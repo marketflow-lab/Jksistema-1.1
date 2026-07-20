@@ -245,16 +245,15 @@
             const rect = $('dockTarget').getBoundingClientRect();
             let offsetX = 0;
             let offsetY = 0;
-            let usedFrameElement = false;
+            let zoomFactor = 1;
             try {
                 if (window.frameElement && typeof window.frameElement.getBoundingClientRect === 'function') {
                     const frameRect = window.frameElement.getBoundingClientRect();
                     offsetX = frameRect.left || 0;
                     offsetY = frameRect.top || 0;
-                    usedFrameElement = true;
                 }
             } catch (_err) {}
-            if ((!usedFrameElement || (offsetX === 0 && offsetY === 0)) && window.top && window.top !== window) {
+            if (window.top && window.top !== window) {
                 const bridged = await getFrameBoundsFromShell();
                 if (bridged && bridged.success !== false && bridged.frame) {
                     if (bridged.active === false || bridged.frame.active === false) {
@@ -262,13 +261,14 @@
                     }
                     offsetX = Number(bridged.frame.x || 0);
                     offsetY = Number(bridged.frame.y || 0);
+                    zoomFactor = Math.max(0.5, Math.min(2, Number(bridged.frame.zoomFactor) || 1));
                 }
             }
             return {
-                x: rect.left + offsetX,
-                y: rect.top + offsetY,
-                width: rect.width,
-                height: rect.height
+                x: (rect.left * zoomFactor) + offsetX,
+                y: (rect.top * zoomFactor) + offsetY,
+                width: rect.width * zoomFactor,
+                height: rect.height * zoomFactor
             };
         }
 

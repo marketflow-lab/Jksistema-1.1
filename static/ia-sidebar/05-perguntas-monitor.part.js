@@ -19,7 +19,12 @@
     }
 
     function _perguntasIsPosVenda(approval) {
-      return String(approval && (approval.tipo || approval.approval_type) || '').toLowerCase() === 'pos_venda';
+      if (!approval || typeof approval !== 'object') return false;
+      return [approval.tipo, approval.approval_type, approval.origem, approval.ia_origem, approval.ia_finalidade]
+        .some((value) => {
+          const marker = String(value || '').trim().toLowerCase();
+          return marker.includes('pos_venda') || marker.includes('pos-venda');
+        });
     }
 
     function _perguntasTextoPrincipal(approval) {
@@ -59,6 +64,7 @@
     }
 
     async function _perguntasMostrarNotificacaoWindows(approval) {
+      if (_perguntasIsPosVenda(approval)) return;
       const title = _perguntasTituloNotificacao(approval);
       const body = _perguntasCorpoNotificacao(approval);
       if (window.electronAPI && typeof window.electronAPI.showWindowsNotification === 'function') {
@@ -96,6 +102,7 @@
     }
 
     async function _perguntasNotificarWindowsAprovacaoUmaVez(approval) {
+      if (_perguntasIsPosVenda(approval)) return;
       const approvalId = _perguntasApprovalId(approval);
       if (!approvalId) return;
       const status = String(approval && approval.status || 'pending').toLowerCase();
@@ -133,6 +140,7 @@
     }
 
     async function _perguntasNotificarAprovacaoPendente(approval) {
+      if (_perguntasIsPosVenda(approval)) return;
       const approvalId = _perguntasApprovalId(approval);
       if (!approvalId) return;
       _adicionarNotificacaoAprovacao(approval, { abrirPainel: false });
@@ -167,7 +175,9 @@
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || data.success === false) return;
-        const pendentes = _perguntasMonitorOrdenarPendentes(Array.isArray(data.pendentes) ? data.pendentes : []);
+        const pendentes = _perguntasMonitorOrdenarPendentes(
+          (Array.isArray(data.pendentes) ? data.pendentes : []).filter(approval => !_perguntasIsPosVenda(approval))
+        );
         const conhecidos = _perguntasAprovacoesNotificadasSet();
         const novas = pendentes.filter((approval) => {
           const id = _perguntasApprovalId(approval);

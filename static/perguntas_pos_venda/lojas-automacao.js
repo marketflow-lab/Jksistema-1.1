@@ -11,12 +11,205 @@ function atualizarConfigPerguntasLocal(nomeLoja, configPerguntas) {
     if (loja) loja.config_perguntas = configPerguntas;
 }
 
+const AUTOMACAO_PERGUNTAS_STATUS_INTERVAL_MS = 10000;
+const AUTOMACAO_PERGUNTAS_STATUS_TIMEOUT_MS = 5000;
+const AUTOMACAO_PERGUNTAS_REFRESH_DELAY_MS = 250;
+
+function contagemNovidadesAutomacao(valor) {
+    if (Array.isArray(valor)) return valor.length;
+    const numero = Number(valor || 0);
+    return Number.isFinite(numero) ? Math.max(0, numero) : 0;
+}
+
+function resultadoAutomacaoTemNovidade(resultado) {
+    const dados = resultado && typeof resultado === 'object' ? resultado : {};
+    const contagens = dados.contagens && typeof dados.contagens === 'object' ? dados.contagens : {};
+    return contagemNovidadesAutomacao(contagens.novas_pendentes ?? dados.novas_pendentes) > 0
+        || contagemNovidadesAutomacao(contagens.enviadas ?? dados.enviadas) > 0;
+}
+
+function normalizarIdsPerguntasAutomacao(valor) {
+    if (!Array.isArray(valor)) return [];
+    return Array.from(new Set(valor.map((item) => String(item || '').trim()).filter(Boolean)));
+}
+
+function statusTemContratoDeltaPerguntas(item) {
+    if (!item || typeof item !== 'object') return false;
+    return ['change_token', 'question_ids', 'new_question_ids', 'new_questions_count', 'question_snapshot_complete']
+        .some((campo) => Object.prototype.hasOwnProperty.call(item, campo));
+}
+
+function registrarTokenStatusPerguntas(nomeLoja, item) {
+    const chave = chaveLojaCronometro(nomeLoja);
+    if (!chave || !item || item.question_snapshot_complete === false) return [];
+    const token = String(item.change_token || '').trim();
+    if (!token) return [];
+    const tokens = state.automacaoPerguntasChangeTokensLojas || {};
+    const tokenAnterior = String(tokens[chave] || '').trim();
+    const snapshots = state.automacaoPerguntasQuestionIdsLojas || {};
+    const temQuestionIds = Array.isArray(item.question_ids);
+    const idsAtuais = temQuestionIds ? normalizarIdsPerguntasAutomacao(item.question_ids) : [];
+    const tinhaBaselineIds = Object.prototype.hasOwnProperty.call(snapshots, chave);
+    const idsAnteriores = new Set(normalizarIdsPerguntasAutomacao(snapshots[chave]));
+    tokens[chave] = token;
+    state.automacaoPerguntasChangeTokensLojas = tokens;
+    if (temQuestionIds) {
+        snapshots[chave] = idsAtuais;
+        state.automacaoPerguntasQuestionIdsLojas = snapshots;
+    }
+    if (!tokenAnterior) {
+        return temQuestionIds && tinhaBaselineIds
+            ? idsAtuais.filter((id) => !idsAnteriores.has(id))
+            : [];
+    }
+    if (tokenAnterior === token) return [];
+    if (temQuestionIds && tinhaBaselineIds) {
+        return idsAtuais.filter((id) => !idsAnteriores.has(id));
+    }
+    return normalizarIdsPerguntasAutomacao(item.new_question_ids);
+}
+
+function registrarSnapshotsPollPerguntas(data, lojaFallback = '') {
+    const snapshots = Array.isArray(data && data.question_snapshots)
+        ? data.question_snapshots
+        : (Array.isArray(data && data.question_ids) ? [{
+            loja: lojaFallback,
+            question_ids: data.question_ids,
+            question_snapshot_complete: data.question_snapshot_complete
+        }] : []);
+    const novidades = [];
+    snapshots.forEach((snapshot) => {
+        if (!snapshot || snapshot.question_snapshot_complete === false) return;
+        const loja = String(snapshot.loja || lojaFallback || '').trim();
+        const chave = chaveLojaCronometro(loja);
+        if (!chave) return;
+        const idsAtuais = normalizarIdsPerguntasAutomacao(snapshot.question_ids);
+        const anteriores = state.automacaoPerguntasQuestionIdsLojas || {};
+        const tinhaBaseline = Object.prototype.hasOwnProperty.call(anteriores, chave);
+        const idsAnteriores = new Set(normalizarIdsPerguntasAutomacao(anteriores[chave]));
+        anteriores[chave] = idsAtuais;
+        state.automacaoPerguntasQuestionIdsLojas = anteriores;
+        if (!tinhaBaseline) return;
+        const idsNovos = idsAtuais.filter((id) => !idsAnteriores.has(id));
+        if (idsNovos.length) novidades.push({ loja, ids: idsNovos });
+    });
+    return novidades;
+}
+
+function tipoStatusAutomacaoEhPerguntas(tipo) {
+    const valor = String(tipo || '').trim().toLowerCase();
+    return !valor || ['perguntas', 'pergunta', 'perguntas_anuncio', 'questions'].includes(valor);
+}
+
+function aplicarStatusBackendAutomacaoPerguntas(data) {
+    const itens = Array.isArray(data && data.lojas) ? data.lojas : [];
+    const statusAnterior = state.automacaoPerguntasStatusLojas || {};
+    const porLoja = {};
+    let ultimaChecagem = normalizarTimestampAutomacaoPerguntas(data && data.atualizado_em);
+    let proximaChecagemGlobal = normalizarTimestampAutomacaoPerguntas(data && data.proxima_checagem_em);
+    const lojasComNovidade = [];
+
+    itens.forEach((item) => {
+        if (!item || !tipoStatusAutomacaoEhPerguntas(item.tipo)) return;
+        const nome = String(item.loja || '').trim();
+        const chave = chaveLojaCronometro(nome);
+        if (!chave) return;
+        const atualizadoEm = normalizarTimestampAutomacaoPerguntas(item.ultima_checagem || item.updated_at);
+        const proximaChecagem = normalizarTimestampAutomacaoPerguntas(item.proxima_checagem || item.next_check_at);
+        const executando = item.executando === true || item.running === true;
+        const sucesso = item.sucesso !== undefined ? item.sucesso : item.success;
+        const contagens = item.contagens && typeof item.contagens === 'object' ? item.contagens : {};
+        const statusAnteriorLoja = statusAnterior[chave];
+        const anteriorEm = Number(statusAnteriorLoja && statusAnteriorLoja.updated_at_ms || 0);
+        const statusAtual = {
+            ...item,
+            loja: nome,
+            running: executando,
+            success: sucesso,
+            enviadas: Number(contagens.enviadas ?? item.enviadas ?? 0),
+            novas_pendentes: Number(contagens.novas_pendentes ?? item.novas_pendentes ?? 0),
+            erros: Number(contagens.erros ?? item.erros ?? 0),
+            updated_at_ms: atualizadoEm,
+            next_check_at_ms: proximaChecagem
+        };
+        const usaContratoDelta = statusTemContratoDeltaPerguntas(item);
+        const idsNovos = usaContratoDelta ? registrarTokenStatusPerguntas(nome, item) : [];
+        if (idsNovos.length) {
+            lojasComNovidade.push(nome);
+        } else if (!usaContratoDelta && anteriorEm > 0 && atualizadoEm > anteriorEm && resultadoAutomacaoTemNovidade(statusAtual)) {
+            lojasComNovidade.push(nome);
+        }
+        porLoja[chave] = statusAtual;
+        ultimaChecagem = Math.max(ultimaChecagem, atualizadoEm);
+        if (proximaChecagem) {
+            state.automacaoPerguntasNextChecks[chave] = proximaChecagem;
+            proximaChecagemGlobal = proximaChecagemGlobal
+                ? Math.min(proximaChecagemGlobal, proximaChecagem)
+                : proximaChecagem;
+        }
+    });
+
+    state.automacaoPerguntasStatusDisponivel = true;
+    state.automacaoPerguntasStatusErro = '';
+    state.automacaoPerguntasStatusLojas = porLoja;
+    state.automacaoPerguntasWorkerIniciado = Boolean(data && data.worker_iniciado);
+    state.automacaoPerguntasBackendExecutando = Boolean(data && data.executando)
+        || Object.values(porLoja).some((item) => item.running === true);
+    if (proximaChecagemGlobal) state.automacaoPerguntasProximaChecagemBackendEm = proximaChecagemGlobal;
+    if (ultimaChecagem) registrarUltimaChecagemAutomacaoPerguntas(ultimaChecagem);
+    lojasComNovidade.forEach((nome) => agendarRecarregamentoPerguntasAposPoll(nome));
+    atualizarCronometrosAutomacao();
+}
+
+async function consultarStatusAutomacaoPerguntas() {
+    if (state.automacaoPerguntasStatusCarregando) return null;
+    const geracao = Number(state.automacaoPerguntasGeracao || 0);
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timeoutId = controller
+        ? setTimeout(() => controller.abort(), AUTOMACAO_PERGUNTAS_STATUS_TIMEOUT_MS)
+        : null;
+    state.automacaoPerguntasStatusCarregando = true;
+    try {
+        const response = await fetch('/api/mercadolivre/perguntas/automacao/status', {
+            method: 'GET',
+            headers: obterAuthHeaders(),
+            cache: 'no-store',
+            ...(controller ? { signal: controller.signal } : {})
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || 'Status da checagem automática indisponível.');
+        if (geracao !== Number(state.automacaoPerguntasGeracao || 0)) return null;
+        aplicarStatusBackendAutomacaoPerguntas(data || {});
+        return data;
+    } catch (error) {
+        if (geracao !== Number(state.automacaoPerguntasGeracao || 0)) return null;
+        state.automacaoPerguntasStatusDisponivel = false;
+        state.automacaoPerguntasStatusErro = mensagemErro(error);
+        atualizarCronometrosAutomacao();
+        return null;
+    } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+        if (geracao === Number(state.automacaoPerguntasGeracao || 0)) {
+            state.automacaoPerguntasStatusCarregando = false;
+        }
+    }
+}
+
+function iniciarConsultaStatusAutomacaoPerguntas() {
+    if (state.automacaoPerguntasStatusTimer) clearInterval(state.automacaoPerguntasStatusTimer);
+    state.automacaoPerguntasStatusTimer = null;
+    const consultaInicial = consultarStatusAutomacaoPerguntas();
+    state.automacaoPerguntasStatusTimer = setInterval(
+        () => { void consultarStatusAutomacaoPerguntas(); },
+        AUTOMACAO_PERGUNTAS_STATUS_INTERVAL_MS
+    );
+    return consultaInicial;
+}
+
 function dadosNotificacaoVazios() {
     return {
         perguntas: 0,
         perguntasParcial: false,
-        posVenda: 0,
-        posVendaParcial: false,
         erro: ''
     };
 }
@@ -27,8 +220,6 @@ function dadosNotificacaoLoja(nome) {
         return {
             perguntas: Number(totais.perguntas || 0),
             perguntasParcial: Boolean(totais.perguntasParcial),
-            posVenda: Number(totais.posVenda || 0),
-            posVendaParcial: Boolean(totais.posVendaParcial),
             erro: ''
         };
     }
@@ -45,13 +236,9 @@ function formatarContadorNotificacao(valor, parcial = false) {
 function htmlNotificacoesLoja(nome) {
     const dados = dadosNotificacaoLoja(nome);
     const perguntas = formatarContadorNotificacao(dados.perguntas, dados.perguntasParcial);
-    const posVenda = formatarContadorNotificacao(dados.posVenda, dados.posVendaParcial);
     const partes = [];
     if (perguntas) {
         partes.push(`<span class="notification-pill" title="Perguntas não respondidas">${escapeHtml(perguntas)} perguntas</span>`);
-    }
-    if (posVenda) {
-        partes.push(`<span class="notification-pill pos-sale" title="Conversas de pós-venda não lidas">${escapeHtml(posVenda)} pós-venda</span>`);
     }
     return partes.join('');
 }
@@ -66,7 +253,6 @@ function atualizarBadgeAba(elemento, valor, parcial = false) {
 function renderizarNotificacoes() {
     const totais = state.notificacoes.totais || {};
     atualizarBadgeAba(tabPerguntasNotificacao, totais.perguntas, totais.perguntasParcial);
-    atualizarBadgeAba(tabPosVendaNotificacao, totais.posVenda, totais.posVendaParcial);
     document.querySelectorAll('[data-store-notifications]').forEach((elemento) => {
         const nome = elemento.dataset.storeNotifications || '';
         elemento.innerHTML = htmlNotificacoesLoja(nome);
@@ -116,11 +302,56 @@ function textoProximaChecagemLoja(nome, loja) {
     const config = loja && loja.config_perguntas ? loja.config_perguntas : {};
     if (!loja || loja.mercadolivre_conectado !== true) return 'Proxima checagem: Mercado Livre desconectado.';
     if (config.responder_automaticamente !== true) return 'Proxima checagem: automacao desligada.';
-    const proxima = Number(state.automacaoPerguntasNextChecks[chaveLojaCronometro(nome)] || 0);
+    const chave = chaveLojaCronometro(nome);
+    const statusBackend = state.automacaoPerguntasStatusLojas[chave] || {};
+    if (statusBackend.running === true || state.automacaoPerguntasRodandoLojas.has(chave)) {
+        return 'Checagem automatica em andamento agora.';
+    }
+    if (statusBackend.success === false && statusBackend.erro) {
+        return `Ultima checagem falhou: ${String(statusBackend.erro).slice(0, 120)}`;
+    }
+    const proxima = Number(state.automacaoPerguntasNextChecks[chave] || 0);
     if (!Number.isFinite(proxima) || proxima <= 0) return 'Proxima checagem: aguardando agendamento...';
     const restante = proxima - Date.now();
     if (restante <= 1000) return 'Proxima checagem: agora.';
     return `Proxima checagem em ${formatarCronometroPerguntas(restante)}.`;
+}
+
+function textoResumoAutomacaoTodas() {
+    const lojasAtivas = lojasComAutomacaoAtiva();
+    if (!lojasAtivas.length) return 'Checagem automatica desligada nas contas conectadas.';
+
+    const statusLojas = Object.values(state.automacaoPerguntasStatusLojas || {});
+    const executandoBackend = state.automacaoPerguntasBackendExecutando === true
+        || statusLojas.some((item) => item && item.running === true);
+    const executandoLocal = state.automacaoPerguntasRodandoLojas.size;
+    if (executandoBackend || executandoLocal) {
+        const quantidade = Math.max(1, statusLojas.filter((item) => item && item.running === true).length, executandoLocal);
+        return `${lojasAtivas.length} conta(s) ativa(s) · checando ${quantidade} agora.`;
+    }
+
+    const falhas = statusLojas.filter((item) => item && (item.success === false || item.erro)).length;
+    const proximas = lojasAtivas
+        .map((loja) => Number(state.automacaoPerguntasNextChecks[chaveLojaCronometro(loja.nome)] || 0))
+        .filter((timestamp) => Number.isFinite(timestamp) && timestamp > 0);
+    const proxima = proximas.length
+        ? Math.min(...proximas)
+        : Number(state.automacaoPerguntasProximaChecagemBackendEm || 0);
+    const partes = [`${lojasAtivas.length} conta(s) ativa(s)`];
+    if (proxima > 0) {
+        const restante = proxima - Date.now();
+        partes.push(restante <= 1000 ? 'proxima checagem agora' : `proxima em ${formatarCronometroPerguntas(restante)}`);
+    } else {
+        partes.push('aguardando agendamento');
+    }
+    if (falhas) partes.push(`${falhas} com falha na ultima checagem`);
+    if (state.automacaoPerguntasStatusDisponivel && !state.automacaoPerguntasWorkerIniciado) {
+        partes.push('worker do servidor iniciando; acompanhamento local ativo');
+    }
+    if (!state.automacaoPerguntasStatusDisponivel && state.automacaoPerguntasStatusErro) {
+        partes.push('acompanhamento local ativo');
+    }
+    return `${partes.join(' · ')}.`;
 }
 
 function atualizarCronometrosAutomacao() {
@@ -128,6 +359,9 @@ function atualizarCronometrosAutomacao() {
         const nome = elemento.dataset.nextCheckLoja || '';
         const loja = state.lojas.find((item) => chaveLojaCronometro(item.nome) === chaveLojaCronometro(nome));
         elemento.textContent = textoProximaChecagemLoja(nome, loja);
+    });
+    document.querySelectorAll('[data-automation-summary]').forEach((elemento) => {
+        elemento.textContent = textoResumoAutomacaoTodas();
     });
 }
 
@@ -183,8 +417,10 @@ function renderizarControlesAutomacaoSelecionada() {
                 }).join('')}
             </select>
         ` : `<strong>${escapeHtml(nome)}</strong>`;
-    const textoStatus = alvoTodas ? '' : textoProximaChecagemLoja(nome, loja);
-    const atributoProxima = alvoTodas ? '' : ` data-next-check-loja="${escapeHtml(nome)}"`;
+    const textoStatus = alvoTodas ? textoResumoAutomacaoTodas() : textoProximaChecagemLoja(nome, loja);
+    const atributoProxima = alvoTodas
+        ? ' data-automation-summary="true"'
+        : ` data-next-check-loja="${escapeHtml(nome)}"`;
     const statusAutomacao = textoStatus
         ? `<span class="store-next-check automation-next-check"${atributoProxima}>${escapeHtml(textoStatus)}</span>`
         : '';
@@ -232,6 +468,9 @@ function ativarAba(nome) {
     document.querySelectorAll('.tab-content').forEach((section) => {
         section.classList.toggle('active', section.id === 'aba-' + nome);
     });
+    if (nome === 'perguntas' && state.automacaoPerguntasRefreshLojas.size) {
+        agendarRecarregamentoPerguntasAposPoll('', 0);
+    }
     if (nome === 'pos-venda' && state.lojaSelecionada) {
         carregarPosVenda();
     }
@@ -269,28 +508,6 @@ async function buscarContadorPerguntasNaoRespondidas(nomeLoja) {
     };
 }
 
-async function buscarContadorPosVendaNaoLidas(nomeLoja) {
-    const params = new URLSearchParams({
-        loja: nomeLoja,
-        dias: posVendaDias?.value || '365',
-        offset: '0',
-        limit: '20',
-        max_orders: '10000',
-        nao_lidas: 'true'
-    });
-    const response = await fetch(`/api/mercadolivre/pos-venda/conversas?${params.toString()}`, {
-        headers: obterAuthHeaders(),
-        cache: 'no-store'
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.detail || `Erro ao contar pós-venda de ${nomeLoja}.`);
-    const conversas = Array.isArray(data.conversas) ? data.conversas.length : 0;
-    return {
-        total: Number(data.conversas_total || data.conversas_nao_lidas_total || conversas || 0),
-        parcial: data.has_next === true || data.next_offset !== null && data.next_offset !== undefined
-    };
-}
-
 async function carregarContadoresNotificacoes(forcar = false) {
     const lojas = lojasMercadoLivreConectadas();
     if (!lojas.length) {
@@ -298,7 +515,7 @@ async function carregarContadoresNotificacoes(forcar = false) {
             carregando: false,
             atualizadoEm: Date.now(),
             lojas: {},
-            totais: { perguntas: 0, posVenda: 0 },
+            totais: { perguntas: 0 },
             erros: {}
         };
         renderizarNotificacoes();
@@ -315,18 +532,15 @@ async function carregarContadoresNotificacoes(forcar = false) {
     const resultados = await Promise.all(lojas.map(async (loja) => {
         const nomeLoja = String(loja.nome || '').trim();
         try {
-            const [perguntas, posVenda] = await Promise.all([
-                buscarContadorPerguntasNaoRespondidas(nomeLoja),
-                buscarContadorPosVendaNaoLidas(nomeLoja)
-            ]);
-            return { nomeLoja, perguntas, posVenda };
+            const perguntas = await buscarContadorPerguntasNaoRespondidas(nomeLoja);
+            return { nomeLoja, perguntas };
         } catch (error) {
             return { nomeLoja, error };
         }
     }));
     const porLoja = {};
     const erros = {};
-    const totais = { perguntas: 0, perguntasParcial: false, posVenda: 0, posVendaParcial: false };
+    const totais = { perguntas: 0, perguntasParcial: false };
     resultados.forEach((resultado) => {
         const chave = chaveLojaCronometro(resultado.nomeLoja);
         if (!chave) return;
@@ -338,15 +552,11 @@ async function carregarContadoresNotificacoes(forcar = false) {
         const dados = {
             perguntas: Number(resultado.perguntas?.total || 0),
             perguntasParcial: Boolean(resultado.perguntas?.parcial),
-            posVenda: Number(resultado.posVenda?.total || 0),
-            posVendaParcial: Boolean(resultado.posVenda?.parcial),
             erro: ''
         };
         porLoja[chave] = dados;
         totais.perguntas += dados.perguntas;
-        totais.posVenda += dados.posVenda;
         totais.perguntasParcial = totais.perguntasParcial || dados.perguntasParcial;
-        totais.posVendaParcial = totais.posVendaParcial || dados.posVendaParcial;
     });
     state.notificacoes = {
         carregando: false,
@@ -415,10 +625,6 @@ function renderizarLojas() {
                     <label class="store-option whatsapp-approval-option">
                         <input class="store-config-checkbox" type="checkbox" data-config="notificar_whatsapp_aprovacoes" ${config.notificar_whatsapp_aprovacoes ? 'checked' : ''}>
                         <span>Enviar sugestão ao WhatsApp cadastrado com Aprovar, Negar e Gerar nova resposta</span>
-                    </label>
-                    <label class="store-option">
-                        <input class="store-config-checkbox" type="checkbox" data-config="habilitar_pos_venda_automatico" ${config.habilitar_pos_venda_automatico ? 'checked' : ''}>
-                        <span>Usar estas configurações também no pós-venda</span>
                     </label>
                     <label class="store-option interval-option">
                         <span>Checar perguntas a cada</span>
@@ -489,7 +695,6 @@ async function salvarConfigLoja(card) {
     const responderAutomaticamente = !!card.querySelector('[data-config="responder_automaticamente"]')?.checked;
     const solicitarAprovacao = !!card.querySelector('[data-config="solicitar_aprovacao"]')?.checked;
     const notificarWhatsappAprovacoes = !!card.querySelector('[data-config="notificar_whatsapp_aprovacoes"]')?.checked;
-    const habilitarPosVendaAutomatico = !!card.querySelector('[data-config="habilitar_pos_venda_automatico"]')?.checked;
     const lojaAtual = state.lojas.find((item) => String(item.nome || '') === nome);
     const configAtual = lojaAtual && lojaAtual.config_perguntas ? lojaAtual.config_perguntas : {};
     const intervaloInput = card.querySelector('[data-config="intervalo_minutos"]');
@@ -507,7 +712,7 @@ async function salvarConfigLoja(card) {
                 responder_automaticamente: responderAutomaticamente,
                 solicitar_aprovacao: solicitarAprovacao,
                 notificar_whatsapp_aprovacoes: notificarWhatsappAprovacoes,
-                habilitar_pos_venda_automatico: habilitarPosVendaAutomatico,
+                habilitar_pos_venda_automatico: false,
                 intervalo_minutos: intervaloMinutos
             })
         });
@@ -568,7 +773,7 @@ async function salvarIntervaloLojaSelecionada() {
                 responder_automaticamente: config.responder_automaticamente === true,
                 solicitar_aprovacao: config.solicitar_aprovacao === true,
                 notificar_whatsapp_aprovacoes: config.notificar_whatsapp_aprovacoes === true,
-                habilitar_pos_venda_automatico: config.habilitar_pos_venda_automatico === true,
+                habilitar_pos_venda_automatico: false,
                 intervalo_minutos: intervaloMinutos
             })
         });
@@ -584,7 +789,22 @@ async function salvarIntervaloLojaSelecionada() {
     }
 }
 
+function aprovacaoEhPosVenda(aprovacao) {
+    if (!aprovacao || typeof aprovacao !== 'object') return false;
+    return [
+        aprovacao.tipo,
+        aprovacao.approval_type,
+        aprovacao.origem,
+        aprovacao.ia_origem,
+        aprovacao.ia_finalidade
+    ].some((valor) => {
+        const marcador = String(valor || '').trim().toLowerCase();
+        return marcador.includes('pos_venda') || marcador.includes('pos-venda');
+    });
+}
+
 function notificarAprovacaoSidebar(aprovacao) {
+    if (aprovacaoEhPosVenda(aprovacao)) return;
     const id = String((aprovacao && aprovacao.id) || '').trim();
     if (!id || state.aprovacoesNotificadas.has(id)) return;
     state.aprovacoesNotificadas.add(id);
@@ -606,7 +826,8 @@ async function carregarAprovacoesPendentes() {
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.detail || 'Erro ao carregar aprovações pendentes.');
-        const pendentes = Array.isArray(data.pendentes) ? data.pendentes : [];
+        const pendentes = (Array.isArray(data.pendentes) ? data.pendentes : [])
+            .filter((item) => !aprovacaoEhPosVenda(item));
         const idsPendentes = new Set(pendentes.map((item) => String((item && item.id) || '').trim()).filter(Boolean));
         Array.from(state.aprovacoesNotificadas).forEach((id) => {
             if (idsPendentes.has(id)) return;
@@ -632,18 +853,6 @@ function existeLojaComAutomacaoAtiva() {
     });
 }
 
-function existeLojaComAutomacaoPosVendaAtiva(lojaNome = '') {
-    const filtro = String(lojaNome || '').trim();
-    return state.lojas.some((loja) => {
-        const config = loja.config_perguntas || {};
-        const nome = String(loja.nome || '').trim();
-        if (filtro && nome !== filtro) return false;
-        return loja.mercadolivre_conectado === true
-            && config.responder_automaticamente === true
-            && config.habilitar_pos_venda_automatico === true;
-    });
-}
-
 function lojasComAutomacaoAtiva() {
     return state.lojas.filter((loja) => {
         const config = loja.config_perguntas || {};
@@ -657,9 +866,61 @@ function intervaloAutomacaoLojaMs(loja) {
     return Math.round(minutos * 60 * 1000);
 }
 
-async function executarAutomacaoPerguntas(lojaNome = '') {
-    if (state.automacaoPerguntasRodando || !existeLojaComAutomacaoAtiva()) return;
-    state.automacaoPerguntasRodando = true;
+function lojaComAutomacaoPerguntasAtiva(nomeLoja) {
+    const chave = chaveLojaCronometro(nomeLoja);
+    if (!chave) return existeLojaComAutomacaoAtiva();
+    return lojasComAutomacaoAtiva().some((loja) => chaveLojaCronometro(loja.nome) === chave);
+}
+
+function deveExecutarPollFrontendPerguntas() {
+    return !(state.automacaoPerguntasStatusDisponivel && state.automacaoPerguntasWorkerIniciado);
+}
+
+function lojaComNovidadeAfetaSelecaoPerguntas(nomeLoja) {
+    if (todasAsLojasSelecionadas()) return true;
+    return chaveLojaCronometro(nomeLoja) === chaveLojaCronometro(state.lojaSelecionada);
+}
+
+function agendarRecarregamentoPerguntasAposPoll(nomeLoja = '', delay = AUTOMACAO_PERGUNTAS_REFRESH_DELAY_MS) {
+    const chave = chaveLojaCronometro(nomeLoja);
+    if (chave) state.automacaoPerguntasRefreshLojas.add(chave);
+    state.automacaoPerguntasRefreshPendente = true;
+    if (state.automacaoPerguntasRefreshTimer) return;
+    const geracao = Number(state.automacaoPerguntasGeracao || 0);
+    state.automacaoPerguntasRefreshTimer = setTimeout(async () => {
+        state.automacaoPerguntasRefreshTimer = null;
+        if (geracao !== Number(state.automacaoPerguntasGeracao || 0)) return;
+        if (!state.automacaoPerguntasRefreshPendente) return;
+        if (state.carregandoPerguntas) {
+            agendarRecarregamentoPerguntasAposPoll(nomeLoja, Math.max(250, Number(delay) || 0));
+            return;
+        }
+
+        state.automacaoPerguntasRefreshPendente = false;
+        const tarefas = [Promise.resolve().then(() => carregarContadoresNotificacoes(true))];
+        const abaPerguntas = document.getElementById('aba-perguntas');
+        const lojasPendentes = Array.from(state.automacaoPerguntasRefreshLojas || []);
+        const afetaSelecao = lojasPendentes.some((loja) => lojaComNovidadeAfetaSelecaoPerguntas(loja));
+        if (afetaSelecao && abaPerguntas && abaPerguntas.classList.contains('active')) {
+            tarefas.push(Promise.resolve()
+                .then(() => carregarPerguntas(state.paginaPerguntas || 1, { background: true, preservarInteracao: true }))
+                .then((atualizou) => {
+                    if (!atualizou) return;
+                    if (todasAsLojasSelecionadas()) state.automacaoPerguntasRefreshLojas.clear();
+                    else state.automacaoPerguntasRefreshLojas.delete(chaveLojaCronometro(state.lojaSelecionada));
+                }));
+        }
+        await Promise.allSettled(tarefas);
+    }, Math.max(0, Number(delay) || 0));
+}
+
+async function executarAutomacaoPerguntas(lojaNome = '', geracaoEsperada = state.automacaoPerguntasGeracao) {
+    const chave = chaveLojaCronometro(lojaNome) || '__todas__';
+    if (!deveExecutarPollFrontendPerguntas()) return null;
+    if (!lojaComAutomacaoPerguntasAtiva(lojaNome)) return null;
+    if (state.automacaoPerguntasRodandoLojas.has(chave)) return null;
+    state.automacaoPerguntasRodandoLojas.add(chave);
+    atualizarCronometrosAutomacao();
     try {
         const params = new URLSearchParams({ max_per_store: '3' });
         if (lojaNome) params.set('loja', lojaNome);
@@ -670,102 +931,83 @@ async function executarAutomacaoPerguntas(lojaNome = '') {
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.detail || 'Erro na automação de perguntas.');
+        if (Number(geracaoEsperada) !== Number(state.automacaoPerguntasGeracao || 0)) return data;
 
         const pendentes = [
             ...(Array.isArray(data.novas_pendentes) ? data.novas_pendentes : []),
             ...(Array.isArray(data.pendentes) ? data.pendentes : [])
         ];
         pendentes.forEach(notificarAprovacaoSidebar);
-
-        if (
-            Array.isArray(data.enviadas) &&
-            data.enviadas.length &&
-            !state.carregandoPerguntas &&
-            document.getElementById('aba-perguntas').classList.contains('active')
-        ) {
-            carregarPerguntas(state.paginaPerguntas || 1);
+        registrarUltimaChecagemAutomacaoPerguntas(data.atualizado_em || Date.now());
+        const novidadesSnapshot = registrarSnapshotsPollPerguntas(data, lojaNome);
+        if (novidadesSnapshot.length) {
+            novidadesSnapshot.forEach((novidade) => agendarRecarregamentoPerguntasAposPoll(novidade.loja));
+        } else if (!Array.isArray(data.question_snapshots) && !Array.isArray(data.question_ids) && resultadoAutomacaoTemNovidade(data)) {
+            agendarRecarregamentoPerguntasAposPoll(lojaNome);
         }
+        void consultarStatusAutomacaoPerguntas();
+        return data;
     } catch (error) {
-        console.warn('[Perguntas IA] Falha ao executar automação:', error);
+        console.warn(`[Perguntas IA] Falha ao executar automação de ${lojaNome || 'todas as contas'}:`, error);
+        return null;
     } finally {
-        state.automacaoPerguntasRodando = false;
+        state.automacaoPerguntasRodandoLojas.delete(chave);
+        atualizarCronometrosAutomacao();
     }
 }
 
-async function executarAutomacaoPosVenda(lojaNome = '') {
-    if (state.automacaoPosVendaRodando || !existeLojaComAutomacaoPosVendaAtiva(lojaNome || state.lojaSelecionada || '')) return;
-    state.automacaoPosVendaRodando = true;
-    try {
-        const params = new URLSearchParams({ max_per_store: '2' });
-        if (lojaNome || state.lojaSelecionada) params.set('loja', lojaNome || state.lojaSelecionada);
-        const response = await fetch(`/api/mercadolivre/pos-venda/automacao/poll?${params.toString()}`, {
-            method: 'POST',
-            headers: obterAuthHeaders(),
-            cache: 'no-store'
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.detail || 'Erro na automação de pós venda.');
-
-        const pendentes = [
-            ...(Array.isArray(data.novas_pendentes) ? data.novas_pendentes : []),
-            ...(Array.isArray(data.pendentes) ? data.pendentes : [])
-        ];
-        pendentes.forEach(notificarAprovacaoSidebar);
-
-        if (
-            Array.isArray(data.enviadas) &&
-            data.enviadas.length &&
-            !state.carregandoPosVenda &&
-            document.getElementById('aba-pos-venda').classList.contains('active')
-        ) {
-            carregarPosVenda(true);
-        }
-    } catch (error) {
-        console.warn('[Pós venda IA] Falha ao executar automação:', error);
-    } finally {
-        state.automacaoPosVendaRodando = false;
-    }
+function pararAutomacaoPerguntas() {
+    state.automacaoPerguntasGeracao = Number(state.automacaoPerguntasGeracao || 0) + 1;
+    (state.automacaoPerguntasTimers || []).forEach((timerId) => clearInterval(timerId));
+    state.automacaoPerguntasTimers = [];
+    (state.automacaoPerguntasStartupTimers || []).forEach((timerId) => clearTimeout(timerId));
+    state.automacaoPerguntasStartupTimers = [];
+    if (state.automacaoPerguntasCountdownTimer) clearInterval(state.automacaoPerguntasCountdownTimer);
+    state.automacaoPerguntasCountdownTimer = null;
+    if (state.automacaoPerguntasStatusTimer) clearInterval(state.automacaoPerguntasStatusTimer);
+    state.automacaoPerguntasStatusTimer = null;
+    if (state.automacaoPerguntasRefreshTimer) clearTimeout(state.automacaoPerguntasRefreshTimer);
+    state.automacaoPerguntasRefreshTimer = null;
+    state.automacaoPerguntasRefreshPendente = false;
+    state.automacaoPerguntasStatusCarregando = false;
+    state.automacaoPerguntasRodandoLojas.clear();
+    state.automacaoPerguntasRefreshLojas.clear();
+    state.automacaoPerguntasNextChecks = {};
 }
 
 function iniciarAutomacaoPerguntas() {
-    if (state.automacaoPerguntasTimer) {
-        clearInterval(state.automacaoPerguntasTimer);
-        state.automacaoPerguntasTimer = null;
-    }
-    (state.automacaoPerguntasTimers || []).forEach((timerId) => clearInterval(timerId));
-    state.automacaoPerguntasTimers = [];
-    if (state.automacaoPerguntasCountdownTimer) {
-        clearInterval(state.automacaoPerguntasCountdownTimer);
-        state.automacaoPerguntasCountdownTimer = null;
-    }
-    state.automacaoPerguntasNextChecks = {};
+    pararAutomacaoPerguntas();
+    const geracao = Number(state.automacaoPerguntasGeracao || 0);
+    void carregarAprovacoesPendentes();
+    iniciarCronometroAutomacao();
+    const consultaStatusInicial = iniciarConsultaStatusAutomacaoPerguntas();
 
-    carregarAprovacoesPendentes();
     const lojasAtivas = lojasComAutomacaoAtiva();
     if (!lojasAtivas.length) {
         atualizarCronometrosAutomacao();
         return;
     }
-    iniciarCronometroAutomacao();
 
     lojasAtivas.forEach((loja, index) => {
         const nomeLoja = String(loja.nome || '').trim();
         const intervaloMs = intervaloAutomacaoLojaMs(loja);
         const delayPerguntas = 250 + (index * 250);
-        const delayPosVenda = 750 + (index * 250);
-        registrarProximaChecagemLoja(nomeLoja, Date.now() + Math.min(delayPerguntas, delayPosVenda));
-        setTimeout(() => {
-            executarAutomacaoPerguntas(nomeLoja);
+        registrarProximaChecagemLoja(nomeLoja, Date.now() + delayPerguntas);
+
+        const startupPerguntas = setTimeout(async () => {
+            await consultaStatusInicial;
+            if (geracao !== Number(state.automacaoPerguntasGeracao || 0)) return;
+            if (!deveExecutarPollFrontendPerguntas()) return;
+            void executarAutomacaoPerguntas(nomeLoja, geracao);
             registrarProximaChecagemLoja(nomeLoja, Date.now() + intervaloMs);
         }, delayPerguntas);
-        setTimeout(() => {
-            executarAutomacaoPosVenda(nomeLoja);
-            registrarProximaChecagemLoja(nomeLoja, Date.now() + intervaloMs);
-        }, delayPosVenda);
+        state.automacaoPerguntasStartupTimers.push(startupPerguntas);
+
         const timerId = setInterval(() => {
+            if (geracao !== Number(state.automacaoPerguntasGeracao || 0)) return;
+            if (!deveExecutarPollFrontendPerguntas()) return;
             registrarProximaChecagemLoja(nomeLoja, Date.now() + intervaloMs);
-            executarAutomacaoPerguntas(nomeLoja);
-            executarAutomacaoPosVenda(nomeLoja);
+            void executarAutomacaoPerguntas(nomeLoja, geracao);
         }, intervaloMs);
         state.automacaoPerguntasTimers.push(timerId);
     });

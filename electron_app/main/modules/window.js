@@ -1,3 +1,248 @@
+const APP_ZOOM_MIN_PERCENT = 70;
+const APP_ZOOM_MAX_PERCENT = 150;
+const APP_ZOOM_STEP_PERCENT = 10;
+const APP_ZOOM_DEFAULT_PERCENT = 100;
+const APP_ZOOM_PREFERENCES_PATH = path.join(app.getPath('userData'), 'electron-ui-preferences.json');
+let cachedAppZoomPercent = null;
+
+function normalizeAppZoomPercent(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return APP_ZOOM_DEFAULT_PERCENT;
+    const stepped = Math.round(parsed / APP_ZOOM_STEP_PERCENT) * APP_ZOOM_STEP_PERCENT;
+    return Math.min(APP_ZOOM_MAX_PERCENT, Math.max(APP_ZOOM_MIN_PERCENT, stepped));
+}
+
+function getStoredAppZoomPercent() {
+    if (Number.isFinite(cachedAppZoomPercent)) return cachedAppZoomPercent;
+    try {
+        const saved = JSON.parse(fs.readFileSync(APP_ZOOM_PREFERENCES_PATH, 'utf8'));
+        cachedAppZoomPercent = normalizeAppZoomPercent(saved && saved.zoomPercent);
+    } catch (_err) {
+        cachedAppZoomPercent = APP_ZOOM_DEFAULT_PERCENT;
+    }
+    return cachedAppZoomPercent;
+}
+
+function saveStoredAppZoomPercent(percent) {
+    const safePercent = normalizeAppZoomPercent(percent);
+    const preferences = {
+        version: 1,
+        zoomPercent: safePercent,
+        updatedAt: new Date().toISOString()
+    };
+    fs.mkdirSync(path.dirname(APP_ZOOM_PREFERENCES_PATH), { recursive: true });
+    fs.writeFileSync(APP_ZOOM_PREFERENCES_PATH, `${JSON.stringify(preferences, null, 2)}\n`, 'utf8');
+    cachedAppZoomPercent = safePercent;
+    return safePercent;
+}
+
+function appZoomPayload(percent = getStoredAppZoomPercent()) {
+    return {
+        percent: normalizeAppZoomPercent(percent),
+        minPercent: APP_ZOOM_MIN_PERCENT,
+        maxPercent: APP_ZOOM_MAX_PERCENT,
+        stepPercent: APP_ZOOM_STEP_PERCENT
+    };
+}
+
+function applyAppZoomToWebContents(contents, percent = getStoredAppZoomPercent()) {
+    if (!contents || contents.isDestroyed()) return false;
+    const factor = normalizeAppZoomPercent(percent) / 100;
+    try {
+        contents.setZoomFactor(factor);
+        return true;
+    } catch (_err) {
+        return false;
+    }
+}
+
+function setAppZoomPercent(percent, options = {}) {
+    const safePercent = options.persist === false
+        ? normalizeAppZoomPercent(percent)
+        : saveStoredAppZoomPercent(percent);
+    if (options.persist === false) cachedAppZoomPercent = safePercent;
+    for (const browserWindow of BrowserWindow.getAllWindows()) {
+        if (!browserWindow || browserWindow.isDestroyed()) continue;
+        let belongsToMainWindow = browserWindow === mainWindow;
+        try {
+            belongsToMainWindow = belongsToMainWindow || browserWindow.getParentWindow() === mainWindow;
+        } catch (_err) {}
+        if (belongsToMainWindow) applyAppZoomToWebContents(browserWindow.webContents, safePercent);
+    }
+    if (embeddedMlBrowserView && embeddedMlBrowserView.webContents && !embeddedMlBrowserView.webContents.isDestroyed()) {
+        applyAppZoomToWebContents(embeddedMlBrowserView.webContents, safePercent);
+    }
+    const payload = appZoomPayload(safePercent);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        try { mainWindow.webContents.send('app-zoom-changed', payload); } catch (_err) {}
+    }
+    return payload;
+}
+
+function isTrustedAppZoomIpcSender(event) {
+    if (!event || !event.sender || !mainWindow || mainWindow.isDestroyed()) return false;
+    if (event.sender !== mainWindow.webContents) return false;
+    const frame = event.senderFrame || null;
+    if (frame && frame.parent) return false;
+    const frameUrl = String(frame && frame.url || event.sender.getURL() || '');
+    try {
+        const url = new URL(frameUrl);
+        return url.protocol === 'file:' && decodeURIComponent(url.pathname).toLowerCase().endsWith('/electron_shell.html');
+    } catch (_err) {
+        return false;
+    }
+}
+
+function assertTrustedAppZoomIpcSender(event) {
+    assertTrustedElectronShellIpcSender(event, 'alterar o zoom do aplicativo');
+}
+
+function assertTrustedElectronShellIpcSender(event, operation = 'usar este recurso') {
+    if (!isTrustedAppZoomIpcSender(event)) {
+        throw new Error(`Origem nao autorizada para ${operation}.`);
+    }
+}
+
+let appFindTarget = null;
+let appFindTargetListener = null;
+let appFindRequestId = 0;
+let appFindUiOpen = false;
+
+function isVisibleEmbeddedMlBrowserForFind() {
+    if (!embeddedMlBrowserView || !embeddedMlBrowserView.webContents || embeddedMlBrowserView.webContents.isDestroyed()) return false;
+    if (!embeddedMlBrowserOwner || embeddedMlBrowserOwner.isDestroyed()) return false;
+    try {
+        const bounds = embeddedMlBrowserView.getBounds();
+        return Number(bounds.x) > -10000
+            && Number(bounds.y) > -10000
+            && Number(bounds.width) >= 80
+            && Number(bounds.height) >= 80;
+    } catch (_err) {
+        return false;
+    }
+}
+
+function getAppFindTarget() {
+    if (isVisibleEmbeddedMlBrowserForFind()) return embeddedMlBrowserView.webContents;
+    if (mainWindow && !mainWindow.isDestroyed()) return mainWindow.webContents;
+    return null;
+}
+
+function detachAppFindListener() {
+    if (appFindTarget && appFindTargetListener && !appFindTarget.isDestroyed()) {
+        try { appFindTarget.removeListener('found-in-page', appFindTargetListener); } catch (_err) {}
+    }
+    appFindTargetListener = null;
+}
+
+function stopAppFindInPage(action = 'clearSelection') {
+    const safeAction = action === 'keepSelection' ? 'keepSelection' : 'clearSelection';
+    detachAppFindListener();
+    if (appFindTarget && !appFindTarget.isDestroyed()) {
+        try { appFindTarget.stopFindInPage(safeAction); } catch (_err) {}
+    }
+    appFindTarget = null;
+    appFindRequestId = 0;
+    return { success: true, action: safeAction };
+}
+
+function startAppFindInPage(query, options = {}) {
+    const text = String(query || '').slice(0, 256);
+    const token = String(options.token || '').slice(0, 80);
+    if (!text) return { ...stopAppFindInPage('clearSelection'), empty: true, token };
+    const target = getAppFindTarget();
+    if (!target || target.isDestroyed()) {
+        return { success: false, unavailable: true, token };
+    }
+    if (appFindTarget && appFindTarget !== target && !appFindTarget.isDestroyed()) {
+        try { appFindTarget.stopFindInPage('clearSelection'); } catch (_err) {}
+    }
+    detachAppFindListener();
+    appFindTarget = target;
+    appFindRequestId = 0;
+    const targetName = target === (embeddedMlBrowserView && embeddedMlBrowserView.webContents)
+        ? 'embedded-ml-browser'
+        : 'main-window';
+    appFindTargetListener = (_event, result = {}) => {
+        if (!result || Number(result.requestId) !== Number(appFindRequestId)) return;
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        try {
+            mainWindow.webContents.send('app-find-result', {
+                token,
+                target: targetName,
+                requestId: Number(result.requestId) || 0,
+                activeMatchOrdinal: Math.max(0, Number(result.activeMatchOrdinal) || 0),
+                matches: Math.max(0, Number(result.matches) || 0),
+                finalUpdate: !!result.finalUpdate
+            });
+        } catch (_err) {}
+    };
+    target.on('found-in-page', appFindTargetListener);
+    try {
+        appFindRequestId = target.findInPage(text, {
+            forward: options.forward !== false,
+            findNext: options.newSession !== false,
+            matchCase: false
+        });
+        return { success: true, token, target: targetName, requestId: appFindRequestId };
+    } catch (err) {
+        stopAppFindInPage('clearSelection');
+        return { success: false, unavailable: true, token, message: err && err.message ? err.message : String(err) };
+    }
+}
+
+function sendAppFindCommand(win, command) {
+    if (!win || win.isDestroyed()) return;
+    try { win.webContents.send('app-find-command', { command }); } catch (_err) {}
+}
+
+function handleAppWindowShortcutInput(event, input, win) {
+    if (String(input && input.type || '').toLowerCase() !== 'keydown') return;
+    const key = String(input && input.key || '').toLowerCase();
+    const commandModifier = !!(input && (input.control || input.meta));
+    if (commandModifier && !input.alt && key === 'f') {
+        event.preventDefault();
+        sendAppFindCommand(win, 'focus');
+        return;
+    }
+    if (!input.alt && key === 'f3') {
+        event.preventDefault();
+        sendAppFindCommand(win, input.shift ? 'previous' : 'next');
+        return;
+    }
+    if (appFindUiOpen && key === 'escape') {
+        event.preventDefault();
+        sendAppFindCommand(win, 'close');
+        return;
+    }
+    if (!commandModifier || input.alt) return;
+    let nextPercent = null;
+    const currentPercent = getStoredAppZoomPercent();
+    if (key === '0' || key === 'num0') {
+        nextPercent = APP_ZOOM_DEFAULT_PERCENT;
+    } else if (key === '+' || key === '=' || key === 'add') {
+        nextPercent = currentPercent + APP_ZOOM_STEP_PERCENT;
+    } else if (key === '-' || key === '_' || key === 'subtract') {
+        nextPercent = currentPercent - APP_ZOOM_STEP_PERCENT;
+    }
+    if (nextPercent === null) return;
+    event.preventDefault();
+    setAppZoomPercent(nextPercent);
+}
+
+function bindAppWindowShortcuts(contents, win) {
+    if (!contents || contents.isDestroyed() || contents.__jkAppShortcutsBound) return;
+    contents.__jkAppShortcutsBound = true;
+    contents.on('before-input-event', (event, input = {}) => {
+        handleAppWindowShortcutInput(event, input, win);
+    });
+}
+
+function bindMainWindowZoomShortcuts(win) {
+    if (!win || win.isDestroyed()) return;
+    bindAppWindowShortcuts(win.webContents, win);
+}
+
 function loadConfiguredApp(win, clientConfig = null) {
     const config = clientConfig || loadClientConfig();
     logElectronLifecycle('client-config-loaded', { appUrl: config.appUrl, configPath: config.configPath });
@@ -1936,6 +2181,7 @@ function loadElectronTabbedShell(win, appUrl) {
 function ensureInternalBrowser(parent) {
     if (internalBrowserWindow && !internalBrowserWindow.isDestroyed()) {
         internalBrowserWindow.webContents.__jkAllowMlAdNavigation = true;
+        applyAppZoomToWebContents(internalBrowserWindow.webContents);
         if (internalBrowserWindow.isMinimized()) {
             internalBrowserWindow.restore();
         }
@@ -1954,12 +2200,16 @@ function ensureInternalBrowser(parent) {
             nodeIntegration: false,
             nativeWindowOpen: true,
             userAgent: ML_BROWSER_USER_AGENT,
-            session: getMlSession()
+            session: getMlSession(),
+            zoomFactor: getStoredAppZoomPercent() / 100
         }
     });
     internalBrowserWindow.webContents.__jkAllowMlAdNavigation = true;
     internalBrowserWindow.webContents.setUserAgent(ML_BROWSER_USER_AGENT);
     registerAvantProConsoleDiagnostics(internalBrowserWindow.webContents);
+    internalBrowserWindow.webContents.on('did-finish-load', () => {
+        applyAppZoomToWebContents(internalBrowserWindow && internalBrowserWindow.webContents);
+    });
     internalBrowserWindow.setMenuBarVisibility(false);
     internalBrowserWindow.on('closed', () => {
         internalBrowserWindow = null;
@@ -1979,12 +2229,16 @@ function createDetachedInternalBrowser(parent, targetUrl, title = '') {
             nodeIntegration: false,
             nativeWindowOpen: true,
             userAgent: ML_BROWSER_USER_AGENT,
-            session: getMlSession()
+            session: getMlSession(),
+            zoomFactor: getStoredAppZoomPercent() / 100
         }
     });
     detachedWindow.webContents.__jkAllowMlAdNavigation = true;
     detachedWindow.webContents.setUserAgent(ML_BROWSER_USER_AGENT);
     registerAvantProConsoleDiagnostics(detachedWindow.webContents);
+    detachedWindow.webContents.on('did-finish-load', () => {
+        applyAppZoomToWebContents(detachedWindow.webContents);
+    });
     detachedWindow.setMenuBarVisibility(false);
     detachedWindow.webContents.on('page-title-updated', (_event, pageTitle) => {
         const clean = String(pageTitle || safeTitle || 'Navegador Interno')
@@ -2036,17 +2290,25 @@ function ensureEmbeddedMlBrowser(parent, options = {}) {
                 backgroundThrottling: false,
                 nativeWindowOpen: true,
                 userAgent: ML_BROWSER_USER_AGENT,
-                session: getMlSession()
+                session: getMlSession(),
+                zoomFactor: getStoredAppZoomPercent() / 100
             }
         });
         embeddedMlBrowserView.webContents.__jkAllowMlAdNavigation = true;
         registerEmbeddedMlBrowserDownloadGuard(embeddedMlBrowserView.webContents);
         registerAvantProConsoleDiagnostics(embeddedMlBrowserView.webContents);
         embeddedMlBrowserView.webContents.setUserAgent(ML_BROWSER_USER_AGENT);
+        embeddedMlBrowserView.webContents.on('did-finish-load', () => {
+            if (embeddedMlBrowserView && embeddedMlBrowserView.webContents) {
+                applyAppZoomToWebContents(embeddedMlBrowserView.webContents);
+            }
+        });
         embeddedMlBrowserView.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
             logElectronLifecycle('embedded-ml-browser-fail-load', { errorCode, errorDescription, validatedURL });
         });
     }
+    applyAppZoomToWebContents(embeddedMlBrowserView.webContents);
+    bindAppWindowShortcuts(embeddedMlBrowserView.webContents, mainWindow);
     embeddedMlBrowserView.webContents.__jkAllowMlAdNavigation = true;
     registerEmbeddedMlBrowserDownloadGuard(embeddedMlBrowserView.webContents);
     if (!shouldAttach) {
@@ -2078,6 +2340,7 @@ function destroyEmbeddedMlBrowser(reason = 'hide') {
     }
     try {
         if (embeddedMlBrowserView && embeddedMlBrowserView.webContents && !embeddedMlBrowserView.webContents.isDestroyed()) {
+            if (appFindTarget === embeddedMlBrowserView.webContents) stopAppFindInPage('clearSelection');
             try { embeddedMlBrowserView.webContents.stop(); } catch (_err) {}
             embeddedMlBrowserView.webContents.destroy();
         }
@@ -2119,7 +2382,8 @@ function createWindow() {
             contextIsolation: true,
             webviewTag: true,
             backgroundThrottling: false,
-            defaultEncoding: 'UTF-8'
+            defaultEncoding: 'UTF-8',
+            zoomFactor: getStoredAppZoomPercent() / 100
         }
     });
     const win = mainWindow;
@@ -2130,9 +2394,20 @@ function createWindow() {
     win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
         logElectronLifecycle('did-fail-load', { errorCode, errorDescription, validatedURL });
     });
+    win.webContents.on('did-finish-load', () => {
+        stopAppFindInPage('clearSelection');
+        appFindUiOpen = false;
+        applyAppZoomToWebContents(win.webContents);
+    });
+    win.webContents.on('did-attach-webview', (_event, guestContents) => {
+        bindAppWindowShortcuts(guestContents, win);
+    });
+    bindMainWindowZoomShortcuts(win);
     win.on('unresponsive', () => logElectronLifecycle('main-window-unresponsive'));
     win.on('closed', () => {
         logElectronLifecycle('main-window-closed');
+        stopAppFindInPage('clearSelection');
+        appFindUiOpen = false;
         if (mainWindow === win) {
             mainWindow = null;
         }

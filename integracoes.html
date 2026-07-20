@@ -219,7 +219,7 @@
 
             window.jkIntegracoesReloadStores = async () => {
                 const nomeSelecionado = selectedStore && selectedStore.nome ? selectedStore.nome : '';
-                await loadStores();
+                await loadStores({ cache: 'no-store' });
                 if (nomeSelecionado && stores.some(store => store.nome === nomeSelecionado)) {
                     await selectStore(nomeSelecionado);
                 } else if (nomeSelecionado) {
@@ -227,6 +227,15 @@
                 }
                 return stores.length;
             };
+
+            window.addEventListener('jk:machine-sync-updated', (event) => {
+                const detail = event && event.detail ? event.detail : {};
+                const scopes = Array.isArray(detail.received_scopes) ? detail.received_scopes : [];
+                if (!scopes.includes('lojas_integracoes')) return;
+                void window.jkIntegracoesReloadStores().catch((error) => {
+                    console.warn('Dados recebidos, mas a lista de lojas não pôde ser recarregada:', error);
+                });
+            });
 
             async function apiFetch(url, options = {}) {
                 const userDataStr = localStorage.getItem('user_data');
@@ -341,7 +350,7 @@
             }
 
             const api = {
-                getStores: () => apiFetch('/api/lojas'),
+                getStores: (options = {}) => apiFetch('/api/lojas', options),
                 getStore: (name) => apiFetch(`/api/lojas/${name}`),
                 createStore: (name) => apiFetch('/api/lojas', {
                     method: 'POST',
@@ -631,9 +640,9 @@
                 }
             });
 
-            async function loadStores() {
+            async function loadStores(options = {}) {
                 try {
-                    stores = await api.getStores();
+                    stores = await api.getStores(options);
                     renderStores();
                 } catch (error) {
                     console.error('Erro ao carregar lojas:', error);

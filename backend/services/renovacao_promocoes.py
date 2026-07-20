@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import re
 import threading
@@ -67,6 +68,62 @@ def _renovacao_criar_campanha_ml(
     if not nova_id:
         raise HTTPException(status_code=500, detail="Mercado Livre criou a campanha, mas nao retornou o ID.")
     return nova_id, payload, cfg
+
+
+def _renovacao_criar_campanha_manual_ml(
+    client_id: str,
+    loja: str,
+    nome: str,
+    start_date: str,
+    finish_date: str,
+) -> dict:
+    nome_loja = str(loja or "").strip()
+    nome_campanha = str(nome or "").strip()
+    if not nome_loja:
+        raise HTTPException(status_code=400, detail="Informe a loja do Mercado Livre.")
+    if not nome_campanha:
+        raise HTTPException(status_code=400, detail="Informe o nome da nova campanha.")
+
+    def parse_data_local(valor: str, campo: str) -> dt.date:
+        texto = str(valor or "").strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", texto):
+            raise HTTPException(status_code=400, detail=f"{campo} deve estar no formato YYYY-MM-DD.")
+        try:
+            return dt.datetime.strptime(texto, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"{campo} e invalida.")
+
+    inicio_data = parse_data_local(start_date, "A data inicial")
+    fim_data = parse_data_local(finish_date, "A data final")
+    if inicio_data < dt.date.today():
+        raise HTTPException(status_code=400, detail="A data inicial nao pode ser anterior a hoje.")
+    if fim_data < inicio_data:
+        raise HTTPException(status_code=400, detail="A data final nao pode ser anterior a data inicial.")
+
+    inicio_ml = f"{inicio_data:%Y-%m-%d}T00:00:00"
+    fim_ml = f"{fim_data:%Y-%m-%d}T23:59:59"
+    cfg = ctx._obter_cfg_ml(client_id, nome_loja)
+    nova_id, payload, _cfg = _renovacao_criar_campanha_ml(
+        client_id,
+        nome_loja,
+        cfg,
+        nome_campanha,
+        {},
+        datas_alvo=(inicio_ml, fim_ml),
+    )
+    ctx._cache_invalidar_loja(client_id, nome_loja)
+    return {
+        "success": True,
+        "loja": nome_loja,
+        "nova_campanha": {
+            "id": nova_id,
+            "nome": payload["name"],
+            "start_date": payload["start_date"],
+            "finish_date": payload["finish_date"],
+            "promotion_type": payload["promotion_type"],
+            "sub_type": payload["sub_type"],
+        },
+    }
 
 
 def _renovacao_normalizar_data_periodo(valor: str | None, *, fim: bool = False) -> str:

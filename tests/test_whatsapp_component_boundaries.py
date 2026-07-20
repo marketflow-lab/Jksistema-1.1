@@ -35,6 +35,7 @@ def test_bridge_public_api_contract_is_stable() -> None:
         "WhatsappPhoneSettingsRequest",
         "WhatsappTemplatesRequest",
         "WhatsappVoiceToggleRequest",
+        "whatsapp_bridge_audio_preflight",
         "whatsapp_bridge_download_whisper",
         "whatsapp_bridge_iniciar_background",
         "whatsapp_bridge_pairing_code",
@@ -56,6 +57,7 @@ def test_bridge_public_api_contract_is_stable() -> None:
 
 def test_whatsapp_router_and_openapi_contracts_are_stable() -> None:
     expected_routes = {
+        ("/api/admin/whatsapp/audio/preflight", "POST"),
         ("/api/admin/whatsapp/config", "PUT"),
         ("/api/admin/whatsapp/messages", "POST"),
         ("/api/admin/whatsapp/pairing-code", "POST"),

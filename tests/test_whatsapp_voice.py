@@ -163,3 +163,82 @@ def test_admin_status_redacts_fingerprint_and_filters_other_users_calls(monkeypa
     serialized = json.dumps(status["voice"])
     assert fingerprint not in serialized
     assert "key_fingerprint" not in serialized
+
+
+def test_voice_listing_delivery_uses_bound_subject_and_proactive_photos(monkeypatch):
+    from backend.services.whatsapp import artifacts
+
+    text_payloads: list[dict] = []
+    photo_calls: list[dict] = []
+
+    class DeliveryBridge:
+        @staticmethod
+        def _post_proactive(_config, payload):
+            text_payloads.append(payload)
+            return {"success": True, "status": "sent"}
+
+    def deliver_photos(_config, **kwargs):
+        photo_calls.append(kwargs)
+        return [{"success": True}, {"success": True}]
+
+    monkeypatch.setattr(artifacts, "_whatsapp_deliver_marketplace_listing_images_proactive", deliver_photos)
+    bundle = {
+        "source": "mercado_livre_api",
+        "stores": ["Loja Principal"],
+        "listings": [{
+            "store": "Loja Principal",
+            "item_id": "MLB123456789",
+            "sku": "ABC-123",
+            "title": "Produto real",
+            "status": "active",
+            "currency_id": "BRL",
+            "price": 99.9,
+            "available_quantity": 4,
+            "permalink": "https://produto.mercadolivre.com.br/MLB123456789",
+            "description": "Descricao oficial",
+            "pictures": [{"secure_url": "https://http2.mlstatic.com/photo.jpg"}],
+        }],
+        "listing_count": 1,
+        "picture_count": 1,
+        "coverage_complete": True,
+    }
+    result = whatsapp_voice.VoiceRuntime._deliver_requested_listing(
+        {"machine_id": "machine"},
+        DeliveryBridge,
+        {"id": "call-1", "subject_id": "subject-bound"},
+        {"task_id": "task-1", "final_response": "fallback", "whatsapp_listing_bundle": bundle},
+        "Mande o link, a descricao e as fotos do SKU ABC-123",
+        "Encontrei o anuncio.",
+    )
+
+    assert result == {
+        "attempted": True,
+        "text_sent": True,
+        "pictures_requested": True,
+        "images_sent": 2,
+        "images_attempted": 2,
+    }
+    assert text_payloads[0]["subject_id"] == "subject-bound"
+    assert text_payloads[0]["event_type"] == "task_completed"
+    assert text_payloads[0]["fingerprint"].startswith("voice-task:")
+    assert "MLB123456789" in text_payloads[0]["text"]
+    assert "https://produto.mercadolivre.com.br/MLB123456789" in text_payloads[0]["text"]
+    assert photo_calls[0]["subject_id"] == "subject-bound"
+    assert photo_calls[0]["max_images"] == 3
+
+
+def test_voice_does_not_send_proactively_without_explicit_listing_delivery():
+    class DeliveryBridge:
+        @staticmethod
+        def _post_proactive(_config, _payload):
+            raise AssertionError("must not send a general spoken answer proactively")
+
+    result = whatsapp_voice.VoiceRuntime._deliver_requested_listing(
+        {},
+        DeliveryBridge,
+        {"id": "call-1", "subject_id": "subject-bound"},
+        {"task_id": "task-1"},
+        "Qual e o horario de atendimento?",
+        "Atendemos em horario comercial.",
+    )
+    assert result == {"attempted": False, "text_sent": False, "images_sent": 0}

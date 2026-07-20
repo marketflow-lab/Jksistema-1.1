@@ -432,17 +432,31 @@
                             <h3>Perguntas ML</h3>
                             <label class="label" for="iaModeloPerguntas">IA que responde perguntas</label>
                             <select id="iaModeloPerguntas"><option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option></select>
+                            <label class="label" for="iaRaciocinioPerguntas">Nível de raciocínio do Codex</label>
+                            <select id="iaRaciocinioPerguntas">
+                                <option value="low">Baixo — mais rápido</option>
+                                <option value="medium" selected>Médio — equilibrado</option>
+                                <option value="high">Alto — mais análise</option>
+                                <option value="xhigh">Muito alto — análise máxima</option>
+                            </select>
                             <label class="label" for="iaModoPerguntas">Usar nesta função</label>
                             <select id="iaModoPerguntas"><option value="modelo">IA normal</option><option value="agente">Agente Cloud</option></select>
-                            <div class="hint">Usada apenas nas respostas publicas feitas no anuncio do Mercado Livre.</div>
+                            <div class="hint">Usada apenas nas respostas públicas do anúncio. O nível é aplicado ao Codex; nos demais provedores, fica salvo e é ignorado.</div>
                         </div>
                         <div class="setting-card">
                             <h3>Pos-venda ML</h3>
                             <label class="label" for="iaModeloPosVenda">IA que responde pos-venda</label>
                             <select id="iaModeloPosVenda"><option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option></select>
+                            <label class="label" for="iaRaciocinioPosVenda">Nível de raciocínio do Codex</label>
+                            <select id="iaRaciocinioPosVenda">
+                                <option value="low">Baixo — mais rápido</option>
+                                <option value="medium" selected>Médio — equilibrado</option>
+                                <option value="high">Alto — mais análise</option>
+                                <option value="xhigh">Muito alto — análise máxima</option>
+                            </select>
                             <label class="label" for="iaModoPosVenda">Usar nesta função</label>
                             <select id="iaModoPosVenda"><option value="modelo">IA normal</option><option value="agente">Agente Cloud</option></select>
-                            <div class="hint">Usada nas respostas privadas de atendimento apos a venda.</div>
+                            <div class="hint">Usada nas respostas privadas após a venda. O nível é aplicado ao Codex; nos demais provedores, fica salvo e é ignorado.</div>
                         </div>
                         <div class="setting-card">
                             <h3>Chat lateral</h3>
@@ -542,7 +556,7 @@
                     <div class="context-hub-layout">
                         <section class="context-hub-section" aria-labelledby="contextHubSettingsTitle">
                             <h3 id="contextHubSettingsTitle">Automação</h3>
-                            <label class="check-item"><input id="contextHubAutoPublish" type="checkbox"><span>Publicar automaticamente quando não houver bloqueios</span></label>
+                            <label class="check-item"><input id="contextHubWatcherEnabled" type="checkbox"><span>Observar mudanças somente em 80_Curadoria (sem publicar automaticamente)</span></label>
                             <label class="check-item"><input id="contextHubPaused" type="checkbox"><span>Pausar varreduras e publicações automáticas</span></label>
                             <div class="actions" style="margin:0;">
                                 <button id="btnContextHubSaveSettings" class="btn-save" type="button">Salvar automação</button>
@@ -550,6 +564,40 @@
                             </div>
                             <div id="contextHubSettingsStatus" class="status" role="status" aria-live="polite"></div>
                         </section>
+                        <section class="context-hub-section" aria-labelledby="contextHubCurationTitle">
+                            <div class="card-head" style="padding:0 0 10px;background:none;">
+                                <div><h3 id="contextHubCurationTitle">Curadoria humana</h3><div class="hint">Notas do Obsidian passam por validação, revisão e aprovação do hash atual antes de publicar.</div></div>
+                                <button id="btnContextHubRefreshNotes" class="btn-refresh" type="button">Recarregar notas</button>
+                            </div>
+                            <div class="row">
+                                <div>
+                                    <label class="label" for="contextHubNoteTitle">Título da nota</label>
+                                    <input id="contextHubNoteTitle" type="text" maxlength="120" autocomplete="off" placeholder="Ex.: Política de estoque">
+                                </div>
+                                <div>
+                                    <label class="label" for="contextHubNoteCategory">Categoria</label>
+                                    <select id="contextHubNoteCategory"><option value="Notas">Notas</option><option value="Regras">Regras</option><option value="ADRs">ADRs</option></select>
+                                </div>
+                            </div>
+                            <label class="label" for="contextHubNoteBody">Conteúdo inicial</label>
+                            <textarea id="contextHubNoteBody" rows="4" maxlength="20000" placeholder="Escreva o rascunho inicial. Depois, continue no Obsidian."></textarea>
+                            <div class="actions" style="margin:10px 0;">
+                                <button id="btnContextHubCreateNote" class="btn-save" type="button">Criar nota</button>
+                                <button id="btnContextHubPublishCuration" class="btn-warning" type="button">Publicar aprovadas</button>
+                            </div>
+                            <div id="contextHubCurationStatus" class="status" role="status" aria-live="polite"></div>
+                            <div id="contextHubNotes" class="context-hub-list"><div class="hint">Nenhuma nota carregada.</div></div>
+                            <hr style="border:0;border-top:1px solid var(--border);margin:16px 0;">
+                            <div class="card-head" style="padding:0 0 10px;background:none;">
+                                <div><h3>Backup cifrado da curadoria</h3><div class="hint">Inclui somente 80_Curadoria e restaura primeiro em staging.</div></div>
+                                <button id="btnContextHubRefreshBackups" class="btn-refresh" type="button">Recarregar</button>
+                            </div>
+                            <label class="label" for="contextHubBackupPassphrase">Senha do backup</label>
+                            <input id="contextHubBackupPassphrase" type="password" minlength="12" maxlength="200" autocomplete="new-password" placeholder="Mínimo de 12 caracteres">
+                            <div class="actions" style="margin:10px 0;"><button id="btnContextHubCreateBackup" class="btn-save" type="button">Criar backup cifrado</button></div>
+                            <div id="contextHubBackups" class="context-hub-list"><div class="hint">Nenhum backup carregado.</div></div>
+                        </section>
+
                         <section class="context-hub-section" aria-labelledby="contextHubGenerationsTitle">
                             <div class="card-head" style="padding:0 0 10px;background:none;">
                                 <div><h3 id="contextHubGenerationsTitle">Gerações</h3><div class="hint">Selecione uma geração para revisar e publicar ou restaurar.</div></div>
@@ -659,7 +707,7 @@
                         <div class="setting-card">
                             <h3>Dois agentes Codex</h3>
                             <label class="label" for="waConversationAgentModel">Agente de conversa</label>
-                            <select id="waConversationAgentModel"><option value="gpt-5.6-luna">Codex GPT-5.6 Luna</option></select>
+                            <select id="waConversationAgentModel"><option value="gpt-5.6-luna">Codex conversacional (gpt-5.6-luna)</option></select>
                             <label class="label" for="waConversationAgentReasoning">Inteligência da conversa</label>
                             <select id="waConversationAgentReasoning">
                                 <option value="low">Baixa — resposta rápida</option>
@@ -667,7 +715,7 @@
                                 <option value="high">Alta</option>
                             </select>
                             <label class="label" for="waTaskAgentModel">Agente de tarefa e pesquisa</label>
-                            <select id="waTaskAgentModel"><option value="gpt-5.6-sol">Codex GPT-5.6 Sol</option></select>
+                            <select id="waTaskAgentModel"><option value="gpt-5.6-sol">Codex de tarefa (gpt-5.6-sol)</option></select>
                             <label class="label" for="waTaskAgentReasoning">Inteligência da tarefa</label>
                             <select id="waTaskAgentReasoning" disabled>
                                 <option value="low">Baixa — rápida</option>
@@ -680,11 +728,11 @@
                             </select>
                             <label class="label" for="waConversationWorkers">Conversas simultâneas</label>
                             <select id="waConversationWorkers"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option></select>
-                            <label class="label" for="waConversationRuntimePool">Runtimes Luna aquecidos</label>
+                            <label class="label" for="waConversationRuntimePool">Runtimes Codex aquecidos</label>
                             <select id="waConversationRuntimePool"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option></select>
-                            <label class="label" for="waGlobalTaskAgents">Pesquisas Sol simultâneas</label>
+                            <label class="label" for="waGlobalTaskAgents">Tarefas Codex simultâneas</label>
                             <select id="waGlobalTaskAgents"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option></select>
-                            <div class="small">Luna Conversa → Luna Gerenciador → funções → Sol, quando necessário. Os dois Luna mantêm 4 runtimes aquecidos em Fast 1,5×; o Sol trabalha em low, com até 6 agentes por telefone e sem prazo global.</div>
+                            <div class="small">Codex Conversacional → Codex Seletor de Dados → funções → Codex de Tarefa, quando necessário. Os runtimes ficam aquecidos; as tarefas usam esforço low e respeitam os limites por telefone.</div>
                         </div>
                         <div class="setting-card">
                             <h3>Estado da integração</h3>
@@ -719,9 +767,11 @@
                             <div id="waVoiceActionStatus" class="status"></div>
                         </div>
                         <div class="setting-card">
-                            <h3>Whisper Small local</h3>
+                            <h3>Áudios recebidos no WhatsApp</h3>
                             <div id="waWhisperText" class="small">Verificando modelo...</div>
                             <progress id="waWhisperProgress" max="100" value="0"></progress>
+                            <div class="small">O Whisper roda somente nesta máquina. Isso é separado das ligações OpenAI/SIP e não usa API paga de transcrição.</div>
+                            <div class="actions" style="margin:10px 0 0;"><button id="waAudioPreflight" class="btn-refresh" type="button">Validar áudio local</button></div>
                             <div class="small">Áudio permanece nesta máquina; nenhuma API de transcrição é usada.</div>
                         </div>
                         <div class="setting-card">
@@ -895,6 +945,8 @@
     const selectIaModelo = document.getElementById('iaModeloPadrao');
     const selectIaModeloPerguntas = document.getElementById('iaModeloPerguntas');
     const selectIaModeloPosVenda = document.getElementById('iaModeloPosVenda');
+    const selectIaRaciocinioPerguntas = document.getElementById('iaRaciocinioPerguntas');
+    const selectIaRaciocinioPosVenda = document.getElementById('iaRaciocinioPosVenda');
     const selectIaModeloChat = document.getElementById('iaModeloChat');
     const selectIaModeloFavoritos = document.getElementById('iaModeloFavoritos');
     const selectIaModo = document.getElementById('iaModoPadrao');
@@ -961,7 +1013,7 @@
     const contextHubGenerationDetail = document.getElementById('contextHubGenerationDetail');
     const contextHubFindings = document.getElementById('contextHubFindings');
     const contextHubSearchResults = document.getElementById('contextHubSearchResults');
-    const contextHubAutoPublish = document.getElementById('contextHubAutoPublish');
+    const contextHubWatcherEnabled = document.getElementById('contextHubWatcherEnabled');
     const contextHubPaused = document.getElementById('contextHubPaused');
     const contextHubSearchQuery = document.getElementById('contextHubSearchQuery');
     const btnContextHubPublish = document.getElementById('btnContextHubPublish');
@@ -1028,6 +1080,11 @@
         cardAgentGuidance.classList.remove('hidden');
         cardContextHub.classList.remove('hidden');
         cardContextHubSearch.classList.remove('hidden');
+    }
+
+    function normalizarIaRaciocinio(valor) {
+        const nivel = String(valor || '').trim().toLowerCase();
+        return ['low', 'medium', 'high', 'xhigh'].includes(nivel) ? nivel : 'medium';
     }
 
     function setStatus(texto, tipo = '') {
@@ -1166,7 +1223,7 @@
         setContextHubText('contextHubDiffUpdated', contextHubCount(diff, 'updated', 'changed', 'documents_updated'), '0');
         setContextHubText('contextHubDiffRemoved', contextHubCount(diff, 'removed', 'documents_removed'), '0');
         setContextHubText('contextHubBlockerCount', blockers.length, '0');
-        contextHubAutoPublish.checked = settings.auto_publish_enabled === true;
+        contextHubWatcherEnabled.checked = settings.watch_enabled === true;
         contextHubPaused.checked = settings.paused === true;
         renderContextHubFindings(findings);
 
@@ -1296,7 +1353,8 @@
             await contextHubRequest('/api/admin/context-hub/settings', {
                 method: 'PUT',
                 body: JSON.stringify({
-                    auto_publish_enabled: contextHubAutoPublish.checked,
+                    watch_enabled: contextHubWatcherEnabled.checked,
+                    auto_publish_enabled: false,
                     paused: contextHubPaused.checked
                 })
             });
@@ -1584,7 +1642,8 @@
         if (!contemSelecionado && modeloSelecionado) {
             const opt = document.createElement('option');
             opt.value = modeloSelecionado;
-            opt.textContent = modeloSelecionado;
+            opt.textContent = `${modeloSelecionado} (indisponível no momento)`;
+            opt.disabled = true;
             opt.selected = true;
             selectEl.insertBefore(opt, selectEl.firstChild);
         }
@@ -1592,6 +1651,7 @@
     }
 
     async function carregarModelosIA(selecionados = {}) {
+        const cfg = typeof selecionados === 'string' ? { padrao: selecionados } : (selecionados || {});
         const fallback = [
             { label: 'Codex', itens: [
                 { name: 'codex:gpt-5.6-sol', display_name: 'Codex GPT-5.6 Sol' },
@@ -1622,22 +1682,26 @@
             ]},
         ];
 
-        let grupos = fallback;
+        const modelosConfigurados = new Set(Object.values(cfg).map(valor => String(valor || '').trim()).filter(Boolean));
+        let grupos = fallback.map(grupo => ({
+            ...grupo,
+            itens: grupo.itens.filter(modelo => modelosConfigurados.has(String(modelo.name || '').trim()))
+        }));
         try {
             const resp = await fetch('/api/ia/modelos', { headers: obterAuthHeaders(), cache: 'no-store' });
             if (resp.ok) {
                 const data = await resp.json();
+                const defaults = data && data.defaults || {};
                 grupos = [
                     { label: 'Codex', itens: data.codex || [] },
-                    { label: 'Vertex AI', itens: data.vertex || [] },
-                    { label: 'OpenAI', itens: data.openai || [] },
-                    { label: 'DeepSeek', itens: data.deepseek || [] },
-                    { label: 'Gemini API', itens: data.gemini || [] },
+                    { label: 'Vertex AI', itens: defaults.vertex_ativa === true ? (data.vertex || []) : [] },
+                    { label: 'OpenAI', itens: defaults.openai_ativa === true ? (data.openai || []) : [] },
+                    { label: 'DeepSeek', itens: defaults.deepseek_ativa === true ? (data.deepseek || []) : [] },
+                    { label: 'Gemini API', itens: defaults.gemini_ativa === true ? (data.gemini || []) : [] },
                 ];
             }
         } catch (e) {}
 
-        const cfg = typeof selecionados === 'string' ? { padrao: selecionados } : (selecionados || {});
         preencherSelectModeloIA(selectIaModelo, grupos, cfg.padrao || 'vertex:gemini-2.5-flash', 'vertex:gemini-2.5-flash');
         preencherSelectModeloIA(selectIaModeloPerguntas, grupos, cfg.perguntas || cfg.padrao || 'vertex:gemini-2.5-flash', 'vertex:gemini-2.5-flash');
         preencherSelectModeloIA(selectIaModeloPosVenda, grupos, cfg.pos_venda || cfg.padrao || 'vertex:gemini-2.5-flash', 'vertex:gemini-2.5-flash');
@@ -1827,6 +1891,8 @@
             if (selectIaModelo) selectIaModelo.value = modeloIA;
             if (selectIaModeloPerguntas) selectIaModeloPerguntas.value = modeloPerguntas;
             if (selectIaModeloPosVenda) selectIaModeloPosVenda.value = modeloPosVenda;
+            if (selectIaRaciocinioPerguntas) selectIaRaciocinioPerguntas.value = normalizarIaRaciocinio(cfg?.ia_raciocinio_perguntas);
+            if (selectIaRaciocinioPosVenda) selectIaRaciocinioPosVenda.value = normalizarIaRaciocinio(cfg?.ia_raciocinio_pos_venda);
             if (selectIaModeloChat) selectIaModeloChat.value = modeloChat;
             if (selectIaModeloFavoritos) selectIaModeloFavoritos.value = modeloFavoritos;
             if (selectIaModo) selectIaModo.value = normalizarIaModo(cfg?.ia_modo_padrao);
@@ -1883,6 +1949,8 @@
                     ia_modelo_padrao: selectIaModelo ? String(selectIaModelo.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
                     ia_modelo_perguntas: selectIaModeloPerguntas ? String(selectIaModeloPerguntas.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
                     ia_modelo_pos_venda: selectIaModeloPosVenda ? String(selectIaModeloPosVenda.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
+                    ia_raciocinio_perguntas: selectIaRaciocinioPerguntas ? normalizarIaRaciocinio(selectIaRaciocinioPerguntas.value) : 'medium',
+                    ia_raciocinio_pos_venda: selectIaRaciocinioPosVenda ? normalizarIaRaciocinio(selectIaRaciocinioPosVenda.value) : 'medium',
                     ia_modelo_chat: selectIaModeloChat ? String(selectIaModeloChat.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
                     ia_modelo_favoritos: selectIaModeloFavoritos ? String(selectIaModeloFavoritos.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
                     ia_modo_padrao: selectIaModo ? normalizarIaModo(selectIaModo.value) : 'modelo',
@@ -1917,6 +1985,8 @@
             const modeloSalvo = String(data?.configuracoes?.ia_modelo_padrao || '').trim();
             const modeloPerguntasSalvo = String(data?.configuracoes?.ia_modelo_perguntas || modeloSalvo).trim();
             const modeloPosVendaSalvo = String(data?.configuracoes?.ia_modelo_pos_venda || modeloSalvo).trim();
+            const raciocinioPerguntasSalvo = normalizarIaRaciocinio(data?.configuracoes?.ia_raciocinio_perguntas);
+            const raciocinioPosVendaSalvo = normalizarIaRaciocinio(data?.configuracoes?.ia_raciocinio_pos_venda);
             const modeloChatSalvo = String(data?.configuracoes?.ia_modelo_chat || modeloSalvo).trim();
             const modeloFavoritosSalvo = String(data?.configuracoes?.ia_modelo_favoritos || modeloSalvo).trim();
             const modoSalvo = normalizarIaModo(data?.configuracoes?.ia_modo_padrao);
@@ -1928,6 +1998,8 @@
             if (modeloSalvo && selectIaModelo) selectIaModelo.value = modeloSalvo;
             if (modeloPerguntasSalvo && selectIaModeloPerguntas) selectIaModeloPerguntas.value = modeloPerguntasSalvo;
             if (modeloPosVendaSalvo && selectIaModeloPosVenda) selectIaModeloPosVenda.value = modeloPosVendaSalvo;
+            if (selectIaRaciocinioPerguntas) selectIaRaciocinioPerguntas.value = raciocinioPerguntasSalvo;
+            if (selectIaRaciocinioPosVenda) selectIaRaciocinioPosVenda.value = raciocinioPosVendaSalvo;
             if (modeloChatSalvo && selectIaModeloChat) selectIaModeloChat.value = modeloChatSalvo;
             if (modeloFavoritosSalvo && selectIaModeloFavoritos) selectIaModeloFavoritos.value = modeloFavoritosSalvo;
             if (selectIaModo) selectIaModo.value = modoSalvo;
@@ -2148,8 +2220,9 @@
     if (canManageUsers) carregarUsuarios();
     if (canManageUsers) carregarAgentGuidance();
 </script>
-<script src="/configuracoes-whatsapp.js?v=20260715-voice-calls-v1"></script>
+<script src="/configuracoes-context-hub-curation.js?v=20260718-governance-v1"></script>
+<script src="/configuracoes-whatsapp.js?v=20260718-audio-preflight-v1"></script>
 <script src="/configuracoes-whatsapp-history.js?v=20260715-voice-calls-v1"></script>
-<script src="/ia-sidebar.js?v=20260714-operational-agent-v1"></script>
+<script src="/ia-sidebar.js?v=20260720-pos-venda-manual"></script>
 </body>
 </html>

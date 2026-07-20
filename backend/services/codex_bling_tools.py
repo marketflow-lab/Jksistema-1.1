@@ -39,6 +39,9 @@ REPORT_LIMIT = 200
 DETAIL_LIMIT = 100
 QUERY_ONLY_LIMIT = 100
 QUERY_TIMEOUT_SECONDS = 60
+POSITIVE_STOCK_PRODUCT_LIMIT = 20_000
+POSITIVE_STOCK_DEPOSIT_LIMIT = 1_000
+POSITIVE_STOCK_BATCH_SIZE = 50
 
 
 _RESOURCE_ROWS = [
@@ -303,9 +306,10 @@ def _get_json(
     params: Any = None,
     timeout: int = 20,
     deadline: Optional[float] = None,
+    limiter: Optional[_BlingAdaptiveLimiter] = None,
 ) -> tuple[Any, int]:
     headers = {"Authorization": f"Bearer {access_token}"}
-    limiter = _BlingAdaptiveLimiter(start_interval=0.09)
+    limiter = limiter or _BlingAdaptiveLimiter(start_interval=0.09)
     resp = None
     # The Codex/WhatsApp query path is intentionally conservative: never retry
     # a 429 in the same request. A single retry is reserved for network/5xx
@@ -382,6 +386,71 @@ def _list_paginated(
     return rows, 200
 
 
+def _list_complete_paginated(
+    access_token: str,
+    path: str,
+    params: Any = None,
+    *,
+    max_records: int,
+    deadline: Optional[float],
+    limiter: Optional[_BlingAdaptiveLimiter] = None,
+) -> tuple[list[dict[str, Any]], int, bool, dict[str, Any]]:
+    """List a complete API collection without the 200-row conversational clamp."""
+
+    cap = max(1, int(max_records or 1))
+    rows: list[dict[str, Any]] = []
+    pages = 0
+    page_size = 100
+    while len(rows) < cap:
+        pagina = pages + 1
+        requested_limit = min(page_size, cap - len(rows))
+        page_params = list(params or []) if isinstance(params, list) else list((params or {}).items())
+        page_params.extend((("pagina", pagina), ("limite", requested_limit)))
+        data, status = _get_json(
+            access_token,
+            path,
+            page_params,
+            deadline=deadline,
+            limiter=limiter,
+        )
+        pages += 1
+        if status != 200:
+            return rows, status, False, {
+                "pages": pages,
+                "max_records": cap,
+                "reason": f"HTTP {status} na pagina {pagina}",
+            }
+        if isinstance(data, dict):
+            data = data.get("data") if isinstance(data.get("data"), list) else []
+        if not isinstance(data, list):
+            return rows, 502, False, {
+                "pages": pages,
+                "max_records": cap,
+                "reason": f"resposta invalida na pagina {pagina}",
+            }
+        page_rows = [item for item in data if isinstance(item, dict)]
+        rows.extend(page_rows[: max(0, cap - len(rows))])
+        if len(page_rows) != len(data):
+            return rows, 502, False, {
+                "pages": pages,
+                "max_records": cap,
+                "reason": f"pagina {pagina} contem registro(s) invalido(s)",
+            }
+        if len(data) < requested_limit:
+            return rows, 200, True, {"pages": pages, "max_records": cap, "reason": ""}
+        if not page_rows:
+            return rows, 502, False, {
+                "pages": pages,
+                "max_records": cap,
+                "reason": f"pagina {pagina} sem registros validos",
+            }
+    return rows, 200, False, {
+        "pages": pages,
+        "max_records": cap,
+        "reason": f"catalogo atingiu o limite seguro de {cap} registros",
+    }
+
+
 def _exception_chain_text(exc: BaseException) -> str:
     parts: list[str] = []
     seen: set[int] = set()
@@ -432,6 +501,7 @@ def _connected_stores(
     loja: Optional[str],
     *,
     require_exact: bool = False,
+    allow_default_fallback: bool = True,
 ) -> tuple[list[tuple[str, dict[str, Any]]], list[str]]:
     warnings: list[str] = []
     stores: list[tuple[str, dict[str, Any]]] = []
@@ -443,7 +513,7 @@ def _connected_stores(
     except Exception as exc:
         root = Path(__file__).resolve().parents[2]
         path = root / "info" / str(client_id or "default") / "lojas_config.json"
-        if not path.exists() and str(client_id or "") != "default":
+        if not path.exists() and str(client_id or "") != "default" and allow_default_fallback:
             path = root / "info" / "default" / "lojas_config.json"
         if path.exists():
             try:
@@ -970,6 +1040,344 @@ def _bling_stock_chart_data(rows: list[dict[str, Any]], lojas: list[str]) -> dic
         "pii_included": False,
         "read_only": True,
     }
+
+
+def _bling_inventory_number(value: Any) -> tuple[float, bool]:
+    if value is None or value == "" or isinstance(value, bool):
+        return 0.0, False
+    try:
+        parsed = float(str(value).replace(",", "."))
+        return (parsed, True) if math.isfinite(parsed) else (0.0, False)
+    except Exception:
+        return 0.0, False
+
+
+def _bling_positive_stock_snapshot(
+    access_token: str,
+    store: str,
+    *,
+    deadline: Optional[float],
+) -> tuple[dict[str, Any], int]:
+    """Count distinct catalog SKUs with positive non-Full stock for one store."""
+
+    limiter = _BlingAdaptiveLimiter(min_interval=0.34, start_interval=0.34)
+    reasons: list[str] = []
+    products, product_status, products_complete, product_meta = _list_complete_paginated(
+        access_token,
+        "/produtos",
+        {},
+        max_records=POSITIVE_STOCK_PRODUCT_LIMIT,
+        deadline=deadline,
+        limiter=limiter,
+    )
+    if product_status != 200 or not products_complete:
+        reason = str(product_meta.get("reason") or f"catalogo de produtos retornou HTTP {product_status}")
+        return {
+            "schema": "jk.stock.bling_positive_sku_count.v1",
+            "store": store,
+            "loja": store,
+            "positive_sku_count": None,
+            "store_available": None,
+            "catalog_products_scanned": len(products),
+            "catalog_distinct_skus": 0,
+            "balances_requested": 0,
+            "balances_returned": 0,
+            "duplicate_skus_collapsed": 0,
+            "products_without_sku_positive": 0,
+            "coverage_complete": False,
+            "partial_reason": reason,
+            "failed_stage": "products",
+            "products_pages": int(product_meta.get("pages") or 0),
+            "stock_scope": "bling_non_full_only",
+            "full_excluded": True,
+            "api_consulted": True,
+            "read_only": True,
+        }, product_status
+
+    products_by_id: dict[str, dict[str, Any]] = {}
+    products_without_id = 0
+    services_excluded = 0
+    for product in products:
+        if str(product.get("tipo") or "").strip().upper() == "S":
+            services_excluded += 1
+            continue
+        product_id = str(product.get("id") or "").strip()
+        if not product_id:
+            products_without_id += 1
+            continue
+        products_by_id.setdefault(product_id, product)
+    product_ids = list(products_by_id)
+    sku_product_ids: dict[str, set[str]] = defaultdict(set)
+    for product_id, product in products_by_id.items():
+        sku = str(product.get("codigo") or product.get("sku") or "").strip().upper()
+        if sku:
+            sku_product_ids[sku].add(product_id)
+    duplicate_skus = sum(max(0, len(ids) - 1) for ids in sku_product_ids.values())
+
+    base = {
+        "schema": "jk.stock.bling_positive_sku_count.v1",
+        "store": store,
+        "loja": store,
+        "catalog_products_scanned": len(products),
+        "inventory_products_scanned": len(product_ids),
+        "catalog_distinct_skus": len(sku_product_ids),
+        "balances_requested": len(product_ids),
+        "balances_returned": 0,
+        "duplicate_skus_collapsed": duplicate_skus,
+        "products_without_id": products_without_id,
+        "services_excluded": services_excluded,
+        "products_without_sku_positive": 0,
+        "products_pages": int(product_meta.get("pages") or 0),
+        "deposit_pages": 0,
+        "balance_batches": 0,
+        "full_deposit_rows_excluded": 0,
+        "stock_scope": "bling_non_full_only",
+        "full_excluded": True,
+        "api_consulted": True,
+        "read_only": True,
+    }
+    if products_without_id:
+        base.update({
+            "positive_sku_count": None,
+            "store_available": None,
+            "coverage_complete": False,
+            "partial_reason": f"{products_without_id} produto(s) sem ID nao puderam ser consultados",
+            "failed_stage": "products",
+        })
+        return base, 200
+    if not product_ids:
+        base.update({
+            "positive_sku_count": 0,
+            "store_available": 0.0,
+            "coverage_complete": True,
+            "partial_reason": "",
+            "failed_stage": "",
+        })
+        return base, 200
+
+    deposits, deposit_status, deposits_complete, deposit_meta = _list_complete_paginated(
+        access_token,
+        "/depositos",
+        {},
+        max_records=POSITIVE_STOCK_DEPOSIT_LIMIT,
+        deadline=deadline,
+        limiter=limiter,
+    )
+    base["deposit_pages"] = int(deposit_meta.get("pages") or 0)
+    base["deposits_cataloged"] = len(deposits)
+    if deposit_status != 200 or not deposits_complete:
+        reason = str(deposit_meta.get("reason") or f"catalogo de depositos retornou HTTP {deposit_status}")
+        base.update({
+            "positive_sku_count": None,
+            "store_available": None,
+            "coverage_complete": False,
+            "partial_reason": reason,
+            "failed_stage": "deposits",
+        })
+        return base, deposit_status
+    deposits_by_id = {
+        _bling_deposito_id(deposit): deposit
+        for deposit in deposits
+        if isinstance(deposit, dict) and _bling_deposito_id(deposit)
+    }
+
+    product_totals: dict[str, float] = defaultdict(float)
+    returned_ids: set[str] = set()
+    invalid_quantity_rows = 0
+    unclassified_deposit_ids: set[str] = set()
+    balance_batches = 0
+    for start in range(0, len(product_ids), POSITIVE_STOCK_BATCH_SIZE):
+        batch = product_ids[start:start + POSITIVE_STOCK_BATCH_SIZE]
+        params = [("idsProdutos[]", product_id) for product_id in batch]
+        data, status = _get_json(
+            access_token,
+            "/estoques/saldos",
+            params,
+            deadline=deadline,
+            limiter=limiter,
+        )
+        balance_batches += 1
+        base["balance_batches"] = balance_batches
+        if status != 200 or not isinstance(data, list):
+            base.update({
+                "positive_sku_count": None,
+                "store_available": None,
+                "balances_returned": len(returned_ids),
+                "coverage_complete": False,
+                "partial_reason": _response_error_text(data, status) if status != 200 else "resposta de saldos invalida",
+                "failed_stage": "balances",
+            })
+            return base, status if status != 200 else 502
+        for item in data:
+            if not isinstance(item, dict):
+                reasons.append("linha de saldo invalida")
+                continue
+            product = item.get("produto") if isinstance(item.get("produto"), dict) else {}
+            product_id = str(product.get("id") or item.get("idProduto") or "").strip()
+            if not product_id or product_id not in products_by_id:
+                reasons.append("saldo retornado para produto nao solicitado")
+                continue
+            if product_id in returned_ids:
+                reasons.append("produto retornado mais de uma vez na consulta de saldos")
+                continue
+            returned_ids.add(product_id)
+            if not str(products_by_id[product_id].get("codigo") or products_by_id[product_id].get("sku") or "").strip():
+                balance_sku = str(product.get("codigo") or product.get("sku") or "").strip()
+                if balance_sku:
+                    products_by_id[product_id] = {**products_by_id[product_id], "codigo": balance_sku}
+            for deposit_row in item.get("depositos") if isinstance(item.get("depositos"), list) else []:
+                if not isinstance(deposit_row, dict):
+                    reasons.append("linha de deposito invalida")
+                    continue
+                deposit_id = _bling_deposito_id(deposit_row)
+                deposit = deposits_by_id.get(deposit_id)
+                if not deposit:
+                    unclassified_deposit_ids.add(deposit_id or "nao informado")
+                    continue
+                active = _bling_deposito_ativo(deposit)
+                ignored = _bling_deposito_desconsidera_saldo(deposit)
+                description = str(deposit.get("descricao") or deposit.get("nome") or "").strip()
+                if active is None or ignored is None or not description:
+                    unclassified_deposit_ids.add(deposit_id or "nao informado")
+                    continue
+                if not active or ignored:
+                    continue
+                if _bling_deposito_eh_full(deposit):
+                    base["full_deposit_rows_excluded"] = int(base["full_deposit_rows_excluded"] or 0) + 1
+                    continue
+                quantity, valid_quantity = _bling_inventory_number(deposit_row.get("saldoFisico"))
+                if not valid_quantity:
+                    invalid_quantity_rows += 1
+                    continue
+                product_totals[product_id] += quantity
+
+    missing_balance_ids = set(product_ids) - returned_ids
+    if missing_balance_ids:
+        reasons.append(f"{len(missing_balance_ids)} produto(s) sem retorno de saldo")
+    if unclassified_deposit_ids:
+        reasons.append(f"{len(unclassified_deposit_ids)} deposito(s) nao classificado(s)")
+    if invalid_quantity_rows:
+        reasons.append(f"{invalid_quantity_rows} saldo(s) sem quantidade valida")
+
+    final_sku_product_ids: dict[str, set[str]] = defaultdict(set)
+    for product_id, product in products_by_id.items():
+        sku = str(product.get("codigo") or product.get("sku") or "").strip().upper()
+        if sku:
+            final_sku_product_ids[sku].add(product_id)
+    base["catalog_distinct_skus"] = len(final_sku_product_ids)
+    base["duplicate_skus_collapsed"] = sum(
+        max(0, len(ids) - 1) for ids in final_sku_product_ids.values()
+    )
+
+    sku_totals: dict[str, float] = defaultdict(float)
+    products_without_sku_positive = 0
+    for product_id, total in product_totals.items():
+        product = products_by_id.get(product_id, {})
+        sku = str(product.get("codigo") or product.get("sku") or "").strip().upper()
+        if sku:
+            sku_totals[sku] += total
+        elif total > 0:
+            products_without_sku_positive += 1
+    coverage_complete = not reasons
+    positive_sku_count = sum(1 for total in sku_totals.values() if total > 0)
+    store_available = round(sum(product_totals.values()), 3)
+    base.update({
+        "positive_sku_count": positive_sku_count if coverage_complete else None,
+        "positive_sku_count_observed": positive_sku_count,
+        "store_available": store_available if coverage_complete else None,
+        "store_available_observed": store_available,
+        "balances_returned": len(returned_ids),
+        "products_without_sku_positive": products_without_sku_positive,
+        "coverage_complete": coverage_complete,
+        "partial_reason": "; ".join(reasons)[:500],
+        "failed_stage": "" if coverage_complete else "balances",
+    })
+    return base, 200
+
+
+def tool_bling_positive_stock_sku_count(
+    client_id: str,
+    message: str,
+    loja: Optional[str],
+    query_deadline: Optional[float] = None,
+    **_: Any,
+) -> dict[str, Any]:
+    """Return an exact distinct-SKU count only when the whole Bling scan completed."""
+
+    warnings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    tenant = str(client_id or "").strip()
+    if not tenant or tenant == "default":
+        warnings.append("Sessao sem tenant autenticado; a consulta Bling foi bloqueada por seguranca.")
+        return _result(
+            "bling_positive_stock_sku_count",
+            {"mensagem": message, "loja": loja or ""},
+            "inventory_summary",
+            rows,
+            lojas=[],
+            sources=sources,
+            warnings=warnings,
+            extra={"stock_scope": "bling_non_full_only", "coverage_complete": False},
+        )
+
+    stores, store_warnings = _connected_stores(
+        tenant,
+        loja,
+        require_exact=True,
+        allow_default_fallback=False,
+    )
+    warnings.extend(store_warnings)
+    deadline = query_deadline if query_deadline is not None else time.monotonic() + QUERY_TIMEOUT_SECONDS
+    for store, cfg in stores:
+        snapshot, status, _cfg = _call_store(
+            tenant,
+            store,
+            cfg,
+            lambda token, _store=store: _bling_positive_stock_snapshot(token, _store, deadline=deadline),
+        )
+        if not isinstance(snapshot, dict):
+            snapshot = {
+                "schema": "jk.stock.bling_positive_sku_count.v1",
+                "store": store,
+                "loja": store,
+                "positive_sku_count": None,
+                "store_available": None,
+                "coverage_complete": False,
+                "partial_reason": "resposta agregada invalida",
+                "failed_stage": "unknown",
+                "stock_scope": "bling_non_full_only",
+                "full_excluded": True,
+                "api_consulted": True,
+                "read_only": True,
+            }
+        rows.append(snapshot)
+        if status != 200:
+            warnings.append(f"{store}: contagem de SKUs com estoque falhou: {_response_error_text(snapshot, status)}.")
+        elif snapshot.get("coverage_complete") is not True:
+            warnings.append(f"{store}: contagem incompleta: {str(snapshot.get('partial_reason') or 'cobertura parcial')[:300]}.")
+        sources.extend([
+            _source(store, "/produtos", int(snapshot.get("catalog_products_scanned") or 0), {"pages": snapshot.get("products_pages")}, status=200 if snapshot.get("failed_stage") != "products" else status),
+            _source(store, "/depositos", int(snapshot.get("deposits_cataloged") or 0), {"pages": snapshot.get("deposit_pages")}, status=200 if snapshot.get("failed_stage") not in {"products", "deposits"} else status),
+            _source(store, "/estoques/saldos", int(snapshot.get("balances_returned") or 0), {"batches": snapshot.get("balance_batches"), "requested": snapshot.get("balances_requested")}, status=status),
+        ])
+    coverage_complete = bool(rows) and all(row.get("coverage_complete") is True for row in rows)
+    return _result(
+        "bling_positive_stock_sku_count",
+        {"mensagem": message, "loja": loja or ""},
+        "inventory_summary",
+        rows,
+        lojas=[store for store, _cfg in stores],
+        sources=sources,
+        warnings=warnings,
+        extra={
+            "schema": "jk.stock.bling_positive_sku_count.v1",
+            "stock_scope": "bling_non_full_only",
+            "full_provider": "mercado_livre_api_only",
+            "coverage_complete": coverage_complete,
+            "partial_response": not coverage_complete,
+        },
+    )
 
 
 def tool_bling_stock_balances(client_id: str, message: str, loja: Optional[str], limit: int = DEFAULT_LIMIT, **_: Any) -> dict[str, Any]:
@@ -1871,6 +2279,7 @@ BLING_TOOL_EXECUTORS: dict[str, Callable[..., dict[str, Any]]] = {
     "bling_status": tool_bling_status,
     "bling_products": tool_bling_products,
     "bling_fiscal_product": tool_bling_fiscal_product,
+    "bling_positive_stock_sku_count": tool_bling_positive_stock_sku_count,
     "bling_stock_balances": tool_bling_stock_balances,
     "bling_deposits": tool_bling_deposits,
     "bling_sales_orders": tool_bling_sales_orders,

@@ -44,11 +44,16 @@
   }
 
   async function request(path, options = {}) {
+    const acceptFailure = options.acceptFailure === true;
+    if ('acceptFailure' in options) {
+      options = { ...options };
+      delete options.acceptFailure;
+    }
     const headers = { ...authHeaders(), ...(options.headers || {}) };
     if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
     const response = await fetch(path, { cache: 'no-store', ...options, headers });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok || data.success === false) {
+    if (!response.ok || (!acceptFailure && data.success === false)) {
       throw new Error(data.detail || data.error || data.message || `Erro HTTP ${response.status}`);
     }
     return data;
@@ -125,7 +130,7 @@
       value: String(item.name || '').replace(/^codex:/i, ''),
       label: String(item.display_name || item.name || ''),
     })).filter(item => item.value);
-    [['gpt-5.6-luna', 'Codex GPT-5.6 Luna'], ['gpt-5.6-sol', 'Codex GPT-5.6 Sol']].forEach(([value, label]) => {
+    [['gpt-5.6-luna', 'Codex conversacional (gpt-5.6-luna)'], ['gpt-5.6-sol', 'Codex de tarefa (gpt-5.6-sol)']].forEach(([value, label]) => {
       if (!models.some(item => item.value === value)) models.push({ value, label });
     });
     function fill(select, selected, fallback) {
@@ -505,9 +510,12 @@
     latestPayload = payload;
     const worker = payload.worker || {};
     const whisper = payload.whisper || {};
+    const audioMessages = payload.audio_messages || {};
     const joao = payload.joao || {};
     const runtime = payload.runtime || {};
     const counts = worker.counts || {};
+    const inboundMedia = worker.inbound_media || {};
+    const inboundMediaCounts = inboundMedia.counts || {};
     const usage = worker.usage || {};
     const zero = worker.zero_cost || payload.zero_cost || {};
     const meta = worker.meta || {};
@@ -537,10 +545,10 @@
       healthItem('D1', worker.d1 === true),
       healthItem('KV mídia', worker.kv === true),
       healthItem('Meta', meta.configured === true),
-      healthItem('Whisper', whisper.ready === true),
+      healthItem('Áudio WhatsApp', audioMessages.ready === true || (audioMessages.ready === undefined && whisper.ready === true)),
       healthItem('João', joao.ready === true),
-      healthItem('Luna conversa', dualRuntime.ready === true),
-      healthItem('Sol tarefa', Boolean(payload.task_agent_model)),
+      healthItem('Codex conversa', dualRuntime.ready === true),
+      healthItem('Codex tarefa', Boolean(payload.task_agent_model)),
     );
     renderPersonalNumbers(payload);
     byId('waPolicyUntil').textContent = `${zero.policy_valid === false ? 'VENCIDA · ' : ''}${zero.valid_until || zero.policy_valid_until || '—'}`;
@@ -550,6 +558,24 @@
     byId('waWhisperText').textContent = whisper.ready
       ? `Pronto · ${formatBytes(whisper.downloaded_bytes)} · CPU int8`
       : `${whisper.download_status || 'indisponível'} · ${progress}% · ${formatBytes(whisper.downloaded_bytes)}`;
+    const audioReady = audioMessages.ready === true || (audioMessages.ready === undefined && whisper.ready === true);
+    const audioPreflight = audioMessages.preflight || {};
+    const audioQueue = audioMessages.queue || {};
+    const runnerReady = audioMessages.runner_ready === true || audioPreflight.runner_ready === true;
+    const modelReady = audioMessages.model_ready === true || audioPreflight.model_integrity === 'verified_sha256' || whisper.ready === true;
+    const dependenciesReady = audioMessages.dependencies_ready === true
+      || (audioPreflight.dependency_installed === true && audioPreflight.av_installed === true);
+    const queueWaiting = Number(audioMessages.queue_depth || audioQueue.waiting || 0);
+    const queueActive = Number(audioQueue.active || 0);
+    const audioParts = [
+      audioReady ? 'Pronto' : (audioMessages.state || whisper.download_status || 'indisponível'),
+      `runner: ${runnerReady ? 'OK' : 'bloqueado'}`,
+      `modelo: ${modelReady ? 'OK' : 'bloqueado'}`,
+      `dependências: ${dependenciesReady ? 'OK' : 'bloqueadas'}`,
+      `fila: ${queueWaiting}/4 · ativo: ${queueActive}/1`,
+    ];
+    if (audioMessages.last_error_code) audioParts.push(`último erro: ${audioMessages.last_error_code}`);
+    byId('waWhisperText').textContent = audioParts.join(' · ');
     byId('waUsageText').textContent = [
       `KV ativo: ${formatBytes(usage.media_active_bytes)} / 900 MB`,
       `uploads: ${Number(usage.media_uploads_month || 0)} / 10.000`,
@@ -557,6 +583,7 @@
     ].join(' · ');
     byId('waPendingText').textContent = [
       `entrada pendente: ${Number(counts.inbox_pending || 0)}`,
+      `mídias aguardando retry: ${Number(inboundMediaCounts.waiting_retry || counts.media_retry_pending || 0)}`,
       `saída/alertas retidos: ${Number(counts.outbox_pending || 0)}`,
       `dead letters: ${Number(counts.dead_letters || 0)}`,
       `bloqueadas por template: ${Number(counts.template_blocked_outbox || 0)}`,
@@ -568,7 +595,12 @@
     });
     renderTemplates(templates);
     renderVoice(payload);
-    errorBox.textContent = runtime.last_error || whisper.download_error || worker.error || '';
+    errorBox.textContent = runtime.last_error
+      || audioMessages.last_error_code
+      || whisper.download_error
+      || inboundMedia.migration_required
+      || worker.error
+      || '';
   }
 
   async function loadStatus(silent = false) {
@@ -611,6 +643,7 @@
       worker_url: workerUrl.value.trim(),
       business_phone: businessPhone.value.trim(),
       agent_architecture: 'dual_codex',
+      response_provider_policy: (latestPayload && latestPayload.response_provider_policy) || 'codex_only',
       conversation_agent_model: String(conversationAgentModel.value || 'gpt-5.6-luna').trim(),
       conversation_agent_reasoning: String(conversationAgentReasoning.value || 'low').trim(),
       task_agent_model: String(taskAgentModel.value || 'gpt-5.6-sol').trim(),
@@ -627,11 +660,10 @@
       conversation_runtime_pool_size: Math.max(Number(conversationRuntimePool.value || 4), Number(conversationWorkers.value || 4)),
       max_active_task_agents_global: Number(globalTaskAgents.value || 12),
       preserve_order_per_phone: true,
-      function_manager_enabled: true,
-      function_manager_required_before_sol: true,
-      function_manager_worker_count: 4,
-      function_manager_runtime_pool_size: 4,
-      ai_model: `codex:${String(taskAgentModel.value || 'gpt-5.6-sol').trim()}`,
+      data_selection_enabled: true,
+      data_selection_worker_count: 4,
+      data_selection_runtime_pool_size: 4,
+      ai_model: (latestPayload && latestPayload.ai_model) || 'codex:gpt-5.5',
       codex_reasoning_effort: 'low',
       codex_reasoning_policy: 'fixed',
       codex_reasoning_max: 'low',
@@ -830,6 +862,16 @@
   byId('waDownloadWhisper').addEventListener('click', () => action('waDownloadWhisper', 'Iniciando...', () =>
     request('/api/admin/whatsapp/whisper/download', { method: 'POST' })
   ));
+
+  byId('waAudioPreflight').addEventListener('click', () => action('waAudioPreflight', 'Validando áudio...', async () => {
+    const result = await request('/api/admin/whatsapp/audio/preflight', { method: 'POST', acceptFailure: true });
+    if (result.success === false) {
+      const audio = result.audio_messages || {};
+      const preflight = audio.preflight || {};
+      throw new Error(`Áudio local bloqueado: ${audio.last_error_code || preflight.error_code || 'preflight_failed'}.`);
+    }
+    return result;
+  }));
 
   byId('waSyncTemplates').addEventListener('click', () => action('waSyncTemplates', 'Sincronizando...', () =>
     request('/api/admin/whatsapp/templates/sync', { method: 'POST', body: JSON.stringify({ create_missing: true }) })

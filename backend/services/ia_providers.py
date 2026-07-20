@@ -344,6 +344,13 @@ CODEX_CONFIGURABLE_MODELS = (
     ("gpt-5.3-codex-spark", "Codex GPT-5.3 Codex Spark"),
 )
 
+CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
+
+
+def _normalizar_codex_reasoning_effort(value: object) -> str:
+    effort = str(value or "").strip().lower()
+    return effort if effort in CODEX_REASONING_EFFORTS else "medium"
+
 
 def _listar_modelos_codex_configuraveis() -> list[dict[str, str]]:
     return [
@@ -495,6 +502,42 @@ def _ia_modelo_pos_venda_configurado() -> str:
     return _ia_modelo_finalidade_configurado("pos_venda")
 
 
+def _ia_raciocinio_finalidade_configurado(finalidade: str) -> str:
+    chave_por_finalidade = {
+        "perguntas": "ia_raciocinio_perguntas",
+        "pos_venda": "ia_raciocinio_pos_venda",
+        "pos-venda": "ia_raciocinio_pos_venda",
+    }
+    chave = chave_por_finalidade.get(str(finalidade or "").strip().lower())
+    try:
+        cfg = _carregar_configuracoes_globais()
+        return _normalizar_codex_reasoning_effort(cfg.get(chave) if chave else "")
+    except Exception:
+        logger.exception("Erro ao carregar raciocinio de IA para finalidade %s", finalidade)
+        return "medium"
+
+
+def _ia_raciocinio_perguntas_configurado() -> str:
+    return _ia_raciocinio_finalidade_configurado("perguntas")
+
+
+def _ia_raciocinio_pos_venda_configurado() -> str:
+    return _ia_raciocinio_finalidade_configurado("pos_venda")
+
+
+def _ia_codex_reasoning_effort_payload(payload: IAChatRequest) -> str:
+    context = payload.context if isinstance(payload.context, dict) else {}
+    explicit = str(context.get("_codex_reasoning_effort") or "").strip()
+    if explicit:
+        return _normalizar_codex_reasoning_effort(explicit)
+    finalidade = str(context.get("ia_finalidade") or context.get("tipo_treinamento") or "").strip().lower()
+    if finalidade in {"pos_venda", "pos-venda"}:
+        return _ia_raciocinio_pos_venda_configurado()
+    if finalidade in {"perguntas", "perguntas_anuncio"} or str(context.get("modulo") or "").strip() == "perguntas_pos_venda":
+        return _ia_raciocinio_perguntas_configurado()
+    return "medium"
+
+
 def _ia_modelo_chat_configurado() -> str:
     return _ia_modelo_finalidade_configurado("chat")
 
@@ -617,6 +660,7 @@ def _chamar_codex_chat_com_thread(
     thread_id: str = "",
     persist_thread: bool = False,
     conversation_key: str = "",
+    reasoning_effort: str | None = None,
 ) -> tuple[str, str]:
     """Execute Codex in read-only mode and optionally resume an operational thread."""
     from backend.services import codex_console
@@ -633,23 +677,9 @@ def _chamar_codex_chat_com_thread(
         raise HTTPException(status_code=400, detail="Mensagem vazia.")
 
     blocos = [mensagem]
-    contexto = payload.context if isinstance(payload.context, dict) else {}
-    if contexto:
-        try:
-            contexto_json = json.dumps(contexto, ensure_ascii=False, default=str)
-        except Exception:
-            contexto_json = str(contexto)
-        if contexto_json.strip():
-            blocos.append(f"Contexto do JK Sistema:\n{contexto_json[:16000]}")
-
-    resultados = payload.tool_results if isinstance(payload.tool_results, list) else []
-    if resultados:
-        try:
-            resultados_json = json.dumps(resultados, ensure_ascii=False, default=str)
-        except Exception:
-            resultados_json = str(resultados)
-        if resultados_json.strip():
-            blocos.append(f"Resultados de consultas internas autorizadas:\n{resultados_json[:18000]}")
+    contexto_planejado = _ia_chat_planned_context_text(payload, client_id)
+    if contexto_planejado:
+        blocos.append(contexto_planejado)
 
     anexos_texto = []
     for anexo in _ia_chat_normalizar_anexos(payload):
@@ -665,6 +695,9 @@ def _chamar_codex_chat_com_thread(
 
     prompt = "\n\n".join(blocos)[:52000]
     model = _codex_modelo_nome_curto(payload.model)
+    reasoning_effort_name = _normalizar_codex_reasoning_effort(
+        reasoning_effort or _ia_codex_reasoning_effort_payload(payload)
+    )
     session_key = str(conversation_key or thread_id or uuid.uuid4().hex).strip()
     cwd = codex_console._codex_readonly_cwd_for_session(
         {"client_id": str(client_id or "default"), "username": "ia-configurada"},
@@ -697,7 +730,9 @@ def _chamar_codex_chat_com_thread(
             }
             if str(thread_id or "").strip():
                 try:
-                    thread = codex.thread_resume(str(thread_id).strip(), **thread_kwargs)
+                    resume_kwargs = dict(thread_kwargs)
+                    resume_kwargs.pop("ephemeral", None)
+                    thread = codex.thread_resume(str(thread_id).strip(), **resume_kwargs)
                 except Exception as exc:
                     if logger is not None:
                         logger.warning("[IA CODEX] Thread operacional indisponivel; iniciando outra: %s", exc)
@@ -709,7 +744,7 @@ def _chamar_codex_chat_com_thread(
                 cwd=cwd,
                 model=model,
                 approval_mode=ApprovalMode.deny_all,
-                effort=ReasoningEffort.medium,
+                effort=getattr(ReasoningEffort, reasoning_effort_name, ReasoningEffort.medium),
                 summary=ReasoningSummary.model_validate("auto"),
             )
     except HTTPException:
@@ -730,10 +765,19 @@ def _chamar_codex_chat_com_thread(
     return resposta, str(getattr(thread, "id", "") or "")
 
 
-def _chamar_codex_chat(payload: IAChatRequest, client_id: str) -> str:
+def _chamar_codex_chat(
+    payload: IAChatRequest,
+    client_id: str,
+    *,
+    reasoning_effort: str | None = None,
+) -> str:
     """Executa o modelo Codex configurado sem expor ferramentas ou o workspace."""
 
-    resposta, _thread_id = _chamar_codex_chat_com_thread(payload, client_id)
+    resposta, _thread_id = _chamar_codex_chat_com_thread(
+        payload,
+        client_id,
+        reasoning_effort=reasoning_effort,
+    )
     return resposta
 
 
@@ -1111,6 +1155,98 @@ def _ia_compactar_mensagem_chat(mensagem: str, limite: int = IA_CHAT_MESSAGE_COM
     return (texto[:inicio_len].rstrip() + marcador + texto[-fim_len:].lstrip())[:limite]
 
 
+IA_CHAT_PLANNED_CONTEXT_MAX_CHARS = 16_000
+_IA_CHAT_PLANNED_CONTEXT_KEYS = (
+    "data_selection",
+    "codex_data_selection",
+    "data_selection_plan",
+)
+_IA_CHAT_SENSITIVE_CONTEXT_KEY_RE = re.compile(
+    r"(?:token|secret|password|senha|api[_-]?key|authorization|cookie|path|reference|buyer|phone|cpf|cnpj)",
+    re.I,
+)
+
+
+def _ia_chat_compact_planned_value(value: Any, *, depth: int = 0) -> Any:
+    """Keep model evidence bounded and strip fields that must never enter prompts."""
+
+    if depth >= 5:
+        return "[limite de profundidade]"
+    if isinstance(value, dict):
+        compact: dict[str, Any] = {}
+        for key, child in list(value.items())[:30]:
+            key_text = str(key or "").strip()[:100]
+            if not key_text or _IA_CHAT_SENSITIVE_CONTEXT_KEY_RE.search(key_text):
+                continue
+            compact[key_text] = _ia_chat_compact_planned_value(child, depth=depth + 1)
+        return compact
+    if isinstance(value, list):
+        return [_ia_chat_compact_planned_value(item, depth=depth + 1) for item in value[:12]]
+    if isinstance(value, str):
+        return value.replace("\x00", "").strip()[:1600]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return str(value).replace("\x00", "").strip()[:800]
+
+
+def _ia_chat_planned_context_text(payload: IAChatRequest, client_id: str) -> str:
+    """Return only evidence explicitly selected before provider execution.
+
+    Providers used to preload the complete screen, stock CSV, legacy RAG and
+    other sources independently.  The data-selection layer now owns that
+    decision.  This adapter accepts the versioned selection envelope while
+    remaining compatible with an already-planned ``tool_results`` list.
+    """
+
+    del client_id  # Tenant binding is enforced before selection, never by the model payload.
+    context = payload.context if isinstance(payload.context, dict) else {}
+    selection: Any = None
+    for key in _IA_CHAT_PLANNED_CONTEXT_KEYS:
+        candidate = context.get(key)
+        if isinstance(candidate, dict):
+            selection = candidate
+            break
+    if selection is None and isinstance(payload.tool_results, list) and payload.tool_results:
+        selection = {
+            "schema_version": 1,
+            "status": "planned_tool_results",
+            "evidence": payload.tool_results,
+        }
+    if not isinstance(selection, dict) or not selection:
+        return ""
+
+    try:
+        from backend.services.codex_data_selection_agent import compact_evidence
+
+        compact = compact_evidence(_ia_chat_compact_planned_value(selection), report=False)
+    except Exception:
+        compact = _ia_chat_compact_planned_value(selection)
+    serialized = json.dumps(compact, ensure_ascii=False, separators=(",", ":"), default=str)
+    if len(serialized) > IA_CHAT_PLANNED_CONTEXT_MAX_CHARS:
+        # Keep complete JSON fields. Never put a sliced serialized document in
+        # the model prompt because it can look like valid but incomplete data.
+        compact_selection = compact if isinstance(compact, dict) else {}
+        compact = {
+            key: compact_selection.get(key)
+            for key in (
+                "schema_version",
+                "status",
+                "action",
+                "intents",
+                "entities",
+                "requested_fields",
+                "selected_tools",
+                "coverage_complete",
+                "missing",
+                "warnings",
+            )
+            if compact_selection.get(key) not in (None, "", [], {})
+        }
+        compact["evidence_omitted_by_budget"] = True
+        serialized = json.dumps(compact, ensure_ascii=False, separators=(",", ":"), default=str)
+    return "Evidencia compacta selecionada pelo backend (somente referencia):\n" + serialized
+
+
 def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
     _ia_validar_provedor_ativo("openai")
 
@@ -1143,10 +1279,6 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
     modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
     fluxo_perguntas_publicas_v2 = str(ctx_payload.get("tipo") or "").strip() == "novo_fluxo_perguntas_v2"
     desativa_recursos_chat = _ia_contexto_desativa_recursos_chat(ctx_payload)
-    usa_contexto = False if (modo_rapido or desativa_recursos_chat) else _ia_chat_usa_contexto_tela(mensagem, anexos)
-    if not modo_rapido and not desativa_recursos_chat and isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
-        usa_contexto = True
-
     if _ia_chat_eh_saudacao_curta(mensagem) and not anexos:
         return _ia_chat_resposta_saudacao(payload)
 
@@ -1155,9 +1287,6 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
     if len(mensagem) > IA_CHAT_MESSAGE_MAX_CHARS:
         logger.warning("[IA] Mensagem longa (%s chars) compactada antes da OpenAI.", len(mensagem))
         mensagem = _ia_compactar_mensagem_chat(mensagem)
-
-    rag_query = mensagem or " ".join([a.get("name") or "anexo" for a in anexos])
-    contexto_rag = _ia_rag_contexto(rag_query, client_id) if usa_contexto else ""
 
     historico = []
     for item in (payload.history or [])[-8:]:
@@ -1205,17 +1334,11 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
             "Quando fizer sentido, finalize com uma sugestÃƒÂ£o curta de prÃƒÂ³ximo passo. "
             "Evite texto longo e repetitivo; seja claro, acionÃƒÂ¡vel e focado no que o usuÃƒÂ¡rio pediu."
         )
-        if not desativa_recursos_chat:
-            system_prompt += _ia_chat_bloco_prompt_analise_especialista(
-                mensagem,
-                payload.page,
-                payload.context if isinstance(payload.context, dict) else None,
-            )
-            system_prompt += _ia_treinamento_ppv_bloco_prompt(
-                client_id,
-                payload.page,
-                payload.context if isinstance(payload.context, dict) else None,
-            )
+        # Semantic routing and knowledge selection happen before the provider
+        # call in CodexDataSelectionAgent.  Do not re-enable the legacy
+        # keyword router or preload the PPV/RAG training bundle here.  When
+        # either knowledge or specialist evidence is needed it is present in
+        # the compact, server-validated data_selection envelope below.
 
     input_messages = [{"role": "system", "content": system_prompt}]
     input_messages.extend(historico)
@@ -1225,48 +1348,21 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
         itens = ", ".join([f"{a.get('name')} ({a.get('mime_type')})" for a in anexos])
         resumo_anexos = f"\n\nAnexos enviados pelo usuÃƒÂ¡rio: {itens}"
 
-    contexto_tela = f"Contexto da tela em JSON:\n{_montar_contexto_ia(payload, client_id)}" if usa_contexto else ""
-    texto_estoque = _ia_estoque_texto(client_id) if (usa_contexto and _ia_chat_deve_anexar_estoque_contexto(mensagem)) else ""
-    bloco_estoque = f"\n\n{texto_estoque}" if texto_estoque else ""
+    # Provider execution consumes only the compact envelope prepared by the
+    # data-selection layer. It must not decide to preload screen/RAG/stock.
+    contexto_tela = (
+        _ia_chat_planned_context_text(payload, client_id)
+        if not desativa_recursos_chat and not fluxo_perguntas_publicas_v2
+        else ""
+    )
     # SKUs vendidos no perÃƒÂ­odo lidos direto do banco de dados
-    bloco_vendas = ""
-    bloco_vendas_exato = ""
-    bloco_web = ""
-    bloco_funcoes = ""
-    if usa_contexto and _ia_chat_deve_anexar_vendas_db_contexto(mensagem):
-        try:
-            ctx = payload.context if isinstance(payload.context, dict) else {}
-            _v_ini = str(ctx.get("data_inicio") or "").strip()
-            _v_fim = str(ctx.get("data_fim") or "").strip()
-            _v_loja = str(ctx.get("loja") or "").strip()
-            texto_vendas = _ia_vendas_db_texto(client_id, _v_ini, _v_fim, _v_loja)
-            bloco_vendas = f"\n\n{texto_vendas}" if texto_vendas else ""
-            texto_vendas_exato = _ia_vendas_contexto_exato(mensagem, client_id, ctx)
-            bloco_vendas_exato = f"\n\n{texto_vendas_exato}" if texto_vendas_exato else ""
-        except Exception:
-            bloco_vendas = ""
-            bloco_vendas_exato = ""
-    if not modo_rapido and _ia_chat_precisa_busca_web(mensagem, payload.page, payload.context if isinstance(payload.context, dict) else None):
-        try:
-            query_web = str(ctx_payload.get("web_search_query") or mensagem).strip()
-            texto_web = _ia_web_contexto(query_web, client_id)
-            bloco_web = f"\n\n{texto_web}" if texto_web else ""
-        except Exception:
-            bloco_web = ""
-    if not modo_rapido and not desativa_recursos_chat and not fluxo_perguntas_publicas_v2:
-        try:
-            texto_funcoes = _ia_chat_contexto_funcoes(payload, client_id)
-            bloco_funcoes = f"\n\n{texto_funcoes}" if texto_funcoes else ""
-        except Exception as exc:
-            logger.warning(f"[IA TOOLS] Falha ao executar funcoes no chat OpenAI: {exc}")
-            bloco_funcoes = ""
-    contexto_recuperado = f"\n\nContexto recuperado por busca semantica:\n{contexto_rag}" if contexto_rag else ""
-    bloco_contexto = f"{contexto_tela}{bloco_estoque}{bloco_vendas}{bloco_vendas_exato}{bloco_web}{bloco_funcoes}{contexto_recuperado}{resumo_anexos}" if (contexto_tela or bloco_estoque or bloco_vendas or bloco_vendas_exato or bloco_web or bloco_funcoes or contexto_recuperado or resumo_anexos) else ""
+    bloco_contexto = f"{contexto_tela}{resumo_anexos}" if (contexto_tela or resumo_anexos) else ""
 
     user_content = [{
         "type": "input_text",
         "text": (
-            f"{bloco_contexto}\n\n" if bloco_contexto else ""
+            (f"{bloco_contexto}\n\n" if bloco_contexto else "")
+            +
             f"Pergunta do usuÃƒÂ¡rio:\n{pergunta_usuario}\n\n"
             "InstruÃƒÂ§ÃƒÂ£o adicional: responda de forma humana e natural, com foco no que foi pedido "
             "e destacando apenas as informaÃƒÂ§ÃƒÂµes mais relevantes. "
@@ -1373,10 +1469,6 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
     modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
     fluxo_perguntas_publicas_v2 = str(ctx_payload.get("tipo") or "").strip() == "novo_fluxo_perguntas_v2"
     desativa_recursos_chat = _ia_contexto_desativa_recursos_chat(ctx_payload)
-    usa_contexto = False if (modo_rapido or desativa_recursos_chat) else _ia_chat_usa_contexto_tela(mensagem, anexos)
-    if not modo_rapido and not desativa_recursos_chat and isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
-        usa_contexto = True
-
     if _ia_chat_tem_imagem(anexos):
         logger.info("[IA] DeepSeek selecionado com imagem anexada; o modelo nao suporta entrada visual nesta API.")
         return (
@@ -1392,9 +1484,6 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
     if len(mensagem) > IA_CHAT_MESSAGE_MAX_CHARS:
         logger.warning("[IA] Mensagem longa (%s chars) compactada antes da OpenAI.", len(mensagem))
         mensagem = _ia_compactar_mensagem_chat(mensagem)
-
-    rag_query = mensagem or " ".join([a.get("name") or "anexo" for a in (anexos or [])])
-    contexto_rag = _ia_rag_contexto(rag_query, client_id) if usa_contexto else ""
 
     historico = []
     for item in (payload.history or [])[-8:]:
@@ -1440,17 +1529,8 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
             "Quando fizer sentido, finalize com uma sugestÃƒÂ£o curta de prÃƒÂ³ximo passo. "
             "Evite texto longo e repetitivo; seja claro, acionÃƒÂ¡vel e focado no que o usuÃƒÂ¡rio pediu."
         )
-        if not desativa_recursos_chat:
-            system_prompt += _ia_chat_bloco_prompt_analise_especialista(
-                mensagem,
-                payload.page,
-                payload.context if isinstance(payload.context, dict) else None,
-            )
-            system_prompt += _ia_treinamento_ppv_bloco_prompt(
-                client_id,
-                payload.page,
-                payload.context if isinstance(payload.context, dict) else None,
-            )
+        # Knowledge and specialist evidence are injected only through the
+        # server-validated data_selection envelope.
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(historico)
@@ -1461,46 +1541,14 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
         itens = ", ".join([f"{a.get('name')} ({a.get('mime_type')})" for a in anexos])
         resumo_anexos = f"\n\nAnexos enviados pelo usuÃƒÂ¡rio: {itens}"
 
-    contexto_tela = f"Contexto da tela em JSON:\n{_montar_contexto_ia(payload, client_id)}" if usa_contexto else ""
-    texto_estoque = _ia_estoque_texto(client_id) if (usa_contexto and _ia_chat_deve_anexar_estoque_contexto(mensagem)) else ""
-    bloco_estoque = f"\n\n{texto_estoque}" if texto_estoque else ""
-    bloco_vendas = ""
-    bloco_vendas_exato = ""
-    bloco_web = ""
-    bloco_funcoes = ""
-    if usa_contexto and _ia_chat_deve_anexar_vendas_db_contexto(mensagem):
-        try:
-            ctx = payload.context if isinstance(payload.context, dict) else {}
-            texto_vendas = _ia_vendas_db_texto(
-                client_id,
-                str(ctx.get("data_inicio") or "").strip(),
-                str(ctx.get("data_fim") or "").strip(),
-                str(ctx.get("loja") or "").strip(),
-            )
-            bloco_vendas = f"\n\n{texto_vendas}" if texto_vendas else ""
-            texto_vendas_exato = _ia_vendas_contexto_exato(mensagem, client_id, ctx)
-            bloco_vendas_exato = f"\n\n{texto_vendas_exato}" if texto_vendas_exato else ""
-        except Exception:
-            bloco_vendas = ""
-            bloco_vendas_exato = ""
-    if not modo_rapido and _ia_chat_precisa_busca_web(mensagem, payload.page, payload.context if isinstance(payload.context, dict) else None):
-        try:
-            query_web = str(ctx_payload.get("web_search_query") or mensagem).strip()
-            texto_web = _ia_web_contexto(query_web, client_id)
-            bloco_web = f"\n\n{texto_web}" if texto_web else ""
-        except Exception:
-            bloco_web = ""
-    if not modo_rapido and not desativa_recursos_chat and not fluxo_perguntas_publicas_v2:
-        try:
-            texto_funcoes = _ia_chat_contexto_funcoes(payload, client_id)
-            bloco_funcoes = f"\n\n{texto_funcoes}" if texto_funcoes else ""
-        except Exception as exc:
-            logger.warning(f"[IA TOOLS] Falha ao executar funcoes no chat DeepSeek: {exc}")
-            bloco_funcoes = ""
-    contexto_recuperado = f"\n\nContexto recuperado por busca semantica:\n{contexto_rag}" if contexto_rag else ""
+    contexto_tela = (
+        _ia_chat_planned_context_text(payload, client_id)
+        if not desativa_recursos_chat and not fluxo_perguntas_publicas_v2
+        else ""
+    )
     bloco_contexto = (
-        f"{contexto_tela}{bloco_estoque}{bloco_vendas}{bloco_vendas_exato}{bloco_web}{bloco_funcoes}{contexto_recuperado}{resumo_anexos}"
-        if (contexto_tela or bloco_estoque or bloco_vendas or bloco_vendas_exato or bloco_web or bloco_funcoes or contexto_recuperado or resumo_anexos)
+        f"{contexto_tela}{resumo_anexos}"
+        if (contexto_tela or resumo_anexos)
         else ""
     )
 
@@ -1599,17 +1647,8 @@ def _chamar_gemini_chat(payload: IAChatRequest, client_id: str) -> str:
             "com tom simpatico, cordial, humano e profissional. "
             "Responda exatamente ao que foi pedido e nao invente totais, SKUs, precos ou datas."
         )
-        if not desativa_recursos_chat:
-            system_prompt += _ia_chat_bloco_prompt_analise_especialista(
-                mensagem,
-                payload.page,
-                payload.context if isinstance(payload.context, dict) else None,
-            )
-            system_prompt += _ia_treinamento_ppv_bloco_prompt(
-                client_id,
-                payload.page,
-                payload.context if isinstance(payload.context, dict) else None,
-            )
+        # Knowledge and specialist evidence are injected only through the
+        # server-validated data_selection envelope.
 
     historico = []
     for item in (payload.history or [])[-8:]:
@@ -1618,7 +1657,11 @@ def _chamar_gemini_chat(payload: IAChatRequest, client_id: str) -> str:
         if content:
             historico.append({"role": role, "parts": [{"text": content[:1500]}]})
 
-    contexto_tela = f"Contexto da tela em JSON:\n{_montar_contexto_ia(payload, client_id)}" if not modo_rapido and not desativa_recursos_chat else ""
+    contexto_tela = (
+        _ia_chat_planned_context_text(payload, client_id)
+        if not desativa_recursos_chat and not fluxo_perguntas_publicas_v2
+        else ""
+    )
     pergunta_usuario = mensagem or "Analise os anexos enviados e responda de forma objetiva."
     user_text = (
         (f"{contexto_tela}\n\n" if contexto_tela else "")
@@ -1677,10 +1720,6 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
     modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
     fluxo_perguntas_publicas_v2 = str(ctx_payload.get("tipo") or "").strip() == "novo_fluxo_perguntas_v2"
     desativa_recursos_chat = _ia_contexto_desativa_recursos_chat(ctx_payload)
-    usa_contexto = False if (modo_rapido or desativa_recursos_chat) else _ia_chat_usa_contexto_tela(mensagem, anexos)
-    if not modo_rapido and not desativa_recursos_chat and isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
-        usa_contexto = True
-
     if _ia_chat_eh_saudacao_curta(mensagem) and not anexos:
         return _ia_chat_resposta_saudacao(payload)
 
@@ -1706,9 +1745,6 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
         if headers and project_id
         else ""
     )
-
-    rag_query = mensagem or " ".join([a.get("name") or "anexo" for a in (anexos or [])])
-    contexto_rag = _ia_rag_contexto(rag_query, client_id) if usa_contexto else ""
 
     historico = []
     for item in (payload.history or [])[-8:]:
@@ -1743,17 +1779,8 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
             "Quando comparar meses, periodos, lojas ou SKUs com duas ou mais colunas de valores, responda preferencialmente em tabela Markdown. "
             "Se houver anexos, considere o conteudo deles. Seja claro, acionavel e focado."
         )
-        if not desativa_recursos_chat:
-            system_prompt += _ia_chat_bloco_prompt_analise_especialista(
-                mensagem,
-                payload.page,
-                payload.context if isinstance(payload.context, dict) else None,
-            )
-            system_prompt += _ia_treinamento_ppv_bloco_prompt(
-                client_id,
-                payload.page,
-                payload.context if isinstance(payload.context, dict) else None,
-            )
+        # Knowledge and specialist evidence are injected only through the
+        # server-validated data_selection envelope.
 
     pergunta_usuario = mensagem or "Analise os anexos enviados e responda de forma objetiva."
     resumo_anexos = ""
@@ -1761,47 +1788,14 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
         itens = ", ".join([f"{a.get('name')} ({a.get('mime_type')})" for a in anexos])
         resumo_anexos = f"\n\nAnexos enviados pelo usuario: {itens}"
 
-    contexto_tela = f"Contexto da tela em JSON:\n{_montar_contexto_ia(payload, client_id)}" if usa_contexto else ""
-    texto_estoque = _ia_estoque_texto(client_id) if (usa_contexto and _ia_chat_deve_anexar_estoque_contexto(mensagem)) else ""
-    bloco_estoque = f"\n\n{texto_estoque}" if texto_estoque else ""
-    bloco_vendas = ""
-    bloco_vendas_exato = ""
-    bloco_web = ""
-    bloco_funcoes = ""
-    if usa_contexto and _ia_chat_deve_anexar_vendas_db_contexto(mensagem):
-        try:
-            ctx = payload.context if isinstance(payload.context, dict) else {}
-            texto_vendas = _ia_vendas_db_texto(
-                client_id,
-                str(ctx.get("data_inicio") or "").strip(),
-                str(ctx.get("data_fim") or "").strip(),
-                str(ctx.get("loja") or "").strip(),
-            )
-            bloco_vendas = f"\n\n{texto_vendas}" if texto_vendas else ""
-            texto_vendas_exato = _ia_vendas_contexto_exato(mensagem, client_id, ctx)
-            bloco_vendas_exato = f"\n\n{texto_vendas_exato}" if texto_vendas_exato else ""
-        except Exception:
-            bloco_vendas = ""
-            bloco_vendas_exato = ""
-    if not modo_rapido and _ia_chat_precisa_busca_web(mensagem, payload.page, payload.context if isinstance(payload.context, dict) else None):
-        try:
-            query_web = str(ctx_payload.get("web_search_query") or mensagem).strip()
-            texto_web = _ia_web_contexto(query_web, client_id)
-            bloco_web = f"\n\n{texto_web}" if texto_web else ""
-        except Exception:
-            bloco_web = ""
-    if not modo_rapido and not desativa_recursos_chat and not fluxo_perguntas_publicas_v2:
-        try:
-            texto_funcoes = _ia_chat_contexto_funcoes(payload, client_id)
-            bloco_funcoes = f"\n\n{texto_funcoes}" if texto_funcoes else ""
-        except Exception as exc:
-            logger.warning(f"[IA TOOLS] Falha ao executar funcoes no chat Vertex AI: {exc}")
-            bloco_funcoes = ""
-
-    contexto_recuperado = f"\n\nContexto recuperado por busca semantica:\n{contexto_rag}" if contexto_rag else ""
+    contexto_tela = (
+        _ia_chat_planned_context_text(payload, client_id)
+        if not desativa_recursos_chat and not fluxo_perguntas_publicas_v2
+        else ""
+    )
     bloco_contexto = (
-        f"{contexto_tela}{bloco_estoque}{bloco_vendas}{bloco_vendas_exato}{bloco_web}{bloco_funcoes}{contexto_recuperado}{resumo_anexos}"
-        if (contexto_tela or bloco_estoque or bloco_vendas or bloco_vendas_exato or bloco_web or bloco_funcoes or contexto_recuperado or resumo_anexos)
+        f"{contexto_tela}{resumo_anexos}"
+        if (contexto_tela or resumo_anexos)
         else ""
     )
     user_text = (

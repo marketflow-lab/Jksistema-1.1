@@ -256,7 +256,7 @@ def _phone_notification_settings(
 
 def _default_config() -> dict[str, Any]:
     return {
-        "version": 9,
+        "version": 10,
         "worker_url": "",
         "bridge_token": "",
         "business_phone": "",
@@ -269,6 +269,7 @@ def _default_config() -> dict[str, Any]:
         "progress_explain_wait": True,
         "active_task_policy": "steer_or_queue",
         "agent_architecture": WHATSAPP_AGENT_ARCHITECTURE_DEFAULT,
+        "response_provider_policy": whatsapp_settings.WHATSAPP_RESPONSE_PROVIDER_POLICY_DEFAULT,
         "conversation_agent_model": WHATSAPP_CONVERSATION_AGENT_MODEL_DEFAULT,
         "conversation_agent_reasoning": WHATSAPP_CONVERSATION_AGENT_REASONING_DEFAULT,
         "task_agent_model": WHATSAPP_TASK_AGENT_MODEL_DEFAULT,
@@ -293,6 +294,9 @@ def _default_config() -> dict[str, Any]:
         "preserve_order_per_phone": True,
         "function_manager_enabled": WHATSAPP_FUNCTION_MANAGER_ENABLED_DEFAULT,
         "function_manager_required_before_sol": WHATSAPP_FUNCTION_MANAGER_REQUIRED_DEFAULT,
+        "context_hub_enabled": True,
+        "context_hub_enabled_default": True,
+        "context_hub_enabled_by_client": {},
         "function_manager_worker_count": WHATSAPP_FUNCTION_MANAGER_WORKER_COUNT_DEFAULT,
         "function_manager_runtime_pool_size": WHATSAPP_FUNCTION_MANAGER_RUNTIME_POOL_SIZE_DEFAULT,
         "voice_enabled": False,
@@ -325,10 +329,11 @@ def _load_config() -> dict[str, Any]:
     with CONFIG_LOCK:
         result = _default_config()
         stored = _json_read(_config_path(), {})
-        if isinstance(stored, dict):
-            result.update(stored)
+        stored_config = stored if isinstance(stored, dict) else {}
+        if stored_config:
+            result.update(stored_config)
             try:
-                stored_version = int(stored.get("version") or 0)
+                stored_version = int(stored_config.get("version") or 0)
             except (TypeError, ValueError):
                 stored_version = 0
             if stored_version < 9 and str(result.get("agent_architecture") or "").strip().lower() == "dual_codex":
@@ -353,11 +358,32 @@ def _load_config() -> dict[str, Any]:
                         "function_manager_runtime_pool_size": WHATSAPP_FUNCTION_MANAGER_RUNTIME_POOL_SIZE_DEFAULT,
                     }
                 )
+            if stored_version < 10:
+                result.update(
+                    {
+                        "version": 10,
+                        "response_provider_policy": whatsapp_settings.WHATSAPP_RESPONSE_PROVIDER_POLICY_DEFAULT,
+                    }
+                )
         result["enabled"] = bool(result.get("enabled"))
-        result["version"] = 9
+        result["version"] = 10
         result["pairing_pending"] = bool(result.get("pairing_pending"))
+        if "context_hub_enabled_default" not in stored_config:
+            result["context_hub_enabled_default"] = stored_config.get("context_hub_enabled") is not False
+        else:
+            result["context_hub_enabled_default"] = stored_config.get("context_hub_enabled_default") is not False
+        result["context_hub_enabled_by_client"] = whatsapp_settings.normalize_context_hub_enabled_by_client(
+            result.get("context_hub_enabled_by_client")
+        )
+        result["client_id"] = str(result.get("client_id") or "").strip()
+        result["context_hub_enabled"] = whatsapp_settings.context_hub_enabled_for_client(
+            result, result.get("client_id")
+        )
         result["machine_id"] = str(result.get("machine_id") or _host_machine_id())
         result["ai_model"] = _normalize_ai_model(result.get("ai_model"))
+        result["response_provider_policy"] = whatsapp_settings.normalize_response_provider_policy(
+            result.get("response_provider_policy")
+        )
         result["codex_reasoning_effort"] = _normalize_codex_reasoning_effort(result.get("codex_reasoning_effort"))
         result["codex_reasoning_policy"] = _normalize_codex_reasoning_policy(result.get("codex_reasoning_policy"))
         result["codex_reasoning_max"] = _normalize_codex_reasoning_effort(result.get("codex_reasoning_max"))
@@ -376,10 +402,43 @@ def _load_config() -> dict[str, Any]:
 
 def _save_config(config: dict[str, Any]) -> dict[str, Any]:
     with CONFIG_LOCK:
+        source = dict(config or {})
+        override = source.pop("_context_hub_enabled_override", None)
+        stored = _json_read(_config_path(), {})
+        stored_config = stored if isinstance(stored, dict) else {}
+        if "context_hub_enabled_default" in stored_config:
+            context_hub_default = stored_config.get("context_hub_enabled_default") is not False
+        elif "context_hub_enabled" in stored_config:
+            context_hub_default = stored_config.get("context_hub_enabled") is not False
+        else:
+            context_hub_default = whatsapp_settings.context_hub_enabled_default(source)
+        if "context_hub_enabled_by_client" in stored_config:
+            context_hub_overrides = whatsapp_settings.normalize_context_hub_enabled_by_client(
+                stored_config.get("context_hub_enabled_by_client")
+            )
+        else:
+            context_hub_overrides = whatsapp_settings.normalize_context_hub_enabled_by_client(
+                source.get("context_hub_enabled_by_client")
+            )
+        if isinstance(override, dict):
+            override_client_id = whatsapp_settings.normalize_context_hub_client_id(
+                override.get("client_id")
+            )
+            if override_client_id and isinstance(override.get("enabled"), bool):
+                context_hub_overrides[override_client_id] = override["enabled"]
         value = _default_config()
-        value.update(dict(config or {}))
-        value["version"] = 9
+        value.update(source)
+        value["version"] = 10
+        value["context_hub_enabled_default"] = context_hub_default
+        value["context_hub_enabled_by_client"] = context_hub_overrides
+        value["client_id"] = str(value.get("client_id") or "").strip()
+        value["context_hub_enabled"] = whatsapp_settings.context_hub_enabled_for_client(
+            value, value.get("client_id")
+        )
         value["ai_model"] = _normalize_ai_model(value.get("ai_model"))
+        value["response_provider_policy"] = whatsapp_settings.normalize_response_provider_policy(
+            value.get("response_provider_policy")
+        )
         value["codex_reasoning_effort"] = _normalize_codex_reasoning_effort(value.get("codex_reasoning_effort"))
         value["codex_reasoning_policy"] = _normalize_codex_reasoning_policy(value.get("codex_reasoning_policy"))
         value["codex_reasoning_max"] = _normalize_codex_reasoning_effort(value.get("codex_reasoning_max"))
@@ -395,7 +454,12 @@ def _save_config(config: dict[str, Any]) -> dict[str, Any]:
             value["phone_notification_settings"] = {}
         value.update(_normalize_voice_config(value))
         value["updated_at"] = _now()
-        _json_write(_config_path(), value)
+        persisted_value = {
+            key: item
+            for key, item in value.items()
+            if not str(key).startswith("function_manager_")
+        }
+        _json_write(_config_path(), persisted_value)
         return value
 
 def _load_state() -> dict[str, Any]:

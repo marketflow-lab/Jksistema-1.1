@@ -492,6 +492,7 @@ def _dual_group_final_response(
             worker_result=final_result,
             ai_behavior=str(pending.get("phone_ai_behavior") or ""),
             tick_index=int(pending.get("tick_index") or 0),
+            client_id=str(pending.get("client_id") or ""),
         )
         return decision, str(decision.get("reply_text") or "").strip()
     except Exception as exc:

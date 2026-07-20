@@ -149,9 +149,12 @@ def shared_sync_machine_auto(
     client_id: str = Depends(get_tenant_id),
 ):
     sessao = _shared_sync_session(authorization, client_id)
-    if not _shared_sync_auto_enabled():
-        return _shared_sync_manual_only_payload("machine-auto")
-    limitado = _shared_sync_auto_rate_limit("machine-auto", sessao, payload.machine_id or "")
+    limitado = _shared_sync_auto_rate_limit(
+        "machine-auto",
+        sessao,
+        payload.machine_id or "",
+        interval_seconds=_shared_sync_machine_auto_interval_seconds(),
+    )
     if limitado:
         return {"success": True, "direction": "machine-auto", "results": [], "skipped": [limitado]}
     return _shared_sync_machine_auto_run(sessao, payload.machine_id or "", payload.scopes)

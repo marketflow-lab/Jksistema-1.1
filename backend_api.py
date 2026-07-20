@@ -347,6 +347,7 @@ from backend.services.renovacao import (
     _renovacao_agendamento_atual,
     _renovacao_agendamento_put_payload,
     _renovacao_atualizar_periodo_campanha_ml,
+    _renovacao_criar_campanha_manual_ml,
     _renovacao_criar_ou_completar_proximo_mes,
     _renovacao_deletar_campanha_ml,
     _renovacao_iniciar_agendamento_background,
@@ -615,7 +616,7 @@ PERMISSION_KEYS = [
     'cadastro', 'impostos', 'configuracoes', 'importacoes', 'simulador', 'sala_reuniao', 'admin_usuarios'
 ]
 
-VERSAO_MINIMA_APP_PADRAO = "1.0.101"
+VERSAO_MINIMA_APP_PADRAO = "1.0.102"
 
 
 def versao_minima_app_backend() -> str:
@@ -1966,6 +1967,7 @@ _renovacao_router_config = RenovacaoRouterConfig(
     get_tenant_id=get_tenant_id,
     listar_campanhas_usuario=_renovacao_listar_campanhas_usuario_payload,
     criar_ou_completar_proximo_mes=_renovacao_criar_ou_completar_proximo_mes,
+    criar_campanha_manual=_renovacao_criar_campanha_manual_ml,
     atualizar_periodo_campanha=_renovacao_atualizar_periodo_campanha_ml,
     deletar_campanha=_renovacao_deletar_campanha_ml,
     sincronizar_promocao_existente=_renovacao_sincronizar_promocao_existente,

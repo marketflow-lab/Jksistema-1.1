@@ -20,6 +20,8 @@ from urllib.parse import quote, quote_plus, urlencode
 import requests
 from fastapi import HTTPException
 
+from backend.services.bling_oauth import exchange_bling_refresh_token
+
 
 logger = logging.getLogger("jk_sistema")
 PASTA_INFO = ""
@@ -31,6 +33,8 @@ _resolver_redirect_uri_publica: Callable[..., str] = lambda **kwargs: ""
 _resolver_redirect_uri_bling: Callable[..., str] = lambda **kwargs: ""
 _bling_session = requests.Session()
 _LOJAS_CONFIG_LOCK = threading.RLock()
+_BLING_REFRESH_LOCKS_GUARD = threading.Lock()
+_BLING_REFRESH_LOCKS: dict[tuple[str, str], threading.Lock] = {}
 
 
 def configure_integracoes_context(
@@ -535,6 +539,17 @@ def buscar_loja(client_id: str, nome_loja: str):
     return None
 
 
+def _integracoes_encontrar_loja(lojas: list, nome_loja: str):
+    nome_alvo = str(nome_loja or "").strip()
+    for loja in lojas:
+        if isinstance(loja, dict) and str(loja.get("nome") or "").strip() == nome_alvo:
+            return loja
+    for loja in lojas:
+        if isinstance(loja, dict) and _integracoes_nome_equivalente(loja.get("nome"), nome_alvo):
+            return loja
+    return None
+
+
 def atualizar_api_loja(client_id: str, nome_loja: str, api_nome: str, dados_api: dict):
     """Cria ou atualiza uma loja e sua integracao para um cliente especifico."""
     if isinstance(dados_api, dict) and str(api_nome or "").strip().lower() in {"bling", "mercadolivre", "ml"}:
@@ -542,37 +557,216 @@ def atualizar_api_loja(client_id: str, nome_loja: str, api_nome: str, dados_api:
             dados_api = _normalizar_integracao_conectada(api_nome, dados_api)
         except Exception:
             dados_api = dict(dados_api or {})
-    lojas = carregar_lojas(client_id)
-    encontrou = False
-    for loja in lojas:
-        if loja["nome"] == nome_loja:
-            if "integracoes" not in loja:
-                loja["integracoes"] = {}
-            atual = loja["integracoes"].get(api_nome)
-            if isinstance(atual, dict) and isinstance(dados_api, dict):
-                merged = dict(atual)
-                merged.update(dados_api)
-                loja["integracoes"][api_nome] = merged
-            else:
-                loja["integracoes"][api_nome] = dados_api
-            encontrou = True
-            break
-    if not encontrou:
-        nova_loja = {"nome": nome_loja, "integracoes": {api_nome: dados_api}}
-        lojas.append(nova_loja)
-    salvar_lojas(client_id, lojas)
+    # O lock cobre todo o read-modify-write. Antes, carregar e salvar eram
+    # protegidos isoladamente, permitindo que duas lojas perdessem updates.
+    with _LOJAS_CONFIG_LOCK:
+        lojas = carregar_lojas(client_id)
+        loja = _integracoes_encontrar_loja(lojas, nome_loja)
+        if loja is None:
+            loja = {"nome": nome_loja, "integracoes": {}}
+            lojas.append(loja)
+        integracoes = loja.setdefault("integracoes", {})
+        atual = integracoes.get(api_nome)
+        if isinstance(atual, dict) and isinstance(dados_api, dict):
+            merged = dict(atual)
+            merged.update(dados_api)
+            integracoes[api_nome] = merged
+        else:
+            integracoes[api_nome] = dados_api
+        salvar_lojas(client_id, lojas)
+
+
+def _bling_refresh_lock(client_id: str, nome_loja: str) -> threading.Lock:
+    key = (
+        str(client_id or "default").strip().lower() or "default",
+        _integracoes_nome_normalizado(nome_loja),
+    )
+    with _BLING_REFRESH_LOCKS_GUARD:
+        lock = _BLING_REFRESH_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _BLING_REFRESH_LOCKS[key] = lock
+        return lock
+
+
+def _bling_config_atual(client_id: str, nome_loja: str) -> dict:
+    with _LOJAS_CONFIG_LOCK:
+        loja = _integracoes_encontrar_loja(carregar_lojas(client_id), nome_loja)
+        if not isinstance(loja, dict):
+            return {}
+        return dict(((loja.get("integracoes") or {}).get("bling") or {}))
+
+
+def _atualizar_bling_cas(
+    client_id: str,
+    nome_loja: str,
+    *,
+    expected_refresh_token: str,
+    expected_access_token: str | None = None,
+    expected_updated_at: str | None = None,
+    expected_sync_version: str | int | None = None,
+    dados_api: dict,
+) -> tuple[bool, dict]:
+    """Atualiza OAuth somente se o snapshot que iniciou a operacao for atual."""
+    with _LOJAS_CONFIG_LOCK:
+        lojas = carregar_lojas(client_id)
+        loja = _integracoes_encontrar_loja(lojas, nome_loja)
+        if not isinstance(loja, dict):
+            raise HTTPException(status_code=404, detail="Loja nao encontrada para renovar token Bling.")
+        integracoes = loja.setdefault("integracoes", {})
+        atual = dict(integracoes.get("bling") or {})
+        refresh_atual = str(atual.get("refresh_token") or "").strip()
+        if refresh_atual != str(expected_refresh_token or "").strip():
+            return False, atual
+        if expected_access_token is not None and str(atual.get("access_token") or "").strip() != str(expected_access_token or "").strip():
+            return False, atual
+        if expected_updated_at is not None and str(atual.get("updated_at") or "").strip() != str(expected_updated_at or "").strip():
+            return False, atual
+        if expected_sync_version is not None and str(atual.get("_sync_version") or "").strip() != str(expected_sync_version or "").strip():
+            return False, atual
+        atualizado = dict(atual)
+        atualizado.update(dict(dados_api or {}))
+        try:
+            normalizado = _normalizar_integracao_conectada("bling", atualizado)
+            if isinstance(normalizado, dict):
+                atualizado = normalizado
+        except Exception:
+            pass
+        integracoes["bling"] = atualizado
+        salvar_lojas(client_id, lojas)
+        return True, dict(atualizado)
+
+
+def renovar_token_bling_loja(client_id: str, nome_loja: str, cfg: dict | None = None) -> dict:
+    """Single-flight por tenant/loja com releitura e persistencia CAS."""
+    hint = dict(cfg or {})
+    expected_refresh = str(hint.get("refresh_token") or "").strip()
+    expected_access = str(hint.get("access_token") or "").strip()
+    expected_updated_at = str(hint.get("updated_at") or "").strip()
+    with _bling_refresh_lock(client_id, nome_loja):
+        atual = _bling_config_atual(client_id, nome_loja)
+        refresh_atual = str(atual.get("refresh_token") or "").strip()
+        access_atual = str(atual.get("access_token") or "").strip()
+        updated_at_atual = str(atual.get("updated_at") or "").strip()
+
+        # Outra thread renovou ou o usuario reconectou enquanto este chamador
+        # ainda carregava o snapshot antigo. Reutilize o token mais novo.
+        if expected_refresh and refresh_atual and refresh_atual != expected_refresh:
+            return atual
+        if expected_refresh and refresh_atual == expected_refresh and (
+            (expected_access and access_atual and access_atual != expected_access)
+            or (expected_updated_at and updated_at_atual and updated_at_atual != expected_updated_at)
+        ):
+            return atual
+
+        base = dict(hint)
+        base.update(atual)
+        client_oauth_id = str(base.get("id") or base.get("client_id") or "").strip()
+        client_secret = str(base.get("secret") or base.get("client_secret") or "").strip()
+        refresh_usado = str(base.get("refresh_token") or expected_refresh or "").strip()
+        access_usado = str(base.get("access_token") or "").strip()
+        updated_at_usado = str(base.get("updated_at") or "").strip()
+        sync_version_usada = base.get("_sync_version")
+        if not (client_oauth_id and client_secret and refresh_usado):
+            raise HTTPException(
+                status_code=401,
+                detail="Credenciais Bling incompletas. Refaca a conexao em Integracoes.",
+            )
+
+        try:
+            novos = exchange_bling_refresh_token(client_oauth_id, client_secret, refresh_usado)
+        except HTTPException as exc:
+            if exc.status_code == 401:
+                recente = _bling_config_atual(client_id, nome_loja)
+                if str(recente.get("refresh_token") or "").strip() != refresh_usado:
+                    return recente
+                gravou_invalido, _persistido_invalido = _atualizar_bling_cas(
+                    client_id,
+                    nome_loja,
+                    expected_refresh_token=refresh_usado,
+                    expected_access_token=access_usado,
+                    expected_updated_at=updated_at_usado,
+                    expected_sync_version=sync_version_usada,
+                    dados_api={
+                        "connected": False,
+                        "status": "reautenticacao_necessaria",
+                        "motivo": str(exc.detail or "Token Bling expirado."),
+                        "oauth_invalid": True,
+                        "shared_without_oauth_tokens": False,
+                        "updated_at": str(time.time()),
+                    },
+                )
+                if not gravou_invalido:
+                    return _bling_config_atual(client_id, nome_loja)
+            raise
+
+        access_token = str(novos.get("access_token") or "").strip()
+        if not access_token:
+            raise HTTPException(status_code=502, detail="Resposta invalida ao renovar token do Bling.")
+        refresh_novo = str(novos.get("refresh_token") or refresh_usado).strip()
+        atualizado = dict(base)
+        atualizado.update({
+            "id": client_oauth_id,
+            "secret": client_secret,
+            "access_token": access_token,
+            "refresh_token": refresh_novo,
+            "connected": True,
+            "status": "conectado",
+            "motivo": "",
+            "oauth_invalid": False,
+            "shared_without_oauth_tokens": False,
+            "updated_at": str(time.time()),
+        })
+        gravou, persistido = _atualizar_bling_cas(
+            client_id,
+            nome_loja,
+            expected_refresh_token=refresh_usado,
+            expected_access_token=access_usado,
+            expected_updated_at=updated_at_usado,
+            expected_sync_version=sync_version_usada,
+            dados_api=atualizado,
+        )
+        # Uma reconexao pode vencer o CAS enquanto o POST estava em voo.
+        return persistido if gravou else _bling_config_atual(client_id, nome_loja)
+
+
+def marcar_token_bling_invalido(client_id: str, nome_loja: str, cfg: dict | None, motivo: str) -> dict:
+    """Invalida apenas o mesmo refresh token que produziu o 401 observado."""
+    expected_refresh = str((cfg or {}).get("refresh_token") or "").strip()
+    if not expected_refresh:
+        return _bling_config_atual(client_id, nome_loja)
+    gravou, persistido = _atualizar_bling_cas(
+        client_id,
+        nome_loja,
+        expected_refresh_token=expected_refresh,
+        expected_access_token=str((cfg or {}).get("access_token") or "").strip(),
+        expected_updated_at=str((cfg or {}).get("updated_at") or "").strip(),
+        expected_sync_version=(cfg or {}).get("_sync_version"),
+        dados_api={
+            "connected": False,
+            "status": "reautenticacao_necessaria",
+            "motivo": str(motivo or "Token Bling expirado. Refaca a conexao em Integracoes."),
+            "oauth_invalid": True,
+            "shared_without_oauth_tokens": False,
+            "updated_at": str(time.time()),
+        },
+    )
+    return persistido if gravou else _bling_config_atual(client_id, nome_loja)
 
 
 def desconectar_api_loja(client_id: str, nome_loja: str, api_nome: str) -> dict:
-    lojas = carregar_lojas(client_id)
-    for loja in lojas:
-        if loja.get("nome") != nome_loja:
-            continue
-        integracoes = loja.setdefault("integracoes", {})
-        integracoes[api_nome] = {"connected": False}
-        registrar_tombstone_integracao(client_id, loja=loja, servico=api_nome, tipo="integration")
-        salvar_lojas(client_id, lojas)
-        return loja
+    # A desconexao concorre com refresh/reconexao OAuth e, por isso, tambem
+    # precisa manter o lock durante todo o ciclo read-modify-write.
+    with _LOJAS_CONFIG_LOCK:
+        lojas = carregar_lojas(client_id)
+        for loja in lojas:
+            if loja.get("nome") != nome_loja:
+                continue
+            integracoes = loja.setdefault("integracoes", {})
+            integracoes[api_nome] = {"connected": False}
+            registrar_tombstone_integracao(client_id, loja=loja, servico=api_nome, tipo="integration")
+            salvar_lojas(client_id, lojas)
+            return loja
     raise HTTPException(status_code=404, detail="Loja nao encontrada.")
 
 
@@ -707,6 +901,8 @@ __all__ = [
     "salvar_lojas",
     "buscar_loja",
     "atualizar_api_loja",
+    "renovar_token_bling_loja",
+    "marcar_token_bling_invalido",
     "desconectar_api_loja",
     "registrar_tombstone_integracao",
     "salvar_temp_auth",

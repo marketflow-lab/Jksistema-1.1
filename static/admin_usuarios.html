@@ -832,11 +832,11 @@
                             <h3>Sincronizar minhas máquinas</h3>
                             <div id="machineSyncSummary" class="small">Carregando sincronização das minhas máquinas...</div>
                         </div>
-                        <button class="btn-muted" onclick="carregarSincronizacaoMinhasMaquinas()">Atualizar</button>
+                        <button class="btn-muted" onclick="carregarSincronizacaoMinhasMaquinas()">Atualizar status</button>
                     </div>
                     <label class="check-item">
                         <input id="machineSyncEnabled" type="checkbox">
-                        <span>Permitir sincronização manual entre as máquinas em que estou logado</span>
+                        <span>Receber automaticamente nesta máquina os dados enviados pelas outras máquinas em que estou logado</span>
                     </label>
                     <div class="machine-sync-grid">
                         <div>
@@ -987,8 +987,11 @@
     let compartilhamentoUsuariosTimer = null;
     let compartilhamentoUltimaAtualizacao = '';
     let userShareProcessoAtual = null;
+    let sincronizacaoMaquinasCarregamentoAtual = null;
+    let sincronizacaoMaquinasStatusTimer = null;
     let hiddenPermissionsState = { full: false, configuracoes: false };
     let secaoAtual = modoCompartilharEmbutido ? 'compartilhar' : (usuarioPodeVerPresenca ? 'visao-geral' : 'compartilhar');
+    const MACHINE_SYNC_STATUS_INTERVAL_MS = 60 * 1000;
 
     function atualizarBalaoSincronizacaoMaquinas(ativo, mensagem) {
         const texto = String(mensagem || 'Processando a sincronização...');
@@ -2391,7 +2394,9 @@
             const ativos = scopeKeys.filter(scope => selected.has(scope)).length;
             const maquinas = Number((payload && payload.online_count) || 0);
             const backend = payload && payload.backend === 'firebase' ? 'Firebase' : 'local';
-            summary.textContent = `${config.enabled ? 'Ativa' : 'Desativada'} | ${ativos} dado(s) selecionado(s) | ${maquinas} máquina(s) online | ${backend}`;
+            const pendentes = scopeKeys.filter(scope => (scopes[scope] || {}).pending_receive === true).length;
+            const recebimento = config.enabled && config.auto_pull !== false ? 'Recebimento automático ativo' : 'Recebimento automático desativado';
+            summary.textContent = `${recebimento} | ${ativos} dado(s) selecionado(s) | ${pendentes ? `${pendentes} para receber` : 'sem pendências'} | ${maquinas} máquina(s) online | ${backend}`;
         }
         if (grid) {
             if (!scopeKeys.length) {
@@ -2400,13 +2405,30 @@
                 grid.innerHTML = scopeKeys.map(scope => {
                     const item = scopes[scope] || {};
                     const remote = item.remote || {};
+                    const state = item.state || {};
+                    const pendingReceive = item.pending_receive === true
+                        || (item.status && item.status.pending_receive === true)
+                        || state.pending_receive === true;
+                    const pendingKnown = Object.prototype.hasOwnProperty.call(item, 'pending_receive')
+                        || Object.prototype.hasOwnProperty.call(item.status || {}, 'pending_receive')
+                        || Object.prototype.hasOwnProperty.call(state, 'pending_receive');
+                    const lastReceivedAt = item.last_received_at
+                        || (item.status && item.status.last_received_at)
+                        || state.last_received_at
+                        || (state.direction === 'pull' ? state.synced_at : '')
+                        || '';
                     const remoteText = remote.exists
                         ? `Último envio: ${remote.updated_at || 'sem data'}${remote.machine_id ? ' | ' + remote.machine_id : ''}`
                         : 'Ainda não enviado.';
+                    const receiveText = pendingReceive
+                        ? 'Novo envio disponível para receber automaticamente.'
+                        : (lastReceivedAt
+                            ? `Último recebimento: ${lastReceivedAt}`
+                            : (pendingKnown && remote.exists ? 'Recebimento em dia nesta máquina.' : 'Ainda não recebido nesta máquina.'));
                     return `
                         <label class="check-item" title="${escaparHtml(item.description || '')}">
                             <input type="checkbox" data-machine-sync-scope="${escaparHtml(scope)}" ${selected.has(scope) ? 'checked' : ''}>
-                            <span>${escaparHtml(item.label || scope)}<span class="muted-line">${escaparHtml(remoteText)}</span></span>
+                            <span>${escaparHtml(item.label || scope)}<span class="muted-line">${escaparHtml(remoteText)}</span><span class="muted-line">${escaparHtml(receiveText)}</span></span>
                         </label>
                     `;
                 }).join('');
@@ -2438,32 +2460,80 @@
     }
 
     function coletarSincronizacaoMinhasMaquinas() {
+        const enabled = !!document.getElementById('machineSyncEnabled')?.checked;
         return {
-            enabled: !!document.getElementById('machineSyncEnabled')?.checked,
+            enabled,
             scopes: scopesSelecionadosSincronizacaoMinhasMaquinas(),
-            auto_pull: false,
+            auto_pull: enabled,
             auto_push: false
         };
     }
 
-    async function carregarSincronizacaoMinhasMaquinas() {
-        const summary = document.getElementById('machineSyncSummary');
-        if (summary) summary.textContent = 'Carregando sincronização das minhas máquinas...';
+    function agendarAtualizacaoStatusSincronizacaoMaquinas(delayMs = MACHINE_SYNC_STATUS_INTERVAL_MS) {
+        if (sincronizacaoMaquinasStatusTimer) clearTimeout(sincronizacaoMaquinasStatusTimer);
+        sincronizacaoMaquinasStatusTimer = setTimeout(() => {
+            sincronizacaoMaquinasStatusTimer = null;
+            if (document.visibilityState !== 'hidden') {
+                void carregarSincronizacaoMinhasMaquinas({ silencioso: true });
+            } else {
+                agendarAtualizacaoStatusSincronizacaoMaquinas();
+            }
+        }, Math.max(60000, Number(delayMs) || MACHINE_SYNC_STATUS_INTERVAL_MS));
+    }
+
+    async function carregarSincronizacaoMinhasMaquinas(opcoes = {}) {
+        if (sincronizacaoMaquinasCarregamentoAtual) return sincronizacaoMaquinasCarregamentoAtual;
+        const silencioso = !!(opcoes && opcoes.silencioso);
+        sincronizacaoMaquinasCarregamentoAtual = (async () => {
+            const summary = document.getElementById('machineSyncSummary');
+            if (summary && !silencioso) summary.textContent = 'Carregando sincronização das minhas máquinas...';
+            try {
+                const machineId = machineIdAtual();
+                const resp = await fetch('/api/shared-sync/machine-sync?machine_id=' + encodeURIComponent(machineId), {
+                    headers: obterAuthHeaders(),
+                    cache: 'no-store'
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao carregar sincronização.');
+                renderSincronizacaoMinhasMaquinas(data);
+                return true;
+            } catch (error) {
+                sincronizacaoMaquinasCache = null;
+                if (summary) summary.textContent = `${error.message || 'Erro ao carregar sincronização.'} Status anterior descartado.`;
+                const grid = document.getElementById('machineSyncScopes');
+                const machinesEl = document.getElementById('machineSyncMachines');
+                if (grid) grid.innerHTML = '<div class="machine-sync-empty">Status indisponível. Atualize novamente antes de sincronizar.</div>';
+                if (machinesEl) machinesEl.innerHTML = '<div class="machine-sync-empty">Não foi possível conferir as máquinas agora.</div>';
+                return false;
+            }
+        })();
         try {
-            const machineId = machineIdAtual();
-            const resp = await fetch('/api/shared-sync/machine-sync?machine_id=' + encodeURIComponent(machineId), {
-                headers: obterAuthHeaders(),
-                cache: 'no-store'
-            });
-            const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao carregar sincronização.');
-            renderSincronizacaoMinhasMaquinas(data);
-            return true;
-        } catch (error) {
-            if (summary) summary.textContent = error.message || 'Erro ao carregar sincronização.';
-            return false;
+            return await sincronizacaoMaquinasCarregamentoAtual;
+        } finally {
+            sincronizacaoMaquinasCarregamentoAtual = null;
+            agendarAtualizacaoStatusSincronizacaoMaquinas();
         }
     }
+
+    function atualizarStatusSincronizacaoMaquinasAoRetomar() {
+        if (document.visibilityState === 'hidden') return;
+        void carregarSincronizacaoMinhasMaquinas({ silencioso: true });
+    }
+
+    window.addEventListener('jk:machine-sync-updated', (event) => {
+        const detail = event && event.detail ? event.detail : {};
+        const results = Array.isArray(detail.results) ? detail.results : [];
+        const recebeuDados = results.some(item => item && item.direction === 'pull' && item.success !== false && item.skipped !== true);
+        if (recebeuDados) void carregarSincronizacaoMinhasMaquinas({ silencioso: true });
+    });
+    window.addEventListener('focus', atualizarStatusSincronizacaoMaquinasAoRetomar);
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState !== 'hidden') atualizarStatusSincronizacaoMaquinasAoRetomar();
+    });
+    window.addEventListener('pagehide', () => {
+        if (sincronizacaoMaquinasStatusTimer) clearTimeout(sincronizacaoMaquinasStatusTimer);
+        sincronizacaoMaquinasStatusTimer = null;
+    });
 
     async function salvarSincronizacaoMinhasMaquinas(silencioso) {
         const payload = coletarSincronizacaoMinhasMaquinas();

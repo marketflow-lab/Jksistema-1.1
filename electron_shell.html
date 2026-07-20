@@ -185,6 +185,123 @@
         }
         .toolbar-btn:hover { background: #eef6ff; border-color: #4facfe; }
         .toolbar-btn:disabled { cursor: not-allowed; opacity: 0.55; }
+        .sr-only {
+            clip: rect(0, 0, 0, 0);
+            clip-path: inset(50%);
+            height: 1px;
+            overflow: hidden;
+            position: absolute;
+            white-space: nowrap;
+            width: 1px;
+        }
+        .screen-search {
+            align-items: center;
+            background: #ffffff;
+            border: 1px solid #8ebff1;
+            border-radius: 9px;
+            box-shadow: 0 0 0 2px rgba(79, 172, 254, 0.12);
+            display: none;
+            flex: 1;
+            gap: 4px;
+            height: 30px;
+            min-width: 210px;
+            overflow: hidden;
+            padding: 0 4px 0 8px;
+        }
+        .shell.search-expanded .toolbar {
+            transform: translateY(0);
+        }
+        .shell.search-expanded .tabs,
+        .shell.search-expanded #screen-search-open {
+            display: none;
+        }
+        .shell.search-expanded .screen-search {
+            display: flex;
+        }
+        .screen-search-input {
+            background: transparent;
+            border: 0;
+            color: #0f172a;
+            flex: 1;
+            font-size: 12px;
+            height: 100%;
+            min-width: 80px;
+            outline: 0;
+            padding: 0;
+        }
+        .screen-search-input::placeholder { color: #64748b; }
+        .screen-search-status {
+            color: #475569;
+            flex: 0 0 auto;
+            font-size: 11px;
+            font-variant-numeric: tabular-nums;
+            min-width: 52px;
+            text-align: center;
+            white-space: nowrap;
+        }
+        .screen-search-btn {
+            align-items: center;
+            background: transparent;
+            border: 0;
+            border-radius: 6px;
+            color: #334155;
+            cursor: pointer;
+            display: inline-flex;
+            flex: 0 0 auto;
+            font-size: 15px;
+            font-weight: 900;
+            height: 24px;
+            justify-content: center;
+            line-height: 1;
+            padding: 0;
+            width: 25px;
+        }
+        .screen-search-btn:hover { background: #e8f3ff; color: #1d4ed8; }
+        .screen-search-btn:disabled { cursor: default; opacity: 0.35; }
+        .screen-search-btn:focus-visible,
+        .screen-search-input:focus-visible {
+            outline: 2px solid #2563eb;
+            outline-offset: -1px;
+        }
+        .zoom-controls {
+            align-items: center;
+            background: #ffffff;
+            border: 1px solid #cbd8ea;
+            border-radius: 9px;
+            display: inline-flex;
+            flex: 0 0 auto;
+            height: 30px;
+            overflow: hidden;
+        }
+        .zoom-btn,
+        .zoom-value {
+            align-items: center;
+            background: transparent;
+            border: 0;
+            color: #0f172a;
+            cursor: pointer;
+            display: inline-flex;
+            font-size: 12px;
+            font-weight: 800;
+            height: 100%;
+            justify-content: center;
+            padding: 0;
+        }
+        .zoom-btn { width: 28px; }
+        .zoom-value {
+            border-left: 1px solid #dbe5f2;
+            border-right: 1px solid #dbe5f2;
+            min-width: 52px;
+            padding: 0 7px;
+        }
+        .zoom-btn:hover,
+        .zoom-value:hover { background: #eef6ff; color: #1d4ed8; }
+        .zoom-btn:disabled { cursor: not-allowed; opacity: 0.42; }
+        .zoom-btn:focus-visible,
+        .zoom-value:focus-visible {
+            box-shadow: inset 0 0 0 2px #4facfe;
+            outline: 0;
+        }
         .views {
             background: #ffffff;
             height: 100vh;
@@ -519,6 +636,21 @@
     <main class="shell">
         <header class="toolbar">
             <div id="tabs" class="tabs" aria-label="Abas abertas"></div>
+            <div id="screen-search" class="screen-search" role="search" aria-label="Pesquisar na tela">
+                <label class="sr-only" for="screen-search-input">Pesquisar nesta tela</label>
+                <input id="screen-search-input" class="screen-search-input" type="search" placeholder="Pesquisar nesta tela" autocomplete="off" spellcheck="false" maxlength="256">
+                <span id="screen-search-status" class="screen-search-status" role="status" aria-live="polite" aria-atomic="true">Digite</span>
+                <button id="screen-search-previous" type="button" class="screen-search-btn" title="Resultado anterior (Shift+Enter)" aria-label="Resultado anterior" disabled>&uarr;</button>
+                <button id="screen-search-next" type="button" class="screen-search-btn" title="Proximo resultado (Enter)" aria-label="Proximo resultado" disabled>&darr;</button>
+                <button id="screen-search-clear" type="button" class="screen-search-btn" title="Limpar pesquisa" aria-label="Limpar pesquisa" disabled>&times;</button>
+                <button id="screen-search-close" type="button" class="screen-search-btn" title="Fechar pesquisa (Esc)" aria-label="Fechar pesquisa">&#10005;</button>
+            </div>
+            <button id="screen-search-open" type="button" class="toolbar-btn" title="Pesquisar na tela (Ctrl+F)" aria-label="Pesquisar na tela">Buscar</button>
+            <div class="zoom-controls" role="group" aria-label="Zoom da tela">
+                <button id="zoom-out" type="button" class="zoom-btn" title="Diminuir zoom (Ctrl+-)" aria-label="Diminuir zoom">&minus;</button>
+                <button id="zoom-reset" type="button" class="zoom-value" title="Restaurar zoom para 100% (Ctrl+0)" aria-label="Restaurar zoom para 100%">100%</button>
+                <button id="zoom-in" type="button" class="zoom-btn" title="Aumentar zoom (Ctrl++)" aria-label="Aumentar zoom">+</button>
+            </div>
             <button id="home-tab" type="button" class="toolbar-btn" title="Ir para o inÃ­cio">Home</button>
             <button id="back-tab" type="button" class="toolbar-btn" title="Voltar na aba atual">Voltar</button>
             <button id="new-tab" type="button" class="toolbar-btn" title="Abrir nova aba">+ Aba</button>
@@ -584,6 +716,16 @@
         const backBtn = document.getElementById('back-tab');
         const reloadBtn = document.getElementById('reload-tab');
         const newTabBtn = document.getElementById('new-tab');
+        const screenSearchOpenBtn = document.getElementById('screen-search-open');
+        const screenSearchInput = document.getElementById('screen-search-input');
+        const screenSearchStatus = document.getElementById('screen-search-status');
+        const screenSearchPreviousBtn = document.getElementById('screen-search-previous');
+        const screenSearchNextBtn = document.getElementById('screen-search-next');
+        const screenSearchClearBtn = document.getElementById('screen-search-clear');
+        const screenSearchCloseBtn = document.getElementById('screen-search-close');
+        const zoomOutBtn = document.getElementById('zoom-out');
+        const zoomResetBtn = document.getElementById('zoom-reset');
+        const zoomInBtn = document.getElementById('zoom-in');
         const shellEl = document.querySelector('.shell');
         const toolbarEl = document.querySelector('.toolbar');
         const toolbarTrigger = document.getElementById('toolbar-trigger');
@@ -609,6 +751,17 @@
         let activeId = '';
         let serial = 0;
         let toolbarAutoHideTimer = null;
+        let screenSearchIsOpen = false;
+        let screenSearchDebounceTimer = null;
+        let screenSearchTokenSerial = 0;
+        let screenSearchActiveToken = '';
+        let screenSearchMatches = 0;
+        let screenSearchActiveOrdinal = 0;
+        let screenSearchActiveForward = true;
+        let screenSearchFallbackTarget = null;
+        let screenSearchFallbackListener = null;
+        let screenSearchFallbackRequestId = 0;
+        let screenSearchPreviousFocus = null;
         let updateToastTimer = null;
         let updateToastActionHandler = null;
         let favoritosWorkerBarHideTimer = null;
@@ -635,6 +788,323 @@
         const mlBrowserUrlByTab = new Map();
         const mlBrowserRestorableUrlByTab = new Map();
         const mlBrowserVisibleByTab = new Map();
+        const WINDOW_ZOOM_MIN_PERCENT = 70;
+        const WINDOW_ZOOM_MAX_PERCENT = 150;
+        const WINDOW_ZOOM_STEP_PERCENT = 10;
+        let currentWindowZoomPercent = 100;
+
+        function normalizeWindowZoomPercent(value) {
+            const parsed = Number(value);
+            if (!Number.isFinite(parsed)) return 100;
+            const stepped = Math.round(parsed / WINDOW_ZOOM_STEP_PERCENT) * WINDOW_ZOOM_STEP_PERCENT;
+            return Math.min(WINDOW_ZOOM_MAX_PERCENT, Math.max(WINDOW_ZOOM_MIN_PERCENT, stepped));
+        }
+
+        function scaleBoundsForNativeWindow(bounds) {
+            const factor = currentWindowZoomPercent / 100;
+            const scaled = { ...(bounds || {}) };
+            for (const field of ['x', 'y', 'width', 'height']) {
+                if (Number.isFinite(Number(scaled[field]))) {
+                    scaled[field] = Math.round(Number(scaled[field]) * factor);
+                }
+            }
+            scaled.zoomFactor = factor;
+            return scaled;
+        }
+
+        function refreshNativeSurfacesAfterZoom() {
+            notifyRustDeskTabVisibility();
+            if (mlBrowserWebview && typeof mlBrowserWebview.setZoomFactor === 'function') {
+                try { mlBrowserWebview.setZoomFactor(currentWindowZoomPercent / 100); } catch (_err) {}
+            }
+            if (mlBrowserOwnerId) {
+                reposicionarEmbeddedMlBrowserParaDono(mlBrowserOwnerId);
+            }
+        }
+
+        function updateWindowZoomUi(percent) {
+            currentWindowZoomPercent = normalizeWindowZoomPercent(percent);
+            if (zoomResetBtn) {
+                zoomResetBtn.textContent = `${currentWindowZoomPercent}%`;
+                zoomResetBtn.setAttribute('aria-label', `Zoom atual ${currentWindowZoomPercent}%. Restaurar para 100%`);
+            }
+            if (zoomOutBtn) zoomOutBtn.disabled = currentWindowZoomPercent <= WINDOW_ZOOM_MIN_PERCENT;
+            if (zoomInBtn) zoomInBtn.disabled = currentWindowZoomPercent >= WINDOW_ZOOM_MAX_PERCENT;
+            window.requestAnimationFrame(refreshNativeSurfacesAfterZoom);
+        }
+
+        async function requestWindowZoom(percent) {
+            const safePercent = normalizeWindowZoomPercent(percent);
+            const api = window.electronAPI || null;
+            if (api && typeof api.setAppZoom === 'function') {
+                try {
+                    const payload = await api.setAppZoom(safePercent);
+                    updateWindowZoomUi(payload && payload.percent);
+                    return;
+                } catch (err) {
+                    console.warn('Falha ao alterar zoom da janela:', err && err.message ? err.message : err);
+                }
+            }
+            document.documentElement.style.zoom = String(safePercent / 100);
+            updateWindowZoomUi(safePercent);
+        }
+
+        function handleWindowZoomCommand(command) {
+            if (command === 'in') {
+                requestWindowZoom(currentWindowZoomPercent + WINDOW_ZOOM_STEP_PERCENT);
+            } else if (command === 'out') {
+                requestWindowZoom(currentWindowZoomPercent - WINDOW_ZOOM_STEP_PERCENT);
+            } else if (command === 'reset') {
+                requestWindowZoom(100);
+            }
+        }
+
+        function initializeWindowZoom() {
+            const api = window.electronAPI || null;
+            if (api && typeof api.onAppZoomChanged === 'function') {
+                api.onAppZoomChanged(payload => updateWindowZoomUi(payload && payload.percent));
+            }
+            if (api && typeof api.getAppZoom === 'function') {
+                api.getAppZoom()
+                    .then(payload => updateWindowZoomUi(payload && payload.percent))
+                    .catch(() => updateWindowZoomUi(100));
+                return;
+            }
+            updateWindowZoomUi(100);
+        }
+
+        function nextScreenSearchToken() {
+            screenSearchTokenSerial += 1;
+            return `screen-find-${Date.now()}-${screenSearchTokenSerial}`;
+        }
+
+        function updateScreenSearchControls() {
+            const hasQuery = !!String(screenSearchInput?.value || '').trim();
+            const hasMatches = hasQuery && screenSearchMatches > 0;
+            if (screenSearchPreviousBtn) screenSearchPreviousBtn.disabled = !hasMatches;
+            if (screenSearchNextBtn) screenSearchNextBtn.disabled = !hasMatches;
+            if (screenSearchClearBtn) screenSearchClearBtn.disabled = !hasQuery;
+        }
+
+        function setScreenSearchStatus(text) {
+            if (screenSearchStatus) screenSearchStatus.textContent = String(text || '');
+        }
+
+        function handleScreenSearchResult(payload = {}) {
+            if (!screenSearchIsOpen || String(payload.token || '') !== screenSearchActiveToken) return;
+            const rawMatches = Math.max(0, Number(payload.matches) || 0);
+            const rawOrdinal = Math.max(0, Number(payload.activeMatchOrdinal) || 0);
+            const includesSearchField = payload.target === 'main-window' && rawMatches > 0;
+            const matches = Math.max(0, rawMatches - (includesSearchField ? 1 : 0));
+            if (includesSearchField && matches > 0 && rawOrdinal === 1 && payload.finalUpdate) {
+                setScreenSearchStatus('Buscando...');
+                window.setTimeout(() => runScreenSearch({ newSession: false, forward: screenSearchActiveForward }), 0);
+                return;
+            }
+            const ordinal = includesSearchField && rawOrdinal > 0 ? Math.max(0, rawOrdinal - 1) : rawOrdinal;
+            screenSearchMatches = matches;
+            screenSearchActiveOrdinal = ordinal;
+            if (matches > 0) {
+                setScreenSearchStatus(`${Math.max(1, ordinal)} de ${matches}`);
+            } else if (payload.finalUpdate) {
+                setScreenSearchStatus('Nenhum');
+            } else {
+                setScreenSearchStatus('Buscando...');
+            }
+            updateScreenSearchControls();
+        }
+
+        function detachScreenSearchFallbackListener() {
+            if (screenSearchFallbackTarget && screenSearchFallbackListener) {
+                try { screenSearchFallbackTarget.removeEventListener('found-in-page', screenSearchFallbackListener); } catch (_err) {}
+            }
+            screenSearchFallbackListener = null;
+            screenSearchFallbackRequestId = 0;
+        }
+
+        function stopScreenSearchFallback() {
+            detachScreenSearchFallbackListener();
+            if (screenSearchFallbackTarget && typeof screenSearchFallbackTarget.stopFindInPage === 'function') {
+                try { screenSearchFallbackTarget.stopFindInPage('clearSelection'); } catch (_err) {}
+            }
+            screenSearchFallbackTarget = null;
+        }
+
+        function visibleFallbackSearchWebview() {
+            if (!mlBrowserWebview || !mlBrowserWebview.classList.contains('is-active')) return null;
+            if (typeof mlBrowserWebview.findInPage !== 'function') return null;
+            try {
+                const rect = mlBrowserWebview.getBoundingClientRect();
+                if (Number(rect.width) < 20 || Number(rect.height) < 20) return null;
+            } catch (_err) {
+                return null;
+            }
+            return mlBrowserWebview;
+        }
+
+        function stopScreenSearchHighlight(options = {}) {
+            screenSearchActiveToken = nextScreenSearchToken();
+            stopScreenSearchFallback();
+            const api = window.electronAPI || null;
+            if (api && typeof api.stopFindInActiveScreen === 'function') {
+                Promise.resolve(api.stopFindInActiveScreen('clearSelection')).catch(() => {});
+            }
+            screenSearchMatches = 0;
+            screenSearchActiveOrdinal = 0;
+            if (options.resetStatus !== false) {
+                setScreenSearchStatus(String(screenSearchInput?.value || '').trim() ? 'Buscando...' : 'Digite');
+            }
+            updateScreenSearchControls();
+        }
+
+        async function runScreenSearch(options = {}) {
+            window.clearTimeout(screenSearchDebounceTimer);
+            if (!screenSearchIsOpen) return;
+            const query = String(screenSearchInput?.value || '').slice(0, 256);
+            if (!query.trim()) {
+                stopScreenSearchHighlight();
+                return;
+            }
+
+            const forward = options.forward !== false;
+            const newSession = options.newSession !== false;
+            screenSearchActiveForward = forward;
+            const token = nextScreenSearchToken();
+            screenSearchActiveToken = token;
+            setScreenSearchStatus('Buscando...');
+            updateScreenSearchControls();
+
+            const fallbackTarget = visibleFallbackSearchWebview();
+            if (fallbackTarget) {
+                const api = window.electronAPI || null;
+                if (api && typeof api.stopFindInActiveScreen === 'function') {
+                    Promise.resolve(api.stopFindInActiveScreen('clearSelection')).catch(() => {});
+                }
+                if (newSession || screenSearchFallbackTarget !== fallbackTarget) stopScreenSearchFallback();
+                else detachScreenSearchFallbackListener();
+                screenSearchFallbackTarget = fallbackTarget;
+                screenSearchFallbackListener = (event) => {
+                    const result = event && event.result ? event.result : {};
+                    if (Number(result.requestId) !== Number(screenSearchFallbackRequestId)) return;
+                    handleScreenSearchResult({
+                        token,
+                        target: 'fallback-ml-browser',
+                        requestId: Number(result.requestId) || 0,
+                        activeMatchOrdinal: result.activeMatchOrdinal,
+                        matches: result.matches,
+                        finalUpdate: !!result.finalUpdate
+                    });
+                };
+                fallbackTarget.addEventListener('found-in-page', screenSearchFallbackListener);
+                try {
+                    screenSearchFallbackRequestId = fallbackTarget.findInPage(query, {
+                        forward,
+                        findNext: newSession,
+                        matchCase: false
+                    });
+                } catch (_err) {
+                    stopScreenSearchFallback();
+                    if (screenSearchActiveToken === token) setScreenSearchStatus('Indisponivel');
+                }
+                return;
+            }
+
+            stopScreenSearchFallback();
+            const api = window.electronAPI || null;
+            if (!api || typeof api.findInActiveScreen !== 'function') {
+                if (screenSearchActiveToken === token) setScreenSearchStatus('Indisponivel');
+                return;
+            }
+            try {
+                const result = await api.findInActiveScreen(query, { token, forward, newSession });
+                if (screenSearchActiveToken === token && result && result.success === false) {
+                    setScreenSearchStatus('Indisponivel');
+                }
+            } catch (_err) {
+                if (screenSearchActiveToken === token) setScreenSearchStatus('Indisponivel');
+            }
+        }
+
+        function refreshScreenSearchAfterContextChange(delay = 80) {
+            if (!screenSearchIsOpen || !String(screenSearchInput?.value || '').trim()) return;
+            window.clearTimeout(screenSearchDebounceTimer);
+            stopScreenSearchHighlight({ resetStatus: false });
+            setScreenSearchStatus('Buscando...');
+            screenSearchDebounceTimer = window.setTimeout(() => runScreenSearch({ newSession: true }), delay);
+        }
+
+        function openScreenSearch(options = {}) {
+            const wasOpen = screenSearchIsOpen;
+            if (!wasOpen) screenSearchPreviousFocus = document.activeElement;
+            screenSearchIsOpen = true;
+            shellEl?.classList.add('search-expanded');
+            showTabsToolbar(0);
+            const api = window.electronAPI || null;
+            if (api && typeof api.setAppFindOpen === 'function') {
+                Promise.resolve(api.setAppFindOpen(true)).catch(() => {});
+            }
+            window.requestAnimationFrame(() => {
+                if (!screenSearchInput) return;
+                screenSearchInput.focus();
+                if (options.select !== false) screenSearchInput.select();
+            });
+            if (!wasOpen && String(screenSearchInput?.value || '').trim()) {
+                runScreenSearch({ newSession: true });
+            }
+        }
+
+        function closeScreenSearch(options = {}) {
+            if (!screenSearchIsOpen) return;
+            window.clearTimeout(screenSearchDebounceTimer);
+            stopScreenSearchHighlight({ resetStatus: false });
+            screenSearchIsOpen = false;
+            shellEl?.classList.remove('search-expanded');
+            const api = window.electronAPI || null;
+            if (api && typeof api.setAppFindOpen === 'function') {
+                Promise.resolve(api.setAppFindOpen(false)).catch(() => {});
+            }
+            if (options.restoreFocus !== false && screenSearchPreviousFocus && typeof screenSearchPreviousFocus.focus === 'function') {
+                try { screenSearchPreviousFocus.focus(); } catch (_err) {}
+            }
+            screenSearchPreviousFocus = null;
+            showTabsToolbar(900);
+        }
+
+        function clearScreenSearch() {
+            if (screenSearchInput) screenSearchInput.value = '';
+            stopScreenSearchHighlight();
+            screenSearchInput?.focus();
+        }
+
+        function handleScreenSearchCommand(command) {
+            const normalized = String(command || '').toLowerCase();
+            if (normalized === 'focus') {
+                openScreenSearch({ select: true });
+                return;
+            }
+            if (normalized === 'close') {
+                closeScreenSearch();
+                return;
+            }
+            if (normalized === 'next' || normalized === 'previous') {
+                if (!screenSearchIsOpen) {
+                    openScreenSearch({ select: false });
+                    return;
+                }
+                runScreenSearch({ newSession: false, forward: normalized !== 'previous' });
+            }
+        }
+
+        function initializeScreenSearch() {
+            const api = window.electronAPI || null;
+            if (api && typeof api.onAppFindResult === 'function') {
+                api.onAppFindResult(handleScreenSearchResult);
+            }
+            if (api && typeof api.onAppFindCommand === 'function') {
+                api.onAppFindCommand(payload => handleScreenSearchCommand(payload && payload.command));
+            }
+            updateScreenSearchControls();
+        }
 
         function urlEmFluxoAutenticacaoMercadoLivreShell(value) {
             const raw = String(value || '').trim();
@@ -794,6 +1264,10 @@
 
         function hideTabsToolbar() {
             if (!shellEl || !toolbarEl) return;
+            if (screenSearchIsOpen) {
+                showTabsToolbar(0);
+                return;
+            }
             if (toolbarEl.matches(':hover') || toolbarEl.contains(document.activeElement)) {
                 showTabsToolbar(900);
                 return;
@@ -812,6 +1286,7 @@
 
         function scheduleTabsToolbarHide(timeout = 700) {
             clearTimeout(toolbarAutoHideTimer);
+            if (screenSearchIsOpen) return;
             toolbarAutoHideTimer = setTimeout(hideTabsToolbar, timeout);
         }
 
@@ -1147,13 +1622,13 @@
         function tabFrameBounds(tab, id) {
             if (!tab || !tab.webview || typeof tab.webview.getBoundingClientRect !== 'function') return null;
             const rect = tab.webview.getBoundingClientRect();
-            return {
+            return scaleBoundsForNativeWindow({
                 x: rect.left,
                 y: rect.top,
                 width: rect.width,
                 height: rect.height,
                 active: String(id || tab.id || '') === String(activeId || '')
-            };
+            });
         }
 
         function notifyRustDeskTabVisibility() {
@@ -1629,6 +2104,10 @@
         function reloadTab(id, options = {}) {
             const tab = tabs.get(id);
             if (!tab) return;
+            if (id === activeId && screenSearchIsOpen) {
+                stopScreenSearchHighlight({ resetStatus: false });
+                if (String(screenSearchInput?.value || '').trim()) setScreenSearchStatus('Buscando...');
+            }
             if (!options.keepRetryCount) tab.loadRetries = 0;
             const requestedUrl = options.url ? normalizeTabUrl(options.url, appUrl) : '';
             const currentUrl = normalizeTabUrl(requestedUrl || tab.url || tab.webview?.src || appUrl, appUrl);
@@ -1663,8 +2142,16 @@
                 });
             };
 
-            mlBrowserWebview.addEventListener('dom-ready', event => sendEvent('dom-ready', event));
-            mlBrowserWebview.addEventListener('did-finish-load', event => sendEvent('did-finish-load', event));
+            mlBrowserWebview.addEventListener('dom-ready', event => {
+                if (typeof mlBrowserWebview.setZoomFactor === 'function') {
+                    try { mlBrowserWebview.setZoomFactor(currentWindowZoomPercent / 100); } catch (_err) {}
+                }
+                sendEvent('dom-ready', event);
+            });
+            mlBrowserWebview.addEventListener('did-finish-load', event => {
+                sendEvent('did-finish-load', event);
+                refreshScreenSearchAfterContextChange(100);
+            });
             mlBrowserWebview.addEventListener('did-navigate', event => sendEvent('did-navigate', event));
             mlBrowserWebview.addEventListener('did-navigate-in-page', event => sendEvent('did-navigate-in-page', event));
             mlBrowserWebview.addEventListener('did-fail-load', event => sendEvent('did-fail-load', event));
@@ -1732,7 +2219,7 @@
                 Number(bounds.height) >= 20
             );
             return {
-                bounds: {
+                bounds: scaleBoundsForNativeWindow({
                     x: temBoundsValidos
                         ? Math.max(0, Math.round(frameRect.left + Number(bounds.left || 0)))
                         : Math.max(0, Math.round(frameRect.left)),
@@ -1746,7 +2233,7 @@
                         ? Math.max(80, Math.round(Number(bounds.height || 0)))
                         : Math.max(80, Math.round(Number(frameRect.height || 0))),
                     background
-                }
+                })
             };
         }
 
@@ -1893,11 +2380,13 @@
 
         function activateTab(id) {
             if (!tabs.has(id)) return;
+            const changed = activeId !== id;
             activeId = id;
             const tab = tabs.get(id);
             document.title = `${tab.title || 'JK Sistema'} - JK Sistema`;
             updateVisibleState();
             showTabsToolbar(1400);
+            if (changed) refreshScreenSearchAfterContextChange(80);
         }
 
         function closeTab(id) {
@@ -1938,6 +2427,7 @@
             }
             updateVisibleState();
             showTabsToolbar(1200);
+            refreshScreenSearchAfterContextChange(80);
         }
 
         function createTab(url, title = 'JK Sistema', options = {}) {
@@ -2007,6 +2497,7 @@
                 markTabReady(id);
                 const frameTitle = titleFromFrame(webview);
                 if (frameTitle) setTabTitle(id, frameTitle);
+                if (id === activeId) refreshScreenSearchAfterContextChange(80);
             });
             webview.addEventListener('error', () => {
                 clearTabLoadTimer(tabs.get(id));
@@ -2047,6 +2538,10 @@
             }
             tab.url = targetUrl;
             if (title) setTabTitle(activeId, title);
+            if (screenSearchIsOpen) {
+                stopScreenSearchHighlight({ resetStatus: false });
+                if (String(screenSearchInput?.value || '').trim()) setScreenSearchStatus('Buscando...');
+            }
             startTabLoadWatchdog(activeId);
             try {
                 tab.webview.src = targetUrl;
@@ -2778,14 +3273,81 @@
         backBtn.addEventListener('click', goBackActiveTab);
         reloadBtn.addEventListener('click', reloadActiveTab);
         newTabBtn.addEventListener('click', () => createTab(appUrl, 'Inicio'));
+        screenSearchOpenBtn.addEventListener('click', () => openScreenSearch({ select: true }));
+        screenSearchCloseBtn.addEventListener('click', () => closeScreenSearch());
+        screenSearchClearBtn.addEventListener('click', clearScreenSearch);
+        screenSearchPreviousBtn.addEventListener('mousedown', event => event.preventDefault());
+        screenSearchNextBtn.addEventListener('mousedown', event => event.preventDefault());
+        screenSearchPreviousBtn.addEventListener('click', () => runScreenSearch({ newSession: false, forward: false }));
+        screenSearchNextBtn.addEventListener('click', () => runScreenSearch({ newSession: false, forward: true }));
+        screenSearchInput.addEventListener('input', () => {
+            window.clearTimeout(screenSearchDebounceTimer);
+            screenSearchMatches = 0;
+            screenSearchActiveOrdinal = 0;
+            updateScreenSearchControls();
+            if (!String(screenSearchInput.value || '').trim()) {
+                stopScreenSearchHighlight();
+                return;
+            }
+            setScreenSearchStatus('Buscando...');
+            screenSearchDebounceTimer = window.setTimeout(() => runScreenSearch({ newSession: true }), 150);
+        });
+        screenSearchInput.addEventListener('keydown', (event) => {
+            if (event.isComposing) return;
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                runScreenSearch({ newSession: false, forward: !event.shiftKey });
+            } else if (event.key === 'Escape') {
+                event.preventDefault();
+                closeScreenSearch();
+            }
+        });
+        zoomOutBtn.addEventListener('click', () => handleWindowZoomCommand('out'));
+        zoomResetBtn.addEventListener('click', () => handleWindowZoomCommand('reset'));
+        zoomInBtn.addEventListener('click', () => handleWindowZoomCommand('in'));
         bindAutoHidingToolbar();
         bindAutoUpdateStatusToast();
         window.addEventListener('keydown', (event) => {
+            if ((event.ctrlKey || event.metaKey) && !event.altKey) {
+                const key = String(event.key || '').toLowerCase();
+                if (key === 'f') {
+                    event.preventDefault();
+                    openScreenSearch({ select: true });
+                    return;
+                }
+                if (key === '0') {
+                    event.preventDefault();
+                    handleWindowZoomCommand('reset');
+                    return;
+                }
+                if (key === '+' || key === '=') {
+                    event.preventDefault();
+                    handleWindowZoomCommand('in');
+                    return;
+                }
+                if (key === '-' || key === '_') {
+                    event.preventDefault();
+                    handleWindowZoomCommand('out');
+                    return;
+                }
+            }
+            if (event.key === 'F3') {
+                event.preventDefault();
+                handleScreenSearchCommand(event.shiftKey ? 'previous' : 'next');
+                return;
+            }
+            if (event.key === 'Escape' && screenSearchIsOpen) {
+                event.preventDefault();
+                closeScreenSearch();
+                return;
+            }
             if (event.key === 'F5' || ((event.ctrlKey || event.metaKey) && String(event.key).toLowerCase() === 'r')) {
                 event.preventDefault();
                 reloadActiveTab();
             }
         });
+        initializeWindowZoom();
+        initializeScreenSearch();
 
         if (!restoreTabsAfterUpdate()) {
             createTab(appUrl, 'Inicio');

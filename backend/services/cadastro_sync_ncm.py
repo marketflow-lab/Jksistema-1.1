@@ -45,6 +45,7 @@ import pandas as pd
 from fastapi import Depends
 
 from backend.services.cadastro_common import *
+from backend.services.integracoes import renovar_token_bling_loja
 from backend.services.monofasico_rules import avaliar_monofasico
 
 SYNC_NCM_JOBS: dict[str, dict] = {}
@@ -241,19 +242,9 @@ def _sync_ncm_cadastro_worker(client_id: str, job_id: str):
                 resp_ncm_cest, status_ncm = _bling_obter_ncm_cest_produto(access_token_ncm, pid)
                 if status_ncm == 401 and refresh_ncm:
                     try:
-                        novos = _bling_refresh_token(cid_ncm, sec_ncm, refresh_ncm)
-                        access_token_ncm = novos.get("access_token") or access_token_ncm
-                        refresh_ncm = novos.get("refresh_token", refresh_ncm)
-                        bling_por_loja[nome_loja]["access_token"] = access_token_ncm
-                        bling_por_loja[nome_loja]["refresh_token"] = refresh_ncm
-                        atualizar_api_loja(client_id, nome_loja, "bling", {
-                            "id": cid_ncm,
-                            "secret": sec_ncm,
-                            "access_token": access_token_ncm,
-                            "refresh_token": refresh_ncm,
-                            "connected": True,
-                            "updated_at": str(time.time())
-                        })
+                        renovado = renovar_token_bling_loja(client_id, nome_loja, cfg_loja)
+                        bling_por_loja[nome_loja] = dict(renovado)
+                        access_token_ncm = renovado.get("access_token") or access_token_ncm
                         resp_ncm_cest, status_ncm = _bling_obter_ncm_cest_produto(access_token_ncm, pid)
                     except Exception:
                         status_ncm = 500

@@ -21,6 +21,7 @@ from backend.services.renovacao_planilhas import (
 from backend.services.renovacao_promocoes_helpers import _renovacao_sync_job_get
 from backend.services.renovacao_promocoes import (
     _renovacao_atualizar_periodo_campanha_ml,
+    _renovacao_criar_campanha_manual_ml,
     _renovacao_criar_ou_completar_proximo_mes,
     _renovacao_deletar_campanha_ml,
     _renovacao_listar_campanhas_usuario_payload,
@@ -46,6 +47,7 @@ __all__ = [
     "_renovacao_agendamento_atual",
     "_renovacao_agendamento_put_payload",
     "_renovacao_atualizar_periodo_campanha_ml",
+    "_renovacao_criar_campanha_manual_ml",
     "_renovacao_criar_ou_completar_proximo_mes",
     "_renovacao_deletar_campanha_ml",
     "_renovacao_iniciar_agendamento_background",

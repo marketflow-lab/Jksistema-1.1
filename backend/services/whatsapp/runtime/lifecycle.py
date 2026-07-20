@@ -209,7 +209,7 @@ def whatsapp_bridge_iniciar_background() -> None:
     if BRIDGE_THREAD and BRIDGE_THREAD.is_alive():
         return
     BRIDGE_STOP_EVENT.clear()
-    # Persiste a normalizacao v8 no primeiro inicio, incluindo o gerenciador.
+    # Persiste a configuracao atual e materializa somente os runtimes Codex ativos.
     config = _save_config(_load_config())
     settings = _whatsapp_dual_agent_settings(config)
     recovered_retries = _recover_dual_pending_after_restart(_load_state())
@@ -230,10 +230,10 @@ def whatsapp_bridge_iniciar_background() -> None:
                     settings["task_agent_model"],
                     pool_size=settings["conversation_runtime_pool_size"],
                 )
-                codex_whatsapp_agents.FUNCTION_MANAGER_RUNTIME.warm(
+                codex_whatsapp_agents.DATA_SELECTION_RUNTIME.warm(
                     settings["conversation_agent_model"],
                     settings["task_agent_model"],
-                    pool_size=settings["function_manager_runtime_pool_size"],
+                    pool_size=settings["data_selection_runtime_pool_size"],
                 )
                 RUNTIME_STATE["dual_agent_last_error"] = ""
             except Exception as exc:
@@ -294,7 +294,7 @@ def whatsapp_bridge_parar_background() -> None:
         _save_state(_load_state())
     finally:
         codex_whatsapp_agents.CONVERSATION_RUNTIME.close()
-        codex_whatsapp_agents.FUNCTION_MANAGER_RUNTIME.close()
+        codex_whatsapp_agents.DATA_SELECTION_RUNTIME.close()
     RUNTIME_STATE["running"] = False
 
 

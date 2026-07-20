@@ -51,6 +51,12 @@ class CodexToolPermissionsTest(unittest.TestCase):
                 "high",
                 "standard",
                 "read_only",
+                server_data_selection={
+                    "schema_version": "1.0",
+                    "action": "collect",
+                    "tool_calls": [{"tool_id": "sales_ranking"}],
+                    "selected_tools": ["sales_ranking"],
+                },
             )
 
         compact_context.assert_not_called()

@@ -35,8 +35,20 @@
     let codexPollFailures = {};
     let codexRenderedFinalTasks = new Set();
     let codexFallbackTasks = new Set();
+    let codexOperationalFailureCount = 0;
+    let codexOperationalFailureTasks = new Set();
+    let codexStatusFailureCounted = false;
     let codexPaths = [];
     let codexUploadedAttachments = [];
+    let codexVoiceRecorder = null;
+    let codexVoiceStream = null;
+    let codexVoiceChunks = [];
+    let codexVoiceState = 'idle';
+    let codexVoiceCancelled = false;
+    let codexVoiceStartedAt = 0;
+    let codexVoiceTimer = null;
+    let codexVoiceMaxTimer = null;
+    let codexVoiceGeneration = 0;
     let codexMessagesAtuais = [];
     let codexAssistantTimer = null;
     let codexAssistantLastReportId = '';
@@ -2120,6 +2132,9 @@
       codexPollFailures = {};
       codexRenderedFinalTasks = new Set();
       codexFallbackTasks = new Set();
+      codexOperationalFailureCount = 0;
+      codexOperationalFailureTasks = new Set();
+      codexStatusFailureCounted = false;
       codexMessagesAtuais = [];
       _codexSetArchiveView(false);
       _codexSetSelectValue('jk-codex-access', 'read_only');
@@ -3002,6 +3017,13 @@
         if (!saved.reasoning_effort && defaults.reasoning_effort) _codexSetSelectValue('jk-codex-reasoning', defaults.reasoning_effort);
         if (!saved.speed && defaults.speed) _codexSetSelectValue('jk-codex-speed', defaults.speed);
         const msg = data && data.message ? data.message : 'Status do Codex recebido.';
+        if (data && data.ready === true) {
+          codexOperationalFailureCount = 0;
+          codexStatusFailureCounted = false;
+        } else if (!codexStatusFailureCounted && _blackJhonErroPermiteFallback({ message: msg })) {
+          codexOperationalFailureCount += 1;
+          codexStatusFailureCounted = true;
+        }
         _codexSetStatus(msg, !(data && data.ready));
         if (_usuarioLocalEhFull()) void _codexCarregarPropostasPendentes();
         return data;
@@ -3076,12 +3098,17 @@
         const erroTask = task.error || 'Codex falhou.';
         const temAnexos = (Array.isArray(task.paths) ? task.paths : [])
           .some(path => String(path || '').replace(/\\/g, '/').includes('.codex-remote-attachments/'));
+        if (_blackJhonErroPermiteFallback({ message: erroTask }) && !codexOperationalFailureTasks.has(task.task_id)) {
+          codexOperationalFailureTasks.add(task.task_id);
+          codexOperationalFailureCount += 1;
+        }
         const fallbackPermitido = _blackJhonPodeUsarIaSecundaria({
           sandbox: task.sandbox,
           prompt: task.prompt,
           temAnexos,
           mutableIntent: task.mutable_intent === true,
           error: erroTask,
+          operationalFailureCount: codexOperationalFailureCount,
         });
         if (fallbackPermitido && !codexFallbackTasks.has(task.task_id)) {
           codexFallbackTasks.add(task.task_id);
@@ -3100,6 +3127,9 @@
           }
         }
       } else if (status === 'completed' || status === 'partial') {
+        codexOperationalFailureCount = 0;
+        codexOperationalFailureTasks = new Set();
+        codexStatusFailureCounted = false;
         _codexSetStatus(status === 'partial' ? 'Concluido parcialmente; alguns resultados nao foram comprovados.' : 'Codex concluiu.', status === 'partial');
         if (task.thread_id) {
           _codexSetThreadId(task.thread_id);
@@ -3246,6 +3276,7 @@
       const ehPergunta = actionId === 'ml.pergunta_responder';
       const ehPosVenda = actionId === 'ml.pos_venda_responder';
       if (!ehPergunta && !ehPosVenda) return null;
+      if (ehPosVenda) return null;
       const resposta = String(params.resposta || params.texto || '').trim();
       if (!resposta) return null;
       return {
@@ -3285,6 +3316,8 @@
     function _codexRenderActionProposal(proposal) {
       if (!_usuarioLocalEhFull()) return;
       if (!proposal || !proposal.proposal_id) return;
+      const proposalAction = proposal.action || {};
+      if (String(proposal.action_id || proposalAction.id || '').trim() === 'ml.pos_venda_responder') return null;
       const lista = document.getElementById('jk-codex-messages');
       const existente = lista && Array.from(lista.querySelectorAll('.jk-codex-action-card[data-proposal-id]'))
         .find(card => String(card.dataset.proposalId || '') === String(proposal.proposal_id));
@@ -3451,11 +3484,12 @@
       return /\b(altere|alterar|alteracao|ajuste|ajustar|corrija|corrigir|correcao|implemente|implementar|crie|criar|adicione|adicionar|inclua|incluir|edite|editar|modifique|modificar|troque|trocar|substitua|substituir|remova|remover|apague|apagar|delete|deletar|exclua|excluir|salve|salvar|grave|gravar|atualize|atualizar|sincronize|sincronizar|instale|instalar|publique|publicar|envie|enviar|aprove|aprovar|execute|executar|rode|rodar|gere|gerar|change|edit|fix|implement|create|add|remove|update|save|write|modify|patch|install|publish|send|approve|execute|run|generate)\b/.test(text);
     }
 
-    function _blackJhonPodeUsarIaSecundaria({ sandbox = 'read_only', prompt = '', temAnexos = false, mutableIntent = false, error = null } = {}) {
+    function _blackJhonPodeUsarIaSecundaria({ sandbox = 'read_only', prompt = '', temAnexos = false, mutableIntent = false, error = null, operationalFailureCount = 0 } = {}) {
       return String(sandbox || 'read_only') === 'read_only'
         && !temAnexos
         && !mutableIntent
         && !_blackJhonPromptTemPossivelMutacao(prompt)
+        && Number(operationalFailureCount || 0) >= 2
         && _blackJhonErroPermiteFallback(error);
     }
 
@@ -3658,9 +3692,178 @@
       return true;
     }
 
+    function _codexVoiceMime() {
+      const candidates = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4', 'audio/webm'];
+      if (!window.MediaRecorder || typeof window.MediaRecorder.isTypeSupported !== 'function') return '';
+      return candidates.find(value => window.MediaRecorder.isTypeSupported(value)) || '';
+    }
+
+    function _codexVoiceExtension(mime) {
+      const value = String(mime || '').toLowerCase();
+      if (value.includes('ogg')) return '.ogg';
+      if (value.includes('mp4')) return '.m4a';
+      return '.webm';
+    }
+
+    function _codexVoiceStopTracks() {
+      if (codexVoiceStream) {
+        try { codexVoiceStream.getTracks().forEach(track => track.stop()); } catch (_) {}
+      }
+      codexVoiceStream = null;
+    }
+
+    function _codexVoiceClearTimers() {
+      if (codexVoiceTimer) clearInterval(codexVoiceTimer);
+      if (codexVoiceMaxTimer) clearTimeout(codexVoiceMaxTimer);
+      codexVoiceTimer = null;
+      codexVoiceMaxTimer = null;
+    }
+
+    function _codexVoiceSetState(state, message = '', isError = false) {
+      codexVoiceState = String(state || 'idle');
+      const button = document.getElementById('jk-codex-voice');
+      const cancel = document.getElementById('jk-codex-voice-cancel');
+      const status = document.getElementById('jk-codex-voice-status');
+      const recording = codexVoiceState === 'recording';
+      const busy = ['requesting', 'uploading', 'transcribing'].includes(codexVoiceState);
+      if (button) {
+        button.dataset.state = codexVoiceState;
+        button.setAttribute('aria-pressed', recording ? 'true' : 'false');
+        button.setAttribute('aria-label', recording ? 'Parar gravacao e transcrever' : 'Gravar comando de voz');
+        button.title = recording ? 'Parar gravacao e transcrever' : 'Gravar comando de voz';
+        button.disabled = busy;
+      }
+      if (cancel) cancel.hidden = !recording && !busy;
+      if (status) {
+        status.hidden = !message;
+        status.textContent = String(message || '');
+        status.className = isError ? 'error' : (codexVoiceState === 'review' ? 'review' : '');
+      }
+    }
+
+    function _codexVoiceRecordingStatus() {
+      const elapsed = Math.max(0, Math.floor((Date.now() - codexVoiceStartedAt) / 1000));
+      const minutes = String(Math.floor(elapsed / 60)).padStart(2, '0');
+      const seconds = String(elapsed % 60).padStart(2, '0');
+      _codexVoiceSetState('recording', `Gravando ${minutes}:${seconds}. Clique no microfone para transcrever ou cancele.`);
+    }
+
+    function _codexVoiceCancel() {
+      codexVoiceCancelled = true;
+      codexVoiceGeneration += 1;
+      _codexVoiceClearTimers();
+      if (codexVoiceRecorder && codexVoiceRecorder.state === 'recording') {
+        try { codexVoiceRecorder.stop(); } catch (_) {}
+      }
+      _codexVoiceStopTracks();
+      codexVoiceRecorder = null;
+      codexVoiceChunks = [];
+      _codexVoiceSetState('idle', 'Gravacao cancelada. O texto digitado foi preservado.');
+    }
+
+    async function _codexVoiceTranscribe(blob, mime) {
+      if (!blob || blob.size <= 0) {
+        _codexVoiceSetState('error', 'Nenhum audio foi capturado. Tente novamente.', true);
+        return;
+      }
+      const form = new FormData();
+      form.append('file', blob, `black-jhon-voice${_codexVoiceExtension(mime)}`);
+      const generation = codexVoiceGeneration;
+      try {
+        _codexVoiceSetState('transcribing', 'Transcrevendo localmente. Nenhuma tarefa sera enviada automaticamente.');
+        const result = await _codexFetchJson('/api/codex/audio/transcriptions', { method: 'POST', body: form });
+        if (generation !== codexVoiceGeneration) return;
+        const text = String(result && result.text || '').trim();
+        if (!result || result.success !== true || !text) {
+          throw new Error(String(result && result.error_code || 'transcription_failed'));
+        }
+        const input = document.getElementById('jk-codex-input');
+        if (input) {
+          input.value = text;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.focus();
+          input.setSelectionRange(input.value.length, input.value.length);
+        }
+        _codexVoiceSetState('review', 'Transcricao pronta. Revise o texto e pressione Enviar quando estiver correto.');
+      } catch (error) {
+        if (generation !== codexVoiceGeneration) return;
+        const code = String(error && error.message || 'transcription_failed');
+        const friendly = /resource_busy|queue_timeout/i.test(code)
+          ? 'O transcritor local esta ocupado. Aguarde um momento ou digite a mensagem.'
+          : /no_speech|low_confidence|audio_empty/i.test(code)
+            ? 'Nao consegui entender o audio com seguranca. Grave novamente ou digite a mensagem.'
+            : 'Nao foi possivel transcrever o audio localmente. O envio por texto continua disponivel.';
+        _codexVoiceSetState('error', friendly, true);
+      }
+    }
+
+    async function _codexVoiceToggle() {
+      if (codexVoiceState === 'recording' && codexVoiceRecorder) {
+        _codexVoiceClearTimers();
+        try { codexVoiceRecorder.stop(); } catch (_) {}
+        return;
+      }
+      if (['requesting', 'uploading', 'transcribing'].includes(codexVoiceState)) return;
+      if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+        _codexVoiceSetState('error', 'Este navegador nao oferece gravacao de audio. Digite a mensagem normalmente.', true);
+        return;
+      }
+      codexVoiceCancelled = false;
+      codexVoiceChunks = [];
+      const generation = ++codexVoiceGeneration;
+      _codexVoiceSetState('requesting', 'Solicitando permissao para usar o microfone...');
+      try {
+        codexVoiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (generation !== codexVoiceGeneration || codexVoiceCancelled) {
+          _codexVoiceStopTracks();
+          return;
+        }
+        const preferredMime = _codexVoiceMime();
+        codexVoiceRecorder = preferredMime
+          ? new MediaRecorder(codexVoiceStream, { mimeType: preferredMime })
+          : new MediaRecorder(codexVoiceStream);
+        codexVoiceRecorder.ondataavailable = event => {
+          if (event.data && event.data.size > 0) codexVoiceChunks.push(event.data);
+        };
+        codexVoiceRecorder.onerror = () => {
+          codexVoiceCancelled = true;
+          codexVoiceGeneration += 1;
+          _codexVoiceStopTracks();
+          _codexVoiceClearTimers();
+          _codexVoiceSetState('error', 'A gravacao foi interrompida. Tente novamente ou use o texto.', true);
+        };
+        codexVoiceRecorder.onstop = () => {
+          const recorder = codexVoiceRecorder;
+          const mime = String(recorder && recorder.mimeType || preferredMime || 'audio/webm').split(';', 1)[0];
+          const chunks = codexVoiceChunks.slice();
+          codexVoiceRecorder = null;
+          codexVoiceChunks = [];
+          _codexVoiceStopTracks();
+          _codexVoiceClearTimers();
+          if (codexVoiceCancelled) return;
+          void _codexVoiceTranscribe(new Blob(chunks, { type: mime }), mime);
+        };
+        codexVoiceRecorder.start(250);
+        codexVoiceStartedAt = Date.now();
+        _codexVoiceRecordingStatus();
+        codexVoiceTimer = setInterval(_codexVoiceRecordingStatus, 1000);
+        codexVoiceMaxTimer = setTimeout(() => {
+          if (codexVoiceRecorder && codexVoiceRecorder.state === 'recording') codexVoiceRecorder.stop();
+        }, 10 * 60 * 1000);
+      } catch (_) {
+        _codexVoiceStopTracks();
+        _codexVoiceClearTimers();
+        _codexVoiceSetState('error', 'O acesso ao microfone foi negado. Libere a permissao ou use o texto.', true);
+      }
+    }
+
     async function _codexCriarTarefa(forcedAccess = '') {
       const input = document.getElementById('jk-codex-input');
       const promptDigitado = String(input && input.value || '').trim();
+      if (['requesting', 'recording', 'uploading', 'transcribing'].includes(codexVoiceState)) {
+        _codexVoiceSetState(codexVoiceState, 'Conclua ou cancele a gravacao antes de enviar a tarefa.', true);
+        return;
+      }
       if (_codexTemUploadPendente()) {
         _codexSetStatus('Aguarde o envio dos anexos antes de enviar a tarefa.', true);
         return;
@@ -3728,6 +3931,7 @@
         if (task && task.task_id) _codexPollTask(task.task_id, taskPollGeneration);
       } catch (err) {
         let erroFinal = err;
+        if (_blackJhonErroPermiteFallback(err)) codexOperationalFailureCount += 1;
         if (full && _codexPedidoPareceAcaoMutavel(prompt)) {
           const propostaPreparada = await _codexTryCriarActionProposal(prompt, screenContext);
           if (propostaPreparada) return;
@@ -3738,6 +3942,7 @@
           temAnexos,
           mutableIntent: _codexPedidoPareceAcaoMutavel(prompt),
           error: err,
+          operationalFailureCount: codexOperationalFailureCount,
         });
         if (fallbackPermitido) {
           try {

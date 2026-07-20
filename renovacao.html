@@ -46,6 +46,16 @@
         .btn-danger { background: #7b2838; border-color: #d85b6a; }
         .btn-danger:hover { background: #963448; }
         .btn-api { width: auto; margin-top: 0; padding: 12px 22px; }
+        .manual-campaign-backdrop[hidden] { display: none; }
+        .manual-campaign-backdrop { position: fixed; inset: 0; z-index: 6000; display: grid; place-items: center; padding: 18px; background: rgba(5, 10, 20, .76); }
+        .manual-campaign-dialog { width: min(620px, 100%); max-height: calc(100vh - 36px); overflow-y: auto; border: 1px solid #4facfe; border-radius: 12px; background: #101b2b; box-shadow: 0 22px 70px rgba(0, 0, 0, .55); padding: 20px; }
+        .manual-campaign-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
+        .manual-campaign-title { margin: 0; color: #fff; font-size: 1.2em; }
+        .manual-campaign-hint { margin: 0 0 16px; color: #b8c7df; line-height: 1.45; text-align: left !important; }
+        .manual-campaign-store { margin: 0 0 14px; color: #8ff7d7; }
+        .manual-campaign-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+        .manual-campaign-grid .field:first-child { grid-column: 1 / -1; }
+        .manual-campaign-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
         .period-popover[hidden] { display: none; }
         .period-popover { position: fixed; z-index: 5000; width: min(420px, calc(100vw - 28px)); background: #101b2b; border: 1px solid #4facfe; border-radius: 10px; box-shadow: 0 18px 50px rgba(0, 0, 0, .45); padding: 14px; text-align: left; }
         .period-popover::before { content: ""; position: absolute; top: -8px; left: 28px; width: 14px; height: 14px; background: #101b2b; border-left: 1px solid #4facfe; border-top: 1px solid #4facfe; transform: rotate(45deg); }
@@ -98,6 +108,9 @@
         .btn-process.btn-api { width: auto; margin-top: 0; padding: 12px 18px; font-size: 1em; border-radius: 7px; border: 1px solid #00d1a2; }
         @media (max-width: 900px) {
             .api-grid { grid-template-columns: 1fr; }
+            .manual-campaign-grid { grid-template-columns: 1fr; }
+            .manual-campaign-grid .field:first-child { grid-column: auto; }
+            .manual-campaign-actions { flex-direction: column-reverse; }
             .period-popover { left: 14px !important; right: 14px; width: auto; }
             .api-actions { align-items: stretch; }
             .btn-api, .btn-action, .btn-row { width: 100%; }
@@ -150,7 +163,40 @@
         </div>
         <div class="api-actions">
             <button class="btn-action" onclick="carregarCampanhasRenovacao()">Atualizar campanhas</button>
+            <button type="button" class="btn-action" id="btn-abrir-criacao-manual-renovacao" aria-haspopup="dialog" onclick="abrirDialogCriacaoManualRenovacao(event)">Criar promoção</button>
             <button class="btn-process btn-api" id="btn-criar-renovacao" onclick="criarCampanhaMesSeguinte()">Criar campanha do mes seguinte</button>
+        </div>
+        <div id="renovacao-criacao-manual-backdrop" class="manual-campaign-backdrop" hidden onclick="fecharDialogCriacaoManualAoClicarFora(event)">
+            <section class="manual-campaign-dialog" role="dialog" aria-modal="true" aria-labelledby="renovacao-criacao-manual-titulo" aria-describedby="renovacao-criacao-manual-descricao">
+                <div class="manual-campaign-header">
+                    <div>
+                        <h3 class="manual-campaign-title" id="renovacao-criacao-manual-titulo">Criar promoção no Mercado Livre</h3>
+                    </div>
+                    <button type="button" class="period-popover-close" id="btn-fechar-criacao-manual-renovacao" aria-label="Fechar criação de promoção" onclick="fecharDialogCriacaoManualRenovacao()">X</button>
+                </div>
+                <p class="manual-campaign-hint" id="renovacao-criacao-manual-descricao">Cria uma campanha vazia no Mercado Livre. Depois, use <strong>Sincronizar promoção</strong> para copiar os anúncios e descontos de outra campanha.</p>
+                <p class="manual-campaign-store">Loja: <strong id="renovacao-criacao-manual-loja">-</strong></p>
+                <form id="renovacao-criacao-manual-form" onsubmit="criarPromocaoManualRenovacao(event)">
+                    <div class="manual-campaign-grid">
+                        <label class="field" for="renovacao-criacao-manual-nome">
+                            Nome da promoção
+                            <input type="text" id="renovacao-criacao-manual-nome" maxlength="255" autocomplete="off" required>
+                        </label>
+                        <label class="field" for="renovacao-criacao-manual-inicio">
+                            Data de início
+                            <input type="date" id="renovacao-criacao-manual-inicio" required>
+                        </label>
+                        <label class="field" for="renovacao-criacao-manual-fim">
+                            Data de término
+                            <input type="date" id="renovacao-criacao-manual-fim" required>
+                        </label>
+                    </div>
+                    <div class="manual-campaign-actions">
+                        <button type="button" class="btn-action" id="btn-cancelar-criacao-manual-renovacao" onclick="fecharDialogCriacaoManualRenovacao()">Cancelar</button>
+                        <button type="submit" class="btn-process btn-api" id="btn-criar-promocao-manual-renovacao">Criar no Mercado Livre</button>
+                    </div>
+                </form>
+            </section>
         </div>
         <div id="renovacao-periodo-popover" class="period-popover" hidden>
             <div class="period-popover-header">
@@ -218,7 +264,7 @@
             </div>
         </div>
         <div id="renovacao-campanha-info" class="campaign-info"></div>
-        <div id="renovacao-api-status" class="status-box"></div>
+        <div id="renovacao-api-status" class="status-box" role="status" aria-live="polite"></div>
     </div>
 
 </div>
@@ -227,6 +273,8 @@
     let campanhasRenovacao = [];
     let renovacaoNomeSugeridoAtual = '';
     let renovacaoSyncPolling = null;
+    let renovacaoCriacaoManualTrigger = null;
+    let renovacaoCriacaoManualState = { loja: '', pendente: false };
     let renovacaoPeriodoState = {
         campanhaId: '',
         campo: 'fim',
@@ -244,7 +292,32 @@
         }
         document.addEventListener('click', fecharPopoverPeriodoAoClicarFora);
         document.addEventListener('keydown', (event) => {
-            if (event.key === 'Escape') fecharPopoverPeriodoRenovacao();
+            const criacaoManual = document.getElementById('renovacao-criacao-manual-backdrop');
+            if (criacaoManual && !criacaoManual.hidden && event.key === 'Tab') {
+                const dialog = criacaoManual.querySelector('.manual-campaign-dialog');
+                const focaveis = Array.from(dialog?.querySelectorAll('button:not([disabled]), input:not([disabled])') || []);
+                if (!focaveis.length) return;
+                const primeiro = focaveis[0];
+                const ultimo = focaveis[focaveis.length - 1];
+                if (!focaveis.includes(document.activeElement)) {
+                    event.preventDefault();
+                    (event.shiftKey ? ultimo : primeiro).focus();
+                } else if (event.shiftKey && document.activeElement === primeiro) {
+                    event.preventDefault();
+                    ultimo.focus();
+                } else if (!event.shiftKey && document.activeElement === ultimo) {
+                    event.preventDefault();
+                    primeiro.focus();
+                }
+                return;
+            }
+            if (event.key !== 'Escape') return;
+            if (criacaoManual && !criacaoManual.hidden) {
+                event.preventDefault();
+                fecharDialogCriacaoManualRenovacao();
+                return;
+            }
+            fecharPopoverPeriodoRenovacao();
         });
     });
 
@@ -284,6 +357,182 @@
     function nomeLojaRenovacao(loja) {
         if (typeof loja === 'string') return loja;
         return loja?.nome || loja?.name || '';
+    }
+
+    function dataIsoLocalRenovacao(data) {
+        const ano = data.getFullYear();
+        const mes = String(data.getMonth() + 1).padStart(2, '0');
+        const dia = String(data.getDate()).padStart(2, '0');
+        return `${ano}-${mes}-${dia}`;
+    }
+
+    function parseDataManualRenovacao(valor) {
+        const texto = String(valor || '');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(texto)) return null;
+        const partes = texto.split('-').map(Number);
+        if (partes.length !== 3 || partes.some((parte) => !Number.isInteger(parte))) return null;
+        const data = new Date(partes[0], partes[1] - 1, partes[2], 12, 0, 0, 0);
+        if (data.getFullYear() !== partes[0] || data.getMonth() !== partes[1] - 1 || data.getDate() !== partes[2]) return null;
+        return data;
+    }
+
+    function validarDadosPromocaoManualRenovacao(loja, nome, inicio, fim, agora = new Date()) {
+        if (!String(loja || '').trim()) return 'Selecione a loja para criar a promoção.';
+        if (!String(nome || '').trim()) return 'Informe o nome da promoção.';
+        if (!inicio || !fim) return 'Informe as datas de início e término.';
+        const inicioData = parseDataManualRenovacao(inicio);
+        const fimData = parseDataManualRenovacao(fim);
+        if (!inicioData || !fimData) return 'Informe datas válidas para a promoção.';
+        const hoje = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate(), 12, 0, 0, 0);
+        if (inicioData < hoje) return 'A data de início não pode ser anterior a hoje.';
+        if (fimData < inicioData) return 'A data de término não pode ser anterior à data de início.';
+        return '';
+    }
+
+    function setCriacaoManualPendenteRenovacao(pendente) {
+        renovacaoCriacaoManualState.pendente = Boolean(pendente);
+        for (const id of [
+            'btn-criar-promocao-manual-renovacao',
+            'btn-fechar-criacao-manual-renovacao',
+            'btn-cancelar-criacao-manual-renovacao'
+        ]) {
+            const controle = document.getElementById(id);
+            if (controle) controle.disabled = Boolean(pendente);
+        }
+        const backdrop = document.getElementById('renovacao-criacao-manual-backdrop');
+        const lojaSelect = document.getElementById('renovacao-loja');
+        if (lojaSelect) lojaSelect.disabled = Boolean(backdrop && !backdrop.hidden);
+    }
+
+    function abrirDialogCriacaoManualRenovacao(event) {
+        const loja = document.getElementById('renovacao-loja')?.value || '';
+        if (!loja) {
+            setRenovacaoApiStatus('Selecione a loja para criar a promoção.', 'error');
+            document.getElementById('renovacao-loja')?.focus();
+            return;
+        }
+        const backdrop = document.getElementById('renovacao-criacao-manual-backdrop');
+        const inicioInput = document.getElementById('renovacao-criacao-manual-inicio');
+        const fimInput = document.getElementById('renovacao-criacao-manual-fim');
+        const hojeIso = dataIsoLocalRenovacao(new Date());
+        if (!backdrop) return;
+        renovacaoCriacaoManualTrigger = event?.currentTarget || document.activeElement || null;
+        renovacaoCriacaoManualState = { loja, pendente: false };
+        document.getElementById('renovacao-criacao-manual-loja').textContent = loja;
+        if (inicioInput) inicioInput.min = hojeIso;
+        if (fimInput) fimInput.min = hojeIso;
+        backdrop.hidden = false;
+        setCriacaoManualPendenteRenovacao(false);
+        window.setTimeout(() => document.getElementById('renovacao-criacao-manual-nome')?.focus(), 0);
+    }
+
+    function fecharDialogCriacaoManualRenovacao(limpar = false, forcar = false) {
+        if (renovacaoCriacaoManualState.pendente && !forcar) return;
+        const backdrop = document.getElementById('renovacao-criacao-manual-backdrop');
+        if (backdrop) backdrop.hidden = true;
+        if (limpar) document.getElementById('renovacao-criacao-manual-form')?.reset();
+        renovacaoCriacaoManualState = { loja: '', pendente: false };
+        setCriacaoManualPendenteRenovacao(false);
+        const trigger = renovacaoCriacaoManualTrigger;
+        renovacaoCriacaoManualTrigger = null;
+        if (trigger && typeof trigger.focus === 'function') trigger.focus();
+    }
+
+    function fecharDialogCriacaoManualAoClicarFora(event) {
+        if (event?.target === event?.currentTarget) fecharDialogCriacaoManualRenovacao();
+    }
+
+    function restaurarSelecoesAposCriacaoManualRenovacao(origemCampanhaId, origemSyncId, novaCampanha) {
+        const novaId = String(novaCampanha?.id || '').trim();
+        const selectCampanha = document.getElementById('renovacao-campanha');
+        const selectOrigem = document.getElementById('renovacao-sync-origem');
+        const selectDestino = document.getElementById('renovacao-campanha-destino');
+        if (origemCampanhaId && campanhasRenovacao.some((item) => String(item.id || '') === String(origemCampanhaId))) {
+            selectCampanha.value = origemCampanhaId;
+            selecionarCampanhaRenovacao();
+        }
+        if (origemSyncId && campanhasRenovacao.some((item) => String(item.id || '') === String(origemSyncId))) {
+            selectOrigem.value = origemSyncId;
+        }
+        atualizarCampanhasDestinoRenovacao();
+        if (!novaId || !selectDestino) return;
+        if (!campanhasRenovacao.some((item) => String(item.id || '') === novaId)) {
+            const novaNormalizada = {
+                ...novaCampanha,
+                id: novaId,
+                name: novaCampanha.nome || novaCampanha.name || novaId,
+                promotion_type: novaCampanha.promotion_type || 'SELLER_CAMPAIGN'
+            };
+            campanhasRenovacao.push(novaNormalizada);
+            for (const select of [selectCampanha, selectOrigem, selectDestino]) {
+                if (!select || Array.from(select.options || []).some((option) => String(option.value || '') === novaId)) continue;
+                const option = document.createElement('option');
+                option.value = novaId;
+                option.textContent = rotuloOpcaoCampanhaRenovacao(novaNormalizada);
+                select.appendChild(option);
+            }
+            renderizarCampanhasRenovacao(campanhasRenovacao);
+        }
+        selectDestino.value = novaId;
+    }
+
+    async function criarPromocaoManualRenovacao(event) {
+        event?.preventDefault();
+        if (renovacaoCriacaoManualState.pendente) return;
+        const lojaAtualAntesDoEnvio = document.getElementById('renovacao-loja')?.value || '';
+        const loja = renovacaoCriacaoManualState.loja || lojaAtualAntesDoEnvio;
+        const nomeInput = document.getElementById('renovacao-criacao-manual-nome');
+        const inicioInput = document.getElementById('renovacao-criacao-manual-inicio');
+        const fimInput = document.getElementById('renovacao-criacao-manual-fim');
+        const nome = nomeInput?.value.trim() || '';
+        const inicio = inicioInput?.value || '';
+        const fim = fimInput?.value || '';
+        if (renovacaoCriacaoManualState.loja && lojaAtualAntesDoEnvio !== renovacaoCriacaoManualState.loja) {
+            setRenovacaoApiStatus('A loja selecionada mudou. Feche e abra novamente a criação da promoção.', 'error');
+            return;
+        }
+        const erro = validarDadosPromocaoManualRenovacao(loja, nome, inicio, fim);
+        if (erro) {
+            setRenovacaoApiStatus(erro, 'error');
+            if (!nome) nomeInput?.focus();
+            else if (!inicio || parseDataManualRenovacao(inicio) < new Date(new Date().setHours(0, 0, 0, 0))) inicioInput?.focus();
+            else fimInput?.focus();
+            return;
+        }
+        if (!confirm(`Criar a promoção vazia "${nome}" no Mercado Livre, de ${formatarDataCurta(inicio)} até ${formatarDataCurta(fim)}?`)) return;
+
+        const botao = document.getElementById('btn-criar-promocao-manual-renovacao');
+        const origemCampanhaId = document.getElementById('renovacao-campanha')?.value || '';
+        const origemSyncId = document.getElementById('renovacao-sync-origem')?.value || origemCampanhaId;
+        setCriacaoManualPendenteRenovacao(true);
+        botao.textContent = 'Criando promoção...';
+        setRenovacaoApiStatus('Criando promoção vazia no Mercado Livre...', 'info');
+        try {
+            const response = await fetch('/api/renovacao/campanha', {
+                method: 'POST',
+                headers: { ...obterAuthHeaders(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ loja, nome, start_date: inicio, finish_date: fim })
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(result.detail || 'Erro ao criar promoção no Mercado Livre.');
+            const novaCampanha = result.nova_campanha || result.campaign || result;
+            const novaId = String(novaCampanha.id || result.id || result.campaign_id || result.promotion_id || '').trim();
+            if (!novaId) throw new Error('A promoção foi criada, mas o Mercado Livre não retornou o ID. Atualize as campanhas para conferir.');
+            const lojaAtualDepoisDoEnvio = document.getElementById('renovacao-loja')?.value || '';
+            fecharDialogCriacaoManualRenovacao(true, true);
+            if (lojaAtualDepoisDoEnvio !== loja) {
+                setRenovacaoApiStatus(`Promoção "${novaCampanha.nome || novaCampanha.name || nome}" criada na loja ${loja}. Volte a essa loja e atualize as campanhas para conferir.`, 'ok');
+                return;
+            }
+            await carregarCampanhasRenovacao();
+            restaurarSelecoesAposCriacaoManualRenovacao(origemCampanhaId, origemSyncId, { ...novaCampanha, id: novaId, nome: novaCampanha.nome || nome });
+            setRenovacaoApiStatus(`Promoção "${novaCampanha.nome || novaCampanha.name || nome}" criada com sucesso e selecionada como destino.`, 'ok');
+        } catch (error) {
+            setRenovacaoApiStatus(error.message || 'Erro ao criar promoção no Mercado Livre.', 'error');
+        } finally {
+            setCriacaoManualPendenteRenovacao(false);
+            botao.textContent = 'Criar no Mercado Livre';
+        }
     }
 
     async function carregarLojasRenovacao() {

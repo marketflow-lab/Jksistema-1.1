@@ -3,11 +3,13 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
+const { validateLocalAppManifestAtRoot } = require('./local-app-manifest');
 
 const appDir = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(appDir, '..');
 const manifestPath = path.join(appDir, 'installer-required-resources.json');
 const packageJsonPath = path.join(appDir, 'package.json');
+const rootPackageJsonPath = path.join(repoRoot, 'package.json');
 const runtimeVersionsPath = path.join(repoRoot, 'runtime-versions.json');
 
 const args = process.argv.slice(2);
@@ -610,6 +612,17 @@ function validatePackageConfig(manifest, failures) {
   const build = pkg.build || {};
   const resources = Array.isArray(build.extraResources) ? build.extraResources.map(normalizeResourceEntry) : [];
 
+  if (toPosix(build.afterPack) !== 'scripts/after-pack-local-app-manifest.js') {
+    failures.push('Hook afterPack do local-app-manifest ausente ou divergente');
+  }
+  for (const requiredFile of [
+    path.join(appDir, 'scripts', 'after-pack-local-app-manifest.js'),
+    path.join(appDir, 'scripts', 'local-app-manifest.js'),
+    path.join(appDir, 'main', 'modules', 'backend-runtime-materializer.js'),
+  ]) {
+    if (!fileExists(requiredFile)) failures.push(`Materializacao segura ausente: ${path.relative(appDir, requiredFile)}`);
+  }
+
   for (const expected of manifest.requiredExtraResources || []) {
     const expectedNorm = normalizeResourceEntry(expected);
     const ok = resources.some((entry) => entry.from === expectedNorm.from && entry.to === expectedNorm.to);
@@ -756,11 +769,36 @@ function validatePackageConfig(manifest, failures) {
   }
 }
 
+function validateReleaseVersions(failures) {
+  const electronVersion = String(readJson(packageJsonPath).version || '').trim();
+  const rootVersion = fileExists(rootPackageJsonPath)
+    ? String(readJson(rootPackageJsonPath).version || '').trim()
+    : '';
+  if (!electronVersion || rootVersion !== electronVersion) {
+    failures.push(
+      `Versao da release divergente: electron_app=${electronVersion || 'ausente'}, raiz=${rootVersion || 'ausente'}`
+    );
+  }
+  if (!packagedRoot) return;
+  const packagedPackage = path.join(packagedRoot, 'local_app', 'package.json');
+  if (!fileExists(packagedPackage)) {
+    failures.push('package.json gerenciado ausente em local_app');
+    return;
+  }
+  const packagedVersion = String(readJson(packagedPackage).version || '').trim();
+  if (packagedVersion !== electronVersion) {
+    failures.push(
+      `Versao do runtime local_app divergente: esperado ${electronVersion}, encontrado ${packagedVersion || 'ausente'}`
+    );
+  }
+}
+
 function validateRuntimeCopyGuards(manifest, failures) {
   const runtimeGuardSources = [
     path.join(appDir, 'main.js'),
     path.join(repoRoot, 'main.js'),
     path.join(appDir, 'main', 'modules', 'backend.js'),
+    path.join(appDir, 'main', 'modules', 'backend-runtime-materializer.js'),
   ].filter((filePath) => {
     try {
       return fs.statSync(filePath).isFile();
@@ -775,10 +813,24 @@ function validateRuntimeCopyGuards(manifest, failures) {
   }
 
   for (const entry of manifest.requiredRuntimeSkipEntries || []) {
+    if (entry === 'electron_app') {
+      const materializerPath = path.join(appDir, 'main', 'modules', 'backend-runtime-materializer.js');
+      const generatorPath = path.join(appDir, 'scripts', 'local-app-manifest.js');
+      const manifestDriven = fileExists(materializerPath)
+        && fileExists(generatorPath)
+        && fs.readFileSync(materializerPath, 'utf8').includes('manifestInfo.managedDirectories')
+        && fs.readFileSync(generatorPath, 'utf8').includes('managed_directories');
+      if (!manifestDriven) {
+        failures.push('electron_app so pode ser atualizado por manifesto exato, nunca por overlay recursivo');
+      }
+      continue;
+    }
     const needle = `lower === '${entry}'`;
     const present = runtimeGuardSources.some((sourcePath) => {
       const source = fs.readFileSync(sourcePath, 'utf8');
-      return source.includes(needle);
+      return source.includes(needle)
+        || source.includes(`'${entry}',`)
+        || source.includes(`'${entry}'\n`);
     });
     if (!present) {
       failures.push(`Protecao runtime ausente contra sobrescrita de dados locais: ${entry}`);
@@ -936,6 +988,12 @@ function validatePackagedOutput(manifest, failures) {
 
   validateNoServiceAccountJson(packagedRoot, packagedRoot, failures, 'no pacote');
 
+  const expectedVersion = String(readJson(packageJsonPath).version || '').trim();
+  failures.push(...validateLocalAppManifestAtRoot(
+    path.join(packagedRoot, 'local_app'),
+    expectedVersion,
+  ));
+
   const asarPath = path.join(packagedRoot, 'app.asar');
   if (fileExists(asarPath)) {
     try {
@@ -955,6 +1013,7 @@ function main() {
   const failures = [];
 
   failIfMissingSource(manifest, failures);
+  validateReleaseVersions(failures);
   validatePackageConfig(manifest, failures);
   validateRuntimeCopyGuards(manifest, failures);
   validateContextBundle(failures);

@@ -38,6 +38,7 @@ from bs4 import BeautifulSoup
 from fastapi import Depends, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
+from backend.services.codex_turn_context import EVIDENCE_ENVELOPE_V2, normalize_evidence_envelope
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.vendas_sync_progress import _corrigir_texto_mojibake
 
@@ -540,8 +541,58 @@ def _ml_pos_venda_montar_contexto_pipeline(client_id: str, loja: str, cfg: dict,
     contexto["decisao_automacao"] = decisao
     _ml_pos_venda_pipeline_marcar(contexto, 9, "ok" if decisao.get("pode_responder_automaticamente") else "humano", "; ".join(decisao.get("motivos_humano") or []) or "auto permitido")
 
-    contexto["memoria_sku"] = _ml_pos_venda_memoria_bloco_prompt(client_id, conversa)
+    # Dados variaveis de estoque, pedido e atendimento pertencem ao envelope da rodada,
+    # nunca a memoria duravel do produto.
+    contexto["memoria_sku"] = ""
+    contexto["durable_memory_policy"] = "stable_reference_only"
     contexto["perguntas_anteriores_anuncio"] = _ml_pos_venda_perguntas_anuncio_chat(conversa)
+    evidence_records = []
+    evidence_sources = []
+    for field, source in (
+        ("mensagem", "mercado_livre_messages"),
+        ("pedido", "mercado_livre_order"),
+        ("anuncios", "mercado_livre_listing"),
+        ("envio", "mercado_livre_shipping"),
+        ("pagamento", "mercado_livre_payment"),
+        ("nota_fiscal", "local_invoice_index"),
+        ("reclamacao_mediacao", "mercado_livre_claim"),
+    ):
+        value = contexto.get(field)
+        if value not in (None, "", [], {}):
+            evidence_records.append({
+                "field": field,
+                "value": value,
+                "store": loja,
+                "source": source,
+                "authority": "confirmed",
+            })
+            evidence_sources.append(source)
+    gaps = []
+    for field in ("pack_id", "order_id", "buyer_id"):
+        if not str(contexto.get(field) or "").strip():
+            gaps.append(field)
+    if not contexto.get("mensagem"):
+        gaps.append("mensagem")
+    if not contexto.get("pedido") or not str((contexto.get("pedido") or {}).get("id") or "").strip():
+        gaps.append("pedido")
+    evidence_sufficient = bool(evidence_records and not gaps)
+    contexto["evidence_envelope"] = normalize_evidence_envelope({
+        "schema_version": EVIDENCE_ENVELOPE_V2,
+        "status": "completed" if evidence_sufficient else ("partial" if evidence_records else "missing"),
+        "records": evidence_records,
+        "sources": evidence_sources,
+        "gaps": gaps,
+        "confidence": "high" if evidence_sufficient else ("medium" if evidence_records else "unknown"),
+        "evidence_sufficient": evidence_sufficient,
+        "coverage_complete": evidence_sufficient,
+        "scope": {
+            "task_type": "post_sale",
+            "store": loja,
+            "pack_id": contexto.get("pack_id") or "",
+            "order_id": contexto.get("order_id") or "",
+            "buyer_id": contexto.get("buyer_id") or "",
+        },
+    }).to_dict()
     _ml_pos_venda_pipeline_marcar(contexto, 11, "ok", "contexto estruturado montado")
     return contexto, cfg
 

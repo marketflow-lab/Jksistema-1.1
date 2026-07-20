@@ -30,6 +30,7 @@ import requests
 from fastapi import Header, HTTPException, Request
 from backend.schemas import IAChatAttachment, IAChatRequest
 from backend.services.whatsapp import formatting as whatsapp_formatting
+from backend.services.whatsapp import config_store as whatsapp_config_store
 from backend.services.whatsapp import gateway as whatsapp_gateway
 from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
@@ -72,12 +73,64 @@ WHATSAPP_MAX_PARTS = whatsapp_formatting.WHATSAPP_MAX_PARTS
 
 
 def _reload_bound_session(config: dict[str, Any], message: dict[str, Any]) -> dict[str, Any]:
-    username = str(message.get("username") or config.get("username") or "").strip().lower()
-    client_id = str(message.get("client_id") or config.get("client_id") or "").strip()
+    configured_machine = str(config.get("machine_id") or "").strip()
+    message_machine = str(message.get("machine_id") or "").strip()
+    subject_id = str(message.get("subject_id") or "").strip()
+    username = str(message.get("username") or "").strip().lower()
+    client_id = str(message.get("client_id") or "").strip()
+    if not configured_machine or message_machine != configured_machine:
+        raise RuntimeError("binding_machine_mismatch")
+    if not subject_id:
+        raise RuntimeError("binding_subject_missing")
     if not username or not client_id:
         raise RuntimeError("binding_identity_missing")
-    permissions = admin_usuarios_common._carregar_permissoes_usuario(username, client_id)
-    return {"username": username, "client_id": client_id, "permissions": permissions, "is_full": permissions.get("full") is True}
+    permissions = dict(admin_usuarios_common._carregar_permissoes_usuario(username, client_id) or {})
+    # Never trust this capability from persisted user permissions.  It exists
+    # only on the in-memory session reconstructed from a claimed, local-machine
+    # WhatsApp binding and grants exactly one read-only tool.
+    permissions.pop("context_hub_read_full", None)
+    permissions["context_hub_read_full"] = True
+    return {
+        "username": username,
+        "client_id": client_id,
+        "permissions": permissions,
+        "is_full": permissions.get("full") is True,
+        "bound_session": True,
+        "binding_subject_id": subject_id,
+        "machine_id": configured_machine,
+    }
+
+
+def _reload_active_bound_session(config: dict[str, Any], pending: dict[str, Any]) -> dict[str, Any]:
+    """Revalidate the local and gateway binding before privileged Hub reads."""
+
+    live_config = whatsapp_config_store._load_config()
+    client_id = str(pending.get("client_id") or "").strip()
+    if not whatsapp_settings.context_hub_enabled_for_client(live_config, client_id):
+        raise RuntimeError("context_hub_disabled_for_tenant")
+    expected_machine = str(pending.get("binding_machine_id") or config.get("machine_id") or "").strip()
+    live_machine = str(live_config.get("machine_id") or "").strip()
+    subject_id = str(pending.get("subject_id") or "").strip()
+    username = str(pending.get("username") or "").strip().lower()
+    if not expected_machine or live_machine != expected_machine or live_config.get("enabled") is not True:
+        raise RuntimeError("context_hub_binding_inactive_local")
+    status = whatsapp_gateway.gateway_json(live_config, "GET", "/bridge/status", timeout=12)
+    if status.get("success") is False or status.get("worker") is False:
+        raise RuntimeError("context_hub_binding_status_unavailable")
+    active = any(
+        isinstance(item, dict)
+        and str(item.get("machine_id") or "").strip() == expected_machine
+        and str(item.get("subject_id") or "").strip() == subject_id
+        and str(item.get("username") or "").strip().lower() == username
+        and str(item.get("client_id") or "").strip() == client_id
+        for item in status.get("bindings") or []
+    )
+    if not active:
+        raise RuntimeError("context_hub_binding_revoked")
+    return _reload_bound_session(live_config, {
+        "machine_id": expected_machine, "subject_id": subject_id,
+        "username": username, "client_id": client_id,
+    })
 
 def _pending_task_for_message(state: dict[str, Any], message_id: str) -> Optional[dict[str, Any]]:
     pending = state.get("pending_messages") if isinstance(state.get("pending_messages"), dict) else {}
@@ -664,10 +717,17 @@ def _resume_dual_pending_with_message(
     message_id: str,
     pending: dict[str, Any],
     user_message: str,
+    request_context: Optional[dict[str, Any]] = None,
 ) -> int:
     kind = str(pending.get("kind") or "")
     if kind == "dual_function_manager":
         original = str(pending.get("job_prompt") or pending.get("request_text") or "").strip()
+        anchors = dict(pending.get("conversation_anchors") or {})
+        turns = [item for item in list(anchors.get("recent_turns") or []) if isinstance(item, dict)][-5:]
+        turns.append({"role": "user", "text": str(user_message or "").strip()[:900]})
+        anchors["recent_turns"] = turns
+        if isinstance(request_context, dict):
+            anchors["resolved_context"] = dict(request_context)
         pending.update(
             {
                 "job_prompt": (original + "\n\nInformacao adicional do usuario: " + str(user_message or "").strip())[-12000:],
@@ -675,6 +735,14 @@ def _resume_dual_pending_with_message(
                 "job_state": "manager_queued",
                 "manager_next_retry_at_epoch": 0,
                 "manager_data_requests": [],
+                "manager_evidence": {},
+                "data_selection_plan": {},
+                "data_selection_raw_plan": {},
+                "data_selection_gap_key": "",
+                "conversation_anchors": anchors,
+                "data_selection_user_replan_count": max(
+                    0, int(pending.get("data_selection_user_replan_count") or 0)
+                ) + 1,
                 "manager_revision": max(0, int(pending.get("manager_revision") or 0)) + 1,
                 "pending_questions": [],
                 "last_user_resume_at": _now(),

@@ -120,7 +120,11 @@ assert(bridgeSettings.includes('WHATSAPP_JOB_DEADLINE_DEFAULT = 120'), 'standard
 assert(service.includes('WHATSAPP_ML_RESEARCH_DEADLINE_SECONDS = 5 * 60'), 'Mercado Livre research deadline changed');
 assert(service.includes('WHATSAPP_REPORT_DEADLINE_SECONDS = 10 * 60'), 'report deadline changed');
 assert(service.includes('def _normalize_tool_result_contract('), 'tool result contract normalization is missing');
-assert(service.includes('def _deterministic_direct_query_plan('), 'deterministic direct router is missing');
+assert(!service.includes('def _deterministic_direct_query_plan('), 'obsolete deterministic direct router is still present');
+assert(bridgeSettings.includes('WHATSAPP_RESPONSE_PROVIDER_POLICY_DEFAULT = "codex_only"'), 'Codex-only response policy is not the default');
+assert(ui.includes('response_provider_policy:'), 'response provider policy is not preserved by the UI');
+assert(ui.includes('data_selection_worker_count:'), 'data-selection capacity is not saved by the UI');
+assert(!ui.includes('function_manager_worker_count:'), 'legacy function-manager settings are still written by the UI');
 assert(service.includes('def _local_web_fallback_context('), 'local web fallback circuit breaker is missing');
 assert(bridgeStore.includes('PRAGMA journal_mode=WAL'), 'SQLite bridge state is not configured for WAL');
 assert(bridgeStore.includes('CREATE TABLE IF NOT EXISTS assistant_jobs'), 'persistent AssistantJob table is missing');

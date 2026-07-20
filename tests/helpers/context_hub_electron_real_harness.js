@@ -57,6 +57,7 @@ function closeServer(server) {
   return new Promise(resolve => {
     if (!server || !server.listening) return resolve();
     server.close(() => resolve());
+    if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
   });
 }
 

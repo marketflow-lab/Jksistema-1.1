@@ -1783,15 +1783,16 @@ def _deduplicate_entities(
 
 
 def _source_version(base: Path) -> str:
-    package = base / "package.json"
-    if package.is_file():
+    for candidate in (base / "package.json", base / "runtime-manifest.json"):
+        if not candidate.is_file():
+            continue
         try:
-            payload = json.loads(_read_text(package))
+            payload = json.loads(_read_text(candidate))
             version = str(payload.get("version") or "").strip() if isinstance(payload, dict) else ""
-            if version:
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,119}", version):
                 return version
         except (OSError, json.JSONDecodeError):
-            pass
+            continue
     return "unknown"
 
 

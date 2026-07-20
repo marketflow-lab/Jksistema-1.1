@@ -47,6 +47,7 @@ from backend.services.cadastro_common import *
 from backend.services.cadastro_custos import *
 from backend.services.cadastro_fotos import *
 from backend.services.cadastro_sync_ncm import *
+from backend.services.integracoes import renovar_token_bling_loja
 
 
 def configure_cadastro_listagem_runtime(runtime_module=None):
@@ -290,19 +291,9 @@ async def listar_produtos_cadastro(
                                     ncm_resp, status_ncm = _bling_obter_ncm_produto(access_token_ncm, pid)
                                     if status_ncm == 401 and refresh_ncm:
                                         try:
-                                            novos = _bling_refresh_token(cid_ncm, sec_ncm, refresh_ncm)
-                                            access_token_ncm = novos.get("access_token") or access_token_ncm
-                                            refresh_ncm = novos.get("refresh_token", refresh_ncm)
-                                            bling_por_loja[nome_loja]["access_token"] = access_token_ncm
-                                            bling_por_loja[nome_loja]["refresh_token"] = refresh_ncm
-                                            atualizar_api_loja(client_id, nome_loja, "bling", {
-                                                "id": cid_ncm,
-                                                "secret": sec_ncm,
-                                                "access_token": access_token_ncm,
-                                                "refresh_token": refresh_ncm,
-                                                "connected": True,
-                                                "updated_at": str(time.time())
-                                            })
+                                            renovado = renovar_token_bling_loja(client_id, nome_loja, cfg_loja)
+                                            bling_por_loja[nome_loja] = dict(renovado)
+                                            access_token_ncm = renovado.get("access_token") or access_token_ncm
                                             ncm_resp, status_ncm = _bling_obter_ncm_produto(access_token_ncm, pid)
                                         except Exception:
                                             status_ncm = 500

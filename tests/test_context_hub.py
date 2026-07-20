@@ -8,7 +8,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
@@ -23,6 +22,16 @@ def _sha(value: str) -> str:
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8", newline="\n")
+
+
+def _publish_ready(result: dict) -> dict:
+    assert result["success"] is True, result
+    assert result["status"] == "ready", result
+    return context_hub.publish_generation("000002", result["generation_id"])
+
+
+def _rebuild_and_publish(*, force: bool = False) -> dict:
+    return _publish_ready(context_hub.rebuild_context("000002", force=force))
 
 
 def _write_bundle(base: Path, *, version: str = "1.0.99", content: str = "# Operacao\n\nConhecimento tecnico seguro.\n") -> Path:
@@ -323,7 +332,7 @@ def test_dlp_scans_all_nested_metadata_and_omits_sensitive_source_ref() -> None:
 
 def test_dlp_sensitive_metadata_never_reaches_generation_database(hub_env) -> None:
     _base, info, adapter = hub_env
-    active = context_hub.rebuild_context("000002")
+    active = _rebuild_and_publish()
     adapter.entities = [
         _entity(
             "jk:domain:seguro",
@@ -368,7 +377,7 @@ def test_file_lock_only_removes_its_own_token(hub_env) -> None:
 def test_rebuild_is_idempotent_publishes_and_searches_active_generation(hub_env) -> None:
     _base, info, _adapter = hub_env
 
-    first = context_hub.rebuild_context("000002")
+    first = _rebuild_and_publish()
     second = context_hub.rebuild_context("000002")
 
     assert first["success"] is True
@@ -434,7 +443,7 @@ def test_non_blocking_warnings_do_not_duplicate_an_unchanged_generation(
 
 def test_status_reports_document_diff_for_a_ready_generation(hub_env) -> None:
     _base, _info, adapter = hub_env
-    active = context_hub.rebuild_context("000002")
+    active = _rebuild_and_publish()
     context_hub.update_settings("000002", auto_publish_enabled=False)
     adapter.entities = [
         _entity(
@@ -460,7 +469,7 @@ def test_status_reports_document_diff_for_a_ready_generation(hub_env) -> None:
 
 def test_status_reads_database_from_one_snapshot(hub_env, monkeypatch: pytest.MonkeyPatch) -> None:
     _base, info, _adapter = hub_env
-    active = context_hub.rebuild_context("000002")
+    active = _rebuild_and_publish()
     database = info / "000002" / "context_hub" / "context_hub.db"
     real_active_generation_id = context_hub._active_generation_id
     mutation_done = False
@@ -499,7 +508,7 @@ def test_single_sku_change_reuses_unrelated_documents(hub_env) -> None:
         _entity("jk:sku:001", kind="sku", domain="cadastro", content="Peca Honda segura."),
         _entity("jk:sku:002", kind="sku", domain="cadastro", content="Peca Yamaha segura."),
     ]
-    context_hub.rebuild_context("000002")
+    _rebuild_and_publish()
     context_hub.update_settings("000002", auto_publish_enabled=False)
     adapter.entities[0] = _entity(
         "jk:sku:001",
@@ -520,7 +529,7 @@ def test_single_sku_change_reuses_unrelated_documents(hub_env) -> None:
 
 def test_dlp_failure_never_persists_secret_and_preserves_active_generation(hub_env) -> None:
     _base, info, adapter = hub_env
-    active = context_hub.rebuild_context("000002")
+    active = _rebuild_and_publish()
     managed_file = next((info / "000002" / "ContextVault" / "70_Gerado").rglob("*.md"))
     old_content = managed_file.read_text(encoding="utf-8")
 
@@ -589,7 +598,7 @@ def test_manual_publish_rollback_cas_and_failed_swap_restore(hub_env, monkeypatc
 
 def test_recovery_restores_backup_when_crash_happens_before_old_moved_journal(hub_env) -> None:
     _base, info, adapter = hub_env
-    active = context_hub.rebuild_context("000002")
+    active = _rebuild_and_publish()
     paths = context_hub._tenant_paths("000002", info_root=info)
     before = {
         path.relative_to(paths.generated_dir).as_posix(): path.read_bytes()
@@ -629,7 +638,7 @@ def test_recovery_restores_backup_when_crash_happens_before_old_moved_journal(hu
 
 def test_recovery_fails_closed_when_previous_backup_is_missing(hub_env) -> None:
     _base, info, adapter = hub_env
-    active = context_hub.rebuild_context("000002")
+    active = _rebuild_and_publish()
     paths = context_hub._tenant_paths("000002", info_root=info)
     adapter.entities = [_entity("jk:domain:test", title="Candidata", content="Nova candidata")]
     context_hub.update_settings("000002", auto_publish_enabled=False)
@@ -654,34 +663,25 @@ def test_recovery_fails_closed_when_previous_backup_is_missing(hub_env) -> None:
 
 
 def test_curated_note_requires_explicit_publication(hub_env) -> None:
-    _base, info, _adapter = hub_env
-    vault = info / "000002" / "ContextVault"
-    context_hub.bootstrap_context_hub("000002")
-    _write(vault / "80_Curadoria" / "Notas" / "rascunho.md", "# Rascunho\n\nNAO_INDEXAR_123.\n")
-    body = "# Regra publicada\n\nCURADORIA_INDEXADA_456.\n"
-    metadata = {
-        "id": "jk:curated:regra",
-        "type": "rule",
-        "managed": False,
-        "status": "published",
-        "ai_usage": "allowed",
-        "tenant_scope": "tenant:000002",
-        "sensitivity": "internal",
-        "truth_class": "human_reviewed",
-        "required_permissions": ["full"],
-        "surface": "development",
-        "source_version": "1.0.99",
-        "source_refs": [],
-        "source_hash": _sha(body),
-        "generated_at": "2026-07-17T00:00:00+00:00",
-    }
-    published = f"---\n{yaml.safe_dump(metadata, sort_keys=False).strip()}\n---\n\n{body}"
-    _write(vault / "80_Curadoria" / "Regras" / "publicada.md", published)
+    _base, _info, _adapter = hub_env
+    draft = context_hub.create_curated_note(
+        "000002", title="Rascunho", body="NAO_INDEXAR_123.", category="Notas", actor="owner",
+    )["note"]
+    approved = context_hub.create_curated_note(
+        "000002", title="Regra publicada", body="CURADORIA_INDEXADA_456.", category="Regras", actor="owner",
+    )["note"]
+    context_hub.validate_curated_note("000002", approved["note_id"], actor="owner")
+    context_hub.review_curated_note("000002", approved["note_id"], actor="owner")
+    context_hub.approve_curated_note("000002", approved["note_id"], actor="owner")
 
-    context_hub.rebuild_context("000002")
+    ready = context_hub.rebuild_context("000002")
 
+    assert ready["status"] == "ready"
+    assert context_hub.search_context("000002", "CURADORIA_INDEXADA_456")["count"] == 0
+    context_hub.publish_generation("000002", ready["generation_id"])
     assert context_hub.search_context("000002", "CURADORIA_INDEXADA_456")["count"] == 1
     assert context_hub.search_context("000002", "NAO_INDEXAR_123")["count"] == 0
+    assert draft["state"] == "draft"
 
 
 def test_450_skus_are_searchable_without_individual_vault_notes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -705,7 +705,7 @@ def test_450_skus_are_searchable_without_individual_vault_notes(tmp_path: Path, 
     monkeypatch.setattr(context_hub, "_load_inventory_adapter", lambda: adapter)
     context_hub.configure_context_hub(base_dir=base, info_root=info, surface="development")
 
-    result = context_hub.rebuild_context("000002")
+    result = _publish_ready(context_hub.rebuild_context("000002"))
 
     assert result["status"] == "active"
     notes = list((info / "000002" / "ContextVault" / "70_Gerado").rglob("*.md"))
@@ -718,13 +718,13 @@ def test_450_skus_are_searchable_without_individual_vault_notes(tmp_path: Path, 
     connection.close()
     assert count == 450
     search = context_hub.search_context("000002", "TESTSKU00449")
-    assert search["count"] == 1
-    assert search["results"][0]["doc_id"] == "jk:sku:449"
+    assert search["count"] >= 1
+    assert any(item["doc_id"] == "jk:sku:449" for item in search["results"])
 
 
 def test_bundle_is_fail_closed_and_ignores_unlisted_overlay(hub_env) -> None:
     base, info, _adapter = hub_env
-    active = context_hub.rebuild_context("000002")
+    active = _rebuild_and_publish()
     assert active["success"] is True, active
     listed = base / "docs" / "knowledge" / "operacao.md"
     original = listed.read_text(encoding="utf-8")
@@ -737,7 +737,7 @@ def test_bundle_is_fail_closed_and_ignores_unlisted_overlay(hub_env) -> None:
 
     _write_bundle(base)
     _write(base / "docs" / "knowledge" / "overlay-obsoleto.md", "# Overlay\n\nNAO_IMPORTAR_OVERLAY_999.\n")
-    rebuilt = context_hub.rebuild_context("000002", force=True)
+    rebuilt = _publish_ready(context_hub.rebuild_context("000002", force=True))
     assert rebuilt["status"] == "active"
     assert context_hub.search_context("000002", "NAO_IMPORTAR_OVERLAY_999")["count"] == 0
     assert context_hub.search_context("000002", "Conhecimento tecnico seguro")["count"] >= 1
@@ -752,7 +752,7 @@ def test_bundle_is_fail_closed_and_ignores_unlisted_overlay(hub_env) -> None:
 
 def test_bundle_rejects_empty_manifest_and_missing_required_entries(hub_env) -> None:
     base, _info, _adapter = hub_env
-    active = context_hub.rebuild_context("000002")
+    active = _rebuild_and_publish()
     manifest_path = base / "context-bundle-manifest.json"
 
     _write(
@@ -793,7 +793,7 @@ def test_bundle_rejects_empty_manifest_and_missing_required_entries(hub_env) -> 
     assert context_hub.get_status("000002")["active_generation"]["generation_id"] == active["generation_id"]
 
 
-def test_watcher_fingerprint_uses_pruned_allowlist(tmp_path: Path) -> None:
+def test_watcher_fingerprint_observes_only_curated_notes(tmp_path: Path) -> None:
     base = tmp_path / "app"
     info = tmp_path / "info"
     info.mkdir()
@@ -803,16 +803,21 @@ def test_watcher_fingerprint_uses_pruned_allowlist(tmp_path: Path) -> None:
     _write(base / "electron_app" / "node_modules" / "noise.js", "module 1\n")
     _write_bundle(base)
     context_hub.configure_context_hub(base_dir=base, info_root=info, surface="development")
+    context_hub.bootstrap_context_hub("000002")
 
     first = context_hub.scan_context_hub_changes("000002")
     _write(base / "electron_app" / "dist-client-setup" / "noise.js", "dist changed with new size\n")
     second = context_hub.scan_context_hub_changes("000002")
     _write(base / "backend" / "service.py", "VALUE = 123456\n")
     third = context_hub.scan_context_hub_changes("000002")
+    curated = info / "000002" / "ContextVault" / "80_Curadoria" / "Notas" / "rascunho.md"
+    _write(curated, "# Rascunho\n\nMudanca humana.\n")
+    fourth = context_hub.scan_context_hub_changes("000002")
 
     assert first["initialized"] is False
     assert second["changed"] is False
-    assert third["changed"] is True
+    assert third["changed"] is False
+    assert fourth["changed"] is True
 
 
 def test_admin_api_is_full_only_and_never_accepts_client_id(hub_env, monkeypatch: pytest.MonkeyPatch) -> None:

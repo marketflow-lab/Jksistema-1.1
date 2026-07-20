@@ -283,7 +283,7 @@ class CodexAdvancedReportTest(unittest.TestCase):
             workbook = openpyxl.load_workbook(path, read_only=True)
             self.assertEqual(
                 workbook.sheetnames,
-                ["Resumo", "Ações", "Lojas", "Vendas_SKU", "Estoque", "Compras_Transito", "Importacao", "Fontes", "Avisos"],
+                ["Resumo", "Margens_MLB", "Historico_Margens", "Ações", "Lojas", "Vendas_SKU", "Estoque", "Compras_Transito", "Importacao", "Fontes", "Fontes_ML", "Avisos"],
             )
             self.assertEqual(workbook["Vendas_SKU"].max_row, 121)
             workbook.close()
@@ -509,6 +509,103 @@ class CodexAdvancedReportTest(unittest.TestCase):
         self.assertIsNone(item_b["valor_custo_estoque_loja"])
         self.assertEqual(result["resumo_estoque_parado"]["custos_cobertos"], 1)
         self.assertEqual(result["resumo_estoque_parado"]["capital_custo_conhecido"], 120)
+
+    def test_marketplace_margin_keeps_same_sku_separate_by_store_mlb_and_variation(self):
+        base = {
+            "financial_summary": {"gross_revenue_brl": 1000, "returns_brl": 0, "advertising_brl": 0},
+            "financial_coverage": {"minimum_required_pct": 95},
+            "store_summaries": [
+                {"store": "Loja A", "gross_revenue_brl": 500, "advertising_brl": 0},
+                {"store": "Loja B", "gross_revenue_brl": 500, "advertising_brl": 0},
+            ],
+            "sales_rows": [
+                {"store": "Loja A", "sku": "SKU-1", "unit_cost": 40, "tax_pct": 10},
+                {"store": "Loja B", "sku": "SKU-1", "unit_cost": 55, "tax_pct": 8},
+            ],
+            "inventory_rows": [],
+            "data_quality": {"warnings": [], "source_health": []},
+        }
+        snapshot = {
+            "status": "ok",
+            "collected_at": "2026-07-20T12:00:00-03:00",
+            "listing_rows": [
+                {"store": "Loja A", "item_id": "MLB1", "variation_id": "V1", "sku": "SKU-1", "price": 100, "sale_fee_amount": 12, "shipping_seller_cost": 8},
+                {"store": "Loja A", "item_id": "MLB2", "variation_id": "V2", "sku": "SKU-1", "price": 120, "sale_fee_amount": 14, "shipping_seller_cost": 9},
+                {"store": "Loja B", "item_id": "MLB1", "variation_id": "V9", "sku": "SKU-1", "price": 130, "sale_fee_amount": 16, "shipping_seller_cost": 10},
+            ],
+            "ledger_rows": [],
+        }
+
+        result = codex_reports_advanced.apply_marketplace_commercial(base, snapshot)
+
+        keys = {(row["store"], row["mlb"], row["variation_id"]) for row in result["listing_margin_rows"]}
+        self.assertEqual(keys, {("Loja A", "MLB1", "V1"), ("Loja A", "MLB2", "V2"), ("Loja B", "MLB1", "V9")})
+        self.assertEqual(result["listing_margin_rows"][0]["unit_cost_brl"], 40)
+        self.assertEqual(result["listing_margin_rows"][2]["unit_cost_brl"], 55)
+
+    def test_marketplace_free_shipping_without_confirmed_cost_remains_incomplete(self):
+        base = {
+            "financial_summary": {"gross_revenue_brl": 100, "returns_brl": 0},
+            "financial_coverage": {"minimum_required_pct": 95},
+            "store_summaries": [{"store": "Loja A", "gross_revenue_brl": 100, "advertising_brl": None}],
+            "sales_rows": [{"store": "Loja A", "sku": "A", "unit_cost": 20, "tax_pct": 10}],
+            "inventory_rows": [],
+            "data_quality": {"warnings": [], "source_health": []},
+        }
+        result = codex_reports_advanced.apply_marketplace_commercial(
+            base,
+            {"status": "partial", "listing_rows": [{"store": "Loja A", "item_id": "MLB1", "sku": "A", "price": 100, "sale_fee_amount": 12, "free_shipping": True}]},
+        )
+        row = result["listing_margin_rows"][0]
+        self.assertEqual(row["margin_status"], "unavailable")
+        self.assertIn("frete", row["missing_components"])
+        self.assertIsNone(row["unit_contribution_brl"])
+
+    def test_marketplace_financial_threshold_is_exactly_95_percent(self):
+        def build(gross_covered):
+            base = {
+                "financial_summary": {"gross_revenue_brl": 1000, "returns_brl": 0, "advertising_brl": 0},
+                "financial_coverage": {"minimum_required_pct": 95},
+                "store_summaries": [{"store": "Loja A", "gross_revenue_brl": 1000, "advertising_brl": 0}],
+                "sales_rows": [],
+                "inventory_rows": [],
+                "data_quality": {"warnings": [], "source_health": []},
+            }
+            ledger = {
+                "store": "Loja A", "order_id": str(gross_covered), "item_id": "MLB1", "sku": "A",
+                "quantity": gross_covered / 100, "unit_price": 100, "gross_amount": gross_covered,
+                "unit_cost": 20, "tax_pct": 10, "sale_fee_amount": 12,
+                "seller_shipping_cost": 0, "pack_item_count": 1,
+            }
+            return codex_reports_advanced.apply_marketplace_commercial(base, {"status": "ok", "listing_rows": [], "ledger_rows": [ledger]})
+
+        below = build(949.9)
+        accepted = build(950)
+
+        self.assertEqual(below["financial_coverage"]["complete_margin_by_revenue_pct"], 94.99)
+        self.assertFalse(below["financial_coverage"]["contribution_margin_valid"])
+        self.assertIsNone(below["financial_summary"]["contribution_profit_brl"])
+        self.assertEqual(accepted["financial_coverage"]["complete_margin_by_revenue_pct"], 95.0)
+        self.assertTrue(accepted["financial_coverage"]["contribution_margin_valid"])
+        self.assertIsNotNone(accepted["financial_summary"]["contribution_profit_brl"])
+
+    def test_multi_item_pack_shipping_is_never_silently_allocated(self):
+        base = {
+            "financial_summary": {"gross_revenue_brl": 200, "returns_brl": 0, "advertising_brl": 0},
+            "financial_coverage": {"minimum_required_pct": 95},
+            "store_summaries": [{"store": "Loja A", "gross_revenue_brl": 200, "advertising_brl": 0}],
+            "sales_rows": [], "inventory_rows": [], "data_quality": {"warnings": [], "source_health": []},
+        }
+        ledger = {
+            "store": "Loja A", "order_id": "1", "pack_id": "P1", "item_id": "MLB1", "sku": "A",
+            "quantity": 1, "unit_price": 200, "gross_amount": 200, "unit_cost": 50, "tax_pct": 10,
+            "sale_fee_amount": 20, "seller_shipping_cost": 15, "pack_item_count": 2,
+        }
+        result = codex_reports_advanced.apply_marketplace_commercial(base, {"status": "ok", "ledger_rows": [ledger]})
+        row = result["historical_margin_ledger"][0]
+        self.assertEqual(row["shipping_scope"], "pack_unallocated")
+        self.assertEqual(row["margin_status"], "unavailable")
+        self.assertIsNone(row["contribution_total_brl"])
 
 
 if __name__ == "__main__":

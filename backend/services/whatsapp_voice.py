@@ -321,7 +321,8 @@ class VoiceRuntime:
                     await asyncio.to_thread(self._hangup, openai_call_id, key)
                     if current is not None:
                         answer = await current
-                        await asyncio.to_thread(self._send_result_message, config, bridge, call, answer)
+                        if not state.pop("result_message_sent", False):
+                            await asyncio.to_thread(self._send_result_message, config, bridge, call, answer)
                     return
                 idle = time.time() - float(state.get("last_user_speech_at") or time.time())
                 if not current and not state["queue"] and idle >= silence_seconds and not silence_warned:
@@ -338,8 +339,10 @@ class VoiceRuntime:
                         answer = current.result()
                     except Exception as exc:
                         answer = f"Não consegui concluir esta consulta: {str(exc)[:240]}."
+                    result_message_sent = bool(state.pop("result_message_sent", False))
                     if state.get("deliver_by_message") is True:
-                        await asyncio.to_thread(self._send_result_message, config, bridge, call, answer)
+                        if not result_message_sent:
+                            await asyncio.to_thread(self._send_result_message, config, bridge, call, answer)
                     else:
                         await self._speak(websocket, answer)
                     current = None
@@ -355,7 +358,8 @@ class VoiceRuntime:
                     if current is not None:
                         state["deliver_by_message"] = True
                         answer = await current
-                        await asyncio.to_thread(self._send_result_message, config, bridge, call, answer)
+                        if not state.pop("result_message_sent", False):
+                            await asyncio.to_thread(self._send_result_message, config, bridge, call, answer)
                     return
                 event = json.loads(raw)
                 event_type = str(event.get("type") or "")
@@ -382,7 +386,8 @@ class VoiceRuntime:
                             await asyncio.to_thread(self._hangup, openai_call_id, key)
                             if current is not None:
                                 answer = await current
-                                await asyncio.to_thread(self._send_result_message, config, bridge, call, answer)
+                                if not state.pop("result_message_sent", False):
+                                    await asyncio.to_thread(self._send_result_message, config, bridge, call, answer)
                             return
                         if selected == "continue":
                             state["choice_requested"] = False
@@ -552,6 +557,18 @@ class VoiceRuntime:
         )
         answer = _safe_spoken_text(final_decision.get("reply_text") or worker_result.get("summary") or "Não consegui concluir a consulta.")
         existing = codex_console._codex_load_task(task_id) or latest
+        delivery = self._deliver_requested_listing(config, bridge, call, existing, transcript, answer)
+        if delivery.get("text_sent") is True:
+            state["result_message_sent"] = True
+            sent_images = int(delivery.get("images_sent") or 0)
+            if delivery.get("pictures_requested") is True and sent_images > 0:
+                answer = _safe_spoken_text(f"{answer} Enviei o link, os detalhes e {sent_images} foto(s) no seu WhatsApp.")
+            elif delivery.get("pictures_requested") is True:
+                answer = _safe_spoken_text(f"{answer} Enviei o link e os detalhes no seu WhatsApp, mas as fotos ficaram indisponiveis.")
+            else:
+                answer = _safe_spoken_text(f"{answer} Enviei os detalhes no seu WhatsApp.")
+        elif delivery.get("attempted") is True:
+            answer = _safe_spoken_text(f"{answer} Nao consegui enviar os detalhes no WhatsApp nesta tentativa.")
         metadata = dict(existing.get("channel_metadata") or {})
         metadata.update({
             "wa_id": phone,
@@ -596,6 +613,62 @@ class VoiceRuntime:
         return answer
 
     @staticmethod
+    def _deliver_requested_listing(
+        config: dict[str, Any],
+        bridge: Any,
+        call: dict[str, Any],
+        task: dict[str, Any],
+        transcript: str,
+        answer: str,
+    ) -> dict[str, Any]:
+        from backend.services.whatsapp import artifacts as whatsapp_artifacts
+        from backend.services.whatsapp import marketplace_listing_delivery
+
+        if not marketplace_listing_delivery.delivery_requested(transcript):
+            return {"attempted": False, "text_sent": False, "images_sent": 0}
+        subject_id = str(call.get("subject_id") or "").strip()
+        task_id = str(task.get("task_id") or "").strip()
+        call_id = str(call.get("id") or "").strip()
+        if not subject_id or not task_id or not call_id:
+            return {"attempted": True, "text_sent": False, "images_sent": 0}
+        bundle = task.get("whatsapp_listing_bundle") if isinstance(task.get("whatsapp_listing_bundle"), dict) else {}
+        delivery_text = marketplace_listing_delivery.format_listing_bundle(bundle, transcript) if bundle else ""
+        delivery_text = str(delivery_text or task.get("final_response") or answer or "").strip()[:3500]
+        fingerprint_seed = hashlib.sha256(f"{call_id}\n{task_id}".encode("utf-8")).hexdigest()[:48]
+        try:
+            text_result = bridge._post_proactive(
+                config,
+                {
+                    "subject_id": subject_id,
+                    "fingerprint": f"voice-task:{fingerprint_seed}",
+                    "event_type": "task_completed",
+                    "severity": "info",
+                    "text": delivery_text,
+                },
+            )
+        except Exception:
+            text_result = {"success": False, "status": "delivery_failed"}
+        text_sent = bool(isinstance(text_result, dict) and text_result.get("success") is True)
+        pictures_requested = marketplace_listing_delivery.pictures_requested(transcript)
+        image_results: list[dict[str, Any]] = []
+        if text_sent and pictures_requested and bundle:
+            image_results = whatsapp_artifacts._whatsapp_deliver_marketplace_listing_images_proactive(
+                config,
+                subject_id=subject_id,
+                listing_bundle=bundle,
+                request_text=transcript,
+                fingerprint_seed=fingerprint_seed,
+                max_images=3,
+            )
+        return {
+            "attempted": True,
+            "text_sent": text_sent,
+            "pictures_requested": pictures_requested,
+            "images_sent": sum(1 for item in image_results if item.get("success")),
+            "images_attempted": len(image_results),
+        }
+
+    @staticmethod
     def _progress_text(task: dict[str, Any]) -> str:
         text = unicodedata_key(f"{task.get('live_status') or ''} {task.get('wait_reason') or ''}")
         if "fila" in text or "queue" in text:
@@ -636,8 +709,8 @@ class VoiceRuntime:
             pass
 
     @staticmethod
-    def _send_result_message(config: dict[str, Any], bridge: Any, call: dict[str, Any], answer: str) -> None:
-        bridge._gateway_json(
+    def _send_result_message(config: dict[str, Any], bridge: Any, call: dict[str, Any], answer: str) -> dict[str, Any]:
+        return bridge._gateway_json(
             config,
             "POST",
             "/bridge/messages/send",

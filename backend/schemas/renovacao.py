@@ -12,6 +12,13 @@ class RenovacaoCampanhaCriarRequest(BaseModel):
     promotion_type: str | None = None
 
 
+class RenovacaoCampanhaManualCriarRequest(BaseModel):
+    loja: str
+    nome: str
+    start_date: str
+    finish_date: str
+
+
 class RenovacaoCampanhaSincronizarRequest(BaseModel):
     loja: str
     campanha_origem_id: str
@@ -45,6 +52,7 @@ class RenovacaoAgendamentoRequest(BaseModel):
 
 __all__ = [
     "RenovacaoCampanhaCriarRequest",
+    "RenovacaoCampanhaManualCriarRequest",
     "RenovacaoCampanhaSincronizarRequest",
     "RenovacaoCampanhaPeriodoRequest",
     "RenovacaoCampanhaExcluirRequest",

@@ -11,6 +11,18 @@ const localPathsSource = fs.readFileSync(
   path.join(repoRoot, 'electron_app', 'main', 'modules', 'local-app-paths.js'),
   'utf8'
 );
+const materializerSource = fs.readFileSync(
+  path.join(repoRoot, 'electron_app', 'main', 'modules', 'backend-runtime-materializer.js'),
+  'utf8'
+);
+const electronPackage = JSON.parse(fs.readFileSync(
+  path.join(repoRoot, 'electron_app', 'package.json'),
+  'utf8'
+));
+const afterPackSource = fs.readFileSync(
+  path.join(repoRoot, 'electron_app', 'scripts', 'after-pack-local-app-manifest.js'),
+  'utf8'
+);
 
 assert(
   backendSource.includes("spawn('cmd.exe', ['/d', '/c', launcherPath],"),
@@ -35,6 +47,32 @@ assert(
 assert(
   backendSource.includes('function getPackagedLocalBackendSourceDir()'),
   'backend sync must have an explicit packaged local_app source'
+);
+assert(
+  !backendSource.includes('function copyDirectoryRecursive(')
+    && backendSource.includes('inspectBundledLocalBackendMaterialization()')
+    && backendSource.includes('finalizeMaterialization(pendingMaterialization)')
+    && backendSource.includes('rollbackMaterialization(pendingMaterialization)'),
+  'backend sync must use the manifest transaction and health-gated finalize/rollback path'
+);
+assert(
+  materializerSource.includes("const JOURNAL_RELATIVE_PATH = path.join('info', 'runtime-materialization-journal.json')")
+    && materializerSource.includes('fs.openSync(lockPath, \'wx\')')
+    && materializerSource.includes('WHISPER_MODEL_MANIFEST')
+    && materializerSource.includes('inspectImmutableRuntimePayloads')
+    && materializerSource.includes('ensureImmutableRuntimePayloads'),
+  'runtime materializer must keep application and immutable Whisper payload transactions explicit'
+);
+assert.strictEqual(
+  electronPackage.build.afterPack,
+  'scripts/after-pack-local-app-manifest.js',
+  'electron-builder must generate local-app-manifest from the final packaged tree'
+);
+assert(
+  afterPackSource.includes('sanitizeLocalAppStaging(localAppDir)')
+    && afterPackSource.includes("[verifier, '--packaged', resourcesDir]")
+    && afterPackSource.includes("PYTHONDONTWRITEBYTECODE: '1'"),
+  'afterPack must sanitize only staging and run the packaged gate before artifact promotion'
 );
 assert(
   backendSource.includes('await stopTrackedProcessTree(child.pid)'),

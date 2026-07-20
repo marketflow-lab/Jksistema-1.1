@@ -68,6 +68,54 @@ def create_context_hub_router(
         methods=["POST"],
         name="context_hub_search",
     )
+    router.add_api_route(
+        "/api/admin/context-hub/curation/notes",
+        context_hub_endpoints.context_hub_curated_notes,
+        methods=["GET"],
+        name="context_hub_curated_notes",
+    )
+    router.add_api_route(
+        "/api/admin/context-hub/curation/notes",
+        context_hub_endpoints.context_hub_curated_note_create,
+        methods=["POST"],
+        name="context_hub_curated_note_create",
+    )
+    for action, endpoint in (
+        ("validate", context_hub_endpoints.context_hub_curated_note_validate),
+        ("review", context_hub_endpoints.context_hub_curated_note_review),
+        ("approve", context_hub_endpoints.context_hub_curated_note_approve),
+        ("reject", context_hub_endpoints.context_hub_curated_note_reject),
+    ):
+        router.add_api_route(
+            f"/api/admin/context-hub/curation/notes/{{note_id}}/{action}",
+            endpoint,
+            methods=["POST"],
+            name=f"context_hub_curated_note_{action}",
+        )
+    router.add_api_route(
+        "/api/admin/context-hub/curation/publish",
+        context_hub_endpoints.context_hub_curated_publish,
+        methods=["POST"],
+        name="context_hub_curated_publish",
+    )
+    router.add_api_route(
+        "/api/admin/context-hub/curation/backups",
+        context_hub_endpoints.context_hub_curated_backups,
+        methods=["GET"],
+        name="context_hub_curated_backups",
+    )
+    router.add_api_route(
+        "/api/admin/context-hub/curation/backups",
+        context_hub_endpoints.context_hub_curated_backup_create,
+        methods=["POST"],
+        name="context_hub_curated_backup_create",
+    )
+    router.add_api_route(
+        "/api/admin/context-hub/curation/backups/{backup_id}/restore",
+        context_hub_endpoints.context_hub_curated_backup_restore,
+        methods=["POST"],
+        name="context_hub_curated_backup_restore",
+    )
     return router
 
 

@@ -10,12 +10,20 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import threading
 import time
 from datetime import datetime
 from typing import Any, Optional
 
 from fastapi import HTTPException
+
+from backend.services.sqlite_coordination import (
+    SQLITE_BUSY_TIMEOUT_MS,
+    configure_sqlite_connection,
+    sqlite_lock_for_path,
+    sqlite_locks_for_paths,
+)
 
 
 SHARED_SYNC_DEFAULT_MAX_FILE_BYTES = 75 * 1024 * 1024
@@ -146,7 +154,7 @@ def _shared_sync_path_permanently_excluded(rel_path: str) -> bool:
     except HTTPException:
         return True
     parts = [part for part in rel.split("/") if part]
-    return any(part in {"contextvault", "context_hub", ".obsidian"} for part in parts)
+    return any(part in {"contextvault", "context_hub", ".obsidian", "sku"} for part in parts)
 
 
 def _shared_sync_resolve_tenant_path(tenant_root: str, rel_path: str) -> str:
@@ -195,12 +203,43 @@ def _shared_sync_sha256_file(path: str) -> str:
 def _shared_sync_bytes_sha256(data: bytes) -> str:
     return hashlib.sha256(data or b"").hexdigest()
 
+
+def _shared_sync_vendas_history_db(rel: str) -> bool:
+    base = os.path.basename(str(rel or "")).lower()
+    return (
+        base == "vendas_historico.db"
+        or (base.startswith("vendas_historico_") and base.endswith(".db"))
+    )
+
+
+def _shared_sync_transient_filename(filename: str) -> bool:
+    lower = str(filename or "").strip().lower()
+    return (
+        lower.endswith((".tmp", ".log", ".bak", "-wal", "-shm"))
+        or ".backup_" in lower
+        or ".sharedsync_" in lower
+    )
+
 SHARED_SYNC_AUTO_RATE_LIMIT_LOCK = threading.RLock()
-SHARED_SYNC_SQLITE_FILE_LOCKS_LOCK = threading.RLock()
-SHARED_SYNC_SQLITE_FILE_LOCKS: dict[str, Any] = {}
 SHARED_SYNC_AUTO_RATE_LIMIT: dict[str, float] = {}
-SHARED_SYNC_SQLITE_BUSY_TIMEOUT_MS = 15000
+SHARED_SYNC_SQLITE_BUSY_TIMEOUT_MS = SQLITE_BUSY_TIMEOUT_MS
 SHARED_SYNC_SQLITE_LOCK_RETRIES = 4
+
+# Aliases legados mantidos para os modulos Shared Sync e seus consumidores.
+# A fonte de verdade dos locks agora e sqlite_coordination, compartilhada com
+# o modulo de Vendas.
+_shared_sync_sqlite_lock_for_path = sqlite_lock_for_path
+_shared_sync_sqlite_locks_for_paths = sqlite_locks_for_paths
+_shared_sync_sqlite_configure = configure_sqlite_connection
+
+
+def _shared_sync_sqlite_quick_check(conn: sqlite3.Connection, label: str) -> None:
+    try:
+        rows = [str(row[0] or "").strip().lower() for row in conn.execute("PRAGMA quick_check").fetchall()]
+    except sqlite3.DatabaseError as exc:
+        raise HTTPException(status_code=502, detail=f"Banco SQLite invalido para sincronizacao: {label}") from exc
+    if rows != ["ok"]:
+        raise HTTPException(status_code=502, detail=f"Banco SQLite corrompido para sincronizacao: {label}")
 
 SHARED_SYNC_SCOPES = {
     "cadastro": {
@@ -211,7 +250,6 @@ SHARED_SYNC_SCOPES = {
             "cadastro_produtos_meta.json",
             "cadastro_produtos_fotos/**",
             "cadastro_fotos/**",
-            "SKU/**",
             "produtos_compilado.csv",
         ],
         "user_scoped": False,
@@ -230,7 +268,7 @@ SHARED_SYNC_SCOPES = {
         "description": "Historico local de vendas, estoque e unidades de negocio.",
         "patterns": [
             "vendas_historico.db",
-            "vendas_sync_state.json",
+            "vendas_historico_*.db",
             "estoque_historico.db",
             "produtos_compilado.csv",
             "unidades_negocios.json",

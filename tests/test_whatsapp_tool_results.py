@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from backend.services import whatsapp_bridge
@@ -99,8 +101,8 @@ def test_compaction_preserves_contract_and_limits_large_payloads() -> None:
     }
     component = tool_results.function_manager_compact_result(source)
     assert component == whatsapp_bridge._function_manager_compact_result(source)
-    assert isinstance(component["rows"], str)
-    assert len(component["rows"]) == 12000
+    assert isinstance(component["rows"], list)
+    assert len(json.dumps(component["rows"], ensure_ascii=False, separators=(",", ":")).encode("utf-8")) <= 12 * 1024
     assert component["records"] == 100
 
     bling = tool_results.function_manager_compact_result(_bling_result(0))

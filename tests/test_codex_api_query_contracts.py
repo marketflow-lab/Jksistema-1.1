@@ -92,6 +92,48 @@ def test_mercado_livre_order_normalizer_prioritizes_complete_sku_aggregation():
     assert codex_assistant._assistant_result_count(result) == 2
 
 
+def test_latest_sale_normalizer_preserves_the_order_instead_of_the_sku_aggregate():
+    order = {
+        "order_id": "2000017389080442",
+        "date_created": "2026-07-17T18:30:00.000-03:00",
+        "paid_amount": 79.9,
+        "items": [{"sku": "001", "title": "Produto", "quantity": 1}],
+    }
+    normalized = codex_assistant._assistant_standard_result(
+        "mercado_livre_orders",
+        {
+            "function": "get_mercado_livre_orders",
+            "result": {
+                "orders": [order],
+                "by_sku": [{"sku": "001", "quantity": 1, "gross_amount": 79.9}],
+                "paging": {"offset": 0, "returned": 1, "total": 26529, "has_more": True},
+            },
+        },
+        {"message": "Qual foi a última venda?", "loja": "JK Pecas"},
+    )
+
+    assert normalized["records"] == 1
+    assert normalized["rows"] == [order]
+
+    exact = codex_assistant._assistant_standard_result(
+        "mercado_livre_orders",
+        {
+            "function": "get_mercado_livre_orders",
+            "result": {
+                "exact_lookup": True,
+                "orders": [order],
+                "by_sku": [
+                    {"sku": "001", "quantity": 1, "gross_amount": 39.95},
+                    {"sku": "002", "quantity": 1, "gross_amount": 39.95},
+                ],
+            },
+        },
+        {"message": "Consulte a venda 2000017389080442", "loja": "JK Pecas"},
+    )
+    assert exact["records"] == 1
+    assert exact["rows"] == [order]
+
+
 def test_daily_report_period_is_today_in_sao_paulo():
     today = datetime.now(ZoneInfo("America/Sao_Paulo")).date().isoformat()
 
@@ -224,6 +266,12 @@ def test_source_routing_prefers_bling_stock_and_ml_for_sales_listings_and_full()
     assert listing["required_tools"] == ["mercado_livre_listing"]
     assert listing["include_listing_details"] is True
 
+    gallery = codex_assistant._assistant_source_routing_policy(
+        "Mande os links e as fotos do SKU 001 no Mercado Livre"
+    )
+    assert gallery["required_tools"] == ["mercado_livre_listing"]
+    assert gallery["include_listing_details"] is True
+
     sales = codex_assistant._assistant_source_routing_policy("Mostre os pedidos e vendas de hoje")
     assert sales["required_tools"] == ["mercado_livre_orders"]
     assert codex_assistant._assistant_select_tool_ids("Mostre os pedidos e vendas de hoje", "chat", {})[0] == "mercado_livre_orders"
@@ -304,6 +352,48 @@ def test_implicit_latest_sku_on_ml_is_a_sale_not_stock():
     assert policy["required_tools"] == ["mercado_livre_orders"]
     assert policy["preferred_providers"] == ["mercado_livre"]
     assert "bling_stock_balances" not in policy["required_tools"]
+
+
+def test_sales_from_a_named_period_are_not_reduced_to_one_latest_order(monkeypatch):
+    calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+    def fake_call(name: str, *args: Any, **kwargs: Any):
+        calls.append((name, args, kwargs))
+        return _api_raw("get_mercado_livre_orders")
+
+    monkeypatch.setattr(codex_assistant, "_assistant_call_ia_tool", fake_call)
+    monkeypatch.setattr(codex_assistant, "_assistant_cache_get", lambda *_args: None)
+    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args: None)
+    monkeypatch.setattr(codex_assistant, "_assistant_api_query_audit", lambda *_args, **_kwargs: None)
+
+    for message in (
+        "Mostre o pedido da ultima semana",
+        "Qual foi o valor da venda na ultima semana?",
+        "Mostre o pedido do ultimo mes",
+    ):
+        assert codex_assistant._assistant_latest_ml_event_kind(message) == ""
+        calls.clear()
+        codex_assistant.codex_assistant_execute_tool_call(
+            "tenant",
+            "mercado_livre_orders",
+            {"message": message, "loja": "JK Pecas", "limite": 37},
+            permissions=_permissions(),
+        )
+        assert len(calls) == 1
+        assert calls[0][2]["limite"] == 37
+
+
+def test_return_order_id_does_not_request_the_sale_api():
+    latest_return = "Qual foi a ultima devolucao do pedido 2000017389080442?"
+    refund = "Mostre o reembolso do pedido 2000017389080442"
+
+    assert codex_assistant._assistant_latest_ml_event_kind(latest_return) == "return"
+    assert codex_assistant._assistant_source_routing_policy(latest_return)["required_tools"] == [
+        "mercado_livre_returns"
+    ]
+    assert codex_assistant._assistant_source_routing_policy(refund)["required_tools"] == [
+        "mercado_livre_returns"
+    ]
 
 
 def test_latest_ml_event_context_does_not_add_local_direct_or_dispatcher_sources(monkeypatch):
@@ -940,6 +1030,114 @@ def test_api_zero_preserves_primary_and_adds_local_history_as_separate_support(m
     assert summaries["sales_returns_query"]["records"] == 1
     assert summaries["sales_returns_query"]["source_role"] == "supporting_local_history"
     assert result["aggregation_policy"] == "separate_sources_no_sum"
+
+
+def test_latest_sale_never_falls_back_to_local_history_or_sums_records(monkeypatch):
+    order = {
+        "order_id": "2000017389080442",
+        "date_created": "2026-07-17T18:30:00.000-03:00",
+        "paid_amount": 79.9,
+        "items": [{"sku": "001", "title": "Produto", "quantity": 1}],
+    }
+    monkeypatch.setattr(codex_assistant, "_assistant_cache_get", lambda *_args: None)
+    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args: None)
+    monkeypatch.setattr(
+        codex_assistant,
+        "_assistant_call_ia_tool",
+        lambda *_args, **_kwargs: {
+            "function": "get_mercado_livre_orders",
+            "arguments": {},
+            "result": {
+                "orders": [order],
+                "by_sku": [{"sku": "001", "quantity": 1, "gross_amount": 79.9}],
+                "paging": {"offset": 0, "returned": 1, "total": 26529, "has_more": True},
+                "partial_response": False,
+                "coverage_complete": False,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        codex_assistant,
+        "_assistant_sales_returns_query",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("histórico local não pode ser consultado")),
+    )
+
+    result = codex_assistant.codex_assistant_execute_tool_call(
+        "tenant",
+        "mercado_livre_orders",
+        {
+            "message": "Qual foi a última venda?",
+            "loja": "JK Pecas",
+            "force_refresh": True,
+            "limite": 1,
+            "incluir_detalhes": True,
+        },
+        permissions=_permissions(),
+    )
+
+    assert result["records"] == 1
+    assert result["all_rows"] == [order]
+    assert [item["tool_id"] for item in result["summary"]] == ["mercado_livre_orders"]
+
+
+def test_latest_sale_api_failure_is_not_masked_by_local_history(monkeypatch):
+    monkeypatch.setattr(
+        codex_assistant,
+        "_assistant_cache_get",
+        lambda *_args: {
+            "success": True,
+            "tool_id": "mercado_livre_orders",
+            "records": 1,
+            "all_rows": [{"order_id": "OLD"}],
+            "summary": [],
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args: None)
+    monkeypatch.setattr(
+        codex_assistant,
+        "_assistant_call_ia_tool",
+        lambda *_args, **_kwargs: {
+            "function": "get_mercado_livre_orders",
+            "arguments": {},
+            "result": {
+                "orders": [],
+                "paging": {"offset": 0, "returned": 0, "total": 0, "has_more": False},
+                "error": "timeout",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        codex_assistant,
+        "_assistant_sales_returns_query",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("histórico local não pode mascarar a API")),
+    )
+
+    result = codex_assistant.codex_assistant_execute_tool_call(
+        "tenant",
+        "mercado_livre_orders",
+        {"message": "Última venda", "loja": "JK Pecas", "force_refresh": True},
+        permissions=_permissions(),
+    )
+
+    assert result["records"] == 0
+    assert result["dados_suficientes"] is False
+    assert result.get("cache_fallback") is not True
+    assert [item["tool_id"] for item in result["summary"]] == ["mercado_livre_orders"]
+
+    exact = codex_assistant.codex_assistant_execute_tool_call(
+        "tenant",
+        "mercado_livre_orders",
+        {
+            "message": "Venda 2000017389080442",
+            "loja": "JK Pecas",
+            "id_pedido": "2000017389080442",
+            "force_refresh": True,
+        },
+        permissions=_permissions(),
+    )
+    assert exact["records"] == 0
+    assert exact.get("cache_fallback") is not True
 
 
 def test_api_query_audit_uses_safe_whitelist(tmp_path, monkeypatch):

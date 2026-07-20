@@ -21,7 +21,7 @@ def test_global_ai_defaults_match_installed_codex_routing():
     defaults = configuracoes.CONFIG_GLOBAIS_DEFAULT
 
     assert defaults["ia_modelo_padrao"] == "codex:gpt-5.5"
-    assert defaults["ia_modelo_perguntas"] == "codex:gpt-5.6-sol"
+    assert defaults["ia_modelo_perguntas"] == "codex:gpt-5.5"
     assert defaults["ia_modelo_pos_venda"] == "codex:gpt-5.5"
     assert defaults["ia_modelo_chat"] == "codex:gpt-5.5"
     assert defaults["ia_modelo_favoritos"] == "codex:gpt-5.5"
@@ -72,7 +72,22 @@ def test_configuration_page_lists_and_accepts_codex_in_both_copies():
     assert "!modeloLower.startsWith('codex:')" in root_html
 
 
-def test_questions_v2_keeps_codex_as_an_allowed_configured_provider():
+def test_questions_v2_uses_codex_and_preserves_configured_provider_as_optional_fallback():
     source = (ROOT / "backend" / "services" / "perguntas_pos_venda_agent.py").read_text(encoding="utf-8")
-    assert "_modelo_eh_vertex_ai(model_req) or _modelo_eh_codex(model_req)" in source
+
+    for model in (
+        "codex:gpt-5.5",
+        "vertex:gemini-2.5-flash",
+        "gemini:gemini-2.5-flash",
+        "deepseek-chat",
+        "gpt-5.4-nano",
+    ):
+        assert ia_providers._normalizar_ia_modelo_padrao(model) == model
+    assert "provider_selection = _perguntas_codex_provider_selection(" in source
+    assert 'model_req = str(provider_selection.get("model") or "codex:gpt-5.5")' in source
+    assert '"response_provider_policy": provider_selection.get("policy")' in source
+    assert '"configured_fallback": provider_selection.get("configured_fallback")' in source
+    assert '"fallback_used": bool(provider_selection.get("fallback_used"))' in source
     assert '"codex": _modelo_eh_codex(model_req)' in source
+    assert '"reasoning_effort": reasoning_effort' in source
+    assert '"_codex_reasoning_effort": self.reasoning_effort' in source

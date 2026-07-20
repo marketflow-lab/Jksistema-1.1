@@ -412,6 +412,8 @@ def _post_proactive_image(
     caption: str,
     filename: str,
     event_type: str = "weekly_report",
+    artifact_type: str = "report_chart",
+    mime_type: str = "image/png",
 ) -> dict[str, Any]:
     worker_url = _normalize_worker_url(config.get("worker_url"))
     token = str(config.get("bridge_token") or "").strip()
@@ -425,8 +427,16 @@ def _post_proactive_image(
     if not path.is_file():
         raise RuntimeError("outbound_image_missing")
     safe_event_type = str(event_type or "weekly_report").strip().lower()
-    if safe_event_type not in {"weekly_report", "monthly_report"}:
+    safe_artifact_type = str(artifact_type or "report_chart").strip().lower()
+    safe_mime_type = str(mime_type or "image/png").split(";", 1)[0].strip().lower()
+    if safe_event_type not in {"weekly_report", "monthly_report", "task_completed"}:
         raise RuntimeError("invalid_proactive_image_event_type")
+    if safe_artifact_type not in {"report_chart", "product_photo"}:
+        raise RuntimeError("invalid_proactive_image_artifact_type")
+    if safe_artifact_type == "report_chart" and safe_mime_type != "image/png":
+        raise RuntimeError("report_chart_png_required")
+    if safe_artifact_type == "product_photo" and safe_mime_type not in {"image/jpeg", "image/png"}:
+        raise RuntimeError("product_photo_mime_not_allowed")
     digest = hashlib.sha256()
     with path.open("rb") as source:
         for chunk in iter(lambda: source.read(256 * 1024), b""):
@@ -440,11 +450,11 @@ def _post_proactive_image(
                 "machine_id": machine_id,
                 "fingerprint": fingerprint,
                 "event_type": safe_event_type,
-                "artifact_type": "report_chart",
+                "artifact_type": safe_artifact_type,
                 "caption": str(caption or "")[:1024],
                 "sha256": digest.hexdigest(),
             },
-            files={"file": (_safe_filename(filename, "black-jhon-weekly-report.png"), source, "image/png")},
+            files={"file": (_safe_filename(filename, "black-jhon-image.jpg"), source, safe_mime_type)},
             timeout=90,
         )
     try:
@@ -508,9 +518,19 @@ def _post_proactive_document(
 def _post_proactive(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     body = dict(payload or {})
     subject = str(body.pop("subject_id", "") or config.get("subject_id") or "").strip()
+    machine_id = str(config.get("machine_id") or "").strip()
     if not subject:
         return {"success": False, "status": "no_paired_subject"}
-    return _gateway_json(config, "POST", "/bridge/proactive", {"subject_id": subject, **body}, timeout=20)
+    if not machine_id:
+        return {"success": False, "status": "machine_id_missing"}
+    body.pop("machine_id", None)
+    return _gateway_json(
+        config,
+        "POST",
+        "/bridge/proactive",
+        {"subject_id": subject, "machine_id": machine_id, **body},
+        timeout=20,
+    )
 
 def _post_interactive_approval(
     config: dict[str, Any],

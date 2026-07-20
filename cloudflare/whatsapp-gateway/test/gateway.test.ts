@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 import worker from "../src/index";
 
@@ -86,6 +87,7 @@ function outboundImageEnvironment(options: {
             async first() {
               sqlCalls.push({ sql, values, operation: "first" });
               if (sql.includes("SELECT * FROM bindings WHERE subject_id=")) return binding;
+              if (sql.includes("SELECT machine_id FROM bindings WHERE subject_id=")) return binding;
               if (sql.includes("FROM inbox i JOIN bindings")) return message;
               if (sql.includes("FROM outbound_media WHERE fingerprint=")) return options.existing ?? null;
               if (sql.includes("COUNT(*) AS total FROM outbound_media WHERE inbound_message_id=")) {
@@ -401,7 +403,343 @@ function directRegisteredInboundEnvironment(registeredPhone: string) {
   };
 }
 
-afterEach(() => vi.unstubAllGlobals());
+function inboundMediaRetryEnvironment(
+  outcomes: Array<number | "timeout" | "success">,
+  options: {
+    schemaMissing?: boolean;
+    metadataUrl?: string;
+    metadataSize?: number;
+    redirectLocation?: string;
+    downloadBody?: BodyInit;
+  } = {},
+) {
+  let inbox: Record<string, any> | null = null;
+  let metadataAttempts = 0;
+  let mediaDownloads = 0;
+  const mediaPuts: Array<{ key: string; options: any }> = [];
+  const mediaDeletes: string[] = [];
+  const boundStatements: Array<{ run(): Promise<{ meta: { changes: number } }> }> = [];
+
+  function changes(value: boolean) {
+    return { meta: { changes: value ? 1 : 0 } };
+  }
+
+  const db = {
+    prepare(sql: string) {
+      const makeStatement = (values: any[]) => {
+        const statement = {
+            async first() {
+              if (sql.includes("SELECT message_id FROM inbox WHERE message_id=")) return inbox ? { message_id: inbox.message_id } : null;
+              if (sql.includes("SELECT subject_id FROM bindings WHERE active=1 AND machine_id=")) {
+                return values[0] === "machine" ? { subject_id: "subject" } : null;
+              }
+              if (sql.includes("FROM bindings WHERE active=1 AND (subject_id=? OR wa_id=? OR phone_number=?)")) {
+                return { subject_id: "subject", machine_id: "machine" };
+              }
+              if (sql.includes("COUNT(*) AS total FROM inbox")) return { total: 0 };
+              if (sql.includes("SELECT counter_value FROM usage_counters")) return { counter_value: 0 };
+              if (sql.includes("SELECT message_id,message_type,media_id,media_mime,media_attempts,media_expires_at")) {
+                return inbox?.media_state === "fetching" ? { ...inbox } : null;
+              }
+              if (sql.includes("SUM(CASE WHEN i.media_state='retry_wait'")) {
+                return {
+                  waiting_retry: inbox?.media_state === "retry_wait" ? 1 : 0,
+                  fetching: inbox?.media_state === "fetching" ? 1 : 0,
+                  stored: inbox?.media_state === "stored" ? 1 : 0,
+                  failed: inbox?.media_state === "failed" ? 1 : 0,
+                  expired: inbox?.media_state === "expired" ? 1 : 0,
+                };
+              }
+              if (sql.includes("(SELECT COUNT(*) FROM inbox i JOIN bindings")) return { inbox_pending: inbox && !inbox.completed_at ? 1 : 0 };
+              if (sql.includes("COUNT(*) AS uploads,COALESCE(SUM(om.byte_size),0)")) return { uploads: 0, bytes: 0 };
+              if (sql.includes("COALESCE(SUM(CASE WHEN i.media_object_key")) return { active_bytes: 0, uploads: 0 };
+              return null;
+            },
+            async run() {
+              const now = Math.floor(Date.now() / 1000);
+              if (sql.includes("INSERT INTO inbox(")) {
+                inbox = {
+                  message_id: values[0], subject_id: values[1], wa_id: values[2], phone_number_id: values[3],
+                  message_type: values[4], text_body: values[5], media_id: values[6], media_mime: values[7],
+                  received_at: values[8], status: values[9], media_size: 0, media_object_key: null,
+                  media_state: "none", media_attempts: 0, media_next_attempt_at: null,
+                  media_last_attempt_at: null, media_lease_until: null, media_error_class: null,
+                  media_expires_at: null, completed_at: null,
+                };
+                return changes(true);
+              }
+              if (!inbox) return changes(true);
+              if (options.schemaMissing && sql.includes("media_state")) throw new Error("no such column: media_state");
+              if (sql.includes("SET media_state='pending',media_attempts=0")) {
+                if (inbox.status !== "media_fetching" || inbox.media_state !== "none") return changes(false);
+                Object.assign(inbox, {
+                  media_state: "pending", media_attempts: 0, media_next_attempt_at: values[0], media_expires_at: values[1],
+                  media_last_attempt_at: null, media_lease_until: null, media_error_class: null, error: null,
+                });
+                return changes(true);
+              }
+              if (sql.includes("status='queued',error=NULL WHERE message_id=? AND status='media_fetching'")) {
+                if (inbox.status !== "media_fetching" || inbox.media_object_key) return changes(false);
+                Object.assign(inbox, {
+                  media_mime: values[0], media_size: values[1], media_object_key: values[2], media_filename: values[3],
+                  status: "queued", error: null,
+                });
+                return changes(true);
+              }
+              if (sql.includes("SET media_state='fetching',media_attempts=media_attempts+1")) {
+                const eligible = ["pending", "retry_wait"].includes(inbox.media_state)
+                  && Number(inbox.media_next_attempt_at || 0) <= Number(values[3])
+                  && Number(inbox.media_expires_at || 0) > Number(values[4])
+                  && Number(inbox.media_attempts || 0) < Number(values[5]);
+                if (!eligible) return changes(false);
+                Object.assign(inbox, {
+                  media_state: "fetching", media_attempts: Number(inbox.media_attempts || 0) + 1,
+                  media_last_attempt_at: values[0], media_lease_until: values[1], media_next_attempt_at: null,
+                });
+                return changes(true);
+              }
+              if (sql.includes("status='queued',media_state='stored'")) {
+                if (inbox.media_state !== "fetching" || inbox.media_attempts !== values[5] || inbox.media_object_key) return changes(false);
+                Object.assign(inbox, {
+                  media_mime: values[0], media_size: values[1], media_object_key: values[2], media_filename: values[3],
+                  status: "queued", media_state: "stored", media_next_attempt_at: null, media_lease_until: null,
+                  media_error_class: null, error: null, completed_at: null,
+                });
+                return changes(true);
+              }
+              if (sql.includes("status='media_retry',media_state='retry_wait',media_next_attempt_at=?")) {
+                if (inbox.media_state !== "fetching" || inbox.media_attempts !== values[4]) return changes(false);
+                Object.assign(inbox, {
+                  status: "media_retry", media_state: "retry_wait", media_next_attempt_at: values[0],
+                  media_lease_until: null, media_error_class: values[1], error: values[2],
+                });
+                return changes(true);
+              }
+              if (sql.includes("media_error_class='media_retry_exhausted'")) return changes(false);
+              if (sql.includes("media_error_class='media_fetch_lease_expired'")) return changes(false);
+              if (sql.includes("SET status='failed',media_state='expired',media_error_class='media_retention_expired'")) {
+                if (inbox.media_state !== "stored" || inbox.media_object_key !== values[2]) return changes(false);
+                Object.assign(inbox, {
+                  status: "failed", media_state: "expired", media_error_class: "media_retention_expired",
+                  error: "media_retention_expired", completed_at: values[0], lease_owner: null, lease_until: null,
+                });
+                return changes(true);
+              }
+              if (sql.includes("status='failed',media_state='failed',media_next_attempt_at=NULL")) {
+                Object.assign(inbox, {
+                  status: "failed", media_state: "failed", media_next_attempt_at: null, media_lease_until: null,
+                  media_error_class: values[0], error: values[1], completed_at: values[2],
+                });
+                return changes(true);
+              }
+              if (sql.includes("status='failed',media_state='expired'")) {
+                const expired = !inbox.media_object_key && Number(inbox.media_expires_at || inbox.received_at + values[1]) <= Number(values[2]);
+                if (!expired) return changes(false);
+                Object.assign(inbox, {
+                  status: "failed", media_state: "expired", media_next_attempt_at: null, media_lease_until: null,
+                  media_error_class: "media_retention_expired", error: "media_retention_expired", completed_at: values[0],
+                });
+                return changes(true);
+              }
+              if (sql.includes("SET media_state='pending',media_next_attempt_at=COALESCE")) return changes(false);
+              if (sql.includes("SET media_object_key=NULL,media_state=?")) {
+                if (inbox.media_object_key !== values[2]) return changes(false);
+                Object.assign(inbox, { media_object_key: null, media_state: values[0], media_expires_at: null });
+                return changes(true);
+              }
+              if (sql.includes("UPDATE bindings SET last_inbound_at")) return changes(true);
+              if (sql.includes("INSERT INTO usage_counters")) return changes(true);
+              if (sql.includes("INSERT INTO audit_events")) return changes(true);
+              return changes(true);
+            },
+            async all() {
+              if (sql.includes("SELECT message_id FROM inbox WHERE media_state IN ('pending','retry_wait')")) {
+                const due = inbox && ["pending", "retry_wait"].includes(inbox.media_state)
+                  && Number(inbox.media_next_attempt_at || 0) <= Number(values[0])
+                  && Number(inbox.media_expires_at || 0) > Number(values[1])
+                  && Number(inbox.media_attempts || 0) < Number(values[2]);
+                return { results: due ? [{ message_id: inbox!.message_id }] : [] };
+              }
+              if (sql.includes("SELECT i.media_error_class AS error_class")) {
+                return { results: inbox?.media_error_class ? [{ error_class: inbox.media_error_class, total: 1 }] : [] };
+              }
+              if (sql.includes("media_object_key IS NOT NULL") && sql.includes("status IN ('completed','failed'")) {
+                return { results: inbox?.media_object_key && ["completed", "failed", "awaiting_approval", "dead_letter", "unsupported"].includes(inbox.status) ? [{ ...inbox }] : [] };
+              }
+              if (sql.includes("media_state='stored'") && sql.includes("COALESCE(media_expires_at")) {
+                return { results: inbox?.media_object_key && inbox.media_state === "stored" && Number(inbox.media_expires_at) <= Number(values[1]) ? [{ ...inbox }] : [] };
+              }
+              return { results: [] };
+            },
+        };
+        boundStatements.push(statement);
+        return statement;
+      };
+      return {
+        bind(...values: any[]) {
+          return makeStatement(values);
+        },
+        first() { return makeStatement([]).first(); },
+        run() { return makeStatement([]).run(); },
+        all() { return makeStatement([]).all(); },
+      };
+    },
+    async batch(statements: Array<{ run(): Promise<{ meta: { changes: number } }> }>) {
+      return Promise.all(statements.map((statement) => statement.run()));
+    },
+  };
+
+  const env = {
+    DB: db,
+    MEDIA: {
+      async put(key: string, _body: ArrayBuffer, options: any) { mediaPuts.push({ key, options }); },
+      async delete(key: string) { mediaDeletes.push(key); },
+    },
+    BRIDGE_TOKEN: "bridge-secret",
+    META_APP_SECRET: "app-secret",
+    META_GRAPH_API_VERSION: "v25.0",
+    META_SYSTEM_USER_TOKEN: "meta-token",
+  } as any;
+
+  vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("graph.facebook.com") && url.endsWith("/media-1")) {
+      const outcome = outcomes[metadataAttempts++] ?? "success";
+      if (outcome === "timeout") throw new DOMException("timed out", "TimeoutError");
+      if (typeof outcome === "number") return new Response(JSON.stringify({ error: { code: outcome } }), { status: outcome });
+      return new Response(JSON.stringify({
+        url: options.metadataUrl || "https://lookaside.fbsbx.com/whatsapp_business/attachments/audio",
+        mime_type: "audio/ogg; codecs=opus",
+        file_size: options.metadataSize ?? 4,
+      }), { status: 200 });
+    }
+    if (url === "https://lookaside.fbsbx.com/whatsapp_business/attachments/audio") {
+      mediaDownloads += 1;
+      if (options.redirectLocation) {
+        return new Response(null, { status: 302, headers: { location: options.redirectLocation } });
+      }
+      return new Response(options.downloadBody || new Uint8Array([0x4f, 0x67, 0x67, 0x53]), {
+        status: 200,
+        headers: { "content-type": "audio/ogg" },
+      });
+    }
+    throw new Error(`unexpected_fetch:${url}`);
+  });
+
+  return {
+    env,
+    get inbox() { return inbox; },
+    get metadataAttempts() { return metadataAttempts; },
+    get mediaDownloads() { return mediaDownloads; },
+    mediaPuts,
+    mediaDeletes,
+  };
+}
+
+function pendingContext() {
+  const pending: Promise<unknown>[] = [];
+  return {
+    context: {
+      waitUntil(promise: Promise<unknown>) { pending.push(Promise.resolve(promise)); },
+      passThroughOnException: () => undefined,
+      props: {},
+    } as unknown as ExecutionContext,
+    async drain() {
+      for (let index = 0; index < pending.length; index += 1) await pending[index];
+    },
+  };
+}
+
+async function inboundAudioRequest(messageId: string): Promise<Request> {
+  const body = JSON.stringify({
+    entry: [{ changes: [{ value: {
+      metadata: { phone_number_id: "phone-id" },
+      messages: [{
+        id: messageId,
+        from: "5537999990000",
+        timestamp: String(Math.floor(Date.now() / 1000)),
+        type: "audio",
+        audio: { id: "media-1", mime_type: "audio/ogg" },
+      }],
+    } }] }],
+  });
+  return new Request("https://example.test/webhooks/whatsapp", {
+    method: "POST",
+    body,
+    headers: { "x-hub-signature-256": await signature("app-secret", body) },
+  });
+}
+
+function inboundResultIdempotencyEnvironment() {
+  const inbox: Record<string, any> = {
+    message_id: "wamid.result.idempotent",
+    subject_id: "subject",
+    wa_id: "5537999990000",
+    machine_id: "machine",
+    status: "leased",
+    media_object_key: null,
+    media_size: 0,
+  };
+  const outboxByKey = new Map<string, Record<string, any>>();
+  const db = {
+    prepare(sql: string) {
+      const make = (values: any[]) => ({
+        async first() {
+          if (sql.includes("SELECT i.*,b.machine_id FROM inbox")) return { ...inbox };
+          if (sql.includes("SELECT media_object_key,media_size FROM inbox")) return { media_object_key: null, media_size: 0 };
+          if (sql.includes("SELECT id FROM outbox WHERE idempotency_key=")) return outboxByKey.get(String(values[0])) || null;
+          return null;
+        },
+        async run() {
+          if (sql.includes("UPDATE inbox SET status=?,task_id=?")) {
+            inbox.status = values[0];
+            inbox.completed_at = values[3];
+          } else if (sql.includes("INSERT OR IGNORE INTO outbox")) {
+            const key = String(values[11]);
+            if (!outboxByKey.has(key)) {
+              outboxByKey.set(key, {
+                id: values[0], inbound_message_id: values[1], subject_id: values[2], recipient: values[3],
+                message_type: values[4], text_body: values[5], template_name: values[6], template_params_json: values[7],
+                status: values[8], created_at: values[9], updated_at: values[10], idempotency_key: key, attempts: 0,
+              });
+            }
+          } else if (sql.includes("UPDATE outbox SET status=?")) {
+            const item = [...outboxByKey.values()].find((candidate) => candidate.id === values[3]);
+            if (item) item.status = values[0];
+          }
+          return { meta: { changes: 1 } };
+        },
+        async all() {
+          if (sql.includes("SELECT * FROM outbox WHERE subject_id=")) {
+            return { results: [...outboxByKey.values()].filter((item) => ["queued", "retry", "waiting_free_window"].includes(item.status)) };
+          }
+          return { results: [] };
+        },
+      });
+      return {
+        bind(...values: any[]) { return make(values); },
+        first() { return make([]).first(); },
+        run() { return make([]).run(); },
+        all() { return make([]).all(); },
+      };
+    },
+  };
+  return {
+    env: {
+      DB: db,
+      MEDIA: { async delete() { return undefined; } },
+      BRIDGE_TOKEN: "bridge-secret",
+      ZERO_COST_POLICY_VALID_UNTIL: "2026-01-01T00:00:00Z",
+    } as any,
+    inbox,
+    outboxByKey,
+  };
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 describe("public gateway routes", () => {
   const env = {
@@ -463,6 +801,299 @@ describe("public gateway routes", () => {
     expect(await response.text()).toBe("EVENT_RECEIVED");
   });
 
+  it("durably retries inbound audio after timeout, 404, 429 and 5xx before storing it once", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-18T12:00:00Z"));
+    const media = inboundMediaRetryEnvironment(["timeout", 404, 429, 503, "success"]);
+    const body = JSON.stringify({
+      entry: [{
+        changes: [{
+          value: {
+            metadata: { phone_number_id: "phone-id" },
+            messages: [{
+              id: "wamid.audio.retry",
+              from: "5537999990000",
+              timestamp: String(Math.floor(Date.now() / 1000)),
+              type: "audio",
+              audio: { id: "media-1", mime_type: "audio/ogg; codecs=opus" },
+            }],
+          },
+        }],
+      }],
+    });
+    const pending = pendingContext();
+    const response = await worker.fetch(
+      new Request("https://example.test/webhooks/whatsapp", {
+        method: "POST",
+        body,
+        headers: { "x-hub-signature-256": await signature("app-secret", body) },
+      }),
+      media.env,
+      pending.context,
+    );
+    await pending.drain();
+
+    expect(response.status).toBe(200);
+    expect(media.inbox).toMatchObject({
+      status: "media_retry",
+      media_state: "retry_wait",
+      media_attempts: 1,
+      media_error_class: "media_fetch_timeout",
+    });
+    expect(Number(media.inbox?.media_next_attempt_at) - Math.floor(Date.now() / 1000)).toBe(5 * 60);
+
+    const statusResponse = await worker.fetch(
+      new Request("https://example.test/bridge/status?machine_id=machine", { headers: { authorization: "Bearer bridge-secret" } }),
+      media.env,
+      context(),
+    );
+    const statusPayload = await statusResponse.json() as any;
+    expect(statusPayload).toMatchObject({ gateway_protocol_version: 1, build_version: "1.0.103" });
+    expect(statusPayload.inbound_media).toMatchObject({
+      durable_retry: true,
+      max_attempts: 5,
+      retry_delays_seconds: [300, 900, 1800, 3600],
+      retention_seconds: 172800,
+      counts: { waiting_retry: 1 },
+    });
+    expect(statusPayload.inbound_media.failures_by_code).toContainEqual({ error_class: "media_fetch_timeout", total: 1 });
+
+    const expectedFailures = [
+      { attempts: 2, error: "meta_metadata_not_found", delay: 15 * 60 },
+      { attempts: 3, error: "meta_metadata_rate_limited", delay: 30 * 60 },
+      { attempts: 4, error: "meta_metadata_server_error", delay: 60 * 60 },
+    ];
+    for (const expected of expectedFailures) {
+      vi.setSystemTime(Number(media.inbox?.media_next_attempt_at) * 1000);
+      await worker.scheduled({} as ScheduledController, media.env, context());
+      expect(media.inbox).toMatchObject({
+        status: "media_retry",
+        media_state: "retry_wait",
+        media_attempts: expected.attempts,
+        media_error_class: expected.error,
+      });
+      expect(Number(media.inbox?.media_next_attempt_at) - Math.floor(Date.now() / 1000)).toBe(expected.delay);
+    }
+
+    vi.setSystemTime(Number(media.inbox?.media_next_attempt_at) * 1000);
+    await worker.scheduled({} as ScheduledController, media.env, context());
+    expect(media.inbox).toMatchObject({ status: "queued", media_state: "stored", media_attempts: 5, media_error_class: null });
+    expect(media.metadataAttempts).toBe(5);
+    expect(media.mediaDownloads).toBe(1);
+    expect(media.mediaPuts).toHaveLength(1);
+    expect(media.mediaPuts[0]?.options.expiration).toBe(media.inbox?.media_expires_at);
+
+    const duplicate = pendingContext();
+    await worker.fetch(
+      new Request("https://example.test/webhooks/whatsapp", {
+        method: "POST",
+        body,
+        headers: { "x-hub-signature-256": await signature("app-secret", body) },
+      }),
+      media.env,
+      duplicate.context,
+    );
+    await duplicate.drain();
+    expect(media.metadataAttempts).toBe(5);
+    expect(media.mediaPuts).toHaveLength(1);
+
+    vi.setSystemTime((Number(media.inbox?.media_expires_at) - 1) * 1000);
+    await worker.scheduled({} as ScheduledController, media.env, context());
+    expect(media.inbox).toMatchObject({ status: "queued", media_state: "stored" });
+    expect(media.mediaDeletes).toHaveLength(0);
+
+    vi.setSystemTime((Number(media.inbox?.media_expires_at) + 1) * 1000);
+    await worker.scheduled({} as ScheduledController, media.env, context());
+    expect(media.inbox).toMatchObject({
+      status: "failed",
+      media_state: "expired",
+      media_object_key: null,
+      media_error_class: "media_retention_expired",
+    });
+    expect(media.mediaDeletes).toHaveLength(1);
+  });
+
+  it("stops inbound media retry after five failed attempts without producing a queued message", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-18T14:00:00Z"));
+    const media = inboundMediaRetryEnvironment([503, 503, 503, 503, 503]);
+    const body = JSON.stringify({
+      entry: [{ changes: [{ value: {
+        metadata: { phone_number_id: "phone-id" },
+        messages: [{
+          id: "wamid.audio.exhausted", from: "5537999990000", timestamp: String(Math.floor(Date.now() / 1000)),
+          type: "audio", audio: { id: "media-1", mime_type: "audio/ogg" },
+        }],
+      } }] }],
+    });
+    const pending = pendingContext();
+    await worker.fetch(
+      new Request("https://example.test/webhooks/whatsapp", {
+        method: "POST", body, headers: { "x-hub-signature-256": await signature("app-secret", body) },
+      }),
+      media.env,
+      pending.context,
+    );
+    await pending.drain();
+    for (let attempt = 2; attempt <= 5; attempt += 1) {
+      vi.setSystemTime(Number(media.inbox?.media_next_attempt_at) * 1000);
+      await worker.scheduled({} as ScheduledController, media.env, context());
+    }
+    expect(media.inbox).toMatchObject({
+      status: "failed",
+      media_state: "failed",
+      media_attempts: 5,
+      media_error_class: "meta_metadata_server_error",
+    });
+    expect(media.metadataAttempts).toBe(5);
+    expect(media.mediaDownloads).toBe(0);
+    expect(media.mediaPuts).toHaveLength(0);
+  });
+
+  it("keeps the legacy one-shot media path working while migration 0008 is not applied", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-18T15:00:00Z"));
+    const media = inboundMediaRetryEnvironment(["success"], { schemaMissing: true });
+    const body = JSON.stringify({
+      entry: [{ changes: [{ value: {
+        metadata: { phone_number_id: "phone-id" },
+        messages: [{
+          id: "wamid.audio.legacy", from: "5537999990000", timestamp: String(Math.floor(Date.now() / 1000)),
+          type: "audio", audio: { id: "media-1", mime_type: "audio/ogg" },
+        }],
+      } }] }],
+    });
+    const pending = pendingContext();
+    await worker.fetch(
+      new Request("https://example.test/webhooks/whatsapp", {
+        method: "POST", body, headers: { "x-hub-signature-256": await signature("app-secret", body) },
+      }),
+      media.env,
+      pending.context,
+    );
+    await pending.drain();
+
+    expect(media.inbox).toMatchObject({ status: "queued", media_object_key: expect.any(String) });
+    expect(media.metadataAttempts).toBe(1);
+    expect(media.mediaDownloads).toBe(1);
+    expect(media.mediaPuts).toHaveLength(1);
+    expect(media.mediaPuts[0]?.options.expirationTtl).toBe(172800);
+  });
+
+  it("fails closed on a non-retryable Meta media 4xx", async () => {
+    const media = inboundMediaRetryEnvironment([400]);
+    const body = JSON.stringify({
+      entry: [{ changes: [{ value: {
+        metadata: { phone_number_id: "phone-id" },
+        messages: [{
+          id: "wamid.audio.bad-request", from: "5537999990000", timestamp: String(Math.floor(Date.now() / 1000)),
+          type: "audio", audio: { id: "media-1", mime_type: "audio/ogg" },
+        }],
+      } }] }],
+    });
+    const pending = pendingContext();
+    await worker.fetch(
+      new Request("https://example.test/webhooks/whatsapp", {
+        method: "POST", body, headers: { "x-hub-signature-256": await signature("app-secret", body) },
+      }),
+      media.env,
+      pending.context,
+    );
+    await pending.drain();
+
+    expect(media.inbox).toMatchObject({
+      status: "failed",
+      media_state: "failed",
+      media_attempts: 1,
+      media_error_class: "meta_metadata_client_error",
+      media_next_attempt_at: null,
+    });
+    expect(media.mediaPuts).toHaveLength(0);
+  });
+
+  it("rejects non-HTTPS or non-official Meta metadata URLs before sending credentials", async () => {
+    const media = inboundMediaRetryEnvironment(["success"], {
+      metadataUrl: "https://attacker.example/private-audio",
+    });
+    const pending = pendingContext();
+    await worker.fetch(await inboundAudioRequest("wamid.audio.untrusted-url"), media.env, pending.context);
+    await pending.drain();
+
+    expect(media.inbox).toMatchObject({
+      status: "failed",
+      media_state: "failed",
+      media_error_class: "meta_media_url_not_allowed",
+    });
+    expect(media.mediaDownloads).toBe(0);
+    expect(media.mediaPuts).toHaveLength(0);
+  });
+
+  it("does not follow an official Meta media redirect to an untrusted host", async () => {
+    const media = inboundMediaRetryEnvironment(["success"], {
+      redirectLocation: "https://attacker.example/redirected-audio",
+    });
+    const pending = pendingContext();
+    await worker.fetch(await inboundAudioRequest("wamid.audio.redirect-outside"), media.env, pending.context);
+    await pending.drain();
+
+    expect(media.inbox).toMatchObject({
+      status: "failed",
+      media_state: "failed",
+      media_error_class: "meta_media_url_not_allowed",
+    });
+    expect(media.mediaDownloads).toBe(1);
+    expect(media.mediaPuts).toHaveLength(0);
+  });
+
+  it("stops a streaming Meta media download as soon as the byte limit is crossed", async () => {
+    const largeChunk = new Uint8Array(9 * 1024 * 1024);
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        controller.enqueue(largeChunk);
+        if (pulls >= 2) controller.close();
+      },
+    });
+    const media = inboundMediaRetryEnvironment(["success"], {
+      metadataSize: 0,
+      downloadBody: body,
+    });
+    const pending = pendingContext();
+    await worker.fetch(await inboundAudioRequest("wamid.audio.streaming-limit"), media.env, pending.context);
+    await pending.drain();
+
+    expect(media.inbox).toMatchObject({
+      status: "failed",
+      media_state: "failed",
+      media_error_class: "media_size_limit",
+    });
+    expect(pulls).toBe(2);
+    expect(media.mediaPuts).toHaveLength(0);
+  });
+
+  it("does not queue a duplicate WhatsApp response when a terminal bridge result is replayed", async () => {
+    const target = inboundResultIdempotencyEnvironment();
+    const request = () => new Request("https://example.test/bridge/messages/wamid.result.idempotent/result", {
+      method: "POST",
+      headers: { authorization: "Bearer bridge-secret", "content-type": "application/json" },
+      body: JSON.stringify({ machine_id: "machine", status: "completed", response: "Resposta unica" }),
+    });
+
+    const first = await worker.fetch(request(), target.env, context());
+    const replay = await worker.fetch(request(), target.env, context());
+
+    expect(await first.json()).toMatchObject({ success: true, status: "completed", queued_parts: 1 });
+    expect(await replay.json()).toMatchObject({
+      success: true,
+      status: "completed",
+      queued_parts: 0,
+      idempotent_replay: true,
+    });
+    expect(target.outboxByKey.size).toBe(1);
+    expect([...target.outboxByKey.keys()]).toEqual(["inbound_result:wamid.result.idempotent:1"]);
+  });
+
   it("informs an unregistered WhatsApp number that it has no Black Jhon permission", async () => {
     const unauthorized = unauthorizedEnvironment();
     const phone = "5537999993818";
@@ -513,6 +1144,69 @@ describe("public gateway routes", () => {
       context(),
     );
     expect(response.status).toBe(401);
+  });
+
+  it("requires an active machine binding for status and inbound media reads", async () => {
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind(..._values: unknown[]) {
+            return {
+              async first() {
+                if (sql.includes("FROM bindings WHERE active=1 AND machine_id=")) return null;
+                return null;
+              },
+            };
+          },
+        };
+      },
+    };
+    const scopedEnv = { DB: db, BRIDGE_TOKEN: "bridge-secret" } as any;
+    const missing = await worker.fetch(
+      new Request("https://example.test/bridge/status", { headers: { authorization: "Bearer bridge-secret" } }),
+      scopedEnv,
+      context(),
+    );
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toMatchObject({ success: false, error: "machine_id_required" });
+
+    const inactive = await worker.fetch(
+      new Request("https://example.test/bridge/status?machine_id=other-machine", { headers: { authorization: "Bearer bridge-secret" } }),
+      scopedEnv,
+      context(),
+    );
+    expect(inactive.status).toBe(403);
+    expect(await inactive.json()).toMatchObject({ success: false, error: "binding_machine_inactive" });
+
+    const media = await worker.fetch(
+      new Request("https://example.test/bridge/media/wamid.private?machine_id=other-machine", { headers: { authorization: "Bearer bridge-secret" } }),
+      scopedEnv,
+      context(),
+    );
+    expect(media.status).toBe(404);
+    expect(await media.json()).toMatchObject({ success: false, error: "media_not_found" });
+  });
+
+  it("blocks proactive text when machine_id does not own the active subject binding", async () => {
+    const target = outboundImageEnvironment({ machineId: "machine-owner" });
+    const response = await worker.fetch(
+      new Request("https://example.test/bridge/proactive", {
+        method: "POST",
+        headers: { authorization: "Bearer bridge-secret", "content-type": "application/json" },
+        body: JSON.stringify({
+          subject_id: "subject",
+          machine_id: "machine-attacker",
+          fingerprint: "task:machine-scope:123456",
+          event_type: "task_completed",
+          text: "conteudo privado",
+        }),
+      }),
+      target.env,
+      context(),
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ success: false, error: "binding_machine_mismatch" });
+    expect(target.graphRequests).toHaveLength(0);
   });
 
   it("registers name-targeted phone bindings directly without sending a confirmation message", async () => {
@@ -863,6 +1557,38 @@ describe("public gateway routes", () => {
     expect(reservation?.sql).toContain("COUNT(*)");
   });
 
+  it("sends an idempotent product photo for a completed voice task", async () => {
+    const { env: imageEnv, sqlCalls, graphRequests } = outboundImageEnvironment();
+    const form = await imageForm({
+      subject_id: "subject",
+      machine_id: "machine",
+      fingerprint: "voice-product:0123456789abcdef",
+      event_type: "task_completed",
+      artifact_type: "product_photo",
+      caption: "Loja Principal - MLB123456 - Foto 1/1",
+    }, { bytes: TEST_JPEG, mime: "image/jpeg", name: "MLB123456-1.jpg" });
+    const response = await worker.fetch(
+      new Request("https://example.test/bridge/proactive/image", {
+        method: "POST",
+        body: form,
+        headers: { authorization: "Bearer bridge-secret" },
+      }),
+      imageEnv,
+      context(),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ success: true, status: "sent", mime: "image/jpeg" });
+    const send = graphRequests[1];
+    expect(JSON.parse(String(send.body))).toMatchObject({
+      to: "553798379212",
+      type: "image",
+      image: { id: "media-id", caption: "Loja Principal - MLB123456 - Foto 1/1" },
+    });
+    const reservation = sqlCalls.find((item) => item.operation === "run" && item.sql.includes("INSERT OR IGNORE INTO outbound_media"));
+    expect(reservation?.values).toContain("proactive:task_completed:voice-product:0123456789abcdef");
+    expect(reservation?.values).toContain("product_photo");
+  });
+
   it("rejects unsupported proactive image events and artifacts before D1", async () => {
     const { env: imageEnv, sqlCalls, graphRequests } = outboundImageEnvironment();
     const form = await imageForm({
@@ -1049,6 +1775,94 @@ describe("public gateway routes", () => {
     expect(exhaustedResponse.status).toBe(429);
     expect(await exhaustedResponse.json()).toMatchObject({ success: false, error: "outbound_media_month_limit" });
     expect(exhausted.graphRequests).toHaveLength(0);
+  });
+
+  it("does not report a live outbound-media processing lease as success", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const processing = outboundImageEnvironment({
+      reserve: false,
+      existing: {
+        status: "processing",
+        attempts: 1,
+        lease_until: now + 120,
+        byte_size: TEST_PNG.byteLength,
+        mime_type: "image/png",
+      },
+    });
+    const form = await imageForm({
+      subject_id: "subject",
+      machine_id: "machine",
+      fingerprint: "weekly:lease-active:2026-07-18",
+      event_type: "weekly_report",
+      artifact_type: "report_chart",
+    });
+    const response = await worker.fetch(
+      new Request("https://example.test/bridge/proactive/image", {
+        method: "POST",
+        body: form,
+        headers: { authorization: "Bearer bridge-secret" },
+      }),
+      processing.env,
+      context(),
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      success: false,
+      status: "processing",
+      error: "outbound_media_processing",
+    });
+    expect(processing.graphRequests).toHaveLength(0);
+  });
+
+  it("resumes an expired outbound-media lease with the same uploaded media id", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const resumed = outboundImageEnvironment({
+      reserve: false,
+      existing: {
+        status: "processing",
+        attempts: 1,
+        lease_until: now - 1,
+        meta_media_id: "existing-media-id",
+        byte_size: TEST_PNG.byteLength,
+        mime_type: "image/png",
+      },
+    });
+    const form = await imageForm({
+      subject_id: "subject",
+      machine_id: "machine",
+      fingerprint: "weekly:lease-expired:2026-07-18",
+      event_type: "weekly_report",
+      artifact_type: "report_chart",
+    });
+    const response = await worker.fetch(
+      new Request("https://example.test/bridge/proactive/image", {
+        method: "POST",
+        body: form,
+        headers: { authorization: "Bearer bridge-secret" },
+      }),
+      resumed.env,
+      context(),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ success: true, status: "sent" });
+    expect(resumed.graphRequests.map((item) => item.url)).toEqual([
+      "https://graph.facebook.com/v25.0/phone-id/messages",
+    ]);
+    expect(JSON.parse(String(resumed.graphRequests[0].body))).toMatchObject({
+      image: { id: "existing-media-id" },
+    });
+    expect(resumed.sqlCalls.some((item) => item.sql.includes("attempts=attempts+1"))).toBe(true);
+  });
+
+  it("ships the additive outbound-media lease migration", () => {
+    const migration = String.raw`${readFileSync(
+      new URL("../migrations/0009_outbound_media_lease.sql", import.meta.url),
+      "utf8",
+    )}`.toLowerCase();
+    expect(migration).toContain("attempts integer not null default 0");
+    expect(migration).toContain("lease_owner text");
+    expect(migration).toContain("lease_until integer");
+    expect(migration).toContain("last_attempt_at integer");
   });
 
   it("rejects an altered proactive chart before reserving outbound quota", async () => {

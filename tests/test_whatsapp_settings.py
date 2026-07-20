@@ -49,6 +49,7 @@ def test_ai_and_dual_settings_components_match_facade() -> None:
         (settings.normalize_codex_reasoning_policy, ("automatic",)),
         (settings.normalize_codex_agent_model, ("modelo invalido!", "gpt-5.6-sol")),
         (settings.normalize_agent_architecture, ("triple",)),
+        (settings.normalize_response_provider_policy, ("por_complexidade",)),
         (settings.normalize_voice_model, ("voz invalida!", "gpt-4o-mini-tts")),
         (settings.normalize_voice_name, ("unknown",)),
     ],
@@ -109,3 +110,39 @@ def test_phone_preferences_are_normalized_per_subject() -> None:
         "client_id": "000001",
         "username": "usuario@example.com",
     }
+
+
+def test_codex_is_the_core_and_ai_model_is_only_optional_fallback() -> None:
+    configured = settings.ai_settings({
+        "ai_model": "deepseek-chat",
+        "response_provider_policy": "codex_then_configured_fallback",
+    })
+    assert configured["provider"] == "codex"
+    assert configured["fallback_provider"] == "deepseek"
+    assert configured["fallback_model"] == "deepseek-chat"
+    assert configured["response_provider_policy"] == "codex_then_configured_fallback"
+
+
+def test_legacy_function_manager_fields_are_not_written_again(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr(whatsapp_bridge, "_json_read", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_json_write",
+        lambda _path, value: captured.update(dict(value)),
+    )
+
+    runtime_value = whatsapp_bridge._save_config({
+        "function_manager_enabled": False,
+        "function_manager_worker_count": 1,
+        "function_manager_runtime_pool_size": 1,
+        "data_selection_enabled": True,
+        "data_selection_worker_count": 3,
+        "data_selection_runtime_pool_size": 3,
+    })
+
+    assert runtime_value["function_manager_legacy_fields_ignored"] is True
+    assert captured["version"] == 10
+    assert captured["response_provider_policy"] == "codex_only"
+    assert captured["data_selection_worker_count"] == 3
+    assert not any(key.startswith("function_manager_") for key in captured)

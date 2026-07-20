@@ -38,6 +38,7 @@ from backend.services.whatsapp import report_scheduling as whatsapp_report_sched
 from backend.services.whatsapp import retry_policy as whatsapp_retry_policy
 from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp import tool_results as whatsapp_tool_results
+from backend.services.whatsapp import context_hub_telemetry as whatsapp_context_hub_telemetry
 from backend.services.whatsapp.contracts import (
     _QuestionResearchPending,
     WhatsappAdhocMessageRequest,
@@ -190,15 +191,29 @@ def _personal_number_status(config: dict[str, Any], worker: dict[str, Any]) -> t
     return personal_numbers, max(1, min(3, int(worker.get("binding_limit_per_user") or 3)))
 
 
-def _conversation_context_status(state: dict[str, Any]) -> dict[str, int]:
+def _conversation_context_status(state: dict[str, Any]) -> dict[str, Any]:
     records = [
         item for item in (state.get("dual_agent_conversations") or {}).values() if isinstance(item, dict)
     ] if isinstance(state.get("dual_agent_conversations"), dict) else []
+    latest = max(records, key=lambda item: float(item.get("last_activity_at_epoch") or 0), default={})
     return {
         "conversations": len(records),
         "with_persisted_context": sum(1 for item in records if list(item.get("recent_turns") or [])),
         "persisted_turns": sum(len(list(item.get("recent_turns") or [])) for item in records),
         "max_turns_per_conversation": 16,
+        "references_ttl_days": 30,
+        "threads_reused": sum(1 for item in records if item.get("thread_reused") is True),
+        "threads_restarted": sum(1 for item in records if str(item.get("thread_reset_reason") or "")),
+        "last_thread": {
+            "reused": latest.get("thread_reused") is True,
+            "reset_reason": str(latest.get("thread_reset_reason") or "")[:120],
+            "prompt_version": str(latest.get("prompt_version") or "")[:120],
+            "prompt_hash": str(latest.get("prompt_hash") or "")[:128],
+            "schema_version": str(latest.get("schema_version") or "")[:120],
+            "context_chars": max(0, int(latest.get("context_chars") or 0)),
+            "response_provider": str(latest.get("response_provider") or "")[:40],
+            "codex_failure_count": max(0, int(latest.get("codex_failure_count") or 0)),
+        },
     }
 
 
@@ -207,7 +222,7 @@ def _runtime_public_status(
     dispatcher: dict[str, Any],
     sol_capacity: dict[str, Any],
     dual_runtime: dict[str, Any],
-    conversation_context: dict[str, int],
+    conversation_context: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "running": bool(RUNTIME_STATE.get("running")),
@@ -254,13 +269,111 @@ def _zero_cost_public_status(worker: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _diagnostic_int(value: Any, *, maximum: int = 2_147_483_647) -> int:
+    try:
+        return max(0, min(maximum, int(value or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _diagnostic_code(value: Any, maximum: int) -> str:
+    text = str(value or "").strip()
+    return text[:maximum] if re.fullmatch(rf"[A-Za-z0-9_.:+-]{{1,{maximum}}}", text) else ""
+
+
+def _public_context_hub_diagnostic(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    documents: list[dict[str, str]] = []
+    for raw in list(source.get("documents") or [])[:12]:
+        if not isinstance(raw, dict):
+            continue
+        document: dict[str, str] = {}
+        doc_id = str(raw.get("doc_id") or "").strip()
+        if re.fullmatch(r"jk:[A-Za-z0-9:_./-]{1,236}", doc_id) or re.fullmatch(r"sha256:[a-f0-9]{64}", doc_id):
+            document["doc_id"] = doc_id
+        for key in ("chunk_id_hash", "source_hash"):
+            digest = str(raw.get(key) or "").strip().lower()
+            if re.fullmatch(r"[a-f0-9]{32,128}", digest):
+                document[key] = digest
+        if document:
+            documents.append(document)
+    query_hash = str(source.get("query_hash") or "").strip().lower()
+    return {
+        "query_hash": query_hash if re.fullmatch(r"[a-f0-9]{64}", query_hash) else "",
+        "intent": _diagnostic_code(source.get("intent"), 80),
+        "generation_id": _diagnostic_code(source.get("generation_id"), 160),
+        "source_version": _diagnostic_code(source.get("source_version"), 120),
+        "result_count": _diagnostic_int(source.get("result_count"), maximum=12),
+        "documents": documents,
+        "latency_ms": _diagnostic_int(source.get("latency_ms")),
+        "status": _diagnostic_code(source.get("status"), 80),
+    }
+
+
+def _data_selection_recent_for_client(state: dict[str, Any], client_id: Any) -> list[dict[str, Any]]:
+    safe_client_id = whatsapp_context_hub_telemetry.safe_internal_client_id(client_id)
+    if not safe_client_id:
+        return []
+    raw_history = state.get("data_selection_diagnostics")
+    if not isinstance(raw_history, list):
+        raw_history = state.get("function_manager_diagnostics")
+    filtered = [
+        item for item in list(raw_history or [])
+        if isinstance(item, dict)
+        and whatsapp_context_hub_telemetry.safe_internal_client_id(item.get("client_id")) == safe_client_id
+    ][-10:]
+    public: list[dict[str, Any]] = []
+    for item in filtered:
+        entry: dict[str, Any] = {
+            "job_id": _diagnostic_code(item.get("job_id"), 100),
+            "agent_role": _diagnostic_code(item.get("agent_role"), 80),
+            "status": _diagnostic_code(item.get("status"), 80),
+            "reason": _diagnostic_code(item.get("reason"), 120),
+            "effective_model": _diagnostic_code(item.get("effective_model"), 100),
+            "reasoning_effort": _diagnostic_code(item.get("reasoning_effort"), 20),
+            "speed": _diagnostic_code(item.get("speed"), 20),
+            "service_tier": _diagnostic_code(item.get("service_tier"), 40),
+            "planning_duration_ms": _diagnostic_int(item.get("planning_duration_ms")),
+            "tools_duration_ms": _diagnostic_int(item.get("tools_duration_ms")),
+            "total_duration_ms": _diagnostic_int(item.get("total_duration_ms")),
+            "tool_ids": [
+                safe for safe in (_diagnostic_code(tool_id, 100) for tool_id in list(item.get("tool_ids") or [])[:6])
+                if safe
+            ],
+            "validations": [
+                {
+                    "tool_id": _diagnostic_code(validation.get("tool_id"), 100),
+                    "required": validation.get("required") is True,
+                    "dados_suficientes": validation.get("dados_suficientes") is True,
+                }
+                for validation in list(item.get("validations") or [])[:12]
+                if isinstance(validation, dict) and _diagnostic_code(validation.get("tool_id"), 100)
+            ],
+            "requires_sol": item.get("requires_sol") is True,
+            "requires_web": item.get("requires_web") is True,
+            "retry_count": _diagnostic_int(item.get("retry_count"), maximum=100),
+            "recorded_at": _diagnostic_code(item.get("recorded_at"), 80),
+        }
+        if isinstance(item.get("context_hub"), dict):
+            entry["context_hub"] = _public_context_hub_diagnostic(item["context_hub"])
+        public.append(entry)
+    return public
+
+
+def _function_manager_recent_for_client(state: dict[str, Any], client_id: Any) -> list[dict[str, Any]]:
+    """Compatibilidade read-only; o Function Manager semantico nao executa mais."""
+
+    return _data_selection_recent_for_client(state, client_id)
+
+
 def _public_status(config: dict[str, Any], worker: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     whisper = _whisper_status()
+    audio_messages = _audio_messages_status()
     codex = codex_console._codex_status_payload()
     ai_settings = _whatsapp_ai_settings(config)
     dual_settings = _whatsapp_dual_agent_settings(config)
     dual_runtime = codex_whatsapp_agents.CONVERSATION_RUNTIME.diagnostics()
-    function_manager_runtime = codex_whatsapp_agents.FUNCTION_MANAGER_RUNTIME.diagnostics()
+    data_selection_runtime = codex_whatsapp_agents.DATA_SELECTION_RUNTIME.diagnostics()
     dispatcher = _phone_dispatch_diagnostics()
     sol_capacity = codex_console._codex_dual_sol_diagnostics()
     worker = worker if isinstance(worker, dict) else _worker_health(config) if config.get("worker_url") and config.get("bridge_token") else {"success": False, "worker": False, "error": "nao_configurado"}
@@ -274,7 +387,7 @@ def _public_status(config: dict[str, Any], worker: Optional[dict[str, Any]] = No
     conversation_context_status = _conversation_context_status(state)
     return {
         "success": True,
-        "config_version": int(config.get("version") or 9),
+        "config_version": int(config.get("version") or 10),
         "enabled": bool(config.get("enabled")),
         "configured": bool(config.get("worker_url") and config.get("bridge_token")),
         "worker_url": str(config.get("worker_url") or ""),
@@ -282,6 +395,8 @@ def _public_status(config: dict[str, Any], worker: Optional[dict[str, Any]] = No
         "business_phone": str(config.get("business_phone") or ""),
         "ai_model": ai_settings["model"],
         "ai_provider": ai_settings["provider"],
+        "fallback_model": ai_settings["fallback_model"],
+        "fallback_provider": ai_settings["fallback_provider"],
         "codex_reasoning_effort": ai_settings["codex_reasoning_effort"],
         "codex_reasoning_policy": ai_settings["codex_reasoning_policy"],
         "codex_reasoning_max": ai_settings["codex_reasoning_max"],
@@ -293,12 +408,17 @@ def _public_status(config: dict[str, Any], worker: Optional[dict[str, Any]] = No
         "active_task_policy": "steer_or_queue",
         **dual_settings,
         "dual_agent_runtime": dual_runtime,
-        "function_manager_runtime": function_manager_runtime,
-        "function_manager_recent": [
-            item
-            for item in list(state.get("function_manager_diagnostics") or [])[-10:]
-            if isinstance(item, dict)
-        ],
+        "black_jhon_prompt_contract": dual_runtime.get("prompt_contract") or {},
+        "data_selection_runtime": data_selection_runtime,
+        "data_selection_recent": _data_selection_recent_for_client(state, config.get("client_id")),
+        # Campos antigos permanecem consultaveis, mas deixam explicito que nao
+        # representam um segundo agente semantico em execucao.
+        "function_manager_runtime": {
+            **data_selection_runtime,
+            "legacy_ignored": True,
+            "replaced_by": "data_selection",
+        },
+        "function_manager_recent": _data_selection_recent_for_client(state, config.get("client_id")),
         "conversation_context": conversation_context_status,
         "conversation_dispatcher": dispatcher,
         "task_agent_capacity": sol_capacity,
@@ -322,6 +442,7 @@ def _public_status(config: dict[str, Any], worker: Optional[dict[str, Any]] = No
         "worker": worker,
         "persistence": persistence,
         "whisper": whisper,
+        "audio_messages": audio_messages,
         "joao": {"ready": bool(codex.get("ready")), "enabled": bool(codex.get("enabled")), "message": codex.get("message")},
         "voice": voice_status,
         "runtime": _runtime_public_status(

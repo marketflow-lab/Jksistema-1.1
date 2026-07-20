@@ -20,12 +20,17 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 import pandas as pd
+from backend.services.sqlite_coordination import (
+    configure_sqlite_connection,
+    sqlite_lock_for_path,
+    sqlite_locks_for_paths,
+)
 
 from .dependencies import get_tenant_path, logger
 from .errors import VendasDomainError as HTTPException
 from .legacy import (
     _bling_obter_numero_nf,
-    _bling_refresh_token,
+    _bling_renovar_token_loja,
     _carregar_mapeamento_lojas_virtuais_cliente,
     _classificar_unidade_virtual_devolucao,
     _deduplicar_vendas_consolidadas,
@@ -37,7 +42,6 @@ from .legacy import (
     _sql_filtro_loja_vendas,
     _sql_filtro_unidade_com_mapa,
     _sql_filtro_unidade_devolucao,
-    atualizar_api_loja,
     buscar_loja,
 )
 from .performance import (
@@ -291,16 +295,12 @@ def listar_vendas(
                         resolucoes_nf += 1
                         numero_nf, status_nf = _bling_obter_numero_nf(access_token, nota_fiscal_id)
                         if status_nf == 401 and estado.get("refresh_token") and estado.get("id") and estado.get("secret"):
-                            novos = _bling_refresh_token(estado["id"], estado["secret"], estado["refresh_token"])
-                            estado["access_token"] = novos.get("access_token")
-                            estado["refresh_token"] = novos.get("refresh_token", estado.get("refresh_token"))
-                            atualizar_api_loja(client_id, loja_conta, "bling", {
-                                "id": estado["id"],
-                                "secret": estado["secret"],
-                                "access_token": estado["access_token"],
-                                "refresh_token": estado["refresh_token"],
-                                "connected": True,
-                                "updated_at": str(time.time())
+                            renovado = _bling_renovar_token_loja(client_id, loja_conta, estado)
+                            estado.update({
+                                "access_token": renovado.get("access_token"),
+                                "refresh_token": renovado.get("refresh_token"),
+                                "id": renovado.get("id") or estado.get("id"),
+                                "secret": renovado.get("secret") or estado.get("secret"),
                             })
                             numero_nf, status_nf = _bling_obter_numero_nf(estado["access_token"], nota_fiscal_id)
                         if status_nf != 200:
@@ -312,12 +312,33 @@ def listar_vendas(
                     if id_unico:
                         atualizacoes_nf.append((numero_nf, id_unico))
 
-            if atualizacoes_loja:
-                cur.executemany("UPDATE vendas SET unidade_negocio = ? WHERE id_unico = ?", atualizacoes_loja)
-            if atualizacoes_nf:
-                cur.executemany("UPDATE vendas SET numero_nf = ? WHERE id_unico = ?", atualizacoes_nf)
             if atualizacoes_loja or atualizacoes_nf:
-                conn.commit()
+                conn.close()
+                conn = None
+                with sqlite_lock_for_path(alvo):
+                    write_conn = sqlite3.connect(alvo, timeout=15)
+                    try:
+                        configure_sqlite_connection(write_conn)
+                        write_conn.execute("BEGIN IMMEDIATE")
+                        write_cur = write_conn.cursor()
+                        if atualizacoes_loja:
+                            write_cur.executemany(
+                                "UPDATE vendas SET unidade_negocio = ? WHERE id_unico = ?",
+                                atualizacoes_loja,
+                            )
+                        if atualizacoes_nf:
+                            write_cur.executemany(
+                                "UPDATE vendas SET numero_nf = ? WHERE id_unico = ?",
+                                atualizacoes_nf,
+                            )
+                        write_conn.commit()
+                    except BaseException:
+                        if write_conn.in_transaction:
+                            write_conn.rollback()
+                        raise
+                    finally:
+                        write_conn.close()
+                invalidate_vendas_cache(client_id)
 
             for item in dados:
                 item.pop("id_unico", None)
@@ -685,19 +706,22 @@ def limpar_todos_bancos_vendas(client_id: str):
         return {"success": True, "arquivos_removidos": []}
 
     removidos = []
-    for nome in os.listdir(tenant_path):
-        if not (nome.startswith("vendas_historico") and nome.endswith(".db")):
-            continue
-        base = os.path.join(tenant_path, nome)
-        candidatos = [base, f"{base}-wal", f"{base}-shm"]
-        for arq in candidatos:
-            if not os.path.exists(arq):
-                continue
-            try:
-                os.remove(arq)
-                removidos.append(os.path.basename(arq))
-            except Exception:
-                logger.exception(f"Falha ao remover arquivo de vendas: {arq}")
+    bases = [
+        os.path.join(tenant_path, nome)
+        for nome in os.listdir(tenant_path)
+        if nome.startswith("vendas_historico") and nome.endswith(".db")
+    ]
+    with sqlite_locks_for_paths(bases):
+        for base in bases:
+            candidatos = [base, f"{base}-wal", f"{base}-shm"]
+            for arq in candidatos:
+                if not os.path.exists(arq):
+                    continue
+                try:
+                    os.remove(arq)
+                    removidos.append(os.path.basename(arq))
+                except Exception:
+                    logger.exception(f"Falha ao remover arquivo de vendas: {arq}")
 
     invalidate_vendas_cache(client_id)
     return {

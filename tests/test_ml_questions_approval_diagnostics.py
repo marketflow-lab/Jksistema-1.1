@@ -105,8 +105,8 @@ def test_approval_diagnostics_omits_absent_or_invalid_values():
 
 
 def test_diagnostic_persistence_is_only_wired_to_listing_question_approval():
-    listing_source = inspect.getsource(endpoints.ml_perguntas_automacao_poll)
-    post_sale_source = inspect.getsource(endpoints.ml_pos_venda_automacao_poll)
+    listing_source = inspect.getsource(endpoints._customer_reply_question_approval)
+    post_sale_source = inspect.getsource(endpoints._customer_reply_post_sale_approval)
 
     assert "approval.update(_perguntas_ia_diagnostico_aprovacao(contexto))" in listing_source
     assert "_perguntas_ia_diagnostico_aprovacao" not in post_sale_source

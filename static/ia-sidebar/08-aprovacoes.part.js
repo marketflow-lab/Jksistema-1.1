@@ -36,6 +36,15 @@
       }
     }
 
+    function _approvalEhPosVenda(payload) {
+      if (!payload || typeof payload !== 'object') return false;
+      return [payload.tipo, payload.approval_type, payload.origem, payload.ia_origem, payload.ia_finalidade]
+        .some((value) => {
+          const marker = String(value || '').trim().toLowerCase();
+          return marker.includes('pos_venda') || marker.includes('pos-venda');
+        });
+    }
+
     function _approvalIndexNoHistorico(approvalId) {
       const id = String(approvalId || '').trim();
       if (!id) return -1;
@@ -51,6 +60,7 @@
     }
 
     function _approvalSalvarNoHistorico(payload) {
+      if (_approvalEhPosVenda(payload)) return;
       const id = String((payload && payload.id) || '').trim();
       const texto = _approvalSerializarMensagem(payload);
       if (!id || !texto) return;
@@ -76,6 +86,7 @@
       }
       mensagensAtuais.forEach(m => {
         const approvalPayload = _approvalParseMensagem(m && m.text);
+        if (_approvalEhPosVenda(approvalPayload)) return;
         const div = document.createElement('div');
         div.className = 'jk-ia-msg ' + (approvalPayload ? 'assistant' : (m.role || 'assistant'));
         if (approvalPayload) {
@@ -92,6 +103,7 @@
     function addMsg(role, texto, salvar = true) {
       const msgsEl = document.getElementById('jk-ia-msgs');
       const approvalPayload = _approvalParseMensagem(texto);
+      if (_approvalEhPosVenda(approvalPayload)) return null;
       const div = document.createElement('div');
       div.className = 'jk-ia-msg ' + (approvalPayload ? 'assistant' : role);
       if (approvalPayload) {
@@ -374,6 +386,9 @@
     }
 
     function _approvalUsarRespostaNaTela(payload, respostaAtual, opcoes = {}) {
+      if (_approvalEhPosVenda(payload)) {
+        return { ok: false, blocked: true, message: 'Sugestoes de IA estao desativadas no pos-venda.' };
+      }
       const detail = _approvalPayloadComRespostaAtual(payload, respostaAtual, {
         force: opcoes.force === true,
         focus: opcoes.focus !== false,
@@ -418,6 +433,7 @@
 
     function _approvalMontarCard(container, payload) {
       payload = payload || {};
+      if (_approvalEhPosVenda(payload)) return null;
       const approvalId = String(payload.id || '').trim();
       if (!approvalId || !container) return null;
       window.__JK_IA_APPROVAL_NOTIFIED__ = window.__JK_IA_APPROVAL_NOTIFIED__ || {};
@@ -599,6 +615,7 @@
 
     function _approvalPersistirNoHistoricoBlackJhon(payload) {
       if (!_usuarioLocalEhFull()) return;
+      if (_approvalEhPosVenda(payload)) return;
       const approvalId = String(payload && payload.id || '').trim();
       if (!approvalId) return;
       if (!codexMessagesAtuais.length) codexMessagesAtuais = _codexLerHistoricoLocal();
@@ -625,6 +642,7 @@
 
     function _approvalRenderNoPainelBlackJhon(payload, options = {}) {
       if (!_usuarioLocalEhFull() || blackJhonUsandoIaSecundaria) return false;
+      if (_approvalEhPosVenda(payload)) return false;
       const approvalId = String(payload && payload.id || '').trim();
       const lista = document.getElementById('jk-codex-messages');
       if (!approvalId || !lista) return false;
@@ -651,6 +669,7 @@
     function _adicionarNotificacaoAprovacao(payload, options = {}) {
       if (!_usuarioLocalEhFull()) return;
       payload = payload || {};
+      if (_approvalEhPosVenda(payload)) return;
       const approvalId = String(payload.id || '').trim();
       if (!approvalId) return;
       const abrirPainel = options.abrirPainel !== false;

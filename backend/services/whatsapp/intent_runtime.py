@@ -296,7 +296,7 @@ def _whatsapp_requested_api_providers(value: Any, domains: list[str]) -> list[st
     providers: list[str] = []
     if "bling" in text:
         providers.append("bling")
-    if "anuncios_ml" in domains or re.search(r"\b(mercado livre|mercadolivre|mlb\d+)\b", text):
+    if "anuncios_ml" in domains or re.search(r"\b(mercado livre|mercadolivre|mlb[\s_-]*\d+)\b", text):
         providers.append("mercado_livre")
     if "vendas" in domains and re.search(r"\b(api|apis|via api)\b", text) and not providers:
         providers.extend(["bling", "mercado_livre"])

@@ -59,6 +59,7 @@ def test_whatsapp_ai_defaults_and_validation():
     assert defaults["codex_reasoning_max"] == "xhigh"
     assert defaults["progress_interval_seconds"] == 8
     assert defaults["agent_architecture"] == "dual_codex"
+    assert defaults["response_provider_policy"] == "codex_only"
     assert defaults["conversation_agent_model"] == "gpt-5.6-luna"
     assert defaults["conversation_agent_reasoning"] == "low"
     assert defaults["task_agent_model"] == "gpt-5.6-sol"
@@ -71,7 +72,10 @@ def test_whatsapp_ai_defaults_and_validation():
     )
     assert settings == {
         "model": "vertex:gemini-2.5-flash",
-        "provider": "vertex",
+        "provider": "codex",
+        "fallback_model": "vertex:gemini-2.5-flash",
+        "fallback_provider": "vertex",
+        "response_provider_policy": "codex_only",
         "codex_reasoning_effort": "medium",
         "codex_reasoning_policy": "adaptive",
         "codex_reasoning_max": "medium",
@@ -239,7 +243,7 @@ def test_codex_running_task_steers_only_the_same_phone(codex_runtime):
 
 def test_phone_notification_defaults_preserve_questions_and_opt_in_reports():
     defaults = whatsapp_bridge._default_config()
-    assert defaults["version"] == 9
+    assert defaults["version"] == 10
     assert defaults["phone_notification_settings"] == {}
     assert whatsapp_bridge._phone_notification_settings({}, "subject-1") == {
         "subject_id": "subject-1",
@@ -268,7 +272,7 @@ def test_selected_codex_ai_passes_admin_model_and_reasoning(monkeypatch):
 
     monkeypatch.setattr(codex_console, "codex_criar_tarefa_para_sessao", fake_create)
     result = whatsapp_bridge._create_selected_ai_task(
-        {"ai_model": "codex:gpt-5.6-terra", "codex_reasoning_effort": "high"},
+        {"task_agent_model": "gpt-5.6-terra", "ai_model": "codex:gpt-5.5"},
         prompt="Analise as vendas",
         session=_full_session(),
         conversation_id="wa-conversation",
@@ -282,7 +286,7 @@ def test_selected_codex_ai_passes_admin_model_and_reasoning(monkeypatch):
     assert result["task"]["task_id"] == "task-codex"
     assert created["origin"] == "whatsapp"
     assert created["payload"].model == "gpt-5.6-terra"
-    assert created["payload"].reasoning_effort == "high"
+    assert created["payload"].reasoning_effort == "low"
     assert created["payload"].speed == "fast"
     assert created["payload"].service_tier == "priority"
     assert created["payload"].sandbox == "read_only"
@@ -340,21 +344,23 @@ def test_selected_codex_ai_preserves_authenticated_dual_worker_profile(monkeypat
     assert created["channel_metadata"]["allow_web_search"] is True
 
 
-def test_selected_non_codex_ai_uses_read_only_provider_task(monkeypatch):
+def test_configured_non_codex_fallback_never_replaces_codex_task(monkeypatch):
     created = {}
-
-    def fake_provider(**kwargs):
-        created.update(kwargs)
-        return {"success": True, "task": {"task_id": "task-provider"}}
-
-    monkeypatch.setattr(whatsapp_bridge, "_create_provider_task", fake_provider)
     monkeypatch.setattr(
-        codex_console,
-        "codex_criar_tarefa_para_sessao",
-        lambda *_args, **_kwargs: pytest.fail("Codex must not run for a Vertex selection"),
+        whatsapp_bridge,
+        "_create_provider_task",
+        lambda **_kwargs: pytest.fail("configured fallback must not be selected in the normal flow"),
     )
+    def fake_codex(payload, session, *, origin, channel_metadata):
+        created.update(payload=payload, session=session, origin=origin, channel_metadata=channel_metadata)
+        return {"success": True, "task": {"task_id": "task-codex"}}
+    monkeypatch.setattr(codex_console, "codex_criar_tarefa_para_sessao", fake_codex)
     result = whatsapp_bridge._create_selected_ai_task(
-        {"ai_model": "vertex:gemini-2.5-pro", "codex_reasoning_effort": "xhigh"},
+        {
+            "ai_model": "vertex:gemini-2.5-pro",
+            "response_provider_policy": "codex_then_configured_fallback",
+            "task_agent_model": "gpt-5.6-sol",
+        },
         prompt="Consulte o estoque",
         session=_full_session(),
         conversation_id="wa-conversation",
@@ -365,9 +371,12 @@ def test_selected_non_codex_ai_uses_read_only_provider_task(monkeypatch):
         channel_metadata={"message_id": "wamid.2"},
     )
 
-    assert result["task"]["task_id"] == "task-provider"
-    assert created["model"] == "vertex:gemini-2.5-pro"
-    assert created["channel_metadata"]["ai_provider"] == "vertex"
+    assert result["task"]["task_id"] == "task-codex"
+    assert created["payload"].model == "gpt-5.6-sol"
+    assert created["payload"].reasoning_effort == "low"
+    assert created["channel_metadata"]["ai_provider"] == "codex"
+    assert created["channel_metadata"]["fallback_model"] == "vertex:gemini-2.5-pro"
+    assert created["channel_metadata"]["fallback_provider"] == "vertex"
     assert created["channel_metadata"]["admin_configured_ai"] is True
 
 
@@ -1591,6 +1600,82 @@ def test_whatsapp_image_markdown_does_not_send_without_explicit_request(tmp_path
     assert results == []
 
 
+def test_whatsapp_marketplace_image_url_requires_official_https_cdn():
+    assert whatsapp_bridge._whatsapp_marketplace_image_url_allowed("https://http2.mlstatic.com/D_123.jpg") is True
+    assert whatsapp_bridge._whatsapp_marketplace_image_url_allowed("http://http2.mlstatic.com/D_123.jpg") is False
+    assert whatsapp_bridge._whatsapp_marketplace_image_url_allowed("https://mlstatic.com.evil.example/D_123.jpg") is False
+    assert whatsapp_bridge._whatsapp_marketplace_image_url_allowed("https://127.0.0.1/D_123.jpg") is False
+
+
+def test_whatsapp_delivers_three_official_listing_photos_in_listing_order(tmp_path, monkeypatch):
+    downloads = []
+    outbound = []
+
+    def fake_download(url):
+        downloads.append(url)
+        path = tmp_path / f"download-{len(downloads)}.png"
+        _write_test_png(path)
+        return path
+
+    def fake_post(_config, message_id, path, mime_type, caption, filename, artifact_type="product_photo"):
+        outbound.append({
+            "message_id": message_id,
+            "exists": path.is_file(),
+            "mime_type": mime_type,
+            "caption": caption,
+            "filename": filename,
+            "artifact_type": artifact_type,
+        })
+        return {"success": True, "status": "sent"}
+
+    monkeypatch.setattr(whatsapp_bridge, "_whatsapp_download_marketplace_image", fake_download)
+    monkeypatch.setattr(whatsapp_bridge, "_post_outbound_image", fake_post)
+    bundle = {
+        "listings": [
+            {
+                "store": "JK Pecas",
+                "item_id": "MLB111111111",
+                "sku": "001",
+                "title": "Anuncio A",
+                "pictures": [
+                    {"secure_url": "https://http2.mlstatic.com/A1.jpg"},
+                    {"secure_url": "https://http2.mlstatic.com/A2.jpg"},
+                ],
+            },
+            {
+                "store": "JK Pecas",
+                "item_id": "MLB222222222",
+                "sku": "001",
+                "title": "Anuncio B",
+                "pictures": [{"secure_url": "https://http2.mlstatic.com/B1.jpg"}],
+            },
+        ]
+    }
+
+    results = whatsapp_bridge._whatsapp_deliver_marketplace_listing_images(
+        {"machine_id": "machine"},
+        "wamid.in.ml",
+        bundle,
+        "Mande o anuncio do SKU 001",
+        max_images=3,
+    )
+
+    assert downloads == [
+        "https://http2.mlstatic.com/A1.jpg",
+        "https://http2.mlstatic.com/B1.jpg",
+        "https://http2.mlstatic.com/A2.jpg",
+    ]
+    assert len(outbound) == 3
+    assert all(item["exists"] is True for item in outbound)
+    assert [item["caption"] for item in outbound] == [
+        "JK Pecas • MLB111111111 • Foto 1/3",
+        "JK Pecas • MLB222222222 • Foto 2/3",
+        "JK Pecas • MLB111111111 • Foto 3/3",
+    ]
+    assert all(item["artifact_type"] == "product_photo" for item in outbound)
+    assert all(item["success"] is True for item in results)
+
+
 def test_whatsapp_formatter_converts_markdown_tables_and_splits_long_reports():
     report = (
         "# Relatorio de vendas\n\n"
@@ -1942,7 +2027,7 @@ def test_general_answer_classifier_separates_conversation_from_system_operations
     assert whatsapp_bridge._whatsapp_general_answer_request("Consulte a loja JK Pecas", _full_session()) is False
 
 
-def test_general_question_answers_directly_without_progress_confirmation(monkeypatch):
+def test_general_question_routes_through_dual_conversation_without_progress_confirmation(monkeypatch):
     monkeypatch.setattr(whatsapp_bridge, "_reload_bound_session", lambda *_args: _full_session())
     monkeypatch.setattr(whatsapp_bridge, "_save_config", lambda *_args: None)
     monkeypatch.setattr(whatsapp_bridge, "_whatsapp_session_stores", lambda _session: ["JK Pecas"])
@@ -1951,24 +2036,27 @@ def test_general_question_answers_directly_without_progress_confirmation(monkeyp
         "_try_create_action_pending",
         lambda *_args, **_kwargs: pytest.fail("general question must not enter the action proposal flow"),
     )
-    created = {}
-
-    def fake_create(payload, session, *, origin, channel_metadata):
-        created.update({"payload": payload, "session": session, "origin": origin, "metadata": channel_metadata})
-        return {"success": True, "task": {"task_id": "task-general-answer", "status": "queued"}}
-
-    monkeypatch.setattr(codex_console, "codex_criar_tarefa_para_sessao", fake_create)
+    delegated = {}
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_process_dual_codex_message",
+        lambda *_args, **kwargs: delegated.update(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        codex_console,
+        "codex_criar_tarefa_para_sessao",
+        lambda *_args, **_kwargs: pytest.fail("direct cutover must not create the legacy standard task"),
+    )
     monkeypatch.setattr(
         codex_console,
         "codex_aprovar_tarefa_para_sessao",
         lambda *_args, **_kwargs: pytest.fail("general question must not request or receive approval"),
     )
-    saved = []
     sent = []
     monkeypatch.setattr(
         whatsapp_bridge,
         "_save_pending",
-        lambda _state, message_id, pending: saved.append((message_id, pending.copy())),
+        lambda *_args, **_kwargs: pytest.fail("delegation itself must not create a legacy pending task"),
     )
     monkeypatch.setattr(
         whatsapp_bridge,
@@ -1988,32 +2076,32 @@ def test_general_question_answers_directly_without_progress_confirmation(monkeyp
         },
     )
 
-    assert created["payload"].sandbox == "read_only"
-    assert created["payload"].approval_mode == "read_only"
-    assert "Responda diretamente" in created["payload"].prompt
-    assert "nao diga que vai fazer depois" in created["payload"].prompt
-    assert created["metadata"]["general_answer"] is True
-    assert saved[0][1]["general_answer"] is True
+    assert delegated["request_text"] == "Corrija esta frase: nos vai amanha."
+    assert delegated["session"]["client_id"] == "cliente"
+    assert delegated["conversation_id"]
     assert sent == []
 
 
-def test_post_sale_mercado_livre_action_keeps_normal_approval_flow(monkeypatch):
+def test_post_sale_mercado_livre_action_enters_dual_flow_without_auto_approval(monkeypatch):
     monkeypatch.setattr(whatsapp_bridge, "_reload_bound_session", lambda *_args: _full_session())
     monkeypatch.setattr(whatsapp_bridge, "_save_config", lambda *_args: None)
     monkeypatch.setattr(whatsapp_bridge, "_whatsapp_load_store_configs", lambda *_args: [{"nome": "JK Pecas"}])
-    monkeypatch.setattr(whatsapp_bridge, "_try_create_action_pending", lambda *_args, **_kwargs: pytest.fail("browser-side proposal flow must not be used"))
-    created = []
-    monkeypatch.setattr(codex_console, "codex_criar_tarefa_para_sessao", lambda payload, *_args, **_kwargs: created.append(payload) or {
-        "success": True,
-        "task": {
-            "task_id": "task-post-sale",
-            "status": "awaiting_approval",
-            "proposal": {"proposal_id": "proposal-post-sale", "channels_allowed": ["app", "whatsapp"]},
-        },
-    })
-    saved = []
-    monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda _state, message_id, pending: saved.append((message_id, pending.copy())))
-    monkeypatch.setattr(whatsapp_bridge, "_complete_pending", lambda *_args: None)
+    delegated = {}
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_process_dual_codex_message",
+        lambda *_args, **kwargs: delegated.update(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_try_create_action_pending",
+        lambda *_args, **_kwargs: pytest.fail("direct cutover must not use the legacy keyword action router"),
+    )
+    monkeypatch.setattr(
+        codex_console,
+        "codex_criar_tarefa_para_sessao",
+        lambda *_args, **_kwargs: pytest.fail("the selector must classify the mutation before any proposal task"),
+    )
 
     whatsapp_bridge._process_message(
         {"machine_id": "machine-1", "subject_id": "subject-1"},
@@ -2026,9 +2114,8 @@ def test_post_sale_mercado_livre_action_keeps_normal_approval_flow(monkeypatch):
         },
     )
 
-    assert len(created) == 1
-    assert created[0].request_id == "wamid.post-sale"
-    assert saved[0][1]["proposal_id"] == "proposal-post-sale"
+    assert delegated["request_text"] == "Envie esta resposta para a pergunta do Mercado Livre da loja JK Pecas"
+    assert delegated["session"]["client_id"] == "cliente"
 
 
 def test_question_queue_inquiry_from_bound_number_is_read_only_without_confirmation(monkeypatch):
@@ -2040,15 +2127,17 @@ def test_question_queue_inquiry_from_bound_number_is_read_only_without_confirmat
         "_try_create_action_pending",
         lambda *_args, **_kwargs: pytest.fail("read-only inquiry must not enter action confirmation"),
     )
-    created = {}
-
-    def fake_create(payload, session, *, origin, channel_metadata):
-        created.update({"payload": payload, "session": session, "origin": origin, "metadata": channel_metadata})
-        return {"success": True, "task": {"task_id": "task-question-inquiry", "status": "queued"}}
-
-    monkeypatch.setattr(codex_console, "codex_criar_tarefa_para_sessao", fake_create)
-    monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda *_args: None)
-    monkeypatch.setattr(whatsapp_bridge, "_complete_pending", lambda *_args: None)
+    delegated = {}
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_process_dual_codex_message",
+        lambda *_args, **kwargs: delegated.update(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        codex_console,
+        "codex_criar_tarefa_para_sessao",
+        lambda *_args, **_kwargs: pytest.fail("read-only inquiry must use the dual selection flow"),
+    )
 
     whatsapp_bridge._process_message(
         {"machine_id": "machine-1", "subject_id": "subject-1"},
@@ -2061,19 +2150,24 @@ def test_question_queue_inquiry_from_bound_number_is_read_only_without_confirmat
         },
     )
 
-    assert created["payload"].sandbox == "read_only"
-    assert created["payload"].approval_mode == "read_only"
-    assert created["origin"] == "whatsapp"
+    assert delegated["request_text"] == "Tem pergunta para responder na loja JK Pecas?"
+    assert delegated["session"]["client_id"] == "cliente"
 
 
-def test_bound_full_number_never_auto_approves_fallback_task(monkeypatch):
+def test_bound_full_number_never_auto_approves_before_dual_selection(monkeypatch):
     monkeypatch.setattr(whatsapp_bridge, "_reload_bound_session", lambda *_args: _full_session())
     monkeypatch.setattr(whatsapp_bridge, "_save_config", lambda *_args: None)
     monkeypatch.setattr(whatsapp_bridge, "_try_create_action_pending", lambda *_args, **_kwargs: False)
+    delegated = {}
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_process_dual_codex_message",
+        lambda *_args, **kwargs: delegated.update(kwargs) or True,
+    )
     monkeypatch.setattr(
         codex_console,
         "codex_criar_tarefa_para_sessao",
-        lambda *_args, **_kwargs: {"success": True, "task": {"task_id": "task-write", "status": "awaiting_approval"}},
+        lambda *_args, **_kwargs: pytest.fail("legacy fallback task must not be created before selection"),
     )
     approvals = []
     monkeypatch.setattr(
@@ -2084,11 +2178,8 @@ def test_bound_full_number_never_auto_approves_fallback_task(monkeypatch):
             "task": {"task_id": task_id, "status": "queued"},
         },
     )
-    saved = []
     sent = []
-    monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda _state, message_id, pending: saved.append((message_id, pending.copy())))
     monkeypatch.setattr(whatsapp_bridge, "_post_message_result", lambda _cfg, message_id, payload: sent.append((message_id, payload)) or {"success": True})
-    monkeypatch.setattr(whatsapp_bridge, "_complete_pending", lambda *_args: None)
 
     whatsapp_bridge._process_message(
         {"machine_id": "machine-1", "subject_id": "subject-1"},
@@ -2102,8 +2193,7 @@ def test_bound_full_number_never_auto_approves_fallback_task(monkeypatch):
     )
 
     assert approvals == []
-    assert saved[0][1]["trusted_bound_number"] is True
-    assert saved[0][1]["awaiting_notified"] is False
+    assert delegated["request_text"] == "Execute a funcao interna solicitada"
     assert sent == []
 
 
@@ -2695,7 +2785,7 @@ def test_provider_worker_source_policy_executes_only_required_tools(monkeypatch)
     assert len(results) == 2
 
 
-def test_store_selection_click_restores_original_request_and_selected_store(monkeypatch):
+def test_store_selection_click_restores_original_request_for_dual_agent(monkeypatch):
     monkeypatch.setattr(whatsapp_bridge, "_reload_bound_session", lambda *_args: _full_session())
     monkeypatch.setattr(whatsapp_bridge, "_save_config", lambda *_args: None)
     monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda *_args: None)
@@ -2707,15 +2797,17 @@ def test_store_selection_click_restores_original_request_and_selected_store(monk
             {"nome": "Deckas", "integracoes": {"bling": {"access_token": "bling-deckas"}}},
         ],
     )
-    monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda *_args: None)
-    monkeypatch.setattr(whatsapp_bridge, "_complete_pending", lambda *_args: None)
-    created = {}
-
-    def fake_create(payload, _session, *, origin, channel_metadata):
-        created.update({"payload": payload, "origin": origin, "metadata": channel_metadata})
-        return {"success": True, "task": {"task_id": "task-selected-store", "status": "queued"}}
-
-    monkeypatch.setattr(codex_console, "codex_criar_tarefa_para_sessao", fake_create)
+    captured = {}
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_process_dual_codex_message",
+        lambda *_args, **kwargs: captured.update(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        codex_console,
+        "codex_criar_tarefa_para_sessao",
+        lambda *_args, **_kwargs: pytest.fail("store selection must return to the dual data-selection flow"),
+    )
     config = {"machine_id": "machine-1", "subject_id": "subject-1", "client_id": "cliente", "username": "admin"}
     message = {
         "message_id": "wamid.store-click",
@@ -2742,13 +2834,103 @@ def test_store_selection_click_restores_original_request_and_selected_store(monk
 
     whatsapp_bridge._process_message(config, state, message)
 
-    policy = created["metadata"]["query_policy"]
-    assert policy["mode"] == "query_only"
-    assert policy["store"] == "Deckas"
-    assert policy["source_policy"]["required_tools"] == ["bling_stock_balances"]
-    assert "Qual o saldo do SKU 001?" in created["payload"].prompt
-    assert "Loja selecionada: Deckas" in created["payload"].prompt
+    assert "Qual o saldo do SKU 001?" in captured["request_text"]
+    assert "Loja selecionada: Deckas" in captured["request_text"]
+    assert captured["session"]["client_id"] == "cliente"
     assert state["store_selection_tokens"]["ABCDEFGH"]["used"] is True
+    resolved = state["dual_agent_conversations"][conversation_id]["resolved_context"]
+    assert resolved["store_mode"] == "single"
+    assert resolved["store"] == "Deckas"
+    assert resolved["field_sources"]["store"] == "interactive_selection"
+
+
+def test_latest_sale_store_click_builds_one_strict_mercado_livre_api_call(monkeypatch):
+    session = _full_session()
+    monkeypatch.setattr(whatsapp_bridge, "_reload_bound_session", lambda *_args: session)
+    monkeypatch.setattr(whatsapp_bridge, "_save_config", lambda *_args: None)
+    monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda *_args: None)
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_whatsapp_load_store_configs",
+        lambda _client_id: [
+            {"nome": "JK Pecas", "integracoes": {"mercadolivre": {"access_token": "ml-jk"}}},
+            {"nome": "Deckas", "integracoes": {"mercadolivre": {"access_token": "ml-deckas"}}},
+        ],
+    )
+    captured: dict = {}
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_process_dual_codex_message",
+        lambda *_args, **kwargs: captured.update(kwargs) or True,
+    )
+    config = {
+        "machine_id": "machine-1",
+        "subject_id": "subject-1",
+        "client_id": "cliente",
+        "username": "admin",
+        "agent_architecture": "dual_codex",
+    }
+    message = {
+        "message_id": "wamid.latest-sale-store",
+        "machine_id": "machine-1",
+        "subject_id": "subject-1",
+        "text_body": "store_select:LASTSALE",
+        "message_type": "interactive",
+    }
+    conversation_id = whatsapp_bridge._conversation_id(config, message)
+    state = {
+        "store_selection_tokens": {
+            "LASTSALE": {
+                "subject_id": "subject-1",
+                "client_id": session["client_id"],
+                "username": session["username"],
+                "conversation_id": conversation_id,
+                "request_text": "Última venda",
+                "store": "JK Pecas",
+                "store_mode": "single",
+                "created_at": __import__("time").time(),
+                "used": False,
+            }
+        }
+    }
+
+    whatsapp_bridge._process_message(config, state, message)
+    request_text = captured["request_text"]
+    policy = whatsapp_bridge._whatsapp_query_policy(request_text, session)
+    plan = whatsapp_bridge._function_manager_enforce_plan(
+        {
+            "schema_version": "1.0",
+            "action": "collect",
+            "intents": ["latest_sale"],
+            "entities": {
+                "sku": "", "mlb": "", "order_id": "", "period": "",
+                "store_ref": "JK Pecas", "store_mode": "single",
+            },
+            "requested_fields": ["latest_order"],
+            "tool_calls": [{
+                "tool_id": "mercado_livre_orders",
+                "arguments": {"limite": 1, "incluir_detalhes": True, "force_refresh": True},
+                "required": True,
+                "reason": "ultima venda da loja escolhida",
+                "depends_on": [],
+            }],
+            "context_hub": {"mode": "not_applicable"},
+            "missing_user_fields": [],
+            "confidence": 0.98,
+            "reason": "consulta operacional selecionada pelo agente",
+        },
+        request_text=request_text,
+        query_policy=policy,
+        catalog=[{"id": "mercado_livre_orders"}, {"id": "sales_ranking"}, {"id": "local_database_query"}],
+        max_calls=6,
+    )
+
+    assert "Última venda" in request_text and "Loja selecionada: JK Pecas" in request_text
+    assert policy["store"] == "JK Pecas"
+    assert [item["tool_id"] for item in plan["tool_calls"]] == ["mercado_livre_orders"]
+    assert plan["tool_calls"][0]["arguments"]["limite"] == 1
+    assert plan["tool_calls"][0]["arguments"]["incluir_detalhes"] is True
+    assert plan["tool_calls"][0]["arguments"]["force_refresh"] is True
 
 
 def test_bling_store_prevalidation_requires_integration_permission(monkeypatch):
@@ -2774,20 +2956,19 @@ def test_bling_store_prevalidation_requires_integration_permission(monkeypatch):
     ) == ["Uai Mineirinho"]
 
 
-def test_api_query_without_store_sends_selectable_authorized_options_without_creating_task(monkeypatch):
+def test_api_query_without_store_is_delegated_for_agent_clarification(monkeypatch):
     _configure_whatsapp_process_test(monkeypatch, ["JK Pecas", "Deckas"])
-    interactive = []
-    completed = []
+    delegated = {}
     monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda *_args: None)
     monkeypatch.setattr(
         whatsapp_bridge,
         "_post_interactive_store_selection",
-        lambda _config, **kwargs: interactive.append(kwargs) or {"success": True, "status": "sent"},
+        lambda *_args, **_kwargs: pytest.fail("the removed keyword router must not choose a store prompt"),
     )
     monkeypatch.setattr(
         whatsapp_bridge,
-        "_post_message_result",
-        lambda _config, message_id, payload: completed.append((message_id, payload)) or {"success": True},
+        "_process_dual_codex_message",
+        lambda *_args, **kwargs: delegated.update(kwargs) or True,
     )
     monkeypatch.setattr(
         codex_console,
@@ -2806,30 +2987,29 @@ def test_api_query_without_store_sends_selectable_authorized_options_without_cre
         },
     )
 
-    assert len(interactive) == 1
-    assert [item["title"] for item in interactive[0]["options"]] == ["Todas as lojas", "JK Pecas", "Deckas"]
-    assert interactive[0]["options"][0]["description"] == "Consultar cada loja separadamente"
-    assert all(item["id"].startswith("store_select:") for item in interactive[0]["options"])
-    assert completed == [("wamid.no-store", {"status": "completed", "response_parts": []})]
+    assert delegated["request_text"] == "Consulte os anuncios ativos via API"
+    assert delegated["session"]["client_id"] == "cliente"
 
 
-def test_process_followup_reuses_recent_store_without_sending_selector(monkeypatch):
+def test_process_followup_delegates_without_server_store_routing(monkeypatch):
     _configure_whatsapp_process_test(monkeypatch, ["JK Pecas", "Deckas"])
-    monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda *_args: None)
-    monkeypatch.setattr(whatsapp_bridge, "_complete_pending", lambda *_args: None)
     monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda *_args: None)
     monkeypatch.setattr(
         whatsapp_bridge,
         "_post_interactive_store_selection",
         lambda *_args, **_kwargs: pytest.fail("a continuacao nao deve perguntar a loja novamente"),
     )
-    created = {}
-
-    def fake_create(payload, _session, *, origin, channel_metadata):
-        created.update({"payload": payload, "origin": origin, "metadata": channel_metadata})
-        return {"success": True, "task": {"task_id": "task-followup-store", "status": "queued"}}
-
-    monkeypatch.setattr(codex_console, "codex_criar_tarefa_para_sessao", fake_create)
+    delegated = {}
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_process_dual_codex_message",
+        lambda *_args, **kwargs: delegated.update(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        codex_console,
+        "codex_criar_tarefa_para_sessao",
+        lambda *_args, **_kwargs: pytest.fail("legacy follow-up task must not be created"),
+    )
     config = {"machine_id": "machine-1", "subject_id": "subject-1", "client_id": "cliente", "username": "admin"}
     message = {
         "message_id": "wamid.followup-store",
@@ -2857,17 +3037,12 @@ def test_process_followup_reuses_recent_store_without_sending_selector(monkeypat
 
     whatsapp_bridge._process_message(config, state, message)
 
-    policy = created["metadata"]["query_policy"]
-    assert created["origin"] == "whatsapp"
-    assert policy["store"] == "JK Pecas"
-    assert policy["store_matches"] == ["JK Pecas"]
-    assert policy["inherited_store_context"] is True
-    assert policy["source_policy"]["required_tools"] == ["mercado_livre_returns"]
-    assert "agora me informe o motivo de cada devolução" in created["payload"].prompt
+    assert delegated["request_text"] == "agora me informe o motivo de cada devolução"
+    assert delegated["conversation_id"] == conversation_id
     assert state["query_contexts"][conversation_id]["store"] == "JK Pecas"
 
 
-def test_all_stores_selection_restores_request_with_separate_store_scope(monkeypatch):
+def test_all_stores_selection_restores_request_for_dual_agent(monkeypatch):
     monkeypatch.setattr(whatsapp_bridge, "_reload_bound_session", lambda *_args: _full_session())
     monkeypatch.setattr(whatsapp_bridge, "_save_config", lambda *_args: None)
     monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda *_args: None)
@@ -2879,15 +3054,17 @@ def test_all_stores_selection_restores_request_with_separate_store_scope(monkeyp
             {"nome": "Deckas", "integracoes": {"mercadolivre": {"access_token": "ml-deckas"}}},
         ],
     )
-    monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda *_args: None)
-    monkeypatch.setattr(whatsapp_bridge, "_complete_pending", lambda *_args: None)
-    created = {}
-
-    def fake_create(payload, _session, *, origin, channel_metadata):
-        created.update({"payload": payload, "metadata": channel_metadata})
-        return {"success": True, "task": {"task_id": "task-all-selected", "status": "queued"}}
-
-    monkeypatch.setattr(codex_console, "codex_criar_tarefa_para_sessao", fake_create)
+    delegated = {}
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_process_dual_codex_message",
+        lambda *_args, **kwargs: delegated.update(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        codex_console,
+        "codex_criar_tarefa_para_sessao",
+        lambda *_args, **_kwargs: pytest.fail("all-store selection must return to the dual selector"),
+    )
     config = {"machine_id": "machine-1", "subject_id": "subject-1", "client_id": "cliente", "username": "admin"}
     message = {
         "message_id": "wamid.store-all",
@@ -2916,16 +3093,12 @@ def test_all_stores_selection_restores_request_with_separate_store_scope(monkeyp
 
     whatsapp_bridge._process_message(config, state, message)
 
-    policy = created["metadata"]["query_policy"]
-    assert policy["store_mode"] == "all"
-    assert policy["stores"] == ["JK Pecas", "Deckas"]
-    assert policy["store"] == ""
-    assert "todas as lojas" in created["payload"].prompt.lower()
-    assert "Nao some nem misture os totais" in created["payload"].prompt
-
-    sanitized = codex_console._codex_whatsapp_query_policy("whatsapp", created["metadata"])
-    assert sanitized["store_mode"] == "all"
-    assert sanitized["stores"] == ["JK Pecas", "Deckas"]
+    assert "todas as lojas" in delegated["request_text"].lower()
+    assert "nao some nem misture os totais" in delegated["request_text"].lower()
+    assert state["store_selection_tokens"]["ALLST234"]["used"] is True
+    resolved = state["dual_agent_conversations"][conversation_id]["resolved_context"]
+    assert resolved["store_mode"] == "all"
+    assert resolved["store"] == ""
 
 
 def test_mutable_store_selection_does_not_offer_all_stores(monkeypatch):
@@ -2951,17 +3124,19 @@ def test_mutable_store_selection_does_not_offer_all_stores(monkeypatch):
     assert [item["title"] for item in sent[0]["options"]] == ["JK Pecas", "Deckas"]
 
 
-def test_api_query_comparing_multiple_stores_creates_separate_store_scope(monkeypatch):
+def test_api_query_comparing_multiple_stores_is_delegated_without_server_scope(monkeypatch):
     _configure_whatsapp_process_test(monkeypatch, ["JK Pecas", "Deckas"])
-    created = {}
-
-    def fake_create(payload, _session, *, origin, channel_metadata):
-        created.update({"payload": payload, "origin": origin, "metadata": channel_metadata})
-        return {"success": True, "task": {"task_id": "task-all-stores", "status": "queued"}}
-
-    monkeypatch.setattr(codex_console, "codex_criar_tarefa_para_sessao", fake_create)
-    monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda *_args: None)
-    monkeypatch.setattr(whatsapp_bridge, "_complete_pending", lambda *_args: None)
+    delegated = {}
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_process_dual_codex_message",
+        lambda *_args, **kwargs: delegated.update(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        codex_console,
+        "codex_criar_tarefa_para_sessao",
+        lambda *_args, **_kwargs: pytest.fail("legacy multi-store routing must not create a task"),
+    )
 
     whatsapp_bridge._process_message(
         {"machine_id": "machine-1", "subject_id": "subject-1"},
@@ -2974,30 +3149,23 @@ def test_api_query_comparing_multiple_stores_creates_separate_store_scope(monkey
         },
     )
 
-    policy = created["metadata"]["query_policy"]
-    assert policy["store_mode"] == "all"
-    assert policy["stores"] == ["JK Pecas", "Deckas"]
-    assert "Nunca some nem misture os totais" in created["payload"].prompt
+    assert delegated["request_text"] == "Compare os anuncios via API das lojas JK Pecas e Deckas"
+    assert delegated["session"]["client_id"] == "cliente"
 
 
-def test_api_query_with_exact_store_creates_read_only_task(monkeypatch):
+def test_api_query_with_exact_store_is_delegated_before_tool_selection(monkeypatch):
     _configure_whatsapp_process_test(monkeypatch, ["JK Pecas", "Deckas"])
-    created = {}
-
-    def fake_create(payload, session, *, origin, channel_metadata):
-        created.update(
-            {
-                "payload": payload,
-                "session": session,
-                "origin": origin,
-                "channel_metadata": channel_metadata,
-            }
-        )
-        return {"success": True, "task": {"task_id": "task-query-only"}}
-
-    monkeypatch.setattr(codex_console, "codex_criar_tarefa_para_sessao", fake_create)
-    monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda *_args: None)
-    monkeypatch.setattr(whatsapp_bridge, "_complete_pending", lambda *_args: None)
+    delegated = {}
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_process_dual_codex_message",
+        lambda *_args, **kwargs: delegated.update(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        codex_console,
+        "codex_criar_tarefa_para_sessao",
+        lambda *_args, **_kwargs: pytest.fail("legacy exact-store routing must not create a task"),
+    )
 
     whatsapp_bridge._process_message(
         {"machine_id": "machine-1", "subject_id": "subject-1"},
@@ -3010,32 +3178,24 @@ def test_api_query_with_exact_store_creates_read_only_task(monkeypatch):
         },
     )
 
-    assert created["origin"] == "whatsapp"
-    assert created["payload"].sandbox == "read_only"
-    assert created["payload"].approval_mode == "read_only"
-    assert created["payload"].model == "gpt-5.5"
-    assert created["payload"].reasoning_effort == "medium"
-    assert created["channel_metadata"]["reasoning_policy"] == "adaptive"
-    assert created["channel_metadata"]["reasoning_max"] == "xhigh"
-    policy = created["channel_metadata"]["query_policy"]
-    assert policy["mode"] == "query_only"
-    assert policy["domains"] == ["anuncios_ml"]
-    assert policy["store"] == "JK Pecas"
-    assert created["payload"].screen_context["selection"]["query_policy"]["store"] == "JK Pecas"
+    assert delegated["request_text"] == "Consulte os anuncios ativos via API da loja JK Pecas"
+    assert delegated["session"]["client_id"] == "cliente"
 
 
-def test_fresh_sales_api_query_bypasses_mutation_flow_and_marks_no_cache(monkeypatch):
+def test_fresh_sales_api_query_is_delegated_without_keyword_mutation_flow(monkeypatch):
     _configure_whatsapp_process_test(monkeypatch, ["JK Pecas"])
-    created = {}
-
-    def fake_create(payload, session, *, origin, channel_metadata):
-        created.update({"payload": payload, "origin": origin, "channel_metadata": channel_metadata})
-        return {"success": True, "task": {"task_id": "task-fresh-sales"}}
-
-    monkeypatch.setattr(codex_console, "codex_criar_tarefa_para_sessao", fake_create)
+    delegated = {}
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_process_dual_codex_message",
+        lambda *_args, **kwargs: delegated.update(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        codex_console,
+        "codex_criar_tarefa_para_sessao",
+        lambda *_args, **_kwargs: pytest.fail("fresh sales must wait for the data-selection plan"),
+    )
     monkeypatch.setattr(whatsapp_bridge, "_try_create_action_pending", lambda *_args, **_kwargs: pytest.fail("fresh API query is not a mutation"))
-    monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda *_args: None)
-    monkeypatch.setattr(whatsapp_bridge, "_complete_pending", lambda *_args: None)
 
     whatsapp_bridge._process_message(
         {"machine_id": "machine-1", "subject_id": "subject-1"},
@@ -3048,27 +3208,23 @@ def test_fresh_sales_api_query_bypasses_mutation_flow_and_marks_no_cache(monkeyp
         },
     )
 
-    policy = created["channel_metadata"]["query_policy"]
-    assert policy["mode"] == "query_only"
-    assert policy["domains"] == ["vendas"]
-    assert policy["store"] == "JK Pecas"
-    assert policy["fresh"] is True
-    assert policy["bypass_cache"] is True
-    assert created["payload"].sandbox == "read_only"
-    assert "ignore resultado em cache" in created["payload"].prompt
+    assert delegated["request_text"] == "Atualize agora as vendas via API da loja JK Pecas"
+    assert delegated["session"]["client_id"] == "cliente"
 
 
-def test_isolated_next_inherits_query_store_filters_and_advances_offset(monkeypatch):
+def test_isolated_next_is_delegated_to_conversation_memory(monkeypatch):
     _configure_whatsapp_process_test(monkeypatch, ["JK Pecas"])
-    created = {}
-
-    def fake_create(payload, session, *, origin, channel_metadata):
-        created.update({"payload": payload, "origin": origin, "channel_metadata": channel_metadata})
-        return {"success": True, "task": {"task_id": "task-next-page"}}
-
-    monkeypatch.setattr(codex_console, "codex_criar_tarefa_para_sessao", fake_create)
-    monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda *_args: None)
-    monkeypatch.setattr(whatsapp_bridge, "_complete_pending", lambda *_args: None)
+    delegated = {}
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_process_dual_codex_message",
+        lambda *_args, **kwargs: delegated.update(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        codex_console,
+        "codex_criar_tarefa_para_sessao",
+        lambda *_args, **_kwargs: pytest.fail("pagination must be resolved by the dual conversation context"),
+    )
     config = {"machine_id": "machine-1", "subject_id": "subject-1", "client_id": "cliente", "username": "admin"}
     message = {
         "message_id": "wamid.next",
@@ -3093,16 +3249,9 @@ def test_isolated_next_inherits_query_store_filters_and_advances_offset(monkeypa
 
     whatsapp_bridge._process_message(config, state, message)
 
-    policy = created["channel_metadata"]["query_policy"]
-    assert policy["mode"] == "query_only"
-    assert policy["domains"] == ["anuncios_ml"]
-    assert policy["store"] == "JK Pecas"
-    assert policy["inherited"] is True
-    assert policy["offset"] == 40
-    assert policy["limit"] == 20
-    assert "status active" in policy["base_request"]
-    assert "Use offset 40 e limite 20" in created["payload"].prompt
-    assert state["query_contexts"][conversation_id]["offset"] == 40
+    assert delegated["request_text"] == "Proximos"
+    assert delegated["conversation_id"] == conversation_id
+    assert state["query_contexts"][conversation_id]["offset"] == 20
 
 
 def test_next_uses_exact_provider_offset_returned_by_last_task(monkeypatch):
@@ -3146,10 +3295,19 @@ def test_next_uses_exact_provider_offset_returned_by_last_task(monkeypatch):
     assert policy["provider_offsets"] == {"mercado_livre_listing": 37}
 
 
-def test_isolated_next_without_context_asks_to_repeat_without_task(monkeypatch):
+def test_isolated_next_without_context_is_delegated_for_clarification(monkeypatch):
     _configure_whatsapp_process_test(monkeypatch, ["JK Pecas"])
-    sent = []
-    monkeypatch.setattr(whatsapp_bridge, "_post_command_reply", lambda _config, _message_id, text, title: sent.append((title, text)))
+    delegated = {}
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_process_dual_codex_message",
+        lambda *_args, **kwargs: delegated.update(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_post_command_reply",
+        lambda *_args, **_kwargs: pytest.fail("the removed continuation router must not answer directly"),
+    )
     monkeypatch.setattr(
         codex_console,
         "codex_criar_tarefa_para_sessao",
@@ -3167,9 +3325,7 @@ def test_isolated_next_without_context_asks_to_repeat_without_task(monkeypatch):
         },
     )
 
-    assert len(sent) == 1
-    assert "REPITA A CONSULTA" in sent[0][0]
-    assert "consulta anterior" in sent[0][1]
+    assert delegated["request_text"] == "Proximos"
 
 
 @pytest.mark.parametrize(
@@ -3179,18 +3335,21 @@ def test_isolated_next_without_context_asks_to_repeat_without_task(monkeypatch):
         "Pause o anuncio MLB1234567890 da loja JK Pecas",
     ],
 )
-def test_full_whatsapp_mutation_reaches_canonical_agent_task(monkeypatch, message_text):
+def test_full_whatsapp_mutation_reaches_dual_selection_without_auto_execution(monkeypatch, message_text):
     _configure_whatsapp_process_test(monkeypatch, ["JK Pecas"])
     sent = []
     monkeypatch.setattr(whatsapp_bridge, "_post_command_reply", lambda _config, _message_id, text, title: sent.append((title, text)))
-    created = []
-    monkeypatch.setattr(codex_console, "codex_criar_tarefa_para_sessao", lambda payload, *_args, **_kwargs: created.append(payload) or {
-        "success": True,
-        "task": {"task_id": "task-canonical", "status": "queued"},
-    })
-    saved = []
-    monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda _state, message_id, pending: saved.append((message_id, pending.copy())))
-    monkeypatch.setattr(whatsapp_bridge, "_complete_pending", lambda *_args: None)
+    delegated = {}
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_process_dual_codex_message",
+        lambda *_args, **kwargs: delegated.update(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        codex_console,
+        "codex_criar_tarefa_para_sessao",
+        lambda *_args, **_kwargs: pytest.fail("mutation must first be classified as mutation_candidate"),
+    )
 
     state = {}
     whatsapp_bridge._process_message(
@@ -3204,9 +3363,7 @@ def test_full_whatsapp_mutation_reaches_canonical_agent_task(monkeypatch, messag
         },
     )
 
-    assert len(created) == 1
-    assert created[0].request_id == "wamid.blocked-write"
-    assert saved[0][1]["task_id"] == "task-canonical"
+    assert delegated["request_text"] == message_text
     assert sent == []
 
 
@@ -3544,10 +3701,11 @@ def test_proactive_can_target_the_originating_number(monkeypatch):
 
     monkeypatch.setattr(whatsapp_bridge, "_gateway_json", fake_gateway)
     whatsapp_bridge._post_proactive(
-        {"subject_id": "latest"},
+        {"subject_id": "latest", "machine_id": "machine-1"},
         {"subject_id": "origin", "fingerprint": "task:1", "text": "feito"},
     )
     assert captured["payload"]["subject_id"] == "origin"
+    assert captured["payload"]["machine_id"] == "machine-1"
     assert captured["payload"]["fingerprint"] == "task:1"
 
 

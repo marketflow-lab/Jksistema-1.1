@@ -229,7 +229,13 @@ def _limpar_progresso(client_id: str):
 
 def _sync_log(client_id: str, mensagem: str):
     mensagem = _corrigir_texto_mojibake(str(mensagem or ""))
-    print(mensagem)
+    try:
+        print(mensagem)
+    except Exception:
+        # A saida do processo pode usar uma codificacao restrita (por exemplo,
+        # CP1252 no Windows). O console e apenas observabilidade e nunca deve
+        # interromper a sincronizacao nem impedir o registro do log em memoria.
+        pass
     key = _sync_context_key(client_id)
     logs = SYNC_LOGS.get(key, [])
     logs.append(mensagem)

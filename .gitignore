@@ -26,8 +26,10 @@ playwright-report/
 .codex-remote-attachments/
 .firebase/
 .tmp_*/
+.tmp-*/
 .tmp/
 .pytest_cache/
+.pytest*/
 .coverage
 .coverage.*
 .pytest-tmp-*/
@@ -53,6 +55,7 @@ info/*/tmp/
 electron_app/dist-client-final/
 electron_app/dist-client-setup/
 electron_app/dist-client-setup.zip
+electron_app/dist-client-staging-*/
 backups/cloud_server_20260601_082817/
 backups/local_before_pesquisa_restore_*/
 
@@ -126,3 +129,8 @@ dist-private/
 *.blockmap
 .venv.blocked-backup-*/
 relatorios/
+
+# Entregaveis e bancos de testes locais. Preservar no disco, nao versionar.
+/output/
+/outputs/
+/runtime/tenant-test/

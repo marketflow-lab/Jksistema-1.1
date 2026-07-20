@@ -7,10 +7,10 @@ selector into an administrative operation.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import Header, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from backend.services import context_hub
 
@@ -55,6 +55,33 @@ class ContextHubSearchRequest(BaseModel):
     filters: Optional[ContextHubSearchFilters] = None
 
 
+class CuratedNoteCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=160)
+    body: str = Field(default="", max_length=900_000)
+    category: Literal["Notas", "Regras", "ADRs"] = "Notas"
+
+
+class CuratedNoteRejectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class CuratedBackupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    passphrase: SecretStr = Field(min_length=12, max_length=1024)
+
+
+class CuratedPublishRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(default="manual_curation_publish", pattern=r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+    force: bool = False
+
+
 def _require_full_admin(request: Request, authorization: Optional[str]) -> dict[str, Any]:
     # Late import avoids coupling this module's import to backend_api composition.
     from backend.services import codex_console
@@ -67,6 +94,16 @@ def _client_id_from_session(session: dict[str, Any]) -> str:
     if not client_id:
         raise HTTPException(status_code=401, detail="Sessao sem cliente valido para o Context Hub.")
     return client_id
+
+
+def _actor_from_session(session: dict[str, Any]) -> str:
+    return str(
+        session.get("username")
+        or session.get("email")
+        or session.get("user_id")
+        or session.get("id")
+        or "full-admin"
+    )
 
 
 def _translate_error(error: Exception) -> HTTPException:
@@ -213,7 +250,147 @@ def context_hub_search(
         raise _translate_error(error) from error
 
 
+def context_hub_curated_notes(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    session = _require_full_admin(request, authorization)
+    try:
+        return context_hub.list_curated_notes(_client_id_from_session(session))
+    except Exception as error:
+        raise _translate_error(error) from error
+
+
+def context_hub_curated_note_create(
+    payload: CuratedNoteCreateRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    session = _require_full_admin(request, authorization)
+    try:
+        return context_hub.create_curated_note(
+            _client_id_from_session(session),
+            title=payload.title,
+            body=payload.body,
+            category=payload.category,
+            actor=_actor_from_session(session),
+        )
+    except Exception as error:
+        raise _translate_error(error) from error
+
+
+def _curated_transition(
+    action: str,
+    note_id: str,
+    request: Request,
+    authorization: Optional[str],
+    *,
+    reason: str = "",
+):
+    session = _require_full_admin(request, authorization)
+    client_id = _client_id_from_session(session)
+    actor = _actor_from_session(session)
+    function = {
+        "validate": context_hub.validate_curated_note,
+        "review": context_hub.review_curated_note,
+        "approve": context_hub.approve_curated_note,
+    }.get(action)
+    try:
+        if action == "reject":
+            return context_hub.reject_curated_note(client_id, note_id, actor=actor, reason=reason)
+        if function is None:
+            raise context_hub.ContextHubValidationError("Acao de curadoria invalida.")
+        return function(client_id, note_id, actor=actor)
+    except Exception as error:
+        raise _translate_error(error) from error
+
+
+def context_hub_curated_note_validate(note_id: str, request: Request, authorization: Optional[str] = Header(default=None)):
+    return _curated_transition("validate", note_id, request, authorization)
+
+
+def context_hub_curated_note_review(note_id: str, request: Request, authorization: Optional[str] = Header(default=None)):
+    return _curated_transition("review", note_id, request, authorization)
+
+
+def context_hub_curated_note_approve(note_id: str, request: Request, authorization: Optional[str] = Header(default=None)):
+    return _curated_transition("approve", note_id, request, authorization)
+
+
+def context_hub_curated_note_reject(
+    note_id: str,
+    payload: CuratedNoteRejectRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    return _curated_transition("reject", note_id, request, authorization, reason=payload.reason)
+
+
+def context_hub_curated_publish(
+    request: Request,
+    payload: Optional[CuratedPublishRequest] = None,
+    authorization: Optional[str] = Header(default=None),
+):
+    session = _require_full_admin(request, authorization)
+    safe_payload = payload or CuratedPublishRequest()
+    try:
+        return context_hub.publish_curated_context(
+            _client_id_from_session(session),
+            reason=safe_payload.reason,
+            force=safe_payload.force,
+        )
+    except Exception as error:
+        raise _translate_error(error) from error
+
+
+def context_hub_curated_backups(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    session = _require_full_admin(request, authorization)
+    try:
+        return context_hub.list_curated_backups(_client_id_from_session(session))
+    except Exception as error:
+        raise _translate_error(error) from error
+
+
+def context_hub_curated_backup_create(
+    payload: CuratedBackupRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    session = _require_full_admin(request, authorization)
+    try:
+        return context_hub.create_curated_backup(
+            _client_id_from_session(session),
+            passphrase=payload.passphrase.get_secret_value(),
+        )
+    except Exception as error:
+        raise _translate_error(error) from error
+
+
+def context_hub_curated_backup_restore(
+    backup_id: str,
+    payload: CuratedBackupRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    session = _require_full_admin(request, authorization)
+    try:
+        return context_hub.restore_curated_backup(
+            _client_id_from_session(session),
+            backup_id,
+            passphrase=payload.passphrase.get_secret_value(),
+        )
+    except Exception as error:
+        raise _translate_error(error) from error
+
+
 __all__ = [
+    "CuratedBackupRequest",
+    "CuratedNoteCreateRequest",
+    "CuratedNoteRejectRequest",
+    "CuratedPublishRequest",
     "ContextHubRebuildRequest",
     "ContextHubSearchRequest",
     "ContextHubSettingsRequest",
@@ -225,4 +402,14 @@ __all__ = [
     "context_hub_search",
     "context_hub_settings_put",
     "context_hub_status",
+    "context_hub_curated_backup_create",
+    "context_hub_curated_backup_restore",
+    "context_hub_curated_backups",
+    "context_hub_curated_note_approve",
+    "context_hub_curated_note_create",
+    "context_hub_curated_note_reject",
+    "context_hub_curated_note_review",
+    "context_hub_curated_note_validate",
+    "context_hub_curated_notes",
+    "context_hub_curated_publish",
 ]

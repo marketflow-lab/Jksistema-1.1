@@ -64,6 +64,14 @@ def _shared_sync_auto_interval_seconds() -> int:
         valor = 900
     return max(600, min(valor, 3600))
 
+
+def _shared_sync_machine_auto_interval_seconds() -> int:
+    try:
+        valor = int(float(os.getenv("JK_MACHINE_SHARED_SYNC_AUTO_INTERVAL_S", "120") or 120))
+    except Exception:
+        valor = 120
+    return max(60, min(valor, 900))
+
 def _shared_sync_auto_enabled() -> bool:
     # Contrato v2: a sincronizacao compartilhada nunca executa em background.
     # A variavel antiga e deliberadamente ignorada para impedir reativacao acidental.
@@ -80,8 +88,13 @@ def _shared_sync_manual_only_payload(direction: str) -> dict:
         }],
     }
 
-def _shared_sync_auto_rate_limit(endpoint: str, sessao: dict, machine_id: str = "") -> Optional[dict]:
-    intervalo = _shared_sync_auto_interval_seconds()
+def _shared_sync_auto_rate_limit(
+    endpoint: str,
+    sessao: dict,
+    machine_id: str = "",
+    interval_seconds: Optional[int] = None,
+) -> Optional[dict]:
+    intervalo = int(interval_seconds or _shared_sync_auto_interval_seconds())
     username = _shared_sync_normalizar_username((sessao or {}).get("username"))
     client_id = _shared_sync_normalizar_client_id((sessao or {}).get("client_id"))
     machine = str(machine_id or "").strip()[:120]
@@ -414,11 +427,27 @@ def _shared_sync_machine_config_normalizar(sessao: dict, payload: Optional[dict]
         scope_norm = str(scope or "").strip()
         if scope_norm in allowed and scope_norm not in scopes:
             scopes.append(scope_norm)
+    auto_pull_explicit = bool(data.get("auto_pull_explicit"))
+    try:
+        mode_version = int(data.get("mode_version") or 0)
+    except Exception:
+        mode_version = 0
+    if mode_version >= 2:
+        auto_pull_explicit = True
+    # Versoes anteriores persistiam auto_pull=false em todos os casos. Sem o
+    # marcador v2, uma configuracao ja habilitada migra para recebimento
+    # automatico para nao exigir um novo clique em cada maquina existente.
+    auto_pull = bool(data.get("auto_pull", False)) if auto_pull_explicit else bool(data.get("enabled", False))
     return {
         "enabled": bool(data.get("enabled", False)),
         "scopes": scopes,
-        "auto_pull": False,
+        # O recebimento automatico entre maquinas da mesma conta e opt-in.
+        # O envio automatico permanece proibido para evitar que uma copia
+        # desatualizada volte a publicar um snapshot regressivo.
+        "auto_pull": auto_pull,
         "auto_push": False,
+        "auto_pull_explicit": auto_pull_explicit,
+        "mode_version": 2 if auto_pull_explicit else 1,
         "updated_at": str(data.get("updated_at") or ""),
     }
 
@@ -427,7 +456,10 @@ def _shared_sync_machine_config_read(sessao: dict) -> dict:
     return _shared_sync_machine_config_normalizar(sessao, state.get("machine_sync") if isinstance(state, dict) else None)
 
 def _shared_sync_machine_config_save(sessao: dict, payload: dict) -> dict:
-    config = _shared_sync_machine_config_normalizar(sessao, payload)
+    explicit_payload = dict(payload) if isinstance(payload, dict) else {}
+    explicit_payload["auto_pull_explicit"] = True
+    explicit_payload["mode_version"] = 2
+    config = _shared_sync_machine_config_normalizar(sessao, explicit_payload)
     config["updated_at"] = _shared_sync_now_iso()
     state = _shared_sync_state_read(sessao.get("client_id"), sessao.get("username") or "")
     state["machine_sync"] = config
@@ -474,6 +506,7 @@ __all__ = [
     "_firebase_shared_sync_user_invites_collection_name",
     "_firebase_shared_sync_user_links_collection_name",
     "_shared_sync_auto_interval_seconds",
+    "_shared_sync_machine_auto_interval_seconds",
     "_shared_sync_auto_enabled",
     "_shared_sync_manual_only_payload",
     "_shared_sync_auto_rate_limit",

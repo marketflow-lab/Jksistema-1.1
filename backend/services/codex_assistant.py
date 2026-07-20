@@ -25,13 +25,14 @@ from fastapi import Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from backend.services import codex_assistant_storage
+from backend.services import codex_assistant_storage, codex_turn_context
 from backend.services.favoritos_margem import (
     margem_calcular_anuncio,
     margem_formatar_moeda,
     margem_parse_float,
 )
 from backend.services.runtime_bridge import bind_runtime_globals
+from backend.services.whatsapp import intent as whatsapp_intent
 
 
 ASSISTANT_LOCK = threading.RLock()
@@ -43,10 +44,10 @@ DAILY_ANALYSIS_ENABLED = False
 REPORT_FORMATS = {"html", "xlsx", "pdf"}
 DEFAULT_RANKING_LIMIT = 50
 BLING_REPORT_LIMIT = 200
-CODEX_DATA_TOOLS_VERSION = "20260717-data-tools-v19-context-hub"
-CODEX_DATA_CONTEXT_CHAR_LIMIT = int(os.getenv("JK_CODEX_DATA_CONTEXT_CHAR_LIMIT") or "600000")
-CODEX_DATA_PREVIEW_CHAR_LIMIT = int(os.getenv("JK_CODEX_DATA_PREVIEW_CHAR_LIMIT") or "600000")
-CODEX_SALES_RETURNS_CONTEXT_CHAR_LIMIT = int(os.getenv("JK_CODEX_SALES_RETURNS_CONTEXT_CHAR_LIMIT") or "560000")
+CODEX_DATA_TOOLS_VERSION = "20260718-data-tools-v21-positive-stock-count"
+CODEX_DATA_CONTEXT_CHAR_LIMIT = int(os.getenv("JK_CODEX_DATA_CONTEXT_CHAR_LIMIT") or "64000")
+CODEX_DATA_PREVIEW_CHAR_LIMIT = int(os.getenv("JK_CODEX_DATA_PREVIEW_CHAR_LIMIT") or "24000")
+CODEX_SALES_RETURNS_CONTEXT_CHAR_LIMIT = int(os.getenv("JK_CODEX_SALES_RETURNS_CONTEXT_CHAR_LIMIT") or "64000")
 CODEX_AGENT_NORMAL_ROW_LIMIT = int(os.getenv("JK_CODEX_AGENT_NORMAL_ROW_LIMIT") or "50")
 CODEX_AGENT_REPORT_ROW_LIMIT = int(os.getenv("JK_CODEX_AGENT_REPORT_ROW_LIMIT") or "200")
 CODEX_AGENT_TOP_ROWS_LIMIT = int(os.getenv("JK_CODEX_AGENT_TOP_ROWS_LIMIT") or "16")
@@ -252,9 +253,55 @@ CODEX_DATA_TOOLS: list[dict[str, Any]] = [
         "executor": "_ia_tool_get_mercado_livre_listing",
         "external": True,
         "cache_ttl_seconds": EXTERNAL_CACHE_SECONDS,
-        "output_fields": ["id", "title", "status", "seller_sku", "price", "available_quantity", "sold_quantity", "health"],
+        "output_fields": [
+            "id", "title", "status", "seller_sku", "price", "available_quantity", "sold_quantity",
+            "health", "permalink", "description", "pictures", "picture_urls",
+        ],
         "fallbacks": ["integrations_status"],
         "status": "consultando Mercado Livre read-only",
+    },
+    {
+        "id": "mercado_livre_visits",
+        "module": "anuncios",
+        "description": "Visitas diarias de um anuncio MLB exato, com ownership confirmado na loja escolhida.",
+        "intent_examples": ["visitas do MLB", "visualizacoes do anuncio", "acessos nos ultimos 30 dias"],
+        "executor": "_ia_tool_get_mercado_livre_visits",
+        "external": True,
+        "read_only": True,
+        "cache_ttl_seconds": 120,
+        "output_fields": ["item_id", "date_from", "date_to", "total_visits", "average", "record", "results"],
+        "fallbacks": [],
+        "zero_is_authoritative": True,
+        "status": "consultando visitas do anuncio no Mercado Livre",
+    },
+    {
+        "id": "mercado_livre_promotions",
+        "module": "anuncios",
+        "description": "Campanhas e promocoes read-only da conta Mercado Livre exata.",
+        "intent_examples": ["campanhas do mercado livre", "promocoes ativas", "ofertas da conta"],
+        "executor": "_ia_tool_get_mercado_livre_promotions",
+        "external": True,
+        "read_only": True,
+        "cache_ttl_seconds": 120,
+        "output_fields": ["id", "name", "type", "status", "start_date", "finish_date", "benefits", "counts"],
+        "fallbacks": [],
+        "zero_is_authoritative": True,
+        "status": "consultando promocoes do Mercado Livre",
+    },
+    {
+        "id": "mercado_livre_post_sale_detail",
+        "module": "perguntas_pos_venda",
+        "description": "Conversa read-only de pos-venda por pack exato, com PII e URLs privadas removidas.",
+        "intent_examples": ["mensagens do pack", "detalhe da conversa pos venda", "anexos da conversa"],
+        "executor": "codex_readonly_sources.mercado_livre_post_sale_detail",
+        "external": True,
+        "read_only": True,
+        "sensitive": True,
+        "cache_ttl_seconds": 0,
+        "output_fields": ["pack_id", "order_id", "status", "items", "messages", "messages_returned"],
+        "fallbacks": [],
+        "zero_is_authoritative": True,
+        "status": "consultando conversa de pos-venda Mercado Livre",
     },
     {
         "id": "mercado_livre_orders",
@@ -365,6 +412,19 @@ CODEX_DATA_TOOLS: list[dict[str, Any]] = [
         "output_fields": ["sku", "produto", "saldo_total", "depositos"],
         "fallbacks": ["bling_products", "stock_data"],
         "status": "consultando saldo Bling",
+    },
+    {
+        "id": "bling_positive_stock_sku_count",
+        "module": "bling",
+        "description": "Conta, com paginacao completa, os SKUs distintos com saldo positivo na loja Bling selecionada.",
+        "intent_examples": ["quantos SKUs estao com estoque", "numero de produtos com saldo positivo", "total de SKUs com estoque na loja"],
+        "executor": "codex_bling_tools.bling_positive_stock_sku_count",
+        "external": True,
+        "cache_ttl_seconds": EXTERNAL_CACHE_SECONDS,
+        "output_fields": ["loja", "positive_sku_count", "store_available", "coverage_complete", "catalog_products_scanned"],
+        "fallbacks": [],
+        "zero_is_authoritative": True,
+        "status": "contando SKUs com estoque na Bling",
     },
     {
         "id": "bling_deposits",
@@ -725,7 +785,7 @@ for _tool_contract in CODEX_DATA_TOOLS:
 # Consultas direcionadas a uma API devem preservar o zero retornado por essa
 # fonte. Um resultado vazio do provedor nao pode virar silenciosamente dados de
 # banco local ou de outra integracao.
-for _api_tool_id in {"mercado_livre_listing", "mercado_livre_orders", "mercado_livre_returns", "mercado_livre_full_stock", "bling_sales_orders", "questions_post_sale_query"}:
+for _api_tool_id in {"mercado_livre_listing", "mercado_livre_visits", "mercado_livre_promotions", "mercado_livre_post_sale_detail", "mercado_livre_orders", "mercado_livre_returns", "mercado_livre_full_stock", "bling_sales_orders", "questions_post_sale_query"}:
     for _tool_contract in CODEX_DATA_TOOLS:
         if str(_tool_contract.get("id") or "") == _api_tool_id:
             _tool_contract["zero_is_authoritative"] = True
@@ -764,6 +824,9 @@ ASSISTANT_TOOL_PERMISSION_REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "sales_anomalies": ("vendas",),
     "integrations_status": ("integracao",),
     "mercado_livre_listing": ("anuncios_ml",),
+    "mercado_livre_visits": ("anuncios_ml",),
+    "mercado_livre_promotions": ("anuncios_ml",),
+    "mercado_livre_post_sale_detail": ("perguntas_pos_venda",),
     "mercado_livre_orders": ("vendas", "anuncios_ml"),
     "mercado_livre_returns": ("vendas", "anuncios_ml"),
     "mercado_livre_full_stock": ("mercado_full",),
@@ -771,6 +834,7 @@ ASSISTANT_TOOL_PERMISSION_REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "bling_status": ("integracao",),
     "bling_products": ("integracao", "cadastro"),
     "bling_fiscal_product": ("integracao", "impostos"),
+    "bling_positive_stock_sku_count": ("integracao", "estoque"),
     "bling_stock_balances": ("integracao", "estoque"),
     "bling_deposits": ("integracao", "estoque"),
     "bling_sales_orders": ("integracao", "vendas"),
@@ -807,6 +871,8 @@ ASSISTANT_FULL_ONLY_TOOLS = frozenset(
         "operational_dispatcher",
     }
 )
+
+ASSISTANT_CONTEXT_HUB_BOUND_PERMISSION = "context_hub_read_full"
 
 
 class CodexAssistantChatRequest(BaseModel):
@@ -1091,11 +1157,16 @@ def _assistant_external_cache_key(client_id: str, tool_id: str, plan: dict[str, 
         "sku": str(plan.get("sku") or "")[:80],
         "item_id": str(plan.get("item_id") or "")[:40],
         "id_pedido": str(plan.get("id_pedido") or "")[:60],
+        "pack_id": str(plan.get("pack_id") or "")[:60],
         "offset": int(plan.get("offset") or 0),
         "limite": int(plan.get("limite") or 0),
         "mode": str(plan.get("mode") or "")[:20],
         "max_paginas": int(plan.get("max_paginas") or 0),
         "incluir_detalhes": bool(plan.get("incluir_detalhes")),
+        "incluir_comercial": bool(plan.get("incluir_comercial")),
+        "dias": int(plan.get("dias") or 0),
+        "promotion_id": str(plan.get("promotion_id") or "")[:120],
+        "incluir_contagens": bool(plan.get("incluir_contagens")),
         "tools_version": CODEX_DATA_TOOLS_VERSION,
     }
     raw = json.dumps(safe_contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -1104,10 +1175,14 @@ def _assistant_external_cache_key(client_id: str, tool_id: str, plan: dict[str, 
 
 _ASSISTANT_AUDITED_API_TOOLS = {
     "bling_sales_orders",
+    "bling_positive_stock_sku_count",
     "bling_stock_balances",
     "mercado_livre_orders",
     "mercado_livre_returns",
     "mercado_livre_listing",
+    "mercado_livre_visits",
+    "mercado_livre_promotions",
+    "mercado_livre_post_sale_detail",
     "mercado_livre_full_stock",
     "questions_post_sale_query",
 }
@@ -1359,6 +1434,20 @@ def _assistant_tool_access(tool_id: str, permissions: Any) -> dict[str, Any]:
             "missing_permissions": [],
             "reason": "full",
         }
+    if (
+        tool_id == "context_hub_search"
+        and normalized.get(ASSISTANT_CONTEXT_HUB_BOUND_PERMISSION) is True
+    ):
+        # This narrowly scoped capability is injected only while rebuilding a
+        # locally bound WhatsApp session.  It must never behave as `full` or
+        # unlock any of the other full-only data tools.
+        return {
+            "allowed": True,
+            "full": False,
+            "required_permissions": [ASSISTANT_CONTEXT_HUB_BOUND_PERMISSION],
+            "missing_permissions": [],
+            "reason": "bound_whatsapp_context_hub",
+        }
     if tool_id in ASSISTANT_FULL_ONLY_TOOLS:
         return {
             "allowed": False,
@@ -1471,7 +1560,31 @@ def _assistant_tool_input_schema(tool_id: str) -> dict[str, Any]:
             "offset": 0,
             "limite": "1..100",
             "incluir_detalhes": False,
+            "incluir_comercial": False,
             "force_refresh": False,
+        },
+        "mercado_livre_visits": {
+            "mensagem": "MLB exato e periodo desejado",
+            "loja": "nome exato da loja/conta Mercado Livre",
+            "item_id": "MLB obrigatorio",
+            "dias": "1..150",
+            "force_refresh": False,
+        },
+        "mercado_livre_promotions": {
+            "mensagem": "campanhas ou promocoes da conta",
+            "loja": "nome exato da loja/conta Mercado Livre",
+            "status": "status exato opcional",
+            "promotion_id": "ID da promocao opcional",
+            "incluir_contagens": False,
+            "limite": "1..50",
+            "force_refresh": False,
+        },
+        "mercado_livre_post_sale_detail": {
+            "mensagem": "conversa pos-venda por pack",
+            "loja": "nome exato da loja/conta Mercado Livre",
+            "pack_id": "pack numerico obrigatorio",
+            "order_id": "pedido numerico opcional",
+            "limite": "1..100 mensagens",
         },
         "mercado_livre_orders": {
             **period_schema,
@@ -1505,6 +1618,7 @@ def _assistant_tool_input_schema(tool_id: str) -> dict[str, Any]:
         "bling_status": {"loja": "nome da loja/conta ou vazio"},
         "bling_products": {"mensagem": "SKU, id, GTIN, EAN ou nome do produto", "loja": "nome da loja/conta ou vazio", "limite": 50},
         "bling_fiscal_product": {"mensagem": "SKU, id, GTIN, EAN ou nome do produto", "loja": "nome da loja/conta ou vazio"},
+        "bling_positive_stock_sku_count": {"loja": "nome exato da loja/conta", "force_refresh": True},
         "bling_stock_balances": {"mensagem": "SKU, codigo ou produto", "loja": "nome da loja/conta ou vazio", "limite": 50},
         "bling_deposits": {"loja": "nome da loja/conta ou vazio", "limite": 50},
         "bling_sales_orders": {**period_schema, "limite": 50},
@@ -1640,6 +1754,9 @@ _ASSISTANT_SOURCE_LABELS: dict[str, str] = {
     "integrations_status": "status das integracoes cadastradas",
     "mercado_livre_readonly": "dados do Mercado Livre",
     "mercado_livre_listing": "anuncios do Mercado Livre",
+    "mercado_livre_visits": "visitas de anuncio do Mercado Livre",
+    "mercado_livre_promotions": "promocoes do Mercado Livre",
+    "mercado_livre_post_sale_detail": "conversa de pos-venda do Mercado Livre",
     "mercado_livre_orders": "pedidos e vendas do Mercado Livre",
     "mercado_livre_returns": "devolucoes da API do Mercado Livre",
     "mercado_livre_full_stock": "estoque Full atual da API do Mercado Livre",
@@ -1648,6 +1765,7 @@ _ASSISTANT_SOURCE_LABELS: dict[str, str] = {
     "bling_status": "status da integracao Bling",
     "bling_products": "produtos cadastrados na Bling",
     "bling_product": "produtos cadastrados na Bling",
+    "bling_positive_stock_sku_count": "contagem de SKUs com estoque na Bling",
     "bling_stock_balances": "saldos de estoque na Bling",
     "bling_deposits": "depositos cadastrados na Bling",
     "bling_sales_orders": "pedidos de venda da Bling",
@@ -2918,7 +3036,7 @@ def _assistant_is_generic_sales_api_query(message: str) -> bool:
     text = _assistant_texto_norm(message)
     wants_sales = bool(re.search(r"\b(venda|vendas|vendido|vendidos|faturamento|pedido|pedidos|ranking|top)\b", text))
     wants_api = bool(re.search(r"\b(api|apis|via api|pelas apis|pela api)\b", text))
-    names_provider = bool(re.search(r"\b(bling|mercado livre|mercadolivre|ml|mlb\d+)\b", text))
+    names_provider = bool(re.search(r"\b(bling|mercado livre|mercadolivre|ml|mlb[\s_-]*\d+)\b", text))
     return bool(wants_sales and wants_api and not names_provider)
 
 
@@ -2928,26 +3046,38 @@ def _assistant_latest_ml_event_kind(message: Any) -> str:
     text = _assistant_texto_norm(str(message or ""))
     if not re.search(r"\b(ultima|ultimo|mais recente|ultima ocorrencia|ultimo registro)\b", text):
         return ""
+    latest_period = bool(
+        re.search(
+            r"\b(ultima|ultimo)\s+(semana|mes|ano|dia|periodo|trimestre|bimestre|semestre)\b",
+            text,
+        )
+    )
     latest_return = bool(
         re.search(
             r"\b(ultima|ultimo|mais recente)\s+(devolucao|devolucoes|reembolso|estorno)\b",
             text,
         )
-        or re.search(r"\b(devolucao|devolucoes)\b[^.]{0,80}\b(mais recente|ultima|ultimo)\b", text)
+        or re.search(r"\b(devolucao|devolucoes|reembolso|estorno)\s+mais recente\b", text)
     )
-    latest_sale = bool(
-        re.search(r"\b(ultima|ultimo|mais recente)\s+(venda|pedido)\b", text)
-        or re.search(r"\b(venda|pedido)\b[^.]{0,80}\b(mais recente|ultima|ultimo)\b", text)
-    )
+    latest_sale = whatsapp_intent.mercado_livre_sales_lookup(message).get("mode") == "latest"
     if not latest_return and not latest_sale:
         latest_sale = bool(
+            not latest_period
+            and
             re.search(r"\b(mercado livre|mercadolivre|ml)\b", text)
             and re.search(r"\b(sku\s*[a-z0-9._/-]+|mlb\s*\d{6,})\b", text)
         )
     explicit_both = bool(
-        latest_return
-        and latest_sale
-        and re.search(r"\b(e|tambem|junto|ambos|as duas|os dois)\b", text)
+        re.search(
+            r"\b(ultima|ultimo|mais recente)\s+(venda|pedido)\b[^.]{0,100}\b(e|tambem|junto|ambos)\b"
+            r"[^.]{0,100}\b(ultima|ultimo|mais recente)\s+(devolucao|reembolso|estorno)\b",
+            text,
+        )
+        or re.search(
+            r"\b(ultima|ultimo|mais recente)\s+(devolucao|reembolso|estorno)\b[^.]{0,100}\b(e|tambem|junto|ambos)\b"
+            r"[^.]{0,100}\b(ultima|ultimo|mais recente)\s+(venda|pedido)\b",
+            text,
+        )
     )
     if explicit_both:
         return "both"
@@ -2962,6 +3092,7 @@ def _assistant_source_routing_policy(message: Any) -> dict[str, Any]:
     """Contrato de origem para consultas operacionais do Black Jhon."""
     text = _assistant_texto_norm(str(message or ""))
     wants_stock = bool(re.search(r"\b(estoque|saldo|quantidade em estoque|disponivel em estoque)\b", text))
+    wants_positive_sku_count = whatsapp_intent.positive_stock_sku_count_requested(message)
     wants_full = bool(wants_stock and re.search(r"\b(full|fulfillment|mercado envios)\b", text))
     wants_sum = bool(wants_stock and re.search(r"\b(somar|some|soma|somatorio|totalizar|total geral|loja\s*\+\s*full|loja e full)\b", text))
     combined_stock = bool(
@@ -2969,8 +3100,28 @@ def _assistant_source_routing_policy(message: Any) -> dict[str, Any]:
         and re.search(r"\b(loja\s*\+\s*full|loja e full|estoque total geral|saldo total geral)\b", text)
     )
     wants_listing_description = bool(
-        re.search(r"\b(anuncio|anuncios|mlb\d+)\b", text)
-        and re.search(r"\b(descricao|descricoes|detalhe|detalhes|atributo|atributos|ficha|conteudo)\b", text)
+        re.search(r"\b(anuncio|anuncios|mercado livre|mercadolivre|mlb[\s_-]*\d+)\b", text)
+        and re.search(
+            r"\b(descricao|descricoes|detalhe|detalhes|atributo|atributos|ficha|conteudo|"
+            r"link|links|url|foto|fotos|imagem|imagens|dados|informacao|informacoes|mlb)\b",
+            text,
+        )
+    )
+    wants_listing_commercial = bool(
+        re.search(r"\b(anuncio|anuncios|mercado livre|mercadolivre|mlb[\s_-]*\d+)\b", text)
+        and re.search(r"\b(taxa|taxas|tarifa|tarifas|comissao|comissoes|frete|custo de envio|preco liquido|valor liquido)\b", text)
+    )
+    wants_visits = bool(
+        re.search(r"\b(visita|visitas|visualizacao|visualizacoes|acesso|acessos)\b", text)
+        and re.search(r"\b(mercado livre|mercadolivre|mlb[\s_-]*\d+|anuncio)\b", text)
+    )
+    wants_promotions = bool(
+        re.search(r"\b(promocao|promocoes|campanha|campanhas|oferta|ofertas)\b", text)
+        and re.search(r"\b(mercado livre|mercadolivre|conta|loja)\b", text)
+    )
+    wants_post_sale_detail = bool(
+        re.search(r"\b(conversa|conversas|mensagem|mensagens|anexo|anexos|mediacao|pos venda|pos-venda)\b", text)
+        and re.search(r"\b(pack|pedido|order)\b", text)
     )
     daily_sales_report = bool(
         re.search(r"\b(relatorio|resumo)\b", text)
@@ -2981,6 +3132,10 @@ def _assistant_source_routing_policy(message: Any) -> dict[str, Any]:
         or re.search(r"\b(pedido|pedidos|venda|vendas|vendido|vendidos|faturamento|ranking|mais vendido)\b", text)
     )
     wants_ml_returns = bool(re.search(r"\b(devolucao|devolucoes|devolvido|devolvidos|reembolso|reembolsos|estorno|estornos)\b", text))
+    if wants_post_sale_detail:
+        wants_ml_sales = False
+    if wants_ml_returns and whatsapp_intent.mercado_livre_return_reference_only(message):
+        wants_ml_sales = False
     latest_event = bool(re.search(r"\b(ultima|ultimo|mais recente|ultima ocorrencia|ultimo registro)\b", text))
     latest_kind = _assistant_latest_ml_event_kind(message)
     if latest_kind == "return":
@@ -3002,7 +3157,22 @@ def _assistant_source_routing_policy(message: Any) -> dict[str, Any]:
             if item and item not in target:
                 target.append(item)
 
-    if combined_stock:
+    if wants_positive_sku_count:
+        add_unique(required_tools, "bling_positive_stock_sku_count")
+        add_unique(
+            forbidden_tools,
+            "bling_stock_balances",
+            "bling_deposits",
+            "mercado_livre_listing",
+            "stock_data",
+            "stockout_forecast",
+            "stale_stock",
+            "product_data",
+            "product_registry",
+        )
+        add_unique(providers, "bling")
+        intents.append("positive_stock_sku_count")
+    elif combined_stock:
         add_unique(required_tools, "bling_stock_balances", "mercado_livre_full_stock")
         add_unique(forbidden_tools, "bling_deposits")
         add_unique(providers, "bling", "mercado_livre")
@@ -3017,10 +3187,22 @@ def _assistant_source_routing_policy(message: Any) -> dict[str, Any]:
         add_unique(forbidden_tools, "bling_deposits")
         add_unique(providers, "bling")
         intents.append("current_store_stock")
-    if wants_listing_description:
+    if wants_listing_description or wants_listing_commercial:
         add_unique(required_tools, "mercado_livre_listing")
         add_unique(providers, "mercado_livre")
-        intents.append("listing_description")
+        intents.append("listing_commercial" if wants_listing_commercial else "listing_description")
+    if wants_visits:
+        add_unique(required_tools, "mercado_livre_visits")
+        add_unique(providers, "mercado_livre")
+        intents.append("listing_visits")
+    if wants_promotions:
+        add_unique(required_tools, "mercado_livre_promotions")
+        add_unique(providers, "mercado_livre")
+        intents.append("promotions")
+    if wants_post_sale_detail:
+        add_unique(required_tools, "mercado_livre_post_sale_detail")
+        add_unique(providers, "mercado_livre")
+        intents.append("post_sale_detail")
     if wants_ml_sales:
         add_unique(required_tools, "mercado_livre_orders")
         add_unique(providers, "mercado_livre")
@@ -3041,19 +3223,23 @@ def _assistant_source_routing_policy(message: Any) -> dict[str, Any]:
     if not required_tools:
         return {}
     return {
-        "version": "20260714-whatsapp-source-routing-v5-implicit-latest-sale",
+        "version": "20260718-whatsapp-source-routing-v6-positive-stock-sku-count",
         "intent": "+".join(intents),
         "required_tools": required_tools,
         "forbidden_tools": forbidden_tools,
         "preferred_providers": providers,
-        "force_refresh": bool(wants_stock or wants_listing_description or wants_ml_sales or wants_ml_returns),
+        "force_refresh": bool(wants_stock or wants_listing_description or wants_listing_commercial or wants_visits or wants_promotions or wants_post_sale_detail or wants_ml_sales or wants_ml_returns),
         "include_listing_details": wants_listing_description,
+        "include_commercial_detail": wants_listing_commercial,
         "sum_requested": wants_sum,
         "full_exclusive": bool(wants_full and not combined_stock),
         "full_stock_provider": "mercado_livre_api_only",
         "bling_stock_scope": "exclude_full",
+        "positive_stock_sku_count_requested": wants_positive_sku_count,
         "aggregation_policy": (
-            "sum_bling_store_plus_mercado_livre_full"
+            "single_store_scalar_no_sum"
+            if wants_positive_sku_count
+            else "sum_bling_store_plus_mercado_livre_full"
             if combined_stock
             else "sum_mercado_livre_full_only"
             if wants_full and wants_sum
@@ -3067,6 +3253,8 @@ def _assistant_select_tool_ids(message: str, mode: str, screen_context: Any) -> 
     page = _assistant_texto_norm(_assistant_context_page(screen_context))
     selected: list[str] = []
     source_policy = _assistant_source_routing_policy(message)
+    if source_policy.get("positive_stock_sku_count_requested") is True:
+        return ["bling_positive_stock_sku_count"]
 
     def add(*tool_ids: str) -> None:
         for tool_id in tool_ids:
@@ -3093,7 +3281,7 @@ def _assistant_select_tool_ids(message: str, mode: str, screen_context: Any) -> 
         re.search(r"\b(lembra|memoria|preferencia|preferencias|regra|regras|decisao|decisoes|relatorio anterior|relatorios anteriores|custo pendente|custos pendentes|alerta ignorado|alertas ignorados|sku frequente|loja usada)\b", text)
     )
     mentions_bling = "bling" in text
-    mentions_ml = bool(re.search(r"\b(mercado livre|mercadolivre|mlb\d+|anuncio|anuncios)\b", text))
+    mentions_ml = bool(re.search(r"\b(mercado livre|mercadolivre|mlb[\s_-]*\d+|anuncio|anuncios)\b", text))
     wants_generic_sales_apis = _assistant_is_generic_sales_api_query(message)
     wants_fiscal = bool(re.search(r"\b(fiscal|nota|notas|nf|nfe|nf-e|nfce|nfse|ncm|cest|tributacao|natureza|naturezas|cfop)\b", text))
     wants_finance = bool(re.search(r"\b(financeiro|contas? a receber|contas? a pagar|receber|pagar|caixa|banco|boleto|boletos)\b", text))
@@ -3255,6 +3443,8 @@ def _assistant_tool_rows(result: Any) -> list[Any]:
         return []
     for key in (
         "rows",
+        "results",
+        "campaigns",
         "by_sku",
         "por_sku",
         "vendas",
@@ -3344,16 +3534,80 @@ def _assistant_tool_empty_reason(tool_id: str, records: int, result: Any, plan: 
     return "Consulta read-only nao retornou registros."
 
 
+def _assistant_dlp_safe_rows(rows: Any) -> tuple[list[Any], int]:
+    """Drop complete evidence rows whose snippets trip the Context Hub DLP."""
+
+    from backend.services import context_hub
+
+    def snippets(value: Any) -> list[str]:
+        if isinstance(value, dict):
+            found = [str(value.get("snippet") or "")] if "snippet" in value else []
+            return found + [item for child in value.values() for item in snippets(child)]
+        if isinstance(value, list):
+            return [item for child in value for item in snippets(child)]
+        return []
+
+    safe: list[Any] = []
+    blocked = 0
+    for row in rows if isinstance(rows, list) else []:
+        if any(context_hub.scan_dlp(value, source_ref="whatsapp_tool_snippet") for value in snippets(row) if value):
+            blocked += 1
+        else:
+            safe.append(row)
+    return safe, blocked
+
+
 def _assistant_standard_result(tool_id: str, raw: Optional[dict[str, Any]], plan: dict[str, Any]) -> dict[str, Any]:
     meta = _assistant_tool_meta(tool_id)
     raw = raw if isinstance(raw, dict) else {}
     result = raw.get("result") if isinstance(raw.get("result"), dict) else {}
     rows = _assistant_tool_rows(result)
+    rows, dlp_blocked_count = _assistant_dlp_safe_rows(rows)
+    if tool_id == "context_hub_search":
+        allowed_keys = {
+            "doc_id",
+            "chunk_id",
+            "snippet",
+            "score",
+            "truth_class",
+            "source_version",
+            "source_hash",
+            "content_hash",
+            "generation_id",
+            "version",
+            "hash",
+            "generation",
+            "type",
+            "module",
+            "surface",
+            "selection_strategy",
+            "selection_reason",
+        }
+        # Source references may contain local absolute paths.  They are useful
+        # in the full admin UI but must not leak into WhatsApp task evidence.
+        rows = [
+            {
+                str(key): value
+                for key, value in row.items()
+                if str(key) in allowed_keys
+            } | ({"reference": str(row.get("doc_id") or "")[:240]} if row.get("doc_id") else {})
+            for row in rows
+            if isinstance(row, dict)
+        ]
+    single_sale_rows = bool(
+        tool_id == "mercado_livre_orders"
+        and isinstance(result.get("orders"), list)
+        and (
+            _assistant_latest_ml_event_kind(plan.get("message")) in {"sale", "both"}
+            or result.get("exact_lookup") is True
+        )
+    )
     if (
         tool_id == "mercado_livre_orders"
         and isinstance(result.get("orders"), list)
         and (
-            result.get("exact_lookup") is True
+            single_sale_rows
+            or result.get("exact_lookup") is True
             or (
                 isinstance(result.get("target"), dict)
                 and isinstance(result.get("exact_coverage"), dict)
@@ -3361,7 +3615,9 @@ def _assistant_standard_result(tool_id: str, raw: Optional[dict[str, Any]], plan
         )
     ):
         rows = result.get("orders") or []
-    records = _assistant_result_count(result)
+    records = len(rows) if single_sale_rows else _assistant_result_count(result)
+    if dlp_blocked_count:
+        records = len(rows)
     if rows and records == 0:
         records = len(rows)
     if records == 0 and isinstance(result, dict):
@@ -3392,6 +3648,20 @@ def _assistant_standard_result(tool_id: str, raw: Optional[dict[str, Any]], plan
     source_raw = raw.get("function") or meta.get("executor") or tool_id
     tool_label = _assistant_human_tool_label(tool_id)
     source_label = _assistant_human_source_label(source_raw, tool_id)
+    if tool_id == "context_hub_search":
+        safe_summary = {
+            key: result.get(key)
+            for key in ("success", "count", "generation_id", "generation", "source_version")
+            if result.get(key) not in (None, "")
+        }
+        safe_arguments: dict[str, Any] = {}
+    else:
+        safe_summary = {
+            key: value for key, value in result.items() if not isinstance(value, list)
+        } if isinstance(result, dict) else {}
+        safe_arguments = raw.get("arguments") or {}
+    if dlp_blocked_count:
+        safe_summary["dlp_blocked_count"] = dlp_blocked_count
     exact_metadata = {}
     if tool_id == "mercado_livre_orders" and result.get("exact_lookup") is True:
         exact_metadata = {
@@ -3422,14 +3692,14 @@ def _assistant_standard_result(tool_id: str, raw: Optional[dict[str, Any]], plan
         "read_only": meta.get("read_only") is True,
         "records": records,
         "rows": rows if tool_id == "sales_returns_query" and isinstance(rows, list) else (rows[:500] if isinstance(rows, list) else []),
-        "summary": {key: value for key, value in result.items() if not isinstance(value, list)} if isinstance(result, dict) else {},
+        "summary": safe_summary,
         "exact_metadata": exact_metadata,
         "source": source_raw,
         "source_label": source_label,
         "sources_human": _assistant_human_source_list([source_raw], tool_id),
         "source_role": str((plan.get("source_roles") or {}).get(tool_id) or plan.get("source_role") or "context"),
         "aggregation_policy": str(plan.get("aggregation_policy") or "standard"),
-        "arguments": raw.get("arguments") or {},
+        "arguments": safe_arguments,
         "periodo": plan.get("periodo") or {},
         "loja": plan.get("loja") or "",
         "empty_reason": _assistant_tool_empty_reason(tool_id, records, result, plan),
@@ -3612,7 +3882,7 @@ def _assistant_execute_registry_tool(
         elif tool_id == "integrations_status":
             raw = _assistant_call_ia_tool("_ia_tool_get_integrations_status", client_id, loja)
         elif tool_id == "mercado_livre_listing":
-            ml_message = message if re.search(r"\b(mercado livre|mercadolivre|mlb\d+|sku|anuncio|anuncios|listar)\b", _assistant_texto_norm(message)) else "listar anuncios ativos mercado livre"
+            ml_message = message if re.search(r"\b(mercado livre|mercadolivre|mlb[\s_-]*\d+|sku|anuncio|anuncios|listar)\b", _assistant_texto_norm(message)) else "listar anuncios ativos mercado livre"
             raw = _assistant_call_ia_tool(
                 "_ia_tool_get_mercado_livre_listing",
                 client_id,
@@ -3628,6 +3898,7 @@ def _assistant_execute_registry_tool(
                 incluir_detalhes=bool(plan.get("incluir_detalhes")),
                 force_refresh=bool(plan.get("force_refresh")),
                 query_deadline=plan.get("query_deadline"),
+                incluir_comercial=bool(plan.get("incluir_comercial")),
             )
             if _assistant_tool_call_signature_error(raw):
                 # Runtime anterior: mantenha a listagem basica enquanto a nova
@@ -3641,6 +3912,30 @@ def _assistant_execute_registry_tool(
                     limit_safe,
                     bool(plan.get("incluir_detalhes")),
                 )
+        elif tool_id == "mercado_livre_visits":
+            raw = _assistant_call_ia_tool(
+                "_ia_tool_get_mercado_livre_visits",
+                client_id,
+                message,
+                loja=loja,
+                item_id=str(plan.get("item_id") or ""),
+                dias=int(plan.get("dias") or 30),
+                force_refresh=bool(plan.get("force_refresh")),
+                query_deadline=plan.get("query_deadline"),
+            )
+        elif tool_id == "mercado_livre_promotions":
+            raw = _assistant_call_ia_tool(
+                "_ia_tool_get_mercado_livre_promotions",
+                client_id,
+                message,
+                loja=loja,
+                status=str(plan.get("status") or ""),
+                promotion_id=str(plan.get("promotion_id") or ""),
+                incluir_contagens=bool(plan.get("incluir_contagens")),
+                limite=limit_safe,
+                force_refresh=bool(plan.get("force_refresh")),
+                query_deadline=plan.get("query_deadline"),
+            )
         elif tool_id == "mercado_livre_orders":
             raw = _assistant_call_ia_tool(
                 "_ia_tool_get_mercado_livre_orders",
@@ -3740,7 +4035,11 @@ def _assistant_execute_registry_tool(
         elif str(tool_id or "").startswith("bling_"):
             from backend.services import codex_bling_tools
 
-            bling_message = _assistant_bling_message_with_refs(message, plan, screen_context, existing_registry_results)
+            bling_message = (
+                message
+                if tool_id == "bling_positive_stock_sku_count"
+                else _assistant_bling_message_with_refs(message, plan, screen_context, existing_registry_results)
+            )
             if tool_id == "bling_sales_order_detail" and str(plan.get("id_pedido") or ""):
                 bling_message = f"pedido {plan.get('id_pedido')} {bling_message}".strip()
             raw = codex_bling_tools.execute_bling_tool(
@@ -3795,6 +4094,7 @@ def _assistant_execute_registry_tool(
                 "ids": list(plan.get("context_ids") or [])[:50],
                 "source_type": str(plan.get("source_type") or ""),
                 "environment": str(plan.get("environment_filter") or ""),
+                "request_surface": str(plan.get("request_surface") or ""),
             }
             filters = {key: value for key, value in filters.items() if value not in ("", [], None)}
             result = context_hub.search_context(
@@ -3820,6 +4120,7 @@ def _assistant_execute_registry_tool(
             "sync_logs_query",
             "mercado_livre_readonly",
             "questions_post_sale_query",
+            "mercado_livre_post_sale_detail",
             "fiscal_local_query",
         }:
             from backend.services import codex_readonly_sources
@@ -3845,6 +4146,8 @@ def _assistant_execute_registry_tool(
                     "sql": str(plan.get("sql") or ""),
                     "status": str(plan.get("status") or ""),
                     "separar_por_loja": bool(plan.get("separar_por_loja")),
+                    "pack_id": str(plan.get("pack_id") or ""),
+                    "order_id": str(plan.get("id_pedido") or ""),
                 },
             )
             raw = {
@@ -4041,6 +4344,16 @@ def _assistant_tool_validation(
             )
             for item in primary_items
         )
+    positive_sku_count_contract = False
+    if tool_id == "bling_positive_stock_sku_count":
+        positive_sku_count_contract = any(
+            isinstance(row, dict)
+            and isinstance(row.get("positive_sku_count"), (int, float))
+            and not isinstance(row.get("positive_sku_count"), bool)
+            and row.get("coverage_complete") is True
+            for item in primary_items
+            for row in (item.get("rows") if isinstance(item.get("rows"), list) else [])
+        )
     attempted = [
         str(item.get("tool_id") or "").strip()
         for item in registry_results
@@ -4068,6 +4381,9 @@ def _assistant_tool_validation(
         # nunca transformam uma consulta de saldo local vazia em evidência.
         enough = primary_stock_contract
         fields_missing = [] if primary_stock_contract else ["saldo_numerico_confirmado"]
+    if tool_id == "bling_positive_stock_sku_count":
+        enough = positive_sku_count_contract
+        fields_missing = [] if positive_sku_count_contract else ["contagem_completa_de_skus"]
     live_question_summaries = []
     for item in registry_results:
         summary = item.get("summary") if isinstance(item, dict) and isinstance(item.get("summary"), dict) else {}
@@ -4121,7 +4437,7 @@ def _assistant_tool_validation(
         fields_missing = list(dict.fromkeys(fields_missing))
     confidence = (
         "alta"
-        if exact_event_conclusive or live_question_complete or authoritative_zero or primary_stock_contract
+        if exact_event_conclusive or live_question_complete or authoritative_zero or primary_stock_contract or positive_sku_count_contract
         else "media"
         if live_question_partial_with_records
         else "alta"
@@ -4134,6 +4450,12 @@ def _assistant_tool_validation(
         confidence = "baixa"
     if authoritative_zero and not exact_event_query and not live_question_query:
         reason = "A fonte primaria confirmou zero registros com cobertura completa."
+    elif tool_id == "bling_positive_stock_sku_count":
+        reason = (
+            "Contagem de SKUs com saldo positivo confirmada em todo o catalogo da loja Bling."
+            if positive_sku_count_contract
+            else "A varredura da loja Bling ficou incompleta; a contagem nao pode ser tratada como exata."
+        )
     elif tool_id == "stock_data":
         reason = (
             "Saldo numerico confirmado no estoque interno do JK Sistema."
@@ -4297,6 +4619,9 @@ def _assistant_agent_result_package(
     chart_function_aliases = {
         "get_mercado_livre_orders": "mercado_livre_orders",
         "get_mercado_livre_listing": "mercado_livre_listing",
+        "get_mercado_livre_visits": "mercado_livre_visits",
+        "get_mercado_livre_promotions": "mercado_livre_promotions",
+        "codex_readonly_sources.mercado_livre_post_sale_detail": "mercado_livre_post_sale_detail",
         "get_days_without_sale_top": "stale_stock",
         "get_stockout_forecast": "stockout_forecast",
         "get_sales_by_period": "sales_ranking",
@@ -4330,12 +4655,18 @@ def _assistant_agent_result_package(
         "description": meta.get("description") or "",
         "external": bool(meta.get("external")),
         "read_only": meta.get("read_only") is True,
-        "args": _assistant_agent_compact(args),
+        "args": {} if tool_id == "context_hub_search" else _assistant_agent_compact(args),
         "records": records,
         "top_rows": _assistant_agent_compact(rows[:CODEX_AGENT_TOP_ROWS_LIMIT]),
         # O relatorio diario do WhatsApp precisa listar cada SKU retornado pela
         # API, e nao apenas a amostra usada pelo agente conversacional.
-        "all_rows": copy.deepcopy(primary_rows[:20000]) if tool_id == "mercado_livre_orders" else [],
+        "all_rows": (
+            copy.deepcopy(primary_rows[:20000])
+            if tool_id == "mercado_livre_orders"
+            else copy.deepcopy(primary_rows[:100])
+            if tool_id == "mercado_livre_listing"
+            else []
+        ),
         "chart_data": primary_chart_data,
         "exact_metadata": primary_exact_metadata,
         "summary": summaries[:12],
@@ -4345,7 +4676,7 @@ def _assistant_agent_result_package(
         "source_label": (sources_human[:1] or [_assistant_human_tool_label(tool_id)])[0],
         "source_role": (
             "primary_api"
-            if tool_id in {"bling_sales_orders", "bling_stock_balances", "mercado_livre_orders", "mercado_livre_returns", "mercado_livre_listing", "mercado_livre_full_stock", "questions_post_sale_query"}
+            if tool_id in {"bling_sales_orders", "bling_positive_stock_sku_count", "bling_stock_balances", "mercado_livre_orders", "mercado_livre_returns", "mercado_livre_listing", "mercado_livre_visits", "mercado_livre_promotions", "mercado_livre_post_sale_detail", "mercado_livre_full_stock", "questions_post_sale_query"}
             else "supporting_local_history"
             if _assistant_is_generic_sales_api_query(str(args.get("message") or args.get("mensagem") or ""))
             and tool_id in {"sales_returns_query", "sales_ranking", "sales_summary"}
@@ -4353,7 +4684,7 @@ def _assistant_agent_result_package(
         ),
         "aggregation_policy": (
             "separate_sources_no_sum"
-            if tool_id in {"bling_sales_orders", "bling_stock_balances", "mercado_livre_orders", "mercado_livre_returns", "mercado_livre_listing", "mercado_livre_full_stock", "questions_post_sale_query"}
+            if tool_id in {"bling_sales_orders", "bling_positive_stock_sku_count", "bling_stock_balances", "mercado_livre_orders", "mercado_livre_returns", "mercado_livre_listing", "mercado_livre_visits", "mercado_livre_promotions", "mercado_livre_post_sale_detail", "mercado_livre_full_stock", "questions_post_sale_query"}
             or _assistant_is_generic_sales_api_query(str(args.get("message") or args.get("mensagem") or ""))
             else "standard"
         ),
@@ -4486,6 +4817,14 @@ def codex_assistant_execute_tool_call(
             and re.search(r"\b(venda|pedido|order|pack|compra)\b", _assistant_texto_norm(message))
         ):
             id_pedido = _assistant_normalize_identifier(standalone_ids[0])
+    pack_id = _assistant_normalize_identifier(args.get("pack_id") or args.get("pack") or "")
+    if not pack_id:
+        pack_match = re.search(
+            r"\bpack(?:\s*(?:id|numero|#))?\s*[:#-]?\s*(\d{5,30})\b",
+            str(message or ""),
+            flags=re.IGNORECASE,
+        )
+        pack_id = _assistant_normalize_identifier(pack_match.group(1) if pack_match else "")
     default_status = ""
     if tool_id == "mercado_livre_listing":
         default_status = "active"
@@ -4496,6 +4835,11 @@ def codex_assistant_execute_tool_call(
     incluir_detalhes = _assistant_bool_arg(
         args.get("incluir_detalhes", args.get("include_details", args.get("incluir_descricao"))),
         False,
+    )
+    routing_policy = _assistant_source_routing_policy(message)
+    incluir_comercial = _assistant_bool_arg(
+        args.get("incluir_comercial", args.get("include_commercial")),
+        bool(routing_policy.get("include_commercial_detail")),
     )
     strict_latest_ml_event = bool(
         latest_ml_event and tool_id in {"mercado_livre_orders", "mercado_livre_returns"}
@@ -4512,8 +4856,9 @@ def codex_assistant_execute_tool_call(
         default_limit = 1000
         maximum_limit = 1000
     elif tool_id == "context_hub_search":
-        default_limit = 12
-        maximum_limit = 12
+        request_surface = str(args.get("request_surface") or "").strip().casefold()
+        default_limit = 8 if request_surface in {"whatsapp", "black_jhon_whatsapp"} else 12
+        maximum_limit = default_limit
     elif tool_id == "mercado_livre_full_stock":
         default_limit = 10000
         maximum_limit = 20000
@@ -4522,6 +4867,12 @@ def codex_assistant_execute_tool_call(
         maximum_limit = 100
     elif tool_id == "mercado_livre_listing":
         default_limit = 20
+        maximum_limit = 100
+    elif tool_id == "mercado_livre_promotions":
+        default_limit = 20
+        maximum_limit = 50
+    elif tool_id == "mercado_livre_post_sale_detail":
+        default_limit = 50
         maximum_limit = 100
     elif tool_id == "mercado_livre_orders":
         default_limit = 20_000 if mode in {"report", "daily"} else 50
@@ -4546,20 +4897,31 @@ def codex_assistant_execute_tool_call(
         "item_id": item_id,
         "mlb": item_id,
         "id_pedido": id_pedido,
+        "pack_id": pack_id,
         "status": status,
         "offset": offset,
         "incluir_detalhes": incluir_detalhes,
+        "incluir_comercial": incluir_comercial,
+        "dias": _assistant_agent_int(args.get("dias") or args.get("days"), 30, 1, 150),
+        "promotion_id": str(args.get("promotion_id") or args.get("promocao_id") or "").strip()[:120],
+        "incluir_contagens": _assistant_bool_arg(args.get("incluir_contagens", args.get("include_counts")), False),
         "force_refresh": force_refresh,
         "query_deadline": query_deadline,
         "api_sales_query": api_sales_query,
         "source_role": (
             "primary_api"
-            if tool_id in {"bling_sales_orders", "mercado_livre_orders", "mercado_livre_returns"}
+            if tool_id in {"bling_sales_orders", "bling_positive_stock_sku_count", "mercado_livre_orders", "mercado_livre_returns", "mercado_livre_listing", "mercado_livre_visits", "mercado_livre_promotions", "mercado_livre_post_sale_detail"}
             else "supporting_local_history"
             if api_sales_query and tool_id in {"sales_returns_query", "sales_ranking", "sales_summary"}
             else "context"
         ),
-        "aggregation_policy": "separate_sources_no_sum" if api_sales_query else "standard",
+        "aggregation_policy": (
+            "single_store_scalar_no_sum"
+            if tool_id == "bling_positive_stock_sku_count"
+            else "separate_sources_no_sum"
+            if api_sales_query
+            else "standard"
+        ),
         "limite": limit_safe,
         "max_paginas": _assistant_agent_int(
             args.get("max_paginas") or args.get("max_pages"),
@@ -4571,7 +4933,7 @@ def codex_assistant_execute_tool_call(
         "category_filter": str(args.get("categoria") or args.get("category") or args.get("category_filter") or "").strip(),
         "capability_id": str(args.get("capability_id") or args.get("capacidade_id") or "").strip(),
         "source_id": str(args.get("source_id") or args.get("fonte") or "").strip(),
-        "source_type": str(args.get("tipo") or args.get("type") or "").strip(),
+        "source_type": str(args.get("source_type") or args.get("tipo") or args.get("type") or "").strip(),
         "context_ids": [
             str(item).strip()
             for item in (
@@ -4596,13 +4958,14 @@ def codex_assistant_execute_tool_call(
             args.get("separar_por_loja") or args.get("todas_lojas") or args.get("all_stores")
         ) or _assistant_wants_store_breakdown(message, loja),
         "incluir_registros": bool(args.get("incluir_registros", True)),
+        "request_surface": str(args.get("request_surface") or "").strip().casefold(),
         "selected_tools": [tool_id],
     }
 
     external_cache_key = ""
     external_cache_ttl = 0
     recent_cached: Optional[dict[str, Any]] = None
-    if meta.get("external") is True:
+    if meta.get("external") is True and meta.get("sensitive") is not True:
         external_cache_ttl = max(1, min(int(meta.get("cache_ttl_seconds") or EXTERNAL_CACHE_SECONDS), EXTERNAL_CACHE_SECONDS))
         external_cache_key = _assistant_external_cache_key(client_id, tool_id, plan)
         cached = _assistant_cache_get(client_id, external_cache_key, external_cache_ttl)
@@ -4678,10 +5041,20 @@ def codex_assistant_execute_tool_call(
             summary = item.get("summary") if isinstance(item.get("summary"), dict) else {}
             coverage = summary.get("exact_coverage") if isinstance(summary.get("exact_coverage"), dict) else {}
             match = summary.get("match") if isinstance(summary.get("match"), dict) else {}
+            paging = summary.get("paging") if isinstance(summary.get("paging"), dict) else {}
+            latest_api_conclusive = bool(
+                not summary.get("error")
+                and summary.get("partial_response") is not True
+                and int(paging.get("offset") or 0) == 0
+                and (int(item.get("records") or 0) > 0 or paging.get("has_more") is False)
+            )
             if (
-                coverage.get("complete") is True
-                and not summary.get("error")
-                and (match.get("exact") is True or int(item.get("records") or 0) == 0)
+                latest_api_conclusive
+                or (
+                    coverage.get("complete") is True
+                    and not summary.get("error")
+                    and (match.get("exact") is True or int(item.get("records") or 0) == 0)
+                )
             ):
                 primary_exact_conclusive = True
                 break
@@ -4692,6 +5065,7 @@ def codex_assistant_execute_tool_call(
     )
     if (
         needs_supporting_history
+        and not strict_latest_ml_event
         and tool_id in {"bling_sales_orders", "mercado_livre_orders", "mercado_livre_returns"}
         and (tool_id != "mercado_livre_returns" or strict_latest_ml_event)
         and not (tool_id == "mercado_livre_orders" and bool(plan.get("id_pedido")))
@@ -4768,7 +5142,11 @@ def codex_assistant_execute_tool_call(
         permissions=permissions,
     )
     result_package["cache_hit"] = False
-    if recent_cached is not None and _assistant_retryable_api_error(result_package):
+    strict_live_sale_lookup = bool(
+        tool_id == "mercado_livre_orders"
+        and (strict_latest_ml_event or bool(plan.get("id_pedido")))
+    )
+    if recent_cached is not None and not strict_live_sale_lookup and _assistant_retryable_api_error(result_package):
         cached_result = copy.deepcopy(recent_cached)
         cached_result["cache_hit"] = True
         cached_result["cache_fallback"] = True
@@ -4938,9 +5316,23 @@ def _assistant_registry_context_text(plan: dict[str, Any], registry_results: lis
         if rows:
             lines.append("  amostra:")
             for row in rows[:8]:
-                lines.append("  - " + json.dumps(row, ensure_ascii=False, default=str)[:900])
+                lines.append(
+                    "  - "
+                    + codex_turn_context.bounded_json(
+                        row,
+                        max_bytes=900,
+                        priority_paths=("field", "value", "source", "coverage", "status", "reference"),
+                    )
+                )
         if summary:
-            lines.append("  resumo: " + json.dumps(summary, ensure_ascii=False, default=str)[:1200])
+            lines.append(
+                "  resumo: "
+                + codex_turn_context.bounded_json(
+                    summary,
+                    max_bytes=1200,
+                    priority_paths=("field", "value", "source", "coverage", "status", "reference"),
+                )
+            )
     return "\n".join(lines)[:CODEX_DATA_CONTEXT_CHAR_LIMIT]
 
 
@@ -5072,6 +5464,8 @@ def _assistant_result_count(value: Any) -> int:
         return 2
     for key in (
         "rows",
+        "results",
+        "campaigns",
         "by_sku",
         "por_sku",
         "vendas",
@@ -5113,6 +5507,7 @@ def _assistant_result_count(value: Any) -> int:
     total = (
         value.get("record_count")
         or value.get("records")
+        or value.get("count")
         or value.get("total_registros")
         or value.get("total")
         or value.get("total_lojas")
@@ -5553,8 +5948,8 @@ def _assistant_resolve_margin_cost_tax(custos_por_sku: dict, impostos_por_sku: d
         return None, None
 
 
-def _assistant_collect_ml_listing_refs(context: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    refs: dict[str, dict[str, Any]] = {}
+def _assistant_collect_ml_listing_refs(context: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    refs: dict[str, list[dict[str, Any]]] = {}
 
     def add(item: Any) -> None:
         if not isinstance(item, dict):
@@ -5569,7 +5964,35 @@ def _assistant_collect_ml_listing_refs(context: dict[str, Any]) -> dict[str, dic
         ).strip().upper()
         if not sku:
             return
-        refs.setdefault(sku, item)
+        details = item.get("details") if isinstance(item.get("details"), dict) else {}
+        commercial = details.get("commercial") if isinstance(details.get("commercial"), dict) else {}
+        price = commercial.get("price") if isinstance(commercial.get("price"), dict) else {}
+        fees = commercial.get("fees") if isinstance(commercial.get("fees"), dict) else {}
+        shipping = commercial.get("shipping") if isinstance(commercial.get("shipping"), dict) else {}
+        normalized = {
+            **item,
+            "price": price.get("amount") if price.get("amount") is not None else item.get("price"),
+            "original_price": price.get("regular_amount") if price.get("regular_amount") is not None else item.get("original_price"),
+            "sale_fee_amount": fees.get("sale_fee_amount"),
+            "shipping_seller_cost": shipping.get("seller_cost"),
+            "free_shipping": shipping.get("free_shipping"),
+            "commercial_collected": bool(commercial),
+        }
+        identity = (
+            str(normalized.get("loja") or normalized.get("store") or ""),
+            str(normalized.get("id") or normalized.get("item_id") or ""),
+            str(normalized.get("variation_id") or ((normalized.get("match") or {}).get("variation_id") if isinstance(normalized.get("match"), dict) else "")),
+        )
+        current = refs.setdefault(sku, [])
+        if not any(
+            (
+                str(value.get("loja") or value.get("store") or ""),
+                str(value.get("id") or value.get("item_id") or ""),
+                str(value.get("variation_id") or ((value.get("match") or {}).get("variation_id") if isinstance(value.get("match"), dict) else "")),
+            ) == identity
+            for value in current
+        ):
+            current.append(normalized)
 
     def lists_from_result(result: dict[str, Any]) -> list[Any]:
         values: list[Any] = []
@@ -5614,6 +6037,9 @@ def _assistant_collect_margin_rows(context: dict[str, Any], limit: int = 120) ->
     if not sales_rows:
         return []
     custos_por_sku, impostos_por_sku, warnings = _assistant_load_margin_cost_maps(client_id, loja)
+    cost_maps_by_store: dict[str, tuple[dict, dict]] = {
+        _assistant_texto_norm(loja): (custos_por_sku, impostos_por_sku)
+    }
     if warnings:
         context.setdefault("warnings", []).extend(warnings)
     ml_refs = _assistant_collect_ml_listing_refs(context)
@@ -5627,34 +6053,66 @@ def _assistant_collect_margin_rows(context: dict[str, Any], limit: int = 120) ->
         preco_unitario = margem_parse_float(row.get("preco_unitario_num"))
         if (preco_unitario is None or preco_unitario <= 0) and qtd_num > 0:
             preco_unitario = valor_num / qtd_num
-        custo, imposto_rate = _assistant_resolve_margin_cost_tax(custos_por_sku, impostos_por_sku, sku)
-        ml_ref = dict(ml_refs.get(sku) or {})
-        anuncio_ref = {**ml_ref, "price": preco_unitario or ml_ref.get("price") or ml_ref.get("preco")}
-        margem = margem_calcular_anuncio(anuncio_ref, sku_hint=sku, custo=custo, imposto_rate=imposto_rate)
-        custo_total = round(float(custo) * float(qtd_num), 2) if custo is not None and qtd_num else None
-        lucro_unitario = margem_parse_float(margem.get("valor_liquido")) if margem.get("margem_completa") else None
-        lucro_total = round(float(lucro_unitario) * float(qtd_num), 2) if lucro_unitario is not None and qtd_num else None
-        rows.append(
-            {
+        ml_candidates = [dict(item) for item in ml_refs.get(sku) or []]
+        if not ml_candidates:
+            ml_candidates = [{}]
+        multiple_ads = len(ml_candidates) > 1
+        for ml_ref in ml_candidates:
+            candidate_store = str(ml_ref.get("loja") or ml_ref.get("store") or row.get("loja") or row.get("store") or loja).strip()
+            store_key = _assistant_texto_norm(candidate_store)
+            if store_key not in cost_maps_by_store:
+                store_costs, store_taxes, store_warnings = _assistant_load_margin_cost_maps(client_id, candidate_store)
+                cost_maps_by_store[store_key] = (store_costs, store_taxes)
+                if store_warnings:
+                    context.setdefault("warnings", []).extend(store_warnings)
+            candidate_costs, candidate_taxes = cost_maps_by_store[store_key]
+            candidate_cost, candidate_tax_rate = _assistant_resolve_margin_cost_tax(candidate_costs, candidate_taxes, sku)
+            # Um preco atual de anuncio nunca substitui silenciosamente o preco
+            # historico vendido. Sem MLB exato, o preco medio permanece apenas
+            # como estimativa por SKU.
+            has_listing = bool(ml_ref)
+            anuncio_ref = dict(ml_ref)
+            if not anuncio_ref:
+                anuncio_ref["price"] = preco_unitario
+            margem = margem_calcular_anuncio(
+                anuncio_ref,
+                sku_hint=sku,
+                custo=candidate_cost,
+                imposto_rate=candidate_tax_rate,
+                require_shipping=has_listing,
+            )
+            custo_total = round(float(candidate_cost) * float(qtd_num), 2) if candidate_cost is not None and qtd_num and not multiple_ads else None
+            lucro_unitario = margem_parse_float(margem.get("valor_liquido")) if margem.get("margem_completa") else None
+            lucro_total = round(float(lucro_unitario) * float(qtd_num), 2) if lucro_unitario is not None and qtd_num and not multiple_ads and not has_listing else None
+            status_label = _assistant_margin_status_label(margem)
+            if multiple_ads:
+                status_label += "; resultado historico nao rateado entre MLBs"
+            rows.append(
+                {
                 "SKU": sku,
+                "Loja": candidate_store,
+                "MLB": str(ml_ref.get("id") or ml_ref.get("item_id") or ""),
+                "Variacao": str(ml_ref.get("variation_id") or ((ml_ref.get("match") or {}).get("variation_id") if isinstance(ml_ref.get("match"), dict) else "")),
                 "Produto": str(row.get("produto") or "").strip(),
-                "Qtd vendida": _assistant_qty(qtd_num),
-                "Valor vendido": _assistant_money(valor_num),
-                "Custo unitario": margem_formatar_moeda(custo) if custo is not None else "",
+                "Qtd vendida": _assistant_qty(qtd_num) if not multiple_ads else "",
+                "Valor vendido": _assistant_money(valor_num) if not multiple_ads else "",
+                "Custo unitario": margem_formatar_moeda(candidate_cost) if candidate_cost is not None else "",
                 "Custo total": margem_formatar_moeda(custo_total) if custo_total is not None else "",
                 "Imposto": f"{_assistant_float(margem.get('imposto_percentual')):.2f}%".replace(".", ",") if margem.get("imposto_percentual") is not None else "",
                 "Frete": margem.get("frete_ml_text") or "",
                 "Tarifa": margem.get("tarifa_ml_text") or "",
+                "Contribuicao unitaria atual": margem.get("valor_liquido_text") or "",
                 "Lucro estimado": margem_formatar_moeda(lucro_total) if lucro_total is not None else "",
                 "Margem %": margem.get("margem_text") or "",
-                "Status da margem": _assistant_margin_status_label(margem),
-                "_valor_num": valor_num,
-                "_qtd_num": qtd_num,
+                "Status da margem": status_label,
+                "_valor_num": valor_num if not multiple_ads and not has_listing else 0.0,
+                "_qtd_num": qtd_num if not multiple_ads else 0.0,
                 "_custo_total_num": float(custo_total) if custo_total is not None else None,
                 "_lucro_num": float(lucro_total) if lucro_total is not None else None,
-                "_margem_completa": bool(margem.get("margem_completa")),
-            }
-        )
+                "_margem_completa": bool(margem.get("margem_completa") and lucro_total is not None),
+                "_current_listing_margin_complete": bool(margem.get("margem_completa") and has_listing),
+                }
+            )
     return rows
 
 
@@ -6661,7 +7119,13 @@ def _assistant_collect_data(
     sources = _assistant_sources(all_results)
     suggestions = _assistant_suggestions_from_results(all_results, mode)
     if not tool_context_parts and all_results:
-        tool_context_parts.append(json.dumps(all_results[:12], ensure_ascii=False, default=str)[:CODEX_DATA_PREVIEW_CHAR_LIMIT])
+        tool_context_parts.append(
+            codex_turn_context.bounded_json(
+                all_results[:12],
+                max_bytes=CODEX_DATA_PREVIEW_CHAR_LIMIT,
+                priority_paths=("field", "value", "source", "coverage", "status", "reference"),
+            )
+        )
 
     payload = {
         "success": True,
@@ -6675,7 +7139,11 @@ def _assistant_collect_data(
         "tool_plan": tool_plan,
         "status_steps": tool_plan.get("status_steps") or [],
         "tool_context": "\n\n".join(tool_context_parts)[:CODEX_DATA_CONTEXT_CHAR_LIMIT],
-        "tool_results_preview": json.dumps(all_results[:20], ensure_ascii=False, default=str)[:CODEX_DATA_PREVIEW_CHAR_LIMIT],
+        "tool_results_preview": codex_turn_context.bounded_json(
+            all_results[:20],
+            max_bytes=CODEX_DATA_PREVIEW_CHAR_LIMIT,
+            priority_paths=("field", "value", "source", "coverage", "status", "reference"),
+        ),
         "sources": sources,
         "warnings": [_assistant_humanize_source_text(item)[:600] for item in warnings[:10]],
         "suggestions": suggestions,
@@ -6873,7 +7341,7 @@ def _assistant_advanced_report_chat_text(title: str, context: dict[str, Any], re
             f"- Receita liquida: {money_or_unavailable(financial.get('net_revenue_brl'))}",
             f"- Publicidade: {money_or_unavailable(financial.get('advertising_brl'))}",
             f"- Margem de contribuicao consolidada: {money_or_unavailable(financial.get('contribution_profit_brl'))}",
-            f"- Lucro apos publicidade: {money_or_unavailable(financial.get('net_profit_after_ads_brl'))}",
+            f"- Resultado de contribuicao apos publicidade: {money_or_unavailable(financial.get('net_profit_after_ads_brl'))}",
             (
                 f"- Cobertura de margem: {margin_coverage_text} "
                 f"(minimo {_assistant_percent(coverage.get('minimum_required_pct') or 95)}); status {coverage.get('status') or 'insufficient'}."
@@ -7217,7 +7685,13 @@ def _assistant_flatten_rows(results: list[dict[str, Any]]) -> list[dict[str, Any
             if isinstance(value, list):
                 collections.append((key, value))
         if not collections:
-            rows.append({"fonte": name, "tipo": "resumo", "dados": json.dumps(result, ensure_ascii=False, default=str)[:1000]})
+            rows.append(
+                {
+                    "fonte": name,
+                    "tipo": "resumo",
+                    "dados": codex_turn_context.bounded_json(result, max_bytes=1000),
+                }
+            )
             continue
         for key, values in collections:
             limit = len(values) if name == "sales_returns_query" and key in {"vendas", "devolucoes", "por_sku", "por_loja"} else min(len(values), 500)
@@ -7226,7 +7700,7 @@ def _assistant_flatten_rows(results: list[dict[str, Any]]) -> list[dict[str, Any
                     row = {"fonte": name, "tipo": key}
                     for k, v in value.items():
                         if isinstance(v, (dict, list)):
-                            row[str(k)] = json.dumps(v, ensure_ascii=False, default=str)[:600]
+                            row[str(k)] = codex_turn_context.bounded_json(v, max_bytes=600)
                         else:
                             row[str(k)] = v
                     rows.append(row)
@@ -7289,7 +7763,8 @@ def _assistant_build_advanced_report_html(title: str, context: dict[str, Any]) -
         ("Receita liquida", financial.get("net_revenue_brl")),
         ("Publicidade", financial.get("advertising_brl")),
         ("Margem de contribuicao", financial.get("contribution_profit_brl")),
-        ("Lucro apos publicidade", financial.get("net_profit_after_ads_brl")),
+        ("Resultado de contribuicao apos publicidade", financial.get("net_profit_after_ads_brl")),
+        ("Resultado de contribuicao apos publicidade e devolucoes reconciliadas", financial.get("net_profit_after_ads_and_returns_brl")),
     ]
     for label, value in financial_cards:
         parts.append(f"<div class=\"card\"><span>{esc(label)}</span><strong>{esc(money(value))}</strong></div>")
@@ -7297,7 +7772,31 @@ def _assistant_build_advanced_report_html(title: str, context: dict[str, Any]) -
     parts.append(
         f"<p class=\"meta\">Cobertura completa de margem: {esc(margin_coverage_text)}; "
         f"minimo exigido: {esc(_assistant_percent(coverage.get('minimum_required_pct') or 95))}. "
+        f"Receita coberta: {esc(money(coverage.get('covered_revenue_brl')))}; "
+        f"receita nao coberta: {esc(money(coverage.get('uncovered_revenue_brl')))}. "
         "Valores ausentes nao foram tratados como zero.</p>"
+    )
+    parts.append(
+        table(
+            "Contribuicao unitaria atual por anuncio e variacao",
+            context.get("listing_margin_rows"),
+            [("store", "Loja"), ("mlb", "MLB"), ("variation_id", "Variacao"), ("sku", "SKU"),
+             ("current_price_brl", "Preco atual"), ("unit_cost_brl", "Custo"), ("tax_pct", "Imposto %"),
+             ("ml_fee_brl", "Tarifa ML"), ("seller_shipping_brl", "Frete vendedor"),
+             ("unit_contribution_brl", "Contribuicao"), ("contribution_margin_pct", "Margem %"),
+             ("margin_status_label", "Status"), ("missing_components_text", "Ausentes")],
+        )
+    )
+    parts.append(
+        table(
+            "Resultado historico reconciliado por anuncio",
+            context.get("historical_margin_ledger"),
+            [("store", "Loja"), ("order_id", "Pedido"), ("line_number", "Linha"), ("pack_id", "Pack"), ("mlb", "MLB"),
+             ("variation_id", "Variacao"), ("sku", "SKU"), ("quantity", "Qtd"),
+             ("gross_amount_brl", "Receita vendida"), ("contribution_total_brl", "Contribuicao"),
+             ("shipping_scope_label", "Escopo frete"), ("margin_status_label", "Status"),
+             ("missing_components_text", "Ausentes")],
+        )
     )
     parts.append("<h2>Decisoes prioritarias</h2>")
     if not actions:
@@ -7657,6 +8156,8 @@ def _assistant_write_advanced_xlsx(path: str, context: dict[str, Any]) -> None:
     warnings = [{"Aviso": str(item)} for item in (quality.get("warnings") if isinstance(quality.get("warnings"), list) else [])]
     sheets = {
         "Resumo": summary_rows,
+        "Margens_MLB": context.get("listing_margin_rows") or [],
+        "Historico_Margens": context.get("historical_margin_ledger") or [],
         "Ações": actions,
         "Lojas": context.get("store_summaries") or [],
         "Vendas_SKU": context.get("sales_rows") or [],
@@ -7664,6 +8165,7 @@ def _assistant_write_advanced_xlsx(path: str, context: dict[str, Any]) -> None:
         "Compras_Transito": context.get("purchase_pipeline_rows") or [],
         "Importacao": import_rows,
         "Fontes": sources,
+        "Fontes_ML": (context.get("marketplace_commercial") or {}).get("sources") if isinstance(context.get("marketplace_commercial"), dict) else [],
         "Avisos": warnings,
     }
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
@@ -7721,12 +8223,40 @@ def _assistant_write_xlsx(path: str, context: dict[str, Any], suggestions: list[
 
 def _assistant_write_advanced_pdf(path: str, title: str, context: dict[str, Any]) -> None:
     from reportlab.lib import colors
+    from reportlab.lib.fonts import addMapping
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib.units import mm
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+    regular_font = "Helvetica"
+    bold_font = "Helvetica-Bold"
+    font_candidates = [
+        (r"C:\Windows\Fonts\arial.ttf", r"C:\Windows\Fonts\arialbd.ttf"),
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    ]
+    for regular_path, bold_path in font_candidates:
+        if not (os.path.isfile(regular_path) and os.path.isfile(bold_path)):
+            continue
+        try:
+            if "JKReport" not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont("JKReport", regular_path))
+                pdfmetrics.registerFont(TTFont("JKReport-Bold", bold_path))
+                addMapping("JKReport", 0, 0, "JKReport")
+                addMapping("JKReport", 1, 0, "JKReport-Bold")
+            regular_font = "JKReport"
+            bold_font = "JKReport-Bold"
+            break
+        except Exception:
+            continue
+
     styles = getSampleStyleSheet()
+    for style_name in ("Normal", "BodyText"):
+        styles[style_name].fontName = regular_font
+    for style_name in ("Title", "Heading1", "Heading2", "Heading3"):
+        styles[style_name].fontName = bold_font
     body = styles["BodyText"]
     small = styles["BodyText"].clone("Small")
     small.fontSize = 7
@@ -7738,46 +8268,77 @@ def _assistant_write_advanced_pdf(path: str, title: str, context: dict[str, Any]
     story.append(
         Paragraph(
             html.escape(
-                f"Periodo {scope.get('period_start') or '-'} a {scope.get('period_end') or '-'}; "
-                f"comparacao {scope.get('comparison_start') or '-'} a {scope.get('comparison_end') or '-'}; "
+                f"Período {scope.get('period_start') or '-'} a {scope.get('period_end') or '-'}; "
+                f"comparação {scope.get('comparison_start') or '-'} a {scope.get('comparison_end') or '-'}; "
                 f"confiabilidade {quality.get('confidence') or 'baixa'} ({quality.get('score') or 0}/100)."
             ),
             body,
         )
     )
     story.append(Spacer(1, 3 * mm))
-    financial_rows = [["Indicador", "Valor"]]
+    coverage = context.get("financial_coverage") if isinstance(context.get("financial_coverage"), dict) else {}
+    story.append(
+        Paragraph(
+            html.escape(
+                f"Cobertura financeira {coverage.get('complete_margin_by_revenue_pct') if coverage.get('complete_margin_by_revenue_pct') is not None else 'indisponível'}%; "
+                f"mínimo {coverage.get('minimum_required_pct') or 95}%; receita coberta "
+                f"{_assistant_money(coverage.get('covered_revenue_brl')) if coverage.get('covered_revenue_brl') is not None else 'indisponível'}; receita não coberta "
+                f"{_assistant_money(coverage.get('uncovered_revenue_brl')) if coverage.get('uncovered_revenue_brl') is not None else 'indisponível'}. "
+                "Campos ausentes não são zero."
+            ),
+            body,
+        )
+    )
+    story.append(Spacer(1, 2 * mm))
+    financial_cell = body.clone("FinancialCell")
+    financial_cell.fontSize = 8
+    financial_cell.leading = 10
+    financial_header = financial_cell.clone("FinancialHeader")
+    financial_header.fontName = bold_font
+    financial_rows = [[Paragraph("Indicador", financial_header), Paragraph("Valor", financial_header)]]
     labels = {
         "gross_revenue_brl": "Receita bruta",
-        "returns_brl": "Devolucoes",
-        "net_revenue_brl": "Receita liquida",
+        "returns_brl": "Devoluções",
+        "net_revenue_brl": "Receita líquida",
         "advertising_brl": "Publicidade",
-        "contribution_profit_brl": "Margem de contribuicao",
-        "net_profit_after_ads_brl": "Lucro apos publicidade",
+        "contribution_profit_brl": "Margem de contribuição",
+        "net_profit_after_ads_brl": "Resultado de contribuição após publicidade",
+        "net_profit_after_ads_and_returns_brl": "Resultado de contribuição após publicidade e devoluções reconciliadas",
     }
     for key, label in labels.items():
         value = financial.get(key)
-        financial_rows.append([label, _assistant_money(value) if value is not None else "Indisponivel"])
-    table = Table(financial_rows, colWidths=[70 * mm, 55 * mm], repeatRows=1)
-    table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#dbeafe")), ("GRID", (0, 0), (-1, -1), .35, colors.grey), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, -1), 8), ("VALIGN", (0, 0), (-1, -1), "TOP")]))
-    story.extend([Paragraph("Resumo financeiro", styles["Heading2"]), table, Spacer(1, 3 * mm), Paragraph("Decisoes prioritarias", styles["Heading2"])])
+        financial_rows.append(
+            [
+                Paragraph(html.escape(label), financial_cell),
+                Paragraph(html.escape(_assistant_money(value) if value is not None else "Indisponível"), financial_cell),
+            ]
+        )
+    table = Table(financial_rows, colWidths=[100 * mm, 45 * mm], repeatRows=1)
+    table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#dbeafe")), ("GRID", (0, 0), (-1, -1), .35, colors.grey), ("FONTNAME", (0, 0), (-1, -1), regular_font), ("FONTNAME", (0, 0), (-1, 0), bold_font), ("FONTSIZE", (0, 0), (-1, -1), 8), ("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    story.extend([Paragraph("Resumo financeiro", styles["Heading2"]), table, Spacer(1, 3 * mm), Paragraph("Decisões prioritárias", styles["Heading2"])])
     for index, action in enumerate((context.get("top_actions") or [])[:5], 1):
         if not isinstance(action, dict):
             continue
         text_value = (
             f"<b>{index}. {html.escape(str(action.get('title') or 'Acao recomendada'))}</b><br/>"
             f"Loja {html.escape(str(action.get('store') or '-'))}; impacto {html.escape(str(action.get('impact_label') or 'nao estimavel'))}; "
-            f"urgencia {html.escape(str(action.get('urgency') or '-'))}; confianca {html.escape(str(action.get('confidence') or '-'))}.<br/>"
+            f"urgência {html.escape(str(action.get('urgency') or '-'))}; confiança {html.escape(str(action.get('confidence') or '-'))}.<br/>"
             f"{html.escape(str(action.get('recommendation') or '-'))}<br/>"
-            f"Responsavel {html.escape(str(action.get('owner_username') or action.get('owner_role') or '-'))}; prazo {html.escape(str(action.get('due_at') or '-'))}."
+            f"Responsável {html.escape(str(action.get('owner_username') or action.get('owner_role') or '-'))}; prazo {html.escape(str(action.get('due_at') or '-'))}."
         )
         story.extend([Paragraph(text_value, body), Spacer(1, 2 * mm)])
 
     def add_table(title_value: str, rows: Any, columns: list[tuple[str, str]], limit: int = 20) -> None:
-        values = [item for item in (rows if isinstance(rows, list) else []) if isinstance(item, dict)][:limit]
+        all_values = [item for item in (rows if isinstance(rows, list) else []) if isinstance(item, dict)]
+        values = all_values[:limit]
         if not values:
             return
-        story.append(Paragraph(html.escape(title_value), styles["Heading2"]))
+        displayed_title = (
+            f"{title_value} - exibindo {len(values)} de {len(all_values)}; base completa no XLSX"
+            if len(all_values) > len(values)
+            else title_value
+        )
+        story.append(Paragraph(html.escape(displayed_title), styles["Heading2"]))
         data: list[list[Any]] = [[Paragraph(html.escape(label), small) for _, label in columns]]
         for row in values:
             cells = []
@@ -7785,24 +8346,85 @@ def _assistant_write_advanced_pdf(path: str, title: str, context: dict[str, Any]
                 value = row.get(key)
                 if (key.endswith("_brl") or key == "revenue") and value is not None:
                     value = _assistant_money(value)
-                cells.append(Paragraph(html.escape(str(value if value is not None else "Indisponivel"))[:320], small))
+                cells.append(Paragraph(html.escape(str(value if value is not None else "Indisponível"))[:320], small))
             data.append(cells)
         widths = [landscape(A4)[0] / len(columns) - 8 * mm for _ in columns]
         output = Table(data, colWidths=widths, repeatRows=1)
         output.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#dbeafe")), ("GRID", (0, 0), (-1, -1), .25, colors.grey), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3)]))
         story.extend([output, Spacer(1, 3 * mm)])
 
-    add_table("Lojas", context.get("store_summaries"), [("store", "Loja"), ("net_revenue_brl", "Receita liquida"), ("trend_pct", "Variacao"), ("target_attainment_pct", "Meta")])
+    add_table("Lojas", context.get("store_summaries"), [("store", "Loja"), ("net_revenue_brl", "Receita líquida"), ("trend_pct", "Variação"), ("target_attainment_pct", "Meta")])
+    add_table(
+        "Contribuição atual por anúncio e variação",
+        context.get("listing_margin_rows"),
+        [("store", "Loja"), ("mlb", "MLB"), ("variation_id", "Variação"), ("sku", "SKU"),
+         ("current_price_brl", "Preço"), ("ml_fee_brl", "Tarifa"), ("seller_shipping_brl", "Frete"),
+         ("unit_contribution_brl", "Contrib."), ("contribution_margin_pct", "Margem %"),
+         ("margin_status_label", "Status"), ("missing_components_text", "Ausentes")],
+        limit=40,
+    )
+    add_table(
+        "Resultado histórico reconciliado",
+        context.get("historical_margin_ledger"),
+        [("store", "Loja"), ("order_id", "Pedido"), ("line_number", "Linha"), ("pack_id", "Pack"), ("mlb", "MLB"),
+         ("variation_id", "Variação"), ("sku", "SKU"), ("gross_amount_brl", "Receita"),
+         ("contribution_total_brl", "Contrib."), ("shipping_scope_label", "Frete"),
+         ("margin_status_label", "Status"), ("missing_components_text", "Ausentes")],
+        limit=40,
+    )
     add_table("Riscos de estoque", context.get("inventory_rows"), [("store", "Loja"), ("sku", "SKU"), ("abc", "ABC"), ("xyz", "XYZ"), ("coverage_days", "Cobertura"), ("suggested_purchase", "Comprar")])
     import_analysis = context.get("import_analysis") if isinstance(context.get("import_analysis"), dict) else {}
     add_table("Custo posto por SKU", import_analysis.get("items"), [("sku", "SKU"), ("quantity", "Qtd"), ("landed_unit_brl", "Custo posto"), ("minimum_sale_price_brl", "Preco minimo")])
+    add_table(
+        "Saúde das fontes",
+        quality.get("source_health"),
+        [("source", "Fonte"), ("status", "Status"), ("records", "Registros"),
+         ("last_sync_at", "Atualização"), ("coverage_pct", "Cobertura %")],
+        limit=30,
+    )
+    marketplace_sources = context.get("marketplace_commercial") if isinstance(context.get("marketplace_commercial"), dict) else {}
+    add_table(
+        "Recursos Mercado Livre consultados",
+        marketplace_sources.get("sources"),
+        [("provider", "Provedor"), ("resource", "Recurso"), ("method", "Método"),
+         ("store", "Loja"), ("day", "Data")],
+        limit=30,
+    )
     warnings = quality.get("warnings") if isinstance(quality.get("warnings"), list) else []
     if warnings:
         story.append(Paragraph("Avisos de dados", styles["Heading2"]))
         for warning in warnings[:12]:
             story.append(Paragraph("- " + html.escape(str(warning)[:420]), small))
-    doc = SimpleDocTemplate(path, pagesize=landscape(A4), rightMargin=12 * mm, leftMargin=12 * mm, topMargin=12 * mm, bottomMargin=12 * mm)
-    doc.build(story)
+    marketplace = context.get("marketplace_commercial") if isinstance(context.get("marketplace_commercial"), dict) else {}
+    story.extend(
+        [
+            Paragraph("Fontes e metodologia", styles["Heading2"]),
+            Paragraph(
+                html.escape(
+                    f"Snapshot Mercado Livre: status {marketplace.get('status') or 'indisponível'}; coletado em "
+                    f"{marketplace.get('collected_at') or 'indisponível'}; cache vencido: {'sim' if marketplace.get('stale') else 'não'}. "
+                    "Preço, custo, imposto, tarifa e frete do vendedor são obrigatórios. Preços atuais nunca são apresentados como históricos. "
+                    "Custo e imposto do cadastro só entram no histórico quando capturados no dia da venda ou em D+1; backfill posterior fica indisponível. "
+                    "Frete de packs com vários produtos permanece no pack e não é rateado."
+                ),
+                small,
+            ),
+        ]
+    )
+    doc = SimpleDocTemplate(path, pagesize=landscape(A4), rightMargin=12 * mm, leftMargin=12 * mm, topMargin=12 * mm, bottomMargin=14 * mm)
+
+    def draw_footer(canvas_obj: Any, document: Any) -> None:
+        canvas_obj.saveState()
+        page_width, _page_height = landscape(A4)
+        canvas_obj.setStrokeColor(colors.HexColor("#d5dde6"))
+        canvas_obj.line(12 * mm, 9 * mm, page_width - 12 * mm, 9 * mm)
+        canvas_obj.setFont(regular_font, 7)
+        canvas_obj.setFillColor(colors.HexColor("#526170"))
+        canvas_obj.drawString(12 * mm, 5.5 * mm, "JK Peças - relatório gerencial somente leitura")
+        canvas_obj.drawRightString(page_width - 12 * mm, 5.5 * mm, f"Página {document.page}")
+        canvas_obj.restoreState()
+
+    doc.build(story, onFirstPage=draw_footer, onLaterPages=draw_footer)
 
 
 def _assistant_write_pdf(path: str, title: str, suggestions: list[dict[str, Any]], sources: list[dict[str, Any]], analysis: Optional[dict[str, Any]] = None, context: Optional[dict[str, Any]] = None) -> None:
@@ -7979,6 +8601,9 @@ def _assistant_create_report(client_id: str, title: str, context: dict[str, Any]
         "data_quality": context.get("data_quality") or {},
         "financial_coverage": context.get("financial_coverage") or {},
         "financial_summary": context.get("financial_summary") or {},
+        "marketplace_commercial": context.get("marketplace_commercial") or {},
+        "listing_margin_rows": context.get("listing_margin_rows") or [],
+        "historical_margin_ledger": context.get("historical_margin_ledger") or [],
         "top_actions": (context.get("top_actions") or [])[:5],
         "store_summaries": context.get("store_summaries") or [],
         "sales_rows": context.get("sales_rows") or [],
@@ -8022,6 +8647,9 @@ def _assistant_ensure_report_chat_text(metadata: dict[str, Any]) -> dict[str, An
         "data_quality": metadata.get("data_quality") or {},
         "financial_coverage": metadata.get("financial_coverage") or {},
         "financial_summary": metadata.get("financial_summary") or {},
+        "marketplace_commercial": metadata.get("marketplace_commercial") or {},
+        "listing_margin_rows": metadata.get("listing_margin_rows") or [],
+        "historical_margin_ledger": metadata.get("historical_margin_ledger") or [],
         "top_actions": metadata.get("top_actions") or [],
         "store_summaries": metadata.get("store_summaries") or [],
         "sales_rows": metadata.get("sales_rows") or [],
@@ -8263,29 +8891,62 @@ def codex_assistant_chat(
     message = str(payload.message or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="Informe uma mensagem.")
-    context = _assistant_collect_data(
-        str(sessao.get("client_id") or "default"),
-        message,
-        payload.screen_context,
-        mode="chat",
-        force_refresh=bool(payload.force_refresh),
+    client_id = str(sessao.get("client_id") or "").strip()
+    if not client_id:
+        raise HTTPException(status_code=401, detail="Sessao sem tenant autenticado.")
+
+    # Compatibilidade de rota: o antigo assistente deterministico nao escolhe
+    # mais fontes. Sistema e WhatsApp compartilham o mesmo seletor Codex e os
+    # mesmos guards de tenant, loja, permissao e read-only do /api/ia/chat.
+    from backend.schemas import IAChatRequest
+    from backend.services import ia_endpoints
+
+    delegated = ia_endpoints.ia_chat(
+        IAChatRequest(
+            message=message,
+            page="codex_assistant",
+            context={
+                "selection": (
+                    payload.screen_context.get("selection")
+                    if isinstance(payload.screen_context, dict)
+                    and isinstance(payload.screen_context.get("selection"), dict)
+                    else {}
+                )
+            },
+        ),
+        request,
+        client_id=client_id,
     )
-    resposta = _assistant_answer_from_context(message, context)
+    resposta = str(delegated.get("resposta") or "")
+    tool_results = [
+        item for item in list(delegated.get("tool_results") or []) if isinstance(item, dict)
+    ]
     return {
-        "success": True,
+        "success": delegated.get("success") is True,
         "resposta": resposta,
         "answer": resposta,
+        "model": delegated.get("model") or "",
         "context": {
-            "sources": context.get("sources") or [],
-            "warnings": context.get("warnings") or [],
-            "suggestions": context.get("suggestions") or [],
-            "management_analysis": context.get("management_analysis") or {},
-            "registry_results": context.get("registry_results") or [],
-            "tool_plan": context.get("tool_plan") or {},
-            "status_steps": context.get("status_steps") or [],
-            "tool_results_count": context.get("tool_results_count") or 0,
-            "generated_at": context.get("generated_at"),
-            "cache_hit": context.get("cache_hit"),
+            "sources": list(dict.fromkeys(
+                str(source or "")[:300]
+                for item in tool_results
+                for source in list(item.get("sources_human") or item.get("sources") or [])[:8]
+                if str(source or "").strip()
+            ))[:20],
+            "warnings": list(dict.fromkeys(
+                str(warning or "")[:300]
+                for item in tool_results
+                for warning in list(item.get("warnings") or [])[:8]
+                if str(warning or "").strip()
+            ))[:20],
+            "suggestions": [],
+            "management_analysis": {},
+            "registry_results": [],
+            "tool_plan": {"managed_by": "CodexDataSelectionAgent"},
+            "status_steps": [],
+            "tool_results_count": len(tool_results),
+            "generated_at": _assistant_now(),
+            "cache_hit": False,
         },
     }
 
@@ -8550,6 +9211,483 @@ def _assistant_weekly_due(state: dict[str, Any], force: bool = False) -> bool:
     return str(state.get("last_weekly_key") or "") != week_key
 
 
+def _assistant_profile_requires_marketplace(profile: str, prompt: str = "") -> bool:
+    if profile in {"weekly_sales_stock", "daily_exceptions"}:
+        return True
+    if profile != "custom":
+        return False
+    normalized = _assistant_texto_norm(prompt)
+    return any(
+        token in normalized
+        for token in ("margem", "lucro", "financeir", "rentabil", "tarifa", "frete", "custo mercado livre")
+    )
+
+
+def _assistant_connected_ml_stores(client_id: str, selected_store: str = "") -> list[str]:
+    from backend.services import ia_tools_marketplaces
+
+    stores: list[str] = []
+    for row in ia_tools_marketplaces.carregar_lojas(client_id) or []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("nome") or "").strip()
+        integrations = row.get("integracoes") if isinstance(row.get("integracoes"), dict) else {}
+        cfg = integrations.get("mercadolivre") if isinstance(integrations.get("mercadolivre"), dict) else {}
+        if name and str(cfg.get("access_token") or "").strip():
+            stores.append(name)
+    selected = str(selected_store or "").strip()
+    if selected and _assistant_texto_norm(selected) not in {
+        _assistant_texto_norm("todas"),
+        _assistant_texto_norm("todas as lojas"),
+        _assistant_texto_norm("__todas"),
+    }:
+        exact = [name for name in stores if _assistant_texto_norm(name) == _assistant_texto_norm(selected)]
+        return exact
+    return list(dict.fromkeys(stores))
+
+
+def _assistant_ml_tool_result(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else payload
+    return result if isinstance(result, dict) else {}
+
+
+def _assistant_marketplace_fetchers(period_start: str, period_end: str) -> dict[str, Any]:
+    from backend.services import ia_tools_marketplaces, mercadolivre_legacy_pricing
+
+    order_cache: dict[tuple[str, str, str, int, int], dict[str, Any]] = {}
+
+    def orders_fetcher(*, client_id: str, store: str, date_from: str, date_to: str, offset: int, limit: int) -> dict[str, Any]:
+        cache_key = (store, date_from, date_to, int(offset), int(limit))
+        if cache_key in order_cache:
+            return copy.deepcopy(order_cache[cache_key])
+        payload = ia_tools_marketplaces._ia_tool_get_mercado_livre_orders(
+            client_id,
+            "conciliacao financeira somente leitura do relatorio",
+            loja=store,
+            data_inicio=date_from,
+            data_fim=date_to,
+            offset=offset,
+            limite=limit,
+            modo_relatorio=True,
+            max_paginas=2,
+            force_refresh=True,
+        )
+        result = _assistant_ml_tool_result(payload)
+        order_cache[cache_key] = copy.deepcopy(result)
+        return result
+
+    def listing_fetcher(*, client_id: str, store: str, relevant_skus: list[str]) -> dict[str, Any]:
+        del relevant_skus
+        collected: dict[str, dict[str, Any]] = {}
+        warnings: list[str] = []
+        complete = True
+        for status_value in ("active", "paused"):
+            offset = 0
+            for _page in range(1000):
+                payload = ia_tools_marketplaces._ia_tool_get_mercado_livre_listing(
+                    client_id,
+                    f"listar anuncios {status_value}",
+                    loja=store,
+                    limite=100,
+                    status=status_value,
+                    offset=offset,
+                    incluir_detalhes=False,
+                    incluir_comercial=False,
+                    force_refresh=True,
+                )
+                result = _assistant_ml_tool_result(payload)
+                warnings.extend(str(item) for item in result.get("warnings") or [])
+                if result.get("error"):
+                    complete = False
+                    break
+                matches = [item for item in result.get("matches") or [] if isinstance(item, dict)]
+                for item in matches:
+                    if _assistant_float(item.get("available_quantity")) > 0:
+                        collected[str(item.get("id") or "").upper()] = item
+                paging = result.get("paging") if isinstance(result.get("paging"), dict) else {}
+                next_offset = paging.get("next_offset")
+                if not paging.get("has_more") or next_offset in (None, ""):
+                    break
+                offset = int(next_offset)
+            else:
+                complete = False
+                warnings.append(f"Paginacao de anuncios {status_value} excedeu o limite de seguranca em {store}.")
+
+        sold_ids: set[str] = set()
+        cursor = date.fromisoformat(period_start)
+        end = date.fromisoformat(period_end)
+        while cursor <= end:
+            offset = 0
+            for _page in range(400):
+                orders = orders_fetcher(
+                    client_id=client_id,
+                    store=store,
+                    date_from=cursor.isoformat(),
+                    date_to=cursor.isoformat(),
+                    offset=offset,
+                    limit=60,
+                )
+                for order in orders.get("orders") or []:
+                    if not isinstance(order, dict):
+                        continue
+                    for item in order.get("items") or []:
+                        if isinstance(item, dict):
+                            item_id = str(item.get("item_id") or "").strip().upper()
+                            if re.fullmatch(r"MLB\d+", item_id):
+                                sold_ids.add(item_id)
+                paging = orders.get("paging") if isinstance(orders.get("paging"), dict) else {}
+                next_offset = paging.get("next_offset")
+                if not paging.get("has_more") or next_offset in (None, ""):
+                    break
+                offset = int(next_offset)
+            else:
+                complete = False
+                warnings.append(f"Paginacao de pedidos excedeu o limite de seguranca em {store}/{cursor.isoformat()}.")
+            cursor += timedelta(days=1)
+
+        for item_id in sorted(sold_ids - set(collected)):
+            payload = ia_tools_marketplaces._ia_tool_get_mercado_livre_listing(
+                client_id,
+                f"consultar {item_id}",
+                loja=store,
+                item_id=item_id,
+                limite=1,
+                incluir_detalhes=False,
+                incluir_comercial=False,
+                force_refresh=True,
+            )
+            result = _assistant_ml_tool_result(payload)
+            matches = [item for item in result.get("matches") or [] if isinstance(item, dict)]
+            if matches:
+                collected[item_id] = matches[0]
+            else:
+                complete = False
+                warnings.append(f"Anuncio vendido {store}/{item_id} nao ficou disponivel para o snapshot atual.")
+        return {
+            "items": list(collected.values()),
+            "coverage": {"complete": complete},
+            "warnings": list(dict.fromkeys(warnings))[:100],
+        }
+
+    def commercial_fetcher(*, client_id: str, store: str, item_id: str, listing: dict[str, Any]) -> dict[str, Any]:
+        payload = ia_tools_marketplaces._ia_tool_get_mercado_livre_listing(
+            client_id,
+            f"consultar dados comerciais {item_id}",
+            loja=store,
+            item_id=item_id,
+            limite=1,
+            incluir_detalhes=True,
+            incluir_comercial=True,
+            force_refresh=True,
+        )
+        result = _assistant_ml_tool_result(payload)
+        matches = [item for item in result.get("matches") or [] if isinstance(item, dict)]
+        exact = matches[0] if matches else {}
+        details = exact.get("details") if isinstance(exact.get("details"), dict) else {}
+        commercial = copy.deepcopy(details.get("commercial") if isinstance(details.get("commercial"), dict) else {})
+        shipping = commercial.get("shipping") if isinstance(commercial.get("shipping"), dict) else {}
+        try:
+            cfg = ia_tools_marketplaces._obter_cfg_ml(client_id, store)
+            shipping_info, _cfg = mercadolivre_legacy_pricing._ml_obter_frete_detalhado(
+                client_id,
+                store,
+                cfg,
+                item_id,
+                shipping,
+                contexto_frete={
+                    "item_price": ((commercial.get("price") or {}).get("amount") if isinstance(commercial.get("price"), dict) else exact.get("price")),
+                    "listing_type_id": exact.get("listing_type_id") or listing.get("listing_type_id"),
+                    "category_id": exact.get("category_id") or listing.get("category_id"),
+                    "mode": shipping.get("mode"),
+                    "logistic_type": shipping.get("logistic_type"),
+                    "free_shipping": shipping.get("free_shipping"),
+                },
+            )
+            seller_cost = shipping_info.get("shipping_seller_cost")
+            shipping["seller_cost"] = seller_cost
+            shipping["seller_cost_available"] = seller_cost is not None
+            shipping["source"] = str(shipping_info.get("shipping_cost_retry_source") or "shipping_options")
+            if seller_cost is None:
+                commercial["coverage_complete"] = False
+                commercial.setdefault("warnings", []).append("Custo monetario do frete do vendedor indisponivel.")
+            commercial["shipping"] = shipping
+        except Exception as exc:
+            shipping["seller_cost"] = None
+            shipping["seller_cost_available"] = False
+            commercial["shipping"] = shipping
+            commercial["coverage_complete"] = False
+            commercial.setdefault("warnings", []).append(f"Frete do vendedor indisponivel: {type(exc).__name__}.")
+        raw_variations: list[dict[str, Any]] = []
+        variation_commercial: dict[str, dict[str, Any]] = {}
+        try:
+            cfg_variations = ia_tools_marketplaces._obter_cfg_ml(client_id, store)
+            raw_item, cfg_variations, ownership_failure = ia_tools_marketplaces._ia_ml_owned_item(
+                client_id,
+                store,
+                cfg_variations,
+                item_id,
+                deadline=time.monotonic() + 45,
+            )
+            if ownership_failure:
+                raise ValueError(str(ownership_failure.get("code") or "listing_not_in_store"))
+            raw_item = raw_item if isinstance(raw_item, dict) else {}
+            raw_variations = [item for item in raw_item.get("variations") or [] if isinstance(item, dict)]
+            item_shipping = raw_item.get("shipping") if isinstance(raw_item.get("shipping"), dict) else {}
+            listing_type_id = str(raw_item.get("listing_type_id") or exact.get("listing_type_id") or listing.get("listing_type_id") or "")
+            category_id = str(raw_item.get("category_id") or exact.get("category_id") or listing.get("category_id") or "")
+            site_id = str(cfg_variations.get("site_id") or "MLB").strip().upper()
+            if not re.fullmatch(r"ML[A-Z]", site_id):
+                site_id = "MLB"
+            for variation in raw_variations:
+                variation_id = str(variation.get("id") or "").strip()
+                variation_price = variation.get("price")
+                entry: dict[str, Any] = {
+                    "price": {
+                        "amount": variation_price,
+                        "regular_amount": None,
+                        "currency_id": str(raw_item.get("currency_id") or "BRL"),
+                        "source": "item_variation",
+                        "available": variation_price is not None,
+                    },
+                    "fees": {"sale_fee_amount": None, "source": "listing_prices", "available": False},
+                    "shipping": {
+                        "mode": str(item_shipping.get("mode") or shipping.get("mode") or ""),
+                        "logistic_type": str(item_shipping.get("logistic_type") or shipping.get("logistic_type") or ""),
+                        "free_shipping": bool(item_shipping.get("free_shipping")),
+                        "seller_cost": None,
+                        "seller_cost_available": False,
+                    },
+                    "coverage_complete": True,
+                    "warnings": [],
+                    "sources": [],
+                }
+                if variation_price is None or not listing_type_id or not category_id:
+                    entry["coverage_complete"] = False
+                    entry["warnings"].append("Variacao sem preco, categoria ou tipo de anuncio para tarifa oficial.")
+                else:
+                    fee_params: dict[str, Any] = {
+                        "price": variation_price,
+                        "listing_type_id": listing_type_id,
+                        "category_id": category_id,
+                    }
+                    if entry["shipping"]["logistic_type"]:
+                        fee_params["logistic_type"] = entry["shipping"]["logistic_type"]
+                    if entry["shipping"]["mode"]:
+                        fee_params["shipping_mode"] = entry["shipping"]["mode"]
+                    fee_response, cfg_variations = ia_tools_marketplaces._ia_ml_request_get(
+                        client_id,
+                        store,
+                        cfg_variations,
+                        f"{ia_tools_marketplaces.ML_IA_API_BASE}/sites/{site_id}/listing_prices",
+                        params=fee_params,
+                        timeout=12,
+                    )
+                    if int(getattr(fee_response, "status_code", 0) or 0) == 200:
+                        fee_payload = fee_response.json() or {}
+                        if isinstance(fee_payload, list):
+                            candidates = [value for value in fee_payload if isinstance(value, dict)]
+                            fee_payload = next(
+                                (value for value in candidates if str(value.get("listing_type_id") or "") == listing_type_id),
+                                candidates[0] if candidates else {},
+                            )
+                        fee_payload = fee_payload if isinstance(fee_payload, dict) else {}
+                        sale_details = fee_payload.get("sale_fee_details") if isinstance(fee_payload.get("sale_fee_details"), dict) else {}
+                        entry["fees"] = {
+                            "sale_fee_amount": fee_payload.get("sale_fee_amount"),
+                            "fixed_fee_amount": sale_details.get("fixed_fee"),
+                            "percentage_fee": sale_details.get("percentage_fee"),
+                            "meli_percentage_fee": sale_details.get("meli_percentage_fee"),
+                            "financing_add_on_fee": sale_details.get("financing_add_on_fee"),
+                            "source": "listing_prices",
+                            "available": fee_payload.get("sale_fee_amount") is not None,
+                        }
+                    if entry["fees"].get("sale_fee_amount") is None:
+                        entry["coverage_complete"] = False
+                        entry["warnings"].append("Tarifa oficial da variacao indisponivel.")
+                    entry["sources"].append({"provider": "mercado_livre", "resource": "listing_prices", "method": "GET", "store": store})
+                try:
+                    variant_shipping, cfg_variations = mercadolivre_legacy_pricing._ml_obter_frete_detalhado(
+                        client_id,
+                        store,
+                        cfg_variations,
+                        item_id,
+                        item_shipping,
+                        contexto_frete={
+                            "item_price": variation_price,
+                            "listing_type_id": listing_type_id,
+                            "category_id": category_id,
+                            "mode": entry["shipping"]["mode"],
+                            "logistic_type": entry["shipping"]["logistic_type"],
+                            "free_shipping": entry["shipping"]["free_shipping"],
+                        },
+                    )
+                    seller_cost = variant_shipping.get("shipping_seller_cost")
+                    entry["shipping"]["seller_cost"] = seller_cost
+                    entry["shipping"]["seller_cost_available"] = seller_cost is not None
+                    entry["shipping"]["source"] = str(variant_shipping.get("shipping_cost_retry_source") or "shipping_options")
+                    if seller_cost is None:
+                        entry["coverage_complete"] = False
+                        entry["warnings"].append("Frete do vendedor da variacao indisponivel.")
+                    entry["sources"].append({"provider": "mercado_livre", "resource": "shipping_options", "method": "GET", "store": store})
+                except Exception as exc:
+                    entry["coverage_complete"] = False
+                    entry["warnings"].append(f"Frete da variacao indisponivel: {type(exc).__name__}.")
+                if variation_id:
+                    variation_commercial[variation_id] = entry
+            if variation_commercial:
+                commercial["variations"] = variation_commercial
+        except Exception as exc:
+            if exact.get("variations"):
+                commercial["coverage_complete"] = False
+                commercial.setdefault("warnings", []).append(f"Detalhamento comercial de variacoes indisponivel: {type(exc).__name__}.")
+        sources = [item for item in result.get("sources") or [] if isinstance(item, dict)]
+        sources.append({"provider": "mercado_livre", "resource": "shipping_options", "method": "GET", "store": store})
+        return {
+            "details": {"commercial": commercial},
+            "listing_variations": raw_variations or exact.get("variations") or [],
+            "sources": sources,
+        }
+
+    def shipping_fetcher(*, client_id: str, store: str, shipment_id: str = "", pack_id: str = "", **_kwargs: Any) -> dict[str, Any]:
+        target = str(shipment_id or pack_id or "").strip()
+        if not target:
+            raise ValueError("shipment_id ausente")
+        cfg = ia_tools_marketplaces._obter_cfg_ml(client_id, store)
+        response, _cfg = ia_tools_marketplaces._ia_ml_request_get(
+            client_id,
+            store,
+            cfg,
+            f"{ia_tools_marketplaces.ML_IA_API_BASE}/shipments/{target}/costs",
+            timeout=15,
+        )
+        if int(getattr(response, "status_code", 0) or 0) != 200:
+            raise HTTPException(status_code=int(getattr(response, "status_code", 500) or 500), detail="Frete real indisponivel")
+        result = response.json() or {}
+        if isinstance(result, dict):
+            result["_seller_id"] = str(cfg.get("user_id") or "")
+        return result
+
+    def order_billing_fetcher(*, client_id: str, store: str, order_ids: list[str], **_kwargs: Any) -> dict[str, Any]:
+        clean_ids = [re.sub(r"\D+", "", str(value or "")) for value in order_ids][:60]
+        clean_ids = [value for value in clean_ids if value]
+        if not clean_ids:
+            return {"results": []}
+        cfg = ia_tools_marketplaces._obter_cfg_ml(client_id, store)
+        response, _cfg = ia_tools_marketplaces._ia_ml_request_get(
+            client_id,
+            store,
+            cfg,
+            f"{ia_tools_marketplaces.ML_IA_API_BASE}/billing/integration/group/ML/order/details",
+            params={"order_ids": ",".join(clean_ids)},
+            timeout=20,
+        )
+        if int(getattr(response, "status_code", 0) or 0) != 200:
+            raise HTTPException(status_code=int(getattr(response, "status_code", 500) or 500), detail="Faturamento ML indisponivel")
+        return response.json() or {}
+
+    return {
+        "listing_fetcher": listing_fetcher,
+        "orders_fetcher": orders_fetcher,
+        "shipping_fetcher": shipping_fetcher,
+        "billing_fetcher": commercial_fetcher,
+        "order_billing_fetcher": order_billing_fetcher,
+    }
+
+
+def _assistant_enrich_marketplace_ledger(
+    client_id: str,
+    advanced: dict[str, Any],
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    from backend.services.codex_marketplace_margin import MarketplaceMarginLedger
+
+    rows = [copy.deepcopy(item) for item in snapshot.get("ledger_rows") or [] if isinstance(item, dict)]
+    if not rows:
+        return snapshot
+    cost_index: dict[tuple[str, str], dict[str, Any]] = {}
+    for source_name in ("sales_rows", "inventory_rows"):
+        for item in advanced.get(source_name) or []:
+            if not isinstance(item, dict):
+                continue
+            key = (_assistant_texto_norm(item.get("store")), str(item.get("sku") or "").strip().upper())
+            current = cost_index.setdefault(key, {})
+            if current.get("unit_cost") is None and item.get("unit_cost") is not None:
+                current["unit_cost"] = item.get("unit_cost")
+            if current.get("tax_pct") is None and item.get("tax_pct") is not None:
+                current["tax_pct"] = item.get("tax_pct")
+    observed = snapshot.get("collected_at") or _assistant_now()
+    observed_day_text = _assistant_calendar_date(str(observed)[:10])
+    changed_by_store: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        key = (_assistant_texto_norm(row.get("store")), str(row.get("sku") or "").strip().upper())
+        cost = cost_index.get(key) or {}
+        if row.get("unit_cost") is None and cost.get("unit_cost") is not None:
+            row["unit_cost"] = cost.get("unit_cost")
+            row["cost_source"] = "cadastro_snapshot_reconciliacao"
+            row["cost_observed_at"] = observed
+        if row.get("tax_pct") is None and cost.get("tax_pct") is not None:
+            row["tax_pct"] = cost.get("tax_pct")
+            row["tax_source"] = "cadastro_snapshot_reconciliacao"
+            row["tax_observed_at"] = observed
+        order_day_text = _assistant_calendar_date(
+            str(row.get("order_date") or row.get("date_created") or "")[:10]
+        )
+        near_sale_snapshot = False
+        if order_day_text and observed_day_text:
+            age_days = (date.fromisoformat(observed_day_text) - date.fromisoformat(order_day_text)).days
+            near_sale_snapshot = 0 <= age_days <= 1
+        if row.get("historical_cost_confirmed") is None:
+            cost_scope = str(row.get("cost_scope") or row.get("cost_source") or "").strip().lower()
+            row["historical_cost_confirmed"] = bool(
+                near_sale_snapshot and row.get("unit_cost") is not None
+            ) or cost_scope in {"order_historical", "ledger_historical"}
+        if row.get("historical_tax_confirmed") is None:
+            tax_scope = str(row.get("tax_scope") or row.get("tax_source") or "").strip().lower()
+            row["historical_tax_confirmed"] = bool(
+                near_sale_snapshot and row.get("tax_pct") is not None
+            ) or tax_scope in {"order_historical", "ledger_historical"}
+        both_historical_components_confirmed = (
+            row.get("historical_cost_confirmed") is True
+            and row.get("historical_tax_confirmed") is True
+        )
+        if not (both_historical_components_confirmed and row.get("historical_component_basis")):
+            row["historical_component_basis"] = (
+                "near_sale_reconciliation_snapshot"
+                if near_sale_snapshot
+                else "current_reconciliation_snapshot"
+            )
+        if row.get("pack_item_count") is None:
+            row["pack_item_count"] = 2 if row.get("shipping_allocation_status") == "pack_multi_item_not_allocated" else 1
+        required_components_known = all(
+            row.get(field) is not None
+            for field in ("unit_price", "unit_cost", "tax_pct", "shipping_seller_cost")
+        )
+        fee_known = row.get("sale_fee_amount") is not None or row.get("sale_fee_total") is not None
+        row["reconciliation_state"] = "reconciled" if (
+            required_components_known
+            and fee_known
+            and row.get("historical_cost_confirmed") is True
+            and row.get("historical_tax_confirmed") is True
+            and int(row.get("pack_item_count") or 1) <= 1
+        ) else "partial"
+        changed_by_store.setdefault(str(row.get("store") or ""), []).append(row)
+    ledger = MarketplaceMarginLedger(_assistant_info_base(), client_id)
+    for store_name, store_rows in changed_by_store.items():
+        if store_name:
+            ledger.upsert_orders(store_name, store_rows)
+    scope = advanced.get("scope") if isinstance(advanced.get("scope"), dict) else {}
+    snapshot["ledger_rows"] = ledger.list_rows(
+        snapshot.get("stores") or [],
+        scope.get("period_start"),
+        scope.get("period_end"),
+        None,
+    )
+    snapshot["order_rows"] = copy.deepcopy(snapshot["ledger_rows"])
+    return snapshot
+
+
 def _assistant_apply_advanced_profile(
     client_id: str,
     context: dict[str, Any],
@@ -8557,10 +9695,13 @@ def _assistant_apply_advanced_profile(
     *,
     store: str = "",
     import_list_id: str = "",
+    force_refresh: bool = False,
+    prompt: str = "",
 ) -> dict[str, Any]:
     from backend.services import codex_reports_advanced
 
-    margin_rows = _assistant_collect_margin_rows(context, limit=500)
+    marketplace_required = _assistant_profile_requires_marketplace(profile, prompt)
+    margin_rows = [] if marketplace_required else _assistant_collect_margin_rows(context, limit=500)
     advanced = codex_reports_advanced.build_profile_context(
         info_base=_assistant_info_base(),
         client_id=client_id,
@@ -8570,6 +9711,63 @@ def _assistant_apply_advanced_profile(
         context=context,
         margin_rows=margin_rows,
     )
+    if marketplace_required:
+        stores = _assistant_connected_ml_stores(client_id, str(store or ""))
+        scope = advanced.get("scope") if isinstance(advanced.get("scope"), dict) else {}
+        relevant_skus = {
+            str(item.get("sku") or "").strip().upper()
+            for source_name in ("sales_rows", "inventory_rows")
+            for item in (advanced.get(source_name) or [])
+            if isinstance(item, dict) and str(item.get("sku") or "").strip()
+        }
+        if not stores:
+            marketplace_snapshot = {
+                "status": "unavailable",
+                "collected_at": _assistant_now(),
+                "stale": False,
+                "stores": [],
+                "listing_rows": [],
+                "order_rows": [],
+                "ledger_rows": [],
+                "sources": [],
+                "warnings": ["Nenhuma loja Mercado Livre conectada ficou disponivel para a coleta comercial."],
+            }
+        else:
+            try:
+                from backend.services.codex_marketplace_margin import collect_marketplace_commercial_snapshot
+
+                fetchers = _assistant_marketplace_fetchers(
+                    str(scope.get("period_start") or date.today().isoformat()),
+                    str(scope.get("period_end") or date.today().isoformat()),
+                )
+                marketplace_snapshot = collect_marketplace_commercial_snapshot(
+                    _assistant_info_base(),
+                    client_id,
+                    stores,
+                    scope.get("period_start"),
+                    scope.get("period_end"),
+                    relevant_skus,
+                    force_refresh=force_refresh,
+                    listing_fetcher=fetchers["listing_fetcher"],
+                    orders_fetcher=fetchers["orders_fetcher"],
+                    shipping_fetcher=fetchers["shipping_fetcher"],
+                    commercial_fetcher=fetchers["billing_fetcher"],
+                    order_billing_fetcher=fetchers["order_billing_fetcher"],
+                )
+                marketplace_snapshot = _assistant_enrich_marketplace_ledger(client_id, advanced, marketplace_snapshot)
+            except Exception as exc:
+                marketplace_snapshot = {
+                    "status": "unavailable",
+                    "collected_at": _assistant_now(),
+                    "stale": False,
+                    "stores": stores,
+                    "listing_rows": [],
+                    "order_rows": [],
+                    "ledger_rows": [],
+                    "sources": [],
+                    "warnings": [f"Coleta comercial Mercado Livre indisponivel: {type(exc).__name__}."],
+                }
+        advanced = codex_reports_advanced.apply_marketplace_commercial(advanced, marketplace_snapshot)
     context.update(advanced)
     scope = advanced.get("scope") if isinstance(advanced.get("scope"), dict) else {}
     tool_plan = context.get("tool_plan") if isinstance(context.get("tool_plan"), dict) else {}
@@ -8629,7 +9827,13 @@ def codex_assistant_weekly_analysis_run(
             mode="report",
             force_refresh=True,
         )
-        context = _assistant_apply_advanced_profile(client_id, context, "weekly_sales_stock")
+        context = _assistant_apply_advanced_profile(
+            client_id,
+            context,
+            "weekly_sales_stock",
+            force_refresh=True,
+            prompt="relatorio semanal completo de vendas, estoque, compras, margem e oportunidades",
+        )
         title = "Black Jhon - Semanal completo de vendas e estoque"
         report = _assistant_create_report(client_id, title, context, "weekly")
         try:
@@ -8686,6 +9890,8 @@ def codex_assistant_report_create(
             profile,
             store=str(payload.store or ""),
             import_list_id=str(payload.import_list_id or ""),
+            force_refresh=bool(payload.force_refresh),
+            prompt=prompt,
         )
     title = {
         "daily_exceptions": "Black Jhon - Diario executivo de vendas e estoque",

@@ -21,6 +21,7 @@ from statistics import NormalDist
 from typing import Any, Optional
 
 from backend.services import codex_assistant_storage
+from backend.services.favoritos_margem import margem_calcular_anuncio
 
 
 REPORT_PROFILES = {"daily_exceptions", "weekly_sales_stock", "import_order", "custom"}
@@ -748,6 +749,15 @@ def _manual_advertising(
         period_start=start,
         period_end=end,
     )
+    # Publicidade so pode ser descontada quando o ajuste representa exatamente
+    # o mesmo intervalo do relatorio. Ajustes apenas sobrepostos continuam
+    # visiveis na fonte, mas nao entram no resultado financeiro consolidado.
+    adjustments = [
+        item
+        for item in adjustments
+        if str(item.get("period_start") or "")[:10] == str(start or "")[:10]
+        and str(item.get("period_end") or "")[:10] == str(end or "")[:10]
+    ]
     by_store: dict[str, float] = {}
     for item in adjustments:
         key = _text_key(item.get("store") or "Sem loja")
@@ -1229,6 +1239,7 @@ def build_profile_context(
                 "excess_quantity": round(excess_qty, 2) if excess_qty is not None else None,
                 "capital_tied_brl": round(capital_tied, 2) if capital_tied is not None else None,
                 "unit_cost": unit_cost,
+                "tax_pct": cost_data.get("tax_pct") if cost_data.get("tax_pct") not in (None, "") else None,
                 "sale_price": sale.get("sale_price"),
                 "opening_stock_date": opening_stock_stamp,
                 "opening_local_stock": round(opening_local_stock, 2) if opening_local_stock is not None else None,
@@ -1465,6 +1476,315 @@ def build_profile_context(
             "top_actions": top_actions[:5],
         }
     )
+
+
+def apply_marketplace_commercial(
+    context: dict[str, Any],
+    marketplace_commercial: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    """Apply a read-only ML snapshot to an already-built report context.
+
+    This function is deliberately pure: it performs no network or filesystem
+    access. Current listing contribution and reconciled historical result stay
+    separate, and missing components never become zero.
+    """
+
+    output = deepcopy(context if isinstance(context, dict) else {})
+    snapshot = deepcopy(marketplace_commercial if isinstance(marketplace_commercial, dict) else {})
+    listing_values = [row for row in snapshot.get("listing_rows") or [] if isinstance(row, dict)]
+    ledger_values = [row for row in snapshot.get("ledger_rows") or [] if isinstance(row, dict)]
+
+    cost_index: dict[tuple[str, str], dict[str, Any]] = {}
+    global_cost: dict[str, dict[str, Any]] = {}
+    for source_name in ("sales_rows", "inventory_rows"):
+        for row in output.get(source_name) or []:
+            if not isinstance(row, dict):
+                continue
+            sku = str(row.get("sku") or "").strip().upper()
+            if not sku:
+                continue
+            values = {
+                "cost": row.get("unit_cost"),
+                "tax_pct": row.get("tax_pct"),
+                "product": row.get("product"),
+            }
+            store_key = _text_key(row.get("store"))
+            current = cost_index.setdefault((store_key, sku), {})
+            for key, value in values.items():
+                if current.get(key) in (None, "") and value not in (None, ""):
+                    current[key] = value
+            if not store_key or _text_key(row.get("cost_scope")) == "global":
+                generic = global_cost.setdefault(sku, {})
+                for key, value in values.items():
+                    if generic.get(key) in (None, "") and value not in (None, ""):
+                        generic[key] = value
+
+    listing_margin_rows: list[dict[str, Any]] = []
+    component_complete = {"price": 0, "cost": 0, "tax": 0, "fee": 0, "shipping": 0}
+    for raw in listing_values:
+        store = str(raw.get("store") or raw.get("loja") or "").strip()
+        sku = str(raw.get("sku") or raw.get("seller_sku") or "").strip().upper()
+        exact_cost = cost_index.get((_text_key(store), sku)) or {}
+        fallback_cost = global_cost.get(sku) or {}
+        cost_data = dict(fallback_cost)
+        cost_data.update({key: value for key, value in exact_cost.items() if value not in (None, "")})
+        cost_scope = "store" if exact_cost.get("cost") not in (None, "") else "global" if fallback_cost.get("cost") not in (None, "") else "unavailable"
+        tax_scope = "store" if exact_cost.get("tax_pct") not in (None, "") else "global" if fallback_cost.get("tax_pct") not in (None, "") else "unavailable"
+        margin_input = {
+            **raw,
+            "price": raw.get("price") if raw.get("price") is not None else raw.get("current_price"),
+            "sale_fee_amount": raw.get("sale_fee_amount") if raw.get("sale_fee_amount") is not None else raw.get("fee_amount"),
+            "shipping_seller_cost": raw.get("shipping_seller_cost") if raw.get("shipping_seller_cost") is not None else raw.get("seller_shipping_cost"),
+        }
+        margin = margem_calcular_anuncio(
+            margin_input,
+            sku_hint=sku,
+            custo=cost_data.get("cost"),
+            imposto_rate=cost_data.get("tax_pct"),
+            require_shipping=True,
+        )
+        missing = [str(item) for item in margin.get("faltando_margem") or []]
+        if "preco" not in missing:
+            component_complete["price"] += 1
+        if "custo" not in missing:
+            component_complete["cost"] += 1
+        if "imposto" not in missing:
+            component_complete["tax"] += 1
+        if "tarifa" not in missing:
+            component_complete["fee"] += 1
+        if "frete" not in missing:
+            component_complete["shipping"] += 1
+        sources = raw.get("sources") if isinstance(raw.get("sources"), list) else []
+        listing_margin_rows.append(
+            {
+                "store": store,
+                "mlb": str(raw.get("mlb") or raw.get("item_id") or raw.get("id") or "").strip().upper(),
+                "variation_id": str(raw.get("variation_id") or "").strip(),
+                "sku": sku,
+                "product": str(raw.get("product") or cost_data.get("product") or "").strip(),
+                "status": str(raw.get("status") or "").strip(),
+                "available_quantity": raw.get("available_quantity"),
+                "current_price_brl": margin.get("preco_final_margem"),
+                "regular_price_brl": raw.get("regular_price") if raw.get("regular_price") is not None else raw.get("original_price"),
+                "unit_cost_brl": margin.get("custo"),
+                "cost_scope": cost_scope,
+                "tax_pct": margin.get("imposto_percentual"),
+                "tax_scope": tax_scope,
+                "ml_fee_brl": margin.get("tarifa_ml"),
+                "seller_shipping_brl": margin.get("frete_ml"),
+                "unit_contribution_brl": margin.get("valor_liquido") if margin.get("margem_completa") else None,
+                "contribution_margin_pct": margin.get("margem_percentual") if margin.get("margem_completa") else None,
+                "margin_status": "available" if margin.get("margem_completa") else "unavailable",
+                "margin_status_label": "Disponível" if margin.get("margem_completa") else "Indisponível",
+                "missing_components": missing,
+                "missing_components_text": ", ".join(missing) if missing else "-",
+                "collected_at": raw.get("collected_at") or snapshot.get("collected_at"),
+                "sources": sources,
+                "source_labels": ", ".join(
+                    str(item.get("resource") or item.get("source") or item)
+                    for item in sources[:8]
+                    if item not in (None, "")
+                ),
+            }
+        )
+
+    historical_rows: list[dict[str, Any]] = []
+    seen_ledger: set[tuple[str, ...]] = set()
+    covered_revenue = 0.0
+    covered_profit = 0.0
+    reconciled_return_gross = 0.0
+    reconciled_return_impact = 0.0
+    for raw in ledger_values:
+        key = (
+            str(raw.get("store") or raw.get("loja") or ""),
+            str(raw.get("order_id") or ""),
+            str(raw.get("line_number") if raw.get("line_number") is not None else ""),
+            str(raw.get("item_id") or raw.get("mlb") or ""),
+            str(raw.get("variation_id") or ""),
+            str(raw.get("sku") or "").upper(),
+        )
+        if key in seen_ledger:
+            continue
+        seen_ledger.add(key)
+        quantity = max(0.0, _float(raw.get("quantity")))
+        sold_price = _optional_float(raw.get("sold_unit_price") if raw.get("sold_unit_price") is not None else raw.get("unit_price"))
+        gross_amount = _optional_float(raw.get("gross_amount"))
+        if gross_amount is None and sold_price is not None:
+            gross_amount = round(sold_price * quantity, 2)
+        unit_cost = _optional_float(raw.get("unit_cost"))
+        tax_pct = _optional_float(raw.get("tax_pct"))
+        fee_total = _optional_float(raw.get("sale_fee_total"))
+        fee_unit = _optional_float(raw.get("sale_fee_amount") if raw.get("sale_fee_amount") is not None else raw.get("fee_unit"))
+        if fee_unit is None and fee_total is not None and quantity > 0:
+            fee_unit = round(fee_total / quantity, 2)
+        pack_item_count = int(_float(raw.get("pack_item_count"), 1))
+        shipping_total = _optional_float(raw.get("seller_shipping_cost") if raw.get("seller_shipping_cost") is not None else raw.get("shipping_seller_cost"))
+        shipping_unit = _optional_float(raw.get("shipping_unit"))
+        if shipping_unit is None and shipping_total is not None and pack_item_count <= 1 and quantity > 0:
+            shipping_unit = round(shipping_total / quantity, 2)
+        historical_input = {
+            "price": sold_price,
+            "sale_fee_amount": fee_unit,
+            "shipping_seller_cost": shipping_unit,
+        }
+        historical_margin = margem_calcular_anuncio(
+            historical_input,
+            sku_hint=str(raw.get("sku") or "").upper(),
+            custo=unit_cost,
+            imposto_rate=tax_pct,
+            require_shipping=True,
+        )
+        missing = [str(item) for item in historical_margin.get("faltando_margem") or []]
+        if raw.get("historical_cost_confirmed") is False:
+            missing.append("custo_historico_nao_confirmado")
+        if raw.get("historical_tax_confirmed") is False:
+            missing.append("imposto_historico_nao_confirmado")
+        if pack_item_count > 1 and "frete" not in missing:
+            missing.append("frete_pack_sem_rateio")
+        historical_basis_confirmed = (
+            raw.get("historical_cost_confirmed") is not False
+            and raw.get("historical_tax_confirmed") is not False
+        )
+        complete = bool(
+            historical_margin.get("margem_completa")
+            and historical_basis_confirmed
+            and pack_item_count <= 1
+            and gross_amount is not None
+        )
+        contribution_total = round(_float(historical_margin.get("valor_liquido")) * quantity, 2) if complete else None
+        if complete:
+            covered_revenue += max(0.0, _float(gross_amount))
+            covered_profit += _float(contribution_total)
+        return_state = str(raw.get("return_reconciliation_state") or "").lower()
+        return_gross = _optional_float(raw.get("return_gross_amount"))
+        return_impact = _optional_float(raw.get("return_impact_brl"))
+        if return_state == "reconciled" and return_gross is not None and return_impact is not None:
+            reconciled_return_gross += max(0.0, return_gross)
+            reconciled_return_impact += return_impact
+        historical_rows.append(
+            {
+                "store": key[0],
+                "order_id": key[1],
+                "line_number": key[2],
+                "pack_id": str(raw.get("pack_id") or ""),
+                "mlb": key[3].upper(),
+                "variation_id": key[4],
+                "sku": key[5],
+                "quantity": quantity,
+                "sold_unit_price_brl": sold_price,
+                "gross_amount_brl": gross_amount,
+                "contribution_total_brl": contribution_total,
+                "reconciliation_state": str(raw.get("reconciliation_state") or ("reconciled" if complete else "partial")),
+                "margin_status": "available" if complete else "unavailable",
+                "margin_status_label": "Disponível" if complete else "Indisponível",
+                "missing_components": missing,
+                "missing_components_text": ", ".join(missing) if missing else "-",
+                "pack_shipping_brl": shipping_total,
+                "shipping_scope": "pack_unallocated" if pack_item_count > 1 else "single_item_pack",
+                "shipping_scope_label": "Pack multi-item sem rateio" if pack_item_count > 1 else "Pack de item único",
+                "sources": raw.get("sources") if isinstance(raw.get("sources"), list) else [],
+            }
+        )
+
+    financial = output.get("financial_summary") if isinstance(output.get("financial_summary"), dict) else {}
+    coverage = output.get("financial_coverage") if isinstance(output.get("financial_coverage"), dict) else {}
+    gross_revenue = _optional_float(financial.get("gross_revenue_brl"))
+    threshold_pct = _float(coverage.get("minimum_required_pct"), 95.0)
+    threshold = threshold_pct / 100.0
+    covered_revenue = min(covered_revenue, gross_revenue) if gross_revenue is not None else covered_revenue
+    margin_ratio = covered_revenue / gross_revenue if gross_revenue is not None and gross_revenue > 0 else None
+    contribution_valid = bool(margin_ratio is not None and margin_ratio >= threshold)
+    stores_with_revenue = {
+        _text_key(item.get("store"))
+        for item in output.get("store_summaries") or []
+        if isinstance(item, dict) and _float(item.get("gross_revenue_brl")) > 0
+    }
+    stores_with_ads = {
+        _text_key(item.get("store"))
+        for item in output.get("store_summaries") or []
+        if isinstance(item, dict) and item.get("advertising_brl") is not None
+    }
+    ads_ratio = 1.0 if stores_with_revenue and stores_with_revenue.issubset(stores_with_ads) else 0.0 if stores_with_revenue else None
+    after_ads_valid = bool(contribution_valid and ads_ratio is not None and ads_ratio >= threshold)
+    returns_total = _optional_float(financial.get("returns_brl"))
+    if returns_total == 0:
+        returns_ratio = 1.0
+    elif returns_total is not None and returns_total > 0:
+        returns_ratio = min(1.0, reconciled_return_gross / returns_total)
+    else:
+        returns_ratio = None
+    after_returns_valid = bool(after_ads_valid and returns_ratio is not None and returns_ratio >= threshold)
+    advertising_total = _optional_float(financial.get("advertising_brl"))
+    consolidated_profit = round(covered_profit, 2) if contribution_valid else None
+    after_ads = round(covered_profit - advertising_total, 2) if after_ads_valid and advertising_total is not None else None
+    after_returns = round(after_ads - reconciled_return_impact, 2) if after_returns_valid and after_ads is not None else None
+
+    listing_count = len(listing_margin_rows)
+    coverage.update(
+        {
+            "minimum_required_pct": threshold_pct,
+            "complete_margin_by_revenue_pct": round(margin_ratio * 100.0, 2) if margin_ratio is not None else None,
+            "covered_revenue_brl": round(covered_revenue, 2) if gross_revenue is not None else None,
+            "uncovered_revenue_brl": round(max(0.0, gross_revenue - covered_revenue), 2) if gross_revenue is not None else None,
+            "advertising_pct": round(ads_ratio * 100.0, 2) if ads_ratio is not None else None,
+            "returns_reconciled_pct": round(returns_ratio * 100.0, 2) if returns_ratio is not None else None,
+            "contribution_margin_valid": contribution_valid,
+            "net_margin_after_ads_valid": after_ads_valid,
+            "net_margin_after_returns_valid": after_returns_valid,
+            "consolidated_profit_brl": consolidated_profit,
+            "consolidated_margin_pct": round(covered_profit / covered_revenue * 100.0, 2) if contribution_valid and covered_revenue > 0 else None,
+            "net_profit_after_ads_brl": after_ads,
+            "net_profit_after_ads_and_returns_brl": after_returns,
+            "listing_component_coverage_pct": {
+                key: round(value / listing_count * 100.0, 2) if listing_count else None
+                for key, value in component_complete.items()
+            },
+            "status": "reliable" if after_returns_valid else "partial" if listing_margin_rows or covered_revenue > 0 else "insufficient",
+        }
+    )
+    financial.update(
+        {
+            "contribution_profit_brl": consolidated_profit,
+            "net_profit_after_ads_brl": after_ads,
+            "reconciled_returns_impact_brl": round(reconciled_return_impact, 2) if returns_ratio is not None else None,
+            "net_profit_after_ads_and_returns_brl": after_returns,
+        }
+    )
+
+    quality = output.get("data_quality") if isinstance(output.get("data_quality"), dict) else {}
+    source_health = quality.get("source_health") if isinstance(quality.get("source_health"), list) else []
+    source_health = [item for item in source_health if not (isinstance(item, dict) and item.get("source") == "Mercado Livre comercial")]
+    source_health.append(
+        {
+            "source": "Mercado Livre comercial",
+            "status": str(snapshot.get("status") or ("unavailable" if not snapshot else "partial")),
+            "records": listing_count,
+            "last_sync_at": snapshot.get("collected_at"),
+            "coverage_pct": round(margin_ratio * 100.0, 2) if margin_ratio is not None else None,
+            "stale": bool(snapshot.get("stale")),
+            "read_only": True,
+        }
+    )
+    warnings = list(quality.get("warnings") or []) + [str(item) for item in snapshot.get("warnings") or []]
+    incomplete_count = sum(1 for item in listing_margin_rows if item.get("margin_status") != "available")
+    if incomplete_count:
+        warnings.append(f"{incomplete_count} anuncio(s)/variacao(oes) ficaram sem margem por componentes comerciais ausentes.")
+    if snapshot.get("stale"):
+        warnings.append("A contingencia comercial do Mercado Livre esta vencida e foi exibida com a data da coleta.")
+    quality["source_health"] = source_health
+    quality["warnings"] = list(dict.fromkeys(warnings))[:50]
+
+    output.update(
+        {
+            "marketplace_commercial": snapshot,
+            "listing_margin_rows": listing_margin_rows,
+            "historical_margin_ledger": historical_rows,
+            "financial_coverage": coverage,
+            "financial_summary": financial,
+            "data_quality": quality,
+        }
+    )
+    return normalize_text_tree(output)
 
 
 def create_queue_action(

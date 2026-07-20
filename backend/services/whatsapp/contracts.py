@@ -30,6 +30,7 @@ class WhatsappBridgeConfigRequest(BaseModel):
     progress_explain_wait: Optional[bool] = None
     active_task_policy: Optional[str] = None
     agent_architecture: Optional[str] = None
+    response_provider_policy: Optional[str] = None
     conversation_agent_model: Optional[str] = None
     conversation_agent_reasoning: Optional[str] = None
     task_agent_model: Optional[str] = None
@@ -47,8 +48,14 @@ class WhatsappBridgeConfigRequest(BaseModel):
     conversation_runtime_pool_size: Optional[int] = None
     max_active_task_agents_global: Optional[int] = None
     preserve_order_per_phone: Optional[bool] = None
+    data_selection_enabled: Optional[bool] = None
+    data_selection_worker_count: Optional[int] = None
+    data_selection_runtime_pool_size: Optional[int] = None
+    # Aceitos apenas para compatibilidade de clientes antigos. O backend nao
+    # usa mais estes campos para ativar ou dimensionar o seletor de dados.
     function_manager_enabled: Optional[bool] = None
     function_manager_required_before_sol: Optional[bool] = None
+    context_hub_enabled: Optional[bool] = None
     function_manager_worker_count: Optional[int] = None
     function_manager_runtime_pool_size: Optional[int] = None
     voice_model: Optional[str] = None

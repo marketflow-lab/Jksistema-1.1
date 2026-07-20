@@ -9,6 +9,8 @@ from typing import Any, Callable
 from backend.core import AppPaths
 from backend.services import bling_vendas, estoque_historico, integracoes
 
+from .errors import VendasDomainError
+
 
 _ALLOWED_BLING_HELPERS = frozenset(
     {
@@ -48,6 +50,28 @@ _ALLOWED_BLING_HELPERS = frozenset(
     }
 )
 
+_ALLOWED_INTEGRACOES_HELPERS = frozenset({"atualizar_api_loja", "buscar_loja"})
+_ALLOWED_ESTOQUE_HELPERS = frozenset(
+    {"_normalizar_sku_estoque", "_vendas_series_estoque_historico"}
+)
+
+
+def _is_fastapi_http_exception(exc: BaseException) -> bool:
+    return any(
+        cls.__name__ == "HTTPException" and cls.__module__.startswith("fastapi")
+        for cls in type(exc).__mro__
+    )
+
+
+def _translate_fastapi_http_exception(exc: Exception) -> None:
+    if not _is_fastapi_http_exception(exc):
+        raise exc
+    raise VendasDomainError(
+        status_code=getattr(exc, "status_code", 500),
+        detail=getattr(exc, "detail", str(exc)),
+        headers=getattr(exc, "headers", None),
+    ) from exc
+
 
 @dataclass(frozen=True)
 class LegacyBlingVendasAdapter:
@@ -61,21 +85,30 @@ class LegacyBlingVendasAdapter:
         )
 
     def call(self, helper_name: str, *args, **kwargs):
-        if helper_name not in _ALLOWED_BLING_HELPERS:
-            raise AttributeError(f"Helper de Vendas nao permitido: {helper_name}")
-        return getattr(bling_vendas, helper_name)(*args, **kwargs)
+        try:
+            if helper_name in _ALLOWED_BLING_HELPERS:
+                helper = getattr(bling_vendas, helper_name)
+            elif helper_name in _ALLOWED_INTEGRACOES_HELPERS:
+                helper = getattr(integracoes, helper_name)
+            elif helper_name in _ALLOWED_ESTOQUE_HELPERS:
+                helper = getattr(estoque_historico, helper_name)
+            else:
+                raise AttributeError(f"Helper de Vendas nao permitido: {helper_name}")
+            return helper(*args, **kwargs)
+        except Exception as exc:
+            _translate_fastapi_http_exception(exc)
 
     def buscar_loja(self, client_id: str, nome_loja: str):
-        return integracoes.buscar_loja(client_id, nome_loja)
+        return self.call("buscar_loja", client_id, nome_loja)
 
     def atualizar_api_loja(self, client_id: str, nome_loja: str, api_nome: str, dados_api: dict):
-        return integracoes.atualizar_api_loja(client_id, nome_loja, api_nome, dados_api)
+        return self.call("atualizar_api_loja", client_id, nome_loja, api_nome, dados_api)
 
     def normalizar_sku_estoque(self, value: Any) -> str:
-        return estoque_historico._normalizar_sku_estoque(value)
+        return self.call("_normalizar_sku_estoque", value)
 
     def vendas_series_estoque_historico(self, *args, **kwargs):
-        return estoque_historico._vendas_series_estoque_historico(*args, **kwargs)
+        return self.call("_vendas_series_estoque_historico", *args, **kwargs)
 
 
 @dataclass(frozen=True)

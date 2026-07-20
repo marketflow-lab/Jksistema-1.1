@@ -107,16 +107,31 @@ def _shared_sync_machine_status_payload(sessao: dict, machine_id: str = "") -> d
     for scope in SHARED_SYNC_SCOPES:
         meta = _shared_sync_machine_remote_meta(sessao, scope) or {}
         state_key = _shared_sync_machine_state_scope(scope)
+        scope_state = state_scopes.get(state_key) or {}
+        remote_hash = str(meta.get("snapshot_hash") or "")
+        state_hash = str(scope_state.get("snapshot_hash") or "")
+        remote_machine = str(meta.get("machine_id") or "").strip()
+        current_machine = str(machine_id or "").strip()
+        synced_at = str(scope_state.get("synced_at") or "")
         scopes[scope] = {
             **_shared_sync_scope_public(scope),
             "allowed": scope in permitidos,
             "selected": scope in (config.get("scopes") or []),
-            "state": state_scopes.get(state_key) or {},
+            "state": scope_state,
+            "pending_receive": bool(
+                meta
+                and remote_hash
+                and remote_hash != state_hash
+                and remote_machine != current_machine
+            ),
+            "synced_at": synced_at,
+            "last_received_at": synced_at if str(scope_state.get("direction") or "") == "pull" else "",
             "remote": {
                 "exists": bool(meta),
                 "updated_at": meta.get("updated_at") or "",
                 "updated_by": meta.get("updated_by") or "",
                 "machine_id": meta.get("machine_id") or "",
+                "snapshot_hash": remote_hash,
                 "file_count": meta.get("file_count") or 0,
                 "stores_count": meta.get("stores_count") or 0,
                 "bundle_bytes": meta.get("bundle_bytes") or 0,
@@ -149,6 +164,9 @@ def _shared_sync_machine_auto_run(sessao: dict, machine_id: str = "", requested:
     results = []
     skipped = []
     for scope in scopes:
+        if not config.get("auto_pull"):
+            skipped.append({"scope": scope, "reason": "auto_pull_disabled"})
+            continue
         state_key = _shared_sync_machine_state_scope(scope)
         remote = _shared_sync_machine_remote_meta(sessao, scope) or {}
         remote_hash = str(remote.get("snapshot_hash") or "")
@@ -156,21 +174,35 @@ def _shared_sync_machine_auto_run(sessao: dict, machine_id: str = "", requested:
         remote_machine = str(remote.get("machine_id") or "").strip()
         current_machine = str(machine_id or "").strip()
 
-        if config.get("auto_pull", True) and remote and remote_hash and state_hash != remote_hash and remote_machine != current_machine:
-            results.append(_shared_sync_machine_pull_scope(sessao, scope))
-            remote = _shared_sync_machine_remote_meta(sessao, scope) or remote
-            remote_hash = str(remote.get("snapshot_hash") or remote_hash)
-
-        if not config.get("auto_push", True):
-            skipped.append({"scope": scope, "reason": "auto_push_disabled"})
+        if not remote:
+            skipped.append({"scope": scope, "reason": "remote_missing"})
             continue
-
-        entries, _warnings = _shared_sync_coletar_arquivos(sessao.get("client_id"), scope, username=sessao.get("username"), user_only=True)
-        local_hash = _shared_sync_snapshot_hash(entries)
-        if remote_hash and local_hash == remote_hash:
+        if not remote_hash:
+            skipped.append({"scope": scope, "reason": "remote_hash_missing"})
+            continue
+        if state_hash == remote_hash:
             skipped.append({"scope": scope, "reason": "already_current", "snapshot_hash": remote_hash})
             continue
-        results.append(_shared_sync_machine_push_scope(sessao, scope, machine_id, skip_if_remote_hash_matches=True))
+        if remote_machine == current_machine:
+            skipped.append({"scope": scope, "reason": "same_machine", "snapshot_hash": remote_hash})
+            continue
+        try:
+            results.append(_shared_sync_machine_pull_scope(sessao, scope))
+        except HTTPException as exc:
+            skipped.append({
+                "scope": scope,
+                "reason": "pull_failed",
+                "status_code": int(exc.status_code or 500),
+                "message": str(exc.detail or "Falha ao receber este dado."),
+            })
+        except Exception as exc:
+            logger.warning("[SHARED-SYNC] Falha no auto-pull do escopo %s: %s", scope, exc)
+            skipped.append({
+                "scope": scope,
+                "reason": "pull_failed",
+                "status_code": 500,
+                "message": "Falha interna ao receber este dado; uma nova tentativa sera feita.",
+            })
     return {"success": True, "direction": "machine-auto", "results": results, "skipped": skipped}
 
 def _shared_sync_status_payload(client_id: str, config: Optional[dict] = None) -> dict:

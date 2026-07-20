@@ -71,11 +71,17 @@ class JKCodexMCP:
         self.permissions = context.get("permissions") if isinstance(context.get("permissions"), dict) else {}
         self.screen_context = context.get("screen_context") if isinstance(context.get("screen_context"), dict) else {}
         self.source_policy = context.get("source_policy") if isinstance(context.get("source_policy"), dict) else {}
+        self.allowed_tools = {
+            str(item or "").strip()
+            for item in (context.get("allowed_tools") or [])
+            if str(item or "").strip()
+        }
         self.authorized_stores = {
             _normalize_store(item)
             for item in (context.get("authorized_stores") or [])
             if _normalize_store(item)
         }
+        self.store_scope_valid = context.get("store_scope_valid") is True
         self.previous_results: list[dict[str, Any]] = []
         self.call_cache: dict[str, dict[str, Any]] = {}
         self.result_path = Path(str(context.get("result_path") or "")).resolve() if context.get("result_path") else None
@@ -89,7 +95,7 @@ class JKCodexMCP:
         tools: list[dict[str, Any]] = []
         for item in catalog:
             name = str(item.get("id") or "").strip()
-            if not name:
+            if not name or name not in self.allowed_tools:
                 continue
             schema = item.get("input_schema") if isinstance(item.get("input_schema"), dict) else {}
             tools.append(
@@ -111,6 +117,12 @@ class JKCodexMCP:
     def call_tool(self, name: str, arguments: Any) -> dict[str, Any]:
         name = str(name or "").strip()
         args = dict(arguments or {}) if isinstance(arguments, dict) else {}
+        client_id = str(self.context.get("client_id") or "").strip()
+        if not client_id:
+            return self._tool_response(
+                {"success": False, "tool_id": name, "error": "Contexto de tenant ausente.", "error_code": "data_selection_tenant_required"},
+                is_error=True,
+            )
         catalog_names = {item["name"] for item in self.tools()}
         if name not in catalog_names:
             return self._tool_response(
@@ -118,7 +130,7 @@ class JKCodexMCP:
                 is_error=True,
             )
         store = args.get("loja") or args.get("conta") or args.get("store")
-        if store and self.authorized_stores and _normalize_store(store) not in self.authorized_stores:
+        if store and (not self.store_scope_valid or _normalize_store(store) not in self.authorized_stores):
             return self._tool_response(
                 {"success": False, "tool_id": name, "error": "Loja fora do escopo autorizado desta conversa."},
                 is_error=True,
@@ -142,7 +154,7 @@ class JKCodexMCP:
         deadline_at = int(self.context.get("deadline_at_epoch") or 0)
         remaining = max(1, deadline_at - int(time.time())) if deadline_at else 60
         result = self.codex_assistant.codex_assistant_execute_tool_call(
-            client_id=str(self.context.get("client_id") or "default"),
+            client_id=client_id,
             tool_id=name,
             args=args,
             screen_context=self.screen_context,

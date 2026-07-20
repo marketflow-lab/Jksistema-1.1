@@ -18,7 +18,7 @@ from typing import Any, Optional
 from backend.services.runtime_bridge import bind_runtime_globals
 
 
-READONLY_SOURCES_VERSION = "20260717-readonly-sources-v3-generic-off"
+READONLY_SOURCES_VERSION = "20260718-readonly-sources-v4-ml-post-sale"
 MAX_DISCOVERY_FILES = int(os.getenv("JK_CODEX_READONLY_MAX_DISCOVERY_FILES") or "1200")
 MAX_TEXT_BYTES = int(os.getenv("JK_CODEX_READONLY_MAX_TEXT_BYTES") or str(512 * 1024))
 DEFAULT_LIMIT = 50
@@ -1016,6 +1016,203 @@ def fiscal_local_query(**kwargs: Any) -> dict[str, Any]:
     return result
 
 
+POST_SALE_TEXT_PII_PATTERNS = PII_VALUE_PATTERNS + (
+    re.compile(r"(?<!\d)\d{5}-?\d{3}(?!\d)"),
+)
+
+
+def _post_sale_safe_text(value: Any, limit: int = 1200) -> str:
+    text = str(value or "").strip()
+    for pattern in POST_SALE_TEXT_PII_PATTERNS:
+        text = pattern.sub("[dado pessoal ocultado]", text)
+    return text[: max(1, int(limit or 1200))]
+
+
+def _post_sale_safe_attachment(value: Any) -> Optional[dict[str, Any]]:
+    attachment = value if isinstance(value, dict) else {}
+    name = _post_sale_safe_text(
+        attachment.get("name") or attachment.get("filename") or attachment.get("file_name") or "anexo",
+        160,
+    )
+    mime = str(attachment.get("mime_type") or attachment.get("content_type") or "").strip()[:120]
+    is_image = bool(attachment.get("is_image") or re.search(r"image|jpg|jpeg|png|webp|gif", f"{mime} {name}", re.I))
+    if not name and not mime:
+        return None
+    # IDs e URLs de anexos sao omitidos de proposito: podem ser credenciais de
+    # download ou permitir acesso lateral a midia privada do comprador.
+    return {"name": name or "anexo", "mime_type": mime, "is_image": is_image, "available_in_app": True}
+
+
+def _post_sale_safe_message(value: Any) -> Optional[dict[str, Any]]:
+    message = value if isinstance(value, dict) else {}
+    text = _post_sale_safe_text(message.get("text"), 1200)
+    attachments = []
+    for raw_attachment in (message.get("attachments") or [])[:10]:
+        attachment = _post_sale_safe_attachment(raw_attachment)
+        if attachment:
+            attachments.append(attachment)
+    if not text and not attachments:
+        return None
+    role = str(message.get("from_role") or "").strip().lower()
+    if role not in {"seller", "buyer"}:
+        role = "unknown"
+    return {
+        "id": str(message.get("id") or "").strip()[:120],
+        "date": str(message.get("date") or "").strip()[:64],
+        "from_role": role,
+        "text": text,
+        "attachments": attachments,
+        "status": str(message.get("status") or "").strip()[:80],
+    }
+
+
+def mercado_livre_post_sale_detail(
+    *,
+    client_id: str,
+    message: str = "",
+    loja: str = "",
+    pack_id: str = "",
+    order_id: str = "",
+    limit: int = DEFAULT_LIMIT,
+    **_: Any,
+) -> dict[str, Any]:
+    """Le uma conversa de pos-venda exata sem expor comprador ou URLs privadas."""
+
+    from backend.services import ia_tools_marketplaces
+
+    pack = str(pack_id or "").strip()
+    order = str(order_id or "").strip()
+    if not pack:
+        match = re.search(r"\bpack(?:\s*(?:id|n[uú]mero|#))?\s*[:#-]?\s*(\d{5,})\b", str(message or ""), re.I)
+        pack = match.group(1) if match else ""
+    if not re.fullmatch(r"\d{5,30}", pack):
+        result = _result(
+            "mercado_livre_post_sale_detail", [], [],
+            {"loja": loja, "pack_id": "", "order_id": order, "limit": limit},
+            ["Informe o pack_id numerico exato da conversa."],
+        )
+        result.update({"success": False, "error": "pack_id_required", "coverage_complete": False, "zero_is_authoritative": False})
+        return result
+    if order and not re.fullmatch(r"\d{5,30}", order):
+        result = _result(
+            "mercado_livre_post_sale_detail", [], [],
+            {"loja": loja, "pack_id": pack, "order_id": "", "limit": limit},
+            ["O order_id informado nao e valido."],
+        )
+        result.update({"success": False, "error": "order_id_invalid", "coverage_complete": False, "zero_is_authoritative": False})
+        return result
+
+    exact_store, failure = ia_tools_marketplaces._ia_ml_resolver_loja_exata(client_id, loja)
+    if not exact_store:
+        result = _result(
+            "mercado_livre_post_sale_detail", [], [],
+            {"loja": loja, "pack_id": pack, "order_id": order, "limit": limit},
+            [str((failure or {}).get("message") or "Loja Mercado Livre exata nao encontrada.")],
+        )
+        result.update({
+            "success": False,
+            "error": str((failure or {}).get("code") or "store_not_found"),
+            "available_stores": list((failure or {}).get("available_stores") or []),
+            "coverage_complete": False,
+            "zero_is_authoritative": False,
+        })
+        return result
+
+    try:
+        from backend.services import perguntas_pos_venda_endpoints
+
+        raw = perguntas_pos_venda_endpoints.ml_pos_venda_detalhe_conversa(
+            loja=exact_store,
+            pack_id=pack,
+            order_id=order or None,
+            client_id=client_id,
+        )
+    except Exception as exc:
+        detail = str(getattr(exc, "detail", exc) or "Falha ao consultar a conversa.")[:300]
+        result = _result(
+            "mercado_livre_post_sale_detail", [], [],
+            {"loja": exact_store, "pack_id": pack, "order_id": order, "limit": limit},
+            [detail],
+        )
+        result.update({"success": False, "error": "integration_error", "coverage_complete": False, "zero_is_authoritative": False})
+        return result
+
+    conversation = raw.get("conversa") if isinstance(raw, dict) and isinstance(raw.get("conversa"), dict) else {}
+    returned_pack = str(conversation.get("pack_id") or "").strip()
+    returned_order = str(conversation.get("order_id") or "").strip()
+    if (returned_pack and returned_pack != pack) or (order and returned_order and returned_order != order):
+        result = _result(
+            "mercado_livre_post_sale_detail", [], [],
+            {"loja": exact_store, "pack_id": pack, "order_id": order, "limit": limit},
+            ["A API retornou uma conversa fora do identificador exato solicitado; os dados foram bloqueados."],
+        )
+        result.update({"success": False, "error": "conversation_scope_mismatch", "coverage_complete": False, "zero_is_authoritative": False})
+        return result
+    messages_raw = conversation.get("messages") if isinstance(conversation.get("messages"), list) else (
+        raw.get("mensagens") if isinstance(raw, dict) and isinstance(raw.get("mensagens"), list) else []
+    )
+    limit_safe = _safe_int(limit, 50, 1, 100)
+    messages = []
+    for raw_message in messages_raw[-limit_safe:]:
+        safe_message = _post_sale_safe_message(raw_message)
+        if safe_message:
+            messages.append(safe_message)
+    items = []
+    for item in (conversation.get("items") or [])[:20]:
+        if not isinstance(item, dict):
+            continue
+        items.append({
+            "id": str(item.get("id") or "").strip()[:64],
+            "sku": str(item.get("sku") or item.get("seller_sku") or "").strip()[:120],
+            "title": _post_sale_safe_text(item.get("title"), 240),
+            "quantity": item.get("quantity"),
+            "permalink": str(item.get("permalink") or "").strip()[:500],
+        })
+    record = {
+        "record_type": "mercado_livre_post_sale_conversation",
+        "loja": exact_store,
+        "pack_id": str(conversation.get("pack_id") or pack).strip(),
+        "order_id": str(conversation.get("order_id") or order).strip(),
+        "status": str(conversation.get("status") or "").strip()[:80],
+        "date_created": str(conversation.get("date_created") or "").strip()[:64],
+        "date_closed": str(conversation.get("date_closed") or "").strip()[:64],
+        "last_message_date": str(conversation.get("last_message_date") or "").strip()[:64],
+        "unread": bool(conversation.get("unread") or conversation.get("is_unread")),
+        "unread_count": _safe_int(conversation.get("unread_count"), 0, 0, 100_000),
+        "conversation_status": {
+            key: str((conversation.get("conversation_status") or {}).get(key) or "").strip()[:100]
+            for key in ("status", "substatus", "path")
+        } if isinstance(conversation.get("conversation_status"), dict) else {},
+        "items": items,
+        "messages": messages,
+        "messages_returned": len(messages),
+        "messages_total": len(messages_raw),
+        "messages_truncated": len(messages_raw) > limit_safe,
+    }
+    result = _result(
+        "mercado_livre_post_sale_detail",
+        [record],
+        [{
+            "source_id": f"mercado_livre_post_sale_{_safe_id(exact_store)}",
+            "type": "external_api",
+            "module": "perguntas_pos_venda",
+            "path": f"Mercado Livre - conversa pos-venda - {exact_store}",
+            "updated_at": _now(),
+            "status": "available",
+        }],
+        {"loja": exact_store, "pack_id": pack, "order_id": order, "limit": limit_safe},
+        ["Dados de comprador, remetente e URLs/IDs privados de anexos foram omitidos."],
+    )
+    result.update({
+        "live_query": True,
+        "source_freshness": "live",
+        "coverage_complete": True,
+        "zero_is_authoritative": False,
+        "records_truncated": len(messages_raw) > limit_safe,
+    })
+    return result
+
+
 def mercado_livre_readonly(
     *,
     client_id: str,
@@ -1086,6 +1283,15 @@ def execute_readonly_source_tool(
             all_stores=bool(args.get("all_stores") or args.get("todas_lojas") or args.get("separar_por_loja")),
             query_deadline_seconds=query_deadline_seconds,
         )
+    if tool_id == "mercado_livre_post_sale_detail":
+        return mercado_livre_post_sale_detail(
+            client_id=client_id,
+            message=message,
+            loja=loja,
+            pack_id=str(args.get("pack_id") or args.get("pack") or ""),
+            order_id=str(args.get("order_id") or args.get("id_pedido") or ""),
+            limit=limit,
+        )
     if tool_id == "fiscal_local_query":
         return fiscal_local_query(**common)
     if tool_id == "mercado_livre_readonly":
@@ -1134,6 +1340,7 @@ __all__ = [
     "local_cache_query",
     "sync_logs_query",
     "questions_post_sale_query",
+    "mercado_livre_post_sale_detail",
     "fiscal_local_query",
     "mercado_livre_readonly",
 ]

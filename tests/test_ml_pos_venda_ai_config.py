@@ -1,4 +1,6 @@
 import json
+import hashlib
+import os
 import re
 import unicodedata
 import unittest
@@ -59,9 +61,79 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
         self.assertTrue(payload["use_web_search"])
         self.assertTrue(payload["web_search_required"])
+        self.assertIn("context_hub_search", payload["allowed_tools"])
         self.assertIn("web_search_question_context", payload["allowed_tools"])
-        self.assertIn("compatibilidade, aplicacao, caracteristicas e funcoes", payload["context_collection_pipeline"][4]["description"])
-        self.assertIn("fabricante, manuais, catalogos OEM", payload["context_collection_pipeline"][4]["description"])
+        self.assertEqual(payload["app_guidance_truth_class"], "versioned_technical")
+        self.assertEqual(payload["app_guidance_source"], "jk_ppv_response_policy_v1")
+        self.assertEqual(payload["context_collection_pipeline"][4]["name"], "context_hub_sku_reference")
+        self.assertIn("dados de referencia nao confiaveis", payload["context_collection_pipeline"][4]["description"])
+        self.assertIn("compatibilidade, aplicacao, caracteristicas e funcoes", payload["context_collection_pipeline"][6]["description"])
+        self.assertIn("fabricante, manuais, catalogos OEM", payload["context_collection_pipeline"][6]["description"])
+
+    def test_legacy_training_is_hashed_but_not_injected_by_default(self):
+        import backend_api  # noqa: F401
+        from backend.services import perguntas_pos_venda_agent as agent
+
+        canary = "RESPOSTA-IDEAL-ANTIGA-NAO-DEVE-ENTRAR"
+        context = {
+            "intencao_atendimento": {
+                "fluxo": "perguntas_anuncio",
+                "intencao": "duvida_produto",
+            }
+        }
+        with patch.dict(os.environ, {"IA_PPV_LEGACY_GUIDANCE_FALLBACK_ENABLED": ""}), \
+             patch.object(agent, "_ia_treinamento_ppv_bloco_prompt", return_value=canary):
+            payload = agent._perguntas_ia_agent_input(
+                "000002",
+                "JK Pecas",
+                {"id": "Q1", "text": "Qual o conector?"},
+                {"id": "MLB1", "seller_sku": "001", "title": "Adaptador"},
+                context,
+                "prompt",
+            )
+            prompt = agent._perguntas_ia_v2_prompt("000002", payload)
+
+        self.assertNotIn(canary, payload["app_guidance"])
+        self.assertNotIn(canary, prompt)
+        self.assertTrue(payload["legacy_guidance_available"])
+        self.assertEqual(payload["legacy_guidance_hash"], hashlib.sha256(canary.encode()).hexdigest())
+        self.assertFalse(payload["legacy_fallback_enabled"])
+        self.assertFalse(payload["legacy_fallback_used"])
+
+    def test_legacy_fallback_requires_opt_in_and_non_security_empty_hub(self):
+        import backend_api  # noqa: F401
+        from backend.services import perguntas_pos_venda_agent as agent
+
+        canary = "REGRA-LEGADA-AUDITADA"
+        payload = {
+            "store": "JK Pecas",
+            "context": {},
+            "intent": {"fluxo": "perguntas_anuncio"},
+        }
+        empty_hub = {"result": {"found": False, "count": 0, "authoritative_count": 0}}
+        nonempty_legacy_hub = {
+            "result": {
+                "found": True,
+                "count": 1,
+                "authoritative_count": 0,
+                "results": [{"truth_class": "legacy_unverified"}],
+            }
+        }
+        unsafe_hub = {"result": {"found": False, "unavailable": True, "reason_code": "security_blocked"}}
+        with patch.dict(os.environ, {"IA_PPV_LEGACY_GUIDANCE_FALLBACK_ENABLED": "true"}), \
+             patch.object(agent, "_ia_treinamento_ppv_bloco_prompt", return_value=canary):
+            self.assertEqual(
+                agent._perguntas_ia_legacy_guidance_fallback("000002", payload, empty_hub),
+                canary,
+            )
+            self.assertEqual(
+                agent._perguntas_ia_legacy_guidance_fallback("000002", payload, unsafe_hub),
+                "",
+            )
+            self.assertEqual(
+                agent._perguntas_ia_legacy_guidance_fallback("000002", payload, nonempty_legacy_hub),
+                "",
+            )
 
     def test_technical_product_question_cannot_disable_web_research(self):
         import backend_api  # noqa: F401
@@ -115,13 +187,15 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_pos_venda_automation_requires_review_by_default(self):
         body = function_body(backend_text(), "ml_pos_venda_automacao_poll")
+        approval_builder = function_body(backend_text(), "_customer_reply_post_sale_approval")
         self.assertIn("_customer_reply_requires_approval()", body)
-        self.assertIn('"aprovacao_obrigatoria_ia": _pos_venda_ia_v2_exigir_aprovacao()', body)
-        self.assertIn('"ia_modo": _ia_modo_pos_venda_configurado()', body)
+        self.assertIn("_customer_reply_post_sale_approval", body)
+        self.assertIn('"aprovacao_obrigatoria_ia": _pos_venda_ia_v2_exigir_aprovacao()', approval_builder)
+        self.assertIn('"ia_modo": _ia_modo_pos_venda_configurado()', approval_builder)
         self.assertIn("_ml_pos_venda_executar_pipeline_ia", body)
         self.assertNotIn('"sent_auto_pos_venda"', body)
         self.assertNotIn("_ml_pos_venda_enviar_resposta_ml", body)
-        self.assertIn('"ia_pipeline": pipeline_resumo', body)
+        self.assertIn('"ia_pipeline": _ml_pos_venda_pipeline_resumo(contexto_ia)', approval_builder)
 
     def test_pos_venda_pipeline_has_user_requested_steps(self):
         source = backend_text()
@@ -500,6 +574,10 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
              patch.object(agent, "_ia_tool_get_product_data", return_value=cadastro), \
              patch.object(agent, "_ia_tool_get_mercado_livre_listing", return_value=anuncio), \
              patch.object(agent, "_ia_tool_get_bling_product", return_value=bling), \
+             patch.object(agent, "_perguntas_ia_context_hub_tool", return_value={
+                 "function": "context_hub_search",
+                 "result": {"found": False, "results": [], "count": 0, "read_only": True},
+             }), \
              patch.object(agent, "_perguntas_ia_memoria_bloco_prompt", return_value="Base Navigator IV/V/VI confirmada"), \
              patch.object(agent, "_ia_agent_perguntas_web_tool", return_value=web_final):
             result = client.generate("prompt com historico e anuncio", {
@@ -525,7 +603,8 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             [step["name"] for step in client.context_pipeline],
             [
                 "buyer_question_history_and_listing_snapshot", "mercado_livre_api_listing",
-                "internal_product_registry", "bling_product", "approved_sku_memory_and_rules",
+                "internal_product_registry", "bling_product", "context_hub_sku_reference",
+                "approved_sku_memory_and_legacy_rules",
                 "product_interface_research",
                 "official_technical_research", "compatibility_decision_and_answer",
             ],

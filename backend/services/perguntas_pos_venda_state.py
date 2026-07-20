@@ -151,15 +151,14 @@ def _perguntas_loja_config_normalizar(config: dict | None = None) -> dict:
     intervalo_minutos = max(PERGUNTAS_AUTOMACAO_INTERVALO_MIN, min(intervalo_minutos, PERGUNTAS_AUTOMACAO_INTERVALO_MAX))
     if float(intervalo_minutos).is_integer():
         intervalo_minutos = int(intervalo_minutos)
-    pos_venda_raw = config.get("habilitar_pos_venda_automatico")
-    if pos_venda_raw is None:
-        pos_venda_raw = config.get("usar_pos_venda") if "usar_pos_venda" in config else config.get("responder_automaticamente")
     return {
         "responder_automaticamente": bool(config.get("responder_automaticamente")),
         # Automatico significa gerar o rascunho; publicar sempre exige humano.
         "solicitar_aprovacao": True,
         "notificar_whatsapp_aprovacoes": bool(config.get("notificar_whatsapp_aprovacoes")),
-        "habilitar_pos_venda_automatico": bool(pos_venda_raw),
+        # Pos-venda aceita somente resposta manual. O valor legado permanece no
+        # arquivo historico, mas nunca pode reativar sugestoes de IA/Black Jhon.
+        "habilitar_pos_venda_automatico": False,
         "intervalo_minutos": intervalo_minutos,
     }
 
@@ -205,7 +204,7 @@ def _perguntas_loja_config_salvar(
         "responder_automaticamente": bool(responder_automaticamente),
         "solicitar_aprovacao": True,
         "notificar_whatsapp_aprovacoes": bool(notificar_whatsapp_aprovacoes),
-        "habilitar_pos_venda_automatico": bool(habilitar_pos_venda_automatico),
+        "habilitar_pos_venda_automatico": False,
         "intervalo_minutos": intervalo_cfg["intervalo_minutos"],
         "updated_at": dt.datetime.now().isoformat(timespec="seconds"),
     }

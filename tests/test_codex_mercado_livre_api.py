@@ -1021,7 +1021,7 @@ def test_listing_explicit_items_limits_descriptions_to_ten(monkeypatch):
         ids = str((kwargs.get("params") or {}).get("ids") or "").split(",")
         return FakeResponse(
             200,
-            [{"body": {"id": item_id, "title": item_id, "status": "active", "seller_sku": item_id}} for item_id in ids],
+            [{"body": {"id": item_id, "title": item_id, "status": "active", "seller_id": 12345, "seller_sku": item_id}} for item_id in ids],
         ), cfg
 
     def fake_description(_client_id, _store, cfg, item_id, **_kwargs):
@@ -1046,6 +1046,72 @@ def test_listing_explicit_items_limits_descriptions_to_ten(monkeypatch):
     assert response["result"]["matches"][9]["description"]
     assert response["result"]["matches"][10]["description"] == ""
     assert any("10 anuncios" in warning for warning in response["result"]["warnings"])
+
+
+def test_listing_explicit_mlb_preserves_pictures_and_validates_store_owner(monkeypatch):
+    _configure_store(monkeypatch)
+
+    def fake_api(_client_id, _store, cfg, method, url, **kwargs):
+        assert method == "GET"
+        assert url.endswith("/items")
+        return FakeResponse(200, [{
+            "code": 200,
+            "body": {
+                "id": "MLB123456789",
+                "seller_id": 12345,
+                "title": "Produto com galeria",
+                "status": "active",
+                "seller_sku": "001",
+                "permalink": "https://produto.mercadolivre.com.br/MLB-123456789",
+                "pictures": [
+                    {"id": "A", "secure_url": "https://http2.mlstatic.com/D_A.jpg", "width": 1200, "height": 1200},
+                    {"id": "B", "url": "https://http2.mlstatic.com/D_B.jpg", "width": 800, "height": 800},
+                ],
+            },
+        }]), cfg
+
+    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
+    response = ml_tools._ia_tool_get_mercado_livre_listing(
+        "000002", "dados do MLB-123456789", "JK Pecas", item_id="MLB-123456789"
+    )
+    result = response["result"]
+
+    assert result["found"] is True
+    assert result["ownership_validation"]["accepted_ids"] == ["MLB123456789"]
+    assert result["matches"][0]["picture_urls"] == [
+        "https://http2.mlstatic.com/D_A.jpg",
+        "https://http2.mlstatic.com/D_B.jpg",
+    ]
+    assert result["matches"][0]["pictures"][0] == {
+        "id": "A",
+        "secure_url": "https://http2.mlstatic.com/D_A.jpg",
+        "url": "",
+        "width": 1200,
+        "height": 1200,
+    }
+
+
+def test_listing_explicit_mlb_from_another_seller_is_rejected_fail_closed(monkeypatch):
+    _configure_store(monkeypatch)
+
+    def fake_api(_client_id, _store, cfg, _method, url, **_kwargs):
+        assert url.endswith("/items")
+        return FakeResponse(200, [{
+            "code": 200,
+            "body": {"id": "MLB987654321", "seller_id": 99999, "title": "Outra conta", "status": "active"},
+        }]), cfg
+
+    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
+    response = ml_tools._ia_tool_get_mercado_livre_listing(
+        "000002", "dados do MLB987654321", "JK Pecas", item_id="MLB987654321"
+    )
+    result = response["result"]
+
+    assert result["found"] is False
+    assert result["matches"] == []
+    assert result["error"] == "listing_not_in_store"
+    assert result["ownership_validation"]["rejected_ids"] == ["MLB987654321"]
+    assert any("outra conta" in warning for warning in result["warnings"])
 
 
 def test_listing_does_not_treat_date_as_sku(monkeypatch):

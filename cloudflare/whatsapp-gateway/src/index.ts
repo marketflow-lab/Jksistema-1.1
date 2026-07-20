@@ -58,8 +58,22 @@ type JsonRecord = Record<string, unknown>;
 
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 const GATEWAY_PROTOCOL_VERSION = 1;
-const GATEWAY_BUILD_VERSION = "1.0.101";
+const GATEWAY_BUILD_VERSION = "1.0.103";
 const MAX_BINDINGS_PER_USER = 3;
+const INBOUND_MEDIA_MAX_ATTEMPTS = 5;
+const INBOUND_MEDIA_RETRY_DELAYS_SECONDS = [5 * 60, 15 * 60, 30 * 60, 60 * 60] as const;
+const INBOUND_MEDIA_RETENTION_SECONDS = 48 * 60 * 60;
+const INBOUND_MEDIA_FETCH_LEASE_SECONDS = 3 * 60;
+const INBOUND_MEDIA_FETCH_TIMEOUT_MS = 20_000;
+const INBOUND_MEDIA_RETRY_BATCH = 10;
+const INBOUND_MEDIA_MAX_REDIRECTS = 3;
+const OUTBOUND_MEDIA_LEASE_SECONDS = 3 * 60;
+const OUTBOUND_MEDIA_MAX_ATTEMPTS = 5;
+const META_MEDIA_EXACT_HOSTS = new Set([
+  "lookaside.fbsbx.com",
+  "lookaside.facebook.com",
+  "scontent.whatsapp.net",
+]);
 const OUTBOUND_IMAGE_ARTIFACT_TYPES = new Set(["product_photo", "report_chart"]);
 const OUTBOUND_DOCUMENT_MIMES: Record<string, string> = {
   report_pdf: "application/pdf",
@@ -130,6 +144,128 @@ function intEnv(value: string | undefined, fallback: number): number {
 
 function retryDelaySeconds(attempt: number): number {
   return [2, 5, 15][Math.max(0, Math.min(2, Number(attempt || 1) - 1))];
+}
+
+function inboundMediaRetryDelaySeconds(attempt: number): number {
+  return INBOUND_MEDIA_RETRY_DELAYS_SECONDS[
+    Math.max(0, Math.min(INBOUND_MEDIA_RETRY_DELAYS_SECONDS.length - 1, Number(attempt || 1) - 1))
+  ];
+}
+
+class InboundMediaError extends Error {
+  constructor(
+    readonly errorClass: string,
+    readonly retryable: boolean,
+  ) {
+    super(errorClass);
+    this.name = "InboundMediaError";
+  }
+}
+
+function inboundMediaHttpError(stage: "metadata" | "download", status: number): InboundMediaError {
+  if (status === 404) return new InboundMediaError(`meta_${stage}_not_found`, true);
+  if (status === 429) return new InboundMediaError(`meta_${stage}_rate_limited`, true);
+  if (status >= 500) return new InboundMediaError(`meta_${stage}_server_error`, true);
+  return new InboundMediaError(`meta_${stage}_client_error`, false);
+}
+
+function classifyInboundMediaError(error: unknown): InboundMediaError {
+  if (error instanceof InboundMediaError) return error;
+  const name = String((error as { name?: unknown } | null)?.name || "").toLowerCase();
+  const detail = error instanceof Error ? error.message : String(error || "");
+  if (name === "aborterror" || name === "timeouterror" || /tim(?:e|ed)[ -]?out|timeout/i.test(detail)) {
+    return new InboundMediaError("media_fetch_timeout", true);
+  }
+  if (/META_GRAPH_API_VERSION|META_SYSTEM_USER_TOKEN/i.test(detail)) {
+    return new InboundMediaError("media_configuration_error", false);
+  }
+  if (error instanceof TypeError || /network|connection|socket|fetch failed/i.test(detail)) {
+    return new InboundMediaError("media_network_error", true);
+  }
+  return new InboundMediaError("media_dependency_error", true);
+}
+
+function validatedMetaMediaUrl(value: unknown): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(String(value || ""));
+  } catch {
+    throw new InboundMediaError("meta_media_url_not_allowed", false);
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  const officialHost = META_MEDIA_EXACT_HOSTS.has(hostname) || hostname.endsWith(".fbcdn.net");
+  if (
+    parsed.protocol !== "https:"
+    || !officialHost
+    || Boolean(parsed.username || parsed.password)
+    || (parsed.port && parsed.port !== "443")
+  ) {
+    throw new InboundMediaError("meta_media_url_not_allowed", false);
+  }
+  return parsed;
+}
+
+async function fetchAllowedMetaMedia(env: Env, initialUrl: unknown): Promise<Response> {
+  let url = validatedMetaMediaUrl(initialUrl);
+  for (let redirects = 0; redirects <= INBOUND_MEDIA_MAX_REDIRECTS; redirects += 1) {
+    const response = await fetch(url.toString(), {
+      headers: { authorization: `Bearer ${env.META_SYSTEM_USER_TOKEN}` },
+      redirect: "manual",
+      signal: AbortSignal.timeout(INBOUND_MEDIA_FETCH_TIMEOUT_MS),
+    });
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    if (redirects >= INBOUND_MEDIA_MAX_REDIRECTS) {
+      throw new InboundMediaError("meta_media_redirect_limit", false);
+    }
+    const location = response.headers.get("location");
+    if (!location) throw new InboundMediaError("meta_media_redirect_invalid", false);
+    url = validatedMetaMediaUrl(new URL(location, url).toString());
+  }
+  throw new InboundMediaError("meta_media_redirect_limit", false);
+}
+
+async function readResponseBodyLimited(response: Response, maxBytes: number): Promise<ArrayBuffer> {
+  const declaredLength = Number.parseInt(String(response.headers.get("content-length") || "0"), 10);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new InboundMediaError("media_size_limit", false);
+  }
+  if (!response.body) throw new InboundMediaError("meta_download_empty", true);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value?.byteLength) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        try {
+          await reader.cancel("media_size_limit");
+        } catch {
+          // Preserve the stable size-limit failure even if stream cancellation
+          // itself reports a transport error.
+        }
+        throw new InboundMediaError("media_size_limit", false);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return joined.buffer;
+}
+
+function inboundMediaSchemaMissing(error: unknown): boolean {
+  return /no such column:\s*(?:media_|idempotency_key)|has no column named\s+(?:media_|idempotency_key)/i.test(
+    error instanceof Error ? error.message : String(error || ""),
+  );
 }
 
 function monthKey(now = new Date()): string {
@@ -611,42 +747,253 @@ async function mediaQuotaAllowed(env: Env, declaredSize: number): Promise<boolea
   return activeBytes + Math.max(0, declaredSize) <= bytesLimit && uploads < uploadLimit && dailyUploads < dailyUploadLimit;
 }
 
-async function downloadMedia(env: Env, messageId: string, subjectId: string, mediaId: string, messageType: string, declaredMime: string): Promise<void> {
+type InboundMediaPayload = {
+  body: ArrayBuffer;
+  mime: string;
+  extension: string;
+};
+
+async function inboundMediaAudit(env: Env, eventType: string, detail: JsonRecord): Promise<void> {
   try {
-    const metadataResp = await graphRequest(env, mediaId);
-    const metadata = (await metadataResp.json()) as JsonRecord;
-    if (!metadataResp.ok) throw new Error(String((metadata.error as JsonRecord | undefined)?.message || `Meta media metadata ${metadataResp.status}`));
-    const url = String(metadata.url || "");
-    const mime = String(metadata.mime_type || declaredMime || "").split(";", 1)[0].trim().toLowerCase();
-    const declaredSize = Number(metadata.file_size || 0);
-    const policy = mediaPolicy(messageType, mime);
-    if (!policy.allowed) throw new Error(`Tipo de midia nao permitido: ${mime || messageType}`);
-    if (declaredSize > policy.maxBytes) throw new Error("Midia acima do limite gratuito configurado");
-    if (!(await mediaQuotaAllowed(env, declaredSize))) throw new Error("Limite gratuito preventivo do KV atingido");
-    const mediaResp = await fetch(url, { headers: { authorization: `Bearer ${env.META_SYSTEM_USER_TOKEN}` } });
-    if (!mediaResp.ok) throw new Error(`Falha ao baixar midia Meta: ${mediaResp.status}`);
-    const body = await mediaResp.arrayBuffer();
-    if (body.byteLength > policy.maxBytes) throw new Error("Midia acima do limite apos download");
-    if (!(await mediaQuotaAllowed(env, body.byteLength))) throw new Error("Limite gratuito preventivo do KV atingido");
-    const extension = mime === "image/jpeg" ? "jpg" : mime === "image/png" ? "png" : mime.split("/", 2)[1]?.replace(/[^a-z0-9]/g, "") || "bin";
-    const objectKey = `incoming/${new Date().toISOString().slice(0, 10)}/${crypto.randomUUID()}.${extension}`;
-    await env.MEDIA.put(objectKey, body, {
-      expirationTtl: 86400,
-      metadata: { contentType: mime, messageId, subjectId, expiresAt: String(nowSeconds() + 86400) },
-    });
-    await env.DB.prepare(
-      "UPDATE inbox SET media_mime=?,media_size=?,media_object_key=?,media_filename=?,status='queued',error=NULL WHERE message_id=?",
-    ).bind(mime, body.byteLength, objectKey, `whatsapp_${messageId}.${extension}`, messageId).run();
-    await Promise.all([
-      counterAdd(env, "media_active_bytes", body.byteLength),
-      counterAdd(env, `media_uploads:${monthKey()}`, 1),
-      counterAdd(env, `media_uploads_day:${new Date().toISOString().slice(0, 10)}`, 1),
-      audit(env, "media_stored", subjectId, { message_id: messageId, bytes: body.byteLength, mime }),
-    ]);
+    await audit(env, eventType, "", detail);
+  } catch {
+    // Telemetry must never change delivery state. Details contain only stable
+    // codes, attempt numbers, sizes and MIME types -- no content or identity.
+  }
+}
+
+async function fetchInboundMedia(
+  env: Env,
+  mediaId: string,
+  messageType: string,
+  declaredMime: string,
+): Promise<InboundMediaPayload> {
+  const metadataResp = await graphRequest(env, mediaId, { signal: AbortSignal.timeout(INBOUND_MEDIA_FETCH_TIMEOUT_MS) });
+  if (!metadataResp.ok) throw inboundMediaHttpError("metadata", metadataResp.status);
+  const metadata = (await metadataResp.json()) as JsonRecord;
+  const url = String(metadata.url || "");
+  if (!url) throw new InboundMediaError("meta_metadata_missing_url", true);
+  const mime = String(metadata.mime_type || declaredMime || "").split(";", 1)[0].trim().toLowerCase();
+  const declaredSize = Number(metadata.file_size || 0);
+  const policy = mediaPolicy(messageType, mime);
+  if (!policy.allowed) throw new InboundMediaError("media_type_not_allowed", false);
+  if (declaredSize > policy.maxBytes) throw new InboundMediaError("media_size_limit", false);
+  if (!(await mediaQuotaAllowed(env, declaredSize))) throw new InboundMediaError("media_quota_exceeded", false);
+  const mediaResp = await fetchAllowedMetaMedia(env, url);
+  if (!mediaResp.ok) throw inboundMediaHttpError("download", mediaResp.status);
+  const body = await readResponseBodyLimited(mediaResp, policy.maxBytes);
+  if (!(await mediaQuotaAllowed(env, body.byteLength))) throw new InboundMediaError("media_quota_exceeded", false);
+  const extension = mime === "image/jpeg" ? "jpg" : mime === "image/png" ? "png" : mime.split("/", 2)[1]?.replace(/[^a-z0-9]/g, "") || "bin";
+  return { body, mime, extension };
+}
+
+async function storeLegacyInboundMedia(env: Env, messageId: string, payload: InboundMediaPayload): Promise<void> {
+  const objectKey = `incoming/${new Date().toISOString().slice(0, 10)}/${crypto.randomUUID()}.${payload.extension}`;
+  await env.MEDIA.put(objectKey, payload.body, {
+    expirationTtl: INBOUND_MEDIA_RETENTION_SECONDS,
+    metadata: { contentType: payload.mime, expiresAt: String(nowSeconds() + INBOUND_MEDIA_RETENTION_SECONDS) },
+  });
+  let stored = false;
+  try {
+    const result = await env.DB.prepare(
+      "UPDATE inbox SET media_mime=?,media_size=?,media_object_key=?,media_filename=?,status='queued',error=NULL WHERE message_id=? AND status='media_fetching' AND media_object_key IS NULL",
+    ).bind(payload.mime, payload.body.byteLength, objectKey, `whatsapp_${messageId}.${payload.extension}`, messageId).run();
+    stored = Number(result.meta.changes || 0) > 0;
+  } finally {
+    if (!stored) await env.MEDIA.delete(objectKey);
+  }
+  if (!stored) return;
+  await Promise.allSettled([
+    counterAdd(env, "media_active_bytes", payload.body.byteLength),
+    counterAdd(env, `media_uploads:${monthKey()}`, 1),
+    counterAdd(env, `media_uploads_day:${dayKey()}`, 1),
+    inboundMediaAudit(env, "media_stored_legacy", { bytes: payload.body.byteLength, mime: payload.mime }),
+  ]);
+}
+
+async function downloadMediaLegacy(
+  env: Env,
+  messageId: string,
+  mediaId: string,
+  messageType: string,
+  declaredMime: string,
+): Promise<void> {
+  try {
+    await storeLegacyInboundMedia(env, messageId, await fetchInboundMedia(env, mediaId, messageType, declaredMime));
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    await env.DB.prepare("UPDATE inbox SET status='failed',error=?,completed_at=? WHERE message_id=?").bind(detail.slice(0, 800), nowSeconds(), messageId).run();
-    await audit(env, "media_failed", subjectId, { message_id: messageId, error: detail.slice(0, 500) });
+    const classified = classifyInboundMediaError(error);
+    await env.DB.prepare("UPDATE inbox SET status='failed',error=?,completed_at=? WHERE message_id=? AND status='media_fetching'")
+      .bind(classified.errorClass, nowSeconds(), messageId).run();
+    await inboundMediaAudit(env, "media_failed_legacy", { error_class: classified.errorClass });
+  }
+}
+
+async function claimInboundMediaAttempt(env: Env, messageId: string): Promise<JsonRecord | null> {
+  const now = nowSeconds();
+  const claim = await env.DB.prepare(
+    "UPDATE inbox SET media_state='fetching',media_attempts=media_attempts+1,media_last_attempt_at=?,media_lease_until=?,media_next_attempt_at=NULL "
+    + "WHERE message_id=? AND media_id IS NOT NULL AND media_object_key IS NULL AND media_state IN ('pending','retry_wait') "
+    + "AND COALESCE(media_next_attempt_at,0)<=? AND COALESCE(media_expires_at,0)>? AND media_attempts<?",
+  ).bind(now, now + INBOUND_MEDIA_FETCH_LEASE_SECONDS, messageId, now, now, INBOUND_MEDIA_MAX_ATTEMPTS).run();
+  if (!Number(claim.meta.changes || 0)) return null;
+  return env.DB.prepare(
+    "SELECT message_id,message_type,media_id,media_mime,media_attempts,media_expires_at FROM inbox WHERE message_id=? AND media_state='fetching'",
+  ).bind(messageId).first<JsonRecord>();
+}
+
+async function storeInboundMedia(env: Env, row: JsonRecord, payload: InboundMediaPayload): Promise<boolean> {
+  const messageId = String(row.message_id || "");
+  const attempt = Number(row.media_attempts || 0);
+  const expiresAt = Number(row.media_expires_at || 0);
+  if (!expiresAt || expiresAt <= nowSeconds() + 60) throw new InboundMediaError("media_retention_expired", false);
+  const objectKey = `incoming/${new Date().toISOString().slice(0, 10)}/${crypto.randomUUID()}.${payload.extension}`;
+  await env.MEDIA.put(objectKey, payload.body, {
+    expiration: expiresAt,
+    metadata: { contentType: payload.mime, expiresAt: String(expiresAt) },
+  });
+  let stored = false;
+  try {
+    const result = await env.DB.prepare(
+      "UPDATE inbox SET media_mime=?,media_size=?,media_object_key=?,media_filename=?,status='queued',media_state='stored',"
+      + "media_next_attempt_at=NULL,media_lease_until=NULL,media_error_class=NULL,error=NULL,completed_at=NULL "
+      + "WHERE message_id=? AND media_state='fetching' AND media_attempts=? AND media_object_key IS NULL",
+    ).bind(
+      payload.mime,
+      payload.body.byteLength,
+      objectKey,
+      `whatsapp_${messageId}.${payload.extension}`,
+      messageId,
+      attempt,
+    ).run();
+    stored = Number(result.meta.changes || 0) > 0;
+  } finally {
+    if (!stored) await env.MEDIA.delete(objectKey);
+  }
+  if (!stored) return false;
+  await Promise.allSettled([
+    counterAdd(env, "media_active_bytes", payload.body.byteLength),
+    counterAdd(env, `media_uploads:${monthKey()}`, 1),
+    counterAdd(env, `media_uploads_day:${dayKey()}`, 1),
+    inboundMediaAudit(env, "media_stored", { attempt, bytes: payload.body.byteLength, mime: payload.mime }),
+  ]);
+  return true;
+}
+
+async function recordInboundMediaFailure(env: Env, row: JsonRecord, error: unknown): Promise<void> {
+  const classified = classifyInboundMediaError(error);
+  const now = nowSeconds();
+  const messageId = String(row.message_id || "");
+  const attempt = Number(row.media_attempts || 0);
+  const expiresAt = Number(row.media_expires_at || 0);
+  const delay = inboundMediaRetryDelaySeconds(attempt);
+  const retryable = classified.retryable
+    && attempt < INBOUND_MEDIA_MAX_ATTEMPTS
+    && expiresAt > now + delay;
+  if (retryable) {
+    const nextAttemptAt = now + delay;
+    const scheduled = await env.DB.prepare(
+      "UPDATE inbox SET status='media_retry',media_state='retry_wait',media_next_attempt_at=?,media_lease_until=NULL,media_error_class=?,error=? "
+      + "WHERE message_id=? AND media_state='fetching' AND media_attempts=?",
+    ).bind(nextAttemptAt, classified.errorClass, classified.errorClass, messageId, attempt).run();
+    if (Number(scheduled.meta.changes || 0)) {
+      await inboundMediaAudit(env, "media_retry_scheduled", {
+        attempt,
+        error_class: classified.errorClass,
+        delay_seconds: delay,
+      });
+    }
+    return;
+  }
+  const failed = await env.DB.prepare(
+    "UPDATE inbox SET status='failed',media_state='failed',media_next_attempt_at=NULL,media_lease_until=NULL,media_error_class=?,error=?,completed_at=? "
+    + "WHERE message_id=? AND media_state='fetching' AND media_attempts=?",
+  ).bind(classified.errorClass, classified.errorClass, now, messageId, attempt).run();
+  if (Number(failed.meta.changes || 0)) {
+    await inboundMediaAudit(env, "media_failed", { attempt, error_class: classified.errorClass });
+  }
+}
+
+async function processInboundMediaAttempt(env: Env, messageId: string): Promise<void> {
+  const row = await claimInboundMediaAttempt(env, messageId);
+  if (!row) return;
+  try {
+    const payload = await fetchInboundMedia(
+      env,
+      String(row.media_id || ""),
+      String(row.message_type || ""),
+      String(row.media_mime || ""),
+    );
+    await storeInboundMedia(env, row, payload);
+  } catch (error) {
+    await recordInboundMediaFailure(env, row, error);
+  }
+}
+
+async function initializeInboundMedia(
+  env: Env,
+  messageId: string,
+  mediaId: string,
+  messageType: string,
+  declaredMime: string,
+): Promise<void> {
+  const now = nowSeconds();
+  try {
+    await env.DB.prepare(
+      "UPDATE inbox SET media_state='pending',media_attempts=0,media_next_attempt_at=?,media_last_attempt_at=NULL,media_lease_until=NULL,"
+      + "media_error_class=NULL,media_expires_at=?,error=NULL WHERE message_id=? AND status='media_fetching' AND media_state='none'",
+    ).bind(now, now + INBOUND_MEDIA_RETENTION_SECONDS, messageId).run();
+  } catch (error) {
+    if (!inboundMediaSchemaMissing(error)) throw error;
+    await downloadMediaLegacy(env, messageId, mediaId, messageType, declaredMime);
+    return;
+  }
+  await processInboundMediaAttempt(env, messageId);
+}
+
+async function retryInboundMedia(env: Env): Promise<void> {
+  const now = nowSeconds();
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE inbox SET status='failed',media_state='expired',media_next_attempt_at=NULL,media_lease_until=NULL,"
+        + "media_error_class='media_retention_expired',error='media_retention_expired',completed_at=? "
+        + "WHERE media_id IS NOT NULL AND media_object_key IS NULL AND media_state IN ('none','pending','retry_wait','fetching') "
+        + "AND COALESCE(media_expires_at,received_at+?)<=?",
+      ).bind(now, INBOUND_MEDIA_RETENTION_SECONDS, now),
+      env.DB.prepare(
+        "UPDATE inbox SET status='failed',media_state='failed',media_next_attempt_at=NULL,media_lease_until=NULL,"
+        + "media_error_class='media_retry_exhausted',error='media_retry_exhausted',completed_at=? "
+        + "WHERE media_state='fetching' AND media_lease_until<? AND media_attempts>=?",
+      ).bind(now, now, INBOUND_MEDIA_MAX_ATTEMPTS),
+      env.DB.prepare(
+        "UPDATE inbox SET status='media_retry',media_state='retry_wait',media_next_attempt_at=CASE media_attempts "
+        + "WHEN 1 THEN ? WHEN 2 THEN ? WHEN 3 THEN ? ELSE ? END,media_lease_until=NULL,"
+        + "media_error_class='media_fetch_lease_expired',error='media_fetch_lease_expired' "
+        + "WHERE media_state='fetching' AND media_lease_until<? AND media_attempts<? AND media_expires_at>?",
+      ).bind(
+        now + INBOUND_MEDIA_RETRY_DELAYS_SECONDS[0],
+        now + INBOUND_MEDIA_RETRY_DELAYS_SECONDS[1],
+        now + INBOUND_MEDIA_RETRY_DELAYS_SECONDS[2],
+        now + INBOUND_MEDIA_RETRY_DELAYS_SECONDS[3],
+        now,
+        INBOUND_MEDIA_MAX_ATTEMPTS,
+        now,
+      ),
+      env.DB.prepare(
+        "UPDATE inbox SET media_state='pending',media_next_attempt_at=COALESCE(media_next_attempt_at,?),"
+        + "media_expires_at=COALESCE(media_expires_at,received_at+?) "
+        + "WHERE media_id IS NOT NULL AND media_object_key IS NULL AND status='media_fetching' AND media_state='none'",
+      ).bind(now, INBOUND_MEDIA_RETENTION_SECONDS),
+    ]);
+    const due = await env.DB.prepare(
+      "SELECT message_id FROM inbox WHERE media_state IN ('pending','retry_wait') AND COALESCE(media_next_attempt_at,0)<=? "
+      + "AND media_expires_at>? AND media_attempts<? ORDER BY COALESCE(media_next_attempt_at,received_at),received_at LIMIT ?",
+    ).bind(now, now, INBOUND_MEDIA_MAX_ATTEMPTS, INBOUND_MEDIA_RETRY_BATCH).all<JsonRecord>();
+    await Promise.allSettled(
+      (due.results || []).map((item) => processInboundMediaAttempt(env, String(item.message_id || ""))),
+    );
+  } catch (error) {
+    if (!inboundMediaSchemaMissing(error)) throw error;
   }
 }
 
@@ -711,7 +1058,7 @@ async function handleIncomingMessage(env: Env, ctx: ExecutionContext, value: Jso
   if (allowedType) {
     ctx.waitUntil(maybeNotifyLocalUnavailable(env, messageId, subjectId, String(binding.machine_id || "")));
   }
-  if (mediaId) ctx.waitUntil(downloadMedia(env, messageId, subjectId, mediaId, messageType, mediaMime));
+  if (mediaId) ctx.waitUntil(initializeInboundMedia(env, messageId, mediaId, messageType, mediaMime));
   ctx.waitUntil(releaseWaitingSummary(env, subjectId));
   // O cadastro pode usar a variante brasileira com o nono digito enquanto a
   // Meta entrega o wa_id sem ele. Libera as mensagens tanto pela identidade
@@ -732,8 +1079,12 @@ async function handleStatuses(env: Env, statuses: unknown): Promise<void> {
       env.DB.prepare("INSERT OR IGNORE INTO message_status(meta_message_id,status,status_at,recipient_id,raw_json) VALUES(?,?,?,?,?)").bind(id, status, at, String(item.recipient_id || ""), JSON.stringify(item)),
       env.DB.prepare("UPDATE outbox SET status=CASE WHEN ? IN ('failed') THEN 'failed' WHEN ? IN ('sent','delivered','read') THEN ? ELSE status END,updated_at=?,error=CASE WHEN ?='failed' THEN ? ELSE error END WHERE meta_message_id=?")
         .bind(status, status, status, at, status, JSON.stringify(item.errors || []).slice(0, 800), id),
-      env.DB.prepare("UPDATE outbound_media SET status=CASE WHEN ?='failed' THEN 'failed' WHEN ? IN ('sent','delivered','read') THEN ? ELSE status END,updated_at=?,error=CASE WHEN ?='failed' THEN ? ELSE error END WHERE meta_message_id=?")
-        .bind(status, status, status, at, status, JSON.stringify(item.errors || []).slice(0, 800), id),
+      env.DB.prepare(
+        "UPDATE outbound_media SET status=CASE WHEN ?='failed' THEN 'failed' WHEN ? IN ('sent','delivered','read') THEN ? ELSE status END,"
+        + "updated_at=?,error=CASE WHEN ?='failed' THEN ? ELSE error END,"
+        + "lease_owner=CASE WHEN ? IN ('failed','sent','delivered','read') THEN NULL ELSE lease_owner END,"
+        + "lease_until=CASE WHEN ? IN ('failed','sent','delivered','read') THEN NULL ELSE lease_until END WHERE meta_message_id=?",
+      ).bind(status, status, status, at, status, JSON.stringify(item.errors || []).slice(0, 800), status, status, id),
     ]);
   }
 }
@@ -782,6 +1133,48 @@ async function queueOutbound(env: Env, subjectId: string, recipient: string, tex
   ).bind(id, subjectId, recipient, templateName ? "template" : "text", compactReply(textBody), templateName || null, JSON.stringify(templateParams || []), "queued", now, now).run();
   await audit(env, "outbox_queued", subjectId, { outbox_id: id, reason, template_name: templateName || "" });
   return id;
+}
+
+async function queueInboundResultPart(
+  env: Env,
+  messageId: string,
+  subjectId: string,
+  recipient: string,
+  textBody: string,
+  reason: string,
+  partIndex: number,
+  templateName = "",
+  templateParams: string[] = [],
+): Promise<string> {
+  const idempotencyKey = `inbound_result:${messageId}:${partIndex}`;
+  const id = randomId("out");
+  const now = nowSeconds();
+  try {
+    await env.DB.prepare(
+      "INSERT OR IGNORE INTO outbox(id,inbound_message_id,subject_id,recipient,message_type,text_body,template_name,template_params_json,status,created_at,updated_at,idempotency_key) "
+      + "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+    ).bind(
+      id,
+      messageId,
+      subjectId,
+      recipient,
+      templateName ? "template" : "text",
+      compactReply(textBody),
+      templateName || null,
+      JSON.stringify(templateParams || []),
+      "queued",
+      now,
+      now,
+      idempotencyKey,
+    ).run();
+    const stored = await env.DB.prepare("SELECT id FROM outbox WHERE idempotency_key=?").bind(idempotencyKey).first<JsonRecord>();
+    const storedId = String(stored?.id || id);
+    await audit(env, "outbox_queued", subjectId, { outbox_id: storedId, reason, template_name: templateName || "", idempotent: true });
+    return storedId;
+  } catch (error) {
+    if (!inboundMediaSchemaMissing(error)) throw error;
+    return queueOutbound(env, subjectId, recipient, textBody, reason, templateName, templateParams);
+  }
 }
 
 async function maybeNotifyLocalUnavailable(
@@ -976,37 +1369,106 @@ async function releaseWaitingSummary(env: Env, subjectId: string): Promise<void>
   if (summaryItem) await sendOutboxItem(env, summaryItem);
 }
 
-async function bridgeStatus(env: Env): Promise<Response> {
+async function inboundMediaStatus(env: Env, machineId: string): Promise<JsonRecord> {
+  try {
+    const counts = await env.DB.prepare(
+      "SELECT "
+      + "SUM(CASE WHEN i.media_state='retry_wait' THEN 1 ELSE 0 END) AS waiting_retry,"
+      + "SUM(CASE WHEN i.media_state='fetching' THEN 1 ELSE 0 END) AS fetching,"
+      + "SUM(CASE WHEN i.media_state='stored' THEN 1 ELSE 0 END) AS stored,"
+      + "SUM(CASE WHEN i.media_state='failed' THEN 1 ELSE 0 END) AS failed,"
+      + "SUM(CASE WHEN i.media_state='expired' THEN 1 ELSE 0 END) AS expired "
+      + "FROM inbox i JOIN bindings b ON b.subject_id=i.subject_id AND b.active=1 "
+      + "WHERE i.media_id IS NOT NULL AND b.machine_id=?",
+    ).bind(machineId).first<JsonRecord>();
+    const failures = await env.DB.prepare(
+      "SELECT i.media_error_class AS error_class,COUNT(*) AS total FROM inbox i "
+      + "JOIN bindings b ON b.subject_id=i.subject_id AND b.active=1 "
+      + "WHERE i.media_id IS NOT NULL AND i.media_error_class IS NOT NULL AND b.machine_id=? "
+      + "GROUP BY i.media_error_class ORDER BY total DESC,error_class LIMIT 30",
+    ).bind(machineId).all<JsonRecord>();
+    return {
+      durable_retry: true,
+      max_attempts: INBOUND_MEDIA_MAX_ATTEMPTS,
+      retry_delays_seconds: [...INBOUND_MEDIA_RETRY_DELAYS_SECONDS],
+      retention_seconds: INBOUND_MEDIA_RETENTION_SECONDS,
+      counts: counts || {},
+      failures_by_code: (failures.results || []).map((item) => ({
+        error_class: String(item.error_class || "unknown").slice(0, 100),
+        total: Number(item.total || 0),
+      })),
+    };
+  } catch (error) {
+    if (!inboundMediaSchemaMissing(error)) throw error;
+    return {
+      durable_retry: false,
+      migration_required: "0008_inbound_media_retry.sql",
+      max_attempts: 1,
+      retry_delays_seconds: [],
+      retention_seconds: INBOUND_MEDIA_RETENTION_SECONDS,
+      counts: {},
+      failures_by_code: [],
+    };
+  }
+}
+
+async function bridgeStatus(request: Request, env: Env): Promise<Response> {
+  const machineId = String(new URL(request.url).searchParams.get("machine_id") || "").trim();
+  if (!machineId || machineId.length > 160) return json({ success: false, error: "machine_id_required" }, 400);
+  const activeBinding = await env.DB.prepare(
+    "SELECT subject_id FROM bindings WHERE active=1 AND machine_id=? LIMIT 1",
+  ).bind(machineId).first<JsonRecord>();
+  if (!activeBinding) return json({ success: false, error: "binding_machine_inactive" }, 403);
   const counts = await env.DB.prepare(
-    "SELECT (SELECT COUNT(*) FROM inbox WHERE status IN ('queued','media_fetching','retry')) AS inbox_pending,(SELECT COUNT(*) FROM outbox WHERE status IN ('queued','retry','waiting_free_window','policy_recheck_required','template_not_approved')) AS outbox_pending,(SELECT COUNT(*) FROM inbox WHERE status='dead_letter') AS dead_letters,(SELECT COUNT(*) FROM outbox WHERE status='template_not_approved') AS template_blocked_outbox,(SELECT COUNT(*) FROM bindings WHERE active=1) AS bindings,(SELECT COUNT(*) FROM template_registry WHERE status='APPROVED' AND category='UTILITY') AS templates",
-  ).first<JsonRecord>();
+    "SELECT "
+    + "(SELECT COUNT(*) FROM inbox i JOIN bindings b ON b.subject_id=i.subject_id AND b.active=1 WHERE b.machine_id=? AND i.status IN ('queued','media_fetching','media_retry','retry')) AS inbox_pending,"
+    + "(SELECT COUNT(*) FROM outbox o JOIN bindings b ON b.subject_id=o.subject_id AND b.active=1 WHERE b.machine_id=? AND o.status IN ('queued','retry','waiting_free_window','policy_recheck_required','template_not_approved')) AS outbox_pending,"
+    + "(SELECT COUNT(*) FROM inbox i JOIN bindings b ON b.subject_id=i.subject_id AND b.active=1 WHERE b.machine_id=? AND i.status='dead_letter') AS dead_letters,"
+    + "(SELECT COUNT(*) FROM outbox o JOIN bindings b ON b.subject_id=o.subject_id AND b.active=1 WHERE b.machine_id=? AND o.status='template_not_approved') AS template_blocked_outbox,"
+    + "(SELECT COUNT(*) FROM bindings WHERE active=1 AND machine_id=?) AS bindings,"
+    + "(SELECT COUNT(*) FROM template_registry WHERE status='APPROVED' AND category='UTILITY') AS templates",
+  ).bind(machineId, machineId, machineId, machineId, machineId).first<JsonRecord>();
   const templates = await env.DB.prepare(
     "SELECT name,language,category,status,last_verified_at FROM template_registry ORDER BY name",
   ).all<JsonRecord>();
   const bindingRows = await env.DB.prepare(
-    "SELECT subject_id,wa_id,phone_number,client_id,username,machine_id,last_inbound_at,created_at FROM bindings WHERE active=1 ORDER BY created_at DESC LIMIT 100",
-  ).all<JsonRecord>();
+    "SELECT subject_id,wa_id,phone_number,client_id,username,machine_id,last_inbound_at,created_at FROM bindings WHERE active=1 AND machine_id=? ORDER BY created_at DESC LIMIT 100",
+  ).bind(machineId).all<JsonRecord>();
   const outboundUsage = await env.DB.prepare(
-    "SELECT COUNT(*) AS uploads,COALESCE(SUM(byte_size),0) AS bytes FROM outbound_media WHERE created_at>=?",
-  ).bind(monthStartSeconds()).first<JsonRecord>();
+    "SELECT COUNT(*) AS uploads,COALESCE(SUM(om.byte_size),0) AS bytes FROM outbound_media om "
+    + "JOIN bindings b ON b.subject_id=om.subject_id AND b.active=1 WHERE b.machine_id=? AND om.created_at>=?",
+  ).bind(machineId, monthStartSeconds()).first<JsonRecord>();
+  const inboundUsage = await env.DB.prepare(
+    "SELECT COALESCE(SUM(CASE WHEN i.media_object_key IS NOT NULL THEN i.media_size ELSE 0 END),0) AS active_bytes,"
+    + "SUM(CASE WHEN i.media_object_key IS NOT NULL AND i.received_at>=? THEN 1 ELSE 0 END) AS uploads "
+    + "FROM inbox i JOIN bindings b ON b.subject_id=i.subject_id AND b.active=1 WHERE b.machine_id=?",
+  ).bind(monthStartSeconds(), machineId).first<JsonRecord>();
   const inboxDetails = await env.DB.prepare(
-    "SELECT message_id,subject_id,message_type,received_at,status,attempts,task_id,error,completed_at,offline_notified_at FROM inbox ORDER BY received_at DESC LIMIT 30",
-  ).all<JsonRecord>();
+    "SELECT i.message_id,i.subject_id,i.message_type,i.received_at,i.status,i.attempts,i.task_id,i.error,i.completed_at,i.offline_notified_at "
+    + "FROM inbox i JOIN bindings b ON b.subject_id=i.subject_id AND b.active=1 WHERE b.machine_id=? ORDER BY i.received_at DESC LIMIT 30",
+  ).bind(machineId).all<JsonRecord>();
   const outboxDetails = await env.DB.prepare(
-    "SELECT id,inbound_message_id,subject_id,message_type,status,attempts,created_at,updated_at,sent_at,meta_message_id,error,next_attempt_at FROM outbox ORDER BY created_at DESC LIMIT 30",
-  ).all<JsonRecord>();
+    "SELECT o.id,o.inbound_message_id,o.subject_id,o.message_type,o.status,o.attempts,o.created_at,o.updated_at,o.sent_at,o.meta_message_id,o.error,o.next_attempt_at "
+    + "FROM outbox o JOIN bindings b ON b.subject_id=o.subject_id AND b.active=1 WHERE b.machine_id=? ORDER BY o.created_at DESC LIMIT 30",
+  ).bind(machineId).all<JsonRecord>();
   const deadLetters = await env.DB.prepare(
-    "SELECT message_id,subject_id,message_type,received_at,attempts,error,completed_at FROM inbox WHERE status='dead_letter' ORDER BY completed_at DESC LIMIT 30",
-  ).all<JsonRecord>();
+    "SELECT i.message_id,i.subject_id,i.message_type,i.received_at,i.attempts,i.error,i.completed_at FROM inbox i "
+    + "JOIN bindings b ON b.subject_id=i.subject_id AND b.active=1 WHERE b.machine_id=? AND i.status='dead_letter' ORDER BY i.completed_at DESC LIMIT 30",
+  ).bind(machineId).all<JsonRecord>();
   const heartbeatRows = await env.DB.prepare(
-    "SELECT machine_id,client_id,username,app_version,status,last_seen_at,updated_at FROM bridge_heartbeats ORDER BY last_seen_at DESC LIMIT 30",
-  ).all<JsonRecord>();
+    "SELECT machine_id,client_id,username,app_version,status,last_seen_at,updated_at FROM bridge_heartbeats WHERE machine_id=? ORDER BY last_seen_at DESC LIMIT 30",
+  ).bind(machineId).all<JsonRecord>();
   const deliveryStatuses = await env.DB.prepare(
-    "SELECT meta_message_id,status,status_at,recipient_id FROM message_status ORDER BY status_at DESC LIMIT 50",
-  ).all<JsonRecord>();
+    "SELECT ms.meta_message_id,ms.status,ms.status_at,ms.recipient_id FROM message_status ms WHERE "
+    + "EXISTS(SELECT 1 FROM outbox o JOIN bindings b ON b.subject_id=o.subject_id AND b.active=1 WHERE o.meta_message_id=ms.meta_message_id AND b.machine_id=?) "
+    + "OR EXISTS(SELECT 1 FROM outbound_media om JOIN bindings b ON b.subject_id=om.subject_id AND b.active=1 WHERE om.meta_message_id=ms.meta_message_id AND b.machine_id=?) "
+    + "ORDER BY ms.status_at DESC LIMIT 50",
+  ).bind(machineId, machineId).all<JsonRecord>();
   const progressDetails = await env.DB.prepare(
-    "SELECT message_id,task_id,sequence,stage,status,created_at,sent_at,error FROM message_progress ORDER BY created_at DESC LIMIT 50",
-  ).all<JsonRecord>();
+    "SELECT mp.message_id,mp.task_id,mp.sequence,mp.stage,mp.status,mp.created_at,mp.sent_at,mp.error FROM message_progress mp "
+    + "JOIN inbox i ON i.message_id=mp.message_id JOIN bindings b ON b.subject_id=i.subject_id AND b.active=1 "
+    + "WHERE b.machine_id=? ORDER BY mp.created_at DESC LIMIT 50",
+  ).bind(machineId).all<JsonRecord>();
   const now = nowSeconds();
   const heartbeats = (heartbeatRows.results || []).map((item) => ({
     ...item,
@@ -1044,6 +1506,7 @@ async function bridgeStatus(env: Env): Promise<Response> {
       free_window_seconds: intEnv(env.FREE_WINDOW_SECONDS, 84600),
     },
     counts: counts || {},
+    inbound_media: await inboundMediaStatus(env, machineId),
     templates: templateRows,
     template_blockers: templateBlockers,
     inbox: inboxDetails.results || [],
@@ -1068,14 +1531,15 @@ async function bridgeStatus(env: Env): Promise<Response> {
       graph_api_version: env.META_GRAPH_API_VERSION,
     },
     usage: {
-      media_active_bytes: await counterGet(env, "media_active_bytes"),
-      media_uploads_month: await counterGet(env, `media_uploads:${monthKey()}`),
+      scoped_to_machine: true,
+      media_active_bytes: Number(inboundUsage?.active_bytes || 0),
+      media_uploads_month: Number(inboundUsage?.uploads || 0),
       media_outbound_uploads_month: Number(outboundUsage?.uploads || 0),
       media_outbound_bytes_month: Number(outboundUsage?.bytes || 0),
       media_outbound_uploads_limit: intEnv(env.MEDIA_OUTBOUND_UPLOADS_MONTH_LIMIT, 10000),
       media_outbound_bytes_limit: intEnv(env.MEDIA_OUTBOUND_BYTES_MONTH_LIMIT, 900 * 1024 * 1024),
-      media_downloads_month: await counterGet(env, `media_downloads:${monthKey()}`),
-      typing_pulses_day: await counterGet(env, `typing_pulses:${dayKey()}`),
+      media_downloads_month: await counterGet(env, `media_downloads:${monthKey()}:${machineId}`),
+      typing_pulses_day: null,
       typing_pulses_day_limit: intEnv(env.TYPING_PULSES_DAY_LIMIT, 10000),
     },
   });
@@ -1267,14 +1731,22 @@ async function claimMessages(request: Request, env: Env): Promise<Response> {
 }
 
 async function bridgeMedia(request: Request, env: Env, mediaId: string): Promise<Response> {
-  const row = await env.DB.prepare("SELECT media_object_key,media_mime,media_size,media_filename FROM inbox WHERE message_id=?").bind(mediaId).first<JsonRecord>();
+  const machineId = String(new URL(request.url).searchParams.get("machine_id") || "").trim();
+  if (!machineId || machineId.length > 160) return json({ success: false, error: "machine_id_required" }, 400);
+  const row = await env.DB.prepare(
+    "SELECT i.media_object_key,i.media_mime,i.media_size,i.media_filename FROM inbox i "
+    + "JOIN bindings b ON b.subject_id=i.subject_id AND b.active=1 WHERE i.message_id=? AND b.machine_id=?",
+  ).bind(mediaId, machineId).first<JsonRecord>();
   const key = String(row?.media_object_key || "");
   if (!key) return json({ success: false, error: "media_not_found" }, 404);
   const reads = await counterGet(env, `media_downloads:${monthKey()}`);
   if (reads >= intEnv(env.MEDIA_DOWNLOADS_MONTH_LIMIT, 50000)) return json({ success: false, error: "free_media_download_limit" }, 429);
   const object = await env.MEDIA.get(key, "stream");
   if (!object) return json({ success: false, error: "media_expired" }, 404);
-  await counterAdd(env, `media_downloads:${monthKey()}`, 1);
+  await Promise.all([
+    counterAdd(env, `media_downloads:${monthKey()}`, 1),
+    counterAdd(env, `media_downloads:${monthKey()}:${machineId}`, 1),
+  ]);
   const headers = new Headers({ "content-type": String(row?.media_mime || "application/octet-stream"), "cache-control": "no-store", "x-jk-filename": encodeURIComponent(String(row?.media_filename || "whatsapp-media")) });
   return new Response(object, { status: 200, headers });
 }
@@ -1284,8 +1756,19 @@ async function releaseMedia(env: Env, messageId: string): Promise<void> {
   const key = String(row?.media_object_key || "");
   if (!key) return;
   await env.MEDIA.delete(key);
-  await env.DB.prepare("UPDATE inbox SET media_object_key=NULL WHERE message_id=?").bind(messageId).run();
-  await counterAdd(env, "media_active_bytes", -Number(row?.media_size || 0));
+  try {
+    await env.DB.prepare(
+      "UPDATE inbox SET media_object_key=NULL,media_state='released',media_expires_at=NULL WHERE message_id=? AND media_object_key=?",
+    ).bind(messageId, key).run();
+  } catch (error) {
+    if (!inboundMediaSchemaMissing(error)) throw error;
+    await env.DB.prepare("UPDATE inbox SET media_object_key=NULL WHERE message_id=? AND media_object_key=?").bind(messageId, key).run();
+  }
+  try {
+    await counterAdd(env, "media_active_bytes", -Number(row?.media_size || 0));
+  } catch {
+    await inboundMediaAudit(env, "media_counter_update_failed", { operation: "terminal_release" });
+  }
 }
 
 async function messageTyping(request: Request, env: Env, messageId: string): Promise<Response> {
@@ -1411,9 +1894,13 @@ async function messageResult(request: Request, env: Env, messageId: string): Pro
   ).bind(messageId).first<JsonRecord>();
   if (!row || String(row.machine_id || "") !== machineId) return json({ success: false, error: "message_not_owned" }, 404);
   const requestedStatus = String(body.status || "");
+  const currentStatus = String(row.status || "");
+  if (["completed", "failed", "awaiting_approval"].includes(currentStatus)) {
+    return json({ success: true, status: currentStatus, queued_parts: 0, idempotent_replay: true });
+  }
   if (requestedStatus === "retry") {
     const diagnostic = compactReply(body.error || "codex_temporarily_unavailable", 800);
-    await env.DB.prepare("UPDATE inbox SET status='queued',error=?,lease_owner=NULL,lease_until=NULL WHERE message_id=?")
+    await env.DB.prepare("UPDATE inbox SET status='queued',error=?,lease_owner=NULL,lease_until=NULL WHERE message_id=? AND status='leased'")
       .bind(diagnostic, messageId).run();
     return json({ success: true, status: "queued_for_retry", queued_parts: 0 });
   }
@@ -1439,20 +1926,202 @@ async function messageResult(request: Request, env: Env, messageId: string): Pro
     const templateName = String(body.template_name || "");
     const params = Array.isArray(body.template_params) ? body.template_params.map(String) : [];
     for (const [index, responseText] of responseParts.entries()) {
-      await queueOutbound(
+      await queueInboundResultPart(
         env,
+        messageId,
         String(row.subject_id || ""),
         String(row.wa_id || row.subject_id || ""),
         responseText,
         `${status}:${index + 1}/${responseParts.length}`,
+        index + 1,
         responseParts.length === 1 ? templateName : "",
         responseParts.length === 1 ? params : [],
       );
     }
     await flushOutbox(env, String(row.subject_id || ""), Math.min(12, Math.max(3, responseParts.length + 1)));
   }
-  await releaseMedia(env, messageId);
+  try {
+    await releaseMedia(env, messageId);
+  } catch {
+    await inboundMediaAudit(env, "media_release_deferred", { terminal_status: status });
+  }
   return json({ success: true, status, queued_parts: responseParts.length });
+}
+
+interface OutboundMediaLeaseInput {
+  fingerprint: string;
+  inboundMessageId: string;
+  subjectId: string;
+  artifactType: string;
+  sha256: string;
+  mime: string;
+  byteSize: number;
+  caption: string;
+  perResponseLimit: boolean;
+  errorPrefix: string;
+}
+
+interface OutboundMediaLeaseResult {
+  acquired: boolean;
+  inserted: boolean;
+  leaseOwner: string;
+  metaMediaId: string;
+  response?: Response;
+}
+
+function outboundMediaConfirmed(status: string): boolean {
+  return ["sent", "delivered", "read"].includes(status);
+}
+
+function outboundMediaDuplicateResponse(existing: JsonRecord, input: OutboundMediaLeaseInput): Response {
+  return json({
+    success: true,
+    status: String(existing.status || "sent"),
+    duplicate: true,
+    fingerprint: input.fingerprint,
+    meta_message_id: String(existing.meta_message_id || ""),
+    bytes: Number(existing.byte_size || input.byteSize),
+    mime: String(existing.mime_type || input.mime),
+  });
+}
+
+async function reserveOutboundMedia(env: Env, input: OutboundMediaLeaseInput): Promise<OutboundMediaLeaseResult> {
+  const now = nowSeconds();
+  const leaseOwner = randomId("outbound_media_lease");
+  const monthStart = monthStartSeconds();
+  const bytesLimit = intEnv(env.MEDIA_OUTBOUND_BYTES_MONTH_LIMIT, 900 * 1024 * 1024);
+  const uploadLimit = intEnv(env.MEDIA_OUTBOUND_UPLOADS_MONTH_LIMIT, 10000);
+  const responseLimitClause = input.perResponseLimit
+    ? " AND (SELECT COUNT(*) FROM outbound_media WHERE inbound_message_id=?) < 5"
+    : "";
+  const reservation = await env.DB.prepare(
+    `INSERT OR IGNORE INTO outbound_media(
+       fingerprint,inbound_message_id,subject_id,artifact_type,sha256,mime_type,byte_size,caption,status,
+       attempts,lease_owner,lease_until,last_attempt_at,created_at,updated_at
+     )
+     SELECT ?,?,?,?,?,?,?,?,'processing',1,?,?,?,?,?
+     WHERE (SELECT COALESCE(SUM(byte_size),0) FROM outbound_media WHERE created_at>=?) + ? <= ?
+       AND (SELECT COUNT(*) FROM outbound_media WHERE created_at>=?) < ?${responseLimitClause}`,
+  ).bind(
+    input.fingerprint,
+    input.inboundMessageId,
+    input.subjectId,
+    input.artifactType,
+    input.sha256,
+    input.mime,
+    input.byteSize,
+    input.caption || null,
+    leaseOwner,
+    now + OUTBOUND_MEDIA_LEASE_SECONDS,
+    now,
+    now,
+    now,
+    monthStart,
+    input.byteSize,
+    bytesLimit,
+    monthStart,
+    uploadLimit,
+    ...(input.perResponseLimit ? [input.inboundMessageId] : []),
+  ).run();
+  if (Number(reservation.meta.changes || 0)) {
+    await counterAdd(env, `media_outbound_uploads:${monthKey()}`, 1);
+    return { acquired: true, inserted: true, leaseOwner, metaMediaId: "" };
+  }
+
+  let existing = await env.DB.prepare(
+    "SELECT status,meta_media_id,meta_message_id,byte_size,mime_type,error,subject_id,artifact_type,sha256,attempts,lease_until "
+    + "FROM outbound_media WHERE fingerprint=?",
+  ).bind(input.fingerprint).first<JsonRecord>();
+  if (!existing) {
+    if (input.perResponseLimit) {
+      const perResponse = await env.DB.prepare(
+        "SELECT COUNT(*) AS total FROM outbound_media WHERE inbound_message_id=?",
+      ).bind(input.inboundMessageId).first<{ total: number }>();
+      if (Number(perResponse?.total || 0) >= 5) {
+        await audit(env, `${input.errorPrefix}_blocked`, input.subjectId, { message_id: input.inboundMessageId, reason: "outbound_media_response_limit" });
+        return { acquired: false, inserted: false, leaseOwner, metaMediaId: "", response: json({ success: false, error: "outbound_media_response_limit" }, 429) };
+      }
+    }
+    await audit(env, `${input.errorPrefix}_blocked`, input.subjectId, { message_id: input.inboundMessageId, reason: "outbound_media_month_limit" });
+    return { acquired: false, inserted: false, leaseOwner, metaMediaId: "", response: json({ success: false, error: "outbound_media_month_limit" }, 429) };
+  }
+
+  const existingStatus = String(existing.status || "processing");
+  if (outboundMediaConfirmed(existingStatus)) {
+    return { acquired: false, inserted: false, leaseOwner, metaMediaId: String(existing.meta_media_id || ""), response: outboundMediaDuplicateResponse(existing, input) };
+  }
+  const immutableConflict = (
+    String(existing.subject_id || input.subjectId) !== input.subjectId
+    || String(existing.artifact_type || input.artifactType) !== input.artifactType
+    || String(existing.sha256 || input.sha256) !== input.sha256
+    || String(existing.mime_type || input.mime) !== input.mime
+    || Number(existing.byte_size || input.byteSize) !== input.byteSize
+  );
+  if (immutableConflict) {
+    return { acquired: false, inserted: false, leaseOwner, metaMediaId: "", response: json({ success: false, error: "outbound_media_fingerprint_conflict" }, 409) };
+  }
+  const leaseUntil = Number(existing.lease_until || 0);
+  if (existingStatus === "processing" && leaseUntil > now) {
+    return {
+      acquired: false,
+      inserted: false,
+      leaseOwner,
+      metaMediaId: String(existing.meta_media_id || ""),
+      response: json({
+        success: false,
+        status: "processing",
+        error: "outbound_media_processing",
+        retry_after_seconds: Math.max(1, leaseUntil - now),
+      }, 409),
+    };
+  }
+  if (Number(existing.attempts || 0) >= OUTBOUND_MEDIA_MAX_ATTEMPTS) {
+    return { acquired: false, inserted: false, leaseOwner, metaMediaId: String(existing.meta_media_id || ""), response: json({ success: false, status: "failed", error: "outbound_media_retry_exhausted" }, 409) };
+  }
+  const claimed = await env.DB.prepare(
+    "UPDATE outbound_media SET status='processing',attempts=attempts+1,lease_owner=?,lease_until=?,last_attempt_at=?,updated_at=?,error=NULL "
+    + "WHERE fingerprint=? AND status NOT IN ('sent','delivered','read') AND attempts<? AND COALESCE(lease_until,0)<=?",
+  ).bind(
+    leaseOwner,
+    now + OUTBOUND_MEDIA_LEASE_SECONDS,
+    now,
+    now,
+    input.fingerprint,
+    OUTBOUND_MEDIA_MAX_ATTEMPTS,
+    now,
+  ).run();
+  if (!Number(claimed.meta.changes || 0)) {
+    existing = await env.DB.prepare(
+      "SELECT status,meta_media_id,meta_message_id,byte_size,mime_type,lease_until FROM outbound_media WHERE fingerprint=?",
+    ).bind(input.fingerprint).first<JsonRecord>();
+    if (existing && outboundMediaConfirmed(String(existing.status || ""))) {
+      return { acquired: false, inserted: false, leaseOwner, metaMediaId: String(existing.meta_media_id || ""), response: outboundMediaDuplicateResponse(existing, input) };
+    }
+    return { acquired: false, inserted: false, leaseOwner, metaMediaId: String(existing?.meta_media_id || ""), response: json({ success: false, status: "processing", error: "outbound_media_processing" }, 409) };
+  }
+  return { acquired: true, inserted: false, leaseOwner, metaMediaId: String(existing.meta_media_id || "") };
+}
+
+async function failOutboundMedia(env: Env, fingerprint: string, leaseOwner: string, errorCode: string): Promise<void> {
+  await env.DB.prepare(
+    "UPDATE outbound_media SET status='failed',error=?,updated_at=?,lease_owner=NULL,lease_until=NULL WHERE fingerprint=? AND lease_owner=? AND status='processing'",
+  ).bind(String(errorCode || "outbound_media_failed").slice(0, 160), nowSeconds(), fingerprint, leaseOwner).run();
+}
+
+async function storeOutboundMetaMediaId(env: Env, fingerprint: string, leaseOwner: string, mediaId: string): Promise<boolean> {
+  const result = await env.DB.prepare(
+    "UPDATE outbound_media SET meta_media_id=?,updated_at=? WHERE fingerprint=? AND lease_owner=? AND status='processing'",
+  ).bind(mediaId, nowSeconds(), fingerprint, leaseOwner).run();
+  return Number(result.meta.changes || 0) > 0;
+}
+
+async function confirmOutboundMediaSent(env: Env, fingerprint: string, leaseOwner: string, metaMessageId: string): Promise<boolean> {
+  const now = nowSeconds();
+  const result = await env.DB.prepare(
+    "UPDATE outbound_media SET status='sent',meta_message_id=?,sent_at=?,updated_at=?,error=NULL,lease_owner=NULL,lease_until=NULL "
+    + "WHERE fingerprint=? AND lease_owner=? AND status='processing'",
+  ).bind(metaMessageId || null, now, now, fingerprint, leaseOwner).run();
+  return Number(result.meta.changes || 0) > 0;
 }
 
 async function messageImage(request: Request, env: Env, messageId: string, mediaKind: "image" | "document" = "image"): Promise<Response> {
@@ -1511,71 +2180,41 @@ async function messageImage(request: Request, env: Env, messageId: string, media
   const fingerprint = await sha256Hex(`${messageId}\n${subjectId}\n${artifactType}\n${sha256}`);
   const defaultFileName = isDocument ? (artifactType === "report_pdf" ? "black-jhon-report.pdf" : "black-jhon-report.xlsx") : "black-jhon-image.jpg";
   const fileName = String(rawFile.name || defaultFileName).replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 120) || defaultFileName;
-  const now = nowSeconds();
-  const monthStart = monthStartSeconds();
-  const bytesLimit = intEnv(env.MEDIA_OUTBOUND_BYTES_MONTH_LIMIT, 900 * 1024 * 1024);
-  const uploadLimit = intEnv(env.MEDIA_OUTBOUND_UPLOADS_MONTH_LIMIT, 10000);
-  const reservation = await env.DB.prepare(
-    `INSERT OR IGNORE INTO outbound_media(
-       fingerprint,inbound_message_id,subject_id,artifact_type,sha256,mime_type,byte_size,caption,status,created_at,updated_at
-     )
-     SELECT ?,?,?,?,?,?,?,?,'processing',?,?
-     WHERE (SELECT COALESCE(SUM(byte_size),0) FROM outbound_media WHERE created_at>=?) + ? <= ?
-       AND (SELECT COUNT(*) FROM outbound_media WHERE created_at>=?) < ?
-       AND (SELECT COUNT(*) FROM outbound_media WHERE inbound_message_id=?) < 5`,
-  ).bind(
-    fingerprint, messageId, subjectId, artifactType, sha256, mime, fileBuffer.byteLength, caption || null, now, now,
-    monthStart, fileBuffer.byteLength, bytesLimit, monthStart, uploadLimit, messageId,
-  ).run();
-  if (!Number(reservation.meta.changes || 0)) {
-    const existing = await env.DB.prepare(
-      "SELECT status,meta_media_id,meta_message_id,byte_size,mime_type,error FROM outbound_media WHERE fingerprint=?",
-    ).bind(fingerprint).first<JsonRecord>();
-    if (existing) {
-      const existingStatus = String(existing.status || "processing");
-      if (["processing", "sent", "delivered", "read"].includes(existingStatus)) {
-        return json({
-          success: true,
-          status: existingStatus,
-          duplicate: true,
-          meta_message_id: String(existing.meta_message_id || ""),
-          bytes: Number(existing.byte_size || fileBuffer.byteLength),
-          mime: String(existing.mime_type || mime),
-        });
-      }
-      return json({ success: false, status: existingStatus, error: String(existing.error || `${errorPrefix}_previous_failure`) }, 409);
-    }
-    const perResponse = await env.DB.prepare(
-      "SELECT COUNT(*) AS total FROM outbound_media WHERE inbound_message_id=?",
-    ).bind(messageId).first<{ total: number }>();
-    if (Number(perResponse?.total || 0) >= 5) {
-      await audit(env, `${errorPrefix}_blocked`, subjectId, { message_id: messageId, reason: "outbound_media_response_limit" });
-      return json({ success: false, error: "outbound_media_response_limit" }, 429);
-    }
-    await audit(env, `${errorPrefix}_blocked`, subjectId, { message_id: messageId, reason: "outbound_media_month_limit" });
-    return json({ success: false, error: "outbound_media_month_limit" }, 429);
-  }
-  await counterAdd(env, `media_outbound_uploads:${monthKey()}`, 1);
+  const lease = await reserveOutboundMedia(env, {
+    fingerprint,
+    inboundMessageId: messageId,
+    subjectId,
+    artifactType,
+    sha256,
+    mime,
+    byteSize: fileBuffer.byteLength,
+    caption,
+    perResponseLimit: true,
+    errorPrefix,
+  });
+  if (!lease.acquired) return lease.response || json({ success: false, error: "outbound_media_processing" }, 409);
 
-  const uploadForm = new FormData();
-  uploadForm.set("messaging_product", "whatsapp");
-  uploadForm.set("file", new File([fileBuffer], fileName, { type: mime }));
-  const uploadResponse = await graphRequest(env, `${env.META_PHONE_NUMBER_ID}/media`, { method: "POST", body: uploadForm });
-  const uploadPayload = await responsePayload(uploadResponse);
-  const mediaId = String(uploadPayload.id || "");
-  if (!uploadResponse.ok || !mediaId) {
-    await env.DB.prepare("UPDATE outbound_media SET status='failed',error=?,updated_at=? WHERE fingerprint=?")
-      .bind(JSON.stringify(uploadPayload).slice(0, 800), nowSeconds(), fingerprint).run();
-    await audit(env, `${errorPrefix}_failed`, subjectId, { message_id: messageId, stage: "meta_media_upload", status: uploadResponse.status });
-    return json({ success: false, stage: "meta_media_upload", error: uploadPayload }, 502);
+  let mediaId = lease.metaMediaId;
+  if (!mediaId) {
+    const uploadForm = new FormData();
+    uploadForm.set("messaging_product", "whatsapp");
+    uploadForm.set("file", new File([fileBuffer], fileName, { type: mime }));
+    const uploadResponse = await graphRequest(env, `${env.META_PHONE_NUMBER_ID}/media`, { method: "POST", body: uploadForm });
+    const uploadPayload = await responsePayload(uploadResponse);
+    mediaId = String(uploadPayload.id || "");
+    if (!uploadResponse.ok || !mediaId) {
+      await failOutboundMedia(env, fingerprint, lease.leaseOwner, `meta_media_upload_http_${uploadResponse.status}`);
+      await audit(env, `${errorPrefix}_failed`, subjectId, { message_id: messageId, stage: "meta_media_upload", status: uploadResponse.status });
+      return json({ success: false, stage: "meta_media_upload", error: uploadPayload }, 502);
+    }
+    if (!(await storeOutboundMetaMediaId(env, fingerprint, lease.leaseOwner, mediaId))) {
+      return json({ success: false, error: "outbound_media_lease_lost" }, 409);
+    }
   }
-  await env.DB.prepare("UPDATE outbound_media SET meta_media_id=?,updated_at=? WHERE fingerprint=?")
-    .bind(mediaId, nowSeconds(), fingerprint).run();
 
   const recipient = outboundRecipient(row.wa_id, subjectId, eligibility.binding);
   if (!recipient) {
-    await env.DB.prepare("UPDATE outbound_media SET status='failed',error='recipient_missing',updated_at=? WHERE fingerprint=?")
-      .bind(nowSeconds(), fingerprint).run();
+    await failOutboundMedia(env, fingerprint, lease.leaseOwner, "recipient_missing");
     return json({ success: false, error: "recipient_missing" }, 400);
   }
   const mediaPayload: JsonRecord = { id: mediaId };
@@ -1588,15 +2227,15 @@ async function messageImage(request: Request, env: Env, messageId: string, media
   });
   const sendPayload = await responsePayload(sendResponse);
   if (!sendResponse.ok) {
-    await env.DB.prepare("UPDATE outbound_media SET status='failed',error=?,updated_at=? WHERE fingerprint=?")
-      .bind(JSON.stringify(sendPayload).slice(0, 800), nowSeconds(), fingerprint).run();
+    await failOutboundMedia(env, fingerprint, lease.leaseOwner, `meta_message_send_http_${sendResponse.status}`);
     await audit(env, `${errorPrefix}_failed`, subjectId, { message_id: messageId, stage: "meta_message_send", status: sendResponse.status, media_id: mediaId });
     return json({ success: false, stage: "meta_message_send", error: sendPayload }, 502);
   }
   const messages = Array.isArray(sendPayload.messages) ? sendPayload.messages : [];
   const metaMessageId = String(((messages[0] || {}) as JsonRecord).id || "");
-  await env.DB.prepare("UPDATE outbound_media SET status='sent',meta_message_id=?,sent_at=?,updated_at=?,error=NULL WHERE fingerprint=?")
-    .bind(metaMessageId || null, nowSeconds(), nowSeconds(), fingerprint).run();
+  if (!(await confirmOutboundMediaSent(env, fingerprint, lease.leaseOwner, metaMessageId))) {
+    return json({ success: false, error: "outbound_media_lease_lost" }, 409);
+  }
   await audit(env, `${errorPrefix}_sent`, subjectId, {
     message_id: messageId,
     meta_message_id: metaMessageId,
@@ -1641,7 +2280,7 @@ async function proactiveImage(request: Request, env: Env, mediaKind: "image" | "
     || !machineId
     || !/^[A-Za-z0-9:_-]{16,160}$/.test(callerFingerprint)
     || !["weekly_report", "monthly_report", "task_completed"].includes(eventType)
-    || (isDocument ? !OUTBOUND_DOCUMENT_MIMES[artifactType] : artifactType !== "report_chart")
+    || (isDocument ? !OUTBOUND_DOCUMENT_MIMES[artifactType] : !OUTBOUND_IMAGE_ARTIFACT_TYPES.has(artifactType))
     || !(rawFile instanceof File)
   ) {
     return json({ success: false, error: `invalid_${errorPrefix}_payload` }, 400);
@@ -1669,7 +2308,12 @@ async function proactiveImage(request: Request, env: Env, mediaKind: "image" | "
   } else {
     const policy = outboundImagePolicy(mime, fileBuffer.byteLength, new Uint8Array(fileBuffer.slice(0, 12)));
     if (!policy.allowed) return json({ success: false, error: policy.error }, 400);
-    if (mime !== "image/png") return json({ success: false, error: "report_chart_png_required" }, 400);
+    if (artifactType === "report_chart" && mime !== "image/png") {
+      return json({ success: false, error: "report_chart_png_required" }, 400);
+    }
+    if (artifactType === "product_photo" && !["image/jpeg", "image/png"].includes(mime)) {
+      return json({ success: false, error: "product_photo_mime_not_allowed" }, 400);
+    }
   }
   const digest = await crypto.subtle.digest("SHA-256", fileBuffer);
   const sha256 = [...new Uint8Array(digest)].map((item) => item.toString(16).padStart(2, "0")).join("");
@@ -1679,61 +2323,43 @@ async function proactiveImage(request: Request, env: Env, mediaKind: "image" | "
   // stable even if a later render produces different PNG metadata.
   const fingerprint = await sha256Hex(`${errorPrefix}\n${subjectId}\n${eventType}\n${callerFingerprint}`);
   const inboundMessageId = `proactive:${eventType}:${callerFingerprint}`;
-  const defaultFileName = isDocument ? (artifactType === "report_pdf" ? "black-jhon-report.pdf" : "black-jhon-report.xlsx") : "black-jhon-weekly-report.png";
+  const defaultFileName = isDocument
+    ? (artifactType === "report_pdf" ? "black-jhon-report.pdf" : "black-jhon-report.xlsx")
+    : artifactType === "product_photo"
+      ? "black-jhon-product-photo.jpg"
+      : "black-jhon-weekly-report.png";
   const fileName = String(rawFile.name || defaultFileName).replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 120) || defaultFileName;
-  const now = nowSeconds();
-  const monthStart = monthStartSeconds();
-  const bytesLimit = intEnv(env.MEDIA_OUTBOUND_BYTES_MONTH_LIMIT, 900 * 1024 * 1024);
-  const uploadLimit = intEnv(env.MEDIA_OUTBOUND_UPLOADS_MONTH_LIMIT, 10000);
-  const reservation = await env.DB.prepare(
-    `INSERT OR IGNORE INTO outbound_media(
-       fingerprint,inbound_message_id,subject_id,artifact_type,sha256,mime_type,byte_size,caption,status,created_at,updated_at
-     )
-     SELECT ?,?,?,?,?,?,?,?,'processing',?,?
-     WHERE (SELECT COALESCE(SUM(byte_size),0) FROM outbound_media WHERE created_at>=?) + ? <= ?
-       AND (SELECT COUNT(*) FROM outbound_media WHERE created_at>=?) < ?`,
-  ).bind(
-    fingerprint, inboundMessageId, subjectId, artifactType, sha256, mime, fileBuffer.byteLength, caption || null, now, now,
-    monthStart, fileBuffer.byteLength, bytesLimit, monthStart, uploadLimit,
-  ).run();
-  if (!Number(reservation.meta.changes || 0)) {
-    const existing = await env.DB.prepare(
-      "SELECT status,meta_media_id,meta_message_id,byte_size,mime_type,error FROM outbound_media WHERE fingerprint=?",
-    ).bind(fingerprint).first<JsonRecord>();
-    if (existing) {
-      const existingStatus = String(existing.status || "processing");
-      if (["processing", "sent", "delivered", "read"].includes(existingStatus)) {
-        return json({
-          success: true,
-          status: existingStatus,
-          duplicate: true,
-          fingerprint,
-          meta_message_id: String(existing.meta_message_id || ""),
-          bytes: Number(existing.byte_size || fileBuffer.byteLength),
-          mime: String(existing.mime_type || mime),
-        });
-      }
-      return json({ success: false, status: existingStatus, error: String(existing.error || `${errorPrefix}_previous_failure`) }, 409);
-    }
-    await audit(env, `${errorPrefix}_blocked`, subjectId, { event_type: eventType, reason: "outbound_media_month_limit" });
-    return json({ success: false, error: "outbound_media_month_limit" }, 429);
-  }
-  await counterAdd(env, `media_outbound_uploads:${monthKey()}`, 1);
+  const lease = await reserveOutboundMedia(env, {
+    fingerprint,
+    inboundMessageId,
+    subjectId,
+    artifactType,
+    sha256,
+    mime,
+    byteSize: fileBuffer.byteLength,
+    caption,
+    perResponseLimit: false,
+    errorPrefix,
+  });
+  if (!lease.acquired) return lease.response || json({ success: false, error: "outbound_media_processing" }, 409);
 
-  const uploadForm = new FormData();
-  uploadForm.set("messaging_product", "whatsapp");
-  uploadForm.set("file", new File([fileBuffer], fileName, { type: mime }));
-  const uploadResponse = await graphRequest(env, `${env.META_PHONE_NUMBER_ID}/media`, { method: "POST", body: uploadForm });
-  const uploadPayload = await responsePayload(uploadResponse);
-  const mediaId = String(uploadPayload.id || "");
-  if (!uploadResponse.ok || !mediaId) {
-    await env.DB.prepare("UPDATE outbound_media SET status='failed',error=?,updated_at=? WHERE fingerprint=?")
-      .bind(JSON.stringify(uploadPayload).slice(0, 800), nowSeconds(), fingerprint).run();
-    await audit(env, `${errorPrefix}_failed`, subjectId, { event_type: eventType, stage: "meta_media_upload", status: uploadResponse.status });
-    return json({ success: false, stage: "meta_media_upload", error: uploadPayload }, 502);
+  let mediaId = lease.metaMediaId;
+  if (!mediaId) {
+    const uploadForm = new FormData();
+    uploadForm.set("messaging_product", "whatsapp");
+    uploadForm.set("file", new File([fileBuffer], fileName, { type: mime }));
+    const uploadResponse = await graphRequest(env, `${env.META_PHONE_NUMBER_ID}/media`, { method: "POST", body: uploadForm });
+    const uploadPayload = await responsePayload(uploadResponse);
+    mediaId = String(uploadPayload.id || "");
+    if (!uploadResponse.ok || !mediaId) {
+      await failOutboundMedia(env, fingerprint, lease.leaseOwner, `meta_media_upload_http_${uploadResponse.status}`);
+      await audit(env, `${errorPrefix}_failed`, subjectId, { event_type: eventType, stage: "meta_media_upload", status: uploadResponse.status });
+      return json({ success: false, stage: "meta_media_upload", error: uploadPayload }, 502);
+    }
+    if (!(await storeOutboundMetaMediaId(env, fingerprint, lease.leaseOwner, mediaId))) {
+      return json({ success: false, error: "outbound_media_lease_lost" }, 409);
+    }
   }
-  await env.DB.prepare("UPDATE outbound_media SET meta_media_id=?,updated_at=? WHERE fingerprint=?")
-    .bind(mediaId, nowSeconds(), fingerprint).run();
 
   const mediaPayload: JsonRecord = { id: mediaId };
   if (caption) mediaPayload.caption = caption;
@@ -1745,15 +2371,15 @@ async function proactiveImage(request: Request, env: Env, mediaKind: "image" | "
   });
   const sendPayload = await responsePayload(sendResponse);
   if (!sendResponse.ok) {
-    await env.DB.prepare("UPDATE outbound_media SET status='failed',error=?,updated_at=? WHERE fingerprint=?")
-      .bind(JSON.stringify(sendPayload).slice(0, 800), nowSeconds(), fingerprint).run();
+    await failOutboundMedia(env, fingerprint, lease.leaseOwner, `meta_message_send_http_${sendResponse.status}`);
     await audit(env, `${errorPrefix}_failed`, subjectId, { event_type: eventType, stage: "meta_message_send", status: sendResponse.status, media_id: mediaId });
     return json({ success: false, stage: "meta_message_send", error: sendPayload }, 502);
   }
   const messages = Array.isArray(sendPayload.messages) ? sendPayload.messages : [];
   const metaMessageId = String(((messages[0] || {}) as JsonRecord).id || "");
-  await env.DB.prepare("UPDATE outbound_media SET status='sent',meta_message_id=?,sent_at=?,updated_at=?,error=NULL WHERE fingerprint=?")
-    .bind(metaMessageId || null, nowSeconds(), nowSeconds(), fingerprint).run();
+  if (!(await confirmOutboundMediaSent(env, fingerprint, lease.leaseOwner, metaMessageId))) {
+    return json({ success: false, error: "outbound_media_lease_lost" }, 409);
+  }
   await audit(env, `${errorPrefix}_sent`, subjectId, {
     event_type: eventType,
     caller_fingerprint: callerFingerprint,
@@ -1769,6 +2395,7 @@ async function proactiveImage(request: Request, env: Env, mediaKind: "image" | "
 async function proactive(request: Request, env: Env): Promise<Response> {
   const body = await requestJson(request);
   const subjectId = String(body.subject_id || "").trim();
+  const machineId = String(body.machine_id || "").trim();
   const fingerprint = String(body.fingerprint || "").trim();
   const eventType = String(body.event_type || "").trim();
   const severity = normalizeSeverity(body.severity);
@@ -1778,7 +2405,14 @@ async function proactive(request: Request, env: Env): Promise<Response> {
     body.allow_full_history === true ? 0 : 8,
   );
   const textBody = textParts[0] || "";
-  if (!subjectId || !fingerprint || !eventType || !textParts.length) return json({ success: false, error: "invalid_proactive_payload" }, 400);
+  if (!subjectId || !machineId || !fingerprint || !eventType || !textParts.length) return json({ success: false, error: "invalid_proactive_payload" }, 400);
+  const boundMachine = await env.DB.prepare(
+    "SELECT machine_id FROM bindings WHERE subject_id=? AND active=1",
+  ).bind(subjectId).first<JsonRecord>();
+  if (!boundMachine || String(boundMachine.machine_id || "") !== machineId) {
+    await audit(env, "proactive_text_blocked", subjectId, { reason: "binding_machine_mismatch" });
+    return json({ success: false, error: "binding_machine_mismatch" }, 403);
+  }
   const isTask = ["task_completed", "task_failed", "task_awaiting_approval", "task_conversation"].includes(eventType);
   const isScheduledReport = ["weekly_report", "monthly_report"].includes(eventType);
   if (!isTask && !isScheduledReport && !["high", "critical"].includes(severity)) return json({ success: true, status: "ignored_low_severity" });
@@ -1966,14 +2600,70 @@ async function revokeBinding(request: Request, env: Env): Promise<Response> {
   return json({ success: true, revoked: result.meta.changes, remaining: Number(remaining?.total || 0) });
 }
 
+async function deleteInboundMediaObject(env: Env, item: JsonRecord, mediaState: "released" | "expired"): Promise<void> {
+  const messageId = String(item.message_id || "");
+  const objectKey = String(item.media_object_key || "");
+  if (!messageId || !objectKey) return;
+  await env.MEDIA.delete(objectKey);
+  const cleared = await env.DB.prepare(
+    "UPDATE inbox SET media_object_key=NULL,media_state=?,media_expires_at=NULL WHERE message_id=? AND media_object_key=?",
+  ).bind(mediaState, messageId, objectKey).run();
+  if (Number(cleared.meta.changes || 0)) {
+    try {
+      await counterAdd(env, "media_active_bytes", -Number(item.media_size || 0));
+    } catch {
+      await inboundMediaAudit(env, "media_counter_update_failed", { operation: "release" });
+    }
+  }
+}
+
+async function cleanupInboundMedia(env: Env, now: number): Promise<void> {
+  try {
+    const terminal = await env.DB.prepare(
+      "SELECT message_id,media_object_key,media_size,status FROM inbox WHERE media_object_key IS NOT NULL "
+      + "AND status IN ('completed','failed','awaiting_approval','dead_letter','unsupported') LIMIT 100",
+    ).all<JsonRecord>();
+    for (const item of terminal.results || []) {
+      await deleteInboundMediaObject(env, item, "released");
+    }
+
+    const expired = await env.DB.prepare(
+      "SELECT message_id,media_object_key,media_size,status FROM inbox WHERE media_object_key IS NOT NULL "
+      + "AND media_state='stored' AND COALESCE(media_expires_at,received_at+?)<=? LIMIT 100",
+    ).bind(INBOUND_MEDIA_RETENTION_SECONDS, now).all<JsonRecord>();
+    for (const item of expired.results || []) {
+      const reserved = await env.DB.prepare(
+        "UPDATE inbox SET status='failed',media_state='expired',media_error_class='media_retention_expired',"
+        + "error='media_retention_expired',completed_at=?,lease_owner=NULL,lease_until=NULL "
+        + "WHERE message_id=? AND media_object_key=? AND media_state='stored'",
+      ).bind(now, String(item.message_id || ""), String(item.media_object_key || "")).run();
+      if (Number(reserved.meta.changes || 0)) await deleteInboundMediaObject(env, item, "expired");
+    }
+  } catch (error) {
+    if (!inboundMediaSchemaMissing(error)) throw error;
+    const legacyExpired = await env.DB.prepare(
+      "SELECT message_id,media_object_key,media_size FROM inbox WHERE media_object_key IS NOT NULL AND received_at<? LIMIT 100",
+    ).bind(now - INBOUND_MEDIA_RETENTION_SECONDS).all<JsonRecord>();
+    for (const item of legacyExpired.results || []) {
+      const objectKey = String(item.media_object_key || "");
+      await env.MEDIA.delete(objectKey);
+      const cleared = await env.DB.prepare(
+        "UPDATE inbox SET media_object_key=NULL,status='failed',error='media_retention_expired',completed_at=? WHERE message_id=? AND media_object_key=?",
+      ).bind(now, String(item.message_id || ""), objectKey).run();
+      if (Number(cleared.meta.changes || 0)) {
+        try {
+          await counterAdd(env, "media_active_bytes", -Number(item.media_size || 0));
+        } catch {
+          await inboundMediaAudit(env, "media_counter_update_failed", { operation: "legacy_release" });
+        }
+      }
+    }
+  }
+}
+
 async function cleanup(env: Env): Promise<void> {
   const now = nowSeconds();
-  const expired = await env.DB.prepare("SELECT message_id,media_object_key,media_size FROM inbox WHERE media_object_key IS NOT NULL AND received_at<? LIMIT 100").bind(now - 86400).all<JsonRecord>();
-  for (const item of expired.results || []) {
-    await env.MEDIA.delete(String(item.media_object_key || ""));
-    await env.DB.prepare("UPDATE inbox SET media_object_key=NULL WHERE message_id=?").bind(String(item.message_id || "")).run();
-    await counterAdd(env, "media_active_bytes", -Number(item.media_size || 0));
-  }
+  await cleanupInboundMedia(env, now);
   await env.DB.batch([
     env.DB.prepare("DELETE FROM pairing_codes WHERE expires_at<?").bind(now - 86400),
     env.DB.prepare("DELETE FROM audit_events WHERE created_at<?").bind(now - 30 * 86400),
@@ -1987,7 +2677,7 @@ async function cleanup(env: Env): Promise<void> {
 async function bridgeRoute(request: Request, env: Env): Promise<Response> {
   if (!bridgeAuthorized(request, env)) return json({ success: false, error: "unauthorized" }, 401);
   const url = new URL(request.url);
-  if (request.method === "GET" && url.pathname === "/bridge/status") return bridgeStatus(env);
+  if (request.method === "GET" && url.pathname === "/bridge/status") return bridgeStatus(request, env);
   if (request.method === "GET" && url.pathname === "/bridge/meta/profile") return businessProfile(env);
   if (request.method === "GET" && url.pathname === "/bridge/meta/calling/status") return metaCallingStatus(env);
   if (request.method === "POST" && url.pathname === "/bridge/meta/calling/prepare") return prepareMetaCallingSip(env);
@@ -2042,6 +2732,7 @@ export default {
     });
   },
   async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+    await retryInboundMedia(env);
     await flushOutbox(env, "", 10);
     await cleanup(env);
   },

@@ -83,7 +83,8 @@ def _shared_sync_sqlite_backup_bytes(path: str) -> bytes:
         return b""
 
     def _backup() -> bytes:
-        tmp_path = f"{abs_path}.sharedsync_{uuid.uuid4().hex}.tmp"
+        fd, tmp_path = tempfile.mkstemp(prefix="shared_sync_snapshot_", suffix=".db")
+        os.close(fd)
         src = None
         dst = None
         try:
@@ -94,12 +95,19 @@ def _shared_sync_sqlite_backup_bytes(path: str) -> bytes:
                 dst = sqlite3.connect(tmp_path, timeout=timeout_s)
                 _shared_sync_sqlite_configure(dst)
                 src.backup(dst)
+                _shared_sync_sqlite_quick_check(dst, os.path.basename(abs_path) or abs_path)
                 dst.close()
                 src.close()
                 dst = None
                 src = None
             with open(tmp_path, "rb") as f:
-                return f.read()
+                data = f.read()
+            if not data.startswith(b"SQLite format 3\x00"):
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Banco SQLite invalido para sincronizacao: {os.path.basename(abs_path)}",
+                )
+            return data
         finally:
             try:
                 if dst:
@@ -129,6 +137,7 @@ def _shared_sync_ler_arquivo_pacote(path: str) -> bytes:
         return _shared_sync_sqlite_backup_bytes(path)
     with open(path, "rb") as f:
         return f.read()
+
 
 def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = "", user_only: bool = False) -> tuple[list[dict], list[str]]:
     tenant_path = get_tenant_path(client_id)
@@ -161,7 +170,7 @@ def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = ""
             lower = filename.lower()
             if lower.startswith(("drive_sync_state_", "shared_sync_config")):
                 continue
-            if lower.endswith((".tmp", ".log", ".bak")) or ".backup_" in lower:
+            if lower == "vendas_sync_state.json" or _shared_sync_transient_filename(lower):
                 continue
             ext = os.path.splitext(filename)[1].lower()
             if ext not in SHARED_SYNC_ALLOWED_EXTENSIONS:
@@ -205,6 +214,11 @@ def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = ""
                         "sha256": _shared_sync_sha256_file(abs_path),
                     })
                 if size > max_file:
+                    if scope == "vendas" and _shared_sync_vendas_history_db(rel):
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"Banco de vendas maior que o limite de sincronizacao: {rel}",
+                        )
                     warnings.append(f"{rel} ignorado: arquivo maior que o limite de sincronizacao.")
                     continue
                 entries.append(entry)

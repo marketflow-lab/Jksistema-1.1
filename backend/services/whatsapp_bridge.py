@@ -413,6 +413,12 @@ _whatsapp_outbound_image_caption = _make_delegator('artifacts', '_whatsapp_outbo
 
 _whatsapp_deliver_requested_images = _make_delegator('artifacts', '_whatsapp_deliver_requested_images')
 
+_whatsapp_marketplace_image_url_allowed = _make_delegator('artifacts', '_whatsapp_marketplace_image_url_allowed')
+
+_whatsapp_download_marketplace_image = _make_delegator('artifacts', '_whatsapp_download_marketplace_image')
+
+_whatsapp_deliver_marketplace_listing_images = _make_delegator('artifacts', '_whatsapp_deliver_marketplace_listing_images')
+
 _whatsapp_report_chart_path = _make_delegator('artifacts', '_whatsapp_report_chart_path')
 
 _whatsapp_report_document_path = _make_delegator('artifacts', '_whatsapp_report_document_path')
@@ -545,6 +551,10 @@ _whisper_status = _make_delegator('transcription', '_whisper_status')
 
 _whisper_runner = _make_delegator('transcription', '_whisper_runner')
 
+_audio_messages_status = _make_delegator('transcription', '_audio_messages_status')
+
+_audio_messages_preflight = _make_delegator('transcription', '_audio_messages_preflight')
+
 _download_whisper_worker = _make_delegator('transcription', '_download_whisper_worker')
 
 whatsapp_bridge_download_whisper = _make_delegator('transcription', 'whatsapp_bridge_download_whisper')
@@ -667,6 +677,8 @@ _whatsapp_is_task_complement = _make_delegator('conversation', '_whatsapp_is_tas
 
 _dual_conversation_record = _make_delegator('conversation', '_dual_conversation_record')
 
+_dual_confirm_conversation_context = _make_delegator('conversation', '_dual_confirm_conversation_context')
+
 _dual_append_conversation_turn = _make_delegator('conversation', '_dual_append_conversation_turn')
 
 _dual_recent_conversation_context = _make_delegator('conversation', '_dual_recent_conversation_context')
@@ -679,7 +691,6 @@ _dual_active_job_snapshot = _make_delegator('conversation', '_dual_active_job_sn
 
 _run_conversation_agent = _make_delegator('conversation', '_run_conversation_agent')
 
-_deterministic_direct_query_plan = _make_delegator('conversation', '_deterministic_direct_query_plan')
 
 _dual_delegate_query_policy = _make_delegator('conversation', '_dual_delegate_query_policy')
 
@@ -929,6 +940,8 @@ whatsapp_bridge_send_adhoc_message = _make_delegator('api_endpoints', 'whatsapp_
 
 whatsapp_bridge_test = _make_delegator('api_endpoints', 'whatsapp_bridge_test')
 
+whatsapp_bridge_audio_preflight = _make_delegator('api_endpoints', 'whatsapp_bridge_audio_preflight')
+
 whatsapp_bridge_voice_preflight = _make_delegator('api_endpoints', 'whatsapp_bridge_voice_preflight')
 
 whatsapp_bridge_voice_enable = _make_delegator('api_endpoints', 'whatsapp_bridge_voice_enable')
@@ -953,6 +966,7 @@ __all__ = [
     "WhatsappPhoneSettingsRequest",
     "WhatsappTemplatesRequest",
     "WhatsappVoiceToggleRequest",
+    "whatsapp_bridge_audio_preflight",
     "whatsapp_bridge_download_whisper",
     "whatsapp_bridge_iniciar_background",
     "whatsapp_bridge_pairing_code",

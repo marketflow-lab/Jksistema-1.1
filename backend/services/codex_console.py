@@ -27,7 +27,14 @@ from typing import Any, Optional
 from fastapi import File, Form, Header, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
-from backend.services import codex_actions, codex_agent_runtime, codex_assistant_storage, codex_capabilities, codex_operational_memory
+from backend.services import (
+    codex_actions,
+    codex_agent_runtime,
+    codex_assistant_storage,
+    codex_capabilities,
+    codex_operational_memory,
+    codex_turn_context,
+)
 from backend.services.runtime_bridge import bind_runtime_globals
 
 
@@ -108,6 +115,8 @@ class _ResizableConcurrencyGate:
 CODEX_DUAL_SOL_GATE = _ResizableConcurrencyGate(12, 6)
 BLACK_JHON_DISPLAY_NAME = "Black Jhon"
 CODEX_DEFAULT_MODEL = "gpt-5.5"
+CODEX_SIDEBAR_TASK_PROMPT_VERSION = "black-jhon-sidebar-task-2026-07-20-v2"
+CODEX_SIDEBAR_TASK_SCHEMA_VERSION = "codex-sidebar-task-v2"
 CODEX_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 CODEX_SPEEDS = {"standard", "fast"}
 CODEX_AGENT_MAX_CYCLES = 6
@@ -288,9 +297,9 @@ def _codex_enabled() -> bool:
 
 
 def _codex_agent_mode_enabled() -> bool:
-    if _codex_bool_env("JK_CODEX_LEGACY_CONTEXT_MODE", False):
-        return False
-    return _codex_bool_env("JK_CODEX_AGENT_MODE_ENABLED", True)
+    # Cutover definitivo: o modo legado anexava contexto comercial amplo antes
+    # de o seletor decidir quais fontes eram realmente necessarias.
+    return True
 
 
 def _codex_base_dir() -> str:
@@ -335,10 +344,9 @@ def _codex_deadline_epoch(value: Any) -> int:
 
 
 def _codex_native_mcp_enabled(task: Any) -> bool:
-    if not isinstance(task, dict) or str(task.get("origin") or "") != "whatsapp":
-        return False
-    migration = task.get("mcp_migration") if isinstance(task.get("mcp_migration"), dict) else {}
-    return bool(migration.get("native_enabled"))
+    # Disabled during the data-selection cutover. Tool filtering must happen
+    # before execution, inside the bounded local executor.
+    return False
 
 
 def _codex_native_mcp_result_path(task_id: Any) -> Path:
@@ -384,24 +392,35 @@ def _codex_native_mcp_thread_config(task: dict[str, Any], screen_context: Any) -
     """Build an ephemeral, signed stdio MCP definition for one WhatsApp task."""
 
     metadata = task.get("channel_metadata") if isinstance(task.get("channel_metadata"), dict) else {}
-    raw_policy = metadata.get("query_policy") if isinstance(metadata.get("query_policy"), dict) else {}
-    authorized_stores = [
-        str(item or "").strip()
-        for item in (raw_policy.get("authorized_stores") or raw_policy.get("stores") or [])
-        if str(item or "").strip()
-    ]
-    if not authorized_stores and str(raw_policy.get("store") or "").strip():
-        authorized_stores = [str(raw_policy.get("store") or "").strip()]
+    client_id = str(task.get("client_id") or "").strip()
+    authorized_stores: list[str] = []
+    store_scope_valid = False
+    if client_id:
+        try:
+            from backend.services import integracoes
+
+            configured_stores = integracoes.carregar_lojas(client_id)
+            authorized_stores = [
+                str(item.get("nome") or item.get("name") or "").strip()[:180]
+                for item in list(configured_stores or [])[:50]
+                if isinstance(item, dict) and str(item.get("nome") or item.get("name") or "").strip()
+            ]
+            store_scope_valid = True
+        except Exception:
+            authorized_stores = []
+    allowed_tools = _codex_agent_data_selection_tool_ids(_codex_agent_data_selection_from_task(task))
     payload = {
         "version": 1,
         "task_id": str(task.get("task_id") or ""),
         "conversation_id": str(task.get("conversation_id") or ""),
-        "client_id": str(task.get("client_id") or "default"),
+        "client_id": client_id,
         "username": str(task.get("created_by") or "whatsapp"),
         "wa_id_hash": hashlib.sha256(str(metadata.get("wa_id") or "").encode("utf-8")).hexdigest(),
         "permissions": task.get("permissions") if isinstance(task.get("permissions"), dict) else {},
         "authorized_stores": authorized_stores,
-        "source_policy": _codex_agent_source_policy_from_screen(screen_context),
+        "store_scope_valid": store_scope_valid,
+        "allowed_tools": allowed_tools,
+        "source_policy": {},
         "screen_context": _codex_agent_screen_summary(screen_context),
         "result_path": str(_codex_native_mcp_result_path(task.get("task_id")).resolve()),
         "deadline_at_epoch": _codex_deadline_epoch(task.get("deadline_at")),
@@ -955,6 +974,15 @@ def _codex_public_task(task: dict[str, Any]) -> dict[str, Any]:
         "sandbox": task.get("sandbox"),
         "cwd": task.get("cwd"),
         "thread_id": task.get("thread_id"),
+        "thread_reused": bool(task.get("thread_reused")),
+        "thread_restart_reasons": list(task.get("thread_restart_reasons") or []),
+        "thread_prompt_version": task.get("thread_prompt_version") or "",
+        "thread_schema_version": task.get("thread_schema_version") or "",
+        "thread_prompt_fingerprint": task.get("thread_prompt_fingerprint") or "",
+        "thread_schema_fingerprint": task.get("thread_schema_fingerprint") or "",
+        "thread_scope_fingerprint": task.get("thread_scope_fingerprint") or "",
+        "shared_context_contract_version": codex_turn_context.CONTRACT_VERSION,
+        "shared_context_contract_hash": codex_turn_context.CONTRACT_HASH,
         "conversation_id": conversation.get("conversation_id") or task.get("conversation_id") or task.get("task_id"),
         "conversation_generation": int(conversation.get("conversation_generation") or 1),
         "conversation_state": conversation.get("conversation_state") or "archived",
@@ -1498,6 +1526,11 @@ def _codex_load_or_create_conversation_state(
             "recent_messages": list(legacy_summary.get("recent_messages") or []),
             "legacy_conversation_ids": [legacy_id] if legacy_id else [],
             "latest_thread_id": str(legacy_task.get("thread_id") or "") if legacy_task else "",
+            "thread_prompt_fingerprint": "",
+            "thread_schema_fingerprint": "",
+            "thread_scope_fingerprint": "",
+            "thread_conversation_key": "",
+            "thread_restart_reason": "legacy_state_without_fingerprints" if legacy_task else "",
             "created_at": now,
             "updated_at": now,
             "reset_audit": [],
@@ -1757,11 +1790,31 @@ def _codex_conversation_keywords(messages: list[dict[str, str]]) -> dict[str, li
     return {"skus": skus, "reports": reports, "lojas": lojas[:20]}
 
 
+def _codex_durable_memory_text(value: Any, limit: int = 4000) -> str:
+    sanitized = codex_turn_context.sanitize_durable_memory(
+        {"content": str(value or "")},
+        max_bytes=max(128, min(int(limit or 4000), CODEX_CONVERSATION_SUMMARY_CHAR_LIMIT)),
+    )
+    payload = sanitized.value if isinstance(sanitized.value, dict) else {}
+    return str(payload.get("content") or "").strip()[:limit]
+
+
 def _codex_compact_summary(existing_summary: str, older_messages: list[dict[str, str]]) -> str:
     lines: list[str] = []
     if existing_summary:
-        lines.append(str(existing_summary).strip()[:CODEX_CONVERSATION_SUMMARY_CHAR_LIMIT])
-    keywords = _codex_conversation_keywords(older_messages)
+        stable_existing = _codex_durable_memory_text(
+            existing_summary,
+            CODEX_CONVERSATION_SUMMARY_CHAR_LIMIT,
+        )
+        if stable_existing:
+            lines.append(stable_existing)
+    stable_messages: list[dict[str, str]] = []
+    for item in older_messages[-60:]:
+        text = re.sub(r"\s+", " ", str(item.get("text") or "")).strip()
+        stable_text = _codex_durable_memory_text(text, 520) if text else ""
+        if stable_text:
+            stable_messages.append({"role": str(item.get("role") or "assistant"), "text": stable_text})
+    keywords = _codex_conversation_keywords(stable_messages)
     lines.append("Resumo operacional compactado da conversa atual:")
     if keywords.get("lojas"):
         lines.append("Lojas/contas citadas: " + ", ".join(keywords["lojas"]))
@@ -1769,11 +1822,9 @@ def _codex_compact_summary(existing_summary: str, older_messages: list[dict[str,
         lines.append("SKUs/codigos citados: " + ", ".join(keywords["skus"][:20]))
     if keywords.get("reports"):
         lines.append("Relatorios citados: " + ", ".join(keywords["reports"][:12]))
-    for item in older_messages[-60:]:
+    for item in stable_messages:
         role = "Usuario" if item.get("role") == "user" else BLACK_JHON_DISPLAY_NAME
-        text = re.sub(r"\s+", " ", str(item.get("text") or "")).strip()
-        if text:
-            lines.append(f"- {role}: {text[:520]}")
+        lines.append(f"- {role}: {item.get('text') or ''}")
     summary = "\n".join(line for line in lines if line).strip()
     if len(summary) > CODEX_CONVERSATION_SUMMARY_CHAR_LIMIT:
         summary = summary[-CODEX_CONVERSATION_SUMMARY_CHAR_LIMIT:]
@@ -1781,11 +1832,16 @@ def _codex_compact_summary(existing_summary: str, older_messages: list[dict[str,
 
 
 def _codex_prepare_conversation_context(task: dict[str, Any]) -> dict[str, Any]:
-    client_id = str(task.get("client_id") or "default")
+    client_id = str(task.get("client_id") or "").strip()
+    if not client_id:
+        return {}
     username = str(task.get("created_by") or "").strip().lower()
     conversation_id = _codex_task_conversation_id(task)
     stored = _codex_load_conversation_summary(client_id, username, conversation_id)
-    summary = str(stored.get("summary") or "").strip()
+    summary = _codex_durable_memory_text(
+        stored.get("summary") or "",
+        CODEX_CONVERSATION_SUMMARY_CHAR_LIMIT,
+    )
     generation = int(task.get("conversation_generation") or stored.get("generation") or 1)
     aliases = list(stored.get("legacy_conversation_ids") or []) if generation == 1 else []
     # O browser nao e fonte de autoridade do contexto. A memoria vem apenas de
@@ -1845,7 +1901,9 @@ def _codex_update_conversation_memory(task_id: str) -> dict[str, Any]:
     task = _codex_load_task(task_id)
     if not task:
         return {}
-    client_id = str(task.get("client_id") or "default")
+    client_id = str(task.get("client_id") or "").strip()
+    if not client_id:
+        return {}
     username = str(task.get("created_by") or "").strip().lower()
     conversation_id = _codex_task_conversation_id(task)
     stored = _codex_load_conversation_summary(client_id, username, conversation_id)
@@ -2422,20 +2480,45 @@ def _codex_normalizar_screen_context(value: Any) -> dict[str, Any]:
         for key in allowed_keys
         if key in value and value.get(key) not in (None, "", [], {})
     }
-    raw = json.dumps(screen_context, ensure_ascii=False)
-    if len(raw) <= 18000:
-        return screen_context
-    return {
-        "truncated": True,
-        "raw_preview": raw[:18000],
-    }
+    compacted = codex_turn_context.compact_json_structural(
+        screen_context,
+        max_bytes=18000,
+        priority_paths=(
+            "modulo_atual",
+            "pathname",
+            "title",
+            "selection",
+            "periodo",
+            "filtros",
+            "table_headers",
+            "table_rows",
+            "cards",
+            "controls",
+            "visible_text",
+        ),
+    )
+    return dict(compacted.value) if isinstance(compacted.value, dict) else {}
 
 
 def _codex_screen_context_json(screen_context: Any, limit: int = 18000) -> str:
     if not isinstance(screen_context, dict) or not screen_context:
         return ""
-    text = json.dumps(screen_context, ensure_ascii=False, indent=2)
-    return text[:limit]
+    return codex_turn_context.bounded_json(
+        screen_context,
+        max_bytes=max(2, int(limit or 0)),
+        priority_paths=(
+            "modulo_atual",
+            "pathname",
+            "selection",
+            "periodo",
+            "filtros",
+            "table_headers",
+            "table_rows",
+            "cards",
+            "controls",
+            "visible_text",
+        ),
+    )
 
 
 def _codex_app_data_context(
@@ -2492,12 +2575,15 @@ def _codex_app_data_context(
             return {"enabled": True, "tool_results_count": 0, "tool_context": ""}
         payload.tool_results = tool_results
         tool_context = ia_service._ia_chat_contexto_funcoes(payload, tenant)
-        tool_json = json.dumps(tool_results, ensure_ascii=False, default=str)
         return {
             "enabled": True,
             "tool_results_count": len(tool_results),
             "tool_context": str(tool_context or "")[:24000],
-            "tool_results_preview": tool_json[:24000],
+            "tool_results_preview": codex_turn_context.bounded_json(
+                tool_results,
+                max_bytes=24000,
+                priority_paths=("field", "value", "source", "coverage", "status", "reference"),
+            ),
         }
     except Exception as exc:
         return {
@@ -2659,9 +2745,24 @@ def _codex_context_stats_from_prompt(
 
 def _codex_agent_json(value: Any, limit: int = 60000, indent: Optional[int] = 2) -> str:
     text = json.dumps(value, ensure_ascii=False, default=str, indent=indent)
-    if len(text) <= limit:
+    if len(text.encode("utf-8")) <= limit:
         return text
-    return text[: max(0, limit - 80)] + "\n... [conteudo compactado]"
+    return codex_turn_context.bounded_json(
+        value,
+        max_bytes=max(2, int(limit or 0)),
+        priority_paths=(
+            "request",
+            "user_message",
+            "scope",
+            "selection",
+            "facts",
+            "sources",
+            "gaps",
+            "missing",
+            "records",
+            "history",
+        ),
+    )
 
 
 def _codex_agent_screen_summary(screen_context: Any) -> dict[str, Any]:
@@ -2714,6 +2815,289 @@ def _codex_agent_source_policy_from_screen(screen_context: Any) -> dict[str, Any
     query_policy = selection.get("query_policy") if isinstance(selection.get("query_policy"), dict) else {}
     source_policy = query_policy.get("source_policy") if isinstance(query_policy.get("source_policy"), dict) else {}
     return dict(source_policy)
+
+
+_CODEX_AGENT_DATA_SELECTION_TRUST_MARKER = "backend_data_selection_v1"
+
+
+def _codex_agent_data_selection_from_task(task: Any) -> dict[str, Any]:
+    """Return only a plan materialized and marked by the backend worker."""
+
+    if not isinstance(task, dict):
+        return {}
+    if str(task.get("data_selection_trust_marker") or "") != _CODEX_AGENT_DATA_SELECTION_TRUST_MARKER:
+        return {}
+    candidate = task.get("data_selection")
+    if not isinstance(candidate, dict) or not candidate:
+        return {}
+    try:
+        from backend.services.codex_data_selection_agent import compact_evidence
+
+        compact = compact_evidence(candidate, report=False)
+        return compact if isinstance(compact, dict) else {}
+    except Exception:
+        return dict(candidate)
+
+
+def _codex_agent_planned_arguments(value: Any) -> Optional[dict[str, Any]]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            return None
+    if not isinstance(value, dict):
+        return None
+    return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+
+
+def _codex_agent_planned_calls(selection: Any) -> list[dict[str, Any]]:
+    """Materialize the exact, ordered commercial calls authorized for one turn."""
+
+    if not isinstance(selection, dict):
+        return []
+    plan = selection.get("plan") if isinstance(selection.get("plan"), dict) else selection
+    if not isinstance(plan, dict):
+        return []
+    calls: list[dict[str, Any]] = []
+    for raw_index, raw_call in enumerate(list(plan.get("tool_calls") or [])[:6]):
+        if not isinstance(raw_call, dict):
+            continue
+        tool_id = str(raw_call.get("tool_id") or raw_call.get("id") or "").strip()[:120]
+        if not tool_id:
+            continue
+        dependencies = [
+            item
+            for item in list(raw_call.get("depends_on") or [])[:6]
+            if isinstance(item, int) and 0 <= item < raw_index
+        ]
+        calls.append(
+            {
+                "index": raw_index,
+                "tool_id": tool_id,
+                "arguments": _codex_agent_planned_arguments(raw_call.get("arguments", {})),
+                "required": raw_call.get("required") is True,
+                "depends_on": dependencies,
+            }
+        )
+    hub = plan.get("context_hub") if isinstance(plan.get("context_hub"), dict) else {}
+    hub_mode = str(hub.get("mode") or "not_applicable").strip().lower()
+    if (
+        hub_mode in {"optional", "required"}
+        and not any(item.get("tool_id") == "context_hub_search" for item in calls)
+        and len(calls) < 6
+    ):
+        hub_filters = hub.get("filters") if isinstance(hub.get("filters"), dict) else {}
+        try:
+            hub_limit = max(1, min(6, int(hub.get("top_k") or 6)))
+        except Exception:
+            hub_limit = 6
+        hub_arguments: dict[str, Any] = {
+            "query": str(hub.get("query") or "")[:1000],
+            "limit": hub_limit,
+        }
+        for filter_key, argument_key in (
+            ("module", "module"),
+            ("source_type", "source_type"),
+            ("surface", "environment"),
+            ("ids", "ids"),
+        ):
+            filter_value = hub_filters.get(filter_key)
+            if filter_value not in (None, "", [], {}):
+                hub_arguments[argument_key] = filter_value
+        calls.append(
+            {
+                "index": len(calls),
+                "tool_id": "context_hub_search",
+                "arguments": hub_arguments,
+                "required": hub_mode == "required",
+                "depends_on": [],
+            }
+        )
+    return calls
+
+
+def _codex_agent_authorize_planned_call(
+    tool_id: str,
+    arguments: dict[str, Any],
+    planned_calls: list[dict[str, Any]],
+    attempted_indexes: set[int],
+    success_by_index: dict[int, bool],
+) -> tuple[Optional[dict[str, Any]], str, str]:
+    same_tool = [item for item in planned_calls if str(item.get("tool_id") or "") == str(tool_id or "")]
+    if not same_tool:
+        return None, "data_selection_tool_blocked", "Ferramenta fora do plano de dados validado para este turno."
+    exact = [
+        item
+        for item in same_tool
+        if isinstance(item.get("arguments"), dict) and item.get("arguments") == arguments
+    ]
+    if not exact:
+        return None, "data_selection_arguments_mismatch", "Argumentos diferentes do plano server-side."
+    pending = [item for item in exact if int(item.get("index") or 0) not in attempted_indexes]
+    if not pending:
+        return None, "data_selection_call_already_used", "A chamada planejada ja foi usada neste turno."
+    planned = min(pending, key=lambda item: int(item.get("index") or 0))
+    planned_index = int(planned.get("index") or 0)
+    earlier_indexes = {
+        int(item.get("index") or 0)
+        for item in planned_calls
+        if int(item.get("index") or 0) < planned_index
+    }
+    if not earlier_indexes.issubset(attempted_indexes):
+        return None, "data_selection_call_out_of_order", "Chamada fora da ordem definida pelo plano server-side."
+    dependencies = [int(item) for item in list(planned.get("depends_on") or []) if isinstance(item, int)]
+    if any(dependency not in attempted_indexes for dependency in dependencies):
+        return None, "data_selection_dependency_pending", "Dependencia planejada ainda nao foi executada."
+    if any(success_by_index.get(dependency) is not True for dependency in dependencies):
+        return None, "data_selection_dependency_failed", "Dependencia planejada falhou; chamada nao executada."
+    return planned, "", ""
+
+
+def _codex_agent_data_selection_tool_ids(selection: Any) -> list[str]:
+    if not isinstance(selection, dict):
+        return []
+    ids: list[str] = []
+
+    def add(value: Any) -> None:
+        tool_id = str(value or "").strip()[:120]
+        if tool_id and tool_id not in ids:
+            ids.append(tool_id)
+
+    for call in _codex_agent_planned_calls(selection):
+        if isinstance(call.get("arguments"), dict):
+            add(call.get("tool_id"))
+    return ids[:10]
+
+
+def _codex_agent_plan_short_data_selection(
+    prompt: str,
+    client_id: str,
+    catalog: list[dict[str, Any]],
+    screen_context: Any,
+    conversation_context: Any = None,
+) -> dict[str, Any]:
+    """Plan only the business data tools exposed to the responder."""
+
+    tenant = str(client_id or "").strip()
+    if not tenant:
+        return {
+            "schema_version": 1,
+            "status": "selection_unavailable",
+            "action": "unavailable",
+            "selected_tools": [],
+            "coverage_complete": False,
+            "warnings": ["data_selection_tenant_required"],
+        }
+
+    try:
+        from backend.services import codex_data_selection_agent, integracoes
+
+        configured_stores = integracoes.carregar_lojas(tenant)
+        authorized_stores = [
+            str(item.get("nome") or item.get("name") or "").strip()[:180]
+            for item in list(configured_stores or [])[:50]
+            if isinstance(item, dict) and str(item.get("nome") or item.get("name") or "").strip()
+        ]
+        planner_catalog = []
+        for raw_item in catalog:
+            item = dict(raw_item)
+            input_schema = dict(item.get("input_schema") or {}) if isinstance(item.get("input_schema"), dict) else {}
+            if "properties" not in input_schema:
+                input_schema["properties"] = {str(key): {} for key in list(input_schema)[:40]}
+            item["input_schema"] = input_schema
+            planner_catalog.append(item)
+        screen_summary = _codex_agent_screen_summary(screen_context)
+        conversation = conversation_context if isinstance(conversation_context, dict) else {}
+        conversation_anchors: dict[str, Any] = {
+            key: screen_summary.get(key)
+            for key in ("title", "pathname", "modulo_atual", "periodo", "filtros")
+            if screen_summary.get(key) not in (None, "", [], {})
+        }
+        summary = str(conversation.get("summary") or "").strip()
+        if summary:
+            conversation_anchors["conversation_summary"] = summary[:2000]
+        recent_messages: list[dict[str, str]] = []
+        for raw_message in list(conversation.get("recent_messages") or [])[-4:]:
+            if not isinstance(raw_message, dict):
+                continue
+            text = str(raw_message.get("text") or raw_message.get("content") or "").strip()[:700]
+            if not text:
+                continue
+            recent_messages.append(
+                {
+                    "role": "assistant" if str(raw_message.get("role") or "").lower() == "assistant" else "user",
+                    "text": text,
+                }
+            )
+        if recent_messages:
+            conversation_anchors["recent_messages"] = recent_messages
+        plan = codex_data_selection_agent.DATA_SELECTION_RUNTIME.plan(
+            request_text=str(prompt or "")[:12000],
+            job_prompt=str(prompt or "")[:12000],
+            surface="app",
+            allowed_tools=planner_catalog,
+            authorized_stores=authorized_stores,
+            conversation_anchors=conversation_anchors,
+            previous_evidence=None,
+            data_gap=None,
+            model="gpt-5.6-luna",
+            reasoning_effort="low",
+            max_calls=6,
+        )
+        compact = codex_data_selection_agent.compact_evidence(plan, report=False)
+        return compact if isinstance(compact, dict) else {}
+    except Exception:
+        return {
+            "schema_version": 1,
+            "status": "selection_unavailable",
+            "action": "unavailable",
+            "selected_tools": [],
+            "coverage_complete": False,
+        }
+
+
+def _codex_agent_materialize_task_data_selection(
+    task: dict[str, Any],
+    *,
+    prompt: str,
+    screen_context: Any,
+    read_only_only: bool,
+    conversation_context: Any = None,
+) -> dict[str, Any]:
+    """Resolve one server-owned selection plan and bind it to this task."""
+
+    trusted = _codex_agent_data_selection_from_task(task)
+    if trusted:
+        selection = trusted
+    else:
+        catalog = _codex_agent_tool_catalog(
+            task.get("permissions") if isinstance(task.get("permissions"), dict) else {},
+            read_only_only=read_only_only,
+            source_policy={},
+        )
+        selection = _codex_agent_plan_short_data_selection(
+            prompt,
+            str(task.get("client_id") or "").strip(),
+            catalog,
+            screen_context,
+            conversation_context,
+        )
+    if not isinstance(selection, dict) or not selection:
+        selection = {
+            "schema_version": 1,
+            "status": "selection_unavailable",
+            "action": "unavailable",
+            "selected_tools": [],
+            "coverage_complete": False,
+            "warnings": ["data_selection_invalid_plan"],
+        }
+    query_policy = dict(task.get("query_policy") or {}) if isinstance(task.get("query_policy"), dict) else {}
+    query_policy["source_policy"] = {}
+    task["query_policy"] = query_policy
+    task["data_selection"] = selection
+    task["data_selection_trust_marker"] = _CODEX_AGENT_DATA_SELECTION_TRUST_MARKER
+    task["data_selection_tool_ids"] = _codex_agent_data_selection_tool_ids(selection)
+    return selection
 
 
 def _codex_agent_tool_catalog(
@@ -2803,23 +3187,66 @@ def _codex_agent_initial_prompt(
     external_safe_mode: bool = False,
     whatsapp_full_access: bool = False,
     native_mcp: bool = False,
+    server_data_selection: Any = None,
 ) -> str:
     source_policy = _codex_agent_source_policy_from_screen(screen_context)
     catalog = _codex_agent_tool_catalog(
         permissions,
         read_only_only=external_safe_mode,
-        source_policy=source_policy,
+        source_policy={},
     )
-    capabilities = _codex_agent_capability_catalog(
-        client_id,
-        permissions,
-        read_only_only=external_safe_mode,
-    )
+    data_selection = dict(server_data_selection) if isinstance(server_data_selection, dict) else {}
+    if not data_selection:
+        data_selection = _codex_agent_plan_short_data_selection(
+            prompt,
+            client_id,
+            catalog,
+            screen_context,
+            conversation_context,
+        )
+    if data_selection:
+        # The short plan supersedes the legacy routing policy. Keeping both
+        # would silently reintroduce required_tools that the selector omitted.
+        source_policy = {}
+    selected_tool_ids = _codex_agent_data_selection_tool_ids(data_selection)
+    if data_selection:
+        selected_set = set(selected_tool_ids)
+        catalog = [
+            {
+                **item,
+                "fallbacks": [fallback for fallback in list(item.get("fallbacks") or []) if fallback in selected_set],
+            }
+            for item in catalog
+            if str(item.get("id") or "") in selected_set
+        ]
+        capabilities = {
+            "version": "data-selection",
+            "total_capabilities": 0,
+            "modules": [],
+            "capabilities": [],
+        }
+    else:
+        capabilities = _codex_agent_capability_catalog(
+            client_id,
+            permissions,
+            read_only_only=external_safe_mode,
+        )
     screen_summary = _codex_agent_screen_summary(screen_context)
-    guidance_items = codex_agent_runtime.resolve_guidance(
-        _codex_base_info_dir(),
-        str(client_id or "default"),
-        context=_codex_agent_guidance_context(prompt, screen_context),
+    if data_selection:
+        screen_summary = {
+            key: screen_summary.get(key)
+            for key in ("title", "pathname", "modulo_atual")
+            if screen_summary.get(key) not in (None, "", [], {})
+        }
+    tenant = str(client_id or "").strip()
+    guidance_items = [] if data_selection else (
+        codex_agent_runtime.resolve_guidance(
+            _codex_base_info_dir(),
+            tenant,
+            context=_codex_agent_guidance_context(prompt, screen_context),
+        )
+        if tenant
+        else []
     )
     guidance_text = codex_agent_runtime.guidance_prompt(guidance_items)
     conversation_context = conversation_context if isinstance(conversation_context, dict) else {}
@@ -2835,10 +3262,10 @@ def _codex_agent_initial_prompt(
     max_calls = _codex_int_env("JK_CODEX_AGENT_MAX_TOOL_CALLS_PER_CYCLE", CODEX_AGENT_MAX_TOOL_CALLS_PER_CYCLE, 1, 10)
     memory_parts: list[str] = []
     operational_memory: dict[str, Any] = {}
-    if isinstance(permissions, dict) and permissions.get("full") is True:
+    if not data_selection and isinstance(permissions, dict) and permissions.get("full") is True:
         try:
             operational_memory = codex_operational_memory.compact_context(
-                client_id=str(client_id or "default"),
+                client_id=tenant,
                 message=str(prompt or ""),
                 limit_chars=6000,
             )
@@ -2899,6 +3326,35 @@ def _codex_agent_initial_prompt(
             f"Politica calculada pelo servidor: {_codex_agent_json(source_policy, 4000)}\n\n"
         )
     guidance_section = guidance_text + "\n\n" if guidance_text else ""
+    data_selection_section = ""
+    if data_selection:
+        selection_status = str(data_selection.get("status") or "")
+        selection_action = str(data_selection.get("action") or "")
+        if selection_status == "selection_unavailable" or selection_action == "unavailable":
+            selection_instruction = (
+                "A selecao de dados esta indisponivel. Nao responda com numeros ou fatos operacionais e nao tente "
+                "outras fontes; informe de forma curta que a consulta nao pode ser validada agora."
+            )
+        elif selection_action == "clarify":
+            selection_instruction = (
+                "Nao solicite ferramentas. Peca somente os campos listados em missing_user_fields."
+            )
+        elif selection_action == "mutation_candidate":
+            selection_instruction = (
+                "Nao solicite ferramentas comerciais. Continue aplicando as regras normais de sandbox e aprovacao "
+                "para ferramentas nativas de codigo ou acoes explicitamente autorizadas."
+            )
+        else:
+            selection_instruction = (
+                "Use apenas as evidencias desse plano. Ao solicitar jk_tool_calls, copie exatamente o tool_id e o "
+                "objeto arguments da chamada planejada, preserve a ordem e as dependencias e solicite cada chamada "
+                "no maximo uma vez. Se o catalogo curto estiver vazio, nao solicite ferramenta comercial adicional."
+            )
+        data_selection_section = (
+            "Selecao de dados ja validada pelo backend:\n"
+            f"{_codex_agent_json(data_selection, 12000)}\n"
+            f"{selection_instruction}\n\n"
+        )
     if native_mcp:
         tool_protocol = (
             "Protocolo de ferramenta:\n"
@@ -2940,6 +3396,7 @@ def _codex_agent_initial_prompt(
         f"{mobile_report_rule}"
         f"{source_routing_rule}"
         f"{guidance_section}"
+        f"{data_selection_section}"
         f"{tool_protocol}"
         "No final de respostas com dados, inclua onde consultou em linguagem simples, periodo, loja/conta, quantidade de registros e avisos de dados incompletos.\n\n"
         f"Configuracao: modelo={model}, raciocinio={reasoning_effort}, velocidade={speed}, aprovacao={approval_profile}, sandbox={sandbox}.\n\n"
@@ -3916,6 +4373,34 @@ def _codex_agent_update_trace(task_id: str, trace: dict[str, Any], **updates: An
     )
 
 
+def _codex_capture_whatsapp_listing_bundle(task_id: str, task: dict[str, Any], result: Any) -> None:
+    """Persist a bounded official-listing contract for channel delivery."""
+
+    if str(task.get("origin") or "") != "whatsapp" or not isinstance(result, dict):
+        return
+    if str(result.get("tool_id") or "") != "mercado_livre_listing":
+        return
+    try:
+        from backend.services.whatsapp import marketplace_listing_delivery
+
+        bundle = marketplace_listing_delivery.build_listing_bundle([result])
+    except Exception:
+        return
+    listings = [item for item in list(bundle.get("listings") or []) if isinstance(item, dict)][:20]
+    if not listings:
+        return
+    for listing in listings:
+        listing["pictures"] = [
+            item for item in list(listing.get("pictures") or []) if isinstance(item, dict)
+        ][:5]
+        listing["description"] = str(listing.get("description") or "")[:1500]
+    bundle["listings"] = listings
+    bundle["listing_count"] = len(listings)
+    bundle["picture_count"] = sum(len(item.get("pictures") or []) for item in listings)
+    task["whatsapp_listing_bundle"] = bundle
+    _codex_update_task(task_id, whatsapp_listing_bundle=bundle)
+
+
 def _codex_agent_source_policy_for_task(task: Any) -> dict[str, Any]:
     if not isinstance(task, dict):
         return {}
@@ -4006,7 +4491,13 @@ def _codex_agent_run_loop(
     mcp_seen: set[str] = set()
     started_monotonic = time.monotonic()
     deadline_seconds = max(30, min(int(task.get("deadline_seconds") or (600 if report_mode else 180)), 600))
-    source_policy = _codex_agent_source_policy_for_task(task)
+    data_selection = _codex_agent_data_selection_from_task(task)
+    selection_enforced = bool(data_selection)
+    planned_calls = _codex_agent_planned_calls(data_selection)
+    attempted_planned_indexes: set[int] = set()
+    planned_success_by_index: dict[int, bool] = {}
+    selected_tool_ids = set(_codex_agent_data_selection_tool_ids(data_selection))
+    source_policy = {} if selection_enforced else _codex_agent_source_policy_for_task(task)
     query_policy = task.get("query_policy") if isinstance(task.get("query_policy"), dict) else {}
 
     for cycle in range(1, max_cycles + 1):
@@ -4045,7 +4536,7 @@ def _codex_agent_run_loop(
         )
         if isinstance(state.get("token_usage"), dict):
             trace["token_usage"] = state.get("token_usage") or {}
-        mcp_cycle_results = _codex_native_mcp_read_results(task_id, mcp_seen)
+        mcp_cycle_results = [] if selection_enforced else _codex_native_mcp_read_results(task_id, mcp_seen)
         for result in mcp_cycle_results:
             tool_id = str(result.get("tool_id") or "")
             raw_sources = list(result.get("sources_raw") or [])[:8]
@@ -4101,7 +4592,12 @@ def _codex_agent_run_loop(
                 if validation.get("dados_suficientes") is False:
                     for item in validation.get("proximas_fontes") or []:
                         tool_id = str(item or "").strip()
-                        if tool_id and tool_id not in attempted and tool_id not in pending_fallbacks:
+                        if (
+                            tool_id
+                            and (not selection_enforced or tool_id in selected_tool_ids)
+                            and tool_id not in attempted
+                            and tool_id not in pending_fallbacks
+                        ):
                             pending_fallbacks.append(tool_id)
             if pending_fallbacks and cycle < max_cycles:
                 if str(task.get("reasoning_policy") or "") == "adaptive":
@@ -4150,6 +4646,8 @@ def _codex_agent_run_loop(
                 read_only_only=True,
             )
         } if read_only_channel_mode else set()
+        if selection_enforced:
+            external_allowed_tools &= selected_tool_ids
         for call in calls[:max_calls]:
             if time.monotonic() - started_monotonic >= deadline_seconds:
                 trace["deadline_exceeded"] = True
@@ -4157,21 +4655,39 @@ def _codex_agent_run_loop(
                 break
             tool_id = str(call.get("tool_id") or "").strip()
             args = dict(call.get("args") or {}) if isinstance(call.get("args"), dict) else {}
-            if tool_id in set(source_policy.get("required_tools") or []):
-                args["force_refresh"] = bool(source_policy.get("force_refresh", True))
-                if tool_id == "mercado_livre_listing" and source_policy.get("include_listing_details") is True:
-                    args["incluir_detalhes"] = True
-            args, call_complete_ml_report = _codex_whatsapp_prepare_agent_tool_call(
-                task,
-                tool_id,
-                args,
-                previous_results + cycle_results,
-            )
+            planned_call: Optional[dict[str, Any]] = None
+            selection_error_code = ""
+            selection_error = ""
+            if selection_enforced:
+                planned_call, selection_error_code, selection_error = _codex_agent_authorize_planned_call(
+                    tool_id,
+                    args,
+                    planned_calls,
+                    attempted_planned_indexes,
+                    planned_success_by_index,
+                )
+                if planned_call is not None:
+                    # Execute a copia materializada pelo servidor, nunca o
+                    # objeto reconstruido pelo modelo.
+                    args = dict(planned_call.get("arguments") or {})
+                call_complete_ml_report = False
+            else:
+                if tool_id in set(source_policy.get("required_tools") or []):
+                    args["force_refresh"] = bool(source_policy.get("force_refresh", True))
+                    if tool_id == "mercado_livre_listing" and source_policy.get("include_listing_details") is True:
+                        args["incluir_detalhes"] = True
+                args, call_complete_ml_report = _codex_whatsapp_prepare_agent_tool_call(
+                    task,
+                    tool_id,
+                    args,
+                    previous_results + cycle_results,
+                )
             label = _codex_agent_tool_status(tool_id)
             trace_call = {
                 "cycle": cycle,
                 "tool_id": tool_id,
                 "args": args,
+                "planned_index": int(planned_call.get("index") or 0) if planned_call is not None else None,
                 "reason": call.get("reason") or "",
                 "at": _codex_now(),
             }
@@ -4197,7 +4713,17 @@ def _codex_agent_run_loop(
                             and re.search(r"\b(ultima|ultimo|mais recente|ultima ocorrencia|ultimo registro)\b", request_text)
                         )
                         api_query_deadline = time.monotonic() + (25 if latest_direct else 60)
-                if read_only_channel_mode and tool_id not in external_allowed_tools:
+                if selection_enforced and planned_call is None:
+                    result = {
+                        "success": False,
+                        "tool_id": tool_id,
+                        "error": selection_error or "Chamada fora do plano de dados validado para este turno.",
+                        "error_code": selection_error_code or "data_selection_tool_blocked",
+                        "records": 0,
+                        "warnings": [selection_error or "A chamada nao foi autorizada pelo backend."],
+                        "generated_at": _codex_now(),
+                    }
+                elif read_only_channel_mode and tool_id not in external_allowed_tools:
                     result = {
                         "success": False,
                         "tool_id": tool_id,
@@ -4217,11 +4743,18 @@ def _codex_agent_run_loop(
                         "generated_at": _codex_now(),
                     }
                 else:
+                    planned_index = int(planned_call.get("index") or 0) if planned_call is not None else None
+                    if planned_index is not None:
+                        attempted_planned_indexes.add(planned_index)
                     result = codex_assistant.codex_assistant_execute_tool_call(
                         client_id=str(task.get("client_id") or ""),
                         tool_id=tool_id,
                         args=args,
-                        screen_context=screen_context if isinstance(screen_context, dict) else {},
+                        screen_context={
+                            key: screen_context.get(key)
+                            for key in ("title", "pathname", "modulo_atual")
+                            if isinstance(screen_context, dict) and screen_context.get(key) not in (None, "", [], {})
+                        },
                         previous_results=previous_results + cycle_results,
                         permissions=task.get("permissions") if isinstance(task.get("permissions"), dict) else {},
                         audit_user=str(task.get("username") or task.get("created_by") or ""),
@@ -4236,6 +4769,10 @@ def _codex_agent_run_loop(
                     "warnings": [str(exc)[:600]],
                     "generated_at": _codex_now(),
                 }
+            if planned_call is not None:
+                planned_index = int(planned_call.get("index") or 0)
+                if planned_index in attempted_planned_indexes:
+                    planned_success_by_index[planned_index] = result.get("success") is True
             raw_sources = list(result.get("sources_raw") or [])[:8]
             human_sources = list(result.get("sources_human") or result.get("sources") or [])[:8]
             source_label = str(result.get("source_label") or ((human_sources[:1] or raw_sources[:1] or [""])[0]) or "")
@@ -4287,6 +4824,7 @@ def _codex_agent_run_loop(
                 "generated_at": result.get("generated_at") or _codex_now(),
             }
             trace["tool_results_summary"].append(result_summary)
+            _codex_capture_whatsapp_listing_bundle(task_id, task, result)
             _codex_agent_unique_extend(trace["sources"], human_sources or raw_sources)
             _codex_agent_unique_extend(trace["warnings"], list(result.get("warnings") or []))
             if result.get("empty_reason"):
@@ -4360,6 +4898,12 @@ def _codex_agent_run_loop(
     # Gere os graficos antes de descartar ``previous_results``. O texto final
     # nunca e usado como fonte numerica e uma falha visual nao afeta a tarefa.
     _codex_generate_whatsapp_chart_artifacts(task_id, task, previous_results)
+    try:
+        from backend.services.codex_data_selection_agent import DATA_SELECTION_RUNTIME
+
+        DATA_SELECTION_RUNTIME.record_evidence_size(previous_results, report=report_mode)
+    except Exception:
+        pass
     return final_response, final_state, trace
 
 
@@ -5458,6 +6002,9 @@ def _codex_run_worker(task_id: str) -> None:
     acquired_full_lock = False
     thread_id = ""
     try:
+        tenant = str(task.get("client_id") or "").strip()
+        if not tenant:
+            raise RuntimeError("data_selection_tenant_required")
         if sandbox == "full_access":
             acquired_full_lock = CODEX_FULL_ACCESS_LOCK.acquire(blocking=False)
             if not acquired_full_lock:
@@ -5492,11 +6039,21 @@ def _codex_run_worker(task_id: str) -> None:
         prompt = str(task.get("prompt") or "").strip()
         cwd = str(task.get("cwd") or _codex_base_dir())
         conversation_state = _codex_conversation_state_for_task(task)
-        thread_id = (
-            str(conversation_state.get("latest_thread_id") or "").strip()
-            if is_full_task
-            else ""
+        thread_id = str(task.get("thread_id") or "").strip() if is_full_task else ""
+        fingerprints_match = bool(
+            is_full_task
+            and str(task.get("thread_prompt_fingerprint") or "")
+            and str(task.get("thread_prompt_fingerprint") or "")
+            == str(conversation_state.get("thread_prompt_fingerprint") or "")
+            and str(task.get("thread_schema_fingerprint") or "")
+            == str(conversation_state.get("thread_schema_fingerprint") or "")
+            and str(task.get("thread_scope_fingerprint") or "")
+            == str(conversation_state.get("thread_scope_fingerprint") or "")
+            and str(task.get("thread_conversation_key") or "")
+            == str(conversation_state.get("thread_conversation_key") or "")
         )
+        if not thread_id and fingerprints_match:
+            thread_id = str(conversation_state.get("latest_thread_id") or "").strip()
         if thread_id != str(task.get("thread_id") or "").strip():
             _codex_update_task(task_id, thread_id=thread_id)
         goal = _codex_clean_text(task.get("goal"), 1200)
@@ -5514,7 +6071,7 @@ def _codex_run_worker(task_id: str) -> None:
             approval_mode = _codex_approval_mode_enum(approval_profile, sandbox)
             cwd = _codex_readonly_cwd_for_session(
                 {
-                    "client_id": str(task.get("client_id") or "default"),
+                    "client_id": tenant,
                     "username": str(task.get("created_by") or "user"),
                 },
                 _codex_conversation_id(
@@ -5538,17 +6095,35 @@ def _codex_run_worker(task_id: str) -> None:
             _codex_update_task(task_id, scope=scope)
         workspace_before = _codex_workspace_snapshot(cwd) if sandbox != "read_only" else {}
         agent_mode = _codex_agent_mode_enabled()
-        native_mcp = bool(agent_mode and read_only_channel_mode and _codex_native_mcp_enabled(task))
-        app_data_context: dict[str, Any] = {}
+        data_selection: dict[str, Any] = {}
         conversation_context: dict[str, Any] = {}
         if agent_mode:
-            _codex_update_live(task_id, agent_mode=True, live_status="interpretando pergunta")
             conversation_context = _codex_prepare_conversation_context(task)
+            data_selection = _codex_agent_materialize_task_data_selection(
+                task,
+                prompt=prompt,
+                screen_context=screen_context,
+                conversation_context=conversation_context,
+                read_only_only=read_only_channel_mode,
+            )
+            _codex_update_task(
+                task_id,
+                data_selection=data_selection,
+                data_selection_trust_marker=_CODEX_AGENT_DATA_SELECTION_TRUST_MARKER,
+                data_selection_tool_ids=_codex_agent_data_selection_tool_ids(data_selection),
+                query_policy=task.get("query_policy") if isinstance(task.get("query_policy"), dict) else {},
+            )
+        # Durante o cutover o MCP comercial permanece desligado: a fronteira
+        # de argumentos/ordem e aplicada no executor local antes de qualquer IO.
+        native_mcp = False
+        app_data_context: dict[str, Any] = {}
+        if agent_mode:
+            _codex_update_live(task_id, agent_mode=True, live_status="interpretando pergunta")
             run_prompt = _codex_agent_initial_prompt(
                 prompt,
                 screen_context,
                 conversation_context,
-                str(task.get("client_id") or "default"),
+                tenant,
                 task.get("permissions") if isinstance(task.get("permissions"), dict) else {},
                 sandbox,
                 model,
@@ -5558,6 +6133,7 @@ def _codex_run_worker(task_id: str) -> None:
                 read_only_channel_mode,
                 whatsapp_full_access,
                 native_mcp,
+                data_selection,
             )
             context_stats = _codex_context_stats_from_prompt(
                 prompt,
@@ -5969,12 +6545,20 @@ def _codex_run_worker(task_id: str) -> None:
             verification=read_verification,
         )
         if result_thread_id and is_full_task:
-            _codex_save_conversation_state(task, latest_thread_id=result_thread_id)
+            _codex_save_conversation_state(
+                task,
+                latest_thread_id=result_thread_id,
+                thread_prompt_fingerprint=str(task.get("thread_prompt_fingerprint") or ""),
+                thread_schema_fingerprint=str(task.get("thread_schema_fingerprint") or ""),
+                thread_scope_fingerprint=str(task.get("thread_scope_fingerprint") or ""),
+                thread_conversation_key=str(task.get("thread_conversation_key") or ""),
+                thread_restart_reason="",
+            )
         task_permissions = task.get("permissions") if isinstance(task.get("permissions"), dict) else {}
         if task_permissions.get("full") is True:
             try:
                 operational_memory_result = codex_operational_memory.remember_from_interaction(
-                    client_id=str(task.get("client_id") or "default"),
+                    client_id=tenant,
                     prompt=str(prompt or ""),
                     final_answer=final_response or "",
                     trace=agent_trace if isinstance(agent_trace, dict) else {},
@@ -6170,6 +6754,23 @@ def codex_status(request: Request, authorization: Optional[str] = Header(default
     return _codex_status_for_session(sessao)
 
 
+def codex_transcribe_audio(
+    request: Request,
+    file: UploadFile = File(...),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Turn a transient local recording into editable composer text."""
+
+    sessao = _codex_require_authenticated(request, authorization)
+    from backend.services import local_audio_transcription
+
+    return local_audio_transcription.transcribe_authenticated_upload(
+        file,
+        client_id=str(sessao.get("client_id") or ""),
+        username=str(sessao.get("username") or ""),
+    )
+
+
 async def codex_upload_attachments(
     request: Request,
     files: list[UploadFile] = File(...),
@@ -6355,12 +6956,9 @@ def codex_criar_tarefa_para_sessao(
         whatsapp_full_access = False
         external_safe_mode = True
         channel_metadata["requires_app_confirmation"] = True
-    guidance_context = _codex_agent_guidance_context(prompt, screen_context)
-    guidance_applied = codex_agent_runtime.resolve_guidance(
-        _codex_base_info_dir(),
-        str(sessao.get("client_id") or "default"),
-        context=guidance_context,
-    )
+    # O seletor server-side substitui guidance/PPV legado no cutover. A tarefa
+    # nasce sem esse contexto para nao duplicar ou contradizer o plano curto.
+    guidance_applied: list[dict[str, Any]] = []
     if whatsapp_query_only:
         # A politica de consulta prevalece sobre qualquer verbo mutavel que o
         # usuario tenha incluído na frase. O agente pode explicar ou preparar,
@@ -6386,6 +6984,44 @@ def codex_criar_tarefa_para_sessao(
         screen_context=screen_context,
         cwd=cwd,
     )
+    thread_decision = None
+    task_thread_id = ""
+    if is_full:
+        screen_identity = _codex_agent_guidance_context("", screen_context)
+        store_scope = str(screen_identity.get("store") or "").strip()
+        screen_payload = screen_context if isinstance(screen_context, dict) else {}
+        thread_scope = {
+            "store": store_scope,
+            "store_mode": str(screen_payload.get("store_mode") or "none").strip().lower(),
+            "multi_store": screen_payload.get("multi_store") is True,
+            "sandbox": sandbox,
+            "modules": list(scope.get("modules") or []),
+            "explicit_paths": list(scope.get("explicit_paths") or []),
+            "agent_lane": str(channel_metadata.get("agent_lane") or channel_metadata.get("agent_role") or ""),
+        }
+        thread_decision = codex_turn_context.decide_conversation(
+            {
+                "thread_id": conversation_state.get("latest_thread_id") or "",
+                "prompt_fingerprint": conversation_state.get("thread_prompt_fingerprint") or "",
+                "schema_fingerprint": conversation_state.get("thread_schema_fingerprint") or "",
+                "scope_fingerprint": conversation_state.get("thread_scope_fingerprint") or "",
+                "conversation_key": conversation_state.get("thread_conversation_key") or "",
+                "updated_at": conversation_state.get("updated_at") or "",
+            },
+            surface="codex_sidebar_task",
+            client_id=str(sessao.get("client_id") or "default"),
+            store=store_scope,
+            user=str(sessao.get("username") or "user"),
+            subject=f"{origin}:{conversation_id}:generation:{conversation_generation}",
+            prompt_contract={"version": CODEX_SIDEBAR_TASK_PROMPT_VERSION},
+            schema_contract={
+                "version": CODEX_SIDEBAR_TASK_SCHEMA_VERSION,
+                "shared_contract_hash": codex_turn_context.CONTRACT_HASH,
+            },
+            scope=thread_scope,
+        )
+        if thread_decision.reuse_thread:
+            task_thread_id = str(conversation_state.get("latest_thread_id") or "").strip()
     request_id = str(
         payload.request_id
         or channel_metadata.get("message_id")
@@ -6501,12 +7137,48 @@ def codex_criar_tarefa_para_sessao(
     except (TypeError, ValueError):
         deadline_seconds = default_deadline_seconds
     deadline_seconds = max(30, min(deadline_seconds, 600))
+    if is_full and thread_decision is not None and thread_scope.get("sandbox") != sandbox:
+        thread_scope["sandbox"] = sandbox
+        thread_decision = codex_turn_context.decide_conversation(
+            {
+                "thread_id": conversation_state.get("latest_thread_id") or "",
+                "prompt_fingerprint": conversation_state.get("thread_prompt_fingerprint") or "",
+                "schema_fingerprint": conversation_state.get("thread_schema_fingerprint") or "",
+                "scope_fingerprint": conversation_state.get("thread_scope_fingerprint") or "",
+                "conversation_key": conversation_state.get("thread_conversation_key") or "",
+                "updated_at": conversation_state.get("updated_at") or "",
+            },
+            surface="codex_sidebar_task",
+            client_id=str(sessao.get("client_id") or "default"),
+            store=store_scope,
+            user=str(sessao.get("username") or "user"),
+            subject=f"{origin}:{conversation_id}:generation:{conversation_generation}",
+            prompt_contract={"version": CODEX_SIDEBAR_TASK_PROMPT_VERSION},
+            schema_contract={
+                "version": CODEX_SIDEBAR_TASK_SCHEMA_VERSION,
+                "shared_contract_hash": codex_turn_context.CONTRACT_HASH,
+            },
+            scope=thread_scope,
+        )
+        task_thread_id = (
+            str(conversation_state.get("latest_thread_id") or "").strip()
+            if thread_decision.reuse_thread
+            else ""
+        )
     task = {
         "task_id": task_id,
         "status": task_status,
         "sandbox": sandbox,
         "cwd": cwd,
-        "thread_id": str(conversation_state.get("latest_thread_id") or "").strip() if is_full else "",
+        "thread_id": task_thread_id,
+        "thread_reused": bool(thread_decision and thread_decision.reuse_thread),
+        "thread_restart_reasons": list(thread_decision.restart_reasons) if thread_decision else [],
+        "thread_prompt_fingerprint": thread_decision.prompt_fingerprint if thread_decision else "",
+        "thread_schema_fingerprint": thread_decision.schema_fingerprint if thread_decision else "",
+        "thread_scope_fingerprint": thread_decision.scope_fingerprint if thread_decision else "",
+        "thread_conversation_key": thread_decision.conversation_key if thread_decision else "",
+        "thread_prompt_version": CODEX_SIDEBAR_TASK_PROMPT_VERSION if is_full else "",
+        "thread_schema_version": CODEX_SIDEBAR_TASK_SCHEMA_VERSION if is_full else "",
         "conversation_id": conversation_id,
         "conversation_generation": conversation_generation,
         "prompt": prompt,
@@ -6531,12 +7203,13 @@ def codex_criar_tarefa_para_sessao(
         "handoff_status": str(channel_metadata.get("handoff_status") or "")[:60],
         "last_conversation_tick_at": str(channel_metadata.get("last_conversation_tick_at") or "")[:40],
         "delivery_state": str(channel_metadata.get("delivery_state") or "pending")[:40],
-        "tool_protocol": "mcp_v1" if _codex_bool_env("JK_CODEX_NATIVE_MCP_ENABLED", True) and origin == "whatsapp" else "typed_catalog_text_v1",
+        "tool_protocol": "typed_catalog_text_v1",
         "mcp_migration": {
             "target": "jk_system_mcp",
-            "native_enabled": _codex_bool_env("JK_CODEX_NATIVE_MCP_ENABLED", True) and origin == "whatsapp",
+            "native_enabled": False,
             "native_active": False,
             "legacy_parser_fallback": True,
+            "disabled_reason": "data_selection_cutover",
         },
         "speed": speed,
         "service_tier": service_tier or "",
@@ -6610,6 +7283,16 @@ def codex_criar_tarefa_para_sessao(
     with CODEX_TASKS_LOCK:
         CODEX_TASKS[task_id] = task
         _codex_persist_task(task)
+    if is_full and thread_decision is not None:
+        _codex_save_conversation_state(
+            task,
+            latest_thread_id=task_thread_id,
+            thread_prompt_fingerprint=thread_decision.prompt_fingerprint,
+            thread_schema_fingerprint=thread_decision.schema_fingerprint,
+            thread_scope_fingerprint=thread_decision.scope_fingerprint,
+            thread_conversation_key=thread_decision.conversation_key,
+            thread_restart_reason=",".join(thread_decision.restart_reasons),
+        )
     _codex_log(task, "Tarefa criada.")
     if not is_full:
         _codex_log(task, "Acesso do usuario limitado pelo servidor a leitura e aos modulos autorizados.")
@@ -7240,6 +7923,11 @@ def codex_reset_current_conversation(
                 "recent_messages": [],
                 "legacy_conversation_ids": [],
                 "latest_thread_id": "",
+                "thread_prompt_fingerprint": "",
+                "thread_schema_fingerprint": "",
+                "thread_scope_fingerprint": "",
+                "thread_conversation_key": "",
+                "thread_restart_reason": "manual_reset",
                 "compacted_until": "",
                 "summary_updated_at": "",
                 "estimated_tokens_before": 0,

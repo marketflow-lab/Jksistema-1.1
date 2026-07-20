@@ -4,10 +4,11 @@ import json
 import os
 import subprocess
 
-from backend.services import codex_console
+from backend.services import codex_console, integracoes
 
 
-def _start_server():
+def _start_server(monkeypatch):
+    monkeypatch.setattr(integracoes, "carregar_lojas", lambda _client_id: [{"nome": "JK Pecas"}])
     screen_context = {
         "selection": {
             "query_policy": {
@@ -23,6 +24,13 @@ def _start_server():
         "client_id": "cliente",
         "created_by": "admin",
         "permissions": {"full": True},
+        "data_selection_trust_marker": codex_console._CODEX_AGENT_DATA_SELECTION_TRUST_MARKER,
+        "data_selection": {
+            "schema_version": "1.0",
+            "action": "collect",
+            "tool_calls": [{"tool_id": "mercado_livre_orders"}],
+            "context_hub": {"mode": "not_applicable"},
+        },
         "deadline_at": codex_console._codex_deadline_at(180),
         "channel_metadata": {
             "wa_id": "5511999999999",
@@ -56,8 +64,8 @@ def _send(process, payload):
     return json.loads(process.stdout.readline())
 
 
-def test_signed_mcp_server_lists_only_read_only_catalog_and_enforces_store_scope():
-    process = _start_server()
+def test_signed_mcp_server_lists_only_selected_read_only_catalog_and_enforces_store_scope(monkeypatch):
+    process = _start_server(monkeypatch)
     try:
         initialized = _send(
             process,
@@ -74,7 +82,7 @@ def test_signed_mcp_server_lists_only_read_only_catalog_and_enforces_store_scope
         tools = listed["result"]["tools"]
         assert tools
         assert all(item["annotations"]["readOnlyHint"] is True for item in tools)
-        assert "mercado_livre_orders" in {item["name"] for item in tools}
+        assert {item["name"] for item in tools} == {"mercado_livre_orders"}
 
         blocked = _send(
             process,

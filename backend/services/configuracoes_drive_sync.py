@@ -34,6 +34,7 @@ DRIVE_SYNC_EXCLUDED_REL_PREFIXES = (
     "codex_assistant/cache",
     "favoritos_ml_cache",
 )
+DRIVE_SYNC_FORBIDDEN_SEGMENTS = {"contextvault", "context_hub", ".obsidian", "sku"}
 
 logger = logging.getLogger("jk_sistema")
 _payload_sessao_por_authorization: Callable[[Optional[str]], dict] = lambda authorization: {}
@@ -262,7 +263,11 @@ def _drive_sync_relativo_seguro(rel_path: str) -> str:
 
 def _drive_sync_rel_path_excluido(rel_path: str) -> bool:
     rel = _drive_sync_relativo_seguro(rel_path).lower()
-    return any(rel == prefix or rel.startswith(prefix + "/") for prefix in DRIVE_SYNC_EXCLUDED_REL_PREFIXES)
+    parts = [part for part in rel.split("/") if part]
+    return (
+        any(part in DRIVE_SYNC_FORBIDDEN_SEGMENTS for part in parts)
+        or any(rel == prefix or rel.startswith(prefix + "/") for prefix in DRIVE_SYNC_EXCLUDED_REL_PREFIXES)
+    )
 
 def _drive_sync_coletar_arquivos(client_id: str) -> list[dict]:
     tenant_path = get_tenant_path(client_id)
@@ -272,8 +277,8 @@ def _drive_sync_coletar_arquivos(client_id: str) -> list[dict]:
         return entries
 
     for root, dirs, files in os.walk(tenant_abs):
-        dirs[:] = []
-        for dirname in dirs:
+        allowed_dirs = []
+        for dirname in list(dirs):
             if dirname in DRIVE_SYNC_EXCLUDED_DIRS or dirname.startswith("."):
                 continue
             dir_abs = os.path.abspath(os.path.join(root, dirname))
@@ -282,7 +287,8 @@ def _drive_sync_coletar_arquivos(client_id: str) -> list[dict]:
             dir_rel = os.path.relpath(dir_abs, tenant_abs).replace("\\", "/")
             if _drive_sync_rel_path_excluido(dir_rel):
                 continue
-            dirs.append(dirname)
+            allowed_dirs.append(dirname)
+        dirs[:] = allowed_dirs
         for filename in files:
             name_lower = filename.lower()
             if name_lower.startswith("drive_sync_state_"):
@@ -493,6 +499,11 @@ def _drive_sync_restaurar_bytes(ctx: dict, encrypted: bytes) -> dict:
             if not isinstance(item, dict):
                 continue
             rel = _drive_sync_relativo_seguro(item.get("relative_path"))
+            if _drive_sync_rel_path_excluido(rel):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Backup geral contem caminho reservado ao Context Hub ou SKU.",
+                )
             zip_name = "files/" + rel
             try:
                 content = zf.read(zip_name)

@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import pandas as pd
-import requests
 from fastapi import Depends, HTTPException
 
 from backend.schemas.estoque import (
@@ -22,6 +21,8 @@ from backend.schemas.estoque import (
     EstoqueSyncRequest,
 )
 from backend.services import estoque_context
+from backend.services.bling import _BlingAdaptiveLimiter, _bling_get_with_adaptive_limit
+from backend.services.integracoes import renovar_token_bling_loja
 from backend.services.runtime_bridge import bind_runtime_globals
 
 
@@ -60,13 +61,18 @@ def _bling_listar_lotes_produto(access_token: str, produto_id: str) -> tuple[lis
     # Endpoint correto para listagem de lotes ÃƒÂ© /produtos/lotes com filtro por produto.
     url = "https://api.bling.com.br/Api/v3/produtos/lotes"
     lotes: list[dict] = []
+    limiter = _BlingAdaptiveLimiter(start_interval=0.08)
     for pagina in range(1, 1000):
-        resp = BLING_SESSION.get(
+        resp = _bling_get_with_adaptive_limit(
             url,
             headers=headers,
             params={"pagina": pagina, "limite": 100, "idsProdutos[]": pid},
             timeout=20,
+            limiter=limiter,
+            max_attempts=3,
         )
+        if resp is None:
+            raise HTTPException(status_code=503, detail="Servico Bling indisponivel ao listar lotes.")
         if resp.status_code == 401:
             return [], 401
         if resp.status_code == 403:
@@ -99,9 +105,16 @@ def _bling_listar_lotes_produto(access_token: str, produto_id: str) -> tuple[lis
                 or "nao foi encontrado" in texto_resp.lower()
             ):
                 return [], 200
+        if resp.status_code == 429:
+            raise HTTPException(status_code=429, detail="Limite de solicitacoes da Bling atingido ao listar lotes.")
+        if resp.status_code in {500, 502, 503, 504}:
+            raise HTTPException(status_code=503, detail="Servico Bling indisponivel ao listar lotes.")
         if resp.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Erro ao listar lotes do produto {pid}: {resp.text}")
-        data = resp.json().get("data", [])
+            raise HTTPException(status_code=502, detail=f"Erro HTTP {resp.status_code} ao listar lotes do produto.")
+        try:
+            data = resp.json().get("data", [])
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="Resposta invalida da Bling ao listar lotes.") from exc
         if not data:
             break
         lotes.extend(data)
@@ -114,8 +127,18 @@ def _bling_listar_lancamentos_lote(access_token: str, lote_id: str) -> tuple[lis
     headers = {"Authorization": f"Bearer {access_token}"}
     url = f"https://api.bling.com.br/Api/v3/produtos/lotes/{lid}/lancamentos"
     lancamentos: list[dict] = []
+    limiter = _BlingAdaptiveLimiter(start_interval=0.08)
     for pagina in range(1, 1000):
-        resp = BLING_SESSION.get(url, headers=headers, params={"pagina": pagina, "limite": 100}, timeout=20)
+        resp = _bling_get_with_adaptive_limit(
+            url,
+            headers=headers,
+            params={"pagina": pagina, "limite": 100},
+            timeout=20,
+            limiter=limiter,
+            max_attempts=3,
+        )
+        if resp is None:
+            raise HTTPException(status_code=503, detail="Servico Bling indisponivel ao listar lancamentos de lote.")
         if resp.status_code == 401:
             return [], 401
         if resp.status_code == 403:
@@ -146,9 +169,16 @@ def _bling_listar_lancamentos_lote(access_token: str, lote_id: str) -> tuple[lis
                 or "nao foi encontrado" in texto_resp.lower()
             ):
                 return [], 200
+        if resp.status_code == 429:
+            raise HTTPException(status_code=429, detail="Limite de solicitacoes da Bling atingido ao listar lancamentos.")
+        if resp.status_code in {500, 502, 503, 504}:
+            raise HTTPException(status_code=503, detail="Servico Bling indisponivel ao listar lancamentos de lote.")
         if resp.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Erro ao listar lanÃƒÂ§amentos do lote {lid}: {resp.text}")
-        data = resp.json().get("data", [])
+            raise HTTPException(status_code=502, detail=f"Erro HTTP {resp.status_code} ao listar lancamentos de lote.")
+        try:
+            data = resp.json().get("data", [])
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="Resposta invalida da Bling ao listar lancamentos.") from exc
         if not data:
             break
         lancamentos.extend(data)
@@ -484,17 +514,9 @@ def _sincronizar_lancamentos_estoque_sku_api(
 
     lotes, status_lotes = _bling_listar_lotes_produto(access_token, id_bling_sku)
     if status_lotes == 401 and refresh_tok:
-        novos = _bling_refresh_token(cid, sec, refresh_tok)
-        access_token = novos.get("access_token")
-        refresh_tok = novos.get("refresh_token", refresh_tok)
-        atualizar_api_loja(client_id, loja_nome, "bling", {
-            "id": cid,
-            "secret": sec,
-            "access_token": access_token,
-            "refresh_token": refresh_tok,
-            "connected": True,
-            "updated_at": str(time.time()),
-        })
+        bling_cfg = renovar_token_bling_loja(client_id, loja_nome, bling_cfg)
+        access_token = bling_cfg.get("access_token")
+        refresh_tok = bling_cfg.get("refresh_token")
         lotes, status_lotes = _bling_listar_lotes_produto(access_token, id_bling_sku)
 
     if status_lotes == 401:
@@ -611,17 +633,9 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
 
     natureza_map, status_nat = _bling_listar_naturezas(access_token)
     if status_nat == 401 and refresh_tok:
-        novos = _bling_refresh_token(cid, sec, refresh_tok)
-        access_token = novos.get("access_token")
-        refresh_tok = novos.get("refresh_token", refresh_tok)
-        atualizar_api_loja(client_id, loja_nome, "bling", {
-            "id": cid,
-            "secret": sec,
-            "access_token": access_token,
-            "refresh_token": refresh_tok,
-            "connected": True,
-            "updated_at": str(time.time()),
-        })
+        bling_cfg = renovar_token_bling_loja(client_id, loja_nome, bling_cfg)
+        access_token = bling_cfg.get("access_token")
+        refresh_tok = bling_cfg.get("refresh_token")
         natureza_map, status_nat = _bling_listar_naturezas(access_token)
     if status_nat == 401:
         raise HTTPException(status_code=401, detail="Token Bling expirado. Refaça a conexão em Integrações.")
@@ -647,17 +661,9 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
         progress_end=44,
     )
     if status_entrada == 401 and refresh_tok:
-        novos = _bling_refresh_token(cid, sec, refresh_tok)
-        access_token = novos.get("access_token")
-        refresh_tok = novos.get("refresh_token", refresh_tok)
-        atualizar_api_loja(client_id, loja_nome, "bling", {
-            "id": cid,
-            "secret": sec,
-            "access_token": access_token,
-            "refresh_token": refresh_tok,
-            "connected": True,
-            "updated_at": str(time.time()),
-        })
+        bling_cfg = renovar_token_bling_loja(client_id, loja_nome, bling_cfg)
+        access_token = bling_cfg.get("access_token")
+        refresh_tok = bling_cfg.get("refresh_token")
         notas_entrada, notas_entrada_itens, status_entrada = _bling_listar_notas_entrada(
             access_token,
             data_inicio,
@@ -693,17 +699,9 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
         progress_end=74,
     )
     if status_saida == 401 and refresh_tok:
-        novos = _bling_refresh_token(cid, sec, refresh_tok)
-        access_token = novos.get("access_token")
-        refresh_tok = novos.get("refresh_token", refresh_tok)
-        atualizar_api_loja(client_id, loja_nome, "bling", {
-            "id": cid,
-            "secret": sec,
-            "access_token": access_token,
-            "refresh_token": refresh_tok,
-            "connected": True,
-            "updated_at": str(time.time()),
-        })
+        bling_cfg = renovar_token_bling_loja(client_id, loja_nome, bling_cfg)
+        access_token = bling_cfg.get("access_token")
+        refresh_tok = bling_cfg.get("refresh_token")
         notas_saida_itens, status_saida = _bling_listar_vendas_fallback_nf_saida(
             access_token,
             data_inicio,

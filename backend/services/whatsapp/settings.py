@@ -23,6 +23,8 @@ WHATSAPP_CODEX_REASONING_POLICIES = ("adaptive", "fixed")
 WHATSAPP_ORCHESTRATION_MODE_DEFAULT = "all_when_codex_selected"
 WHATSAPP_PROGRESS_INTERVAL_DEFAULT = 8
 WHATSAPP_AGENT_ARCHITECTURE_DEFAULT = "dual_codex"
+WHATSAPP_RESPONSE_PROVIDER_POLICY_DEFAULT = "codex_only"
+WHATSAPP_RESPONSE_PROVIDER_POLICIES = ("codex_only", "codex_then_configured_fallback")
 WHATSAPP_CONVERSATION_AGENT_MODEL_DEFAULT = "gpt-5.6-luna"
 WHATSAPP_CONVERSATION_AGENT_REASONING_DEFAULT = "low"
 WHATSAPP_TASK_AGENT_MODEL_DEFAULT = "gpt-5.6-sol"
@@ -39,11 +41,17 @@ WHATSAPP_MAX_SUBTASKS_DEFAULT = 6
 WHATSAPP_MAX_ACTIVE_TASK_AGENTS_DEFAULT = 6
 WHATSAPP_CONVERSATION_WORKER_COUNT_DEFAULT = 4
 WHATSAPP_CONVERSATION_RUNTIME_POOL_SIZE_DEFAULT = 4
-WHATSAPP_FUNCTION_MANAGER_ENABLED_DEFAULT = True
+WHATSAPP_DATA_SELECTION_ENABLED_DEFAULT = True
+WHATSAPP_DATA_SELECTION_WORKER_COUNT_DEFAULT = 4
+WHATSAPP_DATA_SELECTION_RUNTIME_POOL_SIZE_DEFAULT = 4
+# Aliases de importacao preservados durante a remocao do Function Manager
+# semantico. Os campos de configuracao antigos nao controlam mais o runtime.
+WHATSAPP_FUNCTION_MANAGER_ENABLED_DEFAULT = WHATSAPP_DATA_SELECTION_ENABLED_DEFAULT
 WHATSAPP_FUNCTION_MANAGER_REQUIRED_DEFAULT = True
-WHATSAPP_FUNCTION_MANAGER_WORKER_COUNT_DEFAULT = 4
-WHATSAPP_FUNCTION_MANAGER_RUNTIME_POOL_SIZE_DEFAULT = 4
+WHATSAPP_FUNCTION_MANAGER_WORKER_COUNT_DEFAULT = WHATSAPP_DATA_SELECTION_WORKER_COUNT_DEFAULT
+WHATSAPP_FUNCTION_MANAGER_RUNTIME_POOL_SIZE_DEFAULT = WHATSAPP_DATA_SELECTION_RUNTIME_POOL_SIZE_DEFAULT
 WHATSAPP_MAX_ACTIVE_TASK_AGENTS_GLOBAL_DEFAULT = 12
+_CONTEXT_HUB_CLIENT_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,80}")
 
 
 def normalize_ai_model(value: Any) -> str:
@@ -80,7 +88,17 @@ def normalize_agent_architecture(value: Any) -> str:
     architecture = str(value or WHATSAPP_AGENT_ARCHITECTURE_DEFAULT).strip().lower()
     if architecture not in {"dual_codex", "legacy"}:
         raise HTTPException(status_code=400, detail="Arquitetura de agentes do WhatsApp invalida.")
-    return architecture
+    # One-release compatibility: accept the old administrative value but do
+    # not reactivate the removed semantic router.  The direct cutover always
+    # materializes the Luna + CodexDataSelectionAgent architecture.
+    return "dual_codex"
+
+
+def normalize_response_provider_policy(value: Any) -> str:
+    policy = str(value or WHATSAPP_RESPONSE_PROVIDER_POLICY_DEFAULT).strip().lower()
+    if policy not in WHATSAPP_RESPONSE_PROVIDER_POLICIES:
+        raise HTTPException(status_code=400, detail="Politica de provedor de resposta do WhatsApp invalida.")
+    return policy
 
 
 def normalize_conversation_interval(value: Any) -> int:
@@ -99,11 +117,64 @@ def normalize_capacity(value: Any, fallback: int, minimum: int, maximum: int) ->
     return max(minimum, min(maximum, number))
 
 
+def normalize_context_hub_client_id(value: Any) -> str:
+    client_id = str(value or "").strip()
+    return client_id if _CONTEXT_HUB_CLIENT_ID_RE.fullmatch(client_id) else ""
+
+
+def normalize_context_hub_enabled_by_client(value: Any) -> dict[str, bool]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, bool] = {}
+    for raw_client_id, raw_enabled in value.items():
+        client_id = normalize_context_hub_client_id(raw_client_id)
+        if client_id and isinstance(raw_enabled, bool):
+            normalized[client_id] = raw_enabled
+    return normalized
+
+
+def context_hub_enabled_default(config: Any) -> bool:
+    source = config if isinstance(config, dict) else {}
+    if "context_hub_enabled_default" in source:
+        return source.get("context_hub_enabled_default") is not False
+    # Compatibilidade com configuracoes anteriores ao escopo por cliente.
+    return source.get("context_hub_enabled") is not False
+
+
+def context_hub_enabled_for_client(config: Any, client_id: Any) -> bool:
+    source = config if isinstance(config, dict) else {}
+    normalized_client_id = normalize_context_hub_client_id(client_id)
+    overrides = normalize_context_hub_enabled_by_client(source.get("context_hub_enabled_by_client"))
+    if normalized_client_id and normalized_client_id in overrides:
+        return overrides[normalized_client_id]
+    return context_hub_enabled_default(source)
+
+
+def set_context_hub_enabled_for_client(config: dict[str, Any], client_id: Any, enabled: bool) -> None:
+    normalized_client_id = normalize_context_hub_client_id(client_id)
+    if not normalized_client_id:
+        raise ValueError("invalid_context_hub_client_id")
+    default_enabled = context_hub_enabled_default(config)
+    overrides = normalize_context_hub_enabled_by_client(config.get("context_hub_enabled_by_client"))
+    overrides[normalized_client_id] = bool(enabled)
+    config["context_hub_enabled_default"] = default_enabled
+    config["context_hub_enabled_by_client"] = overrides
+    # Campo escalar preservado para consumidores legados no tenant materializado.
+    config["context_hub_enabled"] = bool(enabled)
+    # Marcador somente em memoria: _save_config usa-o para mesclar o override
+    # com o mapa persistido dentro do mesmo lock, sem perder outro tenant.
+    config["_context_hub_enabled_override"] = {
+        "client_id": normalized_client_id,
+        "enabled": bool(enabled),
+    }
+
+
 def dual_agent_settings(
     config: dict[str, Any],
     *,
     report_deadline_seconds: int = 10 * 60,
     max_retry_attempts: int = 3,
+    client_id: Any = None,
 ) -> dict[str, Any]:
     source = config if isinstance(config, dict) else {}
     worker_count = normalize_capacity(
@@ -118,23 +189,26 @@ def dual_agent_settings(
             8,
         ),
     )
-    manager_worker_count = normalize_capacity(
-        source.get("function_manager_worker_count"),
-        WHATSAPP_FUNCTION_MANAGER_WORKER_COUNT_DEFAULT,
+    selection_worker_count = normalize_capacity(
+        source.get("data_selection_worker_count"),
+        WHATSAPP_DATA_SELECTION_WORKER_COUNT_DEFAULT,
         1,
         8,
     )
-    manager_pool_size = max(
-        manager_worker_count,
+    selection_pool_size = max(
+        selection_worker_count,
         normalize_capacity(
-            source.get("function_manager_runtime_pool_size"),
-            WHATSAPP_FUNCTION_MANAGER_RUNTIME_POOL_SIZE_DEFAULT,
+            source.get("data_selection_runtime_pool_size"),
+            WHATSAPP_DATA_SELECTION_RUNTIME_POOL_SIZE_DEFAULT,
             1,
             8,
         ),
     )
     return {
         "agent_architecture": normalize_agent_architecture(source.get("agent_architecture")),
+        "response_provider_policy": normalize_response_provider_policy(
+            source.get("response_provider_policy")
+        ),
         "conversation_agent_model": normalize_codex_agent_model(
             source.get("conversation_agent_model"), WHATSAPP_CONVERSATION_AGENT_MODEL_DEFAULT
         ),
@@ -191,10 +265,22 @@ def dual_agent_settings(
             12,
         ),
         "preserve_order_per_phone": True,
-        "function_manager_enabled": source.get("function_manager_enabled") is not False,
-        "function_manager_required_before_sol": source.get("function_manager_required_before_sol") is not False,
-        "function_manager_worker_count": manager_worker_count,
-        "function_manager_runtime_pool_size": manager_pool_size,
+        "data_selection_enabled": True,
+        "data_selection_required_before_sol": True,
+        "data_selection_worker_count": selection_worker_count,
+        "data_selection_runtime_pool_size": selection_pool_size,
+        "context_hub_enabled": context_hub_enabled_for_client(
+            source,
+            source.get("client_id") if client_id is None else client_id,
+        ),
+        # Compatibilidade de leitura para consumidores antigos. Estes valores
+        # espelham o novo seletor; chaves `function_manager_*` recebidas na
+        # configuracao sao deliberadamente ignoradas.
+        "function_manager_enabled": True,
+        "function_manager_required_before_sol": True,
+        "function_manager_worker_count": selection_worker_count,
+        "function_manager_runtime_pool_size": selection_pool_size,
+        "function_manager_legacy_fields_ignored": True,
     }
 
 
@@ -271,7 +357,14 @@ def ai_settings(config: dict[str, Any]) -> dict[str, str]:
         provider = "openai"
     return {
         "model": model,
-        "provider": provider,
+        # O Black Jhon sempre usa Codex como nucleo semantico. `ai_model`
+        # identifica somente o destino opcional do fallback operacional.
+        "provider": "codex",
+        "fallback_model": model,
+        "fallback_provider": provider,
+        "response_provider_policy": normalize_response_provider_policy(
+            source.get("response_provider_policy")
+        ),
         "codex_reasoning_effort": reasoning,
         "codex_reasoning_policy": normalize_codex_reasoning_policy(source.get("codex_reasoning_policy")),
         "codex_reasoning_max": normalize_codex_reasoning_effort(source.get("codex_reasoning_max") or reasoning),

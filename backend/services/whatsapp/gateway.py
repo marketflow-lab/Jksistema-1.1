@@ -7,7 +7,7 @@ mantém testável e evita que chamadas HTTP sejam misturadas à orquestração.
 from __future__ import annotations
 
 from typing import Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
 import requests
 from fastapi import HTTPException
@@ -29,6 +29,27 @@ def gateway_headers(config: dict[str, Any]) -> dict[str, str]:
     return {"authorization": f"Bearer {token}", "accept": "application/json"}
 
 
+def _machine_scoped_path(config: dict[str, Any], method: str, path: str) -> str:
+    """Bind sensitive bridge reads to the configured local machine.
+
+    The machine id is carried in the query string because these endpoints are
+    GETs.  Any caller-supplied value is replaced by the authenticated local
+    configuration so a reused bridge token cannot select another machine.
+    """
+
+    raw_path = str(path or "")
+    parsed = urlsplit(raw_path)
+    sensitive_read = parsed.path == "/bridge/status" or parsed.path.startswith("/bridge/media/")
+    if method.upper() != "GET" or not sensitive_read:
+        return raw_path
+    machine_id = str(config.get("machine_id") or "").strip()
+    if not machine_id:
+        raise RuntimeError("machine_id_missing")
+    query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key != "machine_id"]
+    query.append(("machine_id", machine_id))
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
+
+
 def gateway_request(
     config: dict[str, Any],
     method: str,
@@ -42,9 +63,10 @@ def gateway_request(
     token = str(config.get("bridge_token") or "").strip()
     if not worker_url or not token:
         raise RuntimeError("worker_url_or_bridge_token_missing")
+    safe_path = _machine_scoped_path(config, method, path)
     response = requests.request(
         method.upper(),
-        worker_url + path,
+        worker_url + safe_path,
         headers=gateway_headers(config),
         json=payload,
         timeout=timeout,

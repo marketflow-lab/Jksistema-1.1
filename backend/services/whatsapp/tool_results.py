@@ -6,7 +6,123 @@ import json
 import re
 from typing import Any
 
-from backend.services.whatsapp import formatting, retry_policy
+from backend.services.codex_data_selection_agent import compact_evidence
+from backend.services.whatsapp import formatting, marketplace_listing_delivery, retry_policy
+
+
+_CONTEXT_HUB_SAFE_FIELDS = frozenset({
+    "doc_id",
+    "chunk_id",
+    "snippet",
+    "score",
+    "truth_class",
+    "source_version",
+    "source_hash",
+    "content_hash",
+    "generation_id",
+    "version",
+    "hash",
+    "generation",
+    "type",
+    "module",
+    "surface",
+    "selection_strategy",
+    "selection_reason",
+})
+_DLP_BLOCKED = object()
+
+
+def _dlp_safe_payload(value: Any) -> tuple[Any, int]:
+    """Remove complete snippet rows blocked by DLP, returning only a count."""
+
+    from backend.services import context_hub
+
+    if isinstance(value, dict):
+        snippet = str(value.get("snippet") or "") if "snippet" in value else ""
+        if snippet and context_hub.scan_dlp(snippet, source_ref="whatsapp_compaction"):
+            return _DLP_BLOCKED, 1
+        output: dict[str, Any] = {}
+        blocked = 0
+        for key, child in value.items():
+            safe_child, child_blocked = _dlp_safe_payload(child)
+            blocked += child_blocked
+            if safe_child is not _DLP_BLOCKED:
+                output[str(key)] = safe_child
+        return output, blocked
+    if isinstance(value, list):
+        output_list: list[Any] = []
+        blocked = 0
+        for child in value:
+            safe_child, child_blocked = _dlp_safe_payload(child)
+            blocked += child_blocked
+            if safe_child is not _DLP_BLOCKED:
+                output_list.append(safe_child)
+        return output_list, blocked
+    return value, 0
+
+
+def _context_hub_safe_rows(source: Any) -> list[dict[str, Any]]:
+    payload = source if isinstance(source, dict) else {}
+    candidates: list[Any] = []
+    for key in ("results", "top_rows", "rows", "data"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            candidates = value
+            break
+    nested = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    if not candidates:
+        for key in ("results", "rows", "data"):
+            value = nested.get(key)
+            if isinstance(value, list):
+                candidates = value
+                break
+    rows: list[dict[str, Any]] = []
+    for item in candidates[:8]:
+        if not isinstance(item, dict):
+            continue
+        item, _blocked = _dlp_safe_payload(item)
+        if item is _DLP_BLOCKED or not isinstance(item, dict):
+            continue
+        safe = {
+            str(key): value
+            for key, value in item.items()
+            if str(key) in _CONTEXT_HUB_SAFE_FIELDS
+        }
+        # Entregue uma referencia logica ao Codex sem expor caminhos locais.
+        if safe.get("doc_id"):
+            safe["reference"] = str(safe.get("doc_id") or "")[:240]
+        if safe.get("snippet") is not None:
+            safe["snippet"] = str(safe.get("snippet") or "")[:320]
+        if safe:
+            safe["trust_label"] = "UNTRUSTED_REFERENCE_DATA"
+            rows.append(safe)
+    return rows
+
+
+def _context_hub_generation(source: Any, rows: list[dict[str, Any]]) -> dict[str, str]:
+    payload = source if isinstance(source, dict) else {}
+    candidates: list[dict[str, Any]] = [payload]
+    if isinstance(payload.get("result"), dict):
+        candidates.append(payload["result"])
+    summary = payload.get("summary")
+    if isinstance(summary, dict):
+        candidates.append(summary)
+    elif isinstance(summary, list):
+        for item in summary:
+            if not isinstance(item, dict):
+                continue
+            candidates.append(item)
+            if isinstance(item.get("summary"), dict):
+                candidates.append(item["summary"])
+    generation_id = ""
+    source_version = ""
+    for candidate in candidates:
+        generation_id = generation_id or str(candidate.get("generation_id") or candidate.get("generation") or "").strip()
+        source_version = source_version or str(candidate.get("source_version") or candidate.get("version") or "").strip()
+    if rows:
+        generation_id = generation_id or str(rows[0].get("generation_id") or rows[0].get("generation") or "").strip()
+        source_version = source_version or str(rows[0].get("source_version") or rows[0].get("version") or "").strip()
+    return {"generation_id": generation_id[:160], "source_version": source_version[:160]}
 
 
 def stock_balance_contract(result: Any) -> dict[str, Any]:
@@ -108,6 +224,84 @@ def stock_balance_contract(result: Any) -> dict[str, Any]:
     }
 
 
+def positive_stock_sku_count_contract(result: Any) -> dict[str, Any]:
+    """Extract the exact aggregate count without confusing it with one SKU balance."""
+
+    source = result if isinstance(result, dict) else {}
+    stored = source.get("positive_stock_sku_count")
+    if isinstance(stored, dict):
+        return dict(stored)
+
+    candidates: list[dict[str, Any]] = []
+    seen: set[int] = set()
+
+    def collect(value: Any, depth: int = 0) -> None:
+        if depth > 5:
+            return
+        if isinstance(value, dict):
+            if id(value) in seen:
+                return
+            seen.add(id(value))
+            if (
+                str(value.get("schema") or "") == "jk.stock.bling_positive_sku_count.v1"
+                or "positive_sku_count" in value
+            ):
+                candidates.append(value)
+            for key in ("inventory_summary", "top_rows", "rows", "data", "result", "summary"):
+                if key in value:
+                    collect(value.get(key), depth + 1)
+        elif isinstance(value, list):
+            for item in value[:50]:
+                collect(item, depth + 1)
+
+    collect(source)
+    candidate = next(
+        (item for item in candidates if item.get("coverage_complete") is True),
+        candidates[0] if candidates else {},
+    )
+    count = candidate.get("positive_sku_count")
+    numeric_count = isinstance(count, (int, float)) and not isinstance(count, bool) and float(count).is_integer()
+    confirmed = bool(candidate.get("coverage_complete") is True and numeric_count and float(count) >= 0)
+    total = candidate.get("store_available")
+    numeric_total = isinstance(total, (int, float)) and not isinstance(total, bool)
+    validation = source.get("tool_validation") if isinstance(source.get("tool_validation"), dict) else {}
+    warning_values = [
+        *list(source.get("warnings") or []),
+        *list(validation.get("warnings") or []),
+    ]
+    warning_key = " ".join(formatting._whatsapp_text_key(item) for item in warning_values)
+    auth_failed = bool(re.search(r"\b(token.*expir\w*|http 401|nao autoriz\w*|autentic\w*|credencial\w*)\b", warning_key))
+    partial_reason = str(candidate.get("partial_reason") or source.get("empty_reason") or "").strip()
+    if confirmed:
+        reason = "Contagem distinta de SKUs com saldo positivo confirmada em todo o catalogo da loja Bling."
+        error_class = ""
+    elif auth_failed:
+        reason = "A autenticacao da Bling desta loja expirou; a contagem nao foi confirmada."
+        error_class = "authentication"
+    else:
+        reason = partial_reason or "A varredura da loja ficou incompleta; a contagem nao foi confirmada."
+        error_class = "coverage_incomplete"
+    return {
+        "confirmed": confirmed,
+        "store": str(candidate.get("store") or candidate.get("loja") or source.get("manager_store") or "").strip(),
+        "positive_sku_count": int(float(count)) if confirmed else None,
+        "store_available": float(total) if confirmed and numeric_total else None,
+        "catalog_products_scanned": int(candidate.get("catalog_products_scanned") or 0),
+        "catalog_distinct_skus": int(candidate.get("catalog_distinct_skus") or 0),
+        "balances_requested": int(candidate.get("balances_requested") or 0),
+        "balances_returned": int(candidate.get("balances_returned") or 0),
+        "duplicate_skus_collapsed": int(candidate.get("duplicate_skus_collapsed") or 0),
+        "products_without_sku_positive": int(candidate.get("products_without_sku_positive") or 0),
+        "scope": str(candidate.get("stock_scope") or "bling_non_full_only"),
+        "full_excluded": candidate.get("full_excluded") is True,
+        "coverage_complete": candidate.get("coverage_complete") is True,
+        "auth_failed": auth_failed,
+        "reason": reason,
+        "error_class": error_class,
+        "retryable": False,
+    }
+
+
 def normalize_tool_result_contract(result: Any) -> dict[str, Any]:
     source = result if isinstance(result, dict) else {"success": False, "error": "resultado_invalido"}
     validation = source.get("tool_validation") if isinstance(source.get("tool_validation"), dict) else {}
@@ -115,7 +309,7 @@ def normalize_tool_result_contract(result: Any) -> dict[str, Any]:
     error_class, retryable = retry_policy.retry_classification(error) if error else ("", False)
     data = source.get("data")
     if data is None:
-        for key in ("result", "rows", "all_rows", "summary"):
+        for key in ("result", "results", "rows", "all_rows", "summary"):
             if source.get(key) not in (None, ""):
                 data = source.get(key)
                 break
@@ -124,7 +318,7 @@ def normalize_tool_result_contract(result: Any) -> dict[str, Any]:
         if isinstance(data, list):
             record_count = len(data)
         elif isinstance(data, dict):
-            rows = data.get("rows") or data.get("records") or data.get("items")
+            rows = data.get("results") or data.get("rows") or data.get("records") or data.get("items")
             record_count = len(rows) if isinstance(rows, list) else (1 if data else 0)
         else:
             record_count = 0
@@ -170,6 +364,17 @@ def normalize_tool_result_contract(result: Any) -> dict[str, Any]:
 def function_manager_compact_result(result: Any) -> dict[str, Any]:
     source = result if isinstance(result, dict) else {"success": False, "error": "resultado_invalido"}
     compact: dict[str, Any] = {}
+    listing_bundle = (
+        marketplace_listing_delivery.build_listing_bundle(source)
+        if str(source.get("tool_id") or "") == "mercado_livre_listing"
+        else {}
+    )
+    context_hub_rows = (
+        _context_hub_safe_rows(source)
+        if str(source.get("tool_id") or "") == "context_hub_search"
+        else []
+    )
+    dlp_blocked_count = 0
     for key in (
         "tool_id",
         "tool_label",
@@ -193,24 +398,44 @@ def function_manager_compact_result(result: Any) -> dict[str, Any]:
         "data",
         "rows",
         "result",
+        "results",
         "top_rows",
     ):
         if key not in source:
             continue
-        value = source.get(key)
-        serialized = json.dumps(value, ensure_ascii=False, default=str)
-        if len(serialized) > 12000:
-            if isinstance(value, list):
-                value = value[:20]
-            elif isinstance(value, dict):
-                value = {str(k): v for k, v in list(value.items())[:30]}
-            serialized = json.dumps(value, ensure_ascii=False, default=str)[:12000]
-            try:
-                value = json.loads(serialized)
-            except Exception:
-                value = serialized
-        compact[key] = value
+        value, blocked = _dlp_safe_payload(source.get(key))
+        dlp_blocked_count += blocked
+        if value is _DLP_BLOCKED:
+            continue
+        compact[key] = compact_evidence(value, report=False)
+    if dlp_blocked_count:
+        compact["dlp_blocked_count"] = dlp_blocked_count
     compact.update(normalize_tool_result_contract(source))
+    if str(source.get("tool_id") or "") == "context_hub_search":
+        generation = _context_hub_generation(source, context_hub_rows)
+        compact.update({
+            "records": len(context_hub_rows),
+            "rows": context_hub_rows,
+            "data": context_hub_rows,
+            "summary": {
+                "count": len(context_hub_rows),
+                **generation,
+            },
+            "context_hub_generation": generation,
+            "dados_suficientes": bool(source.get("success") is True and context_hub_rows),
+            "coverage_complete": bool(source.get("success") is True and context_hub_rows),
+            "error_class": "" if source.get("success") is True and context_hub_rows else "insufficient_evidence",
+            "retryable": False,
+        })
+        # Remove any nested/raw representation that could still contain local
+        # source references.  Only the allowlisted rows above reach the agent.
+        compact.pop("result", None)
+        compact.pop("results", None)
+        compact.pop("top_rows", None)
+        for raw_request_key in ("args", "arguments", "message", "query", "client_id", "tenant_id"):
+            compact.pop(raw_request_key, None)
+    if listing_bundle.get("listings"):
+        compact["listing_bundle"] = listing_bundle
     if str(source.get("tool_id") or "") == "bling_stock_balances":
         stock_balance = stock_balance_contract(source)
         compact["stock_balance"] = stock_balance
@@ -218,6 +443,13 @@ def function_manager_compact_result(result: Any) -> dict[str, Any]:
         compact["coverage_complete"] = stock_balance.get("confirmed") is True
         compact["error_class"] = str(stock_balance.get("error_class") or "")
         compact["retryable"] = stock_balance.get("retryable") is True
+    if str(source.get("tool_id") or "") == "bling_positive_stock_sku_count":
+        count_contract = positive_stock_sku_count_contract(source)
+        compact["positive_stock_sku_count"] = count_contract
+        compact["dados_suficientes"] = count_contract.get("confirmed") is True
+        compact["coverage_complete"] = count_contract.get("confirmed") is True
+        compact["error_class"] = str(count_contract.get("error_class") or "")
+        compact["retryable"] = count_contract.get("retryable") is True
     return compact
 
 
@@ -296,6 +528,8 @@ def stock_tool_result_confirmed(result: dict[str, Any]) -> bool:
     tool_id = str(result.get("tool_id") or "")
     if tool_id == "bling_stock_balances":
         return stock_balance_contract(result).get("confirmed") is True
+    if tool_id == "bling_positive_stock_sku_count":
+        return positive_stock_sku_count_contract(result).get("confirmed") is True
     if tool_id == "mercado_livre_listing":
         return marketplace_listing_stock_contract(result).get("confirmed") is True
     if tool_id == "stock_data":
@@ -358,22 +592,24 @@ def function_manager_evidence(plan: dict[str, Any], results: list[dict[str, Any]
             if result.get(key) not in (None, "", [], {})
         }
         if payload:
-            facts.append(json.dumps(payload, ensure_ascii=False, default=str)[:6000])
+            bounded_payload = compact_evidence(payload, report=False)
+            facts.append(json.dumps(bounded_payload, ensure_ascii=False, separators=(",", ":"), default=str))
     has_required = any(item.get("required") is True for item in validations)
     sufficient = bool(results and required_ok and (has_required or sufficient_count > 0))
-    return {
+    evidence = {
         "status": "completed" if sufficient else "partial",
         "summary": (
             "Dados internos coletados pelo Luna Gerenciador."
             if results
             else "Nenhuma funcao interna aplicavel retornou dados."
         ),
-        "verified_facts": facts[:30],
-        "sources": sources[:30],
         "confidence": "high" if sufficient else ("medium" if sufficient_count else "low"),
         "evidence_sufficient": sufficient,
         "answerable": sufficient_count > 0,
         "coverage_complete": sufficient,
+        "tool_results": results,
+        "verified_facts": facts[:30],
+        "sources": sources[:30],
         "missing": [
             item["motivo"]
             for item in validations
@@ -383,8 +619,28 @@ def function_manager_evidence(plan: dict[str, Any], results: list[dict[str, Any]
         "data_requests": [],
         "validations": validations,
         "failures": failures[:20],
-        "tool_results": results,
         "plan": plan,
+    }
+    report = any(
+        "report" in str(item or "").casefold() or "relatorio" in str(item or "").casefold()
+        for item in [*list(plan.get("intents") or []), *list(plan.get("requested_fields") or [])]
+    )
+    bounded = compact_evidence(evidence, report=report)
+    return bounded if isinstance(bounded, dict) else {
+        "status": "partial",
+        "summary": "A evidencia excedeu o limite seguro.",
+        "verified_facts": [],
+        "sources": [],
+        "confidence": "low",
+        "evidence_sufficient": False,
+        "coverage_complete": False,
+        "missing": ["evidence_budget_exceeded"],
+        "questions": [],
+        "data_requests": [],
+        "validations": [],
+        "failures": ["evidence_budget_exceeded"],
+        "tool_results": [],
+        "plan": {},
     }
 
 
@@ -428,7 +684,13 @@ def function_manager_merge_evidence(previous: Any, current: dict[str, Any]) -> d
         *[item for item in list(old.get("tool_results") or []) if isinstance(item, dict)],
         *[item for item in list(current.get("tool_results") or []) if isinstance(item, dict)],
     ][-30:]
-    return merged
+    plan = merged.get("plan") if isinstance(merged.get("plan"), dict) else {}
+    report = any(
+        "report" in str(item or "").casefold() or "relatorio" in str(item or "").casefold()
+        for item in [*list(plan.get("intents") or []), *list(plan.get("requested_fields") or [])]
+    )
+    bounded = compact_evidence(merged, report=report)
+    return bounded if isinstance(bounded, dict) else merged
 
 
 def format_stock_quantity(value: Any) -> str:

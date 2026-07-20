@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import sqlite3
 import threading
@@ -30,6 +31,30 @@ ASSISTANT_JOB_STATES = {
 }
 TERMINAL_JOB_STATES = {"partial", "completed", "failed", "canceled"}
 SCHEMA_VERSION = 2
+
+_AUDIT_REDACTED = "[REDACTED]"
+_CONTEXT_HUB_EPHEMERAL_PERMISSION = "context_hub_read_full"
+_CONTEXT_HUB_PRIVATE_TEXT_KEYS = {
+    "message", "mensagem", "pergunta", "query", "reference", "snippet",
+}
+_CONTEXT_HUB_PERSISTED_ROW_KEYS = {
+    "chunk_id", "doc_id", "generation_id", "module", "score", "source_hash",
+    "source_version", "surface", "truth_class", "type",
+}
+_AUDIT_STRING_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----", re.IGNORECASE | re.DOTALL),
+    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{4,}", re.IGNORECASE),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
+    re.compile(r"\b(?:sk|rk|pk|AIza)[-_A-Za-z0-9]{16,}\b"),
+    re.compile(
+        r"(?i)([?&](?:access_token|refresh_token|token|authorization|api_key|apikey|secret|password)=)"
+        r"[^&#\s]+"
+    ),
+    re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE),
+    re.compile(r"(?<!\d)(?:\+?55\s*)?(?:\(?\d{2}\)?[\s.-]*)?9?\d{4}[\s.-]?\d{4}(?!\d)"),
+    re.compile(r"(?<!\d)\d{3}[.\s-]?\d{3}[.\s-]?\d{3}[-.\s]?\d{2}(?!\d)"),
+    re.compile(r"(?<!\d)\d{2}[.\s-]?\d{3}[.\s-]?\d{3}[/\s-]?\d{4}[-.\s]?\d{2}(?!\d)"),
+)
 
 
 def _json(value: Any) -> str:
@@ -65,6 +90,21 @@ def _subject_hash(value: Any) -> str:
     return hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()[:24]
 
 
+def _redact_audit_string(value: Any) -> str:
+    # Redact before truncating so a long PEM block cannot evade detection by
+    # having its END marker beyond the persisted audit limit.
+    text = str(value or "")
+    for pattern in _AUDIT_STRING_PATTERNS:
+        if "[?&]" in pattern.pattern:
+            text = pattern.sub(
+                lambda match: f"{match.group(1)[0]}redacted={_AUDIT_REDACTED}",
+                text,
+            )
+        else:
+            text = pattern.sub(_AUDIT_REDACTED, text)
+    return text[:4000]
+
+
 def _safe_audit_value(value: Any) -> Any:
     sensitive = {
         "token", "bridge_token", "access_token", "refresh_token", "authorization",
@@ -79,8 +119,73 @@ def _safe_audit_value(value: Any) -> Any:
     if isinstance(value, list):
         return [_safe_audit_value(item) for item in value[:100]]
     if isinstance(value, str):
-        return value[:4000]
+        return _redact_audit_string(value)
     return value
+
+
+def _context_hub_text_hash(value: Any) -> str:
+    text = str(value or "").strip()
+    return hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()[:24] if text else ""
+
+
+def _context_hub_persisted_row(value: Any) -> dict[str, Any]:
+    row = value if isinstance(value, dict) else {}
+    return {
+        str(key): _safe_audit_value(item)
+        for key, item in row.items()
+        if str(key) in _CONTEXT_HUB_PERSISTED_ROW_KEYS
+    }
+
+
+def _state_persistence_value(value: Any, *, context_hub_scope: bool = False) -> Any:
+    """Create the durable bridge snapshot without persisting Hub capabilities/content.
+
+    The in-memory state keeps the evidence while the active request is running.
+    The SQLite snapshot keeps only document/chunk provenance; after a restart the
+    WhatsApp binding is revalidated and the Hub call is repeated when necessary.
+    """
+
+    if isinstance(value, dict):
+        is_hub = context_hub_scope or str(value.get("tool_id") or "") == "context_hub_search"
+        persisted: dict[str, Any] = {}
+        for raw_key, item in value.items():
+            key = str(raw_key)
+            if key == _CONTEXT_HUB_EPHEMERAL_PERMISSION:
+                continue
+            if is_hub and key in _CONTEXT_HUB_PRIVATE_TEXT_KEYS:
+                if key in {"message", "mensagem", "pergunta", "query"}:
+                    query_hash = _context_hub_text_hash(item)
+                    if query_hash:
+                        persisted.setdefault("query_hash", query_hash)
+                continue
+            if is_hub and key in {"rows", "results", "top_rows", "data"} and isinstance(item, list):
+                persisted[key] = [
+                    safe
+                    for safe in (_context_hub_persisted_row(row) for row in item[:12])
+                    if safe
+                ]
+                continue
+            persisted[key] = _state_persistence_value(item, context_hub_scope=is_hub)
+        return persisted
+    if isinstance(value, list):
+        return [_state_persistence_value(item, context_hub_scope=context_hub_scope) for item in value]
+    if isinstance(value, str) and "context_hub_search" in value:
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return f"[context_hub_evidence_redacted:{_context_hub_text_hash(value)}]"
+        return _json(_state_persistence_value(decoded, context_hub_scope=True))
+    if context_hub_scope and isinstance(value, str):
+        return _redact_audit_string(value)
+    return value
+
+
+def _state_snapshot_for_persistence(state: Any) -> dict[str, Any]:
+    snapshot = state if isinstance(state, dict) else {}
+    return {
+        str(bucket): _state_persistence_value(value)
+        for bucket, value in snapshot.items()
+    }
 
 
 class WhatsappBridgeStore:
@@ -276,7 +381,7 @@ class WhatsappBridgeStore:
 
     def save_state(self, state: dict[str, Any], *, migration: bool = False) -> None:
         self.initialize() if not self._initialized else None
-        snapshot = dict(state or {})
+        snapshot = _state_snapshot_for_persistence(state)
         now = time.time()
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")

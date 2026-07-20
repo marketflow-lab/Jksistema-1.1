@@ -900,6 +900,27 @@ app.whenReady().then(async () => {
     ipcMain.handle('get-app-version', () => {
         return app.getVersion();
     });
+    ipcMain.handle('get-app-zoom', (event) => {
+        assertTrustedAppZoomIpcSender(event);
+        return appZoomPayload();
+    });
+    ipcMain.handle('set-app-zoom', (event, percent) => {
+        assertTrustedAppZoomIpcSender(event);
+        return setAppZoomPercent(percent);
+    });
+    ipcMain.handle('find-in-active-screen', (event, query, options = {}) => {
+        assertTrustedElectronShellIpcSender(event, 'pesquisar na tela');
+        return startAppFindInPage(query, options || {});
+    });
+    ipcMain.handle('stop-find-in-active-screen', (event, action = 'clearSelection') => {
+        assertTrustedElectronShellIpcSender(event, 'encerrar a pesquisa na tela');
+        return stopAppFindInPage(action === 'keepSelection' ? 'keepSelection' : 'clearSelection');
+    });
+    ipcMain.handle('set-app-find-open', (event, open) => {
+        assertTrustedElectronShellIpcSender(event, 'controlar a pesquisa na tela');
+        appFindUiOpen = !!open;
+        return { success: true, open: appFindUiOpen };
+    });
     ipcMain.handle('get-native-window-handle', (event) => {
         return nativeWindowHandlePayload(BrowserWindow.fromWebContents(event.sender) || mainWindow);
     });
@@ -1455,6 +1476,12 @@ app.whenReady().then(async () => {
         if (!Number.isFinite(x) || !Number.isFinite(y)) {
             throw new Error('Coordenada invalida para clicar no navegador do Mercado Livre.');
         }
+        let zoomFactor = 1;
+        try {
+            zoomFactor = Number(view.webContents.getZoomFactor()) || 1;
+        } catch (_err) {}
+        x *= zoomFactor;
+        y *= zoomFactor;
         let bounds = null;
         try { bounds = view.getBounds ? view.getBounds() : null; } catch (_err) {}
         const maxX = bounds && Number(bounds.width) > 1 ? Number(bounds.width) - 1 : 9999;

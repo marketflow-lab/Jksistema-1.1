@@ -198,6 +198,22 @@ def _ia_ml_item_resumo(
     detalhes: Optional[dict] = None,
     requested_sku: str = "",
 ) -> dict:
+    pictures = []
+    picture_urls = []
+    for picture in (item.get("pictures") or [])[:10]:
+        if not isinstance(picture, dict):
+            continue
+        secure_url = str(picture.get("secure_url") or picture.get("url") or "").strip()
+        if not secure_url or secure_url in picture_urls:
+            continue
+        picture_urls.append(secure_url)
+        pictures.append({
+            "id": str(picture.get("id") or "").strip(),
+            "secure_url": secure_url,
+            "url": str(picture.get("url") or "").strip(),
+            "width": picture.get("width"),
+            "height": picture.get("height"),
+        })
     variacoes = [
         _ia_ml_variation_summary(var)
         for var in (item.get("variations") or [])[:8]
@@ -242,6 +258,8 @@ def _ia_ml_item_resumo(
         "category_id": str(item.get("category_id") or "").strip(),
         "permalink": str(item.get("permalink") or "").strip(),
         "thumbnail": str(item.get("thumbnail") or "").strip(),
+        "pictures": pictures,
+        "picture_urls": picture_urls,
         "health": item.get("health"),
         "catalog_listing": bool(item.get("catalog_listing")),
         "variations": variacoes,
@@ -443,6 +461,10 @@ def _ia_ml_store_failure(function_name: str, arguments: dict, failure: dict) -> 
     })
     if function_name == "get_mercado_livre_listing":
         result["matches"] = []
+    elif function_name == "get_mercado_livre_visits":
+        result.update({"results": [], "coverage_complete": False, "zero_is_authoritative": False})
+    elif function_name == "get_mercado_livre_promotions":
+        result.update({"campaigns": [], "coverage_complete": False, "zero_is_authoritative": False})
     elif function_name == "get_mercado_livre_returns":
         result.update({"devolucoes": [], "returns": []})
     else:
@@ -774,7 +796,12 @@ def _ia_ml_order_shipment_id(order: dict) -> str:
     return re.sub(r"[^0-9]", "", shipment_id)
 
 
-def _ia_ml_sanitize_order(order: dict, buyer_city: str = "", include_buyer_summary: bool = False) -> dict:
+def _ia_ml_sanitize_order(
+    order: dict,
+    buyer_city: str = "",
+    include_buyer_summary: bool = False,
+    include_shipment_id: bool = False,
+) -> dict:
     items = []
     items_gross = 0.0
     for entry in (order or {}).get("order_items") or []:
@@ -822,6 +849,8 @@ def _ia_ml_sanitize_order(order: dict, buyer_city: str = "", include_buyer_summa
         "net_amount": net,
         "items": items,
     }
+    if include_shipment_id:
+        result["shipment_id"] = _ia_ml_order_shipment_id(order)
     if include_buyer_summary:
         buyer = (order or {}).get("buyer") if isinstance((order or {}).get("buyer"), dict) else {}
         result["buyer_name"] = _ia_ml_buyer_name(order)
@@ -3069,7 +3098,7 @@ def _ia_tool_get_mercado_livre_orders(
         item_filter = item_ids[0] if item_ids else ""
         sku_filter_norm = _normalizar_texto(sku_value)
         for raw_index, raw in enumerate(orders_raw):
-            order = _ia_ml_sanitize_order(raw)
+            order = _ia_ml_sanitize_order(raw, include_shipment_id=report_mode)
             if str(order.get("status") or "").strip().lower() not in status_values:
                 continue
             if order_id_value and str(order.get("order_id") or "") != order_id_value:
@@ -3834,6 +3863,16 @@ def _ia_ml_validate_listing_sku_matches(
 def _ia_ml_listing_details_from_item(item: dict) -> dict:
     """Extrai somente detalhes read-only presentes no recurso de item, sem PII."""
     shipping = item.get("shipping") if isinstance(item.get("shipping"), dict) else {}
+    attributes = []
+    for attribute in (item.get("attributes") or [])[:100]:
+        if not isinstance(attribute, dict):
+            continue
+        attributes.append({
+            "id": str(attribute.get("id") or "").strip()[:100],
+            "name": str(attribute.get("name") or "").strip()[:160],
+            "value_id": str(attribute.get("value_id") or "").strip()[:100],
+            "value_name": str(attribute.get("value_name") or "").strip()[:300],
+        })
     price = item.get("price")
     original_price = item.get("original_price")
     promotion_detected = bool(
@@ -3846,6 +3885,11 @@ def _ia_ml_listing_details_from_item(item: dict) -> dict:
         "listing_fee_amount": item.get("listing_fee_amount"),
     }
     return {
+        "category": {
+            "id": str(item.get("category_id") or "").strip(),
+            "domain_id": str(item.get("domain_id") or "").strip(),
+        },
+        "attributes": attributes,
         "shipping": {
             "mode": str(shipping.get("mode") or "").strip(),
             "logistic_type": str(shipping.get("logistic_type") or "").strip(),
@@ -3860,6 +3904,369 @@ def _ia_ml_listing_details_from_item(item: dict) -> dict:
             "campaign_details_available": False,
         },
     }
+
+
+def _ia_ml_listing_commercial_requested(message: Any, explicit: bool = False) -> bool:
+    if explicit:
+        return True
+    normalized = _normalizar_texto(str(message or "")).lower()
+    return bool(
+        re.search(
+            r"\b(taxa|taxas|tarifa|tarifas|comissao|comissoes|custo do anuncio|"
+            r"frete|custo de envio|preco liquido|valor liquido|recebivel)\b",
+            normalized,
+        )
+    )
+
+
+def _ia_ml_listing_commercial_details(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    item: dict,
+    *,
+    deadline: Optional[float] = None,
+) -> tuple[dict, dict, list[dict]]:
+    """Consulta somente recursos GET oficiais e nunca completa tarifas por estimativa."""
+
+    item_id = str(item.get("id") or "").strip()
+    shipping = item.get("shipping") if isinstance(item.get("shipping"), dict) else {}
+    detail = {
+        "price": {
+            "amount": item.get("price"),
+            "regular_amount": item.get("original_price"),
+            "currency_id": str(item.get("currency_id") or "BRL").strip(),
+            "promotion_id": "",
+            "promotion_type": "",
+            "source": "item_resource",
+            "available": item.get("price") is not None,
+        },
+        "fees": {
+            "sale_fee_amount": None,
+            "listing_fee_amount": None,
+            "fixed_fee_amount": None,
+            "percentage_fee": None,
+            "meli_percentage_fee": None,
+            "financing_add_on_fee": None,
+            "source": "listing_prices",
+            "available": False,
+            "estimated": False,
+        },
+        "shipping": {
+            "mode": str(shipping.get("mode") or "").strip(),
+            "logistic_type": str(shipping.get("logistic_type") or "").strip(),
+            "free_shipping": bool(shipping.get("free_shipping")),
+            "store_pick_up": bool(shipping.get("store_pick_up")),
+            "seller_cost": None,
+            "seller_cost_available": False,
+            "source": "item_resource",
+            "warning": "Custo monetario de frete nao foi estimado sem um contexto oficial exato.",
+        },
+        "coverage_complete": True,
+        "warnings": [],
+    }
+    sources: list[dict] = []
+
+    try:
+        sale_resp, cfg = _ia_ml_request_get(
+            client_id,
+            loja,
+            cfg,
+            f"{ML_IA_API_BASE}/items/{item_id}/sale_price",
+            params={"context": "channel_marketplace"},
+            timeout=12,
+            deadline=deadline,
+        )
+        sources.append({"provider": "mercado_livre", "resource": "items/{item_id}/sale_price", "method": "GET", "store": loja})
+        if int(getattr(sale_resp, "status_code", 0) or 0) == 200:
+            payload = sale_resp.json() or {}
+            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+            detail["price"].update({
+                "amount": payload.get("amount", detail["price"]["amount"]),
+                "regular_amount": payload.get("regular_amount", detail["price"]["regular_amount"]),
+                "currency_id": str(payload.get("currency_id") or detail["price"]["currency_id"]).strip(),
+                "promotion_id": str(metadata.get("promotion_id") or "").strip(),
+                "promotion_type": str(metadata.get("promotion_type") or "").strip(),
+                "source": "sale_price",
+                "available": payload.get("amount") is not None,
+            })
+        elif int(getattr(sale_resp, "status_code", 0) or 0) not in {404}:
+            detail["coverage_complete"] = False
+            detail["warnings"].append("O preco comercial detalhado nao ficou disponivel nesta consulta.")
+    except (requests.exceptions.Timeout, HTTPException):
+        detail["coverage_complete"] = False
+        detail["warnings"].append("O preco comercial detalhado nao ficou disponivel nesta consulta.")
+
+    category_id = str(item.get("category_id") or "").strip()
+    listing_type_id = str(item.get("listing_type_id") or "").strip()
+    price_value = detail["price"].get("amount")
+    if category_id and listing_type_id and price_value not in (None, ""):
+        site_id = str((cfg or {}).get("site_id") or "MLB").strip().upper()
+        if not re.fullmatch(r"ML[A-Z]", site_id):
+            site_id = "MLB"
+        fee_params = {
+            "price": price_value,
+            "listing_type_id": listing_type_id,
+            "category_id": category_id,
+        }
+        if detail["shipping"]["logistic_type"]:
+            fee_params["logistic_type"] = detail["shipping"]["logistic_type"]
+        if detail["shipping"]["mode"]:
+            fee_params["shipping_mode"] = detail["shipping"]["mode"]
+        try:
+            fee_resp, cfg = _ia_ml_request_get(
+                client_id,
+                loja,
+                cfg,
+                f"{ML_IA_API_BASE}/sites/{site_id}/listing_prices",
+                params=fee_params,
+                timeout=12,
+                deadline=deadline,
+            )
+            sources.append({"provider": "mercado_livre", "resource": "sites/{site_id}/listing_prices", "method": "GET", "store": loja})
+            if int(getattr(fee_resp, "status_code", 0) or 0) == 200:
+                payload = fee_resp.json() or {}
+                if isinstance(payload, list):
+                    candidates = [value for value in payload if isinstance(value, dict)]
+                    payload = next(
+                        (value for value in candidates if str(value.get("listing_type_id") or "") == listing_type_id),
+                        candidates[0] if candidates else {},
+                    )
+                if not isinstance(payload, dict):
+                    payload = {}
+                sale_details = payload.get("sale_fee_details") if isinstance(payload.get("sale_fee_details"), dict) else {}
+                listing_details = payload.get("listing_fee_details") if isinstance(payload.get("listing_fee_details"), dict) else {}
+                detail["fees"].update({
+                    "sale_fee_amount": payload.get("sale_fee_amount"),
+                    "listing_fee_amount": payload.get("listing_fee_amount"),
+                    "fixed_fee_amount": sale_details.get("fixed_fee", listing_details.get("fixed_fee")),
+                    "percentage_fee": sale_details.get("percentage_fee"),
+                    "meli_percentage_fee": sale_details.get("meli_percentage_fee"),
+                    "financing_add_on_fee": sale_details.get("financing_add_on_fee"),
+                    "available": True,
+                })
+            else:
+                detail["coverage_complete"] = False
+                detail["warnings"].append("As tarifas oficiais do anuncio nao ficaram disponiveis nesta consulta.")
+        except (requests.exceptions.Timeout, HTTPException):
+            detail["coverage_complete"] = False
+            detail["warnings"].append("As tarifas oficiais do anuncio nao ficaram disponiveis nesta consulta.")
+    else:
+        detail["coverage_complete"] = False
+        detail["warnings"].append("Categoria, tipo de anuncio ou preco insuficiente para consultar tarifas oficiais.")
+    detail["warnings"] = detail["warnings"][:10]
+    return detail, cfg, sources
+
+
+def _ia_ml_owned_item(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    item_id: str,
+    *,
+    deadline: Optional[float] = None,
+) -> tuple[Optional[dict], dict, dict]:
+    items, cfg, failure = _ia_ml_fetch_listing_items(client_id, loja, cfg, [item_id], deadline=deadline)
+    if failure:
+        return None, cfg, failure
+    item = items[0] if items and isinstance(items[0], dict) else None
+    expected_seller = str((cfg or {}).get("user_id") or "").strip()
+    actual_seller = str((item or {}).get("seller_id") or "").strip()
+    if not item or not expected_seller or actual_seller != expected_seller:
+        return None, cfg, {
+            "code": "listing_not_in_store",
+            "message": "O MLB informado nao pertence, ou nao pode ser confirmado, na loja escolhida.",
+        }
+    return item, cfg, {}
+
+
+def _ia_tool_get_mercado_livre_visits(
+    client_id: str,
+    mensagem: str,
+    loja: Optional[str] = None,
+    item_id: Optional[str] = None,
+    dias: int = 30,
+    force_refresh: bool = False,
+    query_deadline: Optional[float] = None,
+) -> dict:
+    del force_refresh
+    function_name = "get_mercado_livre_visits"
+    ids = _ia_ml_normalizar_item_ids(item_id, mensagem)
+    days = _ia_ml_int(dias, 30, 1, 150)
+    arguments = {"loja": str(loja or "").strip(), "item_id": ids[0] if ids else "", "days": days}
+    if not ids:
+        result = _ia_ml_base_result()
+        result.update({"error": "item_id_required", "message": "Informe um MLB exato para consultar visitas.", "results": [], "coverage_complete": False, "zero_is_authoritative": False})
+        return {"function": function_name, "arguments": arguments, "result": result}
+    nome_loja, failure = _ia_ml_resolver_loja_exata(client_id, loja)
+    if not nome_loja:
+        return _ia_ml_store_failure(function_name, arguments, failure)
+    result = _ia_ml_base_result()
+    result.update({"store": nome_loja, "item_id": ids[0], "results": [], "coverage_complete": False, "zero_is_authoritative": False})
+    deadline = time.monotonic() + 25
+    if query_deadline is not None:
+        try:
+            deadline = min(deadline, float(query_deadline))
+        except (TypeError, ValueError):
+            pass
+    try:
+        cfg = _obter_cfg_ml(client_id, nome_loja)
+        _item, cfg, ownership_failure = _ia_ml_owned_item(client_id, nome_loja, cfg, ids[0], deadline=deadline)
+        result["sources"].append({"provider": "mercado_livre", "resource": "items multiget ownership", "method": "GET", "store": nome_loja})
+        if ownership_failure:
+            result.update({"error": ownership_failure.get("code"), "message": ownership_failure.get("message")})
+            return {"function": function_name, "arguments": arguments, "result": result}
+        ending = datetime.now(ZoneInfo("America/Sao_Paulo")).date().isoformat()
+        resp, cfg = _ia_ml_request_get(
+            client_id,
+            nome_loja,
+            cfg,
+            f"{ML_IA_API_BASE}/items/{ids[0]}/visits/time_window",
+            params={"last": days, "unit": "day", "ending": ending},
+            timeout=15,
+            deadline=deadline,
+        )
+        result["sources"].append({"provider": "mercado_livre", "resource": "items/{item_id}/visits/time_window", "method": "GET", "store": nome_loja})
+        if int(getattr(resp, "status_code", 0) or 0) != 200:
+            code, message, reconnect = _ia_ml_http_failure(resp, "Erro ao consultar visitas do anuncio")
+            result.update({"error": code, "message": message, "reconnect_required": reconnect})
+            return {"function": function_name, "arguments": arguments, "result": result}
+        payload = resp.json() or {}
+        points = []
+        for entry in (payload.get("results") or [])[:160]:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                total = max(0, int(float(entry.get("total") or 0)))
+            except (TypeError, ValueError):
+                total = 0
+            points.append({"date": str(entry.get("date") or "")[:32], "total": total})
+        try:
+            total_visits = max(0, int(float(payload.get("total_visits"))))
+        except (TypeError, ValueError):
+            total_visits = sum(point["total"] for point in points)
+        result.update({
+            "found": True,
+            "date_from": str(payload.get("date_from") or ""),
+            "date_to": str(payload.get("date_to") or ""),
+            "unit": str(payload.get("unit") or "day"),
+            "total_visits": total_visits,
+            "average": round(total_visits / len(points), 2) if points else 0,
+            "record": max(points, key=lambda point: point["total"]) if points else None,
+            "results": points,
+            "coverage_complete": True,
+            "zero_is_authoritative": total_visits == 0,
+            "paging": {"offset": 0, "limit": len(points), "returned": len(points), "total": len(points), "has_more": False},
+        })
+    except requests.exceptions.Timeout:
+        result.update({"error": "timeout", "message": "A consulta de visitas excedeu o limite seguro."})
+    except HTTPException as exc:
+        reconnect = int(getattr(exc, "status_code", 0) or 0) == 401
+        result.update({"error": "reconnect_required" if reconnect else "integration_error", "message": str(getattr(exc, "detail", exc))[:240], "reconnect_required": reconnect})
+    return {"function": function_name, "arguments": arguments, "result": result}
+
+
+def _ia_tool_get_mercado_livre_promotions(
+    client_id: str,
+    mensagem: str,
+    loja: Optional[str] = None,
+    status: Optional[str] = None,
+    promotion_id: Optional[str] = None,
+    incluir_contagens: bool = False,
+    limite: int = 20,
+    force_refresh: bool = False,
+    query_deadline: Optional[float] = None,
+) -> dict:
+    del mensagem, force_refresh
+    function_name = "get_mercado_livre_promotions"
+    limit_value = _ia_ml_int(limite, 20, 1, 50)
+    status_value = str(status or "").strip().lower()
+    promotion_value = str(promotion_id or "").strip()
+    arguments = {"loja": str(loja or "").strip(), "status": status_value, "promotion_id": promotion_value, "include_counts": bool(incluir_contagens), "limit": limit_value}
+    nome_loja, failure = _ia_ml_resolver_loja_exata(client_id, loja)
+    if not nome_loja:
+        return _ia_ml_store_failure(function_name, arguments, failure)
+    result = _ia_ml_base_result()
+    result.update({"store": nome_loja, "campaigns": [], "coverage_complete": False, "zero_is_authoritative": False})
+    deadline = time.monotonic() + 45
+    if query_deadline is not None:
+        try:
+            deadline = min(deadline, float(query_deadline))
+        except (TypeError, ValueError):
+            pass
+    try:
+        cfg = _obter_cfg_ml(client_id, nome_loja)
+        seller_id = str((cfg or {}).get("user_id") or "").strip()
+        if not seller_id:
+            result.update({"error": "seller_id_missing", "message": "A loja nao possui seller id confirmado."})
+            return {"function": function_name, "arguments": arguments, "result": result}
+        resp, cfg = _ia_ml_request_get(
+            client_id, nome_loja, cfg,
+            f"{ML_IA_API_BASE}/seller-promotions/users/{seller_id}",
+            params={"app_version": "v2"}, timeout=18, deadline=deadline,
+        )
+        result["sources"].append({"provider": "mercado_livre", "resource": "seller-promotions/users/{seller_id}", "method": "GET", "store": nome_loja})
+        if int(getattr(resp, "status_code", 0) or 0) != 200:
+            code, message, reconnect = _ia_ml_http_failure(resp, "Erro ao consultar promocoes")
+            result.update({"error": code, "message": message, "reconnect_required": reconnect})
+            return {"function": function_name, "arguments": arguments, "result": result}
+        payload = resp.json() or {}
+        raw_campaigns = payload if isinstance(payload, list) else (payload.get("results") or payload.get("campaigns") or payload.get("promotions") or [])
+        filtered = []
+        for campaign in raw_campaigns:
+            if not isinstance(campaign, dict):
+                continue
+            campaign_id = str(campaign.get("id") or campaign.get("promotion_id") or "").strip()
+            campaign_status = str(campaign.get("status") or campaign.get("state") or "").strip()
+            if not campaign_id or (promotion_value and campaign_id != promotion_value) or (status_value and campaign_status.lower() != status_value):
+                continue
+            benefits = campaign.get("benefits") if isinstance(campaign.get("benefits"), dict) else {}
+            filtered.append({
+                "id": campaign_id,
+                "name": str(campaign.get("name") or campaign.get("title") or campaign_id).strip()[:200],
+                "type": str(campaign.get("type") or campaign.get("promotion_type") or "").strip(),
+                "status": campaign_status,
+                "start_date": campaign.get("start_date") or campaign.get("date_start"),
+                "finish_date": campaign.get("finish_date") or campaign.get("end_date"),
+                "benefits": {key: benefits.get(key) for key in ("type", "meli_percent", "seller_percent") if benefits.get(key) is not None},
+                "counts": {},
+            })
+        total = len(filtered)
+        campaigns = filtered[:limit_value]
+        counts_complete = True
+        if incluir_contagens:
+            for campaign in campaigns[:5]:
+                for label, api_status in (("active", "started"), ("eligible", "candidate")):
+                    count_resp, cfg = _ia_ml_request_get(
+                        client_id, nome_loja, cfg,
+                        f"{ML_IA_API_BASE}/seller-promotions/promotions/{campaign['id']}/items",
+                        params={"app_version": "v2", "promotion_type": campaign["type"], "status": api_status, "limit": 1, "offset": 0},
+                        timeout=15, deadline=deadline,
+                    )
+                    result["sources"].append({"provider": "mercado_livre", "resource": "seller-promotions/promotions/{promotion_id}/items", "method": "GET", "store": nome_loja})
+                    if int(getattr(count_resp, "status_code", 0) or 0) != 200:
+                        counts_complete = False
+                        campaign["counts"][label] = None
+                        continue
+                    count_payload = count_resp.json() or {}
+                    paging = count_payload.get("paging") if isinstance(count_payload.get("paging"), dict) else {}
+                    campaign["counts"][label] = _ia_ml_int(paging.get("total"), len(count_payload.get("results") or []), 0, 100_000_000)
+            if len(campaigns) > 5:
+                counts_complete = False
+                result["warnings"].append("Contagens detalhadas foram limitadas as primeiras 5 campanhas.")
+        coverage_complete = total <= limit_value and counts_complete
+        result.update({
+            "found": bool(campaigns), "campaigns": campaigns, "total": total,
+            "coverage_complete": coverage_complete, "truncated": total > limit_value,
+            "zero_is_authoritative": coverage_complete and total == 0,
+            "paging": {"offset": 0, "limit": limit_value, "returned": len(campaigns), "total": total, "has_more": total > limit_value},
+        })
+    except requests.exceptions.Timeout:
+        result.update({"error": "timeout", "message": "A consulta de promocoes excedeu o limite seguro."})
+    except HTTPException as exc:
+        reconnect = int(getattr(exc, "status_code", 0) or 0) == 401
+        result.update({"error": "reconnect_required" if reconnect else "integration_error", "message": str(getattr(exc, "detail", exc))[:240], "reconnect_required": reconnect})
+    return {"function": function_name, "arguments": arguments, "result": result}
 
 
 def _ia_ml_listar_anuncios(
@@ -3902,6 +4309,7 @@ def _ia_tool_get_mercado_livre_listing(
     force_refresh: bool = False,
     mlb: Optional[str] = None,
     query_deadline: Optional[float] = None,
+    incluir_comercial: bool = False,
 ) -> Optional[dict]:
     del force_refresh  # Reservado para a camada de cache do dispatcher.
     function_name = "get_mercado_livre_listing"
@@ -3934,6 +4342,7 @@ def _ia_tool_get_mercado_livre_listing(
         offset_value = _ia_ml_int(offset, 0, 0, 1_000_000)
         limit_value = _ia_ml_int(limite, 8, 1, 100)
         details_requested = bool(incluir_descricao or incluir_detalhes or _ia_ml_precisa_descricao(mensagem))
+        commercial_requested = _ia_ml_listing_commercial_requested(mensagem, incluir_comercial)
         arguments = {
             "sku": sku_value,
             "item_ids": item_ids,
@@ -3942,6 +4351,7 @@ def _ia_tool_get_mercado_livre_listing(
             "offset": offset_value,
             "limit": limit_value,
             "include_details": details_requested,
+            "include_commercial": commercial_requested,
             "modo": "lista" if listar_sem_ref else ("item_id" if item_ids else "sku"),
         }
         nome_loja, failure = _ia_ml_resolver_loja_exata(client_id, loja)
@@ -3971,6 +4381,20 @@ def _ia_tool_get_mercado_livre_listing(
                 {"provider": "mercado_livre", "resource": "items multiget", "method": "GET", "store": nome_loja},
             ]
             if item_ids:
+                expected_seller_id = str((cfg or {}).get("user_id") or "").strip()
+                if not expected_seller_id:
+                    result.update({
+                        "error": "seller_id_missing",
+                        "message": "A conta Mercado Livre nao informou o seller id necessario para validar o MLB nesta loja.",
+                        "ownership_validation": {
+                            "complete": False,
+                            "expected_seller_id": "",
+                            "accepted_ids": [],
+                            "rejected_ids": [],
+                            "unverified_ids": list(item_ids),
+                        },
+                    })
+                    return {"function": function_name, "arguments": arguments, "result": result}
                 ids = item_ids[offset_value : offset_value + limit_value]
                 total = len(item_ids)
                 next_offset = offset_value + len(ids)
@@ -4017,6 +4441,43 @@ def _ia_tool_get_mercado_livre_listing(
                     "message": detail_failure["message"],
                     "reconnect_required": bool(detail_failure.get("reconnect_required")),
                 })
+            if item_ids and items:
+                expected_seller_id = str((cfg or {}).get("user_id") or "").strip()
+                accepted_items = []
+                rejected_ids = []
+                unverified_ids = []
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    current_id = str(item.get("id") or "").strip()
+                    seller_id = str(item.get("seller_id") or "").strip()
+                    if not seller_id:
+                        unverified_ids.append(current_id)
+                    elif seller_id != expected_seller_id:
+                        rejected_ids.append(current_id)
+                    else:
+                        accepted_items.append(item)
+                items = accepted_items
+                result["ownership_validation"] = {
+                    "complete": not bool(unverified_ids),
+                    "expected_seller_id": expected_seller_id,
+                    "accepted_ids": [str(item.get("id") or "").strip() for item in accepted_items],
+                    "rejected_ids": rejected_ids,
+                    "unverified_ids": unverified_ids,
+                }
+                if rejected_ids:
+                    result["warnings"].append(
+                        f"{len(rejected_ids)} MLB(s) foram descartados porque pertencem a outra conta do Mercado Livre."
+                    )
+                if unverified_ids:
+                    result["warnings"].append(
+                        f"{len(unverified_ids)} MLB(s) foram descartados porque a API nao confirmou o seller da loja escolhida."
+                    )
+                if not items and (rejected_ids or unverified_ids) and not result.get("error"):
+                    result.update({
+                        "error": "listing_not_in_store",
+                        "message": "O MLB informado nao pertence, ou nao pode ser confirmado, na loja Mercado Livre escolhida.",
+                    })
             sku_validation = {}
             if sku_value and items:
                 items, cfg, sku_validation = _ia_ml_validate_listing_sku_matches(
@@ -4046,6 +4507,7 @@ def _ia_tool_get_mercado_livre_listing(
                     )
             matches = []
             descriptions_used = 0
+            commercial_partial = False
             for item_index, item in enumerate(items):
                 if not isinstance(item, dict):
                     continue
@@ -4061,6 +4523,14 @@ def _ia_tool_get_mercado_livre_listing(
                     )
                     descriptions_used += 1
                     details = _ia_ml_listing_details_from_item(item)
+                if commercial_requested and item_index < 5:
+                    details = details or _ia_ml_listing_details_from_item(item)
+                    commercial, cfg, commercial_sources = _ia_ml_listing_commercial_details(
+                        client_id, nome_loja, cfg, item, deadline=deadline,
+                    )
+                    details["commercial"] = commercial
+                    commercial_partial = commercial_partial or commercial.get("coverage_complete") is not True
+                    result["sources"].extend(commercial_sources)
                 matches.append(
                     _ia_ml_item_resumo(
                         item,
@@ -4072,6 +4542,8 @@ def _ia_tool_get_mercado_livre_listing(
                 )
             if details_requested and len(items) > 10:
                 result["warnings"].append("Detalhes e descricoes foram limitados aos primeiros 10 anuncios.")
+            if commercial_requested and len(items) > 5:
+                result["warnings"].append("Detalhes comerciais foram limitados aos primeiros 5 anuncios para preservar o limite da API.")
             if details_requested:
                 result["details_coverage"] = {
                     "limit": 10,
@@ -4086,7 +4558,12 @@ def _ia_tool_get_mercado_livre_listing(
             listing_partial = bool(
                 paging.get("partial_response")
                 or detail_failure
+                or commercial_partial
                 or (sku_validation and not sku_validation.get("complete"))
+                or (
+                    isinstance(result.get("ownership_validation"), dict)
+                    and result.get("ownership_validation", {}).get("complete") is not True
+                )
             )
             if listing_partial:
                 missing = ", ".join(paging.get("partial_content") or [])
@@ -4325,7 +4802,7 @@ def _ia_gerar_imagem_sku_resposta(payload: IAChatRequest, client_id: str) -> Opt
         f"{produto_txt}"
     )
 
-PEER_EXPORTS = ['_ia_lojas_bling_conectadas', '_ia_lojas_com_integracao', '_ia_obter_cfg_bling', '_ia_tool_get_integrations_status', '_ia_ml_precisa_descricao', '_ia_ml_item_resumo', '_ia_ml_obter_descricao_item', '_ia_ml_listar_anuncios', '_ia_ml_resolve_exact_order', '_ia_tool_get_mercado_livre_listing', '_ia_tool_get_mercado_livre_orders', '_ia_tool_get_mercado_livre_returns', '_ia_bling_valor_tributario', '_ia_buscar_imagem_ml_sku', '_ia_montar_prompt_geracao_imagem_sku', '_ia_salvar_imagem_gerada', '_ia_gerar_imagem_sku_resposta']
+PEER_EXPORTS = ['_ia_lojas_bling_conectadas', '_ia_lojas_com_integracao', '_ia_obter_cfg_bling', '_ia_tool_get_integrations_status', '_ia_ml_precisa_descricao', '_ia_ml_item_resumo', '_ia_ml_obter_descricao_item', '_ia_ml_listar_anuncios', '_ia_ml_resolve_exact_order', '_ia_tool_get_mercado_livre_listing', '_ia_tool_get_mercado_livre_orders', '_ia_tool_get_mercado_livre_returns', '_ia_tool_get_mercado_livre_visits', '_ia_tool_get_mercado_livre_promotions', '_ia_bling_valor_tributario', '_ia_buscar_imagem_ml_sku', '_ia_montar_prompt_geracao_imagem_sku', '_ia_salvar_imagem_gerada', '_ia_gerar_imagem_sku_resposta']
 __all__ = PEER_EXPORTS + ["configure_ia_tools_marketplaces_runtime"]
 
 configure_ia_tools_marketplaces_runtime()

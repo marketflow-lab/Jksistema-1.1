@@ -33,6 +33,7 @@ from backend.services.whatsapp import formatting as whatsapp_formatting
 from backend.services.whatsapp import gateway as whatsapp_gateway
 from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
+from backend.services.whatsapp import marketplace_listing_delivery as whatsapp_marketplace_listing
 from backend.services.whatsapp import message as whatsapp_message
 from backend.services.whatsapp import report_scheduling as whatsapp_report_scheduling
 from backend.services.whatsapp import retry_policy as whatsapp_retry_policy
@@ -205,6 +206,7 @@ def _dual_worker_final_response(
             worker_result=worker_result,
             ai_behavior=str(pending.get("phone_ai_behavior") or ""),
             tick_index=int(pending.get("tick_index") or 0),
+            client_id=str(pending.get("client_id") or ""),
         )
         return decision, str(decision.get("reply_text") or "").strip()
     except Exception as exc:
@@ -308,10 +310,24 @@ def _complete_standard_task_artifacts(
     request_text = pending.get("request_text") or task.get("prompt")
     remaining_images = max(0, WHATSAPP_MAX_OUTBOUND_IMAGES - charts_sent)
     if remaining_images > 0:
-        response, product_results = _whatsapp_deliver_requested_images(
-            config, message_id, response, request_text, client_id, max_images=remaining_images,
-        )
-        image_results.extend(product_results)
+        listing_bundle = task.get("whatsapp_listing_bundle") if isinstance(task.get("whatsapp_listing_bundle"), dict) else {}
+        listing_results = _whatsapp_deliver_marketplace_listing_images(
+            config, message_id, listing_bundle, request_text, max_images=remaining_images,
+        ) if listing_bundle else []
+        if listing_results:
+            image_results.extend(listing_results)
+            response = _whatsapp_strip_image_references(response)
+            sent_listing_images = sum(1 for item in listing_results if item.get("success"))
+            if sent_listing_images < len(listing_results):
+                response += f"\n\nFotos: enviei {sent_listing_images} de {len(listing_results)} imagem(ns); as demais ficaram indisponiveis nesta tentativa."
+        elif listing_bundle and whatsapp_marketplace_listing.pictures_requested(request_text):
+            response = _whatsapp_strip_image_references(response)
+            response += "\n\nFotos: a API do Mercado Livre nao retornou uma imagem oficial utilizavel para este anuncio."
+        else:
+            response, product_results = _whatsapp_deliver_requested_images(
+                config, message_id, response, request_text, client_id, max_images=remaining_images,
+            )
+            image_results.extend(product_results)
     elif _whatsapp_image_requested(request_text):
         response = _whatsapp_strip_image_references(response)
     if task.get("whatsapp_chart_expected") is True and charts_sent == 0:

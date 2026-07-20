@@ -676,6 +676,14 @@
             margin-left: 0;
         }
 
+        .perguntas-last-update {
+            flex: 0 0 auto;
+            color: var(--muted);
+            font-size: 0.72rem;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
         select {
             min-height: 40px;
             border: 1px solid rgba(104, 168, 255, 0.32);
@@ -1979,6 +1987,14 @@
             .question-top {
                 align-items: stretch;
                 flex-direction: column;
+            }
+            .toolbar.perguntas-toolbar {
+                max-height: none;
+                overflow: visible;
+                white-space: normal;
+            }
+            .toolbar.perguntas-toolbar .filters {
+                flex-wrap: wrap;
             }
             .training-grid {
                 grid-template-columns: 1fr;

@@ -396,6 +396,17 @@
   #jk-codex-compose.is-dragover{box-shadow:inset 0 0 0 2px rgba(20,184,166,.62);background:#102536;}
   #jk-codex-actions{display:flex;gap:8px;align-items:center;}
   #jk-codex-actions .jk-codex-btn{flex:1 1 0;}
+  #jk-codex-voice{flex:0 0 42px!important;min-width:42px;padding:0;display:inline-grid;place-items:center;}
+  #jk-codex-voice svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;}
+  #jk-codex-voice[data-state="recording"]{border-color:rgba(248,113,113,.72);background:rgba(127,29,29,.55);color:#ffd6d6;animation:jk-codex-voice-pulse 1.25s ease-in-out infinite;}
+  #jk-codex-voice[data-state="requesting"],#jk-codex-voice[data-state="uploading"],#jk-codex-voice[data-state="transcribing"]{color:#fff2ad;border-color:rgba(250,204,21,.48);}
+  #jk-codex-voice-cancel{flex:0 0 auto!important;min-width:72px;}
+  #jk-codex-voice-cancel[hidden],#jk-codex-voice-status[hidden]{display:none!important;}
+  #jk-codex-voice-status{min-height:18px;color:#b7c7d9;font-size:.69rem;line-height:1.35;padding:0 2px;}
+  #jk-codex-voice-status.error{color:#ffb7b7;}
+  #jk-codex-voice-status.review{color:#9cf3e7;}
+  @keyframes jk-codex-voice-pulse{50%{box-shadow:0 0 0 4px rgba(248,113,113,.12);}}
+  @media (prefers-reduced-motion:reduce){#jk-codex-voice[data-state="recording"]{animation:none;}}
   #jk-ia-resizer,#jk-codex-resizer{position:absolute;left:-8px;top:0;bottom:0;width:18px;cursor:ew-resize;touch-action:none;z-index:5;}
   #jk-ia-resizer::before{content:"";position:absolute;left:4px;top:50%;width:11px;height:52px;transform:translateY(-50%);border:1px solid rgba(120,227,212,.34);border-right:0;border-radius:999px 0 0 999px;background:rgba(35,142,165,.42);box-shadow:0 0 14px rgba(120,227,212,.18);transition:background .15s ease,border-color .15s ease,box-shadow .15s ease;}
   #jk-ia-resizer::after{content:"";position:absolute;left:9px;top:50%;width:2px;height:26px;transform:translateY(-50%);border-radius:999px;background:rgba(224,255,250,.66);box-shadow:-3px 0 0 rgba(224,255,250,.32),3px 0 0 rgba(224,255,250,.32);transition:background .15s ease,box-shadow .15s ease;}
@@ -684,7 +695,10 @@
       <div id="jk-codex-path-chips"></div>
       <div id="jk-codex-attachment-chips"></div>
       <textarea id="jk-codex-input" rows="3" placeholder="Peça uma analise, correcao ou tarefa interna para o Black Jhon..."></textarea>
+      <div id="jk-codex-voice-status" role="status" aria-live="polite" hidden></div>
       <div id="jk-codex-actions">
+        <button class="jk-codex-btn" id="jk-codex-voice" type="button" data-state="idle" aria-label="Gravar comando de voz" aria-pressed="false" title="Gravar comando de voz"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8"></path></svg></button>
+        <button class="jk-codex-btn" id="jk-codex-voice-cancel" type="button" hidden>Cancelar</button>
         <button class="jk-codex-btn primary" id="jk-codex-readonly" type="button" title="Enviar para o Black Jhon">Enviar</button>
       </div>
       <input type="file" id="jk-codex-file-input" multiple style="display:none">

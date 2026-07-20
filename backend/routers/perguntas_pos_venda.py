@@ -25,6 +25,7 @@ LEGACY_PERGUNTAS_POS_VENDA_ROUTES: tuple[LegacyRouteSpec, ...] = (
     LegacyRouteSpec("GET", "/api/mercadolivre/perguntas/lojas", "ml_perguntas_listar_lojas"),
     LegacyRouteSpec("POST", "/api/mercadolivre/perguntas/lojas/config", "ml_perguntas_salvar_config_loja"),
     LegacyRouteSpec("POST", "/api/mercadolivre/perguntas/lojas/config-lote", "ml_perguntas_salvar_config_lojas_lote"),
+    LegacyRouteSpec("GET", "/api/mercadolivre/perguntas/automacao/status", "ml_perguntas_automacao_status"),
     LegacyRouteSpec("POST", "/api/mercadolivre/perguntas/automacao/poll", "ml_perguntas_automacao_poll"),
     LegacyRouteSpec("GET", "/api/mercadolivre/perguntas/aprovacoes", "ml_perguntas_aprovacoes_listar"),
     LegacyRouteSpec("POST", "/api/mercadolivre/perguntas/aprovacoes/aprovar", "ml_perguntas_aprovacoes_aprovar"),

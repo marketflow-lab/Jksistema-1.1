@@ -15,7 +15,10 @@ from backend.services.context_hub_inventory import build_context_bundle_manifest
 
 
 def _source_version(base_dir: Path) -> str:
-    payload = json.loads((base_dir / "package.json").read_text(encoding="utf-8"))
+    # A versao do Electron e a fonte canonica da release distribuida. O
+    # package.json da raiz continua empacotado e precisa ser identico, mas nao
+    # pode conduzir sozinho manifests consumidos pelo instalador.
+    payload = json.loads((base_dir / "electron_app" / "package.json").read_text(encoding="utf-8"))
     return str(payload.get("version") or "unknown")
 
 

@@ -215,6 +215,26 @@ def test_inventory_is_pure_complete_and_deterministic(tmp_path: Path) -> None:
     } >= {"jk:data:product_cache"}
 
 
+def test_installed_inventory_uses_runtime_manifest_when_package_json_is_absent(tmp_path: Path) -> None:
+    base, info = _build_fixture(tmp_path)
+    (base / "package.json").unlink()
+    _write(base / "runtime-manifest.json", '{"version":"9.9.10"}\n')
+
+    inventory = build_context_inventory(str(base), str(info), "000002", "installed")
+
+    assert inventory["source_version"] == "9.9.10"
+
+
+def test_inventory_rejects_unsafe_source_versions(tmp_path: Path) -> None:
+    base, info = _build_fixture(tmp_path)
+    _write(base / "package.json", '{"version":"../../segredo"}\n')
+    _write(base / "runtime-manifest.json", '{"version":"versao com espaco"}\n')
+
+    inventory = build_context_inventory(str(base), str(info), "000002", "installed")
+
+    assert inventory["source_version"] == "unknown"
+
+
 def test_sku_unexpected_schema_fails_closed_without_leaking_value(tmp_path: Path) -> None:
     base, info = _build_fixture(tmp_path, forbidden_sku=True)
 

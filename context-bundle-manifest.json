@@ -6,6 +6,11 @@
       "size": 1122
     },
     {
+      "path": "docs/knowledge/curation-governance-v2.md",
+      "sha256": "be43fb8aff69ff58df71b5291a9aa284eebe5b7e1789fdc6606ee1e09121a335",
+      "size": 1651
+    },
+    {
       "path": "docs/knowledge/security-policy.md",
       "sha256": "586d9611ebde78da0a040722bf8aa1c372d8a2866f80c1f44cd8f30ddac99710",
       "size": 890
@@ -24,8 +29,13 @@
       "path": "docs/knowledge/vault-structure.md",
       "sha256": "588be6c8651e398a98d35d8b0e304a39424c2129f271c7b6a9549f6933598e26",
       "size": 534
+    },
+    {
+      "path": "docs/knowledge/whatsapp-ai-context-policy.md",
+      "sha256": "6f36b9eeac70cd80e2be15d7bef25585da06db6f1f2c47eed54c1b34821ced8c",
+      "size": 2769
     }
   ],
   "schema_version": 1,
-  "source_version": "1.0.101"
+  "source_version": "1.0.106"
 }

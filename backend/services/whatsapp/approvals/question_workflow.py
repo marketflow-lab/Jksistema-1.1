@@ -215,10 +215,23 @@ def _eligible_question_bindings(config: dict[str, Any]) -> list[tuple[dict[str, 
     return eligible
 
 def _pending_question_approval(ppv_state: Any, configs: Any, approvals: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    def _is_post_sale(item: dict[str, Any]) -> bool:
+        tipo = str(item.get("tipo") or item.get("approval_type") or "").strip().lower()
+        origens = (
+            item.get("origem"),
+            item.get("ia_origem"),
+            item.get("ia_finalidade"),
+        )
+        return tipo == "pos_venda" or any(
+            "pos_venda" in str(origem or "").strip().lower()
+            for origem in origens
+        )
+
     return next(
         (
             item for item in approvals
             if isinstance(item, dict)
+            and not _is_post_sale(item)
             and str(item.get("status") or "pending") == "pending"
             and str(item.get("id") or "").strip()
             and str(item.get("resposta_sugerida") or "").strip()
@@ -238,6 +251,24 @@ def _record_blocked_question_notification(
     store: str,
     blocked_status: str,
 ) -> None:
+    store_label = store or "Loja nao informada"
+    template_name = "jk_black_jhon_nova_pergunta"
+    template_params = [store_label]
+    try:
+        worker = _worker_health(config)
+        templates = worker.get("templates") if isinstance(worker.get("templates"), list) else []
+        approved = {
+            str(item.get("name") or "").strip()
+            for item in templates
+            if isinstance(item, dict)
+            and str(item.get("category") or "").strip().upper() == "UTILITY"
+            and str(item.get("status") or "").strip().upper() == "APPROVED"
+        }
+        if template_name not in approved and "jk_joao_aprovacao_pendente" in approved:
+            template_name = "jk_joao_aprovacao_pendente"
+            template_params = [f"nova pergunta de comprador na loja {store_label}"]
+    except Exception:
+        pass
     notification = _post_proactive(
         config,
         {
@@ -245,9 +276,9 @@ def _record_blocked_question_notification(
             "fingerprint": f"ppv-template:{notification_key}",
             "event_type": "task_awaiting_approval",
             "severity": "medium",
-            "text": f"Nova pergunta de comprador aguardando revisao na loja {store or 'nao informada'}.",
-            "template_name": "jk_black_jhon_nova_pergunta",
-            "template_params": [store or "Loja nao informada"],
+            "text": f"Nova pergunta de comprador aguardando revisao na loja {store_label}.",
+            "template_name": template_name,
+            "template_params": template_params,
         },
     )
     notification_status = str(notification.get("status") or notification.get("error") or blocked_status)
@@ -256,6 +287,7 @@ def _record_blocked_question_notification(
         "subject_id": subject_id,
         "status": notification_status,
         "interactive_status": blocked_status,
+        "template_name": template_name,
         "blocked": notification_status in {"template_not_approved", "waiting_free_window", "policy_recheck_required"},
         "updated_at": _now(),
     }
@@ -265,7 +297,7 @@ def _record_blocked_question_notification(
             event_type="mercado_livre_question",
             status=notification_status,
             reason=blocked_status,
-            details={"approval_id": approval_id, "store": store},
+            details={"approval_id": approval_id, "store": store, "template_name": template_name},
         )
     except Exception:
         pass

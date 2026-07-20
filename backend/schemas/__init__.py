@@ -98,6 +98,7 @@ from .promocoes import (
 )
 from .renovacao import (
     RenovacaoCampanhaCriarRequest,
+    RenovacaoCampanhaManualCriarRequest,
     RenovacaoCampanhaSincronizarRequest,
     RenovacaoCampanhaPeriodoRequest,
     RenovacaoCampanhaExcluirRequest,
@@ -214,6 +215,7 @@ __all__ = [
     "PromoAplicarParticipacaoRequest",
     "PromoAutomacaoConfigRequest",
     "RenovacaoCampanhaCriarRequest",
+    "RenovacaoCampanhaManualCriarRequest",
     "RenovacaoCampanhaSincronizarRequest",
     "RenovacaoCampanhaPeriodoRequest",
     "RenovacaoCampanhaExcluirRequest",

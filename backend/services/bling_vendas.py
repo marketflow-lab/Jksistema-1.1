@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import os
@@ -13,10 +12,11 @@ import unicodedata
 from datetime import datetime, timedelta
 from typing import Any, Callable, Optional
 
-import requests
 from fastapi import HTTPException
 
 from backend.services.bling import BLING_SESSION, _BlingAdaptiveLimiter, _bling_get_with_adaptive_limit
+from backend.services.bling_oauth import exchange_bling_refresh_token
+from backend.services.sqlite_coordination import sqlite_lock_for_path
 
 logger = logging.getLogger("jk_sistema")
 PASTA_INFO = os.path.join(os.getcwd(), "info")
@@ -170,73 +170,73 @@ def _verificar_cancelamento(client_id: str):
     return _verificar(client_id)
 
 
+def _bling_cancel_callback(client_id: str | None):
+    return (lambda: _verificar_cancelamento(client_id)) if client_id else None
+
+
+def _bling_retry_headers(resp) -> dict[str, str] | None:
+    retry_after = str((getattr(resp, "headers", None) or {}).get("Retry-After") or "").strip()
+    return {"Retry-After": retry_after} if retry_after else None
+
+
+def _bling_raise_required_response(resp, action: str) -> None:
+    status = int(getattr(resp, "status_code", 0) or 0)
+    if status == 429:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Limite de solicitacoes da Bling atingido ao {action}.",
+            headers=_bling_retry_headers(resp),
+        )
+    if status in {500, 502, 503, 504}:
+        raise HTTPException(status_code=503, detail=f"Servico Bling indisponivel ao {action}.")
+    raise HTTPException(status_code=502, detail=f"Falha HTTP {status or 'invalida'} da Bling ao {action}.")
+
+
+def _bling_json_data(resp, *, action: str, default, expected_type):
+    try:
+        payload = resp.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Resposta invalida da Bling ao {action}.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail=f"Resposta invalida da Bling ao {action}.")
+    data = payload.get("data", default)
+    if not isinstance(data, expected_type):
+        raise HTTPException(status_code=502, detail=f"Resposta invalida da Bling ao {action}.")
+    return data
+
+
+def _bling_required_dict(value: Any, action: str) -> dict:
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=502, detail=f"Resposta invalida da Bling ao {action}.")
+    return value
+
+
+def _bling_required_items(value: Any, action: str) -> list[dict]:
+    payload = _bling_required_dict(value, action)
+    items = payload.get("itens")
+    if not isinstance(items, list) or not items:
+        raise HTTPException(status_code=502, detail=f"Itens obrigatorios ausentes da Bling ao {action}.")
+    for item in items:
+        _bling_required_dict(item, action)
+    return items
+
+
+def _bling_required_float(value: Any, action: str) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=f"Valor numerico invalido da Bling ao {action}.") from exc
+
+
 def _bling_refresh_token(client_id, client_secret, refresh_token):
-    url = "https://www.bling.com.br/Api/v3/oauth/token"
-    credential = f"{client_id}:{client_secret}"
-    headers = {
-        "Authorization": f"Basic {base64.b64encode(credential.encode()).decode()}",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/json",
-        "enable-jwt": "1",
-    }
-    payload = {"grant_type": "refresh_token", "refresh_token": refresh_token}
-    try:
-        resp = BLING_SESSION.post(url, headers=headers, data=payload, timeout=20)
-    except requests.RequestException:
-        logger.exception("[BLING] Erro de conexao ao atualizar token")
-        raise HTTPException(
-            status_code=503,
-            detail="Nao foi possivel conectar ao Bling para renovar token no momento. Tente novamente em alguns minutos.",
-        )
-
-    if resp.status_code == 200:
-        return resp.json()
-
-    erro_tipo = ""
-    erro_msg = ""
-    erro_desc = ""
-    try:
-        payload_erro = resp.json() or {}
-        err = payload_erro.get("error")
-        if isinstance(err, dict):
-            erro_tipo = str(err.get("type") or "").strip().lower()
-            erro_msg = str(err.get("message") or "").strip().lower()
-            erro_desc = str(err.get("description") or "").strip().lower()
-        else:
-            erro_msg = str(payload_erro.get("error") or "").strip().lower()
-            erro_desc = str(payload_erro.get("error_description") or "").strip().lower()
-    except Exception:
-        pass
-
-    if (
-        resp.status_code == 400
-        and (
-            erro_tipo == "invalid_grant"
-            or erro_msg == "invalid_grant"
-            or "invalid refresh token" in erro_desc
-        )
-    ):
-        raise HTTPException(
-            status_code=401,
-            detail="Token Bling expirado para esta loja. Refaça a conexão em Integrações para continuar.",
-        )
-
-    raise HTTPException(
-        status_code=502,
-        detail=f"Falha ao renovar token do Bling (HTTP {resp.status_code}).",
-    )
+    """Compatibilidade: fluxos por loja usam o gerenciador single-flight."""
+    return exchange_bling_refresh_token(client_id, client_secret, refresh_token)
 
 
 def _bling_marcar_oauth_invalido(client_id: str, nome_loja: str, cfg: dict | None, motivo: str) -> dict:
-    atualizado = dict(cfg or {})
-    atualizado["connected"] = False
-    atualizado["status"] = "reautenticacao_necessaria"
-    atualizado["motivo"] = str(motivo or "Token Bling expirado. Refaça a conexão em Integrações.")
-    atualizado["oauth_invalid"] = True
-    atualizado["shared_without_oauth_tokens"] = False
-    atualizado["updated_at"] = str(time.time())
-    atualizar_api_loja(client_id, nome_loja, "bling", atualizado)
-    return atualizado
+    from backend.services.integracoes import marcar_token_bling_invalido
+
+    return marcar_token_bling_invalido(client_id, nome_loja, cfg, motivo)
 
 
 def _bling_salvar_oauth_valido(client_id: str, nome_loja: str, cfg: dict) -> dict:
@@ -252,33 +252,9 @@ def _bling_salvar_oauth_valido(client_id: str, nome_loja: str, cfg: dict) -> dic
 
 
 def _bling_renovar_token_loja(client_id: str, nome_loja: str, cfg: dict | None) -> dict:
-    cfg = dict(cfg or {})
-    cid = str(cfg.get("id") or cfg.get("client_id") or "").strip()
-    sec = str(cfg.get("secret") or cfg.get("client_secret") or "").strip()
-    refresh_tok = str(cfg.get("refresh_token") or "").strip()
-    if not (cid and sec and refresh_tok):
-        motivo = "Credenciais Bling incompletas para renovar token. Refaça a conexão em Integrações."
-        _bling_marcar_oauth_invalido(client_id, nome_loja, cfg, motivo)
-        raise HTTPException(status_code=401, detail=motivo)
+    from backend.services.integracoes import renovar_token_bling_loja
 
-    try:
-        novos = _bling_refresh_token(cid, sec, refresh_tok)
-    except HTTPException as exc:
-        if exc.status_code == 401:
-            _bling_marcar_oauth_invalido(client_id, nome_loja, cfg, str(exc.detail or "Token Bling expirado. Refaça a conexão em Integrações."))
-        raise
-
-    access_token = str(novos.get("access_token") or "").strip()
-    if not access_token:
-        motivo = "Bling renovou a sessão sem retornar access_token. Refaça a conexão em Integrações."
-        _bling_marcar_oauth_invalido(client_id, nome_loja, cfg, motivo)
-        raise HTTPException(status_code=401, detail=motivo)
-
-    cfg["id"] = cid
-    cfg["secret"] = sec
-    cfg["access_token"] = access_token
-    cfg["refresh_token"] = str(novos.get("refresh_token") or refresh_tok).strip()
-    return _bling_salvar_oauth_valido(client_id, nome_loja, cfg)
+    return renovar_token_bling_loja(client_id, nome_loja, cfg)
 
 
 def _bling_executar_com_refresh(client_id: str, nome_loja: str, cfg: dict, chamada: Callable[[str], tuple[Any, int]], on_refresh: Optional[Callable[[], None]] = None) -> tuple[Any, int, dict]:
@@ -311,7 +287,7 @@ def _bling_listar_produtos(access_token):
                 params={"pagina": pagina, "limite": 100, "tipo": tipo},
                 timeout=20,
                 limiter=limiter,
-                max_attempts=6,
+                max_attempts=3,
             )
             if resp is None:
                 return None, 503
@@ -362,7 +338,7 @@ def _bling_obter_ncm_cest_produto(access_token: str, produto_id: str):
         headers=headers,
         timeout=20,
         limiter=_BlingAdaptiveLimiter(start_interval=0.08),
-        max_attempts=5,
+        max_attempts=3,
     )
     if resp is None:
         return {"ncm": "", "cest": ""}, 503
@@ -526,17 +502,27 @@ def _bling_map_canais_venda_basico(access_token: str):
     url = "https://api.bling.com.br/Api/v3/canais-venda"
     mapa = {}
     pagina = 1
+    limiter = _BlingAdaptiveLimiter(start_interval=0.08)
     while True:
-        try:
-            resp = BLING_SESSION.get(url, headers=headers, params={"pagina": pagina, "limite": 100}, timeout=20)
-        except requests.RequestException:
+        resp = _bling_get_with_adaptive_limit(
+            url,
+            headers=headers,
+            params={"pagina": pagina, "limite": 100},
+            timeout=20,
+            limiter=limiter,
+            max_attempts=3,
+        )
+        if resp is None:
             break
         if resp.status_code == 401:
             return None, 401
         if resp.status_code != 200:
             break
 
-        data = resp.json().get("data", [])
+        try:
+            data = resp.json().get("data", [])
+        except Exception:
+            return None, 502
         if not data:
             break
 
@@ -559,11 +545,18 @@ def _bling_map_unidades_por_canais(access_token: str):
     url_canais = "https://api.bling.com.br/Api/v3/canais-venda"
     mapa = {}
     pagina = 1
+    limiter = _BlingAdaptiveLimiter(start_interval=0.08)
 
     while True:
-        try:
-            resp = BLING_SESSION.get(url_canais, headers=headers, params={"pagina": pagina, "limite": 100}, timeout=20)
-        except requests.RequestException:
+        resp = _bling_get_with_adaptive_limit(
+            url_canais,
+            headers=headers,
+            params={"pagina": pagina, "limite": 100},
+            timeout=20,
+            limiter=limiter,
+            max_attempts=3,
+        )
+        if resp is None:
             break
 
         if resp.status_code == 401:
@@ -571,7 +564,10 @@ def _bling_map_unidades_por_canais(access_token: str):
         if resp.status_code != 200:
             break
 
-        canais = resp.json().get("data", [])
+        try:
+            canais = resp.json().get("data", [])
+        except Exception:
+            return None, 502
         if not canais:
             break
 
@@ -579,9 +575,14 @@ def _bling_map_unidades_por_canais(access_token: str):
             cid = canal.get("id")
             if not cid:
                 continue
-            try:
-                det = BLING_SESSION.get(f"https://api.bling.com.br/Api/v3/canais-venda/{cid}", headers=headers, timeout=20)
-            except requests.RequestException:
+            det = _bling_get_with_adaptive_limit(
+                f"https://api.bling.com.br/Api/v3/canais-venda/{cid}",
+                headers=headers,
+                timeout=20,
+                limiter=limiter,
+                max_attempts=3,
+            )
+            if det is None:
                 continue
 
             if det.status_code == 401:
@@ -589,7 +590,10 @@ def _bling_map_unidades_por_canais(access_token: str):
             if det.status_code != 200:
                 continue
 
-            data_det = det.json().get("data", {}) or {}
+            try:
+                data_det = det.json().get("data", {}) or {}
+            except Exception:
+                continue
             for filial in data_det.get("filiais", []) or []:
                 uid = str(filial.get("idUnidadeNegocio") or "").strip()
                 nome = str(filial.get("unidadeNegocio") or "").strip()
@@ -609,10 +613,17 @@ def _bling_map_lojas_virtuais(access_token: str):
     headers = {"Authorization": f"Bearer {access_token}"}
     mapa = {}
     pagina = 1
+    limiter = _BlingAdaptiveLimiter(start_interval=0.08)
     while True:
-        try:
-            resp = BLING_SESSION.get(url, headers=headers, params={"situacao": 1, "pagina": pagina, "limite": 100}, timeout=20)
-        except requests.RequestException:
+        resp = _bling_get_with_adaptive_limit(
+            url,
+            headers=headers,
+            params={"situacao": 1, "pagina": pagina, "limite": 100},
+            timeout=20,
+            limiter=limiter,
+            max_attempts=3,
+        )
+        if resp is None:
             break
 
         if resp.status_code == 401:
@@ -620,7 +631,10 @@ def _bling_map_lojas_virtuais(access_token: str):
         if resp.status_code != 200:
             break
 
-        data = resp.json().get("data", [])
+        try:
+            data = resp.json().get("data", [])
+        except Exception:
+            return None, 502
         if not data:
             break
 
@@ -1009,25 +1023,18 @@ def _bling_obter_numero_nf(access_token: str, nota_fiscal_id: str):
         return ""
 
     ultimo_status = 502
+    limiter = _BlingAdaptiveLimiter(start_interval=0.08)
     for url in urls:
-        resp = None
-        for tentativa in range(4):
-            try:
-                resp = BLING_SESSION.get(url, headers=headers, timeout=20)
-            except requests.RequestException:
-                resp = None
-                if tentativa < 3:
-                    time.sleep(0.6 * (tentativa + 1))
-                continue
-
-            if resp.status_code == 429:
-                ultimo_status = 429
-                if tentativa < 3:
-                    time.sleep(0.8 * (tentativa + 1))
-                    continue
-            break
+        resp = _bling_get_with_adaptive_limit(
+            url,
+            headers=headers,
+            timeout=20,
+            limiter=limiter,
+            max_attempts=3,
+        )
 
         if resp is None:
+            ultimo_status = 503
             continue
 
         if resp.status_code == 401:
@@ -1037,7 +1044,11 @@ def _bling_obter_numero_nf(access_token: str, nota_fiscal_id: str):
         if resp.status_code != 200:
             continue
 
-        data = resp.json().get("data", {}) or {}
+        try:
+            data = resp.json().get("data", {}) or {}
+        except Exception:
+            ultimo_status = 502
+            continue
         numero_nf = _extrair_numero_nf(data)
         return numero_nf, 200
 
@@ -1054,7 +1065,7 @@ def _bling_map_depositos(access_token):
         params={"situacao": 1},
         timeout=20,
         limiter=limiter,
-        max_attempts=6,
+        max_attempts=3,
     )
     if resp is None:
         return None, 503
@@ -1108,7 +1119,7 @@ def _bling_saldos(access_token, produtos_ids, mapa_deps):
             params=params,
             timeout=25,
             limiter=limiter,
-            max_attempts=5,
+            max_attempts=3,
         )
         if resp is None:
             return None, 503
@@ -1465,7 +1476,7 @@ def _deve_excluir_venda_ebazar(devolucao=0, comprador: str = "", canal: str = ""
     return "EBAZAR" in comprador_norm or "EBAZAR" in canal_norm
 
 
-def _get_vendas_db(client_id: str, loja: str = None):
+def _get_vendas_db_unlocked(client_id: str, loja: str = None):
     tenant_path = get_tenant_path(client_id)
     db_path = _get_vendas_db_path(client_id, loja)
     conn = sqlite3.connect(db_path)
@@ -1537,12 +1548,17 @@ def _get_vendas_db(client_id: str, loja: str = None):
     return db_path
 
 
+def _get_vendas_db(client_id: str, loja: str = None):
+    db_path = _get_vendas_db_path(client_id, loja)
+    with sqlite_lock_for_path(db_path):
+        return _get_vendas_db_unlocked(client_id, loja)
+
+
 def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loja_nome: str, client_id: str = None, unidades_cache: dict = None, unidades_mapeamento: dict = None, mapa_lojas_cliente: dict = None):
     """Busca vendas no Bling com detalhes de itens."""
     headers = {"Authorization": f"Bearer {access_token}"}
     url_lista = "https://api.bling.com.br/Api/v3/pedidos/vendas"
     registros = []
-    tentativas_429 = 0
     max_paginas = 200
     assinaturas_paginas = set()
     debug_suspeitos_logados = 0
@@ -1611,24 +1627,29 @@ def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loj
             params=params,
             timeout=25,
             limiter=limiter_lista,
-            max_attempts=6,
+            max_attempts=3,
+            cancel_callback=_bling_cancel_callback(client_id),
         )
         if resp is None:
-            raise HTTPException(status_code=502, detail=f"Falha de conexão ao listar vendas Bling (página {pagina}).")
+            raise HTTPException(status_code=503, detail=f"Servico Bling indisponivel ao listar vendas (pagina {pagina}).")
         if resp.status_code == 401:
             return None, 401
-        if resp.status_code == 429:
-            tentativas_429 += 1
-            if tentativas_429 >= 3:
-                raise HTTPException(status_code=429, detail="Limite de solicitações da Bling atingido (429). Aguarde alguns minutos e tente novamente.")
-            continue
-        tentativas_429 = 0
         if resp.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Erro ao listar pedidos Bling: {resp.text}")
+            _bling_raise_required_response(resp, "listar pedidos de venda")
 
-        pedidos = resp.json().get("data", [])
+        pedidos = _bling_json_data(
+            resp,
+            action="listar pedidos de venda",
+            default=[],
+            expected_type=list,
+        )
         if not pedidos:
             break
+
+        pedidos = [
+            _bling_required_dict(item, "listar pedidos de venda")
+            for item in pedidos
+        ]
 
         # Proteção: se a paginação vier repetindo os mesmos pedidos, interrompe com erro claro.
         assinatura = tuple(str(p.get("id")) for p in pedidos[:8])
@@ -1644,6 +1665,7 @@ def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loj
 
         total_pedidos_pagina = len(pedidos)
         for idx_pedido, p in enumerate(pedidos, start=1):
+            p = _bling_required_dict(p, "listar pedidos de venda")
             # Verificar cancelamento para cada venda
             if client_id:
                 _verificar_cancelamento(client_id)
@@ -1661,32 +1683,48 @@ def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loj
                     )
             
             pid = p.get("id")
+            if pid is None or not str(pid).strip():
+                raise HTTPException(status_code=502, detail="Pedido sem identificador obrigatorio na resposta da Bling.")
             url_det = f"https://api.bling.com.br/Api/v3/pedidos/vendas/{pid}"
             det = _bling_get_with_adaptive_limit(
                 url_det,
                 headers=headers,
                 timeout=25,
                 limiter=limiter_detalhe,
-                max_attempts=5,
+                max_attempts=3,
+                cancel_callback=_bling_cancel_callback(client_id),
             )
             if det is None:
-                continue
+                raise HTTPException(
+                    status_code=503,
+                    detail="Servico Bling indisponivel ao buscar detalhe obrigatorio de pedido.",
+                )
             if det.status_code == 401:
                 return None, 401
-            if det.status_code == 429:
-                raise HTTPException(status_code=429, detail="Limite de solicitações da Bling atingido (429). Aguarde alguns minutos e tente novamente.")
             if det.status_code != 200:
-                continue
-            venda = det.json().get("data", {})
+                _bling_raise_required_response(det, "buscar detalhe obrigatorio de pedido")
+            venda = _bling_json_data(
+                det,
+                action="buscar detalhe obrigatorio de pedido",
+                default={},
+                expected_type=dict,
+            )
+            if not venda:
+                raise HTTPException(status_code=502, detail="Detalhe obrigatorio de pedido ausente na resposta da Bling.")
             data_venda = venda.get("data") or p.get("data")
             numero = venda.get("numeroPedidoLoja") or str(venda.get("numero"))
-            situacao = (venda.get("situacao") or {}).get("nome", "-")
+            situacao_obj = venda.get("situacao") or {}
+            situacao = situacao_obj.get("nome", "-") if isinstance(situacao_obj, dict) else "-"
             devolucao = 0
             loja_obj = venda.get("loja") or {}
+            if not isinstance(loja_obj, dict):
+                loja_obj = {}
             loja_virtual_nome = ""
             loja_virtual_id = str(loja_obj.get("id") or "").strip()
-            unidade_negocio_obj = loja_obj.get("unidadeNegocio") if isinstance(loja_obj, dict) else {}
-            unidade_id = str((unidade_negocio_obj or {}).get("id") or "").strip()
+            unidade_negocio_obj = loja_obj.get("unidadeNegocio") or {}
+            if not isinstance(unidade_negocio_obj, dict):
+                unidade_negocio_obj = {}
+            unidade_id = str(unidade_negocio_obj.get("id") or "").strip()
             # Prioridade: descrição oficial do canal de venda (igual ao nome no Bling)
             if loja_virtual_id and loja_virtual_id in mapa_canais:
                 loja_virtual_nome = mapa_canais.get(loja_virtual_id) or ""
@@ -1747,25 +1785,22 @@ def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loj
                     if status_nf == 401:
                         return None, 401
                     if status_nf != 200:
+                        logger.warning(
+                            "[Bling] Enriquecimento opcional do numero visivel da NF indisponivel (status=%s).",
+                            status_nf,
+                        )
                         numero_nf = ""
                     cache_numero_nf[nota_fiscal_id] = numero_nf
 
-            # Debug controlado: registra payload real da Bling quando a loja virtual/NF não resolvem.
+            # Debug controlado sem payloads, IDs fiscais ou identificadores de pedidos.
             if debug_suspeitos_logados < 12:
                 suspeito_loja = not loja_virtual or str(loja_virtual).strip().lower() == "balcão/painel"
                 suspeito_nf = not numero_nf
                 if suspeito_loja or suspeito_nf:
                     logger.info(
-                        "[SYNC-DEBUG] pedido_id=%s numero=%s loja_conta=%s loja_obj=%s canal=%s loja_virtual_nome=%s unidade_resolvida=%s intermediador=%s notaFiscal=%s",
-                        pid,
-                        numero,
-                        loja_nome,
-                        json.dumps(loja_obj, ensure_ascii=False),
-                        canal,
-                        loja_virtual_nome,
-                        loja_virtual,
-                        json.dumps(venda.get("intermediador") or {}, ensure_ascii=False),
-                        json.dumps(venda.get("notaFiscal") or {}, ensure_ascii=False)
+                        "[SYNC-DEBUG] enriquecimento parcial de venda: loja_resolvida=%s nf_resolvida=%s",
+                        not suspeito_loja,
+                        not suspeito_nf,
                     )
                     debug_suspeitos_logados += 1
             
@@ -1774,11 +1809,12 @@ def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loj
             if isinstance(contato, dict):
                 comprador = contato.get("nome", "")
             
-            for item in venda.get("itens", []):
+            venda_itens = _bling_required_items(venda, "buscar detalhe obrigatorio de pedido")
+            for item in venda_itens:
                 sku = item.get("codigo") or "N/D"
                 produto = item.get("descricao") or "Produto s/ descrição"
-                qtd = float(item.get("quantidade", 0) or 0)
-                valor = float(item.get("valor", 0) or 0) * qtd
+                qtd = _bling_required_float(item.get("quantidade", 0), "detalhar item de pedido")
+                valor = _bling_required_float(item.get("valor", 0), "detalhar item de pedido") * qtd
                 registros.append({
                     "data": data_venda,
                     "loja_conta": loja_nome,
@@ -1810,7 +1846,6 @@ def _bling_listar_naturezas(access_token: str):
     headers = {"Authorization": f"Bearer {access_token}"}
     natureza_map = {}
     pagina = 1
-    tentativas_429 = 0
     limiter = _BlingAdaptiveLimiter(start_interval=0.07)
     while True:
         resp = _bling_get_with_adaptive_limit(
@@ -1819,25 +1854,26 @@ def _bling_listar_naturezas(access_token: str):
             params={"pagina": pagina, "limite": 100},
             timeout=20,
             limiter=limiter,
-            max_attempts=6,
+            max_attempts=3,
         )
         if resp is None:
-            raise HTTPException(status_code=502, detail="Falha de conexão ao listar naturezas de operação.")
+            raise HTTPException(status_code=503, detail="Servico Bling indisponivel ao listar naturezas de operacao.")
         if resp.status_code == 401:
             return None, 401
-        if resp.status_code == 429:
-            tentativas_429 += 1
-            if tentativas_429 >= 3:
-                raise HTTPException(status_code=429, detail="Limite de solicitações da Bling atingido (429). Aguarde alguns minutos e tente novamente.")
-            continue
         if resp.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Erro ao listar naturezas de operação: {resp.text}")
+            _bling_raise_required_response(resp, "listar naturezas de operacao")
 
-        data = resp.json().get("data", [])
+        data = _bling_json_data(
+            resp,
+            action="listar naturezas de operacao",
+            default=[],
+            expected_type=list,
+        )
         if not data:
             break
 
         for n in data:
+            n = _bling_required_dict(n, "listar naturezas de operacao")
             nid = n.get("id")
             desc = n.get("descricao")
             if nid is not None and desc is not None:
@@ -1855,32 +1891,45 @@ def _normalizar_texto(texto: str):
     return "".join([c for c in nfkd if not unicodedata.combining(c)])
 
 
-def _bling_obter_detalhes_nf(access_token: str, nf_id: str):
+def _bling_obter_detalhes_nf(access_token: str, nf_id: str, cancel_callback=None):
     """Obtém os detalhes de uma NF específica incluindo itens"""
     url = f"https://api.bling.com.br/Api/v3/nfe/{nf_id}"
     headers = {"Authorization": f"Bearer {access_token}"}
     
-    try:
-        resp = _bling_get_with_adaptive_limit(
-            url,
-            headers=headers,
-            timeout=15,
-            limiter=_BlingAdaptiveLimiter(start_interval=0.08),
-            max_attempts=5,
+    resp = _bling_get_with_adaptive_limit(
+        url,
+        headers=headers,
+        timeout=15,
+        limiter=_BlingAdaptiveLimiter(start_interval=0.08),
+        max_attempts=3,
+        cancel_callback=cancel_callback,
+    )
+    if resp is None:
+        return None, 503
+    if resp.status_code == 401:
+        return None, 401
+    if resp.status_code == 403:
+        return None, 403
+    if resp.status_code == 429:
+        raise HTTPException(
+            status_code=429,
+            detail="Limite de solicitacoes da Bling atingido ao buscar detalhe de nota fiscal.",
+            headers=_bling_retry_headers(resp),
         )
-        if resp is None:
-            return None, 500
-        if resp.status_code == 200:
-            return resp.json().get("data", {}), 200
-        elif resp.status_code == 401:
-            return None, 401
-        elif resp.status_code == 429:
-            return None, 429
-        else:
-            return None, resp.status_code
-    except Exception as e:
-        print(f"[DEBUG] Erro ao obter detalhes NF {nf_id}: {e}")
-        return None, 500
+    if resp.status_code in {500, 502, 503, 504}:
+        return None, 503
+    if resp.status_code != 200:
+        return None, 502
+    try:
+        detalhe = _bling_json_data(
+            resp,
+            action="buscar detalhe de nota fiscal",
+            default={},
+            expected_type=dict,
+        )
+    except HTTPException:
+        return None, 502
+    return detalhe, 200
 
 
 def _extrair_codigo_origem_nf(nf_obj: dict) -> str:
@@ -1986,7 +2035,6 @@ def _bling_listar_notas_entrada(
     registros = []
     itens = []
     pagina = 1
-    tentativas_429 = 0
     limiter = _BlingAdaptiveLimiter(start_interval=0.08)
     mapa_lojas_cliente = {}
     if client_id:
@@ -2019,21 +2067,22 @@ def _bling_listar_notas_entrada(
             params=params,
             timeout=25,
             limiter=limiter,
-            max_attempts=6,
+            max_attempts=3,
+            cancel_callback=_bling_cancel_callback(client_id),
         )
         if resp is None:
-            raise HTTPException(status_code=502, detail="Falha de conexão ao listar NFe de entrada.")
+            raise HTTPException(status_code=503, detail="Servico Bling indisponivel ao listar NFe de entrada.")
         if resp.status_code == 401:
             return None, None, 401
-        if resp.status_code == 429:
-            tentativas_429 += 1
-            if tentativas_429 >= 3:
-                raise HTTPException(status_code=429, detail="Limite de solicitações da Bling atingido (429). Aguarde alguns minutos e tente novamente.")
-            continue
         if resp.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Erro ao listar NFe de entrada: {resp.text}")
+            _bling_raise_required_response(resp, "listar NFe de entrada")
 
-        notas = resp.json().get("data", [])
+        notas = _bling_json_data(
+            resp,
+            action="listar NFe de entrada",
+            default=[],
+            expected_type=list,
+        )
         if not notas:
             break
 
@@ -2049,6 +2098,7 @@ def _bling_listar_notas_entrada(
         )
 
         for idx_nf, nf in enumerate(notas, 1):
+            nf = _bling_required_dict(nf, "listar NFe de entrada")
             # Verificar cancelamento para cada nota
             if client_id:
                 _verificar_cancelamento(client_id)
@@ -2067,6 +2117,11 @@ def _bling_listar_notas_entrada(
                 )
             
             nid = nf.get("id")
+            if nid is None or not str(nid).strip():
+                raise HTTPException(
+                    status_code=502,
+                    detail="NFe de entrada sem identificador para buscar detalhe obrigatorio.",
+                )
             numero = nf.get("numero")
             data_emissao = nf.get("dataEmissao") or nf.get("data")
             valor = nf.get("valorTotal") or nf.get("total") or 0
@@ -2074,6 +2129,8 @@ def _bling_listar_notas_entrada(
             fornecedor = contato.get("nome") if isinstance(contato, dict) else None
 
             natureza = nf.get("naturezaOperacao") or {}
+            if not isinstance(natureza, dict):
+                natureza = {}
             natureza_id = natureza.get("id")
             natureza_desc = natureza.get("descricao")
             if not natureza_desc and natureza_id is not None:
@@ -2140,17 +2197,29 @@ def _bling_listar_notas_entrada(
                 "unidade_negocio_virtual": unidade_virtual,
             })
 
-            # Extrair itens da nota (se disponível na resposta)
-            nota_itens = nf.get("itens", []) or []
-            if not nota_itens and nid:
-                detalhe_nf, status_det = _bling_obter_detalhes_nf(access_token, str(nid))
+            # A listagem pode trazer apenas uma amostra de itens. O detalhe e
+            # obrigatorio para toda NF-e de entrada, mesmo quando ha itens ali.
+            nota_itens: list[dict] = []
+            if nid:
+                detalhe_nf, status_det = _bling_obter_detalhes_nf(
+                    access_token,
+                    str(nid),
+                    cancel_callback=_bling_cancel_callback(client_id),
+                )
                 if status_det == 401:
                     return None, None, 401
                 if status_det == 429:
-                    time.sleep(1)
-                    detalhe_nf, status_det = _bling_obter_detalhes_nf(access_token, str(nid))
-                if status_det == 200 and isinstance(detalhe_nf, dict):
-                    nota_itens = detalhe_nf.get("itens") or []
+                    raise HTTPException(status_code=429, detail="Limite da Bling ao buscar detalhe obrigatorio de NFe de entrada.")
+                if status_det == 403:
+                    raise HTTPException(status_code=403, detail="Permissao insuficiente para detalhar NFe de entrada na Bling.")
+                if status_det == 503:
+                    raise HTTPException(status_code=503, detail="Servico Bling indisponivel ao detalhar NFe de entrada.")
+                if status_det != 200 or not isinstance(detalhe_nf, dict):
+                    raise HTTPException(status_code=502, detail="Detalhe obrigatorio de NFe de entrada ausente ou invalido.")
+                if status_det == 200:
+                    nota_itens = _bling_required_items(
+                        detalhe_nf, "detalhar NFe de entrada"
+                    )
 
                     data_emissao = detalhe_nf.get("dataEmissao") or detalhe_nf.get("data") or data_emissao
                     valor = detalhe_nf.get("valorTotal") or detalhe_nf.get("total") or valor
@@ -2231,6 +2300,7 @@ def _bling_listar_notas_entrada(
                             "origem_codigo": origem_codigo,
                             "unidade_negocio": unidade_nf,
                             "unidade_negocio_virtual": unidade_virtual,
+                            "_detalhe_validado": True,
                         })
             devolucao_cfop = _eh_devolucao_por_cfop_itens(nota_itens)
             if devolucao_cfop:
@@ -2242,12 +2312,17 @@ def _bling_listar_notas_entrada(
                 registros[-1]["devolucao"] = devolucao
                 registros[-1]["unidade_negocio_virtual"] = unidade_virtual
             for item in nota_itens:
+                item = _bling_required_dict(item, "detalhar item de NFe de entrada")
                 # SKU vem diretamente no campo "codigo" do item
                 sku = item.get("codigo") or item.get("sku") or item.get("id")
                 descricao = item.get("descricao") or item.get("nome")
                 
-                quantidade = float(item.get("quantidade") or 0)
-                valor_unitario = float(item.get("valor") or 0)
+                quantidade = _bling_required_float(
+                    item.get("quantidade"), "detalhar item de NFe de entrada"
+                )
+                valor_unitario = _bling_required_float(
+                    item.get("valor"), "detalhar item de NFe de entrada"
+                )
 
                 itens.append({
                     "id_nota": nid,
@@ -2343,7 +2418,6 @@ def _bling_listar_vendas_fallback_nf_saida(
     headers = {"Authorization": f"Bearer {access_token}"}
     registros = []
     pagina = 1
-    tentativas_429 = 0
     max_paginas = 400
     limiter = _BlingAdaptiveLimiter(start_interval=0.08)
     mapa_lojas_cliente = mapa_lojas_cliente or {}
@@ -2387,24 +2461,28 @@ def _bling_listar_vendas_fallback_nf_saida(
             params=params,
             timeout=25,
             limiter=limiter,
-            max_attempts=6,
+            max_attempts=3,
+            cancel_callback=_bling_cancel_callback(client_id),
         )
         if resp is None:
-            raise HTTPException(status_code=502, detail="Falha de conexão ao listar NFe de saída.")
+            raise HTTPException(status_code=503, detail="Servico Bling indisponivel ao listar NFe de saida.")
         if resp.status_code == 401:
             return None, 401
         if resp.status_code == 403:
+            _notificar_log_nf(
+                log_callback,
+                "[ESTOQUE][LANC] Fallback de NFe de saida indisponivel por permissao 403; nenhuma venda sera inferida por esta fonte.",
+            )
             return [], 403
-        if resp.status_code == 429:
-            tentativas_429 += 1
-            if tentativas_429 >= 3:
-                raise HTTPException(status_code=429, detail="Limite de solicitações da Bling atingido (429) na listagem de NF de saída.")
-            continue
-        tentativas_429 = 0
         if resp.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Erro ao listar NFe de saída: {resp.text}")
+            _bling_raise_required_response(resp, "listar NFe de saida")
 
-        notas = resp.json().get("data", [])
+        notas = _bling_json_data(
+            resp,
+            action="listar NFe de saida",
+            default=[],
+            expected_type=list,
+        )
         if not notas:
             break
 
@@ -2420,6 +2498,7 @@ def _bling_listar_vendas_fallback_nf_saida(
         )
 
         for idx_nf, nf in enumerate(notas, 1):
+            nf = _bling_required_dict(nf, "listar NFe de saida")
             if client_id:
                 _verificar_cancelamento(client_id)
 
@@ -2437,6 +2516,8 @@ def _bling_listar_vendas_fallback_nf_saida(
                 )
 
             nf_id = str(nf.get("id") or "").strip()
+            if not nf_id:
+                raise HTTPException(status_code=502, detail="NFe de saida sem identificador para buscar detalhe obrigatorio.")
             numero_nf = str(nf.get("numero") or "").strip()
             data_venda = nf.get("dataEmissao") or nf.get("data") or ""
             contato = nf.get("contato") or {}
@@ -2462,16 +2543,25 @@ def _bling_listar_vendas_fallback_nf_saida(
             canal = loja_desc or "Mercado Livre Full"
             unidade_negocio = _normalizar_unidade_negocio_ml(loja_desc or canal, canal, prefer_full=True)
 
-            detalhe, status_det = _bling_obter_detalhes_nf(access_token, nf_id)
+            detalhe, status_det = _bling_obter_detalhes_nf(
+                access_token,
+                nf_id,
+                cancel_callback=_bling_cancel_callback(client_id),
+            )
             if status_det == 401:
                 return None, 401
             if status_det == 403:
+                _notificar_log_nf(
+                    log_callback,
+                    "[ESTOQUE][LANC] Fallback de NFe de saida interrompido: permissao 403 ao detalhar nota.",
+                )
                 return [], 403
             if status_det == 429:
-                time.sleep(1)
-                continue
+                raise HTTPException(status_code=429, detail="Limite da Bling ao buscar detalhe obrigatorio de NFe de saida.")
+            if status_det == 503:
+                raise HTTPException(status_code=503, detail="Servico Bling indisponivel ao detalhar NFe de saida.")
             if status_det != 200 or not detalhe:
-                continue
+                raise HTTPException(status_code=502, detail="Detalhe obrigatorio de NFe de saida ausente ou invalido.")
 
             # Alguns payloads de listagem de NF não trazem metadados completos de loja/unidade.
             # Prioriza os dados do detalhe para preservar corretamente a loja virtual.
@@ -2521,12 +2611,17 @@ def _bling_listar_vendas_fallback_nf_saida(
             )
             unidade_negocio = _normalizar_unidade_negocio_ml(unidade_resolvida or loja_desc or canal, canal, prefer_full=True)
 
-            itens = detalhe.get("itens") or []
+            itens = _bling_required_items(detalhe, "detalhar NFe de saida")
             for item in itens:
+                item = _bling_required_dict(item, "detalhar item de NFe de saida")
                 sku = item.get("codigo") or item.get("sku") or "N/D"
                 produto = item.get("descricao") or item.get("nome") or "Produto s/ descrição"
-                qtd = float(item.get("quantidade", 0) or 0)
-                valor = float(item.get("valor", 0) or 0) * qtd
+                qtd = _bling_required_float(
+                    item.get("quantidade", 0), "detalhar item de NFe de saida"
+                )
+                valor = _bling_required_float(
+                    item.get("valor", 0), "detalhar item de NFe de saida"
+                ) * qtd
                 registros.append({
                     "data": data_venda,
                     "loja_conta": loja_nome,
@@ -2560,7 +2655,7 @@ def _bling_listar_vendas_fallback_nf_saida(
     return registros, 200
 
 
-def _get_notas_entrada_db(client_id: str, loja: str = None):
+def _get_notas_entrada_db_unlocked(client_id: str, loja: str = None):
     db_path = _get_vendas_db(client_id, loja)
     conn = sqlite3.connect(db_path)
     try:
@@ -2782,6 +2877,12 @@ def _get_notas_entrada_db(client_id: str, loja: str = None):
     finally:
         conn.close()
     return db_path
+
+
+def _get_notas_entrada_db(client_id: str, loja: str = None):
+    db_path = _get_vendas_db_path(client_id, loja)
+    with sqlite_lock_for_path(db_path):
+        return _get_notas_entrada_db_unlocked(client_id, loja)
 
 __all__ = [
     "configure_bling_vendas_context",

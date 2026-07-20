@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import time
 
-from backend.services import codex_console, codex_whatsapp_agents, whatsapp_bridge
+import pytest
+
+from backend.services import codex_assistant, codex_console, codex_whatsapp_agents, whatsapp_bridge
+from backend.services.whatsapp import black_jhon_prompting, conversation_context, marketplace_listing_delivery
 
 
 def _config() -> dict:
@@ -34,6 +37,7 @@ def test_dual_defaults_use_luna_and_sol_without_legacy_progress():
     settings = whatsapp_bridge._whatsapp_dual_agent_settings(whatsapp_bridge._default_config())
     assert settings == {
         "agent_architecture": "dual_codex",
+        "response_provider_policy": "codex_only",
         "conversation_agent_model": "gpt-5.6-luna",
         "conversation_agent_reasoning": "low",
         "task_agent_model": "gpt-5.6-sol",
@@ -57,10 +61,16 @@ def test_dual_defaults_use_luna_and_sol_without_legacy_progress():
         "conversation_runtime_pool_size": 4,
         "max_active_task_agents_global": 12,
         "preserve_order_per_phone": True,
+        "data_selection_enabled": True,
+        "data_selection_required_before_sol": True,
+        "data_selection_worker_count": 4,
+        "data_selection_runtime_pool_size": 4,
         "function_manager_enabled": True,
         "function_manager_required_before_sol": True,
+        "context_hub_enabled": True,
         "function_manager_worker_count": 4,
         "function_manager_runtime_pool_size": 4,
+        "function_manager_legacy_fields_ignored": True,
     }
     assert whatsapp_bridge._start_progress_pulse(_config(), "wamid-1", "task-1") is False
 
@@ -77,7 +87,8 @@ def test_version_five_dual_config_is_migrated_to_parallel_capacity(monkeypatch):
         },
     )
     config = whatsapp_bridge._load_config()
-    assert config["version"] == 9
+    assert config["version"] == 10
+    assert config["response_provider_policy"] == "codex_only"
     assert config["task_agent_reasoning"] == "low"
     assert config["job_deadline_seconds"] == 120
     assert config["retry_policy"] == "bounded"
@@ -121,6 +132,20 @@ def test_conversation_reply_does_not_create_worker(monkeypatch):
 def test_delegate_queues_function_manager_before_any_sol_worker(monkeypatch):
     sent = []
     saved = []
+    state = {
+        "dual_agent_conversations": {
+            "wa-conversation": {
+                "resolved_context": {
+                    "store_mode": "single",
+                    "store": "JK Peças",
+                    "sku": "200",
+                    "revision": 1,
+                    "updated_at_epoch": time.time(),
+                    "expires_at_epoch": time.time() + 3600,
+                }
+            }
+        }
+    }
     monkeypatch.setattr(whatsapp_bridge, "_save_dual_conversation_record", lambda *_args: None)
     monkeypatch.setattr(
         whatsapp_bridge,
@@ -128,9 +153,13 @@ def test_delegate_queues_function_manager_before_any_sol_worker(monkeypatch):
         lambda *_args, **_kwargs: {
             "action": "delegate",
             "reply_text": "Vou confirmar isso para você. Enquanto isso, pode continuar falando comigo.",
-            "job_title": "Consultar estoque",
-            "job_prompt": "Consulte o estoque do SKU 200 na JK Peças.",
-            "thread_id": "thread-luna",
+                "job_title": "Consultar estoque",
+                "job_prompt": "Consulte o estoque do SKU 200 na JK Peças.",
+                "thread_id": "thread-luna",
+                "resolved_context": {
+                    "store_mode": "single", "store": "JK Peças", "sku": "200",
+                    "mlb": "", "period": "", "applied_fields": ["store", "store_mode", "sku"],
+                },
         },
     )
     monkeypatch.setattr(whatsapp_bridge, "_dual_delegate_query_policy", lambda *_args: {})
@@ -143,7 +172,7 @@ def test_delegate_queues_function_manager_before_any_sol_worker(monkeypatch):
 
     whatsapp_bridge._process_dual_codex_message(
         _config(),
-        {},
+        state,
         {"message_id": "wamid-2", "text_body": "Veja o estoque"},
         session=_session(),
         conversation_id="wa-conversation",
@@ -158,6 +187,8 @@ def test_delegate_queues_function_manager_before_any_sol_worker(monkeypatch):
     assert saved[0][1]["kind"] == "dual_function_manager"
     assert saved[0][1]["task_id"] == ""
     assert saved[0][1]["job_state"] == "manager_queued"
+    assert saved[0][1]["conversation_anchors"]["resolved_context"]["store"] == "JK Peças"
+    assert saved[0][1]["conversation_anchors"]["resolved_context"]["sku"] == "200"
     assert submitted == [True]
     assert sent[0]["response"].startswith("Vou confirmar")
     assert sent[0]["task_id"] == ""
@@ -503,7 +534,7 @@ def test_non_json_sol_result_uses_confirmed_tool_validation_and_stops_retry():
     assert whatsapp_bridge._dual_worker_disposition(task, result) == "completed"
 
 
-def test_manager_routes_sku_information_without_scanning_orders():
+def test_server_preserves_agent_selected_sku_sources_without_adding_calls():
     catalog = [
         {"id": "mercado_livre_listing"},
         {"id": "product_data"},
@@ -512,15 +543,20 @@ def test_manager_routes_sku_information_without_scanning_orders():
     ]
     plan = whatsapp_bridge._function_manager_enforce_plan(
         {
-            "intent": "sku_information",
+            "action": "collect",
+            "entities": {
+                "sku": "001", "mlb": "", "order_id": "", "period": "",
+                "store_ref": "Uai Mineirinho", "store_mode": "single",
+            },
             "tool_calls": [
-                {"tool_id": "mercado_livre_orders", "arguments": {}, "required": True, "reason": "expansao indevida"}
+                {"tool_id": "mercado_livre_listing", "arguments": {}, "required": True, "reason": "anuncio", "depends_on": []},
+                {"tool_id": "product_data", "arguments": {}, "required": False, "reason": "cadastro", "depends_on": []},
+                {"tool_id": "product_image", "arguments": {}, "required": False, "reason": "imagem", "depends_on": []},
             ],
-            "requires_sol": True,
-            "requires_web": False,
+            "context_hub": {"mode": "not_applicable"},
         },
         request_text="Informacoes do SKU 001 no Mercado Livre",
-        query_policy={"store": "Uai Mineirinho", "store_mode": "single"},
+        query_policy={"authorized_stores": ["Uai Mineirinho"]},
         catalog=catalog,
         max_calls=6,
     )
@@ -531,6 +567,207 @@ def test_manager_routes_sku_information_without_scanning_orders():
     assert all(item["arguments"]["loja"] == "Uai Mineirinho" for item in plan["tool_calls"])
 
 
+def test_deterministic_route_is_disabled_and_agent_mlb_scope_is_applied():
+    assert not hasattr(whatsapp_bridge, "_deterministic_direct_query_plan")
+    plan = whatsapp_bridge._function_manager_enforce_plan(
+        {
+            "action": "collect",
+            "entities": {
+                "sku": "", "mlb": "MLB123456789", "order_id": "", "period": "",
+                "store_ref": "JK Pecas", "store_mode": "single",
+            },
+            "tool_calls": [{
+                "tool_id": "mercado_livre_listing",
+                "arguments": {"incluir_detalhes": True},
+                "required": True,
+                "reason": "anuncio selecionado",
+                "depends_on": [],
+            }],
+            "context_hub": {"mode": "not_applicable"},
+        },
+        request_text="Mande link, descricao e fotos do MLB-123456789 na JK Pecas",
+        query_policy={"authorized_stores": ["JK Pecas"]},
+        catalog=[{"id": "mercado_livre_listing"}, {"id": "mercado_livre_orders"}],
+        max_calls=6,
+    )
+
+    assert plan["item_id"] == "MLB123456789"
+    assert [item["tool_id"] for item in plan["tool_calls"]] == ["mercado_livre_listing"]
+    assert plan["tool_calls"][0]["arguments"]["loja"] == "JK Pecas"
+    assert plan["tool_calls"][0]["arguments"]["incluir_detalhes"] is True
+
+
+def test_manager_routes_latest_sale_only_to_fresh_mercado_livre_order_api():
+    catalog = [
+        {"id": "mercado_livre_orders"},
+        {"id": "sales_ranking"},
+        {"id": "local_database_query"},
+        {"id": "local_csv_query"},
+    ]
+    plan = whatsapp_bridge._function_manager_enforce_plan(
+        {
+            "action": "collect",
+            "entities": {
+                "sku": "", "mlb": "", "order_id": "", "period": "",
+                "store_ref": "JK Pecas", "store_mode": "single",
+            },
+            "tool_calls": [
+                {"tool_id": "mercado_livre_orders", "arguments": {
+                    "force_refresh": True, "limite": 1, "incluir_detalhes": True,
+                }, "required": True, "depends_on": []},
+            ],
+            "context_hub": {"mode": "not_applicable"},
+        },
+        request_text="Última venda\n\nLoja selecionada: JK Pecas",
+        query_policy={"authorized_stores": ["JK Pecas"]},
+        catalog=catalog,
+        max_calls=6,
+    )
+
+    assert [item["tool_id"] for item in plan["tool_calls"]] == ["mercado_livre_orders"]
+    assert plan["tool_calls"][0]["arguments"] == {
+        "force_refresh": True,
+        "limite": 1,
+        "incluir_detalhes": True,
+        "loja": "JK Pecas",
+        "message": "Última venda\n\nLoja selecionada: JK Pecas",
+    }
+
+
+def test_manager_routes_specific_sale_id_to_direct_mercado_livre_lookup():
+    plan = whatsapp_bridge._function_manager_enforce_plan(
+        {
+            "action": "collect",
+            "entities": {
+                "sku": "", "mlb": "", "order_id": "2000017389080442", "period": "",
+                "store_ref": "JK Pecas", "store_mode": "single",
+            },
+            "tool_calls": [{
+                "tool_id": "mercado_livre_orders",
+                "arguments": {"id_pedido": "2000017389080442", "limite": 1, "incluir_detalhes": True},
+                "required": True, "depends_on": [],
+            }],
+            "context_hub": {"mode": "not_applicable"},
+        },
+        request_text="Consulte a venda 2000017389080442",
+        query_policy={"authorized_stores": ["JK Pecas"]},
+        catalog=[{"id": "mercado_livre_orders"}, {"id": "sales_returns_query"}],
+        max_calls=6,
+    )
+
+    call = plan["tool_calls"][0]
+    assert [item["tool_id"] for item in plan["tool_calls"]] == ["mercado_livre_orders"]
+    assert call["arguments"]["id_pedido"] == "2000017389080442"
+    assert call["arguments"]["limite"] == 1
+    assert call["arguments"]["incluir_detalhes"] is True
+
+
+def test_manager_does_not_treat_the_sale_number_of_latest_return_as_latest_sale():
+    request = "Qual foi o número da venda e a data da última devolução na JK Pecas?"
+    plan = whatsapp_bridge._function_manager_enforce_plan(
+        {
+            "action": "collect",
+            "entities": {
+                "sku": "", "mlb": "", "order_id": "", "period": "",
+                "store_ref": "JK Pecas", "store_mode": "single",
+            },
+            "tool_calls": [{
+                "tool_id": "mercado_livre_returns", "arguments": {}, "required": True, "depends_on": [],
+            }],
+            "context_hub": {"mode": "not_applicable"},
+        },
+        request_text=request,
+        query_policy={
+            "authorized_stores": ["JK Pecas"],
+        },
+        catalog=[
+            {"id": "mercado_livre_orders"},
+            {"id": "mercado_livre_returns"},
+            {"id": "sales_ranking"},
+            {"id": "returns_summary"},
+        ],
+        max_calls=6,
+    )
+
+    assert [item["tool_id"] for item in plan["tool_calls"]] == ["mercado_livre_returns"]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Mostre o pedido da ultima semana",
+        "Qual foi o valor da venda na ultima semana?",
+        "Mostre o pedido do ultimo mes",
+    ],
+)
+def test_manager_does_not_treat_period_sales_as_latest_sale(query):
+    plan = whatsapp_bridge._function_manager_enforce_plan(
+        {
+            "action": "collect",
+            "entities": {
+                "sku": "", "mlb": "", "order_id": "", "period": query,
+                "store_ref": "JK Pecas", "store_mode": "single",
+            },
+            "tool_calls": [{
+                "tool_id": "mercado_livre_orders", "arguments": {"limite": 20},
+                "required": True, "depends_on": [],
+            }],
+            "context_hub": {"mode": "not_applicable"},
+        },
+        request_text=query,
+        query_policy={"authorized_stores": ["JK Pecas"]},
+        catalog=[
+            {"id": "mercado_livre_orders"},
+            {"id": "sales_returns_query"},
+            {"id": "sales_summary"},
+        ],
+        max_calls=6,
+    )
+
+    assert all(
+        not (
+            item["tool_id"] == "mercado_livre_orders"
+            and item.get("arguments", {}).get("limite") == 1
+        )
+        for item in plan["tool_calls"]
+    )
+
+
+def test_manager_treats_order_id_as_return_reference_when_return_is_requested():
+    for query in (
+        "Qual foi a ultima devolucao do pedido 2000017389080442?",
+        "Mostre o reembolso do pedido 2000017389080442",
+    ):
+        plan = whatsapp_bridge._function_manager_enforce_plan(
+            {
+                "action": "collect",
+                "entities": {
+                    "sku": "", "mlb": "", "order_id": "2000017389080442", "period": "",
+                    "store_ref": "JK Pecas", "store_mode": "single",
+                },
+                "tool_calls": [{
+                    "tool_id": "mercado_livre_returns",
+                    "arguments": {"id_pedido": "2000017389080442"},
+                    "required": True, "depends_on": [],
+                }],
+                "context_hub": {"mode": "not_applicable"},
+            },
+            request_text=query,
+            query_policy={
+                "authorized_stores": ["JK Pecas"],
+            },
+            catalog=[
+                {"id": "mercado_livre_orders"},
+                {"id": "mercado_livre_returns"},
+                {"id": "sales_ranking"},
+                {"id": "returns_summary"},
+            ],
+            max_calls=6,
+        )
+
+        assert [item["tool_id"] for item in plan["tool_calls"]] == ["mercado_livre_returns"]
+
+
 def test_manager_routes_explicit_stock_in_bling_ml_system_priority_order():
     catalog = [
         {"id": "bling_stock_balances"},
@@ -539,12 +776,21 @@ def test_manager_routes_explicit_stock_in_bling_ml_system_priority_order():
         {"id": "product_image"},
     ]
     plan = whatsapp_bridge._function_manager_enforce_plan(
-        {"tool_calls": [], "requires_sol": False, "requires_web": False},
+        {
+            "action": "collect",
+            "entities": {
+                "sku": "001", "mlb": "", "order_id": "", "period": "",
+                "store_ref": "", "store_mode": "all",
+            },
+            "tool_calls": [
+                {"tool_id": "bling_stock_balances", "arguments": {}, "required": True, "depends_on": []},
+                {"tool_id": "mercado_livre_listing", "arguments": {}, "required": False, "depends_on": [0]},
+            ],
+            "context_hub": {"mode": "not_applicable"},
+        },
         request_text="Quanto temos de estoque do SKU 001 em todas as lojas?",
         query_policy={
-            "store_mode": "all",
-            "stores": ["JK Pecas", "Uai Mineirinho", "Carlos Jose", "Deckas"],
-            "source_policy": {"required_tools": ["bling_stock_balances"], "force_refresh": True},
+            "authorized_stores": ["JK Pecas", "Uai Mineirinho", "Carlos Jose", "Deckas"],
         },
         catalog=catalog,
         max_calls=6,
@@ -554,40 +800,15 @@ def test_manager_routes_explicit_stock_in_bling_ml_system_priority_order():
         "bling_stock_balances",
         "mercado_livre_listing",
     ]
-    assert all(item["required"] is False for item in plan["tool_calls"])
-    assert plan["manager_guard"]["explicit_stock"] is True
-    assert plan["manager_guard"]["listing_first"] is False
+    assert plan["tool_calls"][0]["required"] is True
+    assert plan["tool_calls"][1]["depends_on"] == [0]
 
 
-def test_simple_stock_query_keeps_the_three_source_chain_in_deterministic_route(monkeypatch):
-    monkeypatch.setattr(
-        whatsapp_bridge,
-        "_function_manager_catalog",
-        lambda *_args: [
-            {"id": "bling_stock_balances"},
-            {"id": "mercado_livre_listing"},
-            {"id": "stock_data"},
-        ],
-    )
-    plan = whatsapp_bridge._deterministic_direct_query_plan(
-        "estoque do SKU 001 na Uai Mineirinho",
-        {
-            "mode": "query_only",
-            "domains": ["estoque"],
-            "store": "Uai Mineirinho",
-            "store_mode": "single",
-            "source_policy": {"required_tools": ["bling_stock_balances"], "force_refresh": True},
-        },
-        {"full": True},
-    )
-
-    assert [item["tool_id"] for item in plan["tool_calls"]] == [
-        "bling_stock_balances", "mercado_livre_listing", "stock_data",
-    ]
-    assert plan["sku"] == "001"
+def test_simple_stock_query_has_no_deterministic_source_chain():
+    assert not hasattr(whatsapp_bridge, "_deterministic_direct_query_plan")
 
 
-def test_stock_executor_stops_at_first_confirmed_priority_and_keeps_local_as_support(monkeypatch):
+def test_stock_executor_runs_only_the_agent_plan_in_call_order(monkeypatch):
     from backend.services import codex_assistant
 
     calls: list[tuple[str, str]] = []
@@ -671,7 +892,6 @@ def test_stock_executor_stops_at_first_confirmed_priority_and_keeps_local_as_sup
             {"tool_id": "mercado_livre_listing", "arguments": {}, "required": False},
             {"tool_id": "stock_data", "arguments": {}, "required": False},
         ],
-        "manager_guard": {"explicit_stock": True},
         "sku": "001",
     }
     policy = {"store_mode": "all", "stores": ["Bling OK", "ML OK", "Local only"]}
@@ -681,18 +901,14 @@ def test_stock_executor_stops_at_first_confirmed_priority_and_keeps_local_as_sup
         policy,
     )
 
-    assert [tool for store, tool in calls if store == "Bling OK"] == ["bling_stock_balances"]
-    assert [tool for store, tool in calls if store == "ML OK"] == ["bling_stock_balances", "mercado_livre_listing"]
-    assert [tool for store, tool in calls if store == "Local only"] == [
-        "bling_stock_balances", "mercado_livre_listing", "stock_data",
-    ]
-    local = next(item for item in results if item["manager_store"] == "Local only" and item["tool_id"] == "stock_data")
-    assert local["stock_supporting_only"] is True
-    assert local["dados_suficientes"] is False
-    assert local["manager_required"] is True
+    for store in ("Bling OK", "ML OK", "Local only"):
+        assert [tool for called_store, tool in calls if called_store == store] == [
+            "bling_stock_balances", "mercado_livre_listing", "stock_data",
+        ]
+    assert len(results) == 9
 
 
-def test_query_context_persists_sku_and_reuses_it_in_followup(monkeypatch):
+def test_query_context_can_inform_agent_but_server_uses_plan_entities(monkeypatch):
     state: dict = {}
     original = {
         "mode": "query_only",
@@ -723,9 +939,19 @@ def test_query_context_persists_sku_and_reuses_it_in_followup(monkeypatch):
     assert followup["sku"] == "001"
     assert followup["inherited_product_context"] is True
     plan = whatsapp_bridge._function_manager_enforce_plan(
-        {"tool_calls": [{"tool_id": "mercado_livre_listing", "arguments": {}, "required": True}]},
+        {
+            "action": "collect",
+            "entities": {
+                "sku": "001", "mlb": "", "order_id": "", "period": "",
+                "store_ref": "Uai Mineirinho", "store_mode": "single",
+            },
+            "tool_calls": [{
+                "tool_id": "mercado_livre_listing", "arguments": {}, "required": True, "depends_on": [],
+            }],
+            "context_hub": {"mode": "not_applicable"},
+        },
         request_text="e no Mercado Livre?",
-        query_policy=followup,
+        query_policy={"authorized_stores": ["Uai Mineirinho"]},
         catalog=[{"id": "mercado_livre_listing"}],
         max_calls=3,
     )
@@ -766,6 +992,260 @@ def test_conversation_agent_receives_durable_context_even_without_thread(monkeyp
     ]
     assert state["dual_agent_conversations"]["conversation-1"]["thread_id"] == "thread-new"
     assert state["dual_agent_conversations"]["conversation-1"]["recent_turns"][-1]["role"] == "assistant"
+
+
+def test_conversation_thread_restarts_when_prompt_contract_changes(monkeypatch):
+    captured = []
+    state = {
+        "dual_agent_conversations": {
+            "conversation-upgrade": {
+                "conversation_id": "conversation-upgrade",
+                "thread_id": "thread-old",
+                "prompt_version": "black-jhon-whatsapp-prompts.v1",
+                "prompt_hash": "old-hash",
+            }
+        }
+    }
+    monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda *_args, **_kwargs: None)
+
+    def run(**kwargs):
+        captured.append(kwargs)
+        return {
+            "action": "reply",
+            "reply_text": "Contexto retomado.",
+            "thread_id": "thread-new",
+            "thread_reused": False,
+            "context_chars": 1200,
+        }
+
+    monkeypatch.setattr(codex_whatsapp_agents.CONVERSATION_RUNTIME, "run", run)
+    whatsapp_bridge._run_conversation_agent(
+        _config(), state, "conversation-upgrade",
+        event_type="user_message", user_message="continue",
+    )
+
+    stored = state["dual_agent_conversations"]["conversation-upgrade"]
+    assert captured[0]["thread_id"] == ""
+    assert stored["thread_id"] == "thread-new"
+    assert stored["thread_reset_reason"] == "prompt_contract_changed"
+    assert stored["prompt_version"] == black_jhon_prompting.PROMPT_CONTRACT_VERSION
+    assert stored["prompt_hash"] == black_jhon_prompting.PROMPT_CONTRACT_HASH
+    assert stored["context_chars"] == 1200
+
+
+def test_luna_persists_resolved_store_and_sku_for_the_next_turn(monkeypatch):
+    captured = []
+    state = {}
+    monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda *_args, **_kwargs: None)
+
+    def run(**kwargs):
+        captured.append(kwargs)
+        if len(captured) == 1:
+            return {
+                "action": "delegate",
+                "reply_text": "Vou consultar.",
+                "job_title": "Estoque",
+                "job_prompt": "Consulte o estoque do SKU 001 na JK Pecas.",
+                "resolved_context": {
+                    "store_mode": "single",
+                    "store": "JK Pecas",
+                    "sku": "001",
+                },
+                "thread_id": "thread-luna",
+            }
+        return {
+            "action": "delegate",
+            "reply_text": "Vou verificar na mesma loja.",
+            "job_title": "Estoque",
+            "job_prompt": "Consulte o estoque do SKU 001 na JK Pecas.",
+            "resolved_context": {
+                "store_mode": "single",
+                "store": "JK Pecas",
+                "sku": "001",
+            },
+            "thread_id": "thread-luna",
+        }
+
+    monkeypatch.setattr(codex_whatsapp_agents.CONVERSATION_RUNTIME, "run", run)
+    whatsapp_bridge._run_conversation_agent(
+        _config(), state, "conversation-context-a",
+        event_type="user_message",
+        user_message="Consulte o estoque do SKU 001 na JK Pecas",
+        authorized_stores=["JK Pecas", "Deckas"],
+    )
+    decision = whatsapp_bridge._run_conversation_agent(
+        _config(), state, "conversation-context-a",
+        event_type="user_message",
+        user_message="e na mesma loja?",
+        authorized_stores=["JK Pecas", "Deckas"],
+    )
+
+    assert captured[1]["conversation_state"]["store"] == "JK Pecas"
+    assert captured[1]["conversation_state"]["sku"] == "001"
+    assert decision["resolved_context"]["store"] == "JK Pecas"
+    assert decision["resolved_context"]["sku"] == "001"
+    stored = state["dual_agent_conversations"]["conversation-context-a"]["resolved_context"]
+    assert stored["revision"] == 1
+
+
+def test_resolved_context_expires_rejects_store_and_clears_conflicting_identifier():
+    record = {}
+    first = conversation_context.apply_resolved_context(
+        record,
+        {"store_mode": "single", "store": "JK Pecas", "sku": "001", "mlb": "MLB123456789"},
+        authorized_stores=["JK Pecas"],
+        source="luna",
+        now_epoch=100.0,
+    )
+    assert first["store"] == "JK Pecas"
+    changed = conversation_context.apply_resolved_context(
+        record,
+        {"sku": "002"},
+        authorized_stores=["JK Pecas"],
+        source="luna",
+        now_epoch=200.0,
+    )
+    assert changed["sku"] == "002"
+    assert changed["mlb"] == ""
+    rejected = conversation_context.apply_resolved_context(
+        record,
+        {"store": "Loja Invasora", "store_mode": "single"},
+        authorized_stores=["JK Pecas"],
+        source="luna",
+        now_epoch=300.0,
+    )
+    assert rejected["store_mode"] == "none"
+    assert rejected["store"] == ""
+    expired = conversation_context.snapshot(
+        record,
+        now_epoch=300.0 + 30 * 24 * 60 * 60 + 1,
+    )
+    assert expired["confirmed_fields"] == []
+    assert "resolved_context" not in record
+
+
+def test_normalized_new_sku_clears_old_mlb_and_new_mlb_clears_old_sku():
+    record = {}
+    conversation_context.apply_resolved_context(
+        record,
+        {"sku": "001", "mlb": "MLB123456789"},
+        source="fixture",
+    )
+    sku_decision = codex_whatsapp_agents.normalize_decision(
+        {
+            "action": "delegate", "reply_text": "Vou consultar.", "job_title": "Estoque",
+            "job_prompt": "Consulte o SKU 002.", "related_job_id": "",
+            "needs_user_input": False, "requires_web": False, "subtasks": [],
+            "resolved_context": {
+                "store": "", "store_mode": "none", "sku": "002", "mlb": "", "period": "",
+                "applied_fields": ["sku"], "clear_fields": [],
+            },
+        },
+        event_type="user_message",
+    )
+    updated = conversation_context.apply_resolved_context(
+        record, sku_decision["resolved_context"], source="luna",
+    )
+    assert updated["sku"] == "002"
+    assert updated["mlb"] == ""
+    changed = conversation_context.apply_resolved_context(
+        record,
+        {"mlb": "MLB987654321", "provided_fields": ["mlb"]},
+        source="luna",
+    )
+    assert changed["mlb"] == "MLB987654321"
+    assert changed["sku"] == ""
+
+
+def test_general_request_receives_no_commercial_request_context():
+    record = {}
+    memory = conversation_context.apply_resolved_context(
+        record,
+        {"store": "JK Pecas", "store_mode": "single", "sku": "001"},
+        authorized_stores=["JK Pecas"], source="fixture",
+    )
+    request = conversation_context.request_context(
+        {"store": "", "store_mode": "none", "sku": "", "mlb": "", "period": "", "applied_fields": []},
+        memory,
+    )
+    assert request["confirmed_fields"] == []
+    assert request["store_mode"] == "none"
+    assert request["sku"] == ""
+    assert conversation_context.snapshot(record)["store"] == "JK Pecas"
+
+
+def test_interactive_store_pin_wins_only_for_the_next_round():
+    proposed = {
+        "store": "Deckas", "store_mode": "single", "sku": "001",
+        "applied_fields": ["store", "store_mode", "sku"], "clear_fields": ["store"],
+    }
+    pinned = conversation_context.merge_round_pin(
+        proposed,
+        {"store": "JK Pecas", "store_mode": "single", "created_at_epoch": time.time()},
+    )
+    assert pinned["store"] == "JK Pecas"
+    assert "store" not in pinned["clear_fields"]
+    assert conversation_context.merge_round_pin(
+        proposed, {"store": "JK Pecas", "store_mode": "single", "created_at_epoch": 1}
+    )["store"] == "Deckas"
+
+
+def test_user_answer_invalidates_clarify_plan_before_one_replan(monkeypatch):
+    saved = []
+    submitted = []
+    pending = {
+        "kind": "dual_function_manager", "request_text": "Qual o estoque?", "job_prompt": "Qual o estoque?",
+        "data_selection_raw_plan": {"action": "clarify", "missing_user_fields": ["loja"]},
+        "data_selection_gap_key": "initial", "manager_evidence": {"status": "blocked"},
+        "conversation_anchors": {"recent_turns": [], "resolved_context": {}},
+    }
+    monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda *_args: saved.append(dict(_args[-1])))
+    monkeypatch.setattr(whatsapp_bridge, "_submit_function_manager_job", lambda *_args: submitted.append(True))
+    resumed = whatsapp_bridge._resume_dual_pending_with_message(
+        _config(), {}, "wamid-gap", pending, "JK Pecas",
+        request_context={"store": "JK Pecas", "store_mode": "single", "applied_fields": ["store"]},
+    )
+    assert resumed == 1
+    assert pending["data_selection_raw_plan"] == {}
+    assert pending["data_selection_gap_key"] == ""
+    assert pending["conversation_anchors"]["resolved_context"]["store"] == "JK Pecas"
+    assert submitted == [True]
+
+
+def test_resolved_context_is_isolated_by_conversation_and_all_stores_clears_single(monkeypatch):
+    state = {}
+    monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda *_args, **_kwargs: None)
+    whatsapp_bridge._dual_confirm_conversation_context(
+        state,
+        "tenant-a:user-a:phone-a",
+        {"store_mode": "single", "store": "JK Pecas", "sku": "001"},
+        authorized_stores=["JK Pecas", "Deckas"],
+    )
+    whatsapp_bridge._dual_confirm_conversation_context(
+        state,
+        "tenant-b:user-a:phone-a",
+        {"store_mode": "single", "store": "Deckas", "sku": "900"},
+        authorized_stores=["JK Pecas", "Deckas"],
+    )
+    whatsapp_bridge._dual_confirm_conversation_context(
+        state,
+        "tenant-a:user-a:phone-a",
+        {"store_mode": "all", "clear_fields": ["store"]},
+        authorized_stores=["JK Pecas", "Deckas"],
+    )
+
+    first = conversation_context.snapshot(
+        state["dual_agent_conversations"]["tenant-a:user-a:phone-a"]
+    )
+    second = conversation_context.snapshot(
+        state["dual_agent_conversations"]["tenant-b:user-a:phone-a"]
+    )
+    assert first["store_mode"] == "all"
+    assert first["store"] == ""
+    assert first["sku"] == "001"
+    assert second["store_mode"] == "single"
+    assert second["store"] == "Deckas"
+    assert second["sku"] == "900"
 
 
 def test_stock_wrapper_uses_numeric_bling_balance_and_never_turns_empty_data_into_zero_records():
@@ -864,6 +1344,158 @@ def test_stock_wrapper_uses_numeric_bling_balance_and_never_turns_empty_data_int
     assert "778" not in response
 
 
+def test_deterministic_listing_bundle_formats_api_fields_without_llm():
+    result = {
+        "success": True,
+        "tool_id": "mercado_livre_listing",
+        "tool_label": "anuncios do Mercado Livre",
+        "records": 2,
+        "top_rows": [
+            {
+                "loja": "JK Pecas",
+                "id": "MLB111111111",
+                "title": "Produto A",
+                "status": "active",
+                "seller_sku": "001",
+                "currency_id": "BRL",
+                "price": 49.9,
+                "available_quantity": 7,
+                "permalink": "https://produto.mercadolivre.com.br/MLB-111111111",
+                "description": "Descricao oficial A",
+                "pictures": [{"secure_url": "https://http2.mlstatic.com/A.jpg"}],
+            },
+            {
+                "loja": "JK Pecas",
+                "id": "MLB222222222",
+                "title": "Produto B",
+                "status": "paused",
+                "seller_sku": "001",
+                "currency_id": "BRL",
+                "price": 59.9,
+                "available_quantity": 0,
+                "permalink": "https://produto.mercadolivre.com.br/MLB-222222222",
+                "description": "Descricao oficial B",
+                "pictures": [{"secure_url": "https://http2.mlstatic.com/B.jpg"}],
+            },
+        ],
+        "dados_suficientes": True,
+        "coverage_complete": True,
+        "manager_store": "JK Pecas",
+        "manager_required": True,
+    }
+    plan = {"manager_guard": {"listing_first": True}, "tool_calls": [{"tool_id": "mercado_livre_listing"}]}
+    evidence = whatsapp_bridge._function_manager_evidence(plan, [result])
+    pending = {
+        "request_text": "Mande links, descricoes, MLB e fotos do SKU 001 na JK Pecas",
+        "manager_plan": plan,
+    }
+
+    response = whatsapp_bridge._deterministic_tool_result_text(evidence, pending)
+
+    assert "*Anuncios do Mercado Livre — JK Pecas*" in response
+    assert "MLB111111111" in response and "MLB222222222" in response
+    assert "SKU: 001" in response
+    assert "R$ 49,90" in response
+    assert "Descricao oficial A" in response
+    assert "https://produto.mercadolivre.com.br/MLB-222222222" in response
+    assert "Fonte: API oficial do Mercado Livre" in response
+
+    bundle = marketplace_listing_delivery.build_listing_bundle([result])
+    mixed = "Mande a descricao do anuncio e diga se serve no Corolla"
+    assert marketplace_listing_delivery.deterministic_response_requested(mixed) is False
+    assert marketplace_listing_delivery.format_listing_bundle(bundle, mixed) == ""
+
+
+def test_deterministic_latest_sale_response_shows_order_instead_of_aggregate_count():
+    result = {
+        "success": True,
+        "tool_id": "mercado_livre_orders",
+        "records": 1,
+        "data": [{
+            "order_id": "2000017389080442",
+            "date_created": "2026-07-17T18:30:00.000-03:00",
+            "status": "paid",
+            "paid_amount": 79.9,
+            "buyer_name": "Cliente Teste",
+            "buyer_city": "Belo Horizonte",
+            "items": [{"sku": "001", "title": "Produto de teste", "quantity": 1}],
+        }],
+        "dados_suficientes": True,
+        "coverage_complete": True,
+        "manager_store": "JK Pecas",
+        "manager_required": True,
+        "sources": ["get_mercado_livre_orders"],
+    }
+    plan = {
+        "tool_calls": [{"tool_id": "mercado_livre_orders", "required": True}],
+        "manager_guard": {"explicit_sales": True, "sales_lookup_mode": "latest"},
+    }
+    evidence = whatsapp_bridge._function_manager_evidence(plan, [result])
+    response = whatsapp_bridge._deterministic_tool_result_text(
+        evidence,
+        {"request_text": "Última venda", "manager_plan": plan},
+    )
+
+    assert "Última venda confirmada na API do Mercado Livre" in response
+    assert "Pedido: 2000017389080442" in response
+    assert "17/07/2026 às 18:30" in response
+    assert "R$ 79,90" in response
+    assert "Cliente Teste — Belo Horizonte" in response
+    assert "26529" not in response
+    assert "registro(s) confirmado(s)" not in response
+
+    result["data"][0]["store"] = "Deckas"
+    exact_plan = {
+        "tool_calls": [{"tool_id": "mercado_livre_orders", "required": True}],
+        "manager_guard": {"explicit_sales": True, "sales_lookup_mode": "exact"},
+    }
+    exact_response = whatsapp_bridge._deterministic_tool_result_text(
+        whatsapp_bridge._function_manager_evidence(exact_plan, [result]),
+        {"request_text": "Venda 2000017389080442", "manager_plan": exact_plan},
+    )
+    assert "*Deckas*" in exact_response
+    assert "*JK Pecas*" not in exact_response
+
+
+def test_listing_bundle_preserves_partial_coverage_from_standard_codex_shape():
+    result = {
+        "success": True,
+        "tool_id": "mercado_livre_listing",
+        "records": 1,
+        "all_rows": [
+            {
+                "loja": "JK Pecas",
+                "id": "MLB111111111",
+                "title": "Produto A",
+                "seller_sku": "001",
+                "permalink": "https://produto.mercadolivre.com.br/MLB-111111111",
+                "pictures": [{"secure_url": "https://http2.mlstatic.com/A.jpg"}],
+            }
+        ],
+        "summary": [
+            {
+                "tool_id": "mercado_livre_listing",
+                "summary": {
+                    "found": True,
+                    "partial_response": True,
+                    "coverage_complete": False,
+                    "paging": {"has_more": True},
+                },
+            }
+        ],
+        "tool_validation": {"dados_suficientes": True, "campos_faltantes": ["cobertura_lojas"]},
+    }
+
+    bundle = marketplace_listing_delivery.build_listing_bundle([result])
+    response = marketplace_listing_delivery.format_listing_bundle(
+        bundle,
+        "Mande o anuncio do SKU 001 na JK Pecas",
+    )
+
+    assert bundle["coverage_complete"] is False
+    assert "Cobertura: parcial" in response
+
+
 def test_internal_manager_evidence_answers_without_creating_sol(monkeypatch):
     message_id = "manager-direct"
     pending = {
@@ -872,8 +1504,8 @@ def test_internal_manager_evidence_answers_without_creating_sol(monkeypatch):
         "job_title": "Informacoes do SKU 001",
         "request_text": "Informacoes do SKU 001 no Mercado Livre",
         "job_prompt": "Consulte o SKU 001.",
-        "query_policy": {"store": "Uai Mineirinho", "store_mode": "single"},
-        "manager_query_policy": {"store": "Uai Mineirinho", "store_mode": "single"},
+        "query_policy": {"authorized_stores": ["Uai Mineirinho"]},
+        "manager_query_policy": {"authorized_stores": ["Uai Mineirinho"]},
         "manager_revision": 0,
         "session_permissions": {"full": True},
         "client_id": "cliente",
@@ -894,15 +1526,21 @@ def test_internal_manager_evidence_answers_without_creating_sol(monkeypatch):
         lambda *_args: [{"id": "mercado_livre_listing"}, {"id": "product_data"}],
     )
     monkeypatch.setattr(
-        codex_whatsapp_agents.FUNCTION_MANAGER_RUNTIME,
-        "run_manager",
+        codex_whatsapp_agents.DATA_SELECTION_RUNTIME,
+        "plan",
         lambda **_kwargs: {
-            "intent": "sku_information", "store": "Uai Mineirinho", "store_mode": "single",
-            "sku": "001", "item_id": "", "requested_fields": ["produto"],
-            "tool_calls": [{"tool_id": "product_data", "arguments": {}, "required": True, "reason": "cadastro"}],
-            "requires_sol": False, "requires_web": False, "missing_user_fields": [], "reason": "consulta interna",
-            "thread_id": "thread-manager", "effective_model": "gpt-5.6-luna", "reasoning_effort": "low",
-            "speed": "fast", "service_tier": "priority",
+            "schema_version": "1.0", "action": "collect", "intents": ["sku_information"],
+            "entities": {
+                "sku": "001", "mlb": "", "order_id": "", "period": "",
+                "store_ref": "Uai Mineirinho", "store_mode": "single",
+            },
+            "requested_fields": ["produto"],
+            "tool_calls": [{
+                "tool_id": "product_data", "arguments": "{}", "required": True,
+                "reason": "cadastro", "depends_on": [],
+            }],
+            "context_hub": {"mode": "not_applicable", "query": "", "filters": {}, "top_k": 0, "snippet_max_chars": 0},
+            "missing_user_fields": [], "confidence": 0.9, "reason": "consulta interna",
         },
     )
     monkeypatch.setattr(
@@ -928,7 +1566,68 @@ def test_internal_manager_evidence_answers_without_creating_sol(monkeypatch):
     final_pending = state["pending_messages"][message_id]
     assert delivered == [True]
     assert final_pending["manager_evidence"]["evidence_sufficient"] is True
-    assert final_pending["manager_effective_model"] == "gpt-5.6-luna"
+    assert final_pending["data_selection_plan"]["manager_guard"]["data_selection_action"] == "collect"
+
+
+def test_direct_listing_delivery_sends_official_photos_before_structured_text(monkeypatch):
+    events = []
+    listing_result = {
+        "success": True,
+        "tool_id": "mercado_livre_listing",
+        "records": 1,
+        "top_rows": [{
+            "loja": "JK Pecas",
+            "id": "MLB123456789",
+            "title": "Produto oficial",
+            "status": "active",
+            "seller_sku": "001",
+            "price": 49.9,
+            "available_quantity": 3,
+            "permalink": "https://produto.mercadolivre.com.br/MLB-123456789",
+            "description": "Descricao oficial",
+            "pictures": [{"secure_url": "https://http2.mlstatic.com/A.jpg"}],
+        }],
+        "dados_suficientes": True,
+        "coverage_complete": True,
+        "manager_store": "JK Pecas",
+        "manager_required": True,
+    }
+    plan = {
+        "manager_guard": {"listing_first": True},
+        "tool_calls": [{"tool_id": "mercado_livre_listing"}],
+    }
+    evidence = whatsapp_bridge._function_manager_evidence(plan, [listing_result])
+    pending = {
+        "deterministic_plan": plan,
+        "manager_plan": plan,
+        "manager_evidence": evidence,
+        "request_text": "Mande link, descricao, MLB e fotos do SKU 001 na JK Pecas",
+        "job_group_id": "job-listing",
+        "conversation_id": "conversation-listing",
+        "subject_id": "subject-listing",
+        "client_id": "000002",
+    }
+    state = {"pending_messages": {"wamid-listing": dict(pending)}}
+
+    def deliver_images(_config, message_id, bundle, request_text, max_images):
+        events.append(("images", message_id, bundle["listings"][0]["item_id"], max_images, request_text))
+        return [{"success": True, "status": "sent", "item_id": "MLB123456789"}]
+
+    def post_text(_config, payload):
+        events.append(("text", payload["text"]))
+        return {"status": "sent"}
+
+    monkeypatch.setattr(whatsapp_bridge, "_whatsapp_deliver_marketplace_listing_images", deliver_images)
+    monkeypatch.setattr(whatsapp_bridge, "_post_proactive", post_text)
+    monkeypatch.setattr(whatsapp_bridge, "_dual_remember_conversation_turn", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(whatsapp_bridge, "_record_message_timing", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(whatsapp_bridge, "_remove_pending", lambda *_args, **_kwargs: None)
+
+    assert whatsapp_bridge._function_manager_deliver_direct({}, state, "wamid-listing", pending) is True
+    assert [item[0] for item in events] == ["images", "text"]
+    assert events[0][2] == "MLB123456789"
+    assert "MLB: MLB123456789" in events[1][1]
+    assert "Link: https://produto.mercadolivre.com.br/MLB-123456789" in events[1][1]
 
 
 def test_sol_data_request_returns_to_same_manager_job(monkeypatch):
@@ -1350,12 +2049,52 @@ def test_ambiguous_question_is_kept_to_one_short_objective_reply():
         active_job=None,
         worker_result=None,
         conversation_context=[{"role": "user", "text": "Consulte o SKU 001"}],
+        conversation_state={
+            "store_mode": "single",
+            "store": "JK Pecas",
+            "sku": "001",
+            "authorized_stores": ["JK Pecas", "Deckas"],
+            "confirmed_fields": ["store", "sku"],
+        },
         ai_behavior="",
         tick_index=0,
     )
     assert "faca exatamente uma pergunta curta e objetiva" in prompt
     assert "nao amplie o escopo" in prompt
     assert '\"conversation_context\":[{\"role\":\"user\",\"text\":\"Consulte o SKU 001\"}]' in prompt
+    assert '\"conversation_state\":{\"store\":\"JK Pecas\",\"store_mode\":\"single\",\"sku\":\"001\"' in prompt
+    assert '\"authorized_stores\":[\"JK Pecas\",\"Deckas\"]' in prompt
+
+
+def test_luna_decision_normalizes_structured_conversation_context():
+    decision = codex_whatsapp_agents.normalize_decision(
+        {
+            "action": "delegate",
+            "reply_text": "Vou consultar.",
+            "job_title": "Estoque",
+            "job_prompt": "Consulte o estoque do SKU 001 na JK Pecas.",
+            "related_job_id": "",
+            "needs_user_input": False,
+            "requires_web": False,
+            "subtasks": [],
+            "resolved_context": {
+                "store_mode": "single",
+                "store": "JK Pecas",
+                "sku": "001",
+                "mlb": "mlb-123456789",
+                "period": "hoje",
+                "applied_fields": ["store", "store_mode", "sku", "mlb", "period"],
+                "clear_fields": [],
+            },
+        },
+        event_type="user_message",
+    )
+
+    assert decision["resolved_context"]["store"] == "JK Pecas"
+    assert decision["resolved_context"]["sku"] == "001"
+    assert decision["resolved_context"]["mlb"] == "MLB123456789"
+    assert decision["resolved_context"]["period"] == "hoje"
+    assert set(decision["resolved_context"]["provided_fields"]) >= {"store", "sku", "mlb", "period"}
 
 
 def test_luna_response_emojis_are_removed_before_whatsapp_delivery():

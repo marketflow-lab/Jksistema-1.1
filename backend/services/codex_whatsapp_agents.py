@@ -14,6 +14,8 @@ import time
 from collections import deque
 from typing import Any, Optional
 
+from backend.services.whatsapp import black_jhon_prompting
+
 
 CONVERSATION_ACTIONS = (
     "reply",
@@ -36,6 +38,7 @@ DECISION_SCHEMA: dict[str, Any] = {
         "related_job_id",
         "needs_user_input",
         "requires_web",
+        "resolved_context",
         "subtasks",
     ],
     "properties": {
@@ -46,6 +49,28 @@ DECISION_SCHEMA: dict[str, Any] = {
         "related_job_id": {"type": "string", "maxLength": 100},
         "needs_user_input": {"type": "boolean"},
         "requires_web": {"type": "boolean"},
+        "resolved_context": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["store", "store_mode", "sku", "mlb", "period", "applied_fields", "clear_fields"],
+            "properties": {
+                "store": {"type": "string", "maxLength": 200},
+                "store_mode": {"type": "string", "enum": ["none", "single", "all"]},
+                "sku": {"type": "string", "maxLength": 100},
+                "mlb": {"type": "string", "maxLength": 60},
+                "period": {"type": "string", "maxLength": 160},
+                "applied_fields": {
+                    "type": "array",
+                    "maxItems": 5,
+                    "items": {"type": "string", "enum": ["store", "store_mode", "sku", "mlb", "period"]},
+                },
+                "clear_fields": {
+                    "type": "array",
+                    "maxItems": 5,
+                    "items": {"type": "string", "enum": ["store", "sku", "mlb", "period"]},
+                },
+            },
+        },
         "subtasks": {
             "type": "array",
             "maxItems": 6,
@@ -66,6 +91,13 @@ DECISION_SCHEMA: dict[str, Any] = {
         },
     },
 }
+
+CONVERSATION_DECISION_V2_SCHEMA = black_jhon_prompting.conversation_decision_v2_schema(DECISION_SCHEMA)
+# Compatibility: callers keep importing DECISION_SCHEMA while the runtime now
+# requests the versioned V2 contract. normalize_decision still accepts V1.
+DECISION_SCHEMA = CONVERSATION_DECISION_V2_SCHEMA
+EVIDENCE_ENVELOPE_V2_SCHEMA = black_jhon_prompting.EVIDENCE_ENVELOPE_V2_SCHEMA
+RETRIEVAL_RESULT_V2_SCHEMA = black_jhon_prompting.RETRIEVAL_RESULT_V2_SCHEMA
 
 WORKER_RESULT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -224,7 +256,14 @@ def normalize_decision(value: Any, *, event_type: str) -> dict[str, Any]:
         raise RuntimeError("conversation_agent_invalid_event_action")
     if event_type == "user_message" and action == "wait":
         raise RuntimeError("conversation_agent_invalid_event_action")
-    if action in {"delegate", "queue"} and not _clean_text(parsed.get("job_prompt"), 12000):
+    raw_task = parsed.get("task") if isinstance(parsed.get("task"), dict) else {}
+    job_title = _clean_text(raw_task.get("title") or parsed.get("job_title"), 180)
+    job_prompt = _clean_text(raw_task.get("prompt") or parsed.get("job_prompt"), 12000)
+    requires_web = bool(raw_task.get("requires_web")) if "requires_web" in raw_task else bool(parsed.get("requires_web"))
+    task_reasoning = _clean_text(raw_task.get("reasoning_effort"), 20).lower()
+    if task_reasoning not in {"low", "medium", "high", "xhigh"}:
+        task_reasoning = "low"
+    if action in {"delegate", "queue"} and not job_prompt:
         raise RuntimeError("conversation_agent_empty_job_prompt")
     subtasks: list[dict[str, Any]] = []
     for item in list(parsed.get("subtasks") or [])[:6]:
@@ -241,14 +280,88 @@ def normalize_decision(value: Any, *, event_type: str) -> dict[str, Any]:
                 "reasoning_effort": "low",
             }
         )
+    raw_context = parsed.get("resolved_context") if isinstance(parsed.get("resolved_context"), dict) else {}
+    raw_mlb = re.sub(r"[^A-Za-z0-9]", "", _clean_text(raw_context.get("mlb"), 60)).upper()
+    applied_fields = [
+        str(item or "").strip().lower()
+        for item in list(raw_context.get("applied_fields") or [])[:5]
+        if str(item or "").strip().lower() in {"store", "store_mode", "sku", "mlb", "period"}
+    ]
+    resolved_context = {
+        "store": _clean_text(raw_context.get("store"), 200),
+        "store_mode": (
+            str(raw_context.get("store_mode") or "none").strip().lower()
+            if str(raw_context.get("store_mode") or "none").strip().lower() in {"none", "single", "all"}
+            else "none"
+        ),
+        "sku": _clean_text(raw_context.get("sku"), 100),
+        "mlb": raw_mlb if re.fullmatch(r"MLB\d{6,}", raw_mlb) else "",
+        "period": _clean_text(raw_context.get("period"), 160),
+        "applied_fields": applied_fields,
+        "clear_fields": [
+            str(item or "").strip().lower()
+            for item in list(raw_context.get("clear_fields") or [])[:5]
+            if str(item or "").strip().lower() in {"store", "sku", "mlb", "period"}
+        ],
+        "provided_fields": list(applied_fields),
+    }
+    missing_fields = [
+        _clean_text(item, 200)
+        for item in list(parsed.get("missing_fields") or [])[:10]
+        if _clean_text(item, 200)
+    ]
+    response_mode = _clean_text(parsed.get("response_mode"), 40).lower()
+    allowed_response_modes = {
+        "direct_reply",
+        "task_delegation",
+        "clarification",
+        "status_update",
+        "control",
+        "silent_wait",
+    }
+    if response_mode not in allowed_response_modes:
+        response_mode = {
+            "reply": "direct_reply",
+            "delegate": "task_delegation",
+            "queue": "task_delegation",
+            "steer": "task_delegation",
+            "request_information": "clarification",
+            "cancel_job": "control",
+            "wait": "silent_wait",
+        }.get(action, "status_update")
+    confidence = _clean_text(parsed.get("confidence"), 20).lower()
+    if confidence not in {"high", "medium", "low", "unknown"}:
+        confidence = "unknown"
+    intent = _clean_text(parsed.get("intent"), 120) or {
+        "reply": "conversation_reply",
+        "delegate": "task_delegation",
+        "queue": "task_queue",
+        "steer": "task_update",
+        "request_information": "clarification",
+        "cancel_job": "task_cancel",
+        "wait": "status_wait",
+    }.get(action, "conversation")
+    task = {
+        "title": job_title,
+        "prompt": job_prompt,
+        "requires_web": requires_web,
+        "reasoning_effort": task_reasoning,
+    }
     return {
+        "schema_version": black_jhon_prompting.CONVERSATION_DECISION_V2,
+        "intent": intent,
+        "response_mode": response_mode,
+        "missing_fields": missing_fields,
+        "confidence": confidence,
+        "task": task,
         "action": action,
         "reply_text": reply,
-        "job_title": _clean_text(parsed.get("job_title"), 180),
-        "job_prompt": _clean_text(parsed.get("job_prompt"), 12000),
+        "job_title": job_title,
+        "job_prompt": job_prompt,
         "related_job_id": _clean_text(parsed.get("related_job_id"), 100),
-        "needs_user_input": bool(parsed.get("needs_user_input")),
-        "requires_web": bool(parsed.get("requires_web")),
+        "needs_user_input": bool(parsed.get("needs_user_input")) or bool(missing_fields),
+        "requires_web": requires_web,
+        "resolved_context": resolved_context,
         "subtasks": subtasks,
     }
 
@@ -258,10 +371,15 @@ def normalize_worker_result(task: dict[str, Any]) -> dict[str, Any]:
     parsed = parse_json_object(raw_response)
     allowed_statuses = {"completed", "partial", "blocked", "failed"}
     if parsed and str(parsed.get("status") or "") in allowed_statuses:
-        facts = [_clean_text(item, 2000) for item in list(parsed.get("verified_facts") or [])[:30] if _clean_text(item, 2000)]
+        raw_records = [item for item in list(parsed.get("records") or [])[:40] if isinstance(item, dict)]
+        raw_facts = parsed.get("facts") if isinstance(parsed.get("facts"), list) else parsed.get("verified_facts")
+        facts = [_clean_text(item, 2000) for item in list(raw_facts or [])[:30] if _clean_text(item, 2000)]
+        if not facts:
+            facts = [_clean_text(item.get("value"), 2000) for item in raw_records if _clean_text(item.get("value"), 2000)][:30]
         sources = [_clean_text(item, 1000) for item in list(parsed.get("sources") or [])[:30] if _clean_text(item, 1000)]
         confidence = str(parsed.get("confidence") or "unknown") if str(parsed.get("confidence") or "") in {"high", "medium", "low", "unknown"} else "unknown"
-        missing = [_clean_text(item, 1000) for item in list(parsed.get("missing") or [])[:20] if _clean_text(item, 1000)]
+        raw_missing = parsed.get("gaps") if isinstance(parsed.get("gaps"), list) else parsed.get("missing")
+        missing = [_clean_text(item, 1000) for item in list(raw_missing or [])[:20] if _clean_text(item, 1000)]
         inferred_sufficient = bool(
             str(parsed.get("status")) == "completed"
             and facts
@@ -269,15 +387,16 @@ def normalize_worker_result(task: dict[str, Any]) -> dict[str, Any]:
             and confidence in {"high", "medium"}
             and not missing
         )
-        return {
+        return black_jhon_prompting.normalize_evidence_envelope_v2({
             "status": str(parsed.get("status")),
             "summary": _clean_text(parsed.get("summary"), 12000),
-            "verified_facts": facts,
+            "records": raw_records,
+            "facts": facts,
             "sources": sources,
             "confidence": confidence,
             "evidence_sufficient": bool(parsed.get("evidence_sufficient")) if "evidence_sufficient" in parsed else inferred_sufficient,
             "coverage_complete": bool(parsed.get("coverage_complete")) if "coverage_complete" in parsed else False,
-            "missing": missing,
+            "gaps": missing,
             "questions": [_clean_text(item, 1000) for item in list(parsed.get("questions") or [])[:10] if _clean_text(item, 1000)],
             "data_requests": [
                 {
@@ -288,7 +407,8 @@ def normalize_worker_result(task: dict[str, Any]) -> dict[str, Any]:
                 for item in list(parsed.get("data_requests") or [])[:6]
                 if isinstance(item, dict) and _clean_text(item.get("need"), 500)
             ],
-        }
+            "schema_version": parsed.get("schema_version") or "legacy-v1",
+        })
     status = str(task.get("status") or "failed")
     mapped_status = status if status in allowed_statuses else ("partial" if status == "canceled" else "failed")
     verification = task.get("verification") if isinstance(task.get("verification"), dict) else {}
@@ -337,18 +457,18 @@ def normalize_worker_result(task: dict[str, Any]) -> dict[str, Any]:
             }
             if payload:
                 fallback_facts.append(_clean_text(json.dumps(payload, ensure_ascii=False, default=str), 2000))
-    return {
+    return black_jhon_prompting.normalize_evidence_envelope_v2({
         "status": mapped_status,
         "summary": raw_response or _clean_text(task.get("error"), 4000),
-        "verified_facts": fallback_facts[:30],
+        "facts": fallback_facts[:30],
         "sources": sources,
         "confidence": "high" if confirmed_by_tools else ("low" if mapped_status != "completed" else "medium"),
         "evidence_sufficient": confirmed_by_tools,
         "coverage_complete": bool(verification.get("coverage_complete") is True or confirmed_by_tools),
-        "missing": missing,
+        "gaps": missing,
         "questions": [],
         "data_requests": [],
-    }
+    })
 
 
 def normalize_manager_plan(value: Any, *, max_calls: int = 6) -> dict[str, Any]:
@@ -398,16 +518,8 @@ def normalize_manager_plan(value: Any, *, max_calls: int = 6) -> dict[str, Any]:
 
 def worker_output_instruction() -> str:
     return (
-        "Voce e o agente Codex de tarefa do Black Jhon. Pesquise profundamente usando apenas ferramentas read-only "
-        "autorizadas. Nao converse com o usuario e nao produza texto para envio direto ao WhatsApp. Ao concluir, "
-        "retorne somente um objeto JSON valido com: status (completed|partial|blocked|failed), summary, "
-        "verified_facts (lista), sources (lista), confidence (high|medium|low|unknown), evidence_sufficient "
-        "(booleano), coverage_complete (booleano), missing (lista), questions (lista) e data_requests (lista). "
-        "Quando faltar dado interno do JK Sistema, descreva em data_requests o dado e os campos desejados; nao "
-        "tente consultar diretamente ferramentas internas que foram reservadas ao Luna Gerenciador. Nao envolva o JSON em "
-        "Markdown. Use completed somente com evidencias suficientes. Para confirmar que nao existe registro, use "
-        "completed somente se coverage_complete for true; timeout, busca vazia incompleta, HTTP 429/5xx e fonte "
-        "indisponivel sao partial ou failed. Diferencie fatos confirmados, lacunas e falhas de fonte.\n\n"
+        black_jhon_prompting.prompt_contract_header("task_agent")
+        + black_jhon_prompting.WORKER_OUTPUT_INSTRUCTIONS
     )
 
 
@@ -420,24 +532,24 @@ def _manager_prompt(
     previous_evidence: Optional[dict[str, Any]],
     data_requests: Optional[list[dict[str, Any]]],
 ) -> str:
+    normalized_evidence = (
+        black_jhon_prompting.normalize_evidence_envelope_v2(previous_evidence)
+        if isinstance(previous_evidence, dict) and previous_evidence
+        else {}
+    )
     context = {
         "request_text": _clean_text(request_text, 12000),
         "job_prompt": _clean_text(job_prompt, 12000),
         "query_policy": query_policy if isinstance(query_policy, dict) else {},
         "allowed_tools": list(tool_catalog or [])[:80],
-        "previous_evidence": previous_evidence if isinstance(previous_evidence, dict) else {},
-        "sol_data_requests": list(data_requests or [])[:6],
+        "previous_evidence": normalized_evidence,
+        "task_data_requests": list(data_requests or [])[:6],
     }
     return (
-        "Planeje a coleta interna obrigatoria antes do agente Sol. Escolha somente ferramentas do catalogo permitido. "
-        "Use o texto original como autoridade para decidir o que foi pedido; o job_prompt pode detalhar, mas nao pode "
-        "ampliar vendas, pedidos, devolucoes ou estoque sem pedido explicito do usuario. Para informacoes gerais de um "
-        "SKU no Mercado Livre, prefira mercado_livre_listing, product_data e product_image; nunca use pedidos apenas "
-        "porque o produto possui vendas. Marque required apenas nas fontes necessarias para responder. Use requires_sol "
-        "para analise, compatibilidade ou sintese complexa e requires_web para fatos atuais/externos. Nao execute funcoes, "
-        "Em cada tool_call, arguments deve ser uma string contendo um objeto JSON (use '{}' quando nao houver argumentos). "
-        "Nao converse com o usuario e retorne apenas o JSON do schema.\n\n"
-        + json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)
+        black_jhon_prompting.prompt_contract_header("function_planner")
+        + black_jhon_prompting.MANAGER_PROMPT_INSTRUCTIONS
+        + "\n\n"
+        + black_jhon_prompting.bounded_context_json(context)
     )
 
 
@@ -448,11 +560,16 @@ def _decision_prompt(
     active_job: Optional[dict[str, Any]],
     worker_result: Optional[dict[str, Any]],
     conversation_context: Optional[list[dict[str, Any]]],
+    conversation_state: Optional[dict[str, Any]] = None,
     ai_behavior: str,
     tick_index: int,
 ) -> str:
     active = active_job if isinstance(active_job, dict) else {}
-    result = worker_result if isinstance(worker_result, dict) else {}
+    result = (
+        black_jhon_prompting.normalize_evidence_envelope_v2(worker_result)
+        if isinstance(worker_result, dict) and worker_result
+        else {}
+    )
     context = {
         "event_type": event_type,
         "user_message": _clean_text(user_message, 12000),
@@ -474,50 +591,36 @@ def _decision_prompt(
             for item in list(conversation_context or [])[-10:]
             if isinstance(item, dict) and _clean_text(item.get("text"), 900)
         ],
+        "conversation_state": {
+            "store": _clean_text((conversation_state or {}).get("store"), 200),
+            "store_mode": _clean_text((conversation_state or {}).get("store_mode"), 20) or "none",
+            "sku": _clean_text((conversation_state or {}).get("sku"), 100),
+            "mlb": _clean_text((conversation_state or {}).get("mlb"), 60),
+            "period": _clean_text((conversation_state or {}).get("period"), 160),
+            "confirmed_fields": [
+                _clean_text(item, 20)
+                for item in list((conversation_state or {}).get("confirmed_fields") or [])[:5]
+                if _clean_text(item, 20) in {"store", "sku", "mlb", "period"}
+            ],
+            "authorized_stores": [
+                _clean_text(item, 200)
+                for item in list((conversation_state or {}).get("authorized_stores") or [])[:50]
+                if _clean_text(item, 200)
+            ],
+        },
         "waiting_turn_index": max(0, int(tick_index or 0)),
         "phone_behavior": _clean_text(ai_behavior, 2000),
     }
     return (
-        "Decida a proxima acao da conversa usando o contexto JSON abaixo. Toda mensagem livre passa por voce.\n"
-        "Atenda tambem perguntas gerais do usuario, mesmo quando nao tiverem relacao com lojas ou com o JK Sistema. "
-        "Nunca solicite loja para clima, noticias, conhecimento geral, escrita, calculos ou outros assuntos pessoais. "
-        "Quando a resposta depender de informacao atual ou de fonte externa, use delegate e escreva no job_prompt "
-        "o pedido completo, incluindo os dados fornecidos pelo usuario nas mensagens anteriores. "
-        "Use reply para saudacoes, conversa casual e respostas que nao exigem novas fontes. Use delegate quando for "
-        "necessario pesquisar dados, APIs, documentos ou executar analise longa. Use steer quando a mensagem altera "
-        "ou complementa a tarefa ativa. Use queue para uma nova tarefa complexa independente enquanto outra estiver "
-        "ativa. Use cancel_job quando o usuario pedir para parar a tarefa. Use request_information somente quando um "
-        "dado do usuario for indispensavel antes da pesquisa.\n"
-        "Use conversation_context como memoria explicita e duravel da conversa, inclusive se a thread do provedor "
-        "tiver sido recriada. Resolva pronomes, expressoes como 'esse SKU', 'nessa loja' e continuacoes com base nele; "
-        "nao peca novamente um dado que ja esteja ali. Se ainda houver duas interpretacoes materialmente diferentes, "
-        "use request_information e faca exatamente uma pergunta curta e objetiva. Nao liste capacidades, fontes, "
-        "varias hipoteses ou informacoes laterais. Responda somente ao que foi pedido e nao amplie o escopo.\n"
-        "Ao delegar, preencha requires_web e, somente quando o trabalho tiver partes realmente independentes, divida-o "
-        "em ate seis subtasks autossuficientes. Nao crie varios agentes para uma contagem simples que uma unica "
-        "ferramenta consegue consultar em paralelo. Todos os agentes de tarefa executam em low; mantenha "
-        "reasoning_effort como low em cada subtask. Se nao houver divisao util, deixe subtasks vazio.\n"
-        "Quando houver tarefa ativa e o usuario enviar apenas ?, e ai, terminou ou uma pergunta de estado equivalente, "
-        "responda sobre a mesma tarefa usando reply; nunca use delegate, queue ou steer para uma consulta de estado.\n"
-        "No evento waiting_tick, mantenha a conversa naturalmente em ate 320 caracteres. No primeiro aviso, se a tarefa "
-        "ainda estiver executando e nao houver resultado, diga uma unica vez que algumas fontes ainda estao sendo "
-        "consultadas e peca para aguardar mais um pouco. Nos avisos seguintes, compartilhe apenas fatos parciais novos, "
-        "faca uma pergunta util ou use wait com reply_text vazio. Nao repita o pedido nem confirme o escopo novamente. "
-        "Nao use titulo, assinatura, nomes internos, contagem de segundos, a palavra Andamento nem invente progresso.\n"
-        "No evento worker_partial, apresente somente os novos fatos confirmados e deixe claro, de forma natural, que a "
-        "consulta restante continua. No evento worker_result, escreva a resposta final natural com base exclusiva no "
-        "resultado fornecido. Declare "
-        "lacunas e nunca finja confirmacao. O agente de tarefa nunca fala diretamente com o usuario.\n"
-        "Em qualquer evento, reply_text deve ser uma mensagem pronta para WhatsApp, curta quando possivel, sem titulo "
-        "em respostas simples, sem assinatura e sem qualquer emoji. A acao wait so pode ser usada em waiting_tick. Para delegate/queue, "
-        "job_prompt deve conter o pedido completo e "
-        "autossuficiente para o agente de tarefa. Retorne somente o JSON solicitado pelo schema.\n\n"
-        + json.dumps(context, ensure_ascii=False, separators=(",", ":"))
+        black_jhon_prompting.prompt_contract_header("conversation_decision")
+        + black_jhon_prompting.DECISION_PROMPT_INSTRUCTIONS
+        + "\n\n"
+        + black_jhon_prompting.bounded_context_json(context)
     )
 
 
 class WarmConversationRuntime:
-    """Owns one warm Codex app-server used only by the Luna conversation lane."""
+    """Own one warm Codex app-server for the WhatsApp conversation lane."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -591,6 +694,7 @@ class WarmConversationRuntime:
         active_job: Optional[dict[str, Any]] = None,
         worker_result: Optional[dict[str, Any]] = None,
         conversation_context: Optional[list[dict[str, Any]]] = None,
+        conversation_state: Optional[dict[str, Any]] = None,
         ai_behavior: str = "",
         tick_index: int = 0,
         speed: str = "fast",
@@ -605,9 +709,11 @@ class WarmConversationRuntime:
             active_job=active_job,
             worker_result=worker_result,
             conversation_context=conversation_context,
+            conversation_state=conversation_state,
             ai_behavior=ai_behavior,
             tick_index=tick_index,
         )
+        context_chars = len(prompt.rsplit("\n\n", 1)[-1])
         effective_speed = codex_console._codex_normalizar_speed(speed)
         effective_service_tier = codex_console._codex_normalizar_service_tier(
             service_tier,
@@ -619,23 +725,22 @@ class WarmConversationRuntime:
                 try:
                     client = self._start_locked()
                     effective_model = self.resolve_model(model)
-                    developer_instructions = (
-                        "Voce e o unico agente autorizado a conversar com o usuario do Black Jhon no WhatsApp. "
-                        "Voce nao possui ferramentas e nao pode alegar que consultou fontes. Classifique semanticamente "
-                        "a mensagem, preserve o contexto da thread e devolva somente o objeto estruturado solicitado."
-                    )
                     kwargs = {
                         "cwd": str(codex_console._codex_base_dir()),
                         "model": effective_model,
                         "approval_mode": codex_console._codex_approval_mode_enum("read_only", "read_only"),
-                        "developer_instructions": developer_instructions,
+                        "developer_instructions": black_jhon_prompting.CONVERSATION_DEVELOPER_INSTRUCTIONS,
                         "service_tier": effective_service_tier,
                     }
+                    thread_reused = False
+                    thread_reset_reason = "new_conversation" if not thread_id else ""
                     if thread_id:
                         try:
                             thread = client.thread_resume(thread_id, **kwargs)
+                            thread_reused = True
                         except Exception:
                             thread = client.thread_start(**kwargs)
+                            thread_reset_reason = "thread_resume_failed"
                     else:
                         thread = client.thread_start(**kwargs)
                     result = thread.run(
@@ -656,6 +761,11 @@ class WarmConversationRuntime:
                             "reasoning_effort": reasoning_effort,
                             "speed": effective_speed,
                             "service_tier": effective_service_tier or "",
+                            "response_provider": "codex",
+                            "thread_reused": thread_reused,
+                            "thread_reset_reason": thread_reset_reason,
+                            "context_chars": context_chars,
+                            "prompt_contract": black_jhon_prompting.prompt_contract_diagnostics(),
                         }
                     )
                     self._effective_model = effective_model
@@ -709,11 +819,7 @@ class WarmConversationRuntime:
                         "cwd": str(codex_console._codex_base_dir()),
                         "model": effective_model,
                         "approval_mode": codex_console._codex_approval_mode_enum("read_only", "read_only"),
-                        "developer_instructions": (
-                            "Voce e o Luna Gerenciador de funcoes do Black Jhon. Nao conversa com o usuario, nao "
-                            "possui credenciais e nao executa ferramentas. Produza somente um plano estruturado "
-                            "read-only usando o catalogo permitido fornecido pelo backend."
-                        ),
+                        "developer_instructions": black_jhon_prompting.FUNCTION_MANAGER_DEVELOPER_INSTRUCTIONS,
                         "service_tier": effective_service_tier,
                     }
                     if thread_id:
@@ -741,6 +847,7 @@ class WarmConversationRuntime:
                             "reasoning_effort": reasoning_effort,
                             "speed": effective_speed,
                             "service_tier": effective_service_tier or "",
+                            "prompt_contract": black_jhon_prompting.prompt_contract_diagnostics(),
                         }
                     )
                     self._effective_model = effective_model
@@ -765,6 +872,7 @@ class WarmConversationRuntime:
                 "conversation_effective_model": conversation_effective,
                 "task_effective_model": task_effective,
                 "available_models": list(self._available_models),
+                "prompt_contract": black_jhon_prompting.prompt_contract_diagnostics(),
             }
 
     def diagnostics(self) -> dict[str, Any]:
@@ -778,6 +886,7 @@ class WarmConversationRuntime:
                 "effective_model": self._effective_model,
                 "available_models": list(self._available_models),
                 "busy": True,
+                "prompt_contract": black_jhon_prompting.prompt_contract_diagnostics(),
             }
         try:
             return {
@@ -788,6 +897,7 @@ class WarmConversationRuntime:
                 "effective_model": self._effective_model,
                 "available_models": list(self._available_models),
                 "busy": False,
+                "prompt_contract": black_jhon_prompting.prompt_contract_diagnostics(),
             }
         finally:
             self._lock.release()
@@ -798,7 +908,7 @@ class WarmConversationRuntime:
 
 
 class WarmConversationRuntimePool:
-    """Pool of isolated warm Codex app-servers for the Luna lane.
+    """Pool of isolated warm Codex app-servers for the conversation lane.
 
     A slot is checked out for one model turn and returned afterwards.  The
     caller is responsible for serializing turns that belong to the same phone;
@@ -949,6 +1059,7 @@ class WarmConversationRuntimePool:
             "healthy": healthy,
             "last_error": last_error,
             "slots": details,
+            "prompt_contract": black_jhon_prompting.prompt_contract_diagnostics(),
         }
 
     def close(self) -> None:
@@ -967,16 +1078,19 @@ class WarmConversationRuntimePool:
 
 
 CONVERSATION_RUNTIME = WarmConversationRuntimePool(default_size=4)
-FUNCTION_MANAGER_RUNTIME = WarmConversationRuntimePool(default_size=4)
+from backend.services.codex_data_selection_agent import DATA_SELECTION_RUNTIME
 
 
 __all__ = [
     "CONVERSATION_ACTIONS",
     "DECISION_SCHEMA",
+    "CONVERSATION_DECISION_V2_SCHEMA",
     "WORKER_RESULT_SCHEMA",
+    "EVIDENCE_ENVELOPE_V2_SCHEMA",
+    "RETRIEVAL_RESULT_V2_SCHEMA",
     "FUNCTION_MANAGER_PLAN_SCHEMA",
     "CONVERSATION_RUNTIME",
-    "FUNCTION_MANAGER_RUNTIME",
+    "DATA_SELECTION_RUNTIME",
     "WarmConversationRuntime",
     "WarmConversationRuntimePool",
     "normalize_decision",

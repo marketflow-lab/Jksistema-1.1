@@ -3,7 +3,25 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
+
+
+_CENT = Decimal("0.01")
+
+
+def _decimal(value: Any) -> Decimal | None:
+    parsed = margem_parse_float(value)
+    if parsed is None:
+        return None
+    try:
+        return Decimal(str(parsed))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _money_decimal(value: Decimal) -> Decimal:
+    return value.quantize(_CENT, rounding=ROUND_HALF_UP)
 
 
 def margem_parse_float(value: Any) -> float | None:
@@ -68,6 +86,7 @@ def margem_calcular_anuncio(
     custo: Any = None,
     imposto_rate: Any = None,
     taxa_padrao: Any = None,
+    require_shipping: bool = False,
 ) -> dict[str, Any]:
     """Calculate ML-style margin using the same inputs expected by Favoritos.
 
@@ -99,15 +118,19 @@ def margem_calcular_anuncio(
             "valor",
         ),
     )
-    custo_float = margem_parse_float(custo)
+    preco_decimal = _decimal(preco_final)
+    custo_decimal = _decimal(custo)
     imposto_float = margem_to_rate(imposto_rate)
+    imposto_decimal = _decimal(imposto_float)
 
     tarifa = _first_float(data, ("ad_cost", "tarifa", "tarifa_ml", "fee_per_sale", "sale_fee_amount"))
     taxa_pct = margem_to_rate(data.get("sale_fee_pct"))
     if taxa_pct is None:
         taxa_pct = margem_to_rate(taxa_padrao)
-    if tarifa is None and preco_final is not None and taxa_pct is not None:
-        tarifa = round(float(preco_final) * float(taxa_pct), 2)
+    taxa_decimal = _decimal(taxa_pct)
+    if tarifa is None and preco_decimal is not None and taxa_decimal is not None:
+        tarifa = float(_money_decimal(preco_decimal * taxa_decimal))
+    tarifa_decimal = _decimal(tarifa)
 
     frete = _first_float(
         data,
@@ -136,13 +159,14 @@ def margem_calcular_anuncio(
         if not free_shipping:
             fields = fields + ("cost",)
         frete = _first_float(shipping_info, fields)
+    frete_decimal = _decimal(frete)
 
     result: dict[str, Any] = {"sku_margem": sku_margem}
     if preco_final is not None:
         result["preco_final_margem"] = round(float(preco_final), 2)
-    if custo_float is not None:
-        result["custo"] = round(float(custo_float), 4)
-        result["custo_text"] = margem_formatar_moeda(custo_float)
+    if custo_decimal is not None:
+        result["custo"] = float(custo_decimal.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
+        result["custo_text"] = margem_formatar_moeda(custo_decimal)
     if imposto_float is not None:
         result["imposto_percentual"] = round(float(imposto_float) * 100.0, 4)
     if taxa_pct is not None:
@@ -155,15 +179,20 @@ def margem_calcular_anuncio(
         result["frete_ml_text"] = margem_formatar_moeda(frete)
 
     faltando: list[str] = []
-    if preco_final is None or preco_final <= 0:
+    currency_id = str(data.get("currency_id") or "BRL").strip().upper()
+    if currency_id and currency_id != "BRL":
+        faltando.append("moeda")
+    if preco_decimal is None or preco_decimal <= 0:
         faltando.append("preco")
-    if custo_float is None:
+    if custo_decimal is None or custo_decimal < 0:
         faltando.append("custo")
-    if imposto_float is None:
+    if imposto_decimal is None or imposto_decimal < 0:
         faltando.append("imposto")
-    if tarifa is None:
+    if tarifa_decimal is None or tarifa_decimal < 0:
         faltando.append("tarifa")
-    if frete is None and free_shipping:
+    if (frete_decimal is None and (free_shipping or require_shipping)) or (
+        frete_decimal is not None and frete_decimal < 0
+    ):
         faltando.append("frete")
 
     result["faltando_margem"] = faltando
@@ -172,11 +201,21 @@ def margem_calcular_anuncio(
         result["margem_status"] = "Faltando " + ", ".join(faltando)
         return result
 
-    frete_calc = float(frete or 0.0)
-    tarifa_calc = float(tarifa or 0.0)
-    imposto_valor = round(float(preco_final) * float(imposto_float), 2)
-    valor_liquido = round(float(preco_final) - float(custo_float) - frete_calc - imposto_valor - tarifa_calc, 2)
-    margem_pct = round((valor_liquido * 100.0) / float(preco_final), 2)
+    assert preco_decimal is not None
+    assert custo_decimal is not None
+    assert imposto_decimal is not None
+    assert tarifa_decimal is not None
+    frete_calc = frete_decimal if frete_decimal is not None else Decimal("0")
+    imposto_valor_decimal = _money_decimal(preco_decimal * imposto_decimal)
+    valor_liquido_decimal = _money_decimal(
+        preco_decimal - custo_decimal - frete_calc - imposto_valor_decimal - tarifa_decimal
+    )
+    margem_pct_decimal = (valor_liquido_decimal * Decimal("100") / preco_decimal).quantize(
+        _CENT, rounding=ROUND_HALF_UP
+    )
+    imposto_valor = float(imposto_valor_decimal)
+    valor_liquido = float(valor_liquido_decimal)
+    margem_pct = float(margem_pct_decimal)
     result.update(
         {
             "imposto_valor": imposto_valor,

@@ -28,13 +28,152 @@ def query_only_domains(value: Any) -> list[str]:
         text,
     ):
         domains.append("vendas")
-    if re.search(r"\b(mercado livre|mercadolivre|ml|anuncio|anuncios|mlb\d+)\b", text):
+    if re.search(r"\b(mercado livre|mercadolivre|ml|anuncio|anuncios|mlb[\s_-]*\d+)\b", text):
         domains.append("anuncios_ml")
     if re.search(r"\b(estoque|saldo|quantidade em estoque|disponivel em estoque)\b", text):
         domains.append("estoque")
         if re.search(r"\b(full|fulfillment|mercado envios)\b", text):
             domains.append("mercado_full")
     return domains
+
+
+def positive_stock_sku_count_requested(value: Any) -> bool:
+    """Recognize a catalog-wide count, not the balance of one named SKU."""
+
+    text = formatting._whatsapp_text_key(value)
+    if not text:
+        return False
+    if re.search(r"\b(full|fulfillment|mercado envios)\b", text):
+        return False
+    count_subject = bool(
+        re.search(r"\bquantos?\s+(?:skus?|produtos?|itens?)\b", text)
+        or re.search(r"\b(?:numero|quantidade|contagem|total)\s+(?:de\s+)?(?:skus?|produtos?|itens?)\b", text)
+    )
+    stock_condition = bool(
+        re.search(r"\b(?:com|em|tem|tenham|possuem?)\s+(?:o\s+)?(?:estoque|saldo)(?:\s+positivo)?\b", text)
+        or re.search(r"\bestao\s+(?:com|no)\s+(?:estoque|saldo)(?:\s+positivo)?\b", text)
+        or re.search(r"\b(?:estoque|saldo)\s+positivo\b", text)
+    )
+    return bool(count_subject and stock_condition)
+
+
+def mercado_livre_sales_lookup(value: Any) -> dict[str, Any]:
+    """Return the strict ML route for one latest or explicitly identified sale."""
+    raw = str(value or "")
+    text = formatting._whatsapp_text_key(raw)
+    latest_sale = bool(
+        re.search(r"\b(ultima|ultimo|mais recente)\s+(venda|pedido)\b", text)
+        or re.search(r"\b(venda|pedido)\s+mais recente\b", text)
+    )
+    latest_return = bool(
+        re.search(r"\b(ultima|ultimo|mais recente)\s+(devolucao|reembolso|estorno)\b", text)
+        or re.search(r"\b(devolucao|reembolso|estorno)\b[^.]{0,80}\b(mais recente|ultima|ultimo)\b", text)
+    )
+    explicit_both = bool(
+        re.search(
+            r"\b(ultima|ultimo|mais recente)\s+(venda|pedido)\b[^.]{0,100}\b(e|tambem|junto|ambos)\b"
+            r"[^.]{0,100}\b(ultima|ultimo|mais recente)\s+(devolucao|reembolso|estorno)\b",
+            text,
+        )
+        or re.search(
+            r"\b(ultima|ultimo|mais recente)\s+(devolucao|reembolso|estorno)\b[^.]{0,100}\b(e|tambem|junto|ambos)\b"
+            r"[^.]{0,100}\b(ultima|ultimo|mais recente)\s+(venda|pedido)\b",
+            text,
+        )
+    )
+    if latest_return and not explicit_both:
+        latest_sale = False
+    id_match = re.search(
+        r"\b(?:(?:pedido|venda|order|pack)(?:\s+(?:especific[oa]|id|numero|n))?|"
+        r"(?:id|numero)\s+(?:do|da)\s+(?:pedido|venda|order|pack))\s*[:#-]?\s*(\d{3,20})\b",
+        text,
+    )
+    if not id_match and re.search(r"\b(venda|pedido|order|pack)\b", text):
+        standalone = re.findall(r"\b\d{10,20}\b", text)
+        id_match = re.search(re.escape(standalone[0]), text) if len(standalone) == 1 else None
+    requested_id = re.sub(r"\D+", "", id_match.group(1) if id_match and id_match.lastindex else id_match.group(0) if id_match else "")
+    if mercado_livre_return_reference_only(text):
+        requested_id = ""
+    mode = "latest" if latest_sale else "exact" if requested_id else ""
+    if not mode:
+        return {}
+    arguments: dict[str, Any] = {"force_refresh": True, "limite": 1, "incluir_detalhes": True}
+    if requested_id:
+        arguments["id_pedido"] = requested_id
+    return {
+        "mode": mode,
+        "arguments": arguments,
+        "forbidden_tools": [
+            "bling_sales_orders", "sales_returns_query", "sales_ranking", "sales_summary",
+            "sales_timeseries", "avg_ticket", "period_comparison", "sales_anomalies",
+        ],
+    }
+
+
+def mercado_livre_return_reference_only(value: Any) -> bool:
+    """Tell apart a returned order reference from a request to inspect the sale itself."""
+    text = formatting._whatsapp_text_key(value)
+    if not re.search(r"\b(devolucao|devolucoes|reembolso|reembolsos|estorno|estornos)\b", text):
+        return False
+    explicit_latest_both = bool(
+        re.search(
+            r"\b(ultima|ultimo|mais recente)\s+(venda|pedido)\b[^.]{0,100}\b(e|tambem|junto|ambos)\b"
+            r"[^.]{0,100}\b(ultima|ultimo|mais recente)\s+(devolucao|reembolso|estorno)\b",
+            text,
+        )
+        or re.search(
+            r"\b(ultima|ultimo|mais recente)\s+(devolucao|reembolso|estorno)\b[^.]{0,100}\b(e|tambem|junto|ambos)\b"
+            r"[^.]{0,100}\b(ultima|ultimo|mais recente)\s+(venda|pedido)\b",
+            text,
+        )
+    )
+    explicit_exact_both = bool(
+        re.search(
+            r"\b(venda|pedido|order|pack)\s*[:#-]?\s*\d{10,20}\b[^.]{0,80}\b(e|tambem|junto|ambos)\b"
+            r"[^.]{0,80}\b(devolucao|reembolso|estorno)\b",
+            text,
+        )
+        or re.search(
+            r"\b(devolucao|reembolso|estorno)\b[^.]{0,80}\b(e|tambem|junto|ambos)\b"
+            r"[^.]{0,80}\b(venda|pedido|order|pack)\s*[:#-]?\s*\d{10,20}\b",
+            text,
+        )
+    )
+    return not (explicit_latest_both or explicit_exact_both)
+
+
+def mercado_livre_sales_policy(value: Any, source_policy: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    policy = dict(source_policy) if isinstance(source_policy, dict) else {}
+    lookup = mercado_livre_sales_lookup(value)
+    if lookup:
+        policy["required_tools"] = list(dict.fromkeys([
+            "mercado_livre_orders", *list(policy.get("required_tools") or []),
+        ]))
+        policy["forbidden_tools"] = list(dict.fromkeys([
+            *list(policy.get("forbidden_tools") or []), *list(lookup.get("forbidden_tools") or []),
+        ]))
+        policy["sales_lookup"] = lookup
+    return policy, lookup
+
+
+def mercado_livre_sales_tool_allowed(
+    lookup: dict[str, Any], tool_id: str, explicit_returns: bool, explicit_stock: bool,
+) -> bool:
+    if not lookup or tool_id == "mercado_livre_orders":
+        return True
+    return bool(
+        (explicit_returns and tool_id == "mercado_livre_returns")
+        or (explicit_stock and tool_id in {"bling_stock_balances", "mercado_livre_listing", "stock_data"})
+    )
+
+
+def mercado_livre_sales_arguments(lookup: dict[str, Any], arguments: Any) -> dict[str, Any]:
+    result = dict(arguments) if isinstance(arguments, dict) else {}
+    if lookup.get("mode") != "exact":
+        for key in ("id_pedido", "pedido_id", "order_id", "id_order"):
+            result.pop(key, None)
+    result.update(lookup.get("arguments") or {})
+    return result
 
 
 def readonly_inquiry(value: Any) -> bool:

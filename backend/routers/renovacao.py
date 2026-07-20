@@ -13,6 +13,7 @@ from backend.schemas.renovacao import (
     RenovacaoAgendamentoRequest,
     RenovacaoCampanhaCriarRequest,
     RenovacaoCampanhaExcluirRequest,
+    RenovacaoCampanhaManualCriarRequest,
     RenovacaoCampanhaPeriodoRequest,
     RenovacaoCampanhaSincronizarRequest,
 )
@@ -24,6 +25,7 @@ class RenovacaoRouterConfig:
     get_tenant_id: Callable
     listar_campanhas_usuario: Callable[..., dict]
     criar_ou_completar_proximo_mes: Callable[..., dict]
+    criar_campanha_manual: Callable[..., dict]
     atualizar_periodo_campanha: Callable[..., dict]
     deletar_campanha: Callable[..., dict]
     sincronizar_promocao_existente: Callable[..., dict]
@@ -54,6 +56,19 @@ def create_renovacao_router(config: RenovacaoRouterConfig) -> APIRouter:
             req.campanha_id,
             req.nome,
             req.promotion_type or "SELLER_CAMPAIGN",
+        )
+
+    @router.post("/api/renovacao/campanha", name="renovacao_criar_campanha_manual")
+    def renovacao_criar_campanha_manual(
+        req: RenovacaoCampanhaManualCriarRequest,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        return config.criar_campanha_manual(
+            client_id,
+            req.loja,
+            req.nome,
+            req.start_date,
+            req.finish_date,
         )
 
     @router.put("/api/renovacao/campanha-periodo", name="renovacao_alterar_periodo_campanha")

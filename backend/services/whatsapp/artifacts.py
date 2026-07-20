@@ -5,6 +5,7 @@ import base64
 import concurrent.futures
 import hashlib
 import heapq
+import ipaddress
 import importlib.util
 import itertools
 import json
@@ -24,7 +25,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 from zoneinfo import ZoneInfo
 import requests
 from fastapi import Header, HTTPException, Request
@@ -33,6 +34,7 @@ from backend.services.whatsapp import formatting as whatsapp_formatting
 from backend.services.whatsapp import gateway as whatsapp_gateway
 from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
+from backend.services.whatsapp import marketplace_listing_delivery as whatsapp_marketplace_listing
 from backend.services.whatsapp import message as whatsapp_message
 from backend.services.whatsapp import report_scheduling as whatsapp_report_scheduling
 from backend.services.whatsapp import retry_policy as whatsapp_retry_policy
@@ -278,6 +280,258 @@ def _whatsapp_deliver_requested_images(
     fallback_text = "Não consegui anexar a imagem no WhatsApp agora. A referência interna foi removida para não enviar um link quebrado."
     return f"{clean_response}\n\n{fallback_text}".strip(), results or [{"success": False, "error": "image_not_found"}]
 
+
+def _whatsapp_marketplace_image_url_allowed(value: Any) -> bool:
+    try:
+        parsed = urlparse(str(value or "").strip())
+        port = parsed.port
+    except Exception:
+        return False
+    host = str(parsed.hostname or "").strip().lower().rstrip(".")
+    return bool(
+        parsed.scheme.lower() == "https"
+        and host
+        and (host == "mlstatic.com" or host.endswith(".mlstatic.com"))
+        and port in (None, 443)
+        and not parsed.username
+        and not parsed.password
+    )
+
+
+def _whatsapp_marketplace_image_host_is_public(url: str) -> bool:
+    parsed = urlparse(str(url or ""))
+    host = str(parsed.hostname or "").strip()
+    if not host:
+        return False
+    try:
+        addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    except OSError:
+        return False
+    if not addresses:
+        return False
+    for entry in addresses:
+        try:
+            address = ipaddress.ip_address(str(entry[4][0]).split("%", 1)[0])
+        except (ValueError, IndexError, TypeError):
+            return False
+        if not address.is_global:
+            return False
+    return True
+
+
+def _whatsapp_download_marketplace_image(value: Any) -> Optional[Path]:
+    current_url = str(value or "").strip()
+    temporary: Optional[Path] = None
+    response = None
+    try:
+        for _redirect in range(4):
+            if not _whatsapp_marketplace_image_url_allowed(current_url):
+                raise RuntimeError("marketplace_image_host_not_allowed")
+            if not _whatsapp_marketplace_image_host_is_public(current_url):
+                raise RuntimeError("marketplace_image_host_not_public")
+            response = requests.get(
+                current_url,
+                stream=True,
+                allow_redirects=False,
+                timeout=(5, 20),
+                headers={"Accept": "image/jpeg,image/png,image/webp", "User-Agent": "JK-Sistema-WhatsApp/1.0"},
+            )
+            if int(response.status_code or 0) in {301, 302, 303, 307, 308}:
+                location = str(response.headers.get("Location") or "").strip()
+                response.close()
+                response = None
+                if not location:
+                    raise RuntimeError("marketplace_image_redirect_missing")
+                current_url = urljoin(current_url, location)
+                continue
+            if int(response.status_code or 0) != 200:
+                raise RuntimeError(f"marketplace_image_http_{int(response.status_code or 0)}")
+            content_length = int(str(response.headers.get("Content-Length") or "0") or "0")
+            if content_length > WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES:
+                raise RuntimeError("marketplace_image_too_large")
+            content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            suffix = ".png" if content_type == "image/png" else ".webp" if content_type == "image/webp" else ".jpg"
+            handle = tempfile.NamedTemporaryFile(prefix="jk-wa-ml-", suffix=suffix, delete=False)
+            temporary = Path(handle.name)
+            downloaded = 0
+            try:
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    downloaded += len(chunk)
+                    if downloaded > WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES:
+                        raise RuntimeError("marketplace_image_too_large")
+                    handle.write(chunk)
+            finally:
+                handle.close()
+            if downloaded <= 0 or _whatsapp_image_mime(temporary) not in {"image/jpeg", "image/png", "image/webp"}:
+                raise RuntimeError("marketplace_image_invalid")
+            return temporary
+        raise RuntimeError("marketplace_image_redirect_limit")
+    except Exception:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        return None
+    finally:
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                pass
+
+
+def _whatsapp_deliver_marketplace_listing_images(
+    config: dict[str, Any],
+    message_id: str,
+    listing_bundle: Any,
+    request_text: Any,
+    max_images: int = WHATSAPP_MAX_OUTBOUND_IMAGES,
+) -> list[dict[str, Any]]:
+    if not whatsapp_marketplace_listing.pictures_requested(request_text):
+        return []
+    candidates = whatsapp_marketplace_listing.image_candidates(listing_bundle, max_images=max_images)
+    results: list[dict[str, Any]] = []
+    for candidate in candidates:
+        source_url = str(candidate.get("url") or "").strip()
+        path = _whatsapp_download_marketplace_image(source_url)
+        item_id = str(candidate.get("item_id") or "MLB").strip()
+        sequence = int(candidate.get("sequence") or len(results) + 1)
+        sequence_total = int(candidate.get("sequence_total") or len(candidates))
+        if path is None:
+            results.append({
+                "success": False,
+                "error": "marketplace_image_download_failed",
+                "artifact_type": "product_photo",
+                "item_id": item_id,
+                "sequence": sequence,
+            })
+            continue
+        prepared = None
+        try:
+            prepared = _whatsapp_prepare_outbound_image(path)
+            if not prepared:
+                raise RuntimeError("marketplace_image_prepare_failed")
+            store = str(candidate.get("store") or "Loja").strip()
+            caption = f"{store} • {item_id} • Foto {sequence}/{sequence_total}"[:1024]
+            result = _post_outbound_image(
+                config,
+                message_id,
+                Path(prepared["path"]),
+                str(prepared["mime_type"]),
+                caption,
+                str(prepared.get("filename") or f"{item_id}-{sequence}.jpg"),
+                artifact_type="product_photo",
+            )
+            results.append({
+                "success": bool(result.get("success")),
+                "status": result.get("status"),
+                "artifact_type": "product_photo",
+                "item_id": item_id,
+                "sequence": sequence,
+                "error": result.get("error"),
+            })
+        except Exception as exc:
+            results.append({
+                "success": False,
+                "error": str(exc)[:500],
+                "artifact_type": "product_photo",
+                "item_id": item_id,
+                "sequence": sequence,
+            })
+        finally:
+            if prepared and prepared.get("cleanup"):
+                try:
+                    Path(prepared["path"]).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return results
+
+
+def _whatsapp_deliver_marketplace_listing_images_proactive(
+    config: dict[str, Any],
+    *,
+    subject_id: str,
+    listing_bundle: Any,
+    request_text: Any,
+    fingerprint_seed: str,
+    max_images: int = WHATSAPP_MAX_OUTBOUND_IMAGES,
+) -> list[dict[str, Any]]:
+    """Deliver official listing photos without requiring an inbound message."""
+
+    subject_id = str(subject_id or "").strip()
+    seed = str(fingerprint_seed or "").strip()
+    if not subject_id or not seed or not whatsapp_marketplace_listing.pictures_requested(request_text):
+        return []
+    candidates = whatsapp_marketplace_listing.image_candidates(listing_bundle, max_images=max_images)
+    results: list[dict[str, Any]] = []
+    for candidate in candidates:
+        source_url = str(candidate.get("url") or "").strip()
+        path = _whatsapp_download_marketplace_image(source_url)
+        item_id = str(candidate.get("item_id") or "MLB").strip()
+        sequence = int(candidate.get("sequence") or len(results) + 1)
+        sequence_total = int(candidate.get("sequence_total") or len(candidates))
+        fingerprint = "voice-product:" + hashlib.sha256(
+            f"{seed}\n{subject_id}\n{item_id}\n{sequence}\n{source_url}".encode("utf-8")
+        ).hexdigest()[:64]
+        if path is None:
+            results.append({
+                "success": False,
+                "error": "marketplace_image_download_failed",
+                "artifact_type": "product_photo",
+                "item_id": item_id,
+                "sequence": sequence,
+            })
+            continue
+        prepared = None
+        try:
+            prepared = _whatsapp_prepare_outbound_image(path)
+            if not prepared:
+                raise RuntimeError("marketplace_image_prepare_failed")
+            store = str(candidate.get("store") or "Loja").strip()
+            caption = f"{store} - {item_id} - Foto {sequence}/{sequence_total}"[:1024]
+            result = _post_proactive_image(
+                config,
+                subject_id=subject_id,
+                fingerprint=fingerprint,
+                path=Path(prepared["path"]),
+                caption=caption,
+                filename=str(prepared.get("filename") or f"{item_id}-{sequence}.jpg"),
+                event_type="task_completed",
+                artifact_type="product_photo",
+                mime_type=str(prepared.get("mime_type") or "image/jpeg"),
+            )
+            results.append({
+                "success": bool(result.get("success")),
+                "status": result.get("status"),
+                "artifact_type": "product_photo",
+                "item_id": item_id,
+                "sequence": sequence,
+                "error": result.get("error"),
+            })
+        except Exception as exc:
+            results.append({
+                "success": False,
+                "error": str(exc)[:500],
+                "artifact_type": "product_photo",
+                "item_id": item_id,
+                "sequence": sequence,
+            })
+        finally:
+            if prepared and prepared.get("cleanup"):
+                try:
+                    Path(prepared["path"]).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return results
+
 def _whatsapp_report_chart_path(artifact: dict[str, Any], client_id: Any) -> Optional[Path]:
     try:
         root = whatsapp_report_visuals.chart_output_dir(_info_dir(), client_id).resolve()
@@ -434,6 +688,10 @@ _COMPONENT_FUNCTIONS = frozenset((
     '_whatsapp_strip_image_references',
     '_whatsapp_outbound_image_caption',
     '_whatsapp_deliver_requested_images',
+    '_whatsapp_marketplace_image_url_allowed',
+    '_whatsapp_download_marketplace_image',
+    '_whatsapp_deliver_marketplace_listing_images',
+    '_whatsapp_deliver_marketplace_listing_images_proactive',
     '_whatsapp_report_chart_path',
     '_whatsapp_report_document_path',
     '_whatsapp_deliver_report_artifacts'
@@ -457,6 +715,10 @@ _IMPLEMENTATIONS = {
     '_whatsapp_strip_image_references': _whatsapp_strip_image_references,
     '_whatsapp_outbound_image_caption': _whatsapp_outbound_image_caption,
     '_whatsapp_deliver_requested_images': _whatsapp_deliver_requested_images,
+    '_whatsapp_marketplace_image_url_allowed': _whatsapp_marketplace_image_url_allowed,
+    '_whatsapp_download_marketplace_image': _whatsapp_download_marketplace_image,
+    '_whatsapp_deliver_marketplace_listing_images': _whatsapp_deliver_marketplace_listing_images,
+    '_whatsapp_deliver_marketplace_listing_images_proactive': _whatsapp_deliver_marketplace_listing_images_proactive,
     '_whatsapp_report_chart_path': _whatsapp_report_chart_path,
     '_whatsapp_report_document_path': _whatsapp_report_document_path,
     '_whatsapp_deliver_report_artifacts': _whatsapp_deliver_report_artifacts

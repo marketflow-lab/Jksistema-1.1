@@ -73,10 +73,36 @@ def test_gateway_request_requires_url_and_token() -> None:
 )
 def test_gateway_request_reports_http_failures(monkeypatch, response, detail) -> None:
     monkeypatch.setattr(gateway.requests, "request", lambda *args, **kwargs: response)
-    config = {"worker_url": "https://worker.example", "bridge_token": "secret"}
+    config = {"worker_url": "https://worker.example", "bridge_token": "secret", "machine_id": "machine-1"}
 
     with pytest.raises(RuntimeError, match=f"gateway_http_{response.status_code}.*{detail}"):
         gateway.gateway_request(config, "GET", "/bridge/status")
+
+
+@pytest.mark.parametrize("path", ["/bridge/status", "/bridge/media/wamid.1"])
+def test_gateway_request_binds_sensitive_gets_to_configured_machine(monkeypatch, path) -> None:
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
+        return FakeResponse(payload={"success": True})
+
+    monkeypatch.setattr(gateway.requests, "request", fake_request)
+    config = {"worker_url": "https://worker.example", "bridge_token": "secret", "machine_id": "machine-local"}
+
+    gateway.gateway_request(config, "GET", path + "?machine_id=attacker&keep=1")
+
+    assert "machine_id=machine-local" in captured["url"]
+    assert "machine_id=attacker" not in captured["url"]
+    assert "keep=1" in captured["url"]
+
+
+def test_gateway_request_fails_closed_without_machine_for_sensitive_get(monkeypatch) -> None:
+    monkeypatch.setattr(gateway.requests, "request", lambda *_args, **_kwargs: pytest.fail("HTTP must not be called"))
+    config = {"worker_url": "https://worker.example", "bridge_token": "secret"}
+
+    with pytest.raises(RuntimeError, match="machine_id_missing"):
+        gateway.gateway_request(config, "GET", "/bridge/media/wamid.1")
 
 
 def test_gateway_json_requires_an_object(monkeypatch) -> None:

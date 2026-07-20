@@ -81,6 +81,11 @@ def _apply_bridge_model_config(config: dict[str, Any], payload: WhatsappBridgeCo
         ("codex_reasoning_max", payload.codex_reasoning_max, _normalize_codex_reasoning_effort),
         ("progress_interval_seconds", payload.progress_interval_seconds, _normalize_progress_interval),
         ("agent_architecture", payload.agent_architecture, _normalize_agent_architecture),
+        (
+            "response_provider_policy",
+            payload.response_provider_policy,
+            whatsapp_settings.normalize_response_provider_policy,
+        ),
     )
     for key, value, normalizer in simple_fields:
         if value is not None:
@@ -99,7 +104,6 @@ def _apply_bridge_model_config(config: dict[str, Any], payload: WhatsappBridgeCo
         config["task_agent_model"] = _normalize_codex_agent_model(
             payload.task_agent_model, WHATSAPP_TASK_AGENT_MODEL_DEFAULT,
         )
-        config["ai_model"] = f"codex:{config['task_agent_model']}"
     if payload.task_agent_reasoning is not None:
         config["task_agent_reasoning"] = WHATSAPP_TASK_AGENT_REASONING_DEFAULT
 
@@ -130,8 +134,20 @@ def _apply_bridge_capacity_config(config: dict[str, Any], payload: WhatsappBridg
         ("conversation_worker_count", payload.conversation_worker_count, WHATSAPP_CONVERSATION_WORKER_COUNT_DEFAULT, 1, 8),
         ("conversation_runtime_pool_size", payload.conversation_runtime_pool_size, WHATSAPP_CONVERSATION_RUNTIME_POOL_SIZE_DEFAULT, 1, 8),
         ("max_active_task_agents_global", payload.max_active_task_agents_global, WHATSAPP_MAX_ACTIVE_TASK_AGENTS_GLOBAL_DEFAULT, 1, 12),
-        ("function_manager_worker_count", payload.function_manager_worker_count, WHATSAPP_FUNCTION_MANAGER_WORKER_COUNT_DEFAULT, 1, 8),
-        ("function_manager_runtime_pool_size", payload.function_manager_runtime_pool_size, WHATSAPP_FUNCTION_MANAGER_RUNTIME_POOL_SIZE_DEFAULT, 1, 8),
+        (
+            "data_selection_worker_count",
+            payload.data_selection_worker_count,
+            whatsapp_settings.WHATSAPP_DATA_SELECTION_WORKER_COUNT_DEFAULT,
+            1,
+            8,
+        ),
+        (
+            "data_selection_runtime_pool_size",
+            payload.data_selection_runtime_pool_size,
+            whatsapp_settings.WHATSAPP_DATA_SELECTION_RUNTIME_POOL_SIZE_DEFAULT,
+            1,
+            8,
+        ),
         ("max_active_task_agents_per_conversation", payload.max_active_task_agents_per_conversation, WHATSAPP_MAX_ACTIVE_TASK_AGENTS_DEFAULT, 1, 6),
     )
     for key, value, fallback, minimum, maximum in capacity_fields:
@@ -142,13 +158,21 @@ def _apply_bridge_capacity_config(config: dict[str, Any], payload: WhatsappBridg
     if payload.preserve_order_per_phone is False:
         raise HTTPException(status_code=400, detail="A ordem FIFO por telefone deve permanecer habilitada.")
     config["preserve_order_per_phone"] = True
-    if payload.function_manager_enabled is not None:
-        config["function_manager_enabled"] = bool(payload.function_manager_enabled)
-    if payload.function_manager_required_before_sol is not None:
-        config["function_manager_required_before_sol"] = bool(payload.function_manager_required_before_sol)
+    if payload.data_selection_enabled is not None:
+        config["data_selection_enabled"] = bool(payload.data_selection_enabled)
+    # `function_manager_*` continua aceito pelo contrato HTTP para nao quebrar
+    # clientes antigos, mas nao altera mais o fluxo dual.
+    if payload.context_hub_enabled is not None:
+        try:
+            whatsapp_settings.set_context_hub_enabled_for_client(
+                config,
+                config.get("client_id"),
+                bool(payload.context_hub_enabled),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Cliente da sessao invalido para configurar o Context Hub.") from exc
     if config.get("agent_architecture") == "dual_codex":
-        config["function_manager_enabled"] = True
-        config["function_manager_required_before_sol"] = True
+        config.setdefault("data_selection_enabled", True)
 
 
 def _apply_bridge_voice_config(config: dict[str, Any], payload: WhatsappBridgeConfigRequest) -> None:
@@ -203,7 +227,7 @@ def _apply_bridge_enabled(config: dict[str, Any], payload: WhatsappBridgeConfigR
         missing.append("numero pessoal vinculado")
     if not whisper.get("ready"):
         missing.append("Whisper Small")
-    if _whatsapp_ai_settings(config)["provider"] == "codex" and not codex.get("ready"):
+    if not codex.get("ready"):
         missing.append("Joao")
     if missing:
         raise HTTPException(status_code=409, detail="Ativacao bloqueada: " + ", ".join(missing) + " ainda nao esta pronto.")
@@ -212,7 +236,7 @@ def _apply_bridge_enabled(config: dict[str, Any], payload: WhatsappBridgeConfigR
 
 
 def _warm_bridge_runtimes(config: dict[str, Any]) -> None:
-    if not config.get("enabled") or config.get("agent_architecture") != "dual_codex":
+    if not config.get("enabled") or _whatsapp_dual_agent_settings(config).get("agent_architecture") != "dual_codex":
         return
     settings = _whatsapp_dual_agent_settings(config)
     try:
@@ -224,9 +248,9 @@ def _warm_bridge_runtimes(config: dict[str, Any]) -> None:
             settings["conversation_agent_model"], settings["task_agent_model"],
             pool_size=settings["conversation_runtime_pool_size"],
         )
-        codex_whatsapp_agents.FUNCTION_MANAGER_RUNTIME.warm(
-            settings["conversation_agent_model"], settings["task_agent_model"],
-            pool_size=settings["function_manager_runtime_pool_size"],
+        codex_whatsapp_agents.DATA_SELECTION_RUNTIME.warm(
+            "gpt-5.6-luna", "",
+            pool_size=settings["data_selection_runtime_pool_size"],
         )
         RUNTIME_STATE["dual_agent_last_error"] = ""
     except Exception as exc:
@@ -241,15 +265,15 @@ def whatsapp_bridge_update_config(
 ) -> dict[str, Any]:
     session = _require_full(request, authorization)
     config = _load_config()
-    _apply_bridge_model_config(config, payload)
-    _apply_bridge_timing_config(config, payload)
-    _apply_bridge_capacity_config(config, payload)
-    _apply_bridge_voice_config(config, payload)
-    config["client_id"] = str(session.get("client_id") or "")
+    config["client_id"] = str(session.get("client_id") or "").strip()
     config["username"] = str(session.get("username") or "").strip().lower()
     config["machine_id"] = str(
         session.get("machine_id") or config.get("machine_id") or _host_machine_id()
     )
+    _apply_bridge_model_config(config, payload)
+    _apply_bridge_timing_config(config, payload)
+    _apply_bridge_capacity_config(config, payload)
+    _apply_bridge_voice_config(config, payload)
     _apply_bridge_enabled(config, payload)
     config = _save_config(config)
     _warm_bridge_runtimes(config)
@@ -517,6 +541,15 @@ def whatsapp_bridge_test(request: Request, authorization: Optional[str] = Header
     worker = _worker_health(config)
     return {"success": bool(worker.get("success")), "status": _public_status(config, worker)}
 
+
+def whatsapp_bridge_audio_preflight(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_full(request, authorization)
+    return _audio_messages_preflight()
+
+
 def whatsapp_bridge_voice_preflight(
     request: Request,
     authorization: Optional[str] = Header(default=None),
@@ -701,6 +734,7 @@ _COMPONENT_FUNCTIONS = frozenset((
     'whatsapp_bridge_register_phone',
     'whatsapp_bridge_send_adhoc_message',
     'whatsapp_bridge_test',
+    'whatsapp_bridge_audio_preflight',
     'whatsapp_bridge_voice_preflight',
     'whatsapp_bridge_voice_enable',
     'whatsapp_bridge_voice_disable',
@@ -715,6 +749,7 @@ _IMPLEMENTATIONS = {
     'whatsapp_bridge_register_phone': whatsapp_bridge_register_phone,
     'whatsapp_bridge_send_adhoc_message': whatsapp_bridge_send_adhoc_message,
     'whatsapp_bridge_test': whatsapp_bridge_test,
+    'whatsapp_bridge_audio_preflight': whatsapp_bridge_audio_preflight,
     'whatsapp_bridge_voice_preflight': whatsapp_bridge_voice_preflight,
     'whatsapp_bridge_voice_enable': whatsapp_bridge_voice_enable,
     'whatsapp_bridge_voice_disable': whatsapp_bridge_voice_disable,

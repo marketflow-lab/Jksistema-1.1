@@ -33,6 +33,7 @@ from backend.services.whatsapp import formatting as whatsapp_formatting
 from backend.services.whatsapp import gateway as whatsapp_gateway
 from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
+from backend.services.whatsapp import marketplace_listing_delivery as whatsapp_marketplace_listing
 from backend.services.whatsapp import message as whatsapp_message
 from backend.services.whatsapp import report_scheduling as whatsapp_report_scheduling
 from backend.services.whatsapp import retry_policy as whatsapp_retry_policy
@@ -73,6 +74,49 @@ WHATSAPP_MAX_PARTS = whatsapp_formatting.WHATSAPP_MAX_PARTS
 
 def _format_stock_quantity(value: Any) -> str:
     return whatsapp_tool_results.format_stock_quantity(value)
+
+def _positive_stock_sku_count_contract(result: Any) -> dict[str, Any]:
+    return whatsapp_tool_results.positive_stock_sku_count_contract(result)
+
+def _deterministic_positive_stock_sku_count_text(evidence: dict[str, Any], pending: dict[str, Any]) -> str:
+    results = [
+        item
+        for item in list(evidence.get("tool_results") or [])
+        if isinstance(item, dict) and str(item.get("tool_id") or "") == "bling_positive_stock_sku_count"
+    ]
+    if not results:
+        return ""
+    blocks: list[str] = []
+    for result in results:
+        details = _positive_stock_sku_count_contract(result)
+        store = str(details.get("store") or result.get("manager_store") or "Loja consultada").strip()
+        lines = [f"*{store}*"]
+        if details.get("confirmed") is True:
+            count = int(details.get("positive_sku_count") or 0)
+            label = "SKU" if count == 1 else "SKUs"
+            lines.append(f"*{count} {label}* {'esta' if count == 1 else 'estao'} com saldo positivo no estoque da loja.")
+            if isinstance(details.get("store_available"), (int, float)) and not isinstance(details.get("store_available"), bool):
+                quantity = _format_stock_quantity(details.get("store_available"))
+                lines.append(f"Saldo total da loja fora do Full: *{quantity} unidade(s)*.")
+            scanned = int(details.get("catalog_products_scanned") or 0)
+            if scanned:
+                lines.append(f"Catalogo verificado: {scanned} produto(s).")
+            if details.get("full_excluded") is True:
+                lines.append("Estoque Full/Fulfillment nao esta incluido nessa contagem.")
+        else:
+            lines.append("Nao consegui confirmar a contagem completa de SKUs com estoque nesta loja.")
+            lines.append(f"Motivo: {str(details.get('reason') or 'a consulta retornou cobertura parcial')[:500]}.")
+            scanned = int(details.get("catalog_products_scanned") or 0)
+            returned = int(details.get("balances_returned") or 0)
+            requested = int(details.get("balances_requested") or 0)
+            if scanned:
+                lines.append(f"Produtos verificados antes da interrupcao: {scanned}.")
+            if requested:
+                lines.append(f"Saldos retornados: {returned} de {requested} produto(s).")
+            lines.append("Nenhum numero parcial foi apresentado como total exato.")
+        lines.append("Fonte: API Bling (consulta somente leitura).")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)[:3500]
 
 def _deterministic_stock_result_text(evidence: dict[str, Any], pending: dict[str, Any]) -> str:
     results = [
@@ -178,14 +222,75 @@ def _deterministic_stock_result_text(evidence: dict[str, Any], pending: dict[str
         lines.append("Cobertura parcial: lojas sem saldo confiavel foram mantidas como nao confirmadas, nunca como estoque zero.")
     return "\n".join(lines).strip()[:3500]
 
+def _deterministic_marketplace_sale_text(evidence: dict[str, Any], pending: dict[str, Any]) -> str:
+    plan = pending.get("manager_plan") if isinstance(pending.get("manager_plan"), dict) else {}
+    guard = plan.get("manager_guard") if isinstance(plan.get("manager_guard"), dict) else {}
+    lookup_mode = str(guard.get("sales_lookup_mode") or "")
+    if lookup_mode not in {"latest", "exact"}:
+        return ""
+    results = [
+        item for item in list(evidence.get("tool_results") or [])
+        if isinstance(item, dict) and str(item.get("tool_id") or "") == "mercado_livre_orders"
+    ]
+    blocks: list[str] = []
+    for result in results:
+        candidates = result.get("data") if isinstance(result.get("data"), list) else result.get("top_rows")
+        orders = [item for item in candidates or [] if isinstance(item, dict) and str(item.get("order_id") or "")]
+        if not orders:
+            continue
+        order = orders[0]
+        store = str(order.get("store") or result.get("manager_store") or "Loja consultada").strip()
+        raw_date = str(order.get("date_created") or order.get("date_closed") or "").strip()
+        date_match = re.match(r"^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?", raw_date)
+        sale_date = (
+            f"{date_match.group(3)}/{date_match.group(2)}/{date_match.group(1)}"
+            + (f" às {date_match.group(4)}:{date_match.group(5)}" if date_match.group(4) else "")
+            if date_match else raw_date or "não informada"
+        )
+        lines = [
+            f"*{store}*",
+            "Última venda confirmada na API do Mercado Livre" if lookup_mode == "latest" else "Venda confirmada na API do Mercado Livre",
+            f"Pedido: {str(order.get('order_id') or '').strip()}",
+            f"Data: {sale_date}",
+            f"Situação: {str(order.get('status') or 'não informada').strip()}",
+            f"Valor pago: {whatsapp_formatting._whatsapp_money(order.get('paid_amount') or order.get('gross_amount'))}",
+        ]
+        for item in [value for value in order.get("items") or [] if isinstance(value, dict)][:8]:
+            sku = str(item.get("sku") or item.get("item_id") or "sem SKU").strip()
+            title = str(item.get("title") or "Produto sem título").strip()[:120]
+            quantity = whatsapp_formatting._whatsapp_number(item.get("quantity") or 0)
+            lines.append(f"- {sku}: {title} — {quantity} un.")
+        buyer = str(order.get("buyer_name") or "").strip()
+        city = str(order.get("buyer_city") or "").strip()
+        if buyer or city:
+            lines.append("Comprador: " + " — ".join(value for value in (buyer, city) if value))
+        blocks.append("\n".join(lines))
+    if not blocks:
+        return ""
+    return ("\n\n".join(blocks) + "\n\nFonte: API oficial do Mercado Livre (orders).")[:3500]
+
 def _deterministic_tool_result_text(evidence: dict[str, Any], pending: dict[str, Any]) -> str:
     plan = pending.get("manager_plan") if isinstance(pending.get("manager_plan"), dict) else {}
     guard = plan.get("manager_guard") if isinstance(plan.get("manager_guard"), dict) else {}
+    if guard.get("positive_stock_sku_count") is True:
+        count_text = _deterministic_positive_stock_sku_count_text(evidence, pending)
+        if count_text:
+            return count_text
     if guard.get("explicit_stock") is True:
         stock_text = _deterministic_stock_result_text(evidence, pending)
         if stock_text:
             return stock_text
+    sale_text = _deterministic_marketplace_sale_text(evidence, pending)
+    if sale_text:
+        return sale_text
     results = [item for item in list(evidence.get("tool_results") or []) if isinstance(item, dict)]
+    if guard.get("listing_first") is True and whatsapp_marketplace_listing.delivery_requested(pending.get("request_text")):
+        listing_text = whatsapp_marketplace_listing.format_listing_bundle(
+            whatsapp_marketplace_listing.build_listing_bundle(results),
+            pending.get("request_text") or "",
+        )
+        if listing_text:
+            return listing_text
     by_store: dict[str, list[dict[str, Any]]] = {}
     for result in results:
         by_store.setdefault(str(result.get("manager_store") or "").strip(), []).append(result)
@@ -250,12 +355,16 @@ def _whatsapp_report_metadata_text(request_text: Any, query_policy: Any, tool_re
 
 _COMPONENT_FUNCTIONS = frozenset((
     '_format_stock_quantity',
+    '_positive_stock_sku_count_contract',
+    '_deterministic_positive_stock_sku_count_text',
     '_deterministic_stock_result_text',
     '_deterministic_tool_result_text',
     '_whatsapp_report_metadata_text'
 ))
 _IMPLEMENTATIONS = {
     '_format_stock_quantity': _format_stock_quantity,
+    '_positive_stock_sku_count_contract': _positive_stock_sku_count_contract,
+    '_deterministic_positive_stock_sku_count_text': _deterministic_positive_stock_sku_count_text,
     '_deterministic_stock_result_text': _deterministic_stock_result_text,
     '_deterministic_tool_result_text': _deterministic_tool_result_text,
     '_whatsapp_report_metadata_text': _whatsapp_report_metadata_text

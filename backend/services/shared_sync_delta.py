@@ -328,82 +328,101 @@ def _shared_sync_lojas_delta_bytes(scope: str, rel: str, data: bytes, known_keys
         return None, []
     return _shared_sync_json_dump_bytes(filtradas), keys
 
+_SHARED_SYNC_VENDAS_DELTA_TABLES = ("vendas", "notas_entrada", "notas_entrada_itens")
+
+
+def _shared_sync_vendas_delta_key(rel: str, table: str, row_id: str) -> str:
+    # Mantem a chave historica da tabela vendas para nao reenviar itens que ja
+    # constam em manifests antigos. As duas tabelas novas recebem namespace.
+    if table == "vendas":
+        return f"vendas:{rel}:id:{row_id}"
+    return f"vendas:{rel}:{table}:id:{row_id}"
+
+
 def _shared_sync_vendas_delta_db_bytes(rel: str, sqlite_bytes: bytes, known_keys: set[str]) -> tuple[Optional[bytes], list[str]]:
     if not sqlite_bytes:
         return None, []
     src_tmp = _shared_sync_sqlite_temp_from_bytes(sqlite_bytes, "shared_sync_vendas_source_")
-    src = None
     tmp_path = ""
+    src = None
     try:
         src = sqlite3.connect(src_tmp, timeout=max(5, SHARED_SYNC_SQLITE_BUSY_TIMEOUT_MS // 1000))
         _shared_sync_sqlite_configure(src)
+        _shared_sync_sqlite_quick_check(src, rel)
         cur = src.cursor()
-        tabela = cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vendas'").fetchone()
-        if not tabela:
-            return None, []
-        cols_info = cur.execute("PRAGMA table_info(vendas)").fetchall()
-        cols = [row[1] for row in cols_info]
-        if not cols:
-            return None, []
-        create_row = cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='vendas'").fetchone()
-        create_sql = create_row[0] if create_row and create_row[0] else ""
-        colunas_sql = ", ".join('"' + c.replace('"', '""') + '"' for c in cols)
-        rows = cur.execute(f"SELECT {colunas_sql} FROM vendas").fetchall()
-        selected = []
-        keys = []
-        vistos_lote = set()
-        id_idx = cols.index("id_unico") if "id_unico" in cols else -1
-        for row in rows:
-            if id_idx >= 0 and str(row[id_idx] or "").strip():
-                chave = f"vendas:{rel}:id:{str(row[id_idx] or '').strip()}"
-            else:
-                bruto = json.dumps([str(valor or "") for valor in row], ensure_ascii=False)
-                chave = f"vendas:{rel}:row:{hashlib.sha256(bruto.encode('utf-8')).hexdigest()}"
-            if chave in known_keys or chave in vistos_lote:
+        selected_tables = []
+        keys: list[str] = []
+        batch_keys = set()
+        for table in _SHARED_SYNC_VENDAS_DELTA_TABLES:
+            table_ident = '"' + table.replace('"', '""') + '"'
+            create_row = cur.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,),
+            ).fetchone()
+            if not create_row:
                 continue
-            vistos_lote.add(chave)
-            selected.append(row)
-            keys.append(chave)
-        if not selected:
+            cols_info = cur.execute(f"PRAGMA table_info({table_ident})").fetchall()
+            cols = [str(row[1]) for row in cols_info]
+            if "id_unico" not in cols:
+                raise HTTPException(status_code=502, detail=f"Tabela {table} sem id_unico no banco de vendas.")
+            quoted_cols = ", ".join('"' + col.replace('"', '""') + '"' for col in cols)
+            id_idx = cols.index("id_unico")
+            selected_rows = []
+            table_keys = []
+            for row in cur.execute(f"SELECT {quoted_cols} FROM {table_ident}"):
+                row_id = str(row[id_idx] or "").strip()
+                if not row_id:
+                    raise HTTPException(status_code=502, detail=f"Tabela {table} contem id_unico vazio.")
+                key = _shared_sync_vendas_delta_key(rel, table, row_id)
+                if key in known_keys or key in batch_keys:
+                    continue
+                batch_keys.add(key)
+                selected_rows.append(tuple(row))
+                table_keys.append(key)
+            if selected_rows:
+                selected_tables.append((table, str(create_row[0] or ""), cols, selected_rows))
+                keys.extend(table_keys)
+
+        if not selected_tables:
             return None, []
+
         fd, tmp_path = tempfile.mkstemp(prefix="shared_sync_vendas_delta_", suffix=".db")
         os.close(fd)
         dst = sqlite3.connect(tmp_path)
         try:
-            dst_cur = dst.cursor()
-            if create_sql:
-                dst_cur.execute(create_sql)
-            else:
-                col_defs = []
-                for col in cols_info:
-                    nome = str(col[1])
-                    tipo = str(col[2] or "TEXT")
-                    pk = " PRIMARY KEY" if int(col[5] or 0) else ""
-                    nome_sql = '"' + nome.replace('"', '""') + '"'
-                    col_defs.append(f"{nome_sql} {tipo}{pk}")
-                dst_cur.execute(f"CREATE TABLE vendas ({', '.join(col_defs)})")
-            placeholders = ", ".join(["?"] * len(cols))
-            quoted_cols = ", ".join('"' + c.replace('"', '""') + '"' for c in cols)
-            dst_cur.executemany(f"INSERT OR IGNORE INTO vendas ({quoted_cols}) VALUES ({placeholders})", selected)
-            dst.commit()
+            _shared_sync_sqlite_configure(dst)
+            dst.execute("BEGIN IMMEDIATE")
+            try:
+                for table, create_sql, cols, rows in selected_tables:
+                    if not create_sql:
+                        raise HTTPException(status_code=502, detail=f"Schema da tabela {table} ausente no banco de vendas.")
+                    dst.execute(create_sql)
+                    table_ident = '"' + table.replace('"', '""') + '"'
+                    quoted_cols = ", ".join('"' + col.replace('"', '""') + '"' for col in cols)
+                    placeholders = ", ".join(["?"] * len(cols))
+                    dst.executemany(
+                        f"INSERT OR IGNORE INTO {table_ident} ({quoted_cols}) VALUES ({placeholders})",
+                        rows,
+                    )
+                dst.commit()
+            except BaseException:
+                dst.rollback()
+                raise
+            _shared_sync_sqlite_quick_check(dst, rel)
         finally:
             dst.close()
-        with open(tmp_path, "rb") as f:
-            return f.read(), keys
+        with open(tmp_path, "rb") as file:
+            return file.read(), keys
     finally:
-        try:
-            if src:
-                src.close()
-        except Exception:
-            pass
+        if src is not None:
+            src.close()
         try:
             os.remove(src_tmp)
-        except Exception:
+        except OSError:
             pass
         if tmp_path:
             try:
                 os.remove(tmp_path)
-            except Exception:
+            except OSError:
                 pass
 
 def _shared_sync_delta_for_entry(scope: str, entry: dict, known_keys: set[str]) -> tuple[Optional[bytes], list[str]]:
@@ -481,6 +500,7 @@ __all__ = [
     "_shared_sync_lista_str_payload",
     "_shared_sync_anuncios_ml_delta_bytes",
     "_shared_sync_lojas_delta_bytes",
+    "_shared_sync_vendas_delta_key",
     "_shared_sync_vendas_delta_db_bytes",
     "_shared_sync_delta_for_entry",
     "_shared_sync_coletar_arquivos_delta",

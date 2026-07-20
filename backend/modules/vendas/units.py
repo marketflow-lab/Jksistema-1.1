@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 import pandas as pd
+from backend.services.sqlite_coordination import configure_sqlite_connection, sqlite_lock_for_path
 
 from .errors import VendasDomainError as HTTPException
 from .legacy import (
@@ -195,23 +196,30 @@ def atualizar_unidade_negocio(
         if not os.path.exists(db_path):
             raise HTTPException(status_code=404, detail="Banco de dados não encontrado")
 
-        conn = sqlite3.connect(db_path)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "UPDATE vendas SET unidade_negocio = ? WHERE unidade_negocio = ?",
-                (nome_novo, nome_antigo)
-            )
-            conn.commit()
-            linhas_afetadas = cur.rowcount
-            invalidate_vendas_cache(client_id)
-            return {
-                "success": True,
-                "message": f"{linhas_afetadas} registros atualizados",
-                "linhas_afetadas": linhas_afetadas
-            }
-        finally:
-            conn.close()
+        with sqlite_lock_for_path(db_path):
+            conn = sqlite3.connect(db_path, timeout=15)
+            try:
+                configure_sqlite_connection(conn)
+                conn.execute("BEGIN IMMEDIATE")
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE vendas SET unidade_negocio = ? WHERE unidade_negocio = ?",
+                    (nome_novo, nome_antigo)
+                )
+                linhas_afetadas = cur.rowcount
+                conn.commit()
+            except BaseException:
+                if conn.in_transaction:
+                    conn.rollback()
+                raise
+            finally:
+                conn.close()
+        invalidate_vendas_cache(client_id)
+        return {
+            "success": True,
+            "message": f"{linhas_afetadas} registros atualizados",
+            "linhas_afetadas": linhas_afetadas
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

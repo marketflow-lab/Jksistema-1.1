@@ -8,6 +8,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
     dockRustDeskInApp: (payload, authToken) => ipcRenderer.invoke('rustdesk-dock-in-app', payload || {}, authToken || ''),
     hideRustDeskInApp: (payload, authToken) => ipcRenderer.invoke('rustdesk-hide-in-app', payload || {}, authToken || ''),
     getMachineInfo: () => ipcRenderer.invoke('get-machine-info'),
+    getAppZoom: () => ipcRenderer.invoke('get-app-zoom'),
+    setAppZoom: (percent) => ipcRenderer.invoke('set-app-zoom', percent),
+    onAppZoomChanged: (callback) => {
+        if (typeof callback !== 'function') return () => {};
+        const listener = (_event, payload) => callback(payload);
+        ipcRenderer.on('app-zoom-changed', listener);
+        return () => ipcRenderer.removeListener('app-zoom-changed', listener);
+    },
+    findInActiveScreen: (query, options) => ipcRenderer.invoke('find-in-active-screen', String(query || ''), options || {}),
+    stopFindInActiveScreen: (action) => ipcRenderer.invoke('stop-find-in-active-screen', action || 'clearSelection'),
+    setAppFindOpen: (open) => ipcRenderer.invoke('set-app-find-open', !!open),
+    onAppFindResult: (callback) => {
+        if (typeof callback !== 'function') return () => {};
+        const listener = (_event, payload) => callback(payload);
+        ipcRenderer.on('app-find-result', listener);
+        return () => ipcRenderer.removeListener('app-find-result', listener);
+    },
+    onAppFindCommand: (callback) => {
+        if (typeof callback !== 'function') return () => {};
+        const listener = (_event, payload) => callback(payload);
+        ipcRenderer.on('app-find-command', listener);
+        return () => ipcRenderer.removeListener('app-find-command', listener);
+    },
     openContextVault: (authToken) => ipcRenderer.invoke(
         'context-vault-open',
         typeof authToken === 'string' ? authToken : ''

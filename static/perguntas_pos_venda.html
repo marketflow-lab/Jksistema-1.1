@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Perguntas e pós venda - JK Sistema</title>
     <script src="/auth.js?v=20260618-persist-login"></script>
-    <link rel="stylesheet" href="/perguntas_pos_venda/styles.css?v=20260712-whatsapp-approval">
+    <link rel="stylesheet" href="/perguntas_pos_venda/styles.css?v=20260718-last-update">
 </head>
 <body>
     <div class="container">
@@ -28,7 +28,7 @@
             <div class="tab-control-row">
             <div class="tabs" role="tablist" aria-label="Perguntas e pós venda">
                 <button id="tab-perguntas" class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="aba-perguntas" data-tab="perguntas">Perguntas <span id="tab-perguntas-notificacao" class="notification-pill tab-notification hidden" title="Perguntas não respondidas">0</span></button>
-                <button id="tab-pos-venda" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-pos-venda" data-tab="pos-venda">Pós venda <span id="tab-pos-venda-notificacao" class="notification-pill tab-notification pos-sale hidden" title="Conversas de pós-venda não lidas">0</span></button>
+                <button id="tab-pos-venda" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-pos-venda" data-tab="pos-venda">Pós venda</button>
                 <button id="tab-mediacao" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-mediacao" data-tab="mediacao">Mediação</button>
                 <button id="tab-treinar-ai" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-treinar-ai" data-tab="treinar-ai">Treinar AI</button>
             </div>
@@ -50,6 +50,7 @@
                     </div>
                     <div id="perguntas-status" class="status-line perguntas-status-inline">Escolha uma loja conectada ao Mercado Livre.</div>
                     <div id="perguntas-summary" class="summary perguntas-summary-inline hidden"></div>
+                    <time id="perguntas-ultima-atualizacao" class="perguntas-last-update">Aguardando primeira checagem</time>
                     <button id="btn-recarregar" class="action-btn secondary" type="button">Atualizar</button>
                 </div>
 
@@ -145,14 +146,13 @@
 
                 <div class="training-type-tabs" role="tablist" aria-label="Tipo de treinamento da IA">
                     <button class="training-type-tab active" type="button" data-training-type="perguntas_anuncio" aria-selected="true">Perguntas de anúncio</button>
-                    <button class="training-type-tab" type="button" data-training-type="pos_venda" aria-selected="false">Pós venda</button>
                 </div>
 
                 <div class="training-grid">
                     <div class="training-card training-stack">
                         <div class="training-card-title">
                             <h3>1. Regras gerais</h3>
-                            <p>Valem para o tipo selecionado acima: perguntas de anúncio ou pós-venda.</p>
+                            <p>Valem para perguntas de anúncio.</p>
                         </div>
                         <label class="training-field">
                             <span>Escopo do treinamento</span>
@@ -241,13 +241,13 @@
         </main>
     </div>
 
-    <script src="/perguntas_pos_venda/runtime.js?v=20260623-isolamento-ppv"></script>
-    <script src="/perguntas_pos_venda/lojas-automacao.js?v=20260712-whatsapp-regenerate"></script>
-    <script src="/perguntas_pos_venda/perguntas.js?v=20260714-codex-orchestrator"></script>
-    <script src="/perguntas_pos_venda/pos-venda.js?v=20260714-codex-orchestrator"></script>
-    <script src="/perguntas_pos_venda/mediacao.js?v=20260623-isolamento-ppv"></script>
-    <script src="/perguntas_pos_venda/treinamento-ia.js?v=20260623-isolamento-ppv"></script>
-    <script src="/perguntas_pos_venda/init.js?v=20260623-isolamento-ppv"></script>
-    <script src="/ia-sidebar.js?v=20260629-sidebar-resposta"></script>
+    <script src="/perguntas_pos_venda/runtime.js?v=20260720-pos-venda-manual"></script>
+    <script src="/perguntas_pos_venda/lojas-automacao.js?v=20260720-pos-venda-manual"></script>
+    <script src="/perguntas_pos_venda/perguntas.js?v=20260720-pos-venda-manual"></script>
+    <script src="/perguntas_pos_venda/pos-venda.js?v=20260720-pos-venda-manual"></script>
+    <script src="/perguntas_pos_venda/mediacao.js?v=20260720-pos-venda-manual"></script>
+    <script src="/perguntas_pos_venda/treinamento-ia.js?v=20260720-pos-venda-manual"></script>
+    <script src="/perguntas_pos_venda/init.js?v=20260720-pos-venda-manual"></script>
+    <script src="/ia-sidebar.js?v=20260720-pos-venda-manual"></script>
 </body>
 </html>

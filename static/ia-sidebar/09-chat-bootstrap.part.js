@@ -188,67 +188,79 @@
 
     /* ── Contexto automático da tela ── */
     function _obterContextoTela() {
-      const filtros = [];
+      const filters = [];
+      const entityRefs = {};
+      let storeMode = 'none';
+      let multiStore = false;
+      let explicitStore = '';
       document.querySelectorAll('select, input[type="text"], input[type="date"], input[type="search"], input[type="number"], input[type="month"], input[type="week"]')
         .forEach(el => {
+          if (filters.length >= 12 || el.closest('#jk-ia-panel,#jk-codex-panel,#jk-msg-panel') || el.offsetParent === null) return;
           const rawValue = (el.value || '').trim();
           const value = rawValue || (el.selectedOptions && el.selectedOptions[0]?.textContent?.trim()) || '';
           if (!value) return;
           const label = (el.getAttribute('aria-label') || el.labels?.[0]?.textContent || el.placeholder || el.id || el.name || 'filtro')
             .replace(/\s+/g, ' ')
-            .trim();
-          filtros.push(label + ': ' + value);
+            .trim().slice(0, 120);
+          const cleanValue = String(value).replace(/\s+/g, ' ').trim().slice(0, 240);
+          const key = String(el.name || el.id || label).replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 80);
+          filters.push({ key, label, value: cleanValue });
+          const normalizedLabel = label.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+          if (/\b(loja|conta)\b/.test(normalizedLabel)) {
+            if (/^(todas?|todos?|all)$/i.test(cleanValue)) {
+              storeMode = 'all';
+              multiStore = true;
+              explicitStore = '';
+            } else {
+              storeMode = 'single';
+              multiStore = false;
+              explicitStore = cleanValue;
+              entityRefs.store = cleanValue;
+            }
+          }
+          if (/\b(sku|codigo)\b/.test(normalizedLabel)) entityRefs.sku = cleanValue.slice(0, 100);
+          if (/\b(mlb|anuncio|item)\b/.test(normalizedLabel) && /MLB\d+/i.test(cleanValue)) {
+            entityRefs.item_id = (cleanValue.match(/MLB\d+/i) || [''])[0].toUpperCase();
+          }
         });
 
-      const cards = [];
+      const metrics = [];
       document.querySelectorAll('.card, .kpi-card, .resumo-card').forEach(c => {
+        if (metrics.length >= 8 || c.closest('#jk-ia-panel,#jk-codex-panel,#jk-msg-panel') || c.offsetParent === null) return;
         const t = c.querySelector('h3,h4,.card-title,.kpi-label')?.textContent?.trim();
         const v = c.querySelector('.val,.value,.kpi-val,.card-value')?.textContent?.trim();
-        if (t && v) cards.push(t + ': ' + v);
-      });
-
-      const tableHeaders = Array.from(document.querySelectorAll('table thead th'))
-        .map(th => th.textContent.replace(/\s+/g, ' ').trim())
-        .filter(Boolean)
-        .slice(0, 12);
-      const tableRows = [];
-      document.querySelectorAll('table tbody tr').forEach(tr => {
-        if (tableRows.length >= 15) return;
-        const cells = Array.from(tr.querySelectorAll('td')).map(td => td.textContent.replace(/\s+/g, ' ').trim());
-        const filled = cells.filter(Boolean);
-        if (!filled.length) return;
-        if (tableHeaders.length && tableHeaders.length === cells.length) {
-          const obj = {};
-          tableHeaders.forEach((header, idx) => {
-            if (cells[idx]) obj[header] = cells[idx];
-          });
-          if (Object.keys(obj).length) tableRows.push(obj);
-          return;
-        }
-        tableRows.push(filled.join(' | '));
-      });
-
-      const listas = [];
-      document.querySelectorAll('ul li, ol li').forEach(li => {
-        const text = li.textContent.replace(/\s+/g, ' ').trim();
-        if (text) listas.push(text);
+        if (t && v) metrics.push({
+          label: t.replace(/\s+/g, ' ').slice(0, 120),
+          value: v.replace(/\s+/g, ' ').slice(0, 240),
+        });
       });
 
       const dateValues = Array.from(document.querySelectorAll('input[type="date"], input[type="month"], input[type="week"]'))
+        .filter(el => !el.closest('#jk-ia-panel,#jk-codex-panel,#jk-msg-panel') && el.offsetParent !== null)
         .map(el => (el.value || '').trim())
         .filter(Boolean);
-      const periodo = dateValues.slice(0, 2).join(' a ');
+      let selectedText = '';
+      try { selectedText = String(window.getSelection?.().toString() || '').replace(/\s+/g, ' ').trim().slice(0, 600); } catch (_) {}
 
       return {
-        title: document.title,
-        url: location.pathname,
-        periodo,
-        filtros: filtros.slice(0, 12),
-        cards: cards.slice(0, 8),
-        table_headers: tableHeaders,
-        table_rows: tableRows,
-        table: tableRows.map(row => typeof row === 'string' ? row : Object.entries(row).map(([k, v]) => `${k}: ${v}`).join(' | ')).slice(0, 15),
-        listas: listas.slice(0, 12),
+        schema_version: 'sidebar-turn-v2',
+        surface: 'sidebar_chat',
+        conversation_mode: 'quick_chat',
+        conversation_id: convAtualId,
+        captured_at: new Date().toISOString(),
+        route: {
+          title: String(document.title || '').replace(/\s+/g, ' ').trim().slice(0, 200),
+          pathname: String(location.pathname || '').slice(0, 500),
+          module: String(_modulo() || '').slice(0, 100),
+        },
+        period: { start: dateValues[0] || '', end: dateValues[1] || dateValues[0] || '' },
+        filters,
+        metrics,
+        selection: selectedText ? { type: 'text', text: selectedText } : {},
+        entity_refs: entityRefs,
+        store_mode: storeMode,
+        multi_store: multiStore,
+        store: explicitStore,
       };
     }
 
@@ -364,10 +376,8 @@
       const aguardando = addMsg('assistant', 'Pensando...', false);
       aguardando.classList.add('loading');
 
-      const historico = mensagensAtuais.slice(-16).map(_approvalHistoricoChat);
+      const historico = mensagensAtuais.slice(-10).map(_approvalHistoricoChat);
       const contextoTela = _obterContextoTela();
-      contextoTela.historico_conversa = historico;
-      contextoTela.modulo_atual = _modulo();
 
       try {
         const acaoLocal = await _executarAcaoLocal(perguntaFinal);
@@ -417,7 +427,11 @@
         try {
           const r = await window.__JK_IA_SIDEBAR_FETCH__(url, { method: 'POST', headers: _authHeaders(), body });
           const data = await r.json().catch(() => null);
-          if (r.ok) { resposta = data?.resposta || 'Sem resposta da IA.'; break; }
+          if (r.ok) {
+            resposta = data?.resposta || 'Sem resposta da IA.';
+            window.__JK_IA_LAST_DIAGNOSTIC__ = data?.diagnostico_ia || null;
+            break;
+          }
           if (r.status !== 405) break;
         } catch (_) {}
       }
@@ -522,9 +536,22 @@
     });
     document.getElementById('jk-codex-goal-input')?.addEventListener('change', () => _codexPersistSettings());
     document.getElementById('jk-codex-readonly').addEventListener('click', () => _codexCriarTarefa());
+    document.getElementById('jk-codex-voice')?.addEventListener('click', () => { void _codexVoiceToggle(); });
+    document.getElementById('jk-codex-voice-cancel')?.addEventListener('click', () => _codexVoiceCancel());
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && codexVoiceState === 'recording') {
+        event.preventDefault();
+        _codexVoiceCancel();
+      }
+    });
     document.getElementById('jk-codex-approve').addEventListener('click', () => _codexAprovarAtual());
     document.getElementById('jk-codex-cancel').addEventListener('click', () => _codexCancelarAtual());
     document.getElementById('jk-codex-input').addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && codexVoiceState === 'recording') {
+        event.preventDefault();
+        _codexVoiceCancel();
+        return;
+      }
       if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
         _codexCriarTarefa();

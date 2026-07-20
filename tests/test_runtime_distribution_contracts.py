@@ -1,7 +1,27 @@
 import hashlib
 import json
+from pathlib import Path
 
 from backend.services import codex_console, whatsapp_bridge
+
+
+def test_release_version_is_canonical_and_materialized():
+    root = Path(__file__).resolve().parents[1]
+    root_package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+    electron_package = json.loads((root / "electron_app" / "package.json").read_text(encoding="utf-8"))
+    context_manifest = json.loads((root / "context-bundle-manifest.json").read_text(encoding="utf-8"))
+    runtime_manifest = json.loads((root / ".installer_runtime" / "runtime-manifest.json").read_text(encoding="utf-8-sig"))
+
+    release_version = electron_package["version"]
+    assert release_version == "1.0.106"
+    assert root_package["version"] == release_version
+    assert context_manifest["source_version"] == release_version
+    assert runtime_manifest["version"] == release_version
+
+    local_app_resource = next(
+        item for item in electron_package["build"]["extraResources"] if item.get("to") == "local_app"
+    )
+    assert "package.json" in local_app_resource["filter"]
 
 
 def test_codex_status_distinguishes_authentication_pending(monkeypatch):
@@ -64,3 +84,12 @@ def test_whisper_prefers_verified_bundled_model(monkeypatch, tmp_path):
 
     assert selected == model.resolve()
     assert whatsapp_bridge._validate_model_dir(selected)["valid"] is True
+
+
+def test_whisper_runner_resolves_service_script():
+    expected = Path(whatsapp_bridge.__file__).with_name("whatsapp_transcribe.py").resolve()
+
+    runner = whatsapp_bridge._whisper_runner()
+
+    assert runner == expected
+    assert runner.is_file()

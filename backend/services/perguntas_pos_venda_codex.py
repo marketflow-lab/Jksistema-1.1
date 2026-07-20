@@ -22,10 +22,27 @@ from typing import Any, Optional
 from urllib.parse import urlsplit
 
 from backend.services import codex_agent_runtime, codex_assistant_storage
+from backend.services.codex_turn_context import (
+    EVIDENCE_ENVELOPE_V2,
+    conversation_key,
+    normalize_evidence_envelope,
+)
 
 
 PROFILE = "mercado_livre_customer_reply"
-TASK_TYPES = {"question", "post_sale"}
+TASK_TYPE_PUBLIC_QUESTION = "public_question"
+TASK_TYPE_POST_SALE = "post_sale"
+TASK_TYPE_ALIASES = {"question": TASK_TYPE_PUBLIC_QUESTION}
+TASK_TYPES = {TASK_TYPE_PUBLIC_QUESTION, TASK_TYPE_POST_SALE}
+PROMPT_VERSION = "jk_ml_customer_reply_codex_v3"
+SCHEMA_VERSION = "3.0"
+PROMPT_HASH = hashlib.sha256(
+    (
+        "codex-native|public-question-by-item-buyer|post-sale-by-pack|"
+        "evidence-envelope-v3|human-review-required|no-direct-publish"
+    ).encode("utf-8")
+).hexdigest()
+THREAD_IDLE_TTL_SECONDS = 30 * 24 * 60 * 60
 TERMINAL_STATUSES = {"completed", "cancelled"}
 ACTIVE_STATUSES = {"queued", "running", "waiting_retry"}
 MAX_GLOBAL_JOBS = 2
@@ -64,7 +81,7 @@ def _hash(value: Any) -> str:
 
 
 def _created_at_epoch(job: dict[str, Any]) -> float:
-    raw = str(job.get("created_at") or "").strip()
+    raw = str(job.get("updated_at") or job.get("completed_at") or job.get("created_at") or "").strip()
     if not raw:
         return 0.0
     try:
@@ -74,6 +91,89 @@ def _created_at_epoch(job: dict[str, Any]) -> float:
         return float(parsed.timestamp())
     except (TypeError, ValueError, OverflowError):
         return 0.0
+
+
+def _canonical_task_type(task_type: Any) -> str:
+    normalized = str(task_type or "").strip().lower()
+    return TASK_TYPE_ALIASES.get(normalized, normalized)
+
+
+def _request_question(request: Optional[dict[str, Any]]) -> dict[str, Any]:
+    data = request if isinstance(request, dict) else {}
+    question = data.get("pergunta") if isinstance(data.get("pergunta"), dict) else {}
+    return question
+
+
+def _conversation_subject_key(
+    task_type: str,
+    event_subject_key: str,
+    request: Optional[dict[str, Any]],
+) -> tuple[str, dict[str, str]]:
+    """Return the durable Codex thread scope without changing the external event id."""
+
+    data = request if isinstance(request, dict) else {}
+    canonical_type = _canonical_task_type(task_type)
+    if canonical_type == TASK_TYPE_POST_SALE:
+        pack_id = str(data.get("pack_id") or event_subject_key or "").strip()
+        order_id = str(data.get("order_id") or "").strip()
+        buyer_id = str(data.get("buyer_id") or "").strip()
+        return f"pack:{pack_id}", {
+            "pack_id": pack_id,
+            "order_id": order_id,
+            "buyer_id": buyer_id,
+        }
+
+    question = _request_question(data)
+    item_id = str(question.get("item_id") or data.get("item_id") or "").strip()
+    buyer_id = str(
+        question.get("buyer_id")
+        or question.get("from_id")
+        or ((question.get("from") or {}).get("id") if isinstance(question.get("from"), dict) else "")
+        or data.get("buyer_id")
+        or ""
+    ).strip()
+    question_id = str(question.get("id") or event_subject_key or "").strip()
+    if item_id and buyer_id:
+        subject = f"item:{item_id}|buyer:{buyer_id}"
+    else:
+        subject = f"question:{question_id}"
+    return subject, {
+        "question_id": question_id,
+        "item_id": item_id,
+        "buyer_id": buyer_id,
+    }
+
+
+def _thread_reuse_decision(
+    latest: Optional[dict[str, Any]],
+    *,
+    task_type: str,
+    scope_verifiers: dict[str, str],
+) -> tuple[str, str, bool]:
+    """Return thread id, restart reason and whether the previous thread is reusable."""
+
+    if not isinstance(latest, dict):
+        return "", "new_conversation", False
+    thread_id = str(latest.get("thread_id") or "").strip()
+    if not thread_id:
+        return "", "previous_thread_missing", False
+    if str(latest.get("prompt_version") or "") != PROMPT_VERSION:
+        return "", "prompt_version_changed", False
+    if str(latest.get("schema_version") or "") != SCHEMA_VERSION:
+        return "", "schema_version_changed", False
+    if str(latest.get("prompt_hash") or "") != PROMPT_HASH:
+        return "", "prompt_hash_changed", False
+    last_activity = _created_at_epoch(latest)
+    if not last_activity or (time.time() - last_activity) > THREAD_IDLE_TTL_SECONDS:
+        return "", "thread_expired", False
+    if _canonical_task_type(task_type) == TASK_TYPE_POST_SALE:
+        previous = latest.get("scope_verifiers") if isinstance(latest.get("scope_verifiers"), dict) else {}
+        for field in ("pack_id", "order_id", "buyer_id"):
+            current_value = str(scope_verifiers.get(field) or "").strip()
+            previous_value = str(previous.get(field) or "").strip()
+            if current_value and previous_value and current_value != previous_value:
+                return "", f"{field}_changed", False
+    return thread_id, "", True
 
 
 def _job_deadline_epoch(job: dict[str, Any]) -> float:
@@ -107,15 +207,13 @@ def _unique_warnings(*groups: Any) -> list[str]:
 
 
 def _fallback_partial_answer(job: dict[str, Any]) -> str:
-    if str(job.get("task_type") or "") == "post_sale":
-        return (
-            "Com as informacoes disponiveis, ainda nao foi possivel confirmar todos os detalhes do caso. "
-            "Revise o historico e complemente a resposta antes de enviar."
-        )
-    return (
-        "Com as informacoes disponiveis, ainda nao foi possivel confirmar a compatibilidade com seguranca. "
-        "Confirme o codigo da peca, o chassi ou envie uma foto da etiqueta antes da compra."
-    )
+    store = str(job.get("store") or "")
+    try:
+        signature = str(_require_runtime()._perguntas_ia_assinatura_loja(store) or "").strip()
+    except Exception:
+        signature = ""
+    answer = "Nao foi possivel gerar uma resposta segura agora. Revise o atendimento e tente novamente."
+    return f"{answer} {signature}".strip()
 
 
 def _retry_delay_seconds(retry_count: int, job_id: str = "") -> int:
@@ -280,7 +378,13 @@ def _complete_with_best_available(
     result = {
         "resposta": final_answer,
         "contexto": final_context,
-        "model": str(final_context.get("model") or diagnostic.get("gemini_model") or ""),
+        "model": str(
+            final_context.get("model")
+            or diagnostic.get("effective_model")
+            or diagnostic.get("gemini_model")
+            or ""
+        ),
+        "evidence_envelope": final_context.get("evidence_envelope") or {},
         "evidence_status": final_matrix,
         "data_sufficient": False,
         "warnings": final_warnings,
@@ -340,7 +444,11 @@ def _complete_with_best_available(
                     "proposal_id": job_id,
                     "version": version,
                     "proposal_hash": proposal_hash,
-                    "action_id": "ml.pergunta_responder" if current.get("task_type") == "question" else "ml.pos_venda_responder",
+                    "action_id": (
+                        "ml.pergunta_responder"
+                        if _canonical_task_type(current.get("task_type")) == TASK_TYPE_PUBLIC_QUESTION
+                        else "ml.pos_venda_responder"
+                    ),
                     "channels_allowed": ["app", "whatsapp"],
                     "requires_confirmation": True,
                 },
@@ -377,6 +485,10 @@ def _persist_retry(
     current["attempt_count"] = max(
         int(current.get("attempt_count") or 0),
         int(job.get("attempt_count") or 0),
+    )
+    current["operational_failure_count"] = max(
+        int(current.get("operational_failure_count") or 0),
+        int(job.get("operational_failure_count") or 0),
     )
     if current.get("cancel_requested"):
         current.update({"status": "cancelled", "agent_state": "cancelado", "current_step": "responder"})
@@ -489,9 +601,14 @@ def _recover_after_startup() -> None:
         logger.exception("[PPV CODEX] Falha ao recuperar jobs pendentes.")
 
 
-def _subject_conversation_id(client_id: str, task_type: str, store: str, subject_key: str) -> str:
-    digest = _hash({"client": client_id, "type": task_type, "store": store, "subject": subject_key})[:28]
-    return f"mlcr_{digest}"
+def _subject_conversation_id(client_id: str, task_type: str, store: str, conversation_subject_key: str) -> str:
+    canonical_type = _canonical_task_type(task_type)
+    return conversation_key(
+        f"mercado_livre_{canonical_type}",
+        client_id,
+        store,
+        subject=conversation_subject_key,
+    )
 
 
 def _subquestions(text: str, task_type: str) -> list[dict[str, Any]]:
@@ -502,7 +619,7 @@ def _subquestions(text: str, task_type: str) -> list[dict[str, Any]]:
         if intent not in {item[0] for item in found}:
             found.append((intent, evidence))
 
-    if task_type == "post_sale":
+    if _canonical_task_type(task_type) == TASK_TYPE_POST_SALE:
         add("post_sale", "pedido, envio, conversa, reclamação ou regra de atendimento")
     if re.search(r"\b(serve|servir|compativ|aplica|encaix|motor|modelo|ano|manual|automatic|cambio|furacao|estria|conector)\b", normalized):
         add("compatibility", "uma fonte oficial/fabricante ou duas fontes técnicas independentes concordantes")
@@ -574,17 +691,153 @@ def _diagnostic_result(context: dict[str, Any]) -> dict[str, Any]:
     return first.get("result") if isinstance(first.get("result"), dict) else {}
 
 
+def _evidence_envelope(
+    task_type: str,
+    *,
+    store: str,
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize evidence for every customer-reply intent, including legacy V1 contexts."""
+
+    diagnostic = _diagnostic_result(context)
+    existing = context.get("evidence_envelope")
+    if not isinstance(existing, dict):
+        existing = diagnostic.get("evidence_envelope")
+    records = list(existing.get("records") or []) if isinstance(existing, dict) else []
+    normalized_records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(field: str, value: Any, source: str, *, coverage: str = "confirmed") -> None:
+        if value in (None, "", [], {}):
+            return
+        coverage_value = str(coverage or "").strip().lower()
+        if coverage_value in {"confirmed", "canonical", "source", "generated_verified", "versioned_technical", "official"}:
+            coverage_value = "confirmed"
+        else:
+            coverage_value = "partial"
+        record = {
+            "field": str(field or "context"),
+            "value": value,
+            "store": str(store or ""),
+            "source": str(source or "runtime"),
+            "coverage": coverage_value,
+            "authority": coverage_value,
+        }
+        marker = _hash(record)
+        if marker not in seen:
+            seen.add(marker)
+            normalized_records.append(record)
+
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        add(
+            str(record.get("field") or "context"),
+            record.get("value"),
+            str(record.get("source") or record.get("reference") or "runtime"),
+            coverage=str(record.get("coverage") or record.get("authority") or record.get("status") or "partial"),
+        )
+
+    compatibility = diagnostic.get("compatibility_analysis")
+    if isinstance(compatibility, dict):
+        for source in list(compatibility.get("sources") or [])[:12]:
+            add("compatibility", source, "compatibility_analysis")
+
+    canonical_type = _canonical_task_type(task_type)
+    if canonical_type == TASK_TYPE_POST_SALE:
+        for field, source in (
+            ("pedido", "mercado_livre_order"),
+            ("envio", "mercado_livre_shipping"),
+            ("pagamento", "mercado_livre_payment"),
+            ("nota_fiscal", "local_invoice_index"),
+            ("reclamacao_mediacao", "mercado_livre_claim"),
+            ("anuncios", "mercado_livre_listing"),
+            ("perguntas_anteriores_anuncio", "mercado_livre_question_history"),
+        ):
+            add(field, context.get(field), source)
+        add("mensagem_comprador", context.get("last_message_text"), "mercado_livre_messages")
+    else:
+        for field, source in (
+            ("pergunta", context.get("pergunta") or context.get("question")),
+            ("anuncio", context.get("item") or context.get("anuncio")),
+            ("historico_comprador", context.get("historico_comprador")),
+            ("context_hub", context.get("context_hub")),
+        ):
+            add(
+                field,
+                source,
+                "mercado_livre" if field != "context_hub" else "context_hub",
+            )
+
+    coverage = "none"
+    if normalized_records:
+        coverage = (
+            "full"
+            if all(str(item.get("coverage") or "") == "confirmed" for item in normalized_records)
+            else "partial"
+        )
+    existing_gaps = [str(item) for item in (existing.get("gaps") or []) if str(item).strip()] if isinstance(existing, dict) else []
+    if isinstance(existing, dict) and (
+        existing.get("evidence_sufficient") is False
+        or existing.get("coverage_complete") is False
+        or existing_gaps
+    ):
+        coverage = "partial" if normalized_records else "none"
+    raw_envelope = {
+        "schema_version": EVIDENCE_ENVELOPE_V2,
+        "task_type": canonical_type,
+        "status": "completed" if coverage == "full" else ("partial" if normalized_records else "missing"),
+        "records": normalized_records[:48],
+        "sources": list(dict.fromkeys(str(item.get("source") or "") for item in normalized_records if item.get("source"))),
+        "gaps": [] if coverage == "full" else (existing_gaps or ["coverage_incomplete"]),
+        "confidence": "high" if coverage == "full" else ("medium" if normalized_records else "unknown"),
+        "evidence_sufficient": coverage == "full",
+        "coverage_complete": coverage == "full",
+        "scope": {"task_type": canonical_type, "store": str(store or "")},
+    }
+    return normalize_evidence_envelope(raw_envelope).to_dict()
+
+
+def _intent_evidence_records(intent: str, envelope: dict[str, Any]) -> list[dict[str, Any]]:
+    records = [item for item in (envelope.get("records") or []) if isinstance(item, dict)]
+    prefixes = {
+        "compatibility": ("compatibility",),
+        "shipping": ("envio", "shipping", "shipment"),
+        "invoice": ("nota_fiscal", "invoice", "danfe"),
+        "stock": ("estoque", "stock", "inventory", "available_quantity"),
+        "price": ("preco", "price"),
+        "warranty": ("garantia", "warranty", "originalidade", "procedencia"),
+        "warranty_originality": ("garantia", "warranty", "originalidade", "procedencia"),
+        "post_sale": ("pedido", "envio", "pagamento", "nota_fiscal", "reclamacao", "mensagem"),
+        "product_feature": ("atributos", "ficha_tecnica", "compatibility"),
+        "general": ("anuncio", "historico", "context_hub", "pedido", "mensagem"),
+    }.get(intent, ())
+    if not prefixes:
+        return []
+    return [
+        item
+        for item in records
+        if str(item.get("field") or "").lower().startswith(prefixes)
+    ]
+
+
 def _evidence_matrix(
     subquestions: list[dict[str, Any]],
     *,
     answer: str,
     context: dict[str, Any],
+    envelope: Optional[dict[str, Any]] = None,
 ) -> tuple[list[dict[str, Any]], bool, list[str]]:
     diagnostic = _diagnostic_result(context)
     validation_ok = diagnostic.get("validation_ok") is not False and bool(answer.strip())
     validation_issues = [str(item) for item in (diagnostic.get("validation_issues") or []) if str(item).strip()]
     analysis = diagnostic.get("compatibility_analysis") if isinstance(diagnostic.get("compatibility_analysis"), dict) else {}
     compatibility_ok, compatibility_warnings = _compatibility_evidence(analysis)
+    normalized_envelope = envelope if isinstance(envelope, dict) else _evidence_envelope(
+        TASK_TYPE_PUBLIC_QUESTION,
+        store=str(context.get("store") or context.get("loja") or ""),
+        context=context,
+    )
     sources = list(analysis.get("sources") or [])
     matrix: list[dict[str, Any]] = []
     warnings = list(dict.fromkeys(validation_issues + compatibility_warnings))
@@ -597,9 +850,25 @@ def _evidence_matrix(
             row["confidence"] = float(analysis.get("confidence") or diagnostic.get("confidence") or 0.0)
             row["sources"] = sources[:12]
         else:
-            row["status"] = "confirmed" if validation_ok else ("partial" if answer.strip() else "no_evidence")
+            intent_records = _intent_evidence_records(intent, normalized_envelope)
+            records_confirmed = bool(intent_records) and all(
+                str(record.get("coverage") or record.get("authority") or "") == "confirmed"
+                for record in intent_records
+            )
+            confirmed = bool(
+                validation_ok
+                and records_confirmed
+            )
+            row["status"] = "confirmed" if confirmed else ("partial" if answer.strip() else "no_evidence")
             row["confidence"] = float(diagnostic.get("confidence") or (0.65 if validation_ok else 0.35))
-            row["sources"] = []
+            row["sources"] = [
+                {
+                    "field": record.get("field"),
+                    "source": record.get("source"),
+                    "store": record.get("store"),
+                }
+                for record in intent_records[:12]
+            ]
         matrix.append(row)
     sufficient = bool(matrix) and all(str(item.get("status")) == "confirmed" for item in matrix)
     if not sufficient:
@@ -616,7 +885,15 @@ def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, An
         "profile": PROFILE,
         "task_type": str(job.get("task_type") or ""),
         "store": str(job.get("store") or ""),
-        "subject_key": str(job.get("subject_key") or ""),
+        "subject_key": str(job.get("event_subject_key") or job.get("subject_key") or ""),
+        "conversation_subject_key": str(job.get("subject_key") or ""),
+        "conversation_id": str(job.get("conversation_id") or ""),
+        "thread_id": str(job.get("thread_id") or ""),
+        "thread_reused": bool(job.get("thread_reused")),
+        "thread_restart_reason": str(job.get("thread_restart_reason") or ""),
+        "prompt_version": str(job.get("prompt_version") or ""),
+        "prompt_hash": str(job.get("prompt_hash") or ""),
+        "schema_version": str(job.get("schema_version") or ""),
         "status": str(job.get("status") or "queued"),
         "agent_state": str(job.get("agent_state") or "entendendo"),
         "current_step": str(job.get("current_step") or ""),
@@ -665,18 +942,34 @@ def create_job(
     channel: str = "app",
     created_by: str = "module_user",
 ) -> dict[str, Any]:
+    task_type = _canonical_task_type(task_type)
     if task_type not in TASK_TYPES:
         raise ValueError("Tipo de tarefa de atendimento inválido.")
     if not str(store or "").strip() or not str(subject_key or "").strip():
         raise ValueError("Loja e identificação da conversa são obrigatórias.")
+    event_subject_key = str(subject_key or "").strip()
+    conversation_subject_key, scope_verifiers = _conversation_subject_key(
+        task_type,
+        event_subject_key,
+        request,
+    )
     info_base = _runtime_info_base()
     latest = codex_assistant_storage.codex_assistant_customer_reply_job_latest(
         info_base,
         client_id,
         task_type=task_type,
         store=str(store),
-        subject_key=str(subject_key),
+        subject_key=conversation_subject_key,
     )
+    if not isinstance(latest, dict) and task_type == TASK_TYPE_PUBLIC_QUESTION:
+        # V1 compatibility reader: old jobs used task_type=question and the event id as subject.
+        latest = codex_assistant_storage.codex_assistant_customer_reply_job_latest(
+            info_base,
+            client_id,
+            task_type="question",
+            store=str(store),
+            subject_key=event_subject_key,
+        )
     latest_result = latest.get("result") if isinstance(latest, dict) and isinstance(latest.get("result"), dict) else {}
     revision_requested = bool(
         str(request.get("resposta_atual") or request.get("orientacao_usuario") or "").strip()
@@ -691,7 +984,11 @@ def create_job(
         and str(latest.get("request_hash") or "") == request_hash
     ):
         return _public_job(latest)
-    if isinstance(latest, dict) and str(latest.get("status") or "") in ACTIVE_STATUSES:
+    same_event = bool(
+        isinstance(latest, dict)
+        and str(latest.get("event_subject_key") or latest.get("subject_key") or "") == event_subject_key
+    )
+    if isinstance(latest, dict) and str(latest.get("status") or "") in ACTIVE_STATUSES and same_event:
         if revision_requested:
             latest_request = dict(latest.get("request") or {}) if isinstance(latest.get("request"), dict) else {}
             latest_request.update(dict(request or {}))
@@ -737,7 +1034,7 @@ def create_job(
             "client": client_id,
             "type": task_type,
             "store": store,
-            "subject": subject_key,
+            "subject": event_subject_key,
             "request": request,
             "bucket": int(time.time() // 5),
         }
@@ -753,7 +1050,7 @@ def create_job(
         question = request.get("pergunta") if isinstance(request.get("pergunta"), dict) else {}
         text = str(question.get("text") or "").strip()
     subquestions = _subquestions(text, task_type)
-    conversation_id = _subject_conversation_id(client_id, task_type, store, subject_key)
+    conversation_id = _subject_conversation_id(client_id, task_type, store, conversation_subject_key)
     guidance = codex_agent_runtime.resolve_guidance(
         info_base,
         client_id,
@@ -771,17 +1068,23 @@ def create_job(
         conversation_generation=1,
         username=created_by,
         channel=channel,
-        message=text or f"{task_type}:{subject_key}",
+        message=text or f"{task_type}:{event_subject_key}",
         mutable=True,
         idempotency_key=idempotency_key,
         guidance_applied=guidance,
     )
-    thread_id = str(latest.get("thread_id") or "") if isinstance(latest, dict) else ""
+    thread_id, restart_reason, thread_reused = _thread_reuse_decision(
+        latest,
+        task_type=task_type,
+        scope_verifiers=scope_verifiers,
+    )
     job = {
         "job_id": job_id,
         "profile": PROFILE,
         "task_type": task_type,
-        "subject_key": str(subject_key),
+        "subject_key": conversation_subject_key,
+        "event_subject_key": event_subject_key,
+        "scope_verifiers": scope_verifiers,
         "store": str(store),
         "client_id": str(client_id),
         "channel": str(channel or "app"),
@@ -794,7 +1097,13 @@ def create_job(
         "request": dict(request or {}),
         "request_hash": request_hash,
         "thread_id": thread_id,
+        "thread_reused": thread_reused,
+        "thread_restart_reason": restart_reason,
+        "prompt_version": PROMPT_VERSION,
+        "prompt_hash": PROMPT_HASH,
+        "schema_version": SCHEMA_VERSION,
         "conversation_id": conversation_id,
+        "previous_job_id": str(latest.get("job_id") or "") if isinstance(latest, dict) else "",
         "plan_id": str(plan.get("plan_id") or ""),
         "proposal_version": max(1, proposal_version),
         "idempotency_key": idempotency_key,
@@ -802,6 +1111,7 @@ def create_job(
         "cancel_requested": False,
         "request_generation": 1,
         "attempt_count": 0,
+        "operational_failure_count": 0,
         "retry_count": 0,
         "retry_policy": "bounded",
         "deadline_seconds": int(RESEARCH_DEADLINE_SECONDS),
@@ -818,7 +1128,18 @@ def create_job(
         entity_id=job_id,
         actor=created_by,
         channel=channel,
-        payload={"task_type": task_type, "store": store, "subject_key": subject_key},
+        payload={
+            "task_type": task_type,
+            "store": store,
+            "event_subject_key": event_subject_key,
+            "conversation_subject_key": conversation_subject_key,
+            "conversation_id": conversation_id,
+            "thread_reused": thread_reused,
+            "thread_restart_reason": restart_reason,
+            "prompt_version": PROMPT_VERSION,
+            "prompt_hash": PROMPT_HASH,
+            "schema_version": SCHEMA_VERSION,
+        },
     )
     _schedule(saved)
     return _public_job(saved, queue_position=_queue_position(info_base, client_id, job_id))
@@ -832,6 +1153,62 @@ def get_job(client_id: str, job_id: str) -> Optional[dict[str, Any]]:
     if str(job.get("status") or "") == "waiting_retry" and _job_deadline_expired(job):
         job = _complete_with_best_available(job)
     return _public_job(job, queue_position=_queue_position(info_base, client_id, job_id))
+
+
+def latest_job_for_request(
+    *,
+    client_id: str,
+    task_type: str,
+    store: str,
+    subject_key: str,
+    request: Optional[dict[str, Any]] = None,
+) -> Optional[dict[str, Any]]:
+    """Return the latest job for the exact customer event without creating work.
+
+    Public-question threads may span multiple questions from the same buyer and
+    listing.  The persisted conversation key is therefore broader than the
+    external question id, so the event id is checked again before a completed
+    draft can be reconciled into the approval queue.
+    """
+
+    canonical_type = _canonical_task_type(task_type)
+    if canonical_type not in TASK_TYPES:
+        return None
+    event_subject_key = str(subject_key or "").strip()
+    if not str(store or "").strip() or not event_subject_key:
+        return None
+    conversation_subject_key, _scope_verifiers = _conversation_subject_key(
+        canonical_type,
+        event_subject_key,
+        request,
+    )
+    info_base = _runtime_info_base()
+    latest = codex_assistant_storage.codex_assistant_customer_reply_job_latest(
+        info_base,
+        client_id,
+        task_type=canonical_type,
+        store=str(store),
+        subject_key=conversation_subject_key,
+    )
+    if not isinstance(latest, dict) and canonical_type == TASK_TYPE_PUBLIC_QUESTION:
+        latest = codex_assistant_storage.codex_assistant_customer_reply_job_latest(
+            info_base,
+            client_id,
+            task_type="question",
+            store=str(store),
+            subject_key=event_subject_key,
+        )
+    if not isinstance(latest, dict):
+        return None
+    persisted_event_key = str(
+        latest.get("event_subject_key") or latest.get("subject_key") or ""
+    ).strip()
+    if persisted_event_key != event_subject_key:
+        return None
+    return _public_job(
+        latest,
+        queue_position=_queue_position(info_base, client_id, str(latest.get("job_id") or "")),
+    )
 
 
 def resume_incomplete_job(client_id: str, job_id: str, reason: str = "evidencia_tecnica_insuficiente") -> Optional[dict[str, Any]]:
@@ -870,7 +1247,7 @@ def wait_job(client_id: str, job_id: str, timeout: float = MAX_SECONDS) -> dict[
         job = get_job(client_id, job_id)
         if not isinstance(job, dict):
             raise KeyError(job_id)
-        if str(job.get("status") or "") in TERMINAL_STATUSES | {"waiting_retry"}:
+        if str(job.get("status") or "") in TERMINAL_STATUSES:
             return job
         time.sleep(0.2)
     job = get_job(client_id, job_id)
@@ -999,6 +1376,42 @@ def _heartbeat_loop(client_id: str, job_id: str, stop_event: threading.Event) ->
             logger.exception("[PPV CODEX] Falha ao renovar lease do job %s", job_id)
 
 
+def _is_operational_failure(exc: BaseException) -> bool:
+    """Classify failures that may unlock the optional provider fallback.
+
+    Validation, missing evidence and application-contract errors can still be
+    retried by the job, but they must never count as a Codex outage.
+    """
+
+    if isinstance(exc, (TimeoutError, ConnectionError, BrokenPipeError)):
+        return True
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None:
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+    try:
+        if int(status_code or 0) == 429 or int(status_code or 0) >= 500:
+            return True
+    except (TypeError, ValueError):
+        pass
+    class_name = exc.__class__.__name__.lower()
+    message = str(exc or "").strip().lower()
+    operational_markers = (
+        "timeout",
+        "timed out",
+        "connection",
+        "broken pipe",
+        "rate limit",
+        "too many requests",
+        "service unavailable",
+        "temporarily unavailable",
+        "provider unavailable",
+        "codex indispon",
+        "respostaindisponivel",
+    )
+    return any(marker in class_name or marker in message for marker in operational_markers)
+
+
 def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     runtime = _require_runtime()
     request = job.get("request") if isinstance(job.get("request"), dict) else {}
@@ -1007,6 +1420,10 @@ def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     question = dict(request.get("pergunta") or {}) if isinstance(request.get("pergunta"), dict) else {}
     question["_codex_thread_id"] = str(job.get("thread_id") or "")
     question["_codex_job_id"] = str(job.get("job_id") or "")
+    question["_codex_conversation_key"] = str(job.get("conversation_id") or "")
+    question["_codex_operational_failure_count"] = max(0, int(job.get("operational_failure_count") or 0))
+    question["_codex_prompt_version"] = str(job.get("prompt_version") or PROMPT_VERSION)
+    question["_codex_schema_version"] = str(job.get("schema_version") or SCHEMA_VERSION)
     question["_agent_subquestions"] = list(job.get("subquestions") or [])
     question["_research_attempt"] = max(1, int(job.get("attempt_count") or 0) + 1)
     question["_research_history"] = list(job.get("research_history") or [])[-6:]
@@ -1038,7 +1455,19 @@ def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     if isinstance(item, dict) and item and not runtime._ml_extrair_sku(item):
         item = runtime._ml_perguntas_completar_skus_itens(client_id, store, cfg, [item])[0]
     answer, _cfg, context = runtime._perguntas_ia_gerar_resposta(client_id, store, cfg, question, item or {})
-    return str(answer or "").strip(), context if isinstance(context, dict) else {}
+    context = context if isinstance(context, dict) else {}
+    context.setdefault("loja", store)
+    context.setdefault("pergunta", {
+        "id": question.get("id") or job.get("event_subject_key") or "",
+        "item_id": question.get("item_id") or item_id,
+        "buyer_id": question.get("buyer_id") or question.get("from_id") or "",
+        "text": question.get("text") or "",
+    })
+    context.setdefault("item", item or {})
+    history = question.get("history") if isinstance(question.get("history"), list) else []
+    if history:
+        context.setdefault("historico_comprador", history[-10:])
+    return str(answer or "").strip(), context
 
 
 def _load_post_sale_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -1046,7 +1475,7 @@ def _load_post_sale_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     request = job.get("request") if isinstance(job.get("request"), dict) else {}
     client_id = str(job.get("client_id") or "default")
     store = str(job.get("store") or "")
-    pack_id = str(request.get("pack_id") or job.get("subject_key") or "")
+    pack_id = str(request.get("pack_id") or (job.get("scope_verifiers") or {}).get("pack_id") or "")
     order_id = str(request.get("order_id") or "")
     cfg = runtime._obter_cfg_ml(client_id, store)
     conversation, cfg = runtime._ml_pos_venda_montar_conversa_normalizada(
@@ -1056,6 +1485,10 @@ def _load_post_sale_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         conversation["buyer_id"] = str(request.get("buyer_id") or "")
     conversation["_codex_thread_id"] = str(job.get("thread_id") or "")
     conversation["_codex_job_id"] = str(job.get("job_id") or "")
+    conversation["_codex_conversation_key"] = str(job.get("conversation_id") or "")
+    conversation["_codex_operational_failure_count"] = max(0, int(job.get("operational_failure_count") or 0))
+    conversation["_codex_prompt_version"] = str(job.get("prompt_version") or PROMPT_VERSION)
+    conversation["_codex_schema_version"] = str(job.get("schema_version") or SCHEMA_VERSION)
     conversation["_agent_subquestions"] = list(job.get("subquestions") or [])
     conversation["_research_attempt"] = max(1, int(job.get("attempt_count") or 0) + 1)
     conversation["_research_history"] = list(job.get("research_history") or [])[-6:]
@@ -1078,6 +1511,27 @@ def _load_post_sale_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return str(result.get("resposta") or "").strip(), context
 
 
+def _refresh_thread_from_previous_job(job: dict[str, Any]) -> dict[str, Any]:
+    """Resolve a thread that was still running when a later event was queued."""
+
+    if str(job.get("thread_id") or "").strip() or not str(job.get("previous_job_id") or "").strip():
+        return job
+    previous = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        _runtime_info_base(),
+        str(job.get("client_id") or "default"),
+        str(job.get("previous_job_id") or ""),
+    )
+    thread_id, reason, reused = _thread_reuse_decision(
+        previous,
+        task_type=str(job.get("task_type") or ""),
+        scope_verifiers=(job.get("scope_verifiers") if isinstance(job.get("scope_verifiers"), dict) else {}),
+    )
+    job["thread_id"] = thread_id
+    job["thread_reused"] = reused
+    job["thread_restart_reason"] = reason
+    return job
+
+
 def _run_job(client_id: str, job_id: str) -> None:
     info_base = _runtime_info_base()
     claimed = codex_assistant_storage.codex_assistant_customer_reply_job_claim(
@@ -1085,7 +1539,7 @@ def _run_job(client_id: str, job_id: str) -> None:
     )
     if not isinstance(claimed, dict):
         return
-    job = claimed
+    job = _refresh_thread_from_previous_job(claimed)
     if _job_deadline_expired(job):
         _complete_with_best_available(job)
         return
@@ -1106,7 +1560,7 @@ def _run_job(client_id: str, job_id: str) -> None:
         if _cancelled(job):
             raise InterruptedError("Tarefa cancelada pelo usuário.")
         job = _save_step(job, "consultando", "consultar", "Consultando anúncio, histórico, regras e fontes autorizadas.")
-        if str(job.get("task_type") or "") == "post_sale":
+        if _canonical_task_type(job.get("task_type")) == TASK_TYPE_POST_SALE:
             answer, context = _load_post_sale_context(job)
         else:
             answer, context = _load_question_context(job)
@@ -1115,9 +1569,38 @@ def _run_job(client_id: str, job_id: str) -> None:
         if _cancelled(job):
             raise InterruptedError("Tarefa cancelada pelo usuário.")
         job = _save_step(job, "validando", "validar", "Validando suficiência e consistência das evidências.")
-        matrix, sufficient, warnings = _evidence_matrix(
-            list(job.get("subquestions") or []), answer=answer, context=context
+        envelope = _evidence_envelope(
+            str(job.get("task_type") or ""),
+            store=str(job.get("store") or ""),
+            context=context,
         )
+        context["evidence_envelope"] = envelope
+        context["codex_conversation"] = {
+            "conversation_id": str(job.get("conversation_id") or ""),
+            "thread_reused": bool(job.get("thread_reused")),
+            "thread_restart_reason": str(job.get("thread_restart_reason") or ""),
+            "prompt_version": str(job.get("prompt_version") or PROMPT_VERSION),
+            "prompt_hash": str(job.get("prompt_hash") or PROMPT_HASH),
+            "schema_version": str(job.get("schema_version") or SCHEMA_VERSION),
+            "operational_failure_count": max(0, int(job.get("operational_failure_count") or 0)),
+        }
+        matrix, sufficient, warnings = _evidence_matrix(
+            list(job.get("subquestions") or []), answer=answer, context=context, envelope=envelope
+        )
+        missing_intents = [
+            str(item.get("intent") or item.get("id") or "evidence")
+            for item in matrix
+            if str(item.get("status") or "") != "confirmed"
+        ]
+        envelope = normalize_evidence_envelope({
+            **envelope,
+            "status": "completed" if sufficient else ("partial" if envelope.get("records") else "missing"),
+            "gaps": [] if sufficient else list(dict.fromkeys(missing_intents or ["coverage_incomplete"])),
+            "confidence": "high" if sufficient else ("medium" if envelope.get("records") else "unknown"),
+            "evidence_sufficient": sufficient,
+            "coverage_complete": sufficient,
+        }).to_dict()
+        context["evidence_envelope"] = envelope
         thread_id = str(
             context.get("codex_thread_id")
             or context.get("_codex_thread_id_result")
@@ -1133,14 +1616,20 @@ def _run_job(client_id: str, job_id: str) -> None:
                 "job_id": job_id,
                 "version": version,
                 "store": job.get("store"),
-                "subject": job.get("subject_key"),
+                "subject": job.get("event_subject_key") or job.get("subject_key"),
                 "answer": answer,
             }
         )
         result = {
             "resposta": answer,
             "contexto": context,
-            "model": str(context.get("model") or _diagnostic_result(context).get("gemini_model") or ""),
+            "model": str(
+                context.get("model")
+                or _diagnostic_result(context).get("effective_model")
+                or _diagnostic_result(context).get("gemini_model")
+                or ""
+            ),
+            "evidence_envelope": envelope,
             "evidence_status": matrix,
             "data_sufficient": sufficient,
             "warnings": warnings,
@@ -1222,7 +1711,11 @@ def _run_job(client_id: str, job_id: str) -> None:
                     "proposal_id": job_id,
                     "version": version,
                     "proposal_hash": proposal_hash,
-                    "action_id": "ml.pergunta_responder" if job.get("task_type") == "question" else "ml.pos_venda_responder",
+                    "action_id": (
+                        "ml.pergunta_responder"
+                        if _canonical_task_type(job.get("task_type")) == TASK_TYPE_PUBLIC_QUESTION
+                        else "ml.pos_venda_responder"
+                    ),
                     "channels_allowed": ["app", "whatsapp"],
                     "requires_confirmation": True,
                 },
@@ -1242,10 +1735,16 @@ def _run_job(client_id: str, job_id: str) -> None:
         codex_assistant_storage.codex_assistant_customer_reply_job_save(info_base, client_id, job)
     except Exception as exc:
         logger.exception("[PPV CODEX] Falha no job %s", job_id)
+        if _is_operational_failure(exc):
+            job["operational_failure_count"] = (
+                max(0, int(job.get("operational_failure_count") or 0)) + 1
+            )
         retry_job = _persist_retry(
             job,
             error=str(exc)[:1200],
-            warnings=["A tentativa falhou; o melhor rascunho disponivel sera usado ao atingir 3 minutos."],
+            warnings=[
+                "A tentativa operacional falhou; o melhor rascunho disponivel sera usado ao atingir 3 minutos."
+            ],
         )
         plan_id = str(job.get("plan_id") or "")
         if plan_id and str(retry_job.get("status") or "") != "completed":
@@ -1325,7 +1824,8 @@ def approve_or_refresh_proposal(
     job = codex_assistant_storage.codex_assistant_customer_reply_job_get(info_base, client_id, proposal_id)
     if not isinstance(job, dict):
         raise KeyError(proposal_id)
-    if str(job.get("store") or "") != str(store or "") or str(job.get("subject_key") or "") != str(subject_key or ""):
+    event_subject_key = str(job.get("event_subject_key") or job.get("subject_key") or "")
+    if str(job.get("store") or "") != str(store or "") or event_subject_key != str(subject_key or ""):
         raise PermissionError("A proposta não pertence a esta loja ou conversa.")
     result = job.get("result") if isinstance(job.get("result"), dict) else {}
     current_answer = str(result.get("resposta") or "").strip()
@@ -1456,6 +1956,7 @@ __all__ = [
     "enabled",
     "create_job",
     "get_job",
+    "latest_job_for_request",
     "resume_incomplete_job",
     "wait_job",
     "cancel_job",

@@ -1284,24 +1284,17 @@
     if (window.__jkMachineSharedSyncAutoInit) return;
     window.__jkMachineSharedSyncAutoInit = true;
 
-    window.jkMachineSyncNow = async () => ({ success: false, manual_only: true });
-    return;
-
     let executando = false;
     let ultimaExecucao = 0;
-    const MACHINE_SHARED_SYNC_AUTO_INTERVAL_MS = 15 * 60 * 1000;
-    const MACHINE_SHARED_SYNC_AUTO_STORAGE_KEY = 'jk_shared_sync_auto_files_enabled';
-    const machineSyncLeader = window.jkTabCoordinator && typeof window.jkTabCoordinator.createLeader === 'function'
+    let machineSyncInitialTimer = null;
+    let machineSyncIntervalTimer = null;
+    const MACHINE_SHARED_SYNC_AUTO_INTERVAL_MS = 2 * 60 * 1000;
+    const MACHINE_SHARED_SYNC_AUTO_START_DELAY_MS = 4000;
+    const machineSyncLeader = telaSeguraParaSincronizar()
+        && window.jkTabCoordinator
+        && typeof window.jkTabCoordinator.createLeader === 'function'
         ? window.jkTabCoordinator.createLeader('machine-shared-sync-auto', { ttlMs: 60000 })
         : null;
-
-    function machineSyncAutomaticoAtivo() {
-        try {
-            return localStorage.getItem(MACHINE_SHARED_SYNC_AUTO_STORAGE_KEY) === '1';
-        } catch (_err) {
-            return false;
-        }
-    }
 
     function liderMachineSync() {
         return !machineSyncLeader || machineSyncLeader.isLeader();
@@ -1321,8 +1314,34 @@
         }
     }
 
+    function resultadosPullAplicados(results) {
+        return (Array.isArray(results) ? results : []).filter(item => (
+            item
+            && item.direction === 'pull'
+            && item.success !== false
+            && item.skipped !== true
+        ));
+    }
+
+    function dispararAtualizacaoMachineSync(data, pullResults) {
+        const detail = {
+            source: 'machine-auto-pull',
+            results: Array.isArray(data && data.results) ? data.results : pullResults,
+            received_scopes: pullResults.map(item => String(item.scope || '')).filter(Boolean),
+            updated_at: new Date().toISOString()
+        };
+        const targets = [window];
+        try {
+            if (window.parent && window.parent !== window) targets.push(window.parent);
+        } catch (_err) {}
+        targets.forEach((target) => {
+            try {
+                target.dispatchEvent(new target.CustomEvent('jk:machine-sync-updated', { detail }));
+            } catch (_err) {}
+        });
+    }
+
     async function executarMachineSync(motivo) {
-        if (!machineSyncAutomaticoAtivo()) return null;
         if (executando || !obterToken() || tokenSessaoExpirado()) return null;
         if (/frontend_index\.html$/i.test(window.location.pathname || '')) return null;
         if (!telaSeguraParaSincronizar()) return null;
@@ -1339,8 +1358,13 @@
                 body: JSON.stringify({ machine_id: machineIdAtualSync() })
             });
             const data = await resp.json().catch(() => ({}));
-            if (resp.ok && data && Array.isArray(data.results) && data.results.length) {
-                console.info('[Machine Sync] Minhas maquinas sincronizadas:', data.results);
+            if (!resp.ok || data.success === false) {
+                throw new Error(data.detail || data.message || 'Erro ao receber dados das outras maquinas.');
+            }
+            const pullResults = resultadosPullAplicados(data.results);
+            if (pullResults.length) {
+                console.info('[Machine Sync] Dados recebidos das outras maquinas:', pullResults);
+                dispararAtualizacaoMachineSync(data, pullResults);
             }
             return data;
         } catch (err) {
@@ -1351,9 +1375,39 @@
         }
     }
 
+    function iniciarAgendamentoMachineSync() {
+        if (!machineSyncInitialTimer) {
+            machineSyncInitialTimer = setTimeout(() => {
+                machineSyncInitialTimer = null;
+                void executarMachineSync('inicio');
+            }, MACHINE_SHARED_SYNC_AUTO_START_DELAY_MS);
+        }
+        if (!machineSyncIntervalTimer) {
+            machineSyncIntervalTimer = setInterval(() => {
+                void executarMachineSync('intervalo');
+            }, MACHINE_SHARED_SYNC_AUTO_INTERVAL_MS);
+        }
+    }
+
     window.jkMachineSyncNow = () => executarMachineSync('manual');
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', iniciarAgendamentoMachineSync, { once: true });
+    } else {
+        iniciarAgendamentoMachineSync();
+    }
+    window.addEventListener('focus', () => {
+        if (document.visibilityState !== 'hidden') void executarMachineSync('foco');
+    });
+    window.addEventListener('pageshow', iniciarAgendamentoMachineSync);
     window.addEventListener('pagehide', () => {
+        if (machineSyncInitialTimer) clearTimeout(machineSyncInitialTimer);
+        if (machineSyncIntervalTimer) clearInterval(machineSyncIntervalTimer);
+        machineSyncInitialTimer = null;
+        machineSyncIntervalTimer = null;
         try { machineSyncLeader?.release(); } catch (_err) {}
+    });
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState !== 'hidden') void executarMachineSync('visivel');
     });
 })();
 

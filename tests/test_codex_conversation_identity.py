@@ -70,6 +70,74 @@ def test_app_identity_ignores_client_conversation_and_thread_ids(conversation_ru
     assert first["conversation_generation"] == second["conversation_generation"] == 1
 
 
+def test_full_thread_reuse_requires_prompt_schema_and_store_scope(conversation_runtime):
+    session = _session()
+    first = codex_console.codex_criar_tarefa_para_sessao(
+        codex_console.CodexTaskRequest(
+            prompt="Consulte o SKU 001",
+            screen_context={
+                "modulo_atual": "estoque",
+                "store_mode": "single",
+                "selection": {"loja": "JK Pecas"},
+            },
+        ),
+        session,
+    )["task"]
+    first_task = codex_console.CODEX_TASKS[first["task_id"]]
+    codex_console._codex_save_conversation_state(
+        first_task,
+        latest_thread_id="thread-jk-pecas",
+        thread_prompt_fingerprint=first_task["thread_prompt_fingerprint"],
+        thread_schema_fingerprint=first_task["thread_schema_fingerprint"],
+        thread_scope_fingerprint=first_task["thread_scope_fingerprint"],
+        thread_conversation_key=first_task["thread_conversation_key"],
+    )
+
+    same_store = codex_console.codex_criar_tarefa_para_sessao(
+        codex_console.CodexTaskRequest(
+            prompt="E a quantidade?",
+            screen_context={
+                "modulo_atual": "estoque",
+                "store_mode": "single",
+                "selection": {"loja": "JK Pecas"},
+            },
+        ),
+        session,
+    )["task"]
+    other_store = codex_console.codex_criar_tarefa_para_sessao(
+        codex_console.CodexTaskRequest(
+            prompt="Agora consulte a outra loja",
+            screen_context={
+                "modulo_atual": "estoque",
+                "store_mode": "single",
+                "selection": {"loja": "Uai Mineirinho"},
+            },
+        ),
+        session,
+    )["task"]
+
+    assert same_store["thread_id"] == "thread-jk-pecas"
+    assert same_store["thread_reused"] is True
+    assert other_store["thread_id"] == ""
+    assert other_store["thread_reused"] is False
+    assert "scope_changed" in other_store["thread_restart_reasons"]
+
+
+def test_compacted_durable_memory_drops_variable_operational_facts():
+    summary = codex_console._codex_compact_summary(
+        "Prefere respostas curtas.",
+        [
+            {"role": "user", "text": "O estoque atual e 12 e o preco e R$ 50."},
+            {"role": "user", "text": "Explique de forma direta e sem titulo."},
+        ],
+    )
+
+    assert "estoque" not in summary.casefold()
+    assert "r$ 50" not in summary.casefold()
+    assert "Prefere respostas curtas" in summary
+    assert "Explique de forma direta" in summary
+
+
 def test_whatsapp_identity_is_one_conversation_per_normalized_phone(conversation_runtime):
     def create(phone: str, subject: str = "subject"):
         return codex_console.codex_criar_tarefa_para_sessao(

@@ -1,3 +1,73 @@
+function formatarTempoDesdeAtualizacaoPerguntas(timestamp, agora = Date.now()) {
+    const segundos = Math.max(0, Math.floor((agora - Number(timestamp || 0)) / 1000));
+    if (segundos < 5) return 'Atualizado agora';
+    if (segundos < 60) return `Atualizado há ${segundos} s`;
+
+    const minutos = Math.floor(segundos / 60);
+    if (minutos < 60) return `Atualizado há ${minutos} min`;
+
+    const horas = Math.floor(minutos / 60);
+    if (horas < 24) return `Atualizado há ${horas} h`;
+
+    const dias = Math.floor(horas / 24);
+    return `Atualizado há ${dias} ${dias === 1 ? 'dia' : 'dias'}`;
+}
+
+function normalizarTimestampAutomacaoPerguntas(valor) {
+    if (valor === null || valor === undefined || valor === '') return 0;
+    const numero = Number(valor);
+    if (Number.isFinite(numero) && numero > 0) {
+        const pareceEpochEmSegundos = numero >= 1000000000 && numero < 100000000000;
+        return pareceEpochEmSegundos ? Math.round(numero * 1000) : Math.round(numero);
+    }
+    const timestamp = new Date(valor).getTime();
+    return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : 0;
+}
+
+function atualizarIndicadorUltimaAtualizacaoPerguntas() {
+    if (!perguntasUltimaAtualizacao) return;
+    const checagemEm = normalizarTimestampAutomacaoPerguntas(state.ultimaChecagemAutomacaoPerguntasEm);
+    const atualizacaoEm = normalizarTimestampAutomacaoPerguntas(state.ultimaAtualizacaoPerguntasEm);
+    const timestamp = checagemEm || atualizacaoEm;
+    if (!timestamp) return;
+    const atualizadoEm = new Date(timestamp);
+    const tempo = formatarTempoDesdeAtualizacaoPerguntas(timestamp);
+    perguntasUltimaAtualizacao.textContent = checagemEm
+        ? tempo.replace(/^Atualizado/, 'Checado')
+        : tempo;
+    perguntasUltimaAtualizacao.dateTime = atualizadoEm.toISOString();
+    perguntasUltimaAtualizacao.title = checagemEm
+        ? `Última checagem automática: ${atualizadoEm.toLocaleString('pt-BR')}`
+        : `Última atualização da lista: ${atualizadoEm.toLocaleString('pt-BR')}`;
+}
+
+function registrarUltimaAtualizacaoPerguntas() {
+    state.ultimaAtualizacaoPerguntasEm = Date.now();
+    atualizarIndicadorUltimaAtualizacaoPerguntas();
+    if (!state.ultimaAtualizacaoPerguntasTimer) {
+        state.ultimaAtualizacaoPerguntasTimer = window.setInterval(
+            atualizarIndicadorUltimaAtualizacaoPerguntas,
+            1000
+        );
+    }
+}
+
+function registrarUltimaChecagemAutomacaoPerguntas(timestamp = Date.now()) {
+    const normalizado = normalizarTimestampAutomacaoPerguntas(timestamp);
+    if (!normalizado) return;
+    state.ultimaChecagemAutomacaoPerguntasEm = Math.max(
+        Number(state.ultimaChecagemAutomacaoPerguntasEm || 0),
+        normalizado
+    );
+    atualizarIndicadorUltimaAtualizacaoPerguntas();
+    if (!state.ultimaAtualizacaoPerguntasTimer) {
+        state.ultimaAtualizacaoPerguntasTimer = window.setInterval(
+            atualizarIndicadorUltimaAtualizacaoPerguntas,
+            1000
+        );
+    }
+}
+
 function renderizarResumo(data) {
     if (data && data.modo_todas) {
         const resumoTodas = data.status_resumo || {};
@@ -337,6 +407,58 @@ function renderizarPerguntas() {
     renderizarPaginacaoPerguntas(state.totalPerguntas || perguntas.length);
 }
 
+function capturarInteracaoPerguntas() {
+    const textarea = perguntasDetail && perguntasDetail.querySelector('.question-answer-text');
+    const checkbox = perguntasDetail && perguntasDetail.querySelector('.question-save-example-checkbox');
+    const ativo = document.activeElement;
+    return {
+        perguntaSelecionadaKey: state.perguntaSelecionadaKey,
+        resposta: textarea ? textarea.value : null,
+        checkboxMarcado: checkbox ? checkbox.checked : null,
+        proposalId: textarea ? String(textarea.dataset.codexProposalId || '') : '',
+        proposalVersion: textarea ? String(textarea.dataset.codexProposalVersion || '') : '',
+        proposalHash: textarea ? String(textarea.dataset.codexProposalHash || '') : '',
+        selectionStart: textarea ? textarea.selectionStart : null,
+        selectionEnd: textarea ? textarea.selectionEnd : null,
+        selectionDirection: textarea ? textarea.selectionDirection : 'none',
+        foco: ativo === textarea ? 'resposta' : (ativo === checkbox ? 'checkbox' : ''),
+        textareaScrollTop: textarea ? textarea.scrollTop : 0,
+        listaScrollTop: perguntasList ? perguntasList.scrollTop : 0,
+        detalheScrollTop: perguntasDetail ? perguntasDetail.scrollTop : 0,
+        paginaX: Number(window.scrollX || window.pageXOffset || 0),
+        paginaY: Number(window.scrollY || window.pageYOffset || 0)
+    };
+}
+
+function restaurarInteracaoPerguntas(snapshot) {
+    if (!snapshot || snapshot.perguntaSelecionadaKey !== state.perguntaSelecionadaKey) return;
+    const textarea = perguntasDetail && perguntasDetail.querySelector('.question-answer-text');
+    const checkbox = perguntasDetail && perguntasDetail.querySelector('.question-save-example-checkbox');
+    if (textarea && snapshot.resposta !== null) {
+        textarea.value = snapshot.resposta;
+        if (snapshot.proposalId) textarea.dataset.codexProposalId = snapshot.proposalId;
+        if (snapshot.proposalVersion) textarea.dataset.codexProposalVersion = snapshot.proposalVersion;
+        if (snapshot.proposalHash) textarea.dataset.codexProposalHash = snapshot.proposalHash;
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        ajustarAlturaTextareaAtendimento(textarea);
+        textarea.scrollTop = snapshot.textareaScrollTop || 0;
+    }
+    if (checkbox && snapshot.checkboxMarcado !== null) {
+        checkbox.checked = snapshot.checkboxMarcado;
+        checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    if (perguntasList) perguntasList.scrollTop = snapshot.listaScrollTop || 0;
+    if (perguntasDetail) perguntasDetail.scrollTop = snapshot.detalheScrollTop || 0;
+    const alvoFoco = snapshot.foco === 'resposta' ? textarea : (snapshot.foco === 'checkbox' ? checkbox : null);
+    if (alvoFoco && typeof alvoFoco.focus === 'function') {
+        try { alvoFoco.focus({ preventScroll: true }); } catch (_error) { alvoFoco.focus(); }
+    }
+    if (textarea && snapshot.foco === 'resposta' && Number.isInteger(snapshot.selectionStart)) {
+        textarea.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd, snapshot.selectionDirection || 'none');
+    }
+    if (typeof window.scrollTo === 'function') window.scrollTo(snapshot.paginaX || 0, snapshot.paginaY || 0);
+}
+
 function obterPerguntaPorId(questionId, loja = '') {
     const id = String(questionId || '').trim();
     const lojaFiltro = String(loja || '').trim();
@@ -471,9 +593,7 @@ function registrarIntegracaoSidebarPerguntas() {
     window.JKPerguntasPosVenda.preencherRespostaPergunta = preencherRespostaPerguntaSugerida;
     window.JKPerguntasPosVenda.preencherRespostaSugerida = function preencherRespostaSugeridaAtendimento(payload, opcoes = {}) {
         const tipo = normalizarSugestaoResposta(payload?.tipo || payload?.approval_type || '').toLowerCase();
-        if (tipo === 'pos_venda' && typeof window.JKPerguntasPosVenda.preencherRespostaPosVenda === 'function') {
-            return window.JKPerguntasPosVenda.preencherRespostaPosVenda(payload, opcoes);
-        }
+        if (tipo === 'pos_venda') return { ok: false, blocked: true, message: 'Sugestoes de IA estao desativadas no pos-venda.' };
         return preencherRespostaPerguntaSugerida(payload, opcoes);
     };
     window.addEventListener('jk:perguntas-pos-venda:usar-resposta', (event) => {
@@ -484,10 +604,7 @@ function registrarIntegracaoSidebarPerguntas() {
             focus: payload.focus !== false,
             allowFallback: payload.allowFallback !== false
         };
-        if (tipo === 'pos_venda' && typeof window.JKPerguntasPosVenda.preencherRespostaPosVenda === 'function') {
-            window.JKPerguntasPosVenda.preencherRespostaPosVenda(payload, opcoes);
-            return;
-        }
+        if (tipo === 'pos_venda') return;
         preencherRespostaPerguntaSugerida(payload, opcoes);
     });
 }
@@ -907,31 +1024,53 @@ async function carregarPerguntasTodasLojas() {
     };
 }
 
-async function carregarPerguntas(pagina = 1) {
+async function carregarPerguntas(pagina = 1, opcoes = {}) {
     if (!state.lojaSelecionada) return;
+    const background = opcoes && opcoes.background === true;
+    const preservarInteracao = background && opcoes.preservarInteracao !== false;
+    const snapshotInteracaoInicial = preservarInteracao
+        ? capturarInteracaoPerguntas()
+        : null;
+    const capturarInteracaoAntesDoRender = () => {
+        if (!preservarInteracao) return null;
+        const snapshotAtual = capturarInteracaoPerguntas();
+        const mesmaPergunta = snapshotAtual
+            && snapshotAtual.perguntaSelecionadaKey === snapshotInteracaoInicial?.perguntaSelecionadaKey;
+        const interacaoAindaMontada = snapshotAtual
+            && (snapshotAtual.resposta !== null || snapshotAtual.checkboxMarcado !== null);
+        return mesmaPergunta && interacaoAindaMontada ? snapshotAtual : snapshotInteracaoInicial;
+    };
     state.carregandoPerguntas = true;
     btnRecarregar.disabled = true;
-    perguntasSummary.classList.add('hidden');
-    perguntasList.innerHTML = '';
-    perguntasPagination.classList.add('hidden');
-    perguntasPagination.innerHTML = '';
-    state.perguntas = [];
-    state.totalPerguntas = 0;
+    if (!background) {
+        perguntasSummary.classList.add('hidden');
+        perguntasList.innerHTML = '';
+        perguntasPagination.classList.add('hidden');
+        perguntasPagination.innerHTML = '';
+        state.perguntas = [];
+        state.totalPerguntas = 0;
+    }
     state.paginaPerguntas = Math.max(1, Number(pagina) || 1);
-    perguntasStatus.textContent = todasAsLojasSelecionadas()
-        ? `Carregando ${lojasMercadoLivreConectadas().length} conta(s)...`
-        : `Carregando perguntas de ${state.lojaSelecionada}...`;
+    if (!background) {
+        perguntasStatus.textContent = todasAsLojasSelecionadas()
+            ? `Carregando ${lojasMercadoLivreConectadas().length} conta(s)...`
+            : `Carregando perguntas de ${state.lojaSelecionada}...`;
+    }
 
     try {
         if (todasAsLojasSelecionadas()) {
             const dataTodas = await carregarPerguntasTodasLojas();
+            if (background && !document.getElementById('aba-perguntas').classList.contains('active')) return false;
             const perguntasTodas = ordenarPerguntasRecentes(Array.isArray(dataTodas.questions) ? dataTodas.questions : []);
             state.perguntas = perguntasTodas;
             state.totalPerguntas = Number(dataTodas.total_paginacao || dataTodas.total_carregado || perguntasTodas.length || 0);
             perguntasStatus.textContent = '';
             renderizarResumo(dataTodas);
+            const snapshotInteracao = capturarInteracaoAntesDoRender();
             renderizarPerguntas();
-            return;
+            restaurarInteracaoPerguntas(snapshotInteracao);
+            if (Number(dataTodas.lojas_consultadas || 0) > 0) registrarUltimaAtualizacaoPerguntas();
+            return true;
         }
         const offset = (state.paginaPerguntas - 1) * state.tamanhoPaginaPerguntas;
         const params = new URLSearchParams({
@@ -947,17 +1086,25 @@ async function carregarPerguntas(pagina = 1) {
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.detail || 'Erro ao carregar perguntas.');
+        if (background && !document.getElementById('aba-perguntas').classList.contains('active')) return false;
         const perguntas = ordenarPerguntasRecentes(Array.isArray(data.questions) ? data.questions : []);
         state.perguntas = perguntas;
         state.totalPerguntas = Number(data.total || perguntas.length || 0);
         perguntasStatus.textContent = data.interrompido ? 'Busca limitada pelo ML.' : '';
         renderizarResumo(data);
+        const snapshotInteracao = capturarInteracaoAntesDoRender();
         renderizarPerguntas();
+        restaurarInteracaoPerguntas(snapshotInteracao);
+        registrarUltimaAtualizacaoPerguntas();
+        return true;
     } catch (error) {
         perguntasStatus.textContent = `Erro ao carregar perguntas: ${mensagemErro(error)}`;
-        perguntasList.innerHTML = '';
-        perguntasPagination.classList.add('hidden');
-        perguntasPagination.innerHTML = '';
+        if (!background) {
+            perguntasList.innerHTML = '';
+            perguntasPagination.classList.add('hidden');
+            perguntasPagination.innerHTML = '';
+        }
+        return false;
     } finally {
         state.carregandoPerguntas = false;
         btnRecarregar.disabled = false;

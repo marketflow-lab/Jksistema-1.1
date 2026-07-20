@@ -26,6 +26,9 @@ const state = {
     totalPerguntas: 0,
     tamanhoPaginaPerguntas: 20,
     carregandoPerguntas: false,
+    ultimaAtualizacaoPerguntasEm: 0,
+    ultimaAtualizacaoPerguntasTimer: null,
+    ultimaChecagemAutomacaoPerguntasEm: 0,
     carregandoPosVenda: false,
     posVendaPagina: 1,
     posVendaOffset: 0,
@@ -55,17 +58,30 @@ const state = {
     treinamentoSkuNotasAtual: '',
     produtosTreinamento: [],
     produtosTreinamentoCarregados: false,
-    automacaoPerguntasTimer: null,
     automacaoPerguntasTimers: [],
+    automacaoPerguntasStartupTimers: [],
+    automacaoPerguntasGeracao: 0,
     automacaoPerguntasCountdownTimer: null,
+    automacaoPerguntasStatusTimer: null,
+    automacaoPerguntasStatusCarregando: false,
+    automacaoPerguntasStatusDisponivel: false,
+    automacaoPerguntasStatusErro: '',
+    automacaoPerguntasStatusLojas: {},
+    automacaoPerguntasChangeTokensLojas: {},
+    automacaoPerguntasQuestionIdsLojas: {},
+    automacaoPerguntasRefreshLojas: new Set(),
+    automacaoPerguntasWorkerIniciado: false,
+    automacaoPerguntasBackendExecutando: false,
+    automacaoPerguntasProximaChecagemBackendEm: 0,
+    automacaoPerguntasRefreshTimer: null,
+    automacaoPerguntasRefreshPendente: false,
     automacaoPerguntasNextChecks: {},
-    automacaoPerguntasRodando: false,
-    automacaoPosVendaRodando: false,
+    automacaoPerguntasRodandoLojas: new Set(),
     notificacoes: {
         carregando: false,
         atualizadoEm: 0,
         lojas: {},
-        totais: { perguntas: 0, posVenda: 0 },
+        totais: { perguntas: 0 },
         erros: {}
     },
     aprovacoesNotificadas: new Set()
@@ -76,7 +92,6 @@ const lojasGrid = document.getElementById('lojas-grid');
 const lojasStatus = document.getElementById('lojas-status');
 const perguntasAutomationControls = document.getElementById('perguntas-automation-controls');
 const tabPerguntasNotificacao = document.getElementById('tab-perguntas-notificacao');
-const tabPosVendaNotificacao = document.getElementById('tab-pos-venda-notificacao');
 const perguntasStatus = document.getElementById('perguntas-status');
 const perguntasSummary = document.getElementById('perguntas-summary');
 const perguntasList = document.getElementById('perguntas-list');
@@ -84,6 +99,7 @@ const perguntasDetail = document.getElementById('perguntas-detail');
 const perguntasPagination = document.getElementById('perguntas-pagination');
 const statusFiltro = document.getElementById('status-filtro');
 const btnRecarregar = document.getElementById('btn-recarregar');
+const perguntasUltimaAtualizacao = document.getElementById('perguntas-ultima-atualizacao');
 const posVendaLojaStatus = document.getElementById('pos-venda-loja-status');
 const posVendaDias = document.getElementById('pos-venda-dias');
 const posVendaBusca = document.getElementById('pos-venda-busca');

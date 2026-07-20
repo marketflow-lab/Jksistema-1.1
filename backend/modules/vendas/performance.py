@@ -20,6 +20,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
+from backend.services.sqlite_coordination import sqlite_lock_for_path
+
 from .dependencies import get_tenant_path, get_vendas_dependencies
 
 
@@ -323,7 +325,7 @@ def prepare_vendas_database(path: str) -> bool:
 
     if not path or not os.path.isfile(path):
         return False
-    with _PREPARE_LOCK:
+    with _PREPARE_LOCK, sqlite_lock_for_path(path):
         conn = sqlite3.connect(path, timeout=15)
         try:
             conn.execute("PRAGMA busy_timeout = 15000")

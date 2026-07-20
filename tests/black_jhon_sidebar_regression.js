@@ -34,7 +34,7 @@ const iaEndpoints = read(path.join('backend', 'services', 'ia_endpoints.py'));
 const android = read(path.join('android_app', 'app', 'src', 'main', 'java', 'br', 'com', 'jksistema', 'mobile', 'MainActivity.java'));
 const vendasAssistant = read(path.join('static', 'vendas', 'assistente.js'));
 
-assert.match(loader, /black-jhon-operational-agent-v1/);
+assert.match(loader, /20260720-black-jhon-codex-context-v2/);
 assert.match(loader, /Abrir Black Jhon/);
 assert.match(loader, /params\.get\('embed'\) === 'share'/);
 
@@ -73,6 +73,7 @@ assert.match(codex, /sandbox[^\n]+=== 'read_only'/);
 assert.match(codex, /!temAnexos/);
 assert.match(codex, /!mutableIntent/);
 assert.match(codex, /fallback_read_only: true/);
+assert.match(codex, /operationalFailureCount[^\n]+>= 2/);
 assert.match(codex, /_codexMesclarHistoricoComEspeciais/);
 assert.match(codex, /item && item\.kind !== 'approval'/);
 assert.match(codex, /item\.content_kind !== 'report'/);
@@ -163,7 +164,7 @@ assert.match(electronBackend, /set "JK_CODEX_CONSOLE_ENABLED=\$\{cmdValue\(proce
 assert.match(backend, /O Codex e sua IA principal de raciocinio e execucao/);
 assert.match(backend, /"mutable_intent": bool\(task\.get\("mutable_intent"\)\)/);
 assert.match(iaSchema, /fallback_read_only: bool = False/);
-assert.match(iaEndpoints, /resposta_imagem = None if fallback_read_only/);
+assert.match(iaEndpoints, /resposta_imagem = None/);
 assert.match(android, /jk-codex-panel/);
 assert.doesNotMatch(android, /fab\.textContent='x'/);
 assert.match(vendasAssistant, /window\.__JK_IA_SIDEBAR_LOAD_FULL__/);

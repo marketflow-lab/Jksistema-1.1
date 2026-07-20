@@ -38,6 +38,7 @@ from bs4 import BeautifulSoup
 from fastapi import Depends, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
+from backend.services import perguntas_pos_venda_store
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.vendas_sync_progress import _corrigir_texto_mojibake
 
@@ -78,6 +79,225 @@ def _perguntas_automacao_bg_key(client_id: str, loja: str, tipo: str) -> str:
     return f"{str(client_id or '').strip()}::{str(loja or '').strip()}::{str(tipo or '').strip()}"
 
 
+_PERGUNTAS_AUTOMACAO_ERRO_SEGREDO_RE = re.compile(
+    r'''(?ix)
+    (?P<prefix>
+        ["']?
+        (?:
+            access[_\s-]?token
+            | refresh[_\s-]?token
+            | authorization
+            | client[_\s-]?secret
+            | api[_\s-]?key
+            | password
+            | senha
+            | token
+        )
+        ["']?\s*[:=]\s*
+    )
+    (?:"[^"]*"|'[^']*'|[^\s,;}\]]+)
+    '''
+)
+_PERGUNTAS_AUTOMACAO_ERRO_CREDENCIAL_RE = re.compile(
+    r"(?i)\b(Bearer|Basic)\s+[^\s,;\"'}\]]+"
+)
+_PERGUNTAS_AUTOMACAO_ERRO_URL_QUERY_RE = re.compile(r"(?i)(https?://[^\s?#]+)[?#][^\s]+")
+_PERGUNTAS_AUTOMACAO_QUESTION_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_PERGUNTAS_AUTOMACAO_CHANGE_TOKEN_RE = re.compile(r"^[a-f0-9]{64}$")
+_PERGUNTAS_AUTOMACAO_CACHE_RECHECK_SECONDS = 15
+
+
+def _perguntas_automacao_bg_erro_publico(erro: Any) -> str:
+    texto = re.sub(r"\s+", " ", str(erro or "")).strip()
+    if not texto:
+        return ""
+    texto = _PERGUNTAS_AUTOMACAO_ERRO_CREDENCIAL_RE.sub(r"\1 [redacted]", texto)
+    texto = _PERGUNTAS_AUTOMACAO_ERRO_SEGREDO_RE.sub(
+        lambda match: f'{match.group("prefix")}[redacted]',
+        texto,
+    )
+    texto = _PERGUNTAS_AUTOMACAO_ERRO_URL_QUERY_RE.sub(r"\1", texto)
+    return texto[:500]
+
+
+def _perguntas_automacao_bg_timestamp_iso(valor: Any) -> str | None:
+    try:
+        timestamp = float(valor or 0)
+    except (TypeError, ValueError):
+        return None
+    if timestamp <= 0:
+        return None
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _perguntas_automacao_bg_contagem(valor: Any) -> int:
+    try:
+        return max(0, int(valor or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _perguntas_automacao_bg_question_ids(valor: Any) -> list[str]:
+    if not isinstance(valor, (list, tuple, set)):
+        return []
+    ids = {
+        str(question_id).strip()
+        for question_id in valor
+        if _PERGUNTAS_AUTOMACAO_QUESTION_ID_RE.fullmatch(str(question_id).strip())
+    }
+    return sorted(ids)
+
+
+def _perguntas_automacao_bg_change_token(key: str, question_ids: Any) -> str:
+    payload = json.dumps(
+        {
+            "scope": str(key or ""),
+            "question_ids": _perguntas_automacao_bg_question_ids(question_ids),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _perguntas_automacao_bg_snapshot(resultado: Any) -> tuple[bool, list[str]]:
+    snapshots = resultado.get("question_snapshots") if isinstance(resultado, dict) else None
+    if not isinstance(snapshots, list):
+        return False, []
+    for snapshot in snapshots:
+        if not isinstance(snapshot, dict):
+            continue
+        if snapshot.get("question_snapshot_complete") is True:
+            return True, _perguntas_automacao_bg_question_ids(snapshot.get("question_ids"))
+    return False, []
+
+
+def _perguntas_automacao_pos_venda_sync_context(client_id: str, loja: str) -> dict[str, Any] | None:
+    obter_cfg = globals().get("_obter_cfg_ml")
+    obter_tenant_path = globals().get("get_tenant_path")
+    if not callable(obter_cfg) or not callable(obter_tenant_path):
+        return None
+    try:
+        cfg = obter_cfg(client_id, loja)
+        seller_id = str((cfg or {}).get("user_id") or "").strip()
+        tenant_path = str(obter_tenant_path(client_id) or "").strip()
+    except Exception:
+        return None
+    if not seller_id or not tenant_path:
+        return None
+    return {"tenant_path": tenant_path, "seller_id": seller_id}
+
+
+def _perguntas_automacao_pos_venda_sync_running(client_id: str, loja: str, seller_id: str) -> bool:
+    try:
+        from backend.services import perguntas_pos_venda_endpoints
+
+        return bool(perguntas_pos_venda_endpoints._ml_pos_venda_sync_running(client_id, loja, seller_id))
+    except Exception:
+        return False
+
+
+def _perguntas_automacao_pos_venda_preparar_sync(client_id: str, loja: str) -> dict[str, Any] | None:
+    context = _perguntas_automacao_pos_venda_sync_context(client_id, loja)
+    if not context:
+        return None
+    active = _perguntas_automacao_pos_venda_sync_running(client_id, loja, context["seller_id"])
+    state = perguntas_pos_venda_store.recover_interrupted_sync(
+        context["tenant_path"],
+        loja,
+        context["seller_id"],
+        active=active,
+    )
+    return {**context, "state": state, "running": active}
+
+
+def _perguntas_automacao_pos_venda_anotar_sync(
+    resultado: dict,
+    *,
+    client_id: str,
+    loja: str,
+    context: dict[str, Any] | None,
+) -> dict:
+    if not context:
+        return resultado
+    seller_id = str(context.get("seller_id") or "").strip()
+    tenant_path = str(context.get("tenant_path") or "").strip()
+    running = _perguntas_automacao_pos_venda_sync_running(client_id, loja, seller_id)
+    state = perguntas_pos_venda_store.get_state(tenant_path, loja, seller_id)
+    if state.get("status") == "running" and not running:
+        state = perguntas_pos_venda_store.recover_interrupted_sync(
+            tenant_path,
+            loja,
+            seller_id,
+            active=False,
+        )
+
+    resultado = dict(resultado or {})
+    resultado["_cache_sync_status"] = "running" if running else str(state.get("status") or "idle")
+    resultado["_cache_sync_cursor"] = max(0, int(state.get("cursor") or 0))
+    has_output = bool(resultado.get("novas_pendentes") or resultado.get("enviadas"))
+    if running and not has_output:
+        resultado["_cache_sync_pending"] = True
+        resultado["_retry_after_seconds"] = _PERGUNTAS_AUTOMACAO_CACHE_RECHECK_SECONDS
+        return resultado
+
+    sync_error = _perguntas_automacao_bg_erro_publico(state.get("error"))
+    if str(state.get("status") or "") == "failed" and sync_error and not has_output:
+        erros = list(resultado.get("erros") or [])
+        if not any(
+            isinstance(item, dict)
+            and str(item.get("etapa") or "") == "cache_pos_venda"
+            for item in erros
+        ):
+            erros.append({"loja": loja, "etapa": "cache_pos_venda", "erro": sync_error})
+        resultado["erros"] = erros
+    return resultado
+
+
+def _perguntas_automacao_bg_worker_iniciado() -> bool:
+    with PERGUNTAS_AUTOMACAO_BG_LOCK:
+        return bool(PERGUNTAS_AUTOMACAO_BG_THREAD_STARTED)
+
+
+def _perguntas_automacao_bg_status(client_id: str, loja: str, tipo: str = "perguntas") -> dict:
+    """Return a tenant-scoped, secret-free snapshot of one automation worker."""
+    key = _perguntas_automacao_bg_key(client_id, loja, tipo)
+    with PERGUNTAS_AUTOMACAO_BG_LOCK:
+        executando = key in PERGUNTAS_AUTOMACAO_BG_RUNNING
+        proxima_timestamp = PERGUNTAS_AUTOMACAO_BG_NEXT_CHECKS.get(key)
+        resultado = dict(PERGUNTAS_AUTOMACAO_BG_LAST_RESULTS.get(key) or {})
+
+    contagens = {
+        "enviadas": _perguntas_automacao_bg_contagem(resultado.get("enviadas")),
+        "novas_pendentes": _perguntas_automacao_bg_contagem(resultado.get("novas_pendentes")),
+        "erros": _perguntas_automacao_bg_contagem(resultado.get("erros")),
+    }
+    sucesso = None
+    if resultado:
+        sucesso = bool(resultado.get("success")) and contagens["erros"] == 0
+
+    change_token = str(resultado.get("change_token") or "").strip().lower()
+    if not _PERGUNTAS_AUTOMACAO_CHANGE_TOKEN_RE.fullmatch(change_token):
+        change_token = None
+    question_ids = _perguntas_automacao_bg_question_ids(resultado.get("question_ids"))
+    new_question_ids = _perguntas_automacao_bg_question_ids(resultado.get("new_question_ids"))
+
+    return {
+        "executando": executando,
+        "ultima_checagem": str(resultado.get("updated_at") or "").strip() or None,
+        "proxima_checagem": None if executando else _perguntas_automacao_bg_timestamp_iso(proxima_timestamp),
+        "sucesso": sucesso,
+        "erro": _perguntas_automacao_bg_erro_publico(resultado.get("erro")),
+        "contagens": contagens,
+        "change_token": change_token,
+        "question_ids": question_ids,
+        "new_question_ids": new_question_ids,
+        "new_questions_count": len(new_question_ids),
+        "question_snapshot_complete": bool(resultado.get("question_snapshot_complete")),
+    }
+
+
 def _perguntas_automacao_bg_marcar_inicio(key: str, agora: float) -> bool:
     with PERGUNTAS_AUTOMACAO_BG_LOCK:
         if key in PERGUNTAS_AUTOMACAO_BG_RUNNING:
@@ -97,8 +317,39 @@ def _perguntas_automacao_bg_finalizar(
 ) -> None:
     agora = time.time()
     with PERGUNTAS_AUTOMACAO_BG_LOCK:
+        anterior = dict(PERGUNTAS_AUTOMACAO_BG_LAST_RESULTS.get(key) or {})
+        snapshot_inicializado = bool(anterior.get("question_snapshot_initialized"))
+        question_ids_anteriores = _perguntas_automacao_bg_question_ids(anterior.get("question_ids"))
+        change_token_anterior = str(anterior.get("change_token") or "").strip().lower()
+        if not _PERGUNTAS_AUTOMACAO_CHANGE_TOKEN_RE.fullmatch(change_token_anterior):
+            change_token_anterior = ""
+
+        snapshot_completo, question_ids_atuais = _perguntas_automacao_bg_snapshot(resultado)
+        if erro or not snapshot_completo:
+            question_ids_finais = question_ids_anteriores
+            change_token = change_token_anterior
+            new_question_ids = []
+            snapshot_completo = False
+        else:
+            question_ids_finais = question_ids_atuais
+            change_token = _perguntas_automacao_bg_change_token(key, question_ids_finais)
+            new_question_ids = (
+                sorted(set(question_ids_finais) - set(question_ids_anteriores))
+                if snapshot_inicializado
+                else []
+            )
+            snapshot_inicializado = True
+
+        retry_after_seconds = _perguntas_automacao_bg_contagem(
+            (resultado or {}).get("_retry_after_seconds")
+        )
+        if retry_after_seconds:
+            next_delay = max(5, min(int(intervalo_segundos or 600), retry_after_seconds))
+        else:
+            next_delay = max(60, int(intervalo_segundos or 600))
+
         PERGUNTAS_AUTOMACAO_BG_RUNNING.discard(key)
-        PERGUNTAS_AUTOMACAO_BG_NEXT_CHECKS[key] = agora + max(60, int(intervalo_segundos or 600))
+        PERGUNTAS_AUTOMACAO_BG_NEXT_CHECKS[key] = agora + next_delay
         PERGUNTAS_AUTOMACAO_BG_LAST_RESULTS[key] = {
             "updated_at": dt.datetime.now().isoformat(timespec="seconds"),
             "success": not bool(erro),
@@ -106,6 +357,16 @@ def _perguntas_automacao_bg_finalizar(
             "enviadas": len((resultado or {}).get("enviadas") or []),
             "novas_pendentes": len((resultado or {}).get("novas_pendentes") or []),
             "erros": len((resultado or {}).get("erros") or []),
+            "question_snapshot_initialized": snapshot_inicializado,
+            "question_snapshot_complete": snapshot_completo,
+            "question_ids": question_ids_finais,
+            "change_token": change_token,
+            "new_question_ids": new_question_ids,
+            "cache_sync_status": str((resultado or {}).get("_cache_sync_status") or ""),
+            "cache_sync_pending": bool((resultado or {}).get("_cache_sync_pending")),
+            "cache_sync_cursor": _perguntas_automacao_bg_contagem(
+                (resultado or {}).get("_cache_sync_cursor")
+            ),
         }
 
 
@@ -115,7 +376,16 @@ def _perguntas_automacao_bg_executar(client_id: str, loja: str, tipo: str, inter
         return
     try:
         if tipo == "pos_venda":
+            sync_context = _perguntas_automacao_pos_venda_preparar_sync(client_id, loja)
             resultado = ml_pos_venda_automacao_poll(loja=loja, max_per_store=2, client_id=client_id)
+            if not isinstance(resultado, dict):
+                resultado = {}
+            resultado = _perguntas_automacao_pos_venda_anotar_sync(
+                resultado,
+                client_id=client_id,
+                loja=loja,
+                context=sync_context,
+            )
         else:
             resultado = ml_perguntas_automacao_poll(loja=loja, max_per_store=3, client_id=client_id)
         if not isinstance(resultado, dict):
@@ -188,7 +458,7 @@ def _perguntas_automacao_iniciar_background() -> None:
         daemon=True,
     ).start()
 
-PEER_EXPORTS = ['_perguntas_automacao_bg_tenants', '_perguntas_automacao_bg_key', '_perguntas_automacao_bg_marcar_inicio', '_perguntas_automacao_bg_finalizar', '_perguntas_automacao_bg_executar', '_perguntas_automacao_bg_tick', '_perguntas_automacao_bg_worker', '_perguntas_automacao_iniciar_background']
+PEER_EXPORTS = ['_perguntas_automacao_bg_tenants', '_perguntas_automacao_bg_key', '_perguntas_automacao_bg_erro_publico', '_perguntas_automacao_bg_timestamp_iso', '_perguntas_automacao_bg_contagem', '_perguntas_automacao_bg_question_ids', '_perguntas_automacao_bg_change_token', '_perguntas_automacao_bg_snapshot', '_perguntas_automacao_bg_worker_iniciado', '_perguntas_automacao_bg_status', '_perguntas_automacao_bg_marcar_inicio', '_perguntas_automacao_bg_finalizar', '_perguntas_automacao_bg_executar', '_perguntas_automacao_bg_tick', '_perguntas_automacao_bg_worker', '_perguntas_automacao_iniciar_background']
 __all__ = PEER_EXPORTS + ["configure_perguntas_pos_venda_automacao_runtime"]
 
 configure_perguntas_pos_venda_automacao_runtime()

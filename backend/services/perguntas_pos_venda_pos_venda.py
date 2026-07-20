@@ -964,7 +964,6 @@ def _ml_pos_venda_gerar_resposta_ia(
         if isinstance(item, dict)
     ])
     ultima = str(conversa.get("last_message_text") or (mensagens[-1].get("text") if mensagens else "") or "").strip()
-    memoria_sku = _ml_pos_venda_memoria_bloco_prompt(client_id, conversa)
     assinatura_loja = _perguntas_ia_assinatura_loja(loja)
     contexto_estruturado = _ml_pos_venda_contexto_prompt(contexto_pipeline)
     resposta_atual = str(conversa.get("_resposta_atual") or "").strip()[:1200]
@@ -1007,7 +1006,6 @@ def _ml_pos_venda_gerar_resposta_ia(
         f"Pedido: {conversa.get('order_id') or '-'}\n"
         f"Comprador: {conversa.get('buyer_nickname') or conversa.get('buyer_id') or '-'}\n"
         f"Produtos:\n{produtos or '-'}\n\n"
-        f"Memoria tecnica local dos SKUs da venda:\n{memoria_sku or '-'}\n\n"
         f"Perguntas anteriores do comprador no anuncio:\n{historico_perguntas_anuncio or '-'}\n\n"
         f"HistÃ³rico da conversa:\n{historico or '-'}\n\n"
         f"Ãšltima mensagem do comprador:\n{ultima or '-'}"
@@ -1016,7 +1014,7 @@ def _ml_pos_venda_gerar_resposta_ia(
     if subquestions:
         mensagem += (
             "\n\nSUBPERGUNTAS OBRIGATORIAS IDENTIFICADAS PELO ORQUESTRADOR:\n"
-            + json.dumps(subquestions[:8], ensure_ascii=False, default=str)
+            + _perguntas_codex_compact_json(subquestions[:8], 5000)
             + "\nResponda todos os assuntos confirmados pelo contexto e sinalize de forma objetiva o que ainda depende de dado do comprador."
         )
     payload = IAChatRequest(
@@ -1035,45 +1033,30 @@ def _ml_pos_venda_gerar_resposta_ia(
             "_codex_thread_id": str(conversa.get("_codex_thread_id") or ""),
             "_codex_persist_thread": bool(conversa.get("_codex_job_id")),
             "_codex_job_id": str(conversa.get("_codex_job_id") or ""),
-            "_codex_conversation_key": str(conversa.get("_codex_job_id") or ""),
+            "_codex_conversation_key": str(
+                conversa.get("_codex_conversation_key")
+                or conversa.get("_codex_job_id")
+                or ""
+            ),
         },
         model=None,
     )
-    model_req = _normalizar_ia_modelo_padrao(_ia_modelo_pos_venda_configurado())
+    provider_selection = _perguntas_codex_provider_selection(
+        _ia_modelo_pos_venda_configurado(),
+        conversa.get("_codex_operational_failure_count"),
+    )
+    model_req = str(provider_selection.get("model") or "codex:gpt-5.5")
     payload.model = model_req
-    if _modelo_eh_codex(model_req):
-        if conversa.get("_codex_job_id") or conversa.get("_codex_thread_id"):
-            resposta, resulting_thread_id = _chamar_codex_chat_com_thread(
-                payload,
-                client_id,
-                thread_id=str(conversa.get("_codex_thread_id") or ""),
-                persist_thread=True,
-                conversation_key=str(conversa.get("_codex_job_id") or ""),
-            )
-            conversa["_codex_thread_id_result"] = resulting_thread_id
-        else:
-            resposta = _chamar_codex_chat(payload, client_id)
-        model_usado = f"codex:{_codex_modelo_nome_curto(model_req)}"
-    elif _modelo_eh_vertex_ai(model_req):
-        resposta = _chamar_vertex_ai_chat(payload, client_id)
-        model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_ai_modelo_padrao()}"
-    elif _modelo_eh_gemini_api(model_req):
-        resposta = _chamar_gemini_chat(payload, client_id)
-        model_usado = f"gemini:{_gemini_nome_curto(model_req) or 'gemini-2.5-flash'}"
-    elif model_req.startswith("deepseek-"):
-        resposta = _chamar_deepseek_chat(payload, client_id)
-        model_usado = model_req
-    else:
-        resposta = _chamar_openai_responses(payload, client_id)
-        model_usado = model_req or (os.getenv("OPENAI_MODEL") or "gpt-5.4-nano").strip()
+    payload.context["response_provider_policy"] = provider_selection.get("policy")
+    payload.context["configured_fallback"] = provider_selection.get("configured_fallback")
+    payload.context["fallback_used"] = bool(provider_selection.get("fallback_used"))
+    payload.context["operational_failure_count"] = provider_selection.get("operational_failure_count")
+    resposta, model_usado = _ia_agent_perguntas_chamar_modelo(client_id, payload, model_req)
+    if isinstance(payload.context, dict) and payload.context.get("_codex_thread_id_result"):
+        conversa["_codex_thread_id_result"] = str(payload.context.get("_codex_thread_id_result") or "")
     resposta_limpa = _pos_venda_ia_resposta_final_loja(resposta, loja, limite)
     if not resposta_limpa:
         raise PerguntasIARespostaIndisponivel("IA de pos-venda nao gerou resposta.")
-    if not conversa.get("_codex_job_id"):
-        try:
-            _ml_pos_venda_memoria_registrar_geracao(client_id, loja, conversa, resposta_limpa, model_usado)
-        except Exception as exc:
-            logger.warning("[ML POS VENDA IA] Falha ao registrar memoria de geracao do SKU: %s", exc)
     return resposta_limpa, model_usado
 
 

@@ -139,6 +139,12 @@ def create_codex_console_router() -> APIRouter:
         name="codex_upload_attachments_user",
     )
     router.add_api_route(
+        "/api/codex/audio/transcriptions",
+        codex_console.codex_transcribe_audio,
+        methods=["POST"],
+        name="codex_transcribe_audio_user",
+    )
+    router.add_api_route(
         "/api/codex/tasks/{task_id}",
         codex_console.codex_obter_tarefa,
         methods=["GET"],

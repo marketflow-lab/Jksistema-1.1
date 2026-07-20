@@ -71,7 +71,17 @@ def test_sqlite_attempts_are_idempotent_and_audit_redacts_secrets(tmp_path: Path
         "mercado_livre_approval_requested",
         message_id="wamid.1",
         subject_id="5511999999999",
-        details={"access_token": "secret-token", "nested": {"authorization": "Bearer secret"}, "draft_hash": "abc"},
+        details={
+            "access_token": "secret-token",
+            "nested": {"authorization": "Bearer secret"},
+            "draft_hash": "abc",
+            "free_text": (
+                "contato pessoa@example.com telefone +55 11 99999-9999 "
+                "cpf 123.456.789-09 cnpj 12.345.678/0001-95 "
+                "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123 "
+                "url https://example.test/cb?access_token=oauth-secret&next=1"
+            ),
+        },
     )
 
     with sqlite3.connect(database) as connection:
@@ -83,7 +93,84 @@ def test_sqlite_attempts_are_idempotent_and_audit_redacts_secrets(tmp_path: Path
     assert "Bearer secret" not in details
     assert "access_token" not in details
     assert "authorization" not in details
+    assert "pessoa@example.com" not in details
+    assert "99999-9999" not in details
+    assert "123.456.789-09" not in details
+    assert "12.345.678/0001-95" not in details
+    assert "eyJhbGciOiJIUzI1NiJ9" not in details
+    assert "oauth-secret" not in details
     assert "draft_hash" in details
+
+
+def test_sqlite_state_never_persists_context_hub_capability_query_or_snippet(tmp_path: Path):
+    database = tmp_path / "whatsapp_bridge.sqlite3"
+    store = WhatsappBridgeStore(database)
+    state = {
+        "pending_messages": {
+            "wamid.context": {
+                "kind": "dual_function_manager",
+                "job_state": "manager_running",
+                "session_permissions": {
+                    "full": False,
+                    "cadastro": True,
+                    "context_hub_read_full": True,
+                },
+                "manager_plan": {
+                    "tool_calls": [{
+                        "tool_id": "context_hub_search",
+                        "arguments": {"query": "QUERY_PERSISTENCE_CANARY", "limit": 12},
+                    }],
+                },
+                "manager_evidence": {
+                    "verified_facts": [json.dumps({
+                        "tool_id": "context_hub_search",
+                        "rows": [{
+                            "doc_id": "jk:sku:001",
+                            "chunk_id": "chunk-1",
+                            "snippet": "SNIPPET_PERSISTENCE_CANARY api_key=SECRET_CANARY",
+                            "reference": r"C:\\tenant\\SKU\\001.json",
+                            "source_hash": "a" * 64,
+                        }],
+                    })],
+                    "tool_results": [{
+                        "tool_id": "context_hub_search",
+                        "records": 1,
+                        "rows": [{
+                            "doc_id": "jk:sku:001",
+                            "chunk_id": "chunk-1",
+                            "snippet": "SNIPPET_PERSISTENCE_CANARY api_key=SECRET_CANARY",
+                            "reference": r"C:\\tenant\\SKU\\001.json",
+                            "source_hash": "a" * 64,
+                        }],
+                    }],
+                },
+            },
+        },
+    }
+
+    store.save_state(state)
+
+    with sqlite3.connect(database) as connection:
+        persisted = "\n".join(
+            str(row[0] or "")
+            for table in ("state_buckets", "assistant_jobs")
+            for row in connection.execute(f"SELECT payload_json FROM {table}").fetchall()
+        )
+    restored = store.load_state()["pending_messages"]["wamid.context"]
+
+    assert "QUERY_PERSISTENCE_CANARY" not in persisted
+    assert "SNIPPET_PERSISTENCE_CANARY" not in persisted
+    assert "SECRET_CANARY" not in persisted
+    assert "context_hub_read_full" not in persisted
+    assert r"C:\\tenant" not in persisted
+    assert restored["session_permissions"] == {"full": False, "cadastro": True}
+    safe_row = restored["manager_evidence"]["tool_results"][0]["rows"][0]
+    assert safe_row == {
+        "doc_id": "jk:sku:001",
+        "chunk_id": "chunk-1",
+        "source_hash": "a" * 64,
+    }
+    assert restored["manager_plan"]["tool_calls"][0]["arguments"]["query_hash"]
 
 
 def _tool_result() -> dict:

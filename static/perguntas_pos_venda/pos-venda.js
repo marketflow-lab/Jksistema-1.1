@@ -132,12 +132,35 @@ function conversaPosVendaNaoLida(venda) {
     return papel === 'comprador' || papel === 'buyer' || rotulo === 'comprador';
 }
 
+const POS_VENDA_CACHE_TTL_MS = 10 * 60 * 1000;
+const POS_VENDA_SYNC_REFRESH_DELAY_MS = 2000;
+let posVendaSyncRefreshTimer = null;
+
+function obterClientIdCachePosVenda() {
+    let clientId = '';
+    try {
+        if (typeof obterClientId === 'function') clientId = String(obterClientId() || '').trim();
+    } catch (_error) {
+        clientId = '';
+    }
+    if (!clientId) {
+        try {
+            const userData = JSON.parse(localStorage.getItem('user_data') || '{}') || {};
+            clientId = String(userData.client_id || '').trim();
+        } catch (_error) {
+            clientId = '';
+        }
+    }
+    return encodeURIComponent(clientId || 'sem-cliente');
+}
+
 function chaveCachePosVenda() {
+    const clientId = obterClientIdCachePosVenda();
     const filtro = filtroPosVendaNaoLidasAtivo() ? 'nao-lidas' : 'todas';
     if (todasAsLojasSelecionadas()) {
-        return `jk_pos_venda_cache:${TODAS_LOJAS_VALUE}:${posVendaDias.value}:pagina-${state.posVendaPagina}:${filtro}:${obterBuscaPosVenda().toLowerCase()}`;
+        return `jk_pos_venda_cache:${clientId}:${TODAS_LOJAS_VALUE}:${posVendaDias.value}:pagina-${state.posVendaPagina}:${filtro}:${obterBuscaPosVenda().toLowerCase()}`;
     }
-    return `jk_pos_venda_cache:${state.lojaSelecionada || 'sem-loja'}:${posVendaDias.value}:${state.posVendaOffset}:${filtro}:${obterBuscaPosVenda().toLowerCase()}`;
+    return `jk_pos_venda_cache:${clientId}:${state.lojaSelecionada || 'sem-loja'}:${posVendaDias.value}:${state.posVendaOffset}:${filtro}:${obterBuscaPosVenda().toLowerCase()}`;
 }
 
 function salvarCachePosVenda(data) {
@@ -153,13 +176,92 @@ function salvarCachePosVenda(data) {
 
 function carregarCachePosVenda() {
     try {
-        const bruto = localStorage.getItem(chaveCachePosVenda());
+        const chave = chaveCachePosVenda();
+        const bruto = localStorage.getItem(chave);
         if (!bruto) return null;
         const payload = JSON.parse(bruto);
-        return payload && typeof payload === 'object' ? payload : null;
+        const salvoEm = Date.parse(payload && payload.saved_at || '');
+        const idade = Date.now() - salvoEm;
+        if (
+            !payload ||
+            typeof payload !== 'object' ||
+            !payload.data ||
+            !Number.isFinite(salvoEm) ||
+            idade < 0 ||
+            idade > POS_VENDA_CACHE_TTL_MS
+        ) {
+            localStorage.removeItem(chave);
+            return null;
+        }
+        return payload;
     } catch (_error) {
         return null;
     }
+}
+
+function obterSyncPosVenda(data) {
+    return data && data.sync && typeof data.sync === 'object' ? data.sync : {};
+}
+
+function syncPosVendaEmAndamento(data) {
+    const sync = obterSyncPosVenda(data);
+    return sync.running === true;
+}
+
+function mensagemSyncPosVenda(data) {
+    if (!syncPosVendaEmAndamento(data)) return '';
+    const sync = obterSyncPosVenda(data);
+    const criandoBase = sync.bootstrap_complete !== true;
+    const syncLojas = Array.isArray(data && data.sync_lojas) ? data.sync_lojas : [];
+    const lojasRodando = syncLojas.filter((item) => syncPosVendaEmAndamento({ sync: item })).length;
+    const sufixoLojas = lojasRodando > 0 ? ` em ${lojasRodando} conta(s)` : '';
+    return criandoBase
+        ? `Criando a base local de pós-venda${sufixoLojas}. A lista será atualizada automaticamente.`
+        : `Atualizando a base local de pós-venda${sufixoLojas}. A lista será atualizada automaticamente.`;
+}
+
+function modoSyncPosVenda(busca, offset, pagina = state.posVendaPagina) {
+    return !busca && Number(pagina || 1) === 1 && Number(offset || 0) === 0
+        ? 'auto'
+        : 'cache';
+}
+
+function adicionarParametrosSyncPosVenda(params, { busca = '', offset = 0, pagina = state.posVendaPagina, forcar = false, syncMode = '' } = {}) {
+    const modo = syncMode || modoSyncPosVenda(busca, offset, pagina);
+    params.set('sync_mode', modo);
+    if (forcar) params.set('force_refresh', 'true');
+    return modo;
+}
+
+function cancelarRefreshSyncPosVenda() {
+    if (!posVendaSyncRefreshTimer) return;
+    clearTimeout(posVendaSyncRefreshTimer);
+    posVendaSyncRefreshTimer = null;
+}
+
+function agendarRefreshSyncPosVenda() {
+    if (posVendaSyncRefreshTimer) return;
+    posVendaSyncRefreshTimer = setTimeout(async () => {
+        posVendaSyncRefreshTimer = null;
+        const abaPosVenda = document.getElementById('aba-pos-venda');
+        if (!abaPosVenda || !abaPosVenda.classList.contains('active') || !state.lojaSelecionada) return;
+        if (state.carregandoPosVenda) {
+            agendarRefreshSyncPosVenda();
+            return;
+        }
+        await carregarPosVenda(false, {
+            ignorarCacheLocal: true,
+            syncMode: 'cache'
+        });
+    }, POS_VENDA_SYNC_REFRESH_DELAY_MS);
+}
+
+function atualizarRefreshSyncPosVenda(data) {
+    if (syncPosVendaEmAndamento(data)) {
+        agendarRefreshSyncPosVenda();
+        return;
+    }
+    cancelarRefreshSyncPosVenda();
 }
 
 function ordenarConversasPosVendaRecentes(conversas) {
@@ -170,13 +272,15 @@ function ordenarConversasPosVendaRecentes(conversas) {
     });
 }
 
-async function carregarPosVendaLojaAgregada(nomeLoja, quantidadeNecessaria, busca) {
+async function carregarPosVendaLojaAgregada(nomeLoja, quantidadeNecessaria, busca, opcoes = {}) {
     const filtroNaoLidas = filtroPosVendaNaoLidasAtivo();
     let offset = 0;
     let nextOffset = 0;
     let chamadas = 0;
     const conversas = [];
     const conversasVistas = new Set();
+    let sync = {};
+    let source = '';
     let resumo = {
         orders_total: 0,
         orders_avaliadas: 0,
@@ -195,12 +299,21 @@ async function carregarPosVendaLojaAgregada(nomeLoja, quantidadeNecessaria, busc
         });
         if (busca) params.set('busca', busca);
         if (filtroNaoLidas) params.set('nao_lidas', 'true');
+        adicionarParametrosSyncPosVenda(params, {
+            busca,
+            offset,
+            pagina: state.posVendaPagina,
+            forcar: opcoes.forcar === true,
+            syncMode: opcoes.syncMode || ''
+        });
         const response = await fetch(`/api/mercadolivre/pos-venda/conversas?${params.toString()}`, {
             headers: obterAuthHeaders(),
             cache: 'no-store'
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.detail || `Erro ao carregar pós venda de ${nomeLoja}.`);
+        sync = obterSyncPosVenda(data);
+        source = String(data.source || source || '');
         resumo = {
             orders_total: Number(data.orders_total || resumo.orders_total || 0),
             orders_avaliadas: Number(resumo.orders_avaliadas || 0) + Number(data.orders_avaliadas || 0),
@@ -227,17 +340,19 @@ async function carregarPosVendaLojaAgregada(nomeLoja, quantidadeNecessaria, busc
         loja: nomeLoja,
         conversas,
         resumo,
-        has_next: resumo.has_next
+        has_next: resumo.has_next,
+        sync,
+        source
     };
 }
 
-async function carregarPosVendaTodasLojas(busca) {
+async function carregarPosVendaTodasLojas(busca, opcoes = {}) {
     const lojas = lojasMercadoLivreConectadas();
     const quantidadeNecessaria = Math.max(20, state.posVendaPagina * 20);
     const resultados = await Promise.all(lojas.map(async (loja) => {
         const nomeLoja = String(loja.nome || '').trim();
         try {
-            return await carregarPosVendaLojaAgregada(nomeLoja, quantidadeNecessaria, busca);
+            return await carregarPosVendaLojaAgregada(nomeLoja, quantidadeNecessaria, busca, opcoes);
         } catch (error) {
             return { loja: nomeLoja, error };
         }
@@ -251,6 +366,18 @@ async function carregarPosVendaTodasLojas(busca) {
     const fim = inicio + 20;
     const pagina = todasConversas.slice(inicio, fim);
     const hasNext = todasConversas.length > fim || sucessos.some((resultado) => resultado.has_next);
+    const syncLojas = sucessos.map((resultado) => ({
+        loja: resultado.loja,
+        ...obterSyncPosVenda(resultado)
+    }));
+    const syncRodando = syncLojas.some((item) => syncPosVendaEmAndamento({ sync: item }));
+    const bootstrapCompleto = syncLojas.length > 0 && syncLojas.every((item) => item.bootstrap_complete === true);
+    const ultimaSincronizacao = syncLojas
+        .map((item) => String(item.last_synced_at || '').trim())
+        .filter(Boolean)
+        .sort()
+        .pop() || null;
+    const ultimoErro = syncLojas.map((item) => item.last_error).find(Boolean) || null;
     return {
         success: true,
         modo_todas: true,
@@ -264,7 +391,16 @@ async function carregarPosVendaTodasLojas(busca) {
         nao_lidas: filtroPosVendaNaoLidasAtivo(),
         has_next: hasNext,
         next_offset: hasNext ? fim : null,
-        conversas: pagina
+        conversas: pagina,
+        source: 'local_cache',
+        sync_lojas: syncLojas,
+        sync: {
+            running: syncRodando,
+            status: syncRodando ? (bootstrapCompleto ? 'incremental' : 'bootstrap') : 'ready',
+            bootstrap_complete: bootstrapCompleto,
+            last_synced_at: ultimaSincronizacao,
+            last_error: ultimoErro
+        }
     };
 }
 
@@ -532,7 +668,6 @@ function renderizarDetalhePosVenda(conversa, mensagemStatus = '') {
         <div class="pos-sale-reply">
             <textarea id="pos-venda-resposta-texto" maxlength="${limite}" placeholder="Digite a resposta para enviar ao comprador"></textarea>
             <div class="pos-sale-reply-actions">
-                <button id="btn-pos-venda-gerar-ia" class="action-btn secondary" type="button">Gerar resposta com IA</button>
                 <button id="btn-pos-venda-enviar-resposta" class="action-btn" type="button" disabled>Enviar resposta</button>
             </div>
         </div>
@@ -541,7 +676,6 @@ function renderizarDetalhePosVenda(conversa, mensagemStatus = '') {
 
     const textarea = document.getElementById('pos-venda-resposta-texto');
     const botao = document.getElementById('btn-pos-venda-enviar-resposta');
-    const botaoIa = document.getElementById('btn-pos-venda-gerar-ia');
     const botaoVoltar = document.getElementById('btn-pos-venda-voltar-lista');
     const status = document.getElementById('pos-venda-resposta-status');
     const atualizarEstado = () => {
@@ -553,66 +687,10 @@ function renderizarDetalhePosVenda(conversa, mensagemStatus = '') {
     };
     textarea.addEventListener('input', atualizarEstado);
     botao.addEventListener('click', () => enviarRespostaPosVenda(conversa, textarea, botao, status));
-    botaoIa.addEventListener('click', () => gerarRespostaIaPosVenda(conversa, textarea, botaoIa, botao, status));
     botaoVoltar.addEventListener('click', voltarParaListaPosVenda);
     atualizarEstado();
     posVendaDetail.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
-
-function conversaPosVendaCombinaSugestao(conversa, payload) {
-    if (!conversa || !payload) return false;
-    const loja = lojaPayloadAtendimento(payload);
-    if (loja) {
-        const lojaConversa = lojaOrigemItem(conversa);
-        if (lojaConversa && !valoresIguaisAtendimento(lojaConversa, loja)) return false;
-    }
-    const packId = normalizarSugestaoResposta(payload.pack_id || payload.pack || '');
-    const orderId = normalizarSugestaoResposta(payload.order_id || payload.pedido || '');
-    const buyerId = normalizarSugestaoResposta(payload.buyer_id || payload.comprador || '');
-    if (packId && normalizarSugestaoResposta(conversa.pack_id) !== packId) return false;
-    if (orderId && normalizarSugestaoResposta(conversa.order_id) !== orderId) return false;
-    if (buyerId && normalizarSugestaoResposta(conversa.buyer_id) !== buyerId) return false;
-    return Boolean(packId || orderId || buyerId);
-}
-
-function preencherRespostaPosVendaSugerida(payload, opcoes = {}) {
-    const resposta = respostaSugeridaPayload(payload);
-    if (!resposta) return { ok: false, message: 'A sugestao nao trouxe texto de resposta.' };
-    const conversa = state.posVendaConversaSelecionada;
-    if (!conversa || !conversaPosVendaCombinaSugestao(conversa, payload)) {
-        return { ok: false, message: 'Abra a conversa pos-venda correspondente para usar esta sugestao.' };
-    }
-    const textarea = document.getElementById('pos-venda-resposta-texto');
-    const status = document.getElementById('pos-venda-resposta-status');
-    if (!textarea) return { ok: false, message: 'A caixa de resposta do pos-venda nao esta aberta.' };
-    const jaTemTexto = Boolean(normalizarSugestaoResposta(textarea.value));
-    if (jaTemTexto && opcoes.force !== true) {
-        if (status) status.textContent = 'Sugestao da IA disponivel; o campo ja tinha texto.';
-        return { ok: false, skipped: true, message: 'O campo de resposta ja tinha texto.' };
-    }
-    textarea.value = resposta;
-    textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    if (opcoes.focus !== false) {
-        textarea.focus();
-        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-    }
-    if (status) status.textContent = 'Sugestao da IA copiada para a resposta. Revise antes de enviar.';
-    return { ok: true, message: 'Resposta copiada para a caixa de texto.' };
-}
-
-function registrarIntegracaoSidebarPosVenda() {
-    window.JKPerguntasPosVenda = window.JKPerguntasPosVenda || {};
-    const preencherAnterior = window.JKPerguntasPosVenda.preencherRespostaSugerida;
-    window.JKPerguntasPosVenda.preencherRespostaPosVenda = preencherRespostaPosVendaSugerida;
-    window.JKPerguntasPosVenda.preencherRespostaSugerida = function preencherRespostaSugeridaAtendimento(payload, opcoes = {}) {
-        const tipo = normalizarSugestaoResposta(payload?.tipo || payload?.approval_type || '').toLowerCase();
-        if (tipo === 'pos_venda') return preencherRespostaPosVendaSugerida(payload, opcoes);
-        if (typeof preencherAnterior === 'function') return preencherAnterior(payload, opcoes);
-        return { ok: false, message: 'Tela de atendimento ainda nao pronta para receber a sugestao.' };
-    };
-}
-
-registrarIntegracaoSidebarPosVenda();
 
 async function abrirConversaPosVenda(venda) {
     if (!venda || state.posVendaDetalheCarregando) return;
@@ -647,56 +725,6 @@ async function abrirConversaPosVenda(venda) {
         posVendaDetail.innerHTML = `<div class="answer-box empty">Erro ao carregar conversa: ${escapeHtml(mensagemErro(error))}</div>`;
     } finally {
         state.posVendaDetalheCarregando = false;
-    }
-}
-
-async function gerarRespostaIaPosVenda(conversa, textarea, botaoIa, botaoEnviar, status) {
-    if (!conversa || !textarea || !botaoIa) return;
-    const lojaConversa = lojaOrigemItem(conversa) || (todasAsLojasSelecionadas() ? '' : state.lojaSelecionada);
-    if (!lojaConversa) {
-        status.textContent = 'Não foi possível identificar a loja desta conversa.';
-        return;
-    }
-    botaoIa.disabled = true;
-    if (botaoEnviar) botaoEnviar.disabled = true;
-    status.textContent = 'Gerando resposta com IA...';
-    try {
-        const response = await fetch('/api/mercadolivre/pos-venda/conversas/gerar-resposta', {
-            method: 'POST',
-            headers: {
-                ...obterAuthHeaders(),
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                loja: lojaConversa,
-                pack_id: String(conversa.pack_id || ''),
-                order_id: String(conversa.order_id || ''),
-                buyer_id: String(conversa.buyer_id || ''),
-                max_chars: Number(conversa.seller_max_message_length || 350),
-                resposta_atual: String(textarea.value || '').trim(),
-                async: true
-            })
-        });
-        let data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(mensagemErroApi(data, 'Erro ao gerar resposta com IA.'));
-        if (data.job_id && data.status !== 'completed') {
-            const aguardar = window.aguardarJobAtendimentoCodex;
-            if (typeof aguardar !== 'function') throw new Error('Monitor do agente Codex indisponivel.');
-            data = await aguardar(data.job_id, (texto) => { status.textContent = texto; });
-        }
-        const result = data.result && typeof data.result === 'object' ? data.result : data;
-        textarea.value = String(result.resposta || data.resposta || '').trim();
-        textarea.dataset.codexProposalId = String(result.proposal_id || data.proposal_id || data.job_id || '');
-        textarea.dataset.codexProposalVersion = String(result.proposal_version || data.proposal_version || 1);
-        textarea.dataset.codexProposalHash = String(result.proposal_hash || data.proposal_hash || '');
-        textarea.dispatchEvent(new Event('input', { bubbles: true }));
-        const aviso = Array.isArray(data.warnings) && data.warnings.length ? ` ${data.warnings[0]}` : '';
-        status.textContent = `Resposta gerada pelo agente Codex. Revise e edite antes de enviar.${aviso}`;
-    } catch (error) {
-        status.textContent = `Erro ao gerar resposta com IA: ${mensagemErro(error)}`;
-    } finally {
-        botaoIa.disabled = false;
-        if (botaoEnviar) botaoEnviar.disabled = !String(textarea.value || '').trim();
     }
 }
 
@@ -752,8 +780,9 @@ function renderizarDadosPosVenda(data, origemCache = false) {
     const rotuloEscopo = rotuloEscopoSelecionado();
     const rotuloFiltro = rotuloFiltroPosVenda();
     const rotuloTotalFiltro = filtroPosVendaNaoLidasAtivo() ? 'conversa(s) não lida(s)' : 'conversa(s)';
-    posVendaStatus.textContent = origemCache
-        ? `Exibindo informações salvas de ${rotuloEscopo}. Atualizando pela API...`
+    const statusSync = mensagemSyncPosVenda(data);
+    posVendaStatus.textContent = statusSync || (origemCache
+        ? `Exibindo informações salvas de ${rotuloEscopo}.`
         : data.modo_todas
             ? (busca
                 ? `${Number(data.conversas_total || conversas.length || 0)} resultado(s) para "${busca}" em todas as contas.`
@@ -762,7 +791,7 @@ function renderizarDadosPosVenda(data, origemCache = false) {
                 ? `${Number(data.conversas_total || conversas.length || 0)} resultado(s) para "${busca}" em ${state.lojaSelecionada}.`
                 : data.interrompido
                 ? `${conversas.length} venda(s) ${rotuloFiltro}. A consulta foi limitada às vendas mais recentes.`
-                : `${conversas.length} venda(s) ${rotuloFiltro} em ${state.lojaSelecionada}.`);
+                : `${conversas.length} venda(s) ${rotuloFiltro} em ${state.lojaSelecionada}.`));
     renderizarResumoPosVenda(data);
     renderizarPosVenda(conversas);
     renderizarPaginacaoPosVenda(data, conversas);
@@ -772,8 +801,10 @@ function renderizarDadosPosVenda(data, origemCache = false) {
     }
 }
 
-async function carregarPosVenda(forcar = false) {
+async function carregarPosVenda(forcar = false, opcoes = {}) {
     if (!state.lojaSelecionada || state.carregandoPosVenda) return;
+    const ignorarCacheLocal = opcoes && opcoes.ignorarCacheLocal === true;
+    const syncModeForcado = String(opcoes && opcoes.syncMode || '').trim();
     const busca = obterBuscaPosVenda();
     const filtroNaoLidas = filtroPosVendaNaoLidasAtivo();
     const filtroChave = filtroNaoLidas ? 'nao-lidas' : 'todas';
@@ -781,12 +812,19 @@ async function carregarPosVenda(forcar = false) {
         ? `${TODAS_LOJAS_VALUE}:${posVendaDias.value}:${state.posVendaPagina}:${filtroChave}:${busca.toLowerCase()}`
         : `${state.lojaSelecionada}:${posVendaDias.value}:${state.posVendaOffset}:${filtroChave}:${busca.toLowerCase()}`;
     const cacheLocal = carregarCachePosVenda();
-    if (!forcar && state.posVendaCarregadoPara === chave && !cacheLocal) return;
+    if (!forcar && !ignorarCacheLocal && cacheLocal && cacheLocal.data) {
+        renderizarDadosPosVenda(cacheLocal.data, true);
+        state.posVendaCarregadoPara = chave;
+        atualizarRefreshSyncPosVenda(cacheLocal.data);
+        return;
+    }
+    if (!forcar && !ignorarCacheLocal && state.posVendaCarregadoPara === chave) return;
 
     state.carregandoPosVenda = true;
     btnPosVendaRecarregar.disabled = true;
-    if (cacheLocal && cacheLocal.data) {
+    if (!ignorarCacheLocal && cacheLocal && cacheLocal.data) {
         renderizarDadosPosVenda(cacheLocal.data, true);
+        if (forcar) posVendaStatus.textContent = 'Atualizando a base local de pós-venda...';
     } else {
         posVendaSummary.classList.add('hidden');
         posVendaList.innerHTML = '';
@@ -799,10 +837,14 @@ async function carregarPosVenda(forcar = false) {
 
     try {
         if (todasAsLojasSelecionadas()) {
-            const dataTodas = await carregarPosVendaTodasLojas(busca);
+            const dataTodas = await carregarPosVendaTodasLojas(busca, {
+                forcar: forcar === true,
+                syncMode: syncModeForcado
+            });
             salvarCachePosVenda(dataTodas);
             renderizarDadosPosVenda(dataTodas, false);
             state.posVendaCarregadoPara = chave;
+            atualizarRefreshSyncPosVenda(dataTodas);
             return;
         }
         const params = new URLSearchParams({
@@ -814,6 +856,13 @@ async function carregarPosVenda(forcar = false) {
         });
         if (busca) params.set('busca', busca);
         if (filtroNaoLidas) params.set('nao_lidas', 'true');
+        adicionarParametrosSyncPosVenda(params, {
+            busca,
+            offset: state.posVendaOffset,
+            pagina: state.posVendaPagina,
+            forcar: forcar === true,
+            syncMode: syncModeForcado
+        });
         const response = await fetch(`/api/mercadolivre/pos-venda/conversas?${params.toString()}`, {
             headers: obterAuthHeaders(),
             cache: 'no-store'
@@ -823,11 +872,13 @@ async function carregarPosVenda(forcar = false) {
         salvarCachePosVenda(data);
         renderizarDadosPosVenda(data, false);
         state.posVendaCarregadoPara = chave;
+        atualizarRefreshSyncPosVenda(data);
     } catch (error) {
         posVendaStatus.textContent = cacheLocal && cacheLocal.data
             ? `Erro ao atualizar pela API: ${mensagemErro(error)}. Mantendo as informações salvas.`
             : `Erro ao carregar pós venda: ${mensagemErro(error)}`;
         if (!cacheLocal || !cacheLocal.data) posVendaList.innerHTML = '';
+        if (cacheLocal && cacheLocal.data) atualizarRefreshSyncPosVenda(cacheLocal.data);
     } finally {
         state.carregandoPosVenda = false;
         btnPosVendaRecarregar.disabled = false;

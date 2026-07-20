@@ -138,13 +138,20 @@ def _append_message_content_prompt(
                 "preserve essa referencia na resposta para a ponte anexar o arquivo real. Nao invente URL nem caminho."
             )
     if media:
-        parts.append(
-            "Anexo local recebido pelo WhatsApp:\n"
-            f"- caminho: {media.get('path')}\n"
-            f"- MIME: {media.get('mime_type')}\n"
-            f"- tamanho: {media.get('size')} bytes\n"
-            f"- wamid: {message.get('message_id')}"
-        )
+        media_mime = str(media.get("mime_type") or "").strip().lower()
+        if media_mime in whatsapp_media.SUPPORTED_AUDIO_MIMES:
+            parts.append(
+                "Audio recebido e processado exclusivamente no transcritor local. "
+                "O arquivo bruto foi descartado e nao deve ser tratado como anexo."
+            )
+        else:
+            parts.append(
+                "Anexo local recebido pelo WhatsApp:\n"
+                f"- caminho: {media.get('path')}\n"
+                f"- MIME: {media.get('mime_type')}\n"
+                f"- tamanho: {media.get('size')} bytes\n"
+                f"- wamid: {message.get('message_id')}"
+            )
     if transcription:
         if transcription.get("success"):
             text = str(transcription.get("text") or "")
@@ -156,8 +163,8 @@ def _append_message_content_prompt(
             )
         else:
             parts.append(
-                "Nao foi possivel transcrever o audio localmente. Preserve o anexo na auditoria e informe isso claramente na resposta. "
-                f"Motivo: {str(transcription.get('error') or 'falha desconhecida')[:500]}"
+                "Nao foi possivel transcrever o audio localmente. Nao prossiga com inferencias sobre o conteudo. "
+                f"Codigo seguro: {str(transcription.get('error_code') or 'child_failed')[:80]}"
             )
     if not body and not media:
         parts.append("A mensagem nao continha texto ou midia suportada.")

@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '20260623-isolamento-auth';
+  const VERSION = '20260720-machine-auto-pull';
   const CHUNKS = [
     "session.js",
     "navigation.js",

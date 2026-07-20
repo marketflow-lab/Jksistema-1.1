@@ -19,6 +19,23 @@ def _runtime(tmp_path):
 
 def _official_context() -> dict:
     return {
+        "evidence_envelope": {
+            "schema_version": "evidence-envelope-v2",
+            "status": "completed",
+            "records": [{
+                "field": "envio",
+                "value": {"estimated_delivery": "prazo exibido pelo Mercado Livre"},
+                "store": "Uai Mineirinho",
+                "source": "mercado_livre_shipping",
+                "coverage": "confirmed",
+                "authority": "confirmed",
+            }],
+            "sources": ["mercado_livre_shipping"],
+            "gaps": [],
+            "confidence": "high",
+            "evidence_sufficient": True,
+            "coverage_complete": True,
+        },
         "diagnostico_ia": [{
             "result": {
                 "validation_ok": True,

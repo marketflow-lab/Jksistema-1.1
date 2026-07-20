@@ -21,6 +21,7 @@ def create_whatsapp_bridge_router() -> APIRouter:
     bridge_router.add_api_route("/pairing-code", whatsapp_bridge.whatsapp_bridge_pairing_code, methods=["POST"])
     bridge_router.add_api_route("/revoke", whatsapp_bridge.whatsapp_bridge_revoke, methods=["POST"])
     bridge_router.add_api_route("/whisper/download", whatsapp_bridge.whatsapp_bridge_download_whisper, methods=["POST"])
+    bridge_router.add_api_route("/audio/preflight", whatsapp_bridge.whatsapp_bridge_audio_preflight, methods=["POST"])
     bridge_router.add_api_route("/templates/sync", whatsapp_bridge.whatsapp_bridge_sync_templates, methods=["POST"])
     bridge_router.add_api_route("/voice/preflight", whatsapp_bridge.whatsapp_bridge_voice_preflight, methods=["POST"])
     bridge_router.add_api_route("/voice/enable", whatsapp_bridge.whatsapp_bridge_voice_enable, methods=["POST"])

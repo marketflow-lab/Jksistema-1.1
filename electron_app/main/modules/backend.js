@@ -583,63 +583,89 @@ function getLocalBackendFirebaseEnv(localAppDir) {
     return { JK_ACCESS_BACKEND: 'auto' };
 }
 
-function shouldSkipBackendCopyEntry(name, fullPath) {
-    const lower = String(name || '').toLowerCase();
-    if (
-        lower === '.git' ||
-        lower === '.venv' ||
-        lower === 'node_modules' ||
-        lower === 'electron_app' ||
-        lower === 'python_runtime' ||
-        lower === 'python_wheels' ||
-        lower === 'prerequisites' ||
-        lower === 'info' ||
-        lower === 'logs' ||
-        lower === 'backups' ||
-        lower === '__pycache__' ||
-        lower.startsWith('.env')
-    ) {
-        return true;
+let backendRuntimeMaterializerModule = null;
+
+function getBackendRuntimeMaterializer() {
+    if (backendRuntimeMaterializerModule) return backendRuntimeMaterializerModule;
+    const candidates = [
+        path.join(getAppRootDir(), 'electron_app', 'main', 'modules', 'backend-runtime-materializer.js'),
+        path.join(__dirname, 'electron_app', 'main', 'modules', 'backend-runtime-materializer.js')
+    ];
+    let lastError = null;
+    for (const candidate of candidates) {
+        try {
+            backendRuntimeMaterializerModule = require(candidate);
+            return backendRuntimeMaterializerModule;
+        } catch (err) {
+            lastError = err;
+        }
     }
-    try {
-        return fs.statSync(fullPath).isDirectory() && lower.startsWith('dist');
-    } catch (_err) {
-        return false;
-    }
+    throw lastError || new Error('Materializador seguro do backend local nao foi encontrado.');
 }
 
-function copyDirectoryRecursive(sourceDir, targetDir) {
-    fs.mkdirSync(targetDir, { recursive: true });
-    const entries = fs.readdirSync(sourceDir, { withFileTypes: true });
-    for (const entry of entries) {
-        const sourcePath = path.join(sourceDir, entry.name);
-        const targetPath = path.join(targetDir, entry.name);
-        if (shouldSkipBackendCopyEntry(entry.name, sourcePath)) {
-            continue;
-        }
-        if (entry.isDirectory()) {
-            copyDirectoryRecursive(sourcePath, targetPath);
-            continue;
-        }
-        if (entry.isFile()) {
-            fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-            fs.copyFileSync(sourcePath, targetPath);
-        }
-    }
-}
-
-function syncBundledLocalBackend() {
+function inspectBundledLocalBackendMaterialization() {
     const runtimeDir = getLocalBackendRuntimeDir();
     const bundledDir = getBundledLocalBackendDir();
     if (!bundledDir) {
         throw new Error('Backend local nao foi encontrado no pacote.');
     }
-    if (path.resolve(runtimeDir) !== path.resolve(bundledDir)) {
-        copyDirectoryRecursive(bundledDir, runtimeDir);
+    if (sameResolvedPath(runtimeDir, bundledDir)) {
+        return {
+            required: false,
+            sameDirectory: true,
+            runtimeDir,
+            bundledDir
+        };
     }
+    const application = getBackendRuntimeMaterializer().inspectMaterialization({
+        sourceDir: bundledDir,
+        targetDir: runtimeDir,
+        expectedVersion: app.getVersion()
+    });
+    const payload = getBackendRuntimeMaterializer().inspectImmutableRuntimePayloads({
+        sourceDir: bundledDir,
+        targetDir: runtimeDir
+    });
+    return {
+        ...application,
+        required: !!(application.required || payload.required),
+        recoveryRequired: !!(application.recoveryRequired || payload.recoveryRequired),
+        application,
+        payload,
+        runtimeDir,
+        bundledDir
+    };
+}
+
+function syncBundledLocalBackend(inspection = null) {
+    const plan = inspection || inspectBundledLocalBackendMaterialization();
+    const runtimeDir = plan.runtimeDir || getLocalBackendRuntimeDir();
+    const bundledDir = plan.bundledDir || getBundledLocalBackendDir();
+    if (!bundledDir) {
+        throw new Error('Backend local nao foi encontrado no pacote.');
+    }
+    const payloadMaterialization = getBackendRuntimeMaterializer().ensureImmutableRuntimePayloads({
+        sourceDir: bundledDir,
+        targetDir: runtimeDir
+    });
+    const materialization = getBackendRuntimeMaterializer().materializeLocalApp({
+        sourceDir: bundledDir,
+        targetDir: runtimeDir,
+        expectedVersion: app.getVersion()
+    });
     fs.mkdirSync(path.join(runtimeDir, 'info'), { recursive: true });
     fs.mkdirSync(path.join(runtimeDir, 'logs'), { recursive: true });
-    return runtimeDir;
+    logElectronLifecycle('local-backend-materialization', {
+        changed: !!materialization.changed,
+        adopted: !!materialization.adopted,
+        version: materialization.version || app.getVersion(),
+        changedEntries: Array.isArray(materialization.changedEntries)
+            ? materialization.changedEntries
+            : [],
+        payloadChanged: !!payloadMaterialization.changed,
+        payloadAdopted: !!payloadMaterialization.adopted
+    });
+    return { runtimeDir, bundledDir, materialization, payloadMaterialization };
 }
 
 function isTcpPortOpen(port, host = '127.0.0.1', timeoutMs = 700) {
@@ -742,6 +768,31 @@ function localBackendHealthCompatible(health, firebaseEnv = null) {
 
 function localBackendHealthUsable(health) {
     return Boolean(health && health.ok === true);
+}
+
+function waitForLocalBackendCompatibleHealth(firebaseEnv, timeoutMs = 45000, intervalMs = 650) {
+    const startedAt = Date.now();
+    return new Promise((resolve, reject) => {
+        const check = async () => {
+            const health = await fetchLocalBackendJson('/health', 3500);
+            if (localBackendHealthCompatible(health, firebaseEnv)) {
+                resolve(health);
+                return;
+            }
+            if (localBackendHealthUsable(health)) {
+                reject(new Error(
+                    `Servidor local iniciou com versao incompativel: ${health.appVersion || 'desconhecida'}.`
+                ));
+                return;
+            }
+            if (Date.now() - startedAt >= timeoutMs) {
+                reject(new Error('Servidor local abriu a porta, mas nao confirmou um health compativel.'));
+                return;
+            }
+            setTimeout(check, intervalMs);
+        };
+        check();
+    });
 }
 
 function stopProcessListeningOnPort(port) {
@@ -1054,7 +1105,7 @@ function writeLocalBackendLauncher(localAppDir) {
         '  echo Ambiente Python provisionado nao encontrado. Execute novamente o instalador completo.>> "%LOG_FILE%"',
         '  exit /b 21',
         ')',
-        '"%PYTHON_EXE%" -B -I -c "import sys, uvicorn; print(sys.version)" >> "%LOG_FILE%" 2>&1',
+        '"%PYTHON_EXE%" -B -I -X utf8 -c "import sys, uvicorn; print(sys.version)" >> "%LOG_FILE%" 2>&1',
         'if errorlevel 1 (',
         '  echo Ambiente Python provisionado ficou indisponivel antes de iniciar o backend.>> "%LOG_FILE%"',
         '  exit /b 22',
@@ -1066,7 +1117,7 @@ function writeLocalBackendLauncher(localAppDir) {
         '  set "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=%JK_CA_BUNDLE%"',
         '  echo Usando certificados Python: %JK_CA_BUNDLE%>> "%LOG_FILE%"',
         ')',
-        `"%PYTHON_EXE%" -B -I -m uvicorn --app-dir "%CD%" backend_api:app --host 127.0.0.1 --port ${JK_LOCAL_BACKEND_PORT} >> "%LOG_FILE%" 2>&1`
+        `"%PYTHON_EXE%" -X utf8 -B -I -m uvicorn --app-dir "%CD%" backend_api:app --host 127.0.0.1 --port ${JK_LOCAL_BACKEND_PORT} >> "%LOG_FILE%" 2>&1`
     ];
     fs.writeFileSync(launcherPath, `${lines.join('\r\n')}\r\n`, 'utf8');
     return { launcherPath, logPath };
@@ -1078,16 +1129,25 @@ function ensureLocalBackendStarted() {
     }
 
     let startupLogPath = '';
+    let pendingMaterialization = null;
     localBackendStartupPromise = (async () => {
-        const localAppDir = syncBundledLocalBackend();
-        const bundledSourceDir = getBundledLocalBackendDir();
+        const inspection = inspectBundledLocalBackendMaterialization();
+        const localAppDir = inspection.runtimeDir;
+        const bundledSourceDir = inspection.bundledDir;
         const firebaseEnv = getLocalBackendFirebaseEnv(localAppDir);
 
         if (await isTcpPortOpen(JK_LOCAL_BACKEND_PORT)) {
             const health = await fetchLocalBackendJson('/health');
-            if (localBackendHealthCompatible(health, firebaseEnv)) {
+            if (localBackendHealthCompatible(health, firebaseEnv) && !inspection.required) {
                 logElectronLifecycle('local-backend-already-running', { port: JK_LOCAL_BACKEND_PORT, health });
                 return { success: true, alreadyRunning: true, port: JK_LOCAL_BACKEND_PORT };
+            }
+            if (localBackendHealthCompatible(health, firebaseEnv) && inspection.required) {
+                logElectronLifecycle('local-backend-restart-for-materialization', {
+                    port: JK_LOCAL_BACKEND_PORT,
+                    currentVersion: app.getVersion(),
+                    recoveryRequired: !!inspection.recoveryRequired
+                });
             }
             if (localBackendHealthUsable(health)) {
                 logElectronLifecycle('local-backend-already-running-with-stale-metadata', {
@@ -1109,6 +1169,8 @@ function ensureLocalBackendStarted() {
             }
         }
 
+        const synchronized = syncBundledLocalBackend(inspection);
+        pendingMaterialization = synchronized.materialization;
         await ensurePythonRuntimeProvisioned(bundledSourceDir, localAppDir);
         const launcher = writeLocalBackendLauncher(localAppDir);
         const launcherPath = launcher.launcherPath;
@@ -1182,6 +1244,14 @@ function ensureLocalBackendStarted() {
                 waitForTcpPortOpen(JK_LOCAL_BACKEND_PORT, 180000),
                 exitPromise
             ]);
+            const health = await Promise.race([
+                waitForLocalBackendCompatibleHealth(firebaseEnv),
+                exitPromise
+            ]);
+            logElectronLifecycle('local-backend-health-compatible', {
+                port: JK_LOCAL_BACKEND_PORT,
+                appVersion: health && health.appVersion
+            });
         } catch (startupError) {
             invalidateRuntimeMarker('backend_not_ready', {
                 error: startupError && startupError.message ? startupError.message : String(startupError)
@@ -1190,9 +1260,25 @@ function ensureLocalBackendStarted() {
             throw startupError;
         }
         backendBecameReady = true;
+        if (pendingMaterialization && pendingMaterialization.changed) {
+            const finalization = getBackendRuntimeMaterializer().finalizeMaterialization(pendingMaterialization);
+            logElectronLifecycle('local-backend-materialization-finalized', finalization);
+        }
+        pendingMaterialization = null;
         logElectronLifecycle('local-backend-ready', { port: JK_LOCAL_BACKEND_PORT });
         return { success: true, localAppDir, port: JK_LOCAL_BACKEND_PORT };
     })().catch((err) => {
+        if (pendingMaterialization && pendingMaterialization.changed) {
+            try {
+                const rollback = getBackendRuntimeMaterializer().rollbackMaterialization(pendingMaterialization);
+                logElectronLifecycle('local-backend-materialization-rolled-back', rollback);
+            } catch (rollbackError) {
+                logElectronLifecycle('local-backend-materialization-rollback-failed', rollbackError);
+                err.materializationRollbackError = rollbackError;
+            } finally {
+                pendingMaterialization = null;
+            }
+        }
         localBackendStartupPromise = null;
         if (err && err.jkLocalBackendDiagnostic) throw err;
         throw pythonRuntimeDiagnosticError(

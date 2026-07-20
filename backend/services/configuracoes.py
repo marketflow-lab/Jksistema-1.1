@@ -17,8 +17,10 @@ from backend.services.env_config import _env_config_bool
 CONFIG_GLOBAIS_DEFAULT = {
     "auto_sync_estoque_janela_minutos": 30,
     "ia_modelo_padrao": "codex:gpt-5.5",
-    "ia_modelo_perguntas": "codex:gpt-5.6-sol",
+    "ia_modelo_perguntas": "codex:gpt-5.5",
     "ia_modelo_pos_venda": "codex:gpt-5.5",
+    "ia_raciocinio_perguntas": "medium",
+    "ia_raciocinio_pos_venda": "medium",
     "ia_modelo_chat": "codex:gpt-5.5",
     "ia_modelo_favoritos": "codex:gpt-5.5",
     "ia_modo_padrao": "modelo",
@@ -98,12 +100,22 @@ def _normalizar_ia_modo(valor: object) -> str:
     return "modelo"
 
 
+IA_RACIOCINIO_NIVEIS = ("low", "medium", "high", "xhigh")
+
+
+def _normalizar_ia_raciocinio(valor: object) -> str:
+    nivel = str(valor or "").strip().lower()
+    return nivel if nivel in IA_RACIOCINIO_NIVEIS else "medium"
+
+
 def _normalizar_configuracoes_globais(payload: Optional[dict] = None) -> dict:
     dados = dict(CONFIG_GLOBAIS_DEFAULT)
     if isinstance(payload, dict):
         dados.update(payload)
     for chave in ("ia_modo_padrao", "ia_modo_perguntas", "ia_modo_pos_venda", "ia_modo_chat", "ia_modo_favoritos"):
         dados[chave] = _normalizar_ia_modo(dados.get(chave))
+    for chave in ("ia_raciocinio_perguntas", "ia_raciocinio_pos_venda"):
+        dados[chave] = _normalizar_ia_raciocinio(dados.get(chave))
     for chave in ("ia_agent_resource_name", "ia_agent_endpoint_url"):
         dados[chave] = str(dados.get(chave) or "").strip()
     dados["ia_openai_ativa"] = bool(dados.get("ia_openai_ativa", True))

@@ -299,7 +299,7 @@ function renderizarTipoTreinamento(limparChat = false) {
 }
 
 function trocarTipoTreinamento(tipo) {
-    const novoTipo = tipo === 'pos_venda' ? 'pos_venda' : 'perguntas_anuncio';
+    const novoTipo = 'perguntas_anuncio';
     if (novoTipo === state.treinamentoTipo) return;
     sincronizarOrientacoesTreinamentoAtual();
     state.treinamentoTipo = novoTipo;
