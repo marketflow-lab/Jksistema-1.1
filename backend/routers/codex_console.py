@@ -349,6 +349,12 @@ def create_codex_console_router() -> APIRouter:
         name="codex_assistant_bling_resources",
     )
     router.add_api_route(
+        "/api/admin/codex/assistant/mercado-livre/resources",
+        codex_assistant.codex_assistant_mercado_livre_resources,
+        methods=["GET"],
+        name="codex_assistant_mercado_livre_resources",
+    )
+    router.add_api_route(
         "/api/admin/codex/assistant/proactive/run",
         codex_assistant.codex_assistant_proactive_run,
         methods=["POST"],

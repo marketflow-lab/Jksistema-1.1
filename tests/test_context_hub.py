@@ -34,7 +34,13 @@ def _rebuild_and_publish(*, force: bool = False) -> dict:
     return _publish_ready(context_hub.rebuild_context("000002", force=force))
 
 
-def _write_bundle(base: Path, *, version: str = "1.0.99", content: str = "# Operacao\n\nConhecimento tecnico seguro.\n") -> Path:
+def _write_bundle(
+    base: Path,
+    *,
+    version: str = "1.0.99",
+    content: str = "# Operacao\n\nConhecimento tecnico seguro.\n",
+    include_ml_guide: bool = False,
+) -> Path:
     relative_documents = {
         "docs/knowledge/README.md": "# Context Hub\n\nConhecimento versionado seguro.\n",
         "docs/knowledge/security-policy.md": "# Seguranca\n\nPolitica tecnica segura.\n",
@@ -43,6 +49,10 @@ def _write_bundle(base: Path, *, version: str = "1.0.99", content: str = "# Oper
         "docs/knowledge/templates/generated-note.md": "# Nota gerada\n\nModelo gerenciado seguro.\n",
         "docs/knowledge/operacao.md": content,
     }
+    if include_ml_guide:
+        relative_documents["docs/knowledge/mercado-livre-api-consultas.md"] = (
+            "# API Mercado Livre\n\nGUIA_ML_OBSIDIAN_2026 seguro.\n"
+        )
     files = []
     for relative, document_content in sorted(relative_documents.items()):
         document = base / relative
@@ -748,6 +758,35 @@ def test_bundle_is_fail_closed_and_ignores_unlisted_overlay(hub_env) -> None:
     mismatch = context_hub.rebuild_context("000002")
     assert mismatch["status"] == "failed"
     assert any(row["code"] == "context_bundle_version_mismatch" for row in mismatch["findings"])
+
+
+def test_reviewed_bundle_guide_is_visible_in_obsidian_without_duplicate_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    base = tmp_path / "app"
+    info = tmp_path / "info"
+    base.mkdir()
+    info.mkdir()
+    _write_bundle(base, include_ml_guide=True)
+    adapter = FakeInventoryAdapter([_entity("jk:domain:test")])
+    monkeypatch.setattr(context_hub, "_load_inventory_adapter", lambda: adapter)
+    context_hub.configure_context_hub(base_dir=base, info_root=info, surface="development")
+
+    active = _publish_ready(context_hub.rebuild_context("000002"))
+
+    visible = (
+        info
+        / "000002"
+        / "ContextVault"
+        / "70_Gerado"
+        / "Contratos"
+        / "Mercado-Livre-API-Consultas.md"
+    )
+    assert active["status"] == "active"
+    assert visible.is_file()
+    assert "GUIA_ML_OBSIDIAN_2026" in visible.read_text(encoding="utf-8")
+    search = context_hub.search_context("000002", "GUIA_ML_OBSIDIAN_2026")
+    assert search["count"] == 1
+    assert search["results"][0]["doc_id"] == "jk:bundle:mercado-livre-api-consultas-md"
+    assert not (info / "000002" / "ContextVault" / "80_Curadoria" / "Mercado-Livre-API-Consultas.md").exists()
 
 
 def test_bundle_rejects_empty_manifest_and_missing_required_entries(hub_env) -> None:

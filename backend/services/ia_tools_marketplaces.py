@@ -488,6 +488,7 @@ def _ia_ml_request_get(
     url: str,
     *,
     params=None,
+    headers=None,
     timeout: int = 20,
     deadline: Optional[float] = None,
 ):
@@ -507,6 +508,7 @@ def _ia_ml_request_get(
                 "GET",
                 url,
                 params=params,
+                headers=headers,
                 timeout=request_timeout,
             )
         except requests.exceptions.Timeout as exc:
@@ -2213,8 +2215,9 @@ def _ia_ml_resolve_exact_order(
         result.update({"error": "invalid_order_id", "message": "Informe um numero de venda, order ou pack valido."})
         return {"function": function_name, "arguments": arguments, "result": result}
 
-    connected = list(_ia_lojas_ml_conectadas(client_id) or [])
-    stores = [selected_store] + [store for store in connected if _normalizar_texto(store) != _normalizar_texto(selected_store)]
+    # A loja exata e uma fronteira de autorizacao. Um order/pack inexistente
+    # nela nunca autoriza busca silenciosa nas demais contas do cliente.
+    stores = [selected_store]
     sources: list[dict] = []
     source_seen: set[tuple[str, str]] = set()
     matched_store = ""
@@ -2289,11 +2292,7 @@ def _ia_ml_resolve_exact_order(
                 pack_orders = []
                 for order_id in list(dict.fromkeys(order_ids)):
                     linked_found = False
-                    linked_stores = [store] + [
-                        candidate
-                        for candidate in stores
-                        if _normalizar_texto(candidate) != _normalizar_texto(store)
-                    ]
+                    linked_stores = [store]
                     for linked_store in linked_stores:
                         try:
                             linked_cfg = (
@@ -2328,7 +2327,7 @@ def _ia_ml_resolve_exact_order(
                         break
                     if not linked_found:
                         result["partial_response"] = True
-                        result["warnings"].append(f"A order {order_id} do pack nao pode ser carregada nas contas permitidas.")
+                        result["warnings"].append(f"A order {order_id} do pack nao pode ser confirmada na loja escolhida.")
                 if pack_orders:
                     raw_orders = pack_orders
                     cfg = cfg_by_store.get(store) or store_cfg
@@ -2367,18 +2366,18 @@ def _ia_ml_resolve_exact_order(
         if had_reconnect:
             result.update({
                 "error": "reconnect_required",
-                "message": "A autenticacao de uma ou mais contas Mercado Livre precisa ser refeita.",
+                "message": "A autenticacao da loja Mercado Livre precisa ser refeita.",
                 "reconnect_required": True,
             })
         elif had_forbidden:
             result.update({
                 "error": "access_denied_or_not_found",
-                "message": "O numero nao foi encontrado nas contas acessiveis; outras contas recusaram acesso ao recurso.",
+                "message": "O numero nao foi encontrado, ou a loja escolhida recusou acesso ao recurso.",
             })
         else:
             result.update({
                 "error": "not_found",
-                "message": "O numero nao foi localizado como order nem como pack nas contas Mercado Livre permitidas.",
+                "message": "O numero nao foi localizado como order nem como pack na loja Mercado Livre escolhida.",
             })
         result["warnings"].append("Nenhum historico local foi usado para substituir a consulta exata da API.")
         return {"function": function_name, "arguments": arguments, "result": result}

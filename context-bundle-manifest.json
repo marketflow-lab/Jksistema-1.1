@@ -2,13 +2,18 @@
   "files": [
     {
       "path": "docs/knowledge/README.md",
-      "sha256": "c29e6c98e709aea8d9ba28f9f9dc5ccb9d88c09475d7bd91cf6d1aa6520419ee",
-      "size": 1122
+      "sha256": "ba3ff1640db0fa0bc806abc2c8b7e0e8667da4b3fb908653e5ba31b0c5473b19",
+      "size": 1344
     },
     {
       "path": "docs/knowledge/curation-governance-v2.md",
       "sha256": "be43fb8aff69ff58df71b5291a9aa284eebe5b7e1789fdc6606ee1e09121a335",
       "size": 1651
+    },
+    {
+      "path": "docs/knowledge/mercado-livre-api-consultas.md",
+      "sha256": "01e8456452cd2dc524fa9bd8f136735826ec86e9886c101013eba5f6af9f8eda",
+      "size": 50291
     },
     {
       "path": "docs/knowledge/security-policy.md",
@@ -37,5 +42,5 @@
     }
   ],
   "schema_version": 1,
-  "source_version": "1.0.108"
+  "source_version": "1.0.109"
 }

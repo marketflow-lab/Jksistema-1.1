@@ -44,7 +44,7 @@ DAILY_ANALYSIS_ENABLED = False
 REPORT_FORMATS = {"html", "xlsx", "pdf"}
 DEFAULT_RANKING_LIMIT = 50
 BLING_REPORT_LIMIT = 200
-CODEX_DATA_TOOLS_VERSION = "20260718-data-tools-v21-positive-stock-count"
+CODEX_DATA_TOOLS_VERSION = "20260720-data-tools-v22-ml-query-catalog"
 CODEX_DATA_CONTEXT_CHAR_LIMIT = int(os.getenv("JK_CODEX_DATA_CONTEXT_CHAR_LIMIT") or "64000")
 CODEX_DATA_PREVIEW_CHAR_LIMIT = int(os.getenv("JK_CODEX_DATA_PREVIEW_CHAR_LIMIT") or "24000")
 CODEX_SALES_RETURNS_CONTEXT_CHAR_LIMIT = int(os.getenv("JK_CODEX_SALES_RETURNS_CONTEXT_CHAR_LIMIT") or "64000")
@@ -259,6 +259,27 @@ CODEX_DATA_TOOLS: list[dict[str, Any]] = [
         ],
         "fallbacks": ["integrations_status"],
         "status": "consultando Mercado Livre read-only",
+    },
+    {
+        "id": "mercado_livre_resource_query",
+        "module": "mercado_livre",
+        "description": "Catalogo oficial versionado e executor fechado de endpoints de consulta do Mercado Livre. Aceita resource_id; nunca URL livre.",
+        "intent_examples": [
+            "catalogo de endpoints mercado livre",
+            "consultar recurso oficial do mercado livre",
+            "buscar estoque de user product ou desempenho do anuncio",
+        ],
+        "executor": "mercado_livre_query_service.execute_mercado_livre_query",
+        "external": True,
+        "read_only": True,
+        "sensitive": True,
+        "cache_ttl_seconds": 0,
+        "output_fields": ["catalog_version", "resource", "data", "rows", "records", "sources"],
+        "fallbacks": [],
+        "zero_is_authoritative": True,
+        "source_role": "primary_api",
+        "aggregation_policy": "separate_sources_no_sum",
+        "status": "consultando recurso oficial do Mercado Livre",
     },
     {
         "id": "mercado_livre_visits",
@@ -785,7 +806,7 @@ for _tool_contract in CODEX_DATA_TOOLS:
 # Consultas direcionadas a uma API devem preservar o zero retornado por essa
 # fonte. Um resultado vazio do provedor nao pode virar silenciosamente dados de
 # banco local ou de outra integracao.
-for _api_tool_id in {"mercado_livre_listing", "mercado_livre_visits", "mercado_livre_promotions", "mercado_livre_post_sale_detail", "mercado_livre_orders", "mercado_livre_returns", "mercado_livre_full_stock", "bling_sales_orders", "questions_post_sale_query"}:
+for _api_tool_id in {"mercado_livre_listing", "mercado_livre_resource_query", "mercado_livre_visits", "mercado_livre_promotions", "mercado_livre_post_sale_detail", "mercado_livre_orders", "mercado_livre_returns", "mercado_livre_full_stock", "bling_sales_orders", "questions_post_sale_query"}:
     for _tool_contract in CODEX_DATA_TOOLS:
         if str(_tool_contract.get("id") or "") == _api_tool_id:
             _tool_contract["zero_is_authoritative"] = True
@@ -859,6 +880,7 @@ ASSISTANT_FULL_ONLY_TOOLS = frozenset(
     {
         "bling_finance_summary",
         "bling_resource_query",
+        "mercado_livre_resource_query",
         "source_discovery",
         "local_database_query",
         "local_csv_query",
@@ -1563,6 +1585,14 @@ def _assistant_tool_input_schema(tool_id: str) -> dict[str, Any]:
             "incluir_comercial": False,
             "force_refresh": False,
         },
+        "mercado_livre_resource_query": {
+            "mensagem": "termos para pesquisar o catalogo; opcional quando resource_id for informado",
+            "resource_id": "identificador exato ml.*; vazio lista ou pesquisa o catalogo",
+            "loja": "nome exato da loja/conta Mercado Livre para executar",
+            "params": "objeto fechado com os parametros permitidos pelo recurso",
+            "limite": "1..100",
+            "force_refresh": False,
+        },
         "mercado_livre_visits": {
             "mensagem": "MLB exato e periodo desejado",
             "loja": "nome exato da loja/conta Mercado Livre",
@@ -1754,6 +1784,7 @@ _ASSISTANT_SOURCE_LABELS: dict[str, str] = {
     "integrations_status": "status das integracoes cadastradas",
     "mercado_livre_readonly": "dados do Mercado Livre",
     "mercado_livre_listing": "anuncios do Mercado Livre",
+    "mercado_livre_resource_query": "catalogo e consultas oficiais do Mercado Livre",
     "mercado_livre_visits": "visitas de anuncio do Mercado Livre",
     "mercado_livre_promotions": "promocoes do Mercado Livre",
     "mercado_livre_post_sale_detail": "conversa de pos-venda do Mercado Livre",
@@ -3881,6 +3912,18 @@ def _assistant_execute_registry_tool(
             raw = _assistant_call_ia_tool("_ia_tool_get_days_without_sale_top", client_id, loja, limit_safe, True, False, True)
         elif tool_id == "integrations_status":
             raw = _assistant_call_ia_tool("_ia_tool_get_integrations_status", client_id, loja)
+        elif tool_id == "mercado_livre_resource_query":
+            from backend.services import mercado_livre_query_service
+
+            raw = mercado_livre_query_service.execute_mercado_livre_query(
+                client_id=client_id,
+                message=message,
+                loja=loja,
+                resource_id=str(plan.get("resource_id") or ""),
+                params=plan.get("resource_params") if isinstance(plan.get("resource_params"), dict) else {},
+                limit=limit_safe,
+                query_deadline=plan.get("query_deadline"),
+            )
         elif tool_id == "mercado_livre_listing":
             ml_message = message if re.search(r"\b(mercado livre|mercadolivre|mlb[\s_-]*\d+|sku|anuncio|anuncios|listar)\b", _assistant_texto_norm(message)) else "listar anuncios ativos mercado livre"
             raw = _assistant_call_ia_tool(
@@ -4655,7 +4698,7 @@ def _assistant_agent_result_package(
         "description": meta.get("description") or "",
         "external": bool(meta.get("external")),
         "read_only": meta.get("read_only") is True,
-        "args": {} if tool_id == "context_hub_search" else _assistant_agent_compact(args),
+        "args": {} if tool_id == "context_hub_search" or meta.get("sensitive") is True else _assistant_agent_compact(args),
         "records": records,
         "top_rows": _assistant_agent_compact(rows[:CODEX_AGENT_TOP_ROWS_LIMIT]),
         # O relatorio diario do WhatsApp precisa listar cada SKU retornado pela
@@ -4676,7 +4719,7 @@ def _assistant_agent_result_package(
         "source_label": (sources_human[:1] or [_assistant_human_tool_label(tool_id)])[0],
         "source_role": (
             "primary_api"
-            if tool_id in {"bling_sales_orders", "bling_positive_stock_sku_count", "bling_stock_balances", "mercado_livre_orders", "mercado_livre_returns", "mercado_livre_listing", "mercado_livre_visits", "mercado_livre_promotions", "mercado_livre_post_sale_detail", "mercado_livre_full_stock", "questions_post_sale_query"}
+            if tool_id in {"bling_sales_orders", "bling_positive_stock_sku_count", "bling_stock_balances", "mercado_livre_resource_query", "mercado_livre_orders", "mercado_livre_returns", "mercado_livre_listing", "mercado_livre_visits", "mercado_livre_promotions", "mercado_livre_post_sale_detail", "mercado_livre_full_stock", "questions_post_sale_query"}
             else "supporting_local_history"
             if _assistant_is_generic_sales_api_query(str(args.get("message") or args.get("mensagem") or ""))
             and tool_id in {"sales_returns_query", "sales_ranking", "sales_summary"}
@@ -4684,7 +4727,7 @@ def _assistant_agent_result_package(
         ),
         "aggregation_policy": (
             "separate_sources_no_sum"
-            if tool_id in {"bling_sales_orders", "bling_positive_stock_sku_count", "bling_stock_balances", "mercado_livre_orders", "mercado_livre_returns", "mercado_livre_listing", "mercado_livre_visits", "mercado_livre_promotions", "mercado_livre_post_sale_detail", "mercado_livre_full_stock", "questions_post_sale_query"}
+            if tool_id in {"bling_sales_orders", "bling_positive_stock_sku_count", "bling_stock_balances", "mercado_livre_resource_query", "mercado_livre_orders", "mercado_livre_returns", "mercado_livre_listing", "mercado_livre_visits", "mercado_livre_promotions", "mercado_livre_post_sale_detail", "mercado_livre_full_stock", "questions_post_sale_query"}
             or _assistant_is_generic_sales_api_query(str(args.get("message") or args.get("mensagem") or ""))
             else "standard"
         ),
@@ -4865,7 +4908,7 @@ def codex_assistant_execute_tool_call(
     elif tool_id == "mercado_livre_returns":
         default_limit = 1
         maximum_limit = 100
-    elif tool_id == "mercado_livre_listing":
+    elif tool_id in {"mercado_livre_listing", "mercado_livre_resource_query"}:
         default_limit = 20
         maximum_limit = 100
     elif tool_id == "mercado_livre_promotions":
@@ -4904,6 +4947,14 @@ def codex_assistant_execute_tool_call(
         "incluir_comercial": incluir_comercial,
         "dias": _assistant_agent_int(args.get("dias") or args.get("days"), 30, 1, 150),
         "promotion_id": str(args.get("promotion_id") or args.get("promocao_id") or "").strip()[:120],
+        "resource_id": str(args.get("resource_id") or args.get("recurso_id") or args.get("endpoint_id") or "").strip()[:160],
+        "resource_params": (
+            dict(args.get("params"))
+            if isinstance(args.get("params"), dict)
+            else dict(args.get("parametros"))
+            if isinstance(args.get("parametros"), dict)
+            else {}
+        ),
         "incluir_contagens": _assistant_bool_arg(args.get("incluir_contagens", args.get("include_counts")), False),
         "force_refresh": force_refresh,
         "query_deadline": query_deadline,
@@ -9160,6 +9211,19 @@ def codex_assistant_bling_resources(
     return payload
 
 
+def codex_assistant_mercado_livre_resources(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    _assistant_require_full_admin(request, authorization)
+    from backend.services.mercado_livre_query_catalog import mercado_livre_query_catalog_public
+
+    payload = mercado_livre_query_catalog_public()
+    payload["execution_requires_exact_store"] = True
+    payload["mutating_routes_blocked"] = True
+    return payload
+
+
 def codex_assistant_proactive_run(
     payload: CodexAssistantRunRequest,
     request: Request,
@@ -10163,6 +10227,7 @@ __all__ = [
     "codex_assistant_memory_delete",
     "codex_assistant_data_sources",
     "codex_assistant_bling_resources",
+    "codex_assistant_mercado_livre_resources",
     "codex_assistant_proactive_run",
     "codex_assistant_daily_analysis_run",
     "codex_assistant_weekly_analysis_run",

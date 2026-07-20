@@ -584,7 +584,7 @@ def test_exact_pack_ignores_period_and_loads_full_claim_return_and_all_messages(
     assert "/orders/search" not in " ".join(call["url"] for call in calls)
 
 
-def test_exact_order_searches_other_permitted_stores_after_selected_store_misses(monkeypatch):
+def test_exact_order_never_searches_other_store_after_selected_store_misses(monkeypatch):
     _configure_store(monkeypatch, ["JK Pecas", "Deckas"])
     calls = []
     order_id = "2000017389080442"
@@ -607,18 +607,17 @@ def test_exact_order_searches_other_permitted_stores_after_selected_store_misses
         id_pedido=order_id,
     )["result"]
 
-    assert result["found"] is True
-    assert result["identifier_type"] == "order"
-    assert result["matched_stores"] == ["Deckas"]
-    assert result["resolved_order_ids"] == [order_id]
-    assert [(store, url.rsplit("/", 1)[-1]) for store, _method, url in calls[:3]] == [
+    assert result["found"] is False
+    assert result["error"] == "not_found"
+    assert result["matched_stores"] == []
+    assert result["resolved_order_ids"] == []
+    assert [(store, url.rsplit("/", 1)[-1]) for store, _method, url in calls] == [
         ("JK Pecas", order_id),
         ("JK Pecas", order_id),
-        ("Deckas", order_id),
     ]
 
 
-def test_exact_pack_resolves_visible_orders_across_permitted_accounts(monkeypatch):
+def test_exact_pack_keeps_only_orders_confirmed_in_selected_store(monkeypatch):
     _configure_store(monkeypatch, ["JK Pecas", "Deckas"])
     pack_id = "2000013990113115"
 
@@ -650,9 +649,10 @@ def test_exact_pack_resolves_visible_orders_across_permitted_accounts(monkeypatc
     )["result"]
 
     assert result["identifier_type"] == "pack"
-    assert result["resolved_order_ids"] == ["101", "202"]
-    assert result["matched_stores"] == ["JK Pecas", "Deckas"]
-    assert [order["store"] for order in result["orders"]] == ["JK Pecas", "Deckas"]
+    assert result["resolved_order_ids"] == ["101"]
+    assert result["matched_stores"] == ["JK Pecas"]
+    assert [order["store"] for order in result["orders"]] == ["JK Pecas"]
+    assert result["partial_response"] is True
 
 
 def test_orders_older_than_twelve_months_uses_local_history_signal_without_api(monkeypatch):

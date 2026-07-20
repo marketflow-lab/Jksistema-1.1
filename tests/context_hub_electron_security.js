@@ -171,6 +171,10 @@ async function main() {
         assert.strictEqual(crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex'), entry.sha256);
         declaredKnowledge.add(entry.path);
     }
+    assert.ok(
+        declaredKnowledge.has('docs/knowledge/mercado-livre-api-consultas.md'),
+        'Guia versionado da API do Mercado Livre ausente do Context Bundle.'
+    );
     const actualKnowledge = [];
     const visitKnowledge = directory => {
         for (const item of fs.readdirSync(directory, { withFileTypes: true })) {

@@ -2547,7 +2547,7 @@ def _ml_api_get(url: str, params: dict | None = None, max_retries: int = 3, dela
     }
     for tentativa in range(max_retries):
         try:
-            resp = requests.get(url, params=params, headers=headers, timeout=10, verify=False)
+            resp = requests.get(url, params=params, headers=headers, timeout=10)
             if resp.status_code == 200:
                 return resp.json()
             status = int(resp.status_code or 0)
@@ -3028,7 +3028,6 @@ def _ml_wayback_primeira_captura_data(item_id: str | None, url: str | None = Non
                 "Accept": "application/json, text/plain, */*",
             },
             timeout=8,
-            verify=False,
         )
         if resp.status_code != 200:
             return None

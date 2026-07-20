@@ -844,43 +844,23 @@ def auth_ml_exchange(app_id, client_secret, code, redirect_uri=None):
         "redirect_uri": redirect_final,
     }
     try:
-        logger.info("[ML EXCHANGE] Iniciando...")
-        logger.info("[ML EXCHANGE] URL: %s", url)
-        logger.info("[ML EXCHANGE] App ID: %s", app_id)
-        logger.info("[ML EXCHANGE] Redirect URI: %s", redirect_final)
-        logger.info("[ML EXCHANGE] Code (primeiros 20 chars): %s...", code[:20] if code else "VAZIO")
-        logger.info("[ML EXCHANGE] Headers: %s", headers)
+        logger.info("[ML EXCHANGE] Iniciando troca OAuth sanitizada.")
 
         resp = requests.post(url, headers=headers, data=payload, timeout=10)
 
         logger.info("[ML EXCHANGE] Status Code: %s", resp.status_code)
-        logger.info("[ML EXCHANGE] Response Headers: %s", dict(resp.headers))
-        try:
-            response_preview = resp.json()
-            if isinstance(response_preview, dict):
-                for token_key in ("access_token", "refresh_token"):
-                    if response_preview.get(token_key):
-                        response_preview[token_key] = str(response_preview[token_key])[:18] + "..."
-                logger.info("[ML EXCHANGE] Response Body: %s", json.dumps(response_preview, ensure_ascii=False)[:1000])
-            else:
-                logger.info("[ML EXCHANGE] Response Body: %s", str(response_preview)[:1000])
-        except Exception:
-            logger.info("[ML EXCHANGE] Response Body (raw): %s", resp.text[:1000])
 
         if resp.status_code == 200:
             result = resp.json()
             logger.info("[ML EXCHANGE] SUCCESS")
-            logger.info("[ML EXCHANGE] Credenciais recebidas: %s", bool(result.get("access_token")))
-            logger.info("[ML EXCHANGE] User ID: %s", result.get("user_id", "N/A"))
             return True, result
 
-        logger.error("[ML EXCHANGE] Erro %s", resp.status_code)
-        logger.error("[ML EXCHANGE] Response: %s", resp.text)
-        return False, resp.text
+        logger.error("[ML EXCHANGE] Falha OAuth HTTP %s.", resp.status_code)
+        return False, f"Mercado Livre recusou a troca OAuth (HTTP {resp.status_code})."
 
-    except Exception as e:
-        logger.exception("[ML EXCHANGE] Exception: %s", e)
-        return False, str(e)
+    except Exception:
+        logger.error("[ML EXCHANGE] Falha de comunicacao na troca OAuth.")
+        return False, "Falha de comunicacao com o Mercado Livre durante a troca OAuth."
 
 
 __all__ = [

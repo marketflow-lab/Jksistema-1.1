@@ -268,19 +268,27 @@ def _ml_api_request(
     params=None,
     json=None,
     data=None,
+    headers=None,
     timeout: int = 15,
     verify_ssl: bool | None = None,
 ):
     """Executa chamada autenticada na API do Mercado Livre com refresh automÃƒÂ¡tico do token."""
-    verify = _env_bool("ML_VERIFY_SSL", True) if verify_ssl is None else bool(verify_ssl)
+    if verify_ssl is False:
+        logger.warning("[ML API] Tentativa legada de desabilitar TLS foi bloqueada para loja=%s.", loja)
+    verify = str(os.environ.get("ML_CA_BUNDLE") or "").strip() or True
     access_token = str((cfg or {}).get("access_token") or "").strip()
+    request_headers = _headers_ml(access_token)
+    for key, value in dict(headers or {}).items():
+        if str(key or "").strip().lower() in {"authorization", "cookie", "set-cookie"}:
+            continue
+        request_headers[str(key)] = str(value)
     resp = _ml_http_request(
         client_id,
         loja,
         access_token,
         method,
         url,
-        headers=_headers_ml(cfg["access_token"]),
+        headers=request_headers,
         params=params,
         json=json,
         data=data,
@@ -291,13 +299,18 @@ def _ml_api_request(
         _ml_http_invalidar_session(client_id, loja, access_token, verify)
         cfg = _ml_refresh_token(client_id, loja, cfg)
         access_token = str((cfg or {}).get("access_token") or "").strip()
+        request_headers = _headers_ml(access_token)
+        for key, value in dict(headers or {}).items():
+            if str(key or "").strip().lower() in {"authorization", "cookie", "set-cookie"}:
+                continue
+            request_headers[str(key)] = str(value)
         resp = _ml_http_request(
             client_id,
             loja,
             access_token,
             method,
             url,
-            headers=_headers_ml(cfg["access_token"]),
+            headers=request_headers,
             params=params,
             json=json,
             data=data,
@@ -410,12 +423,7 @@ def _ml_response_eh_rate_limit(resp, detalhe: str = "") -> bool:
 
 
 def _ml_favoritos_api_request(client_id: str, loja: str, cfg: dict, method: str, url: str, *, params=None, json=None, data=None, timeout: int = 15):
-    """Chamada ML usada apenas pelo mÃ³dulo Favoritos.
-
-    Alguns ambientes Windows/Electron deste app nÃ£o possuem a cadeia de certificados
-    atualizada. Em Favoritos, a falha era tratada como "sem anÃºncio"; aqui ela fica
-    limitada a este mÃ³dulo e evita falso negativo na busca de descriÃ§Ãµes.
-    """
+    """Chamada ML usada pelo mÃ³dulo Favoritos com TLS estrito."""
     cfg_local = dict(cfg or {})
     return _ml_api_request(
         client_id,
@@ -427,7 +435,6 @@ def _ml_favoritos_api_request(client_id: str, loja: str, cfg: dict, method: str,
         json=json,
         data=data,
         timeout=timeout,
-        verify_ssl=False,
     )
 
 PEER_EXPORTS = ['_ml_refresh_token', '_headers_ml', '_ml_oauth_status', '_ml_oauth_config_completa', '_ml_normalizar_oauth_compartilhado', '_ml_descobrir_user_id_oauth', '_obter_cfg_ml', '_ml_api_request', '_ml_api_request_com_retry', '_ml_parse_error_detail', '_ml_response_eh_rate_limit', '_ml_favoritos_api_request']

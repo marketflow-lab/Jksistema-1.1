@@ -6,9 +6,12 @@ clientes, credenciais, bancos operacionais ou dossiês SKU.
 
 No runtime, o conteúdo listado no `context-bundle-manifest.json` da raiz do
 pacote é importado para uma geração em staging. Arquivos ausentes do manifesto
-são ignorados. O vault persistente fica em
-`info/<client_id>/ContextVault`, enquanto o banco e o journal ficam em
-`info/<client_id>/context_hub`.
+são ignorados. O vault persistente fica em `info/<client_id>/ContextVault`,
+enquanto o banco e o journal ficam em `info/<client_id>/context_hub`.
+
+## Guias versionados
+
+- [Orientação de busca na API do Mercado Livre](mercado-livre-api-consultas.md) — catálogo oficial de endpoints de consulta, regras de segurança e funções disponíveis no assistente interno.
 
 ## Classes de verdade
 

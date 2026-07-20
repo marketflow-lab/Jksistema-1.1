@@ -90,6 +90,14 @@ CONTEXT_BUNDLE_REQUIRED_PATHS = frozenset(
         "docs/knowledge/templates/generated-note.md",
     }
 )
+# Only explicitly reviewed bundle documents are mirrored into the Obsidian
+# vault.  They keep their single indexed bundle document; this mapping merely
+# gives the same immutable content a visible path under managed 70_Gerado.
+CONTEXT_BUNDLE_OBSIDIAN_PATHS = {
+    "@bundle/mercado-livre-api-consultas.md": (
+        "70_Gerado/Contratos/Mercado-Livre-API-Consultas.md"
+    ),
+}
 _VOLATILE_INVENTORY_KEYS = {
     "generated_at",
     "generation_time",
@@ -2137,6 +2145,27 @@ def _prepare_documents(
         if relative.lower() in seen_paths:
             findings.append(_finding("bundle_path_duplicate", category="bundle", source_ref=relative))
             continue
+        obsidian_target = CONTEXT_BUNDLE_OBSIDIAN_PATHS.get(relative)
+        if obsidian_target:
+            try:
+                managed_relative = _safe_relative_markdown_path(obsidian_target)
+            except ContextHubValidationError:
+                findings.append(
+                    _finding("bundle_obsidian_path_invalid", category="bundle", source_ref=relative)
+                )
+                continue
+            if tuple(managed_relative.parts[:2]) != ("70_Gerado", "Contratos"):
+                findings.append(
+                    _finding("bundle_obsidian_path_invalid", category="bundle", source_ref=relative)
+                )
+                continue
+            managed_path = managed_relative.as_posix()
+            if any(path.casefold() == managed_path.casefold() for path in managed_files):
+                findings.append(
+                    _finding("bundle_obsidian_path_duplicate", category="bundle", source_ref=relative)
+                )
+                continue
+            managed_files[managed_path] = str(bundle.get("content") or "")
         seen_ids.add(doc_id)
         seen_paths.add(relative.lower())
         documents.append(dict(bundle))
