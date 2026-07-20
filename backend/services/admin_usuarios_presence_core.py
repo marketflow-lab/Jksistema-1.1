@@ -128,6 +128,23 @@ def _montar_machine_id_login(request: Optional[Request], machine_id: Optional[st
         "mac_address": mac_address or None,
     }
 
+
+def _authenticated_session_machine_id(sessao: dict, requested_machine_id: Optional[str] = None) -> str:
+    """Bind an authenticated request to the machine identity carried by its JWT."""
+    authenticated = str((sessao or {}).get("machine_id") or "").strip()
+    if not authenticated:
+        raise HTTPException(
+            status_code=401,
+            detail="Entre novamente para autenticar esta maquina.",
+        )
+    requested = str(requested_machine_id or "").strip()
+    if requested and requested != authenticated:
+        raise HTTPException(
+            status_code=403,
+            detail="A sessao atual pertence a outra maquina.",
+        )
+    return authenticated
+
 def _vincular_maquina_ao_usuario_se_vazia(username: str, machine_id: str):
     machine_final = str(machine_id or "").strip()
     if not machine_final:
@@ -506,6 +523,7 @@ __all__ = [
     "_resolver_nome_computador_por_ip",
     "_resolver_mac_por_ip",
     "_montar_machine_id_login",
+    "_authenticated_session_machine_id",
     "_vincular_maquina_ao_usuario_se_vazia",
     "_registrar_login_maquina",
     "_machine_presence_write_interval_seconds",

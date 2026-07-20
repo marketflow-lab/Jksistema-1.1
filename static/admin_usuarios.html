@@ -325,6 +325,16 @@
         }
         .machine-sync-action-status.is-error { color: #ffb1b1; }
         .machine-sync-action-status.is-success { color: #b9f8d1; }
+        .machine-sync-keyring-status {
+            min-height: 18px;
+            margin-top: 4px;
+            color: #bfe4ff;
+            font-size: 12px;
+            line-height: 1.35;
+        }
+        .machine-sync-keyring-status.is-error { color: #ffb1b1; }
+        .machine-sync-keyring-status.is-success { color: #b9f8d1; }
+        .machine-sync-keyring-status.is-warning { color: #ffd28a; }
         .user-share-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -840,6 +850,7 @@
                         <div>
                             <h3>Sincronizar minhas máquinas</h3>
                             <div id="machineSyncSummary" class="small">Carregando sincronização das minhas máquinas...</div>
+                            <div id="machineSyncKeyringStatus" class="machine-sync-keyring-status" aria-live="polite"></div>
                             <div id="machineSyncActionStatus" class="machine-sync-action-status" aria-live="polite"></div>
                         </div>
                         <button class="btn-muted" onclick="carregarSincronizacaoMinhasMaquinas()">Atualizar status</button>
@@ -2408,7 +2419,9 @@
         const grid = document.getElementById('machineSyncScopes');
         const machinesEl = document.getElementById('machineSyncMachines');
         const enabledEl = document.getElementById('machineSyncEnabled');
+        const keyringEl = document.getElementById('machineSyncKeyringStatus');
         const config = (payload && payload.config) || {};
+        const keyring = (payload && payload.keyring) || {};
         const scopes = (payload && payload.scopes) || {};
         const scopeKeys = Object.keys(scopes).filter(scope => scopes[scope] && scopes[scope].allowed);
         const selected = new Set(Array.isArray(config.scopes) ? config.scopes : []);
@@ -2420,6 +2433,29 @@
             const pendentes = scopeKeys.filter(scope => (scopes[scope] || {}).pending_receive === true).length;
             const recebimento = config.enabled && config.auto_pull !== false ? 'Recebimento automático ativo' : 'Recebimento automático desativado';
             summary.textContent = `${recebimento} | ${ativos} dado(s) selecionado(s) | ${pendentes ? `${pendentes} para receber` : 'sem pendências'} | ${maquinas} máquina(s) online | ${backend}`;
+        }
+        if (keyringEl) {
+            keyringEl.classList.remove('is-error', 'is-success', 'is-warning');
+            if (keyring.ready) {
+                keyringEl.classList.add('is-success');
+                keyringEl.textContent = 'Criptografia segura pronta nesta máquina.';
+            } else if (keyring.reason === 'not_created') {
+                keyringEl.textContent = 'Proteção segura pronta para ser criada no próximo envio.';
+            } else if (keyring.reason === 'envelope_missing') {
+                keyringEl.classList.add('is-warning');
+                keyringEl.textContent = 'Esta máquina foi registrada. Na máquina de origem, clique em Enviar agora novamente.';
+            } else if (keyring.reason === 'machine_id_missing') {
+                keyringEl.classList.add('is-error');
+                keyringEl.textContent = 'Não foi possível identificar esta máquina para a sincronização segura.';
+            } else if (keyring.reason === 'secure_store_unavailable') {
+                keyringEl.classList.add('is-error');
+                keyringEl.textContent = 'O cofre seguro do Windows está indisponível nesta máquina.';
+            } else if (keyring.reason) {
+                keyringEl.classList.add('is-error');
+                keyringEl.textContent = 'Não foi possível registrar esta máquina para a sincronização segura.';
+            } else {
+                keyringEl.textContent = '';
+            }
         }
         if (grid) {
             if (!scopeKeys.length) {

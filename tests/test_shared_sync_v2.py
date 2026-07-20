@@ -1,14 +1,23 @@
+import base64
 import hashlib
 import io
 import json
 from concurrent.futures import ThreadPoolExecutor
+import threading
 import time
 import zipfile
 
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
 
+from backend.schemas import MachinePresenceHeartbeatRequest
 from backend.schemas.shared_sync import SharedSyncRunRequest, SharedSyncUserLinkCreateRequest
+from backend.services import admin_usuarios  # configura o facade de autenticacao e presenca
+from backend.services import admin_usuarios_auth
+from backend.services import admin_usuarios_login_core
+from backend.services import admin_usuarios_presence
+from backend.services import admin_usuarios_presence_core
 from backend.services import shared_sync  # configura o facade e injeta dependências entre módulos
 from backend.services import integracoes
 from backend.services import shared_sync_apply_scope
@@ -18,6 +27,7 @@ from backend.services import shared_sync_collect_files
 from backend.services import shared_sync_config
 from backend.services import shared_sync_machine
 from backend.services import shared_sync_machine_endpoints
+from backend.services import shared_sync_keyring
 from backend.services import shared_sync_merge_sqlite
 from backend.services import shared_sync_merge_user_data
 from backend.services import shared_sync_operations
@@ -179,7 +189,7 @@ def test_machine_auto_run_puxa_apenas_hash_novo_de_outra_maquina_e_nunca_envia(m
     monkeypatch.setattr(
         shared_sync_machine,
         "_shared_sync_machine_pull_scope",
-        lambda _sessao, scope: pulls.append(scope) or {"scope": scope, "success": True, "direction": "pull"},
+        lambda _sessao, scope, **_kwargs: pulls.append(scope) or {"scope": scope, "success": True, "direction": "pull"},
     )
     monkeypatch.setattr(
         shared_sync_machine,
@@ -215,7 +225,7 @@ def test_machine_auto_continua_outros_scopes_quando_um_pull_falha(monkeypatch):
     )
     pulls = []
 
-    def pull_scope(_sessao, scope):
+    def pull_scope(_sessao, scope, **_kwargs):
         pulls.append(scope)
         if scope == "cadastro":
             raise HTTPException(status_code=502, detail="snapshot de cadastro invalido")
@@ -293,6 +303,11 @@ def test_machine_status_expoe_recebimento_pendente_e_ultimo_pull(monkeypatch):
     monkeypatch.setattr(shared_sync_machine, "_machine_presence_list", lambda *args: [], raising=False)
     monkeypatch.setattr(shared_sync_machine, "_machine_presence_mark_current", lambda machines, _machine_id: machines, raising=False)
     monkeypatch.setattr(shared_sync_machine, "_firebase_deve_usar", lambda: True, raising=False)
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_keyring_status",
+        lambda *_args, **_kwargs: {"ready": True, "registered": True, "key_id": "abc123", "needs_send": False, "reason": ""},
+    )
 
     payload = shared_sync_machine._shared_sync_machine_status_payload(sessao, "pc:destino")
     cadastro = payload["scopes"]["cadastro"]
@@ -648,7 +663,7 @@ def test_importacao_manual_de_maquina_reaplica_snapshot_mesmo_com_estado_ja_atua
     monkeypatch.setattr(
         shared_sync_machine,
         "_shared_sync_obter_bundle_por_id",
-        lambda _bundle_id, _meta: (b"pacote-confirmado", dict(meta)),
+        lambda _bundle_id, _meta, **_kwargs: (b"pacote-confirmado", dict(meta)),
     )
     monkeypatch.setattr(
         shared_sync_machine,
@@ -711,7 +726,7 @@ def test_endpoint_de_importacao_manual_forca_reaplicacao(monkeypatch):
     monkeypatch.setattr(
         shared_sync_machine_endpoints,
         "_shared_sync_machine_pull_scope",
-        lambda _sessao, scope, *, force=False: chamadas.append((scope, force)) or {
+        lambda _sessao, scope, *, force=False, machine_id="": chamadas.append((scope, force)) or {
             "scope": scope,
             "success": True,
             "file_count": 1,
@@ -792,7 +807,7 @@ def test_falha_em_cadastro_nao_impede_importacao_das_lojas(monkeypatch):
         lambda *args, **kwargs: {"id": "op", "totals": {"stores": 4}},
     )
 
-    def pull_scope(_sessao, scope, *, force=False):
+    def pull_scope(_sessao, scope, *, force=False, machine_id=""):
         chamadas.append((scope, force))
         if scope == "cadastro":
             raise HTTPException(status_code=423, detail="Cadastro temporariamente bloqueado.")
@@ -903,6 +918,26 @@ class _FakeDocument:
             value = current
         self.collection.data[self.id] = dict(value)
 
+    def create(self, value, **_kwargs):
+        with self.collection.lock:
+            if self.id in self.collection.data:
+                raise RuntimeError("already exists")
+            self.collection.data[self.id] = dict(value)
+
+    def update(self, value, **_kwargs):
+        current = dict(self.collection.data.get(self.id) or {})
+        for key, item in value.items():
+            array_values = getattr(item, "values", None)
+            if array_values is not None:
+                existing = list(current.get(key) or [])
+                for entry in array_values:
+                    if entry not in existing:
+                        existing.append(entry)
+                current[key] = existing
+            else:
+                current[key] = item
+        self.collection.data[self.id] = current
+
     def get(self):
         if self.collection.fail_get and self.collection.fail_get(self.id):
             return _FakeSnapshot(self, exists=False)
@@ -928,6 +963,7 @@ class _FakeCollection:
     def __init__(self):
         self.data = {}
         self.fail_get = None
+        self.lock = threading.Lock()
 
     def document(self, doc_id):
         return _FakeDocument(self, doc_id)
@@ -942,6 +978,34 @@ class _FakeFirestore:
 
     def collection(self, name):
         return self.collections.setdefault(name, _FakeCollection())
+
+
+def _configure_keyring_test(monkeypatch, db, active_device, secure_stores, approved, present=None):
+    present = set(present if present is not None else approved)
+    monkeypatch.setattr(shared_sync_keyring, "_firebase_db", lambda: db)
+    monkeypatch.setattr(shared_sync_keyring, "_firebase_deve_usar", lambda: True)
+    monkeypatch.setattr(shared_sync_keyring, "_firebase_shared_sync_keyrings_collection_name", lambda: "shared_sync_keyrings")
+    monkeypatch.setattr(
+        shared_sync_keyring,
+        "_shared_sync_keyring_approved_machine_ids",
+        lambda _sessao: set(approved),
+    )
+    monkeypatch.setattr(
+        shared_sync_keyring,
+        "_machine_presence_list",
+        lambda *_args: [{"machine_id": machine_id} for machine_id in sorted(present)],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        shared_sync_keyring,
+        "_shared_sync_keyring_read_secret",
+        lambda target: secure_stores.setdefault(active_device["id"], {}).get(target, ""),
+    )
+    monkeypatch.setattr(
+        shared_sync_keyring,
+        "_shared_sync_keyring_write_secret",
+        lambda target, value: secure_stores.setdefault(active_device["id"], {}).__setitem__(target, value),
+    )
 
 
 def test_envio_e_importacao_entre_duas_maquinas_transfere_todas_as_lojas(tmp_path, monkeypatch):
@@ -990,11 +1054,41 @@ def test_envio_e_importacao_entre_duas_maquinas_transfere_todas_as_lojas(tmp_pat
     monkeypatch.setattr(shared_sync_remote, "_firebase_deve_usar", lambda: True, raising=False)
     monkeypatch.setattr(shared_sync_remote, "_firebase_shared_sync_collection_name", lambda: "shared_sync")
     monkeypatch.setattr(shared_sync_remote, "_firebase_shared_sync_chunks_collection_name", lambda: "shared_sync_chunks")
-    monkeypatch.setattr(shared_sync_remote, "_shared_sync_encryption_secret", lambda: b"segredo-e2e-entre-maquinas")
     monkeypatch.setattr(shared_sync_remote, "_shared_sync_state_update", lambda *args, **kwargs: None)
     monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_update", lambda *args, **kwargs: None)
 
-    sessao = {"username": "operador", "client_id": "000002"}
+    active_device = {"id": "pc:destino"}
+    secure_stores = {"pc:origem": {}, "pc:destino": {}}
+    monkeypatch.setattr(shared_sync_keyring, "_firebase_db", lambda: db)
+    monkeypatch.setattr(shared_sync_keyring, "_firebase_deve_usar", lambda: True)
+    monkeypatch.setattr(shared_sync_keyring, "_firebase_shared_sync_keyrings_collection_name", lambda: "shared_sync_keyrings")
+    monkeypatch.setattr(
+        shared_sync_keyring,
+        "_shared_sync_keyring_approved_machine_ids",
+        lambda _sessao: {"pc:origem", "pc:destino"},
+    )
+    monkeypatch.setattr(
+        shared_sync_keyring,
+        "_machine_presence_list",
+        lambda *_args: [{"machine_id": "pc:origem"}, {"machine_id": "pc:destino"}],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        shared_sync_keyring,
+        "_shared_sync_keyring_read_secret",
+        lambda target: secure_stores[active_device["id"]].get(target, ""),
+    )
+    monkeypatch.setattr(
+        shared_sync_keyring,
+        "_shared_sync_keyring_write_secret",
+        lambda target, value: secure_stores[active_device["id"]].__setitem__(target, value),
+    )
+
+    sessao = {"username": "operador", "client_id": "000002", "machine_id": "pc:destino"}
+    assert shared_sync_keyring._shared_sync_keyring_status(sessao, "pc:destino")["registered"] is True
+    active_device["id"] = "pc:origem"
+    sessao["machine_id"] = "pc:origem"
+    assert shared_sync_keyring._shared_sync_keyring_status(sessao, "pc:origem")["registered"] is True
     enviado = shared_sync_machine._shared_sync_machine_push_scope(
         sessao,
         "lojas_integracoes",
@@ -1002,12 +1096,17 @@ def test_envio_e_importacao_entre_duas_maquinas_transfere_todas_as_lojas(tmp_pat
     )
     assert enviado["success"] is True
     assert enviado["stores_count"] == 4
+    pointer = db.collection("shared_sync").data[enviado["id"]]
+    assert pointer["encryption_key_id"]
 
     ativo["root"] = destino
+    active_device["id"] = "pc:destino"
+    sessao["machine_id"] = "pc:destino"
     recebido = shared_sync_machine._shared_sync_machine_pull_scope(
         sessao,
         "lojas_integracoes",
         force=True,
+        machine_id="pc:destino",
     )
 
     lojas_recebidas = json.loads((destino_path / "lojas_config.json").read_text(encoding="utf-8"))
@@ -1015,6 +1114,358 @@ def test_envio_e_importacao_entre_duas_maquinas_transfere_todas_as_lojas(tmp_pat
     assert recebido["stores_count"] == 4
     assert [loja["nome"] for loja in lojas_recebidas] == [loja["nome"] for loja in lojas_origem]
     assert lojas_recebidas[0]["integracoes"]["mercadolivre"]["access_token"] == "token-1"
+
+
+def test_keyring_nova_maquina_so_recebe_envelope_apos_reenvio_e_ignora_membro_injetado(monkeypatch):
+    db = _FakeFirestore()
+    active_device = {"id": "pc:origem"}
+    secure_stores = {"pc:origem": {}, "pc:destino": {}}
+    _configure_keyring_test(
+        monkeypatch, db, active_device, secure_stores,
+        approved={"pc:origem", "pc:destino"},
+    )
+    sessao = {"username": "operador", "client_id": "000002", "machine_id": "pc:origem"}
+
+    assert shared_sync_keyring._shared_sync_keyring_status(sessao, "pc:origem")["registered"] is True
+    source_key, key_id = shared_sync_keyring._shared_sync_keyring_key_for_push(sessao, "pc:origem")
+
+    active_device["id"] = "pc:destino"
+    sessao["machine_id"] = "pc:destino"
+    status_destino = shared_sync_keyring._shared_sync_keyring_status(sessao, "pc:destino")
+    assert status_destino["registered"] is True
+    assert status_destino["ready"] is False
+    assert status_destino["needs_send"] is True
+    with pytest.raises(HTTPException) as missing:
+        shared_sync_keyring._shared_sync_keyring_key_for_pull(sessao, "pc:destino", key_id)
+    assert missing.value.status_code == 409
+    assert "Enviar agora" in str(missing.value.detail)
+
+    active_device["id"] = "pc:origem"
+    sessao["machine_id"] = "pc:origem"
+    source_identity = shared_sync_keyring._shared_sync_keyring_identity(sessao, "pc:origem")
+    attacker_private = shared_sync_keyring.X25519PrivateKey.generate()
+    injected_id = shared_sync_common._shared_sync_safe_doc_id("membro-nao-aprovado")
+    db.collection("shared_sync_keyrings").data[injected_id] = {
+        "id": injected_id,
+        "kind": "member",
+        "schema": 1,
+        "keyring_id": source_identity["keyring_id"],
+        "owner_client_hash": source_identity["owner_client_hash"],
+        "owner_user_hash": source_identity["owner_user_hash"],
+        "public_key": shared_sync_keyring._shared_sync_keyring_public_b64(attacker_private),
+    }
+    resent_key, resent_key_id = shared_sync_keyring._shared_sync_keyring_key_for_push(sessao, "pc:origem")
+    assert resent_key_id == key_id
+    assert resent_key == source_key
+    injected_envelope_id = shared_sync_keyring._shared_sync_keyring_envelope_id(
+        source_identity, injected_id, key_id,
+    )
+    assert injected_envelope_id not in db.collection("shared_sync_keyrings").data
+
+    active_device["id"] = "pc:destino"
+    sessao["machine_id"] = "pc:destino"
+    received_key = shared_sync_keyring._shared_sync_keyring_key_for_pull(sessao, "pc:destino", key_id)
+    assert received_key == source_key
+    secure_stores["pc:destino"] = {
+        target: value
+        for target, value in secure_stores["pc:destino"].items()
+        if "/data-key/" not in target
+    }
+    push_key_from_destination, destination_key_id = shared_sync_keyring._shared_sync_keyring_key_for_push(
+        sessao, "pc:destino",
+    )
+    assert destination_key_id == key_id
+    assert push_key_from_destination == source_key
+
+
+def test_keyring_vincula_machine_id_do_request_ao_jwt(monkeypatch):
+    db = _FakeFirestore()
+    active_device = {"id": "pc:a"}
+    secure_stores = {"pc:a": {}}
+    _configure_keyring_test(monkeypatch, db, active_device, secure_stores, approved={"pc:a", "pc:b"})
+    sessao = {"username": "operador", "client_id": "000002", "machine_id": "pc:a"}
+    with pytest.raises(HTTPException) as mismatch:
+        shared_sync_keyring._shared_sync_keyring_register(sessao, "pc:b")
+    assert mismatch.value.status_code == 403
+    assert db.collection("shared_sync_keyrings").data == {}
+
+
+@pytest.mark.parametrize("route_name", ["heartbeat", "realtime", "session_refresh"])
+def test_rotas_autenticadas_rejeitam_machine_id_diferente_do_jwt(monkeypatch, route_name):
+    request = Request({
+        "type": "http", "method": "POST", "path": "/", "headers": [],
+        "client": ("127.0.0.1", 12345),
+    })
+    sessao = {"username": "admin", "client_id": "000002", "machine_id": "pc:jwt"}
+    target = admin_usuarios_auth if route_name == "session_refresh" else admin_usuarios_presence
+    monkeypatch.setattr(target, "_payload_sessao_por_authorization", lambda _authorization: dict(sessao))
+    if route_name == "heartbeat":
+        action = lambda: admin_usuarios_presence.user_machine_heartbeat(
+            MachinePresenceHeartbeatRequest(machine_id="pc:forjada"),
+            request,
+            authorization="Bearer teste",
+        )
+    elif route_name == "realtime":
+        action = lambda: admin_usuarios_presence.firebase_realtime_presence_session(
+            request,
+            machine_id="pc:forjada",
+            authorization="Bearer teste",
+        )
+    else:
+        action = lambda: admin_usuarios_auth.minha_sessao_auth(
+            request,
+            authorization="Bearer teste",
+            machine_id="pc:forjada",
+        )
+    with pytest.raises(HTTPException) as mismatch:
+        action()
+    assert mismatch.value.status_code == 403
+
+
+def test_machine_id_autenticado_exige_jwt_vinculado_e_usa_o_id_do_token():
+    assert admin_usuarios_presence_core._authenticated_session_machine_id(
+        {"machine_id": "pc:jwt"}, "",
+    ) == "pc:jwt"
+    with pytest.raises(HTTPException) as missing:
+        admin_usuarios_presence_core._authenticated_session_machine_id({}, "pc:request")
+    assert missing.value.status_code == 401
+    assert "novamente" in str(missing.value.detail).lower()
+
+
+def test_login_admin_full_persiste_machine_allowlist_sem_aplicar_limite(monkeypatch):
+    users = _FakeCollection()
+    users.data["admin"] = {
+        "username": "admin",
+        "client_id": "000002",
+        "machine_id": "pc:antiga",
+        "machine_ids": ["pc:antiga"],
+        "max_machines": 1,
+    }
+    saved = []
+    monkeypatch.setattr(admin_usuarios_login_core, "_firebase_collection", lambda: users)
+    monkeypatch.setattr(admin_usuarios_login_core, "_firebase_doc_id", lambda username: username)
+    monkeypatch.setattr(
+        admin_usuarios_login_core, "_usuario_pode_logar_em_qualquer_dispositivo", lambda *_args: True,
+    )
+    monkeypatch.setattr(admin_usuarios_login_core, "_firebase_user_from_data", lambda _username, data: dict(data))
+    monkeypatch.setattr(
+        admin_usuarios_login_core,
+        "_normalizar_lista_maquinas",
+        lambda machine_ids, machine_id=None: list(machine_ids or ([machine_id] if machine_id else [])),
+    )
+    monkeypatch.setattr(
+        admin_usuarios_login_core,
+        "_salvar_usuarios_sql",
+        lambda usuarios, source="": saved.append((usuarios, source)),
+    )
+    ok, message, machine_id = admin_usuarios_login_core._firebase_validar_e_registrar_maquina(
+        "admin",
+        {
+            "username": "admin", "client_id": "000002", "machine_id": "pc:antiga",
+            "machine_ids": ["pc:antiga"], "max_machines": 1,
+        },
+        {"full": True},
+        "pc:nova",
+    )
+    assert (ok, message, machine_id) == (True, "", "pc:nova")
+    assert users.data["admin"]["machine_ids"] == ["pc:antiga", "pc:nova"]
+    assert saved and saved[0][1] == "firebase-cache"
+
+
+def test_keyring_admin_persiste_allowlist_e_ignora_presence_e_membro_forjados(monkeypatch):
+    db = _FakeFirestore()
+    users = db.collection("users")
+    users.data["admin"] = {
+        "username": "admin",
+        "client_id": "000002",
+        "machine_id": "pc:recebedor",
+        "machine_ids": ["pc:recebedor"],
+    }
+    active_device = {"id": "pc:admin"}
+    secure_stores = {"pc:admin": {}, "pc:recebedor": {}}
+    monkeypatch.setattr(shared_sync_keyring, "_firebase_db", lambda: db)
+    monkeypatch.setattr(shared_sync_keyring, "_firebase_deve_usar", lambda: True)
+    monkeypatch.setattr(shared_sync_keyring, "_firebase_collection", lambda: users)
+    monkeypatch.setattr(shared_sync_keyring, "_firebase_doc_id", lambda username: username)
+    monkeypatch.setattr(
+        shared_sync_keyring, "_firebase_shared_sync_keyrings_collection_name", lambda: "shared_sync_keyrings",
+    )
+    monkeypatch.setattr(
+        shared_sync_keyring,
+        "_machine_presence_list",
+        lambda *_args: [{"machine_id": "pc:admin"}, {"machine_id": "pc:forjada"}],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        shared_sync_keyring,
+        "_shared_sync_keyring_read_secret",
+        lambda target: secure_stores[active_device["id"]].get(target, ""),
+    )
+    monkeypatch.setattr(
+        shared_sync_keyring,
+        "_shared_sync_keyring_write_secret",
+        lambda target, value: secure_stores[active_device["id"]].__setitem__(target, value),
+    )
+    sessao = {
+        "username": "admin", "client_id": "000002", "machine_id": "pc:admin",
+        "is_admin": True, "permissions": {"full": True},
+    }
+    assert shared_sync_keyring._shared_sync_keyring_status(sessao, "pc:admin")["registered"] is True
+    assert set(users.data["admin"]["machine_ids"]) == {"pc:recebedor", "pc:admin"}
+
+    active_device["id"] = "pc:recebedor"
+    sessao["machine_id"] = "pc:recebedor"
+    assert shared_sync_keyring._shared_sync_keyring_status(sessao, "pc:recebedor")["registered"] is True
+
+    active_device["id"] = "pc:admin"
+    sessao["machine_id"] = "pc:admin"
+    identity = shared_sync_keyring._shared_sync_keyring_identity(sessao, "pc:admin")
+    forged_member_id = shared_sync_common._shared_sync_safe_doc_id(
+        "shared-sync-keyring-member", "000002", "admin", "pc:forjada",
+    )
+    forged_private = shared_sync_keyring.X25519PrivateKey.generate()
+    db.collection("shared_sync_keyrings").data[forged_member_id] = {
+        "id": forged_member_id,
+        "kind": "member",
+        "schema": 1,
+        "keyring_id": identity["keyring_id"],
+        "owner_client_hash": identity["owner_client_hash"],
+        "owner_user_hash": identity["owner_user_hash"],
+        "public_key": shared_sync_keyring._shared_sync_keyring_public_b64(forged_private),
+    }
+    authorized = shared_sync_keyring._shared_sync_keyring_authorized_machine_ids(sessao, "pc:admin")
+    assert authorized == {"pc:admin", "pc:recebedor"}
+    _data_key, key_id = shared_sync_keyring._shared_sync_keyring_key_for_push(sessao, "pc:admin")
+    receiver_member_id = shared_sync_common._shared_sync_safe_doc_id(
+        "shared-sync-keyring-member", "000002", "admin", "pc:recebedor",
+    )
+    receiver_envelope = shared_sync_keyring._shared_sync_keyring_envelope_id(
+        identity, receiver_member_id, key_id,
+    )
+    forged_envelope = shared_sync_keyring._shared_sync_keyring_envelope_id(
+        identity, forged_member_id, key_id,
+    )
+    assert receiver_envelope in db.collection("shared_sync_keyrings").data
+    assert forged_envelope not in db.collection("shared_sync_keyrings").data
+
+
+def test_keyring_criacao_concorrente_elege_uma_unica_chave(monkeypatch):
+    db = _FakeFirestore()
+    monkeypatch.setattr(shared_sync_keyring, "_firebase_shared_sync_keyrings_collection_name", lambda: "shared_sync_keyrings")
+    identity = shared_sync_keyring._shared_sync_keyring_identity(
+        {"username": "operador", "client_id": "000002"}, "pc:origem",
+    )
+    key_ids = ["a" * 16, "b" * 16]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(
+            lambda key_id: shared_sync_keyring._shared_sync_keyring_create_root(db, identity, key_id),
+            key_ids,
+        ))
+    elected = {result[0]["active_key_id"] for result in results}
+    assert len(elected) == 1
+    assert sum(1 for _root, won in results if won) == 1
+    root = db.collection("shared_sync_keyrings").data[identity["keyring_id"]]
+    assert root["active_key_id"] in key_ids
+
+
+def test_keyring_rejeita_owner_adulterado_e_usuario_cruzado(monkeypatch):
+    db = _FakeFirestore()
+    active_device = {"id": "pc:a"}
+    secure_stores = {"pc:a": {}, "pc:b": {}}
+    _configure_keyring_test(monkeypatch, db, active_device, secure_stores, approved={"pc:a", "pc:b"})
+    sessao_a = {"username": "usuario-a", "client_id": "000002", "machine_id": "pc:a"}
+    shared_sync_keyring._shared_sync_keyring_status(sessao_a, "pc:a")
+    data_key, key_id = shared_sync_keyring._shared_sync_keyring_key_for_push(sessao_a, "pc:a")
+    remote_dump = json.dumps(db.collection("shared_sync_keyrings").data, sort_keys=True)
+    assert shared_sync_keyring._shared_sync_keyring_encode(data_key) not in remote_dump
+    assert base64.b64encode(data_key).decode("ascii") not in remote_dump
+    assert data_key.hex() not in remote_dump
+    status_dump = json.dumps(shared_sync_keyring._shared_sync_keyring_status(sessao_a, "pc:a"), sort_keys=True)
+    assert shared_sync_keyring._shared_sync_keyring_encode(data_key) not in status_dump
+
+    active_device["id"] = "pc:b"
+    sessao_b = {"username": "usuario-b", "client_id": "000002", "machine_id": "pc:b"}
+    with pytest.raises(HTTPException) as cross_user:
+        shared_sync_keyring._shared_sync_keyring_key_for_pull(sessao_b, "pc:b", key_id)
+    assert cross_user.value.status_code == 409
+
+    identity_a = shared_sync_keyring._shared_sync_keyring_identity(sessao_a, "pc:a")
+    db.collection("shared_sync_keyrings").data[identity_a["keyring_id"]]["owner_user_hash"] = "adulterado"
+    active_device["id"] = "pc:a"
+    with pytest.raises(HTTPException) as adulterado:
+        shared_sync_keyring._shared_sync_keyring_key_for_push(sessao_a, "pc:a")
+    assert adulterado.value.status_code == 409
+
+
+def test_keyring_detecta_replay_ou_adulteracao_do_envelope(monkeypatch):
+    db = _FakeFirestore()
+    active_device = {"id": "pc:destino"}
+    secure_stores = {"pc:origem": {}, "pc:destino": {}}
+    _configure_keyring_test(monkeypatch, db, active_device, secure_stores, approved={"pc:origem", "pc:destino"})
+    sessao = {"username": "operador", "client_id": "000002", "machine_id": "pc:destino"}
+    shared_sync_keyring._shared_sync_keyring_status(sessao, "pc:destino")
+    active_device["id"] = "pc:origem"
+    sessao["machine_id"] = "pc:origem"
+    shared_sync_keyring._shared_sync_keyring_status(sessao, "pc:origem")
+    _data_key, key_id = shared_sync_keyring._shared_sync_keyring_key_for_push(sessao, "pc:origem")
+
+    identity = shared_sync_keyring._shared_sync_keyring_identity(sessao, "pc:destino")
+    envelope_id = shared_sync_keyring._shared_sync_keyring_envelope_id(
+        identity, identity["member_id"], key_id,
+    )
+    record = db.collection("shared_sync_keyrings").data[envelope_id]
+    record["envelope"]["ciphertext"] = shared_sync_keyring._shared_sync_keyring_encode(b"adulterado")
+    active_device["id"] = "pc:destino"
+    sessao["machine_id"] = "pc:destino"
+    with pytest.raises(HTTPException) as tampered:
+        shared_sync_keyring._shared_sync_keyring_key_for_pull(sessao, "pc:destino", key_id)
+    assert tampered.value.status_code == 409
+
+
+def test_snapshot_legado_sem_key_id_usa_somente_chave_legada(monkeypatch):
+    db = _FakeFirestore()
+    secret = b"chave-legada-configurada"
+    bundle_id = "bundle-legado"
+    bundle = b"pacote-v2-legado"
+    encrypted = shared_sync_remote._shared_sync_encrypt_bundle(bundle_id, bundle, secret)
+    snapshot_id = "snapshot-legado"
+    db.collection("shared_sync_chunks").data[f"{snapshot_id}_00000"] = {
+        "bundle_id": snapshot_id,
+        "data": shared_sync_keyring._shared_sync_keyring_encode(encrypted),
+    }
+    meta = {
+        "id": bundle_id,
+        "pointer_id": bundle_id,
+        "snapshot_id": snapshot_id,
+        "schema": 2,
+        "encrypted": True,
+        "chunk_count": 1,
+        "bundle_sha256": hashlib.sha256(encrypted).hexdigest(),
+    }
+    monkeypatch.setattr(shared_sync_remote, "_shared_sync_firestore_required", lambda: db)
+    monkeypatch.setattr(shared_sync_remote, "_firebase_shared_sync_chunks_collection_name", lambda: "shared_sync_chunks")
+    monkeypatch.setattr(shared_sync_remote, "_shared_sync_encryption_secret", lambda: secret)
+    opened, _ = shared_sync_remote._shared_sync_obter_bundle_por_id(bundle_id, meta)
+    assert opened == bundle
+
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_encryption_secret",
+        lambda: (_ for _ in ()).throw(HTTPException(status_code=503, detail="chave ausente")),
+    )
+    with pytest.raises(HTTPException) as missing:
+        shared_sync_remote._shared_sync_obter_bundle_por_id(bundle_id, meta)
+    assert missing.value.status_code == 503
+
+    invalid_meta = dict(meta, encryption_key_id="fora-do-formato")
+    monkeypatch.setattr(shared_sync_remote, "_shared_sync_encryption_secret", lambda: secret)
+    with pytest.raises(HTTPException) as invalid_key_id:
+        shared_sync_remote._shared_sync_obter_bundle_por_id(
+            bundle_id,
+            invalid_meta,
+            key_context={"sessao": {"username": "operador"}, "machine_id": "pc"},
+        )
+    assert invalid_key_id.value.status_code == 409
 
 
 def _configure_remote_push_for_test(monkeypatch, db, bundle):
@@ -1165,7 +1616,7 @@ def test_versoes_fonte_e_electron_estao_alinhadas_com_a_release():
     root_package = json.loads(open("package.json", "r", encoding="utf-8").read())
     electron_package = json.loads(open("electron_app/package.json", "r", encoding="utf-8").read())
     backend_source = open("backend_api.py", "r", encoding="utf-8-sig").read()
-    assert root_package["version"] == "1.0.107"
+    assert root_package["version"] == "1.0.108"
     assert electron_package["version"] == root_package["version"]
     # O minimo do backend pode permanecer anterior para nao derrubar clientes
     # durante o rollout em duas ondas.

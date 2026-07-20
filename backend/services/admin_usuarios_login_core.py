@@ -23,6 +23,11 @@ import requests
 from fastapi import Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
+try:
+    from google.cloud.firestore_v1 import ArrayUnion as _FirestoreArrayUnion
+except Exception:  # Firebase is optional in local-only installations.
+    _FirestoreArrayUnion = None
+
 from backend.schemas import LoginResponse
 from backend.services.admin_usuarios_context import configure_admin_usuarios_context
 from backend.services.runtime_bridge import bind_runtime_globals
@@ -429,15 +434,13 @@ def _login_usuario_ativo(usuario: dict) -> bool:
     return bool(valor)
 
 def _firebase_validar_e_registrar_maquina(username: str, usuario: dict, permissoes: dict, machine_final: str) -> tuple[bool, str, str]:
-    if _usuario_pode_logar_em_qualquer_dispositivo(username, permissoes):
-        return True, "", machine_final
-
     username_norm = str(username or "").strip().lower()
+    unrestricted = _usuario_pode_logar_em_qualquer_dispositivo(username, permissoes)
     coll = _firebase_collection()
     if coll is None:
         if _firebase_access_obrigatorio():
             return False, "Firebase indisponivel para validar maquinas.", machine_final
-        return True, "", machine_final
+        return (False, "", machine_final) if unrestricted else (True, "", machine_final)
 
     ref = coll.document(_firebase_doc_id(username_norm))
 
@@ -448,6 +451,22 @@ def _firebase_validar_e_registrar_maquina(username: str, usuario: dict, permisso
         usuario_atual = _firebase_user_from_data(username_norm, snap.to_dict() or {})
         maquinas = _normalizar_lista_maquinas(usuario_atual.get("machine_ids"), usuario_atual.get("machine_id"))
         if machine_final in maquinas:
+            return True, "", machine_final
+        if unrestricted:
+            if _FirestoreArrayUnion is None:
+                return False, "Firebase indisponivel para registrar esta maquina.", machine_final
+            ref.update({
+                "machine_ids": _FirestoreArrayUnion([machine_final]),
+                "updated_at": _firebase_now_iso(),
+            })
+            maquinas.append(machine_final)
+            usuario_atualizado = dict(usuario)
+            maquinas_locais = _normalizar_lista_maquinas(usuario.get("machine_ids"), usuario.get("machine_id"))
+            if machine_final not in maquinas_locais:
+                maquinas_locais.append(machine_final)
+            usuario_atualizado["machine_id"] = maquinas_locais[0] if maquinas_locais else machine_final
+            usuario_atualizado["machine_ids"] = maquinas_locais
+            _salvar_usuarios_sql({username_norm: usuario_atualizado}, source="firebase-cache")
             return True, "", machine_final
         max_machines = _normalizar_max_machines(usuario_atual.get("max_machines", 1))
         if max_machines != 0 and len(maquinas) >= max_machines:
@@ -472,22 +491,23 @@ def _firebase_validar_e_registrar_maquina(username: str, usuario: dict, permisso
         logger.warning("[FIREBASE-AUTH] Falha ao validar maquina no Firebase para %s: %s", username_norm, exc)
         if _firebase_access_obrigatorio():
             return False, f"Firebase indisponivel para validar maquinas: {exc}", machine_final
-        return True, "", machine_final
+        return (False, "", machine_final) if unrestricted else (True, "", machine_final)
 
 def _login_validar_e_registrar_maquina(username: str, usuario: dict, permissoes: dict, machine_id: str, request: Request) -> tuple[bool, str, str]:
     machine_final, _meta = _montar_machine_id_login(request, machine_id)
-    if _firebase_deve_usar() and (usuario or {}).get("source") == "firebase":
-        return _firebase_validar_e_registrar_maquina(username, usuario, permissoes, machine_final)
-
-    if _usuario_pode_logar_em_qualquer_dispositivo(username, permissoes):
-        return True, "", machine_final
+    unrestricted = _usuario_pode_logar_em_qualquer_dispositivo(username, permissoes)
+    source_is_firebase = (usuario or {}).get("source") == "firebase"
+    if _firebase_deve_usar() and (source_is_firebase or unrestricted):
+        remote_result = _firebase_validar_e_registrar_maquina(username, usuario, permissoes, machine_final)
+        if remote_result[0] or source_is_firebase or _firebase_access_obrigatorio():
+            return remote_result
 
     maquinas = _normalizar_lista_maquinas(usuario.get("machine_ids"), usuario.get("machine_id"))
     if machine_final in maquinas:
         return True, "", machine_final
 
     max_machines = _normalizar_max_machines(usuario.get("max_machines", 1))
-    if max_machines != 0 and len(maquinas) >= max_machines:
+    if not unrestricted and max_machines != 0 and len(maquinas) >= max_machines:
         return False, "Limite de dispositivos atingido para este usuario. PeÃ§a ao administrador para resetar os dispositivos.", machine_final
 
     maquinas.append(machine_final)

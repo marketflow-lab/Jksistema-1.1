@@ -193,9 +193,13 @@ def _shared_sync_lojas_config_from_bundle(bundle: bytes) -> list[dict]:
     payload = _shared_sync_json_from_bytes(data, "lojas_config.json")
     return _shared_sync_lojas_from_payload(payload)
 
-def _shared_sync_validar_push_lojas_integracoes(bundle_id: str, bundle: bytes) -> None:
+def _shared_sync_validar_push_lojas_integracoes(
+    bundle_id: str,
+    bundle: bytes,
+    key_context: Optional[dict] = None,
+) -> None:
     try:
-        remoto_bundle, _meta = _shared_sync_obter_bundle_por_id(bundle_id)
+        remoto_bundle, _meta = _shared_sync_obter_bundle_por_id(bundle_id, key_context=key_context)
     except HTTPException as exc:
         if exc.status_code == 404:
             return

@@ -25,6 +25,7 @@ def firebase_realtime_presence_session(
     authorization: Optional[str] = Header(default=None),
 ):
     sessao = _payload_sessao_por_authorization(authorization)
+    machine_final = _authenticated_session_machine_id(sessao, machine_id)
     app_version_ok = _validar_versao_minima_app_ou_426(app_version)
     if not _firebase_deve_usar():
         return {
@@ -66,7 +67,7 @@ def firebase_realtime_presence_session(
 
     username = str(sessao.get("username") or "").strip().lower()
     client_norm = str(sessao.get("client_id") or "default").strip() or "default"
-    machine_final, meta = _montar_machine_id_login(request, machine_id or "")
+    _resolved_machine, meta = _montar_machine_id_login(request, machine_final)
     client_key = _firebase_presence_client_key(client_norm)
     user_key = _firebase_presence_user_key(username)
     machine_key = _firebase_presence_machine_key_hash(machine_final)
@@ -267,10 +268,11 @@ def user_machine_heartbeat(
     authorization: Optional[str] = Header(default=None),
 ):
     sessao = _payload_sessao_por_authorization(authorization)
+    machine_final = _authenticated_session_machine_id(sessao, payload.machine_id)
     record = _machine_presence_record(
         sessao["username"],
         sessao["client_id"],
-        payload.machine_id or "",
+        machine_final,
         request,
         payload.page or "",
         payload.app_version,

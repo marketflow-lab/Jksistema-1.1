@@ -1,0 +1,4 @@
+context-bundle-manifest.json text eol=lf
+docs/knowledge/** text eol=lf
+requirements*.in text eol=lf
+requirements*.txt text eol=lf

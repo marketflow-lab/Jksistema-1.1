@@ -143,6 +143,7 @@ def _shared_sync_create_preview(
     scopes: list[str],
     bundle_ids: dict[str, str],
     machine_id: str = "",
+    key_context: Optional[dict] = None,
 ) -> dict:
     direction = _shared_sync_operation_direction(direction)
     local_hashes, local_files = _shared_sync_local_fingerprint(sessao, scopes)
@@ -161,7 +162,9 @@ def _shared_sync_create_preview(
             else:
                 meta = remote_metas.get(scope) or {}
                 if meta:
-                    bundle, _ = _shared_sync_obter_bundle_por_id(bundle_ids[scope], meta)
+                    bundle, _ = _shared_sync_obter_bundle_por_id(
+                        bundle_ids[scope], meta, key_context=key_context,
+                    )
                     cred, disc, stores = _shared_sync_bundle_sensitive_counts(bundle)
                 else:
                     cred, disc, stores = 0, 0, 0

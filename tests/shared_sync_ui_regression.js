@@ -32,6 +32,10 @@ assert(admin.includes('machineSyncProgressOverlay'), 'balão local da sincroniza
 assert(admin.includes('atualizarBalaoSincronizacaoMaquinas'), 'controle do balão da sincronização ausente');
 assert(admin.includes("await recarregarLojasAposSincronizacao(['lojas_integracoes']);"), 'recarga de lojas após importação ausente');
 assert(admin.includes('machineSyncActionStatus'), 'resultado da sincronização precisa permanecer visível no próprio painel');
+assert(admin.includes('machineSyncKeyringStatus'), 'estado da criptografia segura precisa permanecer visível no painel');
+assert(admin.includes('Criptografia segura pronta nesta máquina.'), 'estado seguro pronto não é explicado ao usuário');
+assert(admin.includes('Na máquina de origem, clique em Enviar agora novamente.'), 'pareamento da máquina receptora não orienta um novo envio na origem');
+assert(admin.includes('O cofre seguro do Windows está indisponível nesta máquina.'), 'falha do cofre seguro não é mostrada claramente');
 assert(admin.includes('Sincronização parcial.'), 'falhas parciais precisam ser informadas sem ocultar os itens concluídos');
 assert(integrations.includes('sharedSyncScreenOverlay'), 'balão central da Central de Integrações ausente');
 assert(integrations.includes('window.jkIntegracoesSetSyncProgress'), 'ponte de status do iframe ausente');

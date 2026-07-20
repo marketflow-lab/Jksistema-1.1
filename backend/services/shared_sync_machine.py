@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -32,6 +33,9 @@ from backend.schemas import (
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.shared_sync_common import *
 from backend.services.shared_sync_context import configure_shared_sync_context, get_tenant_id
+
+
+logger = logging.getLogger(__name__)
 
 
 def configure_shared_sync_machine_runtime(runtime_module=None, peer_globals: dict[str, object] | None = None):
@@ -64,9 +68,16 @@ def _shared_sync_machine_push_scope(sessao: dict, scope: str, machine_id: str = 
         user_only=True,
         state_scope=_shared_sync_machine_state_scope(scope),
         skip_if_remote_hash_matches=skip_if_remote_hash_matches,
+        key_context={"sessao": sessao, "machine_id": machine_id},
     )
 
-def _shared_sync_machine_pull_scope(sessao: dict, scope: str, *, force: bool = False) -> dict:
+def _shared_sync_machine_pull_scope(
+    sessao: dict,
+    scope: str,
+    *,
+    force: bool = False,
+    machine_id: str = "",
+) -> dict:
     bundle_id = _shared_sync_machine_doc_id(sessao.get("client_id"), sessao.get("username"), scope)
     meta = _shared_sync_remote_meta_by_id(bundle_id)
     if not meta:
@@ -81,7 +92,11 @@ def _shared_sync_machine_pull_scope(sessao: dict, scope: str, *, force: bool = F
         sessao.get("client_id"), sessao.get("username") or "", state_scope, meta,
     ):
         return _shared_sync_pull_skip_payload(scope, meta)
-    bundle, meta = _shared_sync_obter_bundle_por_id(bundle_id, meta)
+    bundle, meta = _shared_sync_obter_bundle_por_id(
+        bundle_id,
+        meta,
+        key_context={"sessao": sessao, "machine_id": machine_id},
+    )
     scope_config = {"share_between_users": bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped"))}
     result = _shared_sync_aplicar_pacote(sessao.get("client_id"), scope, bundle, sessao.get("username") or "", scope_config)
     _shared_sync_state_update(sessao.get("client_id"), sessao.get("username") or "", state_scope, meta, "pull")
@@ -136,6 +151,7 @@ def _shared_sync_machine_status_payload(sessao: dict, machine_id: str = "") -> d
                 "stores_count": meta.get("stores_count") or 0,
                 "bundle_bytes": meta.get("bundle_bytes") or 0,
                 "chunk_count": meta.get("chunk_count") or 0,
+                "encryption_key_id": meta.get("encryption_key_id") or "",
                 "warnings": meta.get("warnings") or [],
             },
         }
@@ -150,6 +166,7 @@ def _shared_sync_machine_status_payload(sessao: dict, machine_id: str = "") -> d
         },
         "config": config,
         "scopes": scopes,
+        "keyring": _shared_sync_keyring_status(sessao, machine_id or ""),
         "machines": maquinas[:20],
         "online_count": len([m for m in maquinas if m.get("online")]),
     }
@@ -187,7 +204,7 @@ def _shared_sync_machine_auto_run(sessao: dict, machine_id: str = "", requested:
             skipped.append({"scope": scope, "reason": "same_machine", "snapshot_hash": remote_hash})
             continue
         try:
-            results.append(_shared_sync_machine_pull_scope(sessao, scope))
+            results.append(_shared_sync_machine_pull_scope(sessao, scope, machine_id=machine_id))
         except HTTPException as exc:
             skipped.append({
                 "scope": scope,

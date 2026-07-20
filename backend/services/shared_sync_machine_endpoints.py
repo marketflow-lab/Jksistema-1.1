@@ -114,6 +114,7 @@ def shared_sync_machine_preview(
         scopes=scopes,
         bundle_ids=bundle_ids,
         machine_id=payload.machine_id or "",
+        key_context={"sessao": sessao, "machine_id": payload.machine_id or ""},
     )
 
 def shared_sync_machine_push(
@@ -151,7 +152,9 @@ def shared_sync_machine_pull(
     lojas_esperadas = int(((operation.get("totals") or {}).get("stores")) or 0)
     for scope in scopes:
         try:
-            result = _shared_sync_machine_pull_scope(sessao, scope, force=True)
+            result = _shared_sync_machine_pull_scope(
+                sessao, scope, force=True, machine_id=payload.machine_id or "",
+            )
             if scope == "lojas_integracoes":
                 lojas_aplicadas = int(result.get("stores_count") or 0)
                 if lojas_aplicadas != lojas_esperadas:

@@ -71,24 +71,24 @@ def _shared_sync_encryption_secret() -> bytes:
     return secret.encode("utf-8")
 
 
-def _shared_sync_fernet(bundle_id: str) -> Fernet:
+def _shared_sync_fernet(bundle_id: str, secret: Optional[bytes] = None) -> Fernet:
     salt = hashlib.sha256(("jk-shared-sync-v2|" + str(bundle_id or "")).encode("utf-8")).digest()
     key = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
         salt=salt,
         iterations=210_000,
-    ).derive(_shared_sync_encryption_secret())
+    ).derive(secret if isinstance(secret, bytes) and secret else _shared_sync_encryption_secret())
     return Fernet(base64.urlsafe_b64encode(key))
 
 
-def _shared_sync_encrypt_bundle(bundle_id: str, bundle: bytes) -> bytes:
-    return _shared_sync_fernet(bundle_id).encrypt(bundle or b"")
+def _shared_sync_encrypt_bundle(bundle_id: str, bundle: bytes, secret: Optional[bytes] = None) -> bytes:
+    return _shared_sync_fernet(bundle_id, secret).encrypt(bundle or b"")
 
 
-def _shared_sync_decrypt_bundle(bundle_id: str, encrypted: bytes) -> bytes:
+def _shared_sync_decrypt_bundle(bundle_id: str, encrypted: bytes, secret: Optional[bytes] = None) -> bytes:
     try:
-        return _shared_sync_fernet(bundle_id).decrypt(encrypted or b"")
+        return _shared_sync_fernet(bundle_id, secret).decrypt(encrypted or b"")
     except InvalidToken:
         raise HTTPException(status_code=502, detail="Pacote criptografado invalido ou chave incompatível.")
 
@@ -134,6 +134,7 @@ def _shared_sync_push_scope(
     allow_empty_delta: bool = False,
     sanitize_user_share_oauth: bool = False,
     skip_if_remote_hash_matches: bool = False,
+    key_context: Optional[dict] = None,
 ) -> dict:
     db = _shared_sync_firestore_required()
     bundle, manifest, warnings = _shared_sync_montar_pacote(
@@ -151,11 +152,20 @@ def _shared_sync_push_scope(
 
         stores_count = len(_shared_sync_lojas_config_from_bundle(bundle))
     bundle_id = str(bundle_id or _shared_sync_doc_id(client_id, scope)).strip()
+    encryption_secret: Optional[bytes] = None
+    encryption_key_id = ""
+    if isinstance(key_context, dict):
+        encryption_secret, encryption_key_id = _shared_sync_keyring_key_for_push(
+            key_context.get("sessao") if isinstance(key_context.get("sessao"), dict) else sessao,
+            str(key_context.get("machine_id") or machine_id or ""),
+        )
     if skip_if_remote_hash_matches:
         remote_meta = _shared_sync_remote_meta_by_id(bundle_id) or {}
         remote_hash = str(remote_meta.get("snapshot_hash") or "")
         local_hash = str(manifest.get("snapshot_hash") or "")
-        if remote_hash and local_hash and remote_hash == local_hash:
+        remote_key_id = str(remote_meta.get("encryption_key_id") or "")
+        same_key = remote_key_id == encryption_key_id if encryption_key_id else not remote_key_id
+        if remote_hash and local_hash and remote_hash == local_hash and same_key:
             return {
                 "scope": scope,
                 "success": True,
@@ -191,8 +201,8 @@ def _shared_sync_push_scope(
             "updated_at": _shared_sync_now_iso(),
         }
     if scope == "lojas_integracoes" and known_keys is None:
-        _shared_sync_validar_push_lojas_integracoes(bundle_id, bundle)
-    encrypted_bundle = _shared_sync_encrypt_bundle(bundle_id, bundle)
+        _shared_sync_validar_push_lojas_integracoes(bundle_id, bundle, key_context=key_context)
+    encrypted_bundle = _shared_sync_encrypt_bundle(bundle_id, bundle, encryption_secret)
     bundle_sha256 = _shared_sync_bytes_sha256(encrypted_bundle)
     bundle_b64 = base64.b64encode(encrypted_bundle).decode("ascii")
     chunks = [bundle_b64[i:i + SHARED_SYNC_CHUNK_CHARS] for i in range(0, len(bundle_b64), SHARED_SYNC_CHUNK_CHARS)] or [""]
@@ -231,6 +241,7 @@ def _shared_sync_push_scope(
         "schema": 2,
         "encrypted": True,
         "encryption": "fernet-pbkdf2-sha256",
+        "encryption_key_id": encryption_key_id,
         "bundle_sha256": bundle_sha256,
         "client_id": str(client_id or "default").strip() or "default",
         "scope": scope,
@@ -301,7 +312,11 @@ def _shared_sync_remote_meta_by_id(bundle_id: str) -> Optional[dict]:
 def _shared_sync_obter_bundle_remoto(client_id: str, scope: str) -> tuple[bytes, dict]:
     return _shared_sync_obter_bundle_por_id(_shared_sync_doc_id(client_id, scope))
 
-def _shared_sync_obter_bundle_por_id(bundle_id: str, meta: Optional[dict] = None) -> tuple[bytes, dict]:
+def _shared_sync_obter_bundle_por_id(
+    bundle_id: str,
+    meta: Optional[dict] = None,
+    key_context: Optional[dict] = None,
+) -> tuple[bytes, dict]:
     db = _shared_sync_firestore_required()
     meta = meta if isinstance(meta, dict) and meta else _shared_sync_remote_meta_by_id(bundle_id)
     if not meta:
@@ -328,7 +343,22 @@ def _shared_sync_obter_bundle_por_id(bundle_id: str, meta: Optional[dict] = None
     expected_hash = str(meta.get("bundle_sha256") or "")
     if not expected_hash or _shared_sync_bytes_sha256(encrypted_bundle) != expected_hash:
         raise HTTPException(status_code=502, detail="Hash do pacote remoto invalido.")
-    return _shared_sync_decrypt_bundle(pointer_id, encrypted_bundle), meta
+    encryption_secret: Optional[bytes] = None
+    encryption_key_id_raw = str(meta.get("encryption_key_id") or "").strip().lower()
+    encryption_key_id = (
+        _shared_sync_keyring_normalize_key_id(encryption_key_id_raw)
+        if encryption_key_id_raw else ""
+    )
+    if encryption_key_id:
+        if not isinstance(key_context, dict):
+            raise HTTPException(status_code=409, detail="Contexto autenticado ausente para abrir este snapshot.")
+        sessao = key_context.get("sessao") if isinstance(key_context.get("sessao"), dict) else {}
+        encryption_secret = _shared_sync_keyring_key_for_pull(
+            sessao,
+            str(key_context.get("machine_id") or ""),
+            encryption_key_id,
+        )
+    return _shared_sync_decrypt_bundle(pointer_id, encrypted_bundle, encryption_secret), meta
 
 def _shared_sync_manifest_from_bundle(bundle: bytes) -> dict:
     try:

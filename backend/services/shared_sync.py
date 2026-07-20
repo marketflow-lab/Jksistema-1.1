@@ -9,6 +9,7 @@ from backend.services import shared_sync_config as _shared_sync_module_0
 from backend.services import shared_sync_collect_files as _shared_sync_module_1
 from backend.services import shared_sync_delta as _shared_sync_module_2
 from backend.services import shared_sync_bundle as _shared_sync_module_3
+from backend.services import shared_sync_keyring as _shared_sync_module_keyring
 from backend.services import shared_sync_remote as _shared_sync_module_4
 from backend.services import shared_sync_merge_user_data as _shared_sync_module_5
 from backend.services import shared_sync_merge_integracoes as _shared_sync_module_6
@@ -25,6 +26,7 @@ from backend.services.shared_sync_config import *
 from backend.services.shared_sync_collect_files import *
 from backend.services.shared_sync_delta import *
 from backend.services.shared_sync_bundle import *
+from backend.services.shared_sync_keyring import *
 from backend.services.shared_sync_remote import *
 from backend.services.shared_sync_merge_user_data import *
 from backend.services.shared_sync_merge_integracoes import *
@@ -43,6 +45,7 @@ _SHARED_SYNC_MODULES = (
     _shared_sync_module_1,
     _shared_sync_module_2,
     _shared_sync_module_3,
+    _shared_sync_module_keyring,
     _shared_sync_module_4,
     _shared_sync_module_5,
     _shared_sync_module_6,

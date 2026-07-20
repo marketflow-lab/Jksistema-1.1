@@ -1,4 +1,4 @@
-"""Local secure storage for sensitive API keys.
+"""Local secure storage for sensitive runtime secrets.
 
 On Windows this module stores values in Windows Credential Manager. Other
 platforms deliberately report the store as unavailable so callers can keep using
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wintypes
+import hashlib
 import json
 import os
 from typing import Any
@@ -21,6 +22,8 @@ ERROR_NOT_FOUND = 1168
 SERVICE_NAME = "JK Sistema"
 TARGET_PREFIX = "JK Sistema/IA"
 META_TARGET = f"{TARGET_PREFIX}/__meta__"
+SCOPED_TARGET_PREFIX = "JK Sistema/Scoped"
+SCOPED_TARGET_MAX_CHARS = 2048
 
 SUPPORTED_SECRET_KEYS: tuple[str, ...] = (
     "OPENAI_API_KEY",
@@ -104,6 +107,17 @@ def _target_name(key: str) -> str:
     return f"{TARGET_PREFIX}/{normalize_secret_key(key)}"
 
 
+def _scoped_target_name(target: str) -> str:
+    """Map an app-owned logical target to a non-identifying credential name."""
+    target_norm = str(target or "").strip()
+    if not target_norm:
+        raise ValueError("Destino seguro vazio.")
+    if "\x00" in target_norm or len(target_norm) > SCOPED_TARGET_MAX_CHARS:
+        raise ValueError("Destino seguro invalido.")
+    target_hash = hashlib.sha256(target_norm.encode("utf-8")).hexdigest()
+    return f"{SCOPED_TARGET_PREFIX}/{target_hash}"
+
+
 def _write_target(target: str, value: str) -> None:
     if not _available() or CREDENTIALW is None:
         raise RuntimeError("Windows Credential Manager indisponivel neste ambiente.")
@@ -184,6 +198,25 @@ def delete_secret(key: str) -> bool:
     if key_norm not in SUPPORTED_SECRET_KEYS:
         return False
     return _delete_target(_target_name(key_norm))
+
+
+def write_scoped_secret(target: str, value: str) -> bool:
+    """Persist an app-scoped secret without exposing its logical target or value."""
+    value_norm = str(value or "").strip()
+    if not value_norm:
+        return delete_scoped_secret(target)
+    _write_target(_scoped_target_name(target), value_norm)
+    return True
+
+
+def read_scoped_secret(target: str) -> str:
+    """Read an app-scoped secret from the current Windows user's secure store."""
+    return _read_target(_scoped_target_name(target))
+
+
+def delete_scoped_secret(target: str) -> bool:
+    """Delete an app-scoped secret without allowing arbitrary credential targets."""
+    return _delete_target(_scoped_target_name(target))
 
 
 def write_metadata(version: str | None = None, source: str | None = None) -> None:

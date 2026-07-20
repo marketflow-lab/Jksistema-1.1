@@ -52,6 +52,7 @@ def minha_sessao_auth(
     machine_id: str = "",
 ):
     sessao = _payload_sessao_por_authorization(authorization)
+    machine_final = _authenticated_session_machine_id(sessao, machine_id)
     usuario = _obter_usuario_sql(sessao["username"])
     client_usuario = str(usuario.get("client_id") or sessao["client_id"] or "default").strip() or "default"
     if client_usuario != sessao["client_id"]:
@@ -69,12 +70,10 @@ def minha_sessao_auth(
     except Exception:
         permissoes = _normalizar_permissoes(usuario.get("permissions") or {})
 
-    machine_final = str(machine_id or usuario.get("machine_id") or "").strip()
-    if machine_final:
-        try:
-            _machine_presence_save(_machine_presence_record(sessao["username"], client_usuario, machine_final, request, "session-refresh"))
-        except Exception as exc:
-            logger.warning("[LOGIN] Nao foi possivel atualizar presenca da sessao para %s: %s", sessao["username"], exc)
+    try:
+        _machine_presence_save(_machine_presence_record(sessao["username"], client_usuario, machine_final, request, "session-refresh"))
+    except Exception as exc:
+        logger.warning("[LOGIN] Nao foi possivel atualizar presenca da sessao para %s: %s", sessao["username"], exc)
 
     return _montar_resposta_login_sucesso(sessao["username"], usuario, permissoes, client_usuario, machine_final)
 

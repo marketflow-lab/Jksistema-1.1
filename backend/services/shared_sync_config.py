@@ -51,6 +51,10 @@ def _firebase_shared_sync_collection_name() -> str:
 def _firebase_shared_sync_chunks_collection_name() -> str:
     return _env_texto("FIREBASE_SHARED_SYNC_CHUNKS_COLLECTION", "JK_FIREBASE_SHARED_SYNC_CHUNKS_COLLECTION") or "jk_sistema_shared_sync_chunks"
 
+
+def _firebase_shared_sync_keyrings_collection_name() -> str:
+    return _env_texto("FIREBASE_SHARED_SYNC_KEYRINGS_COLLECTION", "JK_FIREBASE_SHARED_SYNC_KEYRINGS_COLLECTION") or "jk_sistema_shared_sync_keyrings"
+
 def _firebase_shared_sync_user_invites_collection_name() -> str:
     return _env_texto("FIREBASE_SHARED_SYNC_USER_INVITES_COLLECTION", "JK_FIREBASE_SHARED_SYNC_USER_INVITES_COLLECTION") or "jk_sistema_shared_sync_user_invites"
 
@@ -375,6 +379,7 @@ def _shared_sync_session(authorization: Optional[str], client_id: str) -> dict:
     return {
         "username": username,
         "client_id": client_norm,
+        "machine_id": str(sessao.get("machine_id") or "").strip(),
         "usuario": usuario,
         "permissions": permissoes,
         "is_admin": bool(permissoes.get("full") is True or permissoes.get("admin_usuarios") is True),
@@ -503,6 +508,7 @@ __all__ = [
     "_firebase_shared_sync_config_collection_name",
     "_firebase_shared_sync_collection_name",
     "_firebase_shared_sync_chunks_collection_name",
+    "_firebase_shared_sync_keyrings_collection_name",
     "_firebase_shared_sync_user_invites_collection_name",
     "_firebase_shared_sync_user_links_collection_name",
     "_shared_sync_auto_interval_seconds",
