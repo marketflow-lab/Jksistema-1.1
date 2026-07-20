@@ -729,7 +729,7 @@ def test_endpoint_de_importacao_manual_forca_reaplicacao(monkeypatch):
     assert chamadas == [("lojas_integracoes", True)]
 
 
-def test_endpoint_rejeita_importacao_com_quantidade_de_lojas_divergente(monkeypatch):
+def test_endpoint_marca_importacao_com_quantidade_de_lojas_divergente(monkeypatch):
     sessao = {"username": "operador", "client_id": "000002"}
     monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_session", lambda *args: sessao)
     monkeypatch.setattr(
@@ -759,15 +759,66 @@ def test_endpoint_rejeita_importacao_com_quantidade_de_lojas_divergente(monkeypa
     )
     monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_audit", lambda *args, **kwargs: None)
 
-    with pytest.raises(HTTPException) as exc:
-        shared_sync_machine_endpoints.shared_sync_machine_pull(
-            SharedSyncRunRequest(scopes=["lojas_integracoes"], operation_id="op"),
-            authorization="Bearer teste",
-            client_id="000002",
-        )
+    result = shared_sync_machine_endpoints.shared_sync_machine_pull(
+        SharedSyncRunRequest(scopes=["lojas_integracoes"], operation_id="op"),
+        authorization="Bearer teste",
+        client_id="000002",
+    )
 
-    assert exc.value.status_code == 502
-    assert "snapshot continha 4 loja(s), mas 3 foram aplicadas" in exc.value.detail
+    assert result["success"] is False
+    assert result["partial"] is False
+    assert result["results"][0]["scope"] == "lojas_integracoes"
+    assert result["results"][0]["status_code"] == 502
+    assert "snapshot continha 4 loja(s), mas 3 foram aplicadas" in result["results"][0]["message"]
+
+
+def test_falha_em_cadastro_nao_impede_importacao_das_lojas(monkeypatch):
+    sessao = {"username": "operador", "client_id": "000002"}
+    chamadas = []
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_session", lambda *args: sessao)
+    monkeypatch.setattr(
+        shared_sync_machine_endpoints,
+        "_shared_sync_machine_resolver_scopes",
+        lambda *args, **kwargs: ["cadastro", "lojas_integracoes"],
+    )
+    monkeypatch.setattr(
+        shared_sync_machine_endpoints,
+        "_shared_sync_machine_bundle_ids",
+        lambda *args: {"cadastro": "bundle-cadastro", "lojas_integracoes": "bundle-lojas"},
+    )
+    monkeypatch.setattr(
+        shared_sync_machine_endpoints,
+        "_shared_sync_require_operation",
+        lambda *args, **kwargs: {"id": "op", "totals": {"stores": 4}},
+    )
+
+    def pull_scope(_sessao, scope, *, force=False):
+        chamadas.append((scope, force))
+        if scope == "cadastro":
+            raise HTTPException(status_code=423, detail="Cadastro temporariamente bloqueado.")
+        return {
+            "scope": scope,
+            "success": True,
+            "file_count": 1,
+            "stores_count": 4,
+        }
+
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_machine_pull_scope", pull_scope)
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_audit", lambda *args, **kwargs: None)
+
+    result = shared_sync_machine_endpoints.shared_sync_machine_pull(
+        SharedSyncRunRequest(scopes=["cadastro", "lojas_integracoes"], operation_id="op"),
+        authorization="Bearer teste",
+        client_id="000002",
+    )
+
+    assert chamadas == [("cadastro", True), ("lojas_integracoes", True)]
+    assert result["success"] is False
+    assert result["partial"] is True
+    assert result["results"][0]["success"] is False
+    assert result["results"][0]["status_code"] == 423
+    assert result["results"][1]["success"] is True
+    assert result["results"][1]["stores_count"] == 4
 
 
 def test_tela_de_sincronizacao_exibe_balao_central_e_recarrega_lojas():
@@ -779,7 +830,7 @@ def test_tela_de_sincronizacao_exibe_balao_central_e_recarrega_lojas():
     assert "Preparando o envio dos dados" in admin
     assert "Recebendo e aplicando os dados" in admin
     assert "atualizarBalaoSincronizacaoMaquinas(false);" in admin
-    assert "await recarregarLojasAposSincronizacao(scopes);" in admin
+    assert "await recarregarLojasAposSincronizacao(['lojas_integracoes']);" in admin
     assert "ignorado porque o histórico indicava que já estava atualizado" in admin
     assert 'id="sharedSyncScreenOverlay"' in integracoes_html
     assert "window.jkIntegracoesSetSyncProgress" in integracoes_html
@@ -787,6 +838,9 @@ def test_tela_de_sincronizacao_exibe_balao_central_e_recarrega_lojas():
     assert "loja(s) no snapshot" in admin
     assert "não significa exclusão de lojas" in admin
     assert "O backend não confirmou quantas lojas foram importadas" in admin
+    assert 'id="machineSyncActionStatus"' in admin
+    assert "Sincronização parcial." in admin
+    assert "item.success === false" in admin
     assert "throw error;" in admin
     assert admin == open("admin_usuarios.html", "r", encoding="utf-8-sig").read()
     assert integracoes_html == open("integracoes.html", "r", encoding="utf-8-sig").read()
@@ -804,11 +858,24 @@ def test_auditoria_nao_grava_segredos(tmp_path, monkeypatch):
     shared_sync_operations._shared_sync_audit(
         {"username": "destino", "client_id": "000002"},
         record=record,
-        results=[{"scope": "lojas_integracoes", "snapshot_hash": "abc"}],
+        results=[
+            {"scope": "lojas_integracoes", "snapshot_hash": "abc", "success": True},
+            {
+                "scope": "cadastro",
+                "success": False,
+                "reason": "pull_failed",
+                "status_code": 423,
+                "message": "mensagem que nao deve ir para a auditoria",
+            },
+        ],
         link_id="link",
     )
     audit = (tmp_path / "shared_sync_audit.jsonl").read_text(encoding="utf-8")
     assert '"credentials":4' in audit
+    assert '"success":false' in audit
+    assert '"reason":"pull_failed"' in audit
+    assert '"status_code":423' in audit
+    assert "mensagem que nao deve ir para a auditoria" not in audit
     for secret in ("access_token", "refresh_token", "client_secret", "secret", "turbo"):
         assert secret not in audit
 
@@ -1098,7 +1165,7 @@ def test_versoes_fonte_e_electron_estao_alinhadas_com_a_release():
     root_package = json.loads(open("package.json", "r", encoding="utf-8").read())
     electron_package = json.loads(open("electron_app/package.json", "r", encoding="utf-8").read())
     backend_source = open("backend_api.py", "r", encoding="utf-8-sig").read()
-    assert root_package["version"] == "1.0.106"
+    assert root_package["version"] == "1.0.107"
     assert electron_package["version"] == root_package["version"]
     # O minimo do backend pode permanecer anterior para nao derrubar clientes
     # durante o rollout em duas ondas.

@@ -316,6 +316,15 @@
             border-radius: 12px;
             padding: 10px;
         }
+        .machine-sync-action-status {
+            min-height: 18px;
+            margin-top: 6px;
+            color: #bfe4ff;
+            font-size: 12px;
+            line-height: 1.35;
+        }
+        .machine-sync-action-status.is-error { color: #ffb1b1; }
+        .machine-sync-action-status.is-success { color: #b9f8d1; }
         .user-share-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -831,6 +840,7 @@
                         <div>
                             <h3>Sincronizar minhas máquinas</h3>
                             <div id="machineSyncSummary" class="small">Carregando sincronização das minhas máquinas...</div>
+                            <div id="machineSyncActionStatus" class="machine-sync-action-status" aria-live="polite"></div>
                         </div>
                         <button class="btn-muted" onclick="carregarSincronizacaoMinhasMaquinas()">Atualizar status</button>
                     </div>
@@ -1186,6 +1196,16 @@
         if (!box) return;
         box.textContent = msg || '';
         box.style.color = erro ? '#ffb1b1' : '#bfe4ff';
+    }
+
+    function setMachineSyncStatus(msg, erro) {
+        const box = document.getElementById('machineSyncActionStatus');
+        if (box) {
+            box.textContent = msg || '';
+            box.classList.toggle('is-error', !!erro);
+            box.classList.toggle('is-success', !!msg && !erro);
+        }
+        setStatus(msg, erro);
     }
 
     function setUserShareStatus(msg, erro) {
@@ -1772,6 +1792,9 @@
                     ? 'ignorado porque o histórico indicava que já estava atualizado'
                     : `ignorado${item.reason ? ` (${item.reason})` : ''}`;
                 return `${nome}: ${motivo}`;
+            }
+            if (item.success === false) {
+                return `${nome}: falhou (${item.message || 'não foi possível importar'})`;
             }
             const lojas = item.scope === 'lojas_integracoes'
                 ? `, ${Number(item.stores_count || 0)} loja(s)`
@@ -2593,18 +2616,18 @@
             if (!salvou) return;
             const scopes = scopesSelecionadosSincronizacaoMinhasMaquinas();
             if (!scopes.length) {
-                setStatus('Selecione pelo menos um dado para sincronizar.', true);
+                setMachineSyncStatus('Selecione pelo menos um dado para sincronizar.', true);
                 return;
             }
             const endpoint = enviando ? '/api/shared-sync/machine-sync/push' : '/api/shared-sync/machine-sync/pull';
-            setStatus(enviando ? 'Enviando dados desta máquina...' : 'Importando dados para esta máquina...');
+            setMachineSyncStatus(enviando ? 'Enviando dados desta máquina...' : 'Importando dados para esta máquina...');
             atualizarBalaoSincronizacaoMaquinas(
                 true,
                 enviando ? 'Conferindo o que será enviado...' : 'Conferindo o que será recebido...'
             );
             const operationId = await criarPreviaSincronizacaoManual('/api/shared-sync/machine-sync/preview', direcao, scopes);
             if (!operationId) {
-                setStatus('Operação cancelada. Nenhum dado local foi alterado.');
+                setMachineSyncStatus('Operação cancelada. Nenhum dado local foi alterado.');
                 return;
             }
             atualizarBalaoSincronizacaoMaquinas(
@@ -2617,22 +2640,23 @@
                 body: JSON.stringify({ scopes, machine_id: machineIdAtual(), operation_id: operationId })
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao sincronizar minhas máquinas.');
+            if (!resp.ok) throw new Error(data.detail || data.message || 'Erro ao sincronizar minhas máquinas.');
             const resultados = Array.isArray(data.results) ? data.results : [];
-            const scopesConcluidos = new Set(resultados.filter(item => item && item.success !== false).map(item => String(item.scope || '')));
-            const scopesAusentes = scopes.filter(scope => !scopesConcluidos.has(String(scope)));
-            if (scopesAusentes.length) {
-                throw new Error(`A sincronização não confirmou: ${scopesAusentes.join(', ')}.`);
-            }
+            const resultadosConcluidos = resultados.filter(item => item && item.success !== false);
+            const scopesRetornados = new Set(resultados.filter(Boolean).map(item => String(item.scope || '')));
+            const scopesConcluidos = new Set(resultadosConcluidos.map(item => String(item.scope || '')));
+            const scopesAusentes = scopes.filter(scope => !scopesRetornados.has(String(scope)));
+            const falhas = resultados.filter(item => item && item.success === false);
             atualizarBalaoSincronizacaoMaquinas(
                 true,
                 enviando ? 'Finalizando o envio...' : 'Atualizando as lojas e a tela...'
             );
             if (!enviando) {
-                await atualizarCacheHistoricoFavoritosSincronizado(data.results, scopes);
-                const lojasCarregadas = await recarregarLojasAposSincronizacao(scopes);
-                if (scopes.includes('lojas_integracoes')) {
-                    const resultadoLojas = resultados.find(item => item && item.scope === 'lojas_integracoes');
+                const scopesConcluidosLista = Array.from(scopesConcluidos);
+                await atualizarCacheHistoricoFavoritosSincronizado(resultadosConcluidos, scopesConcluidosLista);
+                const resultadoLojas = resultados.find(item => item && item.scope === 'lojas_integracoes' && item.success !== false);
+                if (resultadoLojas) {
+                    const lojasCarregadas = await recarregarLojasAposSincronizacao(['lojas_integracoes']);
                     const lojasAplicadas = Number(resultadoLojas && resultadoLojas.stores_count);
                     if (!Number.isInteger(lojasAplicadas) || lojasAplicadas < 0) {
                         throw new Error('O backend não confirmou quantas lojas foram importadas.');
@@ -2643,9 +2667,17 @@
                 }
             }
             await carregarSincronizacaoMinhasMaquinas();
-            setStatus((enviando ? 'Dados enviados. ' : 'Dados importados. ') + resumoResultadosSync(data.results));
+            if (scopesAusentes.length || falhas.length || data.success === false) {
+                const confirmados = resultadosConcluidos;
+                const resumoConfirmados = confirmados.length ? ` Concluídos: ${resumoResultadosSync(confirmados)}` : '';
+                const resumoFalhas = falhas.length ? ` Falhas: ${resumoResultadosSync(falhas)}` : '';
+                const resumoAusentes = scopesAusentes.length ? ` Sem confirmação: ${scopesAusentes.join(', ')}.` : '';
+                const titulo = confirmados.length ? 'Sincronização parcial.' : 'Sincronização não concluída.';
+                throw new Error(`${titulo}${resumoConfirmados}${resumoFalhas}${resumoAusentes}`.trim());
+            }
+            setMachineSyncStatus((enviando ? 'Dados enviados. ' : 'Dados importados. ') + resumoResultadosSync(resultados));
         } catch (error) {
-            setStatus(error.message || 'Erro ao sincronizar minhas máquinas.', true);
+            setMachineSyncStatus(error.message || 'Erro ao sincronizar minhas máquinas.', true);
         } finally {
             atualizarBalaoSincronizacaoMaquinas(false);
         }

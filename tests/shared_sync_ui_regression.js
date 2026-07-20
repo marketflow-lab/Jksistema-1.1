@@ -30,7 +30,9 @@ assert.doesNotThrow(() => new Function(sharedSyncBoot), 'shared-sync-boot.js pos
 
 assert(admin.includes('machineSyncProgressOverlay'), 'balão local da sincronização ausente');
 assert(admin.includes('atualizarBalaoSincronizacaoMaquinas'), 'controle do balão da sincronização ausente');
-assert(admin.includes('await recarregarLojasAposSincronizacao(scopes);'), 'recarga de lojas após importação ausente');
+assert(admin.includes("await recarregarLojasAposSincronizacao(['lojas_integracoes']);"), 'recarga de lojas após importação ausente');
+assert(admin.includes('machineSyncActionStatus'), 'resultado da sincronização precisa permanecer visível no próprio painel');
+assert(admin.includes('Sincronização parcial.'), 'falhas parciais precisam ser informadas sem ocultar os itens concluídos');
 assert(integrations.includes('sharedSyncScreenOverlay'), 'balão central da Central de Integrações ausente');
 assert(integrations.includes('window.jkIntegracoesSetSyncProgress'), 'ponte de status do iframe ausente');
 assert(integrations.includes('window.jkIntegracoesReloadStores'), 'ponte de recarga das lojas ausente');

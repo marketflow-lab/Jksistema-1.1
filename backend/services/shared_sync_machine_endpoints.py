@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -33,6 +34,9 @@ from backend.schemas import (
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.shared_sync_common import *
 from backend.services.shared_sync_context import configure_shared_sync_context, get_tenant_id
+
+
+logger = logging.getLogger(__name__)
 
 
 def configure_shared_sync_machine_endpoints_runtime(runtime_module=None, peer_globals: dict[str, object] | None = None):
@@ -65,6 +69,27 @@ def _shared_sync_machine_bundle_ids(sessao: dict, scopes: list[str]) -> dict[str
     return {
         scope: _shared_sync_machine_doc_id(sessao.get("client_id"), sessao.get("username"), scope)
         for scope in scopes
+    }
+
+
+def _shared_sync_machine_pull_failure(scope: str, exc: Exception) -> dict:
+    if isinstance(exc, HTTPException):
+        status_code = int(exc.status_code or 500)
+        detail = exc.detail
+        if isinstance(detail, dict):
+            message = str(detail.get("detail") or detail.get("message") or "Falha ao importar este dado.")
+        else:
+            message = str(detail or "Falha ao importar este dado.")
+    else:
+        status_code = 500
+        message = "Falha interna ao importar este dado. Os demais dados continuaram sendo processados."
+        logger.exception("[SHARED-SYNC] Falha no pull manual do escopo %s", scope)
+    return {
+        "scope": scope,
+        "success": False,
+        "reason": "pull_failed",
+        "status_code": status_code,
+        "message": message,
     }
 
 
@@ -122,26 +147,32 @@ def shared_sync_machine_pull(
     # O clique em "Importar agora" e uma ordem manual confirmada por previa.
     # Nao confie apenas no hash historico: o arquivo local pode ter sumido ou
     # divergido depois da ultima sincronizacao.
-    results = [_shared_sync_machine_pull_scope(sessao, scope, force=True) for scope in scopes]
-    if "lojas_integracoes" in scopes:
-        lojas_esperadas = int(((operation.get("totals") or {}).get("stores")) or 0)
-        resultado_lojas = next(
-            (item for item in results if str((item or {}).get("scope") or "") == "lojas_integracoes"),
-            None,
-        )
-        if not isinstance(resultado_lojas, dict):
-            raise HTTPException(status_code=502, detail="A importacao nao retornou o resultado de Lojas e integracoes.")
-        lojas_aplicadas = int(resultado_lojas.get("stores_count") or 0)
-        if lojas_aplicadas != lojas_esperadas:
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    "A importacao de Lojas e integracoes ficou incompleta: "
-                    f"o snapshot continha {lojas_esperadas} loja(s), mas {lojas_aplicadas} foram aplicadas."
-                ),
-            )
+    results = []
+    lojas_esperadas = int(((operation.get("totals") or {}).get("stores")) or 0)
+    for scope in scopes:
+        try:
+            result = _shared_sync_machine_pull_scope(sessao, scope, force=True)
+            if scope == "lojas_integracoes":
+                lojas_aplicadas = int(result.get("stores_count") or 0)
+                if lojas_aplicadas != lojas_esperadas:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=(
+                            "A importacao de Lojas e integracoes ficou incompleta: "
+                            f"o snapshot continha {lojas_esperadas} loja(s), mas {lojas_aplicadas} foram aplicadas."
+                        ),
+                    )
+            results.append(result)
+        except Exception as exc:
+            results.append(_shared_sync_machine_pull_failure(scope, exc))
     _shared_sync_audit(sessao, record=operation, results=results)
-    return {"success": True, "direction": "machine-pull", "results": results}
+    failures = [item for item in results if not bool((item or {}).get("success"))]
+    return {
+        "success": not failures,
+        "partial": bool(failures) and len(failures) < len(results),
+        "direction": "machine-pull",
+        "results": results,
+    }
 
 def shared_sync_machine_auto(
     payload: SharedSyncRunRequest,

@@ -259,7 +259,13 @@ def _shared_sync_audit(sessao: dict, *, record: dict, results: list[dict], link_
         "scopes": list(record.get("scopes") or []),
         "counts": dict(record.get("totals") or {}),
         "snapshots": [
-            {"scope": str(item.get("scope") or ""), "snapshot_hash": str(item.get("snapshot_hash") or "")}
+            {
+                "scope": str(item.get("scope") or ""),
+                "snapshot_hash": str(item.get("snapshot_hash") or ""),
+                "success": item.get("success") is not False,
+                "reason": str(item.get("reason") or ""),
+                "status_code": int(item.get("status_code") or 0),
+            }
             for item in (results or []) if isinstance(item, dict)
         ],
     }
