@@ -606,7 +606,7 @@ def favoritos_colar_historico_planilha(client_id: str, loja: Any, historico: Any
     ]
     try:
         try:
-            worksheet.batch_update(updates, value_input_option="USER_ENTERED")
+            worksheet.batch_update(updates, value_input_option="RAW")
         except TypeError:
             worksheet.batch_update(updates)
     except Exception as exc:

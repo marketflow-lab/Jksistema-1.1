@@ -13,7 +13,7 @@ def test_release_version_is_canonical_and_materialized():
     runtime_manifest = json.loads((root / ".installer_runtime" / "runtime-manifest.json").read_text(encoding="utf-8-sig"))
 
     release_version = electron_package["version"]
-    assert release_version == "1.0.109"
+    assert release_version == "1.0.110"
     assert root_package["version"] == release_version
     assert context_manifest["source_version"] == release_version
     assert runtime_manifest["version"] == release_version
