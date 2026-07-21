@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '20260721-favoritos-ranking-no-arrows-v1';
+  const VERSION = '20260721-favoritos-ranking-no-arrows-v2';
   const CHUNKS = [
     "01-ml-base-busca.js",
     "02-ia-datas-selecao.js",

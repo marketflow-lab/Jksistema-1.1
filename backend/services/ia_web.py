@@ -42,6 +42,7 @@ from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.ia_common import *
 from backend.services.ia_context import get_tenant_id, get_tenant_path
 from backend.services.ia_state import *
+from backend.services.transport_security import requests_tls_verify
 
 logger = None
 
@@ -280,7 +281,7 @@ def _ia_web_buscar_noticias(query: str, max_results: int = 5) -> list[dict]:
             },
             headers=headers,
             timeout=12,
-            verify=False,
+            verify=requests_tls_verify(),
         )
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "xml")
@@ -342,7 +343,7 @@ def _ia_web_buscar(query: str, max_results: int = 5, *, fast: bool = False) -> l
             params={"q": consulta},
             headers=headers,
             timeout=4 if fast else 12,
-            verify=False,
+            verify=requests_tls_verify(),
         )
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -382,7 +383,7 @@ def _ia_web_buscar(query: str, max_results: int = 5, *, fast: bool = False) -> l
             params={"q": consulta},
             headers=headers,
             timeout=12,
-            verify=False,
+            verify=requests_tls_verify(),
         )
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -422,7 +423,7 @@ def _ia_web_buscar(query: str, max_results: int = 5, *, fast: bool = False) -> l
             jina_url,
             headers={"User-Agent": "Mozilla/5.0 (compatible; JKSistema/1.0; +https://jksistema.local)"},
             timeout=5 if fast else 18,
-            verify=False,
+            verify=requests_tls_verify(),
         )
         resp.raise_for_status()
         return _ia_web_extrair_resultados_jina_duckduckgo(resp.text or "", max_results=max_results)

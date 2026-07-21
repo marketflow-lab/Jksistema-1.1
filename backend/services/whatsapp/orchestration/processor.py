@@ -1,17 +1,18 @@
 """Extracted WhatsApp bridge component: processor."""
 
 from __future__ import annotations
-import re
 import threading
 import time
-import unicodedata
 import uuid
+from pathlib import Path
 from typing import Any, Optional
 from backend.schemas import IAChatAttachment, IAChatRequest
 from backend.services.whatsapp import formatting as whatsapp_formatting
 from backend.services.whatsapp import audio_processing as whatsapp_audio_processing
+from backend.services.whatsapp import transcription as whatsapp_transcription
 from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import marketplace_listing_delivery as whatsapp_marketplace_listing
+from backend.services.whatsapp import message as whatsapp_message
 from backend.services.whatsapp import provider_processing as whatsapp_provider_processing
 from backend.services import (
     codex_console,
@@ -307,41 +308,6 @@ def _create_provider_task(
     ).start()
     return {"success": True, "task": codex_console._codex_public_task(task)}
 
-def _whatsapp_adaptive_reasoning_level(
-    settings: dict[str, Any],
-    request_text: str,
-    query_policy: Optional[dict[str, Any]] = None,
-) -> str:
-    configured = _normalize_codex_reasoning_effort(settings.get("codex_reasoning_effort"))
-    policy = _normalize_codex_reasoning_policy(settings.get("codex_reasoning_policy"))
-    maximum = _normalize_codex_reasoning_effort(settings.get("codex_reasoning_max") or configured)
-    if policy == "fixed":
-        return configured
-    ranks = {"low": 0, "medium": 1, "high": 2, "xhigh": 3}
-    normalized = unicodedata.normalize("NFKD", str(request_text or "")).encode("ascii", "ignore").decode("ascii").lower()
-    query_policy = query_policy if isinstance(query_policy, dict) else {}
-    source_policy = query_policy.get("source_policy") if isinstance(query_policy.get("source_policy"), dict) else {}
-    domains = [str(item) for item in (query_policy.get("domains") or [])]
-    providers = [str(item) for item in (source_policy.get("providers") or [])]
-    level = "low"
-    if query_policy or re.search(r"\b(estoque|pedido|venda|anuncio|devolucao|reclamacao|sku|produto)\b", normalized):
-        level = "medium"
-    if (
-        query_policy.get("store_mode") == "all"
-        or len(domains) > 1
-        or len(providers) > 1
-        or re.search(r"\b(relatorio|compare|comparacao|analise|periodo|todas as lojas|historico completo)\b", normalized)
-    ):
-        level = "high"
-    if re.search(
-        r"\b(fontes divergentes|dados conflitantes|estrategia|planeje|plano completo|risco|simule|cenario|corrija a falha|investigue profundamente)\b",
-        normalized,
-    ):
-        level = "xhigh"
-    if ranks[level] > ranks[maximum]:
-        level = maximum
-    return level
-
 def _create_selected_ai_task(
     config: dict[str, Any],
     *,
@@ -375,14 +341,6 @@ def _create_selected_ai_task(
         and requested_role == "task"
         and requested_lane == "worker"
     )
-    default_deadline = _job_deadline_seconds(
-        request_text,
-        requires_web=bool(incoming_metadata.get("allow_web_search") or incoming_metadata.get("web_search_requested")),
-    )
-    try:
-        requested_deadline = int(incoming_metadata.get("deadline_seconds") or default_deadline)
-    except (TypeError, ValueError):
-        requested_deadline = default_deadline
     channel_metadata = {
         **incoming_metadata,
         "ai_model": f"codex:{dual_settings['task_agent_model']}",
@@ -399,14 +357,17 @@ def _create_selected_ai_task(
         "orchestration_profile": (
             "whatsapp_dual_codex_worker" if is_dual_codex_worker else "whatsapp_full_agent"
         ),
-        "deadline_seconds": max(30, min(requested_deadline, 600)),
+        "deadline_enabled": False,
+        "deadline_seconds": 0,
         "admin_configured_ai": True,
     }
     codex_model = str(dual_settings["task_agent_model"])
     payload = codex_console.CodexTaskRequest(
         prompt=prompt,
-        sandbox="read_only" if safe_read_only else ("workspace_write" if mobile_full_access else "read_only"),
-        approval_mode="read_only" if safe_read_only else ("request" if mobile_full_access else "read_only"),
+        # O WhatsApp nunca eleva o sandbox do assistente interno. Acoes
+        # operacionais seguem exclusivamente o fluxo tipado aprovado no app.
+        sandbox="read_only",
+        approval_mode="read_only",
         conversation_id=conversation_id,
         paths=paths,
         screen_context=screen_context,
@@ -457,29 +418,56 @@ def _prepare_inbound_message(
         if not phone:
             raise RuntimeError("whatsapp_phone_identity_missing")
         conversation_id = _conversation_id(config, message)
-        media = _download_media(config, message, conversation_id)
+        downloaded = _download_media(config, message, conversation_id)
+        if not isinstance(downloaded, whatsapp_transcription.DownloadedMedia):
+            raise RuntimeError("media_download_contract_invalid")
+        media = dict(downloaded.public_payload)
+        media.pop("path", None)
+        media.pop("local_path", None)
         if str(media.get("mime_type") or "") in SUPPORTED_AUDIO_MIMES:
-            audio_path = whatsapp_audio_processing.inbound_audio_path(media, _base_dir())
-            try:
-                transcription = _transcribe_audio(audio_path.resolve())
-            except Exception:
-                transcription = whatsapp_audio_processing.transcription_failure("child_failed")
-            finally:
-                audio_deleted = whatsapp_audio_processing.delete_inbound_audio(
-                    audio_path, _base_dir() / ".codex-remote-attachments",
-                )
+            attachment_root = _base_dir() / ".codex-remote-attachments"
+            audio_path: Optional[Path] = None
+            audio_deleted = False
+            with whatsapp_audio_processing.audio_telemetry_scope(
+                client_id=session.get("client_id") or config.get("client_id") or "default",
+                trace_id=message_id,
+                user_id=session.get("username") or "",
+                surface="whatsapp",
+            ):
+                try:
+                    audio_path = whatsapp_audio_processing.validate_inbound_audio_path(
+                        downloaded.local_path,
+                        attachment_root,
+                    )
+                    transcription = whatsapp_audio_processing.transcribe_audio_with_retry(
+                        _transcribe_audio,
+                        audio_path,
+                        total_attempts=2,
+                    )
+                except (OSError, ValueError):
+                    transcription = whatsapp_audio_processing.transcription_failure("child_failed")
+                finally:
+                    if audio_path is not None:
+                        audio_deleted = whatsapp_audio_processing.delete_inbound_audio(audio_path, attachment_root)
+                        if not audio_deleted:
+                            whatsapp_audio_processing.queue_inbound_audio_cleanup(audio_path, attachment_root)
             if not audio_deleted:
                 transcription = whatsapp_audio_processing.transcription_failure("audio_cleanup_failed")
             media = None
     request_text = _message_request_text(message, transcription)
+    quoted_context = whatsapp_message.message_quoted_context(message)
     action_message = {**message, "text_body": request_text}
     if transcription and transcription.get("success") and request_text:
         action_message["message_type"] = "text"
+        # Discard the raw transcription envelope before returning the prepared
+        # context. Only the canonical user message continues through the
+        # existing conversation-history policy.
+        transcription = {"success": True, "local_only": True}
     return {
         "handled": False, "message_id": message_id, "subject": subject, "session": session,
         "phone_ai_behavior": phone_ai_behavior, "phone": phone, "conversation_id": conversation_id,
         "media": media, "transcription": transcription, "request_text": request_text,
-        "message": action_message,
+        "quoted_context": quoted_context, "message": action_message,
     }
 
 def _handle_inbound_commands(
@@ -548,9 +536,10 @@ def _process_message(config: dict[str, Any], state: dict[str, Any], message: dic
     media = context["media"]
     transcription = context["transcription"]
     request_text = context["request_text"]
+    quoted_context = context.get("quoted_context") if isinstance(context.get("quoted_context"), dict) else {}
     message = context["message"]
     if isinstance(transcription, dict) and (
-        transcription.get("success") is not True or not str(transcription.get("text") or "").strip()
+        transcription.get("success") is not True or not str(request_text or "").strip()
     ):
         error_code = transcription.get("error_code") or (
             "no_speech" if transcription.get("success") is True else "child_failed"
@@ -588,6 +577,7 @@ def _process_message(config: dict[str, Any], state: dict[str, Any], message: dic
         config, state, message, session=session, conversation_id=conversation_id,
         message_id=message_id, subject=subject, phone=phone, request_text=request_text,
         media=media, transcription=transcription, phone_ai_behavior=phone_ai_behavior,
+        quoted_context=quoted_context,
     )
 
 _COMPONENT_FUNCTIONS = frozenset((
@@ -596,7 +586,6 @@ _COMPONENT_FUNCTIONS = frozenset((
     '_whatsapp_execute_source_policy_tools',
     '_whatsapp_provider_task_worker',
     '_create_provider_task',
-    '_whatsapp_adaptive_reasoning_level',
     '_create_selected_ai_task',
     '_process_message'
 ))
@@ -606,7 +595,6 @@ _IMPLEMENTATIONS = {
     '_whatsapp_execute_source_policy_tools': _whatsapp_execute_source_policy_tools,
     '_whatsapp_provider_task_worker': _whatsapp_provider_task_worker,
     '_create_provider_task': _create_provider_task,
-    '_whatsapp_adaptive_reasoning_level': _whatsapp_adaptive_reasoning_level,
     '_create_selected_ai_task': _create_selected_ai_task,
     '_process_message': _process_message
 }

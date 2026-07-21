@@ -34,12 +34,24 @@ TASK_TYPE_PUBLIC_QUESTION = "public_question"
 TASK_TYPE_POST_SALE = "post_sale"
 TASK_TYPE_ALIASES = {"question": TASK_TYPE_PUBLIC_QUESTION}
 TASK_TYPES = {TASK_TYPE_PUBLIC_QUESTION, TASK_TYPE_POST_SALE}
-PROMPT_VERSION = "jk_ml_customer_reply_codex_v3"
-SCHEMA_VERSION = "3.0"
+PUBLIC_SUBQUESTION_INTENTS = frozenset({
+    "compatibility",
+    "shipping",
+    "invoice",
+    "stock",
+    "price",
+    "warranty",
+    "warranty_originality",
+    "product_feature",
+    "other_product",
+    "general",
+})
+PROMPT_VERSION = "jk_ml_customer_reply_codex_v4"
+SCHEMA_VERSION = "4.0"
 PROMPT_HASH = hashlib.sha256(
     (
         "codex-native|public-question-by-item-buyer|post-sale-by-pack|"
-        "evidence-envelope-v3|human-review-required|no-direct-publish"
+        "evidence-envelope-v3|ai-only-subquestions|human-review-required|no-direct-publish"
     ).encode("utf-8")
 ).hexdigest()
 THREAD_IDLE_TTL_SECONDS = 30 * 24 * 60 * 60
@@ -206,14 +218,53 @@ def _unique_warnings(*groups: Any) -> list[str]:
     return result[:12]
 
 
-def _fallback_partial_answer(job: dict[str, Any]) -> str:
-    store = str(job.get("store") or "")
-    try:
-        signature = str(_require_runtime()._perguntas_ia_assinatura_loja(store) or "").strip()
-    except Exception:
-        signature = ""
-    answer = "Nao foi possivel gerar uma resposta segura agora. Revise o atendimento e tente novamente."
-    return f"{answer} {signature}".strip()
+def _public_classification_missing(job: dict[str, Any]) -> bool:
+    return bool(
+        _canonical_task_type(job.get("task_type")) == TASK_TYPE_PUBLIC_QUESTION
+        and not list(job.get("subquestions") or [])
+    )
+
+
+def _complete_without_draft(
+    job: dict[str, Any], *, warning: str, completion_reason: str
+) -> dict[str, Any]:
+    """Finish safely without inventing customer-facing text outside the model."""
+
+    info_base = _runtime_info_base()
+    client_id = str(job.get("client_id") or "default")
+    result = {
+        "resposta": "",
+        "contexto": {},
+        "evidence_envelope": {},
+        "evidence_status": [],
+        "data_sufficient": False,
+        "warnings": _unique_warnings(job.get("warnings"), [warning]),
+        "requires_approval": False,
+        "publish_attempted": False,
+        "blocked_without_draft": True,
+        "completion_reason": completion_reason,
+    }
+    job.update(
+        {
+            "status": "completed",
+            "agent_state": "revisao_humana",
+            "current_step": "revisar",
+            "result": result,
+            "warnings": list(result["warnings"]),
+            "deadline_reached": True,
+            "completed_with_partial": False,
+            "blocked_without_draft": True,
+            "lease_owner": "",
+            "lease_expires_ts": 0.0,
+            "completed_at": _now(),
+        }
+    )
+    job.pop("last_partial_result", None)
+    job.pop("error", None)
+    _cancel_retry_timer(str(job.get("job_id") or ""))
+    return codex_assistant_storage.codex_assistant_customer_reply_job_save(
+        info_base, client_id, job
+    )
 
 
 def _retry_delay_seconds(retry_count: int, job_id: str = "") -> int:
@@ -314,6 +365,47 @@ def _research_history_entry(
     }
 
 
+def _cancel_post_sale_job(job: dict[str, Any]) -> dict[str, Any]:
+    """Cancel a legacy post-sale draft and remove every reusable suggestion."""
+
+    current = dict(job or {})
+    info_base = _runtime_info_base()
+    client_id = str(current.get("client_id") or "default")
+    current.pop("result", None)
+    current.pop("last_partial_result", None)
+    current.update(
+        {
+            "status": "cancelled",
+            "cancel_requested": True,
+            "agent_state": "cancelado",
+            "current_step": "responder",
+            "error": "pos_venda_somente_manual",
+            "lease_owner": "",
+            "lease_expires_ts": 0.0,
+            "completed_at": _now(),
+        }
+    )
+    saved = codex_assistant_storage.codex_assistant_customer_reply_job_save(
+        info_base, client_id, current
+    )
+    plan_id = str(current.get("plan_id") or "")
+    if plan_id:
+        try:
+            codex_agent_runtime.transition_plan(
+                info_base,
+                client_id,
+                plan_id,
+                "cancelado",
+                current_step="responder",
+                step_status="canceled",
+                proposal={},
+                details={"reason": "pos_venda_somente_manual"},
+            )
+        except Exception:
+            logger.exception("[PPV CODEX] Falha ao cancelar plano legado de pos-venda %s", plan_id)
+    return saved
+
+
 def _complete_with_best_available(
     job: dict[str, Any],
     *,
@@ -331,11 +423,22 @@ def _complete_with_best_available(
         info_base, client_id, job_id
     )
     current = dict(latest) if isinstance(latest, dict) else dict(job)
+    if _canonical_task_type(current.get("task_type")) == TASK_TYPE_POST_SALE:
+        return _cancel_post_sale_job(current)
     if current.get("cancel_requested"):
         current.update({"status": "cancelled", "agent_state": "cancelado", "current_step": "responder"})
         return codex_assistant_storage.codex_assistant_customer_reply_job_save(info_base, client_id, current)
     if str(current.get("status") or "") == "completed" and isinstance(current.get("result"), dict):
         return current
+    if _public_classification_missing(current):
+        return _complete_without_draft(
+            current,
+            warning=(
+                "Classificacao estruturada da IA indisponivel; nenhuma proposta de resposta foi gerada. "
+                "Encaminhe a pergunta para revisao humana."
+            ),
+            completion_reason="ai_classification_unavailable",
+        )
 
     partial = current.get("last_partial_result") if isinstance(current.get("last_partial_result"), dict) else {}
     final_answer = str(answer or partial.get("resposta") or "").strip()
@@ -345,7 +448,14 @@ def _complete_with_best_available(
                 final_answer = str(entry.get("answer") or "").strip()
                 break
     if not final_answer:
-        final_answer = _fallback_partial_answer(current)
+        return _complete_without_draft(
+            current,
+            warning=(
+                "A IA nao produziu um rascunho valido dentro do prazo; nenhuma resposta local foi criada. "
+                "Encaminhe a pergunta para revisao humana."
+            ),
+            completion_reason="ai_response_unavailable",
+        )
 
     final_context = context if isinstance(context, dict) and context else partial.get("contexto")
     if not isinstance(final_context, dict):
@@ -444,11 +554,7 @@ def _complete_with_best_available(
                     "proposal_id": job_id,
                     "version": version,
                     "proposal_hash": proposal_hash,
-                    "action_id": (
-                        "ml.pergunta_responder"
-                        if _canonical_task_type(current.get("task_type")) == TASK_TYPE_PUBLIC_QUESTION
-                        else "ml.pos_venda_responder"
-                    ),
+                    "action_id": "ml.pergunta_responder",
                     "channels_allowed": ["app", "whatsapp"],
                     "requires_confirmation": True,
                 },
@@ -574,6 +680,65 @@ def _require_runtime() -> Any:
     return _RUNTIME
 
 
+def _job_contract_current(job: Any) -> bool:
+    return bool(
+        isinstance(job, dict)
+        and str(job.get("prompt_version") or "") == PROMPT_VERSION
+        and str(job.get("schema_version") or "") == SCHEMA_VERSION
+        and str(job.get("prompt_hash") or "") == PROMPT_HASH
+    )
+
+
+def _quarantine_outdated_job(
+    job: dict[str, Any], *, client_id: Optional[str] = None
+) -> dict[str, Any]:
+    """Make a pre-current-contract job terminal and remove its actionable draft."""
+
+    info_base = _runtime_info_base()
+    scoped_client_id = str(client_id or job.get("client_id") or "default")
+    previous_result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    warning = (
+        "Tarefa criada com contrato de IA anterior e colocada em quarentena. "
+        "Gere uma nova resposta antes de revisar ou aprovar."
+    )
+    result = {
+        "resposta": "",
+        "contexto": {},
+        "evidence_status": [],
+        "data_sufficient": False,
+        "warnings": [warning],
+        "requires_approval": False,
+        "publish_attempted": False,
+        "blocked_without_draft": True,
+        "completion_reason": "contract_outdated",
+    }
+    job.update(
+        {
+            "status": "cancelled",
+            "agent_state": "cancelado",
+            "current_step": "revisar",
+            "thread_id": "",
+            "thread_reused": False,
+            "thread_restart_reason": "contract_outdated",
+            "idempotency_key": "",
+            "contract_quarantined": True,
+            "quarantined_result_hash": _hash(previous_result) if previous_result else "",
+            "result": result,
+            "warnings": [warning],
+            "completed_with_partial": False,
+            "lease_owner": "",
+            "lease_expires_ts": 0.0,
+            "quarantined_at": _now(),
+        }
+    )
+    job.pop("last_partial_result", None)
+    job.pop("error", None)
+    _cancel_retry_timer(str(job.get("job_id") or ""))
+    return codex_assistant_storage.codex_assistant_customer_reply_job_save(
+        info_base, scoped_client_id, job
+    )
+
+
 def enabled() -> bool:
     return str(os.getenv("JK_CUSTOMER_REPLY_ORCHESTRATOR_ENABLED", "1")).strip().lower() not in {
         "0", "false", "no", "off",
@@ -611,42 +776,51 @@ def _subject_conversation_id(client_id: str, task_type: str, store: str, convers
     )
 
 
-def _subquestions(text: str, task_type: str) -> list[dict[str, Any]]:
-    normalized = _normal(text)
-    found: list[tuple[str, str]] = []
+def _initial_subquestions(task_type: str) -> list[dict[str, Any]]:
+    if _canonical_task_type(task_type) != TASK_TYPE_POST_SALE:
+        return []
+    return [{
+        "id": "sq_1",
+        "intent": "post_sale",
+        "question": "Atendimento pós-venda",
+        "required_evidence": "pedido, envio, conversa, reclamação ou regra de atendimento",
+        "status": "pending",
+    }]
 
-    def add(intent: str, evidence: str) -> None:
-        if intent not in {item[0] for item in found}:
-            found.append((intent, evidence))
 
-    if _canonical_task_type(task_type) == TASK_TYPE_POST_SALE:
-        add("post_sale", "pedido, envio, conversa, reclamação ou regra de atendimento")
-    if re.search(r"\b(serve|servir|compativ|aplica|encaix|motor|modelo|ano|manual|automatic|cambio|furacao|estria|conector)\b", normalized):
-        add("compatibility", "uma fonte oficial/fabricante ou duas fontes técnicas independentes concordantes")
-    if re.search(r"\b(frete|entrega|prazo|envio|chega|data prevista|antes da data)\b", normalized):
-        add("shipping", "prazo ou modalidade retornada pelo Mercado Livre; nunca promessa informal")
-    if re.search(r"\b(estoque|disponivel|pronta entrega|tem quant)\b", normalized):
-        add("stock", "estoque comum atual da Bling ou Full exclusivamente do Mercado Livre")
-    if re.search(r"\b(preco|valor|desconto|quanto custa|faz por)\b", normalized):
-        add("price", "preço vigente do anúncio")
-    if re.search(r"\b(nota fiscal|danfe|\bnf\b)\b", normalized):
-        add("invoice", "regra fiscal cadastrada para a loja")
-    if re.search(r"\b(garantia|original|genuino|paralelo|procedencia)\b", normalized):
-        add("warranty_originality", "descrição, atributos ou regra oficial confirmada")
-    if re.search(r"\b(medida|tamanho|material|lado|voltagem|acompanha|inclui|quantas|cor|rosca|diametro)\b", normalized):
-        add("product_feature", "descrição e atributos do anúncio ou ficha técnica confiável")
-    if not found:
-        add("general", "anúncio, histórico e orientações salvas")
-    return [
-        {
-            "id": f"sq_{index + 1}",
+def _ai_subquestions(context: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize only the structured subquestions returned by the AI pipeline."""
+
+    context = context if isinstance(context, dict) else {}
+    intent_context = context.get("intencao_atendimento")
+    intent_context = intent_context if isinstance(intent_context, dict) else {}
+    raw_subquestions = intent_context.get("subperguntas")
+    if not isinstance(raw_subquestions, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in raw_subquestions[:12]:
+        if not isinstance(item, dict):
+            continue
+        intent = str(item.get("intent") or "").strip()
+        if intent not in PUBLIC_SUBQUESTION_INTENTS:
+            continue
+        question = str(item.get("question") or "").strip()[:1200]
+        required_evidence = str(item.get("required_evidence") or "").strip()[:1200]
+        if not question or not required_evidence:
+            continue
+        marker = (intent, question, required_evidence)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        normalized.append({
+            "id": f"sq_{len(normalized) + 1}",
             "intent": intent,
-            "question": str(text or "").strip()[:1200],
-            "required_evidence": evidence,
+            "question": question,
+            "required_evidence": required_evidence,
             "status": "pending",
-        }
-        for index, (intent, evidence) in enumerate(found)
-    ]
+        })
+    return normalized
 
 
 def _source_domains(values: list[Any]) -> set[str]:
@@ -757,17 +931,50 @@ def _evidence_envelope(
             add(field, context.get(field), source)
         add("mensagem_comprador", context.get("last_message_text"), "mercado_livre_messages")
     else:
-        for field, source in (
+        listing = context.get("item") or context.get("anuncio")
+        listing = listing if isinstance(listing, dict) else {}
+        for field, value in (
             ("pergunta", context.get("pergunta") or context.get("question")),
-            ("anuncio", context.get("item") or context.get("anuncio")),
+            ("anuncio", listing),
             ("historico_comprador", context.get("historico_comprador")),
             ("context_hub", context.get("context_hub")),
         ):
             add(
                 field,
-                source,
+                value,
                 "mercado_livre" if field != "context_hub" else "context_hub",
+                coverage="partial",
             )
+        add(
+            "descricao_anuncio",
+            context.get("descricao") or listing.get("description"),
+            "mercado_livre_listing",
+            coverage="partial",
+        )
+        add(
+            "atributos_anuncio",
+            context.get("atributos") or listing.get("attributes"),
+            "mercado_livre_listing",
+            coverage="partial",
+        )
+        add(
+            "envio_anuncio",
+            context.get("envio") or context.get("shipping") or listing.get("shipping"),
+            "mercado_livre_shipping",
+            coverage="partial",
+        )
+        add(
+            "nota_fiscal",
+            context.get("nota_fiscal") or context.get("invoice"),
+            "store_invoice_policy",
+            coverage="partial",
+        )
+        add(
+            "other_product_search",
+            context.get("busca_outra_peca"),
+            "internal_registry_and_mercado_livre",
+            coverage="partial",
+        )
 
     coverage = "none"
     if normalized_records:
@@ -802,23 +1009,78 @@ def _intent_evidence_records(intent: str, envelope: dict[str, Any]) -> list[dict
     records = [item for item in (envelope.get("records") or []) if isinstance(item, dict)]
     prefixes = {
         "compatibility": ("compatibility",),
-        "shipping": ("envio", "shipping", "shipment"),
-        "invoice": ("nota_fiscal", "invoice", "danfe"),
+        "shipping": ("envio", "frete", "prazo_entrega", "shipping", "shipment"),
+        "invoice": ("nota_fiscal", "fiscal", "invoice", "nfe", "danfe"),
         "stock": ("estoque", "stock", "inventory", "available_quantity"),
         "price": ("preco", "price"),
         "warranty": ("garantia", "warranty", "originalidade", "procedencia"),
         "warranty_originality": ("garantia", "warranty", "originalidade", "procedencia"),
         "post_sale": ("pedido", "envio", "pagamento", "nota_fiscal", "reclamacao", "mensagem"),
-        "product_feature": ("atributos", "ficha_tecnica", "compatibility"),
+        "product_feature": ("atributos", "descricao", "description", "ficha_tecnica", "compatibility"),
+        "other_product": ("other_product", "outra_peca", "busca_outra_peca", "cadastro_outra_peca"),
         "general": ("anuncio", "historico", "context_hub", "pedido", "mensagem"),
     }.get(intent, ())
     if not prefixes:
         return []
-    return [
+    matched = [
         item
         for item in records
         if str(item.get("field") or "").lower().startswith(prefixes)
     ]
+    # Public-question evidence can arrive as one canonical listing snapshot.
+    # Materialize only the nested fields that directly support the intent;
+    # the generic existence of a listing is never sufficient by itself.
+    nested_keys = {
+        "shipping": ("shipping", "shipping_options", "shipment"),
+        "invoice": ("invoice", "invoice_data", "fiscal_data", "nota_fiscal", "nfe"),
+        "product_feature": ("attributes", "description", "descricao", "variations"),
+        "other_product": ("other_product_search", "busca_outra_peca"),
+    }.get(intent, ())
+    for record in records:
+        field = str(record.get("field") or "").strip().lower()
+        value = record.get("value")
+        if field not in {"anuncio", "item", "listing"} or not isinstance(value, dict):
+            continue
+        for key in nested_keys:
+            nested = value.get(key)
+            if nested in (None, "", [], {}):
+                continue
+            matched.append({**record, "field": f"{intent}_{key}", "value": nested})
+        if intent == "invoice":
+            fiscal_terms = []
+            for term in [*(value.get("attributes") or []), *(value.get("sale_terms") or [])]:
+                if not isinstance(term, dict):
+                    continue
+                marker = _normal(f"{term.get('id') or ''} {term.get('name') or ''}")
+                if any(token in marker for token in ("invoice", "nota fiscal", "nfe", "danfe")):
+                    fiscal_terms.append(term)
+            if fiscal_terms:
+                matched.append({**record, "field": "invoice_listing_terms", "value": fiscal_terms[:12]})
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for record in matched:
+        if intent == "other_product":
+            value = record.get("value")
+            if not isinstance(value, dict):
+                continue
+            has_match = any(
+                value.get(key) not in (None, "", [], {})
+                for key in ("cadastro", "anuncios_ativos_ml", "matches", "items", "results")
+            )
+            authoritative_empty = bool(value.get("coverage_complete") is True and str(value.get("query") or "").strip())
+            if not (has_match or authoritative_empty):
+                continue
+        marker = _hash({
+            "field": record.get("field"),
+            "value": record.get("value"),
+            "store": record.get("store"),
+            "source": record.get("source"),
+            "coverage": record.get("coverage") or record.get("authority"),
+        })
+        if marker not in seen:
+            seen.add(marker)
+            unique.append(record)
+    return unique
 
 
 def _evidence_matrix(
@@ -829,7 +1091,7 @@ def _evidence_matrix(
     envelope: Optional[dict[str, Any]] = None,
 ) -> tuple[list[dict[str, Any]], bool, list[str]]:
     diagnostic = _diagnostic_result(context)
-    validation_ok = diagnostic.get("validation_ok") is not False and bool(answer.strip())
+    validation_ok = diagnostic.get("validation_ok") is True and bool(answer.strip())
     validation_issues = [str(item) for item in (diagnostic.get("validation_issues") or []) if str(item).strip()]
     analysis = diagnostic.get("compatibility_analysis") if isinstance(diagnostic.get("compatibility_analysis"), dict) else {}
     compatibility_ok, compatibility_warnings = _compatibility_evidence(analysis)
@@ -845,7 +1107,7 @@ def _evidence_matrix(
         row = dict(item)
         intent = str(row.get("intent") or "general")
         if intent == "compatibility":
-            confirmed = compatibility_ok
+            confirmed = bool(validation_ok and compatibility_ok)
             row["status"] = "confirmed" if confirmed else ("partial" if answer.strip() else "no_evidence")
             row["confidence"] = float(analysis.get("confidence") or diagnostic.get("confidence") or 0.0)
             row["sources"] = sources[:12]
@@ -878,8 +1140,13 @@ def _evidence_matrix(
 
 def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, Any]:
     result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    blocked_without_draft = bool(
+        result.get("blocked_without_draft")
+        or job.get("blocked_without_draft")
+        or job.get("contract_quarantined")
+    )
     return {
-        "success": str(job.get("status") or "") == "completed",
+        "success": str(job.get("status") or "") == "completed" and not blocked_without_draft,
         "queued": str(job.get("status") or "") in ACTIVE_STATUSES,
         "job_id": str(job.get("job_id") or ""),
         "profile": PROFILE,
@@ -915,6 +1182,8 @@ def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, An
         "deadline_at_epoch": float(job.get("deadline_at_epoch") or 0.0),
         "deadline_reached": bool(job.get("deadline_reached")),
         "completed_with_partial": bool(result.get("completed_with_partial") or job.get("completed_with_partial")),
+        "blocked_without_draft": blocked_without_draft,
+        "contract_quarantined": bool(job.get("contract_quarantined")),
         "research_history": list(job.get("research_history") or [])[-RETRY_HISTORY_LIMIT:],
         "queue_position": max(0, int(queue_position or 0)),
         "created_at": str(job.get("created_at") or ""),
@@ -945,6 +1214,8 @@ def create_job(
     task_type = _canonical_task_type(task_type)
     if task_type not in TASK_TYPES:
         raise ValueError("Tipo de tarefa de atendimento inválido.")
+    if task_type == TASK_TYPE_POST_SALE:
+        raise PermissionError("Sugestoes do Black Jhon estao desativadas no pos-venda.")
     if not str(store or "").strip() or not str(subject_key or "").strip():
         raise ValueError("Loja e identificação da conversa são obrigatórias.")
     event_subject_key = str(subject_key or "").strip()
@@ -982,13 +1253,23 @@ def create_job(
         and str(latest.get("status") or "") == "completed"
         and latest_result.get("data_sufficient") is True
         and str(latest.get("request_hash") or "") == request_hash
+        and str(latest.get("prompt_version") or "") == PROMPT_VERSION
+        and str(latest.get("schema_version") or "") == SCHEMA_VERSION
+        and str(latest.get("prompt_hash") or "") == PROMPT_HASH
     ):
         return _public_job(latest)
     same_event = bool(
         isinstance(latest, dict)
         and str(latest.get("event_subject_key") or latest.get("subject_key") or "") == event_subject_key
     )
-    if isinstance(latest, dict) and str(latest.get("status") or "") in ACTIVE_STATUSES and same_event:
+    if (
+        isinstance(latest, dict)
+        and str(latest.get("status") or "") in ACTIVE_STATUSES
+        and same_event
+        and str(latest.get("prompt_version") or "") == PROMPT_VERSION
+        and str(latest.get("schema_version") or "") == SCHEMA_VERSION
+        and str(latest.get("prompt_hash") or "") == PROMPT_HASH
+    ):
         if revision_requested:
             latest_request = dict(latest.get("request") or {}) if isinstance(latest.get("request"), dict) else {}
             latest_request.update(dict(request or {}))
@@ -996,15 +1277,7 @@ def create_job(
                 {
                     "request": latest_request,
                     "request_hash": _hash(latest_request),
-                    "subquestions": _subquestions(
-                        str(
-                            request.get("question_text")
-                            or ((request.get("pergunta") or {}).get("text") if isinstance(request.get("pergunta"), dict) else "")
-                            or latest_request.get("question_text")
-                            or ""
-                        ),
-                        task_type,
-                    ),
+                    "subquestions": _initial_subquestions(task_type),
                     "request_generation": max(1, int(latest.get("request_generation") or 1)) + 1,
                     "proposal_version": max(1, int(latest.get("proposal_version") or 1)) + 1,
                     "restart_requested": True,
@@ -1043,13 +1316,15 @@ def create_job(
         info_base, client_id, idempotency_key=idempotency_key
     )
     if isinstance(existing, dict):
-        return _public_job(existing, queue_position=_queue_position(info_base, client_id, str(existing.get("job_id") or "")))
+        if _job_contract_current(existing):
+            return _public_job(existing, queue_position=_queue_position(info_base, client_id, str(existing.get("job_id") or "")))
+        _quarantine_outdated_job(existing, client_id=client_id)
     job_id = uuid.uuid4().hex
     text = str(request.get("question_text") or request.get("last_message_text") or "").strip()
     if not text:
         question = request.get("pergunta") if isinstance(request.get("pergunta"), dict) else {}
         text = str(question.get("text") or "").strip()
-    subquestions = _subquestions(text, task_type)
+    subquestions = _initial_subquestions(task_type)
     conversation_id = _subject_conversation_id(client_id, task_type, store, conversation_subject_key)
     guidance = codex_agent_runtime.resolve_guidance(
         info_base,
@@ -1150,9 +1425,43 @@ def get_job(client_id: str, job_id: str) -> Optional[dict[str, Any]]:
     job = codex_assistant_storage.codex_assistant_customer_reply_job_get(info_base, client_id, job_id)
     if not isinstance(job, dict):
         return None
+    if _canonical_task_type(job.get("task_type")) == TASK_TYPE_POST_SALE:
+        return _public_job(_cancel_post_sale_job(job))
+    if not _job_contract_current(job):
+        job = _quarantine_outdated_job(job, client_id=client_id)
+        return _public_job(job)
     if str(job.get("status") or "") == "waiting_retry" and _job_deadline_expired(job):
         job = _complete_with_best_available(job)
     return _public_job(job, queue_position=_queue_position(info_base, client_id, job_id))
+
+
+def approval_job_current(client_id: str, job_id: str) -> bool:
+    """Return whether a public draft belongs to the current AI contract and is approvable."""
+
+    try:
+        job = get_job(client_id, job_id)
+    except Exception:
+        return False
+    result = job.get("result") if isinstance(job, dict) and isinstance(job.get("result"), dict) else {}
+    return bool(
+        isinstance(job, dict)
+        and str(job.get("status") or "") == "completed"
+        and str(job.get("agent_state") or "") == "aguardando_aprovacao"
+        and not job.get("contract_quarantined")
+        and not job.get("blocked_without_draft")
+        and str(result.get("resposta") or "").strip()
+        and result.get("requires_approval") is not False
+    )
+
+
+def job_contract_current(client_id: str, job_id: str) -> bool:
+    """Check the current contract without requiring the job to be approval-ready."""
+
+    try:
+        job = get_job(client_id, job_id)
+    except Exception:
+        return False
+    return bool(isinstance(job, dict) and not job.get("contract_quarantined"))
 
 
 def latest_job_for_request(
@@ -1173,6 +1482,8 @@ def latest_job_for_request(
 
     canonical_type = _canonical_task_type(task_type)
     if canonical_type not in TASK_TYPES:
+        return None
+    if canonical_type == TASK_TYPE_POST_SALE:
         return None
     event_subject_key = str(subject_key or "").strip()
     if not str(store or "").strip() or not event_subject_key:
@@ -1200,6 +1511,9 @@ def latest_job_for_request(
         )
     if not isinstance(latest, dict):
         return None
+    if not _job_contract_current(latest):
+        _quarantine_outdated_job(latest, client_id=client_id)
+        return None
     persisted_event_key = str(
         latest.get("event_subject_key") or latest.get("subject_key") or ""
     ).strip()
@@ -1218,6 +1532,10 @@ def resume_incomplete_job(client_id: str, job_id: str, reason: str = "evidencia_
     job = codex_assistant_storage.codex_assistant_customer_reply_job_get(info_base, client_id, job_id)
     if not isinstance(job, dict):
         return None
+    if _canonical_task_type(job.get("task_type")) == TASK_TYPE_POST_SALE:
+        return _public_job(_cancel_post_sale_job(job))
+    if not _job_contract_current(job):
+        return _public_job(_quarantine_outdated_job(job, client_id=client_id))
     if job.get("cancel_requested") or str(job.get("status") or "") == "cancelled":
         return _public_job(job)
     if str(job.get("status") or "") in ACTIVE_STATUSES:
@@ -1227,6 +1545,8 @@ def resume_incomplete_job(client_id: str, job_id: str, reason: str = "evidencia_
             _schedule(job)
         return _public_job(job, queue_position=_queue_position(info_base, client_id, job_id))
     result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    if result.get("blocked_without_draft") or job.get("blocked_without_draft"):
+        return _public_job(job)
     if str(job.get("status") or "") != "completed" or result.get("data_sufficient") is not False:
         return _public_job(job)
     resumed = _persist_retry(
@@ -1539,6 +1859,12 @@ def _run_job(client_id: str, job_id: str) -> None:
     )
     if not isinstance(claimed, dict):
         return
+    if _canonical_task_type(claimed.get("task_type")) == TASK_TYPE_POST_SALE:
+        _cancel_post_sale_job(claimed)
+        return
+    if not _job_contract_current(claimed):
+        _quarantine_outdated_job(claimed, client_id=client_id)
+        return
     job = _refresh_thread_from_previous_job(claimed)
     if _job_deadline_expired(job):
         _complete_with_best_available(job)
@@ -1564,6 +1890,7 @@ def _run_job(client_id: str, job_id: str) -> None:
             answer, context = _load_post_sale_context(job)
         else:
             answer, context = _load_question_context(job)
+            job["subquestions"] = _ai_subquestions(context)
         if time.monotonic() - started > MAX_SECONDS:
             raise TimeoutError("O ciclo do agente excedeu 180 segundos.")
         if _cancelled(job):
@@ -1711,11 +2038,7 @@ def _run_job(client_id: str, job_id: str) -> None:
                     "proposal_id": job_id,
                     "version": version,
                     "proposal_hash": proposal_hash,
-                    "action_id": (
-                        "ml.pergunta_responder"
-                        if _canonical_task_type(job.get("task_type")) == TASK_TYPE_PUBLIC_QUESTION
-                        else "ml.pos_venda_responder"
-                    ),
+                    "action_id": "ml.pergunta_responder",
                     "channels_allowed": ["app", "whatsapp"],
                     "requires_confirmation": True,
                 },
@@ -1783,7 +2106,13 @@ def recover_pending_jobs() -> None:
             info_base, client_id, statuses=list(ACTIVE_STATUSES | {"failed"}), limit=500
         )
         for job in jobs:
+            if _canonical_task_type(job.get("task_type")) == TASK_TYPE_POST_SALE:
+                _cancel_post_sale_job(job)
+                continue
             if job.get("cancel_requested"):
+                continue
+            if not _job_contract_current(job):
+                _quarantine_outdated_job(job, client_id=client_id)
                 continue
             if str(job.get("status") or "") == "failed":
                 job.update({"status": "waiting_retry", "next_retry_at_epoch": 0.0})
@@ -1824,10 +2153,18 @@ def approve_or_refresh_proposal(
     job = codex_assistant_storage.codex_assistant_customer_reply_job_get(info_base, client_id, proposal_id)
     if not isinstance(job, dict):
         raise KeyError(proposal_id)
+    if _canonical_task_type(job.get("task_type")) == TASK_TYPE_POST_SALE:
+        _cancel_post_sale_job(job)
+        raise PermissionError("Sugestoes do Black Jhon estao desativadas no pos-venda.")
+    if not _job_contract_current(job):
+        _quarantine_outdated_job(job, client_id=client_id)
+        raise ValueError("A proposta usa um contrato de IA anterior. Gere uma nova resposta antes de aprovar.")
     event_subject_key = str(job.get("event_subject_key") or job.get("subject_key") or "")
     if str(job.get("store") or "") != str(store or "") or event_subject_key != str(subject_key or ""):
         raise PermissionError("A proposta não pertence a esta loja ou conversa.")
     result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    if result.get("blocked_without_draft") or job.get("blocked_without_draft"):
+        raise ValueError("A tarefa nao possui proposta de resposta aprovavel. Gere uma nova resposta.")
     current_answer = str(result.get("resposta") or "").strip()
     current_version = max(1, int(result.get("proposal_version") or job.get("proposal_version") or 1))
     current_hash = str(result.get("proposal_hash") or "")
@@ -1956,6 +2293,8 @@ __all__ = [
     "enabled",
     "create_job",
     "get_job",
+    "approval_job_current",
+    "job_contract_current",
     "latest_job_for_request",
     "resume_incomplete_job",
     "wait_job",

@@ -16,6 +16,48 @@ def create_codex_console_router() -> APIRouter:
         name="codex_status",
     )
     router.add_api_route(
+        "/api/admin/codex/telemetry/summary",
+        codex_console.codex_telemetry_summary,
+        methods=["GET"],
+        name="codex_telemetry_summary",
+    )
+    router.add_api_route(
+        "/api/admin/codex/telemetry/timeseries",
+        codex_console.codex_telemetry_timeseries,
+        methods=["GET"],
+        name="codex_telemetry_timeseries",
+    )
+    router.add_api_route(
+        "/api/admin/codex/evaluations/runs",
+        codex_console.codex_evaluation_runs,
+        methods=["GET"],
+        name="codex_evaluation_runs",
+    )
+    router.add_api_route(
+        "/api/admin/codex/evaluations/runs/{run_id}",
+        codex_console.codex_evaluation_run_get,
+        methods=["GET"],
+        name="codex_evaluation_run_get",
+    )
+    router.add_api_route(
+        "/api/admin/codex/evaluations/runs",
+        codex_console.codex_evaluation_run_post,
+        methods=["POST"],
+        name="codex_evaluation_run_post",
+    )
+    router.add_api_route(
+        "/api/admin/codex/mcp/rollout",
+        codex_console.codex_mcp_rollout_get,
+        methods=["GET"],
+        name="codex_mcp_rollout_get",
+    )
+    router.add_api_route(
+        "/api/admin/codex/mcp/rollout",
+        codex_console.codex_mcp_rollout_put,
+        methods=["PUT"],
+        name="codex_mcp_rollout_put",
+    )
+    router.add_api_route(
         "/api/admin/codex/tasks",
         codex_console.codex_listar_tarefas,
         methods=["GET"],
@@ -185,6 +227,12 @@ def create_codex_console_router() -> APIRouter:
         codex_console.codex_complementar_tarefa,
         methods=["POST"],
         name="codex_complementar_tarefa_user",
+    )
+    router.add_api_route(
+        "/api/codex/tasks/{task_id}/feedback",
+        codex_console.codex_task_feedback,
+        methods=["POST"],
+        name="codex_task_feedback",
     )
     router.add_api_route(
         "/api/admin/codex/actions",

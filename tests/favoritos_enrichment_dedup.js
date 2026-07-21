@@ -10,6 +10,7 @@ const source = fs.readFileSync(path.join(root, 'static/favoritos/tabelas-layout/
 const mlBrowserSource = fs.readFileSync(path.join(root, 'static/favoritos/ml-browser.js'), 'utf8');
 const mlApiSource = fs.readFileSync(path.join(root, 'static/favoritos/tabelas-layout/01-ml-base-busca.js'), 'utf8');
 const executionSource = fs.readFileSync(path.join(root, 'static/favoritos/tabelas-layout/07-execucao-render-layout.js'), 'utf8');
+const historySource = fs.readFileSync(path.join(root, 'static/favoritos/tabelas-layout/05-resultados-historico.js'), 'utf8');
 const backendSource = fs.readFileSync(path.join(root, 'backend/services/favoritos_endpoints.py'), 'utf8');
 
 function extractFunction(name, context, sourceText = source) {
@@ -57,7 +58,7 @@ function extractFunction(name, context, sourceText = source) {
 
 function createHarness() {
     const requests = [];
-    const state = { activeRequests: 0, maxActiveRequests: 0, requestDelayMs: 0 };
+    const state = { activeRequests: 0, maxActiveRequests: 0, requestDelayMs: 0, enrichmentAliases: new Map() };
     const incompleteIds = new Set();
     const omitOnceIds = new Set();
     const keyFor = item => {
@@ -114,9 +115,15 @@ function createHarness() {
         fonteVendasConfiavel: value => String(value || '').toLowerCase() === 'avant',
         hasNumeroVendas: value => Number.isFinite(Number(value)),
         fullAnuncioDesconhecidoFavoritos: item => item && item._fullAnuncioVerificado !== true,
+        extrairItemIdAnuncio: value => {
+            const match = String(value || '').toUpperCase().match(/MLB-?\d+/);
+            return match ? match[0].replace('-', '') : '';
+        },
+        obterDescricaoAnuncioFavoritosIa: item => String(item && item.descricao || ''),
         chaveAnuncioFavoritos: keyFor,
         chavesAnuncioFavoritos: keysFor,
         aplicarMetadataBasicaAnuncioFavoritos: (target, info) => fill(target, info, ['id', 'url', 'titulo', 'imagem', 'thumbnail']),
+        preencherImagemAnuncioFavoritos: (target, info) => fill(target, info, ['imagem', 'thumbnail', 'foto']),
         preencherPrecoAnuncioFavoritos: (target, info) => fill(target, info, ['preco', 'price', 'preco_original', 'preco_promocional', 'fonte_preco']),
         preencherTipoAnuncioFavoritos: (target, info) => {
             const changed = fill(target, info, ['tipo_anuncio', 'listing_type_id', 'listing_type_name', 'full', 'is_full']);
@@ -153,10 +160,12 @@ function createHarness() {
                             omitOnceIds.delete(item.id);
                             return null;
                         }
+                        const aliasId = state.enrichmentAliases.get(String(item.url || '').toLowerCase());
+                        const idEnriquecido = aliasId || item.id;
                         return ({
-                        id: item.id,
+                        id: idEnriquecido,
                         url: item.url,
-                        vendedor: `Vendedor ${item.id}`,
+                        vendedor: `Vendedor ${idEnriquecido}`,
                         fonte_vendedor: 'pagina_produto',
                         vendas: incompleteIds.has(item.id) ? null : 25,
                         fonte_vendas: incompleteIds.has(item.id) ? '' : 'avant',
@@ -177,6 +186,7 @@ function createHarness() {
         }
     };
     context.executarComTimeoutFavoritos = extractFunction('executarComTimeoutFavoritos', context);
+    context.deduplicarAnunciosFavoritos = extractFunction('deduplicarAnunciosFavoritos', context);
     for (const name of [
         'criarContextoEnriquecimentoFavoritosExecucao',
         'anuncioFavoritosEnriquecimentoCompleto',
@@ -188,6 +198,36 @@ function createHarness() {
         context[name] = extractFunction(name, context);
     }
     return { context, requests, incompleteIds, omitOnceIds, state };
+}
+
+function createHistoryHarness(deduplicarAnunciosFavoritos) {
+    const context = {
+        Array,
+        Number,
+        String,
+        ML_FAVORITOS_HISTORICO_MAX: 50,
+        deduplicarAnunciosFavoritos,
+        nomeUsuarioHistoricoFavoritosAtual: () => 'Teste',
+        usernameHistoricoFavoritosAtual: () => 'teste',
+        obterUsuarioHistoricoFavoritos: entrada => String(entrada && entrada.usuario || ''),
+        normalizarHistoricoAlteracaoFavoritos: item => item,
+        extrairItemIdAnuncio: value => {
+            const match = String(value || '').toUpperCase().match(/MLB-?\d+/);
+            return match ? match[0].replace('-', '') : '';
+        },
+        limparLinkProdutoMercadoLivreFavoritos: value => String(value || '').split('#')[0].trim().toLowerCase(),
+        obterImagemAnuncioFavoritos: item => String(item && (item.imagem || item.thumbnail || item.foto) || ''),
+        obterPrecosAnuncioFavoritos: item => ({
+            preco: Number.isFinite(Number(item && item.preco)) ? Number(item.preco) : null,
+            promocional: Number.isFinite(Number(item && item.preco_promocional)) ? Number(item.preco_promocional) : null,
+            desconto: ''
+        })
+    };
+    context.normalizarDuracaoExecucaoFavoritosMs = extractFunction('normalizarDuracaoExecucaoFavoritosMs', context, historySource);
+    context.normalizarAnuncioHistoricoFavoritosFrontend = extractFunction('normalizarAnuncioHistoricoFavoritosFrontend', context, historySource);
+    context.normalizarListaAnunciosHistoricoFavoritosFrontend = extractFunction('normalizarListaAnunciosHistoricoFavoritosFrontend', context, historySource);
+    context.normalizarHistoricoFavoritosFrontend = extractFunction('normalizarHistoricoFavoritosFrontend', context, historySource);
+    return context;
 }
 
 function item(id) {
@@ -308,6 +348,86 @@ async function run() {
     await emptyHarness.context.enriquecerAnunciosFavoritosRanking([], emptyHarness.context.criarContextoEnriquecimentoFavoritosExecucao());
     assert.strictEqual(emptyHarness.requests.length, 0);
 
+    const convergenceHarness = createHarness();
+    const mlbuUrl = 'https://www.mercadolivre.com.br/up/MLBU999999999';
+    convergenceHarness.state.enrichmentAliases.set(mlbuUrl.toLowerCase(), 'MLB4402208097');
+    const aliasMlbu = {
+        id: '',
+        url: mlbuUrl,
+        titulo: 'Primeiro card coletado',
+        imagem: 'alias.jpg',
+        preco: 100,
+        posicao: 8,
+        pesquisas_origem: ['fita led universal'],
+        campos_origem: ['Pesquisa 1']
+    };
+    const anuncioMlb = {
+        ...item('MLB4402208097'),
+        posicao: 7,
+        pesquisas_origem: ['fita led farol'],
+        campos_origem: ['Pesquisa 2']
+    };
+    await convergenceHarness.context.enriquecerAnunciosFavoritosRanking(
+        [aliasMlbu, anuncioMlb],
+        convergenceHarness.context.criarContextoEnriquecimentoFavoritosExecucao(),
+        { fechamento: true }
+    );
+    assert.strictEqual(aliasMlbu.id, 'MLB4402208097', 'alias MLBU deve receber o MLB descoberto no enriquecimento');
+    const convergidos = convergenceHarness.context.deduplicarAnunciosFavoritos([aliasMlbu, anuncioMlb]);
+    assert.strictEqual(convergidos.length, 1, 'alias MLBU e anuncio MLB convergentes devem sair uma unica vez');
+    assert.strictEqual(convergidos[0].titulo, 'Primeiro card coletado', 'primeiro card deve preservar a prioridade de ordem');
+    assert.strictEqual(convergidos[0].posicao, 7, 'melhor posicao coletada deve ser preservada');
+    assert.deepStrictEqual(
+        Array.from(convergidos[0].pesquisas_origem),
+        ['fita led universal', 'fita led farol'],
+        'todas as pesquisas de origem devem ser mescladas'
+    );
+    assert.deepStrictEqual(
+        Array.from(convergidos[0].campos_origem),
+        ['Pesquisa 1', 'Pesquisa 2'],
+        'todos os campos de origem devem ser mesclados'
+    );
+
+    const compartilhandoMlbu = convergenceHarness.context.deduplicarAnunciosFavoritos([
+        { id: 'MLB1111111111', url: mlbuUrl },
+        { id: 'MLB2222222222', url: mlbuUrl }
+    ]);
+    assert.strictEqual(compartilhandoMlbu.length, 2, 'MLBs finais diferentes nao podem colapsar pela mesma URL MLBU');
+
+    const semChave = { titulo: 'Registro antigo sem MLB ou link' };
+    assert.strictEqual(
+        convergenceHarness.context.deduplicarAnunciosFavoritos([semChave], { preservarSemChave: true }).length,
+        1,
+        'normalizacao historica deve preservar registros sem identidade canonica'
+    );
+
+    const historyHarness = createHistoryHarness(convergenceHarness.context.deduplicarAnunciosFavoritos);
+    const historicoAntigo = historyHarness.normalizarHistoricoFavoritosFrontend([{
+        id: 'execucao-antiga',
+        grupos: [{
+            sku: 'SKU-TESTE',
+            anuncios: [
+                { id: 'MLB4402208097', titulo: 'Primeiro salvo', pesquisas_origem: ['pesquisa antiga'] },
+                { mlb: 'MLB4402208097', imagem: 'foto-complementar.jpg', campos_origem: ['Pesquisa 2'] },
+                semChave
+            ]
+        }]
+    }]);
+    const anunciosHistoricos = historicoAntigo[0].grupos[0].anuncios;
+    assert.strictEqual(anunciosHistoricos.length, 2, 'historico antigo deve remover MLB duplicado sem descartar registro sem chave');
+    assert.strictEqual(historicoAntigo[0].grupos[0].total_anuncios, 2, 'grupo historico deve recalcular o total depois da deduplicacao');
+    assert.strictEqual(historicoAntigo[0].total_anuncios, 2, 'entrada historica deve recalcular o total depois da deduplicacao');
+    assert.strictEqual(anunciosHistoricos[0].imagem, 'foto-complementar.jpg', 'duplicatas historicas devem mesclar metadados complementares');
+    assert.deepStrictEqual(Array.from(anunciosHistoricos[0].pesquisas_origem), ['pesquisa antiga']);
+    assert.deepStrictEqual(Array.from(anunciosHistoricos[0].campos_origem), ['Pesquisa 2']);
+    const rankingHistoricoComDuplicata = historyHarness.normalizarListaAnunciosHistoricoFavoritosFrontend([
+        { id: 'MLB9000000000', titulo: 'Primeiro' },
+        { id: 'MLB9000000000', imagem: 'complemento.jpg' },
+        ...Array.from({ length: 79 }, (_valor, index) => ({ id: `MLB${9000000001 + index}` }))
+    ]);
+    assert.strictEqual(rankingHistoricoComDuplicata.slice(0, 80).length, 80, 'dedup antes do corte deve preservar o limite de 80 MLBs unicos');
+    assert.strictEqual(new Set(rankingHistoricoComDuplicata.map(anuncio => anuncio.id)).size, 80);
+
     const plateauContext = {
         Array,
         Number,
@@ -373,6 +493,9 @@ async function run() {
     assert.match(mlApiSource, /consultarItemApiMercadoLivre\.inflight[\s\S]*consultarItemApiMercadoLivreSemDedupe/, 'API direta deve compartilhar chamadas simultaneas do mesmo MLB');
     assert.match(executionSource, /tempoLimiteMs:\s*90000[\s\S]*maxPassadas:\s*2/, 'execucao visual deve limitar cada pesquisa a 90 segundos e duas passadas');
     assert.match(executionSource, /const normalizadosPesquisa[\s\S]*tempo_enriquecimento_ms:\s*0[\s\S]*enriquecerAnunciosFavoritosRanking\(unicos/, 'enriquecimento deve ocorrer uma vez depois da uniao das pesquisas');
+    const consolidacoesPosEnriquecimento = executionSource.match(/await enriquecerAnunciosFavoritosRanking\(unicos[^;]*;[\s\S]{0,1200}?unicos = deduplicarAnunciosFavoritos\(unicos\)/g) || [];
+    assert.strictEqual(consolidacoesPosEnriquecimento.length, 4, 'todos os quatro fluxos devem consolidar identidades depois do enriquecimento');
+    assert.match(historySource, /normalizarListaAnunciosHistoricoFavoritosFrontend\(grupo && grupo\.anuncios\)[\s\S]*\.slice\(0, ML_FAVORITOS_RANKING_ANUNCIOS_MAX\)/, 'payload historico deve deduplicar antes de aplicar o limite');
     assert.match(backendSource, /ThreadPoolExecutor\(max_workers=36[\s\S]*BoundedSemaphore\(16\)[\s\S]*run_in_executor[\s\S]*asyncio\.wait\(/, 'backend deve usar executor compartilhado, limite por cliente e prazo parcial fora do event loop');
     assert.match(backendSource, /FAVORITOS_ENRIQUECIMENTO_TIMEOUT_S\s*=\s*40\.0[\s\S]*"pendentes"[\s\S]*"parcial"/, 'backend deve devolver resultado parcial antes de parecer travado');
 

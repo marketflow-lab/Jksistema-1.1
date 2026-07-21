@@ -30,6 +30,7 @@ import requests
 from fastapi import Header, HTTPException, Request
 from backend.schemas import IAChatAttachment, IAChatRequest
 from backend.services.whatsapp import formatting as whatsapp_formatting
+from backend.services.whatsapp import audio_processing as whatsapp_audio_processing
 from backend.services.whatsapp import gateway as whatsapp_gateway
 from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
@@ -71,6 +72,34 @@ WHATSAPP_PART_BODY_CHARS = whatsapp_formatting.WHATSAPP_PART_BODY_CHARS
 WHATSAPP_MAX_PARTS = whatsapp_formatting.WHATSAPP_MAX_PARTS
 
 
+def _run_audio_cleanup_janitor(*, force: bool = False) -> dict[str, int]:
+    now_epoch = time.time()
+    last_run = float(RUNTIME_STATE.get("audio_cleanup_janitor_at_epoch") or 0)
+    if not force and now_epoch - last_run < 3600:
+        previous = RUNTIME_STATE.get("audio_cleanup_janitor_result")
+        return dict(previous) if isinstance(previous, dict) else {}
+    try:
+        result = whatsapp_audio_processing.cleanup_stale_audio_files(
+            Path(_base_dir()),
+            older_than_seconds=15 * 60,
+            now_epoch=now_epoch,
+        )
+        sanitized = {
+            "scanned": max(0, int(result.get("scanned") or 0)),
+            "removed": max(0, int(result.get("removed") or 0)),
+            "queued": max(0, int(result.get("queued") or 0)),
+            "failed": max(0, int(result.get("failed") or 0)),
+        }
+        RUNTIME_STATE["audio_cleanup_janitor_result"] = sanitized
+        RUNTIME_STATE["audio_cleanup_janitor_error"] = ""
+        return sanitized
+    except Exception:
+        RUNTIME_STATE["audio_cleanup_janitor_error"] = "audio_cleanup_failed"
+        return {"scanned": 0, "removed": 0, "queued": 0, "failed": 1}
+    finally:
+        RUNTIME_STATE["audio_cleanup_janitor_at_epoch"] = now_epoch
+
+
 def _activate_completed_pairing(config: dict[str, Any]) -> tuple[dict[str, Any], str]:
     if config.get("enabled"):
         return config, "enabled"
@@ -102,6 +131,7 @@ def _activate_completed_pairing(config: dict[str, Any]) -> tuple[dict[str, Any],
 
 def whatsapp_bridge_poll_once() -> dict[str, Any]:
     config = _load_config()
+    _run_audio_cleanup_janitor()
     try:
         whatsapp_voice.VOICE_RUNTIME.tick(config, sys.modules[__name__])
     except Exception as exc:
@@ -116,6 +146,25 @@ def whatsapp_bridge_poll_once() -> dict[str, Any]:
         state["report_file_cleanup_removed"] = whatsapp_report_files.cleanup_stale_files(_info_dir())
         state["report_chart_cleanup_at"] = time.time()
         _save_state(state)
+    lease_renewal_now = time.time()
+    lease_renewal_due = (
+        lease_renewal_now - float(state.get("gateway_lease_renewed_at_epoch") or 0)
+        >= 4 * 60
+    )
+    pending_messages = (
+        state.get("pending_messages")
+        if isinstance(state.get("pending_messages"), dict)
+        else {}
+    )
+    active_message_ids = (
+        [
+            str(message_id)
+            for message_id, pending in list(pending_messages.items())[:100]
+            if str(message_id or "").strip() and isinstance(pending, dict)
+        ]
+        if lease_renewal_due
+        else []
+    )
     heartbeat = _gateway_json(
         config,
         "POST",
@@ -125,9 +174,13 @@ def whatsapp_bridge_poll_once() -> dict[str, Any]:
             "client_id": config.get("client_id"),
             "username": config.get("username"),
             "app_version": str(config.get("app_version") or "bridge-v9"),
+            "active_message_ids": active_message_ids,
         },
         timeout=12,
     )
+    if active_message_ids and heartbeat.get("success") is True:
+        state["gateway_lease_renewed_at_epoch"] = lease_renewal_now
+        state["gateway_lease_renewed_count"] = int(heartbeat.get("renewed_leases") or 0)
     state["gateway_heartbeat_at"] = _now()
     state["gateway_heartbeat_status"] = str(heartbeat.get("status") or "")
     _save_state(state)
@@ -209,6 +262,8 @@ def whatsapp_bridge_iniciar_background() -> None:
     if BRIDGE_THREAD and BRIDGE_THREAD.is_alive():
         return
     BRIDGE_STOP_EVENT.clear()
+    whatsapp_audio_processing.start_audio_cleanup_worker()
+    _run_audio_cleanup_janitor(force=True)
     # Persiste a configuracao atual e materializa somente os runtimes Codex ativos.
     config = _save_config(_load_config())
     settings = _whatsapp_dual_agent_settings(config)
@@ -299,6 +354,7 @@ def whatsapp_bridge_parar_background() -> None:
 
 
 _COMPONENT_FUNCTIONS = frozenset((
+    '_run_audio_cleanup_janitor',
     '_activate_completed_pairing',
     'whatsapp_bridge_poll_once',
     '_bridge_loop',
@@ -306,6 +362,7 @@ _COMPONENT_FUNCTIONS = frozenset((
     'whatsapp_bridge_parar_background'
 ))
 _IMPLEMENTATIONS = {
+    '_run_audio_cleanup_janitor': _run_audio_cleanup_janitor,
     '_activate_completed_pairing': _activate_completed_pairing,
     'whatsapp_bridge_poll_once': whatsapp_bridge_poll_once,
     '_bridge_loop': _bridge_loop,

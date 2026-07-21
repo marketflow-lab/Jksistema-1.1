@@ -14,12 +14,16 @@ import re
 import tempfile
 import threading
 import time
+import unicodedata
+import uuid
 from collections import Counter, deque
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
 
-SCHEMA_VERSION = "1.0"
+LEGACY_SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "2.0"
 DEFAULT_MODEL = "gpt-5.6-luna"
 DEFAULT_REASONING_EFFORT = "low"
 MAX_PLAN_BYTES = 24 * 1024
@@ -28,6 +32,8 @@ MAX_REPORT_EVIDENCE_BYTES = 24 * 1024
 MAX_TOOL_CALLS = 6
 MAX_CONTEXT_HUB_SNIPPETS = 6
 MAX_CONTEXT_HUB_SNIPPET_CHARS = 320
+MAX_ML_RESOURCE_CANDIDATES = 6
+MERCADO_LIVRE_RESOURCE_TOOL_ID = "mercado_livre_resource_query"
 
 PLAN_ACTIONS = ("answer_without_data", "clarify", "collect", "mutation_candidate")
 CONTEXT_HUB_MODES = ("not_applicable", "optional", "required")
@@ -39,10 +45,13 @@ DATA_SELECTION_PLAN_SCHEMA: dict[str, Any] = {
         "schema_version",
         "action",
         "intents",
+        "intent_ids",
         "entities",
         "requested_fields",
         "tool_calls",
         "context_hub",
+        "coverage",
+        "resource_catalog_version",
         "missing_user_fields",
         "confidence",
         "reason",
@@ -55,14 +64,32 @@ DATA_SELECTION_PLAN_SCHEMA: dict[str, Any] = {
             "maxItems": 12,
             "items": {"type": "string", "maxLength": 120},
         },
+        "intent_ids": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {"type": "string", "pattern": r"^[a-z][a-z0-9_.-]{0,119}$"},
+        },
         "entities": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["sku", "mlb", "order_id", "period", "store_ref", "store_mode"],
+            "required": [
+                "sku", "mlb", "order_id", "pack_id", "claim_id", "return_id", "shipment_id",
+                "payment_id", "question_id", "category_id", "product_id", "user_product_id",
+                "period", "store_ref", "store_mode",
+            ],
             "properties": {
                 "sku": {"type": "string", "maxLength": 120},
                 "mlb": {"type": "string", "maxLength": 60},
                 "order_id": {"type": "string", "maxLength": 100},
+                "pack_id": {"type": "string", "maxLength": 100},
+                "claim_id": {"type": "string", "maxLength": 100},
+                "return_id": {"type": "string", "maxLength": 100},
+                "shipment_id": {"type": "string", "maxLength": 100},
+                "payment_id": {"type": "string", "maxLength": 100},
+                "question_id": {"type": "string", "maxLength": 100},
+                "category_id": {"type": "string", "maxLength": 100},
+                "product_id": {"type": "string", "maxLength": 100},
+                "user_product_id": {"type": "string", "maxLength": 100},
                 "period": {"type": "string", "maxLength": 240},
                 "store_ref": {"type": "string", "maxLength": 180},
                 "store_mode": {"type": "string", "enum": ["single", "all", "none"]},
@@ -79,7 +106,10 @@ DATA_SELECTION_PLAN_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["tool_id", "arguments", "required", "reason", "depends_on"],
+                "required": [
+                    "tool_id", "arguments", "required", "reason", "depends_on",
+                    "expected_fields", "success_condition", "failure_policy",
+                ],
                 "properties": {
                     "tool_id": {"type": "string", "maxLength": 120},
                     "arguments": {"type": "string", "maxLength": 6000},
@@ -90,6 +120,13 @@ DATA_SELECTION_PLAN_SCHEMA: dict[str, Any] = {
                         "maxItems": MAX_TOOL_CALLS,
                         "items": {"type": "integer", "minimum": 0, "maximum": MAX_TOOL_CALLS - 1},
                     },
+                    "expected_fields": {
+                        "type": "array",
+                        "maxItems": 20,
+                        "items": {"type": "string", "maxLength": 120},
+                    },
+                    "success_condition": {"type": "string", "maxLength": 500},
+                    "failure_policy": {"type": "string", "enum": ["fail_plan", "partial", "skip"]},
                 },
             },
         },
@@ -113,6 +150,10 @@ DATA_SELECTION_PLAN_SCHEMA: dict[str, Any] = {
                         "ids",
                         "document_types",
                         "tags",
+                        "truth_class",
+                        "authority",
+                        "sensitivity",
+                        "valid_at",
                     ],
                     "properties": {
                         "sku": {"type": "string", "maxLength": 120},
@@ -136,6 +177,13 @@ DATA_SELECTION_PLAN_SCHEMA: dict[str, Any] = {
                             "maxItems": 12,
                             "items": {"type": "string", "maxLength": 80},
                         },
+                        "truth_class": {"type": "string", "maxLength": 100},
+                        "authority": {
+                            "type": "string",
+                            "enum": ["authoritative", "verified_technical", "advisory", "unverified", ""],
+                        },
+                        "sensitivity": {"type": "string", "maxLength": 80},
+                        "valid_at": {"type": "string", "maxLength": 40},
                     },
                 },
                 "top_k": {"type": "integer", "minimum": 0, "maximum": MAX_CONTEXT_HUB_SNIPPETS},
@@ -146,6 +194,28 @@ DATA_SELECTION_PLAN_SCHEMA: dict[str, Any] = {
                 },
             },
         },
+        "coverage": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["expected_stores", "completeness_condition", "stop_conditions"],
+            "properties": {
+                "expected_stores": {
+                    "type": "array",
+                    "maxItems": 30,
+                    "items": {"type": "string", "maxLength": 180},
+                },
+                "completeness_condition": {
+                    "type": "string",
+                    "enum": ["not_applicable", "single_result", "all_required_sources", "all_authorized_stores", "best_effort"],
+                },
+                "stop_conditions": {
+                    "type": "array",
+                    "maxItems": 12,
+                    "items": {"type": "string", "maxLength": 240},
+                },
+            },
+        },
+        "resource_catalog_version": {"type": "string", "maxLength": 80},
         "missing_user_fields": {
             "type": "array",
             "maxItems": 12,
@@ -334,6 +404,154 @@ def compact_tool_catalog(allowed_tools: Optional[Iterable[Any]]) -> list[dict[st
     return compact
 
 
+_ML_DOMAIN_CUES: dict[str, tuple[str, ...]] = {
+    "ads": ("ads", "anuncio patrocinado", "campanha", "publicidade"),
+    "billing": ("faturamento", "cobranca", "tarifa", "relatorio financeiro"),
+    "catalog": ("atributo", "categoria", "catalogo", "produto"),
+    "claims": ("claim", "mediacao", "reclamacao"),
+    "compatibilities": ("aplicacao", "autopeca", "compatibilidade", "veiculo"),
+    "fulfillment": ("estoque distribuido", "estoque full", "full", "inventario"),
+    "invoices": ("invoice", "nota fiscal", "nf-e", "nfe"),
+    "items": ("anuncio", "item", "mlb", "publicacao", "sku"),
+    "messages": ("mensagem", "pos venda", "pos-venda"),
+    "metrics": ("mais vendido", "tendencia", "visita"),
+    "orders": ("order", "pack", "pedido", "venda"),
+    "payments": ("collection", "pagamento"),
+    "pricing": ("preco", "precos", "price"),
+    "promotions": ("desconto", "oferta", "promocao"),
+    "questions": ("pergunta", "question", "tempo de resposta"),
+    "returns": ("devolucao", "retorno"),
+    "shipments": ("envio", "frete", "rastreamento", "shipment"),
+    "users": ("comprador", "endereco", "reputacao", "usuario"),
+}
+DATA_SELECTION_PLAN_V2_SCHEMA = DATA_SELECTION_PLAN_SCHEMA
+_ML_RESOURCE_CUES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("ml.visits.", ("visita", "visitas")),
+    ("ml.trends.", ("tendencia", "tendencias")),
+    ("ml.highlights.", ("destaque", "mais vendido")),
+    ("ml.items.description", ("descricao do anuncio", "descricao")),
+    ("ml.items.get", ("detalhe do anuncio", "dados do mlb")),
+    ("ml.items.seller_search", ("anuncios do vendedor", "buscar sku", "listar anuncios")),
+    ("ml.questions.", ("pergunta", "perguntas")),
+    ("ml.orders.search", ("buscar pedidos", "listar pedidos", "pedidos do periodo")),
+    ("ml.orders.get", ("detalhe do pedido", "status do pedido")),
+    ("ml.claims.messages", ("mensagens da reclamacao", "mensagem da reclamacao")),
+    ("ml.claims.status_history", ("historico da reclamacao", "status da reclamacao")),
+    ("ml.returns.", ("devolucao", "devolucoes")),
+    ("ml.shipments.get", ("detalhe do envio", "status do envio")),
+    ("ml.shipments.history", ("historico do envio", "rastrear envio", "rastreamento")),
+    ("ml.fulfillment.stock", ("estoque full", "saldo full")),
+    ("ml.stock.user_product", ("estoque distribuido", "saldo distribuido")),
+)
+
+
+def _search_normalized(value: Any) -> str:
+    text = unicodedata.normalize("NFKD", _clean_text(value, 8000))
+    text = "".join(char for char in text if not unicodedata.combining(char)).casefold()
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def _mercado_livre_catalog() -> tuple[str, list[dict[str, Any]]]:
+    """Load the versioned catalogue lazily to keep planner import isolation."""
+
+    try:
+        from backend.services import mercado_livre_query_catalog
+
+        return (
+            str(mercado_livre_query_catalog.CATALOG_VERSION),
+            [dict(item) for item in mercado_livre_query_catalog.MERCADO_LIVRE_QUERY_RESOURCES],
+        )
+    except Exception:
+        return "unavailable", []
+
+
+def resolve_mercado_livre_resource_candidates(
+    request_text: Any,
+    *,
+    conversation_anchors: Optional[dict[str, Any]] = None,
+    max_candidates: int = MAX_ML_RESOURCE_CANDIDATES,
+) -> dict[str, Any]:
+    """Rank a bounded set of executable ML resource IDs before model planning."""
+
+    catalog_version, resources = _mercado_livre_catalog()
+    anchors = conversation_anchors if isinstance(conversation_anchors, dict) else {}
+    resolved = anchors.get("resolved_context") if isinstance(anchors.get("resolved_context"), dict) else {}
+    entity_hints = " ".join(
+        _clean_text(resolved.get(key), 160)
+        for key in (
+            "sku", "mlb", "order_id", "pack_id", "claim_id", "return_id", "shipment_id",
+            "payment_id", "question_id", "category_id", "product_id", "user_product_id", "period",
+        )
+        if _clean_text(resolved.get(key), 160)
+    )
+    normalized = _search_normalized(f"{_clean_text(request_text, 6000)} {entity_hints}")
+    terms = {term for term in normalized.split() if len(term) >= 3}
+    ranked: list[tuple[int, str, dict[str, Any], list[str]]] = []
+    for resource in resources:
+        policy = str(resource.get("policy") or "")
+        if resource.get("read_only") is not True or policy in {"document_only", "tombstone"}:
+            continue
+        resource_id = str(resource.get("resource_id") or "")
+        domain = str(resource.get("domain") or "")
+        haystack = _search_normalized(
+            " ".join(
+                [
+                    resource_id,
+                    domain,
+                    str(resource.get("path_template") or ""),
+                    " ".join(str(item) for item in list(resource.get("required_path_params") or [])),
+                    " ".join(str(item) for item in list(resource.get("allowed_query_params") or [])),
+                ]
+            )
+        )
+        score = sum(3 if term in _search_normalized(resource_id) else 1 for term in terms if term in haystack)
+        reasons: list[str] = []
+        for cue in _ML_DOMAIN_CUES.get(domain, ()):
+            normalized_cue = _search_normalized(cue)
+            if normalized_cue and normalized_cue in normalized:
+                score += 12
+                reasons.append(f"domain:{domain}")
+                break
+        for resource_prefix, cues in _ML_RESOURCE_CUES:
+            if not resource_id.startswith(resource_prefix):
+                continue
+            if any(_search_normalized(cue) in normalized for cue in cues):
+                score += 18
+                reasons.append(f"resource_prefix:{resource_prefix.rstrip('.')}")
+                break
+        required_params = [str(item) for item in list(resource.get("required_path_params") or [])]
+        for parameter in required_params:
+            parameter_terms = set(_search_normalized(parameter).split())
+            if parameter_terms & terms:
+                score += 5
+                reasons.append(f"entity:{parameter}")
+        leaf = _search_normalized(resource_id.rsplit(".", 1)[-1])
+        if leaf and leaf in normalized:
+            score += 8
+            reasons.append(f"resource:{leaf}")
+        if score <= 0:
+            continue
+        candidate = {
+            "resource_id": resource_id,
+            "domain": domain,
+            "purpose": resource_id.removeprefix("ml.").replace(".", " ").replace("_", " "),
+            "required_path_params": required_params,
+            "allowed_query_params": [str(item) for item in list(resource.get("allowed_query_params") or [])[:30]],
+            "policy": policy,
+            "ownership_rule": str(resource.get("ownership_rule") or ""),
+            "selection_score": score,
+            "selection_reasons": list(dict.fromkeys(reasons))[:6],
+        }
+        ranked.append((score, resource_id, candidate, reasons))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    maximum = max(1, min(MAX_ML_RESOURCE_CANDIDATES, int(max_candidates or MAX_ML_RESOURCE_CANDIDATES)))
+    return {
+        "catalog_version": catalog_version,
+        "selection": "deterministic_top_n",
+        "candidates": [item[2] for item in ranked[:maximum]],
+    }
+
+
 def _authorized_store_names(authorized_stores: Optional[Iterable[Any]]) -> list[str]:
     names: list[str] = []
     for item in list(authorized_stores or []):
@@ -374,6 +592,9 @@ def normalize_data_selection_plan(
     """Validate model output and enforce the read-only server boundary."""
 
     parsed = _parse_json_object(value)
+    source_schema_version = _clean_text(parsed.get("schema_version"), 40) or LEGACY_SCHEMA_VERSION
+    if source_schema_version not in {LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}:
+        raise DataSelectionPlanError("data_selection_unsupported_schema_version")
     action = _clean_text(parsed.get("action"), 40).lower()
     if action not in PLAN_ACTIONS:
         raise DataSelectionPlanError("data_selection_invalid_action")
@@ -386,6 +607,17 @@ def normalize_data_selection_plan(
             entities_raw.get("mlb") or entities_raw.get("item_id") or parsed.get("item_id"), 60
         ).upper(),
         "order_id": _clean_text(entities_raw.get("order_id") or parsed.get("order_id"), 100),
+        "pack_id": _clean_text(entities_raw.get("pack_id") or parsed.get("pack_id"), 100),
+        "claim_id": _clean_text(entities_raw.get("claim_id") or parsed.get("claim_id"), 100),
+        "return_id": _clean_text(entities_raw.get("return_id") or parsed.get("return_id"), 100),
+        "shipment_id": _clean_text(entities_raw.get("shipment_id") or parsed.get("shipment_id"), 100),
+        "payment_id": _clean_text(entities_raw.get("payment_id") or parsed.get("payment_id"), 100),
+        "question_id": _clean_text(entities_raw.get("question_id") or parsed.get("question_id"), 100),
+        "category_id": _clean_text(entities_raw.get("category_id") or parsed.get("category_id"), 100),
+        "product_id": _clean_text(entities_raw.get("product_id") or parsed.get("product_id"), 100),
+        "user_product_id": _clean_text(
+            entities_raw.get("user_product_id") or parsed.get("user_product_id"), 100
+        ),
         "period": _clean_text(entities_raw.get("period") or parsed.get("period"), 240),
         "store_ref": _clean_text(entities_raw.get("store_ref") or parsed.get("store"), 180),
         "store_mode": _clean_text(entities_raw.get("store_mode") or parsed.get("store_mode"), 20).lower() or "none",
@@ -403,6 +635,9 @@ def normalize_data_selection_plan(
 
     catalog = compact_tool_catalog(allowed_tools)
     allowed_ids = {item["tool_id"].casefold(): item["tool_id"] for item in catalog}
+    ml_catalog_version, ml_resources = _mercado_livre_catalog()
+    ml_resource_ids = {str(item.get("resource_id") or "") for item in ml_resources}
+    requested_catalog_version = _clean_text(parsed.get("resource_catalog_version"), 80)
     limit = max(0, min(MAX_TOOL_CALLS, int(max_calls or MAX_TOOL_CALLS)))
     proposed: list[str] = []
     accepted: list[str] = []
@@ -424,6 +659,12 @@ def normalize_data_selection_plan(
             rejected.append(proposed_id)
             continue
         arguments = _parse_arguments(raw.get("arguments"))
+        if canonical_id.casefold() == MERCADO_LIVRE_RESOURCE_TOOL_ID.casefold():
+            resource_id = _clean_text(arguments.get("resource_id"), 160)
+            if resource_id and resource_id not in ml_resource_ids:
+                raise DataSelectionPlanError("data_selection_invalid_ml_resource_id")
+            if requested_catalog_version and requested_catalog_version not in {ml_catalog_version, "unavailable"}:
+                raise DataSelectionPlanError("data_selection_ml_catalog_version_mismatch")
         for store_key in ("loja", "store", "store_ref", "account", "conta"):
             argument_store = _clean_text(arguments.get(store_key), 180)
             if argument_store and not _store_is_authorized(argument_store, store_names):
@@ -455,6 +696,15 @@ def normalize_data_selection_plan(
                 "required": bool(raw.get("required", True)),
                 "reason": _clean_text(raw.get("reason"), 600),
                 "depends_on": list(dict.fromkeys(depends_on)),
+                "expected_fields": _unique_texts(
+                    raw.get("expected_fields"), maximum=20, item_limit=120
+                ),
+                "success_condition": _clean_text(raw.get("success_condition"), 500),
+                "failure_policy": (
+                    _clean_text(raw.get("failure_policy"), 40).lower()
+                    if _clean_text(raw.get("failure_policy"), 40).lower() in {"fail_plan", "partial", "skip"}
+                    else "fail_plan" if bool(raw.get("required", True)) else "partial"
+                ),
             }
         )
 
@@ -484,6 +734,15 @@ def normalize_data_selection_plan(
             hub_filter_source.get("document_types"), maximum=10, item_limit=80
         ),
         "tags": _unique_texts(hub_filter_source.get("tags"), maximum=12, item_limit=80),
+        "truth_class": _clean_text(hub_filter_source.get("truth_class"), 100),
+        "authority": (
+            _clean_text(hub_filter_source.get("authority"), 40).lower()
+            if _clean_text(hub_filter_source.get("authority"), 40).lower()
+            in {"authoritative", "verified_technical", "advisory", "unverified"}
+            else ""
+        ),
+        "sensitivity": _clean_text(hub_filter_source.get("sensitivity"), 80),
+        "valid_at": _clean_text(hub_filter_source.get("valid_at"), 40),
     }
     hub_filters = {key: value for key, value in hub_filter_candidates.items() if value not in ("", [], {})}
     try:
@@ -526,14 +785,59 @@ def normalize_data_selection_plan(
         confidence = float(confidence_raw)
     except Exception:
         confidence = 0.0
+    intents = _unique_texts(parsed.get("intents") or [parsed.get("intent")], maximum=12, item_limit=120)
+    raw_intent_ids = parsed.get("intent_ids") if isinstance(parsed.get("intent_ids"), (list, tuple)) else []
+    intent_ids = [
+        normalized
+        for item in raw_intent_ids
+        if (normalized := re.sub(r"[^a-z0-9_.-]+", "_", _clean_text(item, 120).casefold()).strip("_.-"))
+    ][:12]
+    if not intent_ids:
+        intent_ids = [
+            normalized
+            for item in intents
+            if (normalized := re.sub(r"[^a-z0-9_.-]+", "_", item.casefold()).strip("_.-"))
+        ][:12]
+    coverage_raw = parsed.get("coverage") if isinstance(parsed.get("coverage"), dict) else {}
+    expected_stores = _unique_texts(
+        coverage_raw.get("expected_stores"), maximum=30, item_limit=180
+    )
+    if not expected_stores:
+        expected_stores = (
+            list(store_names)
+            if entities["store_mode"] == "all"
+            else [entities["store_ref"]] if entities["store_mode"] == "single" and entities["store_ref"] else []
+        )
+    for expected_store in expected_stores:
+        if not _store_is_authorized(expected_store, store_names):
+            raise DataSelectionPlanError("data_selection_unauthorized_store")
+    completeness_condition = _clean_text(coverage_raw.get("completeness_condition"), 60).lower()
+    if completeness_condition not in {
+        "not_applicable", "single_result", "all_required_sources", "all_authorized_stores", "best_effort"
+    }:
+        completeness_condition = (
+            "all_authorized_stores" if entities["store_mode"] == "all"
+            else "all_required_sources" if action == "collect"
+            else "not_applicable"
+        )
     plan = {
         "schema_version": SCHEMA_VERSION,
+        "source_schema_version": source_schema_version,
         "action": action,
-        "intents": _unique_texts(parsed.get("intents") or [parsed.get("intent")], maximum=12, item_limit=120),
+        "intents": intents,
+        "intent_ids": list(dict.fromkeys(intent_ids)),
         "entities": entities,
         "requested_fields": _unique_texts(parsed.get("requested_fields"), maximum=40, item_limit=120),
         "tool_calls": calls,
         "context_hub": context_hub,
+        "coverage": {
+            "expected_stores": expected_stores,
+            "completeness_condition": completeness_condition,
+            "stop_conditions": _unique_texts(
+                coverage_raw.get("stop_conditions"), maximum=12, item_limit=240
+            ),
+        },
+        "resource_catalog_version": ml_catalog_version,
         "missing_user_fields": _unique_texts(parsed.get("missing_user_fields"), maximum=12, item_limit=160),
         "confidence": max(0.0, min(1.0, confidence)),
         "reason": _clean_text(parsed.get("reason"), 1200),
@@ -643,6 +947,24 @@ def build_planner_prompt(
     data_gap: Any,
     validation_error: str = "",
 ) -> str:
+    tool_catalog = compact_tool_catalog(allowed_tools)
+    has_ml_resource_tool = any(
+        str(item.get("tool_id") or "").casefold() == MERCADO_LIVRE_RESOURCE_TOOL_ID.casefold()
+        for item in tool_catalog
+    )
+    ml_resource_selection = (
+        resolve_mercado_livre_resource_candidates(
+            request_text,
+            conversation_anchors=conversation_anchors,
+        )
+        if has_ml_resource_tool
+        else {"catalog_version": "not_applicable", "selection": "not_applicable", "candidates": []}
+    )
+    if has_ml_resource_tool:
+        for item in tool_catalog:
+            if str(item.get("tool_id") or "").casefold() == MERCADO_LIVRE_RESOURCE_TOOL_ID.casefold():
+                item["resource_catalog_version"] = ml_resource_selection["catalog_version"]
+                item["resource_candidates"] = ml_resource_selection["candidates"]
     payload = {
         "contract": SCHEMA_VERSION,
         "surface": _clean_text(surface, 40) or "app",
@@ -650,7 +972,8 @@ def build_planner_prompt(
         "job_prompt": _clean_text(job_prompt, 6000),
         "conversation_anchors": _strip_sensitive(conversation_anchors or {}),
         "authorized_stores": _authorized_store_names(authorized_stores),
-        "tool_catalog": compact_tool_catalog(allowed_tools),
+        "tool_catalog": tool_catalog,
+        "resource_catalog_version": ml_resource_selection["catalog_version"],
         "previous_evidence": compact_evidence(previous_evidence or {}, report=False),
         "data_gap": compact_evidence(data_gap or {}, report=False),
         "validation_error": _clean_text(validation_error, 200),
@@ -662,9 +985,18 @@ def build_planner_prompt(
         "ferramentas read-only do catalogo. Dados atuais de estoque, preco, pedidos e vendas nunca podem vir do "
         "Context Hub. Se a pergunta pedir todas as lojas, mantenha store_mode=all e planeje consultas separadas "
         "por loja autorizada quando a ferramenta exigir loja; nunca misture saldos ou resultados entre contas. "
+        "Para saldo de uma loja nomeada, escolha uma ferramenta cujo input_schema aceite loja/store; stock_data "
+        "e apenas um saldo local agregado e nao comprova o saldo de uma loja especifica. "
         "conversation_anchors.resolved_context contem referencias ja resolvidas pelo Luna para esta conversa. "
         "Use loja, SKU, MLB e periodo dali quando ainda forem aplicaveis ao pedido atual; a pergunta atual explicita "
         "tem precedencia. Se o Luna nao resolveu um campo indispensavel, use clarify em vez de adivinhar. "
+        "Quando usar mercado_livre_resource_query, escolha somente um resource_id exato de resource_candidates e "
+        "copie resource_catalog_version para o plano; nunca invente URL, rota ou resource_id. Preencha coverage, "
+        "expected_fields, success_condition e failure_policy de forma verificavel. "
+        "Quando data_gap contiver attempted_tools ou attempted_call_signatures, produza um plano materialmente "
+        "diferente: escolha outra fonte autorizada ou refine os argumentos. Nao repita a mesma combinacao de "
+        "ferramenta e argumentos que ja retornou evidencia insuficiente, salvo se a evidencia marcar a falha como "
+        "transitoria e retryable. "
         "Para pergunta geral use answer_without_data; para campo essencial ausente use clarify; "
         "para alteracao use mutation_candidate sem ferramentas. Retorne apenas o JSON do schema.\n\n" + payload_text
     )
@@ -748,10 +1080,37 @@ class _CodexPlannerRuntime:
                     return fallback
         raise RuntimeError("data_selection_model_unavailable")
 
-    def run(self, *, prompt: str, model: str, reasoning_effort: str) -> dict[str, Any]:
+    def run(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        reasoning_effort: str,
+        client_id: str = "",
+        trace_id: str = "",
+        telemetry_manage_trace: bool = True,
+        attempt: int = 0,
+    ) -> dict[str, Any]:
         from backend.services import codex_console
         from openai_codex.generated.v2_all import ReasoningSummary
 
+        tenant = _clean_text(client_id, 80) or "default"
+        telemetry_trace_id = _clean_text(trace_id, 200) or uuid.uuid4().hex
+        span_id = f"{telemetry_trace_id}:selector:{max(0, int(attempt or 0))}"
+        started = time.perf_counter()
+        telemetry = None
+        effective_model = _clean_text(model, 100).removeprefix("codex:") or DEFAULT_MODEL
+        try:
+            telemetry = codex_console._codex_ai_telemetry_instance()
+            telemetry.schedule_retention(tenant)
+            telemetry.start_span(
+                tenant,
+                trace_id=telemetry_trace_id,
+                span_id=span_id,
+                stage="selector",
+            )
+        except Exception:
+            telemetry = None
         with self._lock:
             try:
                 client = self._start_locked()
@@ -782,6 +1141,31 @@ class _CodexPlannerRuntime:
                 self._effective_model = effective_model
                 self._last_used_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 self._last_error_code = ""
+                duration_ms = (time.perf_counter() - started) * 1000
+                if telemetry is not None:
+                    telemetry.finish_span(
+                        tenant,
+                        trace_id=telemetry_trace_id,
+                        span_id=span_id,
+                        stage="selector",
+                        status="completed",
+                        duration_ms=duration_ms,
+                    )
+                    telemetry.record_event(
+                        tenant,
+                        event_id=f"{telemetry_trace_id}:selector:{max(0, int(attempt or 0))}",
+                        trace_id=telemetry_trace_id,
+                        span_id=span_id,
+                        event_type="inference",
+                        status="completed",
+                        requested_model=model,
+                        effective_model=effective_model,
+                        provider="openai_codex",
+                        provider_path="data_selection_agent",
+                        model_rerouted=effective_model != _clean_text(model, 100).removeprefix("codex:"),
+                        duration_ms=duration_ms,
+                        dimensions={"surface": "data_selection", "category": "selector"},
+                    )
                 return {
                     "response": getattr(result, "final_response", ""),
                     "effective_model": effective_model,
@@ -789,6 +1173,32 @@ class _CodexPlannerRuntime:
             except Exception as exc:
                 self._last_error_code = type(exc).__name__[:120]
                 self._close_locked()
+                duration_ms = (time.perf_counter() - started) * 1000
+                if telemetry is not None:
+                    telemetry.finish_span(
+                        tenant,
+                        trace_id=telemetry_trace_id,
+                        span_id=span_id,
+                        stage="selector",
+                        status="failed",
+                        duration_ms=duration_ms,
+                        error_code=type(exc).__name__,
+                    )
+                    telemetry.record_event(
+                        tenant,
+                        event_id=f"{telemetry_trace_id}:selector:{max(0, int(attempt or 0))}",
+                        trace_id=telemetry_trace_id,
+                        span_id=span_id,
+                        event_type="inference",
+                        status="failed",
+                        requested_model=model,
+                        effective_model=effective_model,
+                        provider="openai_codex",
+                        provider_path="data_selection_agent",
+                        duration_ms=duration_ms,
+                        error_code=type(exc).__name__,
+                        dimensions={"surface": "data_selection", "category": "selector"},
+                    )
                 raise
 
     def warm(self, model: str) -> dict[str, Any]:
@@ -845,6 +1255,28 @@ class CodexDataSelectionRuntime:
         self._rejected_tools: Counter[str] = Counter()
         self._last_error_code = ""
         self._closing = False
+        self._telemetry_local = threading.local()
+
+    @contextmanager
+    def telemetry_scope(
+        self,
+        *,
+        client_id: str,
+        trace_id: str = "",
+        manage_trace: bool = True,
+    ):
+        """Bind server-only telemetry metadata without exposing tenant IDs to the planner."""
+
+        previous = getattr(self._telemetry_local, "context", None)
+        self._telemetry_local.context = {
+            "client_id": _clean_text(client_id, 80),
+            "trace_id": _clean_text(trace_id, 200),
+            "manage_trace": bool(manage_trace),
+        }
+        try:
+            yield
+        finally:
+            self._telemetry_local.context = previous
 
     def _checkout(self, timeout: float = 60.0) -> _CodexPlannerRuntime:
         deadline = time.monotonic() + max(0.1, float(timeout or 0.1))
@@ -872,7 +1304,17 @@ class CodexDataSelectionRuntime:
                 self._available.append(slot)
             self._condition.notify_all()
 
-    def _invoke_planner(self, *, prompt: str, model: str, reasoning_effort: str, attempt: int) -> Any:
+    def _invoke_planner(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        reasoning_effort: str,
+        attempt: int,
+        client_id: str = "",
+        trace_id: str = "",
+        telemetry_manage_trace: bool = True,
+    ) -> Any:
         if self._planner is not None:
             return self._planner(
                 prompt=prompt,
@@ -883,7 +1325,15 @@ class CodexDataSelectionRuntime:
             )
         slot = self._checkout()
         try:
-            result = slot.run(prompt=prompt, model=model, reasoning_effort=reasoning_effort)
+            result = slot.run(
+                prompt=prompt,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                client_id=client_id,
+                trace_id=trace_id,
+                telemetry_manage_trace=telemetry_manage_trace,
+                attempt=attempt,
+            )
             return result.get("response")
         finally:
             self._release(slot)
@@ -906,6 +1356,30 @@ class CodexDataSelectionRuntime:
         if not _clean_text(request_text, 12000):
             raise DataSelectionPlanError("data_selection_question_required")
         started = time.monotonic()
+        telemetry_context = getattr(self._telemetry_local, "context", None)
+        telemetry_context = telemetry_context if isinstance(telemetry_context, dict) else {}
+        client_id = _clean_text(telemetry_context.get("client_id"), 80)
+        trace_id = _clean_text(telemetry_context.get("trace_id"), 200)
+        telemetry_manage_trace = telemetry_context.get("manage_trace") is not False
+        tenant = _clean_text(client_id, 80) or "default"
+        telemetry_trace_id = _clean_text(trace_id, 200) or uuid.uuid4().hex
+        telemetry = None
+        if telemetry_manage_trace and client_id:
+            try:
+                from backend.services import codex_console
+
+                telemetry = codex_console._codex_ai_telemetry_instance()
+                telemetry.schedule_retention(tenant)
+                telemetry.start_trace(
+                    tenant,
+                    trace_id=telemetry_trace_id,
+                    surface=surface,
+                    category="selector",
+                    requested_model=model,
+                    expected_spans=("selector",),
+                )
+            except Exception:
+                telemetry = None
         validation_error = ""
         last_error: Optional[Exception] = None
         for attempt in range(2):
@@ -928,6 +1402,9 @@ class CodexDataSelectionRuntime:
                     model=_clean_text(model, 100) or DEFAULT_MODEL,
                     reasoning_effort=_clean_text(reasoning_effort, 20) or DEFAULT_REASONING_EFFORT,
                     attempt=attempt,
+                    client_id=client_id,
+                    trace_id=telemetry_trace_id,
+                    telemetry_manage_trace=False,
                 )
                 plan, tool_stats = normalize_data_selection_plan(
                     raw,
@@ -948,6 +1425,15 @@ class CodexDataSelectionRuntime:
                     self._accepted_tools.update(tool_stats["accepted"])
                     self._rejected_tools.update(tool_stats["rejected"])
                     self._last_error_code = ""
+                if telemetry is not None:
+                    telemetry.finish_trace(
+                        tenant,
+                        trace_id=telemetry_trace_id,
+                        status="completed",
+                        effective_model=_clean_text(model, 100).removeprefix("codex:"),
+                        provider="openai_codex",
+                        duration_ms=latency_ms,
+                    )
                 return plan
             except Exception as exc:
                 last_error = exc
@@ -971,6 +1457,16 @@ class CodexDataSelectionRuntime:
                 _clean_text(str(last_error), 160)
                 if isinstance(last_error, DataSelectionPlanError)
                 else "planner_runtime_error"
+            )
+        if telemetry is not None:
+            telemetry.finish_trace(
+                tenant,
+                trace_id=telemetry_trace_id,
+                status="failed",
+                effective_model=_clean_text(model, 100).removeprefix("codex:"),
+                provider="openai_codex",
+                duration_ms=(time.monotonic() - started) * 1000,
+                error_code=self._last_error_code,
             )
         raise RuntimeError(f"data_selection_agent_failed:{self._last_error_code}") from last_error
 
@@ -1060,16 +1556,21 @@ DATA_SELECTION_RUNTIME = CodexDataSelectionRuntime(default_size=4)
 __all__ = [
     "CodexDataSelectionRuntime",
     "DATA_SELECTION_PLAN_SCHEMA",
+    "DATA_SELECTION_PLAN_V2_SCHEMA",
     "DATA_SELECTION_RUNTIME",
     "DEFAULT_MODEL",
     "DataSelectionPlanError",
+    "LEGACY_SCHEMA_VERSION",
     "MAX_CONTEXT_HUB_SNIPPETS",
     "MAX_CONTEXT_HUB_SNIPPET_CHARS",
     "MAX_EVIDENCE_BYTES",
     "MAX_PLAN_BYTES",
+    "MAX_ML_RESOURCE_CANDIDATES",
     "MAX_REPORT_EVIDENCE_BYTES",
+    "MERCADO_LIVRE_RESOURCE_TOOL_ID",
     "build_planner_prompt",
     "compact_evidence",
     "compact_tool_catalog",
     "normalize_data_selection_plan",
+    "resolve_mercado_livre_resource_candidates",
 ]

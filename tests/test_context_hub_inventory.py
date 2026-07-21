@@ -275,11 +275,107 @@ def test_markdown_graph_uses_resolvable_obsidian_wikilinks(tmp_path: Path) -> No
         for content in rendered.values()
         for target in re.findall(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]", content)
     }
+    node_names = {path.removesuffix(".md") for path in rendered}
+    adjacency = {node: set() for node in node_names}
+    for path, content in rendered.items():
+        source = path.removesuffix(".md")
+        for target in re.findall(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]", content):
+            if target in node_names and target != source:
+                adjacency[source].add(target)
+                adjacency[target].add(source)
 
     assert rendered
     assert all("[[" in content for content in rendered.values())
     assert "70_Gerado/Mapas/Inventario-do-Programa" in targets
     assert {f"{target}.md" for target in targets}.issubset(rendered)
+    assert all(neighbors for neighbors in adjacency.values())
+    visited: set[str] = set()
+    pending = [next(iter(node_names))]
+    while pending:
+        current = pending.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        pending.extend(adjacency[current] - visited)
+    assert visited == node_names
+    assert max(len(neighbors) for neighbors in adjacency.values()) <= 20
+
+
+def test_markdown_graph_routes_leaf_notes_through_semantic_parents(tmp_path: Path) -> None:
+    base, info = _build_fixture(tmp_path)
+    inventory = build_context_inventory(str(base), str(info), "000002", "checkout")
+
+    rendered = render_context_inventory_markdown(inventory, generated_at="2026-07-17T12:00:00Z")
+    screen = rendered["70_Gerado/Mapas/Telas/catalog.md"]
+    test_page = rendered["70_Gerado/Operacao/Testes/Parte-001.md"]
+    api_index = rendered["70_Gerado/Contratos/APIs.md"]
+    api_domain = rendered["70_Gerado/Contratos/APIs/cadastro.md"]
+    inventory_index = rendered["70_Gerado/Mapas/Inventario-do-Programa.md"]
+    areas_index = rendered["70_Gerado/Mapas/Areas-do-Programa.md"]
+
+    assert "[[70_Gerado/Dominios/cadastro|Dominio cadastro]]" in screen
+    assert "[[70_Gerado/Mapas/Inventario-do-Programa|Inventario do Programa]]" not in screen
+    assert "[[70_Gerado/Contratos/APIs/cadastro|APIs do dominio cadastro]]" in screen
+    assert "[[70_Gerado/Contratos/APIs|Mapa de APIs]]" not in screen
+    assert "[[70_Gerado/Contratos/APIs/cadastro|APIs do dominio cadastro]]" in api_index
+    assert "[[70_Gerado/Contratos/APIs|Mapa de APIs]]" in api_domain
+    assert "[[70_Gerado/Mapas/Areas-do-Programa|Areas do Programa]]" in inventory_index
+    assert "[[70_Gerado/Contratos/APIs|Mapa de APIs]]" not in inventory_index
+    assert "[[70_Gerado/Contratos/APIs|Mapa de APIs]]" in areas_index
+    assert "[[70_Gerado/Mapas/Areas-do-Programa|Areas do Programa]]" in api_index
+    assert "[[70_Gerado/Operacao/Testes|Mapa de Testes]]" in test_page
+    assert "[[70_Gerado/Mapas/Inventario-do-Programa|Inventario do Programa]]" not in test_page
+
+
+def test_api_domain_maps_partition_every_api_exactly_once(tmp_path: Path) -> None:
+    base, info = _build_fixture(tmp_path)
+    inventory = build_context_inventory(str(base), str(info), "000002", "checkout")
+
+    rendered = render_context_inventory_markdown(inventory, generated_at="2026-07-17T12:00:00Z")
+    api_maps = {
+        path: content
+        for path, content in rendered.items()
+        if path.startswith("70_Gerado/Contratos/APIs/")
+    }
+    expected_ids = {
+        str(row["id"]) for row in inventory["entities"] if row.get("kind") == "api"
+    }
+    occurrences = {
+        api_id: sum(content.count(f"- `{api_id}` - ") for content in api_maps.values())
+        for api_id in expected_ids
+    }
+
+    assert api_maps
+    assert all(re.search(r"^- `jk:api:", content, flags=re.MULTILINE) for content in api_maps.values())
+    assert set(occurrences) == expected_ids
+    assert all(count == 1 for count in occurrences.values())
+    assert not any(
+        "[[70_Gerado/Contratos/APIs|Mapa de APIs]]" in content
+        for path, content in rendered.items()
+        if path.startswith("70_Gerado/Dominios/") or path.startswith("70_Gerado/Mapas/Telas/")
+    )
+
+
+def test_markdown_graph_does_not_link_to_an_empty_group_map(tmp_path: Path) -> None:
+    base, info = _build_fixture(tmp_path)
+    inventory = build_context_inventory(str(base), str(info), "000002", "checkout")
+    inventory["entities"] = [
+        row
+        for row in inventory["entities"]
+        if row.get("kind") != "capability"
+        and not str(row.get("id") or "").startswith("jk:sku-map:")
+    ]
+
+    rendered = render_context_inventory_markdown(inventory, generated_at="2026-07-17T12:00:00Z")
+    index = rendered["70_Gerado/Mapas/Inventario-do-Programa.md"]
+    areas = rendered["70_Gerado/Mapas/Areas-do-Programa.md"]
+
+    assert "70_Gerado/Operacao/Capacidades-Codex.md" not in rendered
+    assert "[[70_Gerado/Operacao/Capacidades-Codex|Capacidades Codex]]" not in index
+    assert "[[70_Gerado/Operacao/Capacidades-Codex|Capacidades Codex]]" not in areas
+    assert not any(path.startswith("70_Gerado/Produtos/") for path in rendered)
+    assert "[[70_Gerado/Produtos/" not in index
+    assert "[[70_Gerado/Produtos/" not in areas
 
 
 def test_large_test_map_is_paginated_without_truncating_entities(tmp_path: Path) -> None:

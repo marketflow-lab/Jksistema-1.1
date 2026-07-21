@@ -588,23 +588,30 @@ function preencherRespostaPerguntaSugerida(payload, opcoes = {}) {
     return preencherTextareaPerguntaComSugestao(card, resposta, opcoes);
 }
 
+function sugestaoEhPosVenda(payload) {
+    if (!payload || typeof payload !== 'object') return false;
+    return [payload.tipo, payload.approval_type, payload.origem, payload.ia_origem, payload.ia_finalidade]
+        .some((valor) => {
+            const marcador = normalizarSugestaoResposta(valor).toLowerCase().replace(/[-\s]+/g, '_');
+            return marcador.includes('pos_venda');
+        });
+}
+
 function registrarIntegracaoSidebarPerguntas() {
     window.JKPerguntasPosVenda = window.JKPerguntasPosVenda || {};
     window.JKPerguntasPosVenda.preencherRespostaPergunta = preencherRespostaPerguntaSugerida;
     window.JKPerguntasPosVenda.preencherRespostaSugerida = function preencherRespostaSugeridaAtendimento(payload, opcoes = {}) {
-        const tipo = normalizarSugestaoResposta(payload?.tipo || payload?.approval_type || '').toLowerCase();
-        if (tipo === 'pos_venda') return { ok: false, blocked: true, message: 'Sugestoes de IA estao desativadas no pos-venda.' };
+        if (sugestaoEhPosVenda(payload)) return { ok: false, blocked: true, message: 'Sugestoes de IA estao desativadas no pos-venda.' };
         return preencherRespostaPerguntaSugerida(payload, opcoes);
     };
     window.addEventListener('jk:perguntas-pos-venda:usar-resposta', (event) => {
         const payload = event.detail || {};
-        const tipo = normalizarSugestaoResposta(payload?.tipo || payload?.approval_type || '').toLowerCase();
         const opcoes = {
             force: payload.force === true,
             focus: payload.focus !== false,
             allowFallback: payload.allowFallback !== false
         };
-        if (tipo === 'pos_venda') return;
+        if (sugestaoEhPosVenda(payload)) return;
         preencherRespostaPerguntaSugerida(payload, opcoes);
     });
 }

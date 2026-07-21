@@ -26,6 +26,9 @@ def _completed_job(
         "subject_key": conversation_subject_key,
         "status": "completed",
         "agent_state": "aguardando_aprovacao",
+        "prompt_version": orchestrator.PROMPT_VERSION,
+        "schema_version": orchestrator.SCHEMA_VERSION,
+        "prompt_hash": orchestrator.PROMPT_HASH,
         "result": {
             "resposta": f"Resposta tardia {job_id}",
             "requires_approval": True,
@@ -126,7 +129,7 @@ def test_late_public_question_job_reconciles_once_and_only_for_exact_event(monke
     assert {call["subject_key"] for call in calls} == {conversation_key}
 
 
-def test_late_post_sale_job_reconciles_once_and_only_for_exact_message(monkeypatch):
+def test_late_post_sale_job_is_not_reconciled_after_manual_only_policy(monkeypatch):
     event_key = "pos_venda:PACK-1:MESSAGE-1"
     conversation_key = "pack:PACK-1"
     job = _completed_job(
@@ -169,16 +172,13 @@ def test_late_post_sale_job_reconciles_once_and_only_for_exact_message(monkeypat
         approvals=[],
     )
 
-    assert candidate and candidate["job_id"] == "job-post-sale-late"
+    assert candidate is None
     assert already_reconciled is False
-    result = endpoints._customer_reply_post_sale_job_result(candidate)
-    assert result["resposta"] == "Resposta tardia job-post-sale-late"
-    assert result["codex_job_id"] == "job-post-sale-late"
-    assert repeated and repeated["job_id"] == "job-post-sale-late"
-    assert repeated_reconciled is True
+    assert repeated is None
+    assert repeated_reconciled is False
     assert wrong_message is None
     assert wrong_message_reconciled is False
-    assert {call["subject_key"] for call in calls} == {conversation_key}
+    assert calls == []
 
 
 def test_codex_resume_omits_ephemeral_and_fallback_start_keeps_it(monkeypatch):

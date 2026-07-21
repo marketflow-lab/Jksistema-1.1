@@ -37,10 +37,25 @@ class ContextHubRebuildRequest(BaseModel):
 class ContextHubSearchFilters(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    sku: str = Field(default="", max_length=120)
+    mlb: str = Field(default="", max_length=60)
+    store_ref: str = Field(default="", max_length=180)
     module: str = Field(default="", max_length=100)
     ids: list[str] = Field(default_factory=list, max_length=100)
     source_type: str = Field(default="", max_length=100)
     environment: str = Field(default="", max_length=100)
+    surface: str = Field(default="", max_length=100)
+    tags: list[str] = Field(default_factory=list, max_length=12)
+    truth_class: str = Field(default="", max_length=100)
+    authority: Literal["", "authoritative", "verified_technical", "advisory", "unverified"] = ""
+    sensitivity: str = Field(default="", max_length=80)
+    validity: Literal["", "active_generation", "unverified"] = ""
+    valid_at: str = Field(
+        default="",
+        max_length=40,
+        pattern=r"^$|^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2})?)?$",
+    )
+    document_types: list[str] = Field(default_factory=list, max_length=10)
 
 
 class ContextHubSearchRequest(BaseModel):
@@ -48,10 +63,25 @@ class ContextHubSearchRequest(BaseModel):
 
     query: str = Field(default="", max_length=500)
     limit: int = Field(default=12, ge=1, le=12)
+    sku: str = Field(default="", max_length=120)
+    mlb: str = Field(default="", max_length=60)
+    store_ref: str = Field(default="", max_length=180)
     module: str = Field(default="", max_length=100)
     ids: list[str] = Field(default_factory=list, max_length=100)
     source_type: str = Field(default="", max_length=100)
     environment: str = Field(default="", max_length=100)
+    surface: str = Field(default="", max_length=100)
+    tags: list[str] = Field(default_factory=list, max_length=12)
+    truth_class: str = Field(default="", max_length=100)
+    authority: Literal["", "authoritative", "verified_technical", "advisory", "unverified"] = ""
+    sensitivity: str = Field(default="", max_length=80)
+    validity: Literal["", "active_generation", "unverified"] = ""
+    valid_at: str = Field(
+        default="",
+        max_length=40,
+        pattern=r"^$|^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2})?)?$",
+    )
+    document_types: list[str] = Field(default_factory=list, max_length=10)
     filters: Optional[ContextHubSearchFilters] = None
 
 
@@ -235,7 +265,11 @@ def context_hub_search(
 ):
     session = _require_full_admin(request, authorization)
     filters = payload.filters.model_dump() if payload.filters is not None else {}
-    for key in ("module", "ids", "source_type", "environment"):
+    for key in (
+        "sku", "mlb", "store_ref", "module", "ids", "source_type", "environment",
+        "surface", "tags", "truth_class", "authority", "sensitivity", "validity",
+        "valid_at", "document_types",
+    ):
         value = getattr(payload, key)
         if value not in ("", [], None):
             filters[key] = value
@@ -392,6 +426,7 @@ __all__ = [
     "CuratedNoteRejectRequest",
     "CuratedPublishRequest",
     "ContextHubRebuildRequest",
+    "ContextHubSearchFilters",
     "ContextHubSearchRequest",
     "ContextHubSettingsRequest",
     "context_hub_generation_get",

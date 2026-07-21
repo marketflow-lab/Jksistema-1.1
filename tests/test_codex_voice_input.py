@@ -8,6 +8,22 @@ from fastapi import HTTPException, UploadFile
 from starlette.datastructures import Headers
 
 from backend.services import codex_console, local_audio_transcription
+from backend.services.whatsapp import audio_processing as whatsapp_audio_processing
+
+
+@pytest.fixture(autouse=True)
+def _isolated_local_voice_root(monkeypatch, tmp_path):
+    attachment_root = tmp_path / ".codex-remote-attachments"
+    attachment_root.mkdir()
+
+    def attachment_dir(client_id: str, username: str, conversation_id: str) -> Path:
+        target = attachment_root / client_id / username / conversation_id
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+
+    monkeypatch.setattr(codex_console, "_codex_attachments_base_dir", lambda: attachment_root)
+    monkeypatch.setattr(codex_console, "_codex_attachment_dir", attachment_dir)
+    return attachment_root
 
 
 def _upload(payload: bytes, mime_type: str = "audio/webm") -> UploadFile:
@@ -18,10 +34,12 @@ def _upload(payload: bytes, mime_type: str = "audio/webm") -> UploadFile:
     )
 
 
-def test_local_voice_transcription_is_editable_text_and_deletes_raw(monkeypatch):
+def test_local_voice_transcription_is_editable_text_and_deletes_raw(monkeypatch, _isolated_local_voice_root):
     from backend.services import whatsapp_bridge
 
     captured: list[Path] = []
+    cleanup_calls: list[tuple[Path, Path]] = []
+    real_delete = whatsapp_audio_processing.delete_inbound_audio
 
     def transcribe(path: Path):
         captured.append(path)
@@ -29,6 +47,11 @@ def test_local_voice_transcription_is_editable_text_and_deletes_raw(monkeypatch)
         return {"success": True, "text": "  loja principal SKU ABC-123  "}
 
     monkeypatch.setattr(whatsapp_bridge, "_transcribe_audio", transcribe)
+    monkeypatch.setattr(
+        whatsapp_audio_processing,
+        "delete_inbound_audio",
+        lambda path, root: cleanup_calls.append((Path(path), Path(root))) or real_delete(path, root),
+    )
     result = local_audio_transcription.transcribe_authenticated_upload(
         _upload(b"\x1a\x45\xdf\xa3" + b"safe-audio"),
         client_id="tenant-a",
@@ -43,6 +66,7 @@ def test_local_voice_transcription_is_editable_text_and_deletes_raw(monkeypatch)
         "raw_audio_retained": False,
     }
     assert captured and not captured[0].exists()
+    assert cleanup_calls == [(captured[0], _isolated_local_voice_root)]
 
 
 def test_local_voice_transcription_fails_closed_when_raw_cleanup_is_pending(monkeypatch):
@@ -56,8 +80,12 @@ def test_local_voice_transcription_fails_closed_when_raw_cleanup_is_pending(monk
         return {"success": True, "text": "texto privado"}
 
     monkeypatch.setattr(whatsapp_bridge, "_transcribe_audio", transcribe)
-    monkeypatch.setattr(local_audio_transcription, "_unlink_audio_file", lambda _path, attempts=3: False)
-    monkeypatch.setattr(local_audio_transcription, "_queue_cleanup", lambda path: queued.append(Path(path)))
+    monkeypatch.setattr(whatsapp_audio_processing, "delete_inbound_audio", lambda _path, _root: False)
+    monkeypatch.setattr(
+        whatsapp_audio_processing,
+        "queue_inbound_audio_cleanup",
+        lambda path, _root: queued.append(Path(path)) or True,
+    )
 
     result = local_audio_transcription.transcribe_authenticated_upload(
         _upload(b"\x1a\x45\xdf\xa3safe-audio"),

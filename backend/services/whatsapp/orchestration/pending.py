@@ -72,29 +72,18 @@ WHATSAPP_MAX_PARTS = whatsapp_formatting.WHATSAPP_MAX_PARTS
 
 
 def _job_deadline_seconds(request_text: Any, *, requires_web: bool = False) -> int:
-    text = _whatsapp_text_key(request_text)
-    if re.search(r"\b(relatorio|planilha|excel|xlsx|pdf|grafico|imagem do relatorio|dashboard)\b", text):
-        return WHATSAPP_REPORT_DEADLINE_SECONDS
-    if re.search(r"\b(pergunta|perguntas|pos venda|comprador|mercado livre|mercadolivre)\b", text) and (
-        requires_web or re.search(r"\b(respost|compatib|aplica|serve|encaixa)\b", text)
-    ):
-        return WHATSAPP_ML_RESEARCH_DEADLINE_SECONDS
-    return WHATSAPP_JOB_DEADLINE_DEFAULT
+    # Compatibilidade para consumidores antigos: zero significa sem prazo
+    # total. A duracao de cada chamada externa segue limitada separadamente.
+    _ = (request_text, requires_web)
+    return 0
 
 def _ensure_job_contract(pending: dict[str, Any]) -> dict[str, Any]:
     now_epoch = time.time()
     created_epoch = float(pending.get("created_at_epoch") or now_epoch)
     pending.setdefault("created_at_epoch", created_epoch)
-    deadline_seconds = int(
-        pending.get("deadline_seconds")
-        or _job_deadline_seconds(
-            pending.get("request_text") or pending.get("job_prompt") or "",
-            requires_web=bool(pending.get("requires_web")),
-        )
-    )
-    deadline_seconds = max(30, min(deadline_seconds, WHATSAPP_REPORT_DEADLINE_SECONDS))
-    pending.setdefault("deadline_seconds", deadline_seconds)
-    pending.setdefault("deadline_at_epoch", created_epoch + deadline_seconds)
+    pending["deadline_enabled"] = False
+    pending["deadline_seconds"] = 0
+    pending["deadline_at_epoch"] = 0
     pending["retry_policy"] = "bounded"
     pending["max_retry_attempts"] = WHATSAPP_MAX_RETRY_ATTEMPTS
     pending.setdefault("wait_notice_count", 0)
@@ -162,20 +151,144 @@ def _remove_pending(
         state["pending_messages"] = pending_messages
         _save_state(state)
 
+def _partial_record_count(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_partial_sources(values: Any) -> list[str]:
+    labels: list[str] = []
+    for value in list(values or []):
+        key = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode("ascii").lower()
+        label = ""
+        if "mercado livre" in key:
+            label = "API do Mercado Livre"
+        elif "bling" in key:
+            label = "API da Bling"
+        elif "context hub" in key:
+            label = "Context Hub"
+        elif "estoque interno" in key or "cadastro de produtos do jk sistema" in key:
+            label = "dados internos do JK Sistema"
+        elif "planilhas e cadastros locais" in key:
+            label = "cadastros locais do JK Sistema"
+        elif "caches locais" in key:
+            label = "cache local do JK Sistema"
+        if label and label not in labels:
+            labels.append(label)
+    return labels[:5]
+
+
+def _manager_partial_text(pending: dict[str, Any]) -> str:
+    evidence = pending.get("manager_evidence") if isinstance(pending.get("manager_evidence"), dict) else {}
+    tool_results = [item for item in list(evidence.get("tool_results") or []) if isinstance(item, dict)]
+    if not tool_results:
+        return ""
+
+    plan = pending.get("manager_plan") if isinstance(pending.get("manager_plan"), dict) else {}
+    if not plan and isinstance(evidence.get("plan"), dict):
+        plan = evidence["plan"]
+    entities = plan.get("entities") if isinstance(plan.get("entities"), dict) else {}
+    raw_intents: list[Any] = []
+    for field in ("intent_ids", "intents", "intent"):
+        value = plan.get(field)
+        if isinstance(value, (list, tuple, set)):
+            raw_intents.extend(value)
+        elif str(value or "").strip():
+            raw_intents.append(value)
+    intent_ids = {str(item or "").strip() for item in raw_intents if str(item or "").strip()}
+    sku = re.sub(r"\s+", " ", str(entities.get("sku") or plan.get("sku") or "")).strip()[:80]
+    store = re.sub(r"\s+", " ", str(entities.get("store_ref") or plan.get("store") or "")).strip()[:120]
+    normalized_intents = {
+        unicodedata.normalize("NFKD", item).encode("ascii", "ignore").decode("ascii").lower()
+        for item in intent_ids
+    }
+    is_stock_query = any("stock" in item or "estoque" in item for item in normalized_intents)
+    no_records = all(_partial_record_count(item.get("records")) == 0 for item in tool_results)
+
+    lines: list[str] = []
+    if is_stock_query:
+        subject = f"do SKU {sku}" if sku else "do produto solicitado"
+        scope = f" na loja {store}" if store else ""
+        if no_records:
+            lines.append(f"Não encontrei estoque confirmado {subject}{scope}.")
+        else:
+            lines.append(f"A consulta de estoque {subject}{scope} ficou incompleta.")
+
+        full_result = next(
+            (item for item in tool_results if str(item.get("tool_id") or "") == "mercado_livre_full_stock"),
+            None,
+        )
+        if full_result is not None:
+            if _partial_record_count(full_result.get("records")) == 0:
+                lines.append("Mercado Livre Full: a API não retornou saldo para os filtros informados.")
+            else:
+                lines.append("Mercado Livre Full: houve retorno, mas sem cobertura suficiente para confirmar o saldo.")
+
+        local_result = next(
+            (
+                item
+                for item in tool_results
+                if str(item.get("tool_id") or "") in {"stock_data", "bling_stock_balances"}
+            ),
+            None,
+        )
+        if local_result is not None:
+            if _partial_record_count(local_result.get("records")) == 0:
+                lines.append("Estoque da loja: as fontes internas não retornaram um saldo numérico confirmado.")
+            else:
+                lines.append("Estoque da loja: houve retorno, mas sem cobertura suficiente para confirmar o saldo.")
+        lines.append("Isso não confirma estoque zero; apenas indica que as fontes consultadas não forneceram um saldo confiável.")
+    else:
+        lines.append("Não consegui obter dados suficientes para concluir esta consulta com segurança.")
+        lines.append("Uma ou mais fontes não forneceram confirmação suficiente para responder sem suposição.")
+
+    source_ids = [str(item.get("tool_id") or "") for item in tool_results]
+    sources: list[str] = []
+    if any("mercado_livre" in item for item in source_ids):
+        sources.append("API do Mercado Livre")
+    if any(item in {"stock_data", "bling_stock_balances"} for item in source_ids):
+        sources.append("dados internos do JK Sistema")
+    if sources:
+        lines.append("Fontes consultadas: " + "; ".join(sources) + ".")
+    lines.append("Posso tentar novamente se você quiser.")
+    return "\n\n".join(lines)[:3500]
+
+
 def _pending_partial_text(pending: dict[str, Any], reason: Any = "") -> str:
-    facts = [str(item or "").strip() for item in list(pending.get("verified_facts") or []) if str(item or "").strip()]
-    sources = [str(item or "").strip() for item in list(pending.get("verified_sources") or []) if str(item or "").strip()]
+    manager_text = _manager_partial_text(pending)
+    if manager_text:
+        return manager_text
+
+    facts: list[str] = []
+    for item in list(pending.get("verified_facts") or []):
+        fact = str(item or "").strip()
+        if not fact:
+            continue
+        if fact[:1] in {"{", "["}:
+            try:
+                if isinstance(json.loads(fact), (dict, list)):
+                    continue
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+        facts.append(fact)
+    sources = _safe_partial_sources(pending.get("verified_sources"))
     lines: list[str] = []
     if facts:
         lines.append("Consegui confirmar até aqui:")
         lines.extend(f"- {item[:700]}" for item in facts[:5])
     else:
         lines.append("Não consegui obter uma confirmação suficiente para concluir esta solicitação.")
-    clean_reason = re.sub(r"\s+", " ", str(reason or "")).strip()
-    if clean_reason:
-        lines.append(f"Limitação encontrada: {clean_reason[:500]}")
+    reason_key = unicodedata.normalize("NFKD", str(reason or "")).encode("ascii", "ignore").decode("ascii").lower()
+    if re.search(r"\b(timeout|timed out|tempo maximo|prazo|deadline)\b", reason_key):
+        lines.append("Limitação encontrada: a consulta atingiu o tempo máximo de execução.")
+    elif re.search(r"\b(evidencia|cobertura|dados insuficientes|resultado parcial|resultado incompleto)\b", reason_key):
+        lines.append("Limitação encontrada: as fontes consultadas não forneceram confirmação suficiente.")
+    elif reason_key:
+        lines.append("Limitação encontrada: a consulta foi encerrada sem confirmação completa.")
     if sources:
-        lines.append("Fontes consultadas: " + "; ".join(item[:250] for item in sources[:5]) + ".")
+        lines.append("Fontes consultadas: " + "; ".join(sources) + ".")
     lines.append("Posso tentar novamente ou continuar se você ajustar o pedido.")
     return "\n\n".join(lines)[:3500]
 
@@ -229,12 +342,14 @@ def _terminate_pending_partial(
             "text": text,
         },
     )
-    delivery = str(result.get("status") or "")
+    delivery = str(result.get("status") or "") if isinstance(result, dict) else ""
+    delivery_event_type = str(result.get("delivery_event_type") or "task_partial") if isinstance(result, dict) else "task_partial"
     if delivery not in {"sent", "queued", "duplicate", "waiting_free_window"}:
         pending["terminal_delivery_started"] = False
         pending["delivery_state"] = f"partial_delivery_{delivery or 'failed'}"
         _save_pending(state, message_id, pending)
         return False
+    pending["partial_delivery_event_type"] = delivery_event_type
     _update_pending_codex_tasks(
         pending,
         handoff_status="partial_terminal",

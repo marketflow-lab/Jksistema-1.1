@@ -28,6 +28,7 @@ from urllib.parse import quote, unquote, urlparse
 from zoneinfo import ZoneInfo
 import requests
 from fastapi import Header, HTTPException, Request
+from backend.services import perguntas_pos_venda_codex
 from backend.schemas import IAChatAttachment, IAChatRequest
 from backend.services.whatsapp import formatting as whatsapp_formatting
 from backend.services.whatsapp import gateway as whatsapp_gateway
@@ -137,6 +138,8 @@ def _question_approval_token(
     user_guidance: str = "",
 ) -> tuple[str, dict[str, Any]]:
     approval_id = str(approval.get("id") or "").strip()
+    question_id = str(approval.get("question_id") or approval.get("pergunta_id") or approval_id).strip()
+    store = str(approval.get("loja") or "").strip()
     suggested_response = str(approval.get("resposta_sugerida") or "").strip()[:1200]
     tokens = state.get("question_approval_tokens") if isinstance(state.get("question_approval_tokens"), dict) else {}
     now = time.time()
@@ -149,11 +152,20 @@ def _question_approval_token(
             and item.get("used") is not True
             and str(item.get("approval_id") or "") == approval_id
             and str(item.get("subject_id") or "") == subject_id
+            and str(item.get("client_id") or "") == client_id
+            and str(item.get("username") or "").strip().lower() == username.strip().lower()
+            and (not str(item.get("store") or "").strip() or str(item.get("store") or "").strip() == store)
+            and (
+                not str(item.get("question_id") or "").strip()
+                or str(item.get("question_id") or "").strip() == question_id
+            )
         ):
             if not str(item.get("suggested_response") or "").strip() and suggested_response:
                 item["suggested_response"] = suggested_response
                 item["draft_hash"] = hashlib.sha256(suggested_response.encode("utf-8")).hexdigest()
                 item["draft_created_at"] = _now()
+            item["store"] = store
+            item["question_id"] = question_id
             state["question_approval_tokens"] = tokens
             return str(token), item
     token = _approval_code()
@@ -164,6 +176,8 @@ def _question_approval_token(
         "subject_id": subject_id,
         "client_id": client_id,
         "username": username.strip().lower(),
+        "store": store,
+        "question_id": question_id,
         "created_at": now,
         "used": False,
         "suggested_response": suggested_response,
@@ -187,6 +201,70 @@ def _question_thread_key(client_id: Any, subject_id: Any, username: Any) -> str:
     )
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
 
+
+def _question_token_scope_matches(
+    item: Any,
+    *,
+    subject_id: str,
+    client_id: str,
+    username: str,
+) -> bool:
+    return bool(
+        isinstance(item, dict)
+        and item.get("used") is not True
+        and str(item.get("subject_id") or "") == str(subject_id or "")
+        and str(item.get("client_id") or "") == str(client_id or "")
+        and str(item.get("username") or "").strip().lower()
+        == str(username or "").strip().lower()
+    )
+
+
+def _question_token_approval_matches(item: Any, approval: Any) -> bool:
+    if not isinstance(item, dict) or not isinstance(approval, dict):
+        return False
+    approval_id = str(approval.get("id") or "").strip()
+    question_id = str(approval.get("question_id") or approval.get("pergunta_id") or approval_id).strip()
+    store = str(approval.get("loja") or "").strip()
+    return bool(
+        approval_id
+        and str(item.get("approval_id") or "").strip() == approval_id
+        and (not str(item.get("store") or "").strip() or str(item.get("store") or "").strip() == store)
+        and (
+            not str(item.get("question_id") or "").strip()
+            or str(item.get("question_id") or "").strip() == question_id
+        )
+    )
+
+
+def _question_card_context(approval: Any, token_item: Any = None) -> dict[str, Any]:
+    """Build the bounded, non-capability context shown in the proactive card."""
+
+    source = approval if isinstance(approval, dict) else {}
+    token = token_item if isinstance(token_item, dict) else {}
+    draft = (
+        str(token.get("suggested_response") or "").strip()
+        or str(source.get("resposta_sugerida") or "").strip()
+    )[:1200]
+    approval_id = str(source.get("id") or token.get("approval_id") or "").strip()[:120]
+    question_id = str(source.get("question_id") or source.get("pergunta_id") or approval_id).strip()[:120]
+    return {
+        "schema_version": "jk.whatsapp.ml-question-draft-context.v1",
+        "kind": "mercado_livre_public_question_draft",
+        "approval_id": approval_id,
+        "question_id": question_id,
+        "status": str(source.get("status") or "pending").strip()[:40],
+        "store": str(source.get("loja") or "").strip()[:200],
+        "item_id": str(source.get("item_id") or "").strip()[:80],
+        "sku": str(source.get("sku") or source.get("item_sku") or "").strip()[:100],
+        "title": str(source.get("titulo") or "").strip()[:300],
+        "question": str(source.get("pergunta") or "").strip()[:1200],
+        "draft": draft,
+        "draft_hash": hashlib.sha256(draft.encode("utf-8")).hexdigest() if draft else "",
+        "free_text_actions": ["request_revision"],
+        "approval_requires_typed_token": True,
+        "free_text_can_send": False,
+    }
+
 def _question_set_active_thread(
     state: dict[str, Any],
     *,
@@ -195,9 +273,20 @@ def _question_set_active_thread(
     subject_id: str,
     client_id: str,
     username: str,
+    card_context: Optional[dict[str, Any]] = None,
 ) -> None:
     threads = state.get("question_active_threads") if isinstance(state.get("question_active_threads"), dict) else {}
     key = _question_thread_key(client_id, subject_id, username)
+    previous = threads.get(key) if isinstance(threads.get(key), dict) else {}
+    tokens = state.get("question_approval_tokens") if isinstance(state.get("question_approval_tokens"), dict) else {}
+    token_item = tokens.get(str(token or "").strip().upper())
+    outbound_message_id = (
+        str(token_item.get("outbound_message_id") or "").strip()[:200]
+        if isinstance(token_item, dict)
+        else ""
+    )
+    if not outbound_message_id and str(previous.get("token") or "").strip().upper() == str(token or "").strip().upper():
+        outbound_message_id = str(previous.get("outbound_message_id") or "").strip()[:200]
     threads[key] = {
         "approval_id": str(approval_id or "").strip(),
         "token": str(token or "").strip().upper(),
@@ -205,6 +294,12 @@ def _question_set_active_thread(
         "client_id": str(client_id or "").strip(),
         "username": str(username or "").strip().lower(),
         "activated_at": time.time(),
+        "outbound_message_id": outbound_message_id,
+        "card_context": (
+            dict(card_context)
+            if isinstance(card_context, dict) and card_context
+            else dict(previous.get("card_context") or {})
+        ),
     }
     state["question_active_threads"] = threads
 
@@ -219,44 +314,111 @@ def _question_clear_active_thread(
     threads.pop(_question_thread_key(client_id, subject_id, username), None)
     state["question_active_threads"] = threads
 
-def _question_active_approval(
+
+def _question_approval_job_id(approval: dict[str, Any]) -> str:
+    return str(
+        approval.get("proposal_id")
+        or approval.get("codex_job_id")
+        or approval.get("research_job_id")
+        or ""
+    ).strip()
+
+
+def _question_approval_is_current(
+    approval: dict[str, Any],
+    *,
+    client_id: str,
+    require_current_contract: bool,
+) -> bool:
+    if str(approval.get("status") or "pending").strip().lower() not in {"pending", "sending"}:
+        return False
+    return bool(
+        not require_current_contract
+        or perguntas_pos_venda_codex.job_contract_current(
+            client_id,
+            _question_approval_job_id(approval),
+        )
+    )
+
+
+def _question_quoted_approval(
     state: dict[str, Any],
-    approvals: list[dict[str, Any]],
+    by_id: dict[str, list[dict[str, Any]]],
+    tokens: dict[str, Any],
+    *,
+    quoted_message_id: str,
+    subject_id: str,
+    client_id: str,
+    username: str,
+    require_current_contract: bool,
+) -> tuple[Optional[dict[str, Any]], str, Optional[dict[str, Any]]]:
+    quoted_tokens = [
+        (str(token).upper(), item)
+        for token, item in tokens.items()
+        if _question_token_scope_matches(
+            item, subject_id=subject_id, client_id=client_id, username=username,
+        )
+        and str(item.get("outbound_message_id") or "").strip() == quoted_message_id
+    ]
+    if len(quoted_tokens) != 1:
+        return None, "", None
+    quoted_token, quoted_item = quoted_tokens[0]
+    matching_approvals = [
+        approval
+        for approval in by_id.get(str(quoted_item.get("approval_id") or "").strip(), [])
+        if _question_token_approval_matches(quoted_item, approval)
+        and _question_approval_is_current(
+            approval,
+            client_id=client_id,
+            require_current_contract=require_current_contract,
+        )
+    ]
+    if len(matching_approvals) != 1:
+        return None, "", None
+    approval = matching_approvals[0]
+    _question_set_active_thread(
+        state,
+        approval_id=str(approval.get("id") or ""),
+        token=quoted_token,
+        subject_id=subject_id,
+        client_id=client_id,
+        username=username,
+        card_context=_question_card_context(approval, quoted_item),
+    )
+    return approval, quoted_token, quoted_item
+
+
+def _question_latest_token_candidate(
+    state: dict[str, Any],
+    by_id: dict[str, list[dict[str, Any]]],
+    tokens: dict[str, Any],
     *,
     subject_id: str,
     client_id: str,
     username: str,
+    require_current_contract: bool,
 ) -> tuple[Optional[dict[str, Any]], str, Optional[dict[str, Any]]]:
-    by_id = {
-        str(item.get("id") or "").strip(): item
-        for item in approvals
-        if isinstance(item, dict) and str(item.get("id") or "").strip()
-    }
-    threads = state.get("question_active_threads") if isinstance(state.get("question_active_threads"), dict) else {}
-    thread = threads.get(_question_thread_key(client_id, subject_id, username))
-    if isinstance(thread, dict):
-        approval = by_id.get(str(thread.get("approval_id") or "").strip())
-        if approval is not None:
-            active_token = str(thread.get("token") or "").strip().upper()
-            tokens = state.get("question_approval_tokens") if isinstance(state.get("question_approval_tokens"), dict) else {}
-            token_item = tokens.get(active_token)
-            return approval, active_token, token_item if isinstance(token_item, dict) else thread
-
-    tokens = state.get("question_approval_tokens") if isinstance(state.get("question_approval_tokens"), dict) else {}
     candidates = []
     for token, item in tokens.items():
-        if not isinstance(item, dict) or item.get("used") is True:
+        if not _question_token_scope_matches(
+            item, subject_id=subject_id, client_id=client_id, username=username,
+        ):
             continue
-        if str(item.get("subject_id") or "") != str(subject_id or ""):
-            continue
-        if str(item.get("client_id") or "") != str(client_id or ""):
-            continue
-        if str(item.get("username") or "").strip().lower() != str(username or "").strip().lower():
-            continue
-        approval = by_id.get(str(item.get("approval_id") or "").strip())
-        if approval is None or str(approval.get("status") or "pending") != "pending":
-            continue
-        candidates.append((float(item.get("created_at") or 0), str(token).upper(), item, approval))
+        matching_approvals = [
+            approval
+            for approval in by_id.get(str(item.get("approval_id") or "").strip(), [])
+            if _question_token_approval_matches(item, approval)
+            and str(approval.get("status") or "pending") == "pending"
+            and _question_approval_is_current(
+                approval,
+                client_id=client_id,
+                require_current_contract=require_current_contract,
+            )
+        ]
+        if len(matching_approvals) == 1:
+            candidates.append(
+                (float(item.get("created_at") or 0), str(token).upper(), item, matching_approvals[0])
+            )
     if not candidates:
         return None, "", None
     _created_at, token, token_item, approval = max(candidates, key=lambda value: value[0])
@@ -267,8 +429,116 @@ def _question_active_approval(
         subject_id=subject_id,
         client_id=client_id,
         username=username,
+        card_context=_question_card_context(approval, token_item),
     )
     return approval, token, token_item
+
+
+def _question_active_approval(
+    state: dict[str, Any],
+    approvals: list[dict[str, Any]],
+    *,
+    subject_id: str,
+    client_id: str,
+    username: str,
+    quoted_message_id: str = "",
+    require_current_contract: bool = False,
+) -> tuple[Optional[dict[str, Any]], str, Optional[dict[str, Any]]]:
+    by_id: dict[str, list[dict[str, Any]]] = {}
+    for item in approvals:
+        if not isinstance(item, dict):
+            continue
+        approval_id = str(item.get("id") or "").strip()
+        if approval_id:
+            by_id.setdefault(approval_id, []).append(item)
+    tokens = state.get("question_approval_tokens") if isinstance(state.get("question_approval_tokens"), dict) else {}
+    quoted_id = str(quoted_message_id or "").strip()[:200]
+    if quoted_id:
+        return _question_quoted_approval(
+            state,
+            by_id,
+            tokens,
+            quoted_message_id=quoted_id,
+            subject_id=subject_id,
+            client_id=client_id,
+            username=username,
+            require_current_contract=require_current_contract,
+        )
+    threads = state.get("question_active_threads") if isinstance(state.get("question_active_threads"), dict) else {}
+    thread = threads.get(_question_thread_key(client_id, subject_id, username))
+    if isinstance(thread, dict):
+        if (
+            str(thread.get("subject_id") or "") != str(subject_id or "")
+            or str(thread.get("client_id") or "") != str(client_id or "")
+            or str(thread.get("username") or "").strip().lower()
+            != str(username or "").strip().lower()
+        ):
+            thread = None
+    if isinstance(thread, dict):
+        active_token = str(thread.get("token") or "").strip().upper()
+        token_item = tokens.get(active_token)
+        if _question_token_scope_matches(
+            token_item, subject_id=subject_id, client_id=client_id, username=username,
+        ):
+            matching_approvals = [
+                approval
+                for approval in by_id.get(str(thread.get("approval_id") or "").strip(), [])
+                if _question_token_approval_matches(token_item, approval)
+                and _question_approval_is_current(
+                    approval,
+                    client_id=client_id,
+                    require_current_contract=require_current_contract,
+                )
+            ]
+            if len(matching_approvals) == 1:
+                approval = matching_approvals[0]
+                thread["card_context"] = _question_card_context(approval, token_item)
+                state["question_active_threads"] = threads
+                return approval, active_token, token_item
+
+        # Legacy threads may point at a consumed, missing or stale-scope token.
+        # The thread identity is still server-scoped. Recover only when its
+        # approval id identifies exactly one approval, and any persisted card
+        # context agrees with that approval's store/question identity.
+        legacy_matches = [
+            approval
+            for approval in by_id.get(str(thread.get("approval_id") or "").strip(), [])
+            if _question_approval_is_current(
+                approval,
+                client_id=client_id,
+                require_current_contract=require_current_contract,
+            )
+        ]
+        if len(legacy_matches) == 1:
+            approval = legacy_matches[0]
+            context = thread.get("card_context") if isinstance(thread.get("card_context"), dict) else {}
+            expected_store = str(context.get("store") or "").strip()
+            expected_question = str(context.get("question_id") or "").strip()
+            approval_id = str(approval.get("id") or "").strip()
+            approval_store = str(approval.get("loja") or "").strip()
+            approval_question = str(
+                approval.get("question_id") or approval.get("pergunta_id") or approval_id
+            ).strip()
+            if (
+                (not expected_store or expected_store == approval_store)
+                and (not expected_question or expected_question == approval_question)
+            ):
+                thread["card_context"] = _question_card_context(approval)
+                state["question_active_threads"] = threads
+                return approval, active_token, token_item if isinstance(token_item, dict) else None
+
+        threads.pop(_question_thread_key(client_id, subject_id, username), None)
+        state["question_active_threads"] = threads
+
+    return _question_latest_token_candidate(
+        state,
+        by_id,
+        tokens,
+        subject_id=subject_id,
+        client_id=client_id,
+        username=username,
+        require_current_contract=require_current_contract,
+    )
 
 def _question_approval_command(value: Any) -> tuple[str, str]:
     match = QUESTION_APPROVAL_COMMAND_RE.match(str(value or "").strip())
@@ -336,8 +606,10 @@ def _question_validate_approval_send(
     if existing and not secrets.compare_digest(existing, idempotency_key):
         raise RuntimeError("question_approval_idempotency_mismatch")
     token_item["idempotency_key"] = idempotency_key
-    token_item["question_id"] = question_id
-    token_item["store"] = store
+    if not str(token_item.get("question_id") or "").strip():
+        token_item["question_id"] = question_id
+    if not str(token_item.get("store") or "").strip():
+        token_item["store"] = store
     return draft, idempotency_key
 
 def _regenerate_question_approval_response(
@@ -437,36 +709,6 @@ def _regenerate_question_approval_response(
     ppv_state._perguntas_ia_aprovacoes_salvar(client_id, approvals)
     return response
 
-def _question_natural_action(value: Any) -> str:
-    text = _whatsapp_text_key(value)
-    if not text:
-        return ""
-    if re.search(r"\b(cancele|cancelar|pare|parar|interrompa|interromper)\b.{0,40}\b(pesquisa|busca|consulta)\b", text):
-        return "cancel_research"
-    if re.search(r"\b(nao responda|nao envie|negue|negar|rejeite|rejeitar|descarte|ignorar esta pergunta)\b", text):
-        return "reject"
-    if (
-        re.search(r"\b(gere|gerar|crie|criar|faca|fazer)\b.{0,50}\b(outra|nova)?\s*(sugestao|resposta)\b", text)
-        or re.search(r"\b(responda assim|pode responder assim|sugestao de resposta|minha sugestao|use esta resposta|use essa resposta)\b", text)
-        or re.search(r"\b(diga|informe|confirme|considere|esclareca)\s+que\b", text)
-        or re.search(r"\b(falando|dizendo|informando|esclarecendo)\s+que\b", text)
-        or re.search(
-            r"\b(remova|retire|exclua|apague|mantenha|preserve|repita|refaca|refaz|refazer|"
-            r"reescreva|reformule|melhore|melhorar|ajuste|altere|mude|troque|substitua|"
-            r"corrija|inclua|acrescente|adicione|deixe)\b",
-            text,
-        )
-    ):
-        return "suggest"
-    if (
-        re.search(r"\b(perfeito|correto|certo|ok|sim|aprovado)\b.{0,50}\b(responda|responder|envie|enviar|mande|mandar|aprove|aprovar)\b", text)
-        or re.fullmatch(r"(?:pode\s+)?(?:responda|responder|envie|enviar|mande|mandar|aprove|aprovar)(?:\s+(?:a|essa|esta))?\s*(?:pergunta|resposta)?", text)
-        or re.search(r"\b(pode enviar|pode responder|responda a pergunta|envie a resposta|mande a resposta)\b", text)
-        or re.fullmatch(r"(?:responda|resposta|envie|mande)\s+(?:isso|essa|esta)(?:\s+resposta)?", text)
-    ):
-        return "confirm_approval"
-    return ""
-
 def _question_suggestion_guidance(value: Any) -> str:
     raw = re.sub(r"\s+", " ", str(value or "")).strip()[:1200]
     return raw
@@ -490,6 +732,8 @@ _COMPONENT_FUNCTIONS = frozenset((
     '_question_approval_body',
     '_question_approval_token',
     '_question_thread_key',
+    '_question_token_scope_matches',
+    '_question_card_context',
     '_question_set_active_thread',
     '_question_clear_active_thread',
     '_question_active_approval',
@@ -498,7 +742,6 @@ _COMPONENT_FUNCTIONS = frozenset((
     '_question_bind_token_draft',
     '_question_validate_approval_send',
     '_regenerate_question_approval_response',
-    '_question_natural_action',
     '_question_suggestion_guidance',
     '_question_explicit_response'
 ))
@@ -508,6 +751,8 @@ _IMPLEMENTATIONS = {
     '_question_approval_body': _question_approval_body,
     '_question_approval_token': _question_approval_token,
     '_question_thread_key': _question_thread_key,
+    '_question_token_scope_matches': _question_token_scope_matches,
+    '_question_card_context': _question_card_context,
     '_question_set_active_thread': _question_set_active_thread,
     '_question_clear_active_thread': _question_clear_active_thread,
     '_question_active_approval': _question_active_approval,
@@ -516,7 +761,6 @@ _IMPLEMENTATIONS = {
     '_question_bind_token_draft': _question_bind_token_draft,
     '_question_validate_approval_send': _question_validate_approval_send,
     '_regenerate_question_approval_response': _regenerate_question_approval_response,
-    '_question_natural_action': _question_natural_action,
     '_question_suggestion_guidance': _question_suggestion_guidance,
     '_question_explicit_response': _question_explicit_response
 }

@@ -187,7 +187,7 @@ def _read_text(path: Path) -> str:
     # ``py_compile`` aceita BOM UTF-8, mas ``ast.parse`` recebe o caractere se
     # o arquivo for aberto como UTF-8 simples. Remover somente o BOM inicial
     # mantem a leitura equivalente ao importador do Python.
-    return path.read_text(encoding="utf-8", errors="replace").lstrip("\ufeff")
+    return path.read_text(encoding="utf-8", errors="strict").lstrip("\ufeff")
 
 
 def _strip_accents(value: Any) -> str:
@@ -2056,6 +2056,7 @@ def render_context_inventory_markdown(
     output: dict[str, str] = {}
 
     index_path = "70_Gerado/Mapas/Inventario-do-Programa.md"
+    areas_path = "70_Gerado/Mapas/Areas-do-Programa.md"
     domain_entities = [row for row in rows if row.get("kind") == "domain"]
     domain_paths = {
         str(row["domain"]): f"70_Gerado/Dominios/{_slug(str(row['domain']))}.md"
@@ -2075,6 +2076,12 @@ def render_context_inventory_markdown(
         ("integration", "70_Gerado/Operacao/Runtime-e-Integracoes.md", "jk:map:integrations", "Runtime e Integracoes"),
     )
     grouped_paths = {kind: (path, title) for kind, path, _entity_id, title in grouped_notes}
+    api_entities = [row for row in rows if row.get("kind") == "api"]
+    api_domains = sorted({str(row.get("domain") or "sistema") for row in api_entities})
+    api_domain_paths = {
+        domain: f"70_Gerado/Contratos/APIs/{_slug(domain)}.md"
+        for domain in api_domains
+    }
     sku_paths = {
         "jk:sku-map:catalog": "70_Gerado/Produtos/Catalogo-SKU.md",
         "jk:sku-map:coverage": "70_Gerado/Produtos/Cobertura-SKU.md",
@@ -2096,10 +2103,23 @@ def render_context_inventory_markdown(
         for row in domain_entities
         if (path := domain_paths.get(str(row.get("domain") or "")))
     ]
-    index_links.extend((path, title) for _kind, path, _entity_id, title in grouped_notes)
-    index_links.extend(
-        (path, sku_titles.get(entity_id, entity_id)) for entity_id, path in sku_paths.items()
+    available_kinds = {str(row.get("kind") or "") for row in rows}
+    represented_area_kinds = {
+        kind for kind, _path, _entity_id, _title in grouped_notes if kind in available_kinds
+    }
+    represented_sku_ids = set(sku_titles)
+    area_links = [
+        (path, title)
+        for kind, path, _entity_id, title in grouped_notes
+        if kind in represented_area_kinds
+    ]
+    area_links.extend(
+        (path, sku_titles[entity_id])
+        for entity_id, path in sku_paths.items()
+        if entity_id in sku_titles
     )
+    if area_links:
+        index_links.append((areas_path, "Areas do Programa"))
     index_content = _with_graph_navigation(index_content, index_links)
     index = _aggregate_entity(
         entity_id="jk:map:inventory",
@@ -2113,6 +2133,28 @@ def render_context_inventory_markdown(
     output[index_path] = render_context_entity_markdown(
         index, source_version=source_version, generated_at=generated_at
     )
+    if area_links:
+        areas_content = _with_graph_navigation(
+            "Indices tecnicos e operacionais organizados por finalidade.",
+            [(index_path, "Inventario do Programa"), *area_links],
+        )
+        areas = _aggregate_entity(
+            entity_id="jk:map:areas",
+            kind="map",
+            domain="sistema",
+            title="Areas do Programa",
+            rows=[
+                row
+                for row in rows
+                if str(row.get("kind") or "") in represented_area_kinds
+                or str(row.get("id") or "") in represented_sku_ids
+            ],
+            inventory=inventory,
+            content=areas_content,
+        )
+        output[areas_path] = render_context_entity_markdown(
+            areas, source_version=source_version, generated_at=generated_at
+        )
 
     for domain_entity in domain_entities:
         domain = str(domain_entity["domain"])
@@ -2126,11 +2168,11 @@ def render_context_inventory_markdown(
             for row in members
             if row.get("kind") == "screen" and str(row.get("id") or "") in screen_paths
         )
-        navigation.extend(
-            grouped_paths[kind]
-            for kind in sorted({str(row.get("kind") or "") for row in members})
-            if kind in grouped_paths
-        )
+        for kind in sorted({str(row.get("kind") or "") for row in members}):
+            if kind == "api" and domain in api_domain_paths:
+                navigation.append((api_domain_paths[domain], f"APIs do dominio {domain}"))
+            elif kind in grouped_paths:
+                navigation.append(grouped_paths[kind])
         content = _with_graph_navigation(content, navigation)
         aggregate = _aggregate_entity(
             entity_id=domain_entity["id"],
@@ -2157,12 +2199,23 @@ def render_context_inventory_markdown(
             content += "\n\nChamadas de API:\n" + "\n".join(
                 f"- {row['title']} ({row.get('metadata', {}).get('classification', 'unknown')})" for row in related_calls
             )
-        navigation = [(index_path, "Inventario do Programa")]
+        navigation: list[tuple[str, str]] = []
         domain_path = domain_paths.get(str(screen.get("domain") or ""))
         if domain_path:
             navigation.append((domain_path, f"Dominio {screen.get('domain')}"))
+        else:
+            # Folhas sem um dominio conhecido ainda precisam de uma ancora.
+            # Quando o dominio existe, ele ja aponta para o inventario e evita
+            # concentrar todas as telas diretamente no mesmo no global.
+            navigation.append((index_path, "Inventario do Programa"))
         if related_calls:
-            navigation.append((grouped_paths["api"][0], grouped_paths["api"][1]))
+            api_domain_path = api_domain_paths.get(str(screen.get("domain") or "sistema"))
+            if api_domain_path:
+                navigation.append(
+                    (api_domain_path, f"APIs do dominio {screen.get('domain') or 'sistema'}")
+                )
+            else:
+                navigation.append((grouped_paths["api"][0], grouped_paths["api"][1]))
         content = _with_graph_navigation(content, navigation)
         aggregate = dict(screen)
         aggregate["content"] = content
@@ -2174,12 +2227,47 @@ def render_context_inventory_markdown(
         selected = [row for row in rows if row.get("kind") == kind]
         if not selected:
             continue
-        navigation = [(index_path, "Inventario do Programa")]
-        navigation.extend(
-            (domain_paths[domain], f"Dominio {domain}")
-            for domain in sorted({str(row.get("domain") or "") for row in selected})
-            if domain in domain_paths
-        )
+        navigation = [(areas_path, "Areas do Programa")]
+        if kind == "api":
+            navigation.extend(
+                (api_domain_paths[domain], f"APIs do dominio {domain}")
+                for domain in api_domains
+            )
+            for domain in api_domains:
+                domain_rows = [
+                    row for row in selected if str(row.get("domain") or "sistema") == domain
+                ]
+                domain_navigation = [(output_path, title)]
+                if domain in domain_paths:
+                    domain_navigation.append((domain_paths[domain], f"Dominio {domain}"))
+                domain_content = _with_graph_navigation(
+                    "\n".join(f"- `{row['id']}` - {row['title']}" for row in domain_rows),
+                    domain_navigation,
+                )
+                domain_aggregate = _aggregate_entity(
+                    entity_id=f"{entity_id}:{_slug(domain)}",
+                    kind="map",
+                    domain=domain,
+                    title=f"APIs do dominio {domain}",
+                    rows=domain_rows,
+                    inventory=inventory,
+                    content=domain_content,
+                )
+                output[api_domain_paths[domain]] = render_context_entity_markdown(
+                    domain_aggregate,
+                    source_version=source_version,
+                    generated_at=generated_at,
+                )
+            content = (
+                f"Mapa de {len(selected)} APIs organizado em "
+                f"{len(api_domains)} dominios."
+            )
+        else:
+            navigation.extend(
+                (domain_paths[domain], f"Dominio {domain}")
+                for domain in sorted({str(row.get("domain") or "") for row in selected})
+                if domain in domain_paths
+            )
         if kind == "test":
             pages = _paginate_markdown_rows(selected)
             page_links: list[tuple[str, str]] = []
@@ -2190,10 +2278,10 @@ def render_context_inventory_markdown(
                 page_content = "\n".join(
                     f"- `{row['id']}` - {row['title']}" for row in page_rows
                 )
-                page_navigation = [
-                    (index_path, "Inventario do Programa"),
-                    (output_path, "Mapa de Testes"),
-                ]
+                # A pagina e folha do mapa de testes. O mapa pai e os dominios
+                # ja oferecem o caminho ate o inventario global; repetir esse
+                # backlink em toda pagina transforma o grafo em um unico hub.
+                page_navigation = [(output_path, "Mapa de Testes")]
                 page_navigation.extend(
                     (domain_paths[domain], f"Dominio {domain}")
                     for domain in sorted({str(row.get("domain") or "") for row in page_rows})
@@ -2219,7 +2307,7 @@ def render_context_inventory_markdown(
                 f"Mapa paginado para preservar integralmente {len(selected)} testes.\n\n"
                 f"- paginas: {len(pages)}"
             )
-        else:
+        elif kind != "api":
             content = "\n".join(f"- `{row['id']}` - {row['title']}" for row in selected)
         content = _with_graph_navigation(content, navigation)
         aggregate = _aggregate_entity(
@@ -2240,14 +2328,14 @@ def render_context_inventory_markdown(
         output_path = sku_paths.get(row_id)
         if output_path:
             aggregate = dict(row)
-            navigation = [(index_path, "Inventario do Programa")]
+            navigation = [(areas_path, "Areas do Programa")]
             cadastro_path = domain_paths.get("cadastro")
             if cadastro_path:
                 navigation.append((cadastro_path, "Dominio Cadastro"))
             navigation.extend(
-                (path, sku_titles.get(entity_id, entity_id))
+                (path, sku_titles[entity_id])
                 for entity_id, path in sku_paths.items()
-                if entity_id != row_id
+                if entity_id != row_id and entity_id in sku_titles
             )
             aggregate["content"] = _with_graph_navigation(str(row.get("content") or ""), navigation)
             output[output_path] = render_context_entity_markdown(

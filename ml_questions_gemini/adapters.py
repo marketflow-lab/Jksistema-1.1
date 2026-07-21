@@ -67,7 +67,7 @@ def context_from_agent_input(agent_input: dict[str, Any], *, auto_publish_enable
         item_id=str(question_data.get("item_id") or item_data.get("id") or context.get("item_id") or "").strip(),
         buyer_id=str((question_data.get("from") or {}).get("id") if isinstance(question_data.get("from"), dict) else question_data.get("buyer_id") or "").strip(),
         status=str(question_data.get("status") or "UNANSWERED").strip(),
-        raw={**question_data, "_agent_intent": agent_intent},
+        raw={**question_data, "_agent_intent": dict(agent_intent)},
     )
     listing = ListingSnapshot(
         id=str(item_data.get("id") or context.get("item_id") or question.item_id or "").strip(),

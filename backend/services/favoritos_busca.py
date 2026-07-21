@@ -39,6 +39,7 @@ from fastapi import Depends, File, Form, Header, HTTPException, Request, UploadF
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
+from backend.services.transport_security import requests_tls_verify
 
 
 def configure_favoritos_busca_runtime(runtime_module=None, peers=None):
@@ -272,7 +273,7 @@ def _extrair_catalog_id(url: str) -> str | None:
 def _buscar_anuncios_mercadolivre_html(url: str, max_retries: int = 3, delay: int = 2):
     for tentativa in range(max_retries):
         try:
-            resp = requests.get(url, headers=_ml_headers(), timeout=10, verify=False)
+            resp = requests.get(url, headers=_ml_headers(), timeout=10, verify=requests_tls_verify())
             if resp.status_code != 200:
                 logger.warning("Erro ao buscar %s: status %s. Tentativa %s/%s", url, resp.status_code, tentativa + 1, max_retries)
                 time.sleep(delay)
@@ -1130,7 +1131,7 @@ def _buscar_anuncios_mercadolivre_automatico(url_busca: str, max_anuncios: int =
                 'Accept-Language': 'pt-BR,pt;q=0.9',
             }
             
-            response = requests.get(url_busca, headers=headers, timeout=20, verify=False)
+            response = requests.get(url_busca, headers=headers, timeout=20, verify=requests_tls_verify())
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, 'html.parser')
                 

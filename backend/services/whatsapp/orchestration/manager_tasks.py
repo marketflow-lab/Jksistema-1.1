@@ -126,7 +126,8 @@ def _dual_worker_channel_metadata(
         "max_active_task_agents_global": settings["max_active_task_agents_global"],
         "max_active_task_agents_per_conversation": settings["max_active_task_agents_per_conversation"],
         "retry_policy": "bounded",
-        "job_deadline_seconds": _job_deadline_seconds(request_text, requires_web=bool(requires_web)),
+        "deadline_enabled": False,
+        "job_deadline_seconds": 0,
     }
 
 
@@ -413,28 +414,24 @@ def _function_manager_deliver_direct(
     pending: dict[str, Any],
 ) -> bool:
     evidence = pending.get("manager_evidence") if isinstance(pending.get("manager_evidence"), dict) else {}
-    if isinstance(pending.get("deterministic_plan"), dict) and pending.get("deterministic_plan"):
+    try:
+        decision = _run_conversation_agent(
+            config,
+            state,
+            str(pending.get("conversation_id") or ""),
+            event_type="worker_result",
+            user_message=str(pending.get("request_text") or ""),
+            active_job={"job_id": str(pending.get("job_group_id") or message_id), "status": "completed", "job_title": str(pending.get("job_title") or "")},
+            worker_result=evidence,
+            ai_behavior=str(pending.get("phone_ai_behavior") or ""),
+            tick_index=int(pending.get("tick_index") or 0),
+            client_id=str(pending.get("client_id") or ""),
+        )
+        final_text = str(decision.get("reply_text") or "").strip()
+    except Exception as exc:
         decision = {}
-        final_text = _deterministic_tool_result_text(evidence, pending)
-    else:
-        try:
-            decision = _run_conversation_agent(
-                config,
-                state,
-                str(pending.get("conversation_id") or ""),
-                event_type="worker_result",
-                user_message=str(pending.get("request_text") or ""),
-                active_job={"job_id": str(pending.get("job_group_id") or message_id), "status": "completed", "job_title": str(pending.get("job_title") or "")},
-                worker_result=evidence,
-                ai_behavior=str(pending.get("phone_ai_behavior") or ""),
-                tick_index=int(pending.get("tick_index") or 0),
-                client_id=str(pending.get("client_id") or ""),
-            )
-            final_text = str(decision.get("reply_text") or "").strip()
-        except Exception as exc:
-            decision = {}
-            final_text = _worker_result_fallback_text(evidence, pending)
-            RUNTIME_STATE["conversation_fallback_last_error"] = str(exc)[:500]
+        final_text = _worker_result_fallback_text(evidence, pending)
+        RUNTIME_STATE["conversation_fallback_last_error"] = str(exc)[:500]
     request_text = str(pending.get("request_text") or "")
     report_results: list[dict[str, Any]] = []
     if whatsapp_report_files.report_requested(request_text):
@@ -494,14 +491,6 @@ def _function_manager_deliver_direct(
         pending["delivery_state"] = f"manager_final_{str(delivery.get('status') or 'failed')}"
         _save_pending(state, message_id, pending)
         return False
-    if isinstance(pending.get("deterministic_plan"), dict) and pending.get("deterministic_plan"):
-        _dual_remember_conversation_turn(
-            state,
-            str(pending.get("conversation_id") or ""),
-            role="assistant",
-            text=final_text,
-            event_type="worker_result",
-        )
     _record_message_timing(message_id, completed_at=_now(), sent_at=_now())
     coverage_complete = evidence.get("coverage_complete") is True
     _remove_pending(

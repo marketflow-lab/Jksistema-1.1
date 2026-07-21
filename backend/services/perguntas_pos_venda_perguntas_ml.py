@@ -691,21 +691,6 @@ def _perguntas_ia_descricao_item(client_id: str, loja: str, cfg: dict, item_id: 
     return fallback[:ML_PERGUNTAS_IA_DESCRICAO_AGENT_MAX_CHARS], cfg
 
 
-def _perguntas_ia_indica_busca_outra_peca(texto: str) -> bool:
-    texto_norm = _favoritos_ranking_texto_norm(texto)
-    if not texto_norm:
-        return False
-    gatilhos = (
-        "TEM ", "VOCE TEM", "VOCES TEM", "VCS TEM", "VENDE", "VENDERIA", "CONSEGUE",
-        "TERIA", "TEM DISPONIVEL", "MANDA O LINK", "ENVIA O LINK", "QUAL O LINK",
-        "OUTRA PECA", "OUTRO PRODUTO", "ESTOU PROCURANDO", "PRECISO DE", "PROCURA",
-        "PROCURANDO", "ACHEI", "ENCONTRO", "ENCONTRA", "COMPRA", "ANUNCIO DE",
-    )
-    if any(gatilho in texto_norm for gatilho in gatilhos):
-        return True
-    return bool(re.search(r"\b(TEM|VENDE|TERIA)\b.+\?", texto_norm))
-
-
 def _perguntas_ia_query_peca(texto: str, titulo_atual: str = "") -> str:
     base = _favoritos_ranking_texto_norm(texto)
     base = re.sub(r"https?://\S+", " ", base)
@@ -875,9 +860,6 @@ def _perguntas_ia_contexto_outra_peca(
     texto_pergunta: str,
     titulo_atual: str,
 ) -> tuple[str, dict, dict]:
-    if not _perguntas_ia_indica_busca_outra_peca(texto_pergunta):
-        return "", cfg, {}
-
     query = _perguntas_ia_query_peca(texto_pergunta, titulo_atual)
     if not query:
         return "", cfg, {"busca_outra_peca": True, "query": ""}
@@ -1469,6 +1451,7 @@ def _ml_perguntas_anexar_historico_comprador(
     return perguntas_norm, cfg
 
 PEER_EXPORTS = ['_pos_venda_ia_limpar_resposta', '_pos_venda_ia_resposta_final_loja', 'ML_POS_VENDA_PIPELINE_V2_MODO', 'ML_POS_VENDA_PIPELINE_ETAPAS', '_ml_pos_venda_pipeline_base', '_ml_pos_venda_pipeline_marcar', '_ml_pos_venda_auditoria_path', '_ml_pos_venda_auditoria_compactar', '_ml_pos_venda_auditoria_registrar', '_ml_pos_venda_texto_norm', '_ml_pos_venda_ultima_mensagem_comprador', '_ml_pos_venda_resumir_pagamento', '_ml_pos_venda_shipping_id', '_ml_pos_venda_status_envio_base', '_ml_pos_venda_buscar_status_envio', '_ml_pos_venda_resumir_anuncio_para_ia', '_ml_pos_venda_buscar_dados_anuncios', '_ml_pos_venda_buscar_nota_fiscal_local', '_ml_pos_venda_buscar_reclamacao_pedido', '_ml_pos_venda_decidir_regras_oficiais', '_ml_pos_venda_decidir_automatizacao', '_ml_pos_venda_montar_contexto_pipeline', '_ml_pos_venda_pipeline_resumo', '_ml_pos_venda_executar_pipeline_ia', '_perguntas_ia_descricao_item', '_perguntas_ia_indica_busca_outra_peca', '_perguntas_ia_query_peca', '_perguntas_ia_score_texto', '_perguntas_ia_buscar_cadastro_peca', '_perguntas_ia_resumir_item_ml', '_perguntas_ia_buscar_anuncios_ml_peca', '_perguntas_ia_contexto_outra_peca', '_perguntas_ia_gerar_resposta', '_perguntas_ia_enviar_resposta_ml', '_ml_perguntas_resumir_status', '_ml_perguntas_tempo_resposta', '_ml_perguntas_foto_item', '_ml_perguntas_nome_comprador', '_ml_perguntas_buscar_usuarios', '_ml_perguntas_normalizar', '_ml_perguntas_completar_skus_itens', '_ml_perguntas_chave_historico', '_ml_perguntas_copia_historico', '_ml_perguntas_montar_chat_historico', '_ml_perguntas_anexar_historico_comprador']
+PEER_EXPORTS = [name for name in PEER_EXPORTS if name != "_perguntas_ia_indica_busca_outra_peca"]
 __all__ = PEER_EXPORTS + ["configure_perguntas_pos_venda_perguntas_ml_runtime"]
 
 configure_perguntas_pos_venda_perguntas_ml_runtime()

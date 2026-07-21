@@ -195,7 +195,11 @@ def test_questions_v2_uses_codex_and_keeps_configured_provider_only_as_fallback(
 
     answer, model, diagnostics = agent._perguntas_ia_v2_gerar_resposta(
         "tenant-test",
-        {"store": "JK Pecas", "question": {"text": "Tem garantia?"}},
+        {
+            "store": "JK Pecas",
+            "question": {"text": "Tem garantia?"},
+            "intent": {"categoria": "product_feature"},
+        },
     )
 
     assert answer == "Resposta segura"

@@ -34,11 +34,14 @@ def test_ai_and_dual_settings_components_match_facade() -> None:
     }
 
     assert settings.ai_settings(config) == whatsapp_bridge._whatsapp_ai_settings(config)
-    assert settings.dual_agent_settings(
+    dual = settings.dual_agent_settings(
         config,
         report_deadline_seconds=whatsapp_bridge.WHATSAPP_REPORT_DEADLINE_SECONDS,
         max_retry_attempts=whatsapp_bridge.WHATSAPP_MAX_RETRY_ATTEMPTS,
-    ) == whatsapp_bridge._whatsapp_dual_agent_settings(config)
+    )
+    assert dual == whatsapp_bridge._whatsapp_dual_agent_settings(config)
+    assert dual["deadline_enabled"] is False
+    assert dual["job_deadline_seconds"] == 0
 
 
 @pytest.mark.parametrize(
@@ -142,7 +145,9 @@ def test_legacy_function_manager_fields_are_not_written_again(monkeypatch) -> No
     })
 
     assert runtime_value["function_manager_legacy_fields_ignored"] is True
-    assert captured["version"] == 10
+    assert captured["version"] == 11
+    assert captured["deadline_enabled"] is False
+    assert captured["job_deadline_seconds"] == 0
     assert captured["response_provider_policy"] == "codex_only"
     assert captured["data_selection_worker_count"] == 3
     assert not any(key.startswith("function_manager_") for key in captured)

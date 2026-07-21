@@ -122,6 +122,16 @@
     function atualizarPosicao() {
       const proxy = getProxy();
       if (!proxy || !proxy.__visible) return;
+      if (!isBalloonOpen() || isBackground()) {
+        proxy.__visible = false;
+        if (!isBackground()) {
+          ocultarDefinitivo({
+            descarregarConteudo: true,
+            reason: 'favoritos-position-after-close'
+          });
+        }
+        return;
+      }
       const bounds = getBounds();
       if (!bounds) return;
       enviar('jk-ml-browser-position', { bounds });
@@ -275,6 +285,14 @@
             return;
           }
           proxy.currentUrl = proximaUrl;
+          if (!segundoPlano && !isBalloonOpen()) {
+            proxy.__visible = false;
+            ocultarDefinitivo({
+              descarregarConteudo: true,
+              reason: 'favoritos-show-after-close'
+            });
+            return;
+          }
           proxy.__visible = !segundoPlano;
           const direto = chamarWorkerDireto('startFavoritosWorkerBrowser', [proxy.currentUrl]);
           if (direto) {
@@ -350,6 +368,14 @@
 
     function forcarVisivel() {
       if (!usarNavegadorMlNoShellElectron()) return false;
+      if (isBackground()) return false;
+      if (!isBalloonOpen()) {
+        ocultarDefinitivo({
+          descarregarConteudo: true,
+          reason: 'favoritos-force-visible-after-close'
+        });
+        return false;
+      }
       let proxy = getProxy();
       if (!proxy) proxy = criarProxy();
       if (!proxy) return false;

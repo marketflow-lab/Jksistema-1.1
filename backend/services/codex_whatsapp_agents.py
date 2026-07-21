@@ -8,9 +8,11 @@ security rules.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
+import uuid
 from collections import deque
 from typing import Any, Optional
 
@@ -27,7 +29,7 @@ CONVERSATION_ACTIONS = (
     "wait",
 )
 
-DECISION_SCHEMA: dict[str, Any] = {
+_BASE_DECISION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "required": [
@@ -92,12 +94,54 @@ DECISION_SCHEMA: dict[str, Any] = {
     },
 }
 
-CONVERSATION_DECISION_V2_SCHEMA = black_jhon_prompting.conversation_decision_v2_schema(DECISION_SCHEMA)
-# Compatibility: callers keep importing DECISION_SCHEMA while the runtime now
-# requests the versioned V2 contract. normalize_decision still accepts V1.
-DECISION_SCHEMA = CONVERSATION_DECISION_V2_SCHEMA
+CONVERSATION_DECISION_V2_SCHEMA = black_jhon_prompting.conversation_decision_v2_schema(_BASE_DECISION_SCHEMA)
+CONVERSATION_DECISION_V3_SCHEMA = black_jhon_prompting.conversation_decision_v3_schema(_BASE_DECISION_SCHEMA)
+# The active output contract is V3. ``normalize_decision`` still accepts and
+# normalizes legacy V1/V2 payloads when no V3 contract was requested.
+DECISION_SCHEMA = CONVERSATION_DECISION_V3_SCHEMA
 EVIDENCE_ENVELOPE_V2_SCHEMA = black_jhon_prompting.EVIDENCE_ENVELOPE_V2_SCHEMA
 RETRIEVAL_RESULT_V2_SCHEMA = black_jhon_prompting.RETRIEVAL_RESULT_V2_SCHEMA
+
+_DECISION_CONTRACT_ENV = "JK_BLACK_JHON_DECISION_CONTRACT"
+
+
+def decision_contract_mode(value: Any = None) -> str:
+    """Resolve the server-owned decision contract with a safe V2 fallback."""
+
+    raw_value = os.getenv(_DECISION_CONTRACT_ENV) if value is None else value
+    if raw_value is None or not str(raw_value).strip():
+        return "v3"
+    normalized = str(raw_value).strip().casefold()
+    if normalized in {"v3", "3", black_jhon_prompting.CONVERSATION_DECISION_V3.casefold()}:
+        return "v3"
+    if normalized in {
+        "v2",
+        "2",
+        "legacy",
+        "off",
+        "false",
+        "0",
+        black_jhon_prompting.CONVERSATION_DECISION_V2.casefold(),
+    }:
+        return "v2"
+    return "v2"
+
+
+def _decision_runtime_contract(value: Any = None) -> dict[str, Any]:
+    mode = decision_contract_mode(value)
+    if mode == "v3":
+        return {
+            "mode": mode,
+            "schema": CONVERSATION_DECISION_V3_SCHEMA,
+            "schema_version": black_jhon_prompting.CONVERSATION_DECISION_V3,
+            "prompt_contract": black_jhon_prompting.prompt_contract_v3_diagnostics(),
+        }
+    return {
+        "mode": "v2",
+        "schema": CONVERSATION_DECISION_V2_SCHEMA,
+        "schema_version": black_jhon_prompting.CONVERSATION_DECISION_V2,
+        "prompt_contract": black_jhon_prompting.prompt_contract_diagnostics(),
+    }
 
 WORKER_RESULT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -232,7 +276,83 @@ def parse_json_object(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def normalize_decision(value: Any, *, event_type: str) -> dict[str, Any]:
+def _normalize_context_operations(value: Any) -> list[dict[str, str]]:
+    fields = {"store", "store_mode", "sku", "mlb", "period"}
+    operations = {"keep", "set", "clear"}
+    sources = {"current_turn", "conversation_memory", "quoted_context"}
+    confidences = {"high", "medium", "low"}
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in list(value or [])[:10]:
+        if not isinstance(item, dict):
+            continue
+        field = _clean_text(item.get("field"), 20).lower()
+        operation = _clean_text(item.get("operation"), 20).lower()
+        if field not in fields or operation not in operations or field in seen:
+            continue
+        raw_value = _clean_text(item.get("value"), 200)
+        if operation == "set" and not raw_value:
+            continue
+        source = _clean_text(item.get("source"), 30).lower()
+        confidence = _clean_text(item.get("confidence"), 20).lower()
+        result.append(
+            {
+                "field": field,
+                "operation": operation,
+                "value": raw_value if operation == "set" else "",
+                "source": source if source in sources else (
+                    "conversation_memory" if operation == "keep" else "current_turn"
+                ),
+                "confidence": confidence if confidence in confidences else "medium",
+            }
+        )
+        seen.add(field)
+    return result
+
+
+def _legacy_context_operations(raw_context: dict[str, Any]) -> list[dict[str, str]]:
+    operations: list[dict[str, str]] = []
+    cleared = {
+        str(item or "").strip().lower()
+        for item in list(raw_context.get("clear_fields") or [])[:5]
+    }
+    for field in ("store", "store_mode", "sku", "mlb", "period"):
+        if field in cleared or (field == "store_mode" and "store" in cleared):
+            operations.append(
+                {
+                    "field": field,
+                    "operation": "clear",
+                    "value": "",
+                    "source": "current_turn",
+                    "confidence": "medium",
+                }
+            )
+            continue
+        applied = {
+            str(item or "").strip().lower()
+            for item in list(raw_context.get("applied_fields") or [])[:5]
+        }
+        if field not in applied:
+            continue
+        content = _clean_text(raw_context.get(field), 200)
+        operations.append(
+            {
+                "field": field,
+                "operation": "set" if content else "keep",
+                "value": content,
+                "source": "current_turn" if content else "conversation_memory",
+                "confidence": "medium",
+            }
+        )
+    return operations[:10]
+
+
+def normalize_decision(
+    value: Any,
+    *,
+    event_type: str,
+    contract_version: Any = None,
+) -> dict[str, Any]:
     parsed = parse_json_object(value)
     action = _clean_text(parsed.get("action"), 40).lower()
     if action not in CONVERSATION_ACTIONS:
@@ -305,6 +425,10 @@ def normalize_decision(value: Any, *, event_type: str) -> dict[str, Any]:
         ],
         "provided_fields": list(applied_fields),
     }
+    source_schema = _clean_text(parsed.get("schema_version"), 120)
+    context_operations = _normalize_context_operations(parsed.get("context_operations"))
+    if not context_operations and source_schema != black_jhon_prompting.CONVERSATION_DECISION_V3:
+        context_operations = _legacy_context_operations(raw_context)
     missing_fields = [
         _clean_text(item, 200)
         for item in list(parsed.get("missing_fields") or [])[:10]
@@ -341,15 +465,41 @@ def normalize_decision(value: Any, *, event_type: str) -> dict[str, Any]:
         "cancel_job": "task_cancel",
         "wait": "status_wait",
     }.get(action, "conversation")
+    intent_kind = _clean_text(parsed.get("intent_kind"), 40).lower()
+    if intent_kind not in {"conversation", "query", "control", "mutation_candidate"}:
+        intent_kind = "control" if action == "cancel_job" else (
+            "query" if action in {"delegate", "queue", "steer", "request_information"} else "conversation"
+        )
+    relation_to_active_job = _clean_text(parsed.get("relation_to_active_job"), 40).lower()
+    if relation_to_active_job not in {"none", "status", "followup", "correction", "cancel", "new_parallel"}:
+        relation_to_active_job = "none"
+    answer_basis = _clean_text(parsed.get("answer_basis"), 40).lower()
+    if answer_basis not in {"conversation_only", "active_job", "verified_evidence", "clarification", "unavailable"}:
+        answer_basis = (
+            "verified_evidence" if event_type in {"worker_result", "worker_partial"}
+            else "clarification" if action == "request_information"
+            else "conversation_only"
+        )
+    data_requirement = _clean_text(parsed.get("data_requirement"), 20).lower()
+    if data_requirement not in {"none", "optional", "required"}:
+        data_requirement = "required" if action in {"delegate", "queue", "steer", "request_information"} else "none"
+    if action == "reply" and data_requirement == "required":
+        raise RuntimeError("conversation_agent_reply_requires_data")
     task = {
         "title": job_title,
         "prompt": job_prompt,
         "requires_web": requires_web,
         "reasoning_effort": task_reasoning,
     }
-    return {
+    normalized_v2 = {
         "schema_version": black_jhon_prompting.CONVERSATION_DECISION_V2,
+        "intent_id": _clean_text(parsed.get("intent_id"), 100),
         "intent": intent,
+        "intent_kind": intent_kind,
+        "relation_to_active_job": relation_to_active_job,
+        "answer_basis": answer_basis,
+        "data_requirement": data_requirement,
+        "context_operations": context_operations,
         "response_mode": response_mode,
         "missing_fields": missing_fields,
         "confidence": confidence,
@@ -364,6 +514,27 @@ def normalize_decision(value: Any, *, event_type: str) -> dict[str, Any]:
         "resolved_context": resolved_context,
         "subtasks": subtasks,
     }
+    selected_mode = (
+        decision_contract_mode(contract_version)
+        if contract_version is not None
+        else (
+            "v3"
+            if str(parsed.get("schema_version") or "").strip()
+            == black_jhon_prompting.CONVERSATION_DECISION_V3
+            else "v2"
+        )
+    )
+    if selected_mode != "v3":
+        return normalized_v2
+
+    v3_source = {
+        **normalized_v2,
+        "schema_version": parsed.get("schema_version") or black_jhon_prompting.CONVERSATION_DECISION_V2,
+    }
+    for key in ("intent_id", "intent_path", "entities", "scope", "risk", "ambiguities"):
+        if key in parsed:
+            v3_source[key] = parsed[key]
+    return black_jhon_prompting.normalize_conversation_decision_v3(v3_source)
 
 
 def normalize_worker_result(task: dict[str, Any]) -> dict[str, Any]:
@@ -563,7 +734,10 @@ def _decision_prompt(
     conversation_state: Optional[dict[str, Any]] = None,
     ai_behavior: str,
     tick_index: int,
+    contract_version: Any = None,
+    quoted_context: Optional[dict[str, Any]] = None,
 ) -> str:
+    contract = _decision_runtime_contract("v2" if contract_version is None else contract_version)
     active = active_job if isinstance(active_job, dict) else {}
     result = (
         black_jhon_prompting.normalize_evidence_envelope_v2(worker_result)
@@ -573,6 +747,14 @@ def _decision_prompt(
     context = {
         "event_type": event_type,
         "user_message": _clean_text(user_message, 12000),
+        "quoted_context": {
+            "message_id": _clean_text((quoted_context or {}).get("message_id"), 200),
+            "text": _clean_text((quoted_context or {}).get("text"), 3500),
+            "source": "whatsapp_reply",
+        } if isinstance(quoted_context, dict) and (
+            _clean_text(quoted_context.get("message_id"), 200)
+            or _clean_text(quoted_context.get("text"), 3500)
+        ) else {},
         "active_job": {
             "job_id": _clean_text(active.get("job_id") or active.get("task_id"), 100),
             "title": _clean_text(active.get("job_title") or active.get("request_text"), 500),
@@ -597,6 +779,12 @@ def _decision_prompt(
             "sku": _clean_text((conversation_state or {}).get("sku"), 100),
             "mlb": _clean_text((conversation_state or {}).get("mlb"), 60),
             "period": _clean_text((conversation_state or {}).get("period"), 160),
+            "revision": max(0, int((conversation_state or {}).get("revision") or 0)),
+            "field_sources": {
+                _clean_text(key, 20): _clean_text(value, 40)
+                for key, value in dict((conversation_state or {}).get("field_sources") or {}).items()
+                if _clean_text(key, 20) in {"store", "sku", "mlb", "period"}
+            },
             "confirmed_fields": [
                 _clean_text(item, 20)
                 for item in list((conversation_state or {}).get("confirmed_fields") or [])[:5]
@@ -612,8 +800,16 @@ def _decision_prompt(
         "phone_behavior": _clean_text(ai_behavior, 2000),
     }
     return (
-        black_jhon_prompting.prompt_contract_header("conversation_decision")
-        + black_jhon_prompting.DECISION_PROMPT_INSTRUCTIONS
+        (
+            black_jhon_prompting.prompt_contract_v3_header("conversation_decision")
+            if contract["mode"] == "v3"
+            else black_jhon_prompting.prompt_contract_header("conversation_decision")
+        )
+        + (
+            black_jhon_prompting.DECISION_V3_PROMPT_INSTRUCTIONS
+            if contract["mode"] == "v3"
+            else black_jhon_prompting.DECISION_PROMPT_INSTRUCTIONS
+        )
         + "\n\n"
         + black_jhon_prompting.bounded_context_json(context)
     )
@@ -695,14 +891,19 @@ class WarmConversationRuntime:
         worker_result: Optional[dict[str, Any]] = None,
         conversation_context: Optional[list[dict[str, Any]]] = None,
         conversation_state: Optional[dict[str, Any]] = None,
+        quoted_context: Optional[dict[str, Any]] = None,
         ai_behavior: str = "",
         tick_index: int = 0,
         speed: str = "fast",
         service_tier: str = "priority",
+        client_id: str = "",
+        telemetry_trace_id: str = "",
+        store_id: str = "",
     ) -> dict[str, Any]:
         from backend.services import codex_console
         from openai_codex.generated.v2_all import ReasoningSummary
 
+        decision_contract = _decision_runtime_contract()
         prompt = _decision_prompt(
             event_type=event_type,
             user_message=user_message,
@@ -710,8 +911,10 @@ class WarmConversationRuntime:
             worker_result=worker_result,
             conversation_context=conversation_context,
             conversation_state=conversation_state,
+            quoted_context=quoted_context,
             ai_behavior=ai_behavior,
             tick_index=tick_index,
+            contract_version=decision_contract["mode"],
         )
         context_chars = len(prompt.rsplit("\n\n", 1)[-1])
         effective_speed = codex_console._codex_normalizar_speed(speed)
@@ -719,12 +922,89 @@ class WarmConversationRuntime:
             service_tier,
             effective_speed,
         )
+        tenant = _clean_text(client_id, 80) or "default"
+        trace_id = _clean_text(telemetry_trace_id, 200) or uuid.uuid4().hex
+        responder_span_id = f"{trace_id}:responder"
+        telemetry_started = time.perf_counter()
+        telemetry = None
+        telemetry_finished = False
+        effective_model_for_telemetry = _clean_text(model, 100).removeprefix("codex:")
+        if client_id:
+            try:
+                telemetry = codex_console._codex_ai_telemetry_instance()
+                telemetry.schedule_retention(tenant)
+                telemetry.start_trace(
+                    tenant,
+                    trace_id=trace_id,
+                    surface="whatsapp",
+                    category="conversation",
+                    requested_model=model,
+                    store_id=store_id,
+                    expected_spans=("responder",),
+                )
+                telemetry.start_span(
+                    tenant,
+                    trace_id=trace_id,
+                    span_id=responder_span_id,
+                    stage="responder",
+                )
+            except Exception:
+                telemetry = None
+
+        def finish_telemetry(status: str, *, error_code: str = "") -> None:
+            nonlocal telemetry_finished
+            if telemetry is None or telemetry_finished:
+                return
+            telemetry_finished = True
+            duration_ms = (time.perf_counter() - telemetry_started) * 1000
+            try:
+                telemetry.finish_span(
+                    tenant,
+                    trace_id=trace_id,
+                    span_id=responder_span_id,
+                    stage="responder",
+                    status=status,
+                    duration_ms=duration_ms,
+                    error_code=error_code,
+                )
+                telemetry.record_event(
+                    tenant,
+                    event_id=f"{trace_id}:responder",
+                    trace_id=trace_id,
+                    span_id=responder_span_id,
+                    event_type="inference",
+                    status=status,
+                    requested_model=model,
+                    effective_model=effective_model_for_telemetry,
+                    provider="openai_codex",
+                    provider_path="whatsapp_conversation_agent",
+                    model_rerouted=(
+                        effective_model_for_telemetry
+                        != _clean_text(model, 100).removeprefix("codex:")
+                    ),
+                    duration_ms=duration_ms,
+                    store_id=store_id,
+                    dimensions={"surface": "whatsapp", "category": "conversation"},
+                    error_code=error_code,
+                )
+                telemetry.finish_trace(
+                    tenant,
+                    trace_id=trace_id,
+                    status=status,
+                    effective_model=effective_model_for_telemetry,
+                    provider="openai_codex",
+                    duration_ms=duration_ms,
+                    error_code=error_code,
+                )
+            except Exception:
+                return
         last_error: Optional[Exception] = None
         for attempt in range(2):
             with self._lock:
                 try:
                     client = self._start_locked()
                     effective_model = self.resolve_model(model)
+                    effective_model_for_telemetry = effective_model
                     kwargs = {
                         "cwd": str(codex_console._codex_base_dir()),
                         "model": effective_model,
@@ -748,11 +1028,15 @@ class WarmConversationRuntime:
                         model=effective_model,
                         effort=codex_console._codex_reasoning_effort_enum(reasoning_effort),
                         approval_mode=codex_console._codex_approval_mode_enum("read_only", "read_only"),
-                        output_schema=DECISION_SCHEMA,
+                        output_schema=decision_contract["schema"],
                         summary=ReasoningSummary.model_validate("none"),
                         service_tier=effective_service_tier,
                     )
-                    decision = normalize_decision(getattr(result, "final_response", ""), event_type=event_type)
+                    decision = normalize_decision(
+                        getattr(result, "final_response", ""),
+                        event_type=event_type,
+                        contract_version=decision_contract["mode"],
+                    )
                     decision.update(
                         {
                             "thread_id": _clean_text(getattr(thread, "id", ""), 200),
@@ -765,12 +1049,17 @@ class WarmConversationRuntime:
                             "thread_reused": thread_reused,
                             "thread_reset_reason": thread_reset_reason,
                             "context_chars": context_chars,
-                            "prompt_contract": black_jhon_prompting.prompt_contract_diagnostics(),
+                            "prompt_contract": decision_contract["prompt_contract"],
+                            "decision_contract_mode": decision_contract["mode"],
+                            "conversation_prompt_contract": (
+                                black_jhon_prompting.conversation_prompt_contract_diagnostics()
+                            ),
                         }
                     )
                     self._effective_model = effective_model
                     self._last_used_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                     self._last_error = ""
+                    finish_telemetry("completed")
                     return decision
                 except Exception as exc:
                     last_error = exc
@@ -778,6 +1067,7 @@ class WarmConversationRuntime:
                     self._close_locked()
             if attempt == 0:
                 time.sleep(0.2)
+        finish_telemetry("failed", error_code=type(last_error).__name__ if last_error else "RuntimeError")
         raise RuntimeError(f"conversation_agent_failed:{last_error}")
 
     def run_manager(
@@ -864,6 +1154,7 @@ class WarmConversationRuntime:
 
     def warm(self, conversation_model: str, task_model: str) -> dict[str, Any]:
         with self._lock:
+            decision_contract = _decision_runtime_contract()
             conversation_effective = self.resolve_model(conversation_model)
             task_effective = self.resolve_model(task_model)
             self._effective_model = conversation_effective
@@ -873,9 +1164,12 @@ class WarmConversationRuntime:
                 "task_effective_model": task_effective,
                 "available_models": list(self._available_models),
                 "prompt_contract": black_jhon_prompting.prompt_contract_diagnostics(),
+                "decision_prompt_contract": decision_contract["prompt_contract"],
+                "decision_contract_mode": decision_contract["mode"],
             }
 
     def diagnostics(self) -> dict[str, Any]:
+        decision_contract = _decision_runtime_contract()
         acquired = self._lock.acquire(blocking=False)
         if not acquired:
             return {
@@ -887,6 +1181,8 @@ class WarmConversationRuntime:
                 "available_models": list(self._available_models),
                 "busy": True,
                 "prompt_contract": black_jhon_prompting.prompt_contract_diagnostics(),
+                "decision_prompt_contract": decision_contract["prompt_contract"],
+                "decision_contract_mode": decision_contract["mode"],
             }
         try:
             return {
@@ -898,6 +1194,8 @@ class WarmConversationRuntime:
                 "available_models": list(self._available_models),
                 "busy": False,
                 "prompt_contract": black_jhon_prompting.prompt_contract_diagnostics(),
+                "decision_prompt_contract": decision_contract["prompt_contract"],
+                "decision_contract_mode": decision_contract["mode"],
             }
         finally:
             self._lock.release()
@@ -1033,6 +1331,7 @@ class WarmConversationRuntimePool:
         return self.configure(size, conversation_model, task_model)
 
     def diagnostics(self) -> dict[str, Any]:
+        decision_contract = _decision_runtime_contract()
         with self._condition:
             slots = list(self._slots)
             busy_ids = set(self._busy)
@@ -1060,6 +1359,8 @@ class WarmConversationRuntimePool:
             "last_error": last_error,
             "slots": details,
             "prompt_contract": black_jhon_prompting.prompt_contract_diagnostics(),
+            "decision_prompt_contract": decision_contract["prompt_contract"],
+            "decision_contract_mode": decision_contract["mode"],
         }
 
     def close(self) -> None:
@@ -1085,6 +1386,7 @@ __all__ = [
     "CONVERSATION_ACTIONS",
     "DECISION_SCHEMA",
     "CONVERSATION_DECISION_V2_SCHEMA",
+    "CONVERSATION_DECISION_V3_SCHEMA",
     "WORKER_RESULT_SCHEMA",
     "EVIDENCE_ENVELOPE_V2_SCHEMA",
     "RETRIEVAL_RESULT_V2_SCHEMA",
@@ -1096,6 +1398,7 @@ __all__ = [
     "normalize_decision",
     "normalize_worker_result",
     "normalize_manager_plan",
+    "decision_contract_mode",
     "parse_json_object",
     "worker_output_instruction",
 ]

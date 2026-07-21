@@ -765,6 +765,9 @@ FAVORITOS_HISTORICO_MAX = 500
 FAVORITOS_HISTORICO_ANUNCIOS_MAX = 60
 
 
+FAVORITOS_HISTORICO_ANUNCIOS_SCAN_MAX = FAVORITOS_HISTORICO_ANUNCIOS_MAX * 4
+
+
 FAVORITOS_HISTORICO_REALTIME_SCOPE = "favoritos_historico"
 
 
@@ -1033,6 +1036,95 @@ def _favoritos_normalizar_alteracao_favoritos_historico(raw: Any) -> dict | None
     }
 
 
+def _favoritos_mlb_canonico_historico(anuncio: Any) -> str:
+    if not isinstance(anuncio, dict):
+        return ""
+    for valor in (
+        anuncio.get("id"),
+        anuncio.get("mlb"),
+        anuncio.get("item_id"),
+        anuncio.get("url"),
+        anuncio.get("permalink"),
+        anuncio.get("link"),
+    ):
+        texto = str(valor or "").strip()
+        if not texto:
+            continue
+        try:
+            texto = unquote(texto)
+        except Exception:
+            pass
+        match = re.search(r"(?<![A-Z0-9])MLB[\s-]*(\d{6,})(?!\d)", texto, flags=re.IGNORECASE)
+        if match:
+            return f"MLB{match.group(1)}"
+    return ""
+
+
+def _favoritos_url_canonica_historico(anuncio: Any) -> str:
+    if not isinstance(anuncio, dict):
+        return ""
+    for valor in (anuncio.get("url"), anuncio.get("permalink"), anuncio.get("link")):
+        texto = str(valor or "").strip()
+        if not texto:
+            continue
+        try:
+            parsed = urlparse(texto)
+        except Exception:
+            continue
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            continue
+        path = parsed.path.rstrip("/") or "/"
+        return parsed._replace(
+            scheme=parsed.scheme.lower(),
+            netloc=parsed.netloc.lower(),
+            path=path,
+            fragment="",
+        ).geturl().lower()
+    return ""
+
+
+def _favoritos_chave_anuncio_historico(anuncio: Any) -> str:
+    mlb = _favoritos_mlb_canonico_historico(anuncio)
+    if mlb:
+        return f"mlb:{mlb}"
+    url = _favoritos_url_canonica_historico(anuncio)
+    return f"url:{url}" if url else ""
+
+
+def _favoritos_valor_ausente_historico(valor: Any) -> bool:
+    return valor is None or valor == "" or (isinstance(valor, (list, tuple, set, dict)) and not valor)
+
+
+def _favoritos_mesclar_anuncio_historico(preferido: dict, complemento: dict) -> dict:
+    for chave, valor_novo in (complemento or {}).items():
+        valor_atual = preferido.get(chave)
+        if isinstance(valor_atual, list) and isinstance(valor_novo, list):
+            for item in valor_novo:
+                if item not in valor_atual:
+                    valor_atual.append(copy.deepcopy(item))
+            continue
+        if _favoritos_valor_ausente_historico(valor_atual) and not _favoritos_valor_ausente_historico(valor_novo):
+            preferido[chave] = copy.deepcopy(valor_novo)
+    return preferido
+
+
+def _favoritos_deduplicar_anuncios_historico(anuncios: list[dict]) -> list[dict]:
+    saida: list[dict] = []
+    indice_por_chave: dict[str, int] = {}
+    for anuncio in anuncios:
+        chave = _favoritos_chave_anuncio_historico(anuncio)
+        if not chave:
+            saida.append(anuncio)
+            continue
+        indice = indice_por_chave.get(chave)
+        if indice is None:
+            indice_por_chave[chave] = len(saida)
+            saida.append(anuncio)
+            continue
+        _favoritos_mesclar_anuncio_historico(saida[indice], anuncio)
+    return saida
+
+
 def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
     if not isinstance(lista, list):
         return []
@@ -1048,11 +1140,14 @@ def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
             if not sku:
                 continue
             anuncios_saida: list[dict] = []
-            for anuncio in (grupo.get("anuncios") or [])[:FAVORITOS_HISTORICO_ANUNCIOS_MAX]:
+            for anuncio in (grupo.get("anuncios") or [])[:FAVORITOS_HISTORICO_ANUNCIOS_SCAN_MAX]:
                 if not isinstance(anuncio, dict):
                     continue
                 anuncio_id = _favoritos_limpar_texto_historico(
-                    anuncio.get("id") or anuncio.get("mlb") or _extrair_item_id(str(anuncio.get("url") or "")),
+                    anuncio.get("id")
+                    or anuncio.get("mlb")
+                    or anuncio.get("item_id")
+                    or _favoritos_mlb_canonico_historico(anuncio),
                     40,
                 )
                 anuncios_saida.append({
@@ -1126,12 +1221,16 @@ def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
                     "campos_origem": _favoritos_lista_texto_historico(anuncio.get("campos_origem"), 80, 3),
                     "motivo_ia": _favoritos_limpar_texto_historico(anuncio.get("motivo_ia") or anuncio.get("motivo"), 240),
                 })
+            anuncios_saida = _favoritos_deduplicar_anuncios_historico(anuncios_saida)[:FAVORITOS_HISTORICO_ANUNCIOS_MAX]
             removidos_ia_saida: list[dict] = []
             for anuncio in (grupo.get("removidos_ia") or grupo.get("removidosIa") or [])[:80]:
                 if not isinstance(anuncio, dict):
                     continue
                 anuncio_id = _favoritos_limpar_texto_historico(
-                    anuncio.get("id") or anuncio.get("mlb") or _extrair_item_id(str(anuncio.get("url") or "")),
+                    anuncio.get("id")
+                    or anuncio.get("mlb")
+                    or anuncio.get("item_id")
+                    or _favoritos_mlb_canonico_historico(anuncio),
                     40,
                 )
                 removidos_ia_saida.append({
@@ -1185,7 +1284,7 @@ def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
                 "opcoes_promocao": opcoes_promocao_saida,
                 "avulso": bool(grupo.get("avulso") or grupo.get("pesquisa_avulsa") or sku.strip().lower() == "avulso"),
                 "pesquisa_avulsa": bool(grupo.get("pesquisa_avulsa") or grupo.get("avulso") or sku.strip().lower() == "avulso"),
-                "total_anuncios": _favoritos_int_historico(grupo.get("total_anuncios"), len(anuncios_saida)),
+                "total_anuncios": len(anuncios_saida),
                 "usou_ia": bool(grupo.get("usou_ia")),
                 "ia_confirmados": _favoritos_int_historico(grupo.get("ia_confirmados"), 0),
                 "ia_max_confirmados": _favoritos_int_historico(grupo.get("ia_max_confirmados"), 0),
@@ -1222,7 +1321,7 @@ def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
             ),
             "username": _favoritos_limpar_texto_historico(entrada.get("username") or entrada.get("created_by") or entrada.get("criado_por") or entrada.get("usuario"), 160),
             "total_skus": _favoritos_int_historico(entrada.get("total_skus"), len(grupos_saida) or len(skus_alteracao)),
-            "total_anuncios": _favoritos_int_historico(entrada.get("total_anuncios"), total_anuncios_padrao),
+            "total_anuncios": total_anuncios_padrao,
             "grupos": grupos_saida,
         }
         duracao_entrada_ms = _favoritos_duracao_execucao_ms(entrada.get("duracao_execucao_ms"))

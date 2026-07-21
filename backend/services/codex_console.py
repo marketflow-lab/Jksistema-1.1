@@ -30,8 +30,12 @@ from pydantic import BaseModel
 from backend.services import (
     codex_actions,
     codex_agent_runtime,
+    codex_ai_telemetry,
     codex_assistant_storage,
     codex_capabilities,
+    codex_evaluations,
+    codex_mcp_rollout,
+    codex_model_router,
     codex_operational_memory,
     codex_turn_context,
 )
@@ -39,6 +43,10 @@ from backend.services.runtime_bridge import bind_runtime_globals
 
 
 CODEX_SANDBOXES = {"read_only", "workspace_write", "full_access"}
+CODEX_INTERNAL_ALLOWED_SANDBOXES = {"read_only"}
+CODEX_EXECUTION_PLANE = "in_app_operations"
+CODEX_DEVELOPMENT_WRITE_ENABLED = False
+CODEX_DEVELOPMENT_ERROR_CODE = "DEVELOPMENT_REQUIRES_CODEX_DESKTOP"
 CODEX_TASKS: dict[str, dict[str, Any]] = {}
 CODEX_TASKS_LOCK = threading.RLock()
 CODEX_FULL_ACCESS_LOCK = threading.Lock()
@@ -47,6 +55,9 @@ CODEX_QUEUE_LOCK = threading.RLock()
 CODEX_ACTIVE_QUEUES: set[str] = set()
 CODEX_ACTIVE_TURNS_LOCK = threading.RLock()
 CODEX_ACTIVE_TURNS: dict[str, Any] = {}
+CODEX_AI_TELEMETRY_LOCK = threading.RLock()
+CODEX_AI_TELEMETRY: Optional[codex_ai_telemetry.CodexAITelemetry] = None
+CODEX_EVALUATION_RUNNER: Optional[codex_evaluations.EvaluationRunner] = None
 
 
 class _ResizableConcurrencyGate:
@@ -205,6 +216,10 @@ class CodexTaskRequest(BaseModel):
     service_tier: Optional[str] = None
     goal: Optional[str] = None
     planning_mode: bool = False
+    attachments: Optional[list[str]] = None
+    reference_paths: Optional[list[str]] = None
+    # Compatibilidade V1. Estes caminhos sao tratados apenas como referencias
+    # de leitura e nunca ampliam o sandbox do assistente interno.
     paths: Optional[list[str]] = None
     screen_context: Optional[dict[str, Any]] = None
     history: Optional[list[dict[str, Any]]] = None
@@ -219,6 +234,26 @@ class CodexTaskSteerRequest(BaseModel):
 class CodexTaskApprovalRequest(BaseModel):
     paths: Optional[list[str]] = None
     screen_context: Optional[dict[str, Any]] = None
+
+
+class CodexTaskFeedbackRequest(BaseModel):
+    rating: int
+    label: str = ""
+
+
+class CodexEvaluationRunAPIRequest(BaseModel):
+    models: list[str]
+    repetitions: int = 1
+    split: str = "holdout"
+    case_ids: Optional[list[str]] = None
+    purpose: str = "manual"
+
+
+class CodexMCPRolloutRequest(BaseModel):
+    mode: str = "off"
+    allowed_tools: Optional[list[str]] = None
+    baseline_p95_ms: float = 0.0
+    observations: Optional[dict[str, Any]] = None
 
 
 class CodexConversationResetRequest(BaseModel):
@@ -321,6 +356,74 @@ def _codex_info_dir() -> str:
     return path
 
 
+def _codex_ai_telemetry_instance() -> codex_ai_telemetry.CodexAITelemetry:
+    global CODEX_AI_TELEMETRY
+    expected_root = Path(_codex_base_info_dir()).resolve()
+    with CODEX_AI_TELEMETRY_LOCK:
+        if CODEX_AI_TELEMETRY is not None and CODEX_AI_TELEMETRY.info_root != expected_root:
+            CODEX_AI_TELEMETRY.close()
+            CODEX_AI_TELEMETRY = None
+        if CODEX_AI_TELEMETRY is None:
+            CODEX_AI_TELEMETRY = codex_ai_telemetry.CodexAITelemetry(expected_root)
+        return CODEX_AI_TELEMETRY
+
+
+def _codex_hmac_identifier(value: Any, *, namespace: str) -> str:
+    if not str(value or ""):
+        return ""
+    return codex_ai_telemetry.secure_hmac_identifier(value, namespace=namespace)
+
+
+def _codex_model_routing_policy() -> codex_model_router.ModelRoutingPolicyV1:
+    raw = str(os.getenv("JK_CODEX_MODEL_ROLLOUT_JSON") or "").strip()
+    if not raw:
+        return codex_model_router.ModelRoutingPolicyV1.disabled()
+    try:
+        payload = json.loads(raw)
+        categories = payload.get("categories") if isinstance(payload, dict) else {}
+        if not isinstance(categories, dict):
+            raise ValueError("categories_invalid")
+        return codex_model_router.ModelRoutingPolicyV1.rollout(
+            policy_version=str(payload.get("policy_version") or "environment-v1"),
+            categories={str(key): float(value) for key, value in categories.items()},
+        )
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return codex_model_router.ModelRoutingPolicyV1.disabled("invalid-policy-fallback")
+
+
+def _codex_model_category(prompt: str, channel_metadata: Any = None) -> str:
+    text = _codex_texto_sem_acentos(prompt)
+    metadata = channel_metadata if isinstance(channel_metadata, dict) else {}
+    lane = str(metadata.get("agent_lane") or metadata.get("agent_role") or "").lower()
+    if "public" in lane or re.search(r"\b(pergunta publica|pos-venda|pos venda|comprador)\b", text):
+        return "public_question"
+    if re.search(r"\b(compatibilidade|serve|aplica|encaixa|codigo da peca|veiculo|motor)\b", text):
+        return "fitment"
+    if re.search(r"\b(relatorio|ranking|comparacao|compare|consolidado)\b", text):
+        return "report"
+    if re.search(r"\b(context hub|obsidian|rag|fonte documental)\b", text):
+        return "context_synthesis"
+    if re.search(r"\b(estoque|venda|pedido|anuncio|mercado livre|bling|devolucao)\b", text):
+        return "commerce_query"
+    return "general"
+
+
+def _codex_decide_model(
+    *,
+    prompt: str,
+    requested_model: str,
+    rollout_key: str,
+    channel_metadata: Any = None,
+) -> codex_model_router.ModelDecisionV1:
+    router = codex_model_router.ModelRouter(_codex_model_routing_policy())
+    return router.decide(
+        category=_codex_model_category(prompt, channel_metadata),
+        requested_model=requested_model,
+        rollout_key=rollout_key,
+        available_models={codex_model_router.BASELINE_MODEL, *codex_model_router.GPT_56_VARIANTS},
+    )
+
+
 def _codex_task_path(task_id: str) -> str:
     safe_id = "".join(ch for ch in str(task_id or "") if ch.isalnum() or ch in {"-", "_"})[:80]
     return os.path.join(_codex_info_dir(), f"{safe_id}.json")
@@ -335,6 +438,14 @@ def _codex_deadline_at(seconds: int) -> str:
     return datetime.fromtimestamp(time.time() + safe_seconds, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _codex_agent_deadline_seconds(task: dict[str, Any], report_mode: bool) -> Optional[int]:
+    """Return the total task deadline, or None for an explicitly unbounded task."""
+    if task.get("deadline_enabled") is False or str(task.get("origin") or "").strip().lower() == "whatsapp":
+        return None
+    fallback = 600 if report_mode else 180
+    return max(30, min(int(task.get("deadline_seconds") or fallback), 600))
+
+
 def _codex_deadline_epoch(value: Any) -> int:
     try:
         parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
@@ -344,9 +455,26 @@ def _codex_deadline_epoch(value: Any) -> int:
 
 
 def _codex_native_mcp_enabled(task: Any) -> bool:
-    # Disabled during the data-selection cutover. Tool filtering must happen
-    # before execution, inside the bounded local executor.
-    return False
+    if not isinstance(task, dict):
+        return False
+    client_id = _codex_safe_id(str(task.get("client_id") or "default"))
+    policy_path = Path(_codex_base_info_dir()) / client_id / "codex_ai" / "mcp_rollout.sqlite3"
+    policy = codex_mcp_rollout.MCPRolloutPolicyStore(policy_path).get()
+    mode = str(policy.get("mode") or "off")
+    if mode in {"off", "shadow"}:
+        return False
+    origin = str(task.get("origin") or "app").strip().lower()
+    if mode == "pilot" and origin != "app":
+        return False
+    if mode.startswith("whatsapp_") and origin != "whatsapp":
+        return False
+    subject = f"{task.get('client_id')}:{task.get('conversation_id')}"
+    secret = str(os.getenv("JK_CODEX_MCP_ROLLOUT_SECRET") or "")
+    if not codex_mcp_rollout.in_cohort(policy, subject=subject, secret=secret):
+        return False
+    selected = set(_codex_agent_data_selection_tool_ids(_codex_agent_data_selection_from_task(task)))
+    allowed = set(policy.get("allowed_tools") or [])
+    return bool(selected) and (not allowed or selected.issubset(allowed))
 
 
 def _codex_native_mcp_result_path(task_id: Any) -> Path:
@@ -362,7 +490,7 @@ def _codex_native_mcp_read_results(task_id: Any, seen: set[str]) -> list[dict[st
         return []
     results: list[dict[str, Any]] = []
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = path.read_text(encoding="utf-8", errors="strict").splitlines()
     except Exception:
         return []
     for line in lines[-100:]:
@@ -393,39 +521,95 @@ def _codex_native_mcp_thread_config(task: dict[str, Any], screen_context: Any) -
 
     metadata = task.get("channel_metadata") if isinstance(task.get("channel_metadata"), dict) else {}
     client_id = str(task.get("client_id") or "").strip()
+    from backend.services import jk_codex_mcp_server
+
     authorized_stores: list[str] = []
+    stable_store_refs: list[dict[str, str]] = []
     store_scope_valid = False
     if client_id:
         try:
             from backend.services import integracoes
 
             configured_stores = integracoes.carregar_lojas(client_id)
-            authorized_stores = [
-                str(item.get("nome") or item.get("name") or "").strip()[:180]
-                for item in list(configured_stores or [])[:50]
-                if isinstance(item, dict) and str(item.get("nome") or item.get("name") or "").strip()
-            ]
-            store_scope_valid = True
+            for item in list(configured_stores or [])[:50]:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("nome") or item.get("name") or "").strip()[:180]
+                integrations = item.get("integracoes") if isinstance(item.get("integracoes"), dict) else {}
+                ml = integrations.get("mercadolivre") if isinstance(integrations.get("mercadolivre"), dict) else {}
+                seller_id = str(ml.get("user_id") or "").strip()
+                site_id = str(ml.get("site_id") or "MLB").strip().upper()
+                if name:
+                    authorized_stores.append(name)
+                if name and seller_id and site_id:
+                    stable_store_refs.append(
+                        {
+                            "store_id": integracoes._integracoes_store_id(client_id, item),
+                            "name": name,
+                            "seller_id": seller_id,
+                            "site_id": site_id,
+                        }
+                    )
+            store_scope_valid = bool(stable_store_refs)
         except Exception:
             authorized_stores = []
-    allowed_tools = _codex_agent_data_selection_tool_ids(_codex_agent_data_selection_from_task(task))
+            stable_store_refs = []
+    selection = _codex_agent_data_selection_from_task(task)
+    calls: list[dict[str, Any]] = []
+    for raw in list(selection.get("tool_calls") or [])[:8]:
+        if not isinstance(raw, dict):
+            continue
+        arguments = _codex_agent_planned_arguments(raw.get("arguments"))
+        tool_id = str(raw.get("tool_id") or "").strip()
+        if not tool_id or arguments is None:
+            continue
+        calls.append(
+            {
+                "tool_id": tool_id,
+                "arguments": arguments,
+                "depends_on": list(raw.get("depends_on") or []),
+                "required": raw.get("required") is not False,
+            }
+        )
+    if not calls or not stable_store_refs:
+        raise RuntimeError("mcp_plan_materialization_incomplete")
+    source_policy = _codex_agent_source_policy_from_screen(screen_context)
+    client_safe = _codex_safe_id(client_id)
+    rollout_path = Path(_codex_base_info_dir()) / client_safe / "codex_ai" / "mcp_rollout.sqlite3"
+    rollout = codex_mcp_rollout.MCPRolloutPolicyStore(rollout_path).get()
+    idempotency_path = Path(_codex_base_info_dir()) / client_safe / "codex_ai" / "mcp_idempotency.sqlite3"
+    issued_at_epoch = int(time.time())
     payload = {
-        "version": 1,
+        "version": 2,
+        "protocol": "mcp_v2",
         "task_id": str(task.get("task_id") or ""),
+        "execution_id": uuid.uuid4().hex,
         "conversation_id": str(task.get("conversation_id") or ""),
         "client_id": client_id,
         "username": str(task.get("created_by") or "whatsapp"),
-        "wa_id_hash": hashlib.sha256(str(metadata.get("wa_id") or "").encode("utf-8")).hexdigest(),
+        "wa_id_hash": _codex_hmac_identifier(metadata.get("wa_id"), namespace="whatsapp_phone"),
         "permissions": task.get("permissions") if isinstance(task.get("permissions"), dict) else {},
         "authorized_stores": authorized_stores,
         "store_scope_valid": store_scope_valid,
-        "allowed_tools": allowed_tools,
-        "source_policy": {},
+        "allowed_tools": sorted({call["tool_id"] for call in calls}),
+        "source_policy": source_policy,
         "screen_context": _codex_agent_screen_summary(screen_context),
+        "rollout": rollout,
+        "rollout_policy_db_path": str(rollout_path.resolve()),
+        "idempotency_db_path": str(idempotency_path.resolve()),
         "result_path": str(_codex_native_mcp_result_path(task.get("task_id")).resolve()),
-        "deadline_at_epoch": _codex_deadline_epoch(task.get("deadline_at")),
-        "expires_at": _codex_deadline_epoch(task.get("deadline_at")) + 300,
+        # O contexto assinado expira por seguranca, mas nao representa um
+        # prazo total da tarefa. Cada ferramenta recebe seu proprio timeout.
+        "deadline_at_epoch": 0,
+        "tool_timeout_seconds": 60,
+        "issued_at": issued_at_epoch,
+        "expires_at": issued_at_epoch + 15 * 60,
     }
+    payload["plan"] = jk_codex_mcp_server.build_plan_v2(
+        payload,
+        calls=calls,
+        stores=stable_store_refs,
+    )
     encoded = base64.urlsafe_b64encode(
         json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
     ).decode("ascii").rstrip("=")
@@ -447,6 +631,149 @@ def _codex_native_mcp_thread_config(task: dict[str, Any], screen_context: Any) -
                 "enabled": True,
             }
         }
+    }
+
+
+def _codex_mcp_shadow_call_fingerprint(tool_id: Any, arguments: Any) -> str:
+    payload = {
+        "tool_id": str(tool_id or "").strip(),
+        "arguments": arguments if isinstance(arguments, dict) else {},
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _codex_mcp_shadow_prepare(
+    task: dict[str, Any],
+    screen_context: Any,
+    rollout_policy: Any,
+) -> dict[str, Any]:
+    """Materialize and validate a Shadow plan without starting MCP or calling tools."""
+
+    policy = rollout_policy if isinstance(rollout_policy, dict) else {}
+    if str(policy.get("mode") or "off") != "shadow":
+        return {}
+    try:
+        thread_config = _codex_native_mcp_thread_config(task, screen_context)
+        server = ((thread_config.get("mcp_servers") or {}).get("jk_system") or {})
+        env = server.get("env") if isinstance(server.get("env"), dict) else {}
+        encoded = str(env.get("JK_CODEX_MCP_CONTEXT_B64") or "").strip()
+        signature = str(env.get("JK_CODEX_MCP_CONTEXT_SIGNATURE") or "").strip().lower()
+        secret = str(env.get("JK_CODEX_MCP_CONTEXT_SECRET") or "")
+        expected_signature = hmac.new(
+            secret.encode("utf-8"),
+            encoded.encode("ascii"),
+            hashlib.sha256,
+        ).hexdigest()
+        if not encoded or not signature or not secret or not hmac.compare_digest(signature, expected_signature):
+            raise RuntimeError("signed_context_invalid")
+        padded = encoded + "=" * (-len(encoded) % 4)
+        context = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        if not isinstance(context, dict):
+            raise RuntimeError("signed_context_invalid")
+        task_client = _codex_safe_id(str(task.get("client_id") or "default"))
+        context_client = _codex_safe_id(str(context.get("client_id") or "default"))
+        expected_rollout_path = (
+            Path(_codex_base_info_dir()) / task_client / "codex_ai" / "mcp_rollout.sqlite3"
+        ).resolve()
+        context_rollout_path = Path(str(context.get("rollout_policy_db_path") or "")).resolve()
+        if context_client != task_client or context_rollout_path != expected_rollout_path:
+            raise RuntimeError("mcp_rollout_store_scope_invalid")
+        from backend.services import jk_codex_mcp_server
+
+        plan = jk_codex_mcp_server.validate_plan_v2(context)
+        expected_calls = [
+            {
+                "fingerprint": _codex_mcp_shadow_call_fingerprint(call.get("tool_id"), call.get("arguments")),
+                "required": call.get("required") is not False,
+            }
+            for call in list(plan.get("calls") or [])
+            if isinstance(call, dict)
+        ]
+        if not expected_calls:
+            raise RuntimeError("mcp_plan_materialization_incomplete")
+        return {
+            "status": "prepared",
+            "task_id": str(context.get("task_id") or task.get("task_id") or ""),
+            "execution_id": str(context.get("execution_id") or uuid.uuid4().hex),
+            "rollout_db_path": str(expected_rollout_path),
+            "rollout_version": max(0, int(policy.get("version") or 0)),
+            "expected_calls": expected_calls,
+        }
+    except RuntimeError as exc:
+        code = str(exc)
+        if code in {"mcp_plan_materialization_incomplete", "mcp_plan_store_refs_required"}:
+            return {"status": "not_eligible", "reason": "plan_or_store_scope_incomplete"}
+        return {"status": "invalid", "reason": "shadow_plan_validation_failed"}
+    except Exception:
+        return {"status": "not_eligible", "reason": "plan_or_store_scope_incomplete"}
+
+
+def _codex_mcp_shadow_finish(probe: Any, agent_trace: Any) -> dict[str, Any]:
+    """Compare the legacy calls with the validated Shadow plan, content-free."""
+
+    state = probe if isinstance(probe, dict) else {}
+    status = str(state.get("status") or "")
+    if status != "prepared":
+        return {
+            "shadow_observed": False,
+            "shadow_status": "not_eligible" if status == "not_eligible" else "invalid",
+            "external_call_executed": False,
+        } if status else {}
+    trace = agent_trace if isinstance(agent_trace, dict) else {}
+    actual_calls = [
+        _codex_mcp_shadow_call_fingerprint(item.get("tool_id"), item.get("args"))
+        for item in list(trace.get("tool_calls") or [])
+        if isinstance(item, dict) and str(item.get("protocol") or "legacy") != "mcp"
+    ]
+    expected = list(state.get("expected_calls") or [])
+    expected_calls = [str(item.get("fingerprint") or "") for item in expected if isinstance(item, dict)]
+    required_calls = {
+        str(item.get("fingerprint") or "")
+        for item in expected
+        if isinstance(item, dict) and item.get("required") is True
+    }
+    sequence_valid = actual_calls == expected_calls[: len(actual_calls)]
+    required_covered = required_calls.issubset(set(actual_calls))
+    matched = sequence_valid and required_covered
+    try:
+        path_text = str(state.get("rollout_db_path") or "").strip()
+        if not path_text:
+            raise RuntimeError("shadow_rollout_store_missing")
+        store = codex_mcp_rollout.MCPRolloutPolicyStore(Path(path_text).resolve())
+        current_policy = store.get()
+        if (
+            str(current_policy.get("mode") or "off") != "shadow"
+            or int(current_policy.get("version") or 0) != int(state.get("rollout_version") or 0)
+        ):
+            return {
+                "shadow_observed": False,
+                "shadow_status": "stale_rollout",
+                "shadow_plan_tools_count": len(expected_calls),
+                "shadow_legacy_tools_count": len(actual_calls),
+                "external_call_executed": False,
+            }
+        store.record_metric(
+            task_id=str(state.get("task_id") or "shadow-task"),
+            execution_id=str(state.get("execution_id") or uuid.uuid4().hex),
+            event_id=f"shadow-comparison-v1:{int(state.get('rollout_version') or 0)}",
+            status="shadow_match" if matched else "shadow_divergence",
+            error_code="" if matched else "shadow_decision_divergence",
+        )
+    except Exception:
+        return {
+            "shadow_observed": False,
+            "shadow_status": "metrics_unavailable",
+            "shadow_plan_tools_count": len(expected_calls),
+            "shadow_legacy_tools_count": len(actual_calls),
+            "external_call_executed": False,
+        }
+    return {
+        "shadow_observed": True,
+        "shadow_status": "match" if matched else "divergence",
+        "shadow_plan_tools_count": len(expected_calls),
+        "shadow_legacy_tools_count": len(actual_calls),
+        "external_call_executed": False,
     }
 
 
@@ -750,6 +1077,9 @@ def _codex_status_payload() -> dict[str, Any]:
         "success": True,
         "enabled": enabled,
         "ready": ready,
+        "execution_plane": CODEX_EXECUTION_PLANE,
+        "development_write_enabled": CODEX_DEVELOPMENT_WRITE_ENABLED,
+        "development_error_code": CODEX_DEVELOPMENT_ERROR_CODE,
         "runtime_status": runtime_status,
         "authentication_required": bool(sdk_ok and not auth_file_exists),
         "sdk_installed": sdk_ok,
@@ -764,7 +1094,7 @@ def _codex_status_payload() -> dict[str, Any]:
             "model": str(os.getenv("JK_CODEX_MODEL") or CODEX_DEFAULT_MODEL).strip() or CODEX_DEFAULT_MODEL,
             "reasoning_effort": str(os.getenv("JK_CODEX_REASONING_EFFORT") or "xhigh").strip() or "xhigh",
             "speed": str(os.getenv("JK_CODEX_SPEED") or "standard").strip() or "standard",
-            "approval_mode": "request",
+            "approval_mode": "read_only",
             "sandbox": "read_only",
             "agent_mode": _codex_agent_mode_enabled(),
         },
@@ -774,12 +1104,16 @@ def _codex_status_payload() -> dict[str, Any]:
 
 def _codex_status_for_session(sessao: dict[str, Any]) -> dict[str, Any]:
     payload = _codex_status_payload()
+    for sensitive_path_field in ("cli_path", "auth_file_path", "cwd"):
+        payload.pop(sensitive_path_field, None)
     is_full = bool(sessao.get("is_full"))
     payload["access"] = {
         "mode": "full" if is_full else "read_only",
         "can_mutate": is_full,
         "can_approve": is_full,
         "can_upload": is_full,
+        "development_write_enabled": False,
+        "typed_commercial_actions_only": True,
     }
     if not is_full:
         payload.pop("cli_path", None)
@@ -966,14 +1300,24 @@ def _codex_transition_task_plan(
     return plan
 
 
+def _codex_public_conversation_metadata(task: dict[str, Any]) -> dict[str, Any]:
+    # Legacy tasks sometimes used the technical Codex thread as conversation
+    # identity. Public projections must never derive an identifier from it.
+    public_task = dict(task or {})
+    public_task["thread_id"] = ""
+    return _codex_task_conversation_metadata(public_task)
+
+
 def _codex_public_task(task: dict[str, Any]) -> dict[str, Any]:
-    conversation = _codex_task_conversation_metadata(task)
+    conversation = _codex_public_conversation_metadata(task)
     return {
         "task_id": task.get("task_id"),
         "status": task.get("status"),
+        "execution_plane": CODEX_EXECUTION_PLANE,
+        "development_write_enabled": CODEX_DEVELOPMENT_WRITE_ENABLED,
+        "development_error_code": CODEX_DEVELOPMENT_ERROR_CODE,
         "sandbox": task.get("sandbox"),
-        "cwd": task.get("cwd"),
-        "thread_id": task.get("thread_id"),
+        "cwd": "",
         "thread_reused": bool(task.get("thread_reused")),
         "thread_restart_reasons": list(task.get("thread_restart_reasons") or []),
         "thread_prompt_version": task.get("thread_prompt_version") or "",
@@ -991,6 +1335,11 @@ def _codex_public_task(task: dict[str, Any]) -> dict[str, Any]:
         "prompt": task.get("prompt"),
         "mutable_intent": bool(task.get("mutable_intent")),
         "model": task.get("model"),
+        "requested_model": task.get("requested_model") or task.get("model"),
+        "effective_model": task.get("effective_model") or task.get("model"),
+        "model_category": task.get("model_category") or "general",
+        "model_policy_version": task.get("model_policy_version") or "disabled",
+        "model_reason_code": task.get("model_reason_code") or "baseline_default",
         "approval_mode": task.get("approval_mode"),
         "reasoning_effort": task.get("reasoning_effort"),
         "reasoning_level": task.get("reasoning_level") or task.get("reasoning_effort") or "",
@@ -1017,71 +1366,86 @@ def _codex_public_task(task: dict[str, Any]) -> dict[str, Any]:
         "runtime_retry_count": int(task.get("runtime_retry_count") or 0),
         "runtime_retry_after_seconds": int(task.get("runtime_retry_after_seconds") or 0),
         "tool_protocol": task.get("tool_protocol") or "typed_catalog_text_v1",
-        "mcp_migration": task.get("mcp_migration") if isinstance(task.get("mcp_migration"), dict) else {},
+        "mcp_migration": _codex_public_mcp_migration(task.get("mcp_migration")),
         "speed": task.get("speed"),
         "service_tier": task.get("service_tier"),
         "goal": task.get("goal") or "",
         "planning_mode": bool(task.get("planning_mode")),
-        "paths": list(task.get("paths") or []),
-        "scope": task.get("scope") if isinstance(task.get("scope"), dict) else {},
-        "scope_changed_files": list(task.get("scope_changed_files") or []),
-        "scope_violations": list(task.get("scope_violations") or []),
-        "screen_context": task.get("screen_context") if isinstance(task.get("screen_context"), dict) else {},
-        "history": list(task.get("history") or [])[-40:],
-        "context_stats": task.get("context_stats") if isinstance(task.get("context_stats"), dict) else {},
-        "app_data_context": task.get("app_data_context") if isinstance(task.get("app_data_context"), dict) else {},
-        "conversation_summary": task.get("conversation_summary") if isinstance(task.get("conversation_summary"), dict) else {},
-        "conversation_compaction": task.get("conversation_compaction") if isinstance(task.get("conversation_compaction"), dict) else {},
+        "attachments": list(task.get("attachments") or []),
+        "reference_paths": [],
+        "paths": [],
+        "scope": _codex_public_scope(task.get("scope")),
+        "scope_changed_files": [],
+        "scope_violations": [],
+        "screen_context": {},
+        "history": [],
+        "context_stats": _codex_public_context_stats(task.get("context_stats")),
+        "app_data_context": {},
+        "conversation_summary": {},
+        "conversation_compaction": {},
         "agent_mode": bool(task.get("agent_mode")),
         "plan_id": task.get("plan_id") or "",
         "agent_state": task.get("agent_state") or ("concluido" if task.get("status") == "completed" else "entendendo"),
         "steps": list(task.get("steps") or []),
         "current_step": task.get("current_step") or "",
-        "required_input": list(task.get("required_input") or []),
-        "proposal": task.get("proposal") if isinstance(task.get("proposal"), dict) else {},
-        "action_run": task.get("action_run") if isinstance(task.get("action_run"), dict) else {},
-        "guidance_applied": list(task.get("guidance_applied") or []),
-        "verification": task.get("verification") if isinstance(task.get("verification"), dict) else {},
+        "required_input": _codex_public_required_input(task.get("required_input")),
+        "proposal": _codex_public_proposal(task.get("proposal")),
+        "action_run": _codex_public_action_run(task.get("action_run")),
+        "guidance_applied": [],
+        "verification": _codex_public_verification(task.get("verification")),
         "idempotency_key": task.get("idempotency_key") or "",
-        "agent_steps": list(task.get("agent_steps") or []),
-        "tool_calls": list(task.get("tool_calls") or []),
-        "tool_results_summary": list(task.get("tool_results_summary") or []),
-        "sources": list(task.get("sources") or []),
-        "warnings": list(task.get("warnings") or []),
-        "observability": _codex_observability_from_task(task),
-        "live_status": task.get("live_status") or "",
+        "agent_steps": _codex_public_status_events(task.get("agent_steps")),
+        "tool_calls": _codex_public_tool_summaries(task.get("tool_calls")),
+        "tool_results_summary": _codex_public_tool_summaries(task.get("tool_results_summary")),
+        "sources": _codex_public_sources(task.get("sources")),
+        "warnings": [_codex_sanitize_log_text(item, 300) for item in list(task.get("warnings") or [])[:30]],
+        "observability": _codex_public_observability(_codex_observability_from_task(task)),
+        "live_status": _codex_sanitize_log_text(task.get("live_status") or "", 240),
         "live_answer": task.get("live_answer") or "",
-        "reasoning_summary": task.get("reasoning_summary") or "",
-        "live_plan": task.get("live_plan") or "",
+        "reasoning_summary": "",
+        "live_plan": "",
         "token_usage": task.get("token_usage") if isinstance(task.get("token_usage"), dict) else {},
         "turn_id": task.get("turn_id") or "",
         "active_turn_id": task.get("active_turn_id") or "",
         "can_steer": bool(task.get("can_steer")),
         "wait_reason": task.get("wait_reason") or "",
-        "progress_events": list(task.get("progress_events") or [])[-120:],
+        "progress_events": _codex_public_status_events(task.get("progress_events")),
         "last_progress_at": task.get("last_progress_at") or "",
-        "deadline_at": task.get("deadline_at") or "",
-        "deadline_seconds": int(task.get("deadline_seconds") or 0),
-        "steer_events": list(task.get("steer_events") or [])[-20:],
+        "deadline_enabled": bool(
+            task.get("deadline_enabled") is not False
+            and str(task.get("origin") or "").strip().lower() != "whatsapp"
+        ),
+        "deadline_at": (
+            ""
+            if task.get("deadline_enabled") is False or str(task.get("origin") or "").strip().lower() == "whatsapp"
+            else task.get("deadline_at") or ""
+        ),
+        "deadline_seconds": (
+            0
+            if task.get("deadline_enabled") is False or str(task.get("origin") or "").strip().lower() == "whatsapp"
+            else int(task.get("deadline_seconds") or 0)
+        ),
+        "steer_events": _codex_public_steer_events(task.get("steer_events")),
         "final_response": task.get("final_response") or "",
-        "error": task.get("error") or "",
+        "error": _codex_sanitize_log_text(task.get("error") or "", 500),
+        "error_code": str(task.get("error_code") or "")[:100],
         "message_kind": task.get("message_kind") or "",
         "memory_excluded": bool(task.get("memory_excluded")),
         "report_id": task.get("report_id") or "",
         "report_formats": list(task.get("report_formats") or []),
-        "logs": list(task.get("logs") or [])[-80:],
+        "logs": [],
         "created_at": task.get("created_at"),
         "started_at": task.get("started_at"),
         "completed_at": task.get("completed_at"),
         "created_by": task.get("created_by"),
         "client_id": task.get("client_id"),
         "origin": task.get("origin") or "app",
-        "channel_message_id": task.get("channel_message_id") or "",
-        "channel_metadata": task.get("channel_metadata") if isinstance(task.get("channel_metadata"), dict) else {},
+        "channel_message_id": "",
+        "channel_metadata": {},
         "external_safe_mode": bool(task.get("external_safe_mode")),
         "whatsapp_full_access": bool(task.get("whatsapp_full_access")),
         "whatsapp_query_only": bool(task.get("whatsapp_query_only")),
-        "query_policy": task.get("query_policy") if isinstance(task.get("query_policy"), dict) else {},
+        "query_policy": _codex_public_query_policy(task.get("query_policy")),
         "access_mode": task.get("access_mode") or ("full" if task.get("sandbox") != "read_only" else "read_only"),
         "approval_required": bool(task.get("approval_required")),
         "approved": bool(task.get("approved")),
@@ -1089,7 +1453,7 @@ def _codex_public_task(task: dict[str, Any]) -> dict[str, Any]:
 
 
 def _codex_task_summary(task: dict[str, Any]) -> dict[str, Any]:
-    conversation = _codex_task_conversation_metadata(task)
+    conversation = _codex_public_conversation_metadata(task)
     prompt = str(task.get("prompt") or "")
     response = str(
         task.get("final_response")
@@ -1111,7 +1475,6 @@ def _codex_task_summary(task: dict[str, Any]) -> dict[str, Any]:
         "conversation_state": conversation.get("conversation_state") or "archived",
         "channel": conversation.get("channel") or "app",
         "queue_position": _codex_task_queue_position(task),
-        "thread_id": task.get("thread_id") or "",
         "prompt_preview": prompt[:240],
         "response_preview": response[:600],
         "message_kind": task.get("message_kind") or "",
@@ -1121,13 +1484,15 @@ def _codex_task_summary(task: dict[str, Any]) -> dict[str, Any]:
         "plan_id": task.get("plan_id") or "",
         "agent_state": task.get("agent_state") or "",
         "current_step": task.get("current_step") or "",
-        "required_input": list(task.get("required_input") or []),
+        "required_input": _codex_public_required_input(task.get("required_input")),
         "proposal_id": str((task.get("proposal") or {}).get("proposal_id") or "") if isinstance(task.get("proposal"), dict) else "",
-        "verification": task.get("verification") if isinstance(task.get("verification"), dict) else {},
+        "verification": _codex_public_verification(task.get("verification")),
         "memory_excluded": bool(task.get("memory_excluded")),
         "report_id": task.get("report_id") or "",
         "report_formats": list(task.get("report_formats") or []),
-        "context_stats": task.get("context_stats") if isinstance(task.get("context_stats"), dict) else {},
+        "context_stats": _codex_public_context_stats(task.get("context_stats")),
+        "observability": _codex_public_observability(_codex_observability_from_task(task)),
+        "mcp_migration": _codex_public_mcp_migration(task.get("mcp_migration")),
         "token_usage": task.get("token_usage") if isinstance(task.get("token_usage"), dict) else {},
     }
 
@@ -1304,18 +1669,11 @@ def _codex_cleanup_old_attachments() -> None:
 
 
 def _codex_attachment_public_payload(path: Path, original_name: str, mime_type: str, size: int) -> dict[str, Any]:
-    absolute = path.resolve()
-    try:
-        rel = os.path.relpath(str(absolute), _codex_base_dir()).replace("\\", "/")
-    except Exception:
-        rel = _codex_relpath(str(absolute), _codex_base_dir())
     return {
         "id": path.stem.split("_", 1)[0],
         "name": original_name,
         "mime_type": mime_type or "application/octet-stream",
         "size": int(size or 0),
-        "path": rel,
-        "relative_path": rel,
     }
 
 
@@ -1361,7 +1719,7 @@ def _codex_canonical_conversation_id(
         if lane_norm
         else f"{client_norm}:{username_norm}:{channel_norm}:{phone_norm}"
     )
-    digest = hashlib.sha256(raw.encode("utf-8", "ignore")).hexdigest()[:24]
+    digest = _codex_hmac_identifier(raw, namespace="conversation")[-24:]
     prefix = "wa" if channel_norm == "whatsapp" else "app"
     return f"{prefix}_{lane_norm}_{digest}" if lane_norm else f"{prefix}_{digest}"
 
@@ -1519,7 +1877,7 @@ def _codex_load_or_create_conversation_state(
             "created_by": str(username or "").strip().lower(),
             "channel": channel_norm,
             "agent_lane": lane_norm,
-            "phone_fingerprint": hashlib.sha256(phone_norm.encode("utf-8")).hexdigest()[:16] if phone_norm else "",
+            "phone_fingerprint": _codex_hmac_identifier(phone_norm, namespace="whatsapp_phone")[-24:] if phone_norm else "",
             "generation": 1,
             "state": "active",
             "summary": str(legacy_summary.get("summary") or ""),
@@ -2272,27 +2630,459 @@ def _codex_whatsapp_history_message_preview(task: dict[str, Any]) -> dict[str, A
     }
 
 
+def _codex_sanitize_log_text(value: Any, limit: int = 500) -> str:
+    text = str(value or "").replace("\x00", " ").strip()
+    if not text:
+        return ""
+    text = re.sub(r"(?i)\b(bearer|api[_ -]?key|authorization|token|secret|password)\b\s*[:=]?\s*\S+", r"\1=[REDACTED]", text)
+    text = re.sub(r"(?i)\b[A-Z]:\\[^\r\n\t]+", "[PATH_REDACTED]", text)
+    text = re.sub(r"(?<!:)\/(?:[^\s/]+\/){2,}[^\s]+", "[PATH_REDACTED]", text)
+    text = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "[EMAIL_REDACTED]", text)
+    text = re.sub(r"(?<!\d)(?:\d[ .()\/-]?){10,14}(?!\d)", "[IDENTIFIER_REDACTED]", text)
+    text = re.sub(
+        r"(?i)\b(?:rua|avenida|av\.?|travessa|alameda|rodovia|pra[cç]a)\s+[^,;\r\n]{2,100}(?:,\s*\d{1,6})?",
+        "[ADDRESS_REDACTED]",
+        text,
+    )
+    text = re.sub(r"(?is)<jk_tool_calls>.*?</jk_tool_calls>", "[TOOL_PAYLOAD_REDACTED]", text)
+    text = re.sub(r"(?is)\b(?:arguments?|result|payload)\s*[:=]\s*[\[{].*", "[TOOL_PAYLOAD_REDACTED]", text)
+    text = re.sub(r"(?is)traceback \(most recent call last\):.*", "[STACK_TRACE_REDACTED]", text)
+    return text[: max(1, int(limit or 1))]
+
+
+def _codex_public_stable_code(value: Any, limit: int = 100) -> str:
+    text = str(value or "").strip()
+    maximum = max(1, min(int(limit or 1), 160))
+    if not text or len(text) > maximum:
+        return ""
+    return text if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.:-]*", text) else ""
+
+
+_CODEX_PUBLIC_CONTEXT_STAT_FIELDS = (
+    "prompt_chars",
+    "screen_context_chars",
+    "screen_context_bytes",
+    "app_data_context_chars",
+    "app_data_context_bytes",
+    "app_tool_results_count",
+    "visible_text_chars",
+    "controls_count",
+    "table_rows_count",
+    "filtros_count",
+    "listas_count",
+    "run_prompt_chars",
+    "estimated_input_tokens",
+    "estimated_tokens",
+    "estimated_context_tokens",
+    "estimated_app_data_tokens",
+    "history_chars",
+    "estimated_history_tokens",
+    "context_soft_limit",
+    "context_target",
+)
+
+
+def _codex_public_context_stats(value: Any) -> dict[str, Any]:
+    item = value if isinstance(value, dict) else {}
+    public: dict[str, Any] = {}
+    for key in _CODEX_PUBLIC_CONTEXT_STAT_FIELDS:
+        if key not in item:
+            continue
+        try:
+            public[key] = max(0, min(int(item.get(key) or 0), 2_000_000_000))
+        except (TypeError, ValueError):
+            public[key] = 0
+    for key in ("conversation_compacted", "agent_mode"):
+        if key in item:
+            public[key] = item.get(key) is True
+    return public
+
+
+def _codex_public_observability(value: Any) -> dict[str, Any]:
+    item = value if isinstance(value, dict) else {}
+    try:
+        records = max(0, min(int(item.get("records") or 0), 2_000_000_000))
+    except (TypeError, ValueError):
+        records = 0
+    failures = [
+        _codex_sanitize_log_text(entry, 240)
+        for entry in list(item.get("failures") or [])[:6]
+    ]
+    next_fallbacks = [
+        _codex_sanitize_log_text(entry, 180)
+        for entry in list(item.get("next_fallbacks") or [])[:8]
+    ]
+    sources = [
+        _codex_sanitize_log_text(entry, 180)
+        for entry in list(item.get("sources") or [])[:8]
+    ]
+    source = _codex_sanitize_log_text(item.get("source") or "", 180)
+    return {
+        "current_status": _codex_sanitize_log_text(item.get("current_status") or "", 160),
+        "last_tool": _codex_sanitize_log_text(item.get("last_tool") or "", 120),
+        "last_tool_module": _codex_public_stable_code(item.get("last_tool_module"), 100),
+        "source": source,
+        "sources": [entry for entry in sources if entry],
+        "records": records,
+        "confidence": _codex_public_stable_code(item.get("confidence"), 40),
+        "enough_data": item.get("enough_data") if isinstance(item.get("enough_data"), bool) else None,
+        "failures": [entry for entry in failures if entry],
+        "next_fallbacks": [entry for entry in next_fallbacks if entry],
+        "tool_calls_count": max(0, min(int(item.get("tool_calls_count") or 0), 100_000)),
+        "tool_results_count": max(0, min(int(item.get("tool_results_count") or 0), 100_000)),
+        "updated_at": str(item.get("updated_at") or "")[:40],
+    }
+
+
+def _codex_public_mcp_migration(value: Any) -> dict[str, Any]:
+    item = value if isinstance(value, dict) else {}
+    if not item:
+        return {}
+    public: dict[str, Any] = {
+        "target": "jk_system_mcp" if item.get("target") == "jk_system_mcp" else "",
+        "native_enabled": item.get("native_enabled") is True,
+        "native_active": item.get("native_active") is True,
+        "legacy_parser_fallback": item.get("legacy_parser_fallback") is True,
+        "fallback_used": item.get("fallback_used") is True,
+    }
+    if isinstance(item.get("shadow_observed"), bool):
+        public["shadow_observed"] = item.get("shadow_observed") is True
+    if isinstance(item.get("external_call_executed"), bool):
+        public["external_call_executed"] = item.get("external_call_executed") is True
+    shadow_status = str(item.get("shadow_status") or "").strip().lower()
+    if shadow_status in {"prepared", "match", "divergence", "not_eligible", "invalid", "metrics_unavailable", "stale_rollout"}:
+        public["shadow_status"] = shadow_status
+    for field in ("shadow_plan_tools_count", "shadow_legacy_tools_count"):
+        if field not in item:
+            continue
+        try:
+            public[field] = max(0, min(int(item.get(field) or 0), 100))
+        except (TypeError, ValueError):
+            public[field] = 0
+    rollout_mode = str(item.get("rollout_mode") or "").strip().lower()
+    if rollout_mode in codex_mcp_rollout.ROLLOUT_MODES:
+        public["rollout_mode"] = rollout_mode
+    try:
+        public["rollout_version"] = max(0, int(item.get("rollout_version") or 0))
+    except (TypeError, ValueError):
+        public["rollout_version"] = 0
+    disabled_reason = str(item.get("disabled_reason") or "").strip()
+    if disabled_reason in {"rollout_or_plan_not_eligible", "data_selection_cutover"}:
+        public["disabled_reason"] = disabled_reason
+    fallback_boundary = str(item.get("fallback_boundary") or "").strip()
+    if fallback_boundary in {"before_first_external_call", "before_first_external_call_only"}:
+        public["fallback_boundary"] = fallback_boundary
+    fallback_error_code = str(item.get("fallback_error_code") or "").strip()
+    if item.get("fallback_error") not in (None, ""):
+        fallback_error_code = "MCP_RUNTIME_UNAVAILABLE"
+    if fallback_error_code == "MCP_RUNTIME_UNAVAILABLE":
+        public["fallback_error_code"] = fallback_error_code
+    return public
+
+
+def _codex_public_scope(value: Any) -> dict[str, Any]:
+    scope = value if isinstance(value, dict) else {}
+    return {
+        "sandbox": "read_only",
+        "enforced": True,
+        "modules": [str(item or "")[:80] for item in list(scope.get("modules") or [])[:30]],
+        "reason": str(scope.get("reason") or "internal_read_only")[:100],
+    }
+
+
+def _codex_public_tool_summaries(value: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in list(value or [])[:80]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            count = max(0, int(item.get("count") or item.get("total") or 0))
+        except (TypeError, ValueError):
+            count = 0
+        rows.append(
+            {
+                "tool_id": str(item.get("tool_id") or item.get("name") or "")[:100],
+                "status": str(item.get("status") or "")[:40],
+                "count": count,
+            }
+        )
+    return rows
+
+
+def _codex_public_sources(value: Any) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for item in list(value or [])[:50]:
+        if isinstance(item, dict):
+            source_id = str(item.get("citation_id") or item.get("source_id") or item.get("id") or "")[:120]
+            source_type = str(item.get("type") or item.get("source") or "internal")[:80]
+            title = _codex_sanitize_log_text(item.get("title") or item.get("label") or "", 180)
+            url = str(item.get("url") or "").strip()
+            if url and not re.match(r"^https://", url, re.IGNORECASE):
+                url = ""
+        else:
+            text = _codex_sanitize_log_text(item, 180)
+            if not text:
+                continue
+            source_id, source_type, title, url = "", "internal", text, ""
+        rows.append({"source_id": source_id, "type": source_type, "title": title, "url": url[:500]})
+    return rows
+
+
+def _codex_public_status_events(value: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in list(value or [])[-120:]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            cycle = max(0, int(item.get("cycle") or 0))
+        except (TypeError, ValueError):
+            cycle = 0
+        rows.append(
+            {
+                "cycle": cycle,
+                "kind": str(item.get("kind") or "status")[:40],
+                "status": _codex_sanitize_log_text(item.get("status") or item.get("text") or "", 180),
+                "tool_id": str(item.get("tool_id") or "")[:100],
+                "at": str(item.get("at") or "")[:40],
+            }
+        )
+    return rows
+
+
+def _codex_public_steer_events(value: Any) -> list[dict[str, str]]:
+    """Expose steer lifecycle metadata without projecting user messages."""
+
+    rows: list[dict[str, str]] = []
+    for item in list(value or [])[-20:]:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "request_id": _codex_public_stable_code(item.get("request_id"), 120),
+                "mode": _codex_public_stable_code(item.get("mode"), 40),
+                "created_at": _codex_public_stable_code(item.get("created_at"), 40),
+            }
+        )
+    return rows
+
+
+def _codex_public_required_input(value: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in list(value or [])[:20]:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "field": _codex_public_stable_code(item.get("field") or item.get("id"), 100),
+                "label": _codex_sanitize_log_text(item.get("label") or "", 160),
+                "message": _codex_sanitize_log_text(item.get("message") or item.get("question") or "", 240),
+                "required": item.get("required") is not False,
+            }
+        )
+    return rows
+
+
+def _codex_public_proposal(value: Any) -> dict[str, Any]:
+    item = value if isinstance(value, dict) else {}
+    if not item:
+        return {}
+    try:
+        version = max(0, int(item.get("version") or 0))
+    except (TypeError, ValueError):
+        version = 0
+    return {
+        "proposal_id": str(item.get("proposal_id") or "")[:120],
+        "version": version,
+        "proposal_hash": str(item.get("proposal_hash") or "")[:128],
+        "action_id": str(item.get("action_id") or item.get("capability_id") or "")[:120],
+        "status": str(item.get("status") or "awaiting_approval")[:40],
+        "risk": str(item.get("risk") or "")[:40],
+        "summary": _codex_sanitize_log_text(item.get("summary") or "", 240),
+    }
+
+
+def _codex_public_verification(value: Any) -> dict[str, Any]:
+    item = value if isinstance(value, dict) else {}
+    if not item:
+        return {}
+    return {
+        "status": _codex_public_stable_code(item.get("status"), 40),
+        "confirmed": item.get("confirmed") is True,
+        "error_code": _codex_public_stable_code(item.get("error_code"), 100),
+    }
+
+
+def _codex_public_action_run(value: Any) -> dict[str, Any]:
+    item = value if isinstance(value, dict) else {}
+    if not item:
+        return {}
+    return {
+        "run_id": str(item.get("run_id") or item.get("action_run_id") or "")[:120],
+        "action_id": str(item.get("action_id") or "")[:120],
+        "status": str(item.get("status") or "")[:40],
+        "error_code": str(item.get("error_code") or "")[:100],
+        "created_at": str(item.get("created_at") or "")[:40],
+        "completed_at": str(item.get("completed_at") or "")[:40],
+        "verification": _codex_public_verification(item.get("verification")),
+    }
+
+
+def _codex_public_query_policy(value: Any) -> dict[str, Any]:
+    item = value if isinstance(value, dict) else {}
+    if not item:
+        return {}
+    allowed_domains = {"vendas", "anuncios_ml", "estoque", "mercado_full"}
+    return {
+        "mode": str(item.get("mode") or "")[:40],
+        "domains": [
+            str(domain) for domain in list(item.get("domains") or [])[:10]
+            if str(domain) in allowed_domains
+        ],
+        "read_only": item.get("read_only") is True,
+        "deny_approval": item.get("deny_approval") is True,
+        "store_required": item.get("store_required") is True,
+        "store_mode": str(item.get("store_mode") or "")[:40],
+    }
+
+
+def _codex_task_duration_ms(task: dict[str, Any]) -> int:
+    try:
+        start = datetime.fromisoformat(str(task.get("started_at") or task.get("created_at") or "").replace("Z", "+00:00"))
+        end = datetime.fromisoformat(str(task.get("completed_at") or _codex_now()).replace("Z", "+00:00"))
+        return max(0, int((end - start).total_seconds() * 1000))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _codex_telemetry_finish_task(task: dict[str, Any]) -> None:
+    try:
+        telemetry = _codex_ai_telemetry_instance()
+        client_id = str(task.get("client_id") or "default")
+        trace_id = str(task.get("trace_id") or task.get("task_id") or "")
+        status = str(task.get("status") or "unknown")
+        duration_ms = _codex_task_duration_ms(task)
+        telemetry.finish_span(
+            client_id,
+            trace_id=trace_id,
+            span_id=f"{trace_id}:finalization",
+            stage="finalization",
+            status="completed" if status in {"completed", "partial"} else status,
+            duration_ms=0,
+            error_code=str(task.get("error_code") or ""),
+        )
+        telemetry.record_event(
+            client_id,
+            event_id=f"{task.get('task_id')}:terminal",
+            trace_id=trace_id,
+            event_type="inference",
+            status=status,
+            requested_model=task.get("requested_model") or task.get("model"),
+            effective_model=task.get("effective_model") or task.get("model"),
+            provider=task.get("provider") or "openai_codex",
+            provider_path=task.get("provider_path") or "codex_internal",
+            model_rerouted=bool(task.get("model_rerouted")),
+            duration_ms=duration_ms,
+            input_tokens=(task.get("token_usage") or {}).get("input_tokens", 0),
+            output_tokens=(task.get("token_usage") or {}).get("output_tokens", 0),
+            cached_tokens=(task.get("token_usage") or {}).get("cached_input_tokens", 0),
+            tool_codes=[
+                item.get("tool_id") or item.get("name")
+                for item in list(task.get("tool_calls") or [])
+                if isinstance(item, dict)
+            ],
+            context_generation=task.get("conversation_generation"),
+            error_code=task.get("error_code") or ("TASK_FAILED" if status == "failed" else ""),
+            user_id=task.get("created_by"),
+            store_id=(task.get("query_policy") or {}).get("store", ""),
+            dimensions={
+                "surface": task.get("origin") or "app",
+                "category": task.get("model_category") or "general",
+                "prompt_version": task.get("thread_prompt_version") or CODEX_SIDEBAR_TASK_PROMPT_VERSION,
+                "tool_schema_version": task.get("thread_schema_version") or CODEX_SIDEBAR_TASK_SCHEMA_VERSION,
+                "model_policy_version": task.get("model_policy_version") or "disabled",
+                "model_reason_code": task.get("model_reason_code") or "baseline_default",
+            },
+        )
+        telemetry.finish_trace(
+            client_id,
+            trace_id=trace_id,
+            status=status,
+            effective_model=task.get("effective_model") or task.get("model"),
+            provider=task.get("provider") or "openai_codex",
+            duration_ms=duration_ms,
+            error_code=task.get("error_code") or ("TASK_FAILED" if status == "failed" else ""),
+        )
+    except Exception:
+        return
+
+
 def _codex_update_task(task_id: str, **updates: Any) -> dict[str, Any]:
+    if "error" in updates:
+        updates["error"] = _codex_sanitize_log_text(updates.get("error"), 500)
+    terminal_transition = False
     with CODEX_TASKS_LOCK:
         task = CODEX_TASKS.get(task_id)
         if not task:
             raise KeyError(task_id)
+        previous_status = str(task.get("status") or "")
         task.update(updates)
         _codex_persist_task(task)
-        return task
+        terminal_transition = (
+            str(task.get("status") or "") in {"completed", "partial", "failed", "canceled"}
+            and previous_status not in {"completed", "partial", "failed", "canceled"}
+        )
+        result = task
+    if terminal_transition:
+        _codex_telemetry_finish_task(result)
+    return result
 
 
 def _codex_log(task: dict[str, Any], text: str, kind: str = "status") -> None:
+    del text
     logs = task.setdefault("logs", [])
-    logs.append({"at": _codex_now(), "text": str(text or "")[:2000], "kind": str(kind or "status")[:40]})
+    kind_safe = str(kind or "status")[:40]
+    logs.append(
+        {
+            "at": _codex_now(),
+            "text": "Aviso tecnico registrado." if kind_safe in {"warning", "error"} else "Evento tecnico registrado.",
+            "kind": kind_safe,
+        }
+    )
     task["logs"] = logs[-240:]
     _codex_persist_task(task)
+
+
+def _codex_public_error(
+    error_code: str,
+    message: str,
+    *,
+    retryable: bool = False,
+    trace_id: str = "",
+) -> dict[str, Any]:
+    return {
+        "error_code": str(error_code or "CODEX_ERROR")[:100],
+        "trace_id": str(trace_id or uuid.uuid4().hex)[:100],
+        "retryable": bool(retryable),
+        "message": _codex_clean_text(message, 500),
+    }
+
+
+def _codex_development_requires_desktop_detail() -> dict[str, Any]:
+    return _codex_public_error(
+        CODEX_DEVELOPMENT_ERROR_CODE,
+        "Alteracoes de codigo devem ser feitas no Codex Desktop, em um Worktree, e aplicadas ao checkout Local somente apos revisao.",
+    )
 
 
 def _codex_normalizar_sandbox(value: str) -> str:
     sandbox = str(value or "read_only").strip().lower()
     if sandbox not in CODEX_SANDBOXES:
-        raise HTTPException(status_code=400, detail="Sandbox invalido para Codex.")
+        raise HTTPException(
+            status_code=400,
+            detail=_codex_public_error("CODEX_SANDBOX_INVALID", "Sandbox invalido para o assistente interno."),
+        )
+    if sandbox not in CODEX_INTERNAL_ALLOWED_SANDBOXES:
+        raise HTTPException(status_code=409, detail=_codex_development_requires_desktop_detail())
     return sandbox
 
 
@@ -2434,6 +3224,29 @@ def _codex_prompt_pede_alteracao(prompt: str) -> bool:
         r"\b(change|edit|fix|implement|create|add|remove|delete|update|save|write|modify|patch)\b",
     )
     return any(re.search(pattern, text) for pattern in patterns)
+
+
+def _codex_prompt_pede_desenvolvimento(prompt: str) -> bool:
+    """Distingue alteracao de codigo de uma acao comercial tipada do app."""
+
+    text = _codex_texto_sem_acentos(prompt)
+    development_objects = (
+        r"\b(codigo|codebase|repositorio|repository|branch|worktree|commit|pull request|pr)\b",
+        r"\b(arquivo|file|pasta|diretorio|source|fonte)\b.*\b(py|python|js|javascript|ts|html|css|toml|yaml|json|md)\b",
+        r"\b(terminal|shell|powershell|cmd|bash|comando)\b",
+        r"\b(endpoint|rota|router|backend|frontend|fastapi|electron|modulo)\b",
+        r"\b(teste|testes|pytest|npm|build|instalador|release)\b",
+    )
+    development_actions = (
+        r"\b(altere|alterar|ajuste|ajustar|corrija|corrigir|implemente|implementar)\b",
+        r"\b(crie|criar|adicione|adicionar|edite|editar|modifique|modificar)\b",
+        r"\b(remova|remover|apague|apagar|delete|deletar|refatore|refatorar)\b",
+        r"\b(execute|executar|rode|rodar|instale|instalar|publique|publicar)\b",
+        r"\b(change|edit|fix|implement|create|add|remove|delete|update|write|patch|refactor)\b",
+    )
+    return any(re.search(pattern, text) for pattern in development_objects) and any(
+        re.search(pattern, text) for pattern in development_actions
+    )
 
 
 def _codex_normalizar_screen_context(value: Any) -> dict[str, Any]:
@@ -2896,10 +3709,19 @@ def _codex_agent_planned_calls(selection: Any) -> list[dict[str, Any]]:
             "limit": hub_limit,
         }
         for filter_key, argument_key in (
+            ("sku", "sku"),
+            ("mlb", "mlb"),
             ("module", "module"),
             ("source_type", "source_type"),
-            ("surface", "environment"),
+            ("surface", "surface"),
             ("ids", "ids"),
+            ("document_types", "document_types"),
+            ("store_ref", "store_ref"),
+            ("tags", "tags"),
+            ("valid_at", "valid_at"),
+            ("truth_class", "truth_class"),
+            ("authority", "authority"),
+            ("sensitivity", "sensitivity"),
         ):
             filter_value = hub_filters.get(filter_key)
             if filter_value not in (None, "", [], {}):
@@ -2975,6 +3797,7 @@ def _codex_agent_plan_short_data_selection(
     catalog: list[dict[str, Any]],
     screen_context: Any,
     conversation_context: Any = None,
+    trace_id: str = "",
 ) -> dict[str, Any]:
     """Plan only the business data tools exposed to the responder."""
 
@@ -3031,19 +3854,24 @@ def _codex_agent_plan_short_data_selection(
             )
         if recent_messages:
             conversation_anchors["recent_messages"] = recent_messages
-        plan = codex_data_selection_agent.DATA_SELECTION_RUNTIME.plan(
-            request_text=str(prompt or "")[:12000],
-            job_prompt=str(prompt or "")[:12000],
-            surface="app",
-            allowed_tools=planner_catalog,
-            authorized_stores=authorized_stores,
-            conversation_anchors=conversation_anchors,
-            previous_evidence=None,
-            data_gap=None,
-            model="gpt-5.6-luna",
-            reasoning_effort="low",
-            max_calls=6,
-        )
+        with codex_data_selection_agent.DATA_SELECTION_RUNTIME.telemetry_scope(
+            client_id=tenant,
+            trace_id=trace_id,
+            manage_trace=not bool(trace_id),
+        ):
+            plan = codex_data_selection_agent.DATA_SELECTION_RUNTIME.plan(
+                request_text=str(prompt or "")[:12000],
+                job_prompt=str(prompt or "")[:12000],
+                surface="app",
+                allowed_tools=planner_catalog,
+                authorized_stores=authorized_stores,
+                conversation_anchors=conversation_anchors,
+                previous_evidence=None,
+                data_gap=None,
+                model="gpt-5.6-luna",
+                reasoning_effort="low",
+                max_calls=6,
+            )
         compact = codex_data_selection_agent.compact_evidence(plan, report=False)
         return compact if isinstance(compact, dict) else {}
     except Exception:
@@ -3081,6 +3909,7 @@ def _codex_agent_materialize_task_data_selection(
             catalog,
             screen_context,
             conversation_context,
+            str(task.get("trace_id") or task.get("task_id") or ""),
         )
     if not isinstance(selection, dict) or not selection:
         selection = {
@@ -3341,8 +4170,8 @@ def _codex_agent_initial_prompt(
             )
         elif selection_action == "mutation_candidate":
             selection_instruction = (
-                "Nao solicite ferramentas comerciais. Continue aplicando as regras normais de sandbox e aprovacao "
-                "para ferramentas nativas de codigo ou acoes explicitamente autorizadas."
+                "Nao solicite nem execute ferramentas. Para desenvolvimento, oriente o usuario a abrir o Codex Desktop "
+                "em um Worktree; para operacoes comerciais, limite-se a explicar que a proposta tipada deve ser criada e aprovada no aplicativo."
             )
         else:
             selection_instruction = (
@@ -3359,9 +4188,8 @@ def _codex_agent_initial_prompt(
         tool_protocol = (
             "Protocolo de ferramenta:\n"
             "Use diretamente as ferramentas tipadas do servidor MCP jk_system. "
-            "Nao escreva blocos jk_tool_calls quando o MCP estiver disponivel.\n"
-            "Se o servidor MCP nao estiver disponivel neste turno, use o rollback temporario: "
-            "<jk_tool_calls>[{\"tool_id\":\"id_autorizado\",\"args\":{}}]</jk_tool_calls>.\n"
+            "Nao escreva blocos jk_tool_calls quando o MCP estiver disponivel. "
+            "Se o protocolo MCP falhar depois que o turno comecar, encerre com falha parcial; nunca troque para o parser legado no mesmo turno.\n"
             f"Use no maximo {max_calls} ferramentas por etapa e no maximo {max_cycles} etapas. "
             "Depois de cada retorno, verifique tool_validation.dados_suficientes e tente as proximas fontes autorizadas antes de concluir.\n\n"
         )
@@ -4467,6 +5295,8 @@ def _codex_agent_run_loop(
     initial_prompt: str,
     screen_context: Any,
     report_mode: bool,
+    *,
+    native_mcp: bool = False,
 ) -> tuple[str, dict[str, Any], dict[str, Any]]:
     max_cycles = _codex_int_env(
         "JK_CODEX_AGENT_REPORT_MAX_CYCLES" if report_mode else "JK_CODEX_AGENT_MAX_CYCLES",
@@ -4490,7 +5320,7 @@ def _codex_agent_run_loop(
     final_response = ""
     mcp_seen: set[str] = set()
     started_monotonic = time.monotonic()
-    deadline_seconds = max(30, min(int(task.get("deadline_seconds") or (600 if report_mode else 180)), 600))
+    deadline_seconds = _codex_agent_deadline_seconds(task, report_mode)
     data_selection = _codex_agent_data_selection_from_task(task)
     selection_enforced = bool(data_selection)
     planned_calls = _codex_agent_planned_calls(data_selection)
@@ -4501,7 +5331,7 @@ def _codex_agent_run_loop(
     query_policy = task.get("query_policy") if isinstance(task.get("query_policy"), dict) else {}
 
     for cycle in range(1, max_cycles + 1):
-        if time.monotonic() - started_monotonic >= deadline_seconds:
+        if deadline_seconds is not None and time.monotonic() - started_monotonic >= deadline_seconds:
             trace["deadline_exceeded"] = True
             trace["warnings"].append(f"Limite seguro de {deadline_seconds} segundos atingido.")
             final_response = (
@@ -4536,6 +5366,18 @@ def _codex_agent_run_loop(
         )
         if isinstance(state.get("token_usage"), dict):
             trace["token_usage"] = state.get("token_usage") or {}
+        if native_mcp:
+            legacy_calls, legacy_parse_error = _codex_agent_extract_tool_calls(response)
+            if legacy_parse_error or legacy_calls:
+                trace["warnings"].append("mcp_legacy_protocol_mix_blocked")
+                final_response = (
+                    "A consulta MCP nao terminou em um protocolo valido. Nenhuma chamada pelo parser legado foi executada; "
+                    "tente novamente para reiniciar a consulta de forma segura."
+                )
+            else:
+                final_response = response
+            final_state = state
+            break
         mcp_cycle_results = [] if selection_enforced else _codex_native_mcp_read_results(task_id, mcp_seen)
         for result in mcp_cycle_results:
             tool_id = str(result.get("tool_id") or "")
@@ -4649,7 +5491,7 @@ def _codex_agent_run_loop(
         if selection_enforced:
             external_allowed_tools &= selected_tool_ids
         for call in calls[:max_calls]:
-            if time.monotonic() - started_monotonic >= deadline_seconds:
+            if deadline_seconds is not None and time.monotonic() - started_monotonic >= deadline_seconds:
                 trace["deadline_exceeded"] = True
                 trace["warnings"].append(f"Limite seguro de {deadline_seconds} segundos atingido durante as consultas.")
                 break
@@ -5351,6 +6193,121 @@ def _codex_readonly_cwd_for_session(sessao: dict[str, Any], conversation_id: str
     return str(path.resolve())
 
 
+def _codex_authorized_reference_roots(
+    sessao: dict[str, Any],
+    conversation_id: str,
+) -> list[Path]:
+    roots = [
+        _codex_attachment_conversation_dir(
+            str(sessao.get("client_id") or "default"),
+            str(sessao.get("username") or "user"),
+            conversation_id,
+        ).resolve(),
+    ]
+    client_safe = _codex_safe_id(str(sessao.get("client_id") or "default"))
+    configured_paths: list[str] = []
+    configured_json = str(os.getenv("JK_CODEX_REFERENCE_ROOTS_JSON") or "").strip()
+    if configured_json:
+        try:
+            mapping = json.loads(configured_json)
+            values = mapping.get(client_safe) if isinstance(mapping, dict) else []
+            if isinstance(values, list):
+                configured_paths.extend(str(item or "") for item in values)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            configured_paths = []
+    legacy_roots = str(os.getenv("JK_CODEX_REFERENCE_ROOTS") or "").strip()
+    for raw_root in legacy_roots.split(os.pathsep) if legacy_roots else []:
+        configured_paths.append(str(Path(raw_root).expanduser() / client_safe))
+    for raw in configured_paths:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        candidate = Path(text).expanduser().resolve()
+        if candidate.exists() and candidate not in roots:
+            roots.append(candidate)
+    return roots
+
+
+def _codex_path_within_roots(candidate: Path, roots: list[Path]) -> bool:
+    resolved = candidate.resolve()
+    for root in roots:
+        try:
+            if os.path.commonpath([str(root), str(resolved)]) == str(root):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def _codex_resolve_readonly_references(
+    raw_paths: Optional[list[str]],
+    sessao: dict[str, Any],
+    conversation_id: str,
+) -> list[str]:
+    if not raw_paths:
+        return []
+    roots = _codex_authorized_reference_roots(sessao, conversation_id)
+    resolved: list[str] = []
+    for raw in raw_paths[:CODEX_PATHS_MAX_COUNT]:
+        text = str(raw or "").strip().strip('"').strip("'")
+        if not text:
+            continue
+        candidates = [Path(text).expanduser()] if os.path.isabs(text) else [
+            Path(_codex_base_dir()) / text,
+            *(root / text for root in roots),
+        ]
+        candidate = next(
+            (item.resolve() for item in candidates if item.exists() and _codex_path_within_roots(item, roots)),
+            None,
+        )
+        if candidate is None:
+            raise HTTPException(
+                status_code=403,
+                detail=_codex_public_error(
+                    "REFERENCE_PATH_NOT_ALLOWED",
+                    "A referencia deve estar em uma raiz de leitura autorizada pelo servidor.",
+                ),
+            )
+        value = str(candidate)
+        if value not in resolved:
+            resolved.append(value)
+    return resolved
+
+
+def _codex_resolve_attachment_ids(
+    attachment_ids: Optional[list[str]],
+    sessao: dict[str, Any],
+    conversation_id: str,
+) -> tuple[list[str], list[str]]:
+    if not attachment_ids:
+        return [], []
+    root = _codex_attachment_conversation_dir(
+        str(sessao.get("client_id") or "default"),
+        str(sessao.get("username") or "user"),
+        conversation_id,
+    ).resolve()
+    ids: list[str] = []
+    paths: list[str] = []
+    for raw in attachment_ids[:CODEX_ATTACHMENT_MAX_COUNT]:
+        attachment_id = re.sub(r"[^A-Za-z0-9_-]+", "", str(raw or ""))[:80]
+        if not attachment_id:
+            continue
+        matches = [
+            item.resolve()
+            for item in root.rglob(f"{attachment_id}_*")
+            if item.is_file() and _codex_path_within_roots(item, [root])
+        ] if root.exists() else []
+        if len(matches) != 1:
+            raise HTTPException(
+                status_code=404,
+                detail=_codex_public_error("ATTACHMENT_NOT_FOUND", "Anexo nao encontrado ou expirado."),
+            )
+        if attachment_id not in ids:
+            ids.append(attachment_id)
+            paths.append(str(matches[0]))
+    return ids, paths
+
+
 def _codex_resolver_cwd(raw: Optional[str]) -> str:
     base = _codex_base_dir()
     if not raw or not _codex_bool_env("JK_CODEX_ALLOW_CUSTOM_CWD", False):
@@ -5631,7 +6588,7 @@ def _codex_git_tracked_files(root: str) -> list[str]:
     for raw in proc.stdout.split(b"\0"):
         if not raw:
             continue
-        rel = raw.decode("utf-8", errors="replace").replace("\\", "/")
+        rel = raw.decode("utf-8", errors="strict").replace("\\", "/")
         ext = os.path.splitext(rel)[1].lower()
         if ext in CODEX_SCOPE_TEXT_EXTENSIONS and not any(rel.lower().startswith(prefix) for prefix in CODEX_SCOPE_RUNTIME_PREFIXES):
             files.append(rel)
@@ -5995,10 +6952,17 @@ def _codex_run_worker(task_id: str) -> None:
     task = _codex_load_task(task_id)
     if not task:
         return
-    sandbox = str(task.get("sandbox") or "read_only")
+    persisted_sandbox = str(task.get("sandbox") or "read_only")
+    sandbox = "read_only"
     whatsapp_query_only = _codex_task_whatsapp_query_only(task)
-    if whatsapp_query_only:
-        sandbox = "read_only"
+    if persisted_sandbox != sandbox:
+        _codex_update_task(
+            task_id,
+            sandbox=sandbox,
+            approval_mode="read_only",
+            access_mode="read_only",
+            whatsapp_full_access=False,
+        )
     acquired_full_lock = False
     thread_id = ""
     try:
@@ -6035,9 +6999,18 @@ def _codex_run_worker(task_id: str) -> None:
         )
         external_safe_mode = bool(task.get("external_safe_mode"))
         whatsapp_full_access = bool(task.get("whatsapp_full_access"))
-        read_only_channel_mode = bool(external_safe_mode or whatsapp_query_only)
+        read_only_channel_mode = True
         prompt = str(task.get("prompt") or "").strip()
-        cwd = str(task.get("cwd") or _codex_base_dir())
+        cwd = _codex_readonly_cwd_for_session(
+            {
+                "client_id": tenant,
+                "username": str(task.get("created_by") or "user"),
+            },
+            _codex_conversation_id(
+                str(task.get("conversation_id") or ""),
+                str(task.get("task_id") or ""),
+            ),
+        )
         conversation_state = _codex_conversation_state_for_task(task)
         thread_id = str(task.get("thread_id") or "").strip() if is_full_task else ""
         fingerprints_match = bool(
@@ -6082,9 +7055,13 @@ def _codex_run_worker(task_id: str) -> None:
             thread_id = ""
             goal = ""
             paths = []
+        sandbox = "read_only"
+        approval_profile = "read_only"
+        approval_mode = _codex_approval_mode_enum(approval_profile, sandbox)
+        sandbox_enum = _codex_sandbox_enum(sandbox)
         screen_context = task.get("screen_context") if isinstance(task.get("screen_context"), dict) else {}
         scope = task.get("scope") if isinstance(task.get("scope"), dict) else {}
-        if not is_full_task or not scope:
+        if not scope or str(scope.get("sandbox") or "") != "read_only":
             scope = _codex_build_scope(
                 prompt=prompt,
                 sandbox=sandbox,
@@ -6097,6 +7074,19 @@ def _codex_run_worker(task_id: str) -> None:
         agent_mode = _codex_agent_mode_enabled()
         data_selection: dict[str, Any] = {}
         conversation_context: dict[str, Any] = {}
+        trace_id = str(task.get("trace_id") or task_id)
+        selection_started = time.perf_counter()
+        telemetry: Optional[codex_ai_telemetry.CodexAITelemetry] = None
+        try:
+            telemetry = _codex_ai_telemetry_instance()
+            telemetry.start_span(
+                tenant,
+                trace_id=trace_id,
+                span_id=f"{trace_id}:selection",
+                stage="selection",
+            )
+        except Exception:
+            telemetry = None
         if agent_mode:
             conversation_context = _codex_prepare_conversation_context(task)
             data_selection = _codex_agent_materialize_task_data_selection(
@@ -6113,9 +7103,33 @@ def _codex_run_worker(task_id: str) -> None:
                 data_selection_tool_ids=_codex_agent_data_selection_tool_ids(data_selection),
                 query_policy=task.get("query_policy") if isinstance(task.get("query_policy"), dict) else {},
             )
-        # Durante o cutover o MCP comercial permanece desligado: a fronteira
-        # de argumentos/ordem e aplicada no executor local antes de qualquer IO.
-        native_mcp = False
+        refreshed_task = _codex_load_task(task_id) or task
+        native_mcp = _codex_native_mcp_enabled(refreshed_task)
+        client_safe = _codex_safe_id(tenant)
+        rollout_policy = codex_mcp_rollout.MCPRolloutPolicyStore(
+            Path(_codex_base_info_dir()) / client_safe / "codex_ai" / "mcp_rollout.sqlite3"
+        ).get()
+        shadow_probe = _codex_mcp_shadow_prepare(
+            refreshed_task,
+            screen_context,
+            rollout_policy,
+        )
+        shadow_status = str(shadow_probe.get("status") or "")
+        _codex_update_task(
+            task_id,
+            mcp_migration={
+                "target": "jk_system_mcp",
+                "rollout_mode": rollout_policy.get("mode") or "off",
+                "rollout_version": int(rollout_policy.get("version") or 0),
+                "native_enabled": bool(native_mcp),
+                "native_active": False,
+                "legacy_parser_fallback": True,
+                "shadow_observed": False,
+                "shadow_status": "prepared" if shadow_status == "prepared" else shadow_status,
+                "external_call_executed": False if shadow_status else None,
+                "disabled_reason": "" if native_mcp or shadow_status == "prepared" else "rollout_or_plan_not_eligible",
+            },
+        )
         app_data_context: dict[str, Any] = {}
         if agent_mode:
             _codex_update_live(task_id, agent_mode=True, live_status="interpretando pergunta")
@@ -6194,6 +7208,16 @@ def _codex_run_worker(task_id: str) -> None:
             )
             _codex_log(task, "Interpretando pedido e preparando Codex Data Tools.", "status")
 
+        if telemetry is not None:
+            telemetry.finish_span(
+                tenant,
+                trace_id=trace_id,
+                span_id=f"{trace_id}:selection",
+                stage="selection",
+                status="completed",
+                duration_ms=(time.perf_counter() - selection_started) * 1000,
+            )
+
         extra_instructions: list[str] = []
         channel_metadata = task.get("channel_metadata") if isinstance(task.get("channel_metadata"), dict) else {}
         dual_worker_web_search = _codex_dual_worker_web_search_enabled(
@@ -6226,7 +7250,11 @@ def _codex_run_worker(task_id: str) -> None:
         if agent_mode:
             extra_instructions.append(
                 "Modo agente ativo: nao ha contexto bruto anexado. "
-                "Use o protocolo jk_tool_calls para solicitar ferramentas read-only quando precisar de dados reais."
+                + (
+                    "Use exclusivamente as ferramentas MCP tipadas quando precisar de dados reais."
+                    if native_mcp
+                    else "Use o protocolo jk_tool_calls para solicitar ferramentas read-only quando precisar de dados reais."
+                )
             )
             if dual_worker_web_search:
                 extra_instructions.append(
@@ -6276,8 +7304,8 @@ def _codex_run_worker(task_id: str) -> None:
             )
         elif is_full_task:
             access_instruction = (
-                "Voce esta dentro do JK Sistema em modo interno administrativo. "
-                "Quando alterar arquivos, mantenha o escopo no pedido atual. "
+                "Voce esta dentro do JK Sistema em modo interno administrativo e estritamente read-only. "
+                "Nao use terminal, nao altere arquivos e execute mutacoes comerciais somente por propostas tipadas do backend. "
             )
         else:
             access_instruction = (
@@ -6297,7 +7325,7 @@ def _codex_run_worker(task_id: str) -> None:
         elif read_only_channel_mode and sandbox == "read_only":
             config_overrides = _codex_external_readonly_config_overrides(fast_mode=fast_mode)
         else:
-            config_overrides = () if is_full_task else _codex_nonfull_config_overrides(fast_mode=fast_mode)
+            config_overrides = _codex_nonfull_config_overrides(fast_mode=fast_mode)
         if str((_codex_load_task(task_id) or {}).get("status") or "") == "cancel_requested":
             _codex_update_task(
                 task_id,
@@ -6309,6 +7337,14 @@ def _codex_run_worker(task_id: str) -> None:
                 can_steer=False,
             )
             return
+        provider_started = time.perf_counter()
+        if telemetry is not None:
+            telemetry.start_span(
+                tenant,
+                trace_id=trace_id,
+                span_id=f"{trace_id}:provider",
+                stage="provider",
+            )
         runtime_bin = _codex_runtime_require_ready()
         with Codex(
             CodexConfig(
@@ -6326,22 +7362,41 @@ def _codex_run_worker(task_id: str) -> None:
                 "developer_instructions": developer_instructions,
             }
             if native_mcp:
-                thread_kwargs["config"] = _codex_native_mcp_thread_config(task, screen_context)
-                _codex_update_task(
-                    task_id,
-                    tool_protocol="mcp_v1",
-                    mcp_migration={
-                        "target": "jk_system_mcp",
-                        "native_enabled": True,
-                        "native_active": True,
-                        "legacy_parser_fallback": True,
-                    },
-                )
-            if not is_full_task:
-                # O perfil de permissions e a fronteira de leitura. Passar
-                # sandbox aqui substituiria partes desse perfil.
-                thread_kwargs.pop("sandbox", None)
-                thread_kwargs["ephemeral"] = True
+                try:
+                    thread_kwargs["config"] = _codex_native_mcp_thread_config(
+                        _codex_load_task(task_id) or task,
+                        screen_context,
+                    )
+                    _codex_update_task(
+                        task_id,
+                        tool_protocol="mcp_v2",
+                        mcp_migration={
+                            "target": "jk_system_mcp",
+                            "native_enabled": True,
+                            "native_active": True,
+                            "legacy_parser_fallback": False,
+                            "fallback_boundary": "before_first_external_call_only",
+                        },
+                    )
+                except Exception as exc:
+                    native_mcp = False
+                    _codex_log(task, f"Plano MCP indisponivel antes da primeira chamada: {exc}", "warning")
+                    _codex_update_task(
+                        task_id,
+                        tool_protocol="typed_catalog_text_v1",
+                        mcp_migration={
+                            "target": "jk_system_mcp",
+                            "native_enabled": True,
+                            "native_active": False,
+                            "fallback_used": True,
+                            "fallback_boundary": "before_first_external_call",
+                            "legacy_parser_fallback": True,
+                        },
+                    )
+            # O perfil de permissions e a fronteira de leitura. Passar sandbox
+            # aqui substituiria partes desse perfil no runtime Codex.
+            thread_kwargs.pop("sandbox", None)
+            thread_kwargs["ephemeral"] = True
             if service_tier:
                 thread_kwargs["service_tier"] = service_tier
             try:
@@ -6370,7 +7425,7 @@ def _codex_run_worker(task_id: str) -> None:
                         "native_enabled": True,
                         "native_active": False,
                         "fallback_used": True,
-                        "fallback_error": str(exc)[:500],
+                        "fallback_error_code": "MCP_RUNTIME_UNAVAILABLE",
                         "legacy_parser_fallback": True,
                     },
                 )
@@ -6383,8 +7438,7 @@ def _codex_run_worker(task_id: str) -> None:
                 "effort": reasoning_effort,
                 "summary": ReasoningSummary.model_validate("auto"),
             }
-            if not is_full_task:
-                run_kwargs.pop("sandbox", None)
+            run_kwargs.pop("sandbox", None)
             if service_tier:
                 run_kwargs["service_tier"] = service_tier
             if agent_mode:
@@ -6396,6 +7450,7 @@ def _codex_run_worker(task_id: str) -> None:
                     run_prompt,
                     screen_context,
                     _codex_agent_is_report_request(prompt),
+                    native_mcp=native_mcp,
                 )
             else:
                 turn = thread.turn(run_prompt, **run_kwargs)
@@ -6408,6 +7463,27 @@ def _codex_run_worker(task_id: str) -> None:
                         _codex_process_stream_event(task_id, task, event, state)
                 finally:
                     _codex_unregister_active_turn(task_id, turn)
+
+        shadow_result = _codex_mcp_shadow_finish(shadow_probe, agent_trace)
+        if shadow_result:
+            current_migration = (_codex_load_task(task_id) or {}).get("mcp_migration")
+            _codex_update_task(
+                task_id,
+                mcp_migration={
+                    **(current_migration if isinstance(current_migration, dict) else {}),
+                    **shadow_result,
+                },
+            )
+
+        if telemetry is not None:
+            telemetry.finish_span(
+                tenant,
+                trace_id=trace_id,
+                span_id=f"{trace_id}:provider",
+                stage="provider",
+                status="completed",
+                duration_ms=(time.perf_counter() - provider_started) * 1000,
+            )
 
         if not agent_mode:
             completed_turn = state.get("completed_turn")
@@ -6754,6 +7830,260 @@ def codex_status(request: Request, authorization: Optional[str] = Header(default
     return _codex_status_for_session(sessao)
 
 
+def codex_telemetry_summary(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    from_at: str = "",
+    to_at: str = "",
+    surface: str = "",
+    model: str = "",
+    provider: str = "",
+    status: str = "",
+):
+    sessao = _codex_require_full_admin(request, authorization)
+    telemetry = _codex_ai_telemetry_instance()
+    return {
+        "success": True,
+        "summary": telemetry.summary(
+            sessao.get("client_id"),
+            from_at=from_at,
+            to_at=to_at,
+            surface=surface,
+            model=model,
+            provider=provider,
+            status=status,
+        ),
+        "feedback": telemetry.feedback_summary(sessao.get("client_id")),
+        "writer": telemetry.diagnostics(),
+    }
+
+
+def codex_telemetry_timeseries(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    from_at: str = "",
+    to_at: str = "",
+    bucket: str = "hour",
+    surface: str = "",
+    model: str = "",
+    provider: str = "",
+    status: str = "",
+):
+    sessao = _codex_require_full_admin(request, authorization)
+    return {
+        "success": True,
+        "bucket": "day" if str(bucket).lower() == "day" else "hour",
+        "series": _codex_ai_telemetry_instance().timeseries(
+            sessao.get("client_id"),
+            from_at=from_at,
+            to_at=to_at,
+            bucket=bucket,
+            surface=surface,
+            model=model,
+            provider=provider,
+            status=status,
+        ),
+    }
+
+
+def codex_evaluation_runs(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    limit: int = 100,
+):
+    sessao = _codex_require_full_admin(request, authorization)
+    return {
+        "success": True,
+        "runs": _codex_ai_telemetry_instance().evaluation_runs(
+            sessao.get("client_id"), limit=max(1, min(int(limit or 100), 1000))
+        ),
+    }
+
+
+def codex_evaluation_run_get(
+    run_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _codex_require_full_admin(request, authorization)
+    result = _codex_ai_telemetry_instance().evaluation_run(sessao.get("client_id"), run_id)
+    if not result.get("run"):
+        raise HTTPException(status_code=404, detail=_codex_public_error("EVALUATION_RUN_NOT_FOUND", "Avaliacao nao encontrada."))
+    return {"success": True, **result}
+
+
+def _codex_fixture_evaluation_runner(
+    case: dict[str, Any],
+    model: str,
+    repetition: int,
+) -> dict[str, Any]:
+    fixtures = case.get("fixtures") if isinstance(case.get("fixtures"), dict) else {}
+    candidates = fixtures.get("evaluation_candidates") if isinstance(fixtures.get("evaluation_candidates"), dict) else {}
+    raw = candidates.get(model)
+    if isinstance(raw, list):
+        raw = raw[min(max(0, int(repetition)), len(raw) - 1)] if raw else None
+    if not isinstance(raw, dict):
+        raise codex_evaluations.EvaluationContractError(f"offline_candidate_missing:{case.get('id')}:{model}")
+    return dict(raw)
+
+
+def codex_evaluation_run_post(
+    payload: CodexEvaluationRunAPIRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _codex_require_full_admin(request, authorization)
+    try:
+        cases = codex_evaluations.load_dataset(require_published=True)
+        split = str(payload.split or "holdout").strip().lower()
+        if split not in {"calibration", "holdout", "all"}:
+            raise codex_evaluations.EvaluationContractError("evaluation_split_invalid")
+        selected = [case for case in cases if split == "all" or str(case.get("split")) == split]
+        requested_ids = {str(item or "") for item in list(payload.case_ids or []) if str(item or "")}
+        if requested_ids:
+            selected = [case for case in selected if str(case.get("id") or "") in requested_ids]
+            if len(selected) != len(requested_ids):
+                raise codex_evaluations.EvaluationContractError("evaluation_case_missing")
+        run_request = codex_evaluations.build_run_request(
+            selected,
+            models=payload.models,
+            repetitions=payload.repetitions,
+            purpose=payload.purpose,
+        )
+        runner = CODEX_EVALUATION_RUNNER or _codex_fixture_evaluation_runner
+        result = codex_evaluations.run_with_fixtures(selected, run_request, runner)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=_codex_public_error(
+                "EVALUATION_DATASET_NOT_READY",
+                "A base revisada de 120 casos ainda nao foi publicada.",
+            ),
+        ) from exc
+    except codex_evaluations.EvaluationContractError as exc:
+        code = "EVALUATION_RUNNER_NOT_CONFIGURED" if "offline_candidate_missing" in str(exc) else "EVALUATION_CONTRACT_INVALID"
+        status_code = 503 if code == "EVALUATION_RUNNER_NOT_CONFIGURED" else 409
+        raise HTTPException(status_code=status_code, detail=_codex_public_error(code, str(exc)[:300])) from exc
+
+    by_case = {str(case.get("id") or ""): case for case in selected}
+    telemetry = _codex_ai_telemetry_instance()
+    scored = list(result.get("results") or [])
+    for item in scored:
+        score = item.get("score") if isinstance(item.get("score"), dict) else {}
+        case = by_case.get(str(item.get("case_id") or ""), {})
+        telemetry.record_evaluation_case(
+            sessao.get("client_id"),
+            run_id=result.get("run_id"),
+            case_id=item.get("case_id"),
+            category=case.get("category"),
+            status="passed" if score.get("passed") else "failed",
+            model=item.get("model_effective") or item.get("model_requested"),
+            score=score.get("score", 0),
+            critical_failure=bool(score.get("automatic_failures")),
+            duration_ms=item.get("duration_ms", 0),
+            total_tokens=item.get("tokens", 0),
+        )
+    passed = sum(1 for item in scored if (item.get("score") or {}).get("passed") is True)
+    critical = sum(1 for item in scored if (item.get("score") or {}).get("automatic_failures"))
+    mean_score = sum(float((item.get("score") or {}).get("score") or 0) for item in scored) / max(1, len(scored))
+    telemetry.record_evaluation_run(
+        sessao.get("client_id"),
+        run_id=result.get("run_id"),
+        dataset_version=codex_evaluations.DATASET_SCHEMA_VERSION,
+        status="completed",
+        model="multi" if len(payload.models) > 1 else payload.models[0],
+        total_cases=len(scored),
+        passed_cases=passed,
+        critical_failures=critical,
+        mean_score=mean_score,
+    )
+    return {"success": True, "run": result}
+
+
+def _codex_mcp_rollout_store(sessao: dict[str, Any]) -> codex_mcp_rollout.MCPRolloutPolicyStore:
+    client_id = _codex_safe_id(str(sessao.get("client_id") or "default"))
+    path = Path(_codex_base_info_dir()) / client_id / "codex_ai" / "mcp_rollout.sqlite3"
+    return codex_mcp_rollout.MCPRolloutPolicyStore(path)
+
+
+def codex_mcp_rollout_get(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _codex_require_full_admin(request, authorization)
+    store = _codex_mcp_rollout_store(sessao)
+    return {
+        "success": True,
+        "rollout": store.get(),
+        "metrics": store.current_metrics(),
+    }
+
+
+def codex_mcp_rollout_put(
+    payload: CodexMCPRolloutRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _codex_require_full_admin(request, authorization)
+    mode = str(payload.mode or "off").strip().lower()
+    public_modes = {"off", "shadow", "pilot", "whatsapp_5", "whatsapp_25", "whatsapp_50", "read_only_100"}
+    if mode not in public_modes:
+        raise HTTPException(status_code=400, detail=_codex_public_error("MCP_ROLLOUT_MODE_INVALID", "Etapa de rollout MCP invalida."))
+    try:
+        store = _codex_mcp_rollout_store(sessao)
+        authoritative_metrics = store.current_metrics()
+        rollback = store.evaluate_and_rollback(
+            authoritative_metrics,
+            actor=str(sessao.get("username") or "admin"),
+        )
+        if rollback["rolled_back"]:
+            return {"success": True, "automatic_rollback": rollback}
+        rollout = store.advance(
+            {
+                "enabled": mode != "off",
+                "mode": mode,
+                "allowed_tools": list(payload.allowed_tools or []),
+                "baseline_p95_ms": payload.baseline_p95_ms,
+            },
+            actor=str(sessao.get("username") or "admin"),
+            observations=authoritative_metrics,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=_codex_public_error("MCP_ROLLOUT_GATE_NOT_MET", "A etapa atual ainda nao cumpriu os criterios minimos."),
+        ) from exc
+    except Exception as exc:
+        # Alterar rollout sem auditoria duravel e proibido.
+        raise HTTPException(
+            status_code=503,
+            detail=_codex_public_error("MCP_ROLLOUT_AUDIT_FAILED", "A alteracao nao foi aplicada porque a auditoria falhou.", retryable=True),
+        ) from exc
+    return {"success": True, "rollout": rollout}
+
+
+def codex_task_feedback(
+    task_id: str,
+    payload: CodexTaskFeedbackRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _codex_require_authenticated(request, authorization)
+    task = _codex_require_owned_task(task_id, sessao)
+    if int(payload.rating) not in {-1, 0, 1}:
+        raise HTTPException(status_code=400, detail=_codex_public_error("FEEDBACK_RATING_INVALID", "Use -1, 0 ou 1."))
+    accepted = _codex_ai_telemetry_instance().record_feedback(
+        sessao.get("client_id"),
+        feedback_id=f"{task_id}:{sessao.get('username')}:{uuid.uuid4().hex}",
+        trace_id=task.get("trace_id") or task_id,
+        rating=payload.rating,
+        label=payload.label,
+        source=task.get("origin") or "app",
+        user_id=sessao.get("username"),
+    )
+    return {"success": bool(accepted)}
+
+
 def codex_transcribe_audio(
     request: Request,
     file: UploadFile = File(...),
@@ -6877,6 +8207,8 @@ def codex_criar_tarefa_para_sessao(
     prompt = str(payload.prompt or "").strip()
     if not prompt:
         raise HTTPException(status_code=400, detail="Informe uma mensagem para o Codex.")
+    if _codex_prompt_pede_desenvolvimento(prompt):
+        raise HTTPException(status_code=409, detail=_codex_development_requires_desktop_detail())
 
     is_full = bool(sessao.get("is_full"))
     origin = "whatsapp" if str(origin or "").strip().lower() == "whatsapp" else "app"
@@ -6887,22 +8219,16 @@ def codex_criar_tarefa_para_sessao(
     )
     query_policy = _codex_whatsapp_query_policy(origin, channel_metadata)
     whatsapp_query_only = bool(query_policy)
-    whatsapp_full_access = bool(
-        origin == "whatsapp"
-        and is_full
-        and channel_metadata.get("mobile_full_access") is True
-    )
-    external_safe_mode = bool(origin == "whatsapp" and not whatsapp_full_access)
+    # O assistente interno nunca recebe acesso de desenvolvimento, inclusive
+    # quando o usuario e administrador ou a origem e WhatsApp.
+    whatsapp_full_access = False
+    external_safe_mode = bool(origin == "whatsapp")
     sandbox = _codex_normalizar_sandbox(payload.sandbox)
     model = _codex_normalizar_model(payload.model)
     reasoning_effort = _codex_normalizar_reasoning_effort(payload.reasoning_effort)
     speed = _codex_normalizar_speed(payload.speed)
     service_tier = _codex_normalizar_service_tier(payload.service_tier, speed)
-    approval_profile = _codex_normalizar_approval_profile(payload.approval_mode, sandbox)
-    if approval_profile == "full_access":
-        sandbox = "full_access"
-    elif approval_profile == "read_only":
-        sandbox = "read_only"
+    approval_profile = "read_only"
     if whatsapp_query_only:
         # Defesa em profundidade: mesmo que um chamador tente elevar sandbox ou
         # approval_mode, vendas/anuncios originados do WhatsApp permanecem leitura.
@@ -6931,17 +8257,26 @@ def codex_criar_tarefa_para_sessao(
         lane=channel_metadata.get("agent_lane") or channel_metadata.get("agent_role"),
     )
     conversation_generation = int(conversation_state.get("generation") or 1)
-    cwd = (
-        _codex_resolver_cwd(payload.cwd)
-        if is_full
-        else _codex_readonly_cwd_for_session(sessao, conversation_id)
+    requested_model = model
+    model_decision = _codex_decide_model(
+        prompt=prompt,
+        requested_model=requested_model,
+        rollout_key=f"{sessao.get('client_id')}:{conversation_id}",
+        channel_metadata=channel_metadata,
     )
-    paths = _codex_resolver_paths_for_session(
-        payload.paths,
+    model = model_decision.effective_model
+    cwd = _codex_readonly_cwd_for_session(sessao, conversation_id)
+    attachment_ids, attachment_paths = _codex_resolve_attachment_ids(
+        payload.attachments,
         sessao,
         conversation_id,
-        allow_external_for_admin=sandbox == "full_access",
     )
+    reference_paths = _codex_resolve_readonly_references(
+        list(payload.reference_paths or []) + list(payload.paths or []),
+        sessao,
+        conversation_id,
+    )
+    paths = list(dict.fromkeys([*attachment_paths, *reference_paths]))
     goal = _codex_clean_text(payload.goal, 1200) if is_full else ""
     screen_context = _codex_normalizar_screen_context(payload.screen_context)
     context_stats = _codex_context_stats(prompt, screen_context)
@@ -6977,6 +8312,10 @@ def codex_criar_tarefa_para_sessao(
             approval_profile = "read_only"
     if approval_profile == "request" and sandbox == "workspace_write" and not mutable_intent:
         sandbox = "read_only"
+    # Defesa final: nenhum perfil, origem ou metadado pode elevar o plano de
+    # execucao do Black Jhon acima de leitura.
+    sandbox = "read_only"
+    approval_profile = "read_only"
     scope = _codex_build_scope(
         prompt=prompt,
         sandbox=sandbox,
@@ -7065,18 +8404,9 @@ def codex_criar_tarefa_para_sessao(
         idempotency_key=idempotency_key,
         guidance_applied=guidance_applied,
     )
-    approval_required = bool(
-        not whatsapp_query_only
-        and (
-            (external_safe_mode and is_full and mutable_intent)
-            or (
-                is_full
-                and (sandbox == "full_access" or (approval_profile == "request" and mutable_intent))
-            )
-        )
-    )
+    approval_required = False
     operational_action: dict[str, Any] = {}
-    if is_full and mutable_intent and not paths and not whatsapp_query_only:
+    if is_full and mutable_intent and not whatsapp_query_only:
         operational_action = codex_actions.create_proposal(
             client_id=str(sessao.get("client_id") or "default"),
             username=str(sessao.get("username") or ""),
@@ -7088,12 +8418,12 @@ def codex_criar_tarefa_para_sessao(
             plan_id=str(plan.get("plan_id") or ""),
             task_id=task_id,
             channel=origin,
-            wa_id_hash=hashlib.sha256(str(channel_metadata.get("wa_id") or "").encode("utf-8")).hexdigest() if origin == "whatsapp" else "",
+            wa_id_hash=_codex_hmac_identifier(channel_metadata.get("wa_id"), namespace="whatsapp_phone") if origin == "whatsapp" else "",
             idempotency_key=idempotency_key,
         )
         if operational_action.get("matched") is True:
             approval_required = not bool(operational_action.get("needs_input"))
-        elif not paths:
+        else:
             # Uma intencao operacional sem contrato nunca recebe acesso de
             # escrita ao workspace. O agente ainda pode analisar e orientar.
             sandbox = "read_only"
@@ -7131,12 +8461,19 @@ def codex_criar_tarefa_para_sessao(
         )
         if isinstance(refreshed_plan, dict):
             plan = refreshed_plan
+    deadline_enabled = bool(
+        str(origin or "").strip().lower() != "whatsapp"
+        and channel_metadata.get("deadline_enabled") is not False
+    )
     default_deadline_seconds = 600 if _codex_agent_is_report_request(prompt) else 180
-    try:
-        deadline_seconds = int(channel_metadata.get("deadline_seconds") or default_deadline_seconds)
-    except (TypeError, ValueError):
-        deadline_seconds = default_deadline_seconds
-    deadline_seconds = max(30, min(deadline_seconds, 600))
+    if deadline_enabled:
+        try:
+            deadline_seconds = int(channel_metadata.get("deadline_seconds") or default_deadline_seconds)
+        except (TypeError, ValueError):
+            deadline_seconds = default_deadline_seconds
+        deadline_seconds = max(30, min(deadline_seconds, 600))
+    else:
+        deadline_seconds = 0
     if is_full and thread_decision is not None and thread_scope.get("sandbox") != sandbox:
         thread_scope["sandbox"] = sandbox
         thread_decision = codex_turn_context.decide_conversation(
@@ -7165,8 +8502,10 @@ def codex_criar_tarefa_para_sessao(
             if thread_decision.reuse_thread
             else ""
         )
+    trace_id = uuid.uuid4().hex
     task = {
         "task_id": task_id,
+        "trace_id": trace_id,
         "status": task_status,
         "sandbox": sandbox,
         "cwd": cwd,
@@ -7183,6 +8522,12 @@ def codex_criar_tarefa_para_sessao(
         "conversation_generation": conversation_generation,
         "prompt": prompt,
         "model": model,
+        "requested_model": requested_model,
+        "effective_model": model,
+        "model_category": model_decision.category,
+        "model_policy_version": model_decision.policy_version,
+        "model_reason_code": model_decision.reason_code,
+        "model_rerouted": model_decision.rerouted,
         "approval_mode": approval_profile,
         "reasoning_effort": reasoning_effort,
         "reasoning_level": str(channel_metadata.get("reasoning_level") or reasoning_effort),
@@ -7215,6 +8560,8 @@ def codex_criar_tarefa_para_sessao(
         "service_tier": service_tier or "",
         "goal": goal,
         "planning_mode": bool(payload.planning_mode) if is_full else False,
+        "attachments": attachment_ids,
+        "reference_paths": reference_paths,
         "paths": paths,
         "scope": scope,
         "scope_violations": [],
@@ -7249,8 +8596,9 @@ def codex_criar_tarefa_para_sessao(
         "wait_reason": "queue" if task_status == "queued" else task_status,
         "progress_events": [],
         "last_progress_at": "",
+        "deadline_enabled": deadline_enabled,
         "deadline_seconds": deadline_seconds,
-        "deadline_at": _codex_deadline_at(deadline_seconds),
+        "deadline_at": _codex_deadline_at(deadline_seconds) if deadline_enabled else "",
         "steer_events": [],
         "mutable_intent": mutable_intent,
         "final_response": initial_response,
@@ -7271,7 +8619,7 @@ def codex_criar_tarefa_para_sessao(
         "whatsapp_query_only": whatsapp_query_only,
         "query_policy": query_policy,
         "trusted_model_config": trusted_model_config,
-        "access_mode": "query_only" if whatsapp_query_only else ("full" if is_full else "read_only"),
+        "access_mode": "query_only" if whatsapp_query_only else "read_only",
         "permissions": {
             str(key): value is True
             for key, value in (sessao.get("permissions") or {}).items()
@@ -7283,6 +8631,29 @@ def codex_criar_tarefa_para_sessao(
     with CODEX_TASKS_LOCK:
         CODEX_TASKS[task_id] = task
         _codex_persist_task(task)
+    try:
+        telemetry = _codex_ai_telemetry_instance()
+        telemetry.schedule_retention(str(sessao.get("client_id") or "default"))
+        telemetry.start_trace(
+            str(sessao.get("client_id") or "default"),
+            trace_id=trace_id,
+            surface=origin,
+            category=model_decision.category,
+            requested_model=requested_model,
+            user_id=sessao.get("username"),
+            store_id=query_policy.get("store", ""),
+            expected_spans=("intake", "selection", "provider", "finalization"),
+        )
+        telemetry.finish_span(
+            str(sessao.get("client_id") or "default"),
+            trace_id=trace_id,
+            span_id=f"{trace_id}:intake",
+            stage="intake",
+            status="completed",
+            duration_ms=0,
+        )
+    except Exception:
+        pass
     if is_full and thread_decision is not None:
         _codex_save_conversation_state(
             task,
@@ -8003,6 +9374,11 @@ def codex_aprovar_tarefa_para_sessao(
             status_code=403,
             detail="Consultas de vendas e anuncios originadas do WhatsApp usam politica query_only e nao podem ser aprovadas para execucao mutavel.",
         )
+    if task.get("status") == "awaiting_approval":
+        # Compatibilidade segura para tarefas antigas persistidas antes do
+        # bloqueio preventivo. Somente propostas tipadas, tratadas acima,
+        # podem ser aprovadas; sandbox de desenvolvimento nunca e elevado.
+        raise HTTPException(status_code=409, detail=_codex_development_requires_desktop_detail())
     if task.get("status") != "awaiting_approval":
         return {"success": True, "task": _codex_public_task(task)}
     source = str(approval_source or "app").strip().lower()

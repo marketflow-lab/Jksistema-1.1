@@ -11,6 +11,8 @@ from typing import Callable
 import requests
 from fastapi import HTTPException
 
+from backend.services.transport_security import requests_tls_verify
+
 
 logger = logging.getLogger("jk_sistema")
 _env_config_bool: Callable[[object], bool] = lambda keys, default=True: default
@@ -46,15 +48,8 @@ def _full_feriados_nacionais_ano(ano: int) -> dict:
     url = f"https://brasilapi.com.br/api/feriados/v1/{ano}"
     feriados: list[dict[str, str]] = []
     erro = ""
-    verify_ssl = _env_config_bool(("FERIADOS_VERIFY_SSL", "BRASILAPI_VERIFY_SSL"), default=True)
     try:
-        try:
-            resp = requests.get(url, timeout=12, verify=verify_ssl)
-        except requests.exceptions.SSLError:
-            if not verify_ssl:
-                raise
-            logger.warning("[FULL CALENDARIO] SSL da BrasilAPI falhou para %s; repetindo sem verificacao.", ano)
-            resp = requests.get(url, timeout=12, verify=False)
+        resp = requests.get(url, timeout=12, verify=requests_tls_verify())
         if resp.status_code == 200:
             payload = resp.json() or []
             if isinstance(payload, list):

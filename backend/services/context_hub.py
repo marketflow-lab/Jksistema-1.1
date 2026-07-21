@@ -18,6 +18,7 @@ import shutil
 import sqlite3
 import threading
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -28,6 +29,8 @@ import yaml
 
 
 CONTEXT_HUB_SCHEMA_VERSION = 2
+CONTEXT_RETRIEVAL_V3 = "jk.context-hub.retrieval.v3"
+CONTEXT_RETRIEVAL_AUTHORITY_POLICY = "jk.context-hub.authority.v1"
 CURATION_SCHEMA_VERSION = 2
 CURATION_STATES = {"draft", "reviewed", "approved", "rejected"}
 GENERATION_STATES = {
@@ -98,6 +101,14 @@ CONTEXT_BUNDLE_OBSIDIAN_PATHS = {
         "70_Gerado/Contratos/Mercado-Livre-API-Consultas.md"
     ),
 }
+CONTEXT_BUNDLE_GRAPH_ANCHORS = {
+    "@bundle/mercado-livre-api-consultas.md": (
+        "70_Gerado/Contratos/APIs/mercado-livre.md",
+        "70_Gerado/Contratos/APIs.md",
+        "70_Gerado/Mapas/Inventario-do-Programa.md",
+    ),
+}
+CURATION_DASHBOARD_RELATIVE_PATH = "00_Inicio/Painel-de-Curadoria.md"
 _VOLATILE_INVENTORY_KEYS = {
     "generated_at",
     "generation_time",
@@ -105,6 +116,37 @@ _VOLATILE_INVENTORY_KEYS = {
     "elapsed_ms",
     "scanned_at",
     "updated_at",
+}
+
+CONTEXT_RETRIEVAL_FILTER_KEYS = frozenset(
+    {
+        "authority",
+        "consumer_surface",
+        "document_types",
+        "domain",
+        "entity_ids",
+        "environment",
+        "ids",
+        "kind",
+        "mlb",
+        "module",
+        "request_surface",
+        "sensitivity",
+        "sku",
+        "source_type",
+        "store_ref",
+        "surface",
+        "tags",
+        "truth_class",
+        "valid_at",
+        "validity",
+    }
+)
+_CONTEXT_AUTHORITY_TRUTH_CLASSES = {
+    "authoritative": {"canonical", "source", "system_authoritative"},
+    "verified_technical": {"generated_verified", "versioned_technical"},
+    "advisory": {"human_curated"},
+    "unverified": {"generated", "generated_secondary", "legacy_unverified"},
 }
 
 
@@ -160,6 +202,7 @@ _CONFIG_LOCK = threading.RLock()
 _RUNTIME_CONFIG: Optional[ContextHubRuntimeConfig] = None
 _TENANT_LOCKS_GUARD = threading.Lock()
 _TENANT_LOCKS: dict[str, threading.RLock] = {}
+_CURATION_DASHBOARD_REFRESHED: set[str] = set()
 _WATCHERS_GUARD = threading.Lock()
 _WATCHERS: dict[str, tuple[threading.Thread, threading.Event]] = {}
 _WATCH_FINGERPRINTS: dict[str, str] = {}
@@ -442,6 +485,10 @@ def _initialize_database(paths: ContextHubPaths, surface: str) -> None:
                 source_hash TEXT NOT NULL,
                 content_hash TEXT NOT NULL,
                 source_refs_json TEXT NOT NULL DEFAULT '[]',
+                store_ref TEXT NOT NULL DEFAULT '',
+                tags_text TEXT NOT NULL DEFAULT '',
+                valid_from TEXT NOT NULL DEFAULT '',
+                valid_to TEXT NOT NULL DEFAULT '',
                 content TEXT NOT NULL,
                 managed INTEGER NOT NULL CHECK(managed IN (0,1)),
                 PRIMARY KEY (generation_id, doc_id),
@@ -488,8 +535,11 @@ def _initialize_database(paths: ContextHubPaths, surface: str) -> None:
 
             CREATE TABLE IF NOT EXISTS context_hub_curated_approvals (
                 relative_path TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL DEFAULT '',
                 content_sha256 TEXT NOT NULL,
                 state TEXT NOT NULL CHECK(state IN ('draft','reviewed','approved','rejected')),
+                present INTEGER NOT NULL DEFAULT 1 CHECK(present IN (0,1)),
+                missing_at TEXT,
                 validated_sha256 TEXT,
                 validated_at TEXT,
                 reviewed_by TEXT,
@@ -535,6 +585,37 @@ def _initialize_database(paths: ContextHubPaths, surface: str) -> None:
             # Minimal SQLite builds may omit FTS5. Search remains fail-safe and
             # reports the lexical fallback; embeddings are never enabled here.
             pass
+        curation_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(context_hub_curated_approvals)")
+        }
+        if "document_id" not in curation_columns:
+            connection.execute(
+                "ALTER TABLE context_hub_curated_approvals ADD COLUMN document_id TEXT NOT NULL DEFAULT ''"
+            )
+        if "present" not in curation_columns:
+            connection.execute(
+                "ALTER TABLE context_hub_curated_approvals ADD COLUMN present INTEGER NOT NULL DEFAULT 1"
+            )
+        if "missing_at" not in curation_columns:
+            connection.execute(
+                "ALTER TABLE context_hub_curated_approvals ADD COLUMN missing_at TEXT"
+            )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_context_hub_curated_document "
+            "ON context_hub_curated_approvals(document_id, present)"
+        )
+        document_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(context_hub_documents)").fetchall()
+        }
+        for column, definition in (
+            ("store_ref", "TEXT NOT NULL DEFAULT ''"),
+            ("tags_text", "TEXT NOT NULL DEFAULT ''"),
+            ("valid_from", "TEXT NOT NULL DEFAULT ''"),
+            ("valid_to", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if column not in document_columns:
+                connection.execute(f"ALTER TABLE context_hub_documents ADD COLUMN {column} {definition}")
         now = _utc_now()
         connection.execute(
             """
@@ -603,6 +684,14 @@ def bootstrap_context_hub(
                     _recover_publish_journal(paths)
             except ContextHubConflictError:
                 pass
+    dashboard_key = str(paths.internal_dir).casefold()
+    with _TENANT_LOCKS_GUARD:
+        refresh_dashboard = dashboard_key not in _CURATION_DASHBOARD_REFRESHED
+        if refresh_dashboard:
+            _CURATION_DASHBOARD_REFRESHED.add(dashboard_key)
+    if refresh_dashboard and _refresh_curation_dashboard_best_effort(paths) is None:
+        with _TENANT_LOCKS_GUARD:
+            _CURATION_DASHBOARD_REFRESHED.discard(dashboard_key)
     return {
         "success": True,
         "client_id": paths.client_id,
@@ -1108,6 +1197,26 @@ def _safe_relative_markdown_path(raw_path: object) -> Path:
     return relative
 
 
+def _obsidian_wikilink(
+    relative_path: object,
+    label: object,
+    *,
+    table_cell: bool = False,
+) -> str:
+    value = str(relative_path or "").strip().replace("\\", "/").lstrip("/")
+    relative = Path(value)
+    if relative.suffix.lower() != ".md" or relative.is_absolute() or ".." in relative.parts:
+        raise ContextHubValidationError("Caminho Markdown invalido para navegacao.")
+    target = relative.as_posix()[:-3]
+    if any(character in target for character in "[]|"):
+        raise ContextHubValidationError("Caminho Markdown invalido para navegacao.")
+    safe_label = re.sub(r"[\\\[\]|\r\n]+", " ", str(label or relative.stem)).strip()[:160]
+    # Markdown tables use an unescaped pipe as a cell delimiter. Obsidian's
+    # wikilink parser recognizes the escaped alias separator inside a table.
+    separator = r"\|" if table_cell else "|"
+    return f"[[{target}{separator}{safe_label or relative.stem}]]"
+
+
 def _safe_identifier(value: object, *, fallback: str) -> str:
     normalized = str(value or "").strip()
     if normalized and len(normalized) <= 300 and not any(character in normalized for character in "\r\n\x00"):
@@ -1172,6 +1281,22 @@ def _normalize_generated_note(
         "generated_at": generated_at,
         "title": title,
         "module": _safe_identifier(raw_metadata.get("module") or entity.get("domain"), fallback=""),
+        "store_ref": _safe_identifier(raw_metadata.get("store_ref") or entity.get("store_ref"), fallback=""),
+        "tags": sorted(
+            {
+                str(item).strip()[:80]
+                for item in (
+                    raw_metadata.get("tags")
+                    if isinstance(raw_metadata.get("tags"), list)
+                    else entity.get("tags")
+                    if isinstance(entity.get("tags"), list)
+                    else []
+                )
+                if str(item).strip()
+            }
+        )[:20],
+        "valid_from": str(raw_metadata.get("valid_from") or entity.get("valid_from") or raw_metadata.get("valid_at") or "")[:40],
+        "valid_to": str(raw_metadata.get("valid_to") or entity.get("valid_to") or raw_metadata.get("valid_at") or "")[:40],
     }
     return metadata, _dump_frontmatter(metadata, body), body
 
@@ -1246,6 +1371,37 @@ def _validate_curated_content(
     doc_id = _safe_identifier(metadata.get("id"), fallback="")
     if not isinstance(metadata.get("id"), str) or not doc_id:
         findings.append(_finding("curated_id_invalid", category="curation", source_ref=source_ref))
+    lifecycle = str(metadata.get("lifecycle") or "").strip().casefold()
+    if lifecycle and lifecycle not in {"current", "superseded"}:
+        findings.append(
+            _finding("curated_lifecycle_invalid", category="curation", source_ref=source_ref)
+        )
+    superseded_by = metadata.get("superseded_by")
+    if lifecycle == "superseded" and (
+        not isinstance(superseded_by, str)
+        or not _safe_identifier(superseded_by, fallback="")
+    ):
+        findings.append(
+            _finding("curated_superseded_target_missing", category="curation", source_ref=source_ref)
+        )
+    valid_dates: dict[str, str] = {}
+    for field in ("valid_from", "valid_to"):
+        raw_date = metadata.get(field)
+        if raw_date is None or raw_date == "":
+            continue
+        value = str(raw_date).strip()
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            findings.append(
+                _finding("curated_validity_date_invalid", category="curation", source_ref=source_ref)
+            )
+        else:
+            valid_dates[field] = value
+    if valid_dates.get("valid_from", "") > valid_dates.get("valid_to", "9999-12-31"):
+        findings.append(
+            _finding("curated_validity_range_invalid", category="curation", source_ref=source_ref)
+        )
     if not body.strip():
         findings.append(_finding("curated_body_empty", category="curation", source_ref=source_ref))
     findings.extend(scan_dlp(_dlp_document_text(metadata, body), source_ref=source_ref))
@@ -1263,31 +1419,53 @@ def _ensure_curation_row(
     connection: sqlite3.Connection,
     relative_path: str,
     content_sha256: str,
+    document_id: str = "",
 ) -> sqlite3.Row:
     now = _utc_now()
+    safe_document_id = _safe_identifier(document_id, fallback="")
+    if safe_document_id:
+        connection.execute(
+            """
+            UPDATE context_hub_curated_approvals
+            SET present=0, missing_at=COALESCE(missing_at, ?), updated_at=?
+            WHERE document_id=? AND relative_path<>? AND present=1
+            """,
+            (now, now, safe_document_id, relative_path),
+        )
     row = _curation_row(connection, relative_path)
     if row is None:
         connection.execute(
             """
             INSERT INTO context_hub_curated_approvals(
-                relative_path, content_sha256, state, updated_at
-            ) VALUES (?, ?, 'draft', ?)
+                relative_path, document_id, content_sha256, state, present, missing_at, updated_at
+            ) VALUES (?, ?, ?, 'draft', 1, NULL, ?)
             """,
-            (relative_path, content_sha256, now),
+            (relative_path, safe_document_id, content_sha256, now),
         )
-    elif str(row["content_sha256"]) != content_sha256:
+    elif str(row["content_sha256"]) != content_sha256 or not bool(row["present"]):
         # Any edit, including frontmatter-only edits in Obsidian, invalidates
-        # validation/review/approval atomically.
+        # validation/review/approval atomically. Moving a note back to a path
+        # used in the past is also a new draft, even when its bytes match.
         connection.execute(
             """
             UPDATE context_hub_curated_approvals SET
-                content_sha256=?, state='draft', validated_sha256=NULL,
+                document_id=?, content_sha256=?, state='draft', present=1, missing_at=NULL,
+                validated_sha256=NULL,
                 validated_at=NULL, reviewed_by=NULL, reviewed_at=NULL,
                 approved_by=NULL, approved_at=NULL, rejected_by=NULL,
                 rejected_at=NULL, rejection_reason=NULL, updated_at=?
             WHERE relative_path=?
             """,
-            (content_sha256, now, relative_path),
+            (safe_document_id, content_sha256, now, relative_path),
+        )
+    else:
+        connection.execute(
+            """
+            UPDATE context_hub_curated_approvals
+            SET document_id=?, present=1, missing_at=NULL
+            WHERE relative_path=?
+            """,
+            (safe_document_id, relative_path),
         )
     return _curation_row(connection, relative_path)  # type: ignore[return-value]
 
@@ -1355,6 +1533,198 @@ def _public_curated_note(record: Mapping[str, Any], row: sqlite3.Row) -> dict[st
     }
 
 
+def _curation_dashboard_lifecycle(metadata: Mapping[str, Any]) -> str:
+    lifecycle = str(metadata.get("lifecycle") or "").strip().casefold()
+    if lifecycle == "superseded":
+        return "Substituida"
+    valid_from = str(metadata.get("valid_from") or "").strip()
+    valid_to = str(metadata.get("valid_to") or "").strip()
+    if valid_from and valid_to:
+        return "Vigencia definida"
+    if valid_from:
+        return "Vigente desde data definida"
+    if valid_to:
+        return "Valida ate data definida"
+    return "Sem prazo"
+
+
+def _render_curation_dashboard(paths: ContextHubPaths, notes: Sequence[Mapping[str, Any]]) -> str:
+    state_labels = {
+        "draft": "Rascunho",
+        "reviewed": "Revisada",
+        "approved": "Aprovada",
+        "rejected": "Rejeitada",
+        "unavailable": "Indisponivel",
+    }
+    counts = {state: 0 for state in state_labels}
+    superseded_count = 0
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for note in notes:
+        state = str(note.get("state") or "unavailable")
+        if bool(note.get("superseded")):
+            superseded_count += 1
+        else:
+            counts[state if state in counts else "unavailable"] += 1
+        grouped.setdefault(str(note.get("category") or "Outras"), []).append(note)
+
+    lines = [
+        "---",
+        "id: jk:navigation:curation-dashboard",
+        "type: navigation",
+        "managed: true",
+        "ai_usage: denied",
+        f"tenant_scope: tenant:{paths.client_id}",
+        "---",
+        "",
+        "# Painel de Curadoria",
+        "",
+        "> Painel automatico. O estado vem do fluxo interno; este arquivo nao aprova nem publica notas.",
+        "",
+        "## Resumo",
+        "",
+        f"- Total: {len(notes)}",
+        f"- Rascunhos ativos: {counts['draft']}",
+        f"- Revisadas: {counts['reviewed']}",
+        f"- Aprovadas: {counts['approved']}",
+        f"- Rejeitadas: {counts['rejected']}",
+        f"- Substituidas: {superseded_count}",
+    ]
+    if counts["unavailable"]:
+        lines.append(f"- Indisponiveis: {counts['unavailable']}")
+    home = paths.vault_dir / "00_Inicio" / "Inicio.md"
+    if home.is_file() and not _is_link_or_junction(home):
+        lines.extend(["", "- " + _obsidian_wikilink("00_Inicio/Inicio.md", "Voltar ao Inicio")])
+
+    for category in sorted(grouped, key=str.casefold):
+        safe_category = re.sub(r"[\[\]|\r\n]+", " ", category).strip()[:120] or "Outras"
+        if scan_dlp(safe_category, source_ref="curation-dashboard"):
+            safe_category = "Outras"
+        lines.extend(
+            [
+                "",
+                f"## {safe_category}",
+                "",
+                "| Nota | Estado | Contrato | Vigencia | Autoridade |",
+                "|---|---|---|---|---|",
+            ]
+        )
+        for note in sorted(grouped[category], key=lambda item: str(item.get("sort_key") or "")):
+            lines.append(
+                "| {label} | {state} | {contract} | {lifecycle} | Consultiva |".format(
+                    label=note["label"],
+                    state=state_labels.get(str(note.get("state") or ""), "Indisponivel"),
+                    contract=note["contract"],
+                    lifecycle=note["lifecycle"],
+                )
+            )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _refresh_curation_dashboard(paths: ContextHubPaths) -> bool:
+    dashboard_path = paths.vault_dir / CURATION_DASHBOARD_RELATIVE_PATH
+    _assert_path_chain_safe(dashboard_path, paths.info_root)
+    notes: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    with _tenant_thread_lock(paths), _exclusive_file_lock(paths):
+        with _connect(paths) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for candidate in sorted(
+                paths.curated_dir.rglob("*.md"), key=lambda item: item.as_posix().casefold()
+            ):
+                relative = candidate.relative_to(paths.curated_dir).as_posix()
+                seen_paths.add(relative)
+                try:
+                    record = _read_curated_note(paths, candidate)
+                except ContextHubValidationError:
+                    notes.append(
+                        {
+                            "category": "Outras",
+                            "sort_key": relative.casefold(),
+                            "label": "Nota retida",
+                            "state": "unavailable",
+                            "contract": "Bloqueada",
+                            "lifecycle": "Indisponivel",
+                            "superseded": False,
+                        }
+                    )
+                    continue
+                row = _ensure_curation_row(
+                    connection,
+                    record["relative_path"],
+                    record["content_sha256"],
+                    str(record.get("metadata", {}).get("id") or ""),
+                )
+                metadata = dict(record.get("metadata") or {})
+                relative = str(record["relative_path"])
+                title = str(metadata.get("title") or Path(relative).stem)
+                safe_surface = title + "\n" + relative
+                if scan_dlp(safe_surface, source_ref="curation-dashboard"):
+                    label = "Nota retida"
+                    category = "Outras"
+                else:
+                    try:
+                        label = _obsidian_wikilink(
+                            f"80_Curadoria/{relative}",
+                            title,
+                            table_cell=True,
+                        )
+                        category = Path(relative).parts[0] if Path(relative).parts else "Outras"
+                    except ContextHubValidationError:
+                        label = "Nota retida"
+                        category = "Outras"
+                lifecycle = _curation_dashboard_lifecycle(metadata)
+                contract = "Valida" if record["valid"] else "Bloqueada"
+                is_superseded = (
+                    str(metadata.get("lifecycle") or "").strip().casefold() == "superseded"
+                )
+                if is_superseded:
+                    contract = "Somente historico"
+                notes.append(
+                    {
+                        "category": category,
+                        "sort_key": relative.casefold(),
+                        "label": label,
+                        "state": str(row["state"]),
+                        "contract": contract,
+                        "lifecycle": lifecycle,
+                        "superseded": is_superseded,
+                    }
+                )
+            now = _utc_now()
+            for row in connection.execute(
+                "SELECT relative_path FROM context_hub_curated_approvals WHERE present=1"
+            ).fetchall():
+                relative_path = str(row["relative_path"])
+                if relative_path not in seen_paths:
+                    connection.execute(
+                        """
+                        UPDATE context_hub_curated_approvals
+                        SET present=0, missing_at=COALESCE(missing_at, ?), updated_at=?
+                        WHERE relative_path=?
+                        """,
+                        (now, now, relative_path),
+                    )
+            connection.commit()
+        content = _render_curation_dashboard(paths, notes)
+        try:
+            current = dashboard_path.read_text(encoding="utf-8").replace("\r\n", "\n")
+        except FileNotFoundError:
+            current = ""
+        if current == content:
+            return False
+        _write_text_atomic(dashboard_path, content)
+    return True
+
+
+def _refresh_curation_dashboard_best_effort(paths: ContextHubPaths) -> Optional[bool]:
+    try:
+        return _refresh_curation_dashboard(paths)
+    except (ContextHubError, OSError, UnicodeError, sqlite3.Error):
+        # The dashboard is derived navigation. A temporary Obsidian lock or an
+        # unsafe path must never roll back a completed curation transition.
+        return None
+
+
 def list_curated_notes(
     client_id: object,
     *,
@@ -1362,6 +1732,7 @@ def list_curated_notes(
 ) -> dict[str, Any]:
     paths = _tenant_paths(client_id, info_root=info_root)
     bootstrap_context_hub(paths.client_id, info_root=paths.info_root)
+    _refresh_curation_dashboard_best_effort(paths)
     notes: list[dict[str, Any]] = []
     with _tenant_thread_lock(paths), _exclusive_file_lock(paths):
         with _connect(paths) as connection:
@@ -1371,7 +1742,12 @@ def list_curated_notes(
                     record = _read_curated_note(paths, candidate)
                 except ContextHubValidationError:
                     continue
-                row = _ensure_curation_row(connection, record["relative_path"], record["content_sha256"])
+                row = _ensure_curation_row(
+                    connection,
+                    record["relative_path"],
+                    record["content_sha256"],
+                    str(record.get("metadata", {}).get("id") or ""),
+                )
                 notes.append(_public_curated_note(record, row))
             connection.commit()
     return {"success": True, "client_id": paths.client_id, "notes": notes, "count": len(notes)}
@@ -1442,8 +1818,14 @@ def create_curated_note(
         record = _read_curated_note(paths, target)
         with _connect(paths) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = _ensure_curation_row(connection, record["relative_path"], record["content_sha256"])
+            row = _ensure_curation_row(
+                connection,
+                record["relative_path"],
+                record["content_sha256"],
+                str(record.get("metadata", {}).get("id") or ""),
+            )
             connection.commit()
+    _refresh_curation_dashboard_best_effort(paths)
     return {"success": True, "client_id": paths.client_id, "note": _public_curated_note(record, row)}
 
 
@@ -1463,7 +1845,12 @@ def _curation_transition(
         _, record = _find_curated_note(paths, note_id)
         with _connect(paths) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = _ensure_curation_row(connection, record["relative_path"], record["content_sha256"])
+            row = _ensure_curation_row(
+                connection,
+                record["relative_path"],
+                record["content_sha256"],
+                str(record.get("metadata", {}).get("id") or ""),
+            )
             state = str(row["state"])
             now = _utc_now()
             if action == "validate":
@@ -1496,6 +1883,10 @@ def _curation_transition(
                 if state != "reviewed" or not record["valid"]:
                     connection.rollback()
                     raise ContextHubConflictError("Somente a versao revisada pode ser aprovada.")
+                lifecycle = str(record.get("metadata", {}).get("lifecycle") or "").strip().casefold()
+                if lifecycle == "superseded":
+                    connection.rollback()
+                    raise ContextHubValidationError("Nota historica substituida nao pode ser aprovada.")
                 if str(row["validated_sha256"] or "") != record["content_sha256"]:
                     connection.rollback()
                     raise ContextHubConflictError("A nota mudou depois da validacao.")
@@ -1524,6 +1915,7 @@ def _curation_transition(
                 raise ContextHubValidationError("Acao de curadoria invalida.")
             row = _curation_row(connection, record["relative_path"])
             connection.commit()
+    _refresh_curation_dashboard_best_effort(paths)
     return {"success": True, "client_id": paths.client_id, "note": _public_curated_note(record, row)}
 
 
@@ -1629,6 +2021,7 @@ def restore_curated_backup(
             )
     except context_hub_backup.BackupValidationError as error:
         raise ContextHubValidationError(str(error)) from error
+    _refresh_curation_dashboard_best_effort(paths)
     return {"success": True, "client_id": paths.client_id, "restore": restored}
 
 
@@ -1664,8 +2057,11 @@ def _collect_curated_notes(paths: ContextHubPaths) -> tuple[list[dict[str, Any]]
                 connection,
                 candidate.relative_to(paths.curated_dir).as_posix(),
                 content_hash,
+                str(metadata.get("id") or ""),
             )
             connection.commit()
+        if str(metadata.get("lifecycle") or "").strip().casefold() == "superseded":
+            continue
         if str(row["state"]) != "approved" or str(row["content_sha256"]) != content_hash:
             continue
         hashes.append((relative, content_hash))
@@ -2078,6 +2474,9 @@ def _prepare_documents(
             }
         )
 
+    inventory_managed_paths = tuple(sorted(managed_files))
+    reviewed_bundle_links: list[tuple[str, str, str]] = []
+
     # SKU dossiers remain canonical JSON.  Their semantic entities are stored
     # only inside the generation DB so they are searchable without producing
     # hundreds of duplicate Markdown files in the Obsidian vault.
@@ -2166,9 +2565,60 @@ def _prepare_documents(
                 )
                 continue
             managed_files[managed_path] = str(bundle.get("content") or "")
+            reviewed_bundle_links.append(
+                (
+                    managed_path,
+                    str(metadata.get("title") or Path(managed_path).stem),
+                    relative,
+                )
+            )
         seen_ids.add(doc_id)
         seen_paths.add(relative.lower())
         documents.append(dict(bundle))
+
+    for managed_path, title, source_ref in reviewed_bundle_links:
+        preferred_anchors = CONTEXT_BUNDLE_GRAPH_ANCHORS.get(source_ref, ())
+        anchor_path = next(
+            (
+                path
+                for preferred in preferred_anchors
+                for path in inventory_managed_paths
+                if path.casefold() == preferred.casefold()
+            ),
+            "",
+        )
+        anchor_document = next(
+            (
+                document
+                for document in documents
+                if str(document.get("relative_path") or "").casefold() == anchor_path.casefold()
+            ),
+            None,
+        )
+        if not anchor_document:
+            findings.append(
+                _finding("bundle_graph_anchor_missing", category="bundle", source_ref=source_ref)
+            )
+            continue
+        link = _obsidian_wikilink(managed_path, title)
+        body = str(anchor_document.get("body") or "").rstrip()
+        body += "\n\n## Documentacao revisada\n\n- " + link + "\n"
+        metadata = dict(anchor_document.get("metadata") or {})
+        metadata["source_refs"] = sorted(
+            set(_normalize_source_refs(metadata.get("source_refs"))) | {source_ref}
+        )
+        metadata["source_hash"] = _sha256_text(
+            _json_canonical(metadata["source_refs"]) + "\n" + body
+        )
+        content = _dump_frontmatter(metadata, body)
+        dlp = scan_dlp(_dlp_document_text(metadata, body), source_ref=anchor_path)
+        if dlp:
+            findings.extend(dlp)
+            continue
+        anchor_document["metadata"] = metadata
+        anchor_document["body"] = body
+        anchor_document["content"] = content
+        managed_files[anchor_path] = content
 
     for curated in curated_documents:
         metadata = dict(curated.get("metadata") or {})
@@ -2314,13 +2764,19 @@ def _persist_ready_generation(
                 doc_id = str(metadata["id"])
                 relative_path = str(document.get("relative_path") or "")
                 source_refs = _normalize_source_refs(metadata.get("source_refs"))
+                tags = sorted(
+                    {str(item).strip().casefold()[:80] for item in list(metadata.get("tags") or []) if str(item).strip()}
+                )[:20]
+                valid_from = str(metadata.get("valid_from") or metadata.get("valid_at") or "")[:40]
+                valid_to = str(metadata.get("valid_to") or metadata.get("valid_at") or "")[:40]
                 connection.execute(
                     """
                     INSERT INTO context_hub_documents(
                         generation_id, doc_id, entity_id, relative_path, title, kind, module,
                         surface, truth_class, sensitivity, source_version, source_hash,
-                        content_hash, source_refs_json, content, managed
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        content_hash, source_refs_json, store_ref, tags_text,
+                        valid_from, valid_to, content, managed
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         generation_id,
@@ -2337,6 +2793,10 @@ def _persist_ready_generation(
                         str(metadata.get("source_hash") or _sha256_text(body)),
                         _sha256_text(content),
                         _json_canonical(source_refs),
+                        str(metadata.get("store_ref") or "")[:180],
+                        "\n".join(tags),
+                        valid_from,
+                        valid_to,
                         content,
                         1 if metadata.get("managed") is True else 0,
                     ),
@@ -2430,6 +2890,7 @@ def rebuild_context(
     config = _runtime_config(base_dir=base_dir, info_root=info_root, surface=surface)
     bootstrap_context_hub(client_id, base_dir=config.base_dir, info_root=config.info_root, surface=config.surface)
     paths = _tenant_paths(client_id, info_root=config.info_root)
+    _refresh_curation_dashboard_best_effort(paths)
     safe_reason = str(reason or "manual_admin").strip().lower()
     if not _SAFE_REASON_RE.fullmatch(safe_reason):
         raise ContextHubValidationError("Motivo de reconstrucao invalido.")
@@ -3097,7 +3558,7 @@ def get_status(
             curation_rows = connection.execute(
                 """
                 SELECT state, COUNT(*) AS count
-                FROM context_hub_curated_approvals GROUP BY state
+                FROM context_hub_curated_approvals WHERE present=1 GROUP BY state
                 """
             ).fetchall()
             connection.commit()
@@ -3268,10 +3729,18 @@ def _search_identifiers(query: str, filters: Mapping[str, Any]) -> list[str]:
     return normalized[:20]
 
 
-def _matching_identifiers(row: Mapping[str, Any], identifiers: Sequence[str]) -> list[str]:
+def _matching_identifiers(
+    row: Mapping[str, Any],
+    identifiers: Sequence[str],
+    *,
+    include_document_content: bool = False,
+) -> list[str]:
+    searchable_keys = ["doc_id", "title", "content"]
+    if include_document_content:
+        searchable_keys.extend(("entity_id", "document_content"))
     searchable = "\n".join(
         str(row[key] or "")
-        for key in ("doc_id", "title", "content")
+        for key in searchable_keys
         if key in row.keys()
     ).casefold()
     matched: list[str] = []
@@ -3285,9 +3754,170 @@ def _matching_identifiers(row: Mapping[str, Any], identifiers: Sequence[str]) ->
     return matched
 
 
+def _rows_matching_required_identifiers(
+    rows: Sequence[sqlite3.Row],
+    identifiers: Sequence[str],
+) -> list[sqlite3.Row]:
+    if not identifiers:
+        return list(rows)
+    required = {str(item or "").casefold() for item in identifiers if str(item or "").strip()}
+    return [
+        row
+        for row in rows
+        if required.issubset({
+            item.casefold()
+            for item in _matching_identifiers(
+                row,
+                identifiers,
+                include_document_content=True,
+            )
+        })
+    ]
+
+
 def _fts_match_query(terms: Sequence[str], operator: str) -> str:
     safe_operator = " OR " if operator == "OR" else " AND "
     return safe_operator.join('"' + term.replace('"', '""') + '"' for term in terms)
+
+
+def _closed_context_filters(filters: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    raw = dict(filters or {}) if isinstance(filters, Mapping) else {}
+    unknown = sorted(str(key) for key in raw if str(key) not in CONTEXT_RETRIEVAL_FILTER_KEYS)
+    if unknown:
+        raise ContextHubValidationError("Filtro de busca do Context Hub nao permitido: " + ", ".join(unknown[:5]))
+    authority = str(raw.get("authority") or "").strip().casefold()
+    if authority and authority not in _CONTEXT_AUTHORITY_TRUTH_CLASSES:
+        raise ContextHubValidationError("Autoridade de busca do Context Hub invalida.")
+    validity = str(raw.get("validity") or "").strip().casefold()
+    if validity and validity not in {"active_generation", "unverified"}:
+        raise ContextHubValidationError("Validade de busca do Context Hub invalida.")
+    valid_at = str(raw.get("valid_at") or "").strip()
+    if valid_at and not re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2})?)?", valid_at):
+        raise ContextHubValidationError("Data de validade do Context Hub invalida.")
+    for list_key in ("ids", "entity_ids", "document_types", "tags"):
+        if list_key in raw and not isinstance(raw.get(list_key), list):
+            raise ContextHubValidationError(f"Filtro {list_key} do Context Hub deve ser uma lista.")
+    return raw
+
+
+def _context_authority(truth_class: Any) -> str:
+    normalized = str(truth_class or "").strip().casefold()
+    for authority, truth_classes in _CONTEXT_AUTHORITY_TRUTH_CLASSES.items():
+        if normalized in truth_classes:
+            return authority
+    return "unverified"
+
+
+def _context_validity(truth_class: Any) -> str:
+    return "unverified" if _context_authority(truth_class) == "unverified" else "active_generation"
+
+
+def _context_citation_id(row: Mapping[str, Any]) -> str:
+    material = "|".join(
+        str(row.get(key) or "")
+        for key in ("generation_id", "doc_id", "chunk_id", "source_hash")
+    )
+    return "ctx-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+def _conflict_text(value: Any) -> str:
+    normalized = unicodedata.normalize("NFKD", str(value or ""))
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char)).casefold()
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _conflict_claim(value: Any) -> tuple[set[str], int]:
+    text = _conflict_text(value)
+    identifiers = {
+        item.upper()
+        for item in re.findall(r"\b(?:MLB\d{6,}|[A-Z0-9][A-Z0-9._/-]*\d[A-Z0-9._/-]{2,})\b", str(value or ""), re.I)
+    }
+    negative = bool(
+        re.search(r"\b(?:nao|nunca)\s+(?:e\s+)?(?:compativel|permitido|serve|suporta)\b|\bincompativel\b", text)
+    )
+    positive = bool(re.search(r"\b(?:compativel|permitido|serve|suporta)\b", text)) and not negative
+    return identifiers, -1 if negative else 1 if positive else 0
+
+
+def _finalize_context_retrieval_v3(
+    payload: Mapping[str, Any],
+    *,
+    filters: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    """Attach bounded provenance, authority and conflict metadata to search results."""
+
+    result = dict(payload)
+    rows = [dict(item) for item in list(result.get("results") or []) if isinstance(item, Mapping)]
+
+    def safe_score(item: Mapping[str, Any]) -> float:
+        try:
+            return max(0.0, float(item.get("score") or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    maximum_score = max((safe_score(item) for item in rows), default=0.0)
+    for item in rows:
+        raw_score = safe_score(item)
+        item["normalized_score"] = round(raw_score / maximum_score, 6) if maximum_score > 0 else 0.0
+        item["authority"] = _context_authority(item.get("truth_class"))
+        item["validity"] = _context_validity(item.get("truth_class"))
+        item["citation_id"] = _context_citation_id(item)
+        item["conflict"] = False
+        item["conflict_with"] = []
+        item["operational_data_source"] = False
+    claims = [_conflict_claim(item.get("snippet")) for item in rows]
+    for left_index, (left_ids, left_polarity) in enumerate(claims):
+        if not left_ids or left_polarity == 0:
+            continue
+        for right_index in range(left_index + 1, len(rows)):
+            right_ids, right_polarity = claims[right_index]
+            if not left_ids.intersection(right_ids) or right_polarity == 0 or left_polarity == right_polarity:
+                continue
+            left = rows[left_index]
+            right = rows[right_index]
+            left["conflict"] = right["conflict"] = True
+            left["conflict_with"].append(right["citation_id"])
+            right["conflict_with"].append(left["citation_id"])
+    conflict_detected = any(item["conflict"] for item in rows)
+    applied_filters = {
+        str(key): value
+        for key, value in dict(filters or {}).items()
+        if value not in (None, "", [], {}) and str(key) in CONTEXT_RETRIEVAL_FILTER_KEYS
+    }
+    gaps: list[str] = []
+    if not result.get("generation_id"):
+        gaps.append("no_active_generation")
+    elif not rows:
+        gaps.append("no_context_match")
+    if conflict_detected:
+        gaps.append("context_conflict")
+    result.update(
+        {
+            "schema_version": CONTEXT_RETRIEVAL_V3,
+            "authority_policy": CONTEXT_RETRIEVAL_AUTHORITY_POLICY,
+            "results": rows,
+            "citations": [
+                {
+                    key: item.get(key)
+                    for key in (
+                        "citation_id", "doc_id", "chunk_id", "reference", "snippet", "generation_id",
+                        "source_version", "truth_class", "authority", "validity", "normalized_score",
+                        "conflict", "conflict_with",
+                    )
+                }
+                for item in rows
+            ],
+            "count": len(rows),
+            "gaps": gaps,
+            "coverage_complete": bool(rows) and not conflict_detected,
+            "conflict_detected": conflict_detected,
+            "filters_applied": applied_filters,
+            "valid_at": str(dict(filters or {}).get("valid_at") or ""),
+            "operational_data_source": False,
+            "embeddings_enabled": False,
+        }
+    )
+    return result
 
 
 def _search_result_from_row(
@@ -3306,11 +3936,13 @@ def _search_result_from_row(
     reference = str(refs[0]) if isinstance(refs, list) and refs else str(row["relative_path"] or "")
     return {
         "doc_id": row["doc_id"],
+        "title": row["title"],
         "chunk_id": row["chunk_id"],
         "snippet": _search_snippet(str(row["content"] or ""), query_terms),
         "score": round(float(score), 6),
         "reference": reference,
         "truth_class": row["truth_class"],
+        "sensitivity": row["sensitivity"],
         "source_version": row["source_version"],
         "source_hash": row["source_hash"],
         "content_hash": row["content_hash"],
@@ -3321,6 +3953,10 @@ def _search_result_from_row(
         "type": row["kind"],
         "module": row["module"],
         "surface": row["surface"],
+        "store_ref": row["store_ref"],
+        "tags": [item for item in str(row["tags_text"] or "").splitlines() if item],
+        "valid_from": row["valid_from"],
+        "valid_to": row["valid_to"],
         "selection_strategy": strategy,
         "selection_reason": reason,
     }
@@ -3398,10 +4034,10 @@ def search_context(
 ) -> dict[str, Any]:
     """Search an active generation by exact ID, strict BM25 and bounded relaxation."""
 
+    raw_filters = _closed_context_filters(filters)
     paths = _tenant_paths(client_id, info_root=info_root)
     bootstrap_context_hub(paths.client_id, info_root=paths.info_root)
     safe_query = str(query or "").strip()[:500]
-    raw_filters = dict(filters or {}) if isinstance(filters, Mapping) else {}
     request_surface = str(
         raw_filters.get("request_surface") or raw_filters.get("consumer_surface") or ""
     ).strip().casefold()
@@ -3410,11 +4046,29 @@ def search_context(
     module_filter = str(raw_filters.get("module") or raw_filters.get("domain") or "").strip().lower()[:100]
     kind_filter = str(raw_filters.get("source_type") or raw_filters.get("kind") or "").strip().lower()[:100]
     surface_filter = str(raw_filters.get("environment") or raw_filters.get("surface") or "").strip().lower()[:100]
+    truth_class_filter = str(raw_filters.get("truth_class") or "").strip().casefold()[:100]
+    authority_filter = str(raw_filters.get("authority") or "").strip().casefold()
+    sensitivity_filter = str(raw_filters.get("sensitivity") or "").strip().casefold()[:80]
+    validity_filter = str(raw_filters.get("validity") or "").strip().casefold()
+    store_filter = str(raw_filters.get("store_ref") or "").strip().casefold()[:180]
+    tags_value = raw_filters.get("tags") or []
+    tags_filter = sorted(
+        {str(value).strip().casefold()[:80] for value in tags_value if str(value).strip()}
+    ) if isinstance(tags_value, list) else []
+    valid_at_filter = str(raw_filters.get("valid_at") or "").strip()[:40]
+    document_types_value = raw_filters.get("document_types") or []
+    document_types = sorted(
+        {str(value).strip().casefold()[:80] for value in document_types_value if str(value).strip()}
+    ) if isinstance(document_types_value, list) else []
     ids_value = raw_filters.get("ids") or raw_filters.get("entity_ids") or []
     ids = sorted({str(value).strip() for value in ids_value if str(value).strip()}) if isinstance(ids_value, list) else []
     query_terms = _search_query_terms(safe_query)
     significant_terms = _significant_search_terms(query_terms)
     identifiers = _search_identifiers(safe_query, raw_filters)
+    required_identifiers = _search_identifiers(
+        "",
+        {"sku": raw_filters.get("sku"), "mlb": raw_filters.get("mlb")},
+    )
     strict_match_query = _fts_match_query(query_terms, "AND")
     relaxed_match_query = _fts_match_query(significant_terms, "OR")
     engine = "fts5_bm25"
@@ -3427,7 +4081,7 @@ def search_context(
         active_id = _active_generation_id(connection)
         if not active_id:
             connection.commit()
-            return {
+            return _finalize_context_retrieval_v3({
                 "success": True,
                 "query": safe_query,
                 "generation_id": None,
@@ -3439,7 +4093,7 @@ def search_context(
                 "search_stages": [],
                 "relaxation_used": False,
                 "embeddings_enabled": False,
-            }
+            }, filters=raw_filters)
         generation = connection.execute(
             "SELECT source_version FROM context_hub_generations WHERE generation_id=? AND status='active'",
             (active_id,),
@@ -3455,14 +4109,53 @@ def search_context(
         if surface_filter:
             base_clauses.append("lower(d.surface)=?")
             base_parameters.append(surface_filter)
+        if truth_class_filter:
+            base_clauses.append("lower(d.truth_class)=?")
+            base_parameters.append(truth_class_filter)
+        if authority_filter:
+            allowed_truth_classes = sorted(_CONTEXT_AUTHORITY_TRUTH_CLASSES[authority_filter])
+            base_clauses.append("lower(d.truth_class) IN (" + ",".join("?" for _ in allowed_truth_classes) + ")")
+            base_parameters.extend(allowed_truth_classes)
+        if sensitivity_filter:
+            base_clauses.append("lower(d.sensitivity)=?")
+            base_parameters.append(sensitivity_filter)
+        if validity_filter:
+            validity_truth_classes = (
+                sorted(set().union(*(
+                    values for key, values in _CONTEXT_AUTHORITY_TRUTH_CLASSES.items() if key != "unverified"
+                )))
+                if validity_filter == "active_generation"
+                else sorted(_CONTEXT_AUTHORITY_TRUTH_CLASSES["unverified"])
+            )
+            base_clauses.append("lower(d.truth_class) IN (" + ",".join("?" for _ in validity_truth_classes) + ")")
+            base_parameters.extend(validity_truth_classes)
+        if document_types:
+            base_clauses.append("lower(d.kind) IN (" + ",".join("?" for _ in document_types) + ")")
+            base_parameters.extend(document_types)
         if ids:
             base_clauses.append("d.doc_id IN (" + ",".join("?" for _ in ids) + ")")
             base_parameters.extend(ids)
+        if store_filter:
+            base_clauses.append("lower(d.store_ref)=?")
+            base_parameters.append(store_filter)
+        for tag in tags_filter:
+            base_clauses.append("instr(char(10) || lower(d.tags_text) || char(10), char(10) || ? || char(10)) > 0")
+            base_parameters.append(tag)
+        if valid_at_filter:
+            base_clauses.extend(
+                [
+                    "(d.valid_from != '' OR d.valid_to != '')",
+                    "(d.valid_from = '' OR d.valid_from <= ?)",
+                    "(d.valid_to = '' OR d.valid_to >= ?)",
+                ]
+            )
+            base_parameters.extend([valid_at_filter, valid_at_filter])
         base_sql = f"""
             SELECT
-                d.doc_id, d.relative_path, d.title, d.kind, d.module, d.surface,
-                d.truth_class, d.source_version, d.source_hash, d.content_hash,
-                d.source_refs_json, c.chunk_id, c.content, 0.0 AS rank_score
+                d.doc_id, d.entity_id, d.relative_path, d.title, d.kind, d.module, d.surface,
+                d.truth_class, d.sensitivity, d.source_version, d.source_hash, d.content_hash,
+                d.source_refs_json, d.store_ref, d.tags_text, d.valid_from, d.valid_to,
+                d.content AS document_content, c.chunk_id, c.content, 0.0 AS rank_score
             FROM context_hub_chunks AS c
             JOIN context_hub_documents AS d
               ON d.generation_id=c.generation_id AND d.doc_id=c.doc_id
@@ -3474,7 +4167,10 @@ def search_context(
 
         if identifiers:
             search_stages.append("exact_identifier")
-            base_rows = connection.execute(base_sql, base_parameters).fetchall()
+            base_rows = _rows_matching_required_identifiers(
+                connection.execute(base_sql, base_parameters).fetchall(),
+                required_identifiers,
+            )
             for row in base_rows:
                 matched = _matching_identifiers(row, identifiers)
                 if not matched:
@@ -3513,9 +4209,10 @@ def search_context(
             strict_rows = connection.execute(
                 f"""
                 SELECT
-                    d.doc_id, d.relative_path, d.title, d.kind, d.module, d.surface,
-                    d.truth_class, d.source_version, d.source_hash, d.content_hash,
-                    d.source_refs_json, f.chunk_id, f.content,
+                    d.doc_id, d.entity_id, d.relative_path, d.title, d.kind, d.module, d.surface,
+                    d.truth_class, d.sensitivity, d.source_version, d.source_hash, d.content_hash,
+                    d.source_refs_json, d.store_ref, d.tags_text, d.valid_from, d.valid_to,
+                    d.content AS document_content, f.chunk_id, f.content,
                     -bm25(context_hub_chunks_fts, 0.0, 0.0, 0.0, 5.0, 1.0) AS rank_score
                 FROM context_hub_chunks_fts AS f
                 JOIN context_hub_documents AS d
@@ -3527,6 +4224,7 @@ def search_context(
                 """,
                 [strict_match_query, *base_parameters, retrieval_limit],
             ).fetchall()
+            strict_rows = _rows_matching_required_identifiers(strict_rows, required_identifiers)
             for row in strict_rows:
                 candidates.append(
                     _search_result_from_row(
@@ -3544,9 +4242,10 @@ def search_context(
                 relaxed_rows = connection.execute(
                     f"""
                     SELECT
-                        d.doc_id, d.relative_path, d.title, d.kind, d.module, d.surface,
-                        d.truth_class, d.source_version, d.source_hash, d.content_hash,
-                        d.source_refs_json, f.chunk_id, f.content,
+                        d.doc_id, d.entity_id, d.relative_path, d.title, d.kind, d.module, d.surface,
+                        d.truth_class, d.sensitivity, d.source_version, d.source_hash, d.content_hash,
+                        d.source_refs_json, d.store_ref, d.tags_text, d.valid_from, d.valid_to,
+                        d.content AS document_content, f.chunk_id, f.content,
                         -bm25(context_hub_chunks_fts, 0.0, 0.0, 0.0, 5.0, 1.0) AS rank_score
                     FROM context_hub_chunks_fts AS f
                     JOIN context_hub_documents AS d
@@ -3558,6 +4257,7 @@ def search_context(
                     """,
                     [relaxed_match_query, *base_parameters, retrieval_limit],
                 ).fetchall()
+                relaxed_rows = _rows_matching_required_identifiers(relaxed_rows, required_identifiers)
                 for row in relaxed_rows:
                     candidates.append(
                         _search_result_from_row(
@@ -3571,7 +4271,14 @@ def search_context(
                     )
         except sqlite3.OperationalError:
             engine = "lexical_fallback"
-            base_rows = base_rows if base_rows is not None else connection.execute(base_sql, base_parameters).fetchall()
+            base_rows = (
+                base_rows
+                if base_rows is not None
+                else _rows_matching_required_identifiers(
+                    connection.execute(base_sql, base_parameters).fetchall(),
+                    required_identifiers,
+                )
+            )
             candidates = [item for item in candidates if item.get("selection_strategy") == "exact_identifier"]
             if query_terms:
                 search_stages = [stage for stage in search_stages if not stage.startswith("bm25_")]
@@ -3641,7 +4348,7 @@ def search_context(
     result_strategies = list(
         dict.fromkeys(str(item.get("selection_strategy") or "") for item in results if item.get("selection_strategy"))
     )
-    return {
+    return _finalize_context_retrieval_v3({
         "success": True,
         "query": safe_query,
         "generation_id": active_id,
@@ -3654,7 +4361,7 @@ def search_context(
         "search_stages": search_stages,
         "relaxation_used": relaxation_used,
         "embeddings_enabled": False,
-    }
+    }, filters=raw_filters)
 
 
 def _watch_roots(config: ContextHubRuntimeConfig, paths: ContextHubPaths) -> list[Path]:
@@ -3706,7 +4413,7 @@ def _iter_watch_files(root: Path) -> Iterator[Path]:
 
 
 def _watch_fingerprint(config: ContextHubRuntimeConfig, paths: ContextHubPaths) -> str:
-    records: list[tuple[str, int, int]] = []
+    records: list[tuple[str, str]] = []
     accepted_suffixes = {".py", ".js", ".html", ".json", ".md", ".toml", ".yml", ".yaml"}
     for root in _watch_roots(config, paths):
         for candidate in _iter_watch_files(root):
@@ -3722,7 +4429,14 @@ def _watch_fingerprint(config: ContextHubRuntimeConfig, paths: ContextHubPaths) 
                 relative = candidate.relative_to(authority).as_posix()
             except ValueError:
                 continue
-            records.append((relative, int(stat.st_mtime_ns), int(stat.st_size)))
+            if stat.st_size > 1_000_000:
+                digest = f"oversize:{int(stat.st_size)}:{int(stat.st_mtime_ns)}"
+            else:
+                try:
+                    digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+                except OSError:
+                    continue
+            records.append((relative, digest))
     return _sha256_text(_json_canonical(sorted(records)))
 
 
@@ -3841,6 +4555,9 @@ def stop_all_context_hub_watchers() -> None:
 
 __all__ = [
     "CONTEXT_HUB_SCHEMA_VERSION",
+    "CONTEXT_RETRIEVAL_AUTHORITY_POLICY",
+    "CONTEXT_RETRIEVAL_FILTER_KEYS",
+    "CONTEXT_RETRIEVAL_V3",
     "ContextHubConflictError",
     "ContextHubError",
     "ContextHubNotFoundError",

@@ -35,8 +35,9 @@ assert.match(lojas, /habilitar_pos_venda_automatico:\s*false/g);
 assert.match(lojas, /function notificarAprovacaoSidebar[\s\S]*?aprovacaoEhPosVenda\(aprovacao\)\) return;/);
 assert.match(lojas, /const pendentes =[\s\S]*?\.filter\(\(item\) => !aprovacaoEhPosVenda\(item\)\)/);
 
-assert.match(perguntas, /if \(tipo === 'pos_venda'\) return \{ ok: false, blocked: true/);
-assert.match(perguntas, /if \(tipo === 'pos_venda'\) return;[\s\S]*?preencherRespostaPerguntaSugerida/);
+assert.match(perguntas, /function sugestaoEhPosVenda[\s\S]*?payload\.ia_origem[\s\S]*?includes\('pos_venda'\)/);
+assert.match(perguntas, /if \(sugestaoEhPosVenda\(payload\)\) return \{ ok: false, blocked: true/);
+assert.match(perguntas, /if \(sugestaoEhPosVenda\(payload\)\) return;[\s\S]*?preencherRespostaPerguntaSugerida/);
 assert.match(perguntas, /preencherRespostaPerguntaSugerida/);
 assert.match(perguntas, /question-ai-answer-btn/);
 

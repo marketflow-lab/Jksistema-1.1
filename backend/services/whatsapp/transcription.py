@@ -21,15 +21,18 @@ import time
 import unicodedata
 import uuid
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from types import MappingProxyType
+from typing import Any, Mapping, Optional
 from urllib.parse import quote, unquote, urlparse
 from zoneinfo import ZoneInfo
 import requests
 from fastapi import Header, HTTPException, Request
 from backend.schemas import IAChatAttachment, IAChatRequest
 from backend.services.whatsapp import formatting as whatsapp_formatting
+from backend.services.whatsapp import audio_processing as whatsapp_audio_processing
 from backend.services.whatsapp import gateway as whatsapp_gateway
 from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
@@ -70,6 +73,18 @@ WHATSAPP_MAX_OUTBOUND_IMAGES = whatsapp_media.WHATSAPP_MAX_OUTBOUND_IMAGES
 WHATSAPP_PART_BODY_CHARS = whatsapp_formatting.WHATSAPP_PART_BODY_CHARS
 WHATSAPP_MAX_PARTS = whatsapp_formatting.WHATSAPP_MAX_PARTS
 
+
+@dataclass(frozen=True)
+class DownloadedMedia:
+    """Private download contract; only ``public_payload`` may leave the processor."""
+
+    public_payload: Mapping[str, Any]
+    local_path: Path
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "public_payload", MappingProxyType(dict(self.public_payload)))
+        object.__setattr__(self, "local_path", Path(self.local_path))
+
 AUDIO_MESSAGE_MAX_BYTES = 16 * 1024 * 1024
 AUDIO_MESSAGE_MAX_DURATION_SECONDS = 600
 AUDIO_TRANSCRIPTION_MAX_WAITING = 4
@@ -86,9 +101,7 @@ _AUDIO_TRANSCRIPTION_STATE: dict[str, Any] = {
     "rejected_busy": 0,
     "last_error_code": "",
     "last_latency_ms": 0,
-    "telemetry": {},
 }
-
 _AUDIO_SAFE_ERROR_CODES = frozenset(
     {
         "audio_corrupt",
@@ -156,6 +169,56 @@ def _audio_duration_bucket(duration_seconds: float) -> str:
     return "gt_600s"
 
 
+def _record_audio_durable_event(
+    event: Mapping[str, Any],
+    telemetry_context: Mapping[str, str],
+) -> None:
+    """Write only allowlisted, content-free audio dimensions per client."""
+
+    client_id = str(telemetry_context.get("client_id") or "").strip()
+    trace_id = str(telemetry_context.get("trace_id") or "").strip()
+    if not client_id or not trace_id:
+        return
+    stage = str(event.get("stage") or "transcription_failed")
+    attempt = max(0, int(event.get("attempt") or 0))
+    status = "ok" if event.get("success") is True else (
+        "error" if event.get("success") is False else "started"
+    )
+    event_suffix = f"{stage}:{attempt}"
+    try:
+        telemetry = codex_console._codex_ai_telemetry_instance()
+        telemetry.schedule_retention(client_id)
+        telemetry.record_event(
+            client_id,
+            event_id=f"{trace_id}:audio:{event_suffix}",
+            trace_id=trace_id,
+            span_id=f"audio:{event_suffix}",
+            event_type="audio_processing",
+            status=status,
+            requested_model="whisper-small",
+            effective_model="whisper-small",
+            provider="local_whisper",
+            provider_path="local_only",
+            duration_ms=event.get("latency_ms") or 0,
+            error_code=event.get("error_code") or "",
+            user_id=telemetry_context.get("user_id") or "",
+            dimensions={
+                "surface": telemetry_context.get("surface") or "whatsapp",
+                "category": "audio",
+                "audio_stage": stage,
+                "audio_attempt": str(attempt),
+                "audio_retries": str(max(0, int(event.get("retries") or 0))),
+                "audio_mime_bucket": event.get("mime") or "unknown",
+                "audio_size_bucket": event.get("size_bucket") or "unknown",
+                "audio_duration_bucket": event.get("duration_bucket") or "unknown",
+                "audio_cleanup_state": event.get("cleanup_state") or "none",
+            },
+        )
+    except Exception:
+        # Telemetry is best-effort for read-only consultations.
+        pass
+
+
 def _record_audio_stage(
     stage: str,
     *,
@@ -165,8 +228,25 @@ def _record_audio_stage(
     success: Optional[bool] = None,
     error_code: str = "",
     latency_ms: int = 0,
+    attempt: int = 0,
+    retries: int = 0,
+    cleanup_state: str = "",
+    telemetry_context: Optional[Mapping[str, str]] = None,
 ) -> None:
-    safe_stage = stage if stage in {"received", "transcription_started", "transcription_succeeded", "transcription_failed"} else "transcription_failed"
+    safe_stage = stage if stage in {
+        "received",
+        "transcription_started",
+        "transcription_succeeded",
+        "transcription_failed",
+        "transcription_attempt",
+        "transcription_retry",
+        "cleanup_succeeded",
+        "cleanup_failed",
+        "cleanup_queued",
+        "cleanup_queue_full",
+        "janitor_removed",
+        "janitor_failed",
+    } else "transcription_failed"
     safe_mime = _audio_mime_from_path(audio_path) if audio_path is not None else "unknown"
     version = str(os.getenv("JK_APP_VERSION") or "unknown").strip()[:40]
     if not re.fullmatch(r"[A-Za-z0-9._+-]{1,40}", version):
@@ -181,15 +261,15 @@ def _record_audio_stage(
         "latency_ms": max(0, min(int(latency_ms or 0), 3_600_000)),
         "success": success if isinstance(success, bool) else None,
         "error_code": safe_error,
+        "attempt": max(0, min(int(attempt or 0), 2)),
+        "retries": max(0, min(int(retries or 0), 1)),
+        "cleanup_state": str(cleanup_state or "none")[:40],
     }
-    with _AUDIO_TRANSCRIPTION_STATE_LOCK:
-        telemetry = _AUDIO_TRANSCRIPTION_STATE.setdefault("telemetry", {})
-        stage_counts = telemetry.setdefault("stage_counts", {})
-        error_counts = telemetry.setdefault("error_counts", {})
-        stage_counts[safe_stage] = int(stage_counts.get(safe_stage) or 0) + 1
-        if safe_error:
-            error_counts[safe_error] = int(error_counts.get(safe_error) or 0) + 1
-        telemetry["last"] = event
+    context = dict(telemetry_context or whatsapp_audio_processing.current_audio_telemetry_context())
+    _record_audio_durable_event(event, context)
+
+
+whatsapp_audio_processing.configure_audio_telemetry(_record_audio_stage)
 
 
 def _record_audio_outcome(
@@ -287,12 +367,6 @@ def _audio_messages_status() -> dict[str, Any]:
     whisper = _whisper_status()
     with _AUDIO_TRANSCRIPTION_STATE_LOCK:
         queue = dict(_AUDIO_TRANSCRIPTION_STATE)
-        raw_telemetry = dict(_AUDIO_TRANSCRIPTION_STATE.get("telemetry") or {})
-        telemetry = {
-            "stage_counts": dict(raw_telemetry.get("stage_counts") or {}),
-            "error_counts": dict(raw_telemetry.get("error_counts") or {}),
-            "last": dict(raw_telemetry.get("last") or {}),
-        }
     return {
         "ready": bool(whisper.get("ready")),
         "local_only": True,
@@ -309,6 +383,9 @@ def _audio_messages_status() -> dict[str, Any]:
         },
         "retention": {
             "raw_audio": "delete_immediately_after_terminal",
+            # This refers to the raw transcription envelope and metadata. Once
+            # cleanup succeeds, the sanitized text becomes the user's normal
+            # conversation message and follows the existing history policy.
             "transcription_persisted": False,
         },
         "queue": {
@@ -321,7 +398,9 @@ def _audio_messages_status() -> dict[str, Any]:
         },
         "last_error_code": _safe_audio_error_code(queue.get("last_error_code"), "") if queue.get("last_error_code") else "",
         "last_latency_ms": max(0, min(int(queue.get("last_latency_ms") or 0), 3_600_000)),
-        "telemetry": telemetry,
+        # Detailed events are intentionally absent from the machine-wide
+        # status. They live only in the per-client CodexAITelemetry database.
+        "telemetry": {"stage_counts": {}, "error_counts": {}, "last": {}},
         "preflight": {
             "dependency_installed": bool(whisper.get("dependency_installed")),
             "av_installed": bool(whisper.get("av_installed")),
@@ -577,7 +656,7 @@ def _safe_filename(value: Any, fallback: str) -> str:
 def _media_extension(mime: str) -> str:
     return whatsapp_media.media_extension(mime)
 
-def _download_media(config: dict[str, Any], message: dict[str, Any], conversation_id: str) -> dict[str, Any]:
+def _download_media(config: dict[str, Any], message: dict[str, Any], conversation_id: str) -> DownloadedMedia:
     message_id = str(message.get("message_id") or "").strip()
     declared = str(message.get("media_mime") or "").split(";", 1)[0].strip().lower()
     limits = {**SUPPORTED_IMAGE_MIMES, **SUPPORTED_AUDIO_MIMES}
@@ -603,15 +682,42 @@ def _download_media(config: dict[str, Any], message: dict[str, Any], conversatio
         raise RuntimeError("media_download_unavailable")
     actual_mime = str(response.headers.get("content-type") or declared).split(";", 1)[0].strip().lower()
     if actual_mime not in limits:
+        response.close()
         raise RuntimeError(f"media_type_not_allowed:{actual_mime or 'unknown'}")
     client_id = str(message.get("client_id") or config.get("client_id") or "default")
     username = str(message.get("username") or config.get("username") or "user")
+    attachment_root = codex_console._codex_attachments_base_dir()
     target_dir = codex_console._codex_attachment_dir(client_id, username, conversation_id)
+    if actual_mime in SUPPORTED_AUDIO_MIMES:
+        try:
+            target_dir = whatsapp_audio_processing.validate_audio_attachment_directory(
+                target_dir,
+                attachment_root,
+            )
+        except ValueError as exc:
+            response.close()
+            raise RuntimeError("media_local_path_invalid") from exc
     original = _safe_filename(response.headers.get("x-jk-filename"), f"whatsapp{_media_extension(actual_mime)}")
     if not os.path.splitext(original)[1]:
         original += _media_extension(actual_mime)
     target = target_dir / f"{codex_console._codex_safe_id(message_id, 'wa')}_{original}"
-    temporary = target.with_suffix(target.suffix + ".part")
+    if actual_mime in SUPPORTED_AUDIO_MIMES and (target.exists() or target.is_symlink()):
+        try:
+            whatsapp_audio_processing.validate_inbound_audio_path(target, attachment_root)
+        except ValueError as exc:
+            response.close()
+            raise RuntimeError("media_local_path_invalid") from exc
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{codex_console._codex_safe_id(message_id, 'wa')}-",
+            suffix=".part",
+            dir=str(target_dir),
+        )
+        os.close(descriptor)
+    except Exception:
+        response.close()
+        raise
+    temporary = Path(temporary_name)
     total = 0
     try:
         with temporary.open("wb") as handle:
@@ -622,11 +728,33 @@ def _download_media(config: dict[str, Any], message: dict[str, Any], conversatio
                 if total > limits[actual_mime]:
                     raise RuntimeError("media_size_limit")
                 handle.write(chunk)
+        if actual_mime in SUPPORTED_AUDIO_MIMES:
+            whatsapp_audio_processing.validate_audio_attachment_directory(target_dir, attachment_root)
+            whatsapp_audio_processing.validate_regular_attachment_file(temporary, attachment_root)
+            if target.exists() or target.is_symlink():
+                whatsapp_audio_processing.validate_inbound_audio_path(target, attachment_root)
         os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
         response.close()
-    return codex_console._codex_attachment_public_payload(target, original, actual_mime, total)
+    public_payload = dict(codex_console._codex_attachment_public_payload(target, original, actual_mime, total))
+    public_payload.pop("path", None)
+    public_payload.pop("local_path", None)
+    try:
+        local_path = target.resolve(strict=True)
+        if actual_mime in SUPPORTED_AUDIO_MIMES:
+            local_path = whatsapp_audio_processing.validate_inbound_audio_path(
+                local_path,
+                attachment_root,
+            )
+    except (OSError, ValueError) as exc:
+        if actual_mime in SUPPORTED_AUDIO_MIMES:
+            whatsapp_audio_processing.delete_inbound_audio(
+                target,
+                attachment_root,
+            )
+        raise RuntimeError("media_local_path_invalid") from exc
+    return DownloadedMedia(public_payload=public_payload, local_path=local_path)
 
 
 _COMPONENT_FUNCTIONS = frozenset((
@@ -659,10 +787,15 @@ _IMPLEMENTATIONS = {
 
 def bind_bridge_dependencies(dependencies: BridgeDependencies) -> None:
     bind_component_namespace(globals(), _IMPLEMENTATIONS, dependencies)
+    # These two entrypoints are also exercised directly by health checks and
+    # local workers. Keep their stable component implementations while their
+    # dependencies remain late-bound to the compatibility facade.
+    globals()["_audio_messages_preflight"] = _IMPLEMENTATIONS["_audio_messages_preflight"]
+    globals()["_transcribe_audio"] = _IMPLEMENTATIONS["_transcribe_audio"]
 
 
 def invoke(name: str, *args: Any, **kwargs: Any) -> Any:
     return invoke_component(_IMPLEMENTATIONS, name, args, kwargs)
 
 
-__all__ = ["bind_bridge_dependencies", "invoke"]
+__all__ = ["DownloadedMedia", "bind_bridge_dependencies", "invoke"]

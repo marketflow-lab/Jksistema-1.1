@@ -115,7 +115,6 @@ def _apply_bridge_timing_config(config: dict[str, Any], payload: WhatsappBridgeC
         ("wait_message_repeat_seconds", payload.wait_message_repeat_seconds, WHATSAPP_WAIT_MESSAGE_REPEAT_DEFAULT, 15, 180),
         ("wait_message_steady_seconds", payload.wait_message_steady_seconds, WHATSAPP_WAIT_MESSAGE_STEADY_DEFAULT, 30, 300),
         ("partial_delivery_debounce_seconds", payload.partial_delivery_debounce_seconds, WHATSAPP_PARTIAL_DEBOUNCE_DEFAULT, 1, 10),
-        ("job_deadline_seconds", payload.job_deadline_seconds, WHATSAPP_JOB_DEADLINE_DEFAULT, 30, WHATSAPP_REPORT_DEADLINE_SECONDS),
     )
     for key, value, fallback, minimum, maximum in timing_fields:
         if value is None:
@@ -125,6 +124,10 @@ def _apply_bridge_timing_config(config: dict[str, Any], payload: WhatsappBridgeC
             if key == "conversation_interval_seconds"
             else _normalize_capacity(value, fallback, minimum, maximum)
         )
+    # Campo legado ainda e aceito pelo contrato publico, mas nao pode reativar
+    # um prazo total para as consultas do Black Jhon.
+    config["job_deadline_seconds"] = 0
+    config["deadline_enabled"] = False
     config["retry_policy"] = "bounded"
 
 

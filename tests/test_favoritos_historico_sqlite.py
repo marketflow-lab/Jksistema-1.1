@@ -130,6 +130,111 @@ class FavoritosHistoricoSqliteTest(unittest.TestCase):
         self.assertEqual(json_path.stat().st_mtime_ns, mtime_json)
         self.assertEqual(_db_count(db_path), 1)
 
+    def test_normalizador_deduplica_mlb_canonico_e_mescla_metadados(self):
+        entrada = _entry("hist-dedup")
+        entrada["grupos"][0]["total_anuncios"] = 2
+        entrada["grupos"][0]["anuncios"] = [
+            {
+                "id": "mlb-4402208097",
+                "url": "https://produto.mercadolivre.com.br/MLB-4402208097#primeiro",
+                "titulo": "",
+                "vendedor": "LOJA PRIMEIRA",
+                "vendas": 0,
+                "parcelamento_sem_juros": False,
+                "pesquisas_origem": ["pesquisa 1"],
+                "campos_origem": ["Pesquisa 1"],
+            },
+            {
+                "id": "MLB4402208097",
+                "url": "https://www.mercadolivre.com.br/produto/up/MLBU1234567890",
+                "titulo": "Titulo completo",
+                "vendedor": "LOJA SEGUNDA",
+                "vendas": 100,
+                "preco": 36.99,
+                "parcelamento_sem_juros": True,
+                "pesquisas_origem": ["pesquisa 2"],
+                "campos_origem": ["Pesquisa 2"],
+            },
+        ]
+
+        normalizado = favoritos_storage._favoritos_normalizar_historico([entrada])[0]
+        grupo = normalizado["grupos"][0]
+
+        self.assertEqual(len(grupo["anuncios"]), 1)
+        self.assertEqual(grupo["total_anuncios"], 1)
+        self.assertEqual(normalizado["total_anuncios"], 1)
+        anuncio = grupo["anuncios"][0]
+        self.assertEqual(anuncio["vendedor"], "LOJA PRIMEIRA")
+        self.assertEqual(anuncio["vendas"], 0)
+        self.assertIs(anuncio["parcelamento_sem_juros"], False)
+        self.assertEqual(anuncio["titulo"], "Titulo completo")
+        self.assertEqual(anuncio["preco"], 36.99)
+        self.assertEqual(anuncio["pesquisas_origem"], ["pesquisa 1", "pesquisa 2"])
+        self.assertEqual(anuncio["campos_origem"], ["Pesquisa 1", "Pesquisa 2"])
+
+    def test_normalizador_nao_colapsa_mlbs_distintos_com_mesma_url_catalogo(self):
+        entrada = _entry("hist-catalogo")
+        url_catalogo = "https://www.mercadolivre.com.br/produto/up/MLBU1234567890"
+        entrada["grupos"][0]["anuncios"] = [
+            {"id": "MLB11111111", "url": url_catalogo, "titulo": "Primeiro"},
+            {"id": "MLB22222222", "url": url_catalogo, "titulo": "Segundo"},
+            {"url": url_catalogo, "titulo": "Catalogo sem MLB", "pesquisas_origem": ["pesquisa 1"]},
+            {"url": f"{url_catalogo}#duplicado", "preco": 25.0, "pesquisas_origem": ["pesquisa 2"]},
+            {"titulo": "Sem chave 1"},
+            {"titulo": "Sem chave 2"},
+        ]
+
+        grupo = favoritos_storage._favoritos_normalizar_historico([entrada])[0]["grupos"][0]
+
+        self.assertEqual(len(grupo["anuncios"]), 5)
+        self.assertEqual(grupo["total_anuncios"], 5)
+        self.assertEqual([item["id"] for item in grupo["anuncios"][:2]], ["MLB11111111", "MLB22222222"])
+        self.assertEqual(grupo["anuncios"][2]["titulo"], "Catalogo sem MLB")
+        self.assertEqual(grupo["anuncios"][2]["preco"], 25.0)
+        self.assertEqual(grupo["anuncios"][2]["pesquisas_origem"], ["pesquisa 1", "pesquisa 2"])
+        self.assertEqual([item["titulo"] for item in grupo["anuncios"][3:]], ["Sem chave 1", "Sem chave 2"])
+
+    def test_normalizador_deduplica_antes_do_limite_e_preserva_60_unicos(self):
+        entrada = _entry("hist-limite-dedup")
+        anuncios = [
+            {"id": f"MLB{10000000 + indice}", "titulo": f"Anuncio {indice}"}
+            for indice in range(59)
+        ]
+        anuncios.insert(10, {"id": "mlb-10000000", "titulo": "Duplicado antes do limite"})
+        anuncios.append({"id": "MLB99999999", "titulo": "Unico depois da posicao 60"})
+        entrada["grupos"][0]["anuncios"] = anuncios
+        entrada["grupos"][0]["total_anuncios"] = len(anuncios)
+        entrada["total_anuncios"] = len(anuncios)
+
+        normalizado = favoritos_storage._favoritos_normalizar_historico([entrada])[0]
+        grupo = normalizado["grupos"][0]
+
+        self.assertEqual(len(grupo["anuncios"]), 60)
+        self.assertEqual(len({favoritos_storage._favoritos_mlb_canonico_historico(item) for item in grupo["anuncios"]}), 60)
+        self.assertEqual(grupo["anuncios"][-1]["id"], "MLB99999999")
+        self.assertEqual(grupo["total_anuncios"], 60)
+        self.assertEqual(normalizado["total_anuncios"], 60)
+
+    def test_sqlite_recarrega_historico_com_mlb_unico(self):
+        entrada = _entry("hist-reload-dedup")
+        entrada["grupos"][0]["total_anuncios"] = 2
+        entrada["grupos"][0]["anuncios"] = [
+            {"id": "MLB-4402208097", "titulo": "", "pesquisas_origem": ["pesquisa 1"]},
+            {"id": "mlb4402208097", "titulo": "Titulo recarregado", "pesquisas_origem": ["pesquisa 2"]},
+        ]
+
+        salvo = favoritos_storage._favoritos_salvar_historico("000002", "caio", [entrada])
+        recarregado = favoritos_storage._favoritos_carregar_historico("000002", "caio")
+
+        for payload in (salvo, recarregado):
+            historico = payload["historico"][0]
+            grupo = historico["grupos"][0]
+            self.assertEqual(len(grupo["anuncios"]), 1)
+            self.assertEqual(grupo["total_anuncios"], 1)
+            self.assertEqual(historico["total_anuncios"], 1)
+            self.assertEqual(grupo["anuncios"][0]["titulo"], "Titulo recarregado")
+            self.assertEqual(grupo["anuncios"][0]["pesquisas_origem"], ["pesquisa 1", "pesquisa 2"])
+
     def test_shared_sync_usa_db_e_aceita_json_legado(self):
         favoritos_storage._favoritos_salvar_historico(
             "000002",

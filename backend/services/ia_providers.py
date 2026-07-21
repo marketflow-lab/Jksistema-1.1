@@ -6,6 +6,7 @@ import asyncio
 import base64
 import csv
 import datetime as dt
+import functools
 import hashlib
 import io
 import json
@@ -42,6 +43,7 @@ from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.ia_common import *
 from backend.services.ia_context import get_tenant_id, get_tenant_path
 from backend.services.ia_state import *
+from backend.services.transport_security import configure_requests_session, requests_tls_verify
 from backend.services.secure_credentials import (
     delete_secret as _secure_delete_secret,
     read_any_secret as _secure_read_any_secret,
@@ -111,7 +113,7 @@ def _obter_openai_api_key() -> str:
         return api_key
 
     # Fallback robusto: tenta ler o .env explicitamente da pasta do programa
-    # e tambÃƒÂ©m do diretÃƒÂ³rio de trabalho atual (execuÃƒÂ§ÃƒÂµes via atalhos/serviÃƒÂ§os).
+    # e também do diretório de trabalho atual (execuções via atalhos/serviços).
     env_paths = []
     try:
         env_paths.append(os.path.join(BASE_DIR, ".env"))
@@ -162,7 +164,7 @@ def _obter_deepseek_api_key() -> str:
     api_key = (os.getenv("DEEPSEEK_API_KEY") or "").strip()
     if api_key:
         return api_key
-    # Fallback: lÃƒÂª .env explicitamente
+    # Fallback: lê .env explicitamente
     env_paths = []
     try:
         env_paths.append(os.path.join(BASE_DIR, ".env"))
@@ -449,7 +451,7 @@ def _chamar_gemini_api_direta(model_name: str, request_body: dict, api_key: str)
         params={"key": chave},
         headers={"Content-Type": "application/json"},
         json=body,
-        verify=False,
+        verify=requests_tls_verify(),
         timeout=60,
     )
     if not resp.ok:
@@ -615,6 +617,29 @@ IA_PROVIDER_LABELS = {
 }
 
 
+def _ia_telemetry_surface(context: dict[str, Any]) -> str:
+    explicit = str(context.get("surface") or "").strip().lower()
+    if explicit:
+        return explicit[:120]
+    origin = str(context.get("origem") or context.get("origem_ia") or "").strip().lower()
+    purpose = str(
+        context.get("tipo")
+        or context.get("tipo_treinamento")
+        or context.get("ia_finalidade")
+        or ""
+    ).strip().lower()
+    combined = f"{origin} {purpose}"
+    if "whatsapp" in combined or combined.startswith("wa_"):
+        return "whatsapp"
+    if "pos_venda" in combined or "pos-venda" in combined or "post_sale" in combined:
+        return "post_sale"
+    if "pergunta" in combined or "public_question" in combined:
+        return "public_questions"
+    if "sidebar" in combined or purpose in {"chat", "assistente", "assistant"}:
+        return "sidebar"
+    return origin[:120] or "ia_internal"
+
+
 def _ia_provedor_por_modelo(model_name: str | None) -> str:
     nome = str(model_name or "").strip()
     if _modelo_eh_codex(nome):
@@ -653,6 +678,102 @@ def _ia_validar_provedor_ativo(provedor: str) -> None:
     )
 
 
+def _telemetried_ia_provider(provider: str, provider_path: str):
+    """Record content-free telemetry around every direct internal IA provider call."""
+
+    def decorate(function):
+        @functools.wraps(function)
+        def wrapped(payload: IAChatRequest, client_id: str, *args: Any, **kwargs: Any):
+            requested_model = str(getattr(payload, "model", "") or "").strip()[:120]
+            context = getattr(payload, "context", None)
+            context = context if isinstance(context, dict) else {}
+            trace_id = str(context.get("telemetry_trace_id") or uuid.uuid4().hex)[:200]
+            surface = _ia_telemetry_surface(context)
+            category = str(context.get("tipo") or "general")[:120]
+            store_id = str(context.get("store") or context.get("loja") or "")[:180]
+            tenant = str(client_id or "default").strip() or "default"
+            span_id = f"{trace_id}:responder"
+            started = time.perf_counter()
+            telemetry = None
+            try:
+                from backend.services import codex_console
+
+                telemetry = codex_console._codex_ai_telemetry_instance()
+                telemetry.schedule_retention(tenant)
+                telemetry.start_trace(
+                    tenant,
+                    trace_id=trace_id,
+                    surface=surface,
+                    category=category,
+                    requested_model=requested_model,
+                    store_id=store_id,
+                    expected_spans=("responder",),
+                )
+                telemetry.start_span(
+                    tenant,
+                    trace_id=trace_id,
+                    span_id=span_id,
+                    stage="responder",
+                )
+            except Exception:
+                telemetry = None
+
+            def finish(status: str, error_code: str = "") -> None:
+                if telemetry is None:
+                    return
+                duration_ms = (time.perf_counter() - started) * 1000
+                try:
+                    telemetry.finish_span(
+                        tenant,
+                        trace_id=trace_id,
+                        span_id=span_id,
+                        stage="responder",
+                        status=status,
+                        duration_ms=duration_ms,
+                        error_code=error_code,
+                    )
+                    telemetry.record_event(
+                        tenant,
+                        event_id=f"{trace_id}:provider:{provider_path}",
+                        trace_id=trace_id,
+                        span_id=span_id,
+                        event_type="inference",
+                        status=status,
+                        requested_model=requested_model,
+                        effective_model=requested_model,
+                        provider=provider,
+                        provider_path=provider_path,
+                        duration_ms=duration_ms,
+                        store_id=store_id,
+                        error_code=error_code,
+                        dimensions={"surface": surface, "category": category},
+                    )
+                    telemetry.finish_trace(
+                        tenant,
+                        trace_id=trace_id,
+                        status=status,
+                        effective_model=requested_model,
+                        provider=provider,
+                        duration_ms=duration_ms,
+                        error_code=error_code,
+                    )
+                except Exception:
+                    return
+
+            try:
+                result = function(payload, client_id, *args, **kwargs)
+            except Exception as exc:
+                finish("failed", type(exc).__name__)
+                raise
+            finish("completed")
+            return result
+
+        return wrapped
+
+    return decorate
+
+
+@_telemetried_ia_provider("openai_codex", "codex_internal")
 def _chamar_codex_chat_com_thread(
     payload: IAChatRequest,
     client_id: str,
@@ -1067,8 +1188,7 @@ def _vertex_ai_auth() -> tuple[str, str]:
                 target_scopes=scopes,
                 lifetime=3600,
             )
-    session = requests.Session()
-    session.verify = False
+    session = configure_requests_session(requests.Session())
     creds.refresh(GoogleAuthRequest(session=session))
     if not project_id:
         raise RuntimeError("Project ID da Vertex AI nao encontrado.")
@@ -1247,6 +1367,7 @@ def _ia_chat_planned_context_text(payload: IAChatRequest, client_id: str) -> str
     return "Evidencia compacta selecionada pelo backend (somente referencia):\n" + serialized
 
 
+@_telemetried_ia_provider("openai", "responses_api")
 def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
     _ia_validar_provedor_ativo("openai")
 
@@ -1311,28 +1432,28 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
         )
     else:
         system_prompt = (
-            "VocÃƒÂª ÃƒÂ© o assistente IA do JK Sistema. Responda sempre em portuguÃƒÂªs do Brasil, "
-            "com tom simpÃƒÂ¡tico, cordial, humano e profissional. "
+            "Você é o assistente de IA do JK Sistema. Responda sempre em português do Brasil, "
+            "com tom simpático, cordial, humano e profissional. "
             "Escreva como uma pessoa experiente ajudando outra pessoa, com linguagem natural e acolhedora. "
-            "Cumprimente de forma breve quando fizer sentido, sem exagero. "
-            "Quando o contexto informar o nome do usuario, use esse nome de forma natural para manter continuidade. "
-            "Responda exatamente ao que o usuario pediu e nao antecipe analises extras. "
-            "Nao traga resumo automatico da tela, numeros ou listas se isso nao foi solicitado. "
-            "Se a mensagem for ambigua, curta ou genÃƒÂ©rica, responda de forma simples e natural, sem puxar dados da tela. "
-            "Evite respostas roboticas ou muito duras. "
+            "Cumprimente brevemente quando fizer sentido, sem exagero. "
+            "Quando o contexto informar o nome do usuário, use-o naturalmente para manter a continuidade. "
+            "Responda exatamente ao que o usuário pediu e não antecipe análises extras. "
+            "Não traga resumo automático da tela, números ou listas quando isso não for solicitado. "
+            "Se a mensagem for ambígua, curta ou genérica, responda de forma simples e natural, sem puxar dados da tela. "
+            "Evite respostas robóticas ou muito duras. "
             "Prefira frases curtas, claras e diretas; use listas apenas quando realmente ajudarem. "
-            "Se a pergunta pedir explicaÃƒÂ§ÃƒÂ£o, explique de forma didÃƒÂ¡tica e prÃƒÂ¡tica. "
+            "Se a pergunta pedir explicação, explique de forma didática e prática. "
             "Quando a pergunta for sobre o contexto da tela, use apenas os dados relevantes e diga se algo estiver faltando. "
-            "Quando houver anexos (imagens/arquivos), considere o conteÃƒÂºdo dos anexos na resposta. "
-            "Quando houver contexto de busca web, use essas fontes externas com cautela e deixe claro quando a informaÃƒÂ§ÃƒÂ£o veio da internet. "
-            "Se a resposta usar internet, cite ao final 2 a 4 fontes curtas com nome do site e, quando houver, a data publicada. "
-            "Se a pergunta pedir noticias do dia, priorize noticias recentes e mencione que se tratam de manchetes/resumos coletados na web. "
-            "Quando houver resultados de funÃƒÂ§ÃƒÂµes do backend, trate esses resultados como a fonte mais confiÃƒÂ¡vel para nÃƒÂºmeros e fatos operacionais. "
-            "Quando comparar meses, perÃƒÂ­odos, lojas ou SKUs com duas ou mais colunas de valores, responda preferencialmente em tabela Markdown. "
-            "Em comparaÃƒÂ§ÃƒÂµes financeiras, use colunas separadas como SKU, Produto, MÃƒÂªs/PerÃƒÂ­odo, Quantidade, Valor vendido, Valor devolvido e VariaÃƒÂ§ÃƒÂ£o; nÃ£o use barras verticais dentro de listas. "
-            "Nunca invente totais, SKUs, preÃ§os ou datas. "
-            "Quando fizer sentido, finalize com uma sugestÃƒÂ£o curta de prÃƒÂ³ximo passo. "
-            "Evite texto longo e repetitivo; seja claro, acionÃƒÂ¡vel e focado no que o usuÃƒÂ¡rio pediu."
+            "Quando houver anexos, considere o conteúdo deles na resposta. "
+            "Quando houver contexto de busca web, use as fontes externas com cautela e indique a origem. "
+            "Se a resposta usar internet, cite ao final de duas a quatro fontes curtas, com site e data quando disponível. "
+            "Se a pergunta pedir notícias do dia, priorize informações recentes e identifique-as como resumos coletados na web. "
+            "Resultados de funções do backend são a fonte mais confiável para números e fatos operacionais. "
+            "Ao comparar meses, períodos, lojas ou SKUs com várias colunas, prefira uma tabela Markdown. "
+            "Em comparações financeiras, separe SKU, Produto, Mês/Período, Quantidade, Valor vendido, Valor devolvido e Variação; não use barras verticais dentro de listas. "
+            "Nunca invente totais, SKUs, preços ou datas. "
+            "Quando fizer sentido, finalize com uma sugestão curta de próximo passo. "
+            "Evite texto longo e repetitivo; seja claro, acionável e focado no pedido do usuário."
         )
         # Semantic routing and knowledge selection happen before the provider
         # call in CodexDataSelectionAgent.  Do not re-enable the legacy
@@ -1346,7 +1467,7 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
     resumo_anexos = ""
     if anexos:
         itens = ", ".join([f"{a.get('name')} ({a.get('mime_type')})" for a in anexos])
-        resumo_anexos = f"\n\nAnexos enviados pelo usuÃƒÂ¡rio: {itens}"
+        resumo_anexos = f"\n\nAnexos enviados pelo usuário: {itens}"
 
     # Provider execution consumes only the compact envelope prepared by the
     # data-selection layer. It must not decide to preload screen/RAG/stock.
@@ -1355,7 +1476,7 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
         if not desativa_recursos_chat and not fluxo_perguntas_publicas_v2
         else ""
     )
-    # SKUs vendidos no perÃƒÂ­odo lidos direto do banco de dados
+    # SKUs vendidos no período, lidos diretamente do banco de dados.
     bloco_contexto = f"{contexto_tela}{resumo_anexos}" if (contexto_tela or resumo_anexos) else ""
 
     user_content = [{
@@ -1363,11 +1484,11 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
         "text": (
             (f"{bloco_contexto}\n\n" if bloco_contexto else "")
             +
-            f"Pergunta do usuÃƒÂ¡rio:\n{pergunta_usuario}\n\n"
-            "InstruÃƒÂ§ÃƒÂ£o adicional: responda de forma humana e natural, com foco no que foi pedido "
-            "e destacando apenas as informaÃƒÂ§ÃƒÂµes mais relevantes. "
-            "Se a resposta comparar valores entre meses, perÃƒÂ­odos ou SKUs, use tabela Markdown com cabeÃƒÂ§alho e separador. "
-            "Nao inclua dados nao solicitados."
+            f"Pergunta do usuário:\n{pergunta_usuario}\n\n"
+            "Instrução adicional: responda de forma humana e natural, com foco no que foi pedido "
+            "e destaque apenas as informações mais relevantes. "
+            "Se a resposta comparar valores entre meses, períodos ou SKUs, use tabela Markdown com cabeçalho e separador. "
+            "Não inclua dados não solicitados."
         ),
     }]
 
@@ -1385,14 +1506,14 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
         if texto_anexo:
             user_content.append({
                 "type": "input_text",
-                "text": f"ConteÃƒÂºdo extraÃƒÂ­do do arquivo '{nome}':\n{texto_anexo}",
+                "text": f"Conteúdo extraído do arquivo '{nome}':\n{texto_anexo}",
             })
         else:
             user_content.append({
                 "type": "input_text",
                 "text": (
-                    f"Arquivo '{nome}' anexado com tipo '{mime}', porÃƒÂ©m sem extraÃƒÂ§ÃƒÂ£o automÃƒÂ¡tica disponÃƒÂ­vel. "
-                    "Considere este contexto ao orientar o usuÃƒÂ¡rio."
+                    f"Arquivo '{nome}' anexado com tipo '{mime}', porém sem extração automática disponível. "
+                    "Considere este contexto ao orientar o usuário."
                 ),
             })
 
@@ -1412,11 +1533,11 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
                 "Content-Type": "application/json",
             },
             json=request_json,
-            verify=False,
+            verify=requests_tls_verify(),
             timeout=45,
         )
     except requests.RequestException as exc:
-        logger.warning(f"[IA] Falha de conexÃƒÂ£o com OpenAI: {exc}")
+        logger.warning(f"[IA] Falha de conexão com OpenAI: {exc}")
         return _resposta_fallback_simpatico(mensagem)
 
     if not resp.ok:
@@ -1438,6 +1559,7 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
     return texto
 
 
+@_telemetried_ia_provider("deepseek", "deepseek_chat")
 def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
     _ia_validar_provedor_ativo("deepseek")
 
@@ -1508,26 +1630,26 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
         )
     else:
         system_prompt = (
-            "VocÃƒÂª ÃƒÂ© o assistente IA do JK Sistema. Responda sempre em portuguÃƒÂªs do Brasil, "
-            "com tom simpÃƒÂ¡tico, cordial, humano e profissional. "
+            "Você é o assistente de IA do JK Sistema. Responda sempre em português do Brasil, "
+            "com tom simpático, cordial, humano e profissional. "
             "Escreva como uma pessoa experiente ajudando outra pessoa, com linguagem natural e acolhedora. "
-            "Cumprimente de forma breve quando fizer sentido, sem exagero. "
-            "Quando o contexto informar o nome do usuario, use esse nome de forma natural para manter continuidade. "
-            "Responda exatamente ao que o usuario pediu e nao antecipe analises extras. "
-            "Nao traga resumo automatico da tela, numeros ou listas se isso nao foi solicitado. "
-            "Se a mensagem for ambigua, curta ou genÃƒÂ©rica, responda de forma simples e natural, sem puxar dados da tela. "
-            "Evite respostas roboticas ou muito duras. "
+            "Cumprimente brevemente quando fizer sentido, sem exagero. "
+            "Quando o contexto informar o nome do usuário, use-o naturalmente para manter a continuidade. "
+            "Responda exatamente ao que o usuário pediu e não antecipe análises extras. "
+            "Não traga resumo automático da tela, números ou listas quando isso não for solicitado. "
+            "Se a mensagem for ambígua, curta ou genérica, responda de forma simples e natural, sem puxar dados da tela. "
+            "Evite respostas robóticas ou muito duras. "
             "Prefira frases curtas, claras e diretas; use listas apenas quando realmente ajudarem. "
-            "Se a pergunta pedir explicaÃƒÂ§ÃƒÂ£o, explique de forma didÃƒÂ¡tica e prÃƒÂ¡tica. "
+            "Se a pergunta pedir explicação, explique de forma didática e prática. "
             "Quando a pergunta for sobre o contexto da tela, use apenas os dados relevantes e diga se algo estiver faltando. "
-            "Quando houver anexos (imagens/arquivos), considere o conteÃƒÂºdo dos anexos na resposta. "
-            "Quando houver contexto de busca web, use essas fontes externas com cautela e deixe claro quando a informaÃƒÂ§ÃƒÂ£o veio da internet. "
-            "Se a resposta usar internet, cite ao final 2 a 4 fontes curtas com nome do site e, quando houver, a data publicada. "
-            "Se a pergunta pedir noticias do dia, priorize noticias recentes e mencione que se tratam de manchetes/resumos coletados na web. "
-            "Quando houver resultados de funÃƒÂ§ÃƒÂµes do backend, trate esses resultados como a fonte mais confiÃƒÂ¡vel para nÃƒÂºmeros e fatos operacionais. "
-            "Nunca invente totais, SKUs, preÃ§os ou datas. "
-            "Quando fizer sentido, finalize com uma sugestÃƒÂ£o curta de prÃƒÂ³ximo passo. "
-            "Evite texto longo e repetitivo; seja claro, acionÃƒÂ¡vel e focado no que o usuÃƒÂ¡rio pediu."
+            "Quando houver anexos, considere o conteúdo deles na resposta. "
+            "Quando houver contexto de busca web, use as fontes externas com cautela e indique a origem. "
+            "Se a resposta usar internet, cite ao final de duas a quatro fontes curtas, com site e data quando disponível. "
+            "Se a pergunta pedir notícias do dia, priorize informações recentes e identifique-as como resumos coletados na web. "
+            "Resultados de funções do backend são a fonte mais confiável para números e fatos operacionais. "
+            "Nunca invente totais, SKUs, preços ou datas. "
+            "Quando fizer sentido, finalize com uma sugestão curta de próximo passo. "
+            "Evite texto longo e repetitivo; seja claro, acionável e focado no pedido do usuário."
         )
         # Knowledge and specialist evidence are injected only through the
         # server-validated data_selection envelope.
@@ -1539,7 +1661,7 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
     resumo_anexos = ""
     if anexos:
         itens = ", ".join([f"{a.get('name')} ({a.get('mime_type')})" for a in anexos])
-        resumo_anexos = f"\n\nAnexos enviados pelo usuÃƒÂ¡rio: {itens}"
+        resumo_anexos = f"\n\nAnexos enviados pelo usuário: {itens}"
 
     contexto_tela = (
         _ia_chat_planned_context_text(payload, client_id)
@@ -1554,11 +1676,11 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
 
     user_text = (
         (f"{bloco_contexto}\n\n" if bloco_contexto else "")
-        + f"Pergunta do usuÃƒÂ¡rio:\n{pergunta_usuario}\n\n"
-        "InstruÃƒÂ§ÃƒÂ£o adicional: responda de forma humana e natural, com foco no que foi pedido "
-        "e destacando apenas as informaÃƒÂ§ÃƒÂµes mais relevantes. "
-        "Se a resposta comparar valores entre meses, perÃƒÂ­odos ou SKUs, use tabela Markdown com cabeÃƒÂ§alho e separador. "
-        "Nao inclua dados nao solicitados."
+        + f"Pergunta do usuário:\n{pergunta_usuario}\n\n"
+        "Instrução adicional: responda de forma humana e natural, com foco no que foi pedido "
+        "e destaque apenas as informações mais relevantes. "
+        "Se a resposta comparar valores entre meses, períodos ou SKUs, use tabela Markdown com cabeçalho e separador. "
+        "Não inclua dados não solicitados."
     )
     messages.append({"role": "user", "content": user_text})
 
@@ -1574,11 +1696,11 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
                 "messages": messages,
                 **({"max_tokens": 360} if modo_rapido else {}),
             },
-            verify=False,
+            verify=requests_tls_verify(),
             timeout=60,
         )
     except requests.RequestException as exc:
-        logger.warning(f"[IA] Falha de conexÃƒÂ£o com DeepSeek: {exc}")
+        logger.warning(f"[IA] Falha de conexão com DeepSeek: {exc}")
         return _resposta_fallback_simpatico(mensagem)
 
     if not resp.ok:
@@ -1600,6 +1722,7 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
     return texto or _resposta_fallback_simpatico(mensagem)
 
 
+@_telemetried_ia_provider("gemini", "gemini_generate_content")
 def _chamar_gemini_chat(payload: IAChatRequest, client_id: str) -> str:
     _ia_validar_provedor_ativo("gemini")
 
@@ -1701,6 +1824,7 @@ def _chamar_gemini_chat(payload: IAChatRequest, client_id: str) -> str:
         return _resposta_fallback_simpatico(mensagem)
 
 
+@_telemetried_ia_provider("google_vertex", "vertex_generate_content")
 def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
     _ia_validar_provedor_ativo("vertex")
 
@@ -1840,7 +1964,7 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
                 url,
                 headers=headers,
                 json=request_body,
-                verify=False,
+                verify=requests_tls_verify(),
                 timeout=60,
             )
         except requests.RequestException as exc:

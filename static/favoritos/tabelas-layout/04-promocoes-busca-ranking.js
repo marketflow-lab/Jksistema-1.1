@@ -676,16 +676,45 @@
             mlFavoritosBalloonActionsEl.innerHTML = '';
             return new Promise(resolve => {
                 let concluido = false;
+                let cicloNavegadorLogin = 0;
+                let navegadorLoginAberto = false;
+                let fecharLoginPeloModal = null;
+                const cicloLoginContinuaAtivo = ciclo => (
+                    !concluido
+                    && navegadorLoginAberto
+                    && ciclo === cicloNavegadorLogin
+                    && typeof balaoResultadosMlAberto === 'function'
+                    && balaoResultadosMlAberto()
+                );
                 const finalizar = (valor) => {
                     if (concluido) return;
                     concluido = true;
+                    cicloNavegadorLogin += 1;
+                    const deveFecharNavegador = navegadorLoginAberto;
+                    navegadorLoginAberto = false;
+                    if (window.__JK_FAVORITOS_LOGIN_CLOSE_HANDLER__ === fecharLoginPeloModal) {
+                        delete window.__JK_FAVORITOS_LOGIN_CLOSE_HANDLER__;
+                    }
+                    fecharLoginPeloModal = null;
                     mlFavoritosPerguntaResolver = null;
                     limparBotaoContinuarLoginAvantProFavoritos();
-                    if (valor === true) esconderBalaoFavoritosStatus();
+                    esconderBalaoFavoritosStatus({ restaurarNavegador: false });
+                    if (deveFecharNavegador && typeof fecharBalaoResultadosMl === 'function') {
+                        fecharBalaoResultadosMl({
+                            forcar: true,
+                            descarregarConteudo: true,
+                            preserveAvantProSession: true,
+                            reason: valor === true ? 'favoritos-login-confirmado' : 'favoritos-login-cancelado'
+                        });
+                    }
                     resolve(valor);
                 };
                 const abrirTelaLogin = async () => {
                     if (concluido) return;
+                    const cicloAtual = ++cicloNavegadorLogin;
+                    navegadorLoginAberto = true;
+                    fecharLoginPeloModal = () => finalizar(false);
+                    window.__JK_FAVORITOS_LOGIN_CLOSE_HANDLER__ = fecharLoginPeloModal;
                     if (typeof mudarAba === 'function') {
                         try { mudarAba('navegador'); } catch (_err) {}
                     }
@@ -716,14 +745,21 @@
                             };
                         await abrirMercadoLivreNoPrograma(payload).catch(() => null);
                     }
+                    if (!cicloLoginContinuaAtivo(cicloAtual)) return;
+                    const agendarEnquantoLoginAberto = (callback, atrasoMs) => {
+                        setTimeout(() => {
+                            if (cicloLoginContinuaAtivo(cicloAtual)) callback();
+                        }, atrasoMs);
+                    };
                     if (typeof forcarNavegadorMlShellVisivel === 'function') {
-                        setTimeout(() => forcarNavegadorMlShellVisivel(), 80);
-                        setTimeout(() => forcarNavegadorMlShellVisivel(), 450);
+                        agendarEnquantoLoginAberto(() => forcarNavegadorMlShellVisivel(), 80);
+                        agendarEnquantoLoginAberto(() => forcarNavegadorMlShellVisivel(), 450);
                     }
                     if (typeof agendarAtualizacaoPosicaoNavegadorMlShell === 'function') {
-                        setTimeout(() => agendarAtualizacaoPosicaoNavegadorMlShell(), 120);
+                        agendarEnquantoLoginAberto(() => agendarAtualizacaoPosicaoNavegadorMlShell(), 120);
                     }
                     const estadoLoginMl = await obterEstadoAutenticacaoMercadoLivreFavoritos().catch(() => ({ pendente: false }));
+                    if (!cicloLoginContinuaAtivo(cicloAtual)) return;
                     const loginMercadoLivrePendente = !!(estadoLoginMl && estadoLoginMl.pendente);
                     if (loginMercadoLivrePendente) {
                         abrirBalaoResultadosMl({
@@ -770,8 +806,8 @@
                     mlFavoritosBalloonActionsEl.appendChild(abrirNovamente);
                     mlFavoritosBalloonActionsEl.appendChild(cancelar);
                     const mensagemLogin = loginMercadoLivrePendente
-                        ? 'Conclua o login ou verificacao do Mercado Livre. Aguarde a pagina da pesquisa voltar e depois clique em Continuar favoritos.'
-                        : 'Faça o login do Avant Pro no navegador interno. Quando terminar, clique em Continuar favoritos.';
+                        ? 'Conclua o login ou verificacao do Mercado Livre. Aguarde a pagina da pesquisa voltar e clique em Continuar favoritos; o navegador sera fechado automaticamente.'
+                        : 'Faça o login do Avant Pro no navegador interno. Quando terminar, clique em Continuar favoritos; o navegador sera fechado automaticamente.';
                     mostrarBalaoFavoritosStatus(mensagemLogin, {
                         manterAcoes: true,
                         manterNavegadorVisivel: true,
@@ -2380,14 +2416,24 @@
             };
         }
 
-        function deduplicarAnunciosFavoritos(anuncios) {
+        function deduplicarAnunciosFavoritos(anuncios, opcoes = {}) {
             const mapa = new Map();
-            anuncios.forEach(anuncio => {
+            const preservarSemChave = !!(opcoes && opcoes.preservarSemChave);
+            (Array.isArray(anuncios) ? anuncios : []).forEach((anuncio, index) => {
+                if (!anuncio || typeof anuncio !== 'object') {
+                    if (preservarSemChave) mapa.set(`sem-chave:${index}`, anuncio);
+                    return;
+                }
                 const chave = chaveAnuncioFavoritos(anuncio);
-                if (!chave) return;
-                const atual = mapa.get(chave);
+                if (!chave && !preservarSemChave) return;
+                const chaveMapa = chave || `sem-chave:${index}`;
+                const atual = mapa.get(chaveMapa);
                 if (!atual) {
-                    mapa.set(chave, { ...anuncio });
+                    mapa.set(chaveMapa, {
+                        ...anuncio,
+                        pesquisas_origem: Array.isArray(anuncio.pesquisas_origem) ? [...anuncio.pesquisas_origem] : [],
+                        campos_origem: Array.isArray(anuncio.campos_origem) ? [...anuncio.campos_origem] : []
+                    });
                     return;
                 }
                 aplicarMetadataBasicaAnuncioFavoritos(atual, anuncio);
@@ -2424,14 +2470,26 @@
                     atual.visitas = anuncio.visitas;
                 }
                 atual.posicao = Math.min(Number(atual.posicao) || 9999, Number(anuncio.posicao) || 9999);
-                (anuncio.pesquisas_origem || []).forEach(termo => {
+                (Array.isArray(anuncio.pesquisas_origem) ? anuncio.pesquisas_origem : []).forEach(termo => {
                     if (termo && !atual.pesquisas_origem.includes(termo)) atual.pesquisas_origem.push(termo);
                 });
-                (anuncio.campos_origem || []).forEach(campo => {
+                (Array.isArray(anuncio.campos_origem) ? anuncio.campos_origem : []).forEach(campo => {
                     if (campo && !atual.campos_origem.includes(campo)) atual.campos_origem.push(campo);
                 });
             });
-            return Array.from(mapa.values());
+            return Array.from(mapa.values()).map(anuncio => {
+                if (!anuncio || typeof anuncio !== 'object') return anuncio;
+                const idDeclarado = String(anuncio.id || anuncio.mlb || anuncio.item_id || '').trim().toUpperCase().replace(/-/g, '');
+                const id = extrairItemIdAnuncio(anuncio.id || anuncio.mlb || anuncio.item_id || anuncio.url || anuncio.permalink || anuncio.link)
+                    || (/^MLB\d{6,}$/.test(idDeclarado) ? idDeclarado : '');
+                if (id) {
+                    anuncio.id = id;
+                    anuncio.mlb = id;
+                    anuncio.chave_canonica = `mlb:${id}`;
+                    anuncio.chaveCanonica = `mlb:${id}`;
+                }
+                return anuncio;
+            });
         }
 
         function criarContextoEnriquecimentoFavoritosExecucao() {

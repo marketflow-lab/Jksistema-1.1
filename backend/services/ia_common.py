@@ -12,6 +12,8 @@ from typing import Optional
 import fitz
 import requests
 
+from backend.services.text_integrity import TextIntegrityError, decode_utf8_strict
+
 
 logger = logging.getLogger("jk_sistema")
 
@@ -154,24 +156,24 @@ def _ia_chat_pede_consulta_produto(mensagem: str) -> bool:
     if not texto:
         return False
     gatilhos = (
-        "SKU", "PRODUTO", "ESTOQUE", "SALDO", "CADASTRO", "MARCA", "CATEGORIA", "PRECO", "PREÃƒâ€¡O", "CUSTO"
+        "SKU", "PRODUTO", "ESTOQUE", "SALDO", "CADASTRO", "MARCA", "CATEGORIA", "PRECO", "CUSTO"
     )
     return any(gatilho in texto for gatilho in gatilhos)
 
 
 def _ia_chat_pede_consulta_estoque(mensagem: str) -> bool:
     texto = _normalizar_texto(mensagem or "")
-    return any(gatilho in texto for gatilho in ("ESTOQUE", "SALDO", "DISPONIVEL", "DISPONÃƒÂVEL", "FULL"))
+    return any(gatilho in texto for gatilho in ("ESTOQUE", "SALDO", "DISPONIVEL", "FULL"))
 
 
 def _ia_chat_pede_consulta_margem(mensagem: str) -> bool:
     texto = _normalizar_texto(mensagem or "")
-    return any(gatilho in texto for gatilho in ("MARGEM", "LUCRO", "MARGEM DE CONTRIBUICAO", "MARGEM DE CONTRIBUIÃƒâ€¡ÃƒÆ’O"))
+    return any(gatilho in texto for gatilho in ("MARGEM", "LUCRO", "MARGEM DE CONTRIBUICAO"))
 
 
 def _ia_chat_pede_consulta_devolucoes(mensagem: str) -> bool:
     texto = _normalizar_texto(mensagem or "")
-    return any(gatilho in texto for gatilho in ("DEVOLUCAO", "DEVOLUÃƒâ€¡Ãƒâ€¢ES", "DEVOLUCOES", "DEVOLVIDO", "DEVOLVERAM"))
+    return any(gatilho in texto for gatilho in ("DEVOLUCAO", "DEVOLUCOES", "DEVOLVIDO", "DEVOLVERAM"))
 
 
 def _ia_chat_pede_status_integracoes(mensagem: str) -> bool:
@@ -280,7 +282,7 @@ def _ia_chat_pede_anomalia(mensagem: str) -> bool:
 
 def _ia_chat_pede_lucro_periodo(mensagem: str) -> bool:
     texto = _normalizar_texto(mensagem or "")
-    return any(gatilho in texto for gatilho in ("LUCRO", "RENTABILIDADE", "MARGEM REAL", "MARGEM LIQUIDA", "MARGEM LÃƒÂQUIDA", "RESULTADO"))
+    return any(gatilho in texto for gatilho in ("LUCRO", "RENTABILIDADE", "MARGEM REAL", "MARGEM LIQUIDA", "RESULTADO"))
 
 
 def _ia_chat_pede_previsao_ruptura_estoque(mensagem: str) -> bool:
@@ -308,11 +310,9 @@ def _ia_chat_pede_dias_sem_venda(mensagem: str) -> bool:
     gatilhos = (
         "DIAS SEM VENDER",
         "NAO VENDE",
-        "NÃƒO VENDE",
         "SEM VENDER",
         "TEMPO SEM VENDER",
         "ULTIMA VENDA",
-        "ÃƒÅ¡LTIMA VENDA",
     )
     return any(g in texto for g in gatilhos)
 
@@ -362,9 +362,7 @@ def _ia_chat_extrair_opcoes_top_dias_sem_venda(mensagem: str) -> dict:
         chave in texto_norm
         for chave in (
             "JA VENDERAM",
-            "JÃƒÂ VENDERAM",
             "QUE JA VENDERAM",
-            "QUE JÃƒÂ VENDERAM",
             "PARARAM DE VENDER",
             "QUE PARARAM",
             "APENAS COM HISTORICO",
@@ -383,7 +381,7 @@ def _ia_chat_extrair_opcoes_top_dias_sem_venda(mensagem: str) -> dict:
 
 def _ia_chat_pede_info_cadastro_produto(mensagem: str) -> bool:
     texto = _normalizar_texto(mensagem or "")
-    gatilhos = ("CADASTRO", "DESCRICAO", "DESCRIÃƒâ€¡ÃƒÆ’O", "IMAGEM", "FOTO", "FICHA", "DADOS DO PRODUTO")
+    gatilhos = ("CADASTRO", "DESCRICAO", "IMAGEM", "FOTO", "FICHA", "DADOS DO PRODUTO")
     return any(g in texto for g in gatilhos)
 
 
@@ -392,7 +390,7 @@ def _ia_chat_pede_imagem_produto(mensagem: str) -> bool:
     if not texto:
         return False
     gatilhos_imagem = ("IMAGEM", "FOTO", "IMG", "FIGURA", "MOSTRA", "MOSTRE", "MANDA", "ENVIA", "ENVIE")
-    gatilhos_produto = ("SKU", "PRODUTO", "ITEM", "PECA", "PEÃƒÆ’Ã¢â‚¬Â¡A")
+    gatilhos_produto = ("SKU", "PRODUTO", "ITEM", "PECA")
     return any(g in texto for g in gatilhos_imagem) and any(g in texto for g in gatilhos_produto)
 
 
@@ -416,8 +414,8 @@ def _ia_chat_pede_noticias(mensagem: str) -> bool:
     if not texto:
         return False
     gatilhos = (
-        "NOTICIA", "NOTICIAS", "NOTÃƒÂCIA", "NOTÃƒÂCIAS", "MANCHETES", "ULTIMAS NOTICIAS",
-        "ÃƒÅ¡LTIMAS NOTÃƒÂCIAS", "DO DIA", "DE HOJE", "HOJE", "AGORA", "RECENTES", "ATUALIDADES",
+        "NOTICIA", "NOTICIAS", "MANCHETES", "ULTIMAS NOTICIAS",
+        "DO DIA", "DE HOJE", "HOJE", "AGORA", "RECENTES", "ATUALIDADES",
     )
     return any(gatilho in texto for gatilho in gatilhos)
 
@@ -479,7 +477,7 @@ def _ia_chat_pede_analise_especialista_vendas(
     if any(g in texto for g in gatilhos_analise) and tem_contexto_comercial:
         return True
 
-    # TambÃƒÂ©m ativa para pedidos explÃƒÂ­citos de especialista, mesmo sem a palavra "analise".
+    # Também ativa para pedidos explícitos de especialista, mesmo sem a palavra "análise".
     if ("ESPECIALISTA" in texto or "CONSULTOR" in texto) and any(g in texto for g in gatilhos_comerciais):
         return True
 
@@ -569,14 +567,11 @@ def _ia_chat_extrair_texto_anexo(anexo: dict) -> str:
     is_texto = mime.startswith("text/") or mime in mimetypes_texto or nome.lower().endswith(extensoes_texto)
 
     if is_texto:
-        for enc in ("utf-8", "latin-1"):
-            try:
-                texto = conteudo.decode(enc, errors="strict").strip()
-                if texto:
-                    return texto[:12000]
-            except Exception:
-                continue
-        return conteudo.decode("utf-8", errors="ignore").strip()[:12000]
+        try:
+            return decode_utf8_strict(conteudo, source_ref=f"ia_attachment:{nome}").strip()[:12000]
+        except TextIntegrityError:
+            logger.warning("[IA] Anexo textual rejeitado por não estar em UTF-8 estrito: %s", nome)
+            return ""
 
     if mime == "application/pdf" or nome.lower().endswith(".pdf"):
         try:
@@ -598,9 +593,7 @@ def _ia_chat_extrair_texto_anexo(anexo: dict) -> str:
 
     return ""
 
-# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
-# IA Ã¢â‚¬â€ PersistÃƒÂªncia de Conversas
-# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
+# IA — Persistência de conversas
 
 
 def _ia_chat_tem_imagem(anexos: Optional[list[dict]] = None) -> bool:
@@ -643,18 +636,18 @@ def _ia_chat_bloco_prompt_analise_especialista(
         return ""
 
     return (
-        "\n\nModo de atuaÃƒÂ§ÃƒÂ£o para esta resposta: aja como especialista sÃƒÂªnior em operaÃƒÂ§ÃƒÂµes de e-commerce automotivo "
-        "(foco em Mercado Livre, Shopee e logÃƒÂ­stica China-Brasil), com objetivo de otimizar capital de giro e margem. "
-        "Estruture a analise de forma objetiva e executiva, priorizando: "
+        "\n\nModo de atuação para esta resposta: aja como especialista sênior em operações de e-commerce automotivo "
+        "(foco em Mercado Livre, Shopee e logística China-Brasil), com objetivo de otimizar capital de giro e margem. "
+        "Estruture a análise de forma objetiva e executiva, priorizando: "
         "1) Giro de estoque e Curva ABC (itens A/B/C e impacto no caixa), "
-        "2) ReposiÃƒÂ§ÃƒÂ£o e lead time de importaÃƒÂ§ÃƒÂ£o (risco de ruptura e ponto de pedido sugerido), "
-        "3) Oportunidades de mix/cross-sell (produtos complementares e aÃƒÂ§ÃƒÂµes prÃƒÂ¡ticas). "
-        "Sempre baseie a analise primeiro nos dados reais disponÃƒÂ­veis no backend/contexto; "
-        "quando faltar dado essencial, explicite o que falta e proponha a prÃƒÂ³xima pergunta objetiva. "
+        "2) Reposição e lead time de importação (risco de ruptura e ponto de pedido sugerido), "
+        "3) Oportunidades de mix/cross-sell (produtos complementares e ações práticas). "
+        "Sempre baseie a análise primeiro nos dados reais disponíveis no backend/contexto; "
+        "quando faltar dado essencial, explicite o que falta e proponha a próxima pergunta objetiva. "
         "Entregue a resposta neste formato fixo e nesta ordem: "
-        "DiagnÃƒÂ³stico executivo; Curva ABC (A/B/C com leitura de giro); Risco de ruptura e reposiÃƒÂ§ÃƒÂ£o (incluindo lead time); "
-        "Oportunidades de mix/cross-sell; Plano de aÃƒÂ§ÃƒÂ£o 7 dias; Plano de aÃƒÂ§ÃƒÂ£o 30 dias; Impacto esperado. "
-        "Em cada seÃƒÂ§ÃƒÂ£o, inclua recomendaÃƒÂ§ÃƒÂµes priorizadas e objetivas com linguagem clara e acionÃƒÂ¡vel."
+        "Diagnóstico executivo; Curva ABC (A/B/C com leitura de giro); Risco de ruptura e reposição (incluindo lead time); "
+        "Oportunidades de mix/cross-sell; Plano de ação 7 dias; Plano de ação 30 dias; Impacto esperado. "
+        "Em cada seção, inclua recomendações priorizadas e objetivas com linguagem clara e acionável."
     )
 
 

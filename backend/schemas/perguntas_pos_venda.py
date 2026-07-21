@@ -21,6 +21,8 @@ class PerguntasLojasConfigLoteRequest(BaseModel):
 
 class PerguntasAprovacaoRequest(BaseModel):
     approval_id: str
+    store: Optional[str] = ""
+    question_id: Optional[str] = ""
     resposta: Optional[Any] = None
     texto: Optional[Any] = None
     idempotency_key: Optional[str] = ""

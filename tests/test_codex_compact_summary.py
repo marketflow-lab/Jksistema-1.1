@@ -272,8 +272,8 @@ class CodexTaskSummaryListTest(unittest.TestCase):
         listed = result["tasks"][0]
         self.assertEqual(listed["prompt"], "Q" * 500)
         self.assertEqual(listed["final_response"], "A" * 1000)
-        self.assertEqual(listed["logs"], [{"text": "log sensivel"}])
-        self.assertEqual(listed["screen_context"], {"visible_text": "conteudo integral"})
+        self.assertEqual(listed["logs"], [])
+        self.assertEqual(listed["screen_context"], {})
         self.assertNotIn("prompt_preview", listed)
 
 

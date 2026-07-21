@@ -66,7 +66,8 @@ def test_app_identity_ignores_client_conversation_and_thread_ids(conversation_ru
 
     assert first["conversation_id"] == second["conversation_id"]
     assert first["conversation_id"].startswith("app_")
-    assert first["thread_id"] == second["thread_id"] == ""
+    assert "thread_id" not in first
+    assert "thread_id" not in second
     assert first["conversation_generation"] == second["conversation_generation"] == 1
 
 
@@ -116,11 +117,15 @@ def test_full_thread_reuse_requires_prompt_schema_and_store_scope(conversation_r
         session,
     )["task"]
 
-    assert same_store["thread_id"] == "thread-jk-pecas"
-    assert same_store["thread_reused"] is True
-    assert other_store["thread_id"] == ""
-    assert other_store["thread_reused"] is False
-    assert "scope_changed" in other_store["thread_restart_reasons"]
+    same_internal = codex_console.CODEX_TASKS[same_store["task_id"]]
+    other_internal = codex_console.CODEX_TASKS[other_store["task_id"]]
+    assert "thread_id" not in same_store
+    assert "thread_id" not in other_store
+    assert same_internal["thread_id"] == "thread-jk-pecas"
+    assert same_internal["thread_reused"] is True
+    assert other_internal["thread_id"] == ""
+    assert other_internal["thread_reused"] is False
+    assert "scope_changed" in other_internal["thread_restart_reasons"]
 
 
 def test_compacted_durable_memory_drops_variable_operational_facts():

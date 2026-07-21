@@ -118,7 +118,14 @@
         window.addEventListener('focus', reexibirNavegadorMlShellAoRetornar);
         document.addEventListener('visibilitychange', reexibirNavegadorMlShellAoRetornar);
         if (mlWorkModalCloseEl) {
-            mlWorkModalCloseEl.addEventListener('click', fecharBalaoResultadosMl);
+            mlWorkModalCloseEl.addEventListener('click', () => {
+                const fecharLoginPendente = window.__JK_FAVORITOS_LOGIN_CLOSE_HANDLER__;
+                if (typeof fecharLoginPendente === 'function') {
+                    fecharLoginPendente();
+                    return;
+                }
+                fecharBalaoResultadosMl();
+            });
         }
         if (mlWorkModalCancelEl) {
             mlWorkModalCancelEl.addEventListener('click', cancelarFavoritosEmExecucao);
@@ -129,6 +136,27 @@
         if (mlWorkModalResumeEl) {
             mlWorkModalResumeEl.addEventListener('click', retomarFavoritosJobAtual);
         }
+
+        let navegadorMlEncerradoAoSairFavoritos = false;
+        const encerrarNavegadorMlAoSairFavoritos = () => {
+            if (navegadorMlEncerradoAoSairFavoritos) return;
+            navegadorMlEncerradoAoSairFavoritos = true;
+            if (typeof ocultarNavegadorMlShellDefinitivo === 'function') {
+                ocultarNavegadorMlShellDefinitivo({
+                    descarregarConteudo: true,
+                    preserveAvantProSession: true,
+                    reason: 'favoritos-pagehide'
+                });
+            }
+        };
+        window.addEventListener('message', event => {
+            const data = event && event.data ? event.data : {};
+            if (data && data.channel === 'jk-shell-history-back') encerrarNavegadorMlAoSairFavoritos();
+        });
+        window.addEventListener('pageshow', event => {
+            if (event && event.persisted) navegadorMlEncerradoAoSairFavoritos = false;
+        });
+        window.addEventListener('pagehide', encerrarNavegadorMlAoSairFavoritos);
 
         mlUrlInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') abrirMercadoLivreNoPrograma();

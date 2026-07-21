@@ -85,7 +85,6 @@ SAFE_EXECUTORS = {
     "estoque_lancamentos_sku",
     "estoque_lancamentos_lote",
     "ml_pergunta_responder",
-    "ml_pos_venda_responder",
     "ml_aprovacao_aprovar",
     "internal_report_queue",
 }
@@ -406,28 +405,6 @@ def _manual_specs() -> dict[str, CodexActionSpec]:
             risk_level="external_write",
             side_effects=("Envia uma resposta publica ao comprador no Mercado Livre.",),
             executor="ml_pergunta_responder",
-            status_kind="mercado_livre",
-        ),
-        "ml.pos_venda_responder": CodexActionSpec(
-            id="ml.pos_venda_responder",
-            module="perguntas_pos_venda",
-            label="Responder conversa pos-venda do Mercado Livre",
-            aliases=("responder pos venda", "responder pós venda", "responder conversa mercado livre", "enviar mensagem pos venda"),
-            params_schema=_schema(
-                ["loja", "pack_id", "texto"],
-                {
-                    "loja": {"type": "string"},
-                    "pack_id": {"type": "string"},
-                    "order_id": {"type": "string"},
-                    "buyer_id": {"type": "string"},
-                    "texto": {"type": "string"},
-                    "max_chars": {"type": "integer"},
-                    "conversa": {"type": "object"},
-                },
-            ),
-            risk_level="external_write",
-            side_effects=("Envia uma mensagem privada na conversa pos-venda do Mercado Livre.",),
-            executor="ml_pos_venda_responder",
             status_kind="mercado_livre",
         ),
         "ml.aprovacao_aprovar": CodexActionSpec(
@@ -763,7 +740,7 @@ def _routes_from_router_sources() -> list[dict[str, Any]]:
     seen: set[str] = set()
     for path in sorted(router_dir.glob("*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="strict"))
         except Exception:
             continue
         source = _safe_rel(path)
@@ -822,7 +799,7 @@ def _services_inventory() -> list[dict[str, Any]]:
         if path.name == "__init__.py":
             continue
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="strict"))
         except Exception:
             continue
         module = path.stem
@@ -882,7 +859,7 @@ def _pages_inventory() -> list[dict[str, Any]]:
         module = path.stem.replace("_", "-")
         title = path.stem.replace("_", " ").replace("-", " ").title()
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")[:6000]
+            text = path.read_text(encoding="utf-8", errors="strict")[:6000]
             match = re.search(r"<title[^>]*>(.*?)</title>", text, flags=re.I | re.S)
             if match:
                 title = re.sub(r"\s+", " ", match.group(1)).strip()[:160] or title
@@ -1310,11 +1287,13 @@ def _select_action(message: str, specs: dict[str, CodexActionSpec]) -> Optional[
     text = _normalizar(message)
     if not _is_explicit_mutating_request(message):
         return None
+    # Pos-venda e exclusivamente manual: o Black Jhon nao pode nem propor uma
+    # acao de resposta/aprovacao para esse fluxo.
+    if re.search(r"\b(pos venda|pos-venda|mensagem privada)\b", text):
+        return None
     action_words = r"(sincronizar|sincronize|sincroniza|sicronizar|sicronize|baixar|baixe|atualizar|atualize|forcar|force|re-sincronizar)"
     if re.search(r"\b(aprovar|aprove|enviar aprovacao|confirmar aprovacao)\b", text) and re.search(r"\b(pergunta|resposta|pos venda|pos-venda|mercado livre|mercadolivre|aprovacao)\b", text):
         return specs.get("ml.aprovacao_aprovar")
-    if re.search(r"\b(responder|responda|enviar|envie|mandar|mande)\b", text) and re.search(r"\b(pos venda|pos-venda|conversa|mensagem privada)\b", text):
-        return specs.get("ml.pos_venda_responder")
     if re.search(r"\b(responder|responda|enviar|envie|mandar|mande)\b", text) and re.search(r"\b(pergunta|mercado livre|mercadolivre|ml)\b", text):
         return specs.get("ml.pergunta_responder")
     if re.search(r"\b(cancelar|cancele|parar|pare)\b", text) and re.search(r"\b(sincronizacao|sincronizar|sincronize|sicronizar|sicronize|vendas)\b", text):
@@ -1882,26 +1861,6 @@ def _execute_ml_pergunta_responder(run_id: str, proposal: dict[str, Any]) -> dic
     return result
 
 
-def _execute_ml_pos_venda_responder(run_id: str, proposal: dict[str, Any]) -> dict[str, Any]:
-    from backend.schemas.perguntas_pos_venda import PosVendaMensagemRequest
-    from backend.services import perguntas_pos_venda_endpoints
-
-    client_id = str(proposal.get("client_id") or "default")
-    params = proposal.get("params") or {}
-    req = PosVendaMensagemRequest(
-        loja=str(params.get("loja") or ""),
-        pack_id=str(params.get("pack_id") or ""),
-        order_id=str(params.get("order_id") or ""),
-        buyer_id=str(params.get("buyer_id") or ""),
-        texto=str(params.get("texto") or params.get("resposta") or ""),
-        max_chars=int(params.get("max_chars") or 350),
-        conversa=params.get("conversa") if isinstance(params.get("conversa"), dict) else None,
-    )
-    result = perguntas_pos_venda_endpoints.ml_pos_venda_responder_conversa(req, client_id)
-    _update_run(run_id, live_status="Resposta pos-venda Mercado Livre enviada.", result=result)
-    return result
-
-
 def _execute_ml_aprovacao_aprovar(run_id: str, proposal: dict[str, Any]) -> dict[str, Any]:
     from backend.schemas.perguntas_pos_venda import PerguntasAprovacaoRequest
     from backend.services import perguntas_pos_venda_endpoints
@@ -2014,12 +1973,12 @@ def _execute_generic_route(run_id: str, proposal: dict[str, Any], authorization:
         req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
-                raw = resp.read().decode("utf-8", errors="replace")
+                raw = resp.read().decode("utf-8", errors="strict")
                 parsed = json.loads(raw) if raw else {}
                 _update_run(run_id, live_status=f"Rota executada: {method} {route_path}", result=parsed)
                 return {"url": url, "status": resp.status, "response": parsed}
         except urllib.error.HTTPError as exc:
-            body_text = exc.read().decode("utf-8", errors="replace")
+            body_text = exc.read().decode("utf-8", errors="strict")
             last_error = f"HTTP {exc.code}: {body_text[:600]}"
             if exc.code not in {404, 405}:
                 break
@@ -2078,8 +2037,6 @@ def _execute_run_worker(run_id: str, proposal: dict[str, Any], authorization: Op
             result = _execute_estoque_lancamentos_lote(run_id, proposal)
         elif executor == "ml_pergunta_responder":
             result = _execute_ml_pergunta_responder(run_id, proposal)
-        elif executor == "ml_pos_venda_responder":
-            result = _execute_ml_pos_venda_responder(run_id, proposal)
         elif executor == "ml_aprovacao_aprovar":
             result = _execute_ml_aprovacao_aprovar(run_id, proposal)
         elif executor == "internal_report_queue":

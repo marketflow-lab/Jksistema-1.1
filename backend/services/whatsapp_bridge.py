@@ -24,7 +24,6 @@ import sys
 import tempfile
 import threading
 import time
-import unicodedata
 import uuid
 from collections import deque
 from datetime import datetime
@@ -76,8 +75,7 @@ ZERO_COST_POLICY_VALID_UNTIL = "2026-09-30T23:59:59Z"
 POLL_SECONDS = 3
 CLAIM_LIMIT = 5
 TYPING_REFRESH_SECONDS = 20
-TYPING_MAX_SECONDS = 10 * 60
-TYPING_MAX_CONSECUTIVE_ERRORS = 3
+TYPING_MAX_SECONDS = 0  # Compatibilidade: zero representa pulso sem prazo total.
 TRANSCRIPTION_TIMEOUT_SECONDS = 600
 WHISPER_MODEL_EXPECTED_BYTES = 488_000_000
 WHATSAPP_GATEWAY_PROTOCOL_VERSION = 1
@@ -131,8 +129,8 @@ WHATSAPP_WAIT_MESSAGE_REPEAT_DEFAULT = whatsapp_settings.WHATSAPP_WAIT_MESSAGE_R
 WHATSAPP_WAIT_MESSAGE_STEADY_DEFAULT = whatsapp_settings.WHATSAPP_WAIT_MESSAGE_STEADY_DEFAULT
 WHATSAPP_PARTIAL_DEBOUNCE_DEFAULT = whatsapp_settings.WHATSAPP_PARTIAL_DEBOUNCE_DEFAULT
 WHATSAPP_JOB_DEADLINE_DEFAULT = whatsapp_settings.WHATSAPP_JOB_DEADLINE_DEFAULT
-WHATSAPP_ML_RESEARCH_DEADLINE_SECONDS = 5 * 60
-WHATSAPP_REPORT_DEADLINE_SECONDS = 10 * 60
+WHATSAPP_ML_RESEARCH_DEADLINE_SECONDS = 0
+WHATSAPP_REPORT_DEADLINE_SECONDS = 0
 WHATSAPP_MAX_SUBTASKS_DEFAULT = whatsapp_settings.WHATSAPP_MAX_SUBTASKS_DEFAULT
 WHATSAPP_MAX_ACTIVE_TASK_AGENTS_DEFAULT = whatsapp_settings.WHATSAPP_MAX_ACTIVE_TASK_AGENTS_DEFAULT
 WHATSAPP_CONVERSATION_WORKER_COUNT_DEFAULT = whatsapp_settings.WHATSAPP_CONVERSATION_WORKER_COUNT_DEFAULT
@@ -671,10 +669,6 @@ _dual_migrate_pending_v7 = _make_delegator('retry_coordinator', '_dual_migrate_p
 
 _recover_dual_pending_after_restart = _make_delegator('retry_coordinator', '_recover_dual_pending_after_restart')
 
-_whatsapp_is_job_status_probe = _make_delegator('conversation', '_whatsapp_is_job_status_probe')
-
-_whatsapp_is_task_complement = _make_delegator('conversation', '_whatsapp_is_task_complement')
-
 _dual_conversation_record = _make_delegator('conversation', '_dual_conversation_record')
 
 _dual_confirm_conversation_context = _make_delegator('conversation', '_dual_confirm_conversation_context')
@@ -692,7 +686,7 @@ _dual_active_job_snapshot = _make_delegator('conversation', '_dual_active_job_sn
 _run_conversation_agent = _make_delegator('conversation', '_run_conversation_agent')
 
 
-_dual_delegate_query_policy = _make_delegator('conversation', '_dual_delegate_query_policy')
+_dual_agent_query_policy = _make_delegator('conversation', '_dual_agent_query_policy')
 
 _function_manager_catalog = _make_delegator('function_manager', '_function_manager_catalog')
 
@@ -747,8 +741,6 @@ _function_manager_future_done = _make_delegator('function_manager', '_function_m
 _submit_function_manager_job = _make_delegator('function_manager', '_submit_function_manager_job')
 
 _dual_retry_pending_due = _make_delegator('retry_coordinator', '_dual_retry_pending_due')
-
-_whatsapp_is_retry_command = _make_delegator('retry_coordinator', '_whatsapp_is_retry_command')
 
 _resume_dual_pending_with_message = _make_delegator('retry_coordinator', '_resume_dual_pending_with_message')
 
@@ -820,8 +812,6 @@ _question_validate_approval_send = _make_delegator('question_tokens', '_question
 
 _regenerate_question_approval_response = _make_delegator('question_tokens', '_regenerate_question_approval_response')
 
-_question_natural_action = _make_delegator('question_tokens', '_question_natural_action')
-
 _question_suggestion_guidance = _make_delegator('question_tokens', '_question_suggestion_guidance')
 
 _question_explicit_response = _make_delegator('question_tokens', '_question_explicit_response')
@@ -841,8 +831,6 @@ _whatsapp_execute_source_policy_tools = _make_delegator('processor', '_whatsapp_
 _whatsapp_provider_task_worker = _make_delegator('processor', '_whatsapp_provider_task_worker')
 
 _create_provider_task = _make_delegator('processor', '_create_provider_task')
-
-_whatsapp_adaptive_reasoning_level = _make_delegator('processor', '_whatsapp_adaptive_reasoning_level')
 
 _create_selected_ai_task = _make_delegator('processor', '_create_selected_ai_task')
 

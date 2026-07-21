@@ -913,9 +913,28 @@ function validarFluxoFavoritosAvantProSemReload() {
   assert.doesNotMatch(ipc, /garantirAvantProWebContents\(view\.webContents/, 'IPC nao deve monitorar a pagina automaticamente ao exibir o BrowserView');
   assert.match(ipc, /function restaurarSessaoAvantProAntesDeAbrirNavegador[\s\S]*ensureAvantProExtensionStorageFromSnapshot/, 'IPC deve ter restauracao da sessao AvantPro a partir da ultima sessao boa');
   assert.match(ipc, /before-embedded-ml-browser-show[\s\S]*await ensureChromeExtensionsForMlSession\(\)/, 'abrir navegador interno deve restaurar a ultima sessao boa do AvantPro antes de carregar extensoes');
-  assert.match(ipc, /function salvarSessaoAvantProAntesDeOcultarNavegador[\s\S]*saveAvantProExtensionStorageSnapshot[\s\S]*embedded-ml-browser-hide[\s\S]*preserveAvantProSession[\s\S]*hideEmbeddedMlBrowser\(hideOptions\)/, 'fechar navegador interno deve salvar a sessao AvantPro antes de ocultar ou destruir');
+  const inicioHideNavegador = ipc.indexOf("ipcMain.handle('embedded-ml-browser-hide'");
+  const fimHideNavegador = ipc.indexOf("ipcMain.handle('embedded-ml-browser-execute'", inicioHideNavegador);
+  const blocoHideNavegador = ipc.slice(inicioHideNavegador, fimHideNavegador);
+  const indiceOcultarImediato = blocoHideNavegador.indexOf('hideEmbeddedMlBrowser({ reason:');
+  const indiceSalvarSessao = blocoHideNavegador.indexOf('await salvarSessaoAvantProAntesDeOcultarNavegador');
+  const indiceDestruirAposSalvar = blocoHideNavegador.indexOf('visibilityGeneration === favoritosEmbeddedMlVisibilityGeneration');
+  assert.ok(
+    indiceOcultarImediato >= 0 && indiceSalvarSessao > indiceOcultarImediato && indiceDestruirAposSalvar > indiceSalvarSessao,
+    'fechar deve retirar o navegador da tela imediatamente, salvar a sessao AvantPro e destruir somente depois se nenhuma nova abertura venceu a corrida'
+  );
+  assert.match(ipc, /favoritosEmbeddedMlVisibilityGeneration[\s\S]*showFoiCancelado[\s\S]*hidden-before-show-complete/, 'hide deve invalidar qualquer show assincrono ainda em andamento');
+  assert.match(ipc, /embedded-ml-browser-position[\s\S]*if \(!attached\)[\s\S]*reason: 'browser-hidden'/, 'reposicionamento atrasado nao deve recriar BrowserView ja fechado');
   assert.match(mlBrowser, /function ocultarNavegadorMlShellDefinitivo\(opcoes = \{\}\)[\s\S]*favoritosBrowserShellBridge\?\.ocultarDefinitivo\(opcoes\)/, 'fachada deve delegar o fechamento ao shell V2');
   assert.match(shellBridgeV2, /function ocultarDefinitivo\(opcoes = \{\}\)[\s\S]*preserveAvantProSession:\s*opcoes\.preserveAvantProSession !== false[\s\S]*enviar\('jk-ml-browser-hide', payload\)/, 'fechar o modulo Favoritos deve pedir preservacao da sessao AvantPro');
+  assert.match(shellBridgeV2, /function forcarVisivel\(\)[\s\S]*if \(!isBalloonOpen\(\)\)[\s\S]*favoritos-force-visible-after-close[\s\S]*return false/, 'timer atrasado nao pode tornar o navegador visivel depois de fechar o modal');
+  assert.match(buscaRanking, /cicloLoginContinuaAtivo[\s\S]*agendarEnquantoLoginAberto/, 'fluxo de login deve cancelar timers atrasados quando a tela for fechada');
+  assert.match(buscaRanking, /favoritos-login-confirmado[\s\S]*favoritos-login-cancelado/, 'fluxo de login deve fechar o navegador ao continuar ou cancelar');
+  assert.match(buscaRanking, /__JK_FAVORITOS_LOGIN_CLOSE_HANDLER__[\s\S]*fecharLoginPeloModal = \(\) => finalizar\(false\)/, 'fluxo de login deve registrar um encerramento especifico para o botao Fechar');
+  assert.match(init, /mlWorkModalCloseEl\.addEventListener\('click'[\s\S]*__JK_FAVORITOS_LOGIN_CLOSE_HANDLER__[\s\S]*fecharLoginPendente\(\)/, 'botao Fechar deve resolver somente a pergunta de login pendente');
+  assert.match(init, /favoritos-pagehide[\s\S]*jk-shell-history-back[\s\S]*pageshow[\s\S]*event\.persisted[\s\S]*pagehide/, 'Voltar ou sair da pagina deve descarregar o navegador preservando a sessao e permitir novo ciclo apos restauracao');
+  assert.match(styles, /body\.ml-work-modal-open \.jk-nav-card-group[\s\S]*display:\s*none !important/, 'Voltar interno deve ficar oculto enquanto o modal ocupa a tela');
+  assert.match(styles, /html\.jk-electron-tab-shell \.ml-work-modal[\s\S]*padding-top:\s*52px[\s\S]*height:\s*calc\(100vh - 58px\)/, 'modal deve reservar a faixa superior do shell Electron');
   assert.match(shell, /const hideOptions = \{[\s\S]*\.\.\.\(payload \|\| \{\}\)[\s\S]*hideEmbeddedMlBrowserShell\(hideOptions\)/, 'shell deve repassar a opcao de preservar sessao AvantPro ao Electron');
   assert.match(mlBrowser, /const ML_FAVORITOS_MONITORAMENTO_PAGINA_AUTOMATICO = false/, 'monitoramento automatico da pagina deve ficar desligado por padrao');
   assert.match(mlBrowser, /function aguardarAvantProNoWebview[\s\S]*statusMonitoramentoPaginaFavoritosDesativado/, 'aguardo do AvantPro deve recusar chamadas automaticas sem acao do usuario');
@@ -924,7 +943,7 @@ function validarFluxoFavoritosAvantProSemReload() {
   assert.match(renderAvantMercadoLivre, /function agendarAtualizacaoAvantAutomatica[\s\S]*mlAvantAutoRunId \+= 1[\s\S]*agendado:\s*false[\s\S]*desativado:\s*true/, 'atualizacao automatica antiga do Avant deve permanecer como no-op bloqueado');
   assert.match(renderAvantMercadoLivre, /if \(typeof monitoramentoPaginaFavoritosAutomaticoAtivo === 'function' && monitoramentoPaginaFavoritosAutomaticoAtivo\(\)\) \{[\s\S]*enriquecerDatasCriacaoAnuncios/, 'enriquecimento pos-render so pode rodar se o monitoramento for religado explicitamente');
   assert.match(windowModule, /function destroyEmbeddedMlBrowser[\s\S]*webContents\.destroy\(\)/, 'BrowserView do ML precisa ser destruido no fechamento definitivo');
-  assert.match(ipc, /embedded-ml-browser-hide[\s\S]*hideEmbeddedMlBrowser\(hideOptions/, 'IPC deve aceitar opcoes para descarregar o BrowserView');
+  assert.match(blocoHideNavegador, /destroyAfterSnapshot[\s\S]*visibilityGeneration === favoritosEmbeddedMlVisibilityGeneration[\s\S]*hideEmbeddedMlBrowser\(\{ \.\.\.hideOptions, destroy: true \}\)/, 'IPC deve descarregar o BrowserView depois de salvar a sessao sem destruir uma abertura mais nova');
   assert.match(ipc, /function buildMlProductUrlFromItemId[\s\S]*function pickMlItemImage[\s\S]*ml-public-item-info[\s\S]*url:\s*permalink,[\s\S]*thumbnail:\s*imagem,[\s\S]*pictures:\s*Array\.isArray\(item\.pictures\)/, 'IPC do item publico ML deve devolver link, foto e pictures para enriquecer o ranking');
   assert.match(shell, /jk-ml-browser-hide[\s\S]*const hideOptions = \{[\s\S]*hideOptions\.destroy = true[\s\S]*hideEmbeddedMlBrowserShell\(hideOptions\)/, 'shell deve repassar hide definitivo para descarregar o navegador');
   assert.match(execucao, /function pararNavegadorFavoritosBackground\(opcoes = \{\}\)[\s\S]*hideEmbeddedMlBrowser\(\{ destroy:\s*true, reason \}\)/, 'parada do navegador background deve descarregar o BrowserView com motivo terminal');
@@ -948,7 +967,7 @@ function validarColetaCanonicaEManifestoFavoritos() {
   const historicoUi = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '06-ranking-manual-historico-ui.js'), 'utf8');
   const mlBaseBusca = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '01-ml-base-busca.js'), 'utf8');
   const renderAvantMercadoLivre = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '08-render-avant-mercadolivre.js'), 'utf8');
-  const styles = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'styles.css'), 'utf8');
+  const stylesColeta = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'styles.css'), 'utf8');
   const favoritosHtml = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos.html'), 'utf8');
   const tabelasLayout = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout.js'), 'utf8');
   const assetManifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'asset-manifest.json'), 'utf8'));
@@ -1002,7 +1021,7 @@ function validarColetaCanonicaEManifestoFavoritos() {
   assert.match(historico, /formatarResumoColetaFavoritosTela[\s\S]*faltas:/, 'historico deve exibir motivos dos incompletos no resumo da coleta');
   assert.match(historicoUi, /<th>Preco<\/th>[\s\S]*criarCelulaPrecoHistoricoFavoritos|<th>Preco<\/th>[\s\S]*criarCelulaPrecoAnuncioFavoritos/, 'tabela de ranking/historico deve incluir preco');
   assert.doesNotMatch(historicoUi, /&uarr;|&darr;|ml-ranking-arrows-row|Mover este anuncio uma posicao/, 'lista de rankeamento nao deve exibir setas para subir ou descer anuncios');
-  assert.doesNotMatch(styles, /\.ml-ranking-arrows-row/, 'estilo exclusivo das setas removidas nao deve permanecer');
+  assert.doesNotMatch(stylesColeta, /\.ml-ranking-arrows-row/, 'estilo exclusivo das setas removidas nao deve permanecer');
   assert.match(historicoUi, /Sincronizar dados deste anuncio pelo Avant Pro[\s\S]*Remover este anuncio do ranking/, 'acoes de sincronizar e remover devem permanecer no rankeamento');
 
   assert.match(buscaRanking, /function chaveAnuncioFavoritos[\s\S]*chaveCanonicaAnuncioFavoritos/, 'ranking deve deduplicar pela chave canonica');

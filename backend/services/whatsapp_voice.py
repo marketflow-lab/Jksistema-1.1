@@ -220,6 +220,8 @@ class VoiceRuntime:
                 "task_ids": [],
                 "choice_requested": False,
                 "deliver_by_message": False,
+                "call_released_event": threading.Event(),
+                "background_delivery_started": False,
                 "usage": {},
                 "last_user_speech_at": time.time(),
             }
@@ -248,6 +250,9 @@ class VoiceRuntime:
             terminal = "failed"
             self._last_error = error
         finally:
+            release_event = state.get("call_released_event")
+            if isinstance(release_event, threading.Event):
+                release_event.set()
             duration = max(0, int(time.time() - float(state.get("started_epoch") or time.time())))
             for task_id in list(state.get("task_ids") or []):
                 try:
@@ -317,18 +322,16 @@ class VoiceRuntime:
                 if time.time() - started >= max_seconds:
                     await self._speak(websocket, "Chegamos ao limite desta ligação. Se houver uma consulta em andamento, enviarei o resultado neste mesmo WhatsApp.")
                     state["deliver_by_message"] = True
+                    self._release_call_wait(state)
                     await asyncio.sleep(1.5)
                     await asyncio.to_thread(self._hangup, openai_call_id, key)
-                    if current is not None:
-                        answer = await current
-                        if not state.pop("result_message_sent", False):
-                            await asyncio.to_thread(self._send_result_message, config, bridge, call, answer)
                     return
                 idle = time.time() - float(state.get("last_user_speech_at") or time.time())
                 if not current and not state["queue"] and idle >= silence_seconds and not silence_warned:
                     silence_warned = True
                     await self._speak(websocket, "Ainda está aí? Se não ouvir você, encerrarei a ligação em trinta segundos.")
                 if not current and not state["queue"] and idle >= silence_seconds + 30:
+                    self._release_call_wait(state)
                     await asyncio.to_thread(self._hangup, openai_call_id, key)
                     return
                 if current is None and state["queue"]:
@@ -341,7 +344,7 @@ class VoiceRuntime:
                         answer = f"Não consegui concluir esta consulta: {str(exc)[:240]}."
                     result_message_sent = bool(state.pop("result_message_sent", False))
                     if state.get("deliver_by_message") is True:
-                        if not result_message_sent:
+                        if not result_message_sent and not state.get("background_delivery_started") and answer:
                             await asyncio.to_thread(self._send_result_message, config, bridge, call, answer)
                     else:
                         await self._speak(websocket, answer)
@@ -357,9 +360,7 @@ class VoiceRuntime:
                 except Exception:
                     if current is not None:
                         state["deliver_by_message"] = True
-                        answer = await current
-                        if not state.pop("result_message_sent", False):
-                            await asyncio.to_thread(self._send_result_message, config, bridge, call, answer)
+                        self._release_call_wait(state)
                     return
                 event = json.loads(raw)
                 event_type = str(event.get("type") or "")
@@ -384,10 +385,7 @@ class VoiceRuntime:
                             await self._speak(websocket, "Tudo bem. Vou concluir e enviar o resultado neste mesmo WhatsApp.")
                             await asyncio.sleep(1.2)
                             await asyncio.to_thread(self._hangup, openai_call_id, key)
-                            if current is not None:
-                                answer = await current
-                                if not state.pop("result_message_sent", False):
-                                    await asyncio.to_thread(self._send_result_message, config, bridge, call, answer)
+                            self._release_call_wait(state)
                             return
                         if selected == "continue":
                             state["choice_requested"] = False
@@ -403,6 +401,9 @@ class VoiceRuntime:
                     usage = ((event.get("response") or {}) if isinstance(event.get("response"), dict) else {}).get("usage")
                     self._merge_usage(state, usage)
                 if event_type in {"session.closed", "call.ended"}:
+                    if current is not None:
+                        state["deliver_by_message"] = True
+                    self._release_call_wait(state)
                     return
                 if event_type == "error":
                     error = event.get("error") if isinstance(event.get("error"), dict) else {}
@@ -466,6 +467,8 @@ class VoiceRuntime:
             event_type="user_message",
             user_message=transcript,
             ai_behavior=ai_behavior,
+            authorized_stores=bridge._whatsapp_session_stores(session),
+            client_id=str(session.get("client_id") or ""),
         )
         action = str(decision.get("action") or "")
         if action in {"reply", "request_information"}:
@@ -484,17 +487,9 @@ class VoiceRuntime:
         if action not in {"delegate", "queue", "steer"}:
             return "Não consegui interpretar esse pedido com segurança. Pode reformular em uma frase?"
         job_prompt = str(decision.get("job_prompt") or transcript).strip()
-        query_policy = bridge._dual_delegate_query_policy(job_prompt, session, local_state, conversation_id)
-        if query_policy.get("store_required") and query_policy.get("store_mode") != "all" and len(query_policy.get("store_matches") or []) != 1:
-            stores = [str(item) for item in list(query_policy.get("authorized_stores") or []) if str(item).strip()]
-            suffix = f" As opções são: {', '.join(stores)}." if stores else ""
-            answer = f"De qual loja você está falando?{suffix}"
-            task = codex_console.codex_registrar_interacao_whatsapp_externa(
-                client_id=str(session.get("client_id") or "default"), username=str(session.get("username") or ""),
-                phone=phone, prompt=transcript, response=answer, call_id=str(call.get("id") or ""),
-            )
-            state["task_ids"].append(str(task.get("task_id") or ""))
-            return answer
+        query_policy = bridge._dual_agent_query_policy(
+            config, session, decision.get("resolved_context"),
+        )
         task = bridge._create_dual_worker_task(
             config,
             message=message,
@@ -519,11 +514,23 @@ class VoiceRuntime:
         started = time.time()
         progress_interval = _setting_int(config, "voice_progress_interval_seconds", VOICE_PROGRESS_SECONDS_DEFAULT, 8, 30)
         offer_after = _setting_int(config, "voice_long_task_offer_seconds", VOICE_LONG_TASK_OFFER_SECONDS_DEFAULT, 30, 300)
-        deadline = 600 if codex_console._codex_agent_is_report_request(job_prompt) else 180
         next_progress = started + progress_interval
         offered = False
         latest: dict[str, Any] = task
-        while time.time() - started < deadline:
+        while True:
+            release_event = state.get("call_released_event")
+            if isinstance(release_event, threading.Event) and release_event.is_set():
+                self._start_detached_task_observer(
+                    config, bridge, call, state,
+                    transcript=transcript,
+                    task_id=task_id,
+                    latest=latest,
+                    local_state=local_state,
+                    conversation_id=conversation_id,
+                    ai_behavior=ai_behavior,
+                    session=session,
+                )
+                return ""
             loaded = codex_console._codex_load_task(task_id)
             if isinstance(loaded, dict):
                 latest = loaded
@@ -537,14 +544,89 @@ class VoiceRuntime:
                 offered = True
                 progress("Esta consulta está demorando mais que o normal. Quer continuar aguardando na ligação ou receber o resultado por mensagem?", choice=True)
             time.sleep(0.5)
-        else:
+        return self._complete_delegated_turn(
+            config, bridge, call, state,
+            transcript=transcript,
+            task_id=task_id,
+            latest=latest,
+            local_state=local_state,
+            conversation_id=conversation_id,
+            ai_behavior=ai_behavior,
+            session=session,
+        )
+
+    @staticmethod
+    def _release_call_wait(state: dict[str, Any]) -> None:
+        event = state.get("call_released_event")
+        if isinstance(event, threading.Event):
+            event.set()
+
+    def _start_detached_task_observer(
+        self,
+        config: dict[str, Any],
+        bridge: Any,
+        call: dict[str, Any],
+        state: dict[str, Any],
+        *,
+        transcript: str,
+        task_id: str,
+        latest: dict[str, Any],
+        local_state: dict[str, Any],
+        conversation_id: str,
+        ai_behavior: str,
+        session: dict[str, Any],
+    ) -> None:
+        with self._lock:
+            if state.get("background_delivery_started") is True:
+                return
+            state["background_delivery_started"] = True
+
+        def observe() -> None:
             try:
-                codex_console.codex_cancelar_tarefa_para_sessao(task_id, session, cancel_source="whatsapp_voice_deadline")
+                current = dict(latest)
+                while str(current.get("status") or "") not in VOICE_TERMINAL_TASK_STATES:
+                    loaded = codex_console._codex_load_task(task_id)
+                    if isinstance(loaded, dict):
+                        current = loaded
+                    if str(current.get("status") or "") not in VOICE_TERMINAL_TASK_STATES:
+                        time.sleep(0.5)
+                answer = self._complete_delegated_turn(
+                    config, bridge, call, state,
+                    transcript=transcript,
+                    task_id=task_id,
+                    latest=current,
+                    local_state=local_state,
+                    conversation_id=conversation_id,
+                    ai_behavior=ai_behavior,
+                    session=session,
+                )
             except Exception:
-                pass
-            loaded = codex_console._codex_load_task(task_id)
-            if isinstance(loaded, dict):
-                latest = loaded
+                answer = "Não consegui concluir a consulta. Você pode tentar novamente por mensagem."
+            if answer and not state.pop("result_message_sent", False):
+                self._send_result_message(config, bridge, call, answer)
+
+        threading.Thread(
+            target=observe,
+            name=f"jk-whatsapp-voice-result-{task_id[-10:]}",
+            daemon=True,
+        ).start()
+
+    def _complete_delegated_turn(
+        self,
+        config: dict[str, Any],
+        bridge: Any,
+        call: dict[str, Any],
+        state: dict[str, Any],
+        *,
+        transcript: str,
+        task_id: str,
+        latest: dict[str, Any],
+        local_state: dict[str, Any],
+        conversation_id: str,
+        ai_behavior: str,
+        session: dict[str, Any],
+    ) -> str:
+        phone = str(call.get("wa_id") or "")
         worker_result = codex_whatsapp_agents.normalize_worker_result(latest)
         final_decision = bridge._run_conversation_agent(
             config,

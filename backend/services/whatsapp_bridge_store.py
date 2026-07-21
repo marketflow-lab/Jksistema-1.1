@@ -150,6 +150,11 @@ def _state_persistence_value(value: Any, *, context_hub_scope: bool = False) -> 
         persisted: dict[str, Any] = {}
         for raw_key, item in value.items():
             key = str(raw_key)
+            if key == "recent_turns":
+                from backend.services.whatsapp import conversation_context
+
+                persisted[key] = conversation_context.sanitize_turns(item)
+                continue
             if key == _CONTEXT_HUB_EPHEMERAL_PERMISSION:
                 continue
             if is_hub and key in _CONTEXT_HUB_PRIVATE_TEXT_KEYS:
@@ -186,6 +191,23 @@ def _state_snapshot_for_persistence(state: Any) -> dict[str, Any]:
         str(bucket): _state_persistence_value(value)
         for bucket, value in snapshot.items()
     }
+
+
+def _sanitize_loaded_conversation_memory(state: dict[str, Any]) -> dict[str, Any]:
+    conversations = state.get("dual_agent_conversations")
+    if not isinstance(conversations, dict):
+        return state
+    from backend.services.whatsapp import conversation_context
+
+    sanitized: dict[str, Any] = {}
+    for conversation_id, raw in conversations.items():
+        if not isinstance(raw, dict):
+            continue
+        record = dict(raw)
+        conversation_context.expire_turn_memory(record)
+        sanitized[str(conversation_id)] = record
+    state["dual_agent_conversations"] = sanitized
+    return state
 
 
 class WhatsappBridgeStore:
@@ -377,7 +399,7 @@ class WhatsappBridgeStore:
                 result[str(row["bucket"])] = json.loads(str(row["payload_json"] or "null"))
             except Exception:
                 continue
-        return result
+        return _sanitize_loaded_conversation_memory(result)
 
     def save_state(self, state: dict[str, Any], *, migration: bool = False) -> None:
         self.initialize() if not self._initialized else None

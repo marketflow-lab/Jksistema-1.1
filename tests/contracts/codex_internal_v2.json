@@ -1,0 +1,1130 @@
+{
+  "contracts": {
+    "mcp": {
+      "max_plan_calls": 8,
+      "plan_schema_version": "2.0",
+      "protocol": "mcp_v2",
+      "server_version": "2026.07.20-plan-v2"
+    },
+    "models": {
+      "baseline": "gpt-5.5",
+      "explicit_candidates": [
+        "gpt-5.6-luna",
+        "gpt-5.6-terra",
+        "gpt-5.6-sol"
+      ]
+    },
+    "request_models": {
+      "CodexActionApprovalRequest": {
+        "properties": {
+          "proposal_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Proposal Hash"
+          },
+          "proposal_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Proposal Version"
+          }
+        },
+        "title": "CodexActionApprovalRequest",
+        "type": "object"
+      },
+      "CodexActionProposalRequest": {
+        "properties": {
+          "action_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Action Id"
+          },
+          "capability_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Capability Id"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Conversation Id"
+          },
+          "history": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "History"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "params": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Params"
+          },
+          "screen_context": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Screen Context"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "CodexActionProposalRequest",
+        "type": "object"
+      },
+      "CodexActionRevisionRequest": {
+        "properties": {
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Message"
+          },
+          "params": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Params"
+          }
+        },
+        "title": "CodexActionRevisionRequest",
+        "type": "object"
+      },
+      "CodexEvaluationRunAPIRequest": {
+        "properties": {
+          "case_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Case Ids"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "purpose": {
+            "default": "manual",
+            "title": "Purpose",
+            "type": "string"
+          },
+          "repetitions": {
+            "default": 1,
+            "title": "Repetitions",
+            "type": "integer"
+          },
+          "split": {
+            "default": "holdout",
+            "title": "Split",
+            "type": "string"
+          }
+        },
+        "required": [
+          "models"
+        ],
+        "title": "CodexEvaluationRunAPIRequest",
+        "type": "object"
+      },
+      "CodexMCPRolloutRequest": {
+        "properties": {
+          "allowed_tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allowed Tools"
+          },
+          "baseline_p95_ms": {
+            "default": 0.0,
+            "title": "Baseline P95 Ms",
+            "type": "number"
+          },
+          "mode": {
+            "default": "off",
+            "title": "Mode",
+            "type": "string"
+          },
+          "observations": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Observations"
+          }
+        },
+        "title": "CodexMCPRolloutRequest",
+        "type": "object"
+      },
+      "CodexTaskApprovalRequest": {
+        "properties": {
+          "paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Paths"
+          },
+          "screen_context": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Screen Context"
+          }
+        },
+        "title": "CodexTaskApprovalRequest",
+        "type": "object"
+      },
+      "CodexTaskFeedbackRequest": {
+        "properties": {
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "rating": {
+            "title": "Rating",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rating"
+        ],
+        "title": "CodexTaskFeedbackRequest",
+        "type": "object"
+      },
+      "CodexTaskRequest": {
+        "properties": {
+          "approval_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Approval Mode"
+          },
+          "attachments": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Attachments"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Conversation Id"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Goal"
+          },
+          "history": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "History"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Paths"
+          },
+          "planning_mode": {
+            "default": false,
+            "title": "Planning Mode",
+            "type": "boolean"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning Effort"
+          },
+          "reference_paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reference Paths"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Request Id"
+          },
+          "sandbox": {
+            "default": "read_only",
+            "title": "Sandbox",
+            "type": "string"
+          },
+          "screen_context": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Screen Context"
+          },
+          "service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Service Tier"
+          },
+          "speed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speed"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Thread Id"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "title": "CodexTaskRequest",
+        "type": "object"
+      },
+      "CodexTaskSteerRequest": {
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Request Id"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "CodexTaskSteerRequest",
+        "type": "object"
+      }
+    },
+    "routes": [
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_actions_listar",
+        "path": "/api/admin/codex/actions"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_actions_listar_propostas",
+        "path": "/api/admin/codex/actions/proposals"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_actions_criar_proposta",
+        "path": "/api/admin/codex/actions/proposals"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_actions_aprovar_proposta",
+        "path": "/api/admin/codex/actions/proposals/{proposal_id}/approve"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_actions_rejeitar_proposta",
+        "path": "/api/admin/codex/actions/proposals/{proposal_id}/reject"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_actions_revisar_proposta",
+        "path": "/api/admin/codex/actions/proposals/{proposal_id}/revise"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_actions_obter_execucao",
+        "path": "/api/admin/codex/actions/runs/{run_id}"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_actions_cancelar_execucao",
+        "path": "/api/admin/codex/actions/runs/{run_id}/cancel"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_agent_capability_coverage",
+        "path": "/api/admin/codex/agent/capability-coverage"
+      },
+      {
+        "methods": [
+          "PUT"
+        ],
+        "name": "codex_agent_guidance_put",
+        "path": "/api/admin/codex/agent/guidance"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_agent_guidance_simulate",
+        "path": "/api/admin/codex/agent/guidance/simulate"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_agent_settings_get",
+        "path": "/api/admin/codex/agent/settings"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_assistant_action_queue_get",
+        "path": "/api/admin/codex/assistant/action-queue"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_assistant_action_queue_post",
+        "path": "/api/admin/codex/assistant/action-queue"
+      },
+      {
+        "methods": [
+          "PATCH"
+        ],
+        "name": "codex_assistant_action_queue_patch",
+        "path": "/api/admin/codex/assistant/action-queue/{action_id}"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_assistant_bling_resources",
+        "path": "/api/admin/codex/assistant/bling/resources"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_assistant_chat",
+        "path": "/api/admin/codex/assistant/chat"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_assistant_daily_analysis_run",
+        "path": "/api/admin/codex/assistant/daily-analysis/run"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_assistant_data_sources",
+        "path": "/api/admin/codex/assistant/data-sources"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_assistant_evaluation_get",
+        "path": "/api/admin/codex/assistant/evaluation"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_assistant_evaluation_run",
+        "path": "/api/admin/codex/assistant/evaluation/run"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_assistant_financial_adjustments_get",
+        "path": "/api/admin/codex/assistant/financial-adjustments"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_assistant_financial_adjustments_post",
+        "path": "/api/admin/codex/assistant/financial-adjustments"
+      },
+      {
+        "methods": [
+          "DELETE"
+        ],
+        "name": "codex_assistant_financial_adjustments_delete",
+        "path": "/api/admin/codex/assistant/financial-adjustments/{adjustment_id}"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_assistant_memory_get",
+        "path": "/api/admin/codex/assistant/memory"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_assistant_memory_post",
+        "path": "/api/admin/codex/assistant/memory"
+      },
+      {
+        "methods": [
+          "DELETE"
+        ],
+        "name": "codex_assistant_memory_delete",
+        "path": "/api/admin/codex/assistant/memory/{entry_id}"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_assistant_mercado_livre_resources",
+        "path": "/api/admin/codex/assistant/mercado-livre/resources"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_assistant_proactive_run",
+        "path": "/api/admin/codex/assistant/proactive/run"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_assistant_report_settings_get",
+        "path": "/api/admin/codex/assistant/report-settings"
+      },
+      {
+        "methods": [
+          "PUT"
+        ],
+        "name": "codex_assistant_report_settings_put",
+        "path": "/api/admin/codex/assistant/report-settings"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_assistant_report_create",
+        "path": "/api/admin/codex/assistant/reports"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_assistant_report_get",
+        "path": "/api/admin/codex/assistant/reports/{report_id}"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_assistant_report_download",
+        "path": "/api/admin/codex/assistant/reports/{report_id}/download"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_assistant_suggestions",
+        "path": "/api/admin/codex/assistant/suggestions"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_assistant_tools",
+        "path": "/api/admin/codex/assistant/tools"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_assistant_weekly_analysis_run",
+        "path": "/api/admin/codex/assistant/weekly-analysis/run"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_upload_attachments",
+        "path": "/api/admin/codex/attachments"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_capabilities_listar",
+        "path": "/api/admin/codex/capabilities"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_capabilities_modules",
+        "path": "/api/admin/codex/capabilities/modules"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_capabilities_resolver",
+        "path": "/api/admin/codex/capabilities/resolve"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_reset_current_conversation",
+        "path": "/api/admin/codex/conversations/current/reset"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_listar_conversas_whatsapp",
+        "path": "/api/admin/codex/conversations/whatsapp"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_listar_mensagens_conversa_whatsapp",
+        "path": "/api/admin/codex/conversations/whatsapp/{conversation_id}/messages"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_obter_mensagem_conversa_whatsapp",
+        "path": "/api/admin/codex/conversations/whatsapp/{conversation_id}/messages/{task_id}"
+      },
+      {
+        "methods": [
+          "DELETE"
+        ],
+        "name": "codex_deletar_conversa",
+        "path": "/api/admin/codex/conversations/{conversation_id}"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_evaluation_runs",
+        "path": "/api/admin/codex/evaluations/runs"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_evaluation_run_post",
+        "path": "/api/admin/codex/evaluations/runs"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_evaluation_run_get",
+        "path": "/api/admin/codex/evaluations/runs/{run_id}"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_program_functions",
+        "path": "/api/admin/codex/functions"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_mcp_rollout_get",
+        "path": "/api/admin/codex/mcp/rollout"
+      },
+      {
+        "methods": [
+          "PUT"
+        ],
+        "name": "codex_mcp_rollout_put",
+        "path": "/api/admin/codex/mcp/rollout"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_status",
+        "path": "/api/admin/codex/status"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_listar_tarefas",
+        "path": "/api/admin/codex/tasks"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_criar_tarefa",
+        "path": "/api/admin/codex/tasks"
+      },
+      {
+        "methods": [
+          "DELETE"
+        ],
+        "name": "codex_deletar_tarefa",
+        "path": "/api/admin/codex/tasks/{task_id}"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_obter_tarefa",
+        "path": "/api/admin/codex/tasks/{task_id}"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_aprovar_tarefa",
+        "path": "/api/admin/codex/tasks/{task_id}/approve"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_cancelar_tarefa",
+        "path": "/api/admin/codex/tasks/{task_id}/cancel"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_complementar_tarefa",
+        "path": "/api/admin/codex/tasks/{task_id}/steer"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_telemetry_summary",
+        "path": "/api/admin/codex/telemetry/summary"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_telemetry_timeseries",
+        "path": "/api/admin/codex/telemetry/timeseries"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_agent_plan_get",
+        "path": "/api/codex/agent/plans/{plan_id}"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_upload_attachments_user",
+        "path": "/api/codex/attachments"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_transcribe_audio_user",
+        "path": "/api/codex/audio/transcriptions"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_reset_current_conversation_user",
+        "path": "/api/codex/conversations/current/reset"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_listar_conversas_whatsapp_user",
+        "path": "/api/codex/conversations/whatsapp"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_listar_mensagens_conversa_whatsapp_user",
+        "path": "/api/codex/conversations/whatsapp/{conversation_id}/messages"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_obter_mensagem_conversa_whatsapp_user",
+        "path": "/api/codex/conversations/whatsapp/{conversation_id}/messages/{task_id}"
+      },
+      {
+        "methods": [
+          "DELETE"
+        ],
+        "name": "codex_deletar_conversa_user",
+        "path": "/api/codex/conversations/{conversation_id}"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_status_user",
+        "path": "/api/codex/status"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_listar_tarefas_user",
+        "path": "/api/codex/tasks"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_criar_tarefa_user",
+        "path": "/api/codex/tasks"
+      },
+      {
+        "methods": [
+          "DELETE"
+        ],
+        "name": "codex_deletar_tarefa_user",
+        "path": "/api/codex/tasks/{task_id}"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "name": "codex_obter_tarefa_user",
+        "path": "/api/codex/tasks/{task_id}"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_aprovar_tarefa_user",
+        "path": "/api/codex/tasks/{task_id}/approve"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_cancelar_tarefa_user",
+        "path": "/api/codex/tasks/{task_id}/cancel"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_task_feedback",
+        "path": "/api/codex/tasks/{task_id}/feedback"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "name": "codex_complementar_tarefa_user",
+        "path": "/api/codex/tasks/{task_id}/steer"
+      }
+    ],
+    "security": {
+      "allowed_sandboxes": [
+        "read_only"
+      ],
+      "development_error_code": "DEVELOPMENT_REQUIRES_CODEX_DESKTOP",
+      "development_write_enabled": false,
+      "execution_plane": "in_app_operations"
+    },
+    "source_contract_hashes": {
+      "development_classifier": "fcf2dc8c2ba0d7cf3c330367a5ccca1c49735b515058e5b9ba96d4673e00eb54",
+      "initial_prompt": "c0740aee6cbd6717ae17519bf32f4b418d782484a3c7f1c57456961b984b68df",
+      "mcp_plan_builder": "ab89b5058d3a5edac2bb2a2da8d1c36ac196216b72f6ce9ec9ef42bd2e86c578",
+      "mcp_plan_validator": "d334cdc41993cee5510b1fe15f291ab482cfa6a59b840e34dd31269102db9e69",
+      "public_task": "2572678ddf9eed115f2c82b15197a972baafa3d5ac7c1b26c313849e3968c3e8",
+      "sandbox_policy": "ef3832b8e52b28a5bd83f41f0842ee69cbbe6ae083bbc655e639e4a87b63663c",
+      "tool_catalog": "cd1b0809fbb555f86f22104833786bac836ce8fbddad4dce129d6a030fccd321"
+    }
+  },
+  "contracts_sha256": "9e493b702a80cc7ddd0142a3dbeb4ff6149511296c518fbf26819f8d34269adb",
+  "snapshot_schema_version": "1.0"
+}

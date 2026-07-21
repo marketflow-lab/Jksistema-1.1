@@ -837,13 +837,15 @@
                 });
             }
 
-            const unicos = deduplicarAnunciosFavoritos(coletados)
+            let unicos = deduplicarAnunciosFavoritos(coletados)
                 .filter(anuncioFavoritosCandidatoRanking);
             if (typeof contexto.onDetail === 'function') {
                 contexto.onDetail(`SKU ${info.sku}: completando os dados de ${unicos.length} anuncios coletados.`);
             }
             const inicioEnriquecimentoFinal = Date.now();
             await enriquecerAnunciosFavoritosRanking(unicos, contextoEnriquecimento, { fechamento: true });
+            unicos = deduplicarAnunciosFavoritos(unicos)
+                .filter(anuncioFavoritosCandidatoRanking);
             tempoEnriquecimentoMs += Math.max(0, Date.now() - inicioEnriquecimentoFinal);
             await aguardarControleFavoritos();
 
@@ -1233,7 +1235,7 @@
                         });
                     }
 
-                    const unicos = deduplicarAnunciosFavoritos(coletados)
+                    let unicos = deduplicarAnunciosFavoritos(coletados)
                         .filter(anuncioFavoritosCandidatoRanking);
                     mostrarBalaoFavoritosStatus(`SKU ${info.sku}: calculando ranking dos anuncios coletados...`, {
                         manterNavegadorVisivel: true,
@@ -1241,6 +1243,8 @@
                         titulo: 'Ranking'
                     });
                     await enriquecerAnunciosFavoritosRanking(unicos, contextoEnriquecimentoFavoritos, { fechamento: true });
+                    unicos = deduplicarAnunciosFavoritos(unicos)
+                        .filter(anuncioFavoritosCandidatoRanking);
                     await aguardarControleFavoritos();
 
                     const anunciosNovos = unicos.filter(anuncioFavoritosProdutoNovo);
@@ -1629,17 +1633,23 @@
                         });
                     }
 
-                    const unicos = deduplicarAnunciosFavoritos(coletados)
+                    let unicos = deduplicarAnunciosFavoritos(coletados)
                         .filter(anuncioFavoritosCandidatoRanking);
                     mostrarBalaoFavoritosStatus(`SKU ${info.sku}: enriquecendo ${unicos.length} anuncio(s) para calcular ranking...`);
                     await aguardarControleFavoritos();
                     await enriquecerAnunciosFavoritosRanking(unicos);
                     for (let i = 0; i < unicos.length; i += 1) {
+                        const pesquisasOrigem = Array.isArray(unicos[i].pesquisas_origem) ? [...unicos[i].pesquisas_origem] : [];
+                        const camposOrigem = Array.isArray(unicos[i].campos_origem) ? [...unicos[i].campos_origem] : [];
                         const origem = Array.isArray(unicos[i].pesquisas_origem) && unicos[i].pesquisas_origem[0]
                             ? { termo: unicos[i].pesquisas_origem[0], campo: '' }
                             : { termo: '', campo: '' };
                         unicos[i] = normalizarAnuncioFavoritosPesquisa(unicos[i], info.sku, origem);
+                        if (pesquisasOrigem.length) unicos[i].pesquisas_origem = pesquisasOrigem;
+                        if (camposOrigem.length) unicos[i].campos_origem = camposOrigem;
                     }
+                    unicos = deduplicarAnunciosFavoritos(unicos)
+                        .filter(anuncioFavoritosCandidatoRanking);
                     await aguardarControleFavoritos();
                     const anunciosNovos = unicos.filter(anuncioFavoritosProdutoNovo);
                     const removidosPorCondicao = unicos.length - anunciosNovos.length;
@@ -2600,17 +2610,23 @@
                     });
                 }
 
-                const unicos = deduplicarAnunciosFavoritos(coletados)
+                let unicos = deduplicarAnunciosFavoritos(coletados)
                     .filter(anuncioFavoritosCandidatoRanking);
                 mostrarBalaoFavoritosStatus(`Ranqueamento avulso: enriquecendo ${unicos.length} anuncio(s)...`);
                 verificarCancelamentoFavoritos();
                 await enriquecerAnunciosFavoritosRanking(unicos, contextoEnriquecimentoFavoritos, { fechamento: true });
                 for (let i = 0; i < unicos.length; i += 1) {
+                    const pesquisasOrigem = Array.isArray(unicos[i].pesquisas_origem) ? [...unicos[i].pesquisas_origem] : [];
+                    const camposOrigem = Array.isArray(unicos[i].campos_origem) ? [...unicos[i].campos_origem] : [];
                     const origem = Array.isArray(unicos[i].pesquisas_origem) && unicos[i].pesquisas_origem[0]
                         ? { termo: unicos[i].pesquisas_origem[0], campo: '' }
                         : { termo: '', campo: '' };
                     unicos[i] = normalizarAnuncioFavoritosPesquisa(unicos[i], skuRanking, origem);
+                    if (pesquisasOrigem.length) unicos[i].pesquisas_origem = pesquisasOrigem;
+                    if (camposOrigem.length) unicos[i].campos_origem = camposOrigem;
                 }
+                unicos = deduplicarAnunciosFavoritos(unicos)
+                    .filter(anuncioFavoritosCandidatoRanking);
                 verificarCancelamentoFavoritos();
                 const anunciosNovos = unicos.filter(anuncioFavoritosProdutoNovo);
                 const anunciosElegiveis = anunciosNovos.length ? anunciosNovos : unicos;

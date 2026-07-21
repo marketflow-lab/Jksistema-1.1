@@ -203,8 +203,6 @@ def _progress_pulse_worker(
                 event["error"] = str(exc)[:500]
                 RUNTIME_STATE["progress_last_error"] = str(exc)[:800]
             _record_progress_event(task_id, event)
-            if elapsed >= TYPING_MAX_SECONDS:
-                break
     finally:
         with PROGRESS_PULSES_LOCK:
             if PROGRESS_PULSES.get(message_id) is stop_event:
@@ -243,35 +241,24 @@ def _stop_progress_pulse(message_id: str) -> None:
         stop_event.set()
 
 def _typing_pulse_worker(config: dict[str, Any], message_id: str, stop_event: threading.Event) -> None:
-    started_at = time.monotonic()
-    consecutive_errors = 0
     terminal_statuses = {
         "not_active",
-        "daily_limit",
-        "policy_recheck_required",
-        "waiting_free_window",
         "message_not_owned",
         "binding_machine_mismatch",
     }
     try:
-        while time.monotonic() - started_at < TYPING_MAX_SECONDS and not stop_event.is_set():
+        while not stop_event.is_set() and not BRIDGE_STOP_EVENT.is_set():
             try:
                 result = _post_typing_indicator(config, message_id)
                 status = str(result.get("status") or result.get("error") or "").strip().lower()
                 if status in terminal_statuses:
                     break
-                if status in {"sent", "too_soon"}:
-                    consecutive_errors = 0
+                if status in {"sent", "too_soon", "daily_limit", "policy_recheck_required", "waiting_free_window"}:
                     RUNTIME_STATE["typing_last_error"] = ""
                     if status == "sent":
                         RUNTIME_STATE["typing_last_sent_at"] = _now()
-                else:
-                    consecutive_errors += 1
             except Exception as exc:
-                consecutive_errors += 1
                 RUNTIME_STATE["typing_last_error"] = str(exc)[:800]
-            if consecutive_errors >= TYPING_MAX_CONSECUTIVE_ERRORS:
-                break
             if stop_event.wait(TYPING_REFRESH_SECONDS) or BRIDGE_STOP_EVENT.is_set():
                 break
     finally:
@@ -524,13 +511,37 @@ def _post_proactive(config: dict[str, Any], payload: dict[str, Any]) -> dict[str
     if not machine_id:
         return {"success": False, "status": "machine_id_missing"}
     body.pop("machine_id", None)
-    return _gateway_json(
+    request_body = {"subject_id": subject, "machine_id": machine_id, **body}
+    result = _gateway_json(
         config,
         "POST",
         "/bridge/proactive",
-        {"subject_id": subject, "machine_id": machine_id, **body},
+        request_body,
         timeout=20,
     )
+    if (
+        str(body.get("event_type") or "") == "task_partial"
+        and isinstance(result, dict)
+        and str(result.get("status") or "") == "ignored_low_severity"
+    ):
+        compatibility_body = dict(request_body)
+        compatibility_body["event_type"] = "task_failed"
+        fallback = _gateway_json(
+            config,
+            "POST",
+            "/bridge/proactive",
+            compatibility_body,
+            timeout=20,
+        )
+        if isinstance(fallback, dict):
+            return {
+                **fallback,
+                "compatibility_fallback": True,
+                "requested_event_type": "task_partial",
+                "delivery_event_type": "task_failed",
+            }
+        return {"success": False, "status": "invalid_gateway_json"}
+    return result
 
 def _post_interactive_approval(
     config: dict[str, Any],
@@ -539,6 +550,7 @@ def _post_interactive_approval(
     fingerprint: str,
     token: str,
     body: str,
+    state: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     worker_url = _normalize_worker_url(config.get("worker_url"))
     bridge_token = str(config.get("bridge_token") or "").strip()
@@ -574,7 +586,30 @@ def _post_interactive_approval(
         return {"success": False, "status": str(payload.get("status") or payload.get("error") or "blocked")}
     if response.status_code >= 400:
         raise RuntimeError(f"gateway_http_{response.status_code}: {payload}")
-    return payload if isinstance(payload, dict) else {"success": False, "status": "invalid_gateway_json"}
+    if not isinstance(payload, dict):
+        return {"success": False, "status": "invalid_gateway_json"}
+    outbound_message_id = str(
+        payload.get("meta_message_id")
+        or payload.get("outbound_message_id")
+        or payload.get("message_id")
+        or ""
+    ).strip()[:200]
+    if outbound_message_id and isinstance(state, dict):
+        normalized_token = str(token or "").strip().upper()
+        tokens = state.get("question_approval_tokens") if isinstance(state.get("question_approval_tokens"), dict) else {}
+        token_item = tokens.get(normalized_token)
+        if isinstance(token_item, dict) and str(token_item.get("subject_id") or "") == str(subject_id or ""):
+            token_item["outbound_message_id"] = outbound_message_id
+        threads = state.get("question_active_threads") if isinstance(state.get("question_active_threads"), dict) else {}
+        for thread in threads.values():
+            if (
+                isinstance(thread, dict)
+                and str(thread.get("token") or "").strip().upper() == normalized_token
+                and str(thread.get("subject_id") or "") == str(subject_id or "")
+            ):
+                thread["outbound_message_id"] = outbound_message_id
+        payload["outbound_message_id"] = outbound_message_id
+    return payload
 
 def _post_interactive_store_selection(
     config: dict[str, Any],

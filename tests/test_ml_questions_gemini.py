@@ -23,7 +23,25 @@ def listing(**kwargs):
     return ListingSnapshot(**data)
 
 
-def process(text, *, ai=None, confidence=0.9, requires_human=False, auto=False, listing_obj=None):
+def _question(text, category=QuestionCategory.PRODUCT_FEATURE, *, item_id="MLB1"):
+    return QuestionContext(
+        id="Q1",
+        text=text,
+        item_id=item_id,
+        raw={"_agent_intent": {"categoria": category.value}},
+    )
+
+
+def process(
+    text,
+    *,
+    ai=None,
+    confidence=0.9,
+    requires_human=False,
+    auto=False,
+    listing_obj=None,
+    category=QuestionCategory.PRODUCT_FEATURE,
+):
     settings = GeminiQuestionsSettings(
         auto_publish_enabled=auto,
         min_confidence=0.78,
@@ -39,7 +57,7 @@ def process(text, *, ai=None, confidence=0.9, requires_human=False, auto=False, 
     })
     orchestrator = QuestionAnswerOrchestrator(settings=settings, gemini_client=client)
     return orchestrator.process(
-        question=QuestionContext(id="Q1", text=text, item_id="MLB1"),
+        question=_question(text, category),
         listing=listing_obj or listing(),
         previous_questions=[PreviousQA(question="Tem nota?", answer="Sim.")],
     )
@@ -60,22 +78,38 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         self.assertNotIn("WhatsApp", result.answer)
 
     def test_shipping_goes_through_ai(self):
-        result = process("Qual o frete para 30100-000?", ai="O frete e o prazo devem ser conferidos pelo Mercado Livre informando o CEP no anuncio.")
+        result = process(
+            "Qual o frete para 30100-000?",
+            ai="O frete e o prazo devem ser conferidos pelo Mercado Livre informando o CEP no anuncio.",
+            category=QuestionCategory.SHIPPING,
+        )
         self.assertEqual(result.source, "gemini")
         self.assertIn("CEP", result.answer)
 
     def test_price_goes_through_ai(self):
-        result = process("Faz desconto? Qual menor valor?", ai="O valor disponivel para compra e o exibido no anuncio pelo Mercado Livre.")
+        result = process(
+            "Faz desconto? Qual menor valor?",
+            ai="O valor disponivel para compra e o exibido no anuncio pelo Mercado Livre.",
+            category=QuestionCategory.PRICE,
+        )
         self.assertEqual(result.source, "gemini")
         self.assertIn("valor disponivel", result.answer)
 
     def test_stock_goes_through_ai(self):
-        result = process("Tem em estoque pronta entrega?", ai="Quando o Mercado Livre permite finalizar a compra, o produto esta disponivel pelo anuncio.")
+        result = process(
+            "Tem em estoque pronta entrega?",
+            ai="Quando o Mercado Livre permite finalizar a compra, o produto esta disponivel pelo anuncio.",
+            category=QuestionCategory.STOCK,
+        )
         self.assertEqual(result.source, "gemini")
         self.assertIn("disponivel pelo anuncio", result.answer)
 
     def test_compatibility_without_listing_evidence_goes_review(self):
-        result = process("Serve no Civic 2008?", ai="Sim, serve no Civic 2008.")
+        result = process(
+            "Serve no Civic 2008?",
+            ai="Sim, serve no Civic 2008.",
+            category=QuestionCategory.COMPATIBILITY,
+        )
         self.assertIn("compatibility_without_evidence", result.validation.issues)
         self.assertEqual(result.decision, PublishDecision.HUMAN_REVIEW)
 
@@ -83,6 +117,7 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         result = process(
             "Aceita no chassi WVGS565NXDW555974?",
             ai="Nao conseguimos confirmar a compatibilidade. Informe o chassi para verificarmos.",
+            category=QuestionCategory.COMPATIBILITY,
         )
         self.assertEqual(result.category, QuestionCategory.COMPATIBILITY)
         self.assertIn("forbidden_compatibility_phrase", result.validation.issues)
@@ -92,6 +127,7 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         result = process(
             "Serve na R1300GS?",
             ai="Para confirmar, envie uma foto da base instalada na moto.",
+            category=QuestionCategory.COMPATIBILITY,
         )
         self.assertIn("public_question_asks_for_photo", result.validation.issues)
 
@@ -99,6 +135,7 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         result = process(
             "Serve na R1300GS?",
             ai="Uma imagem da base seria necessaria para confirmar a compatibilidade.",
+            category=QuestionCategory.COMPATIBILITY,
         )
         self.assertIn("public_question_asks_for_photo", result.validation.issues)
 
@@ -106,6 +143,7 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         result = process(
             "Serve na R1300GS?",
             ai="Uma foto da base, por favor, para confirmarmos a compatibilidade.",
+            category=QuestionCategory.COMPATIBILITY,
         )
         self.assertIn("public_question_asks_for_photo", result.validation.issues)
 
@@ -114,6 +152,7 @@ class MlQuestionsGeminiTests(unittest.TestCase):
             "Serve na R1300GS?",
             ai="Esse adaptador serve se a base for original. Anexe um arquivo mostrando a base instalada.",
             listing_obj=listing(description="R1300GS com base original."),
+            category=QuestionCategory.COMPATIBILITY,
         )
         self.assertIn("public_question_asks_for_attachment", result.validation.issues)
 
@@ -122,6 +161,7 @@ class MlQuestionsGeminiTests(unittest.TestCase):
             "Serve na R1300GS?",
             ai="Esse adaptador serve se a base for original. Um arquivo mostrando a base seria necessario.",
             listing_obj=listing(description="R1300GS com base original."),
+            category=QuestionCategory.COMPATIBILITY,
         )
         self.assertIn("public_question_asks_for_attachment", result.validation.issues)
 
@@ -272,7 +312,7 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         )
 
         result = orchestrator.process(
-            question=QuestionContext(id="Q1", text="Serve no suporte GPS da R1300GS?", item_id="MLB1"),
+            question=_question("Serve no suporte GPS da R1300GS?", QuestionCategory.COMPATIBILITY),
             listing=listing(description="Adaptador para base BMW Navigator IV, V e VI."),
         )
 
@@ -608,6 +648,7 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         result = process(
             "Serve na R1300GS?",
             ai="Nao ha confirmacao objetiva. Recomendamos confirmar com um mecanico de confianca.",
+            category=QuestionCategory.COMPATIBILITY,
         )
         self.assertIn("generic_mechanic_referral", result.validation.issues)
 
@@ -622,7 +663,12 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         self.assertIn("PRODUTO_DO_ANUNCIO", result.prompt)
 
     def test_originality_requires_listing_evidence(self):
-        result = process("E original?", ai="Produto original com garantia.", listing_obj=listing(title="Peca original com garantia"))
+        result = process(
+            "E original?",
+            ai="Produto original com garantia.",
+            listing_obj=listing(title="Peca original com garantia"),
+            category=QuestionCategory.WARRANTY_ORIGINALITY,
+        )
         self.assertTrue(result.validation.ok)
         self.assertEqual(result.decision, PublishDecision.HUMAN_REVIEW)
 
@@ -636,6 +682,7 @@ class MlQuestionsGeminiTests(unittest.TestCase):
             "Radiador seus nao valem nada. 5 meses e ja deu ruim, vou acionar o Procon.",
             ai="Sentimos pelo ocorrido. Por favor, envie fotos do item e do problema pelo detalhe da compra para verificarmos o atendimento. Equipe Minha Loja agradece o seu contato.",
             requires_human=True,
+            category=QuestionCategory.POST_SALE,
         )
         self.assertEqual(result.category, QuestionCategory.POST_SALE)
         self.assertEqual(result.source, "gemini")
@@ -649,6 +696,7 @@ class MlQuestionsGeminiTests(unittest.TestCase):
             "O produto chegou quebrado e preciso de atendimento.",
             ai="Sentimos pelo ocorrido. Anexe um arquivo mostrando a peca quebrada pelo detalhe da compra.",
             requires_human=True,
+            category=QuestionCategory.POST_SALE,
         )
         self.assertEqual(result.category, QuestionCategory.POST_SALE)
         self.assertNotIn("public_question_asks_for_attachment", result.validation.issues)
@@ -672,12 +720,17 @@ class MlQuestionsGeminiTests(unittest.TestCase):
                 raise RuntimeError("offline")
 
         orchestrator = QuestionAnswerOrchestrator(settings=GeminiQuestionsSettings(), gemini_client=BrokenClient())
-        result = orchestrator.process(question=QuestionContext(id="Q1", text="Qual material?"), listing=listing())
+        result = orchestrator.process(question=_question("Qual material?"), listing=listing())
         self.assertEqual(result.source, "gemini_error")
         self.assertIn("gemini_error", result.validation.issues)
 
     def test_missing_listing_context_does_not_publish_compatibility(self):
-        result = process("Serve na Hilux 2012?", ai="Sim, e compativel com Hilux 2012.", listing_obj=listing(title="", description=""))
+        result = process(
+            "Serve na Hilux 2012?",
+            ai="Sim, e compativel com Hilux 2012.",
+            listing_obj=listing(title="", description=""),
+            category=QuestionCategory.COMPATIBILITY,
+        )
         self.assertTrue(result.needs_human)
         self.assertIn("compatibility_without_evidence", result.validation.issues)
 
@@ -728,7 +781,7 @@ class MlQuestionsGeminiTests(unittest.TestCase):
     def test_invalid_ai_payload_goes_review(self):
         client = MockGeminiClient(lambda prompt, meta: "texto solto sem json")
         orchestrator = QuestionAnswerOrchestrator(settings=GeminiQuestionsSettings(), gemini_client=client)
-        result = orchestrator.process(question=QuestionContext(id="Q1", text="Qual material?"), listing=listing())
+        result = orchestrator.process(question=_question("Qual material?"), listing=listing())
         self.assertTrue(result.needs_human)
         self.assertIn("empty_answer", result.validation.issues)
 

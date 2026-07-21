@@ -3,13 +3,63 @@ from __future__ import annotations
 import pytest
 
 from ml_questions_gemini.classifier import QuestionClassifier
-from ml_questions_gemini.compatibility import (
-    extract_compatibility_target,
-    infer_compatibility_profile,
-    normalize_comparison_attributes,
-)
+from ml_questions_gemini.compatibility import normalize_comparison_attributes
 from ml_questions_gemini.schemas import ListingSnapshot, QuestionCategory, QuestionContext, SellerRules
 from ml_questions_gemini.validator import AnswerValidator
+
+
+_COMPATIBILITY_PROFILE_BY_TARGET_TYPE = {
+    "vehicle": "vehicle_fitment",
+    "machine_tool": "machine_interface",
+    "phone_computing": "device_interface",
+    "electrical_electronic": "electrical_interface",
+    "hydraulic": "hydraulic_interface",
+    "dimensional": "dimensional_fit",
+    "generic": "generic_interface",
+}
+
+
+def _classified_question(text: str, category: QuestionCategory) -> QuestionContext:
+    return QuestionContext(
+        id="Q1",
+        text=text,
+        raw={"_agent_intent": {"categoria": category.value}},
+    )
+
+
+def _compatibility_intent(
+    target_item: str,
+    target_type: str,
+    *,
+    missing_fields: list[str] | None = None,
+    decisive_fields: list[str] | None = None,
+) -> dict:
+    return {
+        "intencao": "compatibilidade",
+        "categoria": "compatibility",
+        "categorias": ["compatibility"],
+        "fluxo": "perguntas_anuncio",
+        "confianca": 0.99,
+        "flags": {
+            "usar_busca_web": True,
+            "usar_mercado_livre_anuncio": True,
+            "usar_bling": True,
+        },
+        "subperguntas": [{
+            "intent": "compatibility",
+            "question": f"O produto é compatível com {target_item}?",
+            "required_evidence": "comparação técnica da interface decisiva",
+        }],
+        "compatibilidade": {
+            "aplicavel": True,
+            "target_item": target_item,
+            "target_type": target_type,
+            "compatibility_profile": _COMPATIBILITY_PROFILE_BY_TARGET_TYPE[target_type],
+            "technical_focus": "comparar a interface decisiva do produto e do alvo",
+            "missing_fields": list(missing_fields or []),
+            "decisive_fields": list(decisive_fields or []),
+        },
+    }
 
 
 @pytest.mark.parametrize(
@@ -22,40 +72,61 @@ from ml_questions_gemini.validator import AnswerValidator
         ("Serve na R1300GS?", "Adaptador Smartphone BMW Navigator", "R1300GS", "vehicle"),
     ],
 )
-def test_classifier_and_profile_cover_non_automotive_targets(question, title, target, target_type):
+def test_classifier_and_profile_respect_ai_targets(question, title, target, target_type):
+    import backend_api  # noqa: F401
+    from backend.services import perguntas_pos_venda_agent as agent
+
     classifier = QuestionClassifier()
     classification = classifier.classify(
-        QuestionContext(id="Q1", text=question),
+        _classified_question(question, QuestionCategory.COMPATIBILITY),
         ListingSnapshot(id="MLB1", title=title),
     )
+    agent_input = {"intent": _compatibility_intent(target, target_type)}
 
     assert classification.category == QuestionCategory.COMPATIBILITY
-    assert extract_compatibility_target(question) == target
-    assert infer_compatibility_profile(question=question, title=title)["target_type"] == target_type
+    assert agent._perguntas_ia_v2_alvo_compatibilidade(agent_input) == target
+    assert agent._perguntas_ia_v2_perfil_compatibilidade(agent_input) == {
+        "target_type": target_type,
+        "compatibility_profile": _COMPATIBILITY_PROFILE_BY_TARGET_TYPE[target_type],
+    }
 
 
 def test_phone_as_device_is_not_confused_with_external_contact():
     classifier = QuestionClassifier()
     listing = ListingSnapshot(id="MLB1", title="Capa para celular Samsung")
 
-    device = classifier.classify(QuestionContext(id="Q1", text="Serve no telefone Samsung A54?"), listing)
-    contact = classifier.classify(QuestionContext(id="Q2", text="Qual o telefone da loja?"), listing)
+    device = classifier.classify(
+        _classified_question("Serve no telefone Samsung A54?", QuestionCategory.COMPATIBILITY), listing
+    )
+    contact = classifier.classify(
+        QuestionContext(
+            id="Q2",
+            text="Qual o telefone da loja?",
+            raw={"_agent_intent": {"categoria": QuestionCategory.PRODUCT_FEATURE.value}},
+        ),
+        listing,
+    )
 
     assert device.category == QuestionCategory.COMPATIBILITY
     assert contact.category == QuestionCategory.PROHIBITED_CONTACT
 
 
-def test_automotive_fuel_pump_pressure_question_uses_vehicle_profile():
-    profile = infer_compatibility_profile(
-        question="Serve na Land Rover Evoque SE 2.0 gasolina 2017? Quantos bar de pressao?",
-        title="Bomba com filtro combustivel Land Rover Evoque 2.0 original",
-    )
+def test_automotive_fuel_pump_pressure_uses_ai_vehicle_profile():
+    import backend_api  # noqa: F401
+    from backend.services import perguntas_pos_venda_agent as agent
+
+    agent_input = {
+        "intent": _compatibility_intent(
+            "Evoque SE 2.0 gasolina 2017",
+            "vehicle",
+            decisive_fields=["vehicle_version", "fuel_pressure"],
+        ),
+    }
+    profile = agent._perguntas_ia_v2_perfil_compatibilidade(agent_input)
 
     assert profile["target_type"] == "vehicle"
     assert profile["compatibility_profile"] == "vehicle_fitment"
-    assert extract_compatibility_target(
-        "Serve na Evoque SE 2.0 gasolina 2017? Quantos bar de pressao?"
-    ) == "Evoque SE 2.0 gasolina 2017"
+    assert agent._perguntas_ia_v2_alvo_compatibilidade(agent_input) == "Evoque SE 2.0 gasolina 2017"
 
 
 def test_comparison_attributes_normalize_units_and_results():
@@ -155,27 +226,24 @@ def test_machine_profile_blocks_vehicle_language():
     assert "compatibility_profile_language_mismatch" in validation.issues
 
 
-def test_stihl_safe_fallback_is_machine_specific_and_text_only():
+def test_stihl_insufficient_analysis_does_not_create_local_customer_text():
     import backend_api  # noqa: F401
     from backend.services import perguntas_pos_venda_agent as agent
 
     agent_input = {
         "question": {"text": "Serve na stihl 120?"},
         "item": {"title": "Enxada Rotativa Rocadeira Disco Capina Grama Universal"},
-        "intent": {"fluxo": "perguntas_anuncio", "intencao": "compatibilidade"},
+        "intent": _compatibility_intent(
+            "Stihl 120",
+            "machine_tool",
+            missing_fields=["modelo completo da roçadeira", "medida do eixo e quantidade de estrias"],
+            decisive_fields=["shaft_diameter", "spline_count"],
+        ),
     }
     analysis = agent._perguntas_ia_v2_compatibilidade_padrao(agent_input)
-    answer = agent._perguntas_ia_v2_resposta_segura_compatibilidade(agent_input, "JK Pecas", analysis)
-    normalized = answer.lower()
-
     assert analysis["target_type"] == "machine_tool"
     assert analysis["target_item"].lower() == "stihl 120"
-    assert "modelo completo da ro" in normalized
-    assert "medida do eixo" in normalized
-    assert "estrias" in normalized
-    assert "veiculo" not in normalized
-    assert "foto" not in normalized
-    assert "chassi" not in normalized
+    assert not hasattr(agent, "_perguntas_ia_v2_resposta_segura_compatibilidade")
 
 
 def test_universal_analysis_persists_canonical_target_and_legacy_alias():
@@ -185,6 +253,11 @@ def test_universal_analysis_persists_canonical_target_and_legacy_alias():
     agent_input = {
         "question": {"text": "Serve na Stihl 120?"},
         "item": {"title": "Enxada Rotativa Rocadeira"},
+        "intent": _compatibility_intent(
+            "Stihl 120",
+            "machine_tool",
+            decisive_fields=["shaft_diameter", "spline_count"],
+        ),
     }
     analysis = agent._perguntas_ia_v2_compatibilidade_normalizar(
         _machine_analysis("yes"),

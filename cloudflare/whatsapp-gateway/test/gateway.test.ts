@@ -62,6 +62,8 @@ function outboundImageEnvironment(options: {
   metaUploadStatus?: number;
   metaSendStatus?: number;
   messageImageCount?: number;
+  interactiveReservation?: boolean;
+  interactiveContext?: Record<string, unknown> | null;
 } = {}) {
   const now = Math.floor(Date.now() / 1000);
   const sqlCalls: Array<{ sql: string; values: unknown[]; operation: "first" | "run" }> = [];
@@ -70,6 +72,8 @@ function outboundImageEnvironment(options: {
     subject_id: "subject",
     wa_id: "553798379212",
     phone_number: "+55 37 9837-9212",
+    client_id: "client-a",
+    username: "operator-a",
     machine_id: options.machineId || "machine",
     active: 1,
     last_inbound_at: options.lastInboundAt ?? now,
@@ -93,18 +97,30 @@ function outboundImageEnvironment(options: {
               if (sql.includes("COUNT(*) AS total FROM outbound_media WHERE inbound_message_id=")) {
                 return { total: options.messageImageCount ?? 0 };
               }
+              if (sql.includes("SELECT meta_message_id FROM outbound_quote_context WHERE fingerprint=")) {
+                return options.interactiveContext ?? null;
+              }
               return null;
             },
             async run() {
               sqlCalls.push({ sql, values, operation: "run" });
+              if (sql.includes("INSERT OR IGNORE INTO proactive_events")) {
+                return { meta: { changes: options.interactiveReservation === false ? 0 : 1 } };
+              }
               if (sql.includes("INSERT OR IGNORE INTO outbound_media")) {
                 return { meta: { changes: options.reserve === false ? 0 : 1 } };
               }
               return { meta: { changes: 1 } };
             },
+            async all() {
+              return { results: [] };
+            },
           };
         },
       };
+    },
+    async batch(statements: Array<{ run(): Promise<unknown> }>) {
+      return Promise.all(statements.map((statement) => statement.run()));
     },
   };
   const env = {
@@ -142,6 +158,7 @@ function typingEnvironment(options: {
 } = {}) {
   const now = Math.floor(Date.now() / 1000);
   const graphRequests: Array<{ url: string; body: any }> = [];
+  const sqlCalls: Array<{ sql: string; values: unknown[]; operation: "first" | "run" }> = [];
   const row = {
     message_id: "wamid.typing",
     subject_id: "subject",
@@ -153,13 +170,15 @@ function typingEnvironment(options: {
   const db = {
     prepare(sql: string) {
       return {
-        bind(..._values: unknown[]) {
+        bind(...values: unknown[]) {
           return {
             async first() {
+              sqlCalls.push({ sql, values, operation: "first" });
               if (sql.includes("FROM inbox i JOIN bindings")) return row;
               return null;
             },
             async run() {
+              sqlCalls.push({ sql, values, operation: "run" });
               if (sql.includes("INSERT INTO usage_counters")) {
                 return { meta: { changes: options.reserveTyping === false ? 0 : 1 } };
               }
@@ -188,7 +207,7 @@ function typingEnvironment(options: {
     const status = options.graphStatus || 200;
     return new Response(JSON.stringify(status < 400 ? { success: true } : { error: { message: "failed" } }), { status });
   });
-  return { env, graphRequests };
+  return { env, graphRequests, sqlCalls };
 }
 
 function registrationEnvironment(existing: Record<string, unknown> | null = null, activeBindings = 0) {
@@ -400,6 +419,127 @@ function directRegisteredInboundEnvironment(registeredPhone: string) {
     } as any,
     sqlCalls,
     boundStatements,
+  };
+}
+
+function quotedInboundEnvironment() {
+  const now = Math.floor(Date.now() / 1000);
+  const binding = {
+    subject_id: "subject-a",
+    wa_id: "5537999990000",
+    phone_number: "5537999990000",
+    client_id: "client-a",
+    username: "operator-a",
+    machine_id: "machine-a",
+    active: 1,
+    last_inbound_at: now,
+  };
+  const inbox = new Map<string, Record<string, any>>();
+  const quotedOutbox = new Map<string, Record<string, any>>([
+    ["wamid.quote.same", { subject_id: "subject-a", text_body: "SKU 001 na JK Peças: 5 unidades no Full." }],
+    ["wamid.quote.other", { subject_id: "subject-b", text_body: "Dado privado de outro tenant." }],
+  ]);
+  const quotedInteractive = new Map<string, Record<string, any>>([
+    ["wamid.card.same", {
+      subject_id: "subject-a",
+      client_id: "client-a",
+      username: "operator-a",
+      text_body: "Black Jhon\nResposta sugerida\nEscolher acao\nAprovar e enviar - Envia esta resposta",
+    }],
+    ["wamid.card.other-tenant", {
+      subject_id: "subject-a",
+      client_id: "client-b",
+      username: "operator-b",
+      text_body: "Cartao privado de outro tenant.",
+    }],
+  ]);
+  const db = {
+    prepare(sql: string) {
+      return {
+        bind(...values: unknown[]) {
+          return {
+            async first() {
+              if (sql.includes("SELECT message_id FROM inbox WHERE message_id=")) {
+                const item = inbox.get(String(values[0] || ""));
+                return item ? { message_id: item.message_id } : null;
+              }
+              if (sql.includes("FROM bindings WHERE active=1 AND (subject_id=? OR wa_id=? OR phone_number=?)")) {
+                return values.some((value) => String(value || "") === binding.wa_id) ? binding : null;
+              }
+              if (sql.includes("SELECT text_body FROM inbox WHERE message_id=? AND subject_id=?")) {
+                const item = inbox.get(String(values[0] || ""));
+                return item?.subject_id === String(values[1] || "") ? { text_body: item.text_body } : null;
+              }
+              if (sql.includes("SELECT text_body FROM outbound_quote_context WHERE meta_message_id=?")) {
+                const item = quotedInteractive.get(String(values[0] || ""));
+                return item?.subject_id === String(values[1] || "")
+                  && item?.client_id === String(values[2] || "")
+                  && item?.username === String(values[3] || "")
+                  ? { text_body: item.text_body }
+                  : null;
+              }
+              if (sql.includes("SELECT text_body FROM outbox WHERE meta_message_id=? AND subject_id=?")) {
+                const item = quotedOutbox.get(String(values[0] || ""));
+                return item?.subject_id === String(values[1] || "") ? { text_body: item.text_body } : null;
+              }
+              if (sql.includes("COUNT(*) AS total FROM inbox")) return { total: 0 };
+              if (sql.includes("SELECT last_seen_at FROM bridge_heartbeats")) return { last_seen_at: now };
+              return null;
+            },
+            async run() {
+              if (sql.includes("INSERT INTO inbox(")) {
+                inbox.set(String(values[0] || ""), {
+                  message_id: values[0],
+                  subject_id: values[1],
+                  wa_id: values[2],
+                  phone_number_id: values[3],
+                  message_type: values[4],
+                  text_body: values[5],
+                  media_id: values[6],
+                  media_mime: values[7],
+                  received_at: values[8],
+                  status: values[9],
+                  quoted_message_id: values[10],
+                  quoted_text: values[11],
+                  attempts: 0,
+                });
+              } else if (sql.includes("UPDATE inbox SET status='leased'")) {
+                const item = inbox.get(String(values[2] || ""));
+                if (!item || item.status !== "queued") return { meta: { changes: 0 } };
+                Object.assign(item, { status: "leased", lease_owner: values[0], lease_until: values[1], attempts: item.attempts + 1 });
+              }
+              return { meta: { changes: 1 } };
+            },
+            async all() {
+              if (sql.includes("SELECT i.*,COALESCE(NULLIF(i.wa_id,''),b.wa_id) AS wa_id")) {
+                const machineId = String(values[0] || "");
+                const limit = Number(values[1] || 5);
+                return {
+                  results: [...inbox.values()]
+                    .filter((item) => item.status === "queued" && machineId === binding.machine_id)
+                    .slice(0, limit)
+                    .map((item) => ({ ...item, client_id: "client-a", username: "operator-a", machine_id: binding.machine_id })),
+                };
+              }
+              return { results: [] };
+            },
+          };
+        },
+      };
+    },
+    async batch(statements: Array<{ run(): Promise<unknown> }>) {
+      return Promise.all(statements.map((statement) => statement.run()));
+    },
+  };
+  return {
+    env: {
+      DB: db,
+      BRIDGE_TOKEN: "bridge-secret",
+      META_APP_SECRET: "app-secret",
+      ZERO_COST_POLICY_VALID_UNTIL: "2026-09-30T23:59:59Z",
+      FREE_WINDOW_SECONDS: "84600",
+    } as any,
+    inbox,
   };
 }
 
@@ -799,6 +939,96 @@ describe("public gateway routes", () => {
     );
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("EVENT_RECEIVED");
+  });
+
+  it("preserves quoted context in claims without crossing the bound subject or tenant", async () => {
+    const target = quotedInboundEnvironment();
+    const body = JSON.stringify({
+      entry: [{
+        changes: [{
+          value: {
+            metadata: { phone_number_id: "phone-id" },
+            messages: [
+              {
+                id: "wamid.inbound.same",
+                from: "5537999990000",
+                timestamp: String(Math.floor(Date.now() / 1000)),
+                type: "text",
+                text: { body: "E o mesmo SKU na Uai Mineirinho?" },
+                context: { id: "wamid.quote.same" },
+              },
+              {
+                id: "wamid.inbound.other",
+                from: "5537999990000",
+                timestamp: String(Math.floor(Date.now() / 1000) + 1),
+                type: "text",
+                text: { body: "Repita o dado citado." },
+                context: { id: "wamid.quote.other" },
+              },
+              {
+                id: "wamid.inbound.card",
+                from: "5537999990000",
+                timestamp: String(Math.floor(Date.now() / 1000) + 2),
+                type: "text",
+                text: { body: "Pode corrigir esse cartao?" },
+                context: { id: "wamid.card.same" },
+              },
+              {
+                id: "wamid.inbound.card.other-tenant",
+                from: "5537999990000",
+                timestamp: String(Math.floor(Date.now() / 1000) + 3),
+                type: "text",
+                text: { body: "Qual era o cartao?" },
+                context: { id: "wamid.card.other-tenant" },
+              },
+            ],
+          },
+        }],
+      }],
+    });
+    const pending = pendingContext();
+    const webhook = await worker.fetch(
+      new Request("https://example.test/webhooks/whatsapp", {
+        method: "POST",
+        body,
+        headers: { "x-hub-signature-256": await signature("app-secret", body) },
+      }),
+      target.env,
+      pending.context,
+    );
+    expect(webhook.status).toBe(200);
+    await pending.drain();
+
+    const claim = await worker.fetch(
+      new Request("https://example.test/bridge/claim", {
+        method: "POST",
+        headers: { authorization: "Bearer bridge-secret", "content-type": "application/json" },
+        body: JSON.stringify({ machine_id: "machine-a", limit: 5 }),
+      }),
+      target.env,
+      context(),
+    );
+    const claimed = await claim.json() as any;
+
+    expect(claimed.messages).toHaveLength(4);
+    const claimedByQuote = new Map(claimed.messages.map((item: any) => [item.quoted_message_id, item]));
+    expect(claimedByQuote.get("wamid.quote.same")).toMatchObject({
+      text_body: "E o mesmo SKU na Uai Mineirinho?",
+      quoted_message_id: "wamid.quote.same",
+      quoted_text: "SKU 001 na JK Peças: 5 unidades no Full.",
+    });
+    expect(claimedByQuote.get("wamid.quote.other")).toMatchObject({
+      quoted_message_id: "wamid.quote.other",
+      quoted_text: null,
+    });
+    expect(claimedByQuote.get("wamid.card.same")).toMatchObject({
+      quoted_message_id: "wamid.card.same",
+      quoted_text: "Black Jhon\nResposta sugerida\nEscolher acao\nAprovar e enviar - Envia esta resposta",
+    });
+    expect(claimedByQuote.get("wamid.card.other-tenant")).toMatchObject({
+      quoted_message_id: "wamid.card.other-tenant",
+      quoted_text: null,
+    });
   });
 
   it("durably retries inbound audio after timeout, 404, 429 and 5xx before storing it once", async () => {
@@ -1207,6 +1437,34 @@ describe("public gateway routes", () => {
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ success: false, error: "binding_machine_mismatch" });
     expect(target.graphRequests).toHaveLength(0);
+  });
+
+  it("queues task_partial as a task and normalizes warning to medium", async () => {
+    for (const requestedSeverity of ["medium", "warning"]) {
+      const target = outboundImageEnvironment();
+      const response = await worker.fetch(
+        new Request("https://example.test/bridge/proactive", {
+          method: "POST",
+          headers: { authorization: "Bearer bridge-secret", "content-type": "application/json" },
+          body: JSON.stringify({
+            subject_id: "subject",
+            machine_id: "machine",
+            fingerprint: `job:partial-stock:${requestedSeverity}`,
+            event_type: "task_partial",
+            severity: requestedSeverity,
+            text: "Não encontrei saldo confirmado para esta consulta.",
+          }),
+        }),
+        target.env,
+        context(),
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ success: true, status: "queued", queued_parts: 1 });
+      const event = target.sqlCalls.find((item) => item.operation === "run" && item.sql.includes("INSERT INTO proactive_events"));
+      expect(event?.values).toContain("task_partial");
+      expect(event?.values).toContain("medium");
+    }
   });
 
   it("registers name-targeted phone bindings directly without sending a confirmation message", async () => {
@@ -1865,6 +2123,17 @@ describe("public gateway routes", () => {
     expect(migration).toContain("last_attempt_at integer");
   });
 
+  it("ships tenant-scoped quoted context storage for direct Meta cards", () => {
+    const migration = String.raw`${readFileSync(
+      new URL("../migrations/0010_quoted_message_context.sql", import.meta.url),
+      "utf8",
+    )}`.toLowerCase();
+    expect(migration).toContain("create table if not exists outbound_quote_context");
+    expect(migration).toContain("meta_message_id text primary key");
+    expect(migration).toContain("unique(fingerprint, subject_id, client_id, username)");
+    expect(migration).toContain("on outbound_quote_context(meta_message_id, subject_id, client_id, username)");
+  });
+
   it("rejects an altered proactive chart before reserving outbound quota", async () => {
     const { env: imageEnv, sqlCalls, graphRequests } = outboundImageEnvironment();
     const form = await imageForm({
@@ -1921,7 +2190,13 @@ describe("public gateway routes", () => {
     const response = await worker.fetch(
       new Request("https://example.test/bridge/heartbeat", {
         method: "POST",
-        body: JSON.stringify({ machine_id: "machine", client_id: "cliente", username: "admin", app_version: "bridge-v9" }),
+        body: JSON.stringify({
+          machine_id: "machine",
+          client_id: "cliente",
+          username: "admin",
+          app_version: "bridge-v9",
+          active_message_ids: ["wamid.long-running", "wamid.long-running", ""],
+        }),
         headers: { authorization: "Bearer bridge-secret", "content-type": "application/json" },
       }),
       heartbeatEnv,
@@ -1929,9 +2204,18 @@ describe("public gateway routes", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ success: true, status: "online", offline_after_seconds: 30 });
+    expect(await response.json()).toMatchObject({
+      success: true,
+      status: "online",
+      offline_after_seconds: 30,
+      renewed_leases: 1,
+    });
     expect(calls[0].sql).toContain("INSERT INTO bridge_heartbeats");
     expect(calls[0].values.slice(0, 5)).toEqual(["machine", "cliente", "admin", "bridge-v9", "online"]);
+    expect(calls[1].sql).toContain("UPDATE inbox SET lease_until=?");
+    expect(calls[1].sql).toContain("status='leased' AND lease_owner=?");
+    expect(calls[1].values.slice(1)).toEqual(["machine", "wamid.long-running"]);
+    expect(Number(calls[1].values[0] || 0)).toBeGreaterThan(Math.floor(Date.now() / 1000) + 590);
   });
 
   it("sends authenticated PDF and XLSX documents with hash binding and filenames", async () => {
@@ -2032,16 +2316,72 @@ describe("public gateway routes", () => {
     );
 
     expect(response.status).toBe(200);
+    expect(await response.clone().json()).toMatchObject({
+      success: true,
+      status: "sent",
+      meta_message_id: "message-id",
+      outbound_message_id: "message-id",
+    });
     const sent = JSON.parse(String(approval.graphRequests[0].body));
     expect(sent.interactive.type).toBe("list");
     expect(sent.interactive.action.sections[0].rows.map((item: any) => item.title)).toEqual([
       "Aprovar e enviar", "Corrigir", "Gerar outra resposta", "Negar",
     ]);
     expect(sent.interactive.action.sections[0].rows.every((item: any) => item.id.endsWith(`:${token}`))).toBe(true);
+    const storedContext = approval.sqlCalls.find((item) => item.sql.includes("INSERT INTO outbound_quote_context"));
+    expect(storedContext?.values.slice(0, 7)).toEqual([
+      "message-id",
+      "approval:1234567890",
+      "subject",
+      "client-a",
+      "operator-a",
+      "question_approval",
+      expect.stringContaining("Resposta sugerida"),
+    ]);
+    expect(String(storedContext?.values[7] || "")).toContain("Aprovar e enviar");
+    expect(JSON.stringify(storedContext?.values || [])).not.toContain(token);
+    expect(JSON.stringify(storedContext?.values || [])).not.toContain("ppv_approve");
+  });
+
+  it("returns the original outbound message id when an interactive card is duplicated", async () => {
+    const duplicate = outboundImageEnvironment({
+      interactiveReservation: false,
+      interactiveContext: { meta_message_id: "wamid.existing-card" },
+    });
+    const response = await worker.fetch(
+      new Request("https://example.test/bridge/interactive", {
+        method: "POST",
+        body: JSON.stringify({
+          subject_id: "subject",
+          machine_id: "machine",
+          fingerprint: "approval:duplicate:1234",
+          event_type: "question_approval",
+          body: "Resposta sugerida",
+          options: [
+            { id: "ppv_approve:ABCDEFGH", title: "Aprovar e enviar" },
+            { id: "ppv_correct:ABCDEFGH", title: "Corrigir" },
+            { id: "ppv_regenerate:ABCDEFGH", title: "Gerar outra resposta" },
+            { id: "ppv_reject:ABCDEFGH", title: "Negar" },
+          ],
+        }),
+        headers: { authorization: "Bearer bridge-secret", "content-type": "application/json" },
+      }),
+      duplicate.env,
+      context(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      success: true,
+      status: "duplicate",
+      meta_message_id: "wamid.existing-card",
+      outbound_message_id: "wamid.existing-card",
+    });
+    expect(duplicate.graphRequests).toHaveLength(0);
   });
 
   it("sends the official read and typing payload for the leased message", async () => {
-    const { env: typingEnv, graphRequests } = typingEnvironment();
+    const { env: typingEnv, graphRequests, sqlCalls } = typingEnvironment();
     const response = await worker.fetch(
       new Request("https://example.test/bridge/messages/wamid.typing/typing", {
         method: "POST",
@@ -2063,6 +2403,10 @@ describe("public gateway routes", () => {
         typing_indicator: { type: "text" },
       },
     });
+    const renewal = sqlCalls.find((item) => item.sql.includes("UPDATE inbox SET lease_until=?"));
+    expect(renewal).toBeTruthy();
+    expect(Number(renewal?.values[0] || 0)).toBeGreaterThan(Math.floor(Date.now() / 1000) + 590);
+    expect(renewal?.values.slice(1)).toEqual(["wamid.typing", "machine"]);
   });
 
   it("blocks typing for another machine or an inactive message", async () => {

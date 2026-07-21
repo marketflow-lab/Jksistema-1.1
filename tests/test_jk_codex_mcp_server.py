@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
 
-from backend.services import codex_console, integracoes
+from backend.services import codex_console, codex_mcp_rollout, integracoes, jk_codex_mcp_server
 
 
 def _start_server(monkeypatch):
-    monkeypatch.setattr(integracoes, "carregar_lojas", lambda _client_id: [{"nome": "JK Pecas"}])
+    monkeypatch.setattr(
+        integracoes,
+        "carregar_lojas",
+        lambda _client_id: [{
+            "nome": "JK Pecas",
+            "integracoes": {"mercadolivre": {"user_id": "123", "site_id": "MLB"}},
+        }],
+    )
     screen_context = {
         "selection": {
             "query_policy": {
@@ -28,7 +36,12 @@ def _start_server(monkeypatch):
         "data_selection": {
             "schema_version": "1.0",
             "action": "collect",
-            "tool_calls": [{"tool_id": "mercado_livre_orders"}],
+            "tool_calls": [{
+                "tool_id": "mercado_livre_orders",
+                "arguments": {"loja": "JK Pecas", "message": "ultima venda"},
+                "depends_on": [],
+                "required": True,
+            }],
             "context_hub": {"mode": "not_applicable"},
         },
         "deadline_at": codex_console._codex_deadline_at(180),
@@ -99,3 +112,129 @@ def test_signed_mcp_server_lists_only_selected_read_only_catalog_and_enforces_st
     finally:
         process.terminate()
         process.wait(timeout=10)
+
+
+def _decode_signed_context(config: dict) -> dict:
+    encoded = config["mcp_servers"]["jk_system"]["env"]["JK_CODEX_MCP_CONTEXT_B64"]
+    return json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode("utf-8"))
+
+
+def test_unbounded_whatsapp_mcp_context_has_independent_reissuable_security_ttl(monkeypatch):
+    monkeypatch.setattr(
+        integracoes,
+        "carregar_lojas",
+        lambda _client_id: [{
+            "nome": "JK Pecas",
+            "integracoes": {"mercadolivre": {"user_id": "123", "site_id": "MLB"}},
+        }],
+    )
+    issued_times = iter((1_000, 1_200))
+    monkeypatch.setattr(codex_console.time, "time", lambda: next(issued_times))
+    task = {
+        "task_id": "task-mcp-unbounded",
+        "conversation_id": "conversation-mcp-unbounded",
+        "origin": "whatsapp",
+        "client_id": "cliente",
+        "created_by": "admin",
+        "permissions": {"full": True},
+        "deadline_enabled": False,
+        "deadline_seconds": 0,
+        "deadline_at": "",
+        "data_selection_trust_marker": codex_console._CODEX_AGENT_DATA_SELECTION_TRUST_MARKER,
+        "data_selection": {
+            "schema_version": "1.0",
+            "action": "collect",
+            "tool_calls": [{
+                "tool_id": "mercado_livre_orders",
+                "arguments": {"loja": "JK Pecas", "message": "ultima venda"},
+                "depends_on": [],
+                "required": True,
+            }],
+            "context_hub": {"mode": "not_applicable"},
+        },
+        "channel_metadata": {"wa_id": "redacted"},
+    }
+
+    first = _decode_signed_context(codex_console._codex_native_mcp_thread_config(task, {}))
+    second = _decode_signed_context(codex_console._codex_native_mcp_thread_config(task, {}))
+
+    assert first["deadline_at_epoch"] == 0
+    assert first["tool_timeout_seconds"] == 60
+    assert first["expires_at"] - first["issued_at"] == 15 * 60
+    assert second["issued_at"] > first["issued_at"]
+    assert second["expires_at"] > first["expires_at"]
+
+
+def test_mcp_tool_timeout_is_per_call_and_not_the_expired_global_task_deadline(monkeypatch):
+    captured: dict = {}
+
+    class Assistant:
+        @staticmethod
+        def codex_assistant_execute_tool_call(**kwargs):
+            captured.update(kwargs)
+            return {"success": True, "tool_id": kwargs["tool_id"], "records": 1}
+
+    class Console:
+        @staticmethod
+        def _codex_agent_source_policy_error(*_args, **_kwargs):
+            return ""
+
+    server = object.__new__(jk_codex_mcp_server.JKCodexMCP)
+    server.context = {
+        "client_id": "cliente",
+        "username": "admin",
+        "tool_timeout_seconds": 60,
+        "deadline_at_epoch": 1,
+    }
+    server.permissions = {"full": True}
+    server.screen_context = {}
+    server.source_policy = {}
+    server.allowed_tools = {"mercado_livre_orders"}
+    server.authorized_stores = set()
+    server.store_scope_valid = False
+    server.previous_results = []
+    server.call_cache = {}
+    server.result_path = None
+    server.codex_assistant = Assistant()
+    server.codex_console = Console()
+    server.codex_mcp_rollout = codex_mcp_rollout
+    plan_context = {
+        "client_id": "cliente",
+        "permissions": server.permissions,
+        "source_policy": server.source_policy,
+    }
+    server.plan = jk_codex_mcp_server.build_plan_v2(
+        plan_context,
+        calls=[{
+            "tool_id": "mercado_livre_orders",
+            "arguments": {"message": "ultima venda"},
+            "depends_on": [],
+            "required": True,
+        }],
+        stores=[{
+            "store_id": "store-1",
+            "name": "JK Pecas",
+            "seller_id": "123",
+            "site_id": "MLB",
+        }],
+    )
+    server.plan_calls = list(server.plan["calls"])
+    server.completed_indexes = set()
+    server.successful_indexes = set()
+    server.external_call_count = 0
+    server.rollout_policy = {
+        "enabled": True,
+        "mode": "read_only_100",
+        "allowed_tools": ["mercado_livre_orders"],
+        "cohort_percent": 100,
+        "baseline_p95_ms": 0,
+    }
+    server.rollout_store = None
+    server.idempotency = None
+    server.tools = lambda: [{"name": "mercado_livre_orders"}]
+    monkeypatch.setattr(jk_codex_mcp_server.time, "monotonic", lambda: 5_000.0)
+
+    result = server.call_tool("mercado_livre_orders", {"message": "ultima venda"})
+
+    assert result["isError"] is False
+    assert captured["query_deadline"] == 5_060.0

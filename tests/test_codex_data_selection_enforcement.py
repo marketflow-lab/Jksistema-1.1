@@ -282,6 +282,47 @@ def test_planned_call_arguments_are_exact_and_each_call_runs_once(monkeypatch):
     assert evidence_measurements[0][1] is False
 
 
+def test_native_mcp_never_executes_legacy_parser_in_same_turn(monkeypatch):
+    class _Turn:
+        @staticmethod
+        def stream():
+            return []
+
+    class _Thread:
+        @staticmethod
+        def turn(_prompt, **_kwargs):
+            return _Turn()
+
+    monkeypatch.setattr(
+        codex_console,
+        "_codex_final_response_from_items",
+        lambda *_args, **_kwargs: '<jk_tool_calls>[{"tool_id":"sales_ranking","args":{}}]</jk_tool_calls>',
+    )
+    monkeypatch.setattr(codex_console, "_codex_agent_update_trace", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(codex_console, "_codex_update_live", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(codex_console, "_codex_register_active_turn", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(codex_console, "_codex_unregister_active_turn", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        codex_assistant,
+        "codex_assistant_execute_tool_call",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("legacy parser must not execute")),
+    )
+    task = {
+        "task_id": "task-mcp-exclusive",
+        "client_id": "tenant-a",
+        "permissions": {"full": True},
+        "deadline_seconds": 180,
+        "data_selection_trust_marker": codex_console._CODEX_AGENT_DATA_SELECTION_TRUST_MARKER,
+        "data_selection": _selection("sales_ranking"),
+    }
+    final_response, _state, trace = codex_console._codex_agent_run_loop(
+        task["task_id"], task, _Thread(), {}, "prompt", {}, False, native_mcp=True,
+    )
+    assert "Nenhuma chamada pelo parser legado" in final_response
+    assert trace["tool_calls"] == []
+    assert "mcp_legacy_protocol_mix_blocked" in trace["warnings"]
+
+
 def test_planned_call_order_and_dependencies_fail_closed():
     selection = {
         "tool_calls": [

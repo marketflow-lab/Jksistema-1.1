@@ -301,10 +301,10 @@ def _read_text(path: Path, max_bytes: int = MAX_TEXT_BYTES) -> str:
     data = path.read_bytes()[:max_bytes]
     for enc in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
         try:
-            return data.decode(enc, errors="replace")
+            return data.decode(enc, errors="strict")
         except Exception:
             continue
-    return data.decode("utf-8", errors="replace")
+    return data.decode("utf-8", errors="strict")
 
 
 def _json_preview(path: Path) -> Any:
@@ -348,7 +348,7 @@ def _sqlite_schema(path: Path) -> dict[str, Any]:
 
 def _csv_schema(path: Path) -> dict[str, Any]:
     try:
-        with path.open("r", encoding="utf-8-sig", newline="", errors="replace") as fh:
+        with path.open("r", encoding="utf-8-sig", newline="", errors="strict") as fh:
             sample = fh.read(4096)
         dialect = csv.Sniffer().sniff(sample) if sample else csv.excel
         reader = csv.reader(sample.splitlines(), dialect)
@@ -641,7 +641,7 @@ def local_csv_query(
     warnings = []
     for path in paths:
         try:
-            with path.open("r", encoding="utf-8-sig", newline="", errors="replace") as fh:
+            with path.open("r", encoding="utf-8-sig", newline="", errors="strict") as fh:
                 reader = csv.DictReader(fh)
                 for row in reader:
                     text = _norm(" ".join(str(v or "") for v in row.values()))

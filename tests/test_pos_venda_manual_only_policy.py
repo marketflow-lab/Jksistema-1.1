@@ -13,7 +13,10 @@ from backend.schemas.perguntas_pos_venda import (
     PosVendaMensagemRequest,
 )
 from backend.services import perguntas_pos_venda_endpoints as endpoints
+from backend.services import perguntas_pos_venda_codex as codex_jobs
 from backend.services import perguntas_pos_venda_state as state
+from backend.services import codex_actions
+from backend.services import codex_agent_runtime, perguntas_pos_venda_codex
 from backend.services.whatsapp.approvals import question_workflow
 
 
@@ -104,6 +107,36 @@ def test_post_sale_approval_is_hidden_without_remote_validation(monkeypatch):
     assert result == {"success": True, "pendentes": []}
 
 
+def test_public_approval_from_old_ai_contract_is_hidden(monkeypatch):
+    historical = {
+        "id": "approval-public-old",
+        "status": "pending",
+        "loja": "JK Pecas",
+        "question_id": "Q-OLD",
+        "resposta_sugerida": "Resposta generica antiga.",
+        "codex_job_id": "job-old",
+        "ia_origem": "mercado_livre_perguntas",
+    }
+    saved: list[list[dict]] = []
+    monkeypatch.setattr(endpoints, "_perguntas_ia_aprovacoes_carregar", lambda _client: [historical], raising=False)
+    monkeypatch.setattr(endpoints, "_perguntas_ia_aprovacoes_salvar", lambda _client, data: saved.append(data), raising=False)
+    monkeypatch.setattr(endpoints.perguntas_pos_venda_codex, "get_job", lambda _client, _job: None)
+    monkeypatch.setattr(endpoints, "_obter_cfg_ml", lambda *_args: {}, raising=False)
+    monkeypatch.setattr(endpoints, "_perguntas_ia_limpar_resposta", lambda value: str(value).strip(), raising=False)
+    monkeypatch.setattr(
+        endpoints,
+        "_perguntas_ia_pergunta_respondida_ml",
+        lambda *_args: (False, {"id": "Q-1", "status": "UNANSWERED"}, {}),
+        raising=False,
+    )
+
+    result = endpoints.ml_perguntas_aprovacoes_listar(client_id="cliente")
+
+    assert result == {"success": True, "pendentes": []}
+    assert historical["status"] == "stale_contract"
+    assert saved and saved[-1][0]["status"] == "stale_contract"
+
+
 def test_existing_post_sale_approval_cannot_send(monkeypatch):
     historical = {
         "id": "approval-post-sale",
@@ -128,6 +161,39 @@ def test_existing_post_sale_approval_cannot_send(monkeypatch):
     assert historical["status"] == "pending"
 
 
+def test_public_approval_without_current_ai_job_is_quarantined(monkeypatch):
+    historical = {
+        "id": "approval-public-legacy",
+        "status": "pending",
+        "loja": "JK Pecas",
+        "question_id": "Q-1",
+        "resposta_sugerida": "Resposta antiga.",
+        "ia_origem": "mercado_livre_perguntas",
+    }
+    saved: list[list[dict]] = []
+    monkeypatch.setattr(endpoints, "_perguntas_ia_aprovacoes_carregar", lambda _client: [historical], raising=False)
+    monkeypatch.setattr(endpoints, "_perguntas_ia_aprovacoes_salvar", lambda _client, data: saved.append(data), raising=False)
+    monkeypatch.setattr(endpoints, "_obter_cfg_ml", lambda *_args: {}, raising=False)
+    monkeypatch.setattr(endpoints, "_perguntas_ia_limpar_resposta", lambda value: str(value).strip(), raising=False)
+    monkeypatch.setattr(
+        endpoints,
+        "_perguntas_ia_pergunta_respondida_ml",
+        lambda *_args: (False, {"id": "Q-1", "status": "UNANSWERED"}, {}),
+        raising=False,
+    )
+    monkeypatch.setattr(endpoints, "_perguntas_ia_enviar_resposta_ml", _fail("legacy draft must not send"), raising=False)
+
+    with pytest.raises(HTTPException) as exc_info:
+        endpoints.ml_perguntas_aprovacoes_aprovar(
+            PerguntasAprovacaoRequest(approval_id="approval-public-legacy"),
+            client_id="cliente",
+        )
+
+    assert exc_info.value.status_code == 409
+    assert historical["status"] == "stale_contract"
+    assert saved and saved[-1][0]["status"] == "stale_contract"
+
+
 @pytest.mark.parametrize(
     "post_sale_marker",
     [
@@ -136,9 +202,13 @@ def test_existing_post_sale_approval_cannot_send(monkeypatch):
         {"ia_origem": "mercado_livre_pos_venda"},
         {"origem": "geracao_pos_venda"},
         {"ia_finalidade": "pos_venda"},
+        {"tipo": "pos-venda"},
+        {"approval_type": "pos venda"},
+        {"ia_origem": "mercado-livre-pos-venda"},
     ],
 )
-def test_whatsapp_never_selects_post_sale_suggestion(post_sale_marker):
+def test_whatsapp_never_selects_post_sale_suggestion(post_sale_marker, monkeypatch):
+    monkeypatch.setattr(codex_jobs, "approval_job_current", lambda _client, job_id: job_id == "job-current")
     post_sale = {
         "id": "approval-post-sale",
         "status": "pending",
@@ -152,6 +222,7 @@ def test_whatsapp_never_selects_post_sale_suggestion(post_sale_marker):
         "loja": "JK Pecas",
         "resposta_sugerida": "Resposta para pergunta publica",
         "ia_origem": "mercado_livre_perguntas",
+        "codex_job_id": "job-current",
     }
     ppv_state = SimpleNamespace(
         _perguntas_loja_config_obter=lambda configs, loja: configs.get(loja),
@@ -162,9 +233,35 @@ def test_whatsapp_never_selects_post_sale_suggestion(post_sale_marker):
         ppv_state,
         {"JK Pecas": {"notificar_whatsapp_aprovacoes": True}},
         [post_sale, public_question],
+        client_id="cliente",
     )
 
     assert selected["id"] == "approval-public-question"
+
+
+def test_whatsapp_ignores_public_draft_without_current_ai_job(monkeypatch):
+    monkeypatch.setattr(codex_jobs, "get_job", lambda _client, _job: None)
+    ppv_state = SimpleNamespace(
+        _perguntas_loja_config_obter=lambda configs, loja: configs.get(loja),
+        _perguntas_loja_config_normalizar=lambda config: dict(config or {}),
+    )
+    approval = {
+        "id": "legacy-public-question",
+        "status": "pending",
+        "loja": "JK Pecas",
+        "resposta_sugerida": "Resposta antiga.",
+        "codex_job_id": "job-legado",
+        "ia_origem": "mercado_livre_perguntas",
+    }
+
+    selected = question_workflow._pending_question_approval(
+        ppv_state,
+        {"JK Pecas": {"notificar_whatsapp_aprovacoes": True}},
+        [approval],
+        client_id="cliente",
+    )
+
+    assert selected is None
 
 
 def test_typed_manual_post_sale_response_still_sends(monkeypatch):
@@ -224,3 +321,84 @@ def test_manual_post_sale_route_rejects_legacy_black_jhon_proposal_before_any_ca
 
     assert exc_info.value.status_code == 409
     assert "Black Jhon" in str(exc_info.value.detail)
+
+
+def test_black_jhon_has_no_post_sale_action_or_safe_executor():
+    specs = codex_actions._manual_specs()
+
+    assert "ml.pos_venda_responder" not in specs
+    assert "ml_pos_venda_responder" not in codex_actions.SAFE_EXECUTORS
+    assert "ml.pos_venda_responder" not in codex_agent_runtime.WHATSAPP_NON_DESTRUCTIVE_ACTIONS
+    assert not hasattr(codex_actions, "_execute_ml_pos_venda_responder")
+    assert codex_actions._select_action("Responda o pos-venda no Mercado Livre", specs) is None
+    assert codex_actions._select_action("Aprove a resposta do pos-venda", specs) is None
+
+    public_question = codex_actions._select_action("Responda a pergunta do Mercado Livre", specs)
+    assert public_question is not None
+    assert public_question.id == "ml.pergunta_responder"
+
+
+def test_post_sale_codex_job_creation_is_rejected_before_storage(monkeypatch):
+    monkeypatch.setattr(
+        perguntas_pos_venda_codex,
+        "_runtime_info_base",
+        _fail("storage should not be initialized"),
+    )
+
+    with pytest.raises(PermissionError, match="Black Jhon"):
+        perguntas_pos_venda_codex.create_job(
+            client_id="cliente",
+            task_type="post_sale",
+            store="JK Pecas",
+            subject_key="PACK-1",
+            request={"pack_id": "PACK-1"},
+        )
+
+
+def test_legacy_post_sale_codex_worker_cancels_without_loading_ai(monkeypatch):
+    saved: dict = {}
+    job = {
+        "job_id": "legacy-post-sale-job",
+        "client_id": "cliente",
+        "task_type": "post_sale",
+        "status": "queued",
+        "result": {"resposta": "Sugestao antiga"},
+        "last_partial_result": {"resposta": "Outra sugestao antiga"},
+    }
+
+    monkeypatch.setattr(perguntas_pos_venda_codex, "_runtime_info_base", lambda: "info")
+    monkeypatch.setattr(
+        perguntas_pos_venda_codex.codex_assistant_storage,
+        "codex_assistant_customer_reply_job_claim",
+        lambda *_args, **_kwargs: dict(job),
+    )
+    monkeypatch.setattr(
+        perguntas_pos_venda_codex.codex_assistant_storage,
+        "codex_assistant_customer_reply_job_save",
+        lambda _info, _client, data: saved.update(data) or dict(data),
+    )
+    monkeypatch.setattr(
+        perguntas_pos_venda_codex,
+        "_load_post_sale_context",
+        _fail("AI/context must not run"),
+    )
+
+    perguntas_pos_venda_codex._run_job("cliente", "legacy-post-sale-job")
+
+    assert saved["status"] == "cancelled"
+    assert saved["error"] == "pos_venda_somente_manual"
+    assert "result" not in saved
+    assert "last_partial_result" not in saved
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        {"tipo": "pos-venda"},
+        {"approval_type": "pos venda"},
+        {"origem": "geracao-pos-venda"},
+        {"ia_origem": "mercado livre pos venda"},
+    ],
+)
+def test_backend_recognizes_legacy_post_sale_markers(marker):
+    assert endpoints._aprovacao_eh_pos_venda(marker) is True

@@ -1721,10 +1721,16 @@ def _assistant_tool_input_schema(tool_id: str) -> dict[str, Any]:
         },
         "context_hub_search": {
             "query": "pergunta ou termos tecnicos",
+            "sku": "SKU exato opcional",
+            "mlb": "MLB exato opcional",
+            "store_ref": "loja exata autorizada opcional",
             "module": "modulo ou dominio opcional",
             "ids": "lista opcional de IDs estaveis jk:*",
             "source_type": "tipo de fonte opcional",
             "environment": "development|installed opcional",
+            "surface": "superficie documental exata opcional; alias preferencial de environment",
+            "tags": "lista opcional de tags obrigatorias",
+            "valid_at": "data ISO opcional para validade documental",
             "limit": "1..12",
         },
         "program_functions_catalog": {
@@ -2211,14 +2217,13 @@ def _assistant_extract_sku_filter(message: str, screen_context: Any = None) -> s
     blocked = {
         "PERIODO", "LOJA", "LOJAS", "CONTA", "CONTAS", "TODAS", "VENDA", "VENDAS",
         "DEVOLUCAO", "DEVOLUCOES", "ULTIMA", "ULTIMO", "MAIS", "RECENTE",
+        "NA", "NO", "NAS", "NOS", "DA", "DO", "DAS", "DOS", "DE", "EM", "PARA", "E", "OU",
     }
     for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if not match:
-            continue
-        sku = _assistant_normalize_sku(match.group(1))
-        if sku and sku not in blocked:
-            return sku
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            sku = _assistant_normalize_sku(str(match.group(1) or "").rstrip(".,;:!?"))
+            if sku and sku not in blocked:
+                return sku
     if _assistant_latest_ml_event_kind(message):
         normalized = _assistant_texto_norm(message)
         inferred = re.findall(
@@ -2244,7 +2249,10 @@ def _assistant_product_refs_from_context(*values: Any) -> dict[str, list[str]]:
                 continue
             if kind == "skus":
                 text = _assistant_normalize_sku(text)
-                if not text or text in {"SKU", "PRODUTO", "SALDO", "ESTOQUE", "BLING"}:
+                if not text or text in {
+                    "SKU", "PRODUTO", "SALDO", "ESTOQUE", "BLING",
+                    "NA", "NO", "NAS", "NOS", "DA", "DO", "DAS", "DOS", "DE", "EM", "PARA", "E", "OU",
+                }:
                     continue
             else:
                 if not re.fullmatch(r"\d{3,}", text):
@@ -2308,11 +2316,11 @@ def _assistant_bling_message_with_refs(
 ) -> str:
     refs = _assistant_product_refs_from_context(screen_context, existing_registry_results or [])
     plan_sku = _assistant_normalize_sku(plan.get("sku"))
-    if plan_sku and plan_sku not in refs["skus"]:
-        refs["skus"].insert(0, plan_sku)
+    if plan_sku:
+        refs["skus"] = [plan_sku, *[item for item in refs["skus"] if item != plan_sku]]
     if not refs["skus"] and not refs["bling_ids"]:
         return message
-    lines = [str(message or "").strip(), "", "Contexto resolvido para consulta Bling read-only:"]
+    lines = ["Contexto materializado para consulta Bling read-only:"]
     if refs["skus"]:
         lines.append("SKU " + ", ".join(refs["skus"][:5]))
     if refs["bling_ids"]:
@@ -2320,6 +2328,9 @@ def _assistant_bling_message_with_refs(
     loja = str(plan.get("loja") or "").strip()
     if loja:
         lines.append("loja " + loja)
+    original_message = str(message or "").strip()
+    if original_message:
+        lines.extend(["", "Pedido original:", original_message])
     return "\n".join(line for line in lines if line is not None).strip()
 
 
@@ -3826,6 +3837,16 @@ def _assistant_execute_registry_tool(
     data_fim = str(plan.get("data_fim") or "")
     loja = str(plan.get("loja") or "") or None
     sku = str(plan.get("sku") or "") or None
+    materialized_refs = [
+        value
+        for value in (
+            f"SKU {sku}" if sku else "",
+            str(plan.get("item_id") or ""),
+            f"loja {loja}" if loja else "",
+        )
+        if value
+    ]
+    materialized_message = " ".join(materialized_refs).strip() or message
     separar_por_loja = bool(plan.get("separar_por_loja"))
     incluir_registros = bool(plan.get("incluir_registros", True))
     prev = plan.get("periodo_anterior") if isinstance(plan.get("periodo_anterior"), dict) else {}
@@ -4102,15 +4123,15 @@ def _assistant_execute_registry_tool(
                 query_deadline=plan.get("query_deadline"),
             )
         elif tool_id == "product_data":
-            raw = _assistant_call_ia_tool("_ia_tool_get_product_data", client_id, message, 10)
+            raw = _assistant_call_ia_tool("_ia_tool_get_product_data", client_id, materialized_message, 10)
         elif tool_id == "product_registry":
-            raw = _assistant_call_ia_tool("_ia_tool_get_product_registry_info", client_id, message, None, 10)
+            raw = _assistant_call_ia_tool("_ia_tool_get_product_registry_info", client_id, materialized_message, None, 10)
         elif tool_id == "stock_data":
-            raw = _assistant_call_ia_tool("_ia_tool_get_stock_data", client_id, message, None)
+            raw = _assistant_call_ia_tool("_ia_tool_get_stock_data", client_id, materialized_message, None)
         elif tool_id == "product_margin":
-            raw = _assistant_call_ia_tool("_ia_tool_get_product_margin", client_id, message, None)
+            raw = _assistant_call_ia_tool("_ia_tool_get_product_margin", client_id, materialized_message, None)
         elif tool_id == "product_image":
-            raw = _assistant_call_ia_tool("_ia_tool_get_product_image", client_id, message, None)
+            raw = _assistant_call_ia_tool("_ia_tool_get_product_image", client_id, materialized_message, None)
         elif tool_id == "operational_memory_query":
             from backend.services import codex_operational_memory
 
@@ -4133,11 +4154,20 @@ def _assistant_execute_registry_tool(
             from backend.services import context_hub
 
             filters = {
+                "sku": str(plan.get("sku") or ""),
+                "mlb": str(plan.get("item_id") or ""),
                 "module": str(plan.get("module_filter") or ""),
                 "ids": list(plan.get("context_ids") or [])[:50],
                 "source_type": str(plan.get("source_type") or ""),
-                "environment": str(plan.get("environment_filter") or ""),
+                "surface": str(plan.get("context_surface") or plan.get("environment_filter") or ""),
                 "request_surface": str(plan.get("request_surface") or ""),
+                "document_types": list(plan.get("document_types") or [])[:10],
+                "store_ref": str(plan.get("context_store_ref") or ""),
+                "tags": list(plan.get("context_tags") or [])[:12],
+                "valid_at": str(plan.get("context_valid_at") or ""),
+                "truth_class": str(plan.get("context_truth_class") or ""),
+                "authority": str(plan.get("context_authority") or ""),
+                "sensitivity": str(plan.get("context_sensitivity") or ""),
             }
             filters = {key: value for key, value in filters.items() if value not in ("", [], None)}
             result = context_hub.search_context(
@@ -4752,6 +4782,7 @@ def codex_assistant_execute_tool_call(
     permissions: Any = None,
     audit_user: str = "",
     query_deadline: Optional[float] = None,
+    materialized_context: bool = False,
 ) -> dict[str, Any]:
     """Execute one registered read-only data tool for the Codex agent loop."""
 
@@ -4804,7 +4835,7 @@ def codex_assistant_execute_tool_call(
     data_fim = _assistant_calendar_date(args.get("data_fim") or args.get("fim") or args.get("end_date"))
     if not (data_inicio and data_fim):
         data_inicio, data_fim = _assistant_resolve_period(client_id, message, screen_context)
-    latest_kind = _assistant_latest_ml_event_kind(message)
+    latest_kind = "" if materialized_context else _assistant_latest_ml_event_kind(message)
     latest_ml_event = bool(
         tool_id in {"mercado_livre_orders", "mercado_livre_returns"}
         and latest_kind in {
@@ -4834,26 +4865,26 @@ def codex_assistant_execute_tool_call(
             else:
                 (prev_inicio, prev_fim), (data_inicio, data_fim) = explicit_b, explicit_a
     loja = str(args.get("loja") or args.get("conta") or args.get("store") or "").strip()
-    if not loja:
+    if not loja and not materialized_context:
         loja = _assistant_resolve_loja(client_id, message, screen_context)
     sku = _assistant_normalize_sku(args.get("sku") or args.get("codigo") or args.get("seller_sku") or "")
-    if not sku:
+    if not sku and not materialized_context:
         sku = _assistant_extract_sku_filter(message, screen_context)
     item_id = _assistant_normalize_ml_item_id(args.get("item_id") or args.get("mlb") or args.get("id_anuncio"))
-    if not item_id:
+    if not item_id and not materialized_context:
         item_match = re.search(r"\bMLB[\s_-]?\d{6,}\b", str(message or ""), flags=re.IGNORECASE)
         item_id = _assistant_normalize_ml_item_id(item_match.group(0) if item_match else "")
     id_pedido = _assistant_normalize_identifier(
         args.get("id_pedido") or args.get("pedido_id") or args.get("order_id") or args.get("id_order")
     )
-    if not id_pedido:
+    if not id_pedido and not materialized_context:
         pedido_match = re.search(
             r"\b(?:pedido|order)\s*(?:id|numero|n\.?|#)?\s*[:#-]?\s*(\d{3,})\b",
             str(message or ""),
             flags=re.IGNORECASE,
         )
         id_pedido = _assistant_normalize_identifier(pedido_match.group(1) if pedido_match else "")
-    if not id_pedido and tool_id == "mercado_livre_orders":
+    if not id_pedido and not materialized_context and tool_id == "mercado_livre_orders":
         standalone_ids = re.findall(r"\b\d{10,20}\b", str(message or ""))
         if (
             len(standalone_ids) == 1
@@ -4861,7 +4892,7 @@ def codex_assistant_execute_tool_call(
         ):
             id_pedido = _assistant_normalize_identifier(standalone_ids[0])
     pack_id = _assistant_normalize_identifier(args.get("pack_id") or args.get("pack") or "")
-    if not pack_id:
+    if not pack_id and not materialized_context:
         pack_match = re.search(
             r"\bpack(?:\s*(?:id|numero|#))?\s*[:#-]?\s*(\d{5,30})\b",
             str(message or ""),
@@ -4997,6 +5028,23 @@ def codex_assistant_execute_tool_call(
             if str(item or "").strip()
         ],
         "environment_filter": str(args.get("environment") or args.get("ambiente") or "").strip(),
+        "context_surface": str(
+            args.get("surface") or args.get("environment") or args.get("ambiente") or ""
+        ).strip(),
+        "document_types": [
+            str(item).strip() for item in (
+                args.get("document_types") if isinstance(args.get("document_types"), list) else []
+            )[:10] if str(item).strip()
+        ],
+        "context_store_ref": str(args.get("store_ref") or "").strip(),
+        "context_tags": [
+            str(item).strip() for item in (args.get("tags") if isinstance(args.get("tags"), list) else [])[:12]
+            if str(item).strip()
+        ],
+        "context_valid_at": str(args.get("valid_at") or "").strip(),
+        "context_truth_class": str(args.get("truth_class") or "").strip(),
+        "context_authority": str(args.get("authority") or "").strip(),
+        "context_sensitivity": str(args.get("sensitivity") or "").strip(),
         "sql": str(args.get("sql") or "").strip(),
         "include_routes": bool(args.get("incluir_rotas", args.get("include_routes", True))),
         "include_services": bool(args.get("incluir_servicos", args.get("include_services", True))),
@@ -5116,6 +5164,7 @@ def codex_assistant_execute_tool_call(
     )
     if (
         needs_supporting_history
+        and not materialized_context
         and not strict_latest_ml_event
         and tool_id in {"bling_sales_orders", "mercado_livre_orders", "mercado_livre_returns"}
         and (tool_id != "mercado_livre_returns" or strict_latest_ml_event)
@@ -5148,7 +5197,12 @@ def codex_assistant_execute_tool_call(
         raw_results.extend(raw)
         registry_results.extend(registry)
         warnings.extend(local_warnings)
-    if not has_records and tool_id != "operational_memory_query" and meta.get("zero_is_authoritative") is not True:
+    if (
+        not materialized_context
+        and not has_records
+        and tool_id != "operational_memory_query"
+        and meta.get("zero_is_authoritative") is not True
+    ):
         auth_failure = _assistant_non_retryable_auth_failure(warnings, registry_results)
         fallback_limit = 5 if mode in {"report", "daily"} else 3
         fallback_count = 0

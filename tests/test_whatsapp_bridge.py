@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import datetime
+import json
 import threading
 from pathlib import Path
 
@@ -8,7 +10,10 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
+from backend.schemas.perguntas_pos_venda import PerguntasAprovacaoRequest
 from backend.services import admin_usuarios_common, codex_actions, codex_assistant, codex_capabilities, codex_console, perguntas_pos_venda_codex, perguntas_pos_venda_endpoints, perguntas_pos_venda_state, whatsapp_bridge, whatsapp_transcribe
+from backend.services.whatsapp import transcription as transcription_component
+from backend.services.whatsapp.approvals import question_tokens
 
 
 _REAL_MESSAGE_PHONE = whatsapp_bridge._message_phone
@@ -87,24 +92,6 @@ def test_whatsapp_ai_defaults_and_validation():
         )
 
 
-def test_whatsapp_adaptive_reasoning_uses_complexity_and_cap():
-    settings = {
-        "codex_reasoning_effort": "xhigh",
-        "codex_reasoning_policy": "adaptive",
-        "codex_reasoning_max": "xhigh",
-    }
-    assert whatsapp_bridge._whatsapp_adaptive_reasoning_level(settings, "Oi, tudo bem?", {}) == "low"
-    assert whatsapp_bridge._whatsapp_adaptive_reasoning_level(settings, "Qual o estoque do SKU 10?", {}) == "medium"
-    assert whatsapp_bridge._whatsapp_adaptive_reasoning_level(
-        settings,
-        "Faça um relatório comparando todas as lojas",
-        {"store_mode": "all", "domains": ["vendas", "estoque"]},
-    ) == "high"
-    assert whatsapp_bridge._whatsapp_adaptive_reasoning_level(settings, "Investigue profundamente os dados conflitantes", {}) == "xhigh"
-    capped = {**settings, "codex_reasoning_max": "high"}
-    assert whatsapp_bridge._whatsapp_adaptive_reasoning_level(capped, "Investigue profundamente os dados conflitantes", {}) == "high"
-
-
 def test_whatsapp_progress_message_explains_real_wait_without_internal_tool_names(monkeypatch):
     monkeypatch.setattr(codex_console, "_codex_task_queue_position", lambda _task: 2)
     stage, text = whatsapp_bridge._progress_message(
@@ -143,12 +130,6 @@ def test_codex_transient_runtime_failure_is_narrow():
     assert codex_console._codex_transient_runtime_failure("Codex app-server temporarily unavailable") is True
     assert codex_console._codex_transient_runtime_failure("connection reset by peer") is True
     assert codex_console._codex_transient_runtime_failure("Acesso negado para esta loja") is False
-
-
-def test_whatsapp_complement_classifier_is_conservative():
-    assert whatsapp_bridge._whatsapp_is_task_complement("Na verdade use a loja JK Peças") is True
-    assert whatsapp_bridge._whatsapp_is_task_complement("Inclua também as devoluções") is True
-    assert whatsapp_bridge._whatsapp_is_task_complement("Qual foi a última venda da loja Deckas?") is False
 
 
 def test_codex_queued_task_accepts_idempotent_whatsapp_complement(codex_runtime):
@@ -243,7 +224,9 @@ def test_codex_running_task_steers_only_the_same_phone(codex_runtime):
 
 def test_phone_notification_defaults_preserve_questions_and_opt_in_reports():
     defaults = whatsapp_bridge._default_config()
-    assert defaults["version"] == 10
+    assert defaults["version"] == 11
+    assert defaults["deadline_enabled"] is False
+    assert defaults["job_deadline_seconds"] == 0
     assert defaults["phone_notification_settings"] == {}
     assert whatsapp_bridge._phone_notification_settings({}, "subject-1") == {
         "subject_id": "subject-1",
@@ -295,6 +278,8 @@ def test_selected_codex_ai_passes_admin_model_and_reasoning(monkeypatch):
     assert created["channel_metadata"]["codex_speed"] == "fast"
     assert created["channel_metadata"]["codex_service_tier"] == "priority"
     assert created["channel_metadata"]["orchestration_profile"] == "whatsapp_full_agent"
+    assert created["channel_metadata"]["deadline_enabled"] is False
+    assert created["channel_metadata"]["deadline_seconds"] == 0
 
 
 def test_selected_codex_ai_preserves_authenticated_dual_worker_profile(monkeypatch):
@@ -342,6 +327,27 @@ def test_selected_codex_ai_preserves_authenticated_dual_worker_profile(monkeypat
     assert created["channel_metadata"]["agent_role"] == "task"
     assert created["channel_metadata"]["agent_lane"] == "worker"
     assert created["channel_metadata"]["allow_web_search"] is True
+    assert created["channel_metadata"]["deadline_enabled"] is False
+    assert created["channel_metadata"]["deadline_seconds"] == 0
+
+
+def test_codex_task_honors_explicit_unbounded_deadline(codex_runtime):
+    task = codex_console.codex_criar_tarefa_para_sessao(
+        codex_console.CodexTaskRequest(prompt="Consulte o estoque"),
+        _full_session(),
+        origin="whatsapp",
+        channel_metadata={
+            "message_id": "wamid.unbounded",
+            "wa_id": "5511999999999",
+            "deadline_enabled": False,
+            "deadline_seconds": 0,
+        },
+    )["task"]
+
+    assert task["deadline_enabled"] is False
+    assert task["deadline_seconds"] == 0
+    assert task["deadline_at"] == ""
+    assert codex_console._codex_agent_deadline_seconds(task, report_mode=False) is None
 
 
 def test_configured_non_codex_fallback_never_replaces_codex_task(monkeypatch):
@@ -394,8 +400,8 @@ def test_whatsapp_admin_model_is_preserved_for_read_only_user(codex_runtime):
             reasoning_effort="high",
             speed="fast",
             service_tier="priority",
-            sandbox="full_access",
-            approval_mode="full_access",
+            sandbox="read_only",
+            approval_mode="read_only",
         ),
         session,
         origin="whatsapp",
@@ -403,7 +409,8 @@ def test_whatsapp_admin_model_is_preserved_for_read_only_user(codex_runtime):
     )
 
     task = result["task"]
-    assert task["model"] == "gpt-5.6-terra"
+    assert task["requested_model"] == "gpt-5.6-terra"
+    assert task["effective_model"] == "gpt-5.5"
     assert task["reasoning_effort"] == "high"
     assert task["speed"] == "fast"
     assert task["service_tier"] == "priority"
@@ -481,6 +488,213 @@ def test_question_approval_button_is_scoped_and_uses_existing_approval(monkeypat
         session,
     )
     assert calls == []
+
+
+def test_question_approval_duplicate_id_requires_one_store_and_question_match(monkeypatch):
+    approvals = [
+        {
+            "id": "approval-shared",
+            "codex_job_id": "job-jk",
+            "question_id": "question-jk",
+            "status": "pending",
+            "loja": "JK Pecas",
+            "resposta_sugerida": "Resposta JK.",
+        },
+        {
+            "id": "approval-shared",
+            "codex_job_id": "job-uai",
+            "question_id": "question-uai",
+            "status": "pending",
+            "loja": "Uai Mineirinho",
+            "resposta_sugerida": "Resposta Uai.",
+        },
+    ]
+    session = {
+        "client_id": "cliente",
+        "username": "operador",
+        "permissions": {"perguntas_pos_venda": True},
+    }
+    sends = []
+    replies = []
+    monkeypatch.setattr(perguntas_pos_venda_state, "_perguntas_ia_aprovacoes_carregar", lambda _client: approvals)
+    monkeypatch.setattr(perguntas_pos_venda_endpoints, "dt", datetime, raising=False)
+    monkeypatch.setattr(
+        perguntas_pos_venda_endpoints,
+        "_perguntas_ia_aprovacoes_carregar",
+        lambda _client: approvals,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        perguntas_pos_venda_endpoints,
+        "_perguntas_ia_aprovacoes_salvar",
+        lambda _client, values: approvals.__setitem__(slice(None), values),
+        raising=False,
+    )
+    monkeypatch.setattr(perguntas_pos_venda_endpoints, "_obter_cfg_ml", lambda *_args: {}, raising=False)
+    monkeypatch.setattr(
+        perguntas_pos_venda_endpoints,
+        "_perguntas_ia_limpar_resposta",
+        lambda value: str(value).strip(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        perguntas_pos_venda_endpoints,
+        "_perguntas_ia_pergunta_respondida_ml",
+        lambda _client, _store, cfg, question_id: (
+            False,
+            {"id": question_id, "status": "UNANSWERED"},
+            cfg,
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        perguntas_pos_venda_endpoints,
+        "_perguntas_ia_enviar_resposta_ml",
+        lambda _client, store, cfg, question_id, answer: sends.append((store, question_id, answer))
+        or ({"id": question_id, "status": "ANSWERED"}, cfg),
+        raising=False,
+    )
+    monkeypatch.setattr(perguntas_pos_venda_endpoints, "_perguntas_ia_state_carregar", lambda _client: {}, raising=False)
+    monkeypatch.setattr(perguntas_pos_venda_endpoints, "_perguntas_ia_marcar_processada", lambda *_args: None, raising=False)
+    monkeypatch.setattr(perguntas_pos_venda_endpoints, "_perguntas_ia_state_salvar", lambda *_args: None, raising=False)
+    monkeypatch.setattr(perguntas_pos_venda_codex, "approval_job_current", lambda *_args: True)
+    monkeypatch.setattr(
+        perguntas_pos_venda_codex,
+        "approve_or_refresh_proposal",
+        lambda **_kwargs: {"proposal_version": 1, "proposal_hash": "hash-atual"},
+    )
+    monkeypatch.setattr(perguntas_pos_venda_codex, "mark_verified", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        perguntas_pos_venda_endpoints,
+        "_perguntas_ia_memoria_registrar_resposta_aprovada",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_bridge_store",
+        lambda: type("AuditStore", (), {"audit": lambda *_args, **_kwargs: None})(),
+    )
+    monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_post_command_reply",
+        lambda _cfg, _mid, text, title: replies.append((title, text)),
+    )
+
+    with pytest.raises(HTTPException) as ambiguous_endpoint:
+        perguntas_pos_venda_endpoints.ml_perguntas_aprovacoes_aprovar(
+            PerguntasAprovacaoRequest(
+                approval_id="approval-shared",
+                resposta="Resposta sem escopo.",
+            ),
+            "cliente",
+        )
+    assert ambiguous_endpoint.value.status_code == 409
+    assert sends == []
+
+    ambiguous_state = {
+        "question_approval_tokens": {
+            "AMBIG222": {
+                "approval_id": "approval-shared",
+                "subject_id": "subject-1",
+                "client_id": "cliente",
+                "username": "operador",
+                "created_at": whatsapp_bridge.time.time(),
+                "used": False,
+                "suggested_response": "Resposta sem escopo.",
+            }
+        }
+    }
+
+    assert whatsapp_bridge._handle_question_approval_command(
+        {},
+        ambiguous_state,
+        {"message_id": "wamid.ambiguous", "subject_id": "subject-1", "text_body": "ppv_approve:AMBIG222"},
+        session,
+    ) is True
+    assert sends == []
+    assert ambiguous_state["question_approval_tokens"]["AMBIG222"]["used"] is True
+    assert "unica pergunta compativel" in replies[-1][1]
+
+    scoped_state = {
+        "question_approval_tokens": {
+            "SCOPED22": {
+                "approval_id": "approval-shared",
+                "question_id": "question-uai",
+                "store": "Uai Mineirinho",
+                "subject_id": "subject-1",
+                "client_id": "cliente",
+                "username": "operador",
+                "created_at": whatsapp_bridge.time.time(),
+                "used": False,
+                "suggested_response": "Resposta Uai.",
+            }
+        }
+    }
+    assert whatsapp_bridge._handle_question_approval_command(
+        {},
+        scoped_state,
+        {"message_id": "wamid.scoped", "subject_id": "subject-1", "text_body": "ppv_approve:SCOPED22"},
+        session,
+    ) is True
+    assert sends == [("Uai Mineirinho", "question-uai", "Resposta Uai.")]
+    assert approvals[0]["status"] == "pending"
+    assert approvals[0]["loja"] == "JK Pecas"
+    assert approvals[1]["status"] == "sent"
+    assert approvals[1]["loja"] == "Uai Mineirinho"
+    assert scoped_state["question_approval_tokens"]["SCOPED22"]["store"] == "Uai Mineirinho"
+    assert scoped_state["question_approval_tokens"]["SCOPED22"]["question_id"] == "question-uai"
+
+
+def test_interactive_question_delivery_records_meta_message_id_on_token_and_thread(monkeypatch):
+    class Response:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"success": True, "status": "sent", "meta_message_id": "wamid.card.meta-1"}
+
+    state = {
+        "question_approval_tokens": {
+            "METATOK1": {
+                "approval_id": "approval-meta",
+                "subject_id": "subject-1",
+                "client_id": "cliente",
+                "username": "operador",
+                "created_at": whatsapp_bridge.time.time(),
+                "used": False,
+            }
+        }
+    }
+    whatsapp_bridge._question_set_active_thread(
+        state,
+        approval_id="approval-meta",
+        token="METATOK1",
+        subject_id="subject-1",
+        client_id="cliente",
+        username="operador",
+    )
+    monkeypatch.setattr(whatsapp_bridge.requests, "post", lambda *_args, **_kwargs: Response())
+
+    result = whatsapp_bridge._post_interactive_approval(
+        {
+            "worker_url": "https://bridge.example.test",
+            "bridge_token": "token",
+            "machine_id": "machine-1",
+        },
+        subject_id="subject-1",
+        fingerprint="question-card-meta-0001",
+        token="METATOK1",
+        body="Rascunho",
+        state=state,
+    )
+
+    assert result["outbound_message_id"] == "wamid.card.meta-1"
+    assert state["question_approval_tokens"]["METATOK1"]["outbound_message_id"] == "wamid.card.meta-1"
+    active = next(iter(state["question_active_threads"].values()))
+    assert active["outbound_message_id"] == "wamid.card.meta-1"
 
 
 def test_question_approval_sends_the_exact_draft_bound_to_the_selected_card(monkeypatch):
@@ -629,6 +843,7 @@ def test_pending_question_approval_is_notified_once_to_authorized_binding(monkey
         "titulo": "Produto",
         "pergunta": "Tem garantia?",
         "resposta_sugerida": "Sim, possui garantia.",
+        "codex_job_id": "job-approval-1",
     }
     sent = []
     monkeypatch.setattr(whatsapp_bridge, "_worker_health", lambda _cfg: {"bindings": [{
@@ -639,6 +854,11 @@ def test_pending_question_approval_is_notified_once_to_authorized_binding(monkey
         "JK Pecas": {"notificar_whatsapp_aprovacoes": True}
     })
     monkeypatch.setattr(perguntas_pos_venda_state, "_perguntas_ia_aprovacoes_carregar", lambda _client: [approval])
+    monkeypatch.setattr(perguntas_pos_venda_codex, "get_job", lambda _client, _job: {
+        "status": "completed",
+        "agent_state": "aguardando_aprovacao",
+        "result": {"resposta": "Sim, possui garantia.", "requires_approval": True},
+    })
     monkeypatch.setattr(whatsapp_bridge, "_post_interactive_approval", lambda _cfg, **kwargs: sent.append(kwargs) or {"success": True, "status": "sent"})
     monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
     state = {}
@@ -682,6 +902,7 @@ def test_whatsapp_forwards_only_one_question_until_active_is_answered(monkeypatc
             "titulo": "Produto 1",
             "pergunta": "Pergunta 1?",
             "resposta_sugerida": "Resposta 1.",
+            "codex_job_id": "job-approval-1",
         },
         {
             "id": "approval-2",
@@ -690,6 +911,7 @@ def test_whatsapp_forwards_only_one_question_until_active_is_answered(monkeypatc
             "titulo": "Produto 2",
             "pergunta": "Pergunta 2?",
             "resposta_sugerida": "Resposta 2.",
+            "codex_job_id": "job-approval-2",
         },
     ]
     sent = []
@@ -701,6 +923,14 @@ def test_whatsapp_forwards_only_one_question_until_active_is_answered(monkeypatc
         "JK Pecas": {"notificar_whatsapp_aprovacoes": True}
     })
     monkeypatch.setattr(perguntas_pos_venda_state, "_perguntas_ia_aprovacoes_carregar", lambda _client: approvals)
+    monkeypatch.setattr(perguntas_pos_venda_codex, "get_job", lambda _client, job_id: {
+        "status": "completed",
+        "agent_state": "aguardando_aprovacao",
+        "result": {
+            "resposta": "Resposta 1." if job_id == "job-approval-1" else "Resposta 2.",
+            "requires_approval": True,
+        },
+    })
     monkeypatch.setattr(whatsapp_bridge, "_post_interactive_approval", lambda _cfg, **kwargs: sent.append(kwargs) or {"status": "sent"})
     monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
     state = {}
@@ -720,6 +950,455 @@ def test_whatsapp_forwards_only_one_question_until_active_is_answered(monkeypatc
     assert "Pergunta 2?" in sent[1]["body"]
     active = next(iter(state["question_active_threads"].values()))
     assert active["approval_id"] == "approval-2"
+
+
+def _prepare_question_forwarding(monkeypatch, approvals, sent):
+    monkeypatch.setattr(whatsapp_bridge, "_worker_health", lambda _cfg: {"bindings": [{
+        "machine_id": "machine-1", "client_id": "cliente", "username": "operador", "subject_id": "subject-1"
+    }]})
+    monkeypatch.setattr(admin_usuarios_common, "_carregar_permissoes_usuario", lambda _user, _client: {"perguntas_pos_venda": True})
+    monkeypatch.setattr(perguntas_pos_venda_state, "_perguntas_loja_configs_carregar", lambda _client: {
+        "JK Pecas": {"notificar_whatsapp_aprovacoes": True}
+    })
+    monkeypatch.setattr(perguntas_pos_venda_state, "_perguntas_ia_aprovacoes_carregar", lambda _client: approvals)
+    monkeypatch.setattr(perguntas_pos_venda_codex, "approval_job_current", lambda *_args: True)
+    monkeypatch.setattr(perguntas_pos_venda_codex, "job_contract_current", lambda *_args: True)
+    monkeypatch.setattr(whatsapp_bridge, "_post_interactive_approval", lambda _cfg, **kwargs: sent.append(kwargs) or {"status": "sent"})
+    monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
+
+
+def test_post_sale_active_thread_is_invalidated_and_next_public_question_is_forwarded(monkeypatch):
+    approvals = [
+        {
+            "id": "approval-post-sale",
+            "status": "pending",
+            "tipo": "pos-venda",
+            "loja": "JK Pecas",
+            "pergunta": "Mensagem de pos-venda?",
+            "resposta_sugerida": "Resposta manual.",
+        },
+        {
+            "id": "approval-public",
+            "status": "pending",
+            "loja": "JK Pecas",
+            "pergunta": "Pergunta publica nova?",
+            "resposta_sugerida": "Resposta publica.",
+        },
+    ]
+    sent = []
+    _prepare_question_forwarding(monkeypatch, approvals, sent)
+    state = {
+        "question_approval_tokens": {
+            "POSTSALE": {
+                "approval_id": "approval-post-sale",
+                "subject_id": "subject-1",
+                "client_id": "cliente",
+                "username": "operador",
+                "created_at": whatsapp_bridge.time.time(),
+                "used": False,
+            },
+            "POSTSALE2": {
+                "approval_id": "approval-post-sale",
+                "subject_id": "subject-1",
+                "client_id": "cliente",
+                "username": "operador",
+                "created_at": whatsapp_bridge.time.time(),
+                "used": False,
+            },
+            "OTHERUSER": {
+                "approval_id": "approval-post-sale",
+                "subject_id": "subject-1",
+                "client_id": "cliente",
+                "username": "outro",
+                "created_at": whatsapp_bridge.time.time(),
+                "used": False,
+            },
+        }
+    }
+    whatsapp_bridge._question_set_active_thread(
+        state,
+        approval_id="approval-post-sale",
+        token="POSTSALE",
+        subject_id="subject-1",
+        client_id="cliente",
+        username="operador",
+    )
+
+    whatsapp_bridge._forward_question_approvals({"machine_id": "machine-1"}, state)
+
+    assert len(sent) == 1
+    assert "Pergunta publica nova?" in sent[0]["body"]
+    assert state["question_approval_tokens"]["POSTSALE"]["used"] is True
+    assert state["question_approval_tokens"]["POSTSALE"]["decision"] == "ineligible_post_sale"
+    assert state["question_approval_tokens"]["POSTSALE2"]["used"] is True
+    assert state["question_approval_tokens"]["OTHERUSER"]["used"] is False
+    assert next(iter(state["question_active_threads"].values()))["approval_id"] == "approval-public"
+
+
+def test_consumed_active_token_is_reissued_for_the_public_question(monkeypatch):
+    approvals = [
+        {
+            "id": "approval-consumed",
+            "status": "pending",
+            "loja": "JK Pecas",
+            "pergunta": "Pergunta antiga?",
+            "resposta_sugerida": "Resposta antiga.",
+        },
+        {
+            "id": "approval-next",
+            "status": "pending",
+            "loja": "JK Pecas",
+            "pergunta": "Pergunta publica seguinte?",
+            "resposta_sugerida": "Resposta seguinte.",
+        },
+    ]
+    sent = []
+    _prepare_question_forwarding(monkeypatch, approvals, sent)
+    state = {
+        "question_approval_notifications": {
+            "old-notification": {
+                "approval_id": "approval-consumed",
+                "subject_id": "subject-1",
+                "interactive_sent": True,
+                "sent_at": "2026-07-20T18:00:00Z",
+            }
+        },
+        "question_approval_tokens": {
+            "CONSUMED": {
+                "approval_id": "approval-consumed",
+                "subject_id": "subject-1",
+                "client_id": "cliente",
+                "username": "operador",
+                "created_at": whatsapp_bridge.time.time(),
+                "used": True,
+                "decision": "research_superseded",
+            }
+        }
+    }
+    whatsapp_bridge._question_set_active_thread(
+        state,
+        approval_id="approval-consumed",
+        token="CONSUMED",
+        subject_id="subject-1",
+        client_id="cliente",
+        username="operador",
+    )
+
+    whatsapp_bridge._forward_question_approvals({"machine_id": "machine-1"}, state)
+
+    assert len(sent) == 1
+    assert "Pergunta antiga?" in sent[0]["body"]
+    assert sent[0]["token"] != "CONSUMED"
+    assert sent[0]["token"] in sent[0]["fingerprint"]
+    assert "old-notification" not in state["question_approval_notifications"]
+    assert next(iter(state["question_active_threads"].values()))["approval_id"] == "approval-consumed"
+
+
+def test_expired_active_token_is_reissued_with_a_fresh_token(monkeypatch):
+    approval = {
+        "id": "approval-expired",
+        "status": "pending",
+        "loja": "JK Pecas",
+        "pergunta": "Pergunta com token vencido?",
+        "resposta_sugerida": "Resposta atual.",
+    }
+    sent = []
+    _prepare_question_forwarding(monkeypatch, [approval], sent)
+    state = {
+        "question_approval_tokens": {
+            "EXPIRED1": {
+                "approval_id": "approval-expired",
+                "subject_id": "subject-1",
+                "client_id": "cliente",
+                "username": "operador",
+                "created_at": whatsapp_bridge.time.time() - whatsapp_bridge.QUESTION_APPROVAL_TOKEN_TTL_SECONDS - 1,
+                "used": False,
+            }
+        }
+    }
+    whatsapp_bridge._question_set_active_thread(
+        state,
+        approval_id="approval-expired",
+        token="EXPIRED1",
+        subject_id="subject-1",
+        client_id="cliente",
+        username="operador",
+    )
+
+    whatsapp_bridge._forward_question_approvals({"machine_id": "machine-1"}, state)
+
+    assert len(sent) == 1
+    assert sent[0]["token"] != "EXPIRED1"
+    assert "EXPIRED1" not in state["question_approval_tokens"]
+    assert next(iter(state["question_active_threads"].values()))["approval_id"] == "approval-expired"
+
+
+def test_wrong_scope_active_token_is_not_consumed_or_reused(monkeypatch):
+    approval = {
+        "id": "approval-scope",
+        "status": "pending",
+        "loja": "JK Pecas",
+        "pergunta": "Pergunta do escopo correto?",
+        "resposta_sugerida": "Resposta correta.",
+    }
+    sent = []
+    _prepare_question_forwarding(monkeypatch, [approval], sent)
+    state = {
+        "question_approval_tokens": {
+            "WRONGSCP": {
+                "approval_id": "approval-scope",
+                "subject_id": "subject-1",
+                "client_id": "cliente",
+                "username": "outro-operador",
+                "created_at": whatsapp_bridge.time.time(),
+                "used": False,
+            }
+        }
+    }
+    whatsapp_bridge._question_set_active_thread(
+        state,
+        approval_id="approval-scope",
+        token="WRONGSCP",
+        subject_id="subject-1",
+        client_id="cliente",
+        username="operador",
+    )
+
+    whatsapp_bridge._forward_question_approvals({"machine_id": "machine-1"}, state)
+
+    assert len(sent) == 1
+    assert sent[0]["token"] != "WRONGSCP"
+    assert state["question_approval_tokens"]["WRONGSCP"]["used"] is False
+    assert state["question_approval_tokens"][sent[0]["token"]]["username"] == "operador"
+
+
+def test_valid_pending_public_thread_stays_active_without_duplicate(monkeypatch):
+    approval = {
+        "id": "approval-active",
+        "status": "pending",
+        "loja": "JK Pecas",
+        "pergunta": "Pergunta ainda ativa?",
+        "resposta_sugerida": "Resposta ainda ativa.",
+    }
+    sent = []
+    _prepare_question_forwarding(monkeypatch, [approval], sent)
+    state = {
+        "question_approval_tokens": {
+            "VALIDTOK": {
+                "approval_id": "approval-active",
+                "subject_id": "subject-1",
+                "client_id": "cliente",
+                "username": "operador",
+                "created_at": whatsapp_bridge.time.time(),
+                "used": False,
+            }
+        }
+    }
+    whatsapp_bridge._question_set_active_thread(
+        state,
+        approval_id="approval-active",
+        token="VALIDTOK",
+        subject_id="subject-1",
+        client_id="cliente",
+        username="operador",
+    )
+    active_before = dict(next(iter(state["question_active_threads"].values())))
+
+    whatsapp_bridge._forward_question_approvals({"machine_id": "machine-1"}, state)
+
+    assert sent == []
+    active = next(iter(state["question_active_threads"].values()))
+    assert {key: active[key] for key in active_before if key != "card_context"} == {
+        key: value for key, value in active_before.items() if key != "card_context"
+    }
+    assert active["card_context"]["approval_id"] == "approval-active"
+    assert active["card_context"]["store"] == "JK Pecas"
+
+
+@pytest.mark.parametrize("delivery_state", ["waiting_evidence", "ready"])
+def test_consumed_token_with_active_public_research_keeps_research_thread(monkeypatch, delivery_state):
+    approval = {
+        "id": "approval-research",
+        "status": "pending",
+        "loja": "JK Pecas",
+        "pergunta": "Pergunta em pesquisa?",
+        "resposta_sugerida": "Resposta provisoria.",
+        "research_job_id": "job-active",
+        "research_delivery_state": delivery_state,
+    }
+    next_approval = {
+        "id": "approval-next",
+        "status": "pending",
+        "loja": "JK Pecas",
+        "pergunta": "Pergunta seguinte?",
+        "resposta_sugerida": "Resposta seguinte.",
+    }
+    sent = []
+    research_checks = []
+    _prepare_question_forwarding(monkeypatch, [approval, next_approval], sent)
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_deliver_completed_question_research",
+        lambda *_args, **_kwargs: research_checks.append(True) or False,
+    )
+    state = {
+        "question_approval_tokens": {
+            "RESEARCH": {
+                "approval_id": "approval-research",
+                "subject_id": "subject-1",
+                "client_id": "cliente",
+                "username": "operador",
+                "created_at": whatsapp_bridge.time.time(),
+                "used": True,
+                "decision": "research_superseded",
+            }
+        }
+    }
+    whatsapp_bridge._question_set_active_thread(
+        state,
+        approval_id="approval-research",
+        token="RESEARCH",
+        subject_id="subject-1",
+        client_id="cliente",
+        username="operador",
+    )
+
+    whatsapp_bridge._forward_question_approvals({"machine_id": "machine-1"}, state)
+
+    assert research_checks == [True]
+    assert sent == []
+    assert next(iter(state["question_active_threads"].values()))["approval_id"] == "approval-research"
+
+
+def test_active_research_with_wrong_scope_token_is_rebound_before_polling(monkeypatch):
+    approval = {
+        "id": "approval-research-scope",
+        "status": "pending",
+        "loja": "JK Pecas",
+        "pergunta": "Pergunta em pesquisa com escopo antigo?",
+        "resposta_sugerida": "Resposta provisoria.",
+        "research_job_id": "job-active-scope",
+        "research_delivery_state": "waiting_evidence",
+    }
+    sent = []
+    research_checks = []
+    _prepare_question_forwarding(monkeypatch, [approval], sent)
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_deliver_completed_question_research",
+        lambda *_args, **_kwargs: research_checks.append(True) or False,
+    )
+    state = {
+        "question_approval_tokens": {
+            "WRONGRES": {
+                "approval_id": "approval-research-scope",
+                "subject_id": "subject-1",
+                "client_id": "cliente",
+                "username": "outro-operador",
+                "created_at": whatsapp_bridge.time.time(),
+                "used": True,
+                "decision": "research_superseded",
+            }
+        }
+    }
+    whatsapp_bridge._question_set_active_thread(
+        state,
+        approval_id="approval-research-scope",
+        token="WRONGRES",
+        subject_id="subject-1",
+        client_id="cliente",
+        username="operador",
+    )
+
+    whatsapp_bridge._forward_question_approvals({"machine_id": "machine-1"}, state)
+
+    assert research_checks == [True]
+    assert sent == []
+    assert state["question_approval_tokens"]["WRONGRES"]["used"] is True
+    active = next(iter(state["question_active_threads"].values()))
+    assert active["token"] != "WRONGRES"
+    assert state["question_approval_tokens"][active["token"]]["username"] == "operador"
+
+
+def test_sending_public_thread_blocks_next_question_until_reconciled(monkeypatch):
+    approvals = [
+        {
+            "id": "approval-sending",
+            "status": "sending",
+            "loja": "JK Pecas",
+            "pergunta": "Pergunta em envio?",
+            "resposta_sugerida": "Resposta em envio.",
+        },
+        {
+            "id": "approval-next",
+            "status": "pending",
+            "loja": "JK Pecas",
+            "pergunta": "Proxima pergunta?",
+            "resposta_sugerida": "Proxima resposta.",
+        },
+    ]
+    sent = []
+    _prepare_question_forwarding(monkeypatch, approvals, sent)
+    state = {"question_approval_tokens": {}}
+    whatsapp_bridge._question_set_active_thread(
+        state,
+        approval_id="approval-sending",
+        token="MISSING1",
+        subject_id="subject-1",
+        client_id="cliente",
+        username="operador",
+    )
+    active_before = dict(next(iter(state["question_active_threads"].values())))
+
+    whatsapp_bridge._forward_question_approvals({"machine_id": "machine-1"}, state)
+
+    assert sent == []
+    active = next(iter(state["question_active_threads"].values()))
+    assert {key: active[key] for key in active_before if key != "card_context"} == {
+        key: value for key, value in active_before.items() if key != "card_context"
+    }
+    assert active["card_context"]["approval_id"] == "approval-sending"
+
+
+def test_stale_active_question_contract_does_not_block_new_whatsapp_draft(monkeypatch):
+    thread_key = question_tokens._question_thread_key("cliente", "subject-1", "operador")
+    state = {
+        "question_active_threads": {
+            thread_key: {"approval_id": "approval-old", "token": "OLDTOKEN"},
+        },
+        "question_approval_tokens": {
+            "NEWTOKEN": {
+                "approval_id": "approval-new",
+                "subject_id": "subject-1",
+                "client_id": "cliente",
+                "username": "operador",
+                "created_at": 2,
+                "used": False,
+            },
+        },
+    }
+    approvals = [
+        {"id": "approval-old", "status": "pending", "codex_job_id": "job-old"},
+        {"id": "approval-new", "status": "pending", "codex_job_id": "job-new"},
+    ]
+    monkeypatch.setattr(
+        question_tokens.perguntas_pos_venda_codex,
+        "job_contract_current",
+        lambda _client, job_id: job_id == "job-new",
+    )
+
+    active, token, _item = question_tokens._question_active_approval(
+        state,
+        approvals,
+        subject_id="subject-1",
+        client_id="cliente",
+        username="operador",
+        require_current_contract=True,
+    )
+
+    assert active and active["id"] == "approval-new"
+    assert token == "NEWTOKEN"
+    assert state["question_active_threads"][thread_key]["approval_id"] == "approval-new"
 
 
 def test_whatsapp_recognizes_user_guidance_and_regenerates_same_active_question(monkeypatch):
@@ -757,6 +1436,15 @@ def test_whatsapp_recognizes_user_guidance_and_regenerates_same_active_question(
     monkeypatch.setattr(whatsapp_bridge, "_post_command_reply", lambda _cfg, _mid, text, title: replies.append((title, text)))
     monkeypatch.setattr(whatsapp_bridge, "_post_message_result", lambda _cfg, mid, payload: completed.append((mid, payload)))
     monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
+    monkeypatch.setattr(
+        whatsapp_bridge.codex_whatsapp_agents.CONVERSATION_RUNTIME,
+        "run",
+        lambda **_kwargs: {
+            "action": "steer",
+            "intent_kind": "query",
+            "relation_to_active_job": "correction",
+        },
+    )
     session = {"client_id": "cliente", "username": "operador", "permissions": {"perguntas_pos_venda": True}}
 
     handled = whatsapp_bridge._handle_question_natural_language(
@@ -778,6 +1466,344 @@ def test_whatsapp_recognizes_user_guidance_and_regenerates_same_active_question(
     assert state["question_approval_tokens"][interactive[0]["token"]]["suggested_response"] == "Sim, e estriada dos dois lados."
     assert completed == [("wamid.guidance", {"status": "completed", "response_parts": []})]
     assert replies == []
+
+
+def test_proactive_ml_card_revise_this_answer_uses_structured_active_draft(monkeypatch):
+    approval = {
+        "id": "approval-card-1",
+        "question_id": "question-card-1",
+        "status": "pending",
+        "loja": "Uai Mineirinho",
+        "item_id": "MLB1234567890",
+        "sku": "001",
+        "titulo": "Sensor de temperatura",
+        "pergunta": "Serve no meu veiculo?",
+        "resposta_sugerida": "Resposta original.",
+    }
+    state = {}
+    token, token_item = whatsapp_bridge._question_approval_token(
+        state,
+        approval=approval,
+        subject_id="subject-1",
+        client_id="cliente-1",
+        username="operador",
+    )
+    whatsapp_bridge._question_set_active_thread(
+        state,
+        approval_id=approval["id"],
+        token=token,
+        subject_id="subject-1",
+        client_id="cliente-1",
+        username="operador",
+    )
+    decisions = []
+    regenerated = []
+    interactive = []
+    monkeypatch.setattr(perguntas_pos_venda_state, "_perguntas_ia_aprovacoes_carregar", lambda _client: [approval])
+    monkeypatch.setattr(
+        whatsapp_bridge.codex_whatsapp_agents.CONVERSATION_RUNTIME,
+        "run",
+        lambda **kwargs: decisions.append(kwargs) or {
+            "action": "steer",
+            "intent_kind": "query",
+            "relation_to_active_job": "correction",
+        },
+    )
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_regenerate_question_approval_response",
+        lambda item, _approvals, _client, *, guidance="": regenerated.append(guidance)
+        or item.update({"resposta_sugerida": "Resposta revisada."})
+        or "Resposta revisada.",
+    )
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_post_interactive_approval",
+        lambda _cfg, **kwargs: interactive.append(kwargs) or {"status": "sent"},
+    )
+    monkeypatch.setattr(whatsapp_bridge, "_post_message_result", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
+
+    handled = whatsapp_bridge._handle_question_natural_language(
+        {},
+        state,
+        {
+            "message_id": "wamid.revise-card",
+            "subject_id": "subject-1",
+            "text_body": "revise essa resposta",
+        },
+        {
+            "client_id": "cliente-1",
+            "username": "operador",
+            "permissions": {"perguntas_pos_venda": True},
+        },
+    )
+
+    assert handled is True
+    assert regenerated == ["revise essa resposta"]
+    assert interactive and interactive[0]["token"] != token
+    assert token_item["used"] is False
+    structured = json.loads(decisions[0]["active_job"]["request_text"])
+    assert structured == json.loads(decisions[0]["quoted_context"]["text"])
+    assert structured["kind"] == "mercado_livre_public_question_draft"
+    assert structured["store"] == "Uai Mineirinho"
+    assert structured["draft"] == "Resposta original."
+    assert structured["free_text_can_send"] is False
+    active = next(iter(state["question_active_threads"].values()))
+    assert active["card_context"]["question_id"] == "question-card-1"
+    assert "token" not in active["card_context"]
+
+
+def test_quoted_old_ml_card_routes_revision_to_that_card_and_no_quote_uses_active(monkeypatch):
+    approvals = [
+        {
+            "id": "approval-old",
+            "question_id": "question-old",
+            "status": "pending",
+            "loja": "JK Pecas",
+            "pergunta": "Pergunta antiga?",
+            "resposta_sugerida": "Resposta antiga.",
+        },
+        {
+            "id": "approval-new",
+            "question_id": "question-new",
+            "status": "pending",
+            "loja": "Uai Mineirinho",
+            "pergunta": "Pergunta atual?",
+            "resposta_sugerida": "Resposta atual.",
+        },
+    ]
+
+    def make_state():
+        state = {
+            "question_approval_tokens": {
+                "OLDTOK01": {
+                    "approval_id": "approval-old",
+                    "question_id": "question-old",
+                    "store": "JK Pecas",
+                    "subject_id": "subject-1",
+                    "client_id": "cliente",
+                    "username": "operador",
+                    "created_at": whatsapp_bridge.time.time(),
+                    "used": False,
+                    "suggested_response": "Resposta antiga.",
+                    "outbound_message_id": "wamid.card.old",
+                },
+                "NEWTOK01": {
+                    "approval_id": "approval-new",
+                    "question_id": "question-new",
+                    "store": "Uai Mineirinho",
+                    "subject_id": "subject-1",
+                    "client_id": "cliente",
+                    "username": "operador",
+                    "created_at": whatsapp_bridge.time.time() + 1,
+                    "used": False,
+                    "suggested_response": "Resposta atual.",
+                    "outbound_message_id": "wamid.card.new",
+                },
+            }
+        }
+        whatsapp_bridge._question_set_active_thread(
+            state,
+            approval_id="approval-new",
+            token="NEWTOK01",
+            subject_id="subject-1",
+            client_id="cliente",
+            username="operador",
+        )
+        return state
+
+    regenerated = []
+    monkeypatch.setattr(perguntas_pos_venda_state, "_perguntas_ia_aprovacoes_carregar", lambda _client: approvals)
+    monkeypatch.setattr(
+        whatsapp_bridge.codex_whatsapp_agents.CONVERSATION_RUNTIME,
+        "run",
+        lambda **_kwargs: {
+            "action": "steer",
+            "intent_kind": "query",
+            "relation_to_active_job": "correction",
+        },
+    )
+
+    def regenerate(item, _approvals, _client, *, guidance=""):
+        regenerated.append((item["id"], guidance))
+        item["resposta_sugerida"] = f"Revisada {item['id']}."
+        return item["resposta_sugerida"]
+
+    monkeypatch.setattr(whatsapp_bridge, "_regenerate_question_approval_response", regenerate)
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_post_interactive_approval",
+        lambda _cfg, **_kwargs: {"status": "sent"},
+    )
+    monkeypatch.setattr(whatsapp_bridge, "_post_message_result", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
+    session = {
+        "client_id": "cliente",
+        "username": "operador",
+        "permissions": {"perguntas_pos_venda": True},
+    }
+
+    quoted_state = make_state()
+    assert whatsapp_bridge._question_active_approval(
+        quoted_state,
+        approvals,
+        subject_id="subject-1",
+        client_id="cliente",
+        username="outro-operador",
+        quoted_message_id="wamid.card.old",
+    ) == (None, "", None)
+    assert whatsapp_bridge._handle_question_natural_language(
+        {},
+        quoted_state,
+        {
+            "message_id": "wamid.revise.old",
+            "subject_id": "subject-1",
+            "quoted_message_id": "wamid.card.old",
+            "text_body": "revise essa resposta",
+        },
+        session,
+    ) is True
+    assert regenerated[-1] == ("approval-old", "revise essa resposta")
+    assert next(iter(quoted_state["question_active_threads"].values()))["approval_id"] == "approval-old"
+
+    active_state = make_state()
+    assert whatsapp_bridge._handle_question_natural_language(
+        {},
+        active_state,
+        {
+            "message_id": "wamid.revise.active",
+            "subject_id": "subject-1",
+            "text_body": "revise essa resposta",
+        },
+        session,
+    ) is True
+    assert regenerated[-1] == ("approval-new", "revise essa resposta")
+
+
+def test_unrelated_question_falls_through_while_ml_card_stays_active(monkeypatch):
+    approval = {
+        "id": "approval-card-2",
+        "question_id": "question-card-2",
+        "status": "pending",
+        "loja": "Uai Mineirinho",
+        "pergunta": "Serve no meu veiculo?",
+        "resposta_sugerida": "Resposta original.",
+    }
+    state = {}
+    token, _item = whatsapp_bridge._question_approval_token(
+        state,
+        approval=approval,
+        subject_id="subject-1",
+        client_id="cliente-1",
+        username="operador",
+    )
+    whatsapp_bridge._question_set_active_thread(
+        state,
+        approval_id=approval["id"],
+        token=token,
+        subject_id="subject-1",
+        client_id="cliente-1",
+        username="operador",
+    )
+    regenerated = []
+    monkeypatch.setattr(perguntas_pos_venda_state, "_perguntas_ia_aprovacoes_carregar", lambda _client: [approval])
+    monkeypatch.setattr(
+        whatsapp_bridge.codex_whatsapp_agents.CONVERSATION_RUNTIME,
+        "run",
+        lambda **_kwargs: {
+            "action": "delegate",
+            "intent_kind": "query",
+            "relation_to_active_job": "new_parallel",
+        },
+    )
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_regenerate_question_approval_response",
+        lambda *_args, **_kwargs: regenerated.append(True),
+    )
+
+    handled = whatsapp_bridge._handle_question_natural_language(
+        {},
+        state,
+        {
+            "message_id": "wamid.other-question",
+            "subject_id": "subject-1",
+            "text_body": "Qual e o estoque do SKU 001?",
+        },
+        {
+            "client_id": "cliente-1",
+            "username": "operador",
+            "permissions": {"perguntas_pos_venda": True},
+        },
+    )
+
+    assert handled is False
+    assert regenerated == []
+    active = next(iter(state["question_active_threads"].values()))
+    assert active["approval_id"] == "approval-card-2"
+    assert state["question_approval_tokens"][token]["used"] is False
+
+
+def test_active_ml_card_isolated_by_subject_client_user_and_store():
+    approvals = [
+        {
+            "id": "shared-approval-id",
+            "question_id": "question-jk",
+            "status": "pending",
+            "loja": "JK Pecas",
+            "resposta_sugerida": "Resposta JK.",
+        },
+        {
+            "id": "shared-approval-id",
+            "question_id": "question-uai",
+            "status": "pending",
+            "loja": "Uai Mineirinho",
+            "resposta_sugerida": "Resposta Uai.",
+        },
+    ]
+    state = {}
+    token, _item = whatsapp_bridge._question_approval_token(
+        state,
+        approval=approvals[1],
+        subject_id="subject-uai",
+        client_id="cliente-uai",
+        username="operador-uai",
+    )
+    whatsapp_bridge._question_set_active_thread(
+        state,
+        approval_id="shared-approval-id",
+        token=token,
+        subject_id="subject-uai",
+        client_id="cliente-uai",
+        username="operador-uai",
+    )
+
+    for subject_id, client_id, username in (
+        ("subject-outro", "cliente-uai", "operador-uai"),
+        ("subject-uai", "cliente-outro", "operador-uai"),
+        ("subject-uai", "cliente-uai", "operador-outro"),
+    ):
+        assert whatsapp_bridge._question_active_approval(
+            state,
+            approvals,
+            subject_id=subject_id,
+            client_id=client_id,
+            username=username,
+        ) == (None, "", None)
+
+    active, active_token, _active_item = whatsapp_bridge._question_active_approval(
+        state,
+        approvals,
+        subject_id="subject-uai",
+        client_id="cliente-uai",
+        username="operador-uai",
+    )
+    assert active_token == token
+    assert active is approvals[1]
+    scoped_thread = next(iter(state["question_active_threads"].values()))
+    assert scoped_thread["card_context"]["store"] == "Uai Mineirinho"
+    assert scoped_thread["card_context"]["question_id"] == "question-uai"
 
 
 def test_question_regenerate_button_preserves_the_latest_user_guidance(monkeypatch):
@@ -877,6 +1903,15 @@ def test_natural_edit_instruction_never_falls_into_generic_chat_and_reopens_butt
     monkeypatch.setattr(whatsapp_bridge, "_post_message_result", lambda _cfg, mid, payload: completed.append((mid, payload)))
     monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
     monkeypatch.setattr(codex_console, "codex_criar_tarefa_para_sessao", lambda *_args, **_kwargs: pytest.fail("must not create generic chat task"))
+    monkeypatch.setattr(
+        whatsapp_bridge.codex_whatsapp_agents.CONVERSATION_RUNTIME,
+        "run",
+        lambda **_kwargs: {
+            "action": "steer",
+            "intent_kind": "query",
+            "relation_to_active_job": "correction",
+        },
+    )
 
     def record_regenerate(item, _approvals, _client, *, guidance=""):
         guidance_capture.append(guidance)
@@ -905,7 +1940,7 @@ def test_natural_edit_instruction_never_falls_into_generic_chat_and_reopens_butt
     assert completed == [("wamid.edit", {"status": "completed", "response_parts": []})]
 
 
-def test_audio_guidance_is_transcribed_before_question_revision_routing(monkeypatch):
+def test_audio_guidance_is_transcribed_before_question_revision_routing(monkeypatch, tmp_path):
     transcript = "Reformule a resposta, diga apenas que nao temos esse produto e agradeca."
     approval = {
         "id": "approval-1",
@@ -930,6 +1965,10 @@ def test_audio_guidance_is_transcribed_before_question_revision_routing(monkeypa
     }
     captured_guidance = []
     interactive = []
+    attachment = tmp_path / ".codex-remote-attachments" / "cliente" / "audio-teste.ogg"
+    attachment.parent.mkdir(parents=True)
+    attachment.write_bytes(b"raw-audio")
+    monkeypatch.setattr(whatsapp_bridge, "_base_dir", lambda: tmp_path)
     monkeypatch.setattr(whatsapp_bridge, "_start_typing_pulse", lambda *_args: None)
     monkeypatch.setattr(whatsapp_bridge, "_reload_bound_session", lambda *_args: {
         "client_id": "cliente",
@@ -937,7 +1976,19 @@ def test_audio_guidance_is_transcribed_before_question_revision_routing(monkeypa
         "permissions": {"perguntas_pos_venda": True},
         "is_full": False,
     })
-    monkeypatch.setattr(whatsapp_bridge, "_download_media", lambda *_args: {"mime_type": "audio/ogg", "path": "audio-teste.ogg"})
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_download_media",
+        lambda *_args: transcription_component.DownloadedMedia(
+            public_payload={
+                "id": "audio-public-id",
+                "name": "audio-teste.ogg",
+                "mime_type": "audio/ogg",
+                "size": attachment.stat().st_size,
+            },
+            local_path=attachment.resolve(),
+        ),
+    )
     monkeypatch.setattr(whatsapp_bridge, "_transcribe_audio", lambda _path: {"success": True, "text": transcript})
     monkeypatch.setattr(perguntas_pos_venda_state, "_perguntas_ia_aprovacoes_carregar", lambda _client: [approval])
 
@@ -951,6 +2002,15 @@ def test_audio_guidance_is_transcribed_before_question_revision_routing(monkeypa
     monkeypatch.setattr(whatsapp_bridge, "_post_message_result", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
     monkeypatch.setattr(codex_console, "codex_criar_tarefa_para_sessao", lambda *_args, **_kwargs: pytest.fail("audio guidance must not create a generic task"))
+    monkeypatch.setattr(
+        whatsapp_bridge.codex_whatsapp_agents.CONVERSATION_RUNTIME,
+        "run",
+        lambda **_kwargs: {
+            "action": "steer",
+            "intent_kind": "query",
+            "relation_to_active_job": "correction",
+        },
+    )
 
     whatsapp_bridge._process_message(
         {"machine_id": "machine-1", "subject_id": "subject-1", "personal_phone": "5511999999999"},
@@ -967,14 +2027,10 @@ def test_audio_guidance_is_transcribed_before_question_revision_routing(monkeypa
     )
 
     assert captured_guidance == [transcript]
+    assert not attachment.exists()
     assert len(interactive) == 1
     assert "No momento nao temos esse produto" in interactive[0]["body"]
     assert interactive[0]["token"] != "ABCDEFGH"
-
-
-def test_natural_question_action_accepts_short_confirmation_after_revision():
-    assert whatsapp_bridge._question_natural_action("Responda isso") == "confirm_approval"
-    assert whatsapp_bridge._question_natural_action("Resposta isso") == "confirm_approval"
 
 
 def test_explicit_user_answer_is_kept_exactly_and_saved_without_calling_ai(monkeypatch):
@@ -1203,6 +2259,15 @@ def test_rejecting_suggestion_keeps_same_question_active(monkeypatch):
     monkeypatch.setattr(perguntas_pos_venda_state, "_perguntas_ia_aprovacoes_salvar", lambda _client, values: saved.append(values))
     monkeypatch.setattr(whatsapp_bridge, "_post_command_reply", lambda _cfg, _mid, text, title: replies.append((title, text)))
     monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
+    monkeypatch.setattr(
+        whatsapp_bridge.codex_whatsapp_agents.CONVERSATION_RUNTIME,
+        "run",
+        lambda **_kwargs: {
+            "action": "steer",
+            "intent_kind": "mutation_candidate",
+            "relation_to_active_job": "cancel",
+        },
+    )
     session = {"client_id": "cliente", "username": "operador", "permissions": {"perguntas_pos_venda": True}}
 
     assert whatsapp_bridge._handle_question_natural_language(
@@ -1213,13 +2278,13 @@ def test_rejecting_suggestion_keeps_same_question_active(monkeypatch):
     ) is True
 
     assert approval["status"] == "pending"
-    assert saved and saved[-1][0]["id"] == "approval-1"
+    assert saved == []
     assert state["question_approval_tokens"]["ABCDEFGH"]["used"] is False
     assert next(iter(state["question_active_threads"].values()))["approval_id"] == "approval-1"
-    assert "continua ativa" in replies[-1][1]
+    assert "texto livre nao enviou nada" in replies[-1][1]
 
 
-def test_natural_approval_reopens_tokenized_confirmation_without_sending(monkeypatch):
+def test_natural_approval_requires_tokenized_confirmation_without_sending(monkeypatch):
     approval = {
         "id": "approval-1",
         "status": "pending",
@@ -1243,9 +2308,6 @@ def test_natural_approval_reopens_tokenized_confirmation_without_sending(monkeyp
     calls = []
     replies = []
     interactive = []
-    monkeypatch.setattr(whatsapp_bridge, "_reload_bound_session", lambda *_args: {
-        "client_id": "cliente", "username": "operador", "permissions": {"perguntas_pos_venda": True}, "is_full": False
-    })
     monkeypatch.setattr(perguntas_pos_venda_state, "_perguntas_ia_aprovacoes_carregar", lambda _client: [approval])
     monkeypatch.setattr(
         perguntas_pos_venda_endpoints,
@@ -1260,24 +2322,35 @@ def test_natural_approval_reopens_tokenized_confirmation_without_sending(monkeyp
     )
     monkeypatch.setattr(whatsapp_bridge, "_post_message_result", lambda *_args, **_kwargs: {"success": True, "status": "sent"})
     monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
-    monkeypatch.setattr(codex_console, "codex_criar_tarefa_para_sessao", lambda *_args, **_kwargs: pytest.fail("must not create generic task"))
-
-    whatsapp_bridge._process_message(
-        {"machine_id": "machine-1", "subject_id": "subject-1"},
+    monkeypatch.setattr(
+        whatsapp_bridge.codex_whatsapp_agents.CONVERSATION_RUNTIME,
+        "run",
+        lambda **_kwargs: {
+            "action": "steer",
+            "intent_kind": "mutation_candidate",
+            "relation_to_active_job": "followup",
+        },
+    )
+    handled = whatsapp_bridge._handle_question_natural_language(
+        {},
         state,
         {
             "message_id": "wamid.approve-natural",
-            "machine_id": "machine-1",
             "subject_id": "subject-1",
             "text_body": "Perfeito. responda a pergunta",
-            "message_type": "text",
+        },
+        {
+            "client_id": "cliente",
+            "username": "operador",
+            "permissions": {"perguntas_pos_venda": True},
         },
     )
 
+    assert handled is True
     assert calls == []
-    assert interactive[0]["token"] == "ABCDEFGH"
+    assert interactive == []
     assert state["question_approval_tokens"]["ABCDEFGH"]["used"] is False
-    assert replies == []
+    assert "texto livre nao enviou nada" in replies[-1][1]
 
 
 def test_whatsapp_task_is_read_only_or_waits_for_local_approval(codex_runtime):
@@ -1288,21 +2361,21 @@ def test_whatsapp_task_is_read_only_or_waits_for_local_approval(codex_runtime):
         channel_metadata={"message_id": "wamid.1", "wa_id": "5511999999999"},
     )["task"]
     assert query["origin"] == "whatsapp"
-    assert query["channel_message_id"] == "wamid.1"
+    assert query["channel_message_id"] == ""
+    assert codex_console.CODEX_TASKS[query["task_id"]]["channel_message_id"] == "wamid.1"
     assert query["external_safe_mode"] is True
     assert query["sandbox"] == "read_only"
     assert query["status"] == "queued"
 
-    mutation = codex_console.codex_criar_tarefa_para_sessao(
-        codex_console.CodexTaskRequest(prompt="Altere o modulo de configuracoes"),
-        _full_session(),
-        origin="whatsapp",
-        channel_metadata={"message_id": "wamid.2", "wa_id": "5511999999999"},
-    )["task"]
-    assert mutation["sandbox"] == "workspace_write"
-    assert mutation["status"] == "awaiting_input"
-    assert mutation["approved"] is False
-    assert mutation["required_input"]
+    with pytest.raises(HTTPException) as development:
+        codex_console.codex_criar_tarefa_para_sessao(
+            codex_console.CodexTaskRequest(prompt="Altere o modulo de configuracoes"),
+            _full_session(),
+            origin="whatsapp",
+            channel_metadata={"message_id": "wamid.2", "wa_id": "5511999999999"},
+        )
+    assert development.value.status_code == 409
+    assert development.value.detail["error_code"] == "DEVELOPMENT_REQUIRES_CODEX_DESKTOP"
 
 
 def test_whatsapp_full_mobile_uses_full_catalog_but_mutations_require_app(codex_runtime, monkeypatch):
@@ -1310,23 +2383,23 @@ def test_whatsapp_full_mobile_uses_full_catalog_but_mutations_require_app(codex_
     query = codex_console.codex_criar_tarefa_para_sessao(
         codex_console.CodexTaskRequest(
             prompt="Consulte as vendas dos ultimos 30 dias",
-            sandbox="workspace_write",
-            approval_mode="request",
+            sandbox="read_only",
+            approval_mode="read_only",
         ),
         _full_session(),
         origin="whatsapp",
         channel_metadata={"message_id": "wamid.mobile.query", "subject_id": "subject-1", "wa_id": "5511999999999", "mobile_full_access": True},
     )["task"]
-    assert query["external_safe_mode"] is False
-    assert query["whatsapp_full_access"] is True
+    assert query["external_safe_mode"] is True
+    assert query["whatsapp_full_access"] is False
     assert query["sandbox"] == "read_only"
     assert query["status"] == "queued"
 
     mutation = codex_console.codex_criar_tarefa_para_sessao(
         codex_console.CodexTaskRequest(
             prompt="Sincronize as vendas da loja JK Pecas de 01/07/2026 a 10/07/2026",
-            sandbox="workspace_write",
-            approval_mode="request",
+            sandbox="read_only",
+            approval_mode="read_only",
         ),
         _full_session(),
         origin="whatsapp",
@@ -1350,8 +2423,8 @@ def test_whatsapp_query_only_metadata_forces_full_user_to_read_only(codex_runtim
     task = codex_console.codex_criar_tarefa_para_sessao(
         codex_console.CodexTaskRequest(
             prompt="Atualize as vendas da loja JK Pecas",
-            sandbox="full_access",
-            approval_mode="full_access",
+            sandbox="read_only",
+            approval_mode="read_only",
         ),
         _full_session(),
         origin="whatsapp",
@@ -1401,16 +2474,16 @@ def test_nonfull_whatsapp_mutation_remains_read_only(codex_runtime):
     assert task["whatsapp_full_access"] is False
 
 
-def test_whatsapp_sensitive_request_waits_for_missing_data_before_app_approval(codex_runtime, monkeypatch):
-    task = codex_console.codex_criar_tarefa_para_sessao(
-        codex_console.CodexTaskRequest(prompt="Corrija o modulo de configuracoes"),
-        _full_session(),
-        origin="whatsapp",
-        channel_metadata={"wa_id": "5511999999999"},
-    )["task"]
-    assert task["status"] == "awaiting_input"
-    assert task["required_input"]
-    assert task["agent_state"] == "aguardando_dados"
+def test_whatsapp_development_request_is_redirected_to_codex_desktop(codex_runtime, monkeypatch):
+    with pytest.raises(HTTPException) as exc:
+        codex_console.codex_criar_tarefa_para_sessao(
+            codex_console.CodexTaskRequest(prompt="Corrija o modulo de configuracoes"),
+            _full_session(),
+            origin="whatsapp",
+            channel_metadata={"wa_id": "5511999999999"},
+        )
+    assert exc.value.status_code == 409
+    assert exc.value.detail["error_code"] == "DEVELOPMENT_REQUIRES_CODEX_DESKTOP"
 
 
 def test_external_catalog_omits_action_tools(monkeypatch):
@@ -1880,8 +2953,8 @@ def test_whatsapp_approval_code_is_one_time_and_bound_to_subject(codex_runtime, 
     task = codex_console.codex_criar_tarefa_para_sessao(
         codex_console.CodexTaskRequest(
             prompt="Responda a pergunta do Mercado Livre da loja JK Pecas question_id:123. Resposta: Sim, serve.",
-            sandbox="workspace_write",
-            approval_mode="request",
+            sandbox="read_only",
+            approval_mode="read_only",
         ),
         _full_session(),
         origin="whatsapp",
@@ -3855,7 +4928,6 @@ def test_typing_pulse_renews_and_stops_when_worker_marks_message_inactive(monkey
     replies = iter([{"success": True, "status": "sent"}, {"success": True, "status": "not_active"}])
     monkeypatch.setattr(whatsapp_bridge, "_post_typing_indicator", lambda *_args: calls.append(True) or next(replies))
     monkeypatch.setattr(whatsapp_bridge, "TYPING_REFRESH_SECONDS", 0)
-    monkeypatch.setattr(whatsapp_bridge, "TYPING_MAX_SECONDS", 1)
     monkeypatch.setitem(whatsapp_bridge.RUNTIME_STATE, "typing_last_error", "old")
 
     whatsapp_bridge._typing_pulse_worker({}, "wamid.typing", threading.Event())
@@ -3865,22 +4937,24 @@ def test_typing_pulse_renews_and_stops_when_worker_marks_message_inactive(monkey
     assert whatsapp_bridge.RUNTIME_STATE["typing_last_sent_at"]
 
 
-def test_typing_pulse_failure_is_silent_and_stops_after_three_errors(monkeypatch):
+def test_typing_pulse_failure_is_silent_and_keeps_heartbeat_alive(monkeypatch):
     calls = []
+    stop_event = threading.Event()
 
     def fail(*_args):
         calls.append(True)
+        if len(calls) == 4:
+            stop_event.set()
         raise RuntimeError("typing unavailable")
 
     monkeypatch.setattr(whatsapp_bridge, "_post_typing_indicator", fail)
     monkeypatch.setattr(whatsapp_bridge, "TYPING_REFRESH_SECONDS", 0)
-    monkeypatch.setattr(whatsapp_bridge, "TYPING_MAX_SECONDS", 1)
     monkeypatch.setitem(whatsapp_bridge.RUNTIME_STATE, "last_error", "business-flow-unchanged")
     monkeypatch.setitem(whatsapp_bridge.RUNTIME_STATE, "typing_last_error", "")
 
-    whatsapp_bridge._typing_pulse_worker({}, "wamid.error", threading.Event())
+    whatsapp_bridge._typing_pulse_worker({}, "wamid.error", stop_event)
 
-    assert len(calls) == whatsapp_bridge.TYPING_MAX_CONSECUTIVE_ERRORS
+    assert len(calls) == 4
     assert whatsapp_bridge.RUNTIME_STATE["last_error"] == "business-flow-unchanged"
     assert "typing unavailable" in whatsapp_bridge.RUNTIME_STATE["typing_last_error"]
 

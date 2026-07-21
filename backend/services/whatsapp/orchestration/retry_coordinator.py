@@ -18,7 +18,6 @@ import sys
 import tempfile
 import threading
 import time
-import unicodedata
 import uuid
 from collections import deque
 from datetime import datetime
@@ -435,9 +434,10 @@ def _dual_schedule_retry(
 def _dual_migrate_pending_v7(pending: dict[str, Any]) -> bool:
     changed = False
     before_deadline = float(pending.get("deadline_at_epoch") or 0)
+    before_deadline_enabled = pending.get("deadline_enabled")
     before_policy = str(pending.get("retry_policy") or "")
     _ensure_job_contract(pending)
-    if not before_deadline or before_policy != "bounded":
+    if before_deadline or before_deadline_enabled is not False or before_policy != "bounded":
         changed = True
     pending.setdefault("verified_facts", [])
     pending.setdefault("verified_sources", [])
@@ -707,10 +707,6 @@ def _dual_retry_pending_due(
         _save_pending(state, message_id, pending)
     return created
 
-def _whatsapp_is_retry_command(value: Any) -> bool:
-    text = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode("ascii").lower()
-    return bool(re.search(r"\b(tente|tentar|continue|continuar|retome|retomar|de novo|novamente)\b", text))
-
 def _resume_dual_pending_with_message(
     config: dict[str, Any],
     state: dict[str, Any],
@@ -804,7 +800,6 @@ _COMPONENT_FUNCTIONS = frozenset((
     '_dual_migrate_pending_v7',
     '_recover_dual_pending_after_restart',
     '_dual_retry_pending_due',
-    '_whatsapp_is_retry_command',
     '_resume_dual_pending_with_message'
 ))
 _IMPLEMENTATIONS = {
@@ -826,7 +821,6 @@ _IMPLEMENTATIONS = {
     '_dual_migrate_pending_v7': _dual_migrate_pending_v7,
     '_recover_dual_pending_after_restart': _recover_dual_pending_after_restart,
     '_dual_retry_pending_due': _dual_retry_pending_due,
-    '_whatsapp_is_retry_command': _whatsapp_is_retry_command,
     '_resume_dual_pending_with_message': _resume_dual_pending_with_message
 }
 

@@ -320,7 +320,7 @@ def test_function_manager_pending_never_persists_ephemeral_hub_capability(monkey
         {"machine_id": "machine-local"}, {}, {
             "username": "operador", "client_id": "000002", "machine_id": "machine-local",
             "permissions": {"full": False, "context_hub_read_full": True},
-        }, {"subtasks": []}, {"tool_calls": [{"tool_id": "context_hub_search"}]}, {},
+        }, {"subtasks": []}, {},
         "message-1", "subject-1", "5511999999999", "conversation-1", "Pergunta tecnica",
         "Pergunta tecnica", "Tecnico", "Consultando.", None, None, "",
     )
@@ -602,7 +602,7 @@ def test_hub_only_evidence_is_handed_to_luna_without_sol(monkeypatch):
         "verified_facts": [json.dumps({"rows": [{"snippet": "Aplicacao tecnica confirmada."}]})],
         "validations": [{"required": True, "dados_suficientes": True}],
     }
-    pending = {"deterministic_plan": {}, "manager_evidence": evidence}
+    pending = {"manager_evidence": evidence}
     plan = {"requires_sol": False, "requires_web": False, "manager_guard": {"data_selection_action": "collect"}}
 
     function_manager._function_manager_finish_job({}, {}, "message-1", pending, plan, [{}], evidence)
@@ -655,7 +655,7 @@ def test_technical_request_is_classified_by_luna_before_data_selection(monkeypat
         "permissions": {"full": False, "context_hub_read_full": True},
     }
 
-    decision, _policy, plan = conversation._dual_initial_decision(
+    decision = conversation._dual_initial_decision(
         {},
         {},
         {"message_id": "wamid-1", "subject_id": "subject-1"},
@@ -663,13 +663,11 @@ def test_technical_request_is_classified_by_luna_before_data_selection(monkeypat
         "conversation-1",
         "Como funciona a tela de configuracoes do JK Sistema?",
         {},
-        {},
         "",
     )
 
     assert decision["action"] == "delegate"
     assert decision["action"] == "delegate"
-    assert plan == {}
 
 
 def test_function_manager_audit_never_persists_query_or_snippet(monkeypatch):

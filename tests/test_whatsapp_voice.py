@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -242,3 +243,229 @@ def test_voice_does_not_send_proactively_without_explicit_listing_delivery():
         "Atendemos em horario comercial.",
     )
     assert result == {"attempted": False, "text_sent": False, "images_sent": 0}
+
+
+def test_voice_task_keeps_running_after_old_global_deadline(monkeypatch):
+    decisions = iter((
+        {
+            "action": "delegate",
+            "job_prompt": "consulte os dados completos",
+            "job_title": "Consulta longa",
+            "resolved_context": {},
+        },
+        {"action": "reply", "reply_text": "Consulta concluida com dados confirmados."},
+    ))
+
+    class RuntimeBridge:
+        @staticmethod
+        def _reload_bound_session(_config, _message):
+            return {"client_id": "cliente", "username": "operador", "permissions": {"full": True}}
+
+        @staticmethod
+        def _conversation_id(_config, _message):
+            return "voice-conversation"
+
+        @staticmethod
+        def _phone_notification_settings(*_args, **_kwargs):
+            return {"ai_behavior": "consultivo"}
+
+        @staticmethod
+        def _normalize_phone_ai_behavior(value):
+            return value
+
+        @staticmethod
+        def _load_state():
+            return {}
+
+        @staticmethod
+        def _whatsapp_session_stores(_session):
+            return ["JK Pecas"]
+
+        @staticmethod
+        def _run_conversation_agent(*_args, **_kwargs):
+            return next(decisions)
+
+        @staticmethod
+        def _dual_agent_query_policy(*_args, **_kwargs):
+            return {"store_mode": "single", "store_matches": ["JK Pecas"]}
+
+        @staticmethod
+        def _create_dual_worker_task(*_args, **_kwargs):
+            return {"task_id": "voice-task-long", "status": "running", "channel_metadata": {}}
+
+    running = {"task_id": "voice-task-long", "status": "running", "channel_metadata": {}}
+    completed = {
+        "task_id": "voice-task-long",
+        "status": "completed",
+        "channel_metadata": {},
+        "final_response": "Consulta concluida com dados confirmados.",
+    }
+    loaded_tasks = iter((running, completed, completed))
+    clock = iter((0.0, 0.0, 1_000.0))
+    progress_messages: list[tuple[str, bool]] = []
+
+    monkeypatch.setattr(whatsapp_voice.time, "time", lambda: next(clock, 1_000.0))
+    monkeypatch.setattr(whatsapp_voice.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(codex_console, "_codex_load_task", lambda _task_id: next(loaded_tasks))
+    monkeypatch.setattr(codex_console, "_codex_update_task", lambda *_args, **_kwargs: completed)
+    monkeypatch.setattr(
+        codex_console,
+        "codex_cancelar_tarefa_para_sessao",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("voice must not cancel by elapsed time")),
+    )
+    monkeypatch.setattr(
+        whatsapp_voice.codex_whatsapp_agents,
+        "normalize_worker_result",
+        lambda _task: {"status": "completed", "summary": "Consulta concluida com dados confirmados."},
+    )
+    monkeypatch.setattr(
+        whatsapp_voice.VoiceRuntime,
+        "_deliver_requested_listing",
+        lambda *_args, **_kwargs: {"attempted": False, "text_sent": False, "images_sent": 0},
+    )
+
+    answer = whatsapp_voice.VoiceRuntime()._answer_turn(
+        {},
+        RuntimeBridge,
+        {"id": "call-long", "subject_id": "subject", "wa_id": "5537999990000"},
+        {"task_ids": []},
+        "Consulte um relatorio demorado",
+        lambda text, choice=False: progress_messages.append((text, choice)),
+    )
+
+    assert answer == "Consulta concluida com dados confirmados."
+    assert any(choice for _text, choice in progress_messages)
+
+
+def test_ended_call_releases_capacity_while_nonterminal_task_is_observed(monkeypatch):
+    runtime = whatsapp_voice.VoiceRuntime()
+    call = {
+        "id": "call-never-terminal",
+        "subject_id": "subject",
+        "wa_id": "5537999990000",
+    }
+    state = {
+        "started_epoch": 1.0,
+        "task_ids": [],
+        "usage": {},
+        "call_released_event": threading.Event(),
+        "background_delivery_started": False,
+    }
+    runtime._calls[call["id"]] = state
+    runtime._threads[call["id"]] = threading.current_thread()
+    detached: list[str] = []
+    decisions = iter(({
+        "action": "delegate",
+        "job_prompt": "consulta sem prazo global",
+        "job_title": "Consulta longa",
+        "resolved_context": {},
+    },))
+
+    class RuntimeBridge:
+        @staticmethod
+        def _now():
+            return "2026-07-21T00:00:00Z"
+
+        @staticmethod
+        def _gateway_json(*_args, **_kwargs):
+            return {"success": True}
+
+        @staticmethod
+        def _reload_bound_session(_config, _message):
+            return {"client_id": "cliente", "username": "operador", "permissions": {"full": True}}
+
+        @staticmethod
+        def _conversation_id(_config, _message):
+            return "voice-conversation"
+
+        @staticmethod
+        def _phone_notification_settings(*_args, **_kwargs):
+            return {"ai_behavior": "consultivo"}
+
+        @staticmethod
+        def _normalize_phone_ai_behavior(value):
+            return value
+
+        @staticmethod
+        def _load_state():
+            return {}
+
+        @staticmethod
+        def _whatsapp_session_stores(_session):
+            return ["JK Pecas"]
+
+        @staticmethod
+        def _run_conversation_agent(*_args, **_kwargs):
+            return next(decisions)
+
+        @staticmethod
+        def _dual_agent_query_policy(*_args, **_kwargs):
+            return {"store_mode": "single", "store_matches": ["JK Pecas"]}
+
+        @staticmethod
+        def _create_dual_worker_task(*_args, **_kwargs):
+            return {"task_id": "voice-task-never", "status": "running", "channel_metadata": {}}
+
+    async def ended_call(_config, _bridge, _call, current_state):
+        current_state["call_released_event"].set()
+        assert runtime._answer_turn(
+            {}, RuntimeBridge, call, current_state, "consulta longa", lambda *_args, **_kwargs: None,
+        ) == ""
+
+    monkeypatch.setattr(runtime, "_run_call", ended_call)
+    monkeypatch.setattr(
+        runtime,
+        "_start_detached_task_observer",
+        lambda *_args, **kwargs: detached.append(str(kwargs.get("task_id") or "")),
+    )
+    monkeypatch.setattr(codex_console, "_codex_load_task", lambda _task_id: {
+        "task_id": "voice-task-never", "status": "running", "channel_metadata": {},
+    })
+    monkeypatch.setattr(codex_console, "_codex_update_task", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        codex_console,
+        "codex_cancelar_tarefa_para_sessao",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("call end must not cancel task")),
+    )
+
+    runtime._run_call_thread({}, RuntimeBridge, call, state)
+
+    assert detached == ["voice-task-never"]
+    assert call["id"] not in runtime._calls
+    assert call["id"] not in runtime._threads
+
+
+def test_detached_voice_observer_delivers_completed_task_by_message(monkeypatch):
+    runtime = whatsapp_voice.VoiceRuntime()
+    state = {"background_delivery_started": False}
+    delivered = threading.Event()
+    sent: list[str] = []
+    tasks = iter((
+        {"task_id": "voice-task", "status": "running"},
+        {"task_id": "voice-task", "status": "completed"},
+    ))
+
+    monkeypatch.setattr(codex_console, "_codex_load_task", lambda _task_id: next(tasks))
+    monkeypatch.setattr(whatsapp_voice.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(runtime, "_complete_delegated_turn", lambda *_args, **_kwargs: "Resultado confirmado.")
+
+    def send(_config, _bridge, _call, answer):
+        sent.append(answer)
+        delivered.set()
+        return {"success": True}
+
+    monkeypatch.setattr(runtime, "_send_result_message", send)
+
+    runtime._start_detached_task_observer(
+        {}, object(), {"id": "call", "wa_id": "5537999990000"}, state,
+        transcript="consulta",
+        task_id="voice-task",
+        latest={"task_id": "voice-task", "status": "running"},
+        local_state={},
+        conversation_id="conversation",
+        ai_behavior="consultivo",
+        session={"client_id": "cliente"},
+    )
+
+    assert delivered.wait(2)
+    assert sent == ["Resultado confirmado."]

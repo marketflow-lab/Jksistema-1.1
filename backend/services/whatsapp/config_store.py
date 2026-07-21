@@ -256,7 +256,7 @@ def _phone_notification_settings(
 
 def _default_config() -> dict[str, Any]:
     return {
-        "version": 10,
+        "version": 11,
         "worker_url": "",
         "bridge_token": "",
         "business_phone": "",
@@ -284,6 +284,7 @@ def _default_config() -> dict[str, Any]:
         "wait_message_steady_seconds": WHATSAPP_WAIT_MESSAGE_STEADY_DEFAULT,
         "partial_delivery_debounce_seconds": WHATSAPP_PARTIAL_DEBOUNCE_DEFAULT,
         "job_deadline_seconds": WHATSAPP_JOB_DEADLINE_DEFAULT,
+        "deadline_enabled": False,
         "retry_policy": "bounded",
         "max_subtasks_per_job": WHATSAPP_MAX_SUBTASKS_DEFAULT,
         "progress_messages_enabled": False,
@@ -337,8 +338,8 @@ def _load_config() -> dict[str, Any]:
             except (TypeError, ValueError):
                 stored_version = 0
             if stored_version < 9 and str(result.get("agent_architecture") or "").strip().lower() == "dual_codex":
-                # A versao 9 mantem a arquitetura dual, mas torna prazos,
-                # tentativas e avisos de espera deterministicos e limitados.
+                # A versao 9 mantem a arquitetura dual e normaliza tentativas,
+                # capacidade e avisos de espera.
                 result.update(
                     {
                         "version": 9,
@@ -365,8 +366,18 @@ def _load_config() -> dict[str, Any]:
                         "response_provider_policy": whatsapp_settings.WHATSAPP_RESPONSE_PROVIDER_POLICY_DEFAULT,
                     }
                 )
+            if stored_version < 11:
+                result.update(
+                    {
+                        "version": 11,
+                        "job_deadline_seconds": 0,
+                        "deadline_enabled": False,
+                    }
+                )
         result["enabled"] = bool(result.get("enabled"))
-        result["version"] = 10
+        result["version"] = 11
+        result["job_deadline_seconds"] = 0
+        result["deadline_enabled"] = False
         result["pairing_pending"] = bool(result.get("pairing_pending"))
         if "context_hub_enabled_default" not in stored_config:
             result["context_hub_enabled_default"] = stored_config.get("context_hub_enabled") is not False
@@ -428,7 +439,7 @@ def _save_config(config: dict[str, Any]) -> dict[str, Any]:
                 context_hub_overrides[override_client_id] = override["enabled"]
         value = _default_config()
         value.update(source)
-        value["version"] = 10
+        value["version"] = 11
         value["context_hub_enabled_default"] = context_hub_default
         value["context_hub_enabled_by_client"] = context_hub_overrides
         value["client_id"] = str(value.get("client_id") or "").strip()

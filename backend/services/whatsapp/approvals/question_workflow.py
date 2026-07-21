@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo
 import requests
 from fastapi import Header, HTTPException, Request
 from backend.schemas import IAChatAttachment, IAChatRequest
+from backend.services import perguntas_pos_venda_codex
 from backend.services.whatsapp import formatting as whatsapp_formatting
 from backend.services.whatsapp import gateway as whatsapp_gateway
 from backend.services.whatsapp import intent as whatsapp_intent
@@ -64,6 +65,11 @@ from backend.services.whatsapp.composition import (
     BridgeDependencies,
     bind_component_namespace,
     invoke_component,
+)
+from backend.services.whatsapp.approvals.question_tokens import (
+    _question_card_context,
+    _question_token_approval_matches,
+    _question_token_scope_matches,
 )
 
 WHATSAPP_MAX_OUTBOUND_IMAGES = whatsapp_media.WHATSAPP_MAX_OUTBOUND_IMAGES
@@ -159,7 +165,7 @@ def _deliver_completed_question_research(
     for item in tokens.values():
         if isinstance(item, dict) and str(item.get("approval_id") or "") == approval_id:
             item.update({"used": True, "decision": "superseded_by_verified_research"})
-    token, _token_item = _question_approval_token(
+    token, token_item = _question_approval_token(
         state,
         approval=approval,
         subject_id=subject_id,
@@ -174,6 +180,7 @@ def _deliver_completed_question_research(
         fingerprint=f"ppv-research:{client_id}:{subject_id}:{job_id}:{result.get('proposal_hash') or ''}",
         token=token,
         body=_question_approval_body(approval, response),
+        state=state,
     )
     if str(delivery.get("status") or "") not in {"sent", "duplicate"}:
         return False
@@ -192,6 +199,7 @@ def _deliver_completed_question_research(
         subject_id=subject_id,
         client_id=client_id,
         username=username,
+        card_context=_question_card_context(approval, token_item),
     )
     _save_state(state)
     return True
@@ -214,24 +222,35 @@ def _eligible_question_bindings(config: dict[str, Any]) -> list[tuple[dict[str, 
             eligible.append((binding, client_id, username, subject_id))
     return eligible
 
-def _pending_question_approval(ppv_state: Any, configs: Any, approvals: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
-    def _is_post_sale(item: dict[str, Any]) -> bool:
-        tipo = str(item.get("tipo") or item.get("approval_type") or "").strip().lower()
-        origens = (
-            item.get("origem"),
-            item.get("ia_origem"),
-            item.get("ia_finalidade"),
-        )
-        return tipo == "pos_venda" or any(
-            "pos_venda" in str(origem or "").strip().lower()
-            for origem in origens
-        )
+def _question_approval_marker(value: Any) -> str:
+    return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
 
+
+def _is_post_sale_question_approval(item: dict[str, Any]) -> bool:
+    tipo = _question_approval_marker(item.get("tipo") or item.get("approval_type"))
+    origens = (
+        item.get("origem"),
+        item.get("ia_origem"),
+        item.get("ia_finalidade"),
+    )
+    return tipo == "pos_venda" or any(
+        "pos_venda" in _question_approval_marker(origem)
+        for origem in origens
+    )
+
+def _pending_question_approval(
+    ppv_state: Any,
+    configs: Any,
+    approvals: list[dict[str, Any]],
+    *,
+    client_id: str = "",
+) -> Optional[dict[str, Any]]:
     return next(
         (
             item for item in approvals
             if isinstance(item, dict)
-            and not _is_post_sale(item)
+            and not _is_post_sale_question_approval(item)
+            and perguntas_pos_venda_codex.approval_job_current(client_id, str(item.get("proposal_id") or item.get("codex_job_id") or item.get("research_job_id") or ""))
             and str(item.get("status") or "pending") == "pending"
             and str(item.get("id") or "").strip()
             and str(item.get("resposta_sugerida") or "").strip()
@@ -240,6 +259,99 @@ def _pending_question_approval(ppv_state: Any, configs: Any, approvals: list[dic
             ).get("notificar_whatsapp_aprovacoes") is True
         ),
         None,
+    )
+
+
+def _question_has_active_research(approval: dict[str, Any]) -> bool:
+    job_id = str(approval.get("research_job_id") or approval.get("codex_job_id") or "").strip()
+    if not job_id or str(approval.get("research_delivered_job_id") or "").strip() == job_id:
+        return False
+    return _question_research_delivery_state(approval, job_id) in {"waiting_evidence", "ready"}
+
+
+def _question_active_token_invalid_reason(
+    state: dict[str, Any],
+    approval: dict[str, Any],
+    token: str,
+    *,
+    subject_id: str,
+    client_id: str,
+    username: str,
+) -> str:
+    if _is_post_sale_question_approval(approval):
+        return "ineligible_post_sale"
+    tokens = state.get("question_approval_tokens") if isinstance(state.get("question_approval_tokens"), dict) else {}
+    token_item = tokens.get(str(token or "").strip().upper())
+    if not isinstance(token_item, dict):
+        return "missing_token"
+    approval_id = str(approval.get("id") or "").strip()
+    if (
+        not _question_token_approval_matches(token_item, approval)
+        or str(token_item.get("subject_id") or "").strip() != str(subject_id or "").strip()
+        or str(token_item.get("client_id") or "").strip() != str(client_id or "").strip()
+        or str(token_item.get("username") or "").strip().lower() != str(username or "").strip().lower()
+    ):
+        return "invalid_token_scope"
+    try:
+        token_age = time.time() - float(token_item.get("created_at") or 0)
+    except (TypeError, ValueError):
+        token_age = QUESTION_APPROVAL_TOKEN_TTL_SECONDS + 1
+    if token_age > QUESTION_APPROVAL_TOKEN_TTL_SECONDS:
+        return "expired_token"
+    decision = _question_approval_marker(token_item.get("decision"))
+    if token_item.get("used") is True or "superseded" in decision:
+        if _question_has_active_research(approval):
+            return ""
+        return "consumed_token"
+    return ""
+
+
+def _question_invalidate_active_thread(
+    state: dict[str, Any],
+    *,
+    notifications: dict[str, Any],
+    approval_id: str,
+    token: str,
+    reason: str,
+    subject_id: str,
+    client_id: str,
+    username: str,
+) -> None:
+    tokens = state.get("question_approval_tokens") if isinstance(state.get("question_approval_tokens"), dict) else {}
+    expected_scope = (
+        str(approval_id or "").strip(),
+        str(subject_id or "").strip(),
+        str(client_id or "").strip(),
+        str(username or "").strip().lower(),
+    )
+    for candidate_token, token_item in tokens.items():
+        if not isinstance(token_item, dict):
+            continue
+        item_scope = (
+            str(token_item.get("approval_id") or "").strip(),
+            str(token_item.get("subject_id") or "").strip(),
+            str(token_item.get("client_id") or "").strip(),
+            str(token_item.get("username") or "").strip().lower(),
+        )
+        if item_scope != expected_scope:
+            continue
+        if reason != "ineligible_post_sale" and str(candidate_token).strip().upper() != str(token or "").strip().upper():
+            continue
+        if token_item.get("used") is not True:
+            token_item.update({"used": True, "decision": reason, "decided_at": _now()})
+    if reason != "ineligible_post_sale":
+        for notification_key, item in list(notifications.items()):
+            if (
+                isinstance(item, dict)
+                and str(item.get("approval_id") or "").strip() == expected_scope[0]
+                and str(item.get("subject_id") or "").strip() == expected_scope[1]
+            ):
+                notifications.pop(notification_key, None)
+    _question_clear_active_thread(
+        state,
+        subject_id=subject_id,
+        client_id=client_id,
+        username=username,
     )
 
 def _record_blocked_question_notification(
@@ -315,16 +427,73 @@ def _forward_question_approval_for_binding(
     approvals = ppv_state._perguntas_ia_aprovacoes_carregar(client_id)
     active, active_token, _item = _question_active_approval(
         state, approvals, subject_id=subject_id, client_id=client_id, username=username,
+        require_current_contract=True,
     )
-    if active is not None and str(active.get("status") or "pending") == "pending":
-        _deliver_completed_question_research(
-            config, state, approvals, active,
-            client_id=client_id, subject_id=subject_id, username=username,
-        )
+    active_status = str(active.get("status") or "pending").strip().lower() if active is not None else ""
+    if active is not None and active_status == "sending":
         return
+    if active is not None and active_status == "pending":
+        invalid_reason = _question_active_token_invalid_reason(
+            state,
+            active,
+            active_token,
+            subject_id=subject_id,
+            client_id=client_id,
+            username=username,
+        )
+        if not invalid_reason:
+            _deliver_completed_question_research(
+                config, state, approvals, active,
+                client_id=client_id, subject_id=subject_id, username=username,
+            )
+            return
+        active_approval_id = str(active.get("id") or "").strip()
+        active_research = _question_has_active_research(active)
+        _question_invalidate_active_thread(
+            state,
+            notifications=notifications,
+            approval_id=active_approval_id,
+            token=active_token,
+            reason=invalid_reason,
+            subject_id=subject_id,
+            client_id=client_id,
+            username=username,
+        )
+        if active_research and invalid_reason != "ineligible_post_sale":
+            rebound_token, _rebound_item = _question_approval_token(
+                state,
+                approval=active,
+                subject_id=subject_id,
+                client_id=client_id,
+                username=username,
+                force_new=True,
+            )
+            _question_set_active_thread(
+                state,
+                approval_id=active_approval_id,
+                token=rebound_token,
+                subject_id=subject_id,
+                client_id=client_id,
+                username=username,
+            )
+            _deliver_completed_question_research(
+                config,
+                state,
+                approvals,
+                active,
+                client_id=client_id,
+                subject_id=subject_id,
+                username=username,
+            )
+            return
     if active is not None or active_token:
         _question_clear_active_thread(state, subject_id=subject_id, client_id=client_id, username=username)
-    approval = _pending_question_approval(ppv_state, configs, approvals)
+    else:
+        threads = state.get("question_active_threads") if isinstance(state.get("question_active_threads"), dict) else {}
+        thread_key = _question_thread_key(client_id, subject_id, username)
+        if isinstance(threads.get(thread_key), dict):
+            _question_clear_active_thread(state, subject_id=subject_id, client_id=client_id, username=username)
+    approval = _pending_question_approval(ppv_state, configs, approvals, client_id=client_id)
     if approval is None:
         return
     store = str(approval.get("loja") or "").strip()
@@ -332,7 +501,7 @@ def _forward_question_approval_for_binding(
     draft = str(approval.get("resposta_sugerida") or "").strip()
     draft_hash = hashlib.sha256(draft.encode("utf-8")).hexdigest()[:16]
     notification_key = hashlib.sha256(f"{client_id}|{subject_id}|{approval_id}|{draft_hash}".encode("utf-8")).hexdigest()
-    token, _token_item = _question_approval_token(
+    token, token_item = _question_approval_token(
         state, approval=approval, subject_id=subject_id, client_id=client_id, username=username,
     )
     existing = notifications.get(notification_key)
@@ -340,11 +509,12 @@ def _forward_question_approval_for_binding(
         _question_set_active_thread(
             state, approval_id=approval_id, token=token,
             subject_id=subject_id, client_id=client_id, username=username,
+            card_context=_question_card_context(approval, token_item),
         )
         return
     result = _post_interactive_approval(
-        config, subject_id=subject_id, fingerprint=f"ppv:{notification_key}",
-        token=token, body=_question_approval_body(approval),
+        config, subject_id=subject_id, fingerprint=f"ppv:{notification_key}:{token}",
+        token=token, body=_question_approval_body(approval), state=state,
     )
     if str(result.get("status") or "") in {"sent", "duplicate"}:
         notifications[notification_key] = {
@@ -354,6 +524,7 @@ def _forward_question_approval_for_binding(
         _question_set_active_thread(
             state, approval_id=approval_id, token=token,
             subject_id=subject_id, client_id=client_id, username=username,
+            card_context=_question_card_context(approval, token_item),
         )
         return
     blocked_status = str(result.get("status") or result.get("error") or "interactive_blocked")
@@ -378,6 +549,83 @@ def _forward_question_approvals(config: dict[str, Any], state: dict[str, Any]) -
     except Exception as exc:
         RUNTIME_STATE["last_error"] = f"question_approval_notification: {str(exc)[:800]}"
 
+def _question_agentic_free_text_action(
+    config: dict[str, Any],
+    message: dict[str, Any],
+    session: dict[str, Any],
+    approval: dict[str, Any],
+    token_item: dict[str, Any],
+) -> str:
+    """Classify draft references semantically; never authorize a send."""
+
+    user_message = str(message.get("text_body") or "").strip()[:12000]
+    if not user_message:
+        return ""
+    card_context = _question_card_context(approval, token_item)
+    store = str(card_context.get("store") or "")
+    settings = whatsapp_settings.dual_agent_settings(
+        config,
+        client_id=str(session.get("client_id") or ""),
+    )
+    try:
+        decision = codex_whatsapp_agents.CONVERSATION_RUNTIME.run(
+            thread_id="",
+            model=settings["conversation_agent_model"],
+            reasoning_effort=settings["conversation_agent_reasoning"],
+            speed=settings["conversation_agent_speed"],
+            service_tier=settings["conversation_agent_service_tier"],
+            event_type="user_message",
+            user_message=user_message,
+            active_job={
+                "job_id": f"ml-question-draft:{card_context.get('approval_id') or ''}",
+                "job_title": "Revisar o rascunho ativo da pergunta do Mercado Livre",
+                "request_text": json.dumps(card_context, ensure_ascii=False, separators=(",", ":")),
+                "status": "awaiting_input",
+                "recent_conversation_messages": [
+                    str(card_context.get("question") or "")[:500],
+                    str(card_context.get("draft") or "")[:500],
+                ],
+            },
+            worker_result=None,
+            conversation_context=None,
+            conversation_state={
+                "store": store,
+                "store_mode": "single" if store else "none",
+                "sku": str(card_context.get("sku") or ""),
+                "mlb": str(card_context.get("item_id") or ""),
+                "period": "",
+                "confirmed_fields": [field for field in ("store", "sku") if card_context.get(field)],
+                "authorized_stores": [store] if store else [],
+            },
+            quoted_context={
+                "message_id": f"ml-question-card:{card_context.get('approval_id') or ''}",
+                "text": json.dumps(card_context, ensure_ascii=False, separators=(",", ":")),
+                "source": "whatsapp_reply",
+            },
+            ai_behavior=(
+                "Existe um cartao ativo de rascunho de pergunta do Mercado Livre no quoted_context. "
+                "Classifique semanticamente a mensagem atual. Se ela pedir revisao, correcao ou nova redacao desse "
+                "rascunho, use action=steer e relation_to_active_job=correction ou followup. Se for assunto independente, "
+                "use relation_to_active_job=none ou new_parallel. Texto livre nunca aprova, rejeita, cancela nem envia "
+                "resposta ao comprador; essas mutacoes exigem a acao tokenizada do cartao."
+            ),
+            tick_index=0,
+        )
+    except Exception as exc:
+        RUNTIME_STATE["last_error"] = f"question_draft_semantic_action: {str(exc)[:800]}"
+        return ""
+    if not isinstance(decision, dict):
+        return ""
+    action = str(decision.get("action") or "").strip().lower()
+    relation = str(decision.get("relation_to_active_job") or "").strip().lower()
+    intent_kind = str(decision.get("intent_kind") or "").strip().lower()
+    if intent_kind == "mutation_candidate" or action == "cancel_job" or relation == "cancel":
+        return "typed_only"
+    if action == "steer" and relation in {"correction", "followup"}:
+        return "suggest"
+    return ""
+
+
 def _natural_question_request(
     state: dict[str, Any],
     message: dict[str, Any],
@@ -393,19 +641,16 @@ def _natural_question_request(
     active_thread = threads.get(_question_thread_key(client_id, subject_id, username))
     matching = [
         item for item in tokens.values()
-        if isinstance(item, dict)
-        and item.get("used") is not True
-        and str(item.get("subject_id") or "") == subject_id
-        and str(item.get("client_id") or "") == client_id
-        and str(item.get("username") or "").strip().lower() == username
+        if _question_token_scope_matches(
+            item, subject_id=subject_id, client_id=client_id, username=username,
+        )
     ]
-    action = _question_natural_action(message.get("text_body"))
-    if not action and any(item.get("awaiting_correction") is True for item in matching):
-        action = "suggest" if str(message.get("text_body") or "").strip() else ""
-    if not action or (not isinstance(active_thread, dict) and not matching):
+    if not str(message.get("text_body") or "").strip():
+        return None
+    if not isinstance(active_thread, dict) and not matching:
         return None
     return {
-        "action": action,
+        "action": "semantic",
         "subject_id": subject_id,
         "client_id": client_id,
         "username": username,
@@ -428,6 +673,7 @@ def _natural_question_confirm(
         fingerprint=fingerprint,
         token=token,
         body=_question_approval_body(approval, _question_bind_token_draft(token_item, approval)),
+        state=state,
     )
     _save_state(state)
     if str(result.get("status") or "") in {"sent", "duplicate"}:
@@ -487,13 +733,14 @@ def _natural_question_suggest(
     _question_set_active_thread(
         state, approval_id=str(approval.get("id") or ""), token=token,
         subject_id=subject_id, client_id=client_id, username=username,
+        card_context=_question_card_context(approval, token_item),
     )
     fingerprint = "ppv-natural-suggest:" + hashlib.sha256(
         f"{subject_id}|{token}|{message_id}|{regenerated}".encode("utf-8")
     ).hexdigest()
     result = _post_interactive_approval(
         config, subject_id=subject_id, fingerprint=fingerprint,
-        token=token, body=_question_approval_body(approval, regenerated),
+        token=token, body=_question_approval_body(approval, regenerated), state=state,
     )
     _save_state(state)
     if str(result.get("status") or "") in {"sent", "duplicate"}:
@@ -526,6 +773,13 @@ def _natural_question_decide(
 
         payload = PerguntasAprovacaoRequest(
             approval_id=str(approval.get("id") or ""),
+            store=str(token_item.get("store") or approval.get("loja") or ""),
+            question_id=str(
+                token_item.get("question_id")
+                or approval.get("question_id")
+                or approval.get("pergunta_id")
+                or ""
+            ),
             resposta=_question_bind_token_draft(token_item, approval) or None,
         )
         result = ppv_endpoints.ml_perguntas_aprovacoes_aprovar(payload, client_id)
@@ -548,6 +802,7 @@ def _natural_question_decide(
     _question_set_active_thread(
         state, approval_id=str(approval.get("id") or ""), token=token,
         subject_id=subject_id, client_id=client_id, username=username,
+        card_context=_question_card_context(approval, token_item),
     )
     _save_state(state)
     _post_command_reply(
@@ -579,6 +834,7 @@ def _handle_question_natural_language(
         approvals = ppv_state._perguntas_ia_aprovacoes_carregar(client_id)
         approval, token, found_token_item = _question_active_approval(
             state, approvals, subject_id=subject_id, client_id=client_id, username=username,
+            quoted_message_id=str(message.get("quoted_message_id") or ""),
         )
         if approval is None or str(approval.get("status") or "pending") != "pending":
             return False
@@ -593,6 +849,23 @@ def _handle_question_natural_language(
             tokens = state.get("question_approval_tokens") if isinstance(state.get("question_approval_tokens"), dict) else {}
             token_item = tokens.get(token) if isinstance(tokens.get(token), dict) else {}
         _question_bind_token_draft(token_item, approval)
+        if action == "semantic":
+            if token_item.get("awaiting_correction") is True:
+                action = "suggest"
+            else:
+                action = _question_agentic_free_text_action(
+                    config, message, session, approval, token_item,
+                )
+            if action == "typed_only":
+                _post_command_reply(
+                    config,
+                    message_id,
+                    "Use os botoes do cartao para aprovar, rejeitar ou cancelar. O texto livre nao enviou nada ao comprador.",
+                    "BLACK JHON - ACAO TOKENIZADA OBRIGATORIA",
+                )
+                return True
+            if action != "suggest":
+                return False
         if action == "confirm_approval":
             return _natural_question_confirm(config, state, approval, token, token_item, subject_id, message_id)
         if action == "cancel_research":
@@ -681,12 +954,21 @@ def _question_command_regenerate(
         username=username, force_new=True, user_guidance=guidance,
     )
     token_item["regenerated_at"] = _now()
+    _question_set_active_thread(
+        state,
+        approval_id=str(approval.get("id") or ""),
+        token=token,
+        subject_id=subject_id,
+        client_id=client_id,
+        username=username,
+        card_context=_question_card_context(approval, token_item),
+    )
     fingerprint = "ppv-regen:" + hashlib.sha256(
         f"{subject_id}|{token}|{message_id}|{regenerated}".encode("utf-8")
     ).hexdigest()
     result = _post_interactive_approval(
         config, subject_id=subject_id, fingerprint=fingerprint,
-        token=token, body=_question_approval_body(approval, regenerated),
+        token=token, body=_question_approval_body(approval, regenerated), state=state,
     )
     _save_state(state)
     if str(result.get("status") or "") in {"sent", "duplicate"}:
@@ -714,7 +996,18 @@ def _question_command_approve(
     from backend.schemas.perguntas_pos_venda import PerguntasAprovacaoRequest
 
     draft, idempotency_key = _question_validate_approval_send(token_item, approval, client_id=client_id)
-    payload = PerguntasAprovacaoRequest(approval_id=approval_id, resposta=draft, idempotency_key=idempotency_key)
+    payload = PerguntasAprovacaoRequest(
+        approval_id=approval_id,
+        store=str(token_item.get("store") or approval.get("loja") or ""),
+        question_id=str(
+            token_item.get("question_id")
+            or approval.get("question_id")
+            or approval.get("pergunta_id")
+            or ""
+        ),
+        resposta=draft,
+        idempotency_key=idempotency_key,
+    )
     audit_details = {
         "client_id": client_id,
         "store": str(approval.get("loja") or ""),
@@ -777,6 +1070,7 @@ def _question_command_reject(
     _question_set_active_thread(
         state, approval_id=approval_id, token=token,
         subject_id=subject_id, client_id=client_id, username=username,
+        card_context=_question_card_context(approval, token_item),
     )
     _save_state(state)
     _post_command_reply(
@@ -812,20 +1106,25 @@ def _handle_question_approval_command(
         from backend.services import perguntas_pos_venda_state as ppv_state
 
         approvals = ppv_state._perguntas_ia_aprovacoes_carregar(client_id)
-        approval = next(
-            (
-                item for item in approvals
-                if isinstance(item, dict)
-                and str(item.get("id") or "") == approval_id
-                and str(item.get("status") or "pending") in {"pending", "sending"}
-            ),
-            None,
-        )
-        if not approval:
+        matching_approvals = [
+            item
+            for item in approvals
+            if isinstance(item, dict)
+            and str(item.get("status") or "pending") in {"pending", "sending"}
+            and _question_token_approval_matches(token_item, item)
+        ]
+        if len(matching_approvals) != 1:
             token_item["used"] = True
             _save_state(state)
-            _post_command_reply(config, message_id, "A pergunta ja foi resolvida por outro fluxo e nenhuma acao foi repetida.", "BLACK JHON - JA RESOLVIDA")
+            _post_command_reply(
+                config,
+                message_id,
+                "Esta decisao nao identifica uma unica pergunta compativel. Nenhuma acao foi aplicada.",
+                "BLACK JHON - DECISAO INVALIDA",
+            )
             return True
+        approval = matching_approvals[0]
+        approval_id = str(approval.get("id") or "")
         _question_bind_token_draft(token_item, approval)
         if action == "correct":
             return _question_command_correct(

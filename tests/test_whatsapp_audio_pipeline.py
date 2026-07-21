@@ -1,18 +1,35 @@
 import json
+import os
+import subprocess
 import sys
 import threading
 import time
+from dataclasses import FrozenInstanceError
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from backend.services import whatsapp_bridge, whatsapp_transcribe
+from backend.services import codex_console, whatsapp_bridge, whatsapp_transcribe
+from backend.services.whatsapp import audio_processing as whatsapp_audio_processing
 from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import message as whatsapp_message
 from backend.services.whatsapp import transcription as transcription_component
+from backend.services.whatsapp.runtime import lifecycle as lifecycle_component
 from backend.services.whatsapp.orchestration import processor as processor_component
+
+
+def _downloaded_audio(path: Path, *, size: int | None = None):
+    return transcription_component.DownloadedMedia(
+        public_payload={
+            "id": "audio-public-id",
+            "name": "voice.ogg",
+            "mime_type": "audio/ogg",
+            "size": int(path.stat().st_size if size is None else size),
+        },
+        local_path=path.resolve(),
+    )
 
 
 def _reset_transcription_queue(monkeypatch) -> dict[str, int | str]:
@@ -129,7 +146,7 @@ def test_real_preflight_loads_child_locally_and_returns_safe_status(monkeypatch,
     assert "must-not-leak" not in serialized
 
 
-def test_audio_telemetry_keeps_only_safe_buckets(monkeypatch, tmp_path):
+def test_machine_wide_audio_status_exposes_no_per_client_events(monkeypatch, tmp_path):
     _reset_transcription_queue(monkeypatch)
     monkeypatch.setenv("JK_APP_VERSION", "1.0.104")
     monkeypatch.setattr(
@@ -154,24 +171,11 @@ def test_audio_telemetry_keeps_only_safe_buckets(monkeypatch, tmp_path):
         size_bytes=2 * 1024 * 1024,
         duration_seconds=42,
     )
-    telemetry = transcription_component._audio_messages_status()["telemetry"]
-    last = telemetry["last"]
-
-    assert set(last) == {
-        "stage", "mime", "size_bucket", "duration_bucket",
-        "runtime_version", "latency_ms", "success", "error_code",
-    }
-    assert last == {
-        "stage": "transcription_failed",
-        "mime": "audio/ogg",
-        "size_bucket": "1_to_4mb",
-        "duration_bucket": "30_to_120s",
-        "runtime_version": "1.0.104",
-        "latency_ms": 321,
-        "success": False,
-        "error_code": "low_confidence",
-    }
-    serialized = json.dumps(telemetry)
+    status = transcription_component._audio_messages_status()
+    assert status["last_error_code"] == "low_confidence"
+    assert status["last_latency_ms"] == 321
+    assert status["telemetry"] == {"stage_counts": {}, "error_counts": {}, "last": {}}
+    serialized = json.dumps(status["telemetry"])
     assert "5511999999999" not in serialized
     assert "texto-secreto" not in serialized
     assert str(tmp_path) not in serialized
@@ -245,6 +249,699 @@ def test_transcription_queue_allows_one_active_four_waiting_and_rejects_sixth(mo
     assert state["waiting"] == 0
 
 
+def test_downloaded_media_is_frozen_and_keeps_private_path_out_of_public_payload(tmp_path):
+    attachment = tmp_path / ".codex-remote-attachments" / "client" / "voice.ogg"
+    attachment.parent.mkdir(parents=True)
+    attachment.write_bytes(b"raw-audio")
+
+    downloaded = _downloaded_audio(attachment)
+
+    assert downloaded.local_path == attachment.resolve()
+    assert downloaded.public_payload == {
+        "id": "audio-public-id",
+        "name": "voice.ogg",
+        "mime_type": "audio/ogg",
+        "size": len(b"raw-audio"),
+    }
+    serialized = json.dumps(dict(downloaded.public_payload))
+    assert "path" not in downloaded.public_payload
+    assert str(tmp_path) not in serialized
+    with pytest.raises(FrozenInstanceError):
+        downloaded.local_path = tmp_path / "other.ogg"
+    with pytest.raises(TypeError):
+        downloaded.public_payload["name"] = "changed.ogg"
+    with pytest.raises(TypeError):
+        dict.__setitem__(downloaded.public_payload, "name", "bypass.ogg")
+
+
+def test_real_download_flows_through_processor_and_routes_only_text(monkeypatch, tmp_path):
+    attachment_root = tmp_path / ".codex-remote-attachments"
+    attachment_dir = attachment_root / "client" / "conversation"
+    attachment_dir.mkdir(parents=True)
+    response_closed = []
+    transcribed: list[Path] = []
+    routed: list[dict] = []
+
+    class FakeResponse:
+        headers = {
+            "content-type": "audio/ogg",
+            "x-jk-filename": "voice.ogg",
+        }
+
+        @staticmethod
+        def iter_content(_chunk_size):
+            yield b"OggS-real-simulated-audio"
+
+        @staticmethod
+        def close():
+            response_closed.append(True)
+
+    monkeypatch.setattr(whatsapp_bridge, "_base_dir", lambda: tmp_path)
+    monkeypatch.setattr(whatsapp_bridge, "_gateway_request", lambda *_args, **_kwargs: FakeResponse())
+    monkeypatch.setattr(
+        whatsapp_bridge.codex_console,
+        "_codex_attachment_dir",
+        lambda *_args: attachment_dir,
+    )
+    monkeypatch.setattr(
+        whatsapp_bridge.codex_console,
+        "_codex_attachments_base_dir",
+        lambda: attachment_root,
+    )
+    monkeypatch.setattr(whatsapp_bridge, "_start_typing_pulse", lambda *_args: None)
+    monkeypatch.setattr(whatsapp_bridge, "_pending_task_for_message", lambda *_args: None)
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_reload_bound_session",
+        lambda *_args: {
+            "client_id": "client",
+            "username": "admin",
+            "permissions": {"full": True},
+            "is_full": True,
+        },
+    )
+    monkeypatch.setattr(whatsapp_bridge, "_phone_notification_settings", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(whatsapp_bridge, "_normalize_phone_ai_behavior", lambda _value: "")
+    monkeypatch.setattr(whatsapp_bridge, "_message_phone", lambda *_args: "5511999999999")
+    monkeypatch.setattr(whatsapp_bridge, "_conversation_id", lambda *_args: "conversation")
+
+    def transcribe(path: Path):
+        transcribed.append(path)
+        assert path.is_file()
+        path.resolve().relative_to(attachment_root.resolve())
+        return {
+            "success": True,
+            "text": "consulte o SKU ABC-123",
+            "duration_seconds": 3.0,
+            "confidence": 0.95,
+        }
+
+    monkeypatch.setattr(whatsapp_bridge, "_transcribe_audio", transcribe)
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_message_request_text",
+        lambda _message, transcription: str(transcription.get("text") or ""),
+    )
+    monkeypatch.setattr(
+        processor_component,
+        "_handle_inbound_commands",
+        lambda _config, _state, message, _session: routed.append(dict(message)) or True,
+        raising=False,
+    )
+
+    whatsapp_bridge._process_message(
+        {"machine_id": "machine", "subject_id": "subject", "client_id": "client", "username": "admin"},
+        {},
+        {
+            "message_id": "wamid.real-download",
+            "machine_id": "machine",
+            "subject_id": "subject",
+            "client_id": "client",
+            "username": "admin",
+            "wa_id": "5511999999999",
+            "media_id": "media",
+            "media_mime": "audio/ogg",
+            "media_size": len(b"OggS-real-simulated-audio"),
+            "message_type": "audio",
+        },
+    )
+
+    assert response_closed == [True]
+    assert len(transcribed) == 1
+    assert not transcribed[0].exists()
+    assert routed == [{
+        "message_id": "wamid.real-download",
+        "machine_id": "machine",
+        "subject_id": "subject",
+        "client_id": "client",
+        "username": "admin",
+        "wa_id": "5511999999999",
+        "media_id": "media",
+        "media_mime": "audio/ogg",
+        "media_size": len(b"OggS-real-simulated-audio"),
+        "message_type": "text",
+        "text_body": "consulte o SKU ABC-123",
+    }]
+    assert not any(attachment_root.rglob("*.ogg"))
+
+
+@pytest.mark.parametrize("transient_error", ["resource_busy", "queue_timeout", "child_failed"])
+def test_transient_transcription_failure_retries_once_then_routes_once(
+    monkeypatch, tmp_path, transient_error
+):
+    attachment = tmp_path / ".codex-remote-attachments" / "client" / "voice.ogg"
+    attachment.parent.mkdir(parents=True)
+    attachment.write_bytes(b"raw-audio")
+    outcomes = [
+        {"success": False, "error_code": transient_error, "local_only": True},
+        {"success": True, "text": "consulte o SKU 001", "duration_seconds": 3.0, "confidence": 0.95},
+    ]
+    attempts: list[Path] = []
+    replies: list[str] = []
+    routed: list[dict] = []
+    monkeypatch.setattr(whatsapp_bridge, "_base_dir", lambda: tmp_path)
+    monkeypatch.setattr(whatsapp_bridge, "_start_typing_pulse", lambda *_args: None)
+    monkeypatch.setattr(whatsapp_bridge, "_pending_task_for_message", lambda *_args: None)
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_reload_bound_session",
+        lambda *_args: {"client_id": "client", "username": "admin", "permissions": {"full": True}, "is_full": True},
+    )
+    monkeypatch.setattr(whatsapp_bridge, "_phone_notification_settings", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(whatsapp_bridge, "_normalize_phone_ai_behavior", lambda _value: "")
+    monkeypatch.setattr(whatsapp_bridge, "_message_phone", lambda *_args: "5511999999999")
+    monkeypatch.setattr(whatsapp_bridge, "_conversation_id", lambda *_args: "conversation")
+    monkeypatch.setattr(whatsapp_bridge, "_download_media", lambda *_args: _downloaded_audio(attachment))
+
+    def transcribe(path: Path):
+        attempts.append(path)
+        return outcomes.pop(0)
+
+    monkeypatch.setattr(whatsapp_bridge, "_transcribe_audio", transcribe)
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_message_request_text",
+        lambda _message, transcription: str(transcription.get("text") or ""),
+    )
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_post_command_reply",
+        lambda _cfg, _mid, text, _title: replies.append(text),
+    )
+    monkeypatch.setattr(
+        processor_component,
+        "_handle_inbound_commands",
+        lambda _config, _state, message, _session: routed.append(dict(message)) or True,
+        raising=False,
+    )
+
+    whatsapp_bridge._process_message(
+        {"machine_id": "machine", "subject_id": "subject"},
+        {},
+        {
+            "message_id": "wamid.retry-once",
+            "machine_id": "machine",
+            "subject_id": "subject",
+            "wa_id": "5511999999999",
+            "media_id": "media",
+            "message_type": "audio",
+        },
+    )
+
+    assert len(attempts) == 2
+    assert attempts[0] == attempts[1] == attachment.resolve()
+    assert replies == []
+    assert len(routed) == 1
+    assert routed[0]["text_body"] == "consulte o SKU 001"
+    assert not attachment.exists()
+
+
+@pytest.mark.parametrize("terminal_error", [
+    "no_speech", "low_confidence", "audio_corrupt", "audio_empty",
+    "audio_size_limit", "duration_limit", "model_invalid", "transcription_timeout",
+])
+def test_terminal_transcription_failure_is_not_retried_and_replies_once(
+    monkeypatch, tmp_path, terminal_error
+):
+    attachment = tmp_path / ".codex-remote-attachments" / "client" / "voice.ogg"
+    attachment.parent.mkdir(parents=True)
+    attachment.write_bytes(b"raw-audio")
+    attempts: list[Path] = []
+    replies: list[str] = []
+    monkeypatch.setattr(whatsapp_bridge, "_base_dir", lambda: tmp_path)
+    monkeypatch.setattr(whatsapp_bridge, "_start_typing_pulse", lambda *_args: None)
+    monkeypatch.setattr(whatsapp_bridge, "_pending_task_for_message", lambda *_args: None)
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_reload_bound_session",
+        lambda *_args: {"client_id": "client", "username": "admin", "permissions": {"full": True}, "is_full": True},
+    )
+    monkeypatch.setattr(whatsapp_bridge, "_phone_notification_settings", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(whatsapp_bridge, "_normalize_phone_ai_behavior", lambda _value: "")
+    monkeypatch.setattr(whatsapp_bridge, "_message_phone", lambda *_args: "5511999999999")
+    monkeypatch.setattr(whatsapp_bridge, "_conversation_id", lambda *_args: "conversation")
+    monkeypatch.setattr(whatsapp_bridge, "_download_media", lambda *_args: _downloaded_audio(attachment))
+
+    def transcribe(path: Path):
+        attempts.append(path)
+        return {"success": False, "error_code": terminal_error, "local_only": True}
+
+    monkeypatch.setattr(whatsapp_bridge, "_transcribe_audio", transcribe)
+    monkeypatch.setattr(whatsapp_bridge, "_message_request_text", lambda *_args: "")
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_post_command_reply",
+        lambda _cfg, _mid, text, _title: replies.append(text),
+    )
+    monkeypatch.setattr(
+        processor_component,
+        "_handle_inbound_commands",
+        lambda *_args: pytest.fail("terminal failure must stop before routing"),
+        raising=False,
+    )
+
+    whatsapp_bridge._process_message(
+        {"machine_id": "machine", "subject_id": "subject"},
+        {},
+        {
+            "message_id": "wamid.terminal",
+            "machine_id": "machine",
+            "subject_id": "subject",
+            "wa_id": "5511999999999",
+            "media_id": "media",
+            "message_type": "audio",
+        },
+    )
+
+    assert attempts == [attachment.resolve()]
+    assert len(replies) == 1
+    assert not attachment.exists()
+
+
+def test_transient_transcription_exhaustion_stops_after_two_attempts_and_replies_once(monkeypatch, tmp_path):
+    attachment = tmp_path / ".codex-remote-attachments" / "client" / "voice.ogg"
+    attachment.parent.mkdir(parents=True)
+    attachment.write_bytes(b"raw-audio")
+    attempts: list[Path] = []
+    replies: list[str] = []
+    monkeypatch.setattr(whatsapp_bridge, "_base_dir", lambda: tmp_path)
+    monkeypatch.setattr(whatsapp_bridge, "_start_typing_pulse", lambda *_args: None)
+    monkeypatch.setattr(whatsapp_bridge, "_pending_task_for_message", lambda *_args: None)
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_reload_bound_session",
+        lambda *_args: {"client_id": "client", "username": "admin", "permissions": {"full": True}, "is_full": True},
+    )
+    monkeypatch.setattr(whatsapp_bridge, "_phone_notification_settings", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(whatsapp_bridge, "_normalize_phone_ai_behavior", lambda _value: "")
+    monkeypatch.setattr(whatsapp_bridge, "_message_phone", lambda *_args: "5511999999999")
+    monkeypatch.setattr(whatsapp_bridge, "_conversation_id", lambda *_args: "conversation")
+    monkeypatch.setattr(whatsapp_bridge, "_download_media", lambda *_args: _downloaded_audio(attachment))
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_transcribe_audio",
+        lambda path: attempts.append(path) or {"success": False, "error_code": "resource_busy", "local_only": True},
+    )
+    monkeypatch.setattr(whatsapp_bridge, "_message_request_text", lambda *_args: "")
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_post_command_reply",
+        lambda _cfg, _mid, text, _title: replies.append(text),
+    )
+
+    whatsapp_bridge._process_message(
+        {"machine_id": "machine", "subject_id": "subject"},
+        {},
+        {
+            "message_id": "wamid.retry-exhausted",
+            "machine_id": "machine",
+            "subject_id": "subject",
+            "wa_id": "5511999999999",
+            "media_id": "media",
+            "message_type": "audio",
+        },
+    )
+
+    assert len(attempts) == 2
+    assert len(replies) == 1
+    assert not attachment.exists()
+
+
+def test_audio_path_validation_rejects_missing_directory_and_escape(tmp_path):
+    attachment_root = tmp_path / ".codex-remote-attachments"
+    attachment_root.mkdir()
+    valid = attachment_root / "valid.ogg"
+    valid.write_bytes(b"raw-audio")
+    assert whatsapp_audio_processing.validate_inbound_audio_path(valid, attachment_root) == valid.resolve()
+
+    directory = attachment_root / "directory.ogg"
+    directory.mkdir()
+    outside = tmp_path / "outside.ogg"
+    outside.write_bytes(b"must-not-delete")
+    traversal = attachment_root / "nested" / ".." / ".." / outside.name
+    missing = attachment_root / "missing.ogg"
+
+    for invalid in (Path(), directory, outside, traversal, missing):
+        with pytest.raises(ValueError, match="audio_path_invalid"):
+            whatsapp_audio_processing.validate_inbound_audio_path(invalid, attachment_root)
+    with pytest.raises(ValueError, match="audio_path_missing"):
+        whatsapp_audio_processing.inbound_audio_path({}, tmp_path)
+
+
+
+def test_audio_path_validation_rejects_symlink(tmp_path):
+    attachment_root = tmp_path / ".codex-remote-attachments"
+    attachment_root.mkdir()
+    outside = tmp_path / "outside.ogg"
+    outside.write_bytes(b"must-not-delete")
+    symlink = attachment_root / "linked.ogg"
+    try:
+        symlink.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink unavailable: {type(exc).__name__}")
+    with pytest.raises(ValueError, match="audio_path_invalid"):
+        whatsapp_audio_processing.validate_inbound_audio_path(symlink, attachment_root)
+    assert outside.read_bytes() == b"must-not-delete"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction contract")
+def test_audio_path_validation_rejects_windows_junction(tmp_path):
+    attachment_root = tmp_path / ".codex-remote-attachments"
+    attachment_root.mkdir()
+    outside = tmp_path / "outside-directory"
+    outside.mkdir()
+    (outside / "voice.ogg").write_bytes(b"must-not-delete")
+    junction = attachment_root / "junction"
+    created = subprocess.run(
+        ["cmd", "/d", "/c", "mklink", "/J", str(junction), str(outside)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if created.returncode != 0:
+        pytest.skip("junction creation unavailable")
+    try:
+        with pytest.raises(ValueError, match="audio_path_invalid"):
+            whatsapp_audio_processing.validate_inbound_audio_path(junction / "voice.ogg", attachment_root)
+        assert (outside / "voice.ogg").read_bytes() == b"must-not-delete"
+    finally:
+        os.rmdir(junction)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction contract")
+def test_download_rejects_junction_before_writing_audio_bytes(monkeypatch, tmp_path):
+    attachment_root = tmp_path / ".codex-remote-attachments"
+    attachment_root.mkdir()
+    outside = tmp_path / "outside-directory"
+    outside.mkdir()
+    junction = attachment_root / "redirected-client"
+    created = subprocess.run(
+        ["cmd", "/d", "/c", "mklink", "/J", str(junction), str(outside)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if created.returncode != 0:
+        pytest.skip("junction creation unavailable")
+    iterated: list[bool] = []
+    closed: list[bool] = []
+
+    class FakeResponse:
+        headers = {"content-type": "audio/ogg", "x-jk-filename": "voice.ogg"}
+
+        @staticmethod
+        def iter_content(_chunk_size):
+            iterated.append(True)
+            yield b"OggS-must-not-be-written"
+
+        @staticmethod
+        def close():
+            closed.append(True)
+
+    monkeypatch.setattr(whatsapp_bridge, "_gateway_request", lambda *_args, **_kwargs: FakeResponse())
+    monkeypatch.setattr(whatsapp_bridge.codex_console, "_codex_attachments_base_dir", lambda: attachment_root)
+    monkeypatch.setattr(whatsapp_bridge.codex_console, "_codex_attachment_dir", lambda *_args: junction)
+    try:
+        with pytest.raises(RuntimeError, match="media_local_path_invalid"):
+            whatsapp_bridge._download_media(
+                {"client_id": "client", "username": "admin"},
+                {
+                    "message_id": "wamid-junction",
+                    "media_mime": "audio/ogg",
+                    "media_size": len(b"OggS-must-not-be-written"),
+                },
+                "conversation",
+            )
+        assert iterated == []
+        assert closed == [True]
+        assert list(outside.iterdir()) == []
+    finally:
+        os.rmdir(junction)
+
+
+def test_audio_cleanup_retries_a_transient_windows_lock(monkeypatch, tmp_path):
+    attachment_root = tmp_path / ".codex-remote-attachments"
+    attachment = attachment_root / "client" / "voice.ogg"
+    attachment.parent.mkdir(parents=True)
+    attachment.write_bytes(b"raw-audio")
+    original_unlink = Path.unlink
+    attempts = []
+
+    def transient_unlink(path: Path, *args, **kwargs):
+        if path == attachment.resolve():
+            attempts.append(path)
+            if len(attempts) == 1:
+                raise PermissionError(32, "simulated sharing violation")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", transient_unlink)
+
+    assert whatsapp_audio_processing.delete_inbound_audio(attachment, attachment_root) is True
+    assert len(attempts) == 2
+    assert not attachment.exists()
+
+
+def test_audio_cleanup_telemetry_uses_only_hmac_and_safe_buckets(monkeypatch, tmp_path):
+    _reset_transcription_queue(monkeypatch)
+    recorded: list[tuple[str, dict]] = []
+
+    class FakeTelemetry:
+        def schedule_retention(self, _client_id):
+            return True
+
+        def record_event(self, client_id, **payload):
+            recorded.append((str(client_id), dict(payload)))
+            return True
+
+    monkeypatch.setattr(codex_console, "_codex_ai_telemetry_instance", lambda: FakeTelemetry())
+    attachment_root = tmp_path / ".codex-remote-attachments"
+    attachment = attachment_root / "client" / "5511999999999-texto-secreto.ogg"
+    attachment.parent.mkdir(parents=True)
+    attachment.write_bytes(b"raw-audio")
+
+    with whatsapp_audio_processing.audio_telemetry_scope(
+        client_id="tenant-a",
+        trace_id="cleanup-safe",
+        surface="whatsapp",
+    ):
+        assert whatsapp_audio_processing.delete_inbound_audio(attachment, attachment_root) is True
+
+    assert recorded[-1][0] == "tenant-a"
+    assert recorded[-1][1]["dimensions"]["audio_stage"] == "cleanup_succeeded"
+    assert recorded[-1][1]["dimensions"]["audio_cleanup_state"] == "removed"
+    serialized = json.dumps(recorded[-1][1], ensure_ascii=False)
+    assert "5511999999999" not in serialized
+    assert "texto-secreto" not in serialized
+    assert str(tmp_path) not in serialized
+
+
+def test_audio_telemetry_is_recorded_per_client_without_content(monkeypatch, tmp_path):
+    recorded: list[tuple[str, dict]] = []
+
+    class FakeTelemetry:
+        def pseudonymize(self, _value, *, namespace="id"):
+            return f"hmac-sha256:v1:{namespace}-safe"
+
+        def schedule_retention(self, _client_id):
+            return True
+
+        def record_event(self, client_id, **payload):
+            recorded.append((str(client_id), dict(payload)))
+            return True
+
+    monkeypatch.setattr(codex_console, "_codex_ai_telemetry_instance", lambda: FakeTelemetry())
+    private_path = tmp_path / "5511999999999-transcricao-secreta.ogg"
+    with whatsapp_audio_processing.audio_telemetry_scope(
+        client_id="tenant-a",
+        trace_id="wamid-safe",
+        user_id="operator-a",
+        surface="whatsapp",
+    ):
+        transcription_component._record_audio_stage(
+            "transcription_attempt",
+            audio_path=private_path,
+            size_bytes=2048,
+            duration_seconds=3,
+            attempt=1,
+            retries=0,
+        )
+
+    assert len(recorded) == 1
+    client_id, event = recorded[0]
+    assert client_id == "tenant-a"
+    assert event["event_type"] == "audio_processing"
+    assert event["dimensions"] == {
+        "surface": "whatsapp",
+        "category": "audio",
+        "audio_stage": "transcription_attempt",
+        "audio_attempt": "1",
+        "audio_retries": "0",
+        "audio_mime_bucket": "audio/ogg",
+        "audio_size_bucket": "lt_1mb",
+        "audio_duration_bucket": "lt_30s",
+        "audio_cleanup_state": "none",
+    }
+    serialized = json.dumps(event, ensure_ascii=False)
+    assert "5511999999999" not in serialized
+    assert "transcricao-secreta" not in serialized
+    assert str(tmp_path) not in serialized
+
+
+def test_successful_transcription_with_persistent_cleanup_failure_fails_closed_without_retranscribing(
+    monkeypatch, tmp_path
+):
+    attachment_root = tmp_path / ".codex-remote-attachments"
+    attachment = attachment_root / "client" / "private-5511999999999.ogg"
+    attachment.parent.mkdir(parents=True)
+    attachment.write_bytes(b"raw-audio")
+    private_transcript = "conteudo privado do audio"
+    transcriptions: list[Path] = []
+    queued: list[tuple[Path, Path]] = []
+    replies: list[str] = []
+    routed: list[dict] = []
+    state: dict = {}
+    monkeypatch.setattr(whatsapp_bridge, "_base_dir", lambda: tmp_path)
+    monkeypatch.setattr(whatsapp_bridge, "_start_typing_pulse", lambda *_args: None)
+    monkeypatch.setattr(whatsapp_bridge, "_pending_task_for_message", lambda *_args: None)
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_reload_bound_session",
+        lambda *_args: {"client_id": "client", "username": "admin", "permissions": {"full": True}, "is_full": True},
+    )
+    monkeypatch.setattr(whatsapp_bridge, "_phone_notification_settings", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(whatsapp_bridge, "_normalize_phone_ai_behavior", lambda _value: "")
+    monkeypatch.setattr(whatsapp_bridge, "_message_phone", lambda *_args: "5511999999999")
+    monkeypatch.setattr(whatsapp_bridge, "_conversation_id", lambda *_args: "conversation")
+    monkeypatch.setattr(whatsapp_bridge, "_download_media", lambda *_args: _downloaded_audio(attachment))
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_transcribe_audio",
+        lambda path: transcriptions.append(path) or {"success": True, "text": private_transcript, "local_only": True},
+    )
+    monkeypatch.setattr(whatsapp_audio_processing, "delete_inbound_audio", lambda *_args: False)
+    monkeypatch.setattr(
+        whatsapp_audio_processing,
+        "queue_inbound_audio_cleanup",
+        lambda path, root: queued.append((Path(path), Path(root))) or True,
+    )
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_post_command_reply",
+        lambda _cfg, _mid, text, _title: replies.append(text),
+    )
+    monkeypatch.setattr(
+        processor_component,
+        "_handle_inbound_commands",
+        lambda _config, _state, message, _session: routed.append(dict(message)) or True,
+        raising=False,
+    )
+
+    whatsapp_bridge._process_message(
+        {"machine_id": "machine", "subject_id": "subject"},
+        state,
+        {
+            "message_id": "wamid.cleanup-failed",
+            "machine_id": "machine",
+            "subject_id": "subject",
+            "wa_id": "5511999999999",
+            "media_id": "media",
+            "message_type": "audio",
+        },
+    )
+
+    assert transcriptions == [attachment.resolve()]
+    assert queued == [(attachment.resolve(), attachment_root.resolve())]
+    assert routed == []
+    assert len(replies) == 1
+    sanitized = json.dumps({"reply": replies[0], "state": state}, ensure_ascii=False)
+    assert private_transcript not in sanitized
+    assert "5511999999999" not in sanitized
+    assert str(tmp_path) not in sanitized
+
+
+def test_stale_audio_cleanup_is_bounded_and_recorded_per_client(monkeypatch, tmp_path):
+    recorded: list[tuple[str, dict]] = []
+
+    class FakeTelemetry:
+        def schedule_retention(self, _client_id):
+            return True
+
+        def record_event(self, client_id, **payload):
+            recorded.append((str(client_id), dict(payload)))
+            return True
+
+    monkeypatch.setattr(codex_console, "_codex_ai_telemetry_instance", lambda: FakeTelemetry())
+    attachment_root = tmp_path / ".codex-remote-attachments"
+    owned_dir = attachment_root / "client-a" / "user-a"
+    owned_dir.mkdir(parents=True)
+    old_audio = owned_dir / "old.ogg"
+    fresh_audio = owned_dir / "fresh.ogg"
+    old_image = owned_dir / "old.jpg"
+    unowned_root_audio = attachment_root / "unowned.ogg"
+    outside_audio = tmp_path / "outside.ogg"
+    for path in (old_audio, fresh_audio, old_image, unowned_root_audio, outside_audio):
+        path.write_bytes(b"fixture")
+    now_epoch = time.time()
+    old_epoch = now_epoch - 901
+    os.utime(old_audio, (old_epoch, old_epoch))
+    os.utime(old_image, (old_epoch, old_epoch))
+    os.utime(unowned_root_audio, (old_epoch, old_epoch))
+    os.utime(outside_audio, (old_epoch, old_epoch))
+    os.utime(fresh_audio, (now_epoch - 899, now_epoch - 899))
+
+    result = whatsapp_audio_processing.cleanup_stale_audio_files(
+        tmp_path,
+        older_than_seconds=900,
+        now_epoch=now_epoch,
+    )
+
+    assert result["removed"] == 1
+    assert not old_audio.exists()
+    assert fresh_audio.exists()
+    assert old_image.exists()
+    assert unowned_root_audio.exists()
+    assert outside_audio.exists()
+    assert recorded and {client_id for client_id, _event in recorded} == {"client-a"}
+    assert recorded[-1][1]["dimensions"]["surface"] == "audio_janitor"
+
+
+def test_audio_cleanup_janitor_runs_at_startup_then_at_most_hourly(monkeypatch, tmp_path):
+    calls = []
+    runtime_state: dict = {}
+    clock = {"now": 10_000.0}
+    monkeypatch.setattr(lifecycle_component, "RUNTIME_STATE", runtime_state)
+    monkeypatch.setattr(lifecycle_component, "_base_dir", lambda: tmp_path)
+    monkeypatch.setattr(lifecycle_component.time, "time", lambda: clock["now"])
+    monkeypatch.setattr(
+        whatsapp_audio_processing,
+        "cleanup_stale_audio_files",
+        lambda base_dir, **kwargs: calls.append((Path(base_dir), dict(kwargs))) or {
+            "scanned": 2,
+            "removed": 1,
+            "queued": 0,
+            "failed": 0,
+            "private_path": str(tmp_path / "must-not-persist.ogg"),
+        },
+    )
+
+    startup = lifecycle_component._IMPLEMENTATIONS["_run_audio_cleanup_janitor"](force=True)
+    suppressed = lifecycle_component._IMPLEMENTATIONS["_run_audio_cleanup_janitor"]()
+    clock["now"] += 3_601
+    periodic = lifecycle_component._IMPLEMENTATIONS["_run_audio_cleanup_janitor"]()
+
+    assert startup == suppressed == periodic == {
+        "scanned": 2,
+        "removed": 1,
+        "queued": 0,
+        "failed": 0,
+    }
+    assert len(calls) == 2
+    assert all(call[0] == tmp_path for call in calls)
+    assert all(call[1]["older_than_seconds"] == 900 for call in calls)
+    assert "private_path" not in runtime_state["audio_cleanup_janitor_result"]
+    assert str(tmp_path) not in json.dumps(runtime_state)
+
+
 def test_terminal_audio_failure_replies_without_calling_ai_and_deletes_raw_file(monkeypatch, tmp_path):
     attachment = tmp_path / ".codex-remote-attachments" / "client" / "voice.ogg"
     attachment.parent.mkdir(parents=True)
@@ -265,11 +962,7 @@ def test_terminal_audio_failure_replies_without_calling_ai_and_deletes_raw_file(
     monkeypatch.setattr(
         whatsapp_bridge,
         "_download_media",
-        lambda *_args: {
-            "mime_type": "audio/ogg",
-            "size": attachment.stat().st_size,
-            "path": ".codex-remote-attachments/client/voice.ogg",
-        },
+        lambda *_args: _downloaded_audio(attachment),
     )
     monkeypatch.setattr(
         whatsapp_bridge,
@@ -319,11 +1012,7 @@ def test_successful_audio_routes_transcript_only_after_raw_delete(monkeypatch, t
     monkeypatch.setattr(
         whatsapp_bridge,
         "_download_media",
-        lambda *_args: {
-            "mime_type": "audio/ogg",
-            "size": attachment.stat().st_size,
-            "path": ".codex-remote-attachments/client/voice.ogg",
-        },
+        lambda *_args: _downloaded_audio(attachment),
     )
     monkeypatch.setattr(
         whatsapp_bridge,
@@ -406,7 +1095,7 @@ def test_processor_hands_only_transcript_text_to_luna(monkeypatch):
             "phone_ai_behavior": "",
             "phone": "5511999999999",
             "conversation_id": "conversation",
-            "media": {"mime_type": "audio/ogg", "path": "private/voice.ogg"},
+            "media": {"id": "audio-public-id", "name": "voice.ogg", "mime_type": "audio/ogg", "size": 10},
             "transcription": {
                 "success": True,
                 "text": "consulte o MLB123",

@@ -442,10 +442,11 @@ def test_selector_failure_ends_closed_without_outer_retry_or_tools(monkeypatch):
     assert "Nenhuma fonte foi consultada" in delivered[0]["text"]
 
 
-def test_mutation_candidate_hands_off_to_existing_approval_without_auto_approval(monkeypatch):
+def test_mutation_candidate_is_blocked_and_only_explained_on_whatsapp(monkeypatch):
     created = []
     saved = []
     completed = []
+    delivered = []
     monkeypatch.setattr(function_manager, "_now", lambda: "2026-07-18T00:00:00Z", raising=False)
     monkeypatch.setattr(
         function_manager,
@@ -482,7 +483,7 @@ def test_mutation_candidate_hands_off_to_existing_approval_without_auto_approval
     monkeypatch.setattr(
         function_manager,
         "_function_manager_deliver_direct",
-        lambda *_args, **_kwargs: pytest.fail("full mutation must enter the approval workflow"),
+        lambda _config, _state, _message_id, value: delivered.append(dict(value)) or True,
         raising=False,
     )
     pending = {
@@ -505,14 +506,11 @@ def test_mutation_candidate_hands_off_to_existing_approval_without_auto_approval
 
     function_manager._function_manager_finish_job({}, {}, "message-a", pending, plan, [], {})
 
-    assert created[0]["safe_read_only"] is False
-    assert created[0]["mobile_full_access"] is True
-    assert created[0]["paths"] == []
-    assert created[0]["channel_metadata"]["data_selection_action"] == "mutation_candidate"
-    assert saved[-1][1]["kind"] == "task"
-    assert saved[-1][1]["proposal_id"] == "proposal-mutation-a"
-    assert saved[-1][1]["approval_required"] is True
-    assert completed[-1][1]["task_id"] == "task-mutation-a"
+    assert created == []
+    assert completed == []
+    assert saved[-1][1]["data_selection_state"] == "completed"
+    assert "nenhuma acao foi executada" in saved[-1][1]["manager_evidence"]["summary"].lower()
+    assert delivered[-1]["job_group_id"] == "job-mutation-a"
 
 
 def test_answer_without_data_evidence_stays_inside_twelve_kilobytes(monkeypatch):

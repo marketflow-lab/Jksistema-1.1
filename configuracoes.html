@@ -130,6 +130,7 @@
         .tab-btn[data-tab="usuarios"]::before { content: "05"; }
         .tab-btn[data-tab="whatsapp"]::before { content: "06"; }
         .tab-btn[data-tab="whatsapp-history"]::before { content: "07"; }
+        .tab-btn[data-tab="codex-observability"]::before { content: "08"; }
         .tab-btn.active { background: var(--teal-soft); border-color: rgba(57, 184, 166, 0.34); color: var(--text); }
         .tabs .btn-save-top { min-height: 58px; background: var(--teal); color: #06201d; border-color: transparent; }
         .page-layout { display: grid; grid-template-columns: minmax(0, 1fr) 294px; gap: 16px; align-items: start; }
@@ -391,6 +392,7 @@
         <button id="tabUsuariosBtn" class="tab-btn hidden" data-tab="usuarios">Usuários</button>
         <button id="tabWhatsappBtn" class="tab-btn hidden" data-tab="whatsapp">WhatsApp — Black John</button>
         <button id="tabWhatsappHistoryBtn" class="tab-btn" data-tab="whatsapp-history">Histórico do WhatsApp</button>
+        <button id="tabCodexObservabilityBtn" class="tab-btn hidden" data-tab="codex-observability">Saúde do Black Jhon</button>
         <button id="btnSalvarTopo" class="btn-save btn-save-top" type="button">Salvar alterações</button>
     </div>
 
@@ -835,6 +837,67 @@
                 </div>
             </div>
 
+            <div id="tab-codex-observability" class="tab-panel">
+                <div class="card">
+                    <div class="card-head">
+                        <div>
+                            <h2>Saúde do Black Jhon</h2>
+                            <div class="hint">Indicadores agregados. Perguntas, respostas, telefones e dados de ferramentas não aparecem aqui.</div>
+                        </div>
+                        <button id="codexObsRefresh" class="btn-refresh" type="button">Atualizar</button>
+                    </div>
+                    <div class="grid-2">
+                        <div><label class="label" for="codexObsFrom">De</label><input id="codexObsFrom" type="date"></div>
+                        <div><label class="label" for="codexObsTo">Até</label><input id="codexObsTo" type="date"></div>
+                    </div>
+                    <div class="grid-2">
+                        <div><label class="label" for="codexObsSurface">Canal</label><select id="codexObsSurface"><option value="">Todos</option><option value="sidebar">Chat lateral</option><option value="whatsapp">WhatsApp</option><option value="public_questions">Perguntas públicas</option><option value="post_sale">Pós-venda</option></select></div>
+                        <div><label class="label" for="codexObsModel">Modelo</label><select id="codexObsModel"><option value="">Todos</option><option value="gpt-5.5">GPT-5.5</option><option value="gpt-5.6-luna">GPT-5.6 Luna</option><option value="gpt-5.6-terra">GPT-5.6 Terra</option><option value="gpt-5.6-sol">GPT-5.6 Sol</option></select></div>
+                        <div><label class="label" for="codexObsProvider">Provedor</label><select id="codexObsProvider"><option value="">Todos</option><option value="codex">Codex</option><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="gemini">Gemini</option><option value="vertex">Vertex AI</option></select></div>
+                        <div><label class="label" for="codexObsResult">Resultado</label><select id="codexObsResult"><option value="">Todos</option><option value="completed">Concluído</option><option value="ok">OK</option><option value="failed">Falhou</option></select></div>
+                    </div>
+                    <div id="codexObsStatus" class="status" role="status" aria-live="polite"></div>
+                    <div id="codexObsMetrics" class="ia-grid"></div>
+                    <div class="grid-2">
+                        <div class="setting-card"><h3>Modelos usados</h3><div id="codexObsModels" class="small">Sem dados.</div></div>
+                        <div class="setting-card"><h3>Erros encontrados</h3><div id="codexObsErrors" class="small">Sem dados.</div></div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-head">
+                        <div><h2>Avaliação sem rede</h2><div class="hint">Executa apenas a base revisada e as respostas congeladas. O limite da campanha é 600 execuções.</div></div>
+                        <button id="codexEvalRefresh" class="btn-refresh" type="button">Atualizar histórico</button>
+                    </div>
+                    <div class="checkbox-grid" id="codexEvalModels">
+                        <label class="check-item"><input type="checkbox" value="gpt-5.5" checked><span>GPT-5.5 atual</span></label>
+                        <label class="check-item"><input type="checkbox" value="gpt-5.6-luna"><span>GPT-5.6 Luna</span></label>
+                        <label class="check-item"><input type="checkbox" value="gpt-5.6-terra" checked><span>GPT-5.6 Terra</span></label>
+                        <label class="check-item"><input type="checkbox" value="gpt-5.6-sol"><span>GPT-5.6 Sol</span></label>
+                    </div>
+                    <div class="grid-2">
+                        <div><label class="label" for="codexEvalSplit">Conjunto</label><select id="codexEvalSplit"><option value="holdout">Holdout (30 casos)</option><option value="calibration">Calibração (90 casos)</option><option value="all">Todos (120 casos)</option></select></div>
+                        <div><label class="label" for="codexEvalRepetitions">Repetições</label><input id="codexEvalRepetitions" type="number" min="1" max="5" value="1"></div>
+                    </div>
+                    <div class="actions"><button id="codexEvalRun" class="btn-save" type="button">Executar avaliação</button></div>
+                    <div id="codexEvalStatus" class="status"></div>
+                    <div id="codexEvalRuns" class="context-hub-findings"><div class="small">Nenhuma execução carregada.</div></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-head"><div><h2>Ativação gradual do MCP interno</h2><div class="hint">O servidor valida os mínimos da etapa. Violações, lentidão ou erros desligam o MCP automaticamente.</div></div></div>
+                    <div class="grid-2">
+                        <div><label class="label" for="codexMcpMode">Etapa desejada</label><select id="codexMcpMode"><option value="off">Desligado</option><option value="shadow">Shadow</option><option value="pilot">Piloto interno</option><option value="whatsapp_5">WhatsApp 5%</option><option value="whatsapp_25">WhatsApp 25%</option><option value="whatsapp_50">WhatsApp 50%</option><option value="read_only_100">Leitura 100%</option></select></div>
+                        <div><label class="label" for="codexMcpBaseline">p95 de referência (ms)</label><input id="codexMcpBaseline" type="number" min="0" step="1" value="0"></div>
+                    </div>
+                    <label class="label" for="codexMcpTools">Ferramentas read-only permitidas</label>
+                    <input id="codexMcpTools" type="text" value="product_data, sales_ranking, bling_stock_balances" autocomplete="off">
+                    <div id="codexMcpMetrics" class="small">Carregando etapa atual...</div>
+                    <div class="actions"><button id="codexMcpSave" class="btn-save" type="button">Aplicar etapa</button></div>
+                    <div id="codexMcpStatus" class="status"></div>
+                </div>
+            </div>
+
             <div id="tab-usuarios" class="tab-panel">
                 <div id="cardAdminUsuarios" class="card hidden">
                     <h2>Usuários cadastrados</h2>
@@ -938,6 +1001,7 @@
             if (btn.getAttribute('role') === 'tab') btn.setAttribute('aria-selected', 'true');
             document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
             if (btn.dataset.tab === 'context-hub') carregarContextHub();
+            if (btn.dataset.tab === 'codex-observability') window.jkCodexObservabilityLoad?.();
         });
     });
 
@@ -998,6 +1062,7 @@
     const tabContextHubBtn = document.getElementById('tabContextHubBtn');
     const tabCredenciaisBtn = document.getElementById('tabCredenciaisBtn');
     const tabUsuariosBtn = document.getElementById('tabUsuariosBtn');
+    const tabCodexObservabilityBtn = document.getElementById('tabCodexObservabilityBtn');
     const cardAdminUsuarios = document.getElementById('cardAdminUsuarios');
     const usersList = document.getElementById('usersList');
     const userEmptyState = document.getElementById('userEmptyState');
@@ -1074,6 +1139,7 @@
         tabContextHubBtn.classList.remove('hidden');
         tabCredenciaisBtn.classList.remove('hidden');
         tabUsuariosBtn.classList.remove('hidden');
+        tabCodexObservabilityBtn.classList.remove('hidden');
         cardAdminUsuarios.classList.remove('hidden');
         cardIaPadrao.classList.remove('hidden');
         cardIaCredenciais.classList.remove('hidden');
@@ -2223,6 +2289,7 @@
 <script src="/configuracoes-context-hub-curation.js?v=20260718-governance-v1"></script>
 <script src="/configuracoes-whatsapp.js?v=20260718-audio-preflight-v1"></script>
 <script src="/configuracoes-whatsapp-history.js?v=20260715-voice-calls-v1"></script>
+<script src="/configuracoes-codex-observability.js?v=20260720-observability-v1"></script>
 <script src="/ia-sidebar.js?v=20260720-pos-venda-manual"></script>
 </body>
 </html>

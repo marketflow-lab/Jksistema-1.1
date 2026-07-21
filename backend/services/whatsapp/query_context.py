@@ -71,6 +71,25 @@ WHATSAPP_PART_BODY_CHARS = whatsapp_formatting.WHATSAPP_PART_BODY_CHARS
 WHATSAPP_MAX_PARTS = whatsapp_formatting.WHATSAPP_MAX_PARTS
 
 
+def _whatsapp_materialized_product_identifiers(value: Any) -> tuple[str, str]:
+    """Validate product identifiers already materialized by an agent/context."""
+
+    raw = value if isinstance(value, dict) else {}
+    entities = raw.get("entities") if isinstance(raw.get("entities"), dict) else {}
+    sku = str(raw.get("sku") or entities.get("sku") or "").strip()[:100]
+    if (
+        sku.casefold() in {"a", "ao", "da", "de", "do", "e", "em", "na", "no", "para"}
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,99}", sku)
+    ):
+        sku = ""
+    item_id = re.sub(
+        r"[^A-Z0-9]", "", str(raw.get("item_id") or raw.get("mlb") or entities.get("mlb") or "").upper()
+    )[:60]
+    if not re.fullmatch(r"MLB\d{6,}", item_id):
+        item_id = ""
+    return sku, item_id
+
+
 def _whatsapp_inherit_query_store_context(
     value: Any,
     direct_policy: dict[str, Any],
@@ -144,11 +163,12 @@ def _whatsapp_inherit_query_store_context(
         "inherited": True,
         "inherited_store_context": True,
     })
-    current_sku, current_item_id = _function_manager_extract_identifiers(value)
-    inherited_sku = str(previous.get("sku") or "").strip()
-    inherited_item_id = str(previous.get("item_id") or "").strip().upper()
-    policy["sku"] = str(policy.get("sku") or current_sku or inherited_sku).strip()[:100]
-    policy["item_id"] = str(policy.get("item_id") or current_item_id or inherited_item_id).strip().upper()[:60]
+    # Product identity comes only from the agent-materialized policy or the
+    # previously materialized conversation context, never from free-form text.
+    current_sku, current_item_id = _whatsapp_materialized_product_identifiers(policy)
+    inherited_sku, inherited_item_id = _whatsapp_materialized_product_identifiers(previous)
+    policy["sku"] = current_sku or inherited_sku
+    policy["item_id"] = current_item_id or inherited_item_id
     if (policy.get("sku") and not current_sku) or (policy.get("item_id") and not current_item_id):
         policy["inherited_product_context"] = True
         previous_request = str(previous.get("base_request") or "").strip()
@@ -257,6 +277,7 @@ def _pagination_continuation(previous: dict[str, Any], base: dict[str, Any], rep
     if previous.get("pagination_complete") is True and not provider_offsets:
         return {**base, "pagination": "complete", "no_more_results": True}
     previous_offset = max(0, int(previous.get("offset") or 0))
+    materialized_sku, materialized_item_id = _whatsapp_materialized_product_identifiers(previous)
     return {
         **base,
         "pagination": "next",
@@ -268,8 +289,8 @@ def _pagination_continuation(previous: dict[str, Any], base: dict[str, Any], rep
         "base_request": str(previous.get("base_request") or "")[:2000],
         "fresh": bool(previous.get("fresh")),
         "bypass_cache": bool(previous.get("bypass_cache")),
-        "sku": str(previous.get("sku") or "").strip()[:100],
-        "item_id": str(previous.get("item_id") or "").strip().upper()[:60],
+        "sku": materialized_sku,
+        "item_id": materialized_item_id,
         "context_request": str(previous.get("base_request") or "").strip()[:2000],
     }
 
@@ -336,9 +357,7 @@ def _whatsapp_remember_query_context(
         return
     contexts = state.get("query_contexts") if isinstance(state.get("query_contexts"), dict) else {}
     base_request = str(policy.get("base_request") or request_text or "").strip()[:2000]
-    extracted_sku, extracted_item_id = _function_manager_extract_identifiers(
-        policy.get("context_request") or request_text or base_request
-    )
+    materialized_sku, materialized_item_id = _whatsapp_materialized_product_identifiers(policy)
     contexts[conversation_id] = {
         "domains": list(policy.get("domains") or []),
         "store_required": bool(policy.get("store_required")),
@@ -352,8 +371,8 @@ def _whatsapp_remember_query_context(
         "providers": list(policy.get("providers") or []),
         "source_policy": dict(policy.get("source_policy") or {}) if isinstance(policy.get("source_policy"), dict) else {},
         "base_request": base_request,
-        "sku": str(policy.get("sku") or extracted_sku or "").strip()[:100],
-        "item_id": str(policy.get("item_id") or extracted_item_id or "").strip().upper()[:60],
+        "sku": materialized_sku,
+        "item_id": materialized_item_id,
         "offset": max(0, int(policy.get("offset") or 0)),
         "provider_offsets": dict(policy.get("provider_offsets") or {}) if isinstance(policy.get("provider_offsets"), dict) else {},
         "pagination_complete": False,
@@ -377,6 +396,23 @@ def _whatsapp_update_query_context_from_task(
     context = contexts.get(conversation_id) if isinstance(contexts.get(conversation_id), dict) else {}
     if not context:
         return
+    materialized_sku = ""
+    materialized_item_id = ""
+    for source in (
+        pending.get("manager_plan"),
+        pending.get("data_selection_plan"),
+        task.get("data_selection"),
+    ):
+        candidate_sku, candidate_item_id = _whatsapp_materialized_product_identifiers(source)
+        materialized_sku = materialized_sku or candidate_sku
+        materialized_item_id = materialized_item_id or candidate_item_id
+    identity_changed = False
+    if materialized_sku and context.get("sku") != materialized_sku:
+        context["sku"] = materialized_sku
+        identity_changed = True
+    if materialized_item_id and context.get("item_id") != materialized_item_id:
+        context["item_id"] = materialized_item_id
+        identity_changed = True
     provider_offsets: dict[str, int] = {}
     saw_paging = False
     for item in task.get("tool_results_summary") if isinstance(task.get("tool_results_summary"), list) else []:
@@ -395,12 +431,13 @@ def _whatsapp_update_query_context_from_task(
                 provider_offsets[tool_id] = max(0, int(next_offset))
             except (TypeError, ValueError):
                 continue
-    if not saw_paging:
+    if not saw_paging and not identity_changed:
         return
-    context["provider_offsets"] = provider_offsets
-    context["pagination_complete"] = not bool(provider_offsets)
-    if provider_offsets:
-        context["offset"] = min(provider_offsets.values())
+    if saw_paging:
+        context["provider_offsets"] = provider_offsets
+        context["pagination_complete"] = not bool(provider_offsets)
+        if provider_offsets:
+            context["offset"] = min(provider_offsets.values())
     context["updated_at"] = time.time()
     contexts[conversation_id] = context
     state["query_contexts"] = contexts

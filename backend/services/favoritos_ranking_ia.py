@@ -39,6 +39,7 @@ from fastapi import Depends, File, Form, Header, HTTPException, Request, UploadF
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
+from backend.services.transport_security import requests_tls_verify
 
 
 def configure_favoritos_ranking_ia_runtime(runtime_module=None, peers=None):
@@ -380,7 +381,7 @@ def _favoritos_ia_vertex_pesquisa_texto(mensagem: str, model: str | None = None)
             "contents": [{"role": "user", "parts": [{"text": mensagem}]}],
             "generationConfig": {"temperature": 0.2},
         },
-        verify=False,
+        verify=requests_tls_verify(),
         timeout=60,
     )
     if not resp.ok:
@@ -1004,7 +1005,7 @@ def _favoritos_busca_externa_chamar_api(query: str, max_results: int = 4, timeou
                 "include_answer": False,
             },
             timeout=timeout_s,
-            verify=False,
+            verify=requests_tls_verify(),
         )
         resp.raise_for_status()
         data = resp.json() or {}
@@ -1017,7 +1018,7 @@ def _favoritos_busca_externa_chamar_api(query: str, max_results: int = 4, timeou
             headers={"Accept": "application/json", "X-Subscription-Token": brave_key},
             params={"q": query, "count": max_results, "country": "br", "search_lang": "pt-br"},
             timeout=timeout_s,
-            verify=False,
+            verify=requests_tls_verify(),
         )
         resp.raise_for_status()
         data = resp.json() or {}
@@ -1034,7 +1035,7 @@ def _favoritos_busca_externa_chamar_api(query: str, max_results: int = 4, timeou
             "https://serpapi.com/search.json",
             params={"engine": "google", "q": query, "hl": "pt-br", "gl": "br", "num": max_results, "api_key": serpapi_key},
             timeout=timeout_s,
-            verify=False,
+            verify=requests_tls_verify(),
         )
         resp.raise_for_status()
         data = resp.json() or {}
@@ -1045,7 +1046,7 @@ def _favoritos_busca_externa_chamar_api(query: str, max_results: int = 4, timeou
         params={"q": query},
         headers={"User-Agent": "Mozilla/5.0 JK-Sistema/1.0"},
         timeout=timeout_s,
-        verify=False,
+        verify=requests_tls_verify(),
     )
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text or "", "lxml")
@@ -1239,7 +1240,7 @@ def _favoritos_ranking_chamar_ia_json(
             f"https://{host}/v1/projects/{project_id}/locations/{location}/publishers/google/models/{model_curto}:generateContent",
             headers=headers,
             json=payload_json,
-            verify=False,
+            verify=requests_tls_verify(),
             timeout=75,
         )
         if not resp.ok and resp.status_code == 400:
@@ -1248,7 +1249,7 @@ def _favoritos_ranking_chamar_ia_json(
                 f"https://{host}/v1/projects/{project_id}/locations/{location}/publishers/google/models/{model_curto}:generateContent",
                 headers=headers,
                 json=payload_json,
-                verify=False,
+                verify=requests_tls_verify(),
                 timeout=75,
             )
         if not resp.ok:

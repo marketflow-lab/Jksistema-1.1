@@ -284,6 +284,10 @@ def test_mercado_livre_approval_idempotency_replays_without_second_api_post(monk
         "loja": "JK Pecas",
         "question_id": "question-1",
         "resposta_sugerida": response,
+        "codex_job_id": "job-current",
+        "proposal_id": "job-current",
+        "proposal_version": 1,
+        "proposal_hash": "proposal-current",
     }]
     sends: list[tuple] = []
     monkeypatch.setattr(perguntas_pos_venda_endpoints, "dt", datetime, raising=False)
@@ -305,6 +309,13 @@ def test_mercado_livre_approval_idempotency_replays_without_second_api_post(monk
     monkeypatch.setattr(perguntas_pos_venda_endpoints, "_perguntas_ia_marcar_processada", lambda *_args: None, raising=False)
     monkeypatch.setattr(perguntas_pos_venda_endpoints, "_perguntas_ia_state_salvar", lambda *_args: None, raising=False)
     monkeypatch.setattr(perguntas_pos_venda_endpoints, "_perguntas_ia_memoria_registrar_resposta_aprovada", lambda *_args, **_kwargs: None, raising=False)
+    monkeypatch.setattr(perguntas_pos_venda_endpoints, "_customer_reply_approval_job_current", lambda *_args: True)
+    monkeypatch.setattr(
+        perguntas_pos_venda_endpoints.perguntas_pos_venda_codex,
+        "approve_or_refresh_proposal",
+        lambda **_kwargs: {"proposal_version": 1, "proposal_hash": "proposal-current"},
+    )
+    monkeypatch.setattr(perguntas_pos_venda_endpoints.perguntas_pos_venda_codex, "mark_verified", lambda **_kwargs: None)
 
     request = PerguntasAprovacaoRequest(approval_id="approval-1", resposta=response, idempotency_key=key)
     first = perguntas_pos_venda_endpoints.ml_perguntas_aprovacoes_aprovar(request, "cliente")

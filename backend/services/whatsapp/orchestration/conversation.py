@@ -2,13 +2,13 @@
 from __future__ import annotations
 import re
 import time
-import unicodedata
 import uuid
 from typing import Any, Optional
-from backend.services.whatsapp import formatting as whatsapp_formatting
 from backend.services.whatsapp import black_jhon_prompting
+from backend.services.whatsapp import formatting as whatsapp_formatting
 from backend.services.whatsapp import conversation_context as whatsapp_conversation_context
 from backend.services.whatsapp import media as whatsapp_media
+from backend.services.whatsapp import message as whatsapp_message
 from backend.services.whatsapp import response_fallback as whatsapp_response_fallback
 from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services import (
@@ -23,35 +23,6 @@ from backend.services.whatsapp.composition import (
 WHATSAPP_MAX_OUTBOUND_IMAGES = whatsapp_media.WHATSAPP_MAX_OUTBOUND_IMAGES
 WHATSAPP_PART_BODY_CHARS = whatsapp_formatting.WHATSAPP_PART_BODY_CHARS
 WHATSAPP_MAX_PARTS = whatsapp_formatting.WHATSAPP_MAX_PARTS
-def _whatsapp_is_job_status_probe(text: str) -> bool:
-    normalized = unicodedata.normalize("NFKD", str(text or "")).encode("ascii", "ignore").decode("ascii")
-    normalized = re.sub(r"\s+", " ", normalized).strip().lower()
-    if not normalized:
-        return False
-    if re.fullmatch(r"[?.!]+", normalized):
-        return True
-    return bool(
-        len(normalized) <= 120
-        and re.fullmatch(
-            r"(?:e ai|e dai|terminou|acabou|concluiu|alguma novidade|como estamos|como esta|ja terminou|deu certo)[?.! ]*",
-            normalized,
-        )
-    )
-def _whatsapp_is_task_complement(text: str) -> bool:
-    normalized = unicodedata.normalize("NFKD", str(text or "")).encode("ascii", "ignore").decode("ascii").strip().lower()
-    if not normalized or len(normalized) > 600:
-        return False
-    if re.match(
-        r"^(na verdade|corrija|corrige|adicione|inclua|considere|use |troque|mude|refaca|quero dizer|quando eu disse|"
-        r"complementando|mais um detalhe|a loja e|o sku e|o pedido e|e tambem|tambem |sobre isso|nesse caso|"
-        r"e so\b|so\b|somente\b|apenas\b|continue\b|pode continuar\b|sem\b|nao inclua\b|nao precisa\b)",
-        normalized,
-    ):
-        return True
-    return bool(
-        len(normalized) <= 220
-        and re.search(r"\b(isso|isto|essa|esse|dessa|desse|nela|nele|anterior|mesmo|mesma|mesma loja|mesmo pedido|mais detalhes?)\b", normalized)
-    )
 def _dual_conversation_record(state: dict[str, Any], conversation_id: str) -> dict[str, Any]:
     with BRIDGE_STATE_LOCK:
         conversations = state.get("dual_agent_conversations") if isinstance(state.get("dual_agent_conversations"), dict) else {}
@@ -98,40 +69,17 @@ def _dual_append_conversation_turn(
     event_type: str = "",
 ) -> dict[str, Any]:
     """Persist a small, PII-minimized dialogue window independent of Codex threads."""
-
-    content = re.sub(r"\s+", " ", str(text or "").replace("\x00", " ")).strip()[:1200]
-    normalized_role = "assistant" if str(role or "").strip().lower() == "assistant" else "user"
-    if not content:
-        return record
-    turns = [
-        {
-            "role": "assistant" if str(item.get("role") or "") == "assistant" else "user",
-            "text": str(item.get("text") or "").strip()[:1200],
-            "event_type": str(item.get("event_type") or "")[:40],
-            "at": str(item.get("at") or "")[:40],
-        }
-        for item in list(record.get("recent_turns") or [])[-15:]
-        if isinstance(item, dict) and str(item.get("text") or "").strip()
-    ]
-    if turns and turns[-1]["role"] == normalized_role and turns[-1]["text"] == content:
-        return record
-    turns.append({"role": normalized_role, "text": content, "event_type": str(event_type or "")[:40], "at": _now()})
-    record["recent_turns"] = turns[-16:]
-    return record
+    return whatsapp_conversation_context.append_turn(
+        record, role=role, text=text, event_type=event_type, at=_now(),
+    )
 def _dual_recent_conversation_context(
     record: dict[str, Any],
     *,
     current_user_message: str = "",
 ) -> list[dict[str, str]]:
-    turns = [
-        {"role": str(item.get("role") or "user"), "text": str(item.get("text") or "").strip()[:900]}
-        for item in list(record.get("recent_turns") or [])[-12:]
-        if isinstance(item, dict) and str(item.get("text") or "").strip()
-    ]
-    current = re.sub(r"\s+", " ", str(current_user_message or "")).strip()[:900]
-    if turns and current and turns[-1]["role"] == "user" and turns[-1]["text"] == current:
-        turns.pop()
-    return turns[-10:]
+    return whatsapp_conversation_context.recent_turns(
+        record, current_user_message=current_user_message,
+    )
 def _dual_remember_conversation_turn(
     state: dict[str, Any],
     conversation_id: str,
@@ -151,6 +99,7 @@ def _save_dual_conversation_record(state: dict[str, Any], conversation_id: str, 
     with DUAL_AGENT_STATE_LOCK, BRIDGE_STATE_LOCK:
         conversations = state.get("dual_agent_conversations") if isinstance(state.get("dual_agent_conversations"), dict) else {}
         value = dict(record or {})
+        whatsapp_conversation_context.expire_turn_memory(value)
         value["conversation_id"] = conversation_id
         value["updated_at"] = _now()
         conversations[conversation_id] = value
@@ -207,6 +156,38 @@ def _dual_active_job_snapshot(
     return message_id, pending, task, snapshot
 
 
+def _materialize_agent_decision_context(
+    record: dict[str, Any], decision: dict[str, Any], *, event_type: str,
+    authorized_stores: Optional[list[str]], quoted_context: Optional[dict[str, Any]],
+) -> None:
+    if event_type == "user_message":
+        proposed_payload = dict(decision.get("resolved_context") or {})
+        if "context_operations" in decision:
+            proposed_payload["context_operations"] = list(decision.get("context_operations") or [])
+        proposed_context = whatsapp_conversation_context.merge_round_pin(
+            proposed_payload, record.pop("round_context_pin", None),
+        )
+        if "context_operations" in proposed_context:
+            memory_context = whatsapp_conversation_context.apply_context_operations(
+                record, proposed_context.get("context_operations"),
+                authorized_stores=authorized_stores, source="codex_conversation",
+            )
+        else:
+            memory_context = _dual_apply_resolved_context(
+                record, proposed_context,
+                authorized_stores=authorized_stores, source="codex_conversation",
+            )
+        resolved_context = whatsapp_conversation_context.request_context(
+            proposed_context, memory_context,
+        )
+        decision["context_operations"] = list(resolved_context.get("context_operations") or [])
+    else:
+        resolved_context = whatsapp_conversation_context.request_context({}, {})
+    decision["resolved_context"] = resolved_context
+    decision["effective_context"] = dict(resolved_context)
+    decision["quoted_context"] = dict(quoted_context or {})
+
+
 def _run_conversation_agent(
     config: dict[str, Any],
     state: dict[str, Any],
@@ -220,16 +201,20 @@ def _run_conversation_agent(
     tick_index: int = 0,
     authorized_stores: Optional[list[str]] = None,
     client_id: str = "",
+    quoted_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     settings = _whatsapp_dual_agent_settings(config)
-    prompt_contract = black_jhon_prompting.prompt_contract_diagnostics()
+    runtime_contract = codex_whatsapp_agents._decision_runtime_contract()
+    prompt_contract = runtime_contract["prompt_contract"]
     with DUAL_AGENT_STATE_LOCK:
         record = _dual_conversation_record(state, conversation_id)
         thread_id = str(record.get("thread_id") or "")
         initial_thread_reset_reason = ""
         if thread_id and (
-            str(record.get("prompt_version") or "") != str(prompt_contract.get("version") or "")
-            or str(record.get("prompt_hash") or "") != str(prompt_contract.get("hash") or "")
+            str(record.get("conversation_prompt_version") or record.get("prompt_version") or "")
+            != str(prompt_contract.get("version") or "")
+            or str(record.get("conversation_prompt_hash") or record.get("prompt_hash") or "")
+            != str(prompt_contract.get("hash") or "")
         ):
             thread_id = ""
             initial_thread_reset_reason = "prompt_contract_changed"
@@ -253,11 +238,16 @@ def _run_conversation_agent(
             worker_result=worker_result,
             conversation_context=conversation_context,
             conversation_state=conversation_state,
+            quoted_context=quoted_context,
             ai_behavior=ai_behavior,
             tick_index=tick_index,
+            client_id=client_id,
+            telemetry_trace_id=telemetry_trace_id,
+            store_id=str(conversation_state.get("store") or ""),
         )
         return value if isinstance(value, dict) else {}
 
+    telemetry_trace_id = uuid.uuid4().hex
     decision, codex_failure_count, terminal_error = whatsapp_response_fallback.resolve_conversation_decision(
         invoke,
         initial_thread_id=thread_id,
@@ -290,9 +280,12 @@ def _run_conversation_agent(
                 "thread_reset_reason": str(decision.get("thread_reset_reason") or "")[:120],
                 "prompt_version": str(prompt_contract.get("version") or "")[:120],
                 "prompt_hash": str(prompt_contract.get("hash") or "")[:128],
+                "conversation_prompt_version": str(prompt_contract.get("version") or "")[:120],
+                "conversation_prompt_hash": str(prompt_contract.get("hash") or "")[:128],
                 "schema_version": str(
-                    (prompt_contract.get("schemas") or {}).get("conversation_decision") or ""
+                    runtime_contract.get("schema_version") or ""
                 )[:120],
+                "decision_contract_mode": str(runtime_contract.get("mode") or "v2")[:20],
                 "context_chars": max(0, int(decision.get("context_chars") or 0)),
                 "last_event_type": event_type,
                 "last_activity_at_epoch": time.time(),
@@ -300,45 +293,14 @@ def _run_conversation_agent(
             }
         )
         reply_text = str(decision.get("reply_text") or "").strip()
-        if event_type == "user_message":
-            proposed_context = whatsapp_conversation_context.merge_round_pin(
-                decision.get("resolved_context"), record.pop("round_context_pin", None)
-            )
-            memory_context = _dual_apply_resolved_context(
-                record,
-                proposed_context,
-                authorized_stores=authorized_stores,
-                source="codex_conversation",
-            )
-            resolved_context = whatsapp_conversation_context.request_context(
-                proposed_context, memory_context
-            )
-        else:
-            resolved_context = whatsapp_conversation_context.request_context({}, {})
-        decision["resolved_context"] = resolved_context
+        _materialize_agent_decision_context(
+            record, decision, event_type=event_type,
+            authorized_stores=authorized_stores, quoted_context=quoted_context,
+        )
         if reply_text:
             _dual_append_conversation_turn(record, role="assistant", text=reply_text, event_type=event_type)
         _save_dual_conversation_record(state, conversation_id, record)
     return decision
-
-def _dual_delegate_query_policy(
-    request_text: str,
-    session: dict[str, Any],
-    state: dict[str, Any],
-    conversation_id: str,
-) -> dict[str, Any]:
-    direct = _whatsapp_query_policy(request_text, session)
-    store_scoped = _whatsapp_store_scoped_request(request_text)
-    # O contexto de loja so pode ser herdado por uma tarefa que continue sendo
-    # comercial. Frases naturais como "agora pesquise a previsao do
-    # tempo" nao podem reaproveitar a ultima loja consultada.
-    if not direct and not store_scoped:
-        return {}
-    inherited = _whatsapp_inherit_query_store_context(request_text, direct, state, conversation_id, session)
-    policy = direct or inherited
-    if not policy and store_scoped:
-        policy = _whatsapp_store_scope_policy(request_text, session)
-    return policy if isinstance(policy, dict) else {}
 
 def _record_dual_user_message(state: dict[str, Any], conversation_id: str, request_text: str) -> None:
     with DUAL_AGENT_STATE_LOCK:
@@ -362,6 +324,24 @@ def _dual_server_data_policy(config: dict[str, Any], session: dict[str, Any]) ->
         "context_hub_enabled": whatsapp_settings.context_hub_enabled_for_client(config, client_id),
     }
 
+def _dual_agent_query_policy(
+    config: dict[str, Any], session: dict[str, Any], resolved_context: Any,
+) -> dict[str, Any]:
+    """Bind the agent-selected context to server-owned authorization."""
+
+    policy = _dual_server_data_policy(config, session)
+    resolved = resolved_context if isinstance(resolved_context, dict) else {}
+    authorized = list(policy.get("authorized_stores") or [])
+    store_mode = str(resolved.get("store_mode") or "none").strip().lower()
+    store = str(resolved.get("store") or "").strip()
+    if store_mode == "single" and store in authorized:
+        policy.update({"store_mode": "single", "store": store, "stores": [store]})
+    elif store_mode == "all" and authorized:
+        policy.update({"store_mode": "all", "store": "", "stores": authorized})
+    else:
+        policy.update({"store_mode": "none", "store": "", "stores": []})
+    return policy
+
 def _dual_initial_decision(
     config: dict[str, Any],
     state: dict[str, Any],
@@ -369,41 +349,18 @@ def _dual_initial_decision(
     session: dict[str, Any],
     conversation_id: str,
     request_text: str,
-    active_task: dict[str, Any],
     active_snapshot: dict[str, Any],
     phone_ai_behavior: str,
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    del message
-    deterministic_plan: dict[str, Any] = {}
-    query_policy = _dual_server_data_policy(config, session) if not active_task else {}
-    decision = _run_conversation_agent(
+    quoted_context: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    return _run_conversation_agent(
         config, state, conversation_id,
         event_type="user_message", user_message=request_text,
         active_job=active_snapshot, ai_behavior=phone_ai_behavior,
         authorized_stores=_whatsapp_session_stores(session),
         client_id=str(session.get("client_id") or ""),
+        quoted_context=(quoted_context or whatsapp_message.message_quoted_context(message)),
     )
-    return decision, query_policy, deterministic_plan
-
-def _normalized_dual_action(
-    decision: dict[str, Any],
-    active_task: dict[str, Any],
-    request_text: str,
-) -> str:
-    action = str(decision.get("action") or "")
-    if not active_task:
-        return action
-    if _whatsapp_is_job_status_probe(request_text):
-        return "reply"
-    related_job_id = str(decision.get("related_job_id") or "").strip()
-    active_task_id = str(active_task.get("task_id") or "").strip()
-    if action in {"delegate", "queue"} and (
-        _whatsapp_is_task_complement(request_text) or (related_job_id and related_job_id == active_task_id)
-    ):
-        return "steer"
-    if action == "delegate":
-        return "queue"
-    return action
 
 def _cancel_dual_active_job(
     state: dict[str, Any],
@@ -475,19 +432,6 @@ def _handle_dual_control_action(
             _cancel_dual_active_job(state, session, active_message_id, active_pending)
         _post_message_result(config, message_id, {"status": "completed", "response": reply_text})
         return True, action
-    active_job_state = str(active_pending.get("job_state") or "") if active_pending else ""
-    should_resume = bool(
-        active_pending and not _whatsapp_is_job_status_probe(request_text)
-        and (active_job_state == "awaiting_input" or (
-            active_job_state in {"waiting_retry", "retry_starting"} and _whatsapp_is_retry_command(request_text)
-        ))
-    )
-    if should_resume and active_message_id and _resume_dual_pending_with_message(
-        config, state, active_message_id, active_pending, request_text,
-        request_context=decision.get("resolved_context"),
-    ):
-        _post_message_result(config, message_id, {"status": "completed", "task_id": active_task_id, "response": reply_text})
-        return True, action
     if action == "steer" and active_task:
         if _steer_dual_active_job(
             config, state, session, decision, active_message_id, active_pending,
@@ -512,17 +456,16 @@ def _dual_resolve_job_policy(
     conversation_id: str,
     request_text: str,
     job_prompt: str,
-    precomputed: dict[str, Any],
+    decision: dict[str, Any],
 ) -> Optional[dict[str, Any]]:
-    del state, message, conversation_id, request_text, job_prompt, precomputed
-    return _dual_server_data_policy(config, session)
+    del state, message, conversation_id, request_text, job_prompt
+    return _dual_agent_query_policy(config, session, decision.get("resolved_context"))
 
 def _queue_dual_function_manager(
     config: dict[str, Any],
     state: dict[str, Any],
     session: dict[str, Any],
     decision: dict[str, Any],
-    deterministic_plan: dict[str, Any],
     query_policy: dict[str, Any],
     message_id: str,
     subject: str,
@@ -536,7 +479,6 @@ def _queue_dual_function_manager(
     transcription: Optional[dict[str, Any]],
     phone_ai_behavior: str,
 ) -> bool:
-    del deterministic_plan
     settings = _whatsapp_dual_agent_settings(config)
     selection_enabled = settings.get("data_selection_enabled", settings.get("function_manager_enabled"))
     selection_required = settings.get(
@@ -566,6 +508,7 @@ def _queue_dual_function_manager(
             current_user_message=request_text,
         )[-6:],
         "resolved_context": dict(decision.get("resolved_context") or {}),
+        "quoted_context": dict(decision.get("quoted_context") or {}),
     }
     pending = {
         "task_id": "", "kind": "dual_function_manager", "conversation_id": conversation_id,
@@ -771,19 +714,20 @@ def _process_dual_codex_message(
     media: Optional[dict[str, Any]],
     transcription: Optional[dict[str, Any]],
     phone_ai_behavior: str,
+    quoted_context: Optional[dict[str, Any]] = None,
 ) -> bool:
     active_message_id, active_pending, active_task, active_snapshot = _dual_active_job_snapshot(
         state, conversation_id, exclude_message_id=message_id,
     )
     _record_dual_user_message(state, conversation_id, request_text)
-    decision, precomputed_policy, deterministic_plan = _dual_initial_decision(
+    decision = _dual_initial_decision(
         config, state, message, session, conversation_id, request_text,
-        active_task, active_snapshot, phone_ai_behavior,
+        active_snapshot, phone_ai_behavior, quoted_context,
     )
     if decision.get("action") == "selection_sent":
         return True
     reply_text = str(decision.get("reply_text") or "").strip()
-    action = _normalized_dual_action(decision, active_task, request_text)
+    action = str(decision.get("action") or "")
     handled, action = _handle_dual_control_action(
         config, state, session, decision, action, active_message_id, active_pending,
         active_task, request_text, message_id, subject, phone, reply_text,
@@ -794,7 +738,7 @@ def _process_dual_codex_message(
     job_title = str(decision.get("job_title") or request_text).strip()[:180]
     query_policy = _dual_resolve_job_policy(
         config, state, message, session, conversation_id,
-        request_text, job_prompt, precomputed_policy,
+        request_text, job_prompt, decision,
     )
     if query_policy is None:
         return True
@@ -803,7 +747,7 @@ def _process_dual_codex_message(
         config, session.get("client_id")
     )
     if _queue_dual_function_manager(
-        config, state, session, decision, deterministic_plan, query_policy,
+        config, state, session, decision, query_policy,
         message_id, subject, phone, conversation_id, request_text, job_prompt,
         job_title, reply_text, media, transcription, phone_ai_behavior,
     ):
@@ -815,8 +759,6 @@ def _process_dual_codex_message(
     )
 
 _COMPONENT_FUNCTIONS = frozenset((
-    '_whatsapp_is_job_status_probe',
-    '_whatsapp_is_task_complement',
     '_dual_conversation_record',
     '_dual_confirm_conversation_context',
     '_dual_append_conversation_turn',
@@ -825,12 +767,10 @@ _COMPONENT_FUNCTIONS = frozenset((
     '_save_dual_conversation_record',
     '_dual_active_job_snapshot',
     '_run_conversation_agent',
-    '_dual_delegate_query_policy',
+    '_dual_agent_query_policy',
     '_process_dual_codex_message'
 ))
 _IMPLEMENTATIONS = {
-    '_whatsapp_is_job_status_probe': _whatsapp_is_job_status_probe,
-    '_whatsapp_is_task_complement': _whatsapp_is_task_complement,
     '_dual_conversation_record': _dual_conversation_record,
     '_dual_confirm_conversation_context': _dual_confirm_conversation_context,
     '_dual_append_conversation_turn': _dual_append_conversation_turn,
@@ -839,7 +779,7 @@ _IMPLEMENTATIONS = {
     '_save_dual_conversation_record': _save_dual_conversation_record,
     '_dual_active_job_snapshot': _dual_active_job_snapshot,
     '_run_conversation_agent': _run_conversation_agent,
-    '_dual_delegate_query_policy': _dual_delegate_query_policy,
+    '_dual_agent_query_policy': _dual_agent_query_policy,
     '_process_dual_codex_message': _process_dual_codex_message
 }
 

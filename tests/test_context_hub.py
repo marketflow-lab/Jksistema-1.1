@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -162,9 +163,33 @@ def test_bootstrap_creates_persistent_vault_without_workspace(hub_env) -> None:
     assert json.loads((vault / ".obsidian" / "community-plugins.json").read_text(encoding="utf-8")) == []
     assert not (vault / ".obsidian" / "workspace.json").exists()
     assert (info / "000002" / "context_hub" / "context_hub.db").is_file()
+    dashboard = vault / context_hub.CURATION_DASHBOARD_RELATIVE_PATH
+    assert dashboard.is_file()
+    assert "ai_usage: denied" in dashboard.read_text(encoding="utf-8")
+    assert "- Total: 0" in dashboard.read_text(encoding="utf-8")
 
     with pytest.raises(context_hub.ContextHubValidationError):
         context_hub.bootstrap_context_hub("../outro")
+
+
+def test_repeated_settings_poll_does_not_rescan_curation_dashboard(
+    hub_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _base, _info, _adapter = hub_env
+    context_hub.bootstrap_context_hub("000002")
+    calls = 0
+    original = context_hub._refresh_curation_dashboard_best_effort
+
+    def counted(paths):
+        nonlocal calls
+        calls += 1
+        return original(paths)
+
+    monkeypatch.setattr(context_hub, "_refresh_curation_dashboard_best_effort", counted)
+    context_hub.get_settings("000002")
+    context_hub.get_settings("000002")
+
+    assert calls == 0
 
 
 @pytest.mark.parametrize(
@@ -694,6 +719,203 @@ def test_curated_note_requires_explicit_publication(hub_env) -> None:
     assert draft["state"] == "draft"
 
 
+def test_curation_dashboard_tracks_workflow_without_indexing_note_body(hub_env) -> None:
+    _base, info, _adapter = hub_env
+    created = context_hub.create_curated_note(
+        "000002",
+        title="Regra segura",
+        body="SEGREDO_DO_CORPO_9988.",
+        category="Regras",
+        actor="owner",
+    )["note"]
+    dashboard = (
+        info
+        / "000002"
+        / "ContextVault"
+        / context_hub.CURATION_DASHBOARD_RELATIVE_PATH
+    )
+
+    draft_text = dashboard.read_text(encoding="utf-8")
+    assert "[[80_Curadoria/Regras/regra-segura\\|Regra segura]]" in draft_text
+    assert "[[80_Curadoria/Regras/regra-segura|Regra segura]]" not in draft_text
+    assert "| Rascunho | Valida | Sem prazo | Consultiva |" in draft_text
+    assert "SEGREDO_DO_CORPO_9988" not in draft_text
+    assert "owner" not in draft_text
+    assert created["content_sha256"] not in draft_text
+    assert "source_hash" not in draft_text
+
+    context_hub.validate_curated_note("000002", created["note_id"], actor="owner")
+    context_hub.review_curated_note("000002", created["note_id"], actor="owner")
+    context_hub.approve_curated_note("000002", created["note_id"], actor="owner")
+    assert "| Aprovada | Valida | Sem prazo | Consultiva |" in dashboard.read_text(encoding="utf-8")
+
+    note_path = (
+        info / "000002" / "ContextVault" / "80_Curadoria" / created["relative_path"]
+    )
+    current = note_path.read_text(encoding="utf-8")
+    note_path.write_text(current.replace("SEGREDO_DO_CORPO_9988", "SEGREDO_DO_CORPO_8899"), encoding="utf-8")
+    context_hub.list_curated_notes("000002")
+    refreshed = dashboard.read_text(encoding="utf-8")
+    assert "| Rascunho | Valida | Sem prazo | Consultiva |" in refreshed
+    assert "SEGREDO_DO_CORPO_8899" not in refreshed
+    with sqlite3.connect(info / "000002" / "context_hub" / "context_hub.db") as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM context_hub_documents WHERE relative_path=?",
+            (context_hub.CURATION_DASHBOARD_RELATIVE_PATH,),
+        ).fetchone()[0]
+    assert count == 0
+
+
+def test_curation_dashboard_table_wikilinks_create_recognizable_backlinks(hub_env) -> None:
+    _base, info, _adapter = hub_env
+    created = [
+        context_hub.create_curated_note(
+            "000002",
+            title=f"Nota de regressao {index}",
+            body=f"Conteudo seguro {index}.",
+            category="Regras" if index % 2 else "Notas",
+        )["note"]
+        for index in range(1, 10)
+    ]
+    dashboard = (
+        info
+        / "000002"
+        / "ContextVault"
+        / context_hub.CURATION_DASHBOARD_RELATIVE_PATH
+    ).read_text(encoding="utf-8")
+
+    targets: list[str] = []
+    for line in dashboard.splitlines():
+        if not line.startswith("| [["):
+            continue
+        # Obsidian/Markdown divide table cells only at unescaped pipes. A raw
+        # wikilink alias separator would therefore produce six cells here and
+        # the note would not receive the intended graph backlink.
+        cells = [cell.strip() for cell in re.split(r"(?<!\\)\|", line.strip().strip("|"))]
+        assert len(cells) == 5
+        match = re.fullmatch(r"\[\[([^\[\]|]+)\\\|([^\[\]]+)\]\]", cells[0])
+        assert match is not None
+        targets.append(match.group(1))
+
+    assert set(targets) == {
+        f"80_Curadoria/{note['relative_path'][:-3]}" for note in created
+    }
+    assert len(targets) == len(created) == 9
+
+
+def test_moving_or_deleting_curated_note_tombstones_old_state(hub_env) -> None:
+    _base, info, _adapter = hub_env
+    created = context_hub.create_curated_note(
+        "000002", title="Regra movel", body="Conteudo movel seguro.", category="Regras"
+    )["note"]
+    context_hub.validate_curated_note("000002", created["note_id"])
+    context_hub.review_curated_note("000002", created["note_id"])
+    context_hub.approve_curated_note("000002", created["note_id"])
+    curated_root = info / "000002" / "ContextVault" / "80_Curadoria"
+    source = curated_root / created["relative_path"]
+    target = curated_root / "Notas" / source.name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source.replace(target)
+
+    notes = context_hub.list_curated_notes("000002")["notes"]
+    assert len(notes) == 1
+    assert notes[0]["relative_path"].startswith("Notas/")
+    assert notes[0]["state"] == "draft"
+    assert context_hub.get_status("000002")["curation"]["states"] == {"draft": 1}
+    with sqlite3.connect(info / "000002" / "context_hub" / "context_hub.db") as connection:
+        rows = connection.execute(
+            "SELECT relative_path, state, present FROM context_hub_curated_approvals ORDER BY relative_path"
+        ).fetchall()
+    assert rows == [
+        (f"Notas/{source.name}", "draft", 1),
+        (created["relative_path"], "approved", 0),
+    ]
+
+    target.unlink()
+    assert context_hub.list_curated_notes("000002")["count"] == 0
+    assert context_hub.get_status("000002")["curation"]["states"] == {}
+    dashboard = (
+        info / "000002" / "ContextVault" / context_hub.CURATION_DASHBOARD_RELATIVE_PATH
+    ).read_text(encoding="utf-8")
+    assert "- Total: 0" in dashboard
+
+
+def test_curation_dashboard_withholds_identifier_for_unreadable_note(hub_env) -> None:
+    _base, info, _adapter = hub_env
+    context_hub.bootstrap_context_hub("000002")
+    invalid = (
+        info
+        / "000002"
+        / "ContextVault"
+        / "80_Curadoria"
+        / "Notas"
+        / "nota-invalida.md"
+    )
+    invalid.write_bytes(b"\xff\xfe\x00")
+
+    context_hub.list_curated_notes("000002")
+    dashboard = (
+        info / "000002" / "ContextVault" / context_hub.CURATION_DASHBOARD_RELATIVE_PATH
+    ).read_text(encoding="utf-8")
+
+    assert "| Nota retida | Indisponivel | Bloqueada | Indisponivel | Consultiva |" in dashboard
+    assert context_hub._curated_note_id("Notas/nota-invalida.md")[:8] not in dashboard
+
+
+def test_superseded_curated_note_cannot_be_approved(hub_env) -> None:
+    _base, info, _adapter = hub_env
+    created = context_hub.create_curated_note(
+        "000002", title="Regra historica", body="Conteudo historico seguro.", category="Regras"
+    )["note"]
+    note_path = info / "000002" / "ContextVault" / "80_Curadoria" / created["relative_path"]
+    content = note_path.read_text(encoding="utf-8")
+    note_path.write_text(
+        content.replace(
+            "module: curadoria\n",
+            "lifecycle: superseded\n"
+            "superseded_by: jk:curated:replacement\n"
+            "valid_to: '2026-07-20'\n"
+            "module: curadoria\n",
+        ),
+        encoding="utf-8",
+    )
+
+    context_hub.validate_curated_note("000002", created["note_id"])
+    context_hub.review_curated_note("000002", created["note_id"])
+    with pytest.raises(context_hub.ContextHubValidationError, match="substituida"):
+        context_hub.approve_curated_note("000002", created["note_id"])
+    dashboard = (
+        info / "000002" / "ContextVault" / context_hub.CURATION_DASHBOARD_RELATIVE_PATH
+    ).read_text(encoding="utf-8")
+    assert "| Revisada | Somente historico | Substituida | Consultiva |" in dashboard
+    with sqlite3.connect(info / "000002" / "context_hub" / "context_hub.db") as connection:
+        connection.execute(
+            "UPDATE context_hub_curated_approvals SET state='approved' WHERE relative_path=?",
+            (created["relative_path"],),
+        )
+        connection.commit()
+    active = _publish_ready(context_hub.rebuild_context("000002"))
+    assert active["status"] == "active"
+    search = context_hub.search_context("000002", "Conteudo historico seguro")
+    assert all(result["doc_id"] != created["document_id"] for result in search["results"])
+
+
+def test_unknown_curated_lifecycle_fails_closed(hub_env) -> None:
+    _base, info, _adapter = hub_env
+    created = context_hub.create_curated_note(
+        "000002", title="Regra invalida", body="Conteudo seguro.", category="Regras"
+    )["note"]
+    note_path = info / "000002" / "ContextVault" / "80_Curadoria" / created["relative_path"]
+    content = note_path.read_text(encoding="utf-8")
+    note_path.write_text(
+        content.replace("module: curadoria\n", "lifecycle: superseeded\nmodule: curadoria\n"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(context_hub.ContextHubValidationError, match="validacao"):
+        context_hub.validate_curated_note("000002", created["note_id"])
+
+
 def test_450_skus_are_searchable_without_individual_vault_notes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     base = tmp_path / "app"
     info = tmp_path / "info"
@@ -767,6 +989,16 @@ def test_reviewed_bundle_guide_is_visible_in_obsidian_without_duplicate_index(tm
     info.mkdir()
     _write_bundle(base, include_ml_guide=True)
     adapter = FakeInventoryAdapter([_entity("jk:domain:test")])
+    monkeypatch.setattr(
+        adapter,
+        "render_context_inventory_markdown",
+        lambda _inventory: {
+            "70_Gerado/Contratos/APIs/mercado-livre.md": (
+                "---\nid: jk:map:apis:mercado-livre\ntype: map\n---\n\n"
+                "# APIs do dominio mercado-livre\n"
+            )
+        },
+    )
     monkeypatch.setattr(context_hub, "_load_inventory_adapter", lambda: adapter)
     context_hub.configure_context_hub(base_dir=base, info_root=info, surface="development")
 
@@ -787,6 +1019,37 @@ def test_reviewed_bundle_guide_is_visible_in_obsidian_without_duplicate_index(tm
     assert search["count"] == 1
     assert search["results"][0]["doc_id"] == "jk:bundle:mercado-livre-api-consultas-md"
     assert not (info / "000002" / "ContextVault" / "80_Curadoria" / "Mercado-Livre-API-Consultas.md").exists()
+    anchor = (
+        info
+        / "000002"
+        / "ContextVault"
+        / "70_Gerado"
+        / "Contratos"
+        / "APIs"
+        / "mercado-livre.md"
+    )
+    assert anchor.is_file()
+    anchor_text = anchor.read_text(encoding="utf-8")
+    assert "[[70_Gerado/Contratos/Mercado-Livre-API-Consultas|" in anchor_text
+    with sqlite3.connect(info / "000002" / "context_hub" / "context_hub.db") as connection:
+        anchor_documents = connection.execute(
+            "SELECT COUNT(*) FROM context_hub_documents WHERE generation_id=? AND relative_path=?",
+            (active["generation_id"], "70_Gerado/Contratos/APIs/mercado-livre.md"),
+        ).fetchone()[0]
+        indexed_bundle_content = connection.execute(
+            "SELECT content FROM context_hub_documents WHERE generation_id=? AND relative_path=?",
+            (active["generation_id"], "@bundle/mercado-livre-api-consultas.md"),
+        ).fetchone()[0]
+    assert anchor_documents == 1
+    assert visible.read_text(encoding="utf-8") == indexed_bundle_content
+    assert not (
+        info
+        / "000002"
+        / "ContextVault"
+        / "70_Gerado"
+        / "Mapas"
+        / "Documentacao-Revisada.md"
+    ).exists()
 
 
 def test_bundle_rejects_empty_manifest_and_missing_required_entries(hub_env) -> None:
@@ -852,11 +1115,20 @@ def test_watcher_fingerprint_observes_only_curated_notes(tmp_path: Path) -> None
     curated = info / "000002" / "ContextVault" / "80_Curadoria" / "Notas" / "rascunho.md"
     _write(curated, "# Rascunho\n\nMudanca humana.\n")
     fourth = context_hub.scan_context_hub_changes("000002")
+    dashboard = info / "000002" / "ContextVault" / context_hub.CURATION_DASHBOARD_RELATIVE_PATH
+    dashboard.write_text(dashboard.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    fifth = context_hub.scan_context_hub_changes("000002")
+    original_stat = curated.stat()
+    _write(curated, "# Rascunho\n\nMudanca segura.\n")
+    os.utime(curated, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    sixth = context_hub.scan_context_hub_changes("000002")
 
     assert first["initialized"] is False
     assert second["changed"] is False
     assert third["changed"] is False
     assert fourth["changed"] is True
+    assert fifth["changed"] is False
+    assert sixth["changed"] is True
 
 
 def test_admin_api_is_full_only_and_never_accepts_client_id(hub_env, monkeypatch: pytest.MonkeyPatch) -> None:

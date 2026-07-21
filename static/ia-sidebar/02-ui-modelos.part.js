@@ -642,19 +642,19 @@
     <div id="jk-codex-compose">
       <div id="jk-codex-toolbar">
         <button class="jk-codex-tool icon" id="jk-codex-add-toggle" type="button" title="Adicionar">+</button>
-        <label class="jk-codex-select-wrap" title="Acesso">
+        <label class="jk-codex-select-wrap" title="Plano de execucao interno">
           <span class="jk-codex-select-icon" aria-hidden="true">&#128274;</span>
-          <select class="jk-codex-select" id="jk-codex-access" title="Acesso">
-            <option value="read_only">Leitura</option>
-            <option value="request">Solicitar aprovacao</option>
-            <option value="auto">Aprovar por mim</option>
-            <option value="full_access">Acesso completo</option>
+          <select class="jk-codex-select" id="jk-codex-access" title="Black Jhon opera somente em leitura" disabled>
+            <option value="read_only">Somente leitura</option>
           </select>
         </label>
         <label class="jk-codex-select-wrap" title="Modelo">
           <span class="jk-codex-select-icon" aria-hidden="true">&#128187;</span>
           <select class="jk-codex-select" id="jk-codex-model" title="Modelo">
             <option value="gpt-5.5">GPT-5.5</option>
+            <option value="gpt-5.6-luna">GPT-5.6 Luna</option>
+            <option value="gpt-5.6-terra">GPT-5.6 Terra</option>
+            <option value="gpt-5.6-sol">GPT-5.6 Sol</option>
             <option value="gpt-5.4">GPT-5.4</option>
             <option value="gpt-5.4-mini">GPT-5.4 Mini</option>
             <option value="gpt-5.4-nano">GPT-5.4 Nano</option>

@@ -67,7 +67,56 @@ async function main() {
         authFlow: false
     });
 
-    console.log('OK: timeout do navegador pode recuperar a URL real antes de exibir falso erro.');
+    let proxy = null;
+    let modalOpen = false;
+    const visibilityMessages = [];
+    fakeTop.postMessage = message => visibilityMessages.push(message);
+    const visibilityBridge = fakeWindow.FavoritosV2.browser.shellBridge.createBridge({
+        getProxy: () => proxy,
+        setProxy: value => { proxy = value; },
+        getBounds: () => ({ left: 10, top: 20, width: 900, height: 600 }),
+        getDefaultUrl: () => 'https://www.mercadolivre.com.br/',
+        isBalloonOpen: () => modalOpen,
+        isBackground: () => false,
+        areUrlsEquivalent: (left, right) => left === right
+    });
+    proxy = visibilityBridge.criarProxy();
+    proxy.src = 'https://lista.mercadolivre.com.br/modal-fechado';
+    assert.strictEqual(
+        visibilityMessages.some(message => message.channel === 'jk-ml-browser-show'),
+        false,
+        'atribuir URL com modal fechado nao pode exibir o navegador'
+    );
+    assert.strictEqual(
+        visibilityMessages.some(message => message.channel === 'jk-ml-browser-hide'),
+        true,
+        'atribuir URL com modal fechado deve manter o navegador oculto'
+    );
+
+    modalOpen = true;
+    proxy.src = 'https://lista.mercadolivre.com.br/modal-aberto';
+    assert.strictEqual(
+        visibilityMessages.filter(message => message.channel === 'jk-ml-browser-show').length,
+        1,
+        'modal aberto deve permitir exatamente uma exibicao'
+    );
+    modalOpen = false;
+    const showsBeforeForce = visibilityMessages.filter(message => message.channel === 'jk-ml-browser-show').length;
+    assert.strictEqual(visibilityBridge.forcarVisivel(), false, 'forcar visibilidade depois de fechar deve ser recusado');
+    assert.strictEqual(
+        visibilityMessages.filter(message => message.channel === 'jk-ml-browser-show').length,
+        showsBeforeForce,
+        'timer atrasado nao pode reabrir o navegador'
+    );
+    proxy.__visible = true;
+    visibilityBridge.atualizarPosicao();
+    assert.strictEqual(
+        visibilityMessages.some(message => message.channel === 'jk-ml-browser-position'),
+        false,
+        'reposicionamento atrasado nao pode atuar depois que o modal fechou'
+    );
+
+    console.log('OK: timeout recupera estado e o navegador fechado nao reaparece por timer atrasado.');
 }
 
 main().catch((error) => {

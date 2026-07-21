@@ -104,7 +104,7 @@ assert(service.includes('TRANSCRIPTION_TIMEOUT_SECONDS = 600'), 'transcription t
 assert(service.includes('POLL_SECONDS = 3'), 'bridge poll interval must be 3 seconds');
 assert(service.includes('CLAIM_LIMIT = 5'), 'bridge claim limit changed');
 assert(service.includes('TYPING_REFRESH_SECONDS = 20'), 'typing refresh must remain at 20 seconds');
-assert(service.includes('TYPING_MAX_SECONDS = 10 * 60'), 'typing maximum duration must remain at 10 minutes');
+assert(service.includes('TYPING_MAX_SECONDS = 0'), 'typing heartbeat must not have a total deadline');
 assert(service.includes('/typing"'), 'local bridge typing endpoint missing');
 assert(service.includes('pairing_pending'), 'pairing no longer auto-activates the local bridge');
 assert(bridgeSettings.includes('WHATSAPP_AI_DEFAULT_MODEL = "codex:gpt-5.5"'), 'WhatsApp Codex default changed');
@@ -116,9 +116,9 @@ assert(service.includes('def _process_dual_codex_message('), 'dual Codex WhatsAp
 assert(service.includes('def _complete_dual_worker_pending('), 'worker result handoff to Luna is missing');
 assert(bridgeRetryPolicy.includes('WHATSAPP_RETRY_DELAYS_SECONDS = (2, 5, 15)'), 'bounded retry intervals changed');
 assert(bridgeRetryPolicy.includes('WHATSAPP_MAX_RETRY_ATTEMPTS = 3'), 'bounded retry limit changed');
-assert(bridgeSettings.includes('WHATSAPP_JOB_DEADLINE_DEFAULT = 120'), 'standard job deadline changed');
-assert(service.includes('WHATSAPP_ML_RESEARCH_DEADLINE_SECONDS = 5 * 60'), 'Mercado Livre research deadline changed');
-assert(service.includes('WHATSAPP_REPORT_DEADLINE_SECONDS = 10 * 60'), 'report deadline changed');
+assert(bridgeSettings.includes('WHATSAPP_JOB_DEADLINE_DEFAULT = 0'), 'Black Jhon total deadline must stay disabled');
+assert(service.includes('WHATSAPP_ML_RESEARCH_DEADLINE_SECONDS = 0'), 'Mercado Livre total deadline must stay disabled');
+assert(service.includes('WHATSAPP_REPORT_DEADLINE_SECONDS = 0'), 'report total deadline must stay disabled');
 assert(service.includes('def _normalize_tool_result_contract('), 'tool result contract normalization is missing');
 assert(!service.includes('def _deterministic_direct_query_plan('), 'obsolete deterministic direct router is still present');
 assert(bridgeSettings.includes('WHATSAPP_RESPONSE_PROVIDER_POLICY_DEFAULT = "codex_only"'), 'Codex-only response policy is not the default');

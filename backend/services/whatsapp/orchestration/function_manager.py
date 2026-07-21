@@ -1,8 +1,6 @@
 """Extracted WhatsApp bridge component: function_manager."""
 from __future__ import annotations
 import concurrent.futures
-import hashlib
-import json
 import re
 import time
 from typing import Any, Optional
@@ -14,12 +12,17 @@ from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp import tool_results as whatsapp_tool_results
 from backend.services.whatsapp import context_hub_telemetry as whatsapp_context_hub_telemetry
 from backend.services.whatsapp import data_selection_enforcement as whatsapp_data_selection_enforcement
+from backend.services.whatsapp.orchestration import agentic_replan
 from backend.services.whatsapp.orchestration import retry_coordinator as whatsapp_retry_coordinator
 from backend.services import codex_whatsapp_agents
 from backend.services.whatsapp.composition import BridgeDependencies, bind_component_namespace, invoke_component
 WHATSAPP_MAX_OUTBOUND_IMAGES = whatsapp_media.WHATSAPP_MAX_OUTBOUND_IMAGES
 WHATSAPP_PART_BODY_CHARS = whatsapp_formatting.WHATSAPP_PART_BODY_CHARS
 WHATSAPP_MAX_PARTS = whatsapp_formatting.WHATSAPP_MAX_PARTS
+_WHATSAPP_FORBIDDEN_ACTION_TOOLS = {
+    "program_action_match",
+    "operational_dispatcher",
+}
 def _whatsapp_dual_agent_settings(config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Direct-import fallback; bridge composition may replace this binding."""
 
@@ -32,7 +35,7 @@ def _function_manager_catalog(permissions: Any) -> list[dict[str, Any]]:
         if not isinstance(item, dict) or item.get("read_only") is not True:
             continue
         tool_id = str(item.get("id") or "").strip()
-        if not tool_id:
+        if not tool_id or tool_id in _WHATSAPP_FORBIDDEN_ACTION_TOOLS:
             continue
         catalog.append(
             {
@@ -45,14 +48,41 @@ def _function_manager_catalog(permissions: Any) -> list[dict[str, Any]]:
         )
     return catalog[:100]
 def _function_manager_extract_identifiers(value: Any) -> tuple[str, str]:
+    """Compatibility helper; SKU ownership belongs to the agent plan.
+
+    An MLB identifier has a canonical prefix and remains safe to recognize
+    syntactically. Free-form text is never interpreted as a SKU here.
+    """
+
     text = str(value or "")
-    sku_match = re.search(r"\bsku\s*[:#-]?\s*([a-z0-9][a-z0-9._/-]{0,99})\b", text, re.IGNORECASE)
     item_match = re.search(r"\bMLB[\s_-]*(\d{6,})\b", text, re.IGNORECASE)
     return (
-        str(sku_match.group(1) if sku_match else "").strip(),
+        "",
         (f"MLB{item_match.group(1)}" if item_match else "").upper(),
     )
-_function_manager_enforce_plan = whatsapp_data_selection_enforcement.enforce_plan
+
+
+def _function_manager_sanitize_materialized_entities(plan: dict[str, Any]) -> dict[str, Any]:
+    """Reject obvious language fragments without deriving entities from text."""
+
+    result = dict(plan or {})
+    entities = dict(result.get("entities") or {}) if isinstance(result.get("entities"), dict) else {}
+    sku = str(entities.get("sku") or "").strip()[:100]
+    if sku.casefold() in {"a", "ao", "da", "de", "do", "e", "em", "na", "no", "para"}:
+        entities["sku"] = ""
+    result["entities"] = entities
+    return result
+def _function_manager_enforce_plan(
+    plan: dict[str, Any], *, request_text: str, query_policy: dict[str, Any],
+    catalog: list[dict[str, Any]], max_calls: int,
+) -> dict[str, Any]:
+    return whatsapp_data_selection_enforcement.enforce_plan(
+        _function_manager_sanitize_materialized_entities(plan),
+        request_text=request_text,
+        query_policy=query_policy,
+        catalog=catalog,
+        max_calls=max_calls,
+    )
 
 def _stock_balance_contract(result: Any) -> dict[str, Any]:
     return whatsapp_tool_results.stock_balance_contract(result)
@@ -69,72 +99,86 @@ def _stock_tool_result_confirmed(result: dict[str, Any]) -> bool:
 def _function_manager_result_sufficient(value: dict[str, Any]) -> bool:
     validation = value.get("tool_validation") if isinstance(value.get("tool_validation"), dict) else {}
     return value.get("dados_suficientes") is True or validation.get("dados_suficientes") is True
+
+
+def _function_manager_execute_one(
+    entry: tuple[int, dict[str, Any], int, str, list[dict[str, Any]]],
+    *,
+    pending: dict[str, Any],
+    config: Optional[dict[str, Any]],
+) -> tuple[int, dict[str, Any]]:
+    from backend.services import codex_assistant
+
+    index, call, store_index, store, dependency_results = entry
+    args = dict(call.get("arguments") or {}) if isinstance(call.get("arguments"), dict) else {}
+    for untrusted_tenant_key in (
+        "authorization", "permissions", "client_id", "tenant_id", "tenant", "cliente_id",
+        "access_token", "refresh_token", "token", "api_key",
+    ):
+        args.pop(untrusted_tenant_key, None)
+    if store:
+        args["loja"] = store
+    args.setdefault("mode", "chat")
+    args.setdefault("limite", 20)
+    args.setdefault("force_refresh", True)
+    if str(call.get("tool_id") or "") == "context_hub_search":
+        args["request_surface"] = "black_jhon_whatsapp"
+    try:
+        is_hub = str(call.get("tool_id") or "") == "context_hub_search"
+        bound_session = whatsapp_retry_coordinator._reload_active_bound_session(config or {}, pending) if is_hub else pending
+        bound_client_id = str(bound_session.get("client_id") or "").strip()
+        if not bound_client_id:
+            raise RuntimeError("data_selection_tenant_required")
+        permissions = bound_session.get("permissions") if is_hub else pending.get("session_permissions")
+        raw = codex_assistant.codex_assistant_execute_tool_call(
+            client_id=bound_client_id,
+            tool_id=str(call.get("tool_id") or ""),
+            args=args,
+            screen_context=pending.get("screen_context") if isinstance(pending.get("screen_context"), dict) else {},
+            previous_results=dependency_results,
+            permissions=permissions if isinstance(permissions, dict) else {},
+            audit_user=str(pending.get("username") or "whatsapp"),
+            query_deadline=time.monotonic() + 60,
+            materialized_context=True,
+        )
+        value = _function_manager_compact_result(raw)
+    except Exception as exc:
+        error_class, retryable = whatsapp_retry_policy.retry_classification(exc)
+        error_code = f"tool_{error_class}"
+        value = {
+            "tool_id": str(call.get("tool_id") or ""),
+            "success": False,
+            "error": error_code,
+            "error_class": error_class,
+            "retryable": retryable,
+            "tool_validation": {"dados_suficientes": False, "motivo": error_code},
+        }
+    value.setdefault("tool_id", str(call.get("tool_id") or ""))
+    value["manager_call_index"] = index
+    value["manager_required"] = call.get("required") is not False
+    value["manager_store"] = store
+    return store_index, value
+
+
 def _function_manager_execute_tools(
     pending: dict[str, Any],
     plan: dict[str, Any],
     query_policy: dict[str, Any],
     config: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, Any]]:
-    from backend.services import codex_assistant
+    manager_guard = plan.get("manager_guard") if isinstance(plan.get("manager_guard"), dict) else {}
+    if str(manager_guard.get("data_selection_action") or "").strip() == "mutation_candidate":
+        return []
 
     calls = [item for item in list(plan.get("tool_calls") or []) if isinstance(item, dict)][:6]
+    if any(str(item.get("tool_id") or "").strip() in _WHATSAPP_FORBIDDEN_ACTION_TOOLS for item in calls):
+        return []
     stores = [str(item or "").strip() for item in list(query_policy.get("stores") or []) if str(item or "").strip()]
     if not stores and str(query_policy.get("store") or "").strip():
         stores = [str(query_policy.get("store") or "").strip()]
     stores = stores or [""]
     if not calls:
         return []
-
-    def execute(
-        entry: tuple[int, dict[str, Any], int, str, list[dict[str, Any]]],
-    ) -> tuple[int, dict[str, Any]]:
-        index, call, store_index, store, dependency_results = entry
-        args = dict(call.get("arguments") or {}) if isinstance(call.get("arguments"), dict) else {}
-        for untrusted_tenant_key in (
-            "authorization", "permissions", "client_id", "tenant_id", "tenant", "cliente_id",
-            "access_token", "refresh_token", "token", "api_key",
-        ):
-            args.pop(untrusted_tenant_key, None)
-        if store:
-            args["loja"] = store
-        args.setdefault("mode", "chat")
-        args.setdefault("limite", 20)
-        args.setdefault("force_refresh", True)
-        if str(call.get("tool_id") or "") == "context_hub_search": args["request_surface"] = "black_jhon_whatsapp"
-        try:
-            is_hub = str(call.get("tool_id") or "") == "context_hub_search"
-            bound_session = whatsapp_retry_coordinator._reload_active_bound_session(config or {}, pending) if is_hub else pending
-            bound_client_id = str(bound_session.get("client_id") or "").strip()
-            if not bound_client_id:
-                raise RuntimeError("data_selection_tenant_required")
-            permissions = bound_session.get("permissions") if is_hub else pending.get("session_permissions")
-            raw = codex_assistant.codex_assistant_execute_tool_call(
-                client_id=bound_client_id,
-                tool_id=str(call.get("tool_id") or ""),
-                args=args,
-                screen_context=pending.get("screen_context") if isinstance(pending.get("screen_context"), dict) else {},
-                previous_results=dependency_results,
-                permissions=permissions if isinstance(permissions, dict) else {},
-                audit_user=str(pending.get("username") or "whatsapp"),
-                query_deadline=time.monotonic() + 60,
-            )
-            value = _function_manager_compact_result(raw)
-        except Exception as exc:
-            error_class, retryable = whatsapp_retry_policy.retry_classification(exc)
-            error_code = f"tool_{error_class}"
-            value = {
-                "tool_id": str(call.get("tool_id") or ""),
-                "success": False,
-                "error": error_code,
-                "error_class": error_class,
-                "retryable": retryable,
-                "tool_validation": {"dados_suficientes": False, "motivo": error_code},
-            }
-        value.setdefault("tool_id", str(call.get("tool_id") or ""))
-        value["manager_call_index"] = index
-        value["manager_required"] = call.get("required") is not False
-        value["manager_store"] = store
-        return store_index, value
 
     started = time.monotonic()
     output: list[dict[str, Any]] = []
@@ -180,7 +224,15 @@ def _function_manager_execute_tools(
                 max_workers=min(6, len(executable)),
                 thread_name_prefix="jk-wa-manager-call",
             ) as executor:
-                futures = [executor.submit(execute, item) for item in executable]
+                futures = [
+                    executor.submit(
+                        _function_manager_execute_one,
+                        item,
+                        pending=pending,
+                        config=config,
+                    )
+                    for item in executable
+                ]
                 for future in concurrent.futures.as_completed(futures):
                     call_results.append(future.result())
         call_results.sort(key=lambda item: item[0])
@@ -265,38 +317,39 @@ def _record_function_manager_diagnostic(
         history.append(entry)
         state["data_selection_diagnostics"] = history[-100:]
         _save_state(state)
-def _function_manager_retry(pending: dict[str, Any], reason: str) -> None:
+def _function_manager_retry(
+    pending: dict[str, Any],
+    reason: str,
+    *,
+    force_retryable: bool = False,
+) -> None:
     count = max(0, int(pending.get("manager_retry_count") or 0)) + 1
     error_class, retryable = _dual_retry_classification(reason)
-    if not retryable or count > WHATSAPP_MAX_RETRY_ATTEMPTS:
-        pending.update(
-            {
-                "manager_state": "partial",
-                "data_selection_state": "partial",
-                "job_state": "partial",
-                "manager_retry_count": count,
-                "manager_retry_reason": str(reason or "resultado_interno_incompleto")[:1000],
-                "manager_next_retry_at_epoch": 0,
-                "next_retry_at_epoch": 0,
-                "retry_policy": "bounded",
-                "terminal_reason": str(reason or "limite_de_tentativas_atingido")[:1000],
-                "terminal_error_class": error_class,
-            }
-        )
-        return
-    delay = _dual_retry_delay_seconds(count, reason, str(pending.get("job_group_id") or "manager"))
-    pending.update(
-        {
-            "manager_state": "waiting_retry",
-            "data_selection_state": "waiting_retry",
-            "job_state": "waiting_retry",
-            "manager_retry_count": count,
-            "manager_retry_reason": str(reason or "resultado_interno_incompleto")[:1000],
-            "manager_next_retry_at_epoch": time.time() + delay,
-            "next_retry_at_epoch": time.time() + delay,
-            "retry_policy": "bounded",
-        }
+    if force_retryable:
+        error_class, retryable = "agent_replan", True
+    delay = 0 if not retryable else _dual_retry_delay_seconds(
+        count, reason, str(pending.get("job_group_id") or "manager")
     )
+    agentic_replan.apply_retry_state(
+        pending, reason=reason, count=count, error_class=error_class,
+        retryable=retryable, max_attempts=WHATSAPP_MAX_RETRY_ATTEMPTS,
+        delay_seconds=delay, now_epoch=time.time(),
+    )
+
+
+def _function_manager_schedule_evidence_replan(
+    pending: dict[str, Any],
+    evidence: dict[str, Any],
+) -> bool:
+    """Ask the planning agent for one genuinely different evidence strategy."""
+    if not agentic_replan.prepare_evidence_replan(pending, evidence):
+        return False
+    _function_manager_retry(
+        pending,
+        "data_selection_agent_replan_required",
+        force_retryable=True,
+    )
+    return str(pending.get("manager_state") or "") == "waiting_retry"
 
 def _function_manager_pending_snapshot(state: dict[str, Any], message_id: str) -> dict[str, Any]:
     with BRIDGE_STATE_LOCK:
@@ -307,11 +360,7 @@ def _function_manager_revision_matches(state: dict[str, Any], message_id: str, r
     latest = _function_manager_pending_snapshot(state, message_id)
     return bool(latest and int(latest.get("manager_revision") or 0) == revision)
 def _data_selection_gap_key(pending: dict[str, Any]) -> str:
-    requests = list(pending.get("manager_data_requests") or [])[:12]
-    if not requests:
-        return "initial"
-    encoded = json.dumps(requests, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return agentic_replan.gap_key(pending)
 def _data_selection_error_code(value: Any) -> str:
     text = str(value or "").strip().lower()
     match = re.search(r"\b(data_selection_[a-z0-9_.:-]{1,100})\b", text)
@@ -319,26 +368,7 @@ def _data_selection_error_code(value: Any) -> str:
         return match.group(1)
     return "data_selection_internal_error"
 def _data_selection_register_plan_attempt(pending: dict[str, Any]) -> None:
-    """Allow one replan per data gap; tool retries reuse the stored plan."""
-
-    gap_key = _data_selection_gap_key(pending)
-    reusable_plan = bool(
-        isinstance(pending.get("data_selection_raw_plan"), dict)
-        and pending.get("data_selection_raw_plan")
-        and str(pending.get("data_selection_gap_key") or "") == gap_key
-    )
-    if reusable_plan:
-        return
-    attempt_counts = {
-        str(key): max(0, int(value or 0))
-        for key, value in dict(pending.get("data_selection_attempts_by_gap") or {}).items()
-        if re.fullmatch(r"(?:initial|[a-f0-9]{64})", str(key or ""))
-    }
-    next_attempt = attempt_counts.get(gap_key, 0) + 1
-    if next_attempt > 2:
-        raise RuntimeError("data_selection_replan_limit")
-    attempt_counts[gap_key] = next_attempt
-    pending["data_selection_attempts_by_gap"] = dict(list(attempt_counts.items())[-12:])
+    agentic_replan.register_plan_attempt(pending)
 
 def _function_manager_build_plan(
     config: dict[str, Any],
@@ -381,34 +411,47 @@ def _function_manager_build_plan(
         if isinstance(pending.get("conversation_anchors"), dict)
         else {}
     )
+    context_revision = agentic_replan.context_revision(conversation_anchors)
     planning_started = time.monotonic()
     gap_key = _data_selection_gap_key(pending)
-    stored_raw_plan = (
-        pending.get("data_selection_raw_plan")
-        if isinstance(pending.get("data_selection_raw_plan"), dict)
-        and str(pending.get("data_selection_gap_key") or "") == gap_key
-        else {}
+    stored_raw_plan = agentic_replan.reusable_raw_plan(
+        pending, gap_key=gap_key, revision=context_revision,
     )
     if stored_raw_plan:
         raw_plan = dict(stored_raw_plan)
     else:
-        raw_plan = codex_whatsapp_agents.DATA_SELECTION_RUNTIME.plan(
-            request_text=str(pending.get("request_text") or ""),
-            job_prompt=str(pending.get("job_prompt") or pending.get("request_text") or ""),
-            surface="whatsapp",
-            allowed_tools=catalog,
-            authorized_stores=authorized_stores,
-            conversation_anchors=conversation_anchors,
-            previous_evidence=pending.get("manager_evidence") if isinstance(pending.get("manager_evidence"), dict) else None,
-            data_gap={
-                "requests": list(pending.get("manager_data_requests") or [])[:12],
-            } if isinstance(pending.get("manager_data_requests"), list) else None,
-            model="gpt-5.6-luna",
-            reasoning_effort="low",
-            max_calls=settings["max_subtasks_per_job"],
-        )
+        with codex_whatsapp_agents.DATA_SELECTION_RUNTIME.telemetry_scope(
+            client_id=client_id,
+            trace_id=str(
+                pending.get("telemetry_trace_id")
+                or pending.get("job_group_id")
+                or pending.get("task_id")
+                or ""
+            ),
+            manage_trace=True,
+        ):
+            raw_plan = codex_whatsapp_agents.DATA_SELECTION_RUNTIME.plan(
+                request_text=str(pending.get("request_text") or ""),
+                job_prompt=str(pending.get("job_prompt") or pending.get("request_text") or ""),
+                surface="whatsapp",
+                allowed_tools=catalog,
+                authorized_stores=authorized_stores,
+                conversation_anchors=conversation_anchors,
+                previous_evidence=pending.get("manager_evidence") if isinstance(pending.get("manager_evidence"), dict) else None,
+                data_gap={
+                    "requests": list(pending.get("manager_data_requests") or [])[:12],
+                    "attempted_tools": list(pending.get("manager_previously_attempted_tools") or [])[:12],
+                    "attempted_call_signatures": list(
+                        pending.get("manager_previously_attempted_call_signatures") or []
+                    )[:12],
+                } if isinstance(pending.get("manager_data_requests"), list) else None,
+                model="gpt-5.6-luna",
+                reasoning_effort="low",
+                max_calls=settings["max_subtasks_per_job"],
+            )
     if not isinstance(raw_plan, dict) or not str(raw_plan.get("action") or "").strip():
         raise RuntimeError("data_selection_invalid_plan")
+    raw_plan = _function_manager_sanitize_materialized_entities(raw_plan)
     duration_ms = int(round((time.monotonic() - planning_started) * 1000))
     selection_context = "\n".join(
         value
@@ -425,6 +468,10 @@ def _function_manager_build_plan(
         catalog=catalog,
         max_calls=settings["max_subtasks_per_job"],
     )
+    agentic_replan.reject_repeated_calls(
+        plan, pending.get("manager_previously_attempted_call_signatures"),
+    )
+    pending["data_selection_context_revision"] = context_revision
     execution_policy = dict(manager_policy)
     if str(plan.get("store_mode") or "") == "single" and str(plan.get("store") or "").strip():
         execution_policy.update({"store_mode": "single", "store": str(plan["store"]).strip(), "stores": []})
@@ -582,90 +629,13 @@ def _function_manager_handoff_mutation_candidate(
     pending: dict[str, Any],
     plan: dict[str, Any],
 ) -> bool:
-    """Hand a classified mutation to the existing approval workflow.
+    """Compatibility boundary: WhatsApp can describe, but never forward, a mutation."""
 
-    The data-selection agent only identifies the candidate.  It never receives
-    write tools and never executes or approves the action.  Full-access users
-    are handed to the canonical Codex proposal flow; read-only users remain in
-    the fail-closed explanatory path below.
-    """
-
-    permissions = dict(pending.get("session_permissions") or {})
-    mobile_full_access = bool(pending.get("session_is_full") and permissions.get("full") is True)
-    if not mobile_full_access:
-        return False
-    client_id = str(pending.get("client_id") or "").strip()
-    username = str(pending.get("username") or "").strip().lower()
-    if not client_id or not username:
-        raise RuntimeError("data_selection_mutation_identity_required")
-    request_text = str(pending.get("request_text") or "").strip()
-    if not request_text:
-        raise RuntimeError("data_selection_mutation_request_required")
-    session = {
-        "username": username,
-        "client_id": client_id,
-        "permissions": permissions,
-        "is_full": True,
-    }
-    result = _create_selected_ai_task(
-        config,
-        prompt=request_text,
-        session=session,
-        conversation_id=str(pending.get("conversation_id") or ""),
-        paths=[],
-        screen_context=(
-            dict(pending.get("screen_context") or {})
-            if isinstance(pending.get("screen_context"), dict)
-            else {}
-        ),
-        safe_read_only=False,
-        mobile_full_access=True,
-        channel_metadata={
-            "message_id": message_id,
-            "subject_id": str(pending.get("subject_id") or ""),
-            "wa_id": str(pending.get("wa_id") or ""),
-            "message_type": "text",
-            "request_text": request_text,
-            "query_policy": {},
-            "mobile_full_access": True,
-            "data_selection_action": "mutation_candidate",
-            "data_selection_schema_version": str(plan.get("schema_version") or "1.0")[:20],
-        },
-    )
-    task = result.get("task") if isinstance(result, dict) and isinstance(result.get("task"), dict) else {}
-    task_id = str(task.get("task_id") or "").strip()
-    if not task_id:
-        raise RuntimeError("data_selection_mutation_proposal_failed")
-    proposal = task.get("proposal") if isinstance(task.get("proposal"), dict) else {}
-    action_pending = {
-        "task_id": task_id,
-        "kind": "task",
-        "conversation_id": str(pending.get("conversation_id") or ""),
-        "subject_id": str(pending.get("subject_id") or ""),
-        "username": username,
-        "client_id": client_id,
-        "request_text": request_text,
-        "mobile_full_access": True,
-        "query_policy": {},
-        "general_answer": False,
-        "created_at": _now(),
-        "awaiting_notified": False,
-        "trusted_bound_number": True,
-        "proposal_id": str(proposal.get("proposal_id") or ""),
-        "proposal_version": int(proposal.get("version") or 1),
-        "proposal_hash": str(proposal.get("proposal_hash") or ""),
-        "action_summary": str(proposal.get("summary") or proposal.get("title") or ""),
-        "risk": str(proposal.get("risk") or ""),
-        "wa_id": str(pending.get("wa_id") or ""),
-        "selection_action": "mutation_candidate",
-        "approval_required": True,
-    }
-    _save_pending(state, message_id, action_pending)
+    del config, message_id, plan
     _record_function_manager_diagnostic(
-        state, pending, status="mutation_handed_to_approval", reason="mutation_candidate",
+        state, pending, status="mutation_blocked_whatsapp", reason="mutation_candidate",
     )
-    _complete_pending(config, state, message_id, action_pending)
-    return True
+    return False
 def _function_manager_finish_job(
     config: dict[str, Any],
     state: dict[str, Any],
@@ -727,6 +697,25 @@ def _function_manager_finish_job(
         and item.get("retryable") is True
         for item in list(evidence.get("validations") or [])
     )
+    required_incomplete = any(
+        isinstance(item, dict)
+        and item.get("required") is True
+        and item.get("dados_suficientes") is not True
+        for item in list(evidence.get("validations") or [])
+    )
+    if (
+        required_incomplete
+        and not required_retryable
+        and _function_manager_schedule_evidence_replan(pending, evidence)
+    ):
+        _record_function_manager_diagnostic(
+            state,
+            pending,
+            status="waiting_replan",
+            reason="data_selection_agent_replan_required",
+        )
+        _save_pending(state, message_id, pending)
+        return
     terminal_non_retryable_evidence = bool(
         results and not required_retryable and any(
             isinstance(item, dict) and item.get("dados_suficientes") is True

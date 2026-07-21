@@ -692,6 +692,14 @@
         .filter(Boolean);
     }
 
+    function _codexAttachmentIds() {
+      return codexUploadedAttachments
+        .filter(item => item && item.status !== 'uploading' && item.status !== 'error' && item.id)
+        .map(item => String(item.id || '').trim())
+        .filter(Boolean)
+        .slice(0, 20);
+    }
+
     function _codexPathsParaTarefa(basePaths = []) {
       const result = [];
       [...(Array.isArray(basePaths) ? basePaths : []), ..._codexAttachmentPaths()].forEach(path => {
@@ -815,10 +823,7 @@
     }
 
     function _codexAccessToRuntime(accessValue) {
-      const access = String(accessValue || 'read_only');
-      if (access === 'full_access') return { access, sandbox: 'full_access', approval_mode: 'full_access' };
-      if (access === 'auto') return { access, sandbox: 'workspace_write', approval_mode: 'auto' };
-      if (access === 'request') return { access, sandbox: 'workspace_write', approval_mode: 'request' };
+      void accessValue;
       return { access: 'read_only', sandbox: 'read_only', approval_mode: 'read_only' };
     }
 
@@ -838,7 +843,7 @@
         service_tier: speed === 'fast' ? 'priority' : '',
         goal: full ? String(document.getElementById('jk-codex-goal-input')?.value || '').trim() : '',
         planning_mode: full && document.getElementById('jk-codex-plan-toggle')?.classList.contains('is-active') === true,
-        paths: full ? codexPaths.slice(0, 20) : [],
+        paths: [],
       };
     }
 
@@ -3870,7 +3875,7 @@
       }
       const full = _usuarioLocalEhFull();
       const settings = _codexCollectSettings(full ? forcedAccess : 'read_only');
-      const pathsParaTarefa = full ? _codexPathsParaTarefa(settings.paths) : [];
+      const attachmentIds = full ? _codexAttachmentIds() : [];
       const temAnexos = full && _codexAttachmentPaths().length > 0;
       const prompt = promptDigitado || (temAnexos ? 'Analise os arquivos enviados.' : '');
       if (!prompt) return;
@@ -3906,7 +3911,9 @@
             service_tier: settings.service_tier,
             goal: settings.goal,
             planning_mode: settings.planning_mode,
-            paths: pathsParaTarefa,
+            attachments: attachmentIds,
+            reference_paths: [],
+            paths: [],
             screen_context: screenContext,
             history: _codexHistoryForPrompt(),
             request_id: requestId,

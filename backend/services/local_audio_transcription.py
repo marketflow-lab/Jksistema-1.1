@@ -8,14 +8,14 @@ creates a short-lived file and returns a compact, non-sensitive contract.
 from __future__ import annotations
 
 import os
-import queue
 import re
 import tempfile
-import threading
+import uuid
 from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException, UploadFile
+from backend.services.whatsapp import audio_processing as whatsapp_audio_processing
 
 
 LOCAL_AUDIO_MAX_BYTES = 16 * 1024 * 1024
@@ -49,45 +49,15 @@ LOCAL_AUDIO_SAFE_ERRORS = frozenset(
     }
 )
 
-_CLEANUP_QUEUE: "queue.Queue[Path]" = queue.Queue()
-_CLEANUP_THREAD_LOCK = threading.Lock()
-_CLEANUP_THREAD: threading.Thread | None = None
+def _unlink_audio_file(path: Path, attempts: int = 3, *, attachment_root: Path | None = None) -> bool:
+    # ``attempts`` remains in the private signature for compatibility. The
+    # centralized implementation owns the fixed, reviewed retry schedule.
+    del attempts
+    return whatsapp_audio_processing.delete_inbound_audio(path, attachment_root or path.parent)
 
 
-def _unlink_audio_file(path: Path, attempts: int = 3) -> bool:
-    for _attempt in range(max(1, attempts)):
-        try:
-            path.unlink(missing_ok=True)
-            return not path.exists()
-        except OSError:
-            continue
-    return False
-
-
-def _cleanup_janitor() -> None:
-    while True:
-        path = _CLEANUP_QUEUE.get()
-        try:
-            for delay_seconds in (0.0, 0.25, 1.0, 5.0):
-                if delay_seconds:
-                    threading.Event().wait(delay_seconds)
-                if _unlink_audio_file(path, attempts=2):
-                    break
-        finally:
-            _CLEANUP_QUEUE.task_done()
-
-
-def _queue_cleanup(path: Path) -> None:
-    global _CLEANUP_THREAD
-    _CLEANUP_QUEUE.put(path)
-    with _CLEANUP_THREAD_LOCK:
-        if _CLEANUP_THREAD is None or not _CLEANUP_THREAD.is_alive():
-            _CLEANUP_THREAD = threading.Thread(
-                target=_cleanup_janitor,
-                name="jk-local-audio-cleanup",
-                daemon=True,
-            )
-            _CLEANUP_THREAD.start()
+def _queue_cleanup(path: Path, *, attachment_root: Path | None = None) -> None:
+    whatsapp_audio_processing.queue_inbound_audio_cleanup(path, attachment_root or path.parent)
 
 
 def _normalized_mime(value: Any) -> str:
@@ -148,54 +118,85 @@ def transcribe_authenticated_upload(
     if not suffix:
         raise HTTPException(status_code=415, detail="Formato de audio nao suportado.")
 
-    descriptor, temporary_name = tempfile.mkstemp(prefix="jk-codex-voice-", suffix=suffix)
+    # Keep local voice under the same private attachment root as WhatsApp.
+    # The global operating-system temp directory must never be scanned/deleted.
+    from backend.services import codex_console
+
+    attachment_root = codex_console._codex_attachments_base_dir()
+    target_dir = codex_console._codex_attachment_dir(client_id, username, "local-voice")
+    target_dir = whatsapp_audio_processing.validate_audio_attachment_directory(
+        target_dir,
+        attachment_root,
+    )
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix="jk-codex-voice-",
+        suffix=suffix,
+        dir=str(target_dir),
+    )
     os.close(descriptor)
-    temporary = Path(temporary_name)
+    temporary = whatsapp_audio_processing.validate_inbound_audio_path(
+        Path(temporary_name),
+        attachment_root,
+    )
     size = 0
     header = b""
     result_payload: dict[str, Any] | None = None
     pending_error: BaseException | None = None
-    try:
-        with temporary.open("wb") as target:
-            while True:
-                chunk = upload.file.read(256 * 1024)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > LOCAL_AUDIO_MAX_BYTES:
-                    raise HTTPException(status_code=413, detail="Audio acima do limite de 16 MB.")
-                if len(header) < 32:
-                    header += chunk[: 32 - len(header)]
-                target.write(chunk)
-        if size <= 0:
-            result_payload = _failure("audio_empty")
-        elif not _signature_matches(mime_type, header):
-            result_payload = _failure("audio_corrupt")
+    with whatsapp_audio_processing.audio_telemetry_scope(
+        client_id=client_id,
+        trace_id=uuid.uuid4().hex,
+        user_id=username,
+        surface="local_voice",
+    ):
+        try:
+            with temporary.open("wb") as target:
+                while True:
+                    chunk = upload.file.read(256 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > LOCAL_AUDIO_MAX_BYTES:
+                        raise HTTPException(status_code=413, detail="Audio acima do limite de 16 MB.")
+                    if len(header) < 32:
+                        header += chunk[: 32 - len(header)]
+                    target.write(chunk)
+            if size <= 0:
+                result_payload = _failure("audio_empty")
+            elif not _signature_matches(mime_type, header):
+                result_payload = _failure("audio_corrupt")
 
-        if result_payload is None:
-            # Import lazily so the WhatsApp component is already composed with
-            # the application runtime. No audio bytes or transcript are logged.
-            from backend.services import whatsapp_bridge
+            if result_payload is None:
+                # Import lazily so the WhatsApp component is already composed with
+                # the application runtime. No audio bytes or transcript are logged.
+                from backend.services import whatsapp_bridge
 
-            result = whatsapp_bridge._transcribe_audio(temporary.resolve())
-            if not isinstance(result, dict) or result.get("success") is not True:
-                result_payload = _failure((result or {}).get("error_code") if isinstance(result, dict) else "child_failed")
-            else:
-                text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]+", " ", str(result.get("text") or ""))
-                text = re.sub(r"[ \t]+", " ", text).strip()[:12000]
-                result_payload = _failure("no_speech") if not text else {
-                    "success": True,
-                    "text": text,
-                    "error_code": "",
-                    "local_only": True,
-                    "raw_audio_retained": False,
-                }
-    except BaseException as exc:
-        pending_error = exc
-    finally:
-        removed = _unlink_audio_file(temporary)
-        if not removed:
-            _queue_cleanup(temporary)
+                validated = whatsapp_audio_processing.validate_inbound_audio_path(
+                    temporary,
+                    attachment_root,
+                )
+                result = whatsapp_audio_processing.transcribe_audio_with_retry(
+                    whatsapp_bridge._transcribe_audio,
+                    validated,
+                    total_attempts=2,
+                )
+                if not isinstance(result, dict) or result.get("success") is not True:
+                    result_payload = _failure((result or {}).get("error_code") if isinstance(result, dict) else "child_failed")
+                else:
+                    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]+", " ", str(result.get("text") or ""))
+                    text = re.sub(r"[ \t]+", " ", text).strip()[:12000]
+                    result_payload = _failure("no_speech") if not text else {
+                        "success": True,
+                        "text": text,
+                        "error_code": "",
+                        "local_only": True,
+                        "raw_audio_retained": False,
+                    }
+        except BaseException as exc:
+            pending_error = exc
+        finally:
+            removed = _unlink_audio_file(temporary, attachment_root=attachment_root)
+            if not removed:
+                _queue_cleanup(temporary, attachment_root=attachment_root)
     if not removed:
         return _failure("audio_cleanup_pending", raw_audio_retained=True)
     if pending_error is not None:

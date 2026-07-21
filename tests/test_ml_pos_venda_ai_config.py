@@ -37,17 +37,79 @@ def extract_assignment(source: str, name: str) -> str:
     return match.group(0)
 
 
+def ai_classification(
+    question: str,
+    *,
+    category: str = "product_feature",
+    intent: str | None = None,
+    use_web: bool = False,
+    target_item: str = "",
+    target_type: str = "",
+    compatibility_profile: str = "",
+    technical_focus: str = "",
+    missing_fields: tuple[str, ...] = (),
+    decisive_fields: tuple[str, ...] = (),
+    required_evidence: str = "anuncio, cadastro ou fonte tecnica coletada",
+) -> dict:
+    post_sale = category == "post_sale"
+    if intent is None:
+        intent = {
+            "compatibility": "compatibilidade",
+            "other_product": "outra_peca",
+            "price": "preco_estoque",
+            "stock": "preco_estoque",
+            "post_sale": "pos_venda_defeito",
+            "unknown": "nao_entendi",
+        }.get(category, "duvida_produto")
+    subquestion_intent = category if category in {
+        "compatibility", "shipping", "stock", "price", "invoice",
+        "warranty_originality", "product_feature", "other_product", "post_sale",
+    } else "general"
+    compatibility = category == "compatibility"
+    return {
+        "intencao": intent,
+        "categoria": category,
+        "categorias": [category],
+        "fluxo": "pos_venda" if post_sale else "perguntas_anuncio",
+        "confianca": 0.97,
+        "flags": {
+            "usar_busca_web": bool(use_web and not post_sale),
+            "usar_mercado_livre_anuncio": not post_sale,
+            "usar_bling": not post_sale,
+        },
+        "subperguntas": [{
+            "intent": subquestion_intent,
+            "question": question,
+            "required_evidence": required_evidence,
+        }],
+        "compatibilidade": {
+            "aplicavel": compatibility,
+            "target_item": target_item if compatibility else "",
+            "target_type": target_type if compatibility else "",
+            "compatibility_profile": compatibility_profile if compatibility else "",
+            "technical_focus": technical_focus,
+            "missing_fields": list(missing_fields),
+            "decisive_fields": list(decisive_fields),
+        },
+    }
+
+
 class MlPosVendaAIConfigTests(unittest.TestCase):
-    def test_compatibility_intent_cannot_disable_required_web_research(self):
+    def test_compatibility_intent_enables_required_web_research_from_ai_classification(self):
         import backend_api  # noqa: F401
         from backend.services import perguntas_pos_venda_agent as agent
 
         context = {
-            "intencao_atendimento": {
-                "fluxo": "perguntas_anuncio",
-                "intencao": "compatibilidade",
-                "usar_busca_web": False,
-            }
+            "intencao_atendimento": ai_classification(
+                "Serve na R1300GS?",
+                category="compatibility",
+                use_web=True,
+                target_item="BMW R1300GS",
+                target_type="vehicle",
+                compatibility_profile="vehicle_fitment",
+                technical_focus="interface base conector preparacao",
+                required_evidence="interface do produto, interface da moto e equivalencia tecnica",
+            )
         }
         with patch.object(agent, "_ia_treinamento_ppv_bloco_prompt", return_value=""):
             payload = agent._perguntas_ia_agent_input(
@@ -76,10 +138,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
         canary = "RESPOSTA-IDEAL-ANTIGA-NAO-DEVE-ENTRAR"
         context = {
-            "intencao_atendimento": {
-                "fluxo": "perguntas_anuncio",
-                "intencao": "duvida_produto",
-            }
+            "intencao_atendimento": ai_classification("Qual o conector?")
         }
         with patch.dict(os.environ, {"IA_PPV_LEGACY_GUIDANCE_FALLBACK_ENABLED": ""}), \
              patch.object(agent, "_ia_treinamento_ppv_bloco_prompt", return_value=canary):
@@ -108,7 +167,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         payload = {
             "store": "JK Pecas",
             "context": {},
-            "intent": {"fluxo": "perguntas_anuncio"},
+            "intent": ai_classification("Qual o conector?"),
         }
         empty_hub = {"result": {"found": False, "count": 0, "authoritative_count": 0}}
         nonempty_legacy_hub = {
@@ -135,16 +194,17 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 "",
             )
 
-    def test_technical_product_question_cannot_disable_web_research(self):
+    def test_technical_product_question_enables_web_research_from_ai_flag(self):
         import backend_api  # noqa: F401
         from backend.services import perguntas_pos_venda_agent as agent
 
         context = {
-            "intencao_atendimento": {
-                "fluxo": "perguntas_anuncio",
-                "intencao": "duvida_produto",
-                "usar_busca_web": False,
-            }
+            "intencao_atendimento": ai_classification(
+                "Essa carcaca da valvula termostatica e de engate rapido ou para abracadeira?",
+                use_web=True,
+                technical_focus="engate rapido abracadeira",
+                required_evidence="codigo da peca e especificacao das conexoes",
+            )
         }
         with patch.object(agent, "_ia_treinamento_ppv_bloco_prompt", return_value=""):
             payload = agent._perguntas_ia_agent_input(
@@ -291,14 +351,43 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_public_question_chassis_is_compatibility_and_not_asked_again(self):
         source = backend_text()
-        intent_body = function_body(source, "_perguntas_ia_intencao_heuristica")
+        classifier_body = function_body(source, "_perguntas_ia_classificar_intencao")
         validator_body = function_body(source, "_ia_agent_perguntas_violacoes_resposta")
         v2_body = function_body(source, "_perguntas_ia_v2_gerar_resposta")
-        self.assertIn('"chassi"', intent_body)
-        self.assertIn('"chassi"', validator_body)
+        self.assertNotIn("def _perguntas_ia_intencao_heuristica", source)
+        self.assertIn("categoria deve ser uma de", classifier_body)
+        self.assertIn("categoria_classificada", validator_body)
+        self.assertIn("QuestionCategory.COMPATIBILITY.value", validator_body)
         self.assertIn("_ia_agent_perguntas_resposta_pede_chassi(texto)", validator_body)
         self.assertIn("_perguntas_ia_v2_corrigir_resposta_bloqueada", v2_body)
-        self.assertIn("_perguntas_ia_v2_resposta_segura_compatibilidade", v2_body)
+        self.assertNotIn("_perguntas_ia_v2_resposta_segura_compatibilidade", v2_body)
+        self.assertNotIn("fallback_local_compatibilidade", v2_body)
+        self.assertNotIn("_perguntas_ia_v2_resposta_aterrada_navigator", source)
+        self.assertNotIn("preparação original BMW para Navigator", source)
+
+        import backend_api  # noqa: F401
+        from backend.services import perguntas_pos_venda_agent as agent
+
+        classified_input = {
+            "question": {"text": "Serve no veiculo de chassi WVGS565NXDW555974?"},
+            "item": {"title": "Peca automotiva"},
+            "intent": ai_classification(
+                "Serve no veiculo de chassi WVGS565NXDW555974?",
+                category="compatibility",
+                use_web=True,
+                target_item="veiculo de chassi WVGS565NXDW555974",
+                target_type="vehicle",
+                compatibility_profile="vehicle_fitment",
+                technical_focus="codigo OEM interface e aplicacao",
+            ),
+        }
+        self.assertIn(
+            "pediu chassi em pergunta de compatibilidade",
+            agent._ia_agent_perguntas_violacoes_resposta(
+                classified_input,
+                "Informe o chassi para verificarmos.",
+            ),
+        )
 
         namespace = {
             "re": re,
@@ -343,6 +432,15 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 "seller_sku": "241-1",
                 "title": "Adaptador Smartphone Suporte GPS BMW R1250 R1200 F850 GS ADV Preto",
             },
+            "intent": ai_classification(
+                "Serve no suporte gps da 1300gs?",
+                category="compatibility",
+                use_web=True,
+                target_item="BMW R1300GS",
+                target_type="vehicle",
+                compatibility_profile="vehicle_fitment",
+                technical_focus="interface base conector preparacao",
+            ),
         }
         queries = agent._ia_agent_perguntas_queries_web(agent_input, [])
 
@@ -367,6 +465,15 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 "seller_sku": "241-1",
                 "title": "Adaptador Smartphone Suporte GPS BMW R1250 R1200 F850 GS ADV Preto",
             },
+            "intent": ai_classification(
+                "Serve no suporte gps da 1300gs?",
+                category="compatibility",
+                use_web=True,
+                target_item="BMW R1300GS",
+                target_type="vehicle",
+                compatibility_profile="vehicle_fitment",
+                technical_focus="interface base conector preparacao",
+            ),
         }
         collected = [{
             "function": "get_mercado_livre_listing",
@@ -404,7 +511,12 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 "title": "Carcaca Valvula Termostatica THP 1.6 16v DS3 308 4008 C4 408",
                 "description": "Codigos de referencia 11537534521 / 52514 / 7534521 / 9810916980",
             },
-            "intent": {"fluxo": "perguntas_anuncio", "intencao": "duvida_produto"},
+            "intent": ai_classification(
+                "Boa tarde, essa carcaca da valvula termostatica e de engate rapido ou para abracadeira?",
+                use_web=True,
+                technical_focus="engate rapido abracadeira",
+                required_evidence="codigos da peca e especificacao tecnica das conexoes",
+            ),
         }
 
         queries = agent._ia_agent_perguntas_queries_web(agent_input, [])
@@ -428,7 +540,10 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         from backend.services import perguntas_pos_venda_agent as agent
 
         answer = '{"answer":"Acompanha cabo USB.","confidence":0.96,"requires_human_review":false,"reason":"listing_evidence"}'
-        client = agent._PerguntasVertexGeminiV2Client("cliente", "Loja", "codex:gpt-5.5", {"question": {"text": "Acompanha cabo?"}})
+        client = agent._PerguntasVertexGeminiV2Client("cliente", "Loja", "codex:gpt-5.5", {
+            "question": {"text": "Acompanha cabo?"},
+            "intent": ai_classification("Acompanha cabo?"),
+        })
         with patch.object(agent, "_ia_agent_perguntas_chamar_modelo", return_value=(answer, "codex:gpt-5.5")) as model_call, patch.object(
             agent,
             "_ia_agent_perguntas_web_tool",
@@ -487,7 +602,12 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 "title": "Carcaca Valvula Termostatica THP 1.6",
                 "description": "Codigo 9810916980",
             },
-            "intent": {"fluxo": "perguntas_anuncio", "intencao": "duvida_produto"},
+            "intent": ai_classification(
+                "Essa carcaca e de engate rapido ou para abracadeira?",
+                use_web=True,
+                technical_focus="engate rapido abracadeira",
+                required_evidence="codigo da peca e ficha tecnica das conexoes",
+            ),
             "allowed_tools": ["web_search_question_context"],
             "use_web_search": True,
         }
@@ -562,7 +682,16 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         agent_input = {
             "question": {"text": "Serve no suporte GPS da R1300GS?"},
             "item": {"id": "MLB1", "title": "Adaptador smartphone BMW Navigator", "description": "Compativel com base Navigator IV, V e VI"},
-            "intent": {"fluxo": "perguntas_anuncio", "intencao": "compatibilidade"},
+            "intent": ai_classification(
+                "Serve no suporte GPS da R1300GS?",
+                category="compatibility",
+                use_web=True,
+                target_item="BMW R1300GS",
+                target_type="vehicle",
+                compatibility_profile="vehicle_fitment",
+                technical_focus="base Navigator interface e encaixe",
+                required_evidence="interface do adaptador, interface oficial da moto e equivalencia",
+            ),
             "app_guidance": "Compare a base antes de responder.",
         }
         client = agent._PerguntasVertexGeminiV2Client("cliente", "Loja", "codex:gpt-5.5", agent_input)
@@ -588,8 +717,11 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 "history_count": 1,
             })
 
-        self.assertTrue(result.answer.startswith("Esse adaptador é compatível"))
-        self.assertIn("Ele encaixa nessa base e não acompanha nem substitui o suporte original.", result.answer)
+        self.assertEqual(
+            result.answer,
+            "Esse adaptador e compativel com a R1300GS equipada com a base original BMW Navigator IV ou posterior. "
+            "Ele encaixa nessa base e nao acompanha nem substitui o suporte original.",
+        )
         self.assertEqual(model_call.call_count, 1)
         self.assertEqual(client.compatibility_analysis["decision"], "conditional")
         self.assertEqual(client.compatibility_analysis["target_vehicle"], "BMW R1300GS")
@@ -831,12 +963,25 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         public_input = {
             "question": {"text": "Serve na R1300GS?"},
             "item": {"title": "Adaptador BMW R1300GS"},
-            "intent": {"fluxo": "perguntas_anuncio", "intencao": "compatibilidade"},
+            "intent": ai_classification(
+                "Serve na R1300GS?",
+                category="compatibility",
+                use_web=True,
+                target_item="BMW R1300GS",
+                target_type="vehicle",
+                compatibility_profile="vehicle_fitment",
+                technical_focus="interface base conector",
+            ),
         }
         post_sale_input = {
             "question": {"text": "O produto chegou quebrado"},
             "item": {"title": "Adaptador BMW"},
-            "intent": {"fluxo": "pos_venda", "intencao": "pos_venda"},
+            "intent": ai_classification(
+                "O produto chegou quebrado",
+                category="post_sale",
+                intent="pos_venda_defeito",
+                required_evidence="historico do pedido e mensagem do comprador",
+            ),
         }
         self.assertIn(
             "pediu anexo/arquivo em pergunta publica",
@@ -1103,14 +1248,25 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         self.assertEqual(analysis["evidence"]["target_vehicle"], [])
         self.assertIn("target_vehicle_evidence", analysis["missing_fields"])
 
-    def test_insufficient_analysis_replaces_positive_draft_with_textual_fallback(self):
+    def test_insufficient_analysis_keeps_draft_blocked_for_human_review(self):
         import backend_api  # noqa: F401
         from backend.services import perguntas_pos_venda_agent as agent
 
         agent_input = {
             "question": {"text": "Serve na minha moto?"},
             "item": {"id": "MLB1", "title": "Adaptador automotivo"},
-            "intent": {"fluxo": "perguntas_anuncio", "intencao": "compatibilidade"},
+            "intent": ai_classification(
+                "Serve na minha moto?",
+                category="compatibility",
+                use_web=True,
+                target_item="minha moto",
+                target_type="vehicle",
+                compatibility_profile="vehicle_fitment",
+                technical_focus="aplicacao ano versao e interface",
+                missing_fields=("ano", "versao"),
+                decisive_fields=("ano", "versao"),
+                required_evidence="aplicacao comprovada e equivalencia de interface",
+            ),
         }
         client = agent._PerguntasVertexGeminiV2Client("cliente", "Loja", "codex:gpt-5.5", agent_input)
         with patch.object(agent, "_ia_agent_perguntas_product_identity_web_tool", return_value=None), \
@@ -1132,8 +1288,8 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 "listing_title": "Adaptador automotivo",
             })
 
-        self.assertIn("informe o ano", result.answer.lower())
-        self.assertNotIn("e compativel", result.answer.lower())
+        self.assertEqual(result.answer, "Esse adaptador e compativel com a moto informada.")
+        self.assertLessEqual(result.confidence, 0.49)
         self.assertTrue(result.requires_human_review)
 
 

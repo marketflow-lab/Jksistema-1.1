@@ -69,6 +69,7 @@ const INBOUND_MEDIA_RETRY_BATCH = 10;
 const INBOUND_MEDIA_MAX_REDIRECTS = 3;
 const OUTBOUND_MEDIA_LEASE_SECONDS = 3 * 60;
 const OUTBOUND_MEDIA_MAX_ATTEMPTS = 5;
+const INBOUND_MESSAGE_LEASE_SECONDS = 10 * 60;
 const META_MEDIA_EXACT_HOSTS = new Set([
   "lookaside.fbsbx.com",
   "lookaside.facebook.com",
@@ -1010,6 +1011,7 @@ async function handleIncomingMessage(env: Env, ctx: ExecutionContext, value: Jso
   const media = (message[messageType] as JsonRecord | undefined) || {};
   const mediaId = ["image", "audio"].includes(messageType) ? String(media.id || "") : "";
   const mediaMime = String(media.mime_type || "");
+  const quotedMessageId = String(((message.context as JsonRecord | undefined) || {}).id || "").trim().slice(0, 240);
 
   const existing = await env.DB.prepare("SELECT message_id FROM inbox WHERE message_id=?").bind(messageId).first();
   if (existing) return;
@@ -1019,14 +1021,14 @@ async function handleIncomingMessage(env: Env, ctx: ExecutionContext, value: Jso
   // reais a Meta pode enviar um BSUID diferente; nesse caso o wa_id/telefone
   // continua sendo a identidade confiavel para recuperar o mesmo vinculo.
   let binding = await env.DB.prepare(
-    "SELECT subject_id,machine_id FROM bindings WHERE active=1 AND (subject_id=? OR wa_id=? OR phone_number=?) LIMIT 1",
+    "SELECT subject_id,machine_id,client_id,username FROM bindings WHERE active=1 AND (subject_id=? OR wa_id=? OR phone_number=?) LIMIT 1",
   ).bind(incomingSubjectId, waId, phoneSubject || waId).first<JsonRecord>();
   if (!binding) {
     const aliases = registeredPhoneAliases(phoneSubject || waId);
     const alternatePhone = aliases.find((candidate) => candidate !== phoneSubject && candidate !== waId) || "";
     if (alternatePhone) {
       binding = await env.DB.prepare(
-        "SELECT subject_id,machine_id FROM bindings WHERE active=1 AND (subject_id=? OR wa_id=? OR phone_number=?) LIMIT 1",
+        "SELECT subject_id,machine_id,client_id,username FROM bindings WHERE active=1 AND (subject_id=? OR wa_id=? OR phone_number=?) LIMIT 1",
       ).bind(alternatePhone, alternatePhone, alternatePhone).first<JsonRecord>();
     }
   }
@@ -1040,6 +1042,25 @@ async function handleIncomingMessage(env: Env, ctx: ExecutionContext, value: Jso
     return;
   }
   const subjectId = String(binding.subject_id || incomingSubjectId);
+  let quotedText = "";
+  if (quotedMessageId) {
+    const clientId = String(binding.client_id || "").trim();
+    const username = String(binding.username || "").trim().toLowerCase();
+    const quotedInbox = await env.DB.prepare(
+      "SELECT text_body FROM inbox WHERE message_id=? AND subject_id=? LIMIT 1",
+    ).bind(quotedMessageId, subjectId).first<JsonRecord>();
+    const quotedInteractive = quotedInbox?.text_body || !clientId || !username
+      ? null
+      : await env.DB.prepare(
+        "SELECT text_body FROM outbound_quote_context WHERE meta_message_id=? AND subject_id=? AND client_id=? AND username=? LIMIT 1",
+      ).bind(quotedMessageId, subjectId, clientId, username).first<JsonRecord>();
+    const quotedOutbound = quotedInbox?.text_body || quotedInteractive?.text_body
+      ? null
+      : await env.DB.prepare(
+        "SELECT text_body FROM outbox WHERE meta_message_id=? AND subject_id=? LIMIT 1",
+      ).bind(quotedMessageId, subjectId).first<JsonRecord>();
+    quotedText = compactReply(quotedInbox?.text_body || quotedInteractive?.text_body || quotedOutbound?.text_body || "", 3500);
+  }
 
   const recent = await env.DB.prepare("SELECT COUNT(*) AS total FROM inbox WHERE subject_id=? AND received_at>=?").bind(subjectId, nowSeconds() - 3600).first<{ total: number }>();
   if (Number(recent?.total || 0) >= 30) {
@@ -1050,8 +1071,21 @@ async function handleIncomingMessage(env: Env, ctx: ExecutionContext, value: Jso
   const initialStatus = !allowedType ? "unsupported" : mediaId ? "media_fetching" : "queued";
   await env.DB.batch([
     env.DB.prepare(
-      "INSERT INTO inbox(message_id,subject_id,wa_id,phone_number_id,message_type,text_body,media_id,media_mime,received_at,status) VALUES(?,?,?,?,?,?,?,?,?,?)",
-    ).bind(messageId, subjectId, waId || null, String(metadata.phone_number_id || ""), messageType, textBody || null, mediaId || null, mediaMime || null, receivedAt, initialStatus),
+      "INSERT INTO inbox(message_id,subject_id,wa_id,phone_number_id,message_type,text_body,media_id,media_mime,received_at,status,quoted_message_id,quoted_text) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+    ).bind(
+      messageId,
+      subjectId,
+      waId || null,
+      String(metadata.phone_number_id || ""),
+      messageType,
+      textBody || null,
+      mediaId || null,
+      mediaMime || null,
+      receivedAt,
+      initialStatus,
+      quotedMessageId || null,
+      quotedText || null,
+    ),
     env.DB.prepare("UPDATE bindings SET last_inbound_at=?,wa_id=COALESCE(NULLIF(?,''),wa_id) WHERE subject_id=?").bind(receivedAt, waId, subjectId),
   ]);
   await audit(env, "inbound_received", subjectId, { message_id: messageId, type: messageType });
@@ -1202,6 +1236,11 @@ async function bridgeHeartbeat(request: Request, env: Env): Promise<Response> {
   const body = await requestJson(request);
   const machineId = String(body.machine_id || "").trim();
   if (!machineId || machineId.length > 160) return json({ success: false, error: "machine_id_required" }, 400);
+  const activeMessageIds = [...new Set(
+    (Array.isArray(body.active_message_ids) ? body.active_message_ids : [])
+      .map((value) => String(value || "").trim().slice(0, 240))
+      .filter(Boolean),
+  )].slice(0, 100);
   const now = nowSeconds();
   await env.DB.prepare(
     "INSERT INTO bridge_heartbeats(machine_id,client_id,username,app_version,status,last_seen_at,updated_at) VALUES(?,?,?,?,?,?,?) "
@@ -1215,7 +1254,21 @@ async function bridgeHeartbeat(request: Request, env: Env): Promise<Response> {
     now,
     now,
   ).run();
-  return json({ success: true, status: "online", last_seen_at: now, offline_after_seconds: 30 });
+  let renewedLeases = 0;
+  if (activeMessageIds.length) {
+    const placeholders = activeMessageIds.map(() => "?").join(",");
+    const renewed = await env.DB.prepare(
+      `UPDATE inbox SET lease_until=? WHERE status='leased' AND lease_owner=? AND message_id IN (${placeholders})`,
+    ).bind(now + INBOUND_MESSAGE_LEASE_SECONDS, machineId, ...activeMessageIds).run();
+    renewedLeases = Number(renewed.meta.changes || 0);
+  }
+  return json({
+    success: true,
+    status: "online",
+    last_seen_at: now,
+    offline_after_seconds: 30,
+    renewed_leases: renewedLeases,
+  });
 }
 
 async function zeroCostEligibility(env: Env, subjectId: string, allowUnregistered = false): Promise<{ allowed: boolean; reason: string; binding?: JsonRecord }> {
@@ -1724,10 +1777,17 @@ async function claimMessages(request: Request, env: Env): Promise<Response> {
   for (const row of rows.results || []) {
     const messageId = String(row.message_id || "");
     const result = await env.DB.prepare("UPDATE inbox SET status='leased',lease_owner=?,lease_until=?,attempts=attempts+1 WHERE message_id=? AND status='queued'")
-      .bind(machineId, now + 600, messageId).run();
-    if (result.meta.changes) claimed.push({ ...row, status: "leased", lease_until: now + 600 });
+      .bind(machineId, now + INBOUND_MESSAGE_LEASE_SECONDS, messageId).run();
+    if (result.meta.changes) claimed.push({ ...row, status: "leased", lease_until: now + INBOUND_MESSAGE_LEASE_SECONDS });
   }
   return json({ success: true, messages: claimed });
+}
+
+async function renewInboundMessageLease(env: Env, messageId: string, machineId: string, now: number): Promise<boolean> {
+  const renewed = await env.DB.prepare(
+    "UPDATE inbox SET lease_until=? WHERE message_id=? AND status='leased' AND lease_owner=?",
+  ).bind(now + INBOUND_MESSAGE_LEASE_SECONDS, messageId, machineId).run();
+  return Number(renewed.meta.changes || 0) > 0;
 }
 
 async function bridgeMedia(request: Request, env: Env, mediaId: string): Promise<Response> {
@@ -1782,21 +1842,24 @@ async function messageTyping(request: Request, env: Env, messageId: string): Pro
   if (!row) return json({ success: false, error: "message_not_owned" }, 404);
   if (String(row.machine_id || "") !== machineId) return json({ success: false, error: "binding_machine_mismatch" }, 403);
   if (String(row.status || "") !== "leased") return json({ success: true, status: "not_active" });
-  if (!isPolicyValid(env.ZERO_COST_POLICY_VALID_UNTIL)) {
-    return json({ success: false, status: "policy_recheck_required", error: "policy_recheck_required" }, 409);
-  }
-  if (!isFreeWindowOpen(Number(row.last_inbound_at || 0), nowSeconds(), intEnv(env.FREE_WINDOW_SECONDS, 84600))) {
-    return json({ success: false, status: "waiting_free_window", error: "waiting_free_window" }, 409);
-  }
   const now = nowSeconds();
-  if (Number(row.typing_last_at || 0) > now - 15) return json({ success: true, status: "too_soon" });
+  if (!(await renewInboundMessageLease(env, messageId, machineId, now))) {
+    return json({ success: true, status: "not_active" });
+  }
+  if (!isPolicyValid(env.ZERO_COST_POLICY_VALID_UNTIL)) {
+    return json({ success: false, status: "policy_recheck_required", error: "policy_recheck_required", lease_renewed: true }, 409);
+  }
+  if (!isFreeWindowOpen(Number(row.last_inbound_at || 0), now, intEnv(env.FREE_WINDOW_SECONDS, 84600))) {
+    return json({ success: false, status: "waiting_free_window", error: "waiting_free_window", lease_renewed: true }, 409);
+  }
+  if (Number(row.typing_last_at || 0) > now - 15) return json({ success: true, status: "too_soon", lease_renewed: true });
   const throttle = await env.DB.prepare(
     "UPDATE inbox SET typing_last_at=? WHERE message_id=? AND status='leased' AND (typing_last_at IS NULL OR typing_last_at<=?)",
   ).bind(now, messageId, now - 15).run();
-  if (!Number(throttle.meta.changes || 0)) return json({ success: true, status: "too_soon" });
+  if (!Number(throttle.meta.changes || 0)) return json({ success: true, status: "too_soon", lease_renewed: true });
   const dailyLimit = intEnv(env.TYPING_PULSES_DAY_LIMIT, 10000);
   if (!(await counterReserveBelow(env, `typing_pulses:${dayKey()}`, dailyLimit))) {
-    return json({ success: true, status: "daily_limit", limit: dailyLimit });
+    return json({ success: true, status: "daily_limit", limit: dailyLimit, lease_renewed: true });
   }
   const response = await graphRequest(env, `${env.META_PHONE_NUMBER_ID}/messages`, {
     method: "POST",
@@ -1814,9 +1877,9 @@ async function messageTyping(request: Request, env: Env, messageId: string): Pro
       message_id: messageId,
       status: response.status,
     });
-    return json({ success: false, error: "meta_typing_indicator_failed", meta: payload }, 502);
+    return json({ success: false, error: "meta_typing_indicator_failed", meta: payload, lease_renewed: true }, 502);
   }
-  return json({ success: true, status: "sent" });
+  return json({ success: true, status: "sent", lease_renewed: true });
 }
 
 async function messageProgress(request: Request, env: Env, messageId: string): Promise<Response> {
@@ -1837,6 +1900,10 @@ async function messageProgress(request: Request, env: Env, messageId: string): P
   if (!row) return json({ success: false, error: "message_not_owned" }, 404);
   if (String(row.machine_id || "") !== machineId) return json({ success: false, error: "binding_machine_mismatch" }, 403);
   if (String(row.status || "") !== "leased") return json({ success: true, status: "not_active" });
+  const leaseNow = nowSeconds();
+  if (!(await renewInboundMessageLease(env, messageId, machineId, leaseNow))) {
+    return json({ success: true, status: "not_active" });
+  }
   if (!isPolicyValid(env.ZERO_COST_POLICY_VALID_UNTIL)) {
     return json({ success: false, status: "policy_recheck_required", error: "policy_recheck_required" }, 409);
   }
@@ -2398,7 +2465,8 @@ async function proactive(request: Request, env: Env): Promise<Response> {
   const machineId = String(body.machine_id || "").trim();
   const fingerprint = String(body.fingerprint || "").trim();
   const eventType = String(body.event_type || "").trim();
-  const severity = normalizeSeverity(body.severity);
+  const rawSeverity = String(body.severity || "").trim().toLowerCase();
+  const severity = normalizeSeverity(rawSeverity === "warning" ? "medium" : rawSeverity);
   const textParts = compactReplyParts(
     body.text_parts,
     body.text || "",
@@ -2413,7 +2481,7 @@ async function proactive(request: Request, env: Env): Promise<Response> {
     await audit(env, "proactive_text_blocked", subjectId, { reason: "binding_machine_mismatch" });
     return json({ success: false, error: "binding_machine_mismatch" }, 403);
   }
-  const isTask = ["task_completed", "task_failed", "task_awaiting_approval", "task_conversation"].includes(eventType);
+  const isTask = ["task_completed", "task_failed", "task_partial", "task_awaiting_approval", "task_conversation"].includes(eventType);
   const isScheduledReport = ["weekly_report", "monthly_report"].includes(eventType);
   if (!isTask && !isScheduledReport && !["high", "critical"].includes(severity)) return json({ success: true, status: "ignored_low_severity" });
   const existing = await env.DB.prepare("SELECT fingerprint FROM proactive_events WHERE fingerprint=?").bind(fingerprint).first();
@@ -2505,11 +2573,28 @@ async function interactiveApproval(request: Request, env: Env): Promise<Response
   }
   const recipient = outboundRecipient(subjectId, subjectId, eligibility.binding);
   if (!recipient) return json({ success: false, error: "recipient_missing" }, 400);
+  const clientId = String(eligibility.binding?.client_id || "").trim();
+  const username = String(eligibility.binding?.username || "").trim().toLowerCase();
+  if (!clientId || !username) return json({ success: false, error: "binding_tenant_scope_missing" }, 409);
   const now = nowSeconds();
   const reservation = await env.DB.prepare(
     "INSERT OR IGNORE INTO proactive_events(fingerprint,subject_id,event_type,severity,text_body,status,created_at) VALUES(?,?,?,?,?,'processing',?)",
   ).bind(fingerprint, subjectId, eventType, "info", textBody, now).run();
-  if (!Number(reservation.meta.changes || 0)) return json({ success: true, status: "duplicate" });
+  if (!Number(reservation.meta.changes || 0)) {
+    const existingContext = await env.DB.prepare(
+      "SELECT meta_message_id FROM outbound_quote_context WHERE fingerprint=? AND subject_id=? AND client_id=? AND username=? LIMIT 1",
+    ).bind(fingerprint, subjectId, clientId, username).first<JsonRecord>();
+    const existingMessageId = String(existingContext?.meta_message_id || "");
+    if (existingMessageId) {
+      return json({
+        success: true,
+        status: "duplicate",
+        meta_message_id: existingMessageId,
+        outbound_message_id: existingMessageId,
+      });
+    }
+    return json({ success: true, status: "processing", meta_message_id: null, outbound_message_id: null }, 202);
+  }
   const useList = eventType === "question_approval" || (eventType === "store_selection" && options.length > 3);
   const interactive: JsonRecord = useList
     ? {
@@ -2554,9 +2639,38 @@ async function interactiveApproval(request: Request, env: Env): Promise<Response
   }
   const messages = Array.isArray(payload.messages) ? payload.messages : [];
   const metaMessageId = String(((messages[0] || {}) as JsonRecord).id || "");
-  await env.DB.prepare("UPDATE proactive_events SET status='sent' WHERE fingerprint=?").bind(fingerprint).run();
+  if (!metaMessageId) {
+    await env.DB.prepare("UPDATE proactive_events SET status='sent_untracked' WHERE fingerprint=?").bind(fingerprint).run();
+    await audit(env, `interactive_${eventType}_untracked`, subjectId, { fingerprint });
+    return json({ success: false, error: "meta_interactive_message_id_missing" }, 502);
+  }
+  const visibleOptions = options.map((item) => ({ title: item.title, description: item.description }));
+  const actionLabel = compactReply(body.button_label || (useList ? "Ver lojas" : ""), 20);
+  const quoteText = compactReply([
+    header,
+    textBody,
+    actionLabel,
+    ...visibleOptions.map((item) => item.description ? `${item.title} - ${item.description}` : item.title),
+    footer,
+  ].filter(Boolean).join("\n"), 3500);
+  const quoteContext = JSON.stringify({
+    version: 1,
+    kind: "interactive",
+    event_type: eventType,
+    header,
+    body: textBody,
+    footer,
+    action_label: actionLabel,
+    options: visibleOptions,
+  });
+  await env.DB.batch([
+    env.DB.prepare("UPDATE proactive_events SET status='sent' WHERE fingerprint=?").bind(fingerprint),
+    env.DB.prepare(
+      "INSERT INTO outbound_quote_context(meta_message_id,fingerprint,subject_id,client_id,username,event_type,text_body,context_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+    ).bind(metaMessageId, fingerprint, subjectId, clientId, username, eventType, quoteText, quoteContext, now),
+  ]);
   await audit(env, `interactive_${eventType}_sent`, subjectId, { fingerprint, meta_message_id: metaMessageId });
-  return json({ success: true, status: "sent", meta_message_id: metaMessageId });
+  return json({ success: true, status: "sent", meta_message_id: metaMessageId, outbound_message_id: metaMessageId });
 }
 
 async function syncTemplates(request: Request, env: Env): Promise<Response> {

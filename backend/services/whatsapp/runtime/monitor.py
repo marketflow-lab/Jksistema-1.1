@@ -103,33 +103,9 @@ def _expire_dual_pending_if_due(
             pending,
             reason=str(pending.get("terminal_reason") or "resultado_parcial"),
         )
-    deadline = float(pending.get("deadline_at_epoch") or 0)
-    if not deadline or time.time() < deadline:
-        return False
-    for task_id in _pending_task_ids(pending):
-        try:
-            task = codex_console._codex_load_task(task_id) or {}
-            if str(task.get("status") or "") not in {"queued", "running", "cancel_requested"}:
-                continue
-            codex_console._codex_interrupt_active_turn(task_id)
-            codex_console._codex_update_task(
-                task_id,
-                status="canceled",
-                cancel_source="whatsapp_deadline",
-                canceled_at=_now(),
-                handoff_status="partial_terminal",
-                delivery_state="deadline_exceeded",
-            )
-        except Exception:
-            continue
-    pending["deadline_exceeded_at"] = _now()
-    return _terminate_pending_partial(
-        config,
-        state,
-        message_id,
-        pending,
-        reason="O tempo máximo desta consulta foi atingido.",
-    )
+    # O Black Jhon nao encerra mais consultas por tempo total. O monitor segue
+    # cuidando de progresso, retries e estados terminais reais.
+    return False
 
 def _retry_dual_pending_interrupts(pending: dict[str, Any]) -> int:
     interrupted = 0

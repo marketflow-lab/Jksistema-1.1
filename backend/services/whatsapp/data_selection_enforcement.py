@@ -10,6 +10,9 @@ from backend.services.context_hub_inventory import _slug as _context_hub_slug
 from backend.services.whatsapp import intent as whatsapp_intent
 
 
+_TOOLS_WITHOUT_STORE_BALANCE_SCOPE = frozenset({"stock_data"})
+
+
 def _apply_scope(
     result: dict[str, Any], query_policy: dict[str, Any]
 ) -> str:
@@ -50,6 +53,7 @@ def _apply_scope(
 def _hub_call(
     result: dict[str, Any],
     add_call: Callable[..., Optional[int]],
+    query_policy: dict[str, Any],
 ) -> tuple[str, dict[str, Any]]:
     hub_plan = result.get("context_hub") if isinstance(result.get("context_hub"), dict) else {}
     hub_mode = str(hub_plan.get("mode") or "off").strip().lower()
@@ -65,9 +69,9 @@ def _hub_call(
         value = str(filters.get(key) or "").strip()
         if re.fullmatch(r"[A-Za-z0-9_.:-]{1,100}", value):
             hub_args[key] = value
-    surface = str(filters.get("surface") or "").strip().lower()
-    if surface in {"development", "installed"}:
-        hub_args["environment"] = surface
+    surface = str(filters.get("surface") or "").strip().casefold()[:100]
+    if surface and re.fullmatch(r"[a-z0-9_.:-]{1,100}", surface):
+        hub_args["surface"] = surface
     stable_ids = [
         str(item).strip()
         for item in list(filters.get("ids") or [])[:20]
@@ -75,14 +79,55 @@ def _hub_call(
     ]
     if stable_ids:
         hub_args["ids"] = stable_ids
-    filter_sku = str(filters.get("sku") or result.get("sku") or "").strip()
-    if filter_sku and filter_sku == result.get("sku"):
+    entity_sku = str(result.get("sku") or "").strip()
+    filter_sku = str(filters.get("sku") or entity_sku).strip()[:100]
+    if entity_sku and filter_sku and filter_sku.casefold() != entity_sku.casefold():
+        raise RuntimeError("data_selection_context_scope_mismatch")
+    if filter_sku and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,99}", filter_sku):
+        hub_args["sku"] = filter_sku
         normalized_sku = _context_hub_slug(filter_sku, fallback="")
         if normalized_sku:
             canonical_id = f"jk:sku:{normalized_sku}"
             if canonical_id not in stable_ids:
                 stable_ids.insert(0, canonical_id)
-            hub_args.update({"ids": stable_ids[:20], "source_type": "sku", "module": "cadastro"})
+            hub_args["ids"] = stable_ids[:20]
+            hub_args.setdefault("source_type", "sku")
+            hub_args.setdefault("module", "cadastro")
+
+    entity_mlb = str(result.get("item_id") or "").strip().upper()
+    filter_mlb = re.sub(r"[^A-Za-z0-9]", "", str(filters.get("mlb") or entity_mlb)).upper()[:60]
+    if entity_mlb and filter_mlb and filter_mlb != entity_mlb:
+        raise RuntimeError("data_selection_context_scope_mismatch")
+    if filter_mlb and re.fullmatch(r"MLB\d{6,}", filter_mlb):
+        hub_args["mlb"] = filter_mlb
+
+    authorized_stores = [
+        str(item or "").strip()
+        for item in list(query_policy.get("authorized_stores") or [])
+        if str(item or "").strip()
+    ]
+    requested_store = str(filters.get("store_ref") or result.get("store") or "").strip()[:180]
+    if requested_store:
+        store_matches = whatsapp_intent.exact_store_matches(requested_store, authorized_stores)
+        if authorized_stores and len(store_matches) != 1:
+            raise RuntimeError("data_selection_unauthorized_store")
+        scoped_store = store_matches[0] if store_matches else requested_store
+        if result.get("store") and scoped_store != result.get("store"):
+            raise RuntimeError("data_selection_context_scope_mismatch")
+        hub_args["store_ref"] = scoped_store
+
+    tags = [
+        str(item or "").strip()[:80]
+        for item in list(filters.get("tags") or [])[:12]
+        if str(item or "").strip()
+    ]
+    if tags:
+        hub_args["tags"] = list(dict.fromkeys(tags))
+    valid_at = str(filters.get("valid_at") or "").strip()[:40]
+    if valid_at:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2})?)?", valid_at):
+            raise RuntimeError("data_selection_invalid_context_valid_at")
+        hub_args["valid_at"] = valid_at
     if hub_args["query"]:
         add_call(
             "context_hub_search", hub_args, hub_mode == "required",
@@ -115,6 +160,10 @@ def enforce_plan(
     ) -> Optional[int]:
         if tool_id not in allowed or (tool_id == "context_hub_search" and not hub_allowed):
             return None
+        if exact_store and tool_id in _TOOLS_WITHOUT_STORE_BALANCE_SCOPE:
+            # Capability validation only: this tool exposes an aggregate local
+            # balance and cannot prove the balance of one named store.
+            return None
         args = {
             str(key): value for key, value in dict(arguments or {}).items()
             if str(key).strip().lower() not in denied_keys
@@ -124,14 +173,15 @@ def enforce_plan(
         elif str(query_policy.get("store_mode") or "") == "all":
             args.pop("loja", None)
             args.pop("store", None)
-        if result.get("sku") and tool_id not in {"bling_positive_stock_sku_count", "context_hub_search"}:
-            args["sku"] = result["sku"]
-        else:
-            args.pop("sku", None)
-        if result.get("item_id") and tool_id != "context_hub_search":
-            args["item_id"] = result["item_id"]
-        else:
-            args.pop("item_id", None)
+        if tool_id != "context_hub_search":
+            if result.get("sku") and tool_id != "bling_positive_stock_sku_count":
+                args["sku"] = result["sku"]
+            else:
+                args.pop("sku", None)
+            if result.get("item_id"):
+                args["item_id"] = result["item_id"]
+            else:
+                args.pop("item_id", None)
         args.setdefault("message", context_request[:4000])
         signature = json.dumps({"tool_id": tool_id, "arguments": args}, ensure_ascii=False, sort_keys=True, default=str)
         if signature in seen:
@@ -188,7 +238,7 @@ def enforce_plan(
             if accepted_index is not None:
                 accepted[raw_index] = accepted_index
 
-    hub_mode, hub_plan = _hub_call(result, add_call)
+    hub_mode, hub_plan = _hub_call(result, add_call, query_policy)
     result.update({"tool_calls": calls, "requires_web": False, "requires_sol": False})
     hub_planned = any(str(item.get("tool_id") or "") == "context_hub_search" for item in calls)
     result["missing_user_fields"] = [

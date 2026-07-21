@@ -605,6 +605,22 @@ def _customer_reply_job_ready_for_approval(job: Any) -> bool:
     )
 
 
+def _customer_reply_approval_job_current(client_id: str, approval: Any) -> bool:
+    """Only current-contract AI jobs may keep or publish a public-question draft."""
+
+    if not isinstance(approval, dict):
+        return False
+    job_id = str(
+        approval.get("proposal_id")
+        or approval.get("codex_job_id")
+        or approval.get("research_job_id")
+        or ""
+    ).strip()
+    if not job_id:
+        return False
+    return perguntas_pos_venda_codex.approval_job_current(client_id, job_id)
+
+
 def _customer_reply_job_already_reconciled(aprovacoes: Any, job_id: Any) -> bool:
     normalized_job_id = str(job_id or "").strip()
     if not normalized_job_id:
@@ -899,8 +915,17 @@ def ml_perguntas_automacao_poll(
                     continue
                 if _perguntas_ia_ja_processada(state, nome_loja, question_id):
                     continue
-                if _perguntas_ia_aprovacao_pendente(aprovacoes, nome_loja, question_id):
-                    continue
+                aprovacao_pendente = _perguntas_ia_aprovacao_pendente(
+                    aprovacoes, nome_loja, question_id
+                )
+                if aprovacao_pendente:
+                    if _customer_reply_approval_job_current(client_id, aprovacao_pendente):
+                        continue
+                    _perguntas_ia_resolver_aprovacao(
+                        aprovacao_pendente,
+                        "stale_contract",
+                        "contrato_ia_anterior_ou_sem_job_verificavel",
+                    )
                 if processadas_loja >= max_per_store:
                     break
 
@@ -1004,16 +1029,16 @@ def ml_perguntas_automacao_poll(
 def _aprovacao_eh_pos_venda(approval: Any) -> bool:
     if not isinstance(approval, dict):
         return False
-    tipo = str(approval.get("tipo") or approval.get("approval_type") or "").strip().lower()
+    def _marcador(value: Any) -> str:
+        return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+    tipo = _marcador(approval.get("tipo") or approval.get("approval_type"))
     origens = (
         approval.get("origem"),
         approval.get("ia_origem"),
         approval.get("ia_finalidade"),
     )
-    return tipo == "pos_venda" or any(
-        "pos_venda" in str(origem or "").strip().lower()
-        for origem in origens
-    )
+    return tipo == "pos_venda" or any("pos_venda" in _marcador(origem) for origem in origens)
 
 
 def ml_perguntas_aprovacoes_listar(client_id: str = Depends(get_tenant_id)):
@@ -1029,6 +1054,16 @@ def ml_perguntas_aprovacoes_listar(client_id: str = Depends(get_tenant_id)):
         if _aprovacao_eh_pos_venda(approval):
             # Mantem o registro historico intacto, mas nao o expoe nem consulta
             # o Mercado Livre para um fluxo de sugestao que foi desativado.
+            continue
+        if not _customer_reply_approval_job_current(client_id, approval):
+            approval.update(
+                {
+                    "status": "stale_contract",
+                    "resolved_at": datetime.now().isoformat(timespec="seconds"),
+                    "resolved_reason": "contrato_ia_anterior_ou_sem_job_verificavel",
+                }
+            )
+            mudou = True
             continue
         loja = str(approval.get("loja") or "").strip()
         question_id = str(approval.get("question_id") or "").strip()
@@ -1110,11 +1145,39 @@ def ml_perguntas_aprovacoes_aprovar(req: PerguntasAprovacaoRequest, client_id: s
 
 def _ml_perguntas_aprovacoes_aprovar_locked(req: PerguntasAprovacaoRequest, client_id: str):
     approval_id = str(req.approval_id or "").strip()
+    requested_store = str(req.store or "").strip()
+    requested_question_id = str(req.question_id or "").strip()
     aprovacoes = _perguntas_ia_aprovacoes_carregar(client_id)
-    idx = next((i for i, item in enumerate(aprovacoes) if isinstance(item, dict) and str(item.get("id") or "") == approval_id), -1)
-    if idx < 0:
+    id_matches = [
+        (i, item)
+        for i, item in enumerate(aprovacoes)
+        if isinstance(item, dict) and str(item.get("id") or "").strip() == approval_id
+    ]
+    if not id_matches:
         raise HTTPException(status_code=404, detail="AprovaÃ§Ã£o nÃ£o encontrada.")
-    approval = aprovacoes[idx]
+    compatible = [
+        (i, item)
+        for i, item in id_matches
+        if (
+            not requested_store
+            or str(item.get("loja") or "").strip().casefold() == requested_store.casefold()
+        )
+        and (
+            not requested_question_id
+            or str(item.get("question_id") or item.get("pergunta_id") or "").strip()
+            == requested_question_id
+        )
+    ]
+    if len(compatible) != 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Aprovacao ambigua: informe store e question_id para identificar uma unica pergunta."
+                if len(compatible) > 1
+                else "O escopo informado nao corresponde a aprovacao solicitada."
+            ),
+        )
+    idx, approval = compatible[0]
     tipo_aprovacao = str(approval.get("tipo") or approval.get("approval_type") or "").strip().lower()
     if _aprovacao_eh_pos_venda(approval):
         raise HTTPException(
@@ -1145,8 +1208,8 @@ def _ml_perguntas_aprovacoes_aprovar_locked(req: PerguntasAprovacaoRequest, clie
             "idempotent_replay": bool(existing_idempotency_key == idempotency_key and previous_status.startswith("sent")),
         }
 
-    cfg = _obter_cfg_ml(client_id, loja)
     proposal_id = str(approval.get("proposal_id") or approval.get("codex_job_id") or "").strip()
+    cfg = _obter_cfg_ml(client_id, loja)
     proposal_info = None
     if tipo_aprovacao == "pos_venda":
         pack_id = str(approval.get("pack_id") or "").strip()
@@ -1225,6 +1288,20 @@ def _ml_perguntas_aprovacoes_aprovar_locked(req: PerguntasAprovacaoRequest, clie
             aprovacoes[idx] = approval
             _perguntas_ia_aprovacoes_salvar(client_id, aprovacoes)
             return {"success": True, "approval": approval, "idempotent_replay": reconciled}
+        if not proposal_id or not _customer_reply_approval_job_current(client_id, approval):
+            approval.update(
+                {
+                    "status": "stale_contract",
+                    "resolved_at": datetime.now().isoformat(timespec="seconds"),
+                    "resolution_reason": "contrato_ia_anterior_ou_sem_job_verificavel",
+                }
+            )
+            aprovacoes[idx] = approval
+            _perguntas_ia_aprovacoes_salvar(client_id, aprovacoes)
+            raise HTTPException(
+                status_code=409,
+                detail="Esta sugestao pertence a um contrato de IA anterior. Gere uma nova resposta antes de aprovar.",
+            )
         if proposal_id:
             proposal_info = perguntas_pos_venda_codex.approve_or_refresh_proposal(
                 client_id=client_id,

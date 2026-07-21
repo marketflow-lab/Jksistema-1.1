@@ -1299,6 +1299,15 @@ body {
         body.ml-work-modal-open {
             overflow: hidden;
         }
+        body.ml-work-modal-open .jk-nav-card-group {
+            display: none !important;
+        }
+        html.jk-electron-tab-shell .ml-work-modal {
+            padding-top: 52px;
+        }
+        html.jk-electron-tab-shell .ml-work-modal-dialog {
+            height: calc(100vh - 58px);
+        }
         .ml-work-modal-dialog {
             background: #f8fafc;
             border: 1px solid rgba(191, 219, 254, 0.9);
@@ -1565,9 +1574,28 @@ body {
             .ml-work-modal {
                 padding: 12px;
             }
+            html.jk-electron-tab-shell .ml-work-modal {
+                padding: 52px 12px 12px;
+            }
             .ml-work-modal-dialog {
                 height: calc(100vh - 24px);
                 width: calc(100vw - 24px);
+            }
+            html.jk-electron-tab-shell .ml-work-modal-dialog {
+                height: calc(100vh - 64px);
+            }
+            .ml-work-modal-header {
+                align-items: flex-start;
+                flex-wrap: wrap;
+            }
+            .ml-work-modal-actions {
+                flex-wrap: wrap;
+                justify-content: flex-end;
+                max-width: 100%;
+            }
+            .ml-work-modal-live-status {
+                flex: 1 0 100%;
+                order: 3;
             }
             .ml-work-modal-body {
                 grid-template-columns: 1fr;

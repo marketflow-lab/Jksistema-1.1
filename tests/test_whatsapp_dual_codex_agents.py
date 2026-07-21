@@ -7,6 +7,9 @@ import pytest
 
 from backend.services import codex_assistant, codex_console, codex_whatsapp_agents, whatsapp_bridge
 from backend.services.whatsapp import black_jhon_prompting, conversation_context, marketplace_listing_delivery
+from backend.services.whatsapp.orchestration import conversation as whatsapp_conversation
+from backend.services.whatsapp.orchestration import function_manager as whatsapp_function_manager
+from backend.services.whatsapp.orchestration import manager_results as whatsapp_manager_results
 
 
 def _config() -> dict:
@@ -50,7 +53,8 @@ def test_dual_defaults_use_luna_and_sol_without_legacy_progress():
         "wait_message_after_seconds": 15,
         "wait_message_repeat_seconds": 30,
         "partial_delivery_debounce_seconds": 2,
-        "job_deadline_seconds": 120,
+        "deadline_enabled": False,
+        "job_deadline_seconds": 0,
         "retry_policy": "bounded",
         "max_retry_attempts": 3,
         "wait_message_steady_seconds": 60,
@@ -87,10 +91,11 @@ def test_version_five_dual_config_is_migrated_to_parallel_capacity(monkeypatch):
         },
     )
     config = whatsapp_bridge._load_config()
-    assert config["version"] == 10
+    assert config["version"] == 11
     assert config["response_provider_policy"] == "codex_only"
     assert config["task_agent_reasoning"] == "low"
-    assert config["job_deadline_seconds"] == 120
+    assert config["deadline_enabled"] is False
+    assert config["job_deadline_seconds"] == 0
     assert config["retry_policy"] == "bounded"
     assert config["max_active_task_agents_per_conversation"] == 6
     assert config["max_active_task_agents_global"] == 12
@@ -162,7 +167,6 @@ def test_delegate_queues_function_manager_before_any_sol_worker(monkeypatch):
                 },
         },
     )
-    monkeypatch.setattr(whatsapp_bridge, "_dual_delegate_query_policy", lambda *_args: {})
     monkeypatch.setattr(whatsapp_bridge, "_create_dual_worker_task", lambda *_args, **_kwargs: {"task_id": "task-sol", "status": "queued"})
     monkeypatch.setattr(whatsapp_bridge, "_post_message_result", lambda _cfg, _mid, payload: sent.append(payload) or {"status": "sent"})
     monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda _state, message_id, pending: saved.append((message_id, dict(pending))))
@@ -214,7 +218,6 @@ def test_delegate_can_create_independent_sol_siblings_in_one_job_group(monkeypat
             ],
         },
     )
-    monkeypatch.setattr(whatsapp_bridge, "_dual_delegate_query_policy", lambda *_args: {})
 
     def create(*_args, **kwargs):
         created.append(kwargs)
@@ -395,7 +398,7 @@ def test_job_group_buffers_partial_and_delivers_one_final_answer(monkeypatch):
     assert removed == ["wamid-group"]
 
 
-def test_expired_job_deadline_cancels_running_tasks_and_delivers_partial(monkeypatch):
+def test_expired_legacy_job_deadline_is_cleared_without_canceling_tasks(monkeypatch):
     statuses = {"task-1": "running", "task-2": "queued"}
     canceled = []
     updates = []
@@ -411,12 +414,13 @@ def test_expired_job_deadline_cancels_running_tasks_and_delivers_partial(monkeyp
         "username": "admin", "client_id": "cliente",
         "subtasks": [{"task_id": "task-1"}, {"task_id": "task-2"}],
     }
-    assert whatsapp_bridge._expire_dual_pending_if_due({}, {}, "wamid-deadline", pending) is True
-    assert canceled == ["task-1", "task-2"]
+    assert whatsapp_bridge._expire_dual_pending_if_due({}, {}, "wamid-deadline", pending) is False
+    assert canceled == []
     canceled_updates = [values for _, values in updates if "status" in values]
-    assert len(canceled_updates) == 2
-    assert all(values["status"] == "canceled" for values in canceled_updates)
-    assert pending["job_state"] == "partial"
+    assert canceled_updates == []
+    assert pending["deadline_enabled"] is False
+    assert pending["deadline_seconds"] == 0
+    assert pending["deadline_at_epoch"] == 0
     assert pending["retry_policy"] == "bounded"
 
 
@@ -920,6 +924,7 @@ def test_query_context_can_inform_agent_but_server_uses_plan_entities(monkeypatc
         "providers": ["bling"],
         "source_policy": {"required_tools": ["bling_stock_balances"]},
         "base_request": "estoque do SKU 001 na Uai Mineirinho",
+        "sku": "001",
     }
     whatsapp_bridge._whatsapp_remember_query_context(state, "conversation-1", original["base_request"], original)
     monkeypatch.setattr(whatsapp_bridge, "_whatsapp_authorized_api_stores", lambda *_args: ["Uai Mineirinho"])
@@ -957,6 +962,82 @@ def test_query_context_can_inform_agent_but_server_uses_plan_entities(monkeypatc
     )
     assert plan["sku"] == "001"
     assert plan["tool_calls"][0]["arguments"]["sku"] == "001"
+
+
+def test_followup_preposition_is_never_interpreted_as_sku() -> None:
+    message = "É o mesmo SKU na UAI Mineirinho?"
+
+    assert whatsapp_bridge._function_manager_extract_identifiers(message)[0] == ""
+
+    state: dict = {}
+    whatsapp_bridge._whatsapp_remember_query_context(
+        state,
+        "conversation-no-sku",
+        message,
+        {
+            "mode": "query_only",
+            "domains": ["estoque"],
+            "store": "Uai Mineirinho",
+            "store_mode": "single",
+            "providers": ["bling"],
+        },
+    )
+    assert state["query_contexts"]["conversation-no-sku"]["sku"] == ""
+
+
+def test_agent_materialized_preposition_is_rejected_before_tool_execution() -> None:
+    raw = {
+        "action": "collect",
+        "entities": {
+            "sku": "na",
+            "mlb": "",
+            "order_id": "",
+            "period": "",
+            "store_ref": "Uai Mineirinho",
+            "store_mode": "single",
+        },
+    }
+
+    sanitized = whatsapp_function_manager._function_manager_sanitize_materialized_entities(raw)
+
+    assert sanitized["entities"]["sku"] == ""
+
+
+def test_manager_result_uses_only_materialized_sku() -> None:
+    message = "É o mesmo SKU na UAI Mineirinho?"
+
+    assert whatsapp_manager_results._materialized_stock_sku({"request_text": message}) == ""
+    assert whatsapp_manager_results._materialized_stock_sku({
+        "request_text": message,
+        "manager_plan": {"sku": "001"},
+    }) == "001"
+
+
+def test_query_context_learns_sku_from_agent_plan_not_request_text() -> None:
+    state: dict = {}
+    whatsapp_bridge._whatsapp_remember_query_context(
+        state,
+        "conversation-agent-sku",
+        "É o mesmo SKU na UAI Mineirinho?",
+        {
+            "mode": "query_only",
+            "domains": ["estoque"],
+            "store": "Uai Mineirinho",
+            "store_mode": "single",
+            "providers": ["bling"],
+        },
+    )
+
+    whatsapp_bridge._whatsapp_update_query_context_from_task(
+        state,
+        {
+            "conversation_id": "conversation-agent-sku",
+            "manager_plan": {"entities": {"sku": "001"}, "sku": "001"},
+        },
+        {},
+    )
+
+    assert state["query_contexts"]["conversation-agent-sku"]["sku"] == "001"
 
 
 def test_conversation_agent_receives_durable_context_even_without_thread(monkeypatch):
@@ -1028,8 +1109,11 @@ def test_conversation_thread_restarts_when_prompt_contract_changes(monkeypatch):
     assert captured[0]["thread_id"] == ""
     assert stored["thread_id"] == "thread-new"
     assert stored["thread_reset_reason"] == "prompt_contract_changed"
-    assert stored["prompt_version"] == black_jhon_prompting.PROMPT_CONTRACT_VERSION
-    assert stored["prompt_hash"] == black_jhon_prompting.PROMPT_CONTRACT_HASH
+    v3_contract = black_jhon_prompting.prompt_contract_v3_diagnostics()
+    assert stored["prompt_version"] == v3_contract["version"]
+    assert stored["prompt_hash"] == v3_contract["hash"]
+    assert stored["schema_version"] == black_jhon_prompting.CONVERSATION_DECISION_V3
+    assert stored["decision_contract_mode"] == "v3"
     assert stored["context_chars"] == 1200
 
 
@@ -1598,7 +1682,6 @@ def test_direct_listing_delivery_sends_official_photos_before_structured_text(mo
     }
     evidence = whatsapp_bridge._function_manager_evidence(plan, [listing_result])
     pending = {
-        "deterministic_plan": plan,
         "manager_plan": plan,
         "manager_evidence": evidence,
         "request_text": "Mande link, descricao, MLB e fotos do SKU 001 na JK Pecas",
@@ -1618,6 +1701,16 @@ def test_direct_listing_delivery_sends_official_photos_before_structured_text(mo
         return {"status": "sent"}
 
     monkeypatch.setattr(whatsapp_bridge, "_whatsapp_deliver_marketplace_listing_images", deliver_images)
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_run_conversation_agent",
+        lambda *_args, **_kwargs: {
+            "reply_text": (
+                "Produto oficial\n\nMLB: MLB123456789\n\n"
+                "Link: https://produto.mercadolivre.com.br/MLB-123456789"
+            ),
+        },
+    )
     monkeypatch.setattr(whatsapp_bridge, "_post_proactive", post_text)
     monkeypatch.setattr(whatsapp_bridge, "_dual_remember_conversation_turn", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(whatsapp_bridge, "_record_message_timing", lambda *_args, **_kwargs: None)
@@ -1731,7 +1824,6 @@ def test_failed_third_subtask_does_not_cancel_created_siblings(monkeypatch):
             ],
         },
     )
-    monkeypatch.setattr(whatsapp_bridge, "_dual_delegate_query_policy", lambda *_args: {})
 
     def create(*_args, **kwargs):
         created.append(kwargs)
@@ -1780,7 +1872,8 @@ def test_restart_keeps_deadline_canceled_pending_terminal_partial(monkeypatch):
     assert pending["state"] == "partial"
     assert pending["job_state"] == "partial"
     assert pending["next_retry_at_epoch"] == 0
-    assert pending["deadline_at_epoch"] < time.time()
+    assert pending["deadline_enabled"] is False
+    assert pending["deadline_at_epoch"] == 0
 
 
 def test_restart_retries_stale_readonly_attempt_waiting_for_approval(monkeypatch):
@@ -1832,25 +1925,11 @@ def test_authentication_notice_is_generated_by_luna_only_once(monkeypatch):
     assert pending["auth_notice_sent"] is True
 
 
-def test_general_research_never_inherits_a_previous_store_context():
-    state = {
-        "query_contexts": {
-            "wa-conversation": {
-                "updated_at": time.time(),
-                "domains": ["vendas"],
-                "providers": ["mercado_livre"],
-                "store_mode": "single",
-                "store": "JK Pecas",
-            }
-        }
-    }
-    policy = whatsapp_bridge._dual_delegate_query_policy(
-        "Agora pesquise a previsao do tempo de hoje em Leandro Ferreira-MG.",
-        _session(),
-        state,
-        "wa-conversation",
-    )
-    assert policy == {}
+def test_agent_query_policy_does_not_inherit_unselected_store_context():
+    policy = whatsapp_bridge._dual_agent_query_policy(_config(), _session(), {})
+    assert policy["store_mode"] == "none"
+    assert policy["store"] == ""
+    assert policy["stores"] == []
 
 
 def test_sol_web_profile_is_live_search_but_remains_restricted():
@@ -1911,11 +1990,6 @@ def test_only_authenticated_readonly_sol_worker_enables_live_web_search():
     ) is False
 
 
-def test_short_scope_correction_is_a_task_complement():
-    assert whatsapp_bridge._whatsapp_is_task_complement("é só a previsão de hoje") is True
-    assert whatsapp_bridge._whatsapp_is_task_complement("Somente a previsão, sem informações extras") is True
-
-
 def test_waiting_tick_is_deterministic_even_when_agent_would_stay_silent(monkeypatch):
     task = {"task_id": "task-sol", "status": "running"}
     proactive = []
@@ -1947,9 +2021,10 @@ def test_waiting_tick_is_deterministic_even_when_agent_would_stay_silent(monkeyp
     assert updates[0][1]["delivery_state"] == "conversation_tick_sent"
 
 
-def test_scope_correction_is_steered_to_active_sol_even_if_luna_says_delegate(monkeypatch):
+def test_active_job_routing_follows_agent_decision_without_lexical_override(monkeypatch):
     sent = []
     steered = []
+    queued = []
     active_task = {"task_id": "task-active", "status": "running"}
     monkeypatch.setattr(
         whatsapp_bridge,
@@ -1985,6 +2060,11 @@ def test_scope_correction_is_steered_to_active_sol_even_if_luna_says_delegate(mo
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not create a second worker")),
     )
     monkeypatch.setattr(
+        whatsapp_conversation,
+        "_queue_dual_function_manager",
+        lambda *_args, **_kwargs: queued.append(True) or True,
+    )
+    monkeypatch.setattr(
         whatsapp_bridge,
         "_post_message_result",
         lambda _cfg, _mid, payload: sent.append(payload) or {"status": "sent"},
@@ -2004,8 +2084,9 @@ def test_scope_correction_is_steered_to_active_sol_even_if_luna_says_delegate(mo
         transcription=None,
         phone_ai_behavior="",
     ) is True
-    assert steered == [("task-active", "Consulte somente a previsão de hoje em Leandro Ferreira-MG.")]
-    assert sent[0]["task_id"] == "task-active"
+    assert steered == []
+    assert queued == [True]
+    assert sent == []
 
 
 def test_wait_action_is_valid_only_for_periodic_tick():

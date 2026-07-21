@@ -126,7 +126,8 @@
         function normalizarAnuncioHistoricoFavoritosFrontend(anuncio) {
             if (!anuncio || typeof anuncio !== 'object') return anuncio;
             const item = { ...anuncio };
-            const id = item.id || extrairItemIdAnuncio(item.url || item.permalink || item.link) || '';
+            const id = extrairItemIdAnuncio(item.id || item.mlb || item.item_id || item.url || item.permalink || item.link)
+                || String(item.id || item.mlb || item.item_id || '').trim().toUpperCase().replace(/-/g, '');
             if (id) {
                 item.id = id;
                 item.mlb = item.mlb || id;
@@ -180,6 +181,14 @@
             item.bloquear_atualizacao_historico = item.bloquear_atualizacao_historico !== false;
             item.fonte_registro = item.fonte_registro || 'historico_ranqueamento';
             return item;
+        }
+
+        function normalizarListaAnunciosHistoricoFavoritosFrontend(lista) {
+            const normalizados = (Array.isArray(lista) ? lista : [])
+                .map(normalizarAnuncioHistoricoFavoritosFrontend)
+                .filter(Boolean);
+            if (typeof deduplicarAnunciosFavoritos !== 'function') return normalizados;
+            return deduplicarAnunciosFavoritos(normalizados, { preservarSemChave: true });
         }
 
         function anuncioRankingHistoricoEstaticoFavoritos(anuncio) {
@@ -327,27 +336,33 @@
                 .map(entrada => {
                     if (!entrada || typeof entrada !== 'object') return entrada;
                     const usuarioEntrada = obterUsuarioHistoricoFavoritos(entrada) || usuarioAtual;
+                    const grupos = Array.isArray(entrada.grupos)
+                        ? entrada.grupos.map(grupo => {
+                            const anuncios = normalizarListaAnunciosHistoricoFavoritosFrontend(grupo && grupo.anuncios);
+                            return {
+                                ...grupo,
+                                duracao_execucao_ms: normalizarDuracaoExecucaoFavoritosMs(grupo && grupo.duracao_execucao_ms),
+                                total_anuncios: anuncios.length,
+                                anuncios,
+                                removidos_ia: normalizarListaAnunciosHistoricoFavoritosFrontend(grupo && grupo.removidos_ia)
+                            };
+                        })
+                        : [];
+                    const alteracoesFavoritos = Array.isArray(entrada.alteracoes_favoritos)
+                        ? entrada.alteracoes_favoritos.map(normalizarHistoricoAlteracaoFavoritos).filter(Boolean)
+                        : [];
                     return {
                         ...entrada,
                         usuario: entrada.usuario || usuarioEntrada,
                         nome_usuario: entrada.nome_usuario || usuarioEntrada,
                         username: entrada.username || usernameAtual || usuarioEntrada,
                         duracao_execucao_ms: normalizarDuracaoExecucaoFavoritosMs(entrada.duracao_execucao_ms),
-                        grupos: Array.isArray(entrada.grupos)
-                            ? entrada.grupos.map(grupo => ({
-                                ...grupo,
-                                duracao_execucao_ms: normalizarDuracaoExecucaoFavoritosMs(grupo && grupo.duracao_execucao_ms),
-                                anuncios: Array.isArray(grupo && grupo.anuncios)
-                                    ? grupo.anuncios.map(normalizarAnuncioHistoricoFavoritosFrontend)
-                                    : [],
-                                removidos_ia: Array.isArray(grupo && grupo.removidos_ia)
-                                    ? grupo.removidos_ia.map(normalizarAnuncioHistoricoFavoritosFrontend)
-                                    : []
-                            }))
-                            : [],
-                        alteracoes_favoritos: Array.isArray(entrada.alteracoes_favoritos)
-                            ? entrada.alteracoes_favoritos.map(normalizarHistoricoAlteracaoFavoritos).filter(Boolean)
-                            : []
+                        total_anuncios: grupos.reduce((acc, grupo) => acc + grupo.total_anuncios, 0)
+                            + alteracoesFavoritos.reduce((acc, alteracao) => (
+                                acc + (Array.isArray(alteracao && alteracao.vinculos) ? alteracao.vinculos.length : 0)
+                            ), 0),
+                        grupos,
+                        alteracoes_favoritos: alteracoesFavoritos
                     };
                 })
                 .slice(0, ML_FAVORITOS_HISTORICO_MAX);
@@ -784,8 +799,8 @@
                 media_mensal_fonte: anuncio && (anuncio.media_mensal_fonte || anuncio.ritmo_atual_fonte || ''),
                 media_vendas_mensal: anuncio && anuncio.media_vendas_mensal,
                 meses_desde_criacao: anuncio && anuncio.meses_desde_criacao,
-                pesquisas_origem: Array.isArray(anuncio && anuncio.pesquisas_origem) ? anuncio.pesquisas_origem.slice(0, 3) : [],
-                campos_origem: Array.isArray(anuncio && anuncio.campos_origem) ? anuncio.campos_origem.slice(0, 3) : [],
+                pesquisas_origem: Array.isArray(anuncio && anuncio.pesquisas_origem) ? [...new Set(anuncio.pesquisas_origem.filter(Boolean))] : [],
+                campos_origem: Array.isArray(anuncio && anuncio.campos_origem) ? [...new Set(anuncio.campos_origem.filter(Boolean))] : [],
                 motivo_ia: anuncio && (anuncio.motivo_ia || anuncio.motivo || '')
             };
         }
@@ -803,12 +818,13 @@
             const agora = new Date();
             const gruposHistorico = (Array.isArray(grupos) ? grupos : [])
                 .map(grupo => {
-                    const anuncios = Array.isArray(grupo && grupo.anuncios)
-                        ? grupo.anuncios.slice(0, ML_FAVORITOS_RANKING_ANUNCIOS_MAX).map(anuncioHistoricoPayload)
-                        : [];
-                    const removidosIa = Array.isArray(grupo && grupo.removidos_ia)
-                        ? grupo.removidos_ia.slice(0, 80).map(anuncioHistoricoPayload)
-                        : [];
+                    grupo = {
+                        ...(grupo || {}),
+                        anuncios: normalizarListaAnunciosHistoricoFavoritosFrontend(grupo && grupo.anuncios),
+                        removidos_ia: normalizarListaAnunciosHistoricoFavoritosFrontend(grupo && grupo.removidos_ia)
+                    };
+                    const anuncios = grupo.anuncios.slice(0, ML_FAVORITOS_RANKING_ANUNCIOS_MAX).map(anuncioHistoricoPayload);
+                    const removidosIa = grupo.removidos_ia.slice(0, 80).map(anuncioHistoricoPayload);
                     const opcoesPromocao = resolverOpcoesPromocaoGrupoFavoritos(grupo, grupo && grupo.sku);
                     const duracaoExecucaoMs = normalizarDuracaoExecucaoFavoritosMs(grupo && grupo.duracao_execucao_ms);
                     return {
@@ -826,7 +842,7 @@
                         timings: grupo && grupo.timings && typeof grupo.timings === 'object'
                             ? { ...grupo.timings }
                             : null,
-                        total_anuncios: Array.isArray(grupo && grupo.anuncios) ? grupo.anuncios.length : 0,
+                        total_anuncios: anuncios.length,
                         usou_ia: !!(grupo && grupo.usou_ia),
                         ia_confirmados: Number(grupo && grupo.ia_confirmados) || 0,
                         ia_max_confirmados: Number(grupo && grupo.ia_max_confirmados) || 0,
@@ -2401,35 +2417,14 @@
             const chavesAlvo = new Set(chavesRemocaoAnuncioRankingFavoritos(anuncio));
             if (!chavesAlvo.size) return;
 
-            const chaveSku = skuChaveSku(skuSelecionado);
             const salvoIgnorado = adicionarAnuncioIgnoradoSku(skuSelecionado, anuncio);
-            let removido = false;
-            const entradaId = String(opcoes.entradaId || '').trim();
-            const grupoAtual = entradaId ? null : mlFavoritosResultadosPorSku.get(chaveSku);
-            if (grupoAtual) {
-                removido = removerAnuncioDeGrupoRankingFavoritos(grupoAtual, chavesAlvo) > 0 || removido;
-                mlFavoritosResultadosPorSku.set(chaveSku, grupoAtual);
-            }
+            const resultado = aplicarMutacaoGrupoRankingFavoritos(skuSelecionado, grupo => (
+                removerAnuncioDeGrupoRankingFavoritos(grupo, chavesAlvo) > 0
+            ), opcoes);
+            const removido = resultado.mudou;
 
-            const historico = lerHistoricoFavoritos();
-            let historicoAlterado = false;
-            const alvoHistorico = encontrarGrupoHistoricoRankingFavoritos(historico, chaveSku, entradaId);
-            if (alvoHistorico) {
-                const removidosHistorico = removerAnuncioDeGrupoRankingFavoritos(alvoHistorico.grupo, chavesAlvo);
-                if (removidosHistorico > 0) {
-                    historicoAlterado = true;
-                    removido = true;
-                    recalcularTotaisHistoricoFavoritos(alvoHistorico.entrada);
-                }
-            }
-            if (historicoAlterado) salvarHistoricoFavoritos(historico);
-
-            renderizarFavoritosOutrosAnuncios(skuSelecionado);
+            renderizarMutacaoRankingFavoritos(skuSelecionado);
             renderizarAnunciosIgnoradosSku();
-            if (skuChaveSku(skuSelecionado) === skuChaveSku(favMlSkuSelecionado) && Array.isArray(favMlAnunciosSkuAtual)) {
-                renderizarFavoritosAnunciosMl(favMlAnunciosSkuAtual, favMlSkuSelecionado);
-            }
-            renderizarHistoricoFavoritos();
             if (favMlStatusEl) {
                 favMlStatusEl.textContent = removido || salvoIgnorado
                     ? `Anuncio ignorado para o SKU ${skuSelecionado}. Ele nao entra mais no ranking desse SKU.`
@@ -2442,46 +2437,38 @@
 
         function moverAnuncioRankingFavoritos(sku, anuncio, direcao, opcoes = {}) {
             const skuSelecionado = String(sku || favMlSkuSelecionado || '').trim();
-            if (!skuSelecionado || !anuncio) return;
+            if (!skuSelecionado || !anuncio) return false;
             const chavesAlvo = new Set(chavesRemocaoAnuncioRankingFavoritos(anuncio));
-            if (!chavesAlvo.size) return;
+            if (!chavesAlvo.size) return false;
 
-            const chaveSku = skuChaveSku(skuSelecionado);
-            let mudou = false;
-            const entradaId = String(opcoes.entradaId || '').trim();
-            const grupoAtual = entradaId ? null : mlFavoritosResultadosPorSku.get(chaveSku);
-            if (grupoAtual) {
-                mudou = moverAnuncioEmGrupoRankingFavoritos(grupoAtual, chavesAlvo, direcao) || mudou;
-                mlFavoritosResultadosPorSku.set(chaveSku, grupoAtual);
-            }
+            const resultado = aplicarMutacaoGrupoRankingFavoritos(skuSelecionado, grupo => (
+                moverAnuncioEmGrupoRankingFavoritos(grupo, chavesAlvo, direcao)
+            ), opcoes);
+            if (!resultado.mudou) return false;
+            renderizarMutacaoRankingFavoritos(skuSelecionado);
+            atualizarStatusRankingFavoritosReordenado(skuSelecionado);
+            return true;
+        }
 
-            const historico = lerHistoricoFavoritos();
-            let historicoAlterado = false;
-            const alvoHistorico = encontrarGrupoHistoricoRankingFavoritos(historico, chaveSku, entradaId);
-            if (alvoHistorico) {
-                const moveuHistorico = moverAnuncioEmGrupoRankingFavoritos(alvoHistorico.grupo, chavesAlvo, direcao);
-                if (moveuHistorico) {
-                    historicoAlterado = true;
-                    mudou = true;
-                    recalcularTotaisHistoricoFavoritos(alvoHistorico.entrada);
-                    if (!grupoAtual) {
-                        mlFavoritosResultadosPorSku.set(chaveSku, alvoHistorico.grupo);
-                    }
-                }
-            }
-            if (historicoAlterado) salvarHistoricoFavoritos(historico, { imediato: true });
+        function moverAnuncioRankingFavoritosParaReferencia(sku, anuncioOrigem, anuncioDestino, colocarDepois, opcoes = {}) {
+            const skuSelecionado = String(sku || favMlSkuSelecionado || '').trim();
+            if (!skuSelecionado || !anuncioOrigem || !anuncioDestino) return false;
+            const chavesOrigem = new Set(chavesRemocaoAnuncioRankingFavoritos(anuncioOrigem));
+            const chavesDestino = new Set(chavesRemocaoAnuncioRankingFavoritos(anuncioDestino));
+            if (!chavesOrigem.size || !chavesDestino.size) return false;
 
-            renderizarFavoritosOutrosAnuncios(skuSelecionado);
-            if (skuChaveSku(skuSelecionado) === skuChaveSku(favMlSkuSelecionado) && Array.isArray(favMlAnunciosSkuAtual)) {
-                renderizarFavoritosAnunciosMl(favMlAnunciosSkuAtual, favMlSkuSelecionado);
-            }
-            renderizarHistoricoFavoritos();
-            if (favMlStatusEl && mudou) {
-                favMlStatusEl.textContent = `Ranking do SKU ${skuSelecionado} reordenado.`;
-            }
-            if (mlHistoricoFavoritosStatusEl && document.getElementById('aba-historico')?.classList.contains('active') && mudou) {
-                mlHistoricoFavoritosStatusEl.textContent = `Ranking do SKU ${skuSelecionado} reordenado.`;
-            }
+            const resultado = aplicarMutacaoGrupoRankingFavoritos(skuSelecionado, grupo => (
+                moverAnuncioParaReferenciaEmGrupoRankingFavoritos(
+                    grupo,
+                    chavesOrigem,
+                    chavesDestino,
+                    colocarDepois === true
+                )
+            ), opcoes);
+            if (!resultado.mudou) return false;
+            renderizarMutacaoRankingFavoritos(skuSelecionado);
+            atualizarStatusRankingFavoritosReordenado(skuSelecionado);
+            return true;
         }
 
         function moverAnuncioRankingFavoritosParaReferencia(sku, anuncioOrigem, anuncioDestino, colocarDepois, opcoes = {}) {

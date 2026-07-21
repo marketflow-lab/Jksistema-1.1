@@ -18,6 +18,42 @@ def _agent_module():
     return perguntas_pos_venda_agent
 
 
+def _structured_intent(
+    category: str,
+    *,
+    web: bool = False,
+    mercado_livre: bool = False,
+    bling: bool = False,
+) -> dict:
+    compatibility = category == "compatibility"
+    return {
+        "intencao": "compatibilidade" if compatibility else "duvida_produto",
+        "categoria": category,
+        "categorias": [category],
+        "fluxo": "perguntas_anuncio",
+        "confianca": 0.95,
+        "flags": {
+            "usar_busca_web": web,
+            "usar_mercado_livre_anuncio": mercado_livre,
+            "usar_bling": bling,
+        },
+        "subperguntas": [{
+            "intent": category if category in {"compatibility", "product_feature"} else "general",
+            "question": "Responder ao ponto classificado pela IA.",
+            "required_evidence": "Dados confirmados do anuncio ou fonte tecnica.",
+        }],
+        "compatibilidade": {
+            "aplicavel": compatibility,
+            "target_item": "BMW R1300GS" if compatibility else "",
+            "target_type": "vehicle" if compatibility else "",
+            "compatibility_profile": "vehicle_fitment" if compatibility else "",
+            "technical_focus": "interface base conector" if compatibility else "",
+            "missing_fields": ["ano", "versao"] if compatibility else [],
+            "decisive_fields": ["base original"] if compatibility else [],
+        },
+    }
+
+
 def test_public_conversation_scope_uses_item_and_buyer_with_question_fallback():
     subject, verifiers = codex_surface._conversation_subject_key(
         "question",
@@ -156,29 +192,39 @@ def test_retry_persists_operational_failure_count(tmp_path, monkeypatch):
     assert saved["operational_failure_count"] == 1
 
 
-def test_public_web_is_enabled_only_for_technical_questions():
+def test_public_web_follows_ai_flags_and_category_not_question_text():
     agent = _agent_module()
     with patch.object(agent, "_perguntas_ia_legacy_guidance_metadata", return_value=(False, "")):
-        simple = agent._perguntas_ia_agent_input(
+        technical_text_without_ai_web = agent._perguntas_ia_agent_input(
             "cliente",
             "Loja",
-            {"id": "Q1", "text": "Tem pronta entrega?"},
+            {"id": "Q1", "text": "Qual o conector e a medida da rosca?"},
             {"id": "MLB1", "title": "Produto"},
-            {"intencao_atendimento": {"fluxo": "perguntas_anuncio", "usar_busca_web": True}},
+            {"intencao_atendimento": _structured_intent("product_feature", web=False)},
             "",
         )
-        technical = agent._perguntas_ia_agent_input(
+        simple_text_with_ai_web = agent._perguntas_ia_agent_input(
             "cliente",
             "Loja",
-            {"id": "Q2", "text": "Qual o conector e a medida da rosca?"},
+            {"id": "Q2", "text": "Tem pronta entrega?"},
             {"id": "MLB1", "title": "Produto"},
-            {"intencao_atendimento": {"fluxo": "perguntas_anuncio"}},
+            {"intencao_atendimento": _structured_intent("product_feature", web=True)},
             "",
         )
-    assert simple["use_web_search"] is False
-    assert "web_search" not in simple["allowed_tools"]
-    assert technical["use_web_search"] is True
-    assert "web_search" in technical["allowed_tools"]
+        compatibility_without_flag = agent._perguntas_ia_agent_input(
+            "cliente",
+            "Loja",
+            {"id": "Q3", "text": "Serve?"},
+            {"id": "MLB1", "title": "Produto"},
+            {"intencao_atendimento": _structured_intent("compatibility", web=False)},
+            "",
+        )
+    assert technical_text_without_ai_web["use_web_search"] is False
+    assert "web_search" not in technical_text_without_ai_web["allowed_tools"]
+    assert simple_text_with_ai_web["use_web_search"] is True
+    assert "web_search" in simple_text_with_ai_web["allowed_tools"]
+    assert compatibility_without_flag["use_web_search"] is True
+    assert "web_search" in compatibility_without_flag["allowed_tools"]
 
 
 def test_structural_compaction_never_slices_json():
@@ -245,11 +291,122 @@ def test_evidence_matrix_does_not_confirm_intent_without_matching_coverage():
             {"id": "s3", "intent": "invoice"},
         ],
         answer="Cobertura confirmada pelas fontes.",
-        context={},
+        context={"diagnostico_ia": [{"result": {"validation_ok": True}}]},
         envelope=exact,
     )
     assert [item["status"] for item in matrix] == ["confirmed", "confirmed", "confirmed"]
     assert sufficient is True
+
+
+def test_compatibility_evidence_never_bypasses_failed_answer_validation():
+    context = {
+        "diagnostico_ia": [{
+            "result": {
+                "validation_ok": False,
+                "validation_issues": ["too_many_sentences"],
+                "compatibility_analysis": {
+                    "decision": "yes",
+                    "confidence": 0.95,
+                    "sources": ["https://fabricante.example/manual"],
+                    "evidence": {
+                        "product": [{"authority": "official_document"}],
+                        "target_vehicle": [{"authority": "official_document"}],
+                    },
+                },
+            },
+        }],
+    }
+
+    matrix, sufficient, warnings = codex_surface._evidence_matrix(
+        [{"id": "s1", "intent": "compatibility"}],
+        answer="Resposta rejeitada pelo validador.",
+        context=context,
+    )
+
+    assert matrix[0]["status"] == "partial"
+    assert sufficient is False
+    assert "too_many_sentences" in warnings
+
+
+def test_unreviewed_public_context_never_confirms_canonical_ai_intents_by_presence_only():
+    context = {
+        "item": {
+            "id": "MLB1",
+            "description": "Corpo em aluminio e conexao de 10 mm.",
+            "shipping": {"free_shipping": True, "logistic_type": "cross_docking"},
+            "sale_terms": [{"id": "INVOICE", "name": "Nota fiscal", "value_name": "Emitida"}],
+        },
+        "busca_outra_peca": {"query": "sensor abs", "anuncios_ativos_ml": []},
+        "diagnostico_ia": [{"result": {"validation_ok": True, "confidence": 0.9}}],
+    }
+    envelope = codex_surface._evidence_envelope(
+        "public_question", store="Loja", context=context
+    )
+
+    matrix, sufficient, _warnings = codex_surface._evidence_matrix(
+        [
+            {"id": "s1", "intent": "shipping"},
+            {"id": "s2", "intent": "invoice"},
+            {"id": "s3", "intent": "product_feature"},
+            {"id": "s4", "intent": "other_product"},
+        ],
+        answer="Resposta validada e sustentada pelos dados consultados.",
+        context=context,
+        envelope=envelope,
+    )
+
+    assert [item["status"] for item in matrix] == ["partial"] * 4
+    assert sufficient is False
+
+
+def test_evidence_matrix_requires_explicit_positive_validation():
+    envelope = {
+        "schema_version": "evidence-envelope-v2",
+        "status": "completed",
+        "records": [{
+            "field": "envio",
+            "value": {"estimated_delivery": "amanha"},
+            "coverage": "confirmed",
+        }],
+        "evidence_sufficient": True,
+        "coverage_complete": True,
+    }
+
+    for validation_value in (None, "", 0):
+        context = {"diagnostico_ia": [{"result": {"validation_ok": validation_value}}]}
+        matrix, sufficient, _warnings = codex_surface._evidence_matrix(
+            [{"id": "s1", "intent": "shipping"}],
+            answer="Chega amanha.",
+            context=context,
+            envelope=envelope,
+        )
+        assert matrix[0]["status"] == "partial"
+        assert sufficient is False
+
+
+def test_empty_other_product_search_is_not_confirmed():
+    envelope = {
+        "schema_version": "evidence-envelope-v2",
+        "status": "completed",
+        "records": [{
+            "field": "other_product_search",
+            "value": {"query": "sensor abs", "cadastro": [], "anuncios_ativos_ml": []},
+            "coverage": "confirmed",
+        }],
+        "evidence_sufficient": True,
+        "coverage_complete": True,
+    }
+    context = {"diagnostico_ia": [{"result": {"validation_ok": True}}]}
+
+    matrix, sufficient, _warnings = codex_surface._evidence_matrix(
+        [{"id": "s1", "intent": "other_product"}],
+        answer="Nao localizei.",
+        context=context,
+        envelope=envelope,
+    )
+
+    assert matrix[0]["status"] == "partial"
+    assert sufficient is False
 
 
 def test_normal_flows_do_not_read_or_write_variable_sku_memory():

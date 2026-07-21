@@ -39,6 +39,7 @@ from fastapi import Depends, File, Form, Header, HTTPException, Request, UploadF
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
+from backend.services.transport_security import requests_tls_verify
 
 
 def configure_favoritos_extract_runtime(runtime_module=None, peers=None):
@@ -466,7 +467,13 @@ def _extrair_info_anuncio(
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.7",
         }
-        resp = requests.get(url, headers=headers, timeout=12, allow_redirects=True, verify=False)
+        resp = requests.get(
+            url,
+            headers=headers,
+            timeout=12,
+            allow_redirects=True,
+            verify=requests_tls_verify(),
+        )
         if resp.status_code != 200:
             logger.warning("[Favoritos][Datas] Erro ao abrir %s: status %s", url, resp.status_code)
             _aplicar_data_criacao_aproximada()

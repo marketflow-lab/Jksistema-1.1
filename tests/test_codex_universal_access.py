@@ -28,6 +28,14 @@ class CodexUniversalAccessTest(unittest.TestCase):
     def setUp(self):
         codex_console.CODEX_TASKS.clear()
         self.addCleanup(codex_console.CODEX_TASKS.clear)
+        self.addCleanup(self._close_telemetry)
+
+    @staticmethod
+    def _close_telemetry():
+        telemetry = codex_console.CODEX_AI_TELEMETRY
+        if telemetry is not None:
+            telemetry.close()
+            codex_console.CODEX_AI_TELEMETRY = None
 
     def test_authenticated_session_fails_closed_without_identity(self):
         with patch.object(codex_console, "_codex_payload_sessao", return_value={"client_id": "000002"}):
@@ -44,8 +52,8 @@ class CodexUniversalAccessTest(unittest.TestCase):
         }
         payload = codex_console.CodexTaskRequest(
             prompt="Resuma as vendas visiveis.",
-            sandbox="full_access",
-            approval_mode="full_access",
+            sandbox="read_only",
+            approval_mode="read_only",
             model="modelo-nao-autorizado",
             reasoning_effort="low",
             speed="fast",
@@ -80,6 +88,7 @@ class CodexUniversalAccessTest(unittest.TestCase):
                 ),
             ):
                 result = codex_console.codex_criar_tarefa(payload, _request(), "Bearer token")
+                self._close_telemetry()
 
         task_id = result["task"]["task_id"]
         task = codex_console.CODEX_TASKS[task_id]

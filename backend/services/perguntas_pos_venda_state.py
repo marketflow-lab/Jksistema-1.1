@@ -40,7 +40,8 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.vendas_sync_progress import _corrigir_texto_mojibake
-from ml_questions_gemini.compatibility import is_compatibility_question
+from backend.services.transport_security import requests_tls_verify
+from ml_questions_gemini.schemas import QuestionCategory
 
 
 def configure_perguntas_pos_venda_state_runtime(runtime_module=None, peers=None):
@@ -495,141 +496,56 @@ ML_PERGUNTAS_IA_INTENCOES_POS_VENDA = {
 }
 
 
-def _perguntas_ia_intencao_fluxo(intencao: str) -> str:
-    return "pos_venda" if str(intencao or "").strip() in ML_PERGUNTAS_IA_INTENCOES_POS_VENDA else "perguntas_anuncio"
-
-
-def _perguntas_ia_intencao_heuristica(pergunta: dict, item: dict | None = None) -> dict:
-    pergunta = pergunta if isinstance(pergunta, dict) else {}
-    item = item if isinstance(item, dict) else {}
-    historico = pergunta.get("buyer_question_chat") if isinstance(pergunta.get("buyer_question_chat"), list) else []
-    textos = [str(pergunta.get("text") or "")]
-    for evento in historico[-6:]:
-        if not isinstance(evento, dict):
-            continue
-        role = str(evento.get("role") or evento.get("from_role") or "").strip().lower()
-        if role in {"seller", "loja", "store"}:
-            continue
-        textos.append(str(evento.get("text") or ""))
-    texto = _favoritos_normalizar_sem_acentos(" ".join(textos))
-
-    sinais_compra = (
-        "comprei", "compre", "minha compra", "pedido", "recebi", "chegou", "produto chegou",
-        "efetuei a compra", "numero da compra", "n da compra", "número da compra",
-    )
-    sinais_defeito = (
-        "defeito", "problema", "nao funciona", "nao funcionou", "parou", "apagando", "apaga",
-        "queimou", "falhando", "mal funcionamento", "nao acende", "nao liga", "quebrou",
-        "veio ruim", "veio com defeito", "uma fica", "uma nao", "um fica",
-    )
-    sinais_troca = (
-        "trocar", "troca", "garantia", "devolver", "devolucao", "reembolso", "assistencia",
-        "quero devolver", "quero trocar", "acionar garantia",
-    )
-    sinais_entrega = (
-        "entrega", "rastreio", "rastreamento", "correio", "transportadora", "nao chegou",
-        "atrasou", "rota de entrega",
-    )
-    sinais_compat_contextuais = (
-        "da certo", "veiculo", "chassi", " vin ", "corolla", "civic", "focus", "hilux",
-    )
-    tem_compatibilidade = bool(
-        is_compatibility_question(texto)
-        or any(sinal in texto for sinal in sinais_compat_contextuais)
-    )
-    sinais_outra = (
-        "voces tem", "voce tem", "tem essa peca", "tem o", "tem a", "manda link", "envia link",
-        "outro lado", "lado esquerdo", "lado direito", "outra peca", "acabamento", "complemento",
-    )
-    sinais_preco_estoque = ("valor", "preco", "quanto", "tem estoque", "disponivel", "pronta entrega")
-
-    tem_compra = any(s in texto for s in sinais_compra)
-    tem_defeito = any(s in texto for s in sinais_defeito)
-    tem_troca = any(s in texto for s in sinais_troca)
-    if tem_compra and (tem_defeito or tem_troca):
-        intencao = "pos_venda_defeito" if tem_defeito else "troca_garantia"
-        return {
-            "intencao": intencao,
-            "fluxo": "pos_venda",
-            "confianca": 0.96,
-            "motivo": "mensagem indica compra ja realizada com defeito/troca",
-            "acao": "responder como pos-venda, pedir dados/fotos e orientar atendimento pela compra",
-            "usar_busca_web": False,
-            "usar_mercado_livre_anuncio": False,
-            "usar_bling": False,
-            "source": "heuristica",
-        }
-    if tem_compra and any(s in texto for s in sinais_entrega):
-        return {
-            "intencao": "entrega",
-            "fluxo": "pos_venda",
-            "confianca": 0.92,
-            "motivo": "mensagem indica compra/pedido com assunto de entrega",
-            "acao": "responder como pos-venda de entrega",
-            "usar_busca_web": False,
-            "usar_mercado_livre_anuncio": False,
-            "usar_bling": False,
-            "source": "heuristica",
-        }
-    if tem_troca and not tem_compatibilidade:
-        return {
-            "intencao": "troca_garantia",
-            "fluxo": "pos_venda",
-            "confianca": 0.88,
-            "motivo": "mensagem pede troca, garantia ou devolucao",
-            "acao": "responder como pos-venda",
-            "usar_busca_web": False,
-            "usar_mercado_livre_anuncio": False,
-            "usar_bling": False,
-            "source": "heuristica",
-        }
-    if any(s in texto for s in sinais_outra):
-        return {
-            "intencao": "outra_peca",
-            "fluxo": "perguntas_anuncio",
-            "confianca": 0.80,
-            "motivo": "comprador parece procurar outra peca ou variacao",
-            "acao": "buscar somente outra peca quando necessario",
-            "usar_busca_web": True,
-            "usar_mercado_livre_anuncio": True,
-            "usar_bling": True,
-            "source": "heuristica",
-        }
-    if tem_compatibilidade:
-        return {
-            "intencao": "compatibilidade",
-            "fluxo": "perguntas_anuncio",
-            "confianca": 0.78,
-            "motivo": "mensagem pergunta compatibilidade/aplicacao",
-            "acao": "responder compatibilidade com cautela",
-            "usar_busca_web": True,
-            "usar_mercado_livre_anuncio": True,
-            "usar_bling": True,
-            "source": "heuristica",
-        }
-    if any(s in texto for s in sinais_preco_estoque):
-        return {
-            "intencao": "preco_estoque",
-            "fluxo": "perguntas_anuncio",
-            "confianca": 0.72,
-            "motivo": "mensagem pergunta preco/estoque/disponibilidade",
-            "acao": "responder somente se houver dado seguro",
-            "usar_busca_web": False,
-            "usar_mercado_livre_anuncio": True,
-            "usar_bling": True,
-            "source": "heuristica",
-        }
-    return {
-        "intencao": "duvida_produto",
-        "fluxo": "perguntas_anuncio",
-        "confianca": 0.55,
-        "motivo": "sem sinais fortes de pos-venda ou compatibilidade",
-        "acao": "responder a duvida do produto com os dados disponiveis",
-        "usar_busca_web": True,
-        "usar_mercado_livre_anuncio": True,
-        "usar_bling": True,
-        "source": "heuristica",
-    }
+ML_PERGUNTAS_IA_CATEGORIAS = {categoria.value for categoria in QuestionCategory}
+ML_PERGUNTAS_IA_FLUXOS = {"perguntas_anuncio", "pos_venda"}
+ML_PERGUNTAS_IA_FLAGS = (
+    "usar_busca_web",
+    "usar_mercado_livre_anuncio",
+    "usar_bling",
+)
+ML_PERGUNTAS_IA_SUBQUESTION_INTENTS = {
+    "compatibility", "shipping", "stock", "price", "invoice",
+    "warranty_originality", "product_feature", "other_product", "general",
+    "post_sale",
+}
+ML_PERGUNTAS_IA_SUBQUESTION_CATEGORY = {
+    "compatibility": "compatibility",
+    "shipping": "shipping",
+    "stock": "stock",
+    "price": "price",
+    "invoice": "invoice",
+    "warranty_originality": "warranty_originality",
+    "product_feature": "product_feature",
+    "other_product": "other_product",
+    "post_sale": "post_sale",
+}
+ML_PERGUNTAS_IA_GENERAL_CATEGORIES = {
+    "greeting", "prohibited_contact", "regulated_product", "unknown",
+}
+ML_PERGUNTAS_IA_INTENCAO_CATEGORIAS = {
+    "duvida_produto": {
+        "greeting", "shipping", "product_feature", "warranty_originality",
+        "invoice", "prohibited_contact", "regulated_product",
+    },
+    "compatibilidade": {"compatibility"},
+    "outra_peca": {"other_product"},
+    "preco_estoque": {"price", "stock"},
+    "pos_venda_defeito": {"post_sale"},
+    "troca_garantia": {"post_sale"},
+    "entrega": {"post_sale"},
+    "cancelamento": {"post_sale"},
+    "reclamacao": {"post_sale"},
+    "nao_entendi": {"unknown"},
+}
+ML_PERGUNTAS_IA_COMPATIBILITY_TARGET_TYPES = {
+    "", "vehicle", "machine_tool", "phone_computing",
+    "electrical_electronic", "hydraulic", "dimensional", "generic",
+}
+ML_PERGUNTAS_IA_COMPATIBILITY_PROFILES = {
+    "", "vehicle_fitment", "machine_interface", "device_interface",
+    "electrical_interface", "hydraulic_interface", "dimensional_fit",
+    "generic_interface",
+}
 
 
 def _perguntas_ia_json_obj(texto: str) -> dict:
@@ -654,63 +570,178 @@ def _perguntas_ia_json_obj(texto: str) -> dict:
     return {}
 
 
-def _perguntas_ia_intencao_normalizar(data: object, fallback: Optional[dict] = None) -> dict:
-    fallback = fallback if isinstance(fallback, dict) else {}
-    data = data if isinstance(data, dict) else {}
-    intencao = str(data.get("intencao") or data.get("intent") or fallback.get("intencao") or "duvida_produto").strip().lower()
-    intencao = intencao.replace("-", "_").replace(" ", "_")
-    aliases = {
-        "defeito": "pos_venda_defeito",
-        "problema_produto": "pos_venda_defeito",
-        "mal_funcionamento": "pos_venda_defeito",
-        "garantia": "troca_garantia",
-        "troca": "troca_garantia",
-        "devolucao": "troca_garantia",
-        "devolução": "troca_garantia",
-        "prazo_entrega": "entrega",
-        "duvida": "duvida_produto",
-        "produto": "duvida_produto",
-    }
-    intencao = aliases.get(intencao, intencao)
-    if intencao not in ML_PERGUNTAS_IA_INTENCOES:
-        intencao = str(fallback.get("intencao") or "duvida_produto")
-    fluxo = str(data.get("fluxo") or fallback.get("fluxo") or _perguntas_ia_intencao_fluxo(intencao)).strip().lower()
-    if intencao in ML_PERGUNTAS_IA_INTENCOES_POS_VENDA:
-        fluxo = "pos_venda"
-    elif fluxo not in {"pos_venda", "perguntas_anuncio"}:
-        fluxo = "perguntas_anuncio"
-    try:
-        confianca = float(str(data.get("confianca") or data.get("confidence") or fallback.get("confianca") or 0).replace(",", "."))
-    except Exception:
-        confianca = 0.0
-    confianca = max(0.0, min(confianca, 1.0))
+def _perguntas_ia_schema_invalido(campo: str) -> None:
+    raise PerguntasIARespostaIndisponivel(
+        f"Classificacao de intencao da IA em formato invalido: {campo}."
+    )
 
-    def _bool_campo(chave: str, default: bool) -> bool:
-        valor = data[chave] if chave in data else fallback.get(chave, default)
-        if isinstance(valor, bool):
-            return valor
-        texto = str(valor or "").strip().lower()
-        if texto in {"0", "false", "nao", "não", "off", "no"}:
-            return False
-        if texto in {"1", "true", "sim", "on", "yes"}:
-            return True
-        return bool(default)
 
-    return {
+def _perguntas_ia_intencao_normalizar(data: object) -> dict:
+    """Valida o contrato canonico da IA sem inferir ou reclassificar assunto."""
+    if not isinstance(data, dict):
+        _perguntas_ia_schema_invalido("objeto JSON ausente")
+
+    intencao = data.get("intencao")
+    if not isinstance(intencao, str) or intencao.strip() not in ML_PERGUNTAS_IA_INTENCOES:
+        _perguntas_ia_schema_invalido("intencao")
+    intencao = intencao.strip()
+
+    categoria = data.get("categoria")
+    if not isinstance(categoria, str) or categoria.strip() not in ML_PERGUNTAS_IA_CATEGORIAS:
+        _perguntas_ia_schema_invalido("categoria")
+    categoria = categoria.strip()
+
+    categorias_brutas = data.get("categorias")
+    if not isinstance(categorias_brutas, list) or not categorias_brutas:
+        _perguntas_ia_schema_invalido("categorias")
+    categorias: list[str] = []
+    for valor in categorias_brutas:
+        if not isinstance(valor, str) or valor.strip() not in ML_PERGUNTAS_IA_CATEGORIAS:
+            _perguntas_ia_schema_invalido("categorias")
+        valor = valor.strip()
+        if valor in categorias:
+            _perguntas_ia_schema_invalido("categorias duplicadas")
+        categorias.append(valor)
+    if categoria not in categorias:
+        _perguntas_ia_schema_invalido("categoria principal ausente de categorias")
+
+    categorias_permitidas = ML_PERGUNTAS_IA_INTENCAO_CATEGORIAS[intencao]
+    if categoria not in categorias_permitidas or not set(categorias).issubset(categorias_permitidas):
+        _perguntas_ia_schema_invalido("coerencia semantica entre intencao e categorias")
+
+    fluxo = data.get("fluxo")
+    if not isinstance(fluxo, str) or fluxo.strip() not in ML_PERGUNTAS_IA_FLUXOS:
+        _perguntas_ia_schema_invalido("fluxo")
+    fluxo = fluxo.strip()
+    intencao_pos_venda = intencao in ML_PERGUNTAS_IA_INTENCOES_POS_VENDA
+    categoria_pos_venda = categoria == QuestionCategory.POST_SALE.value
+    categorias_pos_venda = QuestionCategory.POST_SALE.value in categorias
+    if (
+        (fluxo == "pos_venda") != intencao_pos_venda
+        or categoria_pos_venda != intencao_pos_venda
+        or categorias_pos_venda != intencao_pos_venda
+    ):
+        _perguntas_ia_schema_invalido("coerencia entre intencao, categoria e fluxo")
+
+    confianca = data.get("confianca")
+    if isinstance(confianca, bool) or not isinstance(confianca, (int, float)):
+        _perguntas_ia_schema_invalido("confianca")
+    confianca = float(confianca)
+    if not math.isfinite(confianca) or not 0.0 <= confianca <= 1.0:
+        _perguntas_ia_schema_invalido("confianca")
+
+    flags_brutas = data.get("flags")
+    if not isinstance(flags_brutas, dict):
+        _perguntas_ia_schema_invalido("flags")
+    flags: dict[str, bool] = {}
+    for chave in ML_PERGUNTAS_IA_FLAGS:
+        valor = flags_brutas.get(chave)
+        if not isinstance(valor, bool):
+            _perguntas_ia_schema_invalido(f"flags.{chave}")
+        flags[chave] = valor
+    if fluxo == "pos_venda" and any(flags.values()):
+        _perguntas_ia_schema_invalido("flags de pos-venda")
+
+    subperguntas_brutas = data.get("subperguntas")
+    if not isinstance(subperguntas_brutas, list) or not subperguntas_brutas:
+        _perguntas_ia_schema_invalido("subperguntas")
+    subperguntas: list[dict] = []
+    categorias_cobertas: set[str] = set()
+    for indice, valor in enumerate(subperguntas_brutas, start=1):
+        if not isinstance(valor, dict):
+            _perguntas_ia_schema_invalido(f"subperguntas[{indice}]")
+        sub_intent = valor.get("intent")
+        sub_question = valor.get("question")
+        required_evidence = valor.get("required_evidence")
+        if not isinstance(sub_intent, str) or sub_intent.strip() not in ML_PERGUNTAS_IA_SUBQUESTION_INTENTS:
+            _perguntas_ia_schema_invalido(f"subperguntas[{indice}].intent")
+        if not isinstance(sub_question, str) or not sub_question.strip():
+            _perguntas_ia_schema_invalido(f"subperguntas[{indice}].question")
+        if not isinstance(required_evidence, str) or not required_evidence.strip():
+            _perguntas_ia_schema_invalido(f"subperguntas[{indice}].required_evidence")
+        sub_intent = sub_intent.strip()
+        if sub_intent == "general":
+            categorias_gerais = set(categorias) & ML_PERGUNTAS_IA_GENERAL_CATEGORIES
+            if not categorias_gerais:
+                _perguntas_ia_schema_invalido(f"subperguntas[{indice}].intent inconsistente")
+            categorias_cobertas.update(categorias_gerais)
+        else:
+            categoria_esperada = ML_PERGUNTAS_IA_SUBQUESTION_CATEGORY[sub_intent]
+            if categoria_esperada not in categorias:
+                _perguntas_ia_schema_invalido(f"subperguntas[{indice}].intent inconsistente")
+            categorias_cobertas.add(categoria_esperada)
+        subperguntas.append({
+            "intent": sub_intent,
+            "question": sub_question.strip()[:500],
+            "required_evidence": required_evidence.strip()[:500],
+        })
+    if categorias_cobertas != set(categorias):
+        _perguntas_ia_schema_invalido("subperguntas nao cobrem todas as categorias")
+
+    compatibilidade_bruta = data.get("compatibilidade")
+    if not isinstance(compatibilidade_bruta, dict):
+        _perguntas_ia_schema_invalido("compatibilidade")
+    aplicavel = compatibilidade_bruta.get("aplicavel")
+    if not isinstance(aplicavel, bool):
+        _perguntas_ia_schema_invalido("compatibilidade.aplicavel")
+    target_item = compatibilidade_bruta.get("target_item")
+    target_type = compatibilidade_bruta.get("target_type")
+    compatibility_profile = compatibilidade_bruta.get("compatibility_profile")
+    technical_focus = compatibilidade_bruta.get("technical_focus")
+    missing_fields = compatibilidade_bruta.get("missing_fields")
+    decisive_fields = compatibilidade_bruta.get("decisive_fields")
+    if not isinstance(target_item, str):
+        _perguntas_ia_schema_invalido("compatibilidade.target_item")
+    if not isinstance(target_type, str) or target_type.strip() not in ML_PERGUNTAS_IA_COMPATIBILITY_TARGET_TYPES:
+        _perguntas_ia_schema_invalido("compatibilidade.target_type")
+    if not isinstance(compatibility_profile, str) or compatibility_profile.strip() not in ML_PERGUNTAS_IA_COMPATIBILITY_PROFILES:
+        _perguntas_ia_schema_invalido("compatibilidade.compatibility_profile")
+    if not isinstance(technical_focus, str):
+        _perguntas_ia_schema_invalido("compatibilidade.technical_focus")
+    if not isinstance(missing_fields, list) or any(not isinstance(item, str) or not item.strip() for item in missing_fields):
+        _perguntas_ia_schema_invalido("compatibilidade.missing_fields")
+    if not isinstance(decisive_fields, list) or any(not isinstance(item, str) or not item.strip() for item in decisive_fields):
+        _perguntas_ia_schema_invalido("compatibilidade.decisive_fields")
+    tem_categoria_compatibilidade = QuestionCategory.COMPATIBILITY.value in categorias
+    if aplicavel != tem_categoria_compatibilidade:
+        _perguntas_ia_schema_invalido("coerencia de compatibilidade")
+    if aplicavel and (not target_type.strip() or not compatibility_profile.strip()):
+        _perguntas_ia_schema_invalido("tipo e perfil da compatibilidade")
+    if not aplicavel and (
+        target_item.strip() or target_type.strip() or compatibility_profile.strip()
+        or missing_fields
+    ):
+        _perguntas_ia_schema_invalido("compatibilidade nao aplicavel nao pode definir alvo ou perfil")
+
+    normalizada = {
         "intencao": intencao,
+        "categoria": categoria,
+        "categorias": categorias,
         "fluxo": fluxo,
         "confianca": confianca,
-        "motivo": str(data.get("motivo") or data.get("reason") or fallback.get("motivo") or "").strip()[:500],
-        "acao": str(data.get("acao") or data.get("action") or fallback.get("acao") or "").strip()[:500],
-        "usar_busca_web": _bool_campo("usar_busca_web", fluxo != "pos_venda"),
-        "usar_mercado_livre_anuncio": _bool_campo("usar_mercado_livre_anuncio", fluxo != "pos_venda"),
-        "usar_bling": _bool_campo("usar_bling", fluxo != "pos_venda"),
-        "source": str(data.get("source") or fallback.get("source") or "").strip()[:80],
+        "flags": flags,
+        "subperguntas": subperguntas,
+        "compatibilidade": {
+            "aplicavel": aplicavel,
+            "target_item": target_item.strip()[:200],
+            "target_type": target_type.strip(),
+            "compatibility_profile": compatibility_profile.strip(),
+            "technical_focus": technical_focus.strip()[:500],
+            "missing_fields": [item.strip()[:200] for item in missing_fields[:12]],
+            "decisive_fields": [item.strip()[:200] for item in decisive_fields[:12]],
+        },
+        **flags,
     }
+    for chave, limite in (("motivo", 500), ("acao", 500), ("source", 80), ("model", 120)):
+        if chave in data:
+            valor = data.get(chave)
+            if not isinstance(valor, str):
+                _perguntas_ia_schema_invalido(chave)
+            normalizada[chave] = valor.strip()[:limite]
+    return normalizada
 
 
 def _perguntas_ia_classificar_intencao(client_id: str, loja: str, pergunta: dict, item: dict) -> dict:
-    heuristica = _perguntas_ia_intencao_heuristica(pergunta, item)
     historico = pergunta.get("buyer_question_chat") if isinstance(pergunta.get("buyer_question_chat"), list) else []
     mensagens = []
     for evento in historico[-8:]:
@@ -732,17 +763,28 @@ def _perguntas_ia_classificar_intencao(client_id: str, loja: str, pergunta: dict
         "historico": mensagens,
         "titulo_anuncio": (item or {}).get("title") or pergunta.get("item_title") or "",
         "sku": _ml_extrair_sku(item or {}) or pergunta.get("item_sku") or "",
-        "heuristica": heuristica,
     }
     prompt = (
-        "Classifique a intencao da ultima mensagem do comprador do Mercado Livre. "
+        "Classifique pela IA a ultima mensagem do comprador do Mercado Livre. "
         "Use o historico apenas para entender continuidade, mas classifique a ultima mensagem. "
         "Se o comprador diz que ja comprou, recebeu, quer trocar, relata defeito, problema, item apagando, quebrado, nao funciona, entrega ou garantia, classifique como pos-venda. "
-        "Nao confunda relato de defeito pos-compra com compatibilidade do produto. "
-        "Retorne somente JSON valido, sem markdown, com estes campos: "
-        "intencao, fluxo, confianca, motivo, acao, usar_busca_web, usar_mercado_livre_anuncio, usar_bling. "
+        "Nao confunda relato de defeito pos-compra com compatibilidade do produto. Classifique lateralidade, lado esquerdo/direito ou lado especifico como product_feature, salvo quando a pergunta realmente comparar aplicacao em outro alvo. "
+        "Retorne somente JSON valido, sem markdown e exatamente com o contrato pedido. "
         "intencao deve ser uma de: duvida_produto, compatibilidade, outra_peca, preco_estoque, pos_venda_defeito, troca_garantia, entrega, cancelamento, reclamacao, nao_entendi. "
-        "fluxo deve ser perguntas_anuncio ou pos_venda.\n\n"
+        "categoria deve ser uma de: greeting, price, stock, shipping, compatibility, product_feature, warranty_originality, invoice, other_product, prohibited_contact, regulated_product, post_sale, unknown. "
+        "categorias deve ser uma lista sem repeticao dessas categorias e deve conter categoria. "
+        "Mantenha coerencia semantica estrita: duvida_produto aceita somente greeting, shipping, product_feature, warranty_originality, invoice, prohibited_contact ou regulated_product; "
+        "compatibilidade aceita somente compatibility; outra_peca aceita somente other_product; preco_estoque aceita somente price e/ou stock; "
+        "pos_venda_defeito, troca_garantia, entrega, cancelamento e reclamacao aceitam somente post_sale; nao_entendi aceita somente unknown. "
+        "fluxo deve ser perguntas_anuncio ou pos_venda. confianca deve ser numero entre 0 e 1. "
+        "flags deve conter os booleanos usar_busca_web, usar_mercado_livre_anuncio e usar_bling. Em pos_venda todos devem ser false. "
+        "subperguntas deve ser uma lista nao vazia de objetos somente com intent, question e required_evidence. "
+        "intent deve ser um de: compatibility, shipping, stock, price, invoice, warranty_originality, product_feature, other_product, general, post_sale. "
+        "Cada categoria deve ser coberta por uma subpergunta semanticamente correspondente e nenhuma subpergunta pode introduzir categoria ausente. Nao invente assunto ausente. "
+        "compatibilidade deve conter aplicavel, target_item, target_type, compatibility_profile, technical_focus, missing_fields e decisive_fields. "
+        "target_type deve ser vazio ou vehicle, machine_tool, phone_computing, electrical_electronic, hydraulic, dimensional, generic; compatibility_profile deve ser vazio ou vehicle_fitment, machine_interface, device_interface, electrical_interface, hydraulic_interface, dimensional_fit, generic_interface. "
+        "Quando compatibilidade.aplicavel for false, target_item, target_type, compatibility_profile e missing_fields devem estar vazios; technical_focus e decisive_fields podem descrever a caracteristica tecnica pedida. "
+        "Exemplo de forma, sem copiar os valores: {\"intencao\":\"duvida_produto\",\"categoria\":\"product_feature\",\"categorias\":[\"product_feature\"],\"fluxo\":\"perguntas_anuncio\",\"confianca\":0.95,\"flags\":{\"usar_busca_web\":false,\"usar_mercado_livre_anuncio\":true,\"usar_bling\":true},\"subperguntas\":[{\"intent\":\"product_feature\",\"question\":\"pergunta objetiva\",\"required_evidence\":\"atributo do anuncio ou fonte tecnica\"}],\"compatibilidade\":{\"aplicavel\":false,\"target_item\":\"\",\"target_type\":\"\",\"compatibility_profile\":\"\",\"technical_focus\":\"\",\"missing_fields\":[],\"decisive_fields\":[]}}.\n\n"
         f"Dados:\n{json.dumps(entrada, ensure_ascii=False, default=str)[:6000]}"
     )
     model_req = _normalizar_ia_modelo_padrao(_ia_modelo_perguntas_configurado())
@@ -763,11 +805,9 @@ def _perguntas_ia_classificar_intencao(client_id: str, loja: str, pergunta: dict
     try:
         resposta, model_usado = _ia_agent_perguntas_chamar_modelo(client_id, payload, model_req)
         data = _perguntas_ia_json_obj(resposta)
-        classificada = _perguntas_ia_intencao_normalizar(data, heuristica)
+        classificada = _perguntas_ia_intencao_normalizar(data)
         classificada["model"] = model_usado
         classificada["source"] = "ia"
-        if heuristica.get("fluxo") == "pos_venda" and float(heuristica.get("confianca") or 0) >= 0.90 and classificada.get("fluxo") != "pos_venda":
-            classificada = {**heuristica, "source": "heuristica_sobrepos_ia", "model": model_usado}
         _ia_agent_perguntas_log_perf(
             client_id,
             loja,
@@ -786,8 +826,6 @@ def _perguntas_ia_classificar_intencao(client_id: str, loja: str, pergunta: dict
         )
         return classificada
     except Exception as exc:
-        fallback = _perguntas_ia_intencao_normalizar(heuristica)
-        fallback["source"] = "heuristica_fallback"
         _ia_agent_perguntas_log_perf(
             client_id,
             loja,
@@ -799,11 +837,13 @@ def _perguntas_ia_classificar_intencao(client_id: str, loja: str, pergunta: dict
             time.perf_counter() - perf_t0,
             status="erro",
             erro=type(exc).__name__,
-            intencao=fallback.get("intencao"),
-            fluxo=fallback.get("fluxo"),
-            source=fallback.get("source"),
+            source="ia",
         )
-        return fallback
+        if isinstance(exc, PerguntasIARespostaIndisponivel):
+            raise
+        raise PerguntasIARespostaIndisponivel(
+            f"Classificacao de intencao pela IA indisponivel: {type(exc).__name__}."
+        ) from exc
 
 
 def _perguntas_ia_intencao_agent(agent_input: dict) -> dict:
@@ -1544,7 +1584,13 @@ def _ia_agent_endpoint_headers() -> dict:
 
 def _ia_agent_http_post(url: str, body: dict, headers: dict, *, timeout: int = 75) -> dict:
     try:
-        resp = requests.post(url, headers=headers, json=body, verify=False, timeout=timeout)
+        resp = requests.post(
+            url,
+            headers=headers,
+            json=body,
+            verify=requests_tls_verify(),
+            timeout=timeout,
+        )
     except requests.RequestException as exc:
         raise PerguntasIARespostaIndisponivel(f"Agente Cloud indisponivel: {exc}") from exc
     if not resp.ok:
@@ -1681,6 +1727,10 @@ def _ml_pos_venda_classificar_motivo(conversa: dict, reclamacao: dict) -> dict:
     return {"motivo": "outro", "confianca": 0.55, "evidencia": "sem gatilho claro"}
 
 PEER_EXPORTS = ['ML_RESPOSTA_PERGUNTA_MAX_CHARS', 'ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO', 'ML_PERGUNTAS_IA_PROMPT_MAX_CHARS', 'ML_PERGUNTAS_IA_DESCRICAO_PROMPT_MAX_CHARS', 'ML_PERGUNTAS_IA_DESCRICAO_AGENT_MAX_CHARS', 'ML_PERGUNTAS_IA_CONTEXTO_EXTRA_PROMPT_MAX_CHARS', 'ML_PERGUNTAS_IA_MEMORIA_SKU_MIN_BYTES', 'ML_PERGUNTAS_IA_MEMORIA_SKU_MAX_EVENTOS', 'ML_PERGUNTAS_IA_MEMORIA_SKU_PROMPT_MAX_CHARS', 'IA_CHAT_MESSAGE_MAX_CHARS', 'IA_CHAT_MESSAGE_COMPACT_TARGET_CHARS', 'ML_POS_VENDA_DEFAULT_MAX_CHARS', 'ML_POS_VENDA_LIMITE_SEGURO', 'PERGUNTAS_AUTOMACAO_INTERVALO_PADRAO_MIN', 'PERGUNTAS_AUTOMACAO_INTERVALO_MIN', 'PERGUNTAS_AUTOMACAO_INTERVALO_MAX', 'PERGUNTAS_AUTOMACAO_BG_LOCK', 'PERGUNTAS_AUTOMACAO_BG_THREAD_STARTED', 'PERGUNTAS_AUTOMACAO_BG_NEXT_CHECKS', 'PERGUNTAS_AUTOMACAO_BG_RUNNING', 'PERGUNTAS_AUTOMACAO_BG_LAST_RESULTS', 'PERGUNTAS_IA_MEMORIA_SKU_LOCK', '_perguntas_loja_config_path', '_perguntas_loja_configs_carregar', '_perguntas_loja_config_normalizar', '_perguntas_loja_config_obter', '_perguntas_loja_config_salvar', '_perguntas_ia_state_path', '_perguntas_ia_aprovacoes_path', '_ml_questions_v2_webhook_events_path', '_perguntas_ia_ler_json', '_perguntas_ia_salvar_json', '_perguntas_ia_state_carregar', '_perguntas_ia_state_salvar', '_perguntas_ia_aprovacoes_carregar', '_perguntas_ia_aprovacoes_salvar', '_perguntas_ia_aprovacao_id', '_pos_venda_ia_aprovacao_id', '_perguntas_ia_marcar_processada', '_perguntas_ia_ja_processada', '_perguntas_ia_aprovacao_pendente', '_perguntas_ia_resolver_aprovacao', '_perguntas_ia_resolver_aprovacoes_pendentes', '_perguntas_ia_pergunta_respondida_ml', '_ml_pos_venda_conversa_respondida_pela_loja', '_perguntas_ia_limpar_resposta', '_perguntas_ia_assinatura_loja', '_perguntas_ia_remover_apresentacao_sistema', '_perguntas_ia_resposta_final_loja', 'PerguntasIARespostaIndisponivel', '_perguntas_ia_resposta_fallback_invalida', 'ML_PERGUNTAS_IA_INTENCOES', 'ML_PERGUNTAS_IA_INTENCOES_POS_VENDA', '_perguntas_ia_intencao_fluxo', '_perguntas_ia_intencao_heuristica', '_perguntas_ia_json_obj', '_perguntas_ia_intencao_normalizar', '_perguntas_ia_classificar_intencao', '_perguntas_ia_intencao_agent', '_perguntas_ia_fluxo_pos_venda', '_perguntas_ia_compactar_contexto', '_perguntas_ia_limitar_prompt', '_perguntas_ia_memoria_sku_limite_bytes', '_perguntas_ia_memoria_sku_normalizar', '_perguntas_ia_memoria_sku_de_fontes', '_perguntas_ia_memoria_sku_dir', '_perguntas_ia_memoria_sku_path', '_perguntas_ia_memoria_payload_vazio', '_perguntas_ia_memoria_normalizar', '_perguntas_ia_memoria_carregar', '_perguntas_ia_memoria_bytes', '_perguntas_ia_memoria_salvar', '_perguntas_ia_memoria_resumir_matches', '_perguntas_ia_memoria_resumir_tool_results', '_perguntas_ia_memoria_evento_base', '_perguntas_ia_memoria_compactar_local', '_perguntas_ia_memoria_compactar_com_ia', '_perguntas_ia_memoria_garantir_limite', '_perguntas_ia_memoria_registrar_evento', '_perguntas_ia_memoria_registrar_pesquisa', '_perguntas_ia_memoria_registrar_resposta_aprovada', '_perguntas_ia_memoria_bloco_prompt', '_ml_pos_venda_memoria_items', '_ml_pos_venda_memoria_ultima_mensagem', '_ml_pos_venda_memoria_historico', '_ml_pos_venda_perguntas_anuncio_chat', '_ml_pos_venda_memoria_question_id', '_ml_pos_venda_memoria_bloco_prompt', '_ml_pos_venda_memoria_registrar_evento', '_ml_pos_venda_memoria_registrar_geracao', '_ml_pos_venda_memoria_registrar_resposta_enviada', '_ia_agent_extrair_texto', '_ia_agent_engine_query_url', '_ia_agent_endpoint_query_url', '_ia_agent_endpoint_headers', '_ia_agent_http_post', '_perguntas_ia_item_para_agente', '_perguntas_ia_pergunta_para_agente', '_ia_agent_endpoint_api_key_configurada', '_ml_pos_venda_classificar_motivo']
+PEER_EXPORTS = [
+    name for name in PEER_EXPORTS
+    if name not in {"_perguntas_ia_intencao_heuristica", "_perguntas_ia_intencao_fluxo"}
+]
 __all__ = PEER_EXPORTS + ["configure_perguntas_pos_venda_state_runtime"]
 
 configure_perguntas_pos_venda_state_runtime()

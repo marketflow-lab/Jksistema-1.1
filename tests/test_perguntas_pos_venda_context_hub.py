@@ -11,6 +11,44 @@ def _agent_module():
     return perguntas_pos_venda_agent
 
 
+def _structured_intent(
+    category: str = "compatibility",
+    *,
+    web: bool = False,
+    mercado_livre: bool = True,
+    bling: bool = True,
+) -> dict:
+    compatibility = category == "compatibility"
+    post_sale = category == "post_sale"
+    intent = "pos_venda_defeito" if post_sale else ("compatibilidade" if compatibility else "duvida_produto")
+    return {
+        "intencao": intent,
+        "categoria": category,
+        "categorias": [category],
+        "fluxo": "pos_venda" if post_sale else "perguntas_anuncio",
+        "confianca": 0.95,
+        "flags": {
+            "usar_busca_web": False if post_sale else web,
+            "usar_mercado_livre_anuncio": False if post_sale else mercado_livre,
+            "usar_bling": False if post_sale else bling,
+        },
+        "subperguntas": [{
+            "intent": category if category in {"compatibility", "product_feature", "post_sale"} else "general",
+            "question": "Tratar a mensagem de pos-venda." if post_sale else "Responder ao ponto classificado pela IA.",
+            "required_evidence": "Dados confirmados do atendimento." if post_sale else "Dados confirmados do anuncio ou fonte tecnica.",
+        }],
+        "compatibilidade": {
+            "aplicavel": compatibility,
+            "target_item": "BMW R1300GS" if compatibility else "",
+            "target_type": "vehicle" if compatibility else "",
+            "compatibility_profile": "vehicle_fitment" if compatibility else "",
+            "technical_focus": "interface base conector" if compatibility else "",
+            "missing_fields": ["ano", "versao"] if compatibility else [],
+            "decisive_fields": ["base original"] if compatibility else [],
+        },
+    }
+
+
 def _compatibility_input(*, tenant_id: str = "outro-tenant") -> dict:
     return {
         "tenant_id": tenant_id,
@@ -23,7 +61,7 @@ def _compatibility_input(*, tenant_id: str = "outro-tenant") -> dict:
             "description": "Adaptador para base Navigator IV, V e VI.",
         },
         "context": {"sku": "001"},
-        "intent": {"fluxo": "perguntas_anuncio", "intencao": "compatibilidade"},
+        "intent": _structured_intent("compatibility", web=True),
         "app_guidance": "Responda com cordialidade.",
     }
 
@@ -311,7 +349,7 @@ def test_compatibility_pipeline_orders_internal_hub_legacy_then_web():
 def test_technical_fallback_uses_canonical_context_hub_before_web():
     agent = _agent_module()
     agent_input = _compatibility_input()
-    agent_input["intent"] = {"fluxo": "perguntas_anuncio", "intencao": "duvida_produto"}
+    agent_input["intent"] = _structured_intent("product_feature", web=True)
     agent_input["question"]["text"] = "Qual tipo de conector acompanha?"
     client = agent._PerguntasVertexGeminiV2Client("000002", "JK Pecas", "codex:gpt-5.5", agent_input)
     respostas = [
@@ -362,10 +400,10 @@ def test_legacy_json_guidance_is_labeled_behavioral_not_factual():
     memory.assert_not_called()
 
 
-def test_post_sale_with_sku_reads_context_hub_before_final_answer():
+def test_post_sale_classification_does_not_promote_context_hub_or_web():
     agent = _agent_module()
     agent_input = _compatibility_input()
-    agent_input["intent"] = {"fluxo": "pos_venda", "intencao": "defeito"}
+    agent_input["intent"] = _structured_intent("post_sale")
     agent_input["question"]["text"] = "O produto parou de funcionar, como seguimos?"
     client = agent._PerguntasVertexGeminiV2Client("000002", "JK Pecas", "codex:gpt-5.5", agent_input)
     listing_answer = agent.AIAnswer(
@@ -374,15 +412,9 @@ def test_post_sale_with_sku_reads_context_hub_before_final_answer():
         requires_human_review=True,
         reason="post_sale_listing_only",
     )
-    hub_answer = agent.AIAnswer(
-        answer="Sentimos pelo ocorrido. Envie os dados pelo detalhe da compra para verificarmos.",
-        confidence=0.8,
-        requires_human_review=True,
-        reason="post_sale_context_hub",
-    )
-
     with patch.object(agent, "_perguntas_ia_context_hub_tool", return_value=_hub_result()) as hub, \
-         patch.object(client, "_call_model", side_effect=[listing_answer, hub_answer]):
+         patch.object(agent, "_ia_agent_perguntas_web_tool", side_effect=AssertionError("web nao deveria ser chamada")), \
+         patch.object(client, "_call_model", return_value=listing_answer):
         result = client.generate("prompt", {
             "category": "post_sale",
             "question_text": "O produto parou de funcionar, como seguimos?",
@@ -390,12 +422,11 @@ def test_post_sale_with_sku_reads_context_hub_before_final_answer():
             "listing_title": "Adaptador",
         })
 
-    hub.assert_called_once()
-    assert result.answer == hub_answer.answer
+    hub.assert_not_called()
+    assert result.answer == listing_answer.answer
     assert [stage["name"] for stage in client.context_pipeline] == [
         "buyer_question_and_history",
         "listing_product_analysis",
         "context_hub_sku_reference",
-        "external_research_fallback",
     ]
-    assert client.context_pipeline[-1]["reason"] == "post_sale_context_hub_complete"
+    assert client.context_pipeline[-1]["status"] == "skipped"

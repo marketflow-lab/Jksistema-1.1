@@ -75,6 +75,30 @@ WHATSAPP_MAX_PARTS = whatsapp_formatting.WHATSAPP_MAX_PARTS
 def _format_stock_quantity(value: Any) -> str:
     return whatsapp_tool_results.format_stock_quantity(value)
 
+
+def _materialized_stock_sku(pending: dict[str, Any]) -> str:
+    """Read SKU only from agent/context structures, never from request prose."""
+
+    containers = [
+        pending.get("manager_plan"),
+        pending.get("data_selection_plan"),
+        pending.get("manager_query_policy"),
+        pending.get("query_policy"),
+    ]
+    anchors = pending.get("conversation_anchors") if isinstance(pending.get("conversation_anchors"), dict) else {}
+    containers.append(anchors.get("resolved_context"))
+    for raw in containers:
+        if not isinstance(raw, dict):
+            continue
+        entities = raw.get("entities") if isinstance(raw.get("entities"), dict) else {}
+        sku = str(raw.get("sku") or entities.get("sku") or "").strip()[:100]
+        if not sku or sku.casefold() in {"a", "ao", "da", "de", "do", "e", "em", "na", "no", "para"}:
+            continue
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,99}", sku):
+            return sku
+    return ""
+
+
 def _positive_stock_sku_count_contract(result: Any) -> dict[str, Any]:
     return whatsapp_tool_results.positive_stock_sku_count_contract(result)
 
@@ -153,8 +177,7 @@ def _deterministic_stock_result_text(evidence: dict[str, Any], pending: dict[str
             used.add(key)
     ordered.extend(value for key, value in by_store.items() if key not in used)
 
-    plan = pending.get("manager_plan") if isinstance(pending.get("manager_plan"), dict) else {}
-    sku = str(plan.get("sku") or _function_manager_extract_identifiers(pending.get("request_text"))[0] or "").strip()
+    sku = _materialized_stock_sku(pending)
     lines: list[str] = []
     confirmed_any = False
     partial_any = False
@@ -175,11 +198,12 @@ def _deterministic_stock_result_text(evidence: dict[str, Any], pending: dict[str
         bling = _stock_balance_contract(bling_result)
         marketplace = _marketplace_listing_stock_contract(ml_result)
         local = _local_stock_contract(local_result)
-        row_sku = str(bling.get("sku") or local.get("sku") or sku or "SKU consultado")
+        row_sku = str(bling.get("sku") or local.get("sku") or sku or "").strip()
+        sku_label = f"SKU {row_sku}" if row_sku else "SKU consultado"
         if bling.get("confirmed") is True:
             confirmed_any = True
             quantity = _format_stock_quantity(bling.get("store_available"))
-            lines.append(f"SKU {row_sku}: *{quantity} unidade(s)* no estoque da loja, confirmado diretamente na Bling.")
+            lines.append(f"{sku_label}: *{quantity} unidade(s)* no estoque da loja, confirmado diretamente na Bling.")
             if bling.get("full_excluded") is True:
                 lines.append("Estoque Full/Fulfillment nao esta incluido nesse saldo.")
         elif marketplace.get("confirmed") is True:
@@ -200,9 +224,9 @@ def _deterministic_stock_result_text(evidence: dict[str, Any], pending: dict[str
         else:
             partial_any = True
             if bling.get("auth_failed") is True:
-                lines.append(f"SKU {row_sku}: saldo nao confirmado. A conexao da Bling desta loja esta expirada e precisa ser refeita.")
+                lines.append(f"{sku_label}: saldo nao confirmado. A conexao da Bling desta loja esta expirada e precisa ser refeita.")
             else:
-                lines.append(f"SKU {row_sku}: saldo nao confirmado nas fontes disponiveis.")
+                lines.append(f"{sku_label}: saldo nao confirmado nas fontes disponiveis.")
             if bling.get("fallback_identified") is True:
                 lines.append("O SKU foi localizado no cadastro interno, mas esse retorno nao comprova o saldo desta loja.")
         lines.append("")

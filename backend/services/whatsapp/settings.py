@@ -36,7 +36,9 @@ WHATSAPP_WAIT_MESSAGE_AFTER_DEFAULT = 15
 WHATSAPP_WAIT_MESSAGE_REPEAT_DEFAULT = 30
 WHATSAPP_WAIT_MESSAGE_STEADY_DEFAULT = 60
 WHATSAPP_PARTIAL_DEBOUNCE_DEFAULT = 2
-WHATSAPP_JOB_DEADLINE_DEFAULT = 120
+# Consultas do Black Jhon nao possuem prazo total. Timeouts de rede e de cada
+# ferramenta continuam sendo tratados individualmente pelo executor.
+WHATSAPP_JOB_DEADLINE_DEFAULT = 0
 WHATSAPP_MAX_SUBTASKS_DEFAULT = 6
 WHATSAPP_MAX_ACTIVE_TASK_AGENTS_DEFAULT = 6
 WHATSAPP_CONVERSATION_WORKER_COUNT_DEFAULT = 4
@@ -238,12 +240,8 @@ def dual_agent_settings(
         "partial_delivery_debounce_seconds": normalize_capacity(
             source.get("partial_delivery_debounce_seconds"), WHATSAPP_PARTIAL_DEBOUNCE_DEFAULT, 1, 10
         ),
-        "job_deadline_seconds": normalize_capacity(
-            source.get("job_deadline_seconds"),
-            WHATSAPP_JOB_DEADLINE_DEFAULT,
-            30,
-            report_deadline_seconds,
-        ),
+        "deadline_enabled": False,
+        "job_deadline_seconds": 0,
         "retry_policy": "bounded",
         "max_retry_attempts": max_retry_attempts,
         "max_subtasks_per_job": normalize_capacity(

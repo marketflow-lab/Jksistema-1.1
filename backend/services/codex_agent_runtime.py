@@ -38,7 +38,6 @@ WHATSAPP_NON_DESTRUCTIVE_ACTIONS = {
     "estoque.lancamentos_sku",
     "estoque.lancamentos_periodo",
     "ml.pergunta_responder",
-    "ml.pos_venda_responder",
     "ml.aprovacao_aprovar",
     "reports.queue_replenishment",
     "reports.queue_price_review",
