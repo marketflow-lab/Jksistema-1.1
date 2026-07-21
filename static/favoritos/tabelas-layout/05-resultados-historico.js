@@ -2288,6 +2288,35 @@
             return true;
         }
 
+        function moverAnuncioParaReferenciaEmGrupoRankingFavoritos(grupo, chavesOrigem, chavesDestino, colocarDepois = false) {
+            if (
+                !grupo
+                || !Array.isArray(grupo.anuncios)
+                || !chavesOrigem
+                || !chavesOrigem.size
+                || !chavesDestino
+                || !chavesDestino.size
+            ) return false;
+
+            const origem = grupo.anuncios.findIndex(anuncio => anuncioCorrespondeRemocaoRankingFavoritos(anuncio, chavesOrigem));
+            const destinoOriginal = grupo.anuncios.findIndex(anuncio => anuncioCorrespondeRemocaoRankingFavoritos(anuncio, chavesDestino));
+            if (origem < 0 || destinoOriginal < 0 || origem === destinoOriginal) return false;
+
+            const ordemAnterior = grupo.anuncios.slice();
+            const reordenados = grupo.anuncios.slice();
+            const [anuncioMovido] = reordenados.splice(origem, 1);
+            const destino = reordenados.findIndex(anuncio => anuncioCorrespondeRemocaoRankingFavoritos(anuncio, chavesDestino));
+            if (destino < 0) return false;
+            reordenados.splice(destino + (colocarDepois ? 1 : 0), 0, anuncioMovido);
+
+            const mudou = reordenados.some((anuncio, index) => anuncio !== ordemAnterior[index]);
+            if (!mudou) return false;
+            grupo.anuncios = reordenados;
+            grupo.ordem_manual = true;
+            grupo.total_anuncios = grupo.anuncios.length;
+            return true;
+        }
+
         function recalcularTotaisHistoricoFavoritos(entrada) {
             if (!entrada || !Array.isArray(entrada.grupos)) return;
             entrada.total_skus = entrada.grupos.filter(grupo => grupo && grupo.sku).length;
@@ -2304,6 +2333,65 @@
                 if (grupoHistorico) return { entrada, grupo: grupoHistorico };
             }
             return null;
+        }
+
+        function normalizarEntradaIdMutacaoRankingFavoritos(valor) {
+            const entradaId = String(valor || '').trim();
+            return entradaId === FAV_ML_RANKING_ATUAL_ID ? '' : entradaId;
+        }
+
+        function aplicarMutacaoGrupoRankingFavoritos(sku, mutacaoGrupo, opcoes = {}) {
+            const skuSelecionado = String(sku || favMlSkuSelecionado || '').trim();
+            const chaveSku = skuChaveSku(skuSelecionado);
+            if (!chaveSku || typeof mutacaoGrupo !== 'function') {
+                return { mudou: false, skuSelecionado, entradaId: '', historicoAlterado: false };
+            }
+
+            const entradaId = normalizarEntradaIdMutacaoRankingFavoritos(opcoes.entradaId);
+            const grupoAtual = entradaId ? null : mlFavoritosResultadosPorSku.get(chaveSku);
+            let grupoAtualAlterado = false;
+            if (grupoAtual) {
+                grupoAtualAlterado = !!mutacaoGrupo(grupoAtual);
+                if (grupoAtualAlterado) mlFavoritosResultadosPorSku.set(chaveSku, grupoAtual);
+            }
+
+            const historico = lerHistoricoFavoritos();
+            const alvoHistorico = encontrarGrupoHistoricoRankingFavoritos(historico, chaveSku, entradaId);
+            let historicoAlterado = false;
+            if (alvoHistorico) {
+                historicoAlterado = alvoHistorico.grupo === grupoAtual
+                    ? grupoAtualAlterado
+                    : !!mutacaoGrupo(alvoHistorico.grupo);
+                if (historicoAlterado) {
+                    recalcularTotaisHistoricoFavoritos(alvoHistorico.entrada);
+                    if (!grupoAtual) mlFavoritosResultadosPorSku.set(chaveSku, alvoHistorico.grupo);
+                }
+            }
+            if (historicoAlterado) salvarHistoricoFavoritos(historico, { imediato: true });
+
+            return {
+                mudou: grupoAtualAlterado || historicoAlterado,
+                skuSelecionado,
+                entradaId,
+                historicoAlterado
+            };
+        }
+
+        function renderizarMutacaoRankingFavoritos(skuSelecionado) {
+            renderizarFavoritosOutrosAnuncios(skuSelecionado);
+            if (skuChaveSku(skuSelecionado) === skuChaveSku(favMlSkuSelecionado) && Array.isArray(favMlAnunciosSkuAtual)) {
+                renderizarFavoritosAnunciosMl(favMlAnunciosSkuAtual, favMlSkuSelecionado);
+            }
+            renderizarHistoricoFavoritos();
+        }
+
+        function atualizarStatusRankingFavoritosReordenado(skuSelecionado) {
+            if (favMlStatusEl) {
+                favMlStatusEl.textContent = `Ranking do SKU ${skuSelecionado} reordenado.`;
+            }
+            if (mlHistoricoFavoritosStatusEl && document.getElementById('aba-historico')?.classList.contains('active')) {
+                mlHistoricoFavoritosStatusEl.textContent = `Ranking do SKU ${skuSelecionado} reordenado.`;
+            }
         }
 
         function removerAnuncioRankingFavoritos(sku, anuncio, opcoes = {}) {
@@ -2394,4 +2482,25 @@
             if (mlHistoricoFavoritosStatusEl && document.getElementById('aba-historico')?.classList.contains('active') && mudou) {
                 mlHistoricoFavoritosStatusEl.textContent = `Ranking do SKU ${skuSelecionado} reordenado.`;
             }
+        }
+
+        function moverAnuncioRankingFavoritosParaReferencia(sku, anuncioOrigem, anuncioDestino, colocarDepois, opcoes = {}) {
+            const skuSelecionado = String(sku || favMlSkuSelecionado || '').trim();
+            if (!skuSelecionado || !anuncioOrigem || !anuncioDestino) return false;
+            const chavesOrigem = new Set(chavesRemocaoAnuncioRankingFavoritos(anuncioOrigem));
+            const chavesDestino = new Set(chavesRemocaoAnuncioRankingFavoritos(anuncioDestino));
+            if (!chavesOrigem.size || !chavesDestino.size) return false;
+
+            const resultado = aplicarMutacaoGrupoRankingFavoritos(skuSelecionado, grupo => (
+                moverAnuncioParaReferenciaEmGrupoRankingFavoritos(
+                    grupo,
+                    chavesOrigem,
+                    chavesDestino,
+                    colocarDepois === true
+                )
+            ), opcoes);
+            if (!resultado.mudou) return false;
+            renderizarMutacaoRankingFavoritos(skuSelecionado);
+            atualizarStatusRankingFavoritosReordenado(skuSelecionado);
+            return true;
         }

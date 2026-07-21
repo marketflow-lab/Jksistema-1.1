@@ -663,15 +663,137 @@
             }
         }
 
+        const ML_FAVORITOS_RANKING_DRAG_MIME = 'application/x-jk-favoritos-ranking';
+        let mlFavoritosRankingArrasteAtivo = null;
+
+        function contextoEntradaArrasteRankingFavoritos(entradaId) {
+            return String(entradaId || '').trim();
+        }
+
+        function limparEstadoArrasteRankingFavoritos() {
+            document.querySelectorAll(
+                '.is-ranking-dragging, .is-ranking-drop-before, .is-ranking-drop-after'
+            ).forEach(elemento => {
+                elemento.classList.remove('is-ranking-dragging', 'is-ranking-drop-before', 'is-ranking-drop-after');
+            });
+            mlFavoritosRankingArrasteAtivo = null;
+        }
+
+        function arrasteRankingFavoritosMesmoContexto(contexto, sku, opcoes = {}) {
+            if (!contexto) return false;
+            return contexto.sku === skuChaveSku(sku)
+                && contexto.entradaId === contextoEntradaArrasteRankingFavoritos(opcoes.entradaId);
+        }
+
+        function marcarDestinoArrasteRankingFavoritos(linha, colocarDepois) {
+            document.querySelectorAll('.is-ranking-drop-before, .is-ranking-drop-after').forEach(elemento => {
+                if (elemento !== linha) {
+                    elemento.classList.remove('is-ranking-drop-before', 'is-ranking-drop-after');
+                }
+            });
+            linha.classList.toggle('is-ranking-drop-before', !colocarDepois);
+            linha.classList.toggle('is-ranking-drop-after', !!colocarDepois);
+        }
+
+        function configurarArrasteLinhaRankingFavoritos(linha, sku, anuncio, opcoes = {}) {
+            if (!linha || !anuncio) return;
+            const alca = linha.querySelector('.ml-ranking-drag-handle');
+            if (!alca) return;
+
+            const skuContexto = skuChaveSku(sku);
+            const entradaId = contextoEntradaArrasteRankingFavoritos(opcoes.entradaId);
+            linha.dataset.rankingSku = skuContexto;
+            linha.dataset.rankingEntradaId = entradaId;
+
+            alca.addEventListener('dragstart', event => {
+                if (!event.dataTransfer || !skuContexto) {
+                    event.preventDefault();
+                    return;
+                }
+                limparEstadoArrasteRankingFavoritos();
+                mlFavoritosRankingArrasteAtivo = {
+                    linha,
+                    sku: skuContexto,
+                    entradaId,
+                    anuncio,
+                    opcoes: { ...opcoes }
+                };
+                linha.classList.add('is-ranking-dragging');
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData(ML_FAVORITOS_RANKING_DRAG_MIME, `${skuContexto}|${entradaId}`);
+                if (typeof event.dataTransfer.setDragImage === 'function') {
+                    event.dataTransfer.setDragImage(linha, 24, Math.min(24, Math.max(1, linha.offsetHeight / 2)));
+                }
+                event.stopPropagation();
+            });
+
+            alca.addEventListener('dragend', () => {
+                limparEstadoArrasteRankingFavoritos();
+            });
+
+            linha.addEventListener('dragover', event => {
+                const contexto = mlFavoritosRankingArrasteAtivo;
+                if (!arrasteRankingFavoritosMesmoContexto(contexto, sku, opcoes) || contexto.linha === linha) {
+                    linha.classList.remove('is-ranking-drop-before', 'is-ranking-drop-after');
+                    return;
+                }
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'move';
+                const limites = linha.getBoundingClientRect();
+                const colocarDepois = event.clientY >= limites.top + limites.height / 2;
+                marcarDestinoArrasteRankingFavoritos(linha, colocarDepois);
+            });
+
+            linha.addEventListener('dragleave', event => {
+                if (event.relatedTarget && linha.contains(event.relatedTarget)) return;
+                linha.classList.remove('is-ranking-drop-before', 'is-ranking-drop-after');
+            });
+
+            linha.addEventListener('drop', event => {
+                const contexto = mlFavoritosRankingArrasteAtivo;
+                if (!arrasteRankingFavoritosMesmoContexto(contexto, sku, opcoes) || contexto.linha === linha) {
+                    limparEstadoArrasteRankingFavoritos();
+                    return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                const limites = linha.getBoundingClientRect();
+                const colocarDepois = event.clientY >= limites.top + limites.height / 2;
+                const anuncioOrigem = contexto.anuncio;
+                const opcoesOrigem = contexto.opcoes;
+                limparEstadoArrasteRankingFavoritos();
+                if (typeof moverAnuncioRankingFavoritosParaReferencia === 'function') {
+                    moverAnuncioRankingFavoritosParaReferencia(
+                        sku,
+                        anuncioOrigem,
+                        anuncio,
+                        colocarDepois,
+                        opcoesOrigem
+                    );
+                }
+            });
+        }
+
         function criarCelulaAcoesRankingFavoritos(sku, anuncio, opcoes = {}) {
             const td = document.createElement('td');
             td.className = 'ml-ranking-actions-cell';
             const rank = Number(opcoes.rank);
             if (Number.isFinite(rank) && rank > 0) {
+                const rankLinha = document.createElement('div');
+                rankLinha.className = 'ml-ranking-actions-rank-line';
+                const alca = document.createElement('span');
+                alca.className = 'ml-ranking-drag-handle';
+                alca.draggable = true;
+                alca.textContent = '\u22EE\u22EE';
+                alca.title = 'Arraste para mover este anuncio para outra posicao.';
+                alca.setAttribute('aria-label', `Arrastar anuncio da posicao ${rank}.`);
+                alca.setAttribute('role', 'img');
                 const rankEl = document.createElement('span');
                 rankEl.className = 'ml-ranking-actions-rank';
                 rankEl.textContent = `${rank}\u00B0`;
-                td.appendChild(rankEl);
+                rankLinha.appendChild(alca);
+                rankLinha.appendChild(rankEl);
+                td.appendChild(rankLinha);
             }
             const wrap = document.createElement('div');
             wrap.className = 'ml-ranking-actions-group';
@@ -692,15 +814,6 @@
                 return botao;
             };
 
-            const arrows = document.createElement('div');
-            arrows.className = 'ml-ranking-arrows-row';
-            arrows.appendChild(criarBotao('&uarr;', 'Mover este anuncio uma posicao para cima', 'ml-ranking-action-btn', () => {
-                moverAnuncioRankingFavoritos(sku, anuncio, -1, opcoes);
-            }, opcoes.primeiro));
-            arrows.appendChild(criarBotao('&darr;', 'Mover este anuncio uma posicao para baixo', 'ml-ranking-action-btn', () => {
-                moverAnuncioRankingFavoritos(sku, anuncio, 1, opcoes);
-            }, opcoes.ultimo));
-            wrap.appendChild(arrows);
             wrap.appendChild(criarBotao('&#8635;', 'Sincronizar dados deste anuncio pelo Avant Pro', 'ml-ranking-action-btn ml-ranking-sync-btn', (botao) => {
                 sincronizarAnuncioRankingFavoritos(sku, anuncio, { ...opcoes, botao });
             }, mlFavoritosEmExecucao));
@@ -778,6 +891,9 @@
                     rank: index + 1,
                     ultimo: index === lista.length - 1
                 }));
+                configurarArrasteLinhaRankingFavoritos(tr, sku, anuncio, {
+                    entradaId: opcoes.entradaId || ''
+                });
                 tr.appendChild(criarCelulaFotoAnuncioFavoritos(anuncio));
                 const lojaVendedora = obterNomeLojaVendedoraHistoricoFavoritos(anuncio);
                 tr.appendChild(criarCelulaMlbLojaFavoritos(

@@ -245,6 +245,9 @@
                     rank: index + 1,
                     ultimo: index === anuncios.length - 1
                 }));
+                configurarArrasteLinhaRankingFavoritos(tr, skuSelecionado, anuncioRender, {
+                    entradaId: entradaSelecionada
+                });
                 tr.appendChild(criarCelulaFotoAnuncioFavoritos(anuncioRender));
                 const valores = [
                     { valor: anuncioRender.titulo || '', long: true }

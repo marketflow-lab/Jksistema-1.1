@@ -948,6 +948,7 @@ function validarColetaCanonicaEManifestoFavoritos() {
   const historicoUi = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '06-ranking-manual-historico-ui.js'), 'utf8');
   const mlBaseBusca = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '01-ml-base-busca.js'), 'utf8');
   const renderAvantMercadoLivre = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '08-render-avant-mercadolivre.js'), 'utf8');
+  const styles = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'styles.css'), 'utf8');
   const favoritosHtml = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos.html'), 'utf8');
   const tabelasLayout = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout.js'), 'utf8');
   const assetManifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'asset-manifest.json'), 'utf8'));
@@ -1000,6 +1001,9 @@ function validarColetaCanonicaEManifestoFavoritos() {
   assert.match(historico, /resumo_coleta:\s*Array\.isArray[\s\S]*motivos_incompletos[\s\S]*origens_dados[\s\S]*amostras_incompletos/, 'historico deve persistir auditoria de coleta por pesquisa');
   assert.match(historico, /formatarResumoColetaFavoritosTela[\s\S]*faltas:/, 'historico deve exibir motivos dos incompletos no resumo da coleta');
   assert.match(historicoUi, /<th>Preco<\/th>[\s\S]*criarCelulaPrecoHistoricoFavoritos|<th>Preco<\/th>[\s\S]*criarCelulaPrecoAnuncioFavoritos/, 'tabela de ranking/historico deve incluir preco');
+  assert.doesNotMatch(historicoUi, /&uarr;|&darr;|ml-ranking-arrows-row|Mover este anuncio uma posicao/, 'lista de rankeamento nao deve exibir setas para subir ou descer anuncios');
+  assert.doesNotMatch(styles, /\.ml-ranking-arrows-row/, 'estilo exclusivo das setas removidas nao deve permanecer');
+  assert.match(historicoUi, /Sincronizar dados deste anuncio pelo Avant Pro[\s\S]*Remover este anuncio do ranking/, 'acoes de sincronizar e remover devem permanecer no rankeamento');
 
   assert.match(buscaRanking, /function chaveAnuncioFavoritos[\s\S]*chaveCanonicaAnuncioFavoritos/, 'ranking deve deduplicar pela chave canonica');
   assert.match(buscaRanking, /function anuncioFavoritosCandidatoRanking[\s\S]*return !!link/, 'ranking nao deve aceitar item sem MLB nem link');
