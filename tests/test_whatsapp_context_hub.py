@@ -453,7 +453,7 @@ def test_context_hub_setting_is_legacy_compatible_and_scoped_per_client(monkeypa
     assert whatsapp_settings.dual_agent_settings(scoped, client_id="tenant-b")["context_hub_enabled"] is True
 
     monkeypatch.setattr(whatsapp_bridge, "_json_read", lambda *_args, **_kwargs: legacy)
-    loaded = config_store._load_config()
+    loaded = whatsapp_bridge._load_config()
     assert loaded["context_hub_enabled_default"] is False
     assert loaded["context_hub_enabled_by_client"] == {}
 

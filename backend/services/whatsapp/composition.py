@@ -33,7 +33,11 @@ def bind_component_namespace(
 ) -> None:
     """Refresh component globals without replacing stored implementations."""
 
+    bound_dependencies = target.get("_BRIDGE_BOUND_DEPENDENCIES")
+    if not isinstance(bound_dependencies, dict):
+        bound_dependencies = {}
     protected = {
+        "_BRIDGE_BOUND_DEPENDENCIES",
         "_IMPLEMENTATIONS",
         "_COMPONENT_FUNCTIONS",
         "bind_bridge_dependencies",
@@ -42,7 +46,27 @@ def bind_component_namespace(
     for name, value in dependencies.namespace.items():
         if name.startswith("__") or name in protected:
             continue
+        previous = bound_dependencies.get(name)
+        current = target.get(name)
+        if name in bound_dependencies and current is not previous and callable(current):
+            # A component-scoped override was installed after the last bind
+            # (for example by a test or a runtime adapter).  Nested facade
+            # calls must not erase it midway through the active invocation.
+            # Mutable runtime scalars are deliberately refreshed because the
+            # facade is their compatibility authority between invocations.
+            continue
+        implementation = implementations.get(name)
+        if implementation is not None and getattr(value, "__wrapped__", None) is implementation:
+            # Keep calls between functions of the same component local.  Copying
+            # the facade's default delegator back into the component would
+            # re-enter ``_sync_components`` and overwrite component-scoped
+            # monkeypatches halfway through an invocation.  A real facade
+            # override has no matching ``__wrapped__`` marker and is still
+            # propagated for backwards compatibility.
+            value = implementation
         target[name] = value
+        bound_dependencies[name] = value
+    target["_BRIDGE_BOUND_DEPENDENCIES"] = bound_dependencies
     target["_IMPLEMENTATIONS"] = implementations
 
 

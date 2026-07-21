@@ -1,6 +1,6 @@
 # Auditoria do uso do Codex no JK Sistema
 
-Data da auditoria: 20 de julho de 2026  
+Data da auditoria: 20 de julho de 2026
 Escopo: código-fonte, arquitetura, runtime instalado, Context Hub, integração OpenAI/Codex, ferramentas internas, segurança, testes, telemetria e práticas de desenvolvimento.
 
 ## Resumo executivo

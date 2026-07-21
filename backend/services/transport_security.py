@@ -43,4 +43,3 @@ __all__ = [
     "configure_requests_session",
     "requests_tls_verify",
 ]
-

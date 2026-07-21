@@ -233,7 +233,7 @@ class MCPIdempotencyStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT plan_hash,call_index,tool_id,arguments_hash,state,result_summary_json," 
+                "SELECT plan_hash,call_index,tool_id,arguments_hash,state,result_summary_json,"
                 "lease_expires_at_epoch,lease_owner_token "
                 "FROM mcp_call_idempotency WHERE call_key=?",
                 (call_key,),
@@ -257,7 +257,7 @@ class MCPIdempotencyStore:
                 ):
                     lease_token = uuid.uuid4().hex
                     cursor = connection.execute(
-                        "UPDATE mcp_call_idempotency SET lease_expires_at_epoch=?," 
+                        "UPDATE mcp_call_idempotency SET lease_expires_at_epoch=?,"
                         "lease_owner_token=?,updated_at_epoch=? "
                         "WHERE call_key=? AND state='running' "
                         "AND lease_owner_token=? AND lease_expires_at_epoch<=?",
@@ -288,8 +288,8 @@ class MCPIdempotencyStore:
             now = time.time()
             lease_token = uuid.uuid4().hex
             connection.execute(
-                "INSERT INTO mcp_call_idempotency(" 
-                "call_key,plan_hash,call_index,tool_id,arguments_hash,state," 
+                "INSERT INTO mcp_call_idempotency("
+                "call_key,plan_hash,call_index,tool_id,arguments_hash,state,"
                 "lease_expires_at_epoch,lease_owner_token,updated_at_epoch) "
                 "VALUES(?,?,?,?,?,'running',?,?,?)",
                 (
@@ -318,7 +318,7 @@ class MCPIdempotencyStore:
             return False
         with self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE mcp_call_idempotency SET state=?,result_summary_json=?," 
+                "UPDATE mcp_call_idempotency SET state=?,result_summary_json=?,"
                 "lease_expires_at_epoch=0,lease_owner_token='',updated_at_epoch=? "
                 "WHERE call_key=? AND state='running' AND lease_owner_token=?",
                 (
@@ -444,7 +444,7 @@ class MCPRolloutPolicyStore:
             connection.execute(
                 "INSERT INTO mcp_rollout_current(singleton,policy_json,version,updated_at_epoch,updated_by_hash) "
                 "VALUES(1,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET "
-                "policy_json=excluded.policy_json,version=excluded.version," 
+                "policy_json=excluded.policy_json,version=excluded.version,"
                 "updated_at_epoch=excluded.updated_at_epoch,updated_by_hash=excluded.updated_by_hash",
                 (encoded, version, now, actor_hash),
             )
@@ -510,8 +510,8 @@ class MCPRolloutPolicyStore:
         safe_error_code = str(error_code or "").strip().lower()[:100]
         with self._connect() as connection:
             connection.execute(
-                "INSERT OR IGNORE INTO mcp_rollout_metrics(" 
-                "event_id,task_id,execution_id,mode,status,error_code," 
+                "INSERT OR IGNORE INTO mcp_rollout_metrics("
+                "event_id,task_id,execution_id,mode,status,error_code,"
                 "protocol_error,duration_ms,created_at_epoch) "
                 "VALUES(?,?,?,?,?,?,?,?,?)",
                 (

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import ast
+import functools
 from pathlib import Path
 
 from backend.services import whatsapp_bridge
 from backend.services import whatsapp as whatsapp_package
+from backend.services.whatsapp.composition import BridgeDependencies, bind_component_namespace
 
 
 PACKAGE_DIR = Path(whatsapp_package.__file__).resolve().parent
@@ -76,3 +78,38 @@ def test_component_dependencies_are_resolved_after_monkeypatch(monkeypatch) -> N
 
     assert [label for label, _value in persisted] == ["first", "second"]
     assert set(state["pending_messages"]) == {"message-1", "message-2"}
+
+
+def test_component_binding_restores_local_helpers_without_blocking_real_overrides() -> None:
+    def implementation() -> str:
+        return "local"
+
+    @functools.wraps(implementation)
+    def default_delegator() -> str:
+        return "facade"
+
+    implementations = {"helper": implementation}
+    target = {"helper": default_delegator}
+    bind_component_namespace(
+        target,
+        implementations,
+        BridgeDependencies.from_namespace({"helper": default_delegator}),
+    )
+    assert target["helper"] is implementation
+
+    override = lambda: "override"
+    bind_component_namespace(
+        target,
+        implementations,
+        BridgeDependencies.from_namespace({"helper": override}),
+    )
+    assert target["helper"] is override
+
+    component_override = lambda: "component"
+    target["helper"] = component_override
+    bind_component_namespace(
+        target,
+        implementations,
+        BridgeDependencies.from_namespace({"helper": default_delegator}),
+    )
+    assert target["helper"] is component_override

@@ -23,7 +23,7 @@ const requiredSnippets = [
     '.analysis-promo-badge {',
     'grid-template-columns: 1.15fr 1fr 0.78fr;',
     'min-height: 88px;',
-    '.analysis-comparison-title {\n            display: none;',
+    '.analysis-comparison-title {',
     '((precoCheio - precoAtual) / precoCheio) * 100',
     'const browserApi = electronApi.getMlBrowserItemInfo;',
     'const publicApi = electronApi.getMlPublicItemInfo;',
@@ -44,6 +44,10 @@ for (const snippet of requiredSnippets) {
     if (!html.includes(snippet)) {
         throw new Error(`Trecho obrigatorio ausente: ${snippet}`);
     }
+}
+
+if (!/\.analysis-comparison-title\s*\{\s*display:\s*none;/.test(html)) {
+    throw new Error('Titulo da comparacao deve permanecer oculto');
 }
 
 const forbiddenSnippets = [

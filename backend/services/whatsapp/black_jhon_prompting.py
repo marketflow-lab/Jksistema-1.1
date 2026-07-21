@@ -10,9 +10,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 from backend.services.whatsapp import black_jhon_v3_contracts as _v3_contracts
+from backend.services.whatsapp import black_jhon_context_serialization as _context_serialization
 
 
 PROMPT_CONTRACT_VERSION = "black-jhon-whatsapp-prompts.v2"
@@ -800,80 +801,6 @@ def normalize_retrieval_result_v3(value: Any) -> dict[str, Any]:
     )
 
 
-def _json_safe(value: Any, *, depth: int = 0) -> Any:
-    if depth >= 8:
-        return _clean_text(value, 500)
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    if isinstance(value, str):
-        return value.replace("\x00", "")[:12000]
-    if isinstance(value, Mapping):
-        result: dict[str, Any] = {}
-        for key, item in list(value.items())[:100]:
-            result[_clean_text(key, 120)] = _json_safe(item, depth=depth + 1)
-        return result
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [_json_safe(item, depth=depth + 1) for item in list(value)[:100]]
-    return _clean_text(value, 2000)
-
-
-_PROTECTED_CONTEXT_KEYS = frozenset({"records", "facts", "sources", "gaps", "verified_facts", "missing"})
-_USER_CONTEXT_KEYS = frozenset({"user_message", "request_text", "job_prompt"})
-
-
-def _reduction_candidates(value: Any, path: tuple[Any, ...] = ()) -> list[tuple[int, int, tuple[Any, ...], str]]:
-    candidates: list[tuple[int, int, tuple[Any, ...], str]] = []
-    protected = any(str(part) in _PROTECTED_CONTEXT_KEYS for part in path)
-    user_content = any(str(part) in _USER_CONTEXT_KEYS for part in path)
-    priority = 2 if protected else (1 if user_content else 0)
-    if isinstance(value, str) and len(value) > 80:
-        candidates.append((priority, -len(value), path, "string"))
-    elif isinstance(value, list):
-        if len(value) > 1:
-            candidates.append((priority, -len(_canonical_json(value)), path, "list"))
-        for index, item in enumerate(value):
-            candidates.extend(_reduction_candidates(item, (*path, index)))
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            candidates.extend(_reduction_candidates(item, (*path, key)))
-    return candidates
-
-
-def _path_value(root: Any, path: tuple[Any, ...]) -> Any:
-    current = root
-    for part in path:
-        current = current[part]
-    return current
-
-
-def _replace_path(root: Any, path: tuple[Any, ...], value: Any) -> None:
-    if not path:
-        raise ValueError("root_replacement_not_supported")
-    parent = _path_value(root, path[:-1])
-    parent[path[-1]] = value
-
-
-def _shrink_once(value: dict[str, Any]) -> bool:
-    candidates = sorted(_reduction_candidates(value), key=lambda item: (item[0], item[1], len(item[2])))
-    if not candidates:
-        return False
-    _priority, _size, path, kind = candidates[0]
-    current = _path_value(value, path)
-    if kind == "list":
-        keep = max(1, len(current) // 2)
-        # Conversation history is most useful from the newest end. Evidence
-        # lists preserve their first, highest-priority entries.
-        replacement = current[-keep:] if "conversation_context" in path else current[:keep]
-    else:
-        # Keep making progress even after an earlier reduction added the
-        # ellipsis. A minimum of 40 characters is enough for the final compact
-        # form and avoids the 83 -> 83 loop.
-        keep = max(40, min(len(current) - 4, len(current) // 2))
-        replacement = current[:keep].rstrip() + "..."
-    _replace_path(value, path, replacement)
-    return True
-
-
 def bounded_context_json(context: Mapping[str, Any], *, max_chars: int = MAX_CONTEXT_CHARS) -> str:
     """Serialize context as valid JSON within the hard character budget.
 
@@ -883,40 +810,25 @@ def bounded_context_json(context: Mapping[str, Any], *, max_chars: int = MAX_CON
     context and user text.
     """
 
-    safe_limit = max(1000, min(int(max_chars or MAX_CONTEXT_CHARS), MAX_CONTEXT_CHARS))
-    source = dict(context) if isinstance(context, Mapping) else {}
-    payload = _json_safe({"schema_version": PROMPT_CONTEXT_V2, **source})
-    serialized = _canonical_json(payload)
-    reductions = 0
-    while len(serialized) > safe_limit and reductions < 1000 and _shrink_once(payload):
-        reductions += 1
-        serialized = _canonical_json(payload)
-    if len(serialized) <= safe_limit:
-        return serialized
-    fallback = {
-        "schema_version": PROMPT_CONTEXT_V2,
-        "context_omitted": True,
-        "reason": "context_budget_exceeded",
-    }
-    return _canonical_json(fallback)
+    return _context_serialization.bounded_context_json(
+        context,
+        max_chars=max_chars,
+        hard_max_chars=MAX_CONTEXT_CHARS,
+        schema_version=PROMPT_CONTEXT_V2,
+    )
 
 
 def _bounded_evidence_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
-    candidate = copy.deepcopy(envelope)
-    serialized = bounded_context_json(candidate, max_chars=MAX_EVIDENCE_CONTEXT_CHARS)
-    decoded = json.loads(serialized)
-    decoded.pop("schema_version", None)
-    # bounded_context_json injects the prompt-context schema. Restore the
-    # evidence schema after the structured reduction.
-    result = {"schema_version": EVIDENCE_ENVELOPE_V2, **decoded}
-    facts = list(result.get("facts") or result.get("verified_facts") or [])
-    gaps = list(result.get("gaps") or result.get("missing") or [])
-    result["facts"] = facts
-    result["sources"] = list(result.get("sources") or [])
-    result["gaps"] = gaps
-    result["verified_facts"] = facts
-    result["missing"] = gaps
-    return result
+    return _context_serialization.bounded_evidence_envelope(
+        envelope,
+        evidence_schema_version=EVIDENCE_ENVELOPE_V2,
+        prompt_context_schema_version=PROMPT_CONTEXT_V2,
+        max_chars=MAX_EVIDENCE_CONTEXT_CHARS,
+        hard_max_chars=MAX_CONTEXT_CHARS,
+    )
+
+
+_json_safe = _context_serialization.json_safe
 
 
 __all__ = [

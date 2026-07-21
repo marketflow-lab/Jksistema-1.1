@@ -57,4 +57,3 @@ def test_builder_creates_100_real_and_20_synthetic_staging_cases(monkeypatch, tm
     assert sum(row["split"] == "calibration" for row in rows) == 90
     assert sum(row["split"] == "holdout" for row in rows) == 30
     assert all(row["review"]["status"] == "pending" for row in rows)
-
