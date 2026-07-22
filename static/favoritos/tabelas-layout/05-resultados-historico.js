@@ -2470,24 +2470,3 @@
             atualizarStatusRankingFavoritosReordenado(skuSelecionado);
             return true;
         }
-
-        function moverAnuncioRankingFavoritosParaReferencia(sku, anuncioOrigem, anuncioDestino, colocarDepois, opcoes = {}) {
-            const skuSelecionado = String(sku || favMlSkuSelecionado || '').trim();
-            if (!skuSelecionado || !anuncioOrigem || !anuncioDestino) return false;
-            const chavesOrigem = new Set(chavesRemocaoAnuncioRankingFavoritos(anuncioOrigem));
-            const chavesDestino = new Set(chavesRemocaoAnuncioRankingFavoritos(anuncioDestino));
-            if (!chavesOrigem.size || !chavesDestino.size) return false;
-
-            const resultado = aplicarMutacaoGrupoRankingFavoritos(skuSelecionado, grupo => (
-                moverAnuncioParaReferenciaEmGrupoRankingFavoritos(
-                    grupo,
-                    chavesOrigem,
-                    chavesDestino,
-                    colocarDepois === true
-                )
-            ), opcoes);
-            if (!resultado.mudou) return false;
-            renderizarMutacaoRankingFavoritos(skuSelecionado);
-            atualizarStatusRankingFavoritosReordenado(skuSelecionado);
-            return true;
-        }

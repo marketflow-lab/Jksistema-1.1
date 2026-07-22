@@ -8,6 +8,7 @@ import csv
 import datetime as dt
 import hashlib
 import io
+import ipaddress
 import json
 import math
 import os
@@ -212,6 +213,116 @@ def _ia_web_normalizar_result_url(url: str) -> str:
     except Exception:
         pass
     return url_txt
+
+
+def _ia_web_url_publica_segura(url: str) -> bool:
+    url_limpa = _ia_web_normalizar_result_url(url)
+    try:
+        parsed = urlparse(url_limpa)
+    except Exception:
+        return False
+    host = str(parsed.hostname or "").strip().lower().rstrip(".")
+    if parsed.scheme not in {"http", "https"} or not host:
+        return False
+    if parsed.username or parsed.password:
+        return False
+    if host in {"localhost", "localhost.localdomain"} or host.endswith(
+        (".local", ".internal", ".home.arpa", ".onion")
+    ):
+        return False
+    try:
+        endereco = ipaddress.ip_address(host)
+    except ValueError:
+        endereco = None
+    if endereco is not None and not endereco.is_global:
+        return False
+    caminho = str(parsed.path or "").lower()
+    extensoes_bloqueadas = (
+        ".7z", ".apk", ".bat", ".bin", ".cmd", ".com", ".dmg", ".exe",
+        ".img", ".iso", ".jar", ".js", ".msi", ".ps1", ".rar", ".scr",
+        ".sh", ".tar", ".tgz", ".vbs", ".xlsm", ".zip",
+    )
+    return not caminho.endswith(extensoes_bloqueadas)
+
+
+def _ia_web_autoridade_fonte_publica(url: str, title: str = "", snippet: str = "") -> str:
+    try:
+        parsed = urlparse(str(url or ""))
+        host = str(parsed.hostname or "").lower().removeprefix("www.")
+    except Exception:
+        host = ""
+    texto = re.sub(r"\s+", " ", f"{title} {snippet}").lower()
+    if any(
+        dominio in host
+        for dominio in ("mercadolivre.", "mercadolibre.", "amazon.", "shopee.", "aliexpress.", "magazineluiza.")
+    ):
+        return "marketplace_hint"
+    if host.endswith((".gov", ".edu")) or ".gov." in host or ".edu." in host:
+        return "official_document"
+    if any(
+        marcador in host
+        for marcador in ("forum.", "forums.", "reddit.", "quora.", "facebook.", "youtube.")
+    ):
+        return "community_reference"
+    if any(marcador in texto for marcador in ("forum", "comunidade", "community discussion")):
+        return "community_reference"
+    if any(marcador in texto for marcador in ("catalogo", "catálogo", "catalog", "distribuidor", "distributor")):
+        return "technical_catalog"
+    return "public_web_reference"
+
+
+def _ia_web_mesclar_resultados_provedores(
+    respostas: list[dict],
+    *,
+    max_results: int,
+) -> list[dict]:
+    limite = max(1, min(int(max_results or 1), 20))
+    grupos: list[list[dict]] = []
+    for resposta in respostas:
+        if not isinstance(resposta, dict):
+            continue
+        provider_resposta = str(resposta.get("provider") or "").strip()
+        grupo: list[dict] = []
+        for item in resposta.get("resultados") or []:
+            if not isinstance(item, dict):
+                continue
+            url = _ia_web_normalizar_result_url(item.get("url") or item.get("link") or "")
+            if not _ia_web_url_publica_segura(url):
+                continue
+            title = str(item.get("titulo") or item.get("title") or "").strip()[:180]
+            snippet = str(item.get("trecho") or item.get("snippet") or "").strip()[:500]
+            host = str(urlparse(url).hostname or "").lower().removeprefix("www.")
+            grupo.append({
+                "title": title,
+                "url": url[:600],
+                "snippet": snippet,
+                "provider": str(item.get("provider") or provider_resposta).strip(),
+                "domain": host[:240],
+                "authority": _ia_web_autoridade_fonte_publica(url, title, snippet),
+            })
+        if grupo:
+            grupos.append(grupo)
+
+    saida: list[dict] = []
+    urls_vistas: set[str] = set()
+    dominios_contagem: dict[str, int] = {}
+    maior_grupo = max((len(grupo) for grupo in grupos), default=0)
+    for posicao in range(maior_grupo):
+        for grupo in grupos:
+            if posicao >= len(grupo):
+                continue
+            item = grupo[posicao]
+            parsed = urlparse(item["url"])
+            chave_url = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{parsed.path.rstrip('/')}"
+            dominio = str(item.get("domain") or "")
+            if not chave_url or chave_url in urls_vistas or dominios_contagem.get(dominio, 0) >= 2:
+                continue
+            urls_vistas.add(chave_url)
+            dominios_contagem[dominio] = dominios_contagem.get(dominio, 0) + 1
+            saida.append(item)
+            if len(saida) >= limite:
+                return saida
+    return saida
 
 
 def _ia_web_extrair_resultados_jina_duckduckgo(texto_md: str, max_results: int = 5) -> list[dict]:
@@ -430,6 +541,107 @@ def _ia_web_buscar(query: str, max_results: int = 5, *, fast: bool = False) -> l
     except Exception as exc:
         logger.warning(f"[IA WEB] Falha na busca web jina: {type(exc).__name__}: {exc}")
         return []
+
+
+def _ia_web_buscar_amplo(query: str, max_results: int = 8, *, fast: bool = True) -> list[dict]:
+    """Mescla indices publicos independentes sem alterar a busca padrao do app."""
+    if not _ia_web_busca_ativa():
+        return []
+    consulta = re.sub(r"\s+", " ", str(query or "").strip())
+    if not consulta:
+        return []
+    listar_provedores = globals().get("_favoritos_busca_externa_provedores_configurados")
+    chamar_provedor = globals().get("_favoritos_busca_externa_chamar_api")
+    if not callable(listar_provedores) or not callable(chamar_provedor):
+        return _ia_web_buscar(consulta, max_results=max_results, fast=fast)
+    try:
+        limite_provedores = int(os.getenv("IA_WEB_BROAD_PROVIDER_LIMIT", "4") or "4")
+    except (TypeError, ValueError):
+        limite_provedores = 4
+    limite_provedores = max(1, min(limite_provedores, 4))
+    provedores = list(listar_provedores(incluir_fallback_publico=True) or [])[:limite_provedores]
+    if not provedores:
+        provedores = ["duckduckgo_html"]
+    timeout_s = 4 if fast else 12
+    por_provedor = max(3, min(int(max_results or 8), 8))
+    respostas: list[dict] = []
+    with ThreadPoolExecutor(
+        max_workers=min(4, len(provedores)),
+        thread_name_prefix="ia-web-publica",
+    ) as executor:
+        futuros = {
+            executor.submit(
+                chamar_provedor,
+                consulta,
+                max_results=por_provedor,
+                timeout_s=timeout_s,
+                provider=provider,
+            ): provider
+            for provider in provedores
+        }
+        for futuro, provider in futuros.items():
+            try:
+                resposta = futuro.result()
+            except Exception as exc:
+                if logger is not None:
+                    logger.warning(
+                        "[IA WEB] Provedor publico indisponivel provider=%s erro=%s",
+                        provider,
+                        type(exc).__name__,
+                    )
+                continue
+            if isinstance(resposta, dict):
+                respostas.append(resposta)
+    resultados = _ia_web_mesclar_resultados_provedores(respostas, max_results=max_results)
+    if resultados:
+        return resultados
+    # Mantem os fallbacks HTML, Lite e Jina quando todos os indices falham.
+    fallback = _ia_web_buscar(consulta, max_results=max_results, fast=fast)
+    return _ia_web_mesclar_resultados_provedores(
+        [{"provider": "fallback_publico", "resultados": fallback}],
+        max_results=max_results,
+    )
+
+
+def _ia_web_buscar_amplo_cached(
+    query: str,
+    client_id: Optional[str] = None,
+    max_results: int = 8,
+    *,
+    fast: bool = True,
+) -> list[dict]:
+    limite = max(1, min(int(max_results or 8), 20))
+    if not client_id:
+        return _ia_web_buscar_amplo(query, max_results=limite, fast=fast)
+    tipo = f"web_publica_ampla_v1_{limite}"
+    chave = _ia_web_cache_key(query, tipo=tipo)
+    with IA_WEB_CACHE_LOCK:
+        cache = _ia_web_ler_cache(client_id)
+        consultas = cache.setdefault("consultas", {})
+        item = consultas.get(chave)
+        if item and _ia_web_cache_valido(item):
+            resultados = item.get("resultados")
+            if isinstance(resultados, list) and resultados:
+                return resultados
+        if item:
+            consultas.pop(chave, None)
+            _ia_web_salvar_cache(client_id, cache)
+
+    resultados = _ia_web_buscar_amplo(query, max_results=limite, fast=fast)
+    with IA_WEB_CACHE_LOCK:
+        cache = _ia_web_ler_cache(client_id)
+        consultas = cache.setdefault("consultas", {})
+        if resultados:
+            consultas[chave] = {
+                "query": str(query or "").strip(),
+                "tipo": tipo,
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "resultados": resultados,
+            }
+        else:
+            consultas.pop(chave, None)
+        _ia_web_salvar_cache(client_id, cache)
+    return resultados
 
 
 def _ia_web_buscar_cached(

@@ -986,14 +986,42 @@ def _favoritos_busca_externa_normalizar_resultados(resultados: list[dict], provi
     }
 
 
-def _favoritos_busca_externa_chamar_api(query: str, max_results: int = 4, timeout_s: float = 18) -> dict:
+def _favoritos_busca_externa_provedores_configurados(*, incluir_fallback_publico: bool = True) -> list[str]:
+    provedores: list[str] = []
+    if os.getenv("TAVILY_API_KEY", "").strip():
+        provedores.append("tavily")
+    if os.getenv("BRAVE_SEARCH_API_KEY", "").strip():
+        provedores.append("brave")
+    if os.getenv("SERPAPI_KEY", "").strip():
+        provedores.append("serpapi")
+    if incluir_fallback_publico:
+        provedores.append("duckduckgo_html")
+    return provedores
+
+
+def _favoritos_busca_externa_chamar_api(
+    query: str,
+    max_results: int = 4,
+    timeout_s: float = 18,
+    *,
+    provider: str = "",
+) -> dict:
     query = re.sub(r"\s+", " ", str(query or "").strip())
     if not query:
         return _favoritos_busca_externa_normalizar_resultados([], "none", query, max_results)
     timeout_s = max(2.0, min(float(timeout_s or 18), 30.0))
 
+    provider_normalizado = str(provider or "").strip().lower()
+    provedores = _favoritos_busca_externa_provedores_configurados(incluir_fallback_publico=True)
+    if not provider_normalizado:
+        provider_normalizado = provedores[0] if provedores else "duckduckgo_html"
+    if provider_normalizado not in {"tavily", "brave", "serpapi", "duckduckgo_html"}:
+        raise ValueError("Provedor de busca externa nao permitido.")
+
     tavily_key = os.getenv("TAVILY_API_KEY", "").strip()
-    if tavily_key:
+    if provider_normalizado == "tavily":
+        if not tavily_key:
+            return _favoritos_busca_externa_normalizar_resultados([], "tavily", query, max_results)
         resp = requests.post(
             "https://api.tavily.com/search",
             headers={"Content-Type": "application/json"},
@@ -1012,7 +1040,9 @@ def _favoritos_busca_externa_chamar_api(query: str, max_results: int = 4, timeou
         return _favoritos_busca_externa_normalizar_resultados(data.get("results") or [], "tavily", query, max_results)
 
     brave_key = os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
-    if brave_key:
+    if provider_normalizado == "brave":
+        if not brave_key:
+            return _favoritos_busca_externa_normalizar_resultados([], "brave", query, max_results)
         resp = requests.get(
             "https://api.search.brave.com/res/v1/web/search",
             headers={"Accept": "application/json", "X-Subscription-Token": brave_key},
@@ -1030,7 +1060,9 @@ def _favoritos_busca_externa_chamar_api(query: str, max_results: int = 4, timeou
         )
 
     serpapi_key = os.getenv("SERPAPI_KEY", "").strip()
-    if serpapi_key:
+    if provider_normalizado == "serpapi":
+        if not serpapi_key:
+            return _favoritos_busca_externa_normalizar_resultados([], "serpapi", query, max_results)
         resp = requests.get(
             "https://serpapi.com/search.json",
             params={"engine": "google", "q": query, "hl": "pt-br", "gl": "br", "num": max_results, "api_key": serpapi_key},
@@ -1613,7 +1645,7 @@ def _favoritos_ml_preco_ranking_simulado(req: FavoritosEfetivarPromocaoRequest) 
             return estimado
     return None
 
-PEER_EXPORTS = ['_favoritos_normalizar_texto_pesquisa', '_favoritos_codigo_compacto', '_favoritos_extrair_codigos_pesquisa', '_favoritos_codigo_pesquisa_2', '_favoritos_texto_contem_codigo', '_favoritos_normalizar_sem_acentos', '_favoritos_veiculo_marcas', '_favoritos_extrair_marca_global', '_favoritos_limpar_modelo_veiculo', '_favoritos_extrair_aplicacoes_veiculares', '_favoritos_aplicacao_texto', '_favoritos_pesquisa_tem_aplicacao', '_favoritos_garantir_aplicacao_pesquisa', '_favoritos_gerar_pesquisa_heuristica', '_favoritos_ia_texto_resposta', '_favoritos_ia_gemini_pesquisa_texto', '_favoritos_ia_vertex_pesquisa_texto', '_favoritos_ia_pesquisa_texto', '_favoritos_ia_extrair_json', '_favoritos_parse_resultado_ia', '_favoritos_limpar_resposta_campo_ia', '_favoritos_prompt_campo_pesquisa', '_favoritos_gerar_campo_pesquisa_ia', '_favoritos_ranking_anuncio_id', '_favoritos_ranking_descricao_anuncio', '_favoritos_ranking_buscar_descricao_publica', '_favoritos_ranking_completar_descricoes', 'FAVORITOS_RANKING_DECISOES_LOCK', 'FAVORITOS_RANKING_DECISAO_VERSAO', '_favoritos_ranking_decisoes_cache_path', '_favoritos_ranking_ler_decisoes_cache', '_favoritos_ranking_texto_norm', '_favoritos_ranking_codigo_norm', '_favoritos_ranking_extrair_codigos', '_favoritos_ranking_extrair_anos', 'FAVORITOS_RANKING_MARCAS', 'FAVORITOS_RANKING_MODELOS', 'FAVORITOS_RANKING_PECAS', '_favoritos_ranking_extrair_campos_tecnicos', '_favoritos_ranking_assinatura_decisao', '_favoritos_ranking_decisao_cache_valida', '_favoritos_ranking_preavaliar', 'FAVORITOS_BUSCA_CACHE_LOCK', '_favoritos_busca_externa_limpar_texto', '_favoritos_busca_externa_cache_path', '_favoritos_busca_externa_ler_cache', '_favoritos_busca_externa_cache_key', '_favoritos_busca_externa_cache_valido', '_favoritos_busca_externa_normalizar_resultados', '_favoritos_busca_externa_chamar_api', '_favoritos_busca_externa_cached', '_favoritos_busca_externa_extrair_codigos', '_favoritos_busca_externa_query', '_favoritos_ranking_contexto_busca_externa', '_favoritos_ranking_json_obj', '_favoritos_ranking_lista_ids', '_favoritos_ranking_chamar_ia_json', '_favoritos_ranking_filtrar_com_ia', 'ML_FAVORITOS_STATUS_SKUS', '_favoritos_ml_preco_ranking_simulado']
+PEER_EXPORTS = ['_favoritos_normalizar_texto_pesquisa', '_favoritos_codigo_compacto', '_favoritos_extrair_codigos_pesquisa', '_favoritos_codigo_pesquisa_2', '_favoritos_texto_contem_codigo', '_favoritos_normalizar_sem_acentos', '_favoritos_veiculo_marcas', '_favoritos_extrair_marca_global', '_favoritos_limpar_modelo_veiculo', '_favoritos_extrair_aplicacoes_veiculares', '_favoritos_aplicacao_texto', '_favoritos_pesquisa_tem_aplicacao', '_favoritos_garantir_aplicacao_pesquisa', '_favoritos_gerar_pesquisa_heuristica', '_favoritos_ia_texto_resposta', '_favoritos_ia_gemini_pesquisa_texto', '_favoritos_ia_vertex_pesquisa_texto', '_favoritos_ia_pesquisa_texto', '_favoritos_ia_extrair_json', '_favoritos_parse_resultado_ia', '_favoritos_limpar_resposta_campo_ia', '_favoritos_prompt_campo_pesquisa', '_favoritos_gerar_campo_pesquisa_ia', '_favoritos_ranking_anuncio_id', '_favoritos_ranking_descricao_anuncio', '_favoritos_ranking_buscar_descricao_publica', '_favoritos_ranking_completar_descricoes', 'FAVORITOS_RANKING_DECISOES_LOCK', 'FAVORITOS_RANKING_DECISAO_VERSAO', '_favoritos_ranking_decisoes_cache_path', '_favoritos_ranking_ler_decisoes_cache', '_favoritos_ranking_texto_norm', '_favoritos_ranking_codigo_norm', '_favoritos_ranking_extrair_codigos', '_favoritos_ranking_extrair_anos', 'FAVORITOS_RANKING_MARCAS', 'FAVORITOS_RANKING_MODELOS', 'FAVORITOS_RANKING_PECAS', '_favoritos_ranking_extrair_campos_tecnicos', '_favoritos_ranking_assinatura_decisao', '_favoritos_ranking_decisao_cache_valida', '_favoritos_ranking_preavaliar', 'FAVORITOS_BUSCA_CACHE_LOCK', '_favoritos_busca_externa_limpar_texto', '_favoritos_busca_externa_cache_path', '_favoritos_busca_externa_ler_cache', '_favoritos_busca_externa_cache_key', '_favoritos_busca_externa_cache_valido', '_favoritos_busca_externa_normalizar_resultados', '_favoritos_busca_externa_provedores_configurados', '_favoritos_busca_externa_chamar_api', '_favoritos_busca_externa_cached', '_favoritos_busca_externa_extrair_codigos', '_favoritos_busca_externa_query', '_favoritos_ranking_contexto_busca_externa', '_favoritos_ranking_json_obj', '_favoritos_ranking_lista_ids', '_favoritos_ranking_chamar_ia_json', '_favoritos_ranking_filtrar_com_ia', 'ML_FAVORITOS_STATUS_SKUS', '_favoritos_ml_preco_ranking_simulado']
 __all__ = PEER_EXPORTS + ["configure_favoritos_ranking_ia_runtime"]
 
 configure_favoritos_ranking_ia_runtime()

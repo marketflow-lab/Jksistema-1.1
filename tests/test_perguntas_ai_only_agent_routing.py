@@ -28,7 +28,7 @@ def _classification(*, category: str, compatibility: dict, web: bool = False) ->
     }
 
 
-def test_product_feature_text_is_not_promoted_to_compatibility_or_web() -> None:
+def test_product_feature_keeps_ai_category_and_can_use_public_web() -> None:
     agent = _agent_module()
     intent = _classification(
         category="product_feature",
@@ -50,13 +50,35 @@ def test_product_feature_text_is_not_promoted_to_compatibility_or_web() -> None:
 
     assert agent._perguntas_ia_categoria_classificada(payload) == "product_feature"
     with patch.object(agent, "_ia_web_busca_ativa", return_value=True, create=True):
-        assert agent._ia_agent_perguntas_precisa_web(payload) is False
-    assert agent._perguntas_ia_allowed_tools_classificadas(payload) == ["get_product_data", "context_hub_search"]
+        assert agent._ia_agent_perguntas_precisa_web(payload) is True
+    assert agent._perguntas_ia_allowed_tools_classificadas(payload) == [
+        "get_product_data",
+        "context_hub_search",
+        "web_search",
+        "web_search_product_identity",
+        "web_search_question_context",
+    ]
     assert agent._perguntas_ia_v2_alvo_compatibilidade(payload) == ""
     assert agent._perguntas_ia_v2_perfil_compatibilidade(payload) == {
         "target_type": "",
         "compatibility_profile": "",
     }
+
+
+def test_price_does_not_use_public_web_even_if_ai_requests_it() -> None:
+    agent = _agent_module()
+    payload = {
+        "intent": _classification(category="price", compatibility={}, web=True),
+        "question": {"id": "Q-PRECO", "text": "Qual o preco?"},
+        "item": {"id": "MLB1", "title": "Produto"},
+    }
+
+    with patch.object(agent, "_ia_web_busca_ativa", return_value=True, create=True):
+        assert agent._ia_agent_perguntas_precisa_web(payload) is False
+    assert agent._perguntas_ia_allowed_tools_classificadas(payload) == [
+        "get_product_data",
+        "context_hub_search",
+    ]
 
 
 def test_compatibility_uses_only_structured_target_profile_focus_and_missing_fields() -> None:

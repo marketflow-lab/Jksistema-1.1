@@ -771,7 +771,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             def raise_for_status():
                 return None
 
-        with patch.object(agent, "_ia_web_buscar_cached", return_value=search_result), patch.object(
+        with patch.object(agent, "_ia_agent_perguntas_buscar_web_publica", return_value=search_result), patch.object(
             agent.requests, "get", return_value=Response()
         ) as source_read:
             context = agent._ia_agent_perguntas_contexto_web("cliente", "Loja", [{
@@ -807,7 +807,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             def raise_for_status():
                 return None
 
-        with patch.object(agent, "_ia_web_buscar_cached", return_value=search_result), patch.object(
+        with patch.object(agent, "_ia_agent_perguntas_buscar_web_publica", return_value=search_result), patch.object(
             agent, "_ia_agent_perguntas_anuncios_ml_autenticado", return_value=[]
         ), patch.object(
             agent, "_ia_agent_perguntas_anuncios_publicos_ml", return_value=[]
@@ -865,7 +865,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 return Response(403)
             return Response(200, "The navigation preparation is suitable for Navigator IV and later.")
 
-        with patch.object(agent, "_ia_web_buscar_cached", return_value=results), patch.object(
+        with patch.object(agent, "_ia_agent_perguntas_buscar_web_publica", return_value=results), patch.object(
             agent.requests, "get", side_effect=source_response
         ) as source_read:
             context = agent._ia_agent_perguntas_contexto_web("cliente", "Loja", [{

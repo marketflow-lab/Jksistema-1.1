@@ -225,7 +225,7 @@ def test_context_hub_reference_rejects_encoded_traversal_and_external_authority(
 def test_web_failure_logs_only_query_hash(monkeypatch, caplog):
     agent = _agent_module()
     canary = "PERGUNTA-PRIVADA-CANARY-NAO-LOGAR"
-    monkeypatch.setattr(agent, "_ia_web_buscar_cached", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("falha")))
+    monkeypatch.setattr(agent, "_ia_agent_perguntas_buscar_web_publica", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("falha")))
 
     with caplog.at_level("WARNING"):
         agent._ia_agent_perguntas_contexto_web("000002", "JK Pecas", [{"query": canary, "type": "web"}])
