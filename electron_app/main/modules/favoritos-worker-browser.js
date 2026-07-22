@@ -4,6 +4,7 @@ const FAVORITOS_WORKER_MAX_SCRIPT_LENGTH = 1024 * 1024;
 const FAVORITOS_WORKER_EXECUTE_TIMEOUT_MS = 12000;
 const favoritosWorkerBrowsers = new Map();
 let favoritosWorkersPoolFocusCursor = 0;
+let favoritosWorkerLegacyHandoffToPool = false;
 let favoritosWorkersPoolState = {
     active: false,
     poolId: '',
@@ -188,6 +189,20 @@ function favoritosWorkerCanceledError(workerId = FAVORITOS_WORKER_LEGACY_ID) {
     return error;
 }
 
+function assertFavoritosWorkerLegadoDisponivel(workerId = FAVORITOS_WORKER_LEGACY_ID) {
+    const id = normalizarFavoritosWorkerId(workerId);
+    if (
+        id !== FAVORITOS_WORKER_LEGACY_ID
+        || (!favoritosWorkerLegacyHandoffToPool && !favoritosWorkersPoolState.active)
+    ) return id;
+    const error = new Error('O navegador legado w0 do Favoritos nao pode ser criado enquanto o pool de trabalhadores esta ativo.');
+    error.name = 'ConflictError';
+    error.code = 'FAVORITOS_WORKERS_POOL_ACTIVE';
+    error.workerId = id;
+    error.poolId = favoritosWorkersPoolState.poolId;
+    throw error;
+}
+
 function assertFavoritosWorkerGeneration(record, generation, worker = null) {
     if (!record || generation !== record.generation) throw favoritosWorkerCanceledError(record && record.workerId);
     if (worker && (worker.isDestroyed() || worker.__jkFavoritosWorkerGeneration !== generation)) {
@@ -212,7 +227,8 @@ function atualizarTituloFavoritosWorker(record) {
 }
 
 function ensureFavoritosWorkerBrowser(parent = null, workerId = FAVORITOS_WORKER_LEGACY_ID) {
-    const record = obterRegistroFavoritosWorker(workerId, true);
+    const id = assertFavoritosWorkerLegadoDisponivel(workerId);
+    const record = obterRegistroFavoritosWorker(id, true);
     if (record.window && !record.window.isDestroyed()) return record.window;
 
     if (!record.generation) record.generation = 1;
@@ -338,7 +354,8 @@ async function prepararFavoritosWorkersPool(poolId, url = '') {
 }
 
 async function startFavoritosWorkerBrowser(targetUrl, parent = null, options = {}, workerId = FAVORITOS_WORKER_LEGACY_ID) {
-    const record = obterRegistroFavoritosWorker(workerId, true);
+    const id = assertFavoritosWorkerLegadoDisponivel(workerId);
+    const record = obterRegistroFavoritosWorker(id, true);
     const generation = ++record.generation;
     const url = normalizeTargetUrl(targetUrl || 'https://www.mercadolivre.com.br/');
     const deferInitialNavigation = options.deferInitialNavigation === true;
@@ -658,23 +675,39 @@ async function startFavoritosWorkersPool(payload = {}, parent = null) {
     if (favoritosWorkersPoolState.active) {
         await stopFavoritosWorkersPool({ destroy: true, reason: 'favoritos-pool-restart', message: '' });
     }
-    const poolId = String(payload.poolId || favoritosWorkerPoolIdNovo()).trim();
-    favoritosWorkersPoolFocusCursor = 0;
-    const initialUrl = normalizeTargetUrl(payload.initialUrl || 'https://www.mercadolivre.com.br/');
-    const deferInitialNavigation = payload.deferInitialNavigation === true;
-    assertAllowedFavoritosWorkerUrl(initialUrl);
-    favoritosWorkersPoolState = {
-        active: true,
-        poolId,
-        status: 'running',
-        visible: payload.visible !== false,
-        paused: false,
-        cancelRequested: false,
-        startedAt: Number(payload.startedAt) || Date.now(),
-        finishedAt: 0,
-        message: String(payload.message || 'Pool do Favoritos iniciado.'),
-        preparation: null
-    };
+    let poolId = '';
+    let initialUrl = '';
+    let deferInitialNavigation = false;
+    favoritosWorkerLegacyHandoffToPool = true;
+    try {
+        const legacyRecord = obterRegistroFavoritosWorker(FAVORITOS_WORKER_LEGACY_ID, false);
+        if (legacyRecord && legacyRecord.window && !legacyRecord.window.isDestroyed()) {
+            await stopFavoritosWorkerBrowser({
+                destroy: true,
+                reason: 'favoritos-worker-legacy-handoff-to-pool',
+                message: ''
+            }, FAVORITOS_WORKER_LEGACY_ID);
+        }
+        poolId = String(payload.poolId || favoritosWorkerPoolIdNovo()).trim();
+        favoritosWorkersPoolFocusCursor = 0;
+        initialUrl = normalizeTargetUrl(payload.initialUrl || 'https://www.mercadolivre.com.br/');
+        deferInitialNavigation = payload.deferInitialNavigation === true;
+        assertAllowedFavoritosWorkerUrl(initialUrl);
+        favoritosWorkersPoolState = {
+            active: true,
+            poolId,
+            status: 'running',
+            visible: payload.visible !== false,
+            paused: false,
+            cancelRequested: false,
+            startedAt: Number(payload.startedAt) || Date.now(),
+            finishedAt: 0,
+            message: String(payload.message || 'Pool do Favoritos iniciado.'),
+            preparation: null
+        };
+    } finally {
+        favoritosWorkerLegacyHandoffToPool = false;
+    }
     await prepararFavoritosWorkersPool(poolId, initialUrl);
     const workers = await Promise.all(Array.from({ length: size }, (_item, offset) => {
         const index = offset + 1;

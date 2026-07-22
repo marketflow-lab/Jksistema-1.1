@@ -43,6 +43,17 @@ async function run() {
     'preload real nao expos o contrato do pool',
   );
 
+  const legacyBeforePool = await mainWindow.webContents.executeJavaScript(
+    "window.electronAPI.startFavoritosWorkerBrowser('https://www.mercadolivre.com.br/', 'w0', { show: false, deferInitialNavigation: true })",
+    true,
+  );
+  assert.strictEqual(legacyBeforePool.workerId, 'w0');
+  assert.strictEqual(
+    BrowserWindow.getAllWindows().filter(win => win.getTitle() === 'Favoritos ML - Navegador Trabalhador').length,
+    1,
+    'pre-condicao deve manter exatamente um BrowserWindow legado w0 vivo',
+  );
+
   const initial = await mainWindow.webContents.executeJavaScript(`window.electronAPI.startFavoritosWorkersPool({
     size: 4,
     visible: false,
@@ -51,6 +62,11 @@ async function run() {
   })`, true);
   assert.strictEqual(initial.counts.total, 4);
   assert.strictEqual(initial.counts.active, 4);
+  assert.strictEqual(
+    BrowserWindow.getAllWindows().filter(win => win.getTitle() === 'Favoritos ML - Navegador Trabalhador').length,
+    0,
+    'handoff para o pool deve destruir o BrowserWindow legado w0',
+  );
 
   const workers = BrowserWindow.getAllWindows()
     .filter(win => /^Favoritos ML - Trabalhador [1-4]/.test(win.getTitle()))
@@ -70,6 +86,54 @@ async function run() {
     assert.ok(!worker.url || worker.url === 'about:blank');
   });
 
+  const blockedLegacyCalls = await mainWindow.webContents.executeJavaScript(`(async () => {
+    const capture = async operation => {
+      try {
+        await operation();
+        return { rejected: false, code: '', message: '' };
+      } catch (error) {
+        return {
+          rejected: true,
+          code: String(error && error.code || ''),
+          message: String(error && error.message || error || '')
+        };
+      }
+    };
+    return {
+      execute: await capture(() => window.electronAPI.executeFavoritosWorkerBrowser('true')),
+      start: await capture(() => window.electronAPI.startFavoritosWorkerBrowser(
+        'https://www.mercadolivre.com.br/',
+        'w0',
+        { show: false, deferInitialNavigation: true }
+      ))
+    };
+  })()`, true);
+  for (const [operation, outcome] of Object.entries(blockedLegacyCalls)) {
+    assert.strictEqual(outcome.rejected, true, `${operation} padrao do w0 deve ser rejeitado durante o pool`);
+    assert.match(
+      `${outcome.code} ${outcome.message}`,
+      /FAVORITOS_WORKERS_POOL_ACTIVE|pool de trabalhadores|legado w0/i,
+      `${operation} deve explicar que o w0 foi bloqueado pelo pool`,
+    );
+  }
+  assert.strictEqual(
+    BrowserWindow.getAllWindows().filter(win => win.getTitle() === 'Favoritos ML - Navegador Trabalhador').length,
+    0,
+    'start/execute padrao bloqueados nao podem recriar o BrowserWindow w0',
+  );
+  const legacyMaintenanceDuringPool = await mainWindow.webContents.executeJavaScript(`(async () => ({
+    status: await window.electronAPI.getFavoritosWorkerBrowserStatus(),
+    stopped: await window.electronAPI.stopFavoritosWorkerBrowser({
+      destroy: true,
+      skipSessionSave: true,
+      reason: 'favoritos-w0-maintenance-during-pool'
+    })
+  }))()`, true);
+  assert.strictEqual(legacyMaintenanceDuringPool.status.workerId, 'w0');
+  assert.strictEqual(legacyMaintenanceDuringPool.status.hasWindow, false);
+  assert.strictEqual(legacyMaintenanceDuringPool.stopped.workerId, 'w0');
+  assert.strictEqual(legacyMaintenanceDuringPool.stopped.hasWindow, false);
+
   const paused = await mainWindow.webContents.executeJavaScript('window.electronAPI.pauseFavoritosWorkersPool()', true);
   assert.strictEqual(paused.paused, true);
   assert.strictEqual(paused.counts.paused, 4);
@@ -86,7 +150,42 @@ async function run() {
     BrowserWindow.getAllWindows().filter(win => /^Favoritos ML - Trabalhador [1-4]/.test(win.getTitle())).length,
     0,
   );
-  console.log(`FAVORITOS_WORKERS_POOL_ELECTRON_OK ${JSON.stringify({ workers })}`);
+
+  const legacyAfterPool = await mainWindow.webContents.executeJavaScript(
+    "window.electronAPI.startFavoritosWorkerBrowser('https://www.mercadolivre.com.br/', 'w0', { show: false, deferInitialNavigation: true })",
+    true,
+  );
+  assert.strictEqual(legacyAfterPool.workerId, 'w0', 'apos stopPool, o caminho legado deve voltar a iniciar');
+  const legacyStatusAfterPool = await mainWindow.webContents.executeJavaScript(
+    "window.electronAPI.getFavoritosWorkerBrowserStatus('w0')",
+    true,
+  );
+  assert.strictEqual(legacyStatusAfterPool.active, true);
+  assert.strictEqual(legacyStatusAfterPool.hasWindow, true);
+  const legacyWindowAfterPool = BrowserWindow.getAllWindows().find(
+    win => win.getTitle() === 'Favoritos ML - Navegador Trabalhador',
+  );
+  assert.ok(legacyWindowAfterPool, 'w0 deve existir para a prova real de execucao apos o pool');
+  await legacyWindowAfterPool.webContents.loadURL('about:blank');
+  const legacyExecutionAfterPool = await mainWindow.webContents.executeJavaScript(
+    "window.electronAPI.executeFavoritosWorkerBrowser('({ workerId: \\\"w0\\\", value: 42 })')",
+    true,
+  );
+  assert.deepStrictEqual(
+    legacyExecutionAfterPool,
+    { workerId: 'w0', value: 42 },
+    'apos stopPool, o w0 deve voltar a executar JavaScript no Electron real',
+  );
+  await mainWindow.webContents.executeJavaScript(`window.electronAPI.stopFavoritosWorkerBrowser({
+    destroy: true,
+    reason: 'favoritos-w0-electron-proof'
+  })`, true);
+  assert.strictEqual(
+    BrowserWindow.getAllWindows().filter(win => win.getTitle() === 'Favoritos ML - Navegador Trabalhador').length,
+    0,
+    'limpeza final deve destruir o w0 usado para provar o legado',
+  );
+  console.log(`FAVORITOS_WORKERS_POOL_ELECTRON_OK ${JSON.stringify({ workers, blockedLegacyCalls })}`);
 }
 
 run()

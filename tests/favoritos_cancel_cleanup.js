@@ -162,6 +162,7 @@ async function validarLifecycleWorkerElectron() {
             this.url = 'https://www.mercadolivre.com.br/';
             this.loadCalls = [];
             this.pendingReject = null;
+            this.immediateExecutionResult = undefined;
         }
         isDestroyed() { return this.owner.destroyed; }
         getURL() { return this.url; }
@@ -170,6 +171,9 @@ async function validarLifecycleWorkerElectron() {
         send() {}
         loadURL(url) { this.loadCalls.push(url); this.url = url; return Promise.resolve(); }
         executeJavaScript() {
+            if (this.immediateExecutionResult !== undefined) {
+                return Promise.resolve(this.immediateExecutionResult);
+            }
             return new Promise((_resolve, reject) => { this.pendingReject = reject; });
         }
         rejectPending() {
@@ -208,6 +212,7 @@ async function validarLifecycleWorkerElectron() {
 
     let restoreSession = () => Promise.resolve({ success: true });
     let snapshots = 0;
+    let ensureExtensionsCalls = 0;
     const workerContext = vm.createContext({
         BrowserWindow: FakeBrowserWindow,
         URL,
@@ -230,7 +235,10 @@ async function validarLifecycleWorkerElectron() {
         isIgnorableNavigationAbort: () => false,
         waitForWebContentsLoad: () => Promise.resolve({ loaded: true }),
         waitMs: ms => new Promise(resolve => setTimeout(resolve, Math.min(Number(ms) || 0, 1))),
-        ensureChromeExtensionsForMlSession: () => Promise.resolve([]),
+        ensureChromeExtensionsForMlSession: () => {
+            ensureExtensionsCalls += 1;
+            return Promise.resolve([]);
+        },
         restaurarSessaoAvantProAntesDeAbrirNavegador: (...args) => restoreSession(...args),
         salvarSessaoAvantProAntesDeOcultarNavegador: () => {
             snapshots += 1;
@@ -239,6 +247,7 @@ async function validarLifecycleWorkerElectron() {
     });
     vm.runInContext(workerSource, workerContext, { filename: 'favoritos-worker-browser.js' });
     const start = vm.runInContext('startFavoritosWorkerBrowser', workerContext);
+    const stop = vm.runInContext('stopFavoritosWorkerBrowser', workerContext);
     const execute = vm.runInContext('executeFavoritosWorkerBrowser', workerContext);
     const cancel = vm.runInContext('cancelFavoritosWorkerBrowser', workerContext);
     const status = vm.runInContext('favoritosWorkerBrowserStatus', workerContext);
@@ -279,6 +288,7 @@ async function validarLifecycleWorkerElectron() {
         return Promise.resolve({ success: true });
     };
     const snapshotsAntesPool = snapshots;
+    const workerLegadoAntesPool = windows.at(-1);
     const windowsAntesPool = windows.length;
     const poolIniciado = await startPool({
         size: 4,
@@ -289,6 +299,9 @@ async function validarLifecycleWorkerElectron() {
     assert.strictEqual(poolIniciado.counts.total, 4, 'processo principal deve criar quatro registros no pool');
     assert.strictEqual(poolIniciado.counts.active, 4, 'os quatro trabalhadores devem iniciar ativos');
     assert.strictEqual(restorePoolCalls, 1, 'sessao e extensao devem ser preparadas uma unica vez por pool');
+    assert.strictEqual(workerLegadoAntesPool.destroyed, true, 'inicio do pool deve destruir o navegador legado w0 que ja estava vivo');
+    assert.strictEqual(status().hasWindow, false, 'inicio do pool nao pode manter BrowserWindow do w0');
+    assert.strictEqual(snapshots, snapshotsAntesPool + 1, 'handoff do w0 para o pool deve salvar a sessao exatamente uma vez');
     assert.strictEqual(
         windows.slice(windowsAntesPool).reduce((total, win) => total + win.webContents.loadCalls.length, 0),
         0,
@@ -299,10 +312,48 @@ async function validarLifecycleWorkerElectron() {
         4,
         'pool deve manter quatro janelas visiveis e identificadas'
     );
+    assert.strictEqual(
+        windows.filter(win => !win.destroyed && (win.title || win.options.title || '') === 'Favoritos ML - Navegador Trabalhador').length,
+        0,
+        'pool ativo deve manter zero BrowserWindow legado w0'
+    );
+    const restoresAntesDoBloqueioW0 = restorePoolCalls;
+    const extensionsAntesDoBloqueioW0 = ensureExtensionsCalls;
+    await assert.rejects(
+        () => start('https://www.mercadolivre.com.br/', null, { show: false }),
+        error => error && error.code === 'FAVORITOS_WORKERS_POOL_ACTIVE',
+        'start padrao do w0 deve ser rejeitado enquanto o pool estiver ativo'
+    );
+    await assert.rejects(
+        () => execute('true'),
+        error => error && error.code === 'FAVORITOS_WORKERS_POOL_ACTIVE',
+        'execute padrao do w0 deve ser rejeitado enquanto o pool estiver ativo'
+    );
+    assert.strictEqual(restorePoolCalls, restoresAntesDoBloqueioW0, 'w0 bloqueado deve falhar antes de restaurar a sessao');
+    assert.strictEqual(ensureExtensionsCalls, extensionsAntesDoBloqueioW0, 'w0 bloqueado deve falhar antes de preparar extensoes');
+    assert.strictEqual(
+        windows.filter(win => !win.destroyed && (win.title || win.options.title || '') === 'Favoritos ML - Navegador Trabalhador').length,
+        0,
+        'start/execute bloqueados nao podem criar BrowserWindow w0'
+    );
+    const statusLegadoDurantePool = status();
+    assert.strictEqual(statusLegadoDurantePool.workerId, 'w0', 'status do w0 deve continuar consultavel durante o pool');
+    assert.strictEqual(statusLegadoDurantePool.hasWindow, false);
+    const stopLegadoDurantePool = await stop({ destroy: true, skipSessionSave: true, reason: 'teste-w0-pool-ativo' });
+    assert.strictEqual(stopLegadoDurantePool.workerId, 'w0', 'stop do w0 deve continuar chamavel durante o pool');
+    assert.strictEqual(stopLegadoDurantePool.hasWindow, false);
     assert.throws(() => status('w5'), /Identificador invalido/, 'processo principal deve rejeitar worker fora de w1-w4');
     await stopPool({ status: 'done', destroy: true, reason: 'teste-pool' });
     assert.strictEqual(poolStatus().active, false, 'stop do pool deve finalizar o estado agregado');
-    assert.strictEqual(snapshots, snapshotsAntesPool + 1, 'encerramento do pool deve salvar a sessao uma unica vez');
+    assert.strictEqual(snapshots, snapshotsAntesPool + 2, 'snapshot final do pool deve ser separado do snapshot unico de handoff');
+    const legadoRetomado = await start('https://www.mercadolivre.com.br/', null, {
+        show: false,
+        deferInitialNavigation: true
+    });
+    assert.strictEqual(legadoRetomado.workerId, 'w0', 'apos parar o pool, o worker legado deve voltar a iniciar');
+    windows.at(-1).webContents.immediateExecutionResult = 42;
+    assert.strictEqual(await execute('40 + 2'), 42, 'apos parar o pool, o worker legado deve voltar a executar JavaScript');
+    await cancel({ skipSessionSave: true });
     const poolUm = await startPool({
         size: 1,
         visible: false,

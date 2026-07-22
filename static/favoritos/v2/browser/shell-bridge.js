@@ -46,6 +46,12 @@
     const getBounds = () => call('getBounds', [], null);
     const areUrlsEquivalent = (a, b) => !!call('areUrlsEquivalent', [a, b], false);
     const usarWorkerFavoritos = () => !!window.__JK_FAVORITOS_WORKER_BROWSER_ACTIVE;
+    const usarPoolFavoritos = () => !!window.__JK_FAVORITOS_WORKERS_POOL_ACTIVE;
+    const erroWorkerLegadoBloqueadoPeloPool = () => {
+      const error = new Error('O navegador legado do Favoritos nao pode ser usado enquanto o pool de trabalhadores esta ativo.');
+      error.code = 'FAVORITOS_WORKERS_POOL_ACTIVE';
+      return error;
+    };
     const electronApi = () => {
       try {
         if (window.electronAPI) return window.electronAPI;
@@ -56,6 +62,7 @@
       return null;
     };
     const chamarWorkerDireto = (name, args = []) => {
+      if (usarPoolFavoritos()) return Promise.reject(erroWorkerLegadoBloqueadoPeloPool());
       const controller = browser.workerController;
       if (usarWorkerFavoritos() && controller && typeof controller.invoke === 'function') {
         return controller.invoke(name, args);
@@ -71,6 +78,7 @@
 
     function enviar(channel, payload = {}) {
       if (!usarNavegadorMlNoShellElectron()) return;
+      if (usarPoolFavoritos()) return;
       const payloadFinal = usarWorkerFavoritos()
         ? { ...(payload || {}), worker: true }
         : (payload || {});
@@ -138,6 +146,13 @@
     }
 
     function verificarEstado(urlEsperada = '', timeoutMs = 2600) {
+      if (usarPoolFavoritos()) {
+        return Promise.resolve({
+          success: false,
+          reason: 'favoritos-workers-pool-active',
+          url: ''
+        });
+      }
       if (!usarNavegadorMlNoShellElectron()) {
         return Promise.resolve({
           success: false,
@@ -189,6 +204,7 @@
     }
 
     function criarProxy() {
+      if (usarPoolFavoritos()) return null;
       const atual = getProxy();
       if (atual) return atual;
       const listeners = new Map();
