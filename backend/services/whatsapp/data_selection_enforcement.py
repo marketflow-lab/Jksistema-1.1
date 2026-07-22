@@ -7,10 +7,32 @@ import re
 from typing import Any, Callable, Optional
 
 from backend.services.context_hub_inventory import _slug as _context_hub_slug
+from backend.services.whatsapp import formatting as whatsapp_formatting
 from backend.services.whatsapp import intent as whatsapp_intent
 
 
 _TOOLS_WITHOUT_STORE_BALANCE_SCOPE = frozenset({"stock_data"})
+
+_LIVE_QUESTION_QUEUE_RE = re.compile(
+    r"\b(?:"
+    r"(?:tem|ha|existe|existem|consulte|consultar|verifique|verificar|veja|listar?)\s+"
+    r"(?:alguma?s?\s+)?perguntas?\s+(?:em\s+aberto|abertas?|pendentes?|sem\s+resposta|para\s+responder)"
+    r"|perguntas?\s+(?:em\s+aberto|abertas?|pendentes?|sem\s+resposta|para\s+responder)"
+    r"|(?:tem|ha|existe|existem)\s+(?:alguma?s?\s+)?perguntas?\s*(?:[?.!]|$)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_live_question_queue_request(value: Any) -> bool:
+    text = whatsapp_formatting._whatsapp_text_key(value)
+    if re.search(
+        r"\b(?:voce|black\s*jhon|joao\s+pretinho|assistente)\s+tem\s+"
+        r"(?:alguma?s?\s+)?perguntas?\b",
+        text,
+    ):
+        return False
+    return bool(_LIVE_QUESTION_QUEUE_RE.search(text))
 
 
 def _apply_scope(
@@ -144,6 +166,14 @@ def enforce_plan(
 
     result = dict(plan or {})
     context_request = str(query_policy.get("context_request") or request_text or "").strip()
+    live_question_queue = _is_live_question_queue_request(context_request)
+    if live_question_queue:
+        # A fila atual e uma consulta operacional agregada. SKU/MLB de uma
+        # tarefa ou rodada anterior nunca podem estreitar esse pedido nem
+        # arrastar foto, anuncio ou Context Hub para a conclusao.
+        entities = dict(result.get("entities") or {}) if isinstance(result.get("entities"), dict) else {}
+        entities.update({"sku": "", "mlb": ""})
+        result["entities"] = entities
     allowed = {str(item.get("id") or "") for item in catalog if isinstance(item, dict)}
     exact_store = _apply_scope(result, query_policy)
     calls: list[dict[str, Any]] = []
@@ -204,7 +234,23 @@ def enforce_plan(
     proposed = result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else []
     source_policy = query_policy.get("source_policy") if isinstance(query_policy.get("source_policy"), dict) else {}
     positive_stock_sku_count = source_policy.get("positive_stock_sku_count_requested") is True
-    if positive_stock_sku_count:
+    if live_question_queue and action != "mutation_candidate":
+        result["sku"] = ""
+        result["item_id"] = ""
+        action = "collect"
+        result["action"] = action
+        proposed = []
+        add_call(
+            "questions_post_sale_query",
+            {
+                "status": "UNANSWERED",
+                "todas_lojas": str(query_policy.get("store_mode") or "") == "all",
+                "force_refresh": True,
+            },
+            True,
+            "fila viva de perguntas em aberto",
+        )
+    elif positive_stock_sku_count:
         # Esta consulta e agregada sobre o catalogo; um falso SKU extraido de
         # "SKUs" nao pode transforma-la em saldo de um produto individual.
         result["sku"] = ""
@@ -238,7 +284,10 @@ def enforce_plan(
             if accepted_index is not None:
                 accepted[raw_index] = accepted_index
 
-    hub_mode, hub_plan = _hub_call(result, add_call, query_policy)
+    if live_question_queue:
+        hub_mode, hub_plan = "not_applicable", {}
+    else:
+        hub_mode, hub_plan = _hub_call(result, add_call, query_policy)
     result.update({"tool_calls": calls, "requires_web": False, "requires_sol": False})
     hub_planned = any(str(item.get("tool_id") or "") == "context_hub_search" for item in calls)
     result["missing_user_fields"] = [
@@ -252,6 +301,7 @@ def enforce_plan(
         "context_hub_reason": str(hub_plan.get("reason") or "agent_selection" if hub_planned else "")[:300],
         "context_hub_allowed": hub_allowed,
         "positive_stock_sku_count": positive_stock_sku_count,
+        "live_question_queue": live_question_queue,
     }
     if action == "collect" and not calls:
         raise RuntimeError("data_selection_collect_without_authorized_source")

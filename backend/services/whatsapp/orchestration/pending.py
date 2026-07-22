@@ -70,6 +70,14 @@ WHATSAPP_MAX_OUTBOUND_IMAGES = whatsapp_media.WHATSAPP_MAX_OUTBOUND_IMAGES
 WHATSAPP_PART_BODY_CHARS = whatsapp_formatting.WHATSAPP_PART_BODY_CHARS
 WHATSAPP_MAX_PARTS = whatsapp_formatting.WHATSAPP_MAX_PARTS
 
+_TERMINAL_DELIVERY_LEASE_SECONDS = 120.0
+_ACCEPTED_TERMINAL_DELIVERY_STATES = frozenset({"sent", "queued", "duplicate", "waiting_free_window"})
+_TERMINAL_DELIVERY_LOCK = threading.RLock()
+
+
+def _terminal_delivery_lock() -> threading.RLock:
+    return globals().get("BRIDGE_STATE_LOCK", _TERMINAL_DELIVERY_LOCK)
+
 
 def _job_deadline_seconds(request_text: Any, *, requires_web: bool = False) -> int:
     # Compatibilidade para consumidores antigos: zero significa sem prazo
@@ -320,36 +328,94 @@ def _terminate_pending_partial(
     *,
     reason: str,
 ) -> bool:
-    if pending.get("terminal_delivery_started"):
-        return False
-    pending.update(
-        {
-            "job_state": "partial",
-            "terminal_reason": str(reason or "limite_operacional")[:1000],
-            "terminal_delivery_started": True,
-            "delivery_state": "partial_finalizing",
-        }
-    )
-    _save_pending(state, message_id, pending)
+    terminal_reason = str(reason or "limite_operacional")[:1000]
+    now_epoch = time.time()
+    attempt_id = ""
+    already_delivered = False
+    with _terminal_delivery_lock():
+        has_pending_registry = isinstance(state.get("pending_messages"), dict)
+        pending_messages = state.get("pending_messages") if has_pending_registry else {}
+        stored = pending_messages.get(message_id)
+        if has_pending_registry and not isinstance(stored, dict):
+            return True
+        current = stored if isinstance(stored, dict) else pending
+        pending.update(current)
+        delivery_state = str(current.get("delivery_state") or "").strip().lower()
+        already_delivered = delivery_state in _ACCEPTED_TERMINAL_DELIVERY_STATES
+        if not already_delivered and current.get("terminal_delivery_started") is True:
+            try:
+                started_at = float(current.get("terminal_delivery_started_at_epoch") or 0)
+            except (TypeError, ValueError):
+                started_at = 0
+            if started_at > 0 and now_epoch - started_at < _TERMINAL_DELIVERY_LEASE_SECONDS:
+                pending.update(current)
+                return False
+        if not already_delivered:
+            attempt_id = str(uuid.uuid4())
+            terminal_update = {
+                "job_state": "partial",
+                "terminal_reason": terminal_reason,
+                "terminal_delivery_started": True,
+                "terminal_delivery_started_at_epoch": now_epoch,
+                "terminal_delivery_attempt_id": attempt_id,
+                "delivery_state": "partial_finalizing",
+            }
+            if str(current.get("kind") or "") == "dual_function_manager":
+                terminal_update["manager_revision"] = max(0, int(current.get("manager_revision") or 0)) + 1
+            current.update(terminal_update)
+            pending.update(current)
+            _save_pending(state, message_id, current)
+
     text = _pending_partial_text(pending, reason)
-    result = _post_proactive(
-        config,
-        {
-            "subject_id": str(pending.get("subject_id") or ""),
-            "fingerprint": f"job:{pending.get('job_group_id') or message_id}:partial-terminal",
-            "event_type": "task_partial",
-            "severity": "medium",
-            "text": text,
-        },
-    )
-    delivery = str(result.get("status") or "") if isinstance(result, dict) else ""
-    delivery_event_type = str(result.get("delivery_event_type") or "task_partial") if isinstance(result, dict) else "task_partial"
-    if delivery not in {"sent", "queued", "duplicate", "waiting_free_window"}:
-        pending["terminal_delivery_started"] = False
-        pending["delivery_state"] = f"partial_delivery_{delivery or 'failed'}"
-        _save_pending(state, message_id, pending)
-        return False
-    pending["partial_delivery_event_type"] = delivery_event_type
+    delivery = str(pending.get("delivery_state") or "").strip().lower() if already_delivered else ""
+    delivery_event_type = str(pending.get("partial_delivery_event_type") or "task_partial")
+    if not already_delivered:
+        result = _post_proactive(
+            config,
+            {
+                "subject_id": str(pending.get("subject_id") or ""),
+                "fingerprint": f"job:{pending.get('job_group_id') or message_id}:partial-terminal",
+                "event_type": "task_partial",
+                "severity": "medium",
+                "text": text,
+            },
+        )
+        delivery = str(result.get("status") or "") if isinstance(result, dict) else ""
+        delivery_event_type = str(result.get("delivery_event_type") or "task_partial") if isinstance(result, dict) else "task_partial"
+        with _terminal_delivery_lock():
+            has_pending_registry = isinstance(state.get("pending_messages"), dict)
+            pending_messages = state.get("pending_messages") if has_pending_registry else {}
+            stored = pending_messages.get(message_id)
+            if has_pending_registry and not isinstance(stored, dict):
+                return True
+            current = stored if isinstance(stored, dict) else pending
+            current_attempt = str(current.get("terminal_delivery_attempt_id") or "")
+            if current_attempt and current_attempt != attempt_id:
+                pending.update(current)
+                return False
+            if delivery not in _ACCEPTED_TERMINAL_DELIVERY_STATES:
+                current.update(
+                    {
+                        "terminal_delivery_started": False,
+                        "terminal_delivery_started_at_epoch": 0,
+                        "delivery_state": f"partial_delivery_{delivery or 'failed'}",
+                    }
+                )
+                pending.update(current)
+                _save_pending(state, message_id, current)
+                return False
+            current.update(
+                {
+                    "job_state": "partial",
+                    "terminal_reason": terminal_reason,
+                    "delivery_state": delivery,
+                    "partial_delivery_event_type": delivery_event_type,
+                    "terminal_delivery_completed_at_epoch": time.time(),
+                }
+            )
+            pending.update(current)
+            _save_pending(state, message_id, current)
+
     _update_pending_codex_tasks(
         pending,
         handoff_status="partial_terminal",
@@ -357,7 +423,7 @@ def _terminate_pending_partial(
         user_facing_response=text[:12000],
     )
     _record_message_timing(message_id, completed_at=_now(), sent_at=_now(), terminal_status="partial")
-    _remove_pending(state, message_id, status="partial", reason=reason)
+    _remove_pending(state, message_id, status="partial", reason=terminal_reason)
     return True
 
 def _ensure_pending_approval(pending: dict[str, Any], *, renew: bool = False) -> tuple[str, float]:

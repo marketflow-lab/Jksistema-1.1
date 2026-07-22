@@ -18,7 +18,7 @@ from typing import Any, Optional
 from backend.services.runtime_bridge import bind_runtime_globals
 
 
-READONLY_SOURCES_VERSION = "20260718-readonly-sources-v4-ml-post-sale"
+READONLY_SOURCES_VERSION = "20260722-readonly-sources-v5-strict-question-scope"
 MAX_DISCOVERY_FILES = int(os.getenv("JK_CODEX_READONLY_MAX_DISCOVERY_FILES") or "1200")
 MAX_TEXT_BYTES = int(os.getenv("JK_CODEX_READONLY_MAX_TEXT_BYTES") or str(512 * 1024))
 DEFAULT_LIMIT = 50
@@ -144,6 +144,23 @@ def _norm(value: Any) -> str:
     text = unicodedata.normalize("NFKD", text)
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", text)).strip()
+
+
+def _safe_bool(value: Any, default: bool = False) -> bool:
+    """Parse external boolean arguments without treating ``"false"`` as true."""
+
+    if isinstance(value, bool):
+        return value
+    if value is None or value == "":
+        return bool(default)
+    if isinstance(value, (int, float)):
+        return value != 0
+    normalized = _norm(value)
+    if normalized in {"1", "true", "sim", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "nao", "no", "off"}:
+        return False
+    return bool(default)
 
 
 def _is_inside(path: Path, root: Path) -> bool:
@@ -797,7 +814,7 @@ def _question_requested_stores(
     store_text = str(loja or "").strip()
     store_key = _norm(store_text)
     message_key = _norm(message)
-    all_requested = bool(all_stores) or bool(QUESTION_ALL_STORES_RE.search(message_key)) or store_key in {
+    all_requested = _safe_bool(all_stores) or bool(QUESTION_ALL_STORES_RE.search(message_key)) or store_key in {
         "todas",
         "todas as lojas",
         "todas as contas",
@@ -844,10 +861,11 @@ def questions_post_sale_query(
 
     from backend.services import perguntas_pos_venda_endpoints
 
+    all_stores_requested = _safe_bool(all_stores)
     status_filter = _question_status_filter(message, status)
     limit_safe = _safe_int(limit, DEFAULT_LIMIT, 1, 100)
     catalog, catalog_error = _question_store_catalog(client_id)
-    requested = _question_requested_stores(catalog, message, loja, all_stores)
+    requested = _question_requested_stores(catalog, message, loja, all_stores_requested)
     records: list[dict[str, Any]] = []
     sources: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -969,7 +987,7 @@ def questions_post_sale_query(
             "message": message,
             "loja": loja,
             "status": status_filter,
-            "all_stores": bool(all_stores) or bool(QUESTION_ALL_STORES_RE.search(_norm(message))),
+            "all_stores": all_stores_requested or bool(QUESTION_ALL_STORES_RE.search(_norm(message))),
             "limit": limit_safe,
         },
         warnings,
@@ -1274,13 +1292,17 @@ def execute_readonly_source_tool(
     if tool_id == "sync_logs_query":
         return sync_logs_query(**common)
     if tool_id == "questions_post_sale_query":
+        all_stores_requested = any(
+            _safe_bool(args.get(key))
+            for key in ("all_stores", "todas_lojas", "separar_por_loja")
+        )
         return questions_post_sale_query(
             client_id=client_id,
             message=message,
             loja=loja,
             status=str(args.get("status") or ""),
             limit=limit,
-            all_stores=bool(args.get("all_stores") or args.get("todas_lojas") or args.get("separar_por_loja")),
+            all_stores=all_stores_requested,
             query_deadline_seconds=query_deadline_seconds,
         )
     if tool_id == "mercado_livre_post_sale_detail":

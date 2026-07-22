@@ -70,6 +70,30 @@ WHATSAPP_MAX_OUTBOUND_IMAGES = whatsapp_media.WHATSAPP_MAX_OUTBOUND_IMAGES
 WHATSAPP_PART_BODY_CHARS = whatsapp_formatting.WHATSAPP_PART_BODY_CHARS
 WHATSAPP_MAX_PARTS = whatsapp_formatting.WHATSAPP_MAX_PARTS
 
+_TERMINAL_PENDING_STATES = frozenset({
+    "partial", "partial_finalizing", "completed", "failed", "canceled", "cancelled",
+})
+_TERMINAL_MANAGER_STATES = frozenset({
+    "partial", "partial_finalizing", "completed", "failed", "canceled", "cancelled",
+})
+_TERMINAL_DELIVERY_STATES = frozenset({
+    "partial_finalizing", "sent", "queued", "duplicate", "waiting_free_window",
+})
+
+
+def _pending_is_terminal_or_finalizing(pending: dict[str, Any]) -> bool:
+    """Keep terminal records out of conversational routing and restart recovery."""
+
+    if pending.get("terminal_delivery_started") is True:
+        return True
+    if str(pending.get("job_state") or "").strip().lower() in _TERMINAL_PENDING_STATES:
+        return True
+    if str(pending.get("manager_state") or "").strip().lower() in _TERMINAL_MANAGER_STATES:
+        return True
+    if str(pending.get("delivery_state") or "").strip().lower() in _TERMINAL_DELIVERY_STATES:
+        return True
+    return bool(pending.get("terminal_at") or pending.get("terminal_at_epoch"))
+
 
 def _reload_bound_session(config: dict[str, Any], message: dict[str, Any]) -> dict[str, Any]:
     configured_machine = str(config.get("machine_id") or "").strip()
@@ -148,6 +172,8 @@ def _active_pending_for_conversation(
         if str(pending_message_id or "") == str(exclude_message_id or "") or not isinstance(pending, dict):
             continue
         if str(pending.get("conversation_id") or "") != str(conversation_id or ""):
+            continue
+        if _pending_is_terminal_or_finalizing(pending):
             continue
         tasks = _pending_codex_tasks(pending)
         active = [task for task in tasks if str(task.get("status") or "") in {"queued", "running", "cancel_requested"}]
@@ -520,8 +546,29 @@ def _recover_dual_pending_after_restart(state: dict[str, Any]) -> int:
     for message_id, pending in list(pending_messages.items()):
         if not isinstance(pending, dict) or str(pending.get("kind") or "") not in {"dual_worker", "dual_job_group", "dual_function_manager"}:
             continue
+        if _pending_is_terminal_or_finalizing(pending):
+            # Preserve the legacy normalization for deadline-canceled Sol jobs,
+            # but never pass a terminal record into the retry recovery below.
+            if (
+                str(pending.get("kind") or "") != "dual_function_manager"
+                and str(pending.get("job_state") or "").strip().lower() in {"canceled", "cancelled"}
+            ):
+                holders = (
+                    [item for item in list(pending.get("subtasks") or []) if isinstance(item, dict)]
+                    if str(pending.get("kind") or "") == "dual_job_group"
+                    else [pending]
+                )
+                deadline_canceled = any(
+                    str((codex_console._codex_load_task(str(holder.get("task_id") or "")) or {}).get("cancel_source") or "")
+                    == "whatsapp_deadline"
+                    for holder in holders
+                    if str(holder.get("task_id") or "")
+                )
+                if deadline_canceled and _dual_migrate_pending_v7(pending):
+                    _save_pending(state, str(message_id), pending)
+            continue
         if str(pending.get("kind") or "") == "dual_function_manager":
-            if str(pending.get("manager_state") or "") in {"running", "queued", "partial", "waiting_retry"}:
+            if str(pending.get("manager_state") or "") in {"running", "queued", "waiting_retry"}:
                 pending.update(
                     {
                         "manager_state": "queued",

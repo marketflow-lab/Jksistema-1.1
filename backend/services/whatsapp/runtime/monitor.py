@@ -65,10 +65,107 @@ from backend.services.whatsapp.composition import (
     bind_component_namespace,
     invoke_component,
 )
+from backend.services.whatsapp.orchestration.retry_coordinator import _pending_is_terminal_or_finalizing
 
 WHATSAPP_MAX_OUTBOUND_IMAGES = whatsapp_media.WHATSAPP_MAX_OUTBOUND_IMAGES
 WHATSAPP_PART_BODY_CHARS = whatsapp_formatting.WHATSAPP_PART_BODY_CHARS
 WHATSAPP_MAX_PARTS = whatsapp_formatting.WHATSAPP_MAX_PARTS
+
+_PENDING_PROGRESS_STALL_SECONDS = 300.0
+
+
+def _timestamp_epoch(value: Any) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return 0
+
+
+def _pending_progress_epoch(pending: dict[str, Any]) -> float:
+    epochs: list[float] = []
+    for field in ("last_progress_at_epoch", "manager_progress_at_epoch", "created_at_epoch"):
+        try:
+            epochs.append(float(pending.get(field) or 0))
+        except (TypeError, ValueError):
+            continue
+    for field in (
+        "manager_started_at", "manager_planned_at", "last_retry_scheduled_at",
+        "restart_recovered_at", "last_progress_at",
+    ):
+        epochs.append(_timestamp_epoch(pending.get(field)))
+    holders = (
+        [item for item in list(pending.get("subtasks") or []) if isinstance(item, dict)]
+        if str(pending.get("kind") or "") == "dual_job_group"
+        else [pending]
+    )
+    for holder in holders:
+        for field in ("last_progress_at", "retry_started_at", "last_attempt_at"):
+            epochs.append(_timestamp_epoch(holder.get(field)))
+    for task in _pending_codex_tasks(pending):
+        for field in ("last_progress_at", "updated_at", "started_at", "completed_at"):
+            epochs.append(_timestamp_epoch(task.get(field)))
+    return max(epochs or [0])
+
+
+def _expire_stalled_pending(
+    state: dict[str, Any], message_id: str, pending: dict[str, Any], *, now_epoch: Optional[float] = None,
+) -> bool:
+    if _pending_is_terminal_or_finalizing(pending):
+        return False
+    manager_state = str(pending.get("manager_state") or "").strip().lower()
+    kind = str(pending.get("kind") or "")
+    holders = (
+        [item for item in list(pending.get("subtasks") or []) if isinstance(item, dict)]
+        if kind == "dual_job_group"
+        else [pending]
+    )
+    waiting_holders = [
+        holder for holder in holders
+        if str(holder.get("state") or "").strip().lower() in {"waiting_retry", "retry_starting"}
+    ]
+    running_holders = [
+        holder for holder in holders
+        if str(
+            holder.get("state")
+            or (pending.get("job_state") if kind == "dual_worker" else "")
+            or ""
+        ).strip().lower() in {"queued", "running", "cancel_requested"}
+    ]
+    watches_manager = kind == "dual_function_manager" and manager_state in {"running", "queued", "waiting_retry"}
+    watches_workers = kind in {"dual_worker", "dual_job_group"} and bool(running_holders or waiting_holders)
+    if not watches_manager and not watches_workers:
+        return False
+    current_epoch = time.time() if now_epoch is None else float(now_epoch)
+    progress_epoch = _pending_progress_epoch(pending)
+    if progress_epoch <= 0 or current_epoch - progress_epoch < _PENDING_PROGRESS_STALL_SECONDS:
+        return False
+    reason = "watchdog_sem_progresso"
+    if watches_manager:
+        pending.update(
+            {
+                "manager_state": "partial",
+                "manager_next_retry_at_epoch": 0,
+                "manager_retry_reason": reason,
+                "manager_revision": max(0, int(pending.get("manager_revision") or 0)) + 1,
+            }
+        )
+    for holder in waiting_holders:
+        holder.update({"state": "partial", "next_retry_at_epoch": 0, "retry_reason": reason})
+    for holder in running_holders:
+        holder.update({"state": "partial", "next_retry_at_epoch": 0, "retry_reason": reason})
+    pending.update(
+        {
+            "job_state": "partial",
+            "terminal_reason": reason,
+            "progress_watchdog_triggered_at": _now(),
+            "progress_watchdog_triggered_at_epoch": current_epoch,
+        }
+    )
+    _save_pending(state, message_id, pending)
+    return True
 
 
 def _dual_waiting_tick_due(config: dict[str, Any], state: dict[str, Any], pending: dict[str, Any], task: dict[str, Any]) -> bool:
@@ -92,17 +189,49 @@ def _expire_dual_pending_if_due(
     message_id: str,
     pending: dict[str, Any],
 ) -> bool:
-    changed = _dual_migrate_pending_v7(pending)
-    if changed:
-        _save_pending(state, message_id, pending)
-    if str(pending.get("job_state") or "") == "partial":
-        return _terminate_pending_partial(
+    if _pending_is_terminal_or_finalizing(pending):
+        if (
+            str(pending.get("job_state") or "").strip().lower() == "partial"
+            or str(pending.get("manager_state") or "").strip().lower() == "partial"
+            or pending.get("terminal_delivery_started") is True
+            or str(pending.get("delivery_state") or "").strip().lower() == "partial_finalizing"
+        ):
+            _terminate_pending_partial(
+                config,
+                state,
+                message_id,
+                pending,
+                reason=str(pending.get("terminal_reason") or "resultado_parcial"),
+            )
+        return True
+    _expire_stalled_pending(state, message_id, pending)
+    if _pending_is_terminal_or_finalizing(pending):
+        _terminate_pending_partial(
             config,
             state,
             message_id,
             pending,
             reason=str(pending.get("terminal_reason") or "resultado_parcial"),
         )
+        return True
+    changed = _dual_migrate_pending_v7(pending)
+    if changed:
+        _save_pending(state, message_id, pending)
+    if _pending_is_terminal_or_finalizing(pending):
+        if (
+            str(pending.get("job_state") or "").strip().lower() == "partial"
+            or str(pending.get("manager_state") or "").strip().lower() == "partial"
+            or pending.get("terminal_delivery_started") is True
+            or str(pending.get("delivery_state") or "").strip().lower() == "partial_finalizing"
+        ):
+            _terminate_pending_partial(
+                config,
+                state,
+                message_id,
+                pending,
+                reason=str(pending.get("terminal_reason") or "resultado_parcial"),
+            )
+        return True
     # O Black Jhon nao encerra mais consultas por tempo total. O monitor segue
     # cuidando de progresso, retries e estados terminais reais.
     return False

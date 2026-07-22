@@ -2,6 +2,7 @@
 from __future__ import annotations
 import concurrent.futures
 import re
+import threading
 import time
 from typing import Any, Optional
 import requests
@@ -23,6 +24,13 @@ _WHATSAPP_FORBIDDEN_ACTION_TOOLS = {
     "program_action_match",
     "operational_dispatcher",
 }
+_MANAGER_REVISION_LOCK = threading.RLock()
+
+
+def _manager_revision_lock() -> threading.RLock:
+    return globals().get("BRIDGE_STATE_LOCK", _MANAGER_REVISION_LOCK)
+
+
 def _whatsapp_dual_agent_settings(config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Direct-import fallback; bridge composition may replace this binding."""
 
@@ -359,6 +367,37 @@ def _function_manager_pending_snapshot(state: dict[str, Any], message_id: str) -
 def _function_manager_revision_matches(state: dict[str, Any], message_id: str, revision: int) -> bool:
     latest = _function_manager_pending_snapshot(state, message_id)
     return bool(latest and int(latest.get("manager_revision") or 0) == revision)
+
+
+def _function_manager_save_if_revision(
+    state: dict[str, Any],
+    message_id: str,
+    pending: dict[str, Any],
+    revision: int,
+) -> bool:
+    """Compare and save under one lock so a terminal watchdog cannot be overwritten."""
+
+    with _manager_revision_lock():
+        if not isinstance(state.get("pending_messages"), dict):
+            # Direct component tests can inject the snapshot independently.
+            # In the composed runtime, a valid manager always has a registry.
+            _save_pending(state, message_id, pending)
+            return True
+        current = (
+            (state.get("pending_messages") or {}).get(message_id)
+            if isinstance(state.get("pending_messages"), dict)
+            else None
+        )
+        if not isinstance(current, dict):
+            return False
+        if int(current.get("manager_revision") or 0) != int(revision):
+            return False
+        if whatsapp_retry_coordinator._pending_is_terminal_or_finalizing(current):
+            return False
+        _save_pending(state, message_id, pending)
+        return True
+
+
 def _data_selection_gap_key(pending: dict[str, Any]) -> str:
     return agentic_replan.gap_key(pending)
 def _data_selection_error_code(value: Any) -> str:
@@ -613,9 +652,13 @@ def _function_manager_run_tools(
     pending.update(
         {
             "manager_evidence": evidence,
-            "manager_state": "completed" if evidence.get("evidence_sufficient") else "partial",
-            "data_selection_state": "completed" if evidence.get("evidence_sufficient") else "partial",
-            "manager_completed_at": _now(),
+            # Evidence is ready, but the finish step still owns direct delivery,
+            # retry, replan or Sol handoff. Keep this restartable/non-terminal.
+            "manager_state": "running",
+            "data_selection_state": "evidence_ready",
+            "job_state": "manager_running",
+            "manager_evidence_status": "completed" if evidence.get("evidence_sufficient") else "partial",
+            "manager_evidence_ready_at": _now(),
             "verified_facts": list(evidence.get("verified_facts") or []),
             "verified_sources": list(evidence.get("sources") or []),
             "manager_total_duration_ms": int(round((time.monotonic() - started) * 1000)),
@@ -745,6 +788,7 @@ def _function_manager_finish_job(
 
 def _function_manager_job(config: dict[str, Any], state: dict[str, Any], message_id: str) -> None:
     started = time.monotonic()
+    run_revision = -1
     try:
         pending = _function_manager_pending_snapshot(state, message_id)
         if not pending or str(pending.get("kind") or "") != "dual_function_manager":
@@ -756,24 +800,28 @@ def _function_manager_job(config: dict[str, Any], state: dict[str, Any], message
             "data_selection_state": "running",
             "job_state": "manager_running",
             "manager_started_at": _now(),
+            "manager_progress_at_epoch": time.time(),
         })
-        _save_pending(state, message_id, pending)
-        plan, raw_plan, manager_policy, catalog, planning_duration_ms = _function_manager_build_plan(config, pending)
-        if not _function_manager_revision_matches(state, message_id, run_revision):
+        if not _function_manager_save_if_revision(state, message_id, pending, run_revision):
             return
+        plan, raw_plan, manager_policy, catalog, planning_duration_ms = _function_manager_build_plan(config, pending)
         _function_manager_apply_plan(pending, plan, raw_plan, catalog, planning_duration_ms)
-        _save_pending(state, message_id, pending)
+        pending["manager_progress_at_epoch"] = time.time()
+        if not _function_manager_save_if_revision(state, message_id, pending, run_revision):
+            return
         if _function_manager_request_missing_input(config, state, message_id, pending, plan, started):
             return
         results, evidence = _function_manager_run_tools(config, pending, plan, manager_policy, started)
-        if not _function_manager_revision_matches(state, message_id, run_revision):
+        pending["manager_progress_at_epoch"] = time.time()
+        if not _function_manager_save_if_revision(state, message_id, pending, run_revision):
             return
-        _save_pending(state, message_id, pending)
         current = _function_manager_pending_snapshot(state, message_id)
         if not current or current.get("cancel_requested") is True:
             return
         _function_manager_finish_job(config, state, message_id, pending, plan, results, evidence)
     except Exception as exc:
+        if run_revision >= 0 and not _function_manager_revision_matches(state, message_id, run_revision):
+            return
         pending = _function_manager_pending_snapshot(state, message_id)
         if pending:
             error_code = _data_selection_error_code(exc)
@@ -790,7 +838,8 @@ def _function_manager_job(config: dict[str, Any], state: dict[str, Any], message
             })
             pending["manager_total_duration_ms"] = int(round((time.monotonic() - started) * 1000))
             _record_function_manager_diagnostic(state, pending, status="failed_closed", reason=error_code)
-            _save_pending(state, message_id, pending)
+            if not _function_manager_save_if_revision(state, message_id, pending, run_revision):
+                return
             delivery = _post_proactive(
                 config,
                 {

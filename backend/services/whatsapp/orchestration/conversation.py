@@ -20,6 +20,8 @@ from backend.services.whatsapp.composition import (
     bind_component_namespace,
     invoke_component,
 )
+from backend.services.whatsapp.orchestration.retry_coordinator import _pending_is_terminal_or_finalizing
+from backend.services.whatsapp.data_selection_enforcement import _is_live_question_queue_request
 WHATSAPP_MAX_OUTBOUND_IMAGES = whatsapp_media.WHATSAPP_MAX_OUTBOUND_IMAGES
 WHATSAPP_PART_BODY_CHARS = whatsapp_formatting.WHATSAPP_PART_BODY_CHARS
 WHATSAPP_MAX_PARTS = whatsapp_formatting.WHATSAPP_MAX_PARTS
@@ -111,9 +113,36 @@ def _dual_active_job_snapshot(
     conversation_id: str,
     *,
     exclude_message_id: str = "",
+    client_id: str = "",
+    username: str = "",
+    subject_id: str = "",
 ) -> tuple[str, dict[str, Any], dict[str, Any], dict[str, Any]]:
+    def matches_scope(value: Any) -> bool:
+        if not isinstance(value, dict):
+            return False
+        expected = {
+            "client_id": str(client_id or "").strip(),
+            "username": str(username or "").strip().casefold(),
+            "subject_id": str(subject_id or "").strip(),
+        }
+        actual = {
+            "client_id": str(value.get("client_id") or "").strip(),
+            "username": str(value.get("username") or "").strip().casefold(),
+            "subject_id": str(value.get("subject_id") or "").strip(),
+        }
+        return all(not expected[key] or actual[key] == expected[key] for key in expected)
+
+    scoped_state = state
+    if any(str(item or "").strip() for item in (client_id, username, subject_id)):
+        pending_messages = state.get("pending_messages") if isinstance(state.get("pending_messages"), dict) else {}
+        scoped_state = {
+            **state,
+            "pending_messages": {
+                key: value for key, value in pending_messages.items() if matches_scope(value)
+            },
+        }
     message_id, pending, task = _active_pending_for_conversation(
-        state,
+        scoped_state,
         conversation_id,
         exclude_message_id=exclude_message_id,
     )
@@ -121,6 +150,10 @@ def _dual_active_job_snapshot(
         pending_messages = state.get("pending_messages") if isinstance(state.get("pending_messages"), dict) else {}
         for candidate_message_id, candidate_pending in pending_messages.items():
             if not isinstance(candidate_pending, dict) or str(candidate_pending.get("kind") or "") != "dual_worker":
+                continue
+            if not matches_scope(candidate_pending):
+                continue
+            if _pending_is_terminal_or_finalizing(candidate_pending):
                 continue
             if str(candidate_pending.get("conversation_id") or "") != str(conversation_id or ""):
                 continue
@@ -156,10 +189,114 @@ def _dual_active_job_snapshot(
     return message_id, pending, task, snapshot
 
 
+def _dual_active_status_reply(active_job: dict[str, Any]) -> str:
+    if not active_job:
+        return "Nao ha nenhuma consulta ativa nesta conversa."
+    status = str(active_job.get("status") or "").strip().lower()
+    if status in {"queued", "manager_queued", "waiting_retry", "retry_starting"}:
+        return "Sim. A consulta esta na fila e ainda nao foi concluida."
+    return "Sim. A consulta esta em andamento e ainda nao foi concluida."
+
+
+def _enforce_dual_decision_effect(
+    decision: dict[str, Any],
+    *,
+    event_type: str,
+    active_job: Optional[dict[str, Any]],
+    user_message: str = "",
+) -> dict[str, Any]:
+    """Bind V3 semantics to effects before context or job state is changed."""
+
+    result = dict(decision or {})
+    if event_type != "user_message":
+        return result
+    relation = str(result.get("relation_to_active_job") or "").strip().lower()
+    intent_id = str(result.get("intent_id") or "").strip().lower()
+    action = str(result.get("action") or "").strip().lower()
+    has_active = bool(active_job)
+    if _is_live_question_queue_request(user_message):
+        result.update({
+            "intent_id": "mercado_livre.question",
+            "intent_kind": "query",
+            "action": "queue" if has_active else "delegate",
+            "relation_to_active_job": "new_parallel" if has_active else "none",
+            "answer_basis": "unavailable",
+            "data_requirement": "required",
+            "response_mode": "task_delegation",
+            "context_operations": [
+                {"field": "sku", "operation": "clear", "value": "", "source": "current_turn", "confidence": "high"},
+                {"field": "mlb", "operation": "clear", "value": "", "source": "current_turn", "confidence": "high"},
+            ],
+            "resolved_context": {},
+            "reply_text": "Vou verificar as perguntas em aberto para responder.",
+            "job_title": "Perguntas em aberto do Mercado Livre",
+            "job_prompt": str(user_message or "Tem perguntas?").strip()[:12000],
+            "subtasks": [],
+        })
+        return result
+    if relation == "status" or intent_id == "system.task_status":
+        result.update({
+            "action": "reply",
+            "relation_to_active_job": "status",
+            "answer_basis": "active_job" if has_active else "unavailable",
+            "data_requirement": "none",
+            "response_mode": "status_update",
+            "context_operations": [],
+            "resolved_context": {},
+            "reply_text": _dual_active_status_reply(dict(active_job or {})),
+        })
+        return result
+    if relation == "cancel" or intent_id == "system.task_control" and action == "cancel_job":
+        if has_active:
+            result.update({"action": "cancel_job", "data_requirement": "none", "context_operations": []})
+        else:
+            result.update({
+                "action": "reply",
+                "answer_basis": "unavailable",
+                "data_requirement": "none",
+                "context_operations": [],
+                "resolved_context": {},
+                "reply_text": "Nao ha nenhuma consulta ativa para cancelar nesta conversa.",
+            })
+        return result
+    if relation == "new_parallel" and action in {"delegate", "queue", "steer"}:
+        result["action"] = "queue"
+    elif relation in {"followup", "correction"} and action in {"delegate", "queue", "steer"}:
+        result["action"] = "steer" if has_active else "delegate"
+    elif action == "steer":
+        # Never alter an active job unless the semantic relation confirms it.
+        result["action"] = "queue" if has_active else "delegate"
+    elif action == "cancel_job":
+        result.update({
+            "action": "reply",
+            "answer_basis": "unavailable",
+            "data_requirement": "none",
+            "context_operations": [],
+            "reply_text": "Nao cancelei nenhuma consulta porque o pedido de cancelamento nao ficou confirmado.",
+        })
+    if not has_active and str(result.get("answer_basis") or "").strip().lower() == "active_job":
+        result["answer_basis"] = "unavailable"
+    return result
+
+
 def _materialize_agent_decision_context(
     record: dict[str, Any], decision: dict[str, Any], *, event_type: str,
     authorized_stores: Optional[list[str]], quoted_context: Optional[dict[str, Any]],
 ) -> None:
+    relation = str(decision.get("relation_to_active_job") or "").strip().lower()
+    intent_id = str(decision.get("intent_id") or "").strip().lower()
+    action = str(decision.get("action") or "").strip().lower()
+    if event_type == "user_message" and (
+        relation in {"status", "cancel"}
+        or intent_id in {"system.task_status", "system.task_control"}
+        or action == "cancel_job"
+    ):
+        resolved_context = whatsapp_conversation_context.request_context({}, {})
+        decision["context_operations"] = []
+        decision["resolved_context"] = resolved_context
+        decision["effective_context"] = dict(resolved_context)
+        decision["quoted_context"] = dict(quoted_context or {})
+        return
     if event_type == "user_message":
         proposed_payload = dict(decision.get("resolved_context") or {})
         if "context_operations" in decision:
@@ -257,6 +394,12 @@ def _run_conversation_agent(
         user_message=user_message,
         worker_result=worker_result,
         conversation_state=conversation_state,
+    )
+    decision = _enforce_dual_decision_effect(
+        decision,
+        event_type=event_type,
+        active_job=active_job,
+        user_message=user_message,
     )
     if terminal_error:
         RUNTIME_STATE["conversation_fallback_last_error"] = terminal_error
@@ -717,12 +860,23 @@ def _process_dual_codex_message(
     quoted_context: Optional[dict[str, Any]] = None,
 ) -> bool:
     active_message_id, active_pending, active_task, active_snapshot = _dual_active_job_snapshot(
-        state, conversation_id, exclude_message_id=message_id,
+        state,
+        conversation_id,
+        exclude_message_id=message_id,
+        client_id=str(session.get("client_id") or ""),
+        username=str(session.get("username") or ""),
+        subject_id=subject,
     )
     _record_dual_user_message(state, conversation_id, request_text)
     decision = _dual_initial_decision(
         config, state, message, session, conversation_id, request_text,
         active_snapshot, phone_ai_behavior, quoted_context,
+    )
+    decision = _enforce_dual_decision_effect(
+        decision,
+        event_type="user_message",
+        active_job=active_snapshot,
+        user_message=request_text,
     )
     if decision.get("action") == "selection_sent":
         return True

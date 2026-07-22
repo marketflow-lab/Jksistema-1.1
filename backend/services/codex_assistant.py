@@ -3074,6 +3074,43 @@ def _assistant_message_has_product_ref(message: str) -> bool:
     )
 
 
+def _assistant_questions_addressed_to_assistant(message: Any) -> bool:
+    text = _assistant_texto_norm(str(message or ""))
+    return bool(re.search(
+        r"\b(voce|black jhon|blackjohn|joao pretinho|assistente)\b[^.?!]{0,32}\btem\s+perguntas?\b",
+        text,
+    ))
+
+
+def _assistant_is_broad_open_questions_query(message: Any) -> bool:
+    """Identify a current unanswered-question queue request with no product scope."""
+
+    text = _assistant_texto_norm(str(message or ""))
+    if not re.search(r"\bperguntas?\b", text):
+        return False
+    if _assistant_questions_addressed_to_assistant(message):
+        return False
+    if _assistant_message_has_product_ref(str(message or "")):
+        return False
+    if re.search(
+        r"\b(comprador|historico|anuncio|item|produto|sku|mlb|pedido|order|pack|conversa|foto|imagem|link)\b",
+        text,
+    ):
+        return False
+    answered_history = bool(re.search(r"\brespondid[ao]s?\b", text)) and not bool(
+        re.search(r"\b(nao respondid[ao]s?|sem resposta)\b", text)
+    )
+    if answered_history or re.search(r"\b(fechad[ao]s?|encerrad[ao]s?|historico completo)\b", text):
+        return False
+    return bool(
+        re.search(
+            r"\b(em aberto|abert[ao]s?|pendentes?|sem resposta|nao respondid[ao]s?|"
+            r"para responder|fila(?: atual)?|tem|ha|existe|existem|consulte|consultar|verifique|verificar)\b",
+            text,
+        )
+    )
+
+
 def _assistant_is_generic_sales_api_query(message: str) -> bool:
     text = _assistant_texto_norm(message)
     wants_sales = bool(re.search(r"\b(venda|vendas|vendido|vendidos|faturamento|pedido|pedidos|ranking|top)\b", text))
@@ -3133,6 +3170,7 @@ def _assistant_latest_ml_event_kind(message: Any) -> str:
 def _assistant_source_routing_policy(message: Any) -> dict[str, Any]:
     """Contrato de origem para consultas operacionais do Black Jhon."""
     text = _assistant_texto_norm(str(message or ""))
+    wants_open_questions_queue = _assistant_is_broad_open_questions_query(message)
     wants_stock = bool(re.search(r"\b(estoque|saldo|quantidade em estoque|disponivel em estoque)\b", text))
     wants_positive_sku_count = whatsapp_intent.positive_stock_sku_count_requested(message)
     wants_full = bool(wants_stock and re.search(r"\b(full|fulfillment|mercado envios)\b", text))
@@ -3199,7 +3237,11 @@ def _assistant_source_routing_policy(message: Any) -> dict[str, Any]:
             if item and item not in target:
                 target.append(item)
 
-    if wants_positive_sku_count:
+    if wants_open_questions_queue:
+        add_unique(required_tools, "questions_post_sale_query")
+        add_unique(providers, "mercado_livre")
+        intents.append("open_questions_queue")
+    elif wants_positive_sku_count:
         add_unique(required_tools, "bling_positive_stock_sku_count")
         add_unique(
             forbidden_tools,
@@ -3265,12 +3307,12 @@ def _assistant_source_routing_policy(message: Any) -> dict[str, Any]:
     if not required_tools:
         return {}
     return {
-        "version": "20260718-whatsapp-source-routing-v6-positive-stock-sku-count",
+        "version": "20260722-whatsapp-source-routing-v7-open-questions-scope",
         "intent": "+".join(intents),
         "required_tools": required_tools,
         "forbidden_tools": forbidden_tools,
         "preferred_providers": providers,
-        "force_refresh": bool(wants_stock or wants_listing_description or wants_listing_commercial or wants_visits or wants_promotions or wants_post_sale_detail or wants_ml_sales or wants_ml_returns),
+        "force_refresh": bool(wants_open_questions_queue or wants_stock or wants_listing_description or wants_listing_commercial or wants_visits or wants_promotions or wants_post_sale_detail or wants_ml_sales or wants_ml_returns),
         "include_listing_details": wants_listing_description,
         "include_commercial_detail": wants_listing_commercial,
         "sum_requested": wants_sum,
@@ -3295,6 +3337,9 @@ def _assistant_select_tool_ids(message: str, mode: str, screen_context: Any) -> 
     page = _assistant_texto_norm(_assistant_context_page(screen_context))
     selected: list[str] = []
     source_policy = _assistant_source_routing_policy(message)
+    questions_addressed_to_assistant = _assistant_questions_addressed_to_assistant(message)
+    if source_policy.get("intent") == "open_questions_queue":
+        return ["questions_post_sale_query"]
     if source_policy.get("positive_stock_sku_count_requested") is True:
         return ["bling_positive_stock_sku_count"]
 
@@ -3398,7 +3443,10 @@ def _assistant_select_tool_ids(message: str, mode: str, screen_context: Any) -> 
         if "imagem" in text or "foto" in text:
             add("product_image")
     if wants_operational:
-        if re.search(r"\b(pergunta|perguntas|pos venda|pos-venda)\b", text + " " + page):
+        if (
+            not questions_addressed_to_assistant
+            and re.search(r"\b(pergunta|perguntas|pos venda|pos-venda)\b", text + " " + page)
+        ):
             add("questions_post_sale_query", "mercado_livre_readonly")
         if wants_fiscal:
             add("fiscal_local_query")
@@ -3436,7 +3484,8 @@ def _assistant_registry_plan(client_id: str, message: str, screen_context: Any, 
         data_inicio, data_fim = _assistant_periodo_padrao(365)
     prev_inicio, prev_fim = _assistant_previous_period(data_inicio, data_fim)
     loja = _assistant_resolve_loja(client_id, message, screen_context)
-    sku = _assistant_extract_sku_filter(message, screen_context)
+    broad_open_questions = _assistant_is_broad_open_questions_query(message)
+    sku = "" if broad_open_questions else _assistant_extract_sku_filter(message, screen_context)
     separar_por_loja = _assistant_wants_store_breakdown(message, loja)
     selected = _assistant_select_tool_ids(message, effective_mode, screen_context)
     source_policy = _assistant_source_routing_policy(message)
@@ -4874,6 +4923,11 @@ def codex_assistant_execute_tool_call(
     if not item_id and not materialized_context:
         item_match = re.search(r"\bMLB[\s_-]?\d{6,}\b", str(message or ""), flags=re.IGNORECASE)
         item_id = _assistant_normalize_ml_item_id(item_match.group(0) if item_match else "")
+    if tool_id == "questions_post_sale_query" and _assistant_is_broad_open_questions_query(message):
+        # A fila atual e uma consulta propria. SKU/MLB de um turno ou selecao
+        # anterior nao podem restringir nem reabrir a pesquisa de produto.
+        sku = ""
+        item_id = ""
     id_pedido = _assistant_normalize_identifier(
         args.get("id_pedido") or args.get("pedido_id") or args.get("order_id") or args.get("id_order")
     )
@@ -5053,8 +5107,9 @@ def codex_assistant_execute_tool_call(
         "action_id": str(args.get("action_id") or "").strip(),
         "action_params": args.get("params") if isinstance(args.get("params"), dict) else {},
         "history": args.get("history") if isinstance(args.get("history"), list) else [],
-        "separar_por_loja": bool(
-            args.get("separar_por_loja") or args.get("todas_lojas") or args.get("all_stores")
+        "separar_por_loja": any(
+            _assistant_bool_arg(args.get(key), False)
+            for key in ("separar_por_loja", "todas_lojas", "all_stores")
         ) or _assistant_wants_store_breakdown(message, loja),
         "incluir_registros": bool(args.get("incluir_registros", True)),
         "request_surface": str(args.get("request_surface") or "").strip().casefold(),

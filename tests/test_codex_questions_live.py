@@ -176,6 +176,104 @@ def test_complete_live_zero_is_sufficient_but_partial_zero_is_not(monkeypatch) -
     assert "Deckas" in partial["empty_reason"]
 
 
+def test_string_false_does_not_expand_question_scope_or_keep_stale_product(monkeypatch) -> None:
+    _disable_assistant_cache_and_audit(monkeypatch)
+    calls = _patch_live_api(
+        monkeypatch,
+        [_store("Loja A"), _store("Loja B")],
+        {"Loja A": [], "Loja B": [_question(404)]},
+    )
+    captured_plan: dict[str, Any] = {}
+
+    def capture_cache_key(client_id: str, tool_id: str, plan: dict[str, Any]) -> str:
+        del client_id, tool_id
+        captured_plan.update(plan)
+        return "questions-scope-test"
+
+    monkeypatch.setattr(codex_assistant, "_assistant_external_cache_key", capture_cache_key)
+
+    result = codex_assistant.codex_assistant_execute_tool_call(
+        "tenant-scope",
+        "questions_post_sale_query",
+        {
+            "mensagem": "Perguntei se tem perguntas em aberto para responder",
+            "loja": "Loja A",
+            "sku": "SKU-ANTIGO",
+            "mlb": "MLB123456789",
+            "todas_lojas": "false",
+            "force_refresh": True,
+        },
+        permissions={"perguntas_pos_venda": True},
+    )
+
+    assert calls == [("Loja A", "UNANSWERED")]
+    assert result["records"] == 0
+    assert result["dados_suficientes"] is True
+    assert captured_plan["separar_por_loja"] is False
+    assert captured_plan["sku"] == ""
+    assert captured_plan["item_id"] == ""
+    assert captured_plan["mlb"] == ""
+
+
+def test_readonly_dispatch_parses_string_booleans_strictly(monkeypatch) -> None:
+    calls = _patch_live_api(
+        monkeypatch,
+        [_store("Loja A"), _store("Loja B")],
+        {"Loja A": [], "Loja B": []},
+    )
+
+    codex_readonly_sources.execute_readonly_source_tool(
+        client_id="tenant",
+        tool_id="questions_post_sale_query",
+        message="Tem perguntas?",
+        loja="Loja A",
+        args={"all_stores": "false"},
+    )
+    assert calls == [("Loja A", "UNANSWERED")]
+
+    calls.clear()
+    codex_readonly_sources.execute_readonly_source_tool(
+        client_id="tenant",
+        tool_id="questions_post_sale_query",
+        message="Tem perguntas?",
+        loja="Loja A",
+        args={"all_stores": "true"},
+    )
+    assert set(calls) == {("Loja A", "UNANSWERED"), ("Loja B", "UNANSWERED")}
+
+
+def test_broad_open_questions_plan_uses_only_the_authoritative_live_queue() -> None:
+    message = "Perguntei se tem perguntas em aberto para responder"
+    stale_screen_context = {
+        "sku": "SKU-ANTIGO",
+        "selected_sku": "SKU-ANTIGO",
+        "mlb": "MLB123456789",
+    }
+
+    plan = codex_assistant._assistant_registry_plan(
+        "tenant",
+        message,
+        stale_screen_context,
+        "chat",
+    )
+
+    assert plan["selected_tools"] == ["questions_post_sale_query"]
+    assert plan["source_policy"]["required_tools"] == ["questions_post_sale_query"]
+    assert plan["source_policy"]["force_refresh"] is True
+    assert plan["sku"] == ""
+
+
+def test_short_queue_question_is_not_confused_with_a_question_to_the_assistant() -> None:
+    assert codex_assistant._assistant_is_broad_open_questions_query("Tem perguntas?") is True
+    assert codex_assistant._assistant_is_broad_open_questions_query("Voce tem perguntas?") is False
+    assert codex_assistant._assistant_is_broad_open_questions_query("Black Jhon tem perguntas?") is False
+    assert "questions_post_sale_query" not in codex_assistant._assistant_select_tool_ids(
+        "Black Jhon tem perguntas?",
+        "chat",
+        {},
+    )
+
+
 def test_mercado_livre_question_fallback_uses_the_same_live_queue(monkeypatch) -> None:
     calls = _patch_live_api(
         monkeypatch,
