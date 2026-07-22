@@ -200,6 +200,13 @@ def test_singleflight_deduplicates_concurrent_identical_collection(tmp_path: Pat
     assert sorted(result["coverage"]["cache_hit"] for result in results) == [False, True]
 
 
+def test_tenant_path_comparison_normalizes_windows_device_prefix():
+    regular = Path(r"C:\temp\info\000002\codex_assistant")
+    device = Path(r"\\?\C:\temp\info\000002\codex_assistant")
+
+    assert margin._path_without_windows_device_prefix(device) == regular
+
+
 def test_retry_honors_retry_after_without_real_sleep():
     sleeps: list[float] = []
     attempts = 0

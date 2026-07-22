@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import sqlite3
 import threading
@@ -179,18 +180,31 @@ def _days(start: Any, end: Any) -> Iterator[date]:
         current += timedelta(days=1)
 
 
+def _path_without_windows_device_prefix(path: Path) -> Path:
+    value = str(path)
+    if value.startswith("\\\\?\\UNC\\"):
+        value = f"\\\\{value[8:]}"
+    elif value.startswith("\\\\?\\"):
+        value = value[4:]
+    return Path(value)
+
+
 def _tenant_directory(info_base: Any, client_id: Any) -> Path:
     tenant = _client(client_id)
-    base = Path(str(info_base or "info")).expanduser().resolve()
+    base_path = Path(str(info_base or "info")).expanduser()
+    base_path.mkdir(parents=True, exist_ok=True)
+    base = base_path.resolve()
     target = (base / tenant / "codex_assistant").resolve()
-    if base != target and base not in target.parents:
+    comparable_base = _path_without_windows_device_prefix(base)
+    comparable_target = _path_without_windows_device_prefix(target)
+    if comparable_base != comparable_target and comparable_base not in comparable_target.parents:
         raise ValueError("caminho tenant fora de info_base")
-    target.mkdir(parents=True, exist_ok=True)
-    return target
+    comparable_target.mkdir(parents=True, exist_ok=True)
+    return comparable_target
 
 
 def _lock_for_db(path: Path) -> threading.RLock:
-    key = str(path.resolve())
+    key = os.path.normcase(str(_path_without_windows_device_prefix(path.resolve())))
     with _DB_LOCKS_GUARD:
         return _DB_LOCKS.setdefault(key, threading.RLock())
 
