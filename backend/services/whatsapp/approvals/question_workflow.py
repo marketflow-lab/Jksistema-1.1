@@ -66,6 +66,7 @@ from backend.services.whatsapp.composition import (
 from backend.services.whatsapp.approvals import question_natural_language as _question_natural_language
 from backend.services.whatsapp.approvals.question_tokens import (
     _question_card_context,
+    _question_thread_key,
     _question_token_approval_matches,
     _question_token_scope_matches,
 )
