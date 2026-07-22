@@ -1,4 +1,5 @@
 context-bundle-manifest.json text eol=lf
 docs/knowledge/** text eol=lf
+static/favoritos/v2/browser/shell-bridge.js text eol=crlf
 requirements*.in text eol=lf
 requirements*.txt text eol=lf
