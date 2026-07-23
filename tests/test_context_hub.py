@@ -161,6 +161,32 @@ def test_bootstrap_creates_persistent_vault_without_workspace(hub_env) -> None:
     for relative in context_hub.VAULT_DIRECTORIES:
         assert (vault / relative).is_dir()
     assert json.loads((vault / ".obsidian" / "community-plugins.json").read_text(encoding="utf-8")) == []
+    graph = json.loads((vault / ".obsidian" / "graph.json").read_text(encoding="utf-8"))
+    assert graph == context_hub.OBSIDIAN_GRAPH_DEFAULTS
+    assert graph["hideUnresolved"] is True
+    assert graph["showAttachments"] is False
+    assert [group["query"] for group in graph["colorGroups"]] == [
+        "[type:map OR domain]",
+        'path:"70_Gerado/Produtos/Categorias"',
+        (
+            '(path:"70_Gerado/Produtos/Catalogo-SKU.md" OR '
+            'path:"70_Gerado/Produtos/Familias-SKU.md" OR '
+            'path:"70_Gerado/Produtos/Cobertura-SKU.md")'
+        ),
+        (
+            'path:"70_Gerado/Produtos/Veiculos-compativeis/" '
+            'file:"Marca.md"'
+        ),
+        (
+            "path:/^70_Gerado\\/Produtos\\/(?:Veiculos-Compativeis\\.md$|"
+            "Veiculos-compativeis\\/(?:Arvore\\.md$|Marcas\\/parte-\\d+\\.md$|"
+            "[^/]+\\/Modelos\\/parte-\\d+\\.md$))/"
+        ),
+        (
+            'path:"70_Gerado/Produtos/Veiculos-compativeis/" '
+            'file:"Modelo.md"'
+        ),
+    ]
     assert not (vault / ".obsidian" / "workspace.json").exists()
     assert (info / "000002" / "context_hub" / "context_hub.db").is_file()
     dashboard = vault / context_hub.CURATION_DASHBOARD_RELATIVE_PATH
@@ -218,11 +244,31 @@ def test_bootstrap_preserves_existing_obsidian_configuration(hub_env) -> None:
     obsidian = info / "000002" / "ContextVault" / ".obsidian"
     _write(obsidian / "app.json", '{"userSetting":true}\n')
     _write(obsidian / "workspace.json", '{"layout":"user"}\n')
+    _write(obsidian / "graph.json", '{"colorGroups":[{"query":"tag:#usuario"}]}\n')
 
     context_hub.bootstrap_context_hub("000002")
 
     assert json.loads((obsidian / "app.json").read_text(encoding="utf-8")) == {"userSetting": True}
     assert (obsidian / "workspace.json").is_file()
+    assert json.loads((obsidian / "graph.json").read_text(encoding="utf-8")) == {
+        "colorGroups": [{"query": "tag:#usuario"}]
+    }
+    assert not (obsidian / "community-plugins.json").exists()
+
+
+def test_bootstrap_adds_graph_defaults_to_existing_obsidian_folder(hub_env) -> None:
+    _base, info, _adapter = hub_env
+    obsidian = info / "000002" / "ContextVault" / ".obsidian"
+    _write(obsidian / "app.json", '{"userSetting":true}\n')
+
+    context_hub.bootstrap_context_hub("000002")
+
+    assert json.loads((obsidian / "app.json").read_text(encoding="utf-8")) == {
+        "userSetting": True
+    }
+    assert json.loads((obsidian / "graph.json").read_text(encoding="utf-8")) == (
+        context_hub.OBSIDIAN_GRAPH_DEFAULTS
+    )
     assert not (obsidian / "community-plugins.json").exists()
 
 

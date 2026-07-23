@@ -72,6 +72,72 @@ VAULT_DIRECTORIES = (
     "90_Arquivo",
 )
 
+# Native Obsidian graph groups. The queries use indexed frontmatter and stable
+# generated filenames, so the visual organization follows the semantic model
+# without adding plugins or one note per year. Existing graph.json files are
+# intentionally user-owned and are never replaced by bootstrap.
+OBSIDIAN_GRAPH_DEFAULTS: dict[str, Any] = {
+    "collapse-filter": False,
+    "search": "",
+    "showTags": False,
+    "showAttachments": False,
+    "hideUnresolved": True,
+    "showOrphans": True,
+    "collapse-color-groups": False,
+    "colorGroups": [
+        {
+            "query": "[type:map OR domain]",
+            "color": {"a": 1, "rgb": 3900150},  # #3B82F6 blue
+        },
+        {
+            "query": 'path:"70_Gerado/Produtos/Categorias"',
+            "color": {"a": 1, "rgb": 16096779},  # #F59E0B amber
+        },
+        {
+            "query": (
+                '(path:"70_Gerado/Produtos/Catalogo-SKU.md" OR '
+                'path:"70_Gerado/Produtos/Familias-SKU.md" OR '
+                'path:"70_Gerado/Produtos/Cobertura-SKU.md")'
+            ),
+            "color": {"a": 1, "rgb": 15485081},  # #EC4899 pink
+        },
+        {
+            "query": (
+                'path:"70_Gerado/Produtos/Veiculos-compativeis/" '
+                'file:"Marca.md"'
+            ),
+            "color": {"a": 1, "rgb": 1096065},  # #10B981 emerald
+        },
+        {
+            "query": (
+                "path:/^70_Gerado\\/Produtos\\/(?:Veiculos-Compativeis\\.md$|"
+                "Veiculos-compativeis\\/(?:Arvore\\.md$|Marcas\\/parte-\\d+\\.md$|"
+                "[^/]+\\/Modelos\\/parte-\\d+\\.md$))/"
+            ),
+            "color": {"a": 1, "rgb": 9133302},  # #8B5CF6 violet
+        },
+        {
+            "query": (
+                'path:"70_Gerado/Produtos/Veiculos-compativeis/" '
+                'file:"Modelo.md"'
+            ),
+            "color": {"a": 1, "rgb": 440020},  # #06B6D4 cyan
+        },
+    ],
+    "collapse-display": False,
+    "showArrow": False,
+    "textFadeMultiplier": 0,
+    "nodeSizeMultiplier": 1,
+    "lineSizeMultiplier": 1,
+    "collapse-forces": True,
+    "centerStrength": 0.518713248970312,
+    "repelStrength": 10,
+    "linkStrength": 1,
+    "linkDistance": 250,
+    "scale": 0.15,
+    "close": True,
+}
+
 _SAFE_CLIENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 _SAFE_REASON_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 _WINDOWS_RESERVED_NAMES = {
@@ -666,6 +732,10 @@ def bootstrap_context_hub(
     elif not obsidian.is_dir():
         raise ContextHubValidationError("Configuracao .obsidian invalida para o Context Hub.")
     _assert_path_chain_safe(obsidian, paths.info_root)
+    graph_config = obsidian / "graph.json"
+    _assert_path_chain_safe(graph_config, paths.info_root)
+    if not graph_config.exists():
+        _write_json_atomic(graph_config, OBSIDIAN_GRAPH_DEFAULTS)
     for private_dir in (
         paths.staging_dir,
         paths.generations_dir,

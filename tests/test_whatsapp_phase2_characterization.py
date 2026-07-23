@@ -64,6 +64,7 @@ def test_phase2_settings_contracts_are_bounded_and_sanitized() -> None:
     )
     assert settings == {
         "label": "Telefone principal",
+        "is_primary": False,
         "send_ml_question_suggestions": False,
         "send_weekly_report": True,
         "send_monthly_report": False,

@@ -158,12 +158,9 @@ def _hub_call(
     return hub_mode, hub_plan
 
 
-def enforce_plan(
-    plan: dict[str, Any], *, request_text: str, query_policy: dict[str, Any],
-    catalog: list[dict[str, Any]], max_calls: int,
-) -> dict[str, Any]:
-    """Validate agent-selected read-only calls against server-owned scope."""
-
+def _prepare_enforcement_plan(
+    plan: dict[str, Any], request_text: str, query_policy: dict[str, Any],
+) -> tuple[dict[str, Any], str, bool]:
     result = dict(plan or {})
     context_request = str(query_policy.get("context_request") or request_text or "").strip()
     live_question_queue = _is_live_question_queue_request(context_request)
@@ -174,6 +171,72 @@ def enforce_plan(
         entities = dict(result.get("entities") or {}) if isinstance(result.get("entities"), dict) else {}
         entities.update({"sku": "", "mlb": ""})
         result["entities"] = entities
+    return result, context_request, live_question_queue
+
+
+def _finalize_enforced_plan(
+    result: dict[str, Any], calls: list[dict[str, Any]], *, action: str,
+    hub_mode: str, hub_plan: dict[str, Any], hub_allowed: bool,
+    positive_stock_sku_count: bool, live_question_queue: bool,
+) -> dict[str, Any]:
+    result.update({"tool_calls": calls, "requires_web": False, "requires_sol": False})
+    hub_planned = any(str(item.get("tool_id") or "") == "context_hub_search" for item in calls)
+    result["missing_user_fields"] = [
+        str(item or "").strip()[:160]
+        for item in list(result.get("missing_user_fields") or [])[:12]
+        if str(item or "").strip()
+    ]
+    result["manager_guard"] = {
+        "data_selection_action": action,
+        "context_hub_mode": "selected" if hub_planned else "blocked" if hub_mode not in {"", "off", "none", "not_needed", "not_applicable"} else "not_selected",
+        "context_hub_reason": str(hub_plan.get("reason") or "agent_selection" if hub_planned else "")[:300],
+        "context_hub_allowed": hub_allowed,
+        "positive_stock_sku_count": positive_stock_sku_count,
+        "live_question_queue": live_question_queue,
+    }
+    if action == "collect" and not calls:
+        raise RuntimeError("data_selection_collect_without_authorized_source")
+    return result
+
+
+def _append_authorized_proposed_calls(
+    proposed: list[Any],
+    add_call: Callable[..., Optional[int]],
+) -> None:
+    accepted: dict[int, int] = {}
+    for raw_index, item in enumerate(proposed):
+        if not isinstance(item, dict) or str(item.get("tool_id") or "") == "context_hub_search":
+            continue
+        raw_args = item.get("arguments")
+        if not isinstance(raw_args, dict):
+            try:
+                raw_args = json.loads(str(raw_args or "{}"))
+            except Exception:
+                raw_args = {}
+        mapped = [
+            accepted[dep] for dep in list(item.get("depends_on") or [])[:6]
+            if isinstance(dep, int) and dep in accepted
+        ]
+        accepted_index = add_call(
+            str(item.get("tool_id") or ""),
+            raw_args if isinstance(raw_args, dict) else {},
+            item.get("required") is not False,
+            str(item.get("reason") or ""),
+            mapped,
+        )
+        if accepted_index is not None:
+            accepted[raw_index] = accepted_index
+
+
+def enforce_plan(
+    plan: dict[str, Any], *, request_text: str, query_policy: dict[str, Any],
+    catalog: list[dict[str, Any]], max_calls: int,
+) -> dict[str, Any]:
+    """Validate agent-selected read-only calls against server-owned scope."""
+
+    result, context_request, live_question_queue = _prepare_enforcement_plan(
+        plan, request_text, query_policy,
+    )
     allowed = {str(item.get("id") or "") for item in catalog if isinstance(item, dict)}
     exact_store = _apply_scope(result, query_policy)
     calls: list[dict[str, Any]] = []
@@ -263,49 +326,22 @@ def enforce_plan(
             "contagem agregada de SKUs com saldo positivo",
         )
     if action not in {"answer_without_data", "clarify", "mutation_candidate"}:
-        accepted: dict[int, int] = {}
-        for raw_index, item in enumerate(proposed):
-            if not isinstance(item, dict) or str(item.get("tool_id") or "") == "context_hub_search":
-                continue
-            raw_args = item.get("arguments")
-            if not isinstance(raw_args, dict):
-                try:
-                    raw_args = json.loads(str(raw_args or "{}"))
-                except Exception:
-                    raw_args = {}
-            mapped = [
-                accepted[dep] for dep in list(item.get("depends_on") or [])[:6]
-                if isinstance(dep, int) and dep in accepted
-            ]
-            accepted_index = add_call(
-                str(item.get("tool_id") or ""), raw_args if isinstance(raw_args, dict) else {},
-                item.get("required") is not False, str(item.get("reason") or ""), mapped,
-            )
-            if accepted_index is not None:
-                accepted[raw_index] = accepted_index
+        _append_authorized_proposed_calls(proposed, add_call)
 
     if live_question_queue:
         hub_mode, hub_plan = "not_applicable", {}
     else:
         hub_mode, hub_plan = _hub_call(result, add_call, query_policy)
-    result.update({"tool_calls": calls, "requires_web": False, "requires_sol": False})
-    hub_planned = any(str(item.get("tool_id") or "") == "context_hub_search" for item in calls)
-    result["missing_user_fields"] = [
-        str(item or "").strip()[:160]
-        for item in list(result.get("missing_user_fields") or [])[:12]
-        if str(item or "").strip()
-    ]
-    result["manager_guard"] = {
-        "data_selection_action": action,
-        "context_hub_mode": "selected" if hub_planned else "blocked" if hub_mode not in {"", "off", "none", "not_needed", "not_applicable"} else "not_selected",
-        "context_hub_reason": str(hub_plan.get("reason") or "agent_selection" if hub_planned else "")[:300],
-        "context_hub_allowed": hub_allowed,
-        "positive_stock_sku_count": positive_stock_sku_count,
-        "live_question_queue": live_question_queue,
-    }
-    if action == "collect" and not calls:
-        raise RuntimeError("data_selection_collect_without_authorized_source")
-    return result
+    return _finalize_enforced_plan(
+        result,
+        calls,
+        action=action,
+        hub_mode=hub_mode,
+        hub_plan=hub_plan,
+        hub_allowed=hub_allowed,
+        positive_stock_sku_count=positive_stock_sku_count,
+        live_question_queue=live_question_queue,
+    )
 
 
 __all__ = ["enforce_plan"]

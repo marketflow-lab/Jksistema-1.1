@@ -326,19 +326,10 @@ def _send_registered_phone_welcome(
         return {"requested": True, "success": False, "status": "failed", "error": str(exc)[:500]}
 
 
-def whatsapp_bridge_update_phone_settings(
-    payload: WhatsappPhoneSettingsRequest,
-    request: Request,
-    authorization: Optional[str] = Header(default=None),
+def _require_registered_phone_binding(
+    worker: dict[str, Any], *, subject_id: str, username: str,
+    client_id: str, machine_id: str,
 ) -> dict[str, Any]:
-    session = _require_full(request, authorization)
-    config = _load_config()
-    subject_id = str(payload.subject_id or "").strip()
-    username, client_id = _binding_target(session, payload.username, payload.client_id)
-    if not subject_id or not username or not client_id:
-        raise HTTPException(status_code=400, detail="Telefone, usuario e cliente sao obrigatorios.")
-
-    worker = _worker_health(config)
     binding = next(
         (
             item
@@ -352,8 +343,62 @@ def whatsapp_bridge_update_phone_settings(
     )
     if binding is None:
         raise HTTPException(status_code=404, detail="Numero vinculado nao encontrado para este usuario.")
-    if str(binding.get("machine_id") or "") != str(config.get("machine_id") or ""):
+    if str(binding.get("machine_id") or "") != machine_id:
         raise HTTPException(status_code=409, detail="Este numero esta vinculado em outra maquina. Configure-o na maquina correspondente.")
+    return binding
+
+
+def _register_phone_binding_with_gateway(
+    config: dict[str, Any], *, phone_number: str, client_id: str,
+    username: str, machine_id: str, is_primary: Optional[bool],
+) -> dict[str, Any]:
+    registration_payload: dict[str, Any] = {
+        "phone_number": phone_number,
+        "client_id": client_id,
+        "username": username,
+        "machine_id": machine_id,
+    }
+    if is_primary is not None:
+        registration_payload["is_primary"] = is_primary
+    try:
+        return _gateway_json(
+            config,
+            "POST",
+            "/bridge/bindings/register",
+            registration_payload,
+            timeout=15,
+        )
+    except RuntimeError as exc:
+        error = str(exc)
+        if "binding_limit_reached" in error:
+            raise HTTPException(status_code=409, detail="Este usuario ja possui o limite de 3 telefones.") from exc
+        if "binding_already_registered" in error:
+            raise HTTPException(status_code=409, detail="Este telefone ja esta cadastrado para outro usuario.") from exc
+        if "invalid_phone_number" in error:
+            raise HTTPException(status_code=400, detail="Informe um numero de WhatsApp valido, com DDD.") from exc
+        raise
+
+
+def whatsapp_bridge_update_phone_settings(
+    payload: WhatsappPhoneSettingsRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    session = _require_full(request, authorization)
+    config = _load_config()
+    subject_id = str(payload.subject_id or "").strip()
+    username, client_id = _binding_target(session, payload.username, payload.client_id)
+    if not subject_id or not username or not client_id:
+        raise HTTPException(status_code=400, detail="Telefone, usuario e cliente sao obrigatorios.")
+
+    worker = _worker_health(config)
+    binding = _require_registered_phone_binding(
+        worker,
+        subject_id=subject_id,
+        username=username,
+        client_id=client_id,
+        machine_id=str(config.get("machine_id") or ""),
+    )
 
     authoritative_primary = payload.is_primary
     if payload.is_primary is not None:
@@ -470,31 +515,14 @@ def whatsapp_bridge_register_phone(
     config = _load_config()
     machine_id = str(session.get("machine_id") or config.get("machine_id") or _host_machine_id())
     config["machine_id"] = machine_id
-    try:
-        registration_payload = {
-            "phone_number": phone_number,
-            "client_id": target_client_id,
-            "username": target_username,
-            "machine_id": machine_id,
-        }
-        if payload.is_primary is not None:
-            registration_payload["is_primary"] = payload.is_primary
-        result = _gateway_json(
-            config,
-            "POST",
-            "/bridge/bindings/register",
-            registration_payload,
-            timeout=15,
-        )
-    except RuntimeError as exc:
-        error = str(exc)
-        if "binding_limit_reached" in error:
-            raise HTTPException(status_code=409, detail="Este usuario ja possui o limite de 3 telefones.") from exc
-        if "binding_already_registered" in error:
-            raise HTTPException(status_code=409, detail="Este telefone ja esta cadastrado para outro usuario.") from exc
-        if "invalid_phone_number" in error:
-            raise HTTPException(status_code=400, detail="Informe um numero de WhatsApp valido, com DDD.") from exc
-        raise
+    result = _register_phone_binding_with_gateway(
+        config,
+        phone_number=phone_number,
+        client_id=target_client_id,
+        username=target_username,
+        machine_id=machine_id,
+        is_primary=payload.is_primary,
+    )
 
     binding = result.get("binding") if isinstance(result.get("binding"), dict) else {}
     subject_id = str(result.get("subject_id") or binding.get("subject_id") or phone_number).strip()

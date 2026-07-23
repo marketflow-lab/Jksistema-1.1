@@ -388,40 +388,107 @@
             }
         }
 
+        function urlHttpValidaFavoritos(value) {
+            const raw = String(value || '').trim();
+            if (!raw) return false;
+            try {
+                const url = new URL(raw);
+                return (url.protocol === 'http:' || url.protocol === 'https:') && !!url.hostname;
+            } catch (_err) {
+                return false;
+            }
+        }
+
+        function urlPertenceAoMercadoLivreFavoritos(value) {
+            if (!urlHttpValidaFavoritos(value)) return false;
+            try {
+                const host = new URL(String(value || '').trim()).hostname.toLowerCase();
+                return host === 'mercadolivre.com'
+                    || host.endsWith('.mercadolivre.com')
+                    || host === 'mercadolivre.com.br'
+                    || host.endsWith('.mercadolivre.com.br')
+                    || host === 'mercadolibre.com'
+                    || host.endsWith('.mercadolibre.com');
+            } catch (_err) {
+                return false;
+            }
+        }
+
+        async function obterEstadoFrescoBrowserShellFavoritos(urlEsperada = '') {
+            const bridge = typeof favoritosBrowserShellBridge !== 'undefined'
+                ? favoritosBrowserShellBridge
+                : null;
+            if (!bridge || typeof bridge.verificarEstado !== 'function') return null;
+            const estado = await bridge.verificarEstado(String(urlEsperada || '').trim(), 1200).catch(() => null);
+            const url = String(estado && estado.url || '').trim();
+            if (!estado
+                || estado.success !== true
+                || estado.available !== true
+                || estado.attached !== true
+                || !urlPertenceAoMercadoLivreFavoritos(url)) {
+                return null;
+            }
+            return {
+                url,
+                authFlow: estado.authFlow === true
+            };
+        }
+
         async function obterEstadoAutenticacaoMercadoLivreFavoritos() {
             let urlAtual = '';
             let needsLogin = false;
             let leituraConfiavel = false;
+            let authFlowShell = false;
             const podeExecutarDireto = !!(mlWebviewEl && typeof mlWebviewEl.executeJavaScript === 'function');
             if (mlWebviewEl && typeof mlWebviewEl.getURL === 'function') {
                 try { urlAtual = String(mlWebviewEl.getURL() || '').trim(); } catch (_err) {}
-                if (!podeExecutarDireto && /^https?:\/\//i.test(urlAtual)) leituraConfiavel = true;
+                if (!podeExecutarDireto && urlPertenceAoMercadoLivreFavoritos(urlAtual)) leituraConfiavel = true;
             }
             if (podeExecutarDireto) {
-                const estado = await mlWebviewEl.executeJavaScript(`
-                    (function () {
-                        var texto = String(document.body && (document.body.innerText || document.body.textContent) || '').toLowerCase();
-                        try { texto = texto.normalize('NFD').replace(/[\\u0300-\\u036f]/g, ''); } catch (_err) {}
-                        return {
-                            url: String(location.href || ''),
-                            needsLogin: texto.indexOf('digite seu e-mail') >= 0
-                                || texto.indexOf('digite seu email') >= 0
-                                || texto.indexOf('para iniciar sessao') >= 0
-                                || texto.indexOf('codigo de verificacao') >= 0
-                                || texto.indexOf('verifique sua identidade') >= 0
-                        };
-                    })();
-                `, true).catch(() => null);
-                if (estado && /^https?:\/\//i.test(String(estado.url || '').trim())) {
+                let timeoutLeituraDom = null;
+                const leituraDom = Promise.resolve().then(() => mlWebviewEl.executeJavaScript(`
+                        (function () {
+                            var texto = String(document.body && (document.body.innerText || document.body.textContent) || '').toLowerCase();
+                            try { texto = texto.normalize('NFD').replace(/[\\u0300-\\u036f]/g, ''); } catch (_err) {}
+                            return {
+                                url: String(location.href || ''),
+                                needsLogin: texto.indexOf('digite seu e-mail') >= 0
+                                    || texto.indexOf('digite seu email') >= 0
+                                    || texto.indexOf('para iniciar sessao') >= 0
+                                    || texto.indexOf('codigo de verificacao') >= 0
+                                    || texto.indexOf('verifique sua identidade') >= 0
+                            };
+                        })();
+                    `, true)).catch(() => null);
+                const limiteLeituraDom = new Promise(resolve => {
+                    timeoutLeituraDom = setTimeout(() => resolve(null), 800);
+                });
+                let estado = null;
+                try {
+                    estado = await Promise.race([leituraDom, limiteLeituraDom]);
+                } finally {
+                    if (timeoutLeituraDom) clearTimeout(timeoutLeituraDom);
+                }
+                if (estado && urlPertenceAoMercadoLivreFavoritos(estado.url)) {
                     urlAtual = String(estado.url).trim();
                     leituraConfiavel = true;
                 }
                 needsLogin = !!(estado && estado.needsLogin);
             }
+            if (!leituraConfiavel) {
+                const estadoShell = await obterEstadoFrescoBrowserShellFavoritos(urlAtual).catch(() => null);
+                if (estadoShell) {
+                    urlAtual = estadoShell.url;
+                    authFlowShell = estadoShell.authFlow;
+                    leituraConfiavel = true;
+                }
+            }
             return {
                 url: urlAtual,
                 indeterminado: !leituraConfiavel,
-                pendente: needsLogin || urlEmFluxoAutenticacaoMercadoLivreFavoritos(urlAtual)
+                pendente: needsLogin
+                    || authFlowShell
+                    || urlEmFluxoAutenticacaoMercadoLivreFavoritos(urlAtual)
             };
         }
 

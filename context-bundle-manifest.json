@@ -2,8 +2,8 @@
   "files": [
     {
       "path": "docs/knowledge/README.md",
-      "sha256": "ba3ff1640db0fa0bc806abc2c8b7e0e8667da4b3fb908653e5ba31b0c5473b19",
-      "size": 1344
+      "sha256": "6c62535b44eeab2f0da61d6cc2660644ff080087f76b13282a6477a747e849b0",
+      "size": 1657
     },
     {
       "path": "docs/knowledge/curation-governance-v2.md",
@@ -21,6 +21,16 @@
       "size": 890
     },
     {
+      "path": "docs/knowledge/sku-product-category-taxonomy-v1.md",
+      "sha256": "b7d787f332ddec97a6423e5441d4756e5610728f50b13ac52ad38bee7430f948",
+      "size": 6867
+    },
+    {
+      "path": "docs/knowledge/sku-vehicle-year-tree-v1.md",
+      "sha256": "92cdcc2dc92c6e92444ac571b1bf3e796225e9f929205f5ff7cf00a9aa647545",
+      "size": 3011
+    },
+    {
       "path": "docs/knowledge/templates/curated-note.md",
       "sha256": "01c890f2c0f2536c834ebbb7d7511f1baac47b599d12612524650c5a58c35ffc",
       "size": 512
@@ -32,8 +42,8 @@
     },
     {
       "path": "docs/knowledge/vault-structure.md",
-      "sha256": "588be6c8651e398a98d35d8b0e304a39424c2129f271c7b6a9549f6933598e26",
-      "size": 534
+      "sha256": "547e6101c1e1e315ce5dbc952f4306f054971d7266a457c1232c0817615682da",
+      "size": 924
     },
     {
       "path": "docs/knowledge/whatsapp-ai-context-policy.md",
@@ -42,5 +52,5 @@
     }
   ],
   "schema_version": 1,
-  "source_version": "1.0.113"
+  "source_version": "1.0.114"
 }

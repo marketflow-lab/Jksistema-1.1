@@ -16,7 +16,7 @@ from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 
 FAVORITOS_ENDPOINTS: tuple[str, ...] = ('favoritos_listar_skus', 'favoritos_skus_ocultos_get', 'favoritos_skus_ocultos_put', 'favoritos_vendedores_ignorados_get', 'favoritos_vendedores_ignorados_put', 'favoritos_anuncios_ignorados_get', 'favoritos_anuncios_ignorados_put', 'favoritos_historico_get', 'favoritos_historico_put', 'favoritos_historico_realtime_sync', 'favoritos_planilhas_lojas_get', 'favoritos_planilhas_lojas_put', 'favoritos_planilhas_colar_historico', 'favoritos_ml_listar_skus_anuncios', 'favoritos_ml_listar_promocoes_ativas', 'favoritos_ml_validar_efetivacao', 'favoritos_ml_efetivar_promocao', 'favoritos_ml_listar_anuncios_sku', 'favoritos_salvar_pesquisas_sku', 'favoritos_gerar_pesquisas_sku_ia', 'favoritos_filtrar_ranking_ia', 'favoritos_buscar_descricao_sku', 'favoritos_buscar_descricoes_skus', 'favoritos_ml_primeira_pagina', 'favoritos_ml_enriquecer_datas', 'favoritos_pesquisar')
@@ -700,6 +700,35 @@ def favoritos_ml_listar_promocoes_ativas(
     return _ml_listar_promocoes_ativas_payload(client_id, loja)
 
 
+def _favoritos_ml_etapas_efetivacao(
+    *,
+    preflight: str = "completed",
+    remocao_promocoes: str = "not_started",
+    tipo_anuncio: str = "not_started",
+    preco: str = "not_started",
+    promocao: str = "not_started",
+    verificacao: str = "not_started",
+) -> dict:
+    return {
+        "preflight": {"status": preflight},
+        "promotion_removal": {"status": remocao_promocoes},
+        "listing_type": {"status": tipo_anuncio},
+        "price": {"status": preco},
+        "promotion": {"status": promocao},
+        "verification": {"status": verificacao},
+    }
+
+
+def _favoritos_ml_resposta_efetivacao(status_code: int, payload: dict):
+    return JSONResponse(status_code=status_code, content=jsonable_encoder(payload))
+
+
+def _favoritos_ml_mensagem_excecao(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        return str(exc.detail or exc)
+    return str(exc or "Falha inesperada ao alterar o anuncio.")
+
+
 def favoritos_ml_validar_efetivacao(
     req: FavoritosValidarEfetivacaoRequest,
     client_id: str = Depends(get_tenant_id),
@@ -717,23 +746,35 @@ def favoritos_ml_validar_efetivacao(
                 "message": "Loja ou MLB ausente para validar a alteracao.",
             })
             continue
-        if not alvo:
-            resultados.append({
-                "ok": True,
-                "item_id": item_id,
-                "loja": loja,
-                "message": "Sem troca de tipo para validar.",
-            })
-            continue
         try:
             cfg = _obter_cfg_ml(client_id, loja)
-            validacao, _cfg = _favoritos_ml_validar_listing_type_disponivel(
-                client_id,
-                loja,
-                cfg,
-                item_id,
-                alvo,
-            )
+            if alvo:
+                validacao, cfg = _favoritos_ml_validar_listing_type_disponivel(
+                    client_id,
+                    loja,
+                    cfg,
+                    item_id,
+                    alvo,
+                )
+                estado = _favoritos_ml_resumir_estado_item(item_id, validacao.get("item"))
+            else:
+                estado, cfg = _favoritos_ml_obter_estado_item(client_id, loja, cfg, item_id)
+                validacao = {
+                    "ok": True,
+                    "item_id": item_id,
+                    "loja": loja,
+                    "message": "Sem troca de tipo para validar.",
+                }
+            validacao["current_state"] = estado
+            validacao["outcome"] = "ready"
+            if estado.get("mutation_blocked"):
+                validacao.update({
+                    "ok": False,
+                    "outcome": "blocked_preflight",
+                    "retryable": bool(estado.get("retryable")),
+                    "retry_requires_approval": True,
+                    "message": estado.get("block_reason") or "O estado atual do anuncio bloqueia alteracoes.",
+                })
             resultados.append(validacao)
         except HTTPException as exc:
             resultados.append({
@@ -783,67 +824,324 @@ def favoritos_ml_efetivar_promocao(
         raise HTTPException(status_code=400, detail="Preco promocional simulado invalido.")
 
     cfg = _obter_cfg_ml(client_id, loja)
+    removidas = []
     listing_type_update = None
+    preco_update = None
     listing_type_alvo = _favoritos_ml_listing_type_alvo_req(req)
 
-    removidas, cfg = _favoritos_ml_remover_promocoes_atuais(client_id, loja, cfg, item_id, req)
+    def _interromper(
+        status_code: int,
+        outcome: str,
+        message: str,
+        *,
+        current_state: Optional[dict] = None,
+        retryable: bool = False,
+        stages: Optional[dict] = None,
+    ):
+        estado_resposta = current_state or {}
+        return _favoritos_ml_resposta_efetivacao(status_code, {
+            "success": False,
+            "completed": False,
+            "outcome": outcome,
+            "message": message,
+            "loja": loja,
+            "sku": req.sku,
+            "item_id": item_id,
+            "promotion_id": campanha_id,
+            "promotion_type": promotion_type,
+            "campanha_nome": req.campanha_nome,
+            "retryable": bool(retryable),
+            "retry_requires_approval": True,
+            "current_state": estado_resposta,
+            "preco_anuncio_atual": estado_resposta.get("price"),
+            "preco_anuncio_alvo": round(float(preco_anuncio), 2),
+            "preco_promocional_alvo": round(float(preco_promocional), 2),
+            "promocoes_removidas": removidas,
+            "listing_type_update": listing_type_update,
+            "preco_update": preco_update,
+            "stages": stages or _favoritos_ml_etapas_efetivacao(),
+        })
+
+    try:
+        estado_inicial, cfg = _favoritos_ml_obter_estado_item(client_id, loja, cfg, item_id)
+    except Exception as exc:
+        return _interromper(
+            getattr(exc, "status_code", 502) or 502,
+            "failed",
+            f"Nao foi possivel conferir o anuncio antes das alteracoes: {_favoritos_ml_mensagem_excecao(exc)}",
+            stages=_favoritos_ml_etapas_efetivacao(preflight="failed"),
+        )
+    if estado_inicial.get("mutation_blocked"):
+        return _interromper(
+            409,
+            "blocked_preflight",
+            estado_inicial.get("block_reason") or "O estado atual do anuncio bloqueia alteracoes.",
+            current_state=estado_inicial,
+            retryable=bool(estado_inicial.get("retryable")),
+            stages=_favoritos_ml_etapas_efetivacao(preflight="blocked"),
+        )
+
+    def _interromper_apos_mutacao(
+        status_code: int,
+        message: str,
+        *,
+        stages: dict,
+        fallback_state: Optional[dict] = None,
+    ):
+        nonlocal cfg
+        try:
+            estado_atual, cfg = _favoritos_ml_obter_estado_item(client_id, loja, cfg, item_id)
+        except Exception:
+            estado_atual = fallback_state or estado_inicial
+        _cache_invalidar_loja(client_id, loja)
+        return _interromper(
+            status_code,
+            "partial_failure",
+            message,
+            current_state=estado_atual,
+            retryable=True,
+            stages=stages,
+        )
+
+    try:
+        removidas, cfg = _favoritos_ml_remover_promocoes_atuais(client_id, loja, cfg, item_id, req)
+    except Exception as exc:
+        tentativas_remocao = getattr(exc, "favoritos_remocoes", [])
+        if isinstance(tentativas_remocao, list):
+            removidas = [item for item in tentativas_remocao if isinstance(item, dict) and item.get("success")]
+        cfg_excecao = getattr(exc, "favoritos_cfg", None)
+        if isinstance(cfg_excecao, dict):
+            cfg = cfg_excecao
+        parcial = bool(removidas)
+        if parcial:
+            return _interromper_apos_mutacao(
+                getattr(exc, "status_code", 409) or 409,
+                f"Uma promocao anterior foi removida, mas a remocao das demais falhou: {_favoritos_ml_mensagem_excecao(exc)}",
+                stages=_favoritos_ml_etapas_efetivacao(remocao_promocoes="partial"),
+            )
+        return _interromper(
+            getattr(exc, "status_code", 409) or 409,
+            "failed",
+            f"Nao foi possivel remover a promocao atual: {_favoritos_ml_mensagem_excecao(exc)}",
+            current_state=estado_inicial,
+            stages=_favoritos_ml_etapas_efetivacao(remocao_promocoes="failed"),
+        )
+    status_remocao = "completed" if removidas else "skipped"
     if removidas:
         time.sleep(3.0)
+        try:
+            estado_apos_remocao, cfg = _favoritos_ml_obter_estado_item(client_id, loja, cfg, item_id)
+        except Exception as exc:
+            return _interromper(
+                getattr(exc, "status_code", 502) or 502,
+                "partial_failure",
+                f"A promocao atual foi removida, mas nao foi possivel reconferir o anuncio: {_favoritos_ml_mensagem_excecao(exc)}",
+                current_state=estado_inicial,
+                retryable=True,
+                stages=_favoritos_ml_etapas_efetivacao(remocao_promocoes=status_remocao, tipo_anuncio="pending"),
+            )
+        if estado_apos_remocao.get("mutation_blocked"):
+            pendente_revisao = bool(estado_apos_remocao.get("retryable"))
+            return _interromper(
+                202 if pendente_revisao else 409,
+                "pending_review" if pendente_revisao else "partial_failure",
+                (
+                    "A promocao anterior foi removida, mas o Mercado Livre colocou o anuncio em revisao. "
+                    "O preco e a nova campanha nao foram alterados. Aguarde o anuncio voltar a ativo e aprove novamente."
+                    if pendente_revisao
+                    else estado_apos_remocao.get("block_reason") or "O anuncio ficou bloqueado depois da remocao da promocao."
+                ),
+                current_state=estado_apos_remocao,
+                retryable=pendente_revisao,
+                stages=_favoritos_ml_etapas_efetivacao(
+                    remocao_promocoes=status_remocao,
+                    tipo_anuncio="pending" if pendente_revisao else "blocked",
+                ),
+            )
 
     if listing_type_alvo:
-        listing_type_update, cfg = _favoritos_ml_atualizar_tipo_listing_item(
-            client_id,
-            loja,
-            cfg,
-            item_id,
-            listing_type_alvo,
-        )
-        if listing_type_update and listing_type_update.get("changed"):
-            time.sleep(1.0)
-
-    preco_update, cfg = _favoritos_ml_atualizar_preco_item(client_id, loja, cfg, item_id, preco_anuncio)
-    preco_confirmacao, cfg = _favoritos_ml_aguardar_preco_anuncio(
-        client_id,
-        loja,
-        cfg,
-        item_id,
-        float(preco_anuncio),
-        tentativas=8,
-    )
-    if not preco_confirmacao.get("success"):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "O preco cheio do anuncio ainda nao ficou igual ao simulado no Mercado Livre. "
-                "A promocao nao foi aplicada para evitar margem errada. "
-                f"Conferencia: {preco_confirmacao}"
-            ),
-        )
-
-    ok, erro, cfg = _promo_aplicar_item_participacao_ml(
-        client_id,
-        loja,
-        cfg,
-        item_id=item_id,
-        promotion_id=campanha_id,
-        promotion_type=promotion_type,
-        deal_price=preco_promocional,
-        discount_percentage=percentual,
-    )
-    if not ok:
-        motivo = f"Preco atualizado, mas falhou ao aplicar a promocao: {erro}"
-        if _favoritos_ml_falha_por_percentual_promocao(motivo):
-            fallback, cfg = _favoritos_ml_aplicar_contingencia_sem_promocao(
+        try:
+            listing_type_update, cfg = _favoritos_ml_atualizar_tipo_listing_item(
                 client_id,
                 loja,
                 cfg,
                 item_id,
-                req,
-                motivo,
+                listing_type_alvo,
             )
+        except Exception as exc:
+            parcial = bool(removidas)
+            return _interromper(
+                getattr(exc, "status_code", 409) or 409,
+                "partial_failure" if parcial else "failed",
+                (
+                    "A promocao anterior foi removida, mas a troca do tipo do anuncio falhou: "
+                    if parcial
+                    else "Nao foi possivel alterar o tipo do anuncio: "
+                ) + _favoritos_ml_mensagem_excecao(exc),
+                current_state=estado_inicial,
+                retryable=parcial,
+                stages=_favoritos_ml_etapas_efetivacao(
+                    remocao_promocoes=status_remocao,
+                    tipo_anuncio="failed",
+                ),
+            )
+        if listing_type_update and listing_type_update.get("changed"):
+            time.sleep(1.0)
+            try:
+                estado_apos_tipo, cfg = _favoritos_ml_obter_estado_item(client_id, loja, cfg, item_id)
+            except Exception as exc:
+                return _interromper(
+                    getattr(exc, "status_code", 502) or 502,
+                    "partial_failure",
+                    f"O tipo do anuncio foi alterado, mas nao foi possivel reconferir seu estado: {_favoritos_ml_mensagem_excecao(exc)}",
+                    current_state=estado_inicial,
+                    retryable=True,
+                    stages=_favoritos_ml_etapas_efetivacao(
+                        remocao_promocoes=status_remocao,
+                        tipo_anuncio="completed",
+                        preco="pending",
+                    ),
+                )
+            if estado_apos_tipo.get("mutation_blocked"):
+                pendente_revisao = bool(estado_apos_tipo.get("retryable"))
+                _cache_invalidar_loja(client_id, loja)
+                return _interromper(
+                    202 if pendente_revisao else 409,
+                    "pending_review" if pendente_revisao else "partial_failure",
+                    (
+                        "O tipo do anuncio foi alterado, mas o Mercado Livre colocou o anuncio em revisao. "
+                        "O preco e a campanha nao foram alterados. Aguarde o anuncio voltar a ativo e aprove novamente."
+                        if pendente_revisao
+                        else estado_apos_tipo.get("block_reason") or "O anuncio ficou bloqueado depois da troca de tipo."
+                    ),
+                    current_state=estado_apos_tipo,
+                    retryable=pendente_revisao,
+                    stages=_favoritos_ml_etapas_efetivacao(
+                        remocao_promocoes=status_remocao,
+                        tipo_anuncio="completed",
+                        preco="pending" if pendente_revisao else "blocked",
+                    ),
+                )
+        status_tipo = "completed" if listing_type_update and listing_type_update.get("changed") else "skipped"
+    else:
+        status_tipo = "skipped"
+
+    try:
+        preco_update, cfg = _favoritos_ml_atualizar_preco_item(client_id, loja, cfg, item_id, preco_anuncio)
+        preco_confirmacao, cfg = _favoritos_ml_aguardar_preco_anuncio(
+            client_id,
+            loja,
+            cfg,
+            item_id,
+            float(preco_anuncio),
+            tentativas=8,
+        )
+    except Exception as exc:
+        try:
+            estado_apos_preco, cfg = _favoritos_ml_obter_estado_item(client_id, loja, cfg, item_id)
+        except Exception:
+            estado_apos_preco = estado_inicial
+        preco_atual_estado = _parse_float_flex((estado_apos_preco or {}).get("price"))
+        preco_no_alvo = bool(
+            preco_atual_estado is not None
+            and abs(float(preco_atual_estado) - float(preco_anuncio)) <= 0.02
+        )
+        parcial = bool(
+            removidas
+            or listing_type_update and listing_type_update.get("changed")
+            or preco_update
+            or preco_no_alvo
+        )
+        return _interromper(
+            getattr(exc, "status_code", 409) or 409,
+            "partial_failure" if parcial else "failed",
+            (
+                "A alteracao ficou parcial porque alguma etapa anterior foi aplicada, mas o preco cheio nao foi confirmado: "
+                if parcial
+                else "O preco cheio nao foi alterado nem confirmado: "
+            ) + _favoritos_ml_mensagem_excecao(exc),
+            current_state=estado_apos_preco,
+            retryable=parcial,
+            stages=_favoritos_ml_etapas_efetivacao(
+                remocao_promocoes=status_remocao,
+                tipo_anuncio=status_tipo,
+                preco="failed",
+            ),
+        )
+    if not preco_confirmacao.get("success"):
+        try:
+            estado_apos_preco, cfg = _favoritos_ml_obter_estado_item(client_id, loja, cfg, item_id)
+        except Exception:
+            estado_apos_preco = estado_inicial
+        return _interromper(
+            409,
+            "partial_failure",
+            (
+                "O preco cheio do anuncio ainda nao ficou igual ao simulado no Mercado Livre. "
+                "A promocao nao foi aplicada para evitar margem errada. "
+                f"Conferencia: {preco_confirmacao}"
+            ),
+            current_state=estado_apos_preco,
+            retryable=True,
+            stages=_favoritos_ml_etapas_efetivacao(
+                remocao_promocoes=status_remocao,
+                tipo_anuncio=status_tipo,
+                preco="failed",
+            ),
+        )
+
+    try:
+        ok, erro, cfg = _promo_aplicar_item_participacao_ml(
+            client_id,
+            loja,
+            cfg,
+            item_id=item_id,
+            promotion_id=campanha_id,
+            promotion_type=promotion_type,
+            deal_price=preco_promocional,
+            discount_percentage=percentual,
+        )
+    except Exception as exc:
+        return _interromper_apos_mutacao(
+            getattr(exc, "status_code", 409) or 409,
+            f"O preco cheio foi aplicado, mas a promocao falhou: {_favoritos_ml_mensagem_excecao(exc)}",
+            stages=_favoritos_ml_etapas_efetivacao(
+                remocao_promocoes=status_remocao,
+                tipo_anuncio=status_tipo,
+                preco="completed",
+                promocao="failed",
+            ),
+        )
+    if not ok:
+        motivo = f"Preco atualizado, mas falhou ao aplicar a promocao: {erro}"
+        if _favoritos_ml_falha_por_percentual_promocao(motivo):
+            try:
+                fallback, cfg = _favoritos_ml_aplicar_contingencia_sem_promocao(
+                    client_id,
+                    loja,
+                    cfg,
+                    item_id,
+                    req,
+                    motivo,
+                )
+            except Exception as exc:
+                return _interromper_apos_mutacao(
+                    getattr(exc, "status_code", 409) or 409,
+                    f"A promocao foi recusada e a protecao de margem tambem falhou: {_favoritos_ml_mensagem_excecao(exc)}",
+                    stages=_favoritos_ml_etapas_efetivacao(
+                        remocao_promocoes=status_remocao,
+                        tipo_anuncio=status_tipo,
+                        preco="completed",
+                        promocao="fallback_failed",
+                    ),
+                )
             _cache_invalidar_loja(client_id, loja)
             return {
                 "success": True,
+                "completed": True,
+                "outcome": "completed",
+                "retryable": False,
+                "retry_requires_approval": False,
                 "message": (
                     "Campanha recusada pelo Mercado Livre; aplicado menor preco seguro com margem minima, sem competir com a base."
                     if fallback.get("fallback_sem_competir")
@@ -864,38 +1162,105 @@ def favoritos_ml_efetivar_promocao(
                 "preco_update": preco_update,
                 "preco_confirmacao": preco_confirmacao,
                 "verificacao": None,
+                "stages": _favoritos_ml_etapas_efetivacao(
+                    remocao_promocoes=status_remocao,
+                    tipo_anuncio=status_tipo,
+                    preco="completed",
+                    promocao="fallback_completed",
+                    verificacao="skipped",
+                ),
                 **fallback,
             }
-        raise HTTPException(status_code=409, detail=motivo)
+        try:
+            estado_apos_promocao, cfg = _favoritos_ml_obter_estado_item(client_id, loja, cfg, item_id)
+        except Exception:
+            estado_apos_promocao = estado_inicial
+        _cache_invalidar_loja(client_id, loja)
+        return _interromper(
+            409,
+            "partial_failure",
+            motivo,
+            current_state=estado_apos_promocao,
+            retryable=True,
+            stages=_favoritos_ml_etapas_efetivacao(
+                remocao_promocoes=status_remocao,
+                tipo_anuncio=status_tipo,
+                preco="completed",
+                promocao="failed",
+            ),
+        )
 
-    verificacao, cfg = _favoritos_ml_verificar_efetivacao(
-        client_id,
-        loja,
-        cfg,
-        item_id,
-        campanha_id,
-        promotion_type,
-        float(preco_anuncio),
-        float(preco_promocional),
-    )
+    try:
+        verificacao, cfg = _favoritos_ml_verificar_efetivacao(
+            client_id,
+            loja,
+            cfg,
+            item_id,
+            campanha_id,
+            promotion_type,
+            float(preco_anuncio),
+            float(preco_promocional),
+        )
+    except Exception as exc:
+        return _interromper_apos_mutacao(
+            getattr(exc, "status_code", 409) or 409,
+            f"As alteracoes foram enviadas, mas a conferencia final falhou: {_favoritos_ml_mensagem_excecao(exc)}",
+            stages=_favoritos_ml_etapas_efetivacao(
+                remocao_promocoes=status_remocao,
+                tipo_anuncio=status_tipo,
+                preco="completed",
+                promocao="completed",
+                verificacao="failed",
+            ),
+        )
     if not verificacao.get("success"):
         motivo_verificacao = (
             "Mercado Livre recebeu as alteracoes, mas a conferencia ainda nao bateu com o simulado. "
             f"Verificacao: {verificacao}"
         )
-        exige_fallback_margem, motivo_margem, detalhes_margem = _favoritos_ml_verificacao_exige_contingencia_por_margem(req, verificacao)
-        if _favoritos_ml_falha_por_percentual_promocao(motivo_verificacao, verificacao) or exige_fallback_margem:
-            fallback, cfg = _favoritos_ml_aplicar_contingencia_sem_promocao(
-                client_id,
-                loja,
-                cfg,
-                item_id,
-                req,
-                motivo_margem or motivo_verificacao,
+        try:
+            exige_fallback_margem, motivo_margem, detalhes_margem = _favoritos_ml_verificacao_exige_contingencia_por_margem(req, verificacao)
+        except Exception as exc:
+            return _interromper_apos_mutacao(
+                getattr(exc, "status_code", 409) or 409,
+                f"As alteracoes foram enviadas, mas a conferencia da margem falhou: {_favoritos_ml_mensagem_excecao(exc)}",
+                stages=_favoritos_ml_etapas_efetivacao(
+                    remocao_promocoes=status_remocao,
+                    tipo_anuncio=status_tipo,
+                    preco="completed",
+                    promocao="completed",
+                    verificacao="failed",
+                ),
             )
+        if _favoritos_ml_falha_por_percentual_promocao(motivo_verificacao, verificacao) or exige_fallback_margem:
+            try:
+                fallback, cfg = _favoritos_ml_aplicar_contingencia_sem_promocao(
+                    client_id,
+                    loja,
+                    cfg,
+                    item_id,
+                    req,
+                    motivo_margem or motivo_verificacao,
+                )
+            except Exception as exc:
+                return _interromper_apos_mutacao(
+                    getattr(exc, "status_code", 409) or 409,
+                    f"A conferencia detectou risco e a protecao de margem falhou: {_favoritos_ml_mensagem_excecao(exc)}",
+                    stages=_favoritos_ml_etapas_efetivacao(
+                        remocao_promocoes=status_remocao,
+                        tipo_anuncio=status_tipo,
+                        preco="completed",
+                        promocao="completed",
+                        verificacao="fallback_failed",
+                    ),
+                )
             _cache_invalidar_loja(client_id, loja)
             return {
                 "success": True,
+                "completed": True,
+                "outcome": "completed",
+                "retryable": False,
+                "retry_requires_approval": False,
                 "message": (
                     "Campanha recusada/nao conferida pelo Mercado Livre; aplicado menor preco seguro com margem minima, sem competir com a base."
                     if fallback.get("fallback_sem_competir")
@@ -917,23 +1282,78 @@ def favoritos_ml_efetivar_promocao(
                 "preco_confirmacao": preco_confirmacao,
                 "verificacao": verificacao,
                 "verificacao_margem": detalhes_margem,
+                "stages": _favoritos_ml_etapas_efetivacao(
+                    remocao_promocoes=status_remocao,
+                    tipo_anuncio=status_tipo,
+                    preco="completed",
+                    promocao="completed",
+                    verificacao="fallback_completed",
+                ),
                 **fallback,
             }
-        raise HTTPException(status_code=409, detail=motivo_verificacao)
-
-    exige_fallback_margem, motivo_margem, detalhes_margem = _favoritos_ml_verificacao_exige_contingencia_por_margem(req, verificacao)
-    if exige_fallback_margem:
-        fallback, cfg = _favoritos_ml_aplicar_contingencia_sem_promocao(
-            client_id,
-            loja,
-            cfg,
-            item_id,
-            req,
-            motivo_margem,
+        try:
+            estado_apos_verificacao, cfg = _favoritos_ml_obter_estado_item(client_id, loja, cfg, item_id)
+        except Exception:
+            estado_apos_verificacao = estado_inicial
+        _cache_invalidar_loja(client_id, loja)
+        return _interromper(
+            409,
+            "partial_failure",
+            motivo_verificacao,
+            current_state=estado_apos_verificacao,
+            retryable=True,
+            stages=_favoritos_ml_etapas_efetivacao(
+                remocao_promocoes=status_remocao,
+                tipo_anuncio=status_tipo,
+                preco="completed",
+                promocao="completed",
+                verificacao="failed",
+            ),
         )
+
+    try:
+        exige_fallback_margem, motivo_margem, detalhes_margem = _favoritos_ml_verificacao_exige_contingencia_por_margem(req, verificacao)
+    except Exception as exc:
+        return _interromper_apos_mutacao(
+            getattr(exc, "status_code", 409) or 409,
+            f"As alteracoes foram aplicadas, mas a conferencia da margem falhou: {_favoritos_ml_mensagem_excecao(exc)}",
+            stages=_favoritos_ml_etapas_efetivacao(
+                remocao_promocoes=status_remocao,
+                tipo_anuncio=status_tipo,
+                preco="completed",
+                promocao="completed",
+                verificacao="failed",
+            ),
+        )
+    if exige_fallback_margem:
+        try:
+            fallback, cfg = _favoritos_ml_aplicar_contingencia_sem_promocao(
+                client_id,
+                loja,
+                cfg,
+                item_id,
+                req,
+                motivo_margem,
+            )
+        except Exception as exc:
+            return _interromper_apos_mutacao(
+                getattr(exc, "status_code", 409) or 409,
+                f"A conferencia detectou margem insuficiente e a protecao falhou: {_favoritos_ml_mensagem_excecao(exc)}",
+                stages=_favoritos_ml_etapas_efetivacao(
+                    remocao_promocoes=status_remocao,
+                    tipo_anuncio=status_tipo,
+                    preco="completed",
+                    promocao="completed",
+                    verificacao="fallback_failed",
+                ),
+            )
         _cache_invalidar_loja(client_id, loja)
         return {
             "success": True,
+            "completed": True,
+            "outcome": "completed",
+            "retryable": False,
+            "retry_requires_approval": False,
             "message": (
                 "Preco promocional aplicado ficou abaixo da margem minima; aplicado menor preco seguro, sem competir com a base."
                 if fallback.get("fallback_sem_competir")
@@ -955,12 +1375,23 @@ def favoritos_ml_efetivar_promocao(
             "preco_confirmacao": preco_confirmacao,
             "verificacao": verificacao,
             "verificacao_margem": detalhes_margem,
+            "stages": _favoritos_ml_etapas_efetivacao(
+                remocao_promocoes=status_remocao,
+                tipo_anuncio=status_tipo,
+                preco="completed",
+                promocao="completed",
+                verificacao="fallback_completed",
+            ),
             **fallback,
         }
 
     _cache_invalidar_loja(client_id, loja)
     return {
         "success": True,
+        "completed": True,
+        "outcome": "completed",
+        "retryable": False,
+        "retry_requires_approval": False,
         "message": "Favorito feito no Mercado Livre.",
         "loja": loja,
         "sku": req.sku,
@@ -978,6 +1409,13 @@ def favoritos_ml_efetivar_promocao(
         "preco_confirmacao": preco_confirmacao,
         "verificacao": verificacao,
         "verificacao_margem": detalhes_margem,
+        "stages": _favoritos_ml_etapas_efetivacao(
+            remocao_promocoes=status_remocao,
+            tipo_anuncio=status_tipo,
+            preco="completed",
+            promocao="completed",
+            verificacao="completed",
+        ),
     }
 
 

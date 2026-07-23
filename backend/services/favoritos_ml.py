@@ -1451,6 +1451,13 @@ def _favoritos_ml_remover_promocoes_atuais(
         remover.append(info)
 
     resultados = []
+
+    def _erro_remocao_com_resultados(status_code: int, detail: str) -> HTTPException:
+        erro = HTTPException(status_code=status_code, detail=detail)
+        erro.favoritos_remocoes = list(resultados)
+        erro.favoritos_cfg = cfg
+        return erro
+
     max_attempts = _favoritos_ml_remocao_max_attempts()
     for promo in remover:
         params = {"app_version": "v2"}
@@ -1485,10 +1492,34 @@ def _favoritos_ml_remover_promocoes_atuais(
                     )
                     time.sleep(espera)
                     continue
-                raise HTTPException(
-                    status_code=503,
-                    detail=f"Erro ao sair da promocao atual: Mercado Livre nao respondeu ao remover promocao atual: {exc}",
+                detalhe_timeout = f"Mercado Livre nao respondeu ao remover promocao atual: {exc}"
+                resultados.append({
+                    **promo,
+                    "success": False,
+                    "status_code": 503,
+                    "detail": detalhe_timeout,
+                    "response": {},
+                    "attempts": tentativa,
+                })
+                raise _erro_remocao_com_resultados(
+                    503,
+                    f"Erro ao sair da promocao atual: {detalhe_timeout}",
                 )
+            except Exception as exc:
+                status_code = getattr(exc, "status_code", 502) or 502
+                detalhe_excecao = getattr(exc, "detail", None) or str(exc or "Falha inesperada na API do Mercado Livre")
+                resultados.append({
+                    **promo,
+                    "success": False,
+                    "status_code": status_code,
+                    "detail": str(detalhe_excecao),
+                    "response": {},
+                    "attempts": tentativa,
+                })
+                raise _erro_remocao_com_resultados(
+                    status_code,
+                    f"Erro ao sair da promocao atual: {detalhe_excecao}",
+                ) from exc
 
             body_resp = {}
             try:
@@ -1555,7 +1586,10 @@ def _favoritos_ml_remover_promocoes_atuais(
                 "attempts": tentativa,
             })
             if not ok:
-                raise HTTPException(status_code=resp.status_code, detail=f"Erro ao sair da promocao atual: {detalhe}")
+                raise _erro_remocao_com_resultados(
+                    resp.status_code,
+                    f"Erro ao sair da promocao atual: {detalhe}",
+                )
             break
 
     return resultados, cfg
@@ -1593,6 +1627,81 @@ def _favoritos_ml_nome_listing_type(listing_type_id: str) -> str:
     if listing_type == "free":
         return "Gratis"
     return str(listing_type_id or "").strip()
+
+
+def _favoritos_ml_resumir_estado_item(item_id: str, item_data: Any) -> dict:
+    item = item_data if isinstance(item_data, dict) else {}
+    status = str(item.get("status") or "").strip().lower()
+    sub_status_raw = item.get("sub_status")
+    if isinstance(sub_status_raw, str):
+        sub_status_raw = [sub_status_raw]
+    sub_status = [
+        str(valor or "").strip().lower()
+        for valor in (sub_status_raw if isinstance(sub_status_raw, list) else [])
+        if str(valor or "").strip()
+    ]
+    status_bloqueado = not status or status in {"under_review", "closed", "inactive"}
+    sub_status_bloqueado = any(
+        valor in {"forbidden", "suspended", "deleted"}
+        for valor in sub_status
+    )
+    mutacao_bloqueada = bool(status_bloqueado or sub_status_bloqueado)
+    retryable = bool(status == "under_review" or "forbidden" in sub_status)
+    if not status:
+        motivo = "O Mercado Livre nao informou o status atual do anuncio. Nenhuma alteracao foi enviada por seguranca."
+    elif status == "under_review" or "forbidden" in sub_status:
+        motivo = (
+            "O anuncio esta em revisao no Mercado Livre e as alteracoes de preco "
+            "ficam temporariamente bloqueadas. Aguarde o anuncio voltar a ativo."
+        )
+    elif mutacao_bloqueada:
+        marcador = ", ".join([status or "sem status", *sub_status])
+        motivo = f"O anuncio esta em um estado que bloqueia alteracoes no Mercado Livre: {marcador}."
+    else:
+        motivo = ""
+    listing_type_id = _favoritos_ml_listing_type_id(item.get("listing_type_id"))
+    return {
+        "item_id": str(item.get("id") or item_id or "").strip(),
+        "status": status,
+        "sub_status": sub_status,
+        "listing_type_id": listing_type_id,
+        "listing_type_name": _favoritos_ml_nome_listing_type(listing_type_id),
+        "price": _parse_float_flex(item.get("price")),
+        "base_price": _parse_float_flex(item.get("base_price")),
+        "original_price": _parse_float_flex(item.get("original_price")),
+        "catalog_listing": bool(item.get("catalog_listing")),
+        "catalog_product_id": str(item.get("catalog_product_id") or "").strip(),
+        "last_updated": str(item.get("last_updated") or "").strip(),
+        "mutation_blocked": mutacao_bloqueada,
+        "retryable": retryable,
+        "block_reason": motivo,
+    }
+
+
+def _favoritos_ml_obter_estado_item(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    item_id: str,
+) -> tuple[dict, dict]:
+    resp, cfg = _ml_api_request(
+        client_id,
+        loja,
+        cfg,
+        "GET",
+        f"https://api.mercadolibre.com/items/{item_id}",
+        timeout=15,
+    )
+    if resp.status_code != 200:
+        detalhe = _ml_parse_error_detail(resp, "Nao foi possivel conferir o estado atual do anuncio")
+        raise HTTPException(status_code=resp.status_code or 502, detail=detalhe)
+    try:
+        item_data = resp.json() or {}
+    except Exception:
+        item_data = {}
+    if not isinstance(item_data, dict):
+        raise HTTPException(status_code=502, detail="Mercado Livre retornou um estado de anuncio invalido.")
+    return _favoritos_ml_resumir_estado_item(item_id, item_data), cfg
 
 
 def _favoritos_ml_troca_listing_type_favoritos_suportada(atual: str, alvo: str) -> bool:
@@ -3175,7 +3284,7 @@ def _ml_data_criacao_cache_local(client_id: str | None, item_id: str | None):
         return None
     return _ml_datas_cache_local(client_id).get(item_id)
 
-PEER_EXPORTS = ['_ml_favoritos_buscar_itens_por_sku', '_ml_favoritos_buscar_primeiros_itens_por_skus', '_ml_favoritos_listar_itens_ativos_loja', '_ml_favoritos_listar_todos_itens_ativos_loja', '_favoritos_ml_dividir_skus', '_favoritos_ml_imagem_item', '_favoritos_ml_url_item_id', '_favoritos_ml_resumo_anuncio_sku', '_favoritos_ml_skus_unicos_itens', '_favoritos_ml_garantir_sku_busca', '_ml_favoritos_mapear_itens_ativos_por_skus', '_ml_favoritos_extrair_texto_descricao', '_ml_favoritos_montar_descricao_por_item', '_ml_favoritos_obter_descricao_item', '_ml_favoritos_obter_descricao_item_rapida', '_favoritos_ml_float_close', '_favoritos_ml_preco_minimo_margem_simulado', '_favoritos_ml_preco_final_verificacao', '_favoritos_ml_margem_estimada', '_favoritos_ml_preco_contingencia_sem_promocao', '_favoritos_ml_verificacao_exige_contingencia_por_margem', '_favoritos_ml_falha_por_percentual_promocao', '_favoritos_ml_aplicar_contingencia_sem_promocao', '_favoritos_ml_texto_promocao', '_favoritos_ml_promocao_para_remocao', '_favoritos_ml_promocoes_remocao_fallback', '_favoritos_ml_remocao_max_attempts', '_favoritos_ml_textos_resposta_remocao', '_favoritos_ml_remocao_erro_transitorio', '_favoritos_ml_remocao_retry_delay', '_favoritos_ml_remover_promocoes_atuais', '_favoritos_ml_listing_type_id', '_favoritos_ml_nome_listing_type', '_favoritos_ml_troca_listing_type_favoritos_suportada', '_favoritos_ml_listing_type_alvo_req', '_favoritos_ml_obter_listing_type_atual_e_disponiveis', '_favoritos_ml_validar_listing_type_disponivel', '_favoritos_ml_atualizar_tipo_listing_item', '_favoritos_ml_atualizar_preco_item', '_favoritos_ml_aguardar_preco_anuncio', '_favoritos_ml_verificar_efetivacao', '_favoritos_resolver_sku_para_margem', '_favoritos_aplicar_margem_anuncio_ml', '_ml_headers', '_ml_api_get', '_ml_api_item', '_ml_api_items_multiget_tenant', '_ml_api_item_com_oauth_tenant', '_ml_api_user', '_ml_api_user_com_oauth_tenant', '_ml_total_visitas_payload', '_ml_api_visitas_com_oauth_tenant', '_ml_api_search', '_ml_api_search_paginated', '_ml_parcelamento_sem_juros_api', '_ml_parcelamento_sem_juros_texto', '_ml_data_sort_key', '_ml_primeira_pergunta_publica_data', '_ml_wayback_timestamp_iso', '_ml_wayback_primeira_captura_data', '_ml_normalizar_data_cache_local', '_ml_data_criacao_por_imagem', '_ml_datas_cache_local', '_ml_data_criacao_cache_local']
+PEER_EXPORTS = ['_ml_favoritos_buscar_itens_por_sku', '_ml_favoritos_buscar_primeiros_itens_por_skus', '_ml_favoritos_listar_itens_ativos_loja', '_ml_favoritos_listar_todos_itens_ativos_loja', '_favoritos_ml_dividir_skus', '_favoritos_ml_imagem_item', '_favoritos_ml_url_item_id', '_favoritos_ml_resumo_anuncio_sku', '_favoritos_ml_skus_unicos_itens', '_favoritos_ml_garantir_sku_busca', '_ml_favoritos_mapear_itens_ativos_por_skus', '_ml_favoritos_extrair_texto_descricao', '_ml_favoritos_montar_descricao_por_item', '_ml_favoritos_obter_descricao_item', '_ml_favoritos_obter_descricao_item_rapida', '_favoritos_ml_float_close', '_favoritos_ml_preco_minimo_margem_simulado', '_favoritos_ml_preco_final_verificacao', '_favoritos_ml_margem_estimada', '_favoritos_ml_preco_contingencia_sem_promocao', '_favoritos_ml_verificacao_exige_contingencia_por_margem', '_favoritos_ml_falha_por_percentual_promocao', '_favoritos_ml_aplicar_contingencia_sem_promocao', '_favoritos_ml_texto_promocao', '_favoritos_ml_promocao_para_remocao', '_favoritos_ml_promocoes_remocao_fallback', '_favoritos_ml_remocao_max_attempts', '_favoritos_ml_textos_resposta_remocao', '_favoritos_ml_remocao_erro_transitorio', '_favoritos_ml_remocao_retry_delay', '_favoritos_ml_remover_promocoes_atuais', '_favoritos_ml_listing_type_id', '_favoritos_ml_nome_listing_type', '_favoritos_ml_resumir_estado_item', '_favoritos_ml_obter_estado_item', '_favoritos_ml_troca_listing_type_favoritos_suportada', '_favoritos_ml_listing_type_alvo_req', '_favoritos_ml_obter_listing_type_atual_e_disponiveis', '_favoritos_ml_validar_listing_type_disponivel', '_favoritos_ml_atualizar_tipo_listing_item', '_favoritos_ml_atualizar_preco_item', '_favoritos_ml_aguardar_preco_anuncio', '_favoritos_ml_verificar_efetivacao', '_favoritos_resolver_sku_para_margem', '_favoritos_aplicar_margem_anuncio_ml', '_ml_headers', '_ml_api_get', '_ml_api_item', '_ml_api_items_multiget_tenant', '_ml_api_item_com_oauth_tenant', '_ml_api_user', '_ml_api_user_com_oauth_tenant', '_ml_total_visitas_payload', '_ml_api_visitas_com_oauth_tenant', '_ml_api_search', '_ml_api_search_paginated', '_ml_parcelamento_sem_juros_api', '_ml_parcelamento_sem_juros_texto', '_ml_data_sort_key', '_ml_primeira_pergunta_publica_data', '_ml_wayback_timestamp_iso', '_ml_wayback_primeira_captura_data', '_ml_normalizar_data_cache_local', '_ml_data_criacao_por_imagem', '_ml_datas_cache_local', '_ml_data_criacao_cache_local']
 __all__ = PEER_EXPORTS + ["configure_favoritos_ml_runtime"]
 
 configure_favoritos_ml_runtime()

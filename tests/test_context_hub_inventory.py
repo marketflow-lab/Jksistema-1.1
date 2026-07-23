@@ -194,6 +194,10 @@ def test_inventory_is_pure_complete_and_deterministic(tmp_path: Path) -> None:
         "jk:capability:get_catalog",
         "jk:sku:001",
         "jk:sku-map:catalog",
+        "jk:sku-map:categories",
+        "jk:sku-map:vehicles",
+        "jk:sku-category:veiculares:motocicletas:arrefecimento",
+        "jk:sku-vehicle:root",
         "jk:domain:cadastro",
     }
     assert expected_ids.issubset(entities)
@@ -255,8 +259,58 @@ def test_markdown_rendering_is_managed_and_aggregates_sku(tmp_path: Path) -> Non
     rendered = render_context_inventory_markdown(inventory, generated_at="2026-07-17T12:00:00Z")
 
     assert "70_Gerado/Produtos/Catalogo-SKU.md" in rendered
+    assert "70_Gerado/Produtos/Categorias.md" in rendered
+    assert "70_Gerado/Produtos/Veiculos-Compativeis.md" in rendered
     assert not any(path.endswith("/001.md") for path in rendered)
-    assert sum(1 for path in rendered if path.startswith("70_Gerado/Produtos/")) == 3
+    category_pages = {
+        path: content
+        for path, content in rendered.items()
+        if path.startswith("70_Gerado/Produtos/Categorias/")
+    }
+    vehicle_pages = {
+        path: content
+        for path, content in rendered.items()
+        if path.startswith("70_Gerado/Produtos/Veiculos-compativeis/")
+    }
+    assert len(category_pages) == inventory["stats"]["sku"]["categories"] + 1
+    assert len(vehicle_pages) == inventory["stats"]["sku"]["vehicle_year_tree"]["pages"]
+    assert sum(1 for path in rendered if path.startswith("70_Gerado/Produtos/")) == (
+        5 + len(category_pages) + len(vehicle_pages)
+    )
+    assert any(
+        "SKU 001 - Interruptor térmico da ventoinha" in content
+        and "Caminho: Veiculares > Motocicletas > Arrefecimento" in content
+        for content in category_pages.values()
+    )
+    sku = next(row for row in inventory["entities"] if row["id"] == "jk:sku:001")
+    assert sku["metadata"]["product_category_status"] == "classified_by_rule"
+    assert sku["metadata"]["product_category_truth_class"] == "generated_secondary"
+    assert sku["metadata"]["product_category_path"] == [
+        "Veiculares",
+        "Motocicletas",
+        "Arrefecimento",
+    ]
+    assert {row["target_id"] for row in sku["relationships"]} >= {
+        "jk:sku-category:veiculares:motocicletas:arrefecimento",
+    }
+    assert sku["metadata"]["vehicle_year_record_count"] == 8
+    assert sku["metadata"]["vehicle_year_pending_count"] == 0
+    vehicle_stats = inventory["stats"]["sku"]["vehicle_year_tree"]
+    assert vehicle_stats["records"] == 8
+    assert vehicle_stats["pending"] == 0
+    assert vehicle_stats["brands"] == 1
+    assert vehicle_stats["models"] == 1
+    assert vehicle_stats["years"] == 8
+    model_pages = [
+        content
+        for path, content in vehicle_pages.items()
+        if path.endswith("/Modelo.md")
+    ]
+    assert len(model_pages) == 1
+    assert "## 1997" in model_pages[0]
+    assert "## 2004" in model_pages[0]
+    assert "SKU 001 — Interruptor térmico da ventoinha Honda" in model_pages[0]
+    assert not any("/Anos/" in path for path in vehicle_pages)
     catalog = rendered["70_Gerado/Produtos/Catalogo-SKU.md"]
     assert 'managed: true' in catalog
     assert 'status: "published"' in catalog
@@ -408,6 +462,30 @@ def test_large_test_map_is_paginated_without_truncating_entities(tmp_path: Path)
     assert all("[[70_Gerado/Operacao/Testes|Mapa de Testes]]" in content for content in test_pages.values())
     assert all(combined.count(f"- `{test_id}` - ") == 1 for test_id in expected_ids)
     assert all(not content.rstrip().endswith("`") for content in test_pages.values())
+
+
+def test_entity_renderer_preserves_generated_wikilink_targets_during_redaction() -> None:
+    target = "70_Gerado/Produtos/Veiculos-compativeis/hyundai--ac85892205/Marca"
+    entity = {
+        "id": "jk:test:wikilink",
+        "kind": "test",
+        "domain": "sistema",
+        "title": "Wikilink seguro",
+        "surface": "checkout",
+        "tenant_scope": "system",
+        "sensitivity": "internal",
+        "truth_class": "generated",
+        "source_refs": ["tests/test_context_hub_inventory.py"],
+        "source_hash": hashlib.sha256(target.encode("utf-8")).hexdigest(),
+        "relationships": [],
+        "metadata": {},
+        "content": f"- [[{target}|Hyundai]]\n- possível PII: 12345678",
+    }
+
+    rendered = render_context_entity_markdown(entity)
+
+    assert f"[[{target}|Hyundai]]" in rendered
+    assert "possível PII: [codigo-numerico-protegido]" in rendered
 
 
 def test_entity_renderer_rejects_incomplete_entity() -> None:

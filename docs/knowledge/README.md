@@ -12,6 +12,8 @@ enquanto o banco e o journal ficam em `info/<client_id>/context_hub`.
 ## Guias versionados
 
 - [Orientação de busca na API do Mercado Livre](mercado-livre-api-consultas.md) — catálogo oficial de endpoints de consulta, regras de segurança e funções disponíveis no assistente interno.
+- [Árvore de categorias de produto SKU](sku-product-category-taxonomy-v1.md) — taxonomia aprovada e versionada usada para gerar os índices de produto no Obsidian.
+- [Árvore SKU por veículo e ano](sku-vehicle-year-tree-v1.md) — contrato versionado da visão derivada montadora → modelo → ano → SKUs.
 
 ## Classes de verdade
 

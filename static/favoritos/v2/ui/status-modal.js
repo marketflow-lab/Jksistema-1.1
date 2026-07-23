@@ -170,12 +170,34 @@
         return typeof usarNavegadorMlNoShellElectron === 'function' && usarNavegadorMlNoShellElectron();
     }
 
-    function esperarProximoPaint(callback) {
+    function esperarProximoPaint(callback, tempoLimiteMs = 120) {
         const concluir = typeof callback === 'function' ? callback : () => {};
+        const limite = Math.max(40, Number(tempoLimiteMs) || 120);
+        let concluido = false;
+        let timerLimite = null;
+        let frameId = null;
+        const finalizarUmaVez = () => {
+            if (concluido) return;
+            concluido = true;
+            if (timerLimite) clearTimeout(timerLimite);
+            if (
+                frameId !== null
+                && typeof window !== 'undefined'
+                && typeof window.cancelAnimationFrame === 'function'
+            ) {
+                window.cancelAnimationFrame(frameId);
+            }
+            concluir();
+        };
+        timerLimite = setTimeout(finalizarUmaVez, limite);
         if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
-            window.requestAnimationFrame(() => setTimeout(concluir, 0));
+            try {
+                frameId = window.requestAnimationFrame(() => setTimeout(finalizarUmaVez, 0));
+            } catch (_err) {
+                setTimeout(finalizarUmaVez, 0);
+            }
         } else {
-            setTimeout(concluir, 0);
+            setTimeout(finalizarUmaVez, 0);
         }
     }
 
@@ -198,12 +220,14 @@
     }
 
     function resolverAcaoBalao(resolve, valor, botao, opcoes = {}) {
-        marcarBotaoAcaoBalaoClicado(botao, opcoes);
-        if (opcoes.esconder) {
-            esconderBalaoFavoritosStatus();
-        }
+        const marcouAcao = marcarBotaoAcaoBalaoClicado(botao, opcoes);
+        if (botao && !marcouAcao) return;
         esperarProximoPaint(() => {
-            if (typeof resolve === 'function') resolve(valor);
+            try {
+                if (typeof resolve === 'function') resolve(valor);
+            } finally {
+                if (opcoes.esconder) esconderBalaoFavoritosStatus();
+            }
         });
     }
 
@@ -235,6 +259,7 @@
         limparTimerBalao();
         textoEl.textContent = mensagem || '';
         balaoEl.classList.toggle('is-error', !!opcoes.erro);
+        balaoEl.classList.toggle('is-warning', !opcoes.erro && !!opcoes.aviso);
         balaoEl.classList.toggle('is-wide', !!opcoes.larga);
         if (!opcoes.manterAcoes && acoesEl) {
             acoesEl.innerHTML = '';
@@ -269,6 +294,7 @@
         if (balaoEl) balaoEl.classList.add('hidden');
         if (balaoEl) balaoEl.classList.remove('is-wide');
         if (balaoEl) balaoEl.classList.remove('is-comparison');
+        if (balaoEl) balaoEl.classList.remove('is-error', 'is-warning');
         if (textoEl) textoEl.textContent = '';
         if (acoesEl) acoesEl.innerHTML = '';
         posicionarBalaoFavoritosStatus();

@@ -1069,6 +1069,10 @@ body {
             background: #7f1d1d;
             border-color: #ef4444;
         }
+        .ml-favoritos-balloon.is-warning {
+            background: #78350f;
+            border-color: #f59e0b;
+        }
         .ml-favoritos-balloon-title {
             flex: 0 0 auto;
             font-size: 11px;
@@ -1118,6 +1122,10 @@ body {
         .ml-favoritos-balloon-result-row.is-error {
             border-left-color: #ef4444;
             background: rgba(127, 29, 29, 0.28);
+        }
+        .ml-favoritos-balloon-result-row.is-warning {
+            border-left-color: #f59e0b;
+            background: rgba(120, 53, 15, 0.24);
         }
         .ml-favoritos-balloon-result-title {
             color: #fff;
@@ -2515,6 +2523,13 @@ body {
         .ml-favoritos-efetivar-log-row.is-success::before {
             background: #16a34a;
         }
+        .ml-favoritos-efetivar-log-row.is-warning {
+            background: #fffbeb;
+            border-color: #fcd34d;
+        }
+        .ml-favoritos-efetivar-log-row.is-warning::before {
+            background: #d97706;
+        }
         .ml-favoritos-efetivar-log-row.is-error {
             background: #fff7ed;
             border-color: #fed7aa;
@@ -2572,6 +2587,14 @@ body {
         }
         .ml-favoritos-comparacao-table td {
             overflow-wrap: anywhere;
+        }
+        .ml-favoritos-comparacao-table tr.is-warning td,
+        .ml-favoritos-balloon-comparison-table tr.is-warning td {
+            background: #fffbeb;
+        }
+        .ml-favoritos-comparacao-table tr.is-error td,
+        .ml-favoritos-balloon-comparison-table tr.is-error td {
+            background: #fff7ed;
         }
         .ml-favoritos-comparacao-table .is-money {
             white-space: nowrap;

@@ -14,6 +14,10 @@ from backend.services.whatsapp import tool_results as whatsapp_tool_results
 from backend.services.whatsapp import context_hub_telemetry as whatsapp_context_hub_telemetry
 from backend.services.whatsapp import data_selection_enforcement as whatsapp_data_selection_enforcement
 from backend.services.whatsapp.orchestration import agentic_replan
+from backend.services.whatsapp.orchestration.function_manager_contracts import (
+    function_manager_catalog as _function_manager_catalog,
+    function_manager_extract_identifiers as _function_manager_extract_identifiers,
+)
 from backend.services.whatsapp.orchestration import retry_coordinator as whatsapp_retry_coordinator
 from backend.services import codex_whatsapp_agents
 from backend.services.whatsapp.composition import BridgeDependencies, bind_component_namespace, invoke_component
@@ -35,41 +39,6 @@ def _whatsapp_dual_agent_settings(config: Optional[dict[str, Any]] = None) -> di
     """Direct-import fallback; bridge composition may replace this binding."""
 
     return whatsapp_settings.dual_agent_settings(dict(config or {}))
-def _function_manager_catalog(permissions: Any) -> list[dict[str, Any]]:
-    from backend.services import codex_assistant
-
-    catalog: list[dict[str, Any]] = []
-    for item in codex_assistant._assistant_tools_public(permissions):
-        if not isinstance(item, dict) or item.get("read_only") is not True:
-            continue
-        tool_id = str(item.get("id") or "").strip()
-        if not tool_id or tool_id in _WHATSAPP_FORBIDDEN_ACTION_TOOLS:
-            continue
-        catalog.append(
-            {
-                "id": tool_id,
-                "description": str(item.get("description") or "")[:500],
-                "external": item.get("external") is True,
-                "output_fields": [str(value or "")[:100] for value in list(item.get("output_fields") or [])[:30]],
-                "input_schema": item.get("input_schema") if isinstance(item.get("input_schema"), dict) else {},
-            }
-        )
-    return catalog[:100]
-def _function_manager_extract_identifiers(value: Any) -> tuple[str, str]:
-    """Compatibility helper; SKU ownership belongs to the agent plan.
-
-    An MLB identifier has a canonical prefix and remains safe to recognize
-    syntactically. Free-form text is never interpreted as a SKU here.
-    """
-
-    text = str(value or "")
-    item_match = re.search(r"\bMLB[\s_-]*(\d{6,})\b", text, re.IGNORECASE)
-    return (
-        "",
-        (f"MLB{item_match.group(1)}" if item_match else "").upper(),
-    )
-
-
 def _function_manager_sanitize_materialized_entities(plan: dict[str, Any]) -> dict[str, Any]:
     """Reject obvious language fragments without deriving entities from text."""
 

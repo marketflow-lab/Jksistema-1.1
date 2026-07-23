@@ -16,6 +16,22 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from backend.services.context_hub_sku_taxonomy import (
+    PRODUCT_CATEGORY_TAXONOMY_SOURCE_REF,
+    PRODUCT_CATEGORY_TAXONOMY_VERSION,
+    classify_sku_product,
+    taxonomy_nodes,
+    taxonomy_tree_lines,
+)
+from backend.services.context_hub_sku_vehicle_tree import (
+    VEHICLE_TREE_TRUTH_CLASS,
+    VEHICLE_YEAR_TREE_SOURCE_REF,
+    VEHICLE_YEAR_TREE_VERSION,
+    build_vehicle_year_tree,
+    normalize_sku_vehicle_years,
+    vehicle_model_id,
+)
+
 
 INVENTORY_SCHEMA_VERSION = 1
 SKU_SCHEMA_VERSION = 2
@@ -1527,6 +1543,22 @@ def _scan_sku(
         "pending": 0,
         "excluded": 0,
         "families": 0,
+        "categories": 0,
+        "classified_categories": 0,
+        "pending_category_review": 0,
+        "vehicle_year_tree": {
+            "tree_version": VEHICLE_YEAR_TREE_VERSION,
+            "truth_class": VEHICLE_TREE_TRUTH_CLASS,
+            "records": 0,
+            "pending": 0,
+            "overrides_applied": 0,
+            "brands": 0,
+            "models": 0,
+            "years": 0,
+            "distinct_years": 0,
+            "pages": 0,
+            "max_degree": 0,
+        },
     }
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", client_id or "") or client_id in {".", ".."}:
         findings.append(_finding("invalid_client_id", "blocker", "info", "Identificador de tenant invalido."))
@@ -1555,6 +1587,10 @@ def _scan_sku(
 
     sku_entities: list[dict[str, Any]] = []
     families: dict[str, list[str]] = defaultdict(list)
+    category_members: dict[str, list[dict[str, str]]] = defaultdict(list)
+    vehicle_year_records: list[dict[str, Any]] = []
+    vehicle_year_pending: list[dict[str, Any]] = []
+    vehicle_year_overrides = 0
     names: list[tuple[str, str]] = []
     files = sorted(path for path in safe_sku.glob("*.json") if path.name != "_INDICE.json")
     result_stats["files"] = len(files)
@@ -1607,9 +1643,117 @@ def _scan_sku(
         application_type = str(_sku_field(application, "tipo", "geral") or "geral")
         family = _sku_family(str(data.get("nome_produto") or ""), application_type)
         content, allowed = _sku_content(data, sku, family)
+        vehicle_items = _sku_items(
+            _sku_field(application, "veiculos_compativeis", {})
+        )
+        normalized_vehicles = normalize_sku_vehicle_years(
+            sku=sku,
+            product_name=str(data.get("nome_produto") or ""),
+            vehicle_items=vehicle_items,
+            source_ref=ref,
+        )
+        sku_vehicle_records = [
+            dict(item)
+            for item in normalized_vehicles.get("records", [])
+            if isinstance(item, Mapping)
+        ]
+        sku_vehicle_pending = [
+            dict(item)
+            for item in normalized_vehicles.get("pending", [])
+            if isinstance(item, Mapping)
+        ]
+        vehicle_year_records.extend(sku_vehicle_records)
+        vehicle_year_pending.extend(sku_vehicle_pending)
+        vehicle_year_overrides += int(
+            normalized_vehicles.get("overrides_applied") or 0
+        )
+        vehicle_model_ids = sorted(
+            {
+                vehicle_model_id(
+                    str(item.get("brand") or ""),
+                    str(item.get("model") or ""),
+                )
+                for item in sku_vehicle_records
+            }
+        )
+        allowed["vehicle_year_tree"] = {
+            "tree_version": VEHICLE_YEAR_TREE_VERSION,
+            "truth_class": VEHICLE_TREE_TRUTH_CLASS,
+            "records": [
+                {
+                    "brand": item.get("brand"),
+                    "model": item.get("model"),
+                    "year": item.get("year"),
+                    "status": item.get("status"),
+                    "verified_through": item.get("verified_through"),
+                    "restrictions": item.get("restrictions"),
+                    "override_id": item.get("override_id"),
+                }
+                for item in sku_vehicle_records
+            ],
+            "pending_count": len(sku_vehicle_pending),
+            "overrides_applied": int(
+                normalized_vehicles.get("overrides_applied") or 0
+            ),
+        }
+        if sku_vehicle_records:
+            content += (
+                "\nRelações veículo-ano materializadas: "
+                f"{len(sku_vehicle_records)}"
+            )
+        for pending_item in sku_vehicle_pending:
+            findings.append(
+                _finding(
+                    "sku_vehicle_year_pending",
+                    "warning",
+                    ref,
+                    "Aplicação de veículo não materializada na árvore: "
+                    + str(pending_item.get("reason") or "motivo não informado"),
+                    entity_id=f"jk:sku:{normalized_sku}",
+                )
+            )
+        classification = classify_sku_product(
+            sku=sku,
+            product_name=str(data.get("nome_produto") or ""),
+            application_type=application_type,
+            description=str(_sku_section(data, "o_que_e") or ""),
+            uses=[
+                str(item)
+                for item in _sku_items(_sku_section(data, "para_que_serve"))
+                if isinstance(item, str)
+            ],
+            characteristics=[
+                str(item)
+                for item in _sku_items(_sku_section(data, "caracteristicas_tecnicas"))
+                if isinstance(item, str)
+            ],
+        )
+        category_id = str(classification["category_id"])
+        category_path = [str(item) for item in classification.get("path") or []]
+        category_status = str(classification.get("status") or "pending_review")
+        allowed["product_category"] = {
+            "taxonomy_version": PRODUCT_CATEGORY_TAXONOMY_VERSION,
+            "category_id": category_id,
+            "status": category_status,
+            "rule_id": str(classification.get("rule_id") or ""),
+            "truth_class": "generated_secondary",
+        }
+        content += "\nCategoria derivada de produto: " + " > ".join(category_path)
         entity_id = f"jk:sku:{normalized_sku}"
         families[family].append(entity_id)
         names.append((sku, str(data.get("nome_produto") or "")))
+        category_members[category_id].append(
+            {
+                "id": entity_id,
+                "sku": sku,
+                "title": str(data.get("nome_produto") or ""),
+                "source_hash": _sha256_value(allowed),
+            }
+        )
+        if category_status == "classified_by_rule":
+            result_stats["classified_categories"] += 1
+        else:
+            result_stats["pending_category_review"] += 1
         sku_entities.append(
             _entity(
                 entity_id=entity_id,
@@ -1622,11 +1766,31 @@ def _scan_sku(
                 truth_class="canonical",
                 source_refs=[ref],
                 source_hash=_sha256_value(allowed),
-                relationships=[{"type": "member_of", "target_id": f"jk:sku-family:{_slug(family)}"}],
+                relationships=[
+                    {"type": "member_of", "target_id": f"jk:sku-family:{_slug(family)}"},
+                    {"type": "classified_as", "target_id": category_id},
+                    *[
+                        {"type": "indexed_by_vehicle_model", "target_id": model_id}
+                        for model_id in vehicle_model_ids
+                    ],
+                ],
                 metadata={
                     "sku": sku,
                     "family": family,
                     "application_type": application_type,
+                    "product_category_id": category_id,
+                    "product_category_path": category_path,
+                    "product_category_status": category_status,
+                    "product_category_rule": str(classification.get("rule_id") or ""),
+                    "product_category_truth_class": "generated_secondary",
+                    "product_category_taxonomy_version": PRODUCT_CATEGORY_TAXONOMY_VERSION,
+                    "vehicle_year_tree_version": VEHICLE_YEAR_TREE_VERSION,
+                    "vehicle_year_truth_class": VEHICLE_TREE_TRUTH_CLASS,
+                    "vehicle_year_record_count": len(sku_vehicle_records),
+                    "vehicle_year_pending_count": len(sku_vehicle_pending),
+                    "vehicle_year_overrides_applied": int(
+                        normalized_vehicles.get("overrides_applied") or 0
+                    ),
                     "updated_at": str(data.get("atualizado_em") or ""),
                     "render_individually": False,
                 },
@@ -1641,6 +1805,36 @@ def _scan_sku(
     excluded = excluded if isinstance(excluded, list) else []
     result_stats["excluded"] = len(excluded)
     result_stats["families"] = len(families)
+    category_nodes = taxonomy_nodes()
+    result_stats["categories"] = sum(
+        1 for node in category_nodes if not bool(node.get("is_review_queue"))
+    )
+    try:
+        vehicle_tree = build_vehicle_year_tree(vehicle_year_records)
+    except ValueError:
+        findings.append(
+            _finding(
+                "sku_vehicle_tree_invalid",
+                "blocker",
+                VEHICLE_YEAR_TREE_SOURCE_REF,
+                "Registros incompatíveis impediram a geração segura da árvore por veículo e ano.",
+            )
+        )
+        vehicle_tree = build_vehicle_year_tree([])
+    vehicle_tree_stats = dict(vehicle_tree.get("stats") or {})
+    result_stats["vehicle_year_tree"] = {
+        "tree_version": VEHICLE_YEAR_TREE_VERSION,
+        "truth_class": VEHICLE_TREE_TRUTH_CLASS,
+        "records": int(vehicle_tree_stats.get("records") or 0),
+        "pending": len(vehicle_year_pending),
+        "overrides_applied": vehicle_year_overrides,
+        "brands": int(vehicle_tree_stats.get("brands") or 0),
+        "models": int(vehicle_tree_stats.get("models") or 0),
+        "years": int(vehicle_tree_stats.get("years") or 0),
+        "distinct_years": int(vehicle_tree_stats.get("distinct_years") or 0),
+        "pages": int(vehicle_tree_stats.get("pages") or 0),
+        "max_degree": int(vehicle_tree_stats.get("max_degree") or 0),
+    }
     index_total = index.get("total_skus")
     index_reviewed = index.get("arquivos_revisados")
     index_pending = next((value for key, value in index.items() if _normal_key(key) == "skus_com_pendencias"), [])
@@ -1661,17 +1855,67 @@ def _scan_sku(
     family_content = "Familias derivadas do catalogo SKU.\n" + "\n".join(
         f"- {family}: {len(ids)} SKU(s)" for family, ids in sorted(families.items())
     )
+    category_content = "\n".join(
+        [
+            f"Taxonomia de categorias de produto v{PRODUCT_CATEGORY_TAXONOMY_VERSION}.",
+            "",
+            *taxonomy_tree_lines(),
+            "",
+            f"- SKUs classificados por regra: {result_stats['classified_categories']}",
+            f"- SKUs pendentes de revisão: {result_stats['pending_category_review']}",
+        ]
+    )
+    vehicle_content = "\n".join(
+        [
+            f"Árvore SKU por veículo e ano v{VEHICLE_YEAR_TREE_VERSION}.",
+            "",
+            "Hierarquia: montadora > modelo ou aplicação > ano > SKUs compatíveis.",
+            f"- Relações SKU-veículo-ano: {result_stats['vehicle_year_tree']['records']}",
+            f"- Montadoras: {result_stats['vehicle_year_tree']['brands']}",
+            f"- Modelos ou aplicações: {result_stats['vehicle_year_tree']['models']}",
+            f"- Grupos de ano: {result_stats['vehicle_year_tree']['years']}",
+            f"- Pendências não inferidas: {result_stats['vehicle_year_tree']['pending']}",
+            f"- Correções pesquisadas aplicadas: {vehicle_year_overrides}",
+        ]
+    )
     map_specs = (
-        ("catalog", "Catalogo SKU", catalog_content, {"sku_count": len(names)}),
-        ("coverage", "Cobertura SKU", coverage_content, {"coverage": coverage, "excluded": excluded}),
+        ("catalog", "Catalogo SKU", catalog_content, {"sku_count": len(names)}, "canonical", [index_ref]),
+        ("coverage", "Cobertura SKU", coverage_content, {"coverage": coverage, "excluded": excluded}, "canonical", [index_ref]),
         (
             "families",
             "Familias SKU",
             family_content,
             {"families": {family: sorted(ids) for family, ids in sorted(families.items())}},
+            "canonical",
+            [index_ref],
+        ),
+        (
+            "categories",
+            "Categorias de produto",
+            category_content,
+            {
+                "taxonomy_version": PRODUCT_CATEGORY_TAXONOMY_VERSION,
+                "category_count": result_stats["categories"],
+                "classified": result_stats["classified_categories"],
+                "pending_review": result_stats["pending_category_review"],
+            },
+            "generated_secondary",
+            [index_ref, PRODUCT_CATEGORY_TAXONOMY_SOURCE_REF],
+        ),
+        (
+            "vehicles",
+            "Veículos compatíveis por ano",
+            vehicle_content,
+            dict(result_stats["vehicle_year_tree"]),
+            VEHICLE_TREE_TRUTH_CLASS,
+            [
+                index_ref,
+                VEHICLE_YEAR_TREE_SOURCE_REF,
+                "docs/knowledge/sku-vehicle-year-tree-v1.md",
+            ],
         ),
     )
-    for map_id, title, content, metadata in map_specs:
+    for map_id, title, content, metadata, truth_class, source_refs in map_specs:
         sku_entities.append(
             _entity(
                 entity_id=f"jk:sku-map:{map_id}",
@@ -1681,12 +1925,225 @@ def _scan_sku(
                 surface=surface,
                 tenant_scope="client",
                 sensitivity="internal_catalog",
-                truth_class="canonical",
-                source_refs=[index_ref],
+                truth_class=truth_class,
+                source_refs=source_refs,
                 source_hash=_sha256_value({"index": index_hash, "map": map_id, "metadata": metadata}),
-                relationships=[],
+                relationships=(
+                    [{"type": "contains", "target_id": str(vehicle_tree["root_id"])}]
+                    if map_id == "vehicles"
+                    else []
+                ),
                 metadata={**metadata, "render_individually": True},
                 content=content,
+            )
+        )
+
+    vehicle_nodes = {
+        str(node.get("id") or ""): node
+        for node in vehicle_tree.get("nodes", [])
+        if isinstance(node, Mapping)
+    }
+    for page in vehicle_tree.get("page_specs", []):
+        if not isinstance(page, Mapping):
+            continue
+        node_id = str(page.get("node_id") or "")
+        node = vehicle_nodes.get(node_id, {})
+        page_records = [
+            dict(item)
+            for item in page.get("records", [])
+            if isinstance(item, Mapping)
+        ]
+        year_groups = [
+            dict(item)
+            for item in page.get("year_groups", [])
+            if isinstance(item, Mapping)
+        ]
+        node_path = [str(item) for item in node.get("path", [])]
+        lines = [
+            "Caminho: " + " > ".join(node_path),
+            f"Árvore: v{VEHICLE_YEAR_TREE_VERSION}",
+        ]
+        if str(page.get("kind") or "") == "model":
+            lines.extend(
+                [
+                    f"Anos conhecidos: {len(year_groups)}",
+                    f"Relações SKU-veículo-ano: {len(page_records)}",
+                ]
+            )
+            for group in year_groups:
+                lines.extend(["", f"## {group.get('year')}"])
+                group_records = [
+                    dict(item)
+                    for item in group.get("records", [])
+                    if isinstance(item, Mapping)
+                ]
+                for record in sorted(
+                    group_records,
+                    key=lambda item: (
+                        str(item.get("sku") or "").casefold(),
+                        str(item.get("product_name") or "").casefold(),
+                    ),
+                ):
+                    details: list[str] = []
+                    restrictions = [
+                        str(item)
+                        for item in record.get("restrictions", [])
+                        if str(item).strip()
+                    ]
+                    if restrictions:
+                        details.append("restrições: " + "; ".join(restrictions))
+                    if str(record.get("status") or "") == "vigente":
+                        verified = record.get("verified_through")
+                        details.append(
+                            f"vigente, verificado até {verified}; sem ano final confirmado"
+                        )
+                    suffix = f" ({'; '.join(details)})" if details else ""
+                    lines.append(
+                        f"- SKU {record.get('sku')} — {record.get('product_name')}{suffix}"
+                    )
+        else:
+            lines.append("Índice paginado da árvore de compatibilidade.")
+        parent_id = str(page.get("parent_id") or "")
+        child_ids = [str(item) for item in page.get("child_ids", [])]
+        relationships = []
+        if parent_id:
+            relationships.append({"type": "child_of", "target_id": parent_id})
+        else:
+            relationships.append(
+                {"type": "child_of", "target_id": "jk:sku-map:vehicles"}
+            )
+        relationships.extend(
+            {"type": "contains", "target_id": child_id}
+            for child_id in child_ids
+        )
+        source_refs = sorted(
+            {
+                str(item.get("source_ref") or "")
+                for item in page_records
+                if str(item.get("source_ref") or "").strip()
+            }
+        ) or [VEHICLE_YEAR_TREE_SOURCE_REF]
+        sku_entities.append(
+            _entity(
+                entity_id=node_id,
+                kind="sku_vehicle_tree_page",
+                domain="cadastro",
+                title=str(page.get("title") or "Veículos compatíveis"),
+                surface=surface,
+                tenant_scope="client",
+                sensitivity="internal_catalog",
+                truth_class=VEHICLE_TREE_TRUTH_CLASS,
+                source_refs=[*source_refs, "docs/knowledge/sku-vehicle-year-tree-v1.md"],
+                source_hash=_sha256_value(
+                    {
+                        "tree_version": VEHICLE_YEAR_TREE_VERSION,
+                        "page": page,
+                        "path": node_path,
+                    }
+                ),
+                relationships=relationships,
+                metadata={
+                    "tree_version": VEHICLE_YEAR_TREE_VERSION,
+                    "node_kind": str(page.get("kind") or ""),
+                    "tree_path": node_path,
+                    "relative_path": str(page.get("relative_path") or ""),
+                    "parent_id": parent_id,
+                    "child_ids": child_ids,
+                    "record_count": len(page_records),
+                    "year_group_count": len(year_groups),
+                    "render_individually": True,
+                },
+                content="\n".join(lines),
+            )
+        )
+
+    node_by_id = {str(node["id"]): node for node in category_nodes}
+    for node in category_nodes:
+        node_id = str(node["id"])
+        node_path = [str(item) for item in node.get("path") or []]
+        direct_members = sorted(
+            category_members.get(node_id, []),
+            key=lambda item: (str(item.get("sku") or "").casefold(), str(item.get("id") or "")),
+        )
+        descendant_members = sorted(
+            [
+                member
+                for category_id, members in category_members.items()
+                if category_id == node_id or category_id.startswith(node_id + ":")
+                for member in members
+            ],
+            key=lambda item: (str(item.get("sku") or "").casefold(), str(item.get("id") or "")),
+        )
+        child_ids = [str(item) for item in node.get("child_ids") or []]
+        lines = [
+            "Caminho: " + " > ".join(node_path),
+            f"Taxonomia: v{PRODUCT_CATEGORY_TAXONOMY_VERSION}",
+            f"SKUs nesta categoria e subcategorias: {len(descendant_members)}",
+        ]
+        if child_ids:
+            lines.extend(
+                [
+                    "",
+                    "Subcategorias:",
+                    *[
+                        f"- {node_by_id[child_id]['label']}: "
+                        f"{sum(1 for member_id in category_members if member_id == child_id or member_id.startswith(child_id + ':') for _member in category_members[member_id])} SKU(s)"
+                        for child_id in child_ids
+                    ],
+                ]
+            )
+        if direct_members:
+            lines.extend(
+                [
+                    "",
+                    "SKUs classificados diretamente:",
+                    *[
+                        f"- SKU {member['sku']} - {member['title']}"
+                        for member in direct_members
+                    ],
+                ]
+            )
+        elif bool(node.get("is_leaf")):
+            lines.extend(["", "Nenhum SKU classificado diretamente nesta categoria."])
+        relationships: list[dict[str, str]] = []
+        parent_id = str(node.get("parent_id") or "")
+        if parent_id:
+            relationships.append({"type": "child_of", "target_id": parent_id})
+        relationships.extend({"type": "contains", "target_id": child_id} for child_id in child_ids)
+        sku_entities.append(
+            _entity(
+                entity_id=node_id,
+                kind="sku_category",
+                domain="cadastro",
+                title=str(node.get("label") or "Categoria de produto"),
+                surface=surface,
+                tenant_scope="client",
+                sensitivity="internal_catalog",
+                truth_class="generated_secondary",
+                source_refs=[index_ref, PRODUCT_CATEGORY_TAXONOMY_SOURCE_REF],
+                source_hash=_sha256_value(
+                    {
+                        "taxonomy_version": PRODUCT_CATEGORY_TAXONOMY_VERSION,
+                        "node": node,
+                        "members": [
+                            (member["id"], member["source_hash"])
+                            for member in descendant_members
+                        ],
+                    }
+                ),
+                relationships=relationships,
+                metadata={
+                    "taxonomy_version": PRODUCT_CATEGORY_TAXONOMY_VERSION,
+                    "category_path": node_path,
+                    "parent_id": parent_id,
+                    "child_ids": child_ids,
+                    "direct_member_count": len(direct_members),
+                    "member_count": len(descendant_members),
+                    "is_leaf": bool(node.get("is_leaf")),
+                    "is_review_queue": bool(node.get("is_review_queue")),
+                    "render_individually": True,
+                },
+                content="\n".join(lines),
             )
         )
     return sku_entities, result_stats
@@ -1905,11 +2362,40 @@ def _markdown_safe_text(value: Any) -> str:
 
     Dossies SKU continuam canonicos e intocados. Numeros tecnicos longos ficam
     disponiveis somente na entidade estruturada/adaptador autorizado, nao no
-    Markdown agregado aberto no Obsidian.
+    Markdown agregado aberto no Obsidian. Alvos de wikilinks gerados pelo
+    publicador sao identificadores tecnicos internos e precisam permanecer
+    byte a byte para que o grafo nao seja corrompido pela redacao numerica.
     """
 
     text = str(value or "")
-    return re.sub(r"(?<!\d)\d{8,14}(?!\d)", "[codigo-numerico-protegido]", text)
+    preserved_links: list[str] = []
+
+    def preserve_generated_link(match: re.Match[str]) -> str:
+        target = str(match.group(1) or "")
+        label = str(match.group(2) or "")
+        if not target.startswith("70_Gerado/"):
+            return match.group(0)
+        safe_label = re.sub(
+            r"(?<!\d)\d{8,14}(?!\d)",
+            "[codigo-numerico-protegido]",
+            label,
+        )
+        preserved_links.append(f"[[{target}|{safe_label}]]")
+        return f"__JK_WIKILINK_{len(preserved_links) - 1}__"
+
+    text = re.sub(
+        r"\[\[([^\]|]+)\|([^\]]*)\]\]",
+        preserve_generated_link,
+        text,
+    )
+    text = re.sub(
+        r"(?<!\d)\d{8,14}(?!\d)",
+        "[codigo-numerico-protegido]",
+        text,
+    )
+    for index, link in enumerate(preserved_links):
+        text = text.replace(f"__JK_WIKILINK_{index}__", link)
+    return text
 
 
 def _obsidian_wikilink(path: str, label: str | None = None) -> str:
@@ -2086,12 +2572,40 @@ def render_context_inventory_markdown(
         "jk:sku-map:catalog": "70_Gerado/Produtos/Catalogo-SKU.md",
         "jk:sku-map:coverage": "70_Gerado/Produtos/Cobertura-SKU.md",
         "jk:sku-map:families": "70_Gerado/Produtos/Familias-SKU.md",
+        "jk:sku-map:categories": "70_Gerado/Produtos/Categorias.md",
+        "jk:sku-map:vehicles": "70_Gerado/Produtos/Veiculos-Compativeis.md",
     }
     sku_titles = {
         str(row.get("id") or ""): str(row.get("title") or "Mapa SKU")
         for row in rows
         if str(row.get("id") or "") in sku_paths
     }
+    category_entities = [row for row in rows if row.get("kind") == "sku_category"]
+    category_titles = {
+        str(row.get("id") or ""): str(row.get("title") or "Categoria de produto")
+        for row in category_entities
+    }
+    category_paths: dict[str, str] = {}
+    for row in category_entities:
+        row_id = str(row.get("id") or "")
+        label = _slug(str(row.get("title") or "categoria"))[:56]
+        short_hash = hashlib.sha256(row_id.encode("utf-8")).hexdigest()[:10]
+        category_paths[row_id] = f"70_Gerado/Produtos/Categorias/{label}-{short_hash}.md"
+    vehicle_entities = [
+        row for row in rows if row.get("kind") == "sku_vehicle_tree_page"
+    ]
+    vehicle_titles = {
+        str(row.get("id") or ""): str(row.get("title") or "Veículos compatíveis")
+        for row in vehicle_entities
+    }
+    vehicle_paths: dict[str, str] = {}
+    for row in vehicle_entities:
+        row_id = str(row.get("id") or "")
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        relative_path = str(metadata.get("relative_path") or "").replace("\\", "/").strip()
+        path_parts = [part for part in relative_path.split("/") if part]
+        if not relative_path.startswith("/") and ".." not in path_parts and relative_path.endswith(".md"):
+            vehicle_paths[row_id] = f"70_Gerado/Produtos/{relative_path}"
 
     stats = inventory.get("stats") if isinstance(inventory.get("stats"), dict) else {}
     index_content = "Inventario semantico do JK Sistema.\n\n" + "\n".join(
@@ -2337,10 +2851,77 @@ def render_context_inventory_markdown(
                 for entity_id, path in sku_paths.items()
                 if entity_id != row_id and entity_id in sku_titles
             )
+            if row_id == "jk:sku-map:categories":
+                navigation.extend(
+                    (category_paths[str(category.get("id") or "")], str(category.get("title") or "Categoria"))
+                    for category in category_entities
+                    if not str(category.get("metadata", {}).get("parent_id") or "")
+                    and str(category.get("id") or "") in category_paths
+                )
+            if row_id == "jk:sku-map:vehicles":
+                root_path = vehicle_paths.get("jk:sku-vehicle:root")
+                if root_path:
+                    navigation.append((root_path, "Abrir árvore por montadora"))
             aggregate["content"] = _with_graph_navigation(str(row.get("content") or ""), navigation)
             output[output_path] = render_context_entity_markdown(
                 aggregate, source_version=source_version, generated_at=generated_at
             )
+
+    categories_map_path = sku_paths["jk:sku-map:categories"]
+    render_category_pages = "jk:sku-map:categories" in sku_titles
+    for row in (category_entities if render_category_pages else []):
+        row_id = str(row.get("id") or "")
+        output_path = category_paths.get(row_id)
+        if not output_path:
+            continue
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        parent_id = str(metadata.get("parent_id") or "")
+        child_ids = [str(item) for item in metadata.get("child_ids") or []]
+        navigation: list[tuple[str, str]] = []
+        if parent_id and parent_id in category_paths:
+            navigation.append((category_paths[parent_id], category_titles.get(parent_id, "Categoria superior")))
+        else:
+            navigation.append((categories_map_path, "Categorias de produto"))
+        navigation.extend(
+            (category_paths[child_id], category_titles.get(child_id, "Subcategoria"))
+            for child_id in child_ids
+            if child_id in category_paths
+        )
+        aggregate = dict(row)
+        aggregate["content"] = _with_graph_navigation(str(row.get("content") or ""), navigation)
+        output[output_path] = render_context_entity_markdown(
+            aggregate, source_version=source_version, generated_at=generated_at
+        )
+
+    vehicles_map_path = sku_paths["jk:sku-map:vehicles"]
+    render_vehicle_pages = "jk:sku-map:vehicles" in sku_titles
+    for row in (vehicle_entities if render_vehicle_pages else []):
+        row_id = str(row.get("id") or "")
+        output_path = vehicle_paths.get(row_id)
+        if not output_path:
+            continue
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        parent_id = str(metadata.get("parent_id") or "")
+        child_ids = [str(item) for item in metadata.get("child_ids") or []]
+        navigation: list[tuple[str, str]] = []
+        if parent_id and parent_id in vehicle_paths:
+            navigation.append(
+                (vehicle_paths[parent_id], vehicle_titles.get(parent_id, "Nível anterior"))
+            )
+        else:
+            navigation.append((vehicles_map_path, "Veículos compatíveis por ano"))
+        navigation.extend(
+            (vehicle_paths[child_id], vehicle_titles.get(child_id, "Próximo nível"))
+            for child_id in child_ids
+            if child_id in vehicle_paths
+        )
+        aggregate = dict(row)
+        aggregate["content"] = _with_graph_navigation(
+            str(row.get("content") or ""), navigation
+        )
+        output[output_path] = render_context_entity_markdown(
+            aggregate, source_version=source_version, generated_at=generated_at
+        )
 
     return dict(sorted(output.items()))
 

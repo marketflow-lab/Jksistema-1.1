@@ -447,6 +447,7 @@ const userData = JSON.parse(localStorage.getItem('user_data') || 'null');
         let favMlAnunciosSkuAtual = [];
         let favMlSimulacoesSkuAtual = [];
         let favMlAnunciosNaoAlterarPorSku = new Map();
+        let favMlEfetivacaoEmPreparacao = false;
         let favMlEfetivacaoEmExecucao = false;
         const favMlPromocoesPorLojaCache = new Map();
         let mlRankingMediaFrame = null;

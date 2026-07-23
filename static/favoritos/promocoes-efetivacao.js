@@ -485,17 +485,37 @@
                     body: JSON.stringify(body)
                 });
                 const data = await response.json().catch(() => ({}));
-                if (!response.ok || !data.success) {
-                    throw new Error(normalizarErroEfetivacaoFavoritos(data.detail || data.message || data || `HTTP ${response.status}`));
+                const resultado = data && typeof data.detail === 'object' && data.detail !== null
+                    ? data.detail
+                    : data;
+                if (resultado && resultado.outcome === 'pending_review') {
+                    if (config.mostrarStatus !== false) {
+                        mostrarBalaoFavoritosStatus(resultado.message || `${itemId} ficou pendente de revisao no Mercado Livre.`, {
+                            aviso: true,
+                            larga: true
+                        });
+                    }
+                    if (favMlStatusEl && config.atualizarStatus !== false) {
+                        favMlStatusEl.textContent = `${itemId} pendente: aguarde o anuncio voltar a ativo e aprove novamente.`;
+                    }
+                    if (config.recarregar !== false) {
+                        await carregarFavoritosAnunciosSku(favMlSkuSelecionado, loja);
+                    }
+                    return resultado;
                 }
-                const fallbackSemPromocao = !!(data && data.fallback_sem_promocao_aplicado);
+                if (!response.ok || !resultado || !resultado.success) {
+                    const erro = new Error(normalizarErroEfetivacaoFavoritos(resultado.message || resultado || `HTTP ${response.status}`));
+                    erro.favoritosResultado = resultado && typeof resultado === 'object' ? resultado : null;
+                    throw erro;
+                }
+                const fallbackSemPromocao = !!(resultado && resultado.fallback_sem_promocao_aplicado);
                 if (config.mostrarStatus !== false) {
                     if (fallbackSemPromocao) {
-                        const margemFallback = data.margem_estimada_contingencia !== null && data.margem_estimada_contingencia !== undefined
-                            ? ` Margem estimada: ${formatarMargemAnuncioFavoritos(data.margem_estimada_contingencia)}.`
+                        const margemFallback = resultado.margem_estimada_contingencia !== null && resultado.margem_estimada_contingencia !== undefined
+                            ? ` Margem estimada: ${formatarMargemAnuncioFavoritos(resultado.margem_estimada_contingencia)}.`
                             : '';
                         mostrarBalaoFavoritosStatus(
-                            `Campanha removida/recusada no ML para ${itemId}. Aplicado fallback sem campanha com preco ${formatarPrecoFavoritosMl(data.preco_anuncio)}.${margemFallback}`,
+                            `Campanha removida/recusada no ML para ${itemId}. Aplicado fallback sem campanha com preco ${formatarPrecoFavoritosMl(resultado.preco_anuncio)}.${margemFallback}`,
                             { tempoMs: 8000, larga: true }
                         );
                     } else {
@@ -506,15 +526,15 @@
                 }
                 if (favMlStatusEl && config.atualizarStatus !== false) {
                     if (fallbackSemPromocao) {
-                        favMlStatusEl.textContent = `Favorito ajustado sem campanha: ${itemId} ficou em ${formatarPrecoFavoritosMl(data.preco_anuncio)} (fallback).`;
+                        favMlStatusEl.textContent = `Favorito ajustado sem campanha: ${itemId} ficou em ${formatarPrecoFavoritosMl(resultado.preco_anuncio)} (fallback).`;
                     } else {
-                        favMlStatusEl.textContent = `Favorito feito: ${itemId} ficou em ${formatarPrecoFavoritosMl(data.preco_anuncio)} com promocao ${campanha.nome || campanhaId}.`;
+                        favMlStatusEl.textContent = `Favorito feito: ${itemId} ficou em ${formatarPrecoFavoritosMl(resultado.preco_anuncio)} com promocao ${campanha.nome || campanhaId}.`;
                     }
                 }
                 if (config.recarregar !== false) {
                     await carregarFavoritosAnunciosSku(favMlSkuSelecionado, loja);
                 }
-                return data;
+                return resultado;
             } catch (err) {
                 if (config.mostrarStatus !== false) {
                     mostrarBalaoFavoritosStatus(`Erro ao efetivar favorito: ${err && err.message ? err.message : err}`, {
@@ -729,11 +749,44 @@
             if (removidas) partes.push(`${removidas} promocao(oes) anterior(es) removida(s)`);
             return partes.filter(Boolean).join(' | ');
         }
+        function descreverEstadoAtualEfetivacaoFavoritos(data) {
+            const estado = data && data.current_state || {};
+            const partes = [];
+            if (estado.status) partes.push(`status ML: ${estado.status}`);
+            const subStatus = Array.isArray(estado.sub_status) ? estado.sub_status.filter(Boolean) : [];
+            if (subStatus.length) partes.push(`substatus: ${subStatus.join(', ')}`);
+            if (estado.listing_type_name || estado.listing_type_id) {
+                partes.push(`tipo atual: ${estado.listing_type_name || estado.listing_type_id}`);
+            }
+            if (estado.price !== null && estado.price !== undefined) {
+                partes.push(`preco atual: ${formatarPrecoFavoritosMl(estado.price)}`);
+            }
+            return partes;
+        }
+        function descreverPendenteEfetivacaoFavoritos(item) {
+            const data = item && item.data || {};
+            const registro = item && item.registro || {};
+            const partes = [];
+            const loja = String(data.loja || registro.loja || '').trim();
+            if (loja) partes.push(`Loja: ${loja}`);
+            const tipoUpdate = data.listing_type_update || {};
+            if (tipoUpdate.changed) {
+                partes.push(`tipo alterado: ${tipoUpdate.current_name || tipoUpdate.current || '-'} -> ${tipoUpdate.target_name || tipoUpdate.target || '-'}`);
+            }
+            const removidas = Array.isArray(data.promocoes_removidas) ? data.promocoes_removidas.length : 0;
+            if (removidas) partes.push(`${removidas} promocao(oes) anterior(es) removida(s)`);
+            partes.push(...descreverEstadoAtualEfetivacaoFavoritos(data));
+            partes.push('preco e nova campanha nao foram alterados');
+            const motivo = normalizarErroEfetivacaoFavoritos(data.message || 'Aguardando o anuncio voltar a ativo no Mercado Livre.');
+            if (motivo) partes.push(`proximo passo: ${motivo}`);
+            return partes.filter(Boolean).join(' | ');
+        }
         function descreverFalhaEfetivacaoFavoritos(item) {
             const registro = item && item.registro || {};
             const sim = registro.sim || {};
+            const resultado = item && item.resultado || {};
             const partes = [];
-            const loja = String(registro.loja || '').trim();
+            const loja = String(resultado.loja || registro.loja || '').trim();
             if (loja) partes.push(`Loja: ${loja}`);
             const tipo = descreverTipoEfetivacaoFavoritos(registro, null);
             if (tipo) {
@@ -750,8 +803,10 @@
             } else if (sim && sim.status) {
                 partes.push(`simulacao invalida: ${textoCurtoStatusSimuladorFavoritos(sim.status)}`);
             }
+            partes.push(...descreverEstadoAtualEfetivacaoFavoritos(resultado));
             const erro = normalizarErroEfetivacaoFavoritos(item && item.erro || '');
-            partes.push(`nao feito/concluido: ${erro || 'O Mercado Livre recusou a alteracao sem detalhar o motivo.'}`);
+            const parcial = resultado.outcome === 'partial_failure';
+            partes.push(`${parcial ? 'concluido parcialmente' : 'nao concluido'}: ${erro || 'O Mercado Livre recusou a alteracao sem detalhar o motivo.'}`);
             return partes.filter(Boolean).join(' | ');
         }
         function criarLinhaResultadoBalaoFavoritos(tipo, titulo, detalhe) {
@@ -767,10 +822,11 @@
             row.appendChild(detalheEl);
             return row;
         }
-        function renderizarResumoResultadoBalaoFavoritos(sucessos, falhas) {
+        function renderizarResumoResultadoBalaoFavoritos(sucessos, pendentes, falhas) {
             const feitos = Array.isArray(sucessos) ? sucessos : [];
+            const aguardando = Array.isArray(pendentes) ? pendentes : [];
             const naoFeitos = Array.isArray(falhas) ? falhas : [];
-            if (!feitos.length && !naoFeitos.length) return null;
+            if (!feitos.length && !aguardando.length && !naoFeitos.length) return null;
             const wrap = document.createElement('div');
             wrap.className = 'ml-favoritos-balloon-result-list';
             feitos.forEach(item => {
@@ -783,11 +839,20 @@
                     descreverSucessoEfetivacaoFavoritos(item)
                 ));
             });
+            aguardando.forEach(item => {
+                const itemId = item && (item.itemId || (item.data && item.data.item_id)) || '-';
+                wrap.appendChild(criarLinhaResultadoBalaoFavoritos(
+                    'warning',
+                    `${itemId} - pendente de revisao`,
+                    descreverPendenteEfetivacaoFavoritos(item)
+                ));
+            });
             naoFeitos.forEach(item => {
                 const itemId = item && item.itemId || '-';
+                const parcial = item && item.resultado && item.resultado.outcome === 'partial_failure';
                 wrap.appendChild(criarLinhaResultadoBalaoFavoritos(
                     'error',
-                    `${itemId} - alteracao nao feita`,
+                    `${itemId} - ${parcial ? 'alteracao parcial' : 'alteracao nao feita'}`,
                     descreverFalhaEfetivacaoFavoritos(item)
                 ));
             });
@@ -812,16 +877,25 @@
             wrap.appendChild(statusEl);
             return wrap;
         }
-        function renderizarComparativoEfetivacaoFavoritos(sucessos, mensagemStatus = '', falhas = [], historicoAlteracoes = null) {
+        function renderizarComparativoEfetivacaoFavoritos(sucessos, mensagemStatus = '', pendentes = [], falhas = [], historicoAlteracoes = null) {
             const lista = (Array.isArray(sucessos) ? sucessos : [])
+                .filter(item => item && item.registro && item.data);
+            const listaPendentes = (Array.isArray(pendentes) ? pendentes : [])
                 .filter(item => item && item.registro && item.data);
             const listaFalhas = (Array.isArray(falhas) ? falhas : [])
                 .filter(item => item && (item.itemId || item.erro || item.registro));
-            if (!lista.length && !listaFalhas.length) return;
+            if (!lista.length && !listaPendentes.length && !listaFalhas.length) return;
 
             const itensComparacao = [
                 ...lista.map(item => ({
                     tipo: 'sucesso',
+                    item,
+                    registro: item.registro || {},
+                    data: item.data || {},
+                    erro: ''
+                })),
+                ...listaPendentes.map(item => ({
+                    tipo: 'pendente',
                     item,
                     registro: item.registro || {},
                     data: item.data || {},
@@ -833,13 +907,13 @@
                         tipo: 'falha',
                         item,
                         registro: item.registro || {},
-                        data: null,
+                        data: item.resultado || {},
                         erro: normalizarErroEfetivacaoFavoritos(item.erro || '', 220)
                     }))
             ];
-            const totalProcessados = lista.length + listaFalhas.length;
+            const totalProcessados = lista.length + listaPendentes.length + listaFalhas.length;
             const mostrarCustoIdeal = itensComparacao.some(item => deveMostrarCustoIdealComparacaoFavoritos(item.item));
-            const mostrarStatusLinha = listaFalhas.length > 0;
+            const mostrarStatusLinha = listaPendentes.length > 0 || listaFalhas.length > 0;
             const colunas = [
                 'Nosso MLB',
                 'Nosso preco',
@@ -881,9 +955,16 @@
                             preco: data.preco_anuncio,
                             promocional: data.preco_promocional
                         }
+                        : item.tipo === 'pendente'
+                            ? {
+                                preco: data.current_state && data.current_state.price,
+                                promocional: null
+                            }
                         : {
-                            preco: sim.preco,
-                            promocional: sim.precoPromocionalCalculado ?? sim.precoPromocional ?? sim.precoCompetitivo
+                            preco: data.preco_anuncio_atual ?? (data.current_state && data.current_state.price) ?? sim.preco,
+                            promocional: data.current_state && data.current_state.promotional_price !== undefined
+                                ? data.current_state.promotional_price
+                                : null
                         };
                     const nosso = resumoPrecosComparacaoFavoritos(registro.anuncio, {
                         preco: substitutosNosso.preco,
@@ -912,11 +993,14 @@
                         valores.push({
                             valor: item.tipo === 'sucesso'
                                 ? 'Alterado'
-                                : `Nao feito${item.erro ? `: ${item.erro}` : ''}`
+                                : item.tipo === 'pendente'
+                                    ? 'Pendente de revisao no ML; preco/campanha nao enviados'
+                                    : `${data.outcome === 'partial_failure' ? 'Alteracao parcial' : 'Nao concluido'}${item.erro ? `: ${item.erro}` : ''}`
                         });
                     }
                     const tr = document.createElement('tr');
                     if (item.tipo === 'falha') tr.className = 'is-error';
+                    if (item.tipo === 'pendente') tr.className = 'is-warning';
                     valores.forEach(itemValor => {
                         const td = document.createElement('td');
                         td.textContent = itemValor.valor;
@@ -936,7 +1020,7 @@
                 row.className = 'ml-favoritos-efetivar-log-row is-comparison';
                 const titleEl = document.createElement('div');
                 titleEl.className = 'ml-favoritos-efetivar-log-title';
-                titleEl.textContent = `Comparacao dos anuncios processados: ${totalProcessados} anuncio(s) (${lista.length} alterado(s), ${listaFalhas.length} nao feito(s)).`;
+                titleEl.textContent = `Comparacao dos anuncios processados: ${totalProcessados} anuncio(s) (${lista.length} alterado(s), ${listaPendentes.length} pendente(s), ${listaFalhas.length} nao concluido(s)).`;
                 row.appendChild(titleEl);
                 row.appendChild(criarTabela('ml-favoritos-comparacao-table-wrap', 'ml-favoritos-comparacao-table'));
                 const blocoPlanilha = criarBlocoColarPlanilhaResultadoFavoritos(historicoAlteracoes);
@@ -946,7 +1030,7 @@
             }
 
             if (mlFavoritosStatusEl) {
-                mlFavoritosStatusEl.textContent = `Resultado das alteracoes: ${totalProcessados} processado(s), ${lista.length} feita(s), ${listaFalhas.length} nao feita(s).`;
+                mlFavoritosStatusEl.textContent = `Resultado das alteracoes: ${totalProcessados} processado(s), ${lista.length} feita(s), ${listaPendentes.length} pendente(s), ${listaFalhas.length} nao concluida(s).`;
             }
 
             if (!mlFavoritosBalloonEl || !mlFavoritosBalloonTextEl) return;
@@ -964,7 +1048,7 @@
                 statusResumo.textContent = mensagemStatus;
                 mlFavoritosBalloonTextEl.appendChild(statusResumo);
             }
-            const resumoResultado = renderizarResumoResultadoBalaoFavoritos(lista, listaFalhas);
+            const resumoResultado = renderizarResumoResultadoBalaoFavoritos(lista, listaPendentes, listaFalhas);
             if (resumoResultado) mlFavoritosBalloonTextEl.appendChild(resumoResultado);
             if (itensComparacao.length) {
                 mlFavoritosBalloonTextEl.appendChild(criarTabela('ml-favoritos-balloon-comparison-wrap', 'ml-favoritos-balloon-comparison-table'));
@@ -980,6 +1064,7 @@
             }
             mlFavoritosBalloonEl.classList.remove('hidden');
             mlFavoritosBalloonEl.classList.toggle('is-error', !!listaFalhas.length);
+            mlFavoritosBalloonEl.classList.toggle('is-warning', !listaFalhas.length && !!listaPendentes.length);
             mlFavoritosBalloonEl.classList.add('is-wide', 'is-comparison');
             posicionarBalaoFavoritosStatus();
         }
@@ -1077,7 +1162,7 @@
             };
         }
 
-        function montarLinhaRelatorioFinalAlteracaoFavoritos(item, sucesso) {
+        function montarLinhaRelatorioFinalAlteracaoFavoritos(item, sucesso, pendente = false) {
             const itemId = String(item && item.itemId || item && item.data && item.data.item_id || '-').trim();
             if (sucesso) {
                 const fallback = !!(item && item.data && item.data.fallback_sem_promocao_aplicado);
@@ -1088,10 +1173,19 @@
                     detalhe: descreverSucessoEfetivacaoFavoritos(item)
                 };
             }
+            if (pendente) {
+                return {
+                    tipo: 'warning',
+                    itemId,
+                    titulo: `${itemId} - pendente de revisao`,
+                    detalhe: descreverPendenteEfetivacaoFavoritos(item)
+                };
+            }
+            const parcial = item && item.resultado && item.resultado.outcome === 'partial_failure';
             return {
                 tipo: 'error',
                 itemId,
-                titulo: `${itemId} - alteracao nao feita`,
+                titulo: `${itemId} - ${parcial ? 'alteracao parcial' : 'alteracao nao feita'}`,
                 detalhe: descreverFalhaEfetivacaoFavoritos(item)
             };
         }
@@ -1102,12 +1196,29 @@
             const custoBase = sim.custo ?? anuncio.custo ?? anuncio.custo_unitario ?? anuncio.custo_produto ?? anuncio.preco_custo ?? anuncio.valor_custo ?? null;
             const custoIdeal = sim.custoIdealAbaixoBase ?? sim.custo_ideal_abaixo_base ?? null;
             const precoAlvoCustoIdeal = sim.precoAlvoCustoIdeal ?? sim.preco_alvo_custo_ideal ?? null;
+            const estadoAtual = data && data.current_state && typeof data.current_state === 'object' ? data.current_state : {};
+            const precoAtualMl = data && data.preco_anuncio_atual !== undefined
+                ? data.preco_anuncio_atual
+                : (estadoAtual.price !== undefined ? estadoAtual.price : null);
+            const precoConcluido = !!(
+                data
+                && (
+                    data.success
+                    || data.completed
+                    || data.stages && data.stages.price && data.stages.price.status === 'completed'
+                )
+            );
             return {
                 ok: !!sim.ok,
                 preco_previsto: sim.preco ?? null,
                 preco_promocional_previsto: sim.precoPromocionalCalculado ?? sim.precoPromocional ?? sim.precoCompetitivo ?? null,
-                preco_aplicado: data && data.preco_anuncio !== undefined ? data.preco_anuncio : null,
-                preco_promocional_aplicado: data && data.preco_promocional !== undefined ? data.preco_promocional : null,
+                preco_atual_ml: precoAtualMl,
+                preco_aplicado: data && data.preco_anuncio !== undefined
+                    ? data.preco_anuncio
+                    : (precoConcluido ? precoAtualMl : null),
+                preco_promocional_aplicado: data && data.preco_promocional !== undefined
+                    ? data.preco_promocional
+                    : (precoConcluido && estadoAtual.promotional_price !== undefined ? estadoAtual.promotional_price : null),
                 margem_prevista: sim.margem ?? null,
                 margem_aplicada: data && data.margem_estimada_contingencia !== undefined ? data.margem_estimada_contingencia : sim.margem ?? null,
                 custo: custoBase,
@@ -1135,30 +1246,36 @@
             };
         }
 
-        function montarVinculoHistoricoAlteracaoFavoritos(item, sucesso, sku) {
+        function montarVinculoHistoricoAlteracaoFavoritos(item, sucesso, sku, pendente = false) {
             const registro = item && item.registro || {};
             const itemId = String(item && item.itemId || registro.itemId || obterIdAnuncioFavoritos(registro.anuncio) || '').trim();
-            const relatorioFinal = montarLinhaRelatorioFinalAlteracaoFavoritos(item, sucesso);
+            const relatorioFinal = montarLinhaRelatorioFinalAlteracaoFavoritos(item, sucesso, pendente);
             const fallback = !!(sucesso && item && item.data && item.data.fallback_sem_promocao_aplicado);
+            const resultadoFalha = item && item.resultado && typeof item.resultado === 'object' ? item.resultado : null;
+            const parcial = !!(resultadoFalha && resultadoFalha.outcome === 'partial_failure');
             return {
                 ordem: Number(registro.index) + 1 || 0,
                 sku: String(sku || '').trim(),
                 itemId,
                 loja: String(registro.loja || '').trim(),
-                status: sucesso ? 'success' : 'error',
+                status: sucesso ? 'success' : (pendente ? 'warning' : 'error'),
                 status_texto: sucesso
                     ? (fallback ? 'Feito sem campanha' : 'Alterado')
-                    : 'Nao feito',
+                    : (pendente ? 'Pendente de revisao' : (parcial ? 'Alteracao parcial' : 'Nao concluido')),
                 nosso: clonarAnuncioHistoricoAlteracaoFavoritos(registro.anuncio),
                 base: clonarAnuncioHistoricoAlteracaoFavoritos(registro.ranking),
-                simulacao: montarSimulacaoHistoricoAlteracaoFavoritos(registro, sucesso ? item.data || {} : null),
+                simulacao: montarSimulacaoHistoricoAlteracaoFavoritos(
+                    registro,
+                    sucesso || pendente ? item.data || {} : resultadoFalha
+                ),
                 relatorio_inicial: montarLinhaRelatorioInicialAlteracaoFavoritos(registro),
                 relatorio_final: relatorioFinal
             };
         }
 
-        function montarHistoricoAlteracoesFavoritosPayload({ sku, opcoesPromocao, incluirOutrasContas, validos, bloqueadosPreEnvio, sucessos, falhas, mensagemFinal }) {
+        function montarHistoricoAlteracoesFavoritosPayload({ sku, opcoesPromocao, incluirOutrasContas, validos, bloqueadosPreEnvio, sucessos, pendentes, falhas, mensagemFinal }) {
             const feitos = Array.isArray(sucessos) ? sucessos : [];
+            const aguardando = Array.isArray(pendentes) ? pendentes : [];
             const naoFeitos = Array.isArray(falhas) ? falhas : [];
             const grupoAtual = typeof obterGrupoRankingFavoritosSku === 'function'
                 ? obterGrupoRankingFavoritosSku(sku)
@@ -1166,6 +1283,7 @@
             const tituloGrupo = String(grupoAtual && grupoAtual.grupo && grupoAtual.grupo.titulo || '').trim();
             const vinculos = [
                 ...feitos.map(item => montarVinculoHistoricoAlteracaoFavoritos(item, true, sku)),
+                ...aguardando.map(item => montarVinculoHistoricoAlteracaoFavoritos(item, false, sku, true)),
                 ...naoFeitos.map(item => montarVinculoHistoricoAlteracaoFavoritos(item, false, sku))
             ].filter(item => item && (item.itemId || item.nosso && item.nosso.id || item.base && item.base.id));
             const registrosIniciais = [
@@ -1191,9 +1309,11 @@
                     titulo: 'Relatorio final',
                     resumo: mensagemFinal || '',
                     sucessos: feitos.length,
+                    pendentes: aguardando.length,
                     falhas: naoFeitos.length,
                     linhas: [
                         ...feitos.map(item => montarLinhaRelatorioFinalAlteracaoFavoritos(item, true)),
+                        ...aguardando.map(item => montarLinhaRelatorioFinalAlteracaoFavoritos(item, false, true)),
                         ...naoFeitos.map(item => montarLinhaRelatorioFinalAlteracaoFavoritos(item, false))
                     ]
                 },
@@ -1486,7 +1606,10 @@
                 mlFavoritosPerguntaResolver = null;
             }
             return new Promise(resolve => {
+                let finalizado = false;
                 const finalizar = (confirmado, botao) => {
+                    if (finalizado) return;
+                    finalizado = true;
                     mlFavoritosPerguntaResolver = null;
                     if (typeof window.favoritosResolverAcaoBalao === 'function') {
                         window.favoritosResolverAcaoBalao(resolve, !!confirmado, botao, {
@@ -1635,13 +1758,12 @@
         async function validarRegistrosEfetivaveisFavoritosMercadoLivre(registros) {
             const lista = Array.isArray(registros) ? registros : [];
             const paraValidar = lista.filter(registro => {
-                const sim = registro && registro.sim;
-                return !!(registro && registro.itemId && registro.loja && sim && registroFavoritosExigeTrocaTipoAnuncio(registro));
+                return !!(registro && registro.itemId && registro.loja);
             });
             if (!paraValidar.length) {
                 return { validos: lista, bloqueados: [] };
             }
-            mostrarBalaoFavoritosStatus('Validando no Mercado Livre se a troca Premium/Classico esta disponivel...', {
+            mostrarBalaoFavoritosStatus('Validando no Mercado Livre o estado atual dos anuncios...', {
                 larga: true
             });
             const response = await fetch('/api/favoritos/ml/validar-efetivacao', {
@@ -1673,17 +1795,27 @@
             const bloqueados = [];
             lista.forEach(registro => {
                 const sim = registro && registro.sim;
-                if (!sim || !registroFavoritosExigeTrocaTipoAnuncio(registro)) {
-                    validos.push(registro);
-                    return;
-                }
                 const chave = `${skuNormalizarLoja(registro.loja)}|${String(registro.itemId || '').trim().toUpperCase()}`;
                 const validacao = mapa.get(chave);
-                if (!validacao || validacao.ok !== false) {
+                if (!validacao) {
+                    bloqueados.push({
+                        itemId: registro.itemId,
+                        erro: 'O sistema nao conseguiu confirmar o estado atual deste anuncio no Mercado Livre.',
+                        registro,
+                        validacao: null
+                    });
+                    return;
+                }
+                if (validacao.ok !== false) {
                     validos.push(registro);
                     return;
                 }
-                if (validacaoPermiteTentativaAposPromocoesFavoritos(registro, validacao)) {
+                if (
+                    validacao.outcome !== 'blocked_preflight'
+                    && sim
+                    && registroFavoritosExigeTrocaTipoAnuncio(registro)
+                    && validacaoPermiteTentativaAposPromocoesFavoritos(registro, validacao)
+                ) {
                     sim.trocaTipoAposPromocaoMl = true;
                     sim.trocaTipoAposPromocaoMotivo = validacao.message || 'Mercado Livre pode liberar downgrade depois de remover as promocoes atuais.';
                     validos.push(registro);
@@ -1842,6 +1974,13 @@
                 favMlPromocaoBtnEl.disabled = favMlEfetivacaoEmExecucao || !sku;
                 favMlPromocaoBtnEl.textContent = promocaoPronta ? 'Alterar campanha/%' : 'Campanha e %';
             }
+            if (favMlEfetivacaoEmPreparacao) {
+                favMlEfetivarInfoEl.textContent = 'Validando anuncios e preparando a confirmacao...';
+                favMlEfetivarBtnEl.disabled = true;
+                favMlEfetivarBtnEl.textContent = 'Validando...';
+                if (favMlPromocaoBtnEl) favMlPromocaoBtnEl.disabled = true;
+                return;
+            }
             const registros = lista.length
                 ? obterRegistrosSimulacaoFavoritos(lista, sku, opcoesPromocao, favMlSimulacoesSkuAtual)
                 : [];
@@ -1878,7 +2017,10 @@
             favMlEfetivarBtnEl.disabled = favMlEfetivacaoEmExecucao || !validos.length;
         }
         async function efetivarFavoritosMercadoLivreAprovados() {
-            if (favMlEfetivacaoEmExecucao) return;
+            if (favMlEfetivacaoEmExecucao || favMlEfetivacaoEmPreparacao) return;
+            favMlEfetivacaoEmPreparacao = true;
+            try {
+            atualizarPainelEfetivarFavoritos();
             const sku = String(favMlSkuSelecionado || '').trim();
             if (!sku) {
                 mostrarBalaoFavoritosStatus('Selecione um SKU antes de aprovar as alteracoes.', {
@@ -1983,6 +2125,7 @@
             if (!confirmouAlteracao) return;
 
             favMlEfetivacaoEmExecucao = true;
+            favMlEfetivacaoEmPreparacao = false;
             limparLogEfetivarFavoritos();
             adicionarStatusEfetivarFavoritos('info', 'Iniciando alteracoes no Mercado Livre', `${validos.length} anuncio(s) serao conferidos: sair da promocao atual, ajustar tipo Premium/Classico quando necessario, alterar preco cheio, aplicar campanha e validar o preco final promocional.`);
             if (favMlEfetivarBtnEl) {
@@ -1990,10 +2133,12 @@
                 favMlEfetivarBtnEl.textContent = 'Alterando...';
             }
             const sucessos = [];
+            const pendentes = [];
             const falhas = bloqueadosPreEnvio.map(item => ({
                 itemId: item.itemId,
                 erro: item.erro,
-                registro: item.registro
+                registro: item.registro,
+                resultado: item.validacao || null
             }));
             let protecaoElectronAtiva = false;
             try {
@@ -2041,6 +2186,15 @@
                                 propagarErro: true
                             }
                         );
+                        if (data && data.outcome === 'pending_review') {
+                            pendentes.push({ itemId, data, registro });
+                            adicionarStatusEfetivarFavoritos(
+                                'warning',
+                                `${itemId} pendente de revisao no Mercado Livre`,
+                                descreverPendenteEfetivacaoFavoritos({ itemId, data, registro })
+                            );
+                            continue;
+                        }
                         sucessos.push({ itemId, data, registro });
                         if (data && data.fallback_sem_promocao_aplicado) {
                             const margemFallback = data.margem_estimada_contingencia !== null && data.margem_estimada_contingencia !== undefined
@@ -2063,17 +2217,20 @@
                         );
                     }
                     } catch (err) {
-                        const erroTxt = normalizarErroEfetivacaoFavoritos(err);
-                        falhas.push({ itemId, erro: erroTxt, registro });
+                        const resultado = err && err.favoritosResultado && typeof err.favoritosResultado === 'object'
+                            ? err.favoritosResultado
+                            : null;
+                        const erroTxt = normalizarErroEfetivacaoFavoritos(resultado && resultado.message || err);
+                        falhas.push({ itemId, erro: erroTxt, registro, resultado });
                         adicionarStatusEfetivarFavoritos(
                             'error',
-                            `${itemId} nao foi alterado`,
+                            `${itemId} ${resultado && resultado.outcome === 'partial_failure' ? 'teve alteracao parcial' : 'nao foi alterado'}`,
                             erroTxt || 'O Mercado Livre recusou a alteracao sem detalhar o motivo.'
                         );
                     }
                 }
 
-                if (sucessos.length) {
+                if (sucessos.length || pendentes.length || falhas.length) {
                     await carregarFavoritosAnunciosSku(sku, favMlLojaSelecionada);
                 }
                 let mensagemFinalEfetivacao = '';
@@ -2081,13 +2238,22 @@
                 if (falhas.length) {
                     const primeiraFalha = falhas[0];
                     const txtFallback = totalFallbackSemCampanha ? ` ${totalFallbackSemCampanha} concluido(s) em fallback sem campanha.` : '';
-                    mensagemFinalEfetivacao = `${sucessos.length} favorito(s) feito(s). ${falhas.length} falharam.${txtFallback} Primeiro erro em ${primeiraFalha.itemId}: ${primeiraFalha.erro}`;
+                    const txtPendentes = pendentes.length ? ` ${pendentes.length} pendente(s) de revisao.` : '';
+                    mensagemFinalEfetivacao = `${sucessos.length} favorito(s) feito(s). ${falhas.length} nao concluido(s).${txtPendentes}${txtFallback} Primeiro erro em ${primeiraFalha.itemId}: ${primeiraFalha.erro}`;
                     mostrarBalaoFavoritosStatus(mensagemFinalEfetivacao, {
                         erro: true,
                         larga: true
                     });
-                    if (favMlStatusEl) favMlStatusEl.textContent = `${sucessos.length} favorito(s) feito(s); ${falhas.length} falha(s); ${totalFallbackSemCampanha} fallback(s) sem campanha.`;
-                    adicionarStatusEfetivarFavoritos('error', 'Processo concluido com falhas', `Sucesso: ${sucessos.length}. Falhas: ${falhas.length}. Fallback sem campanha: ${totalFallbackSemCampanha}. Veja acima o motivo retornado pelo Mercado Livre para cada MLB.`);
+                    if (favMlStatusEl) favMlStatusEl.textContent = `${sucessos.length} favorito(s) feito(s); ${pendentes.length} pendente(s); ${falhas.length} nao concluido(s); ${totalFallbackSemCampanha} fallback(s) sem campanha.`;
+                    adicionarStatusEfetivarFavoritos('error', 'Processo concluido com falhas', `Sucesso: ${sucessos.length}. Pendentes: ${pendentes.length}. Nao concluidos: ${falhas.length}. Fallback sem campanha: ${totalFallbackSemCampanha}. Veja acima o estado de cada MLB.`);
+                } else if (pendentes.length) {
+                    mensagemFinalEfetivacao = `${sucessos.length} favorito(s) feito(s). ${pendentes.length} anuncio(s) ficaram pendentes de revisao no Mercado Livre; o preco e a nova campanha desses anuncios nao foram enviados.`;
+                    mostrarBalaoFavoritosStatus(mensagemFinalEfetivacao, {
+                        aviso: true,
+                        larga: true
+                    });
+                    if (favMlStatusEl) favMlStatusEl.textContent = `${sucessos.length} favorito(s) feito(s); ${pendentes.length} pendente(s) de revisao.`;
+                    adicionarStatusEfetivarFavoritos('warning', 'Processo aguardando revisao', `${pendentes.length} anuncio(s) devem voltar a ativo antes de uma nova aprovacao. Nao ha repeticao automatica.`);
                 } else {
                     const txtFallback = totalFallbackSemCampanha ? ` (${totalFallbackSemCampanha} em fallback sem campanha)` : '';
                     mensagemFinalEfetivacao = `Tudo certo: ${sucessos.length} favorito(s) feito(s) no Mercado Livre${txtFallback}.`;
@@ -2110,6 +2276,7 @@
                         validos,
                         bloqueadosPreEnvio,
                         sucessos,
+                        pendentes,
                         falhas,
                         mensagemFinal: mensagemFinalEfetivacao
                     });
@@ -2130,7 +2297,7 @@
                         err && err.message ? err.message : String(err || 'Falha desconhecida ao salvar historico.')
                     );
                 }
-                renderizarComparativoEfetivacaoFavoritos(sucessos, mensagemFinalEfetivacao, falhas, historicoAlteracoesResultado);
+                renderizarComparativoEfetivacaoFavoritos(sucessos, mensagemFinalEfetivacao, pendentes, falhas, historicoAlteracoesResultado);
                 agendarOcultarStatusEfetivarFavoritos(5000);
             } finally {
                 if (protecaoElectronAtiva) {
@@ -2141,6 +2308,13 @@
                     favMlEfetivarBtnEl.textContent = 'Aprovar e alterar';
                 }
                 atualizarPainelEfetivarFavoritos();
+            }
+            } finally {
+                const preparacaoAindaAtiva = favMlEfetivacaoEmPreparacao;
+                favMlEfetivacaoEmPreparacao = false;
+                if (preparacaoAindaAtiva && !favMlEfetivacaoEmExecucao) {
+                    atualizarPainelEfetivarFavoritos();
+                }
             }
         }
         function criarCelulaMargemAnuncioFavoritos(anuncio) {

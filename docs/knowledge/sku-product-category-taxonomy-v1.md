@@ -1,0 +1,230 @@
+# Árvore de categorias de produto SKU
+
+> Arquivo gerado. A fonte de manutenção é `backend/services/context_hub_sku_taxonomy.py`.
+
+- Versão da taxonomia: `1.0.0`
+- Fonte canônica dos produtos: `info/<client_id>/SKU/*.json`
+- Classe desta árvore: `generated_secondary`
+- Escopo: categorias e subcategorias de produto; compatibilidade por veículo e ano é uma árvore separada.
+
+## Regras de publicação
+
+- A taxonomia não substitui nem duplica os dossiês canônicos de SKU.
+- Cada SKU recebe uma categoria por regra determinística e auditável.
+- Produtos sem evidência suficiente ficam em `Pendentes de revisão`.
+- No Obsidian, a árvore é publicada em `70_Gerado/Produtos/Categorias.md`, com uma nota por nó da hierarquia.
+- Notas humanas de `80_Curadoria` são preservadas pelo publicador.
+
+## Árvore aprovada
+
+- Veiculares
+  - Automóveis, utilitários e pesados
+    - Motor e gerenciamento
+      - Admissão e sobrealimentação
+        - Coletores de admissão
+        - Mangueiras de ar e TBI
+        - Mangueiras de intercooler e turbo
+        - Medidores MAF e MAP
+        - Sensores e atuadores da borboleta
+      - Combustível e injeção
+        - Bombas e refis
+        - Módulos, flanges e tampas
+        - Boias e sensores de nível
+        - Sensores de pressão
+        - Válvulas dosadoras e reguladoras
+        - Filtros e telas
+        - Mangueiras e retornos
+      - Ignição e partida
+        - Velas de ignição
+        - Bobinas
+        - Comutadores de ignição
+        - Motores de partida
+      - Lubrificação e componentes internos
+        - Filtros e telas de óleo
+        - Tubos de óleo
+        - Retentores e vedações
+        - Sensores de óleo
+        - Válvulas VVT, VTEC e comando
+      - Emissões e vácuo
+        - EVAP e canister
+        - PCV e diafragmas
+        - Bombas de vácuo
+        - Válvulas e atuadores de vácuo
+    - Arrefecimento e climatização
+      - Radiadores
+      - Válvulas termostáticas
+      - Carcaças termostáticas
+      - Mangueiras, tubos e flanges
+      - Conectores do radiador
+      - Reservatórios e tampas
+      - Interruptores térmicos
+      - Módulos e resistências da ventoinha
+      - Sensores de climatização
+      - Difusores de ar
+      - Tampas e acessórios do filtro de cabine
+    - Elétrica e eletrônica
+      - Bateria e alimentação
+        - Sensores de bateria
+        - Terminais e conectores
+        - Conversores de tensão
+      - Fusíveis e distribuição
+        - Caixas de fusíveis
+        - Módulos BSM
+        - Placas e módulos de proteção
+      - Comandos e interruptores
+        - Vidros elétricos
+        - Iluminação
+        - Volante
+        - Partida
+        - Freio de estacionamento
+      - Instrumentação e telas
+        - Painéis de instrumentos
+        - Telas LCD
+        - Telas de centrais multimídia
+      - Áudio, conectividade e conforto
+        - Cabos auxiliares
+        - Transmissores Bluetooth e FM
+        - Piloto automático
+    - Transmissão, embreagem e tração
+      - Alavancas, manoplas e botões
+      - Esteiras e guarda-pós do seletor
+      - Sensores de transmissão
+      - Atuadores de embreagem
+      - Caixa de transferência
+      - Atuadores 4x4
+      - Cubos e rodas livres
+      - Cardan, coxins e rolamentos
+    - Suspensão, direção, rodas e pneus
+      - Bandejas e braços
+      - Bombas de direção
+      - Reservatórios de direção
+      - Sensores de pressão da direção
+      - Acoplamentos e buchas
+      - Calotas e acabamentos de roda
+      - Sensores TPMS
+    - Freios
+      - Freio de estacionamento
+      - Botões e alavancas
+      - Capas e acabamentos
+      - Servo-freio e vácuo
+    - Carroceria e acabamento externo
+      - Grades dianteiras
+      - Para-choques e molduras
+      - Guias e suportes
+      - Frisos e apliques
+      - Emblemas
+      - Maçanetas
+      - Portas e puxadores
+      - Capô e dobradiças
+      - Porta-malas e fechaduras
+      - Tampa de caçamba e amortecedores
+      - Portinhola de combustível
+      - Lavadores e esguichos
+      - Ponteiras de escapamento
+      - Presilhas e fixadores
+    - Interior e acabamento
+      - Consoles
+      - Puxadores internos
+      - Acabamentos de porta
+      - Acabamentos do câmbio
+      - Acabamentos do painel
+    - Iluminação e sinalização
+      - Lâmpadas de xenônio
+      - Reatores e módulos
+      - Piscas e repetidores
+      - Refletores
+      - Luzes de freio
+      - Luzes auxiliares e DRL
+      - Guias de farol
+      - Protetores e tampas
+  - Motocicletas
+    - Motor, ignição e partida
+    - Combustível e alimentação
+    - Arrefecimento
+    - Elétrica e estatores
+    - Instrumentação e painéis
+    - Iluminação e sinalização
+    - Tanque, tampas e torneiras
+    - Rodas, pneus e válvulas
+    - Suportes e carregadores
+    - Proteção e acessórios
+  - Náutica
+    - Motor e ignição
+    - Combustível
+    - Painéis e comandos elétricos
+    - Iluminação subaquática
+    - Acessórios elétricos
+  - Universais veiculares
+    - Iluminação universal
+    - Instrumentação universal
+    - Bateria e conectores
+    - Áudio e conectividade
+    - Rodas, pneus e válvulas
+    - Cinto e segurança
+    - Presilhas e fixadores
+  - Ferramentas automotivas
+    - Diagnóstico eletrônico
+    - Ferramentas TPMS
+    - Testadores de ignição
+    - Ferramentas de instalação
+- Bicicletas
+  - Transmissão
+    - Coroas redondas
+    - Coroas ovais
+    - Guias de corrente
+  - Selins
+  - Rodas, pneus e válvulas
+- Jardim, agricultura e roçadeiras
+  - Enxadas rotativas
+  - Discos de capina
+  - Adaptadores e luvas
+  - Escovas de aço
+  - Lâminas
+  - Brocas de solo
+  - Irrigação e nebulização
+  - Proteção para operação
+- Ferramentas, oficina e indústria
+  - Elevação e movimentação
+    - Talhas
+    - Controles remotos
+    - Ventosas
+  - Pneumática e ar comprimido
+    - Filtros reguladores
+    - Válvulas de pressão
+  - Bombas e transferência de fluidos
+  - Motores e motoredutores
+  - Medição e detecção
+    - Detectores de parede
+    - Esquadros e níveis
+  - Limpeza e pulverização
+  - Segurança e EPI
+    - Protetores faciais
+    - Mantas antichamas
+  - Armazenamento e segurança
+    - Cofres e porta-chaves
+- Eletrônicos e tecnologia
+  - Computadores e conectividade
+    - Hubs e adaptadores USB
+  - Celulares e tablets
+    - Canetas capacitivas
+    - Carregamento sem fio
+  - Telas e displays
+    - Displays LCD
+    - Telas para localizadores
+  - Casa inteligente
+    - Sensores Wi-Fi
+- Casa, móveis e decoração
+  - Cadeiras de escritório
+  - Painéis ripados
+  - Segurança residencial
+- Animais de estimação
+  - Adestramento
+  - Repelentes ultrassônicos
+- Infantil
+  - Tapetes e brinquedos sensoriais
+- Bem-estar adulto
+  - Produtos íntimos
+
+## Fila operacional
+
+- Pendentes de revisão
