@@ -48,6 +48,7 @@ from backend.services.estoque_common import (
 from backend.services.estoque_historico import (
     _chave_intervalo_estoque,
     _estoque_historico_db_path,
+    _estoque_serie_eventos,
     _garantir_tabela_historico_estoque,
     _inicio_periodo_estoque,
     _normalizar_sku_estoque,
@@ -235,6 +236,10 @@ def _garantir_tabela_lancamentos_estoque(client_id: str) -> None:
         )
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_estoque_lanc_data ON estoque_lancamentos (loja_sync, sku, data_ref)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_estoque_lanc_loja_nocase_sku_data "
+            "ON estoque_lancamentos (loja_sync COLLATE NOCASE, sku, data_ref)"
         )
         conn.commit()
     finally:
@@ -905,8 +910,8 @@ async def estoque_serie_retroativa(
         raise HTTPException(status_code=400, detail="Informe uma loja específica.")
 
     intervalo = str(intervalo or "dia").strip().lower()
-    if intervalo not in ("dia", "semana", "mes"):
-        raise HTTPException(status_code=400, detail="intervalo invalido. Use dia, semana ou mes.")
+    if intervalo not in ("dia", "semana", "mes", "atualizacao"):
+        raise HTTPException(status_code=400, detail="intervalo invalido. Use dia, semana, mes ou atualizacao.")
     fonte = str(fonte or "lancamentos").strip().lower()
     if fonte != "lancamentos":
         raise HTTPException(status_code=400, detail="fonte invalida. Use apenas lancamentos.")
@@ -934,6 +939,41 @@ async def estoque_serie_retroativa(
             "base_snapshot_data": None,
             "total_skus": 0,
             "detail": "Histórico de estoque ainda não foi gerado para esta loja.",
+        }
+
+    try:
+        serie_eventos = _estoque_serie_eventos(
+            client_id,
+            loja_nome,
+            intervalo,
+            data_inicio_ref,
+            data_fim_ref,
+            sku,
+        )
+    except sqlite3.OperationalError as exc:
+        logger.warning(f"Falha ao consultar eventos de estoque; usando fallback legado: {exc}")
+        serie_eventos = None
+    if serie_eventos is not None:
+        serie_eventos["periodo"] = periodo
+        return serie_eventos
+    if intervalo == "atualizacao":
+        return {
+            "success": True,
+            "loja": loja_nome,
+            "sku": _normalizar_sku_estoque(sku) if sku else None,
+            "periodo": periodo,
+            "intervalo": intervalo,
+            "fonte": fonte,
+            "historico_fonte": "eventos",
+            "labels": [],
+            "saldo_retroativo": [],
+            "entradas": [],
+            "saidas": [],
+            "series_por_sku": [],
+            "event_ids": [],
+            "base_snapshot_data": None,
+            "total_skus": 0,
+            "detail": "Sem eventos de atualização para os filtros informados.",
         }
 
     conn_hist = sqlite3.connect(db_hist)

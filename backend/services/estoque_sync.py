@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import sqlite3
@@ -44,7 +45,53 @@ from backend.services.estoque_common import (
     _estoque_log,
     _set_estoque_progresso,
 )
-from backend.services.estoque_historico import _registrar_snapshot_historico_estoque
+from backend.services.estoque_historico import (
+    _confirmar_evento_historico_estoque,
+    _descartar_evento_pendente_estoque,
+    _novo_event_id_estoque,
+    _registrar_snapshot_historico_estoque,
+)
+
+
+def _publicar_csv_estoque_apos_historico(
+    client_id: str,
+    loja_sync: str,
+    registros: list[dict],
+    df_saida: pd.DataFrame,
+    arquivo_cliente: str,
+    event_id: str,
+) -> int:
+    diretorio = os.path.dirname(arquivo_cliente)
+    nome_temporario = f".produtos_compilado.{event_id}.tmp"
+    arquivo_temporario = os.path.join(diretorio, nome_temporario)
+    try:
+        df_saida.to_csv(arquivo_temporario, index=False)
+        with open(arquivo_temporario, "rb") as arquivo_csv:
+            csv_hash = hashlib.sha256(arquivo_csv.read()).hexdigest()
+        _registrar_snapshot_historico_estoque(
+            client_id,
+            loja_sync,
+            registros,
+            event_id=event_id,
+            status="pending",
+            csv_hash=csv_hash,
+        )
+        try:
+            os.replace(arquivo_temporario, arquivo_cliente)
+        except Exception:
+            _descartar_evento_pendente_estoque(client_id, event_id)
+            raise
+        return _confirmar_evento_historico_estoque(
+            client_id,
+            event_id,
+            csv_hash=csv_hash,
+        )
+    finally:
+        if os.path.exists(arquivo_temporario):
+            try:
+                os.remove(arquivo_temporario)
+            except OSError:
+                pass
 
 def _estoque_verificar_cancelamento(client_id: str):
     if ESTOQUE_SYNC_CANCEL_FLAGS.get(client_id):
@@ -110,6 +157,7 @@ async def sincronizar_estoque(req: EstoqueSyncRequest, client_id: str = Depends(
     return {"started": True, "message": "Atualização de estoque iniciada em background."}
 
 async def _sincronizar_estoque_impl(req: EstoqueSyncRequest, client_id: str):
+    sync_event_id = _novo_event_id_estoque()
     ESTOQUE_SYNC_CANCEL_FLAGS.pop(client_id, None)
     ESTOQUE_SYNC_LOGS[client_id] = []
     _set_estoque_progresso(client_id, _criar_progresso("Preparando", 0, 0, 0, "Iniciando atualização de estoque."))
@@ -244,19 +292,25 @@ async def _sincronizar_estoque_impl(req: EstoqueSyncRequest, client_id: str):
     else:
         df_saida = pd.concat([df_existente, df_loja_atual], ignore_index=True)
 
-    df_saida.to_csv(arquivo_cliente, index=False)
-
-    _set_estoque_progresso(client_id, _criar_progresso("Finalizando", 4, 4, 97, "Registrando histórico diário de estoque..."))
-    total_hist = _registrar_snapshot_historico_estoque(client_id, req.loja, registros)
+    _set_estoque_progresso(client_id, _criar_progresso("Finalizando", 4, 4, 97, "Registrando histórico desta atualização..."))
+    total_hist = _publicar_csv_estoque_apos_historico(
+        client_id,
+        req.loja,
+        registros,
+        df_saida,
+        arquivo_cliente,
+        sync_event_id,
+    )
 
     _estoque_log(client_id, f"[ESTOQUE] Sincronização concluída: {len(registros)} SKUs")
-    _estoque_log(client_id, f"[ESTOQUE] Histórico atualizado ({total_hist} registros processados; último snapshot do dia por SKU)")
+    _estoque_log(client_id, f"[ESTOQUE] Histórico atualizado ({total_hist} registros; evento {sync_event_id})")
     _set_estoque_progresso(client_id, _criar_progresso("Concluído", 4, 4, 100, f"Estoque atualizado com {len(registros)} SKUs."))
-    return {"success": True, "total": len(registros)}
+    return {"success": True, "total": len(registros), "event_id": sync_event_id}
 
 
 __all__ = [
     "configure_estoque_sync_runtime",
+    "_publicar_csv_estoque_apos_historico",
     "_estoque_verificar_cancelamento",
     "_sincronizar_estoque_thread_worker",
     "sincronizar_estoque",

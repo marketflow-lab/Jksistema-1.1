@@ -42,8 +42,14 @@
         .aba-conteudo.hidden { display:none; }
         .filters label, .history-actions label { display:flex; align-items:center; gap:6px; color:#9bd1ff; font-size:0.92rem; }
         .history-actions { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:15px; }
+        .history-view-options { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin:-3px 0 15px; padding:10px 12px; border:1px solid #222; border-radius:8px; background:#161925; }
+        .history-view-options label { display:flex; align-items:center; gap:6px; color:#d8ecff; font-size:0.92rem; }
+        .history-view-options input[type="checkbox"] { width:17px; height:17px; accent-color:#4facfe; }
+        .history-view-options input:disabled { opacity:0.55; cursor:not-allowed; }
+        .history-help { flex-basis:100%; margin:0; color:#aab8c5; font-size:0.84rem; }
         .history-table th, .history-table td { text-align:right; }
         .history-table th:first-child, .history-table td:first-child { text-align:left; }
+        .history-table .history-separator { border-left:2px solid #37536b; }
         #btnHistoricoSync:disabled, #btnHistoricoCarregar:disabled { opacity:0.6; cursor:not-allowed; }
     </style>
     <script src="/auth.js?v=20260618-persist-login"></script>
@@ -62,16 +68,16 @@
 
     <div id="status" class="status-bar"></div>
 
-    <div class="tabs">
-        <button id="tabAtual" class="tab-btn active" type="button">Estoque atual</button>
-        <button id="tabHistorico" class="tab-btn" type="button">Histórico de estoque</button>
+    <div class="tabs" role="tablist" aria-label="Visões de estoque">
+        <button id="tabAtual" class="tab-btn active" type="button" role="tab" tabindex="0" aria-selected="true" aria-controls="abaAtual">Estoque atual</button>
+        <button id="tabHistorico" class="tab-btn" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="abaHistorico">Histórico de estoque</button>
     </div>
 
     <div class="filters">
         <div class="loja-group" id="lojaBotoes" aria-label="Selecionar loja"></div>
     </div>
 
-    <section id="abaAtual" class="aba-conteudo">
+    <section id="abaAtual" class="aba-conteudo" role="tabpanel" aria-labelledby="tabAtual">
         <div class="filters">
             <button id="btnSync" class="back-btn" style="background:#28a745;">Atualizar estoque</button>
             <input type="text" id="filtroTexto" placeholder="Buscar por SKU, título ou código" aria-label="Filtro de texto">
@@ -102,15 +108,34 @@
         </div>
     </section>
 
-    <section id="abaHistorico" class="aba-conteudo hidden">
+    <section id="abaHistorico" class="aba-conteudo hidden" role="tabpanel" aria-labelledby="tabHistorico">
         <div class="history-actions">
             <label>Início <input type="date" id="histDataInicio"></label>
             <label>Fim <input type="date" id="histDataFim"></label>
+            <label>Agrupar
+                <select id="histIntervalo" aria-label="Agrupamento do histórico">
+                    <option value="atualizacao">Por atualização</option>
+                    <option value="dia">Dia</option>
+                    <option value="semana">Semana</option>
+                    <option value="mes" selected>Mês</option>
+                </select>
+            </label>
             <button id="btnHistoricoCarregar" class="back-btn" type="button">Carregar histórico</button>
             <button id="btnHistoricoSync" class="back-btn" style="background:#28a745;" type="button">Sincronizar registros</button>
         </div>
 
-        <div id="historicoStatus" class="status-bar"></div>
+        <div class="history-view-options" role="group" aria-labelledby="histVisualizacaoTitulo">
+            <strong id="histVisualizacaoTitulo">Visualização</strong>
+            <label><input type="checkbox" id="histIncluirGeral" checked> Total geral da loja</label>
+            <label><input type="checkbox" id="histIncluirSku"> SKU individual</label>
+            <label for="histSkuInput">SKU
+                <input type="search" id="histSkuInput" list="histSkuOpcoes" placeholder="Digite ou selecione" autocomplete="off" disabled aria-describedby="histEscopoAjuda">
+            </label>
+            <datalist id="histSkuOpcoes"></datalist>
+            <p id="histEscopoAjuda" class="history-help">Os valores exibidos são do saldo da loja. O estoque Full permanece separado.</p>
+        </div>
+
+        <div id="historicoStatus" class="status-bar" role="status" aria-live="polite"></div>
         <div class="summary" id="historicoResumo"></div>
 
         <div class="table-wrapper">
@@ -141,6 +166,11 @@
     const abaHistorico = document.getElementById('abaHistorico');
     const histDataInicio = document.getElementById('histDataInicio');
     const histDataFim = document.getElementById('histDataFim');
+    const histIntervalo = document.getElementById('histIntervalo');
+    const histIncluirGeral = document.getElementById('histIncluirGeral');
+    const histIncluirSku = document.getElementById('histIncluirSku');
+    const histSkuInput = document.getElementById('histSkuInput');
+    const histSkuOpcoes = document.getElementById('histSkuOpcoes');
     const btnHistoricoCarregar = document.getElementById('btnHistoricoCarregar');
     const btnHistoricoSync = document.getElementById('btnHistoricoSync');
     const historicoStatus = document.getElementById('historicoStatus');
@@ -165,6 +195,8 @@
     let historicoSyncEmAndamento = false;
     let historicoSolicitandoSync = false;
     let historicoProgressTimer = null;
+    let historicoRequestSeq = 0;
+    let historicoAbortController = null;
 
     async function carregarConfiguracoesGlobais() {
         try {
@@ -293,13 +325,60 @@
         histDataFim.value = formatarDataInput(fim);
     }
 
+    function invalidarConsultaHistorico() {
+        historicoRequestSeq += 1;
+        if (historicoAbortController) historicoAbortController.abort();
+        historicoAbortController = null;
+    }
+
+    function assinaturaEstadoHistorico() {
+        return JSON.stringify({
+            loja: lojaSelecionada,
+            data_inicio: histDataInicio.value || '',
+            data_fim: histDataFim.value || '',
+            intervalo: histIntervalo.value,
+            incluir_geral: histIncluirGeral.checked,
+            incluir_sku: histIncluirSku.checked,
+            sku: histSkuInput.value.trim()
+        });
+    }
+
+    function consultaHistoricoObsoleta(requestSeq, requestSeqAtual, assinaturaInicial, assinaturaAtual) {
+        return requestSeq !== requestSeqAtual || assinaturaInicial !== assinaturaAtual;
+    }
+
+    function indiceTabDestinoPorTecla(tecla, indiceAtual, total) {
+        if (!Number.isInteger(total) || total <= 0) return indiceAtual;
+        if (tecla === 'Home') return 0;
+        if (tecla === 'End') return total - 1;
+        if (tecla === 'ArrowRight') return (indiceAtual + 1) % total;
+        if (tecla === 'ArrowLeft') return (indiceAtual - 1 + total) % total;
+        return indiceAtual;
+    }
+
+    function navegarTabsPorTeclado(event) {
+        const teclas = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+        if (!teclas.includes(event.key)) return;
+        const tabs = [tabAtual, tabHistorico];
+        const indiceAtual = Math.max(0, tabs.indexOf(event.currentTarget));
+        const indiceDestino = indiceTabDestinoPorTecla(event.key, indiceAtual, tabs.length);
+        event.preventDefault();
+        tabs[indiceDestino].focus();
+        mudarAba(tabs[indiceDestino] === tabHistorico ? 'historico' : 'atual');
+    }
+
     function mudarAba(nome) {
         abaAtiva = nome === 'historico' ? 'historico' : 'atual';
         const historicoAtivo = abaAtiva === 'historico';
         tabAtual.classList.toggle('active', !historicoAtivo);
         tabHistorico.classList.toggle('active', historicoAtivo);
+        tabAtual.setAttribute('aria-selected', String(!historicoAtivo));
+        tabHistorico.setAttribute('aria-selected', String(historicoAtivo));
+        tabAtual.tabIndex = historicoAtivo ? -1 : 0;
+        tabHistorico.tabIndex = historicoAtivo ? 0 : -1;
         abaAtual.classList.toggle('hidden', historicoAtivo);
         abaHistorico.classList.toggle('hidden', !historicoAtivo);
+        if (!historicoAtivo) invalidarConsultaHistorico();
         if (historicoAtivo) {
             if (!lojaSelecionada || lojaSelecionada === '__todas') {
                 historicoStatus.className = 'status-bar empty';
@@ -460,17 +539,156 @@
         return numero.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
     }
 
-    function renderHistoricoResumo(payload) {
+    function numeroHistorico(valor) {
+        if (valor === null || valor === undefined || valor === '') return null;
+        const numero = Number(valor);
+        return Number.isFinite(numero) ? numero : null;
+    }
+
+    function formatarQtdHistorico(valor) {
+        const numero = numeroHistorico(valor);
+        return numero === null ? '—' : formatarQtd(numero);
+    }
+
+    function formatarRotuloHistorico(valor) {
+        const texto = String(valor || '').trim();
+        if (!texto) return '-';
+        if (!/^\d{4}-\d{2}-\d{2}T/.test(texto)) return texto;
+        const data = new Date(texto);
+        if (Number.isNaN(data.getTime())) return texto;
+        return data.toLocaleString('pt-BR', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+    }
+
+    function normalizarPontoHistorico(ponto, indice, labelFallback = '') {
+        const item = (ponto && typeof ponto === 'object') ? ponto : { saldo: ponto };
+        const registradoEm = String(item.recorded_at || item.registrado_em || item.data_hora || '').trim();
+        const label = String(
+            item.label || item.rotulo || registradoEm || item.data || item.data_ref || labelFallback || (indice + 1)
+        ).trim();
+        const entrada = numeroHistorico(item.entradas ?? item.entrada);
+        const saida = numeroHistorico(item.saidas ?? item.saida);
+        const variacaoInformada = numeroHistorico(
+            item.variacao ?? item.delta ?? item.delta_saldo ?? item.variacao_saldo
+        );
+        return {
+            chave: String(item.snapshot_id || item.event_id || registradoEm || label || indice),
+            label: formatarRotuloHistorico(label),
+            saldo: numeroHistorico(
+                item.saldo_loja ?? item.saldo ?? item.valor ?? item.saldo_total_loja
+            ),
+            entrada,
+            saida,
+            variacao: variacaoInformada !== null
+                ? variacaoInformada
+                : (entrada !== null && saida !== null ? entrada - saida : null),
+            ordem: registradoEm ? Date.parse(registradoEm) : indice
+        };
+    }
+
+    function normalizarSerieHistorico(raw, labels = [], saldos = [], entradas = [], saidas = []) {
+        let pontos = raw;
+        if (pontos && !Array.isArray(pontos) && typeof pontos === 'object') {
+            pontos = pontos.pontos || pontos.points || pontos.items || pontos.dados;
+        }
+        if (Array.isArray(pontos)) {
+            return pontos.map((ponto, indice) => normalizarPontoHistorico(ponto, indice, labels[indice]));
+        }
+        return labels.map((label, indice) => normalizarPontoHistorico({
+            label,
+            saldo: saldos[indice],
+            entradas: entradas[indice],
+            saidas: saidas[indice]
+        }, indice));
+    }
+
+    function obterSeriesHistorico(payload) {
+        const skuAtivo = histIncluirSku.checked && Boolean(histSkuInput.value.trim());
+        const series = payload?.series && typeof payload.series === 'object' ? payload.series : {};
+        let geral = normalizarSerieHistorico(
+            series.geral ?? payload?.serie_geral ?? payload?.series_geral
+        );
+        let sku = normalizarSerieHistorico(
+            series.sku ?? payload?.serie_sku ?? payload?.series_sku
+        );
+
+        if (!geral.length && payload?.__payloadGeralCompat) {
+            const compat = payload.__payloadGeralCompat;
+            const pontosCompat = Array.isArray(compat?.labels)
+                ? compat.labels.map((label, indice) => ({
+                    event_id: Array.isArray(compat?.event_ids) ? compat.event_ids[indice] : '',
+                    label,
+                    saldo: Array.isArray(compat?.saldo_retroativo) ? compat.saldo_retroativo[indice] : null,
+                    entradas: Array.isArray(compat?.entradas) ? compat.entradas[indice] : null,
+                    saidas: Array.isArray(compat?.saidas) ? compat.saidas[indice] : null
+                }))
+                : [];
+            geral = normalizarSerieHistorico(
+                compat?.series?.geral ?? compat?.serie_geral ?? compat?.series_geral ?? pontosCompat
+            );
+        }
+
+        const labelsLegado = Array.isArray(payload?.labels) ? payload.labels : [];
+        const saldosLegado = Array.isArray(payload?.saldo_retroativo) ? payload.saldo_retroativo : [];
+        const entradasLegado = Array.isArray(payload?.entradas) ? payload.entradas : [];
+        const saidasLegado = Array.isArray(payload?.saidas) ? payload.saidas : [];
+
+        if (!skuAtivo && !geral.length) {
+            geral = normalizarSerieHistorico(null, labelsLegado, saldosLegado, entradasLegado, saidasLegado);
+        }
+        if (skuAtivo && !sku.length) {
+            if (payload?.historico_fonte === 'eventos') {
+                sku = normalizarSerieHistorico(payload?.series_por_sku);
+            } else {
+                sku = normalizarSerieHistorico(null, labelsLegado, saldosLegado, entradasLegado, saidasLegado);
+            }
+            if (!sku.length) sku = normalizarSerieHistorico(payload?.series_por_sku);
+        }
+        return { geral, sku };
+    }
+
+    function ultimoSaldoHistorico(serie) {
+        for (let indice = serie.length - 1; indice >= 0; indice -= 1) {
+            if (serie[indice].saldo !== null) return serie[indice].saldo;
+        }
+        return null;
+    }
+
+    function serieHistoricoTemSaldo(serie) {
+        return Array.isArray(serie) && serie.some(ponto => ponto && ponto.saldo !== null
+            && ponto.saldo !== undefined && ponto.saldo !== '' && Number.isFinite(Number(ponto.saldo)));
+    }
+
+    function renderHistoricoResumo(payload, series) {
         historicoResumo.innerHTML = '';
         const cards = [
             { label: 'Loja', value: payload.loja || lojaSelecionada || '-' },
-            { label: 'Base', value: payload.base_snapshot_data || '-' },
-            { label: 'SKUs', value: formatarQtd(payload.total_skus || 0) },
+            { label: 'Tipo de saldo', value: 'Loja (Full separado)' },
+            { label: 'Base', value: payload.base_snapshot_at || payload.base_snapshot_data || '-' },
         ];
+        if (histIncluirGeral.checked) {
+            cards.push({ label: 'Total geral', value: formatarQtdHistorico(ultimoSaldoHistorico(series.geral)) });
+        }
+        if (histIncluirSku.checked) {
+            cards.push({
+                label: `SKU ${histSkuInput.value.trim() || '-'}`,
+                value: formatarQtdHistorico(ultimoSaldoHistorico(series.sku))
+            });
+        }
         cards.forEach(c => {
             const div = document.createElement('div');
             div.className = 'card';
-            div.innerHTML = `<h3>${c.label}</h3><div class="val">${c.value}</div>`;
+            const titulo = document.createElement('h3');
+            titulo.textContent = c.label;
+            const valor = document.createElement('div');
+            valor.className = 'val';
+            valor.textContent = c.value;
+            div.append(titulo, valor);
             historicoResumo.appendChild(div);
         });
     }
@@ -478,76 +696,224 @@
     function renderHistorico(payload) {
         historicoTHead.innerHTML = '';
         historicoTBody.innerHTML = '';
-        renderHistoricoResumo(payload || {});
+        const series = obterSeriesHistorico(payload || {});
+        renderHistoricoResumo(payload || {}, series);
 
-        const labels = Array.isArray(payload?.labels) ? payload.labels : [];
-        const saldos = Array.isArray(payload?.saldo_retroativo) ? payload.saldo_retroativo : [];
-        const entradas = Array.isArray(payload?.entradas) ? payload.entradas : [];
-        const saidas = Array.isArray(payload?.saidas) ? payload.saidas : [];
+        const pontosPorChave = new Map();
+        const adicionarPontos = (lista, tipo) => {
+            lista.forEach((ponto, indice) => {
+                const existente = pontosPorChave.get(ponto.chave) || {
+                    chave: ponto.chave,
+                    label: ponto.label,
+                    ordem: Number.isFinite(ponto.ordem) ? ponto.ordem : indice,
+                    geral: null,
+                    sku: null
+                };
+                existente[tipo] = ponto;
+                pontosPorChave.set(ponto.chave, existente);
+            });
+        };
+        adicionarPontos(series.geral, 'geral');
+        adicionarPontos(series.sku, 'sku');
+        const linhas = Array.from(pontosPorChave.values()).sort((a, b) => {
+            if (Number.isFinite(a.ordem) && Number.isFinite(b.ordem) && a.ordem !== b.ordem) {
+                return a.ordem - b.ordem;
+            }
+            return String(a.label).localeCompare(String(b.label), 'pt-BR', { numeric: true });
+        });
 
-        if (!labels.length) {
+        if (!linhas.length) {
             historicoStatus.className = 'status-bar empty';
-            historicoStatus.textContent = payload?.detail || 'Sem histórico para o período selecionado.';
+            historicoStatus.textContent = payload?.meta?.detail || payload?.detail
+                || 'Sem histórico para o período selecionado. Atualize o estoque para iniciar o histórico.';
             return;
         }
 
         const trHead = document.createElement('tr');
-        ['Mês', 'Saldo loja', 'Entradas', 'Saídas', 'Variação'].forEach(label => {
+        const cabecalhos = [{
+            label: histIntervalo.value === 'atualizacao' ? 'Atualização' : 'Período',
+            classe: ''
+        }];
+        if (histIncluirGeral.checked) {
+            cabecalhos.push(
+                { label: 'Total geral da loja', classe: '' },
+                { label: 'Entradas gerais', classe: '' },
+                { label: 'Saídas gerais', classe: '' },
+                { label: 'Variação geral', classe: '' }
+            );
+        }
+        if (histIncluirSku.checked) {
+            const skuLabel = histSkuInput.value.trim() || '-';
+            cabecalhos.push(
+                { label: `Saldo SKU ${skuLabel}`, classe: 'history-separator' },
+                { label: 'Entradas SKU', classe: '' },
+                { label: 'Saídas SKU', classe: '' },
+                { label: 'Variação SKU', classe: '' }
+            );
+        }
+        cabecalhos.forEach(item => {
             const th = document.createElement('th');
-            th.textContent = label;
+            th.textContent = item.label;
+            if (item.classe) th.className = item.classe;
+            th.scope = 'col';
             trHead.appendChild(th);
         });
         historicoTHead.appendChild(trHead);
 
         const frag = document.createDocumentFragment();
-        labels.forEach((label, idx) => {
-            const entrada = Number(entradas[idx] || 0);
-            const saida = Number(saidas[idx] || 0);
+        linhas.forEach(linha => {
             const tr = document.createElement('tr');
-            [label, formatarQtd(saldos[idx]), formatarQtd(entrada), formatarQtd(saida), formatarQtd(entrada - saida)].forEach(valor => {
+            const celulas = [{ valor: linha.label, classe: '' }];
+            if (histIncluirGeral.checked) {
+                celulas.push(
+                    { valor: formatarQtdHistorico(linha.geral?.saldo), classe: '' },
+                    { valor: formatarQtdHistorico(linha.geral?.entrada), classe: '' },
+                    { valor: formatarQtdHistorico(linha.geral?.saida), classe: '' },
+                    { valor: formatarQtdHistorico(linha.geral?.variacao), classe: '' }
+                );
+            }
+            if (histIncluirSku.checked) {
+                celulas.push(
+                    { valor: formatarQtdHistorico(linha.sku?.saldo), classe: 'history-separator' },
+                    { valor: formatarQtdHistorico(linha.sku?.entrada), classe: '' },
+                    { valor: formatarQtdHistorico(linha.sku?.saida), classe: '' },
+                    { valor: formatarQtdHistorico(linha.sku?.variacao), classe: '' }
+                );
+            }
+            celulas.forEach(item => {
                 const td = document.createElement('td');
-                td.textContent = valor;
+                td.textContent = item.valor;
+                if (item.classe) td.className = item.classe;
                 tr.appendChild(td);
             });
             frag.appendChild(tr);
         });
         historicoTBody.appendChild(frag);
 
-        historicoStatus.className = 'status-bar success';
-        historicoStatus.textContent = `Histórico carregado: ${labels.length} mês(es).`;
+        const skuDisponivel = serieHistoricoTemSaldo(series.sku);
+        const geralDisponivel = serieHistoricoTemSaldo(series.geral);
+        const skuSemHistorico = histIncluirSku.checked && !skuDisponivel;
+        const geralSemHistorico = histIncluirGeral.checked && !geralDisponivel;
+        if (skuSemHistorico || geralSemHistorico) {
+            historicoStatus.className = 'status-bar empty';
+            if (skuSemHistorico) {
+                historicoStatus.textContent = histIncluirGeral.checked && geralDisponivel
+                    ? `Total geral carregado. Sem histórico para o SKU ${histSkuInput.value.trim()} nesta loja.`
+                    : `Sem histórico para o SKU ${histSkuInput.value.trim()} nesta loja.`;
+            } else {
+                historicoStatus.textContent = histIncluirSku.checked && skuDisponivel
+                    ? 'Histórico do SKU carregado. A série total geral não está disponível para este período.'
+                    : 'Sem histórico geral para esta loja no período selecionado.';
+            }
+        } else {
+            historicoStatus.className = 'status-bar success';
+            const modo = histIntervalo.options[histIntervalo.selectedIndex]?.textContent || histIntervalo.value;
+            const legado = payload?.meta?.fallback_legacy || payload?.fallback_legacy || payload?.__intervaloFallback;
+            historicoStatus.textContent = legado
+                ? `Histórico carregado por compatibilidade (${modo}); o detalhamento por atualização começa na próxima atualização.`
+                : `Histórico carregado: ${linhas.length} ponto(s), agrupamento ${modo.toLowerCase()}.`;
+        }
+    }
+
+    async function consultarHistorico(params, permitirFallbackAtualizacao = true, signal = null) {
+        let resp = await fetch(`/api/estoque/serie-retroativa?${params.toString()}`, {
+            headers: obterAuthHeaders(),
+            cache: 'no-store',
+            signal
+        });
+        let data = await resp.json().catch(() => ({}));
+        if (!resp.ok && permitirFallbackAtualizacao && params.get('intervalo') === 'atualizacao' && resp.status === 400) {
+            const paramsLegado = new URLSearchParams(params);
+            paramsLegado.set('intervalo', 'dia');
+            resp = await fetch(`/api/estoque/serie-retroativa?${paramsLegado.toString()}`, {
+                headers: obterAuthHeaders(),
+                cache: 'no-store',
+                signal
+            });
+            data = await resp.json().catch(() => ({}));
+            if (resp.ok) data.__intervaloFallback = true;
+        }
+        if (!resp.ok) {
+            throw new Error(data.detail || `HTTP ${resp.status}`);
+        }
+        return data;
     }
 
     async function carregarHistorico(exibirStatus = true) {
+        invalidarConsultaHistorico();
         if (!lojaSelecionada || lojaSelecionada === '__todas') {
             historicoStatus.className = 'status-bar empty';
             historicoStatus.textContent = 'Selecione uma loja para ver o histórico de estoque.';
             return;
         }
+        const incluirGeral = histIncluirGeral.checked;
+        const incluirSku = histIncluirSku.checked;
+        const sku = histSkuInput.value.trim();
+        if (!incluirGeral && !incluirSku) {
+            historicoStatus.className = 'status-bar empty';
+            historicoStatus.textContent = 'Marque Total geral da loja, SKU individual ou ambos.';
+            return;
+        }
+        if (incluirSku && !sku) {
+            historicoStatus.className = 'status-bar empty';
+            historicoStatus.textContent = 'Digite ou selecione um SKU para carregar o histórico individual.';
+            histSkuInput.focus();
+            return;
+        }
+        const requestSeq = historicoRequestSeq;
+        const assinaturaInicial = assinaturaEstadoHistorico();
+        const requestController = new AbortController();
+        historicoAbortController = requestController;
+        const { signal } = requestController;
         if (exibirStatus) {
             historicoStatus.className = 'status-bar loading';
-            historicoStatus.innerHTML = `${spinnerHtml}Carregando histórico mensal...`;
+            historicoStatus.innerHTML = `${spinnerHtml}Carregando histórico de estoque...`;
         }
         try {
             const params = new URLSearchParams({
                 loja: lojaSelecionada,
                 periodo: 'max',
-                intervalo: 'mes',
+                intervalo: histIntervalo.value,
                 fonte: 'lancamentos',
+                incluir_geral: String(incluirGeral),
+                incluir_sku: String(incluirSku),
                 data_inicio: histDataInicio.value || '',
                 data_fim: histDataFim.value || ''
             });
-            const resp = await fetch(`/api/estoque/serie-retroativa?${params.toString()}`, {
-                headers: obterAuthHeaders(),
-                cache: 'no-store'
-            });
-            const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) {
-                throw new Error(data.detail || `HTTP ${resp.status}`);
+            if (incluirSku) params.set('sku', sku);
+
+            const data = await consultarHistorico(params, true, signal);
+            const serieGeralNova = data?.series?.geral ?? data?.serie_geral ?? data?.series_geral;
+            if (incluirGeral && incluirSku && !normalizarSerieHistorico(serieGeralNova).length) {
+                const paramsGeral = new URLSearchParams(params);
+                paramsGeral.delete('sku');
+                paramsGeral.set('incluir_sku', 'false');
+                try {
+                    data.__payloadGeralCompat = await consultarHistorico(paramsGeral, true, signal);
+                } catch (erroGeral) {
+                    data.__erroGeralCompat = String(erroGeral?.message || erroGeral || '');
+                }
             }
+            if (signal.aborted || consultaHistoricoObsoleta(
+                requestSeq,
+                historicoRequestSeq,
+                assinaturaInicial,
+                assinaturaEstadoHistorico()
+            )) return;
             renderHistorico(data);
         } catch (e) {
+            if (e?.name === 'AbortError' || signal.aborted || consultaHistoricoObsoleta(
+                requestSeq,
+                historicoRequestSeq,
+                assinaturaInicial,
+                assinaturaEstadoHistorico()
+            )) return;
             historicoStatus.className = 'status-bar error';
             historicoStatus.textContent = `Erro ao carregar histórico: ${e.message}`;
+        } finally {
+            if (historicoRequestSeq === requestSeq && historicoAbortController === requestController) {
+                historicoAbortController = null;
+            }
         }
     }
 
@@ -708,6 +1074,33 @@
 
     function obterSku(row) {
         return String(row.sku || row.SKU || row.codigo || row.Codigo || '').trim();
+    }
+
+    function atualizarOpcoesSkuHistorico() {
+        const skus = new Set();
+        dados.forEach(row => {
+            const loja = normalizarLoja(row?.loja_sync || row?.loja || '');
+            if (lojaSelecionada !== '__todas' && loja !== normalizarLoja(lojaSelecionada)) return;
+            const sku = obterSku(row);
+            if (sku) skus.add(sku);
+        });
+        histSkuOpcoes.innerHTML = '';
+        Array.from(skus)
+            .sort((a, b) => a.localeCompare(b, 'pt-BR', { numeric: true, sensitivity: 'base' }))
+            .forEach(sku => {
+                const option = document.createElement('option');
+                option.value = sku;
+                histSkuOpcoes.appendChild(option);
+            });
+    }
+
+    function marcarFiltrosHistoricoAlterados() {
+        invalidarConsultaHistorico();
+        historicoTHead.innerHTML = '';
+        historicoTBody.innerHTML = '';
+        historicoResumo.innerHTML = '';
+        historicoStatus.className = 'status-bar empty';
+        historicoStatus.textContent = 'Filtros alterados. Clique em carregar histórico.';
     }
 
     function obterNumeroSku(sku) {
@@ -881,10 +1274,12 @@
     }
 
     function atualizarSelecao() {
+        invalidarConsultaHistorico();
         Array.from(lojaBotoes.children).forEach(btn => {
             btn.classList.toggle('active', btn.textContent === 'Todas as lojas' ? lojaSelecionada === '__todas' : btn.textContent === lojaSelecionada);
         });
         filtrar();
+        atualizarOpcoesSkuHistorico();
         if (abaAtiva === 'historico') {
             historicoTHead.innerHTML = '';
             historicoTBody.innerHTML = '';
@@ -930,6 +1325,7 @@
             const resp = await fetch('/api/estoque', { headers: obterAuthHeaders() });
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             dados = await resp.json();
+            atualizarOpcoesSkuHistorico();
             filtrar();
             if (exibirStatus && !syncEmAndamento) {
                 statusEl.className = 'status-bar';
@@ -967,8 +1363,29 @@
     });
     tabAtual.addEventListener('click', () => mudarAba('atual'));
     tabHistorico.addEventListener('click', () => mudarAba('historico'));
+    tabAtual.addEventListener('keydown', navegarTabsPorTeclado);
+    tabHistorico.addEventListener('keydown', navegarTabsPorTeclado);
     btnHistoricoCarregar.addEventListener('click', () => carregarHistorico(true));
     btnHistoricoSync.addEventListener('click', () => sincronizarHistorico());
+    histDataInicio.addEventListener('change', marcarFiltrosHistoricoAlterados);
+    histDataFim.addEventListener('change', marcarFiltrosHistoricoAlterados);
+    histIntervalo.addEventListener('change', marcarFiltrosHistoricoAlterados);
+    histIncluirGeral.addEventListener('change', marcarFiltrosHistoricoAlterados);
+    histIncluirSku.addEventListener('change', () => {
+        histSkuInput.disabled = !histIncluirSku.checked;
+        marcarFiltrosHistoricoAlterados();
+        if (histIncluirSku.checked) histSkuInput.focus();
+    });
+    histSkuInput.addEventListener('input', marcarFiltrosHistoricoAlterados);
+    histSkuInput.addEventListener('keydown', event => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        if (!histIncluirSku.checked) {
+            histIncluirSku.checked = true;
+            histSkuInput.disabled = false;
+        }
+        carregarHistorico(true);
+    });
 
     async function inicializarPaginaEstoque() {
         inicializarDatasHistorico();
