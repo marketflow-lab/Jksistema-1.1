@@ -30,6 +30,7 @@ import requests
 from fastapi import Header, HTTPException, Request
 from backend.schemas import IAChatAttachment, IAChatRequest
 from backend.services.whatsapp import formatting as whatsapp_formatting
+from backend.services.whatsapp import delivery as whatsapp_delivery
 from backend.services.whatsapp import gateway as whatsapp_gateway
 from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
@@ -277,6 +278,22 @@ def _deliver_dual_worker_final(
         _save_pending(state, message_id, pending)
         codex_console._codex_update_task(task_id, delivery_state=pending["delivery_state"])
         return False
+    delivery_confirmed = whatsapp_delivery.delivery_receipt_confirmed(result)
+    if not delivery_confirmed:
+        pending["delivery_state"] = "final_delivery_pending"
+        _save_pending(state, message_id, pending)
+        codex_console._codex_update_task(
+            task_id,
+            handoff_status="delivery_pending",
+            delivery_state=pending["delivery_state"],
+            conversation_agent_thread_id="",
+        )
+        _discard_unconfirmed_assistant_reply(
+            state,
+            str(pending.get("conversation_id") or ""),
+            final_text,
+        )
+        return False
     codex_console._codex_update_task(
         task_id,
         handoff_status="delivered_by_conversation_agent",
@@ -288,6 +305,19 @@ def _deliver_dual_worker_final(
     _record_message_timing(message_id, sent_at=_now())
     if completed_epoch:
         _record_latency("completed_to_sent", sent_epoch - completed_epoch)
+    if delivery_confirmed:
+        try:
+            _record_shared_delivered_exchange(
+                client_id=str(pending.get("client_id") or task.get("client_id") or ""),
+                username=str(pending.get("username") or task.get("created_by") or ""),
+                phone=str(pending.get("wa_id") or ""),
+                subject_id=str(pending.get("subject_id") or ""),
+                prompt=str(pending.get("request_text") or task.get("prompt") or ""),
+                response=final_text,
+                event_id=f"{message_id}:final",
+            )
+        except Exception:
+            pass
     _whatsapp_update_query_context_from_task(state, pending, task)
     status = "completed" if str(worker_result.get("status") or "") == "completed" else "partial"
     reason = "" if status == "completed" else "resultado_parcial"

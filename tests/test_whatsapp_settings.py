@@ -104,6 +104,7 @@ def test_phone_preferences_are_normalized_per_subject() -> None:
     assert component == whatsapp_bridge._phone_notification_settings(config, "subject-1")
     assert component == {
         "label": "Telefone principal",
+        "is_primary": False,
         "send_ml_question_suggestions": False,
         "send_weekly_report": True,
         "send_monthly_report": True,
@@ -145,7 +146,7 @@ def test_legacy_function_manager_fields_are_not_written_again(monkeypatch) -> No
     })
 
     assert runtime_value["function_manager_legacy_fields_ignored"] is True
-    assert captured["version"] == 11
+    assert captured["version"] == 12
     assert captured["deadline_enabled"] is False
     assert captured["job_deadline_seconds"] == 0
     assert captured["response_provider_policy"] == "codex_only"

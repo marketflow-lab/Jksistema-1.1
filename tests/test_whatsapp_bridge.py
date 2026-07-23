@@ -224,16 +224,17 @@ def test_codex_running_task_steers_only_the_same_phone(codex_runtime):
 
 def test_phone_notification_defaults_preserve_questions_and_opt_in_reports():
     defaults = whatsapp_bridge._default_config()
-    assert defaults["version"] == 11
+    assert defaults["version"] == 12
     assert defaults["deadline_enabled"] is False
     assert defaults["job_deadline_seconds"] == 0
     assert defaults["phone_notification_settings"] == {}
     assert whatsapp_bridge._phone_notification_settings({}, "subject-1") == {
         "subject_id": "subject-1",
         "client_id": "",
-        "username": "",
-        "label": "",
-        "send_ml_question_suggestions": True,
+            "username": "",
+            "label": "",
+            "is_primary": False,
+            "send_ml_question_suggestions": True,
         "send_weekly_report": False,
         "send_monthly_report": False,
         "ai_behavior": "",
@@ -4494,16 +4495,22 @@ def test_status_lists_numbers_grouped_by_user_with_three_number_limit(monkeypatc
     assert status["codex_reasoning_options"] == ["low", "medium", "high", "xhigh"]
 
 
-def test_binding_target_allows_admin_to_select_an_existing_user(monkeypatch):
+def test_binding_target_allows_admin_to_select_an_existing_user_in_same_tenant(monkeypatch):
     checked = {}
     monkeypatch.setattr(
         admin_usuarios_common,
         "_carregar_permissoes_usuario",
         lambda username, client_id: checked.update({"username": username, "client_id": client_id}) or {"full": False},
     )
-    target = whatsapp_bridge._binding_target(_full_session(), "vendas", "cliente-vendas")
-    assert target == ("vendas", "cliente-vendas")
-    assert checked == {"username": "vendas", "client_id": "cliente-vendas"}
+    target = whatsapp_bridge._binding_target(_full_session(), "vendas", "cliente")
+    assert target == ("vendas", "cliente")
+    assert checked == {"username": "vendas", "client_id": "cliente"}
+
+
+def test_binding_target_rejects_another_tenant():
+    with pytest.raises(HTTPException) as exc_info:
+        whatsapp_bridge._binding_target(_full_session(), "vendas", "cliente-vendas")
+    assert exc_info.value.status_code == 403
 
 
 def test_admin_saves_independent_settings_for_a_linked_phone(monkeypatch):
@@ -4514,6 +4521,7 @@ def test_admin_saves_independent_settings_for_a_linked_phone(monkeypatch):
         "phone_notification_settings": {},
     }
     monkeypatch.setattr(whatsapp_bridge, "_require_full", lambda *_args, **_kwargs: _full_session())
+    monkeypatch.setattr(whatsapp_bridge, "_binding_target", lambda _session, username, client_id: (username, client_id))
     monkeypatch.setattr(whatsapp_bridge, "_load_config", lambda: config)
     monkeypatch.setattr(whatsapp_bridge, "_worker_health", lambda _cfg: {"bindings": [{
         "subject_id": "subject-1",
@@ -4550,6 +4558,112 @@ def test_admin_saves_independent_settings_for_a_linked_phone(monkeypatch):
     assert state["scheduled_report_deliveries"]["subject-1"]["weekly"]
     assert state["scheduled_report_deliveries"]["subject-1"]["monthly"]
     assert result["success"] is True
+
+
+def test_admin_selects_gateway_authoritative_primary_and_demotes_previous(monkeypatch):
+    stored = {}
+    gateway_calls = []
+    rotations = []
+    config = {
+        "machine_id": "machine-1",
+        "worker_url": "https://example.workers.dev",
+        "bridge_token": "token",
+        "phone_notification_settings": {
+            "subject-old": {
+                "subject_id": "subject-old",
+                "client_id": "000002",
+                "username": "caio",
+                "phone_number": "5537999995515",
+                "is_primary": True,
+            },
+            "subject-3818": {
+                "subject_id": "subject-3818",
+                "client_id": "000002",
+                "username": "caio",
+                "phone_number": "5537999993818",
+                "is_primary": False,
+            },
+        },
+    }
+
+    def fake_gateway(_config, method, path, payload, timeout):
+        gateway_calls.append({"method": method, "path": path, "payload": payload, "timeout": timeout})
+        if path == "/bridge/bindings/primary":
+            return {"success": True, "is_primary": True, "owner_has_primary": True}
+        return {"success": True}
+
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_require_full",
+        lambda *_args, **_kwargs: {
+            "client_id": "000002",
+            "username": "caio",
+            "permissions": {"full": True},
+            "is_full": True,
+            "machine_id": "machine-1",
+        },
+    )
+    monkeypatch.setattr(whatsapp_bridge, "_binding_target", lambda *_args, **_kwargs: ("caio", "000002"))
+    monkeypatch.setattr(whatsapp_bridge, "_load_config", lambda: config)
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_worker_health",
+        lambda _cfg: {
+            "success": True,
+            "bindings": [{
+                "subject_id": "subject-3818",
+                "phone_number": "5537999993818",
+                "client_id": "000002",
+                "username": "caio",
+                "machine_id": "machine-1",
+                "is_primary": False,
+            }],
+        },
+    )
+    monkeypatch.setattr(whatsapp_bridge, "_gateway_json", fake_gateway)
+    monkeypatch.setattr(whatsapp_bridge, "_save_config", lambda value: stored.update(value) or value)
+    monkeypatch.setattr(whatsapp_bridge, "_load_state", lambda: {})
+    monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _value: None)
+    monkeypatch.setattr(whatsapp_bridge, "_public_status", lambda value, _worker=None: {"success": True, "config": value})
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_rotate_shared_conversation",
+        lambda _config, **kwargs: rotations.append(kwargs),
+    )
+
+    result = whatsapp_bridge.whatsapp_bridge_update_phone_settings(
+        whatsapp_bridge.WhatsappPhoneSettingsRequest(
+            subject_id="subject-3818",
+            username="caio",
+            client_id="000002",
+            label="Caio",
+            is_primary=True,
+        ),
+        _request(),
+        None,
+    )
+
+    assert result["success"] is True
+    assert gateway_calls[0] == {
+        "method": "POST",
+        "path": "/bridge/bindings/primary",
+        "payload": {
+            "subject_id": "subject-3818",
+            "client_id": "000002",
+            "username": "caio",
+            "machine_id": "machine-1",
+            "is_primary": True,
+        },
+        "timeout": 15,
+    }
+    phone_settings = stored["phone_notification_settings"]
+    assert phone_settings["subject-3818"]["is_primary"] is True
+    assert phone_settings["subject-old"]["is_primary"] is False
+    assert rotations == [{
+        "client_id": "000002",
+        "username": "caio",
+        "reason": "primary_binding_changed",
+    }]
 
 
 def test_admin_registers_phone_directly_without_confirmation_message(monkeypatch):

@@ -55,6 +55,7 @@ assert(canonical.includes('id="waConversationInterval"'), 'conversation interval
 assert(canonical.includes('id="userWhatsappSettings"'), 'per-user WhatsApp phone settings are missing');
 assert(canonical.includes('id="userWaNewPhoneName"'), 'direct phone name field is missing');
 assert(canonical.includes('id="userWaNewPhoneNumber"'), 'direct phone number field is missing');
+assert(canonical.includes('id="userWaNewPrimary"'), 'primary phone selector is missing');
 assert(canonical.includes('id="userWaSavePhone"'), 'direct phone save action is missing');
 assert(canonical.includes('id="userWaWelcomeMessage"'), 'welcome message field is missing');
 assert(canonical.includes('id="userWaSendWelcome"'), 'welcome send option is missing');
@@ -85,6 +86,8 @@ assert(ui.includes('Enviar relatório semanal'), 'weekly report preference is mi
 assert(ui.includes('Enviar relatório mensal'), 'monthly report preference is missing');
 assert(ui.includes('Como a IA deve se comportar com este usuário'), 'per-phone AI behavior field is missing');
 assert(ui.includes('ai_behavior: behaviorInput.value.trim()'), 'per-phone AI behavior is not saved by the UI');
+assert(ui.includes('is_primary: primary.input.checked'), 'existing primary phone selection is not saved');
+assert(ui.includes("is_primary: byId('userWaNewPrimary').checked"), 'new primary phone selection is not saved');
 assert(ui.includes('allow_voice_calls: voiceCalls.input.checked'), 'existing phone voice permission is not saved');
 assert(ui.includes("request('/api/admin/whatsapp/voice/preflight'"), 'voice preflight endpoint is not used');
 assert(ui.includes("request('/api/admin/whatsapp/voice/enable'"), 'voice enable endpoint is not used');

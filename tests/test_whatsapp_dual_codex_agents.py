@@ -36,6 +36,22 @@ def _session() -> dict:
     return {"username": "admin", "client_id": "cliente", "permissions": {"full": True}, "is_full": True}
 
 
+def _confirmed_delivery(parts: int = 1) -> dict:
+    return {
+        "status": "sent",
+        "delivery_receipt": {
+            "schema_version": "jk.whatsapp.delivery-receipt.v1",
+            "state": "sent",
+            "confirmed": True,
+            "terminal": True,
+            "parts_total": parts,
+            "parts_sent": parts,
+            "parts_pending": 0,
+            "parts_failed": 0,
+        },
+    }
+
+
 def test_dual_defaults_use_luna_and_sol_without_legacy_progress():
     settings = whatsapp_bridge._whatsapp_dual_agent_settings(whatsapp_bridge._default_config())
     assert settings == {
@@ -91,7 +107,7 @@ def test_version_five_dual_config_is_migrated_to_parallel_capacity(monkeypatch):
         },
     )
     config = whatsapp_bridge._load_config()
-    assert config["version"] == 11
+    assert config["version"] == 12
     assert config["response_provider_policy"] == "codex_only"
     assert config["task_agent_reasoning"] == "low"
     assert config["deadline_enabled"] is False
@@ -313,7 +329,7 @@ def test_worker_result_is_rewritten_by_luna_before_proactive_delivery(monkeypatc
             "thread_id": "thread-luna",
         },
     )
-    monkeypatch.setattr(whatsapp_bridge, "_post_proactive", lambda _cfg, payload: proactive.append(payload) or {"status": "queued"})
+    monkeypatch.setattr(whatsapp_bridge, "_post_proactive", lambda _cfg, payload: proactive.append(payload) or _confirmed_delivery())
     monkeypatch.setattr(whatsapp_bridge, "_whatsapp_update_query_context_from_task", lambda *_args: None)
     monkeypatch.setattr(whatsapp_bridge, "_remove_pending", lambda _state, message_id, **_kwargs: removed.append(message_id))
 
@@ -364,7 +380,7 @@ def test_job_group_buffers_partial_and_delivers_one_final_answer(monkeypatch):
             "thread_id": "thread-luna",
         },
     )
-    monkeypatch.setattr(whatsapp_bridge, "_post_proactive", lambda _cfg, payload: proactive.append(payload) or {"status": "sent"})
+    monkeypatch.setattr(whatsapp_bridge, "_post_proactive", lambda _cfg, payload: proactive.append(payload) or _confirmed_delivery())
     monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(whatsapp_bridge, "_whatsapp_update_query_context_from_task", lambda *_args: None)
     monkeypatch.setattr(whatsapp_bridge, "_remove_pending", lambda _state, mid, **_kwargs: removed.append(mid))
@@ -1698,7 +1714,7 @@ def test_direct_listing_delivery_sends_official_photos_before_structured_text(mo
 
     def post_text(_config, payload):
         events.append(("text", payload["text"]))
-        return {"status": "sent"}
+        return _confirmed_delivery()
 
     monkeypatch.setattr(whatsapp_bridge, "_whatsapp_deliver_marketplace_listing_images", deliver_images)
     monkeypatch.setattr(

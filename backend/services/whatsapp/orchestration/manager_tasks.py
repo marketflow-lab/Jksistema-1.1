@@ -30,6 +30,7 @@ import requests
 from fastapi import Header, HTTPException, Request
 from backend.schemas import IAChatAttachment, IAChatRequest
 from backend.services.whatsapp import formatting as whatsapp_formatting
+from backend.services.whatsapp import delivery as whatsapp_delivery
 from backend.services.whatsapp import gateway as whatsapp_gateway
 from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
@@ -491,6 +492,29 @@ def _function_manager_deliver_direct(
         pending["delivery_state"] = f"manager_final_{str(delivery.get('status') or 'failed')}"
         _save_pending(state, message_id, pending)
         return False
+    delivery_confirmed = whatsapp_delivery.delivery_receipt_confirmed(delivery)
+    if not delivery_confirmed:
+        pending["delivery_state"] = "manager_final_delivery_pending"
+        _save_pending(state, message_id, pending)
+        _discard_unconfirmed_assistant_reply(
+            state,
+            str(pending.get("conversation_id") or ""),
+            final_text,
+        )
+        return False
+    if delivery_confirmed:
+        try:
+            _record_shared_delivered_exchange(
+                client_id=str(pending.get("client_id") or ""),
+                username=str(pending.get("username") or ""),
+                phone=str(pending.get("wa_id") or ""),
+                subject_id=str(pending.get("subject_id") or ""),
+                prompt=request_text,
+                response=final_text,
+                event_id=f"{message_id}:manager-final",
+            )
+        except Exception:
+            pass
     _record_message_timing(message_id, completed_at=_now(), sent_at=_now())
     coverage_complete = evidence.get("coverage_complete") is True
     _remove_pending(

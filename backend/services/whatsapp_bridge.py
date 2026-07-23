@@ -671,6 +671,22 @@ _recover_dual_pending_after_restart = _make_delegator('retry_coordinator', '_rec
 
 _dual_conversation_record = _make_delegator('conversation', '_dual_conversation_record')
 
+_shared_continuity_for_session = _make_delegator('conversation', '_shared_continuity_for_session')
+
+_ensure_shared_conversation_record = _make_delegator('conversation', '_ensure_shared_conversation_record')
+
+_shared_sidebar_conversation_turn = _make_delegator('conversation', '_shared_sidebar_conversation_turn')
+
+_shared_sidebar_worker_result = _make_delegator('conversation', '_shared_sidebar_worker_result')
+
+_record_shared_delivered_exchange = _make_delegator('conversation', '_record_shared_delivered_exchange')
+_discard_unconfirmed_assistant_reply = _make_delegator('conversation', '_discard_unconfirmed_assistant_reply')
+_replace_provisional_assistant_reply = _make_delegator('conversation', '_replace_provisional_assistant_reply')
+
+_rotate_shared_conversation = _make_delegator('conversation', '_rotate_shared_conversation')
+
+_reset_shared_conversation_for_session = _make_delegator('conversation', '_reset_shared_conversation_for_session')
+
 _dual_confirm_conversation_context = _make_delegator('conversation', '_dual_confirm_conversation_context')
 
 _dual_append_conversation_turn = _make_delegator('conversation', '_dual_append_conversation_turn')

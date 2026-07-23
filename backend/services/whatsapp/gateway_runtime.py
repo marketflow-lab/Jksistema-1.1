@@ -102,7 +102,9 @@ def _binding_target(session: dict[str, Any], username: Any = None, client_id: An
     target_client_id = str(client_id or session_client_id).strip()
     if not target_username or not target_client_id:
         raise HTTPException(status_code=400, detail="Selecione um usuario valido para o pareamento.")
-    if target_username != session_username or target_client_id != session_client_id:
+    if target_client_id != session_client_id:
+        raise HTTPException(status_code=403, detail="Nao e permitido administrar telefones de outro cliente.")
+    if target_username != session_username:
         try:
             admin_usuarios_common._carregar_permissoes_usuario(target_username, target_client_id)
         except HTTPException as exc:

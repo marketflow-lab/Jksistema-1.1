@@ -1130,7 +1130,12 @@ def _codex_status_for_session(sessao: dict[str, Any]) -> dict[str, Any]:
     client_id = str(sessao.get("client_id") or "").strip()
     username = str(sessao.get("username") or "").strip().lower()
     if client_id and username:
-        state = _codex_load_or_create_conversation_state(client_id, username, channel="app")
+        shared = _codex_shared_continuity_for_session(sessao)
+        state = (
+            _codex_load_or_create_shared_conversation_state(client_id, username)
+            if shared
+            else _codex_load_or_create_conversation_state(client_id, username, channel="app")
+        )
         conversation_id = str(state.get("conversation_id") or "")
         generation = int(state.get("generation") or 1)
         active_statuses = {"queued", "running", "awaiting_approval", "cancel_requested"}
@@ -1143,7 +1148,7 @@ def _codex_status_for_session(sessao: dict[str, Any]) -> dict[str, Any]:
         ]
         payload["conversation"] = {
             "conversation_id": conversation_id,
-            "channel": "app",
+            "channel": "shared" if shared else "app",
             "generation": generation,
             "state": "active",
             "queue": {
@@ -1217,7 +1222,13 @@ def _codex_observability_from_task(task: dict[str, Any]) -> dict[str, Any]:
 def _codex_agent_guidance_context(prompt: str, screen_context: Any) -> dict[str, str]:
     context = screen_context if isinstance(screen_context, dict) else {}
     selection = context.get("selection") if isinstance(context.get("selection"), dict) else {}
-    filters = context.get("filters") if isinstance(context.get("filters"), dict) else {}
+    filters = (
+        context.get("filtros")
+        if isinstance(context.get("filtros"), dict)
+        else context.get("filters")
+        if isinstance(context.get("filters"), dict)
+        else {}
+    )
 
     def first(*values: Any) -> str:
         for value in values:
@@ -1243,6 +1254,7 @@ def _codex_agent_guidance_context(prompt: str, screen_context: Any) -> dict[str,
             filters.get("loja"),
             filters.get("store"),
             context.get("loja"),
+            context.get("store"),
         ),
         "supplier": first(selection.get("fornecedor"), selection.get("supplier"), filters.get("fornecedor")),
         "sku": first(selection.get("sku"), filters.get("sku"), sku_match.group(1) if sku_match else ""),
@@ -1724,6 +1736,38 @@ def _codex_canonical_conversation_id(
     return f"{prefix}_{lane_norm}_{digest}" if lane_norm else f"{prefix}_{digest}"
 
 
+def _codex_shared_conversation_id(client_id: str, username: str) -> str:
+    """Stable PII-free identity for the user's visible Black Jhon dialogue."""
+
+    client_norm = str(client_id or "default").strip().lower() or "default"
+    username_norm = str(username or "user").strip().lower() or "user"
+    digest = _codex_hmac_identifier(
+        f"{client_norm}:{username_norm}:black_jhon",
+        namespace="shared_conversation",
+    )[-24:]
+    return f"bj_{digest}"
+
+
+def _codex_shared_continuity_for_session(sessao: dict[str, Any]) -> dict[str, Any]:
+    """Ask the WhatsApp authority whether this user has an active primary binding."""
+
+    try:
+        from backend.services import whatsapp_bridge
+
+        continuity = whatsapp_bridge._shared_continuity_for_session(sessao)
+    except Exception:
+        return {}
+    if not isinstance(continuity, dict):
+        return {}
+    expected = _codex_shared_conversation_id(
+        str(sessao.get("client_id") or "default"),
+        str(sessao.get("username") or "user"),
+    )
+    if str(continuity.get("conversation_id") or "") != expected:
+        return {}
+    return continuity
+
+
 def _codex_universal_conversation_id(client_id: str, username: str) -> str:
     """Compatibilidade: a conversa universal antiga agora aponta para o canal app."""
     return _codex_canonical_conversation_id(client_id, username, channel="app")
@@ -1897,6 +1941,42 @@ def _codex_load_or_create_conversation_state(
         return payload
 
 
+def _codex_load_or_create_shared_conversation_state(
+    client_id: str,
+    username: str,
+) -> dict[str, Any]:
+    conversation_id = _codex_shared_conversation_id(client_id, username)
+    with CODEX_CONVERSATION_LOCK:
+        stored = _codex_load_conversation_summary(client_id, username, conversation_id)
+        if (
+            str(stored.get("conversation_id") or "") == conversation_id
+            and int(stored.get("generation") or 0) >= 1
+        ):
+            return stored
+        app_state = _codex_load_or_create_conversation_state(
+            client_id,
+            username,
+            channel="app",
+        )
+        now = _codex_now()
+        payload = {
+            "conversation_id": conversation_id,
+            "client_id": str(client_id or "default"),
+            "created_by": str(username or "").strip().lower(),
+            "channel": "shared",
+            "generation": int(app_state.get("generation") or 1),
+            "state": "active",
+            "summary": str(app_state.get("summary") or ""),
+            "recent_messages": list(app_state.get("recent_messages") or []),
+            "legacy_conversation_ids": [str(app_state.get("conversation_id") or "")],
+            "created_at": now,
+            "updated_at": now,
+            "reset_audit": [],
+        }
+        _codex_save_conversation_summary(client_id, username, conversation_id, payload)
+        return payload
+
+
 def _codex_conversation_state_for_task(task: dict[str, Any]) -> dict[str, Any]:
     client_id = str(task.get("client_id") or "default")
     username = str(task.get("created_by") or "").strip().lower()
@@ -1935,7 +2015,18 @@ def _codex_save_conversation_state(task: dict[str, Any], **updates: Any) -> dict
 
 def _codex_task_conversation_metadata(task: dict[str, Any]) -> dict[str, Any]:
     stored_id = _codex_task_stored_conversation_id(task)
-    state = _codex_conversation_state_for_task(task)
+    expected_shared_id = _codex_shared_conversation_id(
+        str(task.get("client_id") or "default"),
+        str(task.get("created_by") or "user"),
+    )
+    state = (
+        _codex_load_or_create_shared_conversation_state(
+            str(task.get("client_id") or "default"),
+            str(task.get("created_by") or "user"),
+        )
+        if stored_id == expected_shared_id
+        else _codex_conversation_state_for_task(task)
+    )
     if not state:
         return {
             "conversation_id": stored_id,
@@ -3270,6 +3361,9 @@ def _codex_normalizar_screen_context(value: Any) -> dict[str, Any]:
         "controls",
         "selection",
         "viewport",
+        "store",
+        "store_mode",
+        "multi_store",
     }
 
     def trim(obj: Any, depth: int = 0) -> Any:
@@ -4238,6 +4332,46 @@ def _codex_agent_initial_prompt(
         f"{_codex_agent_json(capabilities, CODEX_AGENT_CATALOG_LIMIT)}\n\n"
         "Pergunta do usuario:\n"
         f"{prompt}"
+    )
+
+
+def _codex_agent_delta_prompt(
+    prompt: str,
+    screen_context: Any,
+    permissions: Any,
+    *,
+    read_only_only: bool,
+    native_mcp: bool,
+    server_data_selection: Any = None,
+) -> str:
+    """Per-turn delta for an already resumed technical Codex thread."""
+
+    data_selection = (
+        dict(server_data_selection)
+        if isinstance(server_data_selection, dict)
+        else {}
+    )
+    catalog = _codex_agent_tool_catalog(
+        permissions,
+        read_only_only=read_only_only,
+        source_policy={},
+    )
+    selected = set(_codex_agent_data_selection_tool_ids(data_selection))
+    if selected:
+        catalog = [item for item in catalog if str(item.get("id") or "") in selected]
+    payload = {
+        "question": str(prompt or "").strip()[:12000],
+        "screen": _codex_agent_screen_summary(screen_context),
+        "data_selection": data_selection,
+        "authorized_tools": catalog,
+        "tool_protocol": "mcp_v2" if native_mcp else "typed_catalog_text_v1",
+        "read_only": True,
+    }
+    return (
+        "Turno incremental da thread tecnica ja inicializada. Preserve as instrucoes anteriores; "
+        "considere somente o pedido, o escopo e as autorizacoes atuais abaixo. Ferramentas ausentes "
+        "na lista atual nao estao autorizadas neste turno.\n\n"
+        + _codex_agent_json(payload, CODEX_AGENT_CATALOG_LIMIT + 14000)
     )
 
 
@@ -7149,6 +7283,7 @@ def _codex_run_worker(task_id: str) -> None:
                 native_mcp,
                 data_selection,
             )
+            initial_run_prompt = run_prompt
             context_stats = _codex_context_stats_from_prompt(
                 prompt,
                 run_prompt,
@@ -7192,6 +7327,7 @@ def _codex_run_worker(task_id: str) -> None:
                 task.get("permissions") if isinstance(task.get("permissions"), dict) else {},
             )
             run_prompt = _codex_prompt_com_contexto_tela(prompt, screen_context, app_data_context)
+            initial_run_prompt = run_prompt
             context_stats = _codex_context_stats(prompt, screen_context, app_data_context)
             status_steps = app_data_context.get("status_steps") if isinstance(app_data_context, dict) and isinstance(app_data_context.get("status_steps"), list) else []
             status_final = str(status_steps[-1] if status_steps else "Gerando resposta com dados internos.")
@@ -7396,20 +7532,58 @@ def _codex_run_worker(task_id: str) -> None:
             # O perfil de permissions e a fronteira de leitura. Passar sandbox
             # aqui substituiria partes desse perfil no runtime Codex.
             thread_kwargs.pop("sandbox", None)
-            thread_kwargs["ephemeral"] = True
             if service_tier:
                 thread_kwargs["service_tier"] = service_tier
             try:
                 if thread_id:
                     try:
-                        thread = codex.thread_resume(thread_id, **thread_kwargs)
+                        resume_kwargs = {
+                            key: value
+                            for key, value in thread_kwargs.items()
+                            if key != "developer_instructions"
+                        }
+                        thread = codex.thread_resume(thread_id, **resume_kwargs)
+                        if agent_mode:
+                            run_prompt = _codex_agent_delta_prompt(
+                                prompt,
+                                screen_context,
+                                task.get("permissions") if isinstance(task.get("permissions"), dict) else {},
+                                read_only_only=read_only_channel_mode,
+                                native_mcp=native_mcp,
+                                server_data_selection=data_selection,
+                            )
+                            _codex_update_task(
+                                task_id,
+                                thread_reused=True,
+                                context_stats=_codex_context_stats_from_prompt(
+                                    prompt,
+                                    run_prompt,
+                                    screen_context,
+                                    {"enabled": True, "tool_results_count": 0},
+                                    {},
+                                ),
+                            )
+                        else:
+                            run_prompt = (
+                                "Turno incremental da thread ja inicializada. Preserve as instrucoes anteriores.\n\n"
+                                + _codex_agent_json(
+                                    {
+                                        "question": prompt,
+                                        "screen": _codex_agent_screen_summary(screen_context),
+                                        "app_data_context": app_data_context,
+                                    },
+                                    CODEX_AGENT_TOOL_RESULT_LIMIT,
+                                )
+                            )
                     except Exception as exc:
                         _codex_log(task, f"Thread tecnica anterior indisponivel; contexto logico preservado: {exc}", "warning")
                         _codex_save_conversation_state(task, latest_thread_id="")
                         _codex_update_task(task_id, thread_id="")
                         thread_id = ""
+                        run_prompt = initial_run_prompt
                         thread = codex.thread_start(**thread_kwargs)
                 else:
+                    run_prompt = initial_run_prompt
                     thread = codex.thread_start(**thread_kwargs)
             except Exception as exc:
                 if not native_mcp:
@@ -7417,6 +7591,7 @@ def _codex_run_worker(task_id: str) -> None:
                 _codex_log(task, f"MCP local indisponivel; ativando parser tipado de rollback: {exc}", "warning")
                 thread_kwargs.pop("config", None)
                 native_mcp = False
+                run_prompt = initial_run_prompt
                 _codex_update_task(
                     task_id,
                     tool_protocol="typed_catalog_text_v1",
@@ -7586,6 +7761,20 @@ def _codex_run_worker(task_id: str) -> None:
                     "reason": "deadline_exceeded",
                 }
             )
+        if task.get("shared_responder") is True and str(task.get("origin") or "") == "app":
+            try:
+                from backend.services import whatsapp_bridge
+
+                shared_final = whatsapp_bridge._shared_sidebar_worker_result(
+                    task,
+                    final_response or "",
+                    agent_trace if isinstance(agent_trace, dict) else {},
+                )
+                shared_reply = str(shared_final.get("reply_text") or "").strip()
+                if shared_reply:
+                    final_response = shared_reply
+            except Exception:
+                pass
         _codex_update_task(
             task_id,
             status=terminal_status,
@@ -7687,6 +7876,8 @@ def _codex_run_worker(task_id: str) -> None:
                 started_at="",
                 completed_at="",
                 thread_id="",
+                thread_reused=False,
+                thread_reset_reason="resume_failed",
                 thread_resume_retried=True,
                 live_status="Renovando a thread tecnica sem perder o contexto.",
                 error="",
@@ -8120,7 +8311,17 @@ async def codex_upload_attachments(
     # a conversa app canonica do usuario autenticado.
     del conversation_id
     state = _codex_load_or_create_conversation_state(client_id, username, channel="app")
-    conv_id = str(state.get("conversation_id") or _codex_universal_conversation_id(client_id, username))
+    shared = _codex_shared_continuity_for_session(sessao)
+    visible_state = (
+        _codex_load_or_create_shared_conversation_state(client_id, username)
+        if shared
+        else state
+    )
+    conv_id = str(
+        shared.get("conversation_id")
+        or state.get("conversation_id")
+        or _codex_universal_conversation_id(client_id, username)
+    )
     saved: list[dict[str, Any]] = []
     saved_paths: list[Path] = []
     total_bytes = 0
@@ -8177,7 +8378,7 @@ async def codex_upload_attachments(
         "success": True,
         "attachments": saved,
         "conversation_id": conv_id,
-        "conversation_generation": int(state.get("generation") or 1),
+        "conversation_generation": int(visible_state.get("generation") or 1),
     }
 
 
@@ -8243,12 +8444,17 @@ def codex_criar_tarefa_para_sessao(
             reasoning_effort = _codex_normalizar_reasoning_effort(None)
             speed = _codex_normalizar_speed(None)
             service_tier = _codex_normalizar_service_tier(None, speed)
-    conversation_id = _codex_resolve_new_conversation_id(
-        sessao,
-        payload.conversation_id,
-        origin=origin,
-        channel_metadata=channel_metadata,
-    )
+    shared_continuity = _codex_shared_continuity_for_session(sessao) if origin == "app" else {}
+    conversation_id = str(shared_continuity.get("conversation_id") or "")
+    if not conversation_id:
+        conversation_id = _codex_resolve_new_conversation_id(
+            sessao,
+            payload.conversation_id,
+            origin=origin,
+            channel_metadata=channel_metadata,
+        )
+    if shared_continuity:
+        channel_metadata["shared_continuity"] = True
     conversation_state = _codex_load_or_create_conversation_state(
         str(sessao.get("client_id") or "default"),
         str(sessao.get("username") or "user"),
@@ -8256,7 +8462,15 @@ def codex_criar_tarefa_para_sessao(
         phone=channel_metadata.get("wa_id") if origin == "whatsapp" else "",
         lane=channel_metadata.get("agent_lane") or channel_metadata.get("agent_role"),
     )
-    conversation_generation = int(conversation_state.get("generation") or 1)
+    visible_conversation_state = (
+        _codex_load_or_create_shared_conversation_state(
+            str(sessao.get("client_id") or "default"),
+            str(sessao.get("username") or "user"),
+        )
+        if shared_continuity
+        else conversation_state
+    )
+    conversation_generation = int(visible_conversation_state.get("generation") or 1)
     requested_model = model
     model_decision = _codex_decide_model(
         prompt=prompt,
@@ -8430,6 +8644,28 @@ def codex_criar_tarefa_para_sessao(
             approval_profile = "read_only"
             approval_required = False
 
+    shared_intake: dict[str, Any] = {}
+    shared_decision: dict[str, Any] = {}
+    if shared_continuity and not approval_required:
+        try:
+            from backend.services import whatsapp_bridge
+
+            shared_intake = whatsapp_bridge._shared_sidebar_conversation_turn(
+                sessao,
+                prompt,
+                screen_context,
+            )
+            shared_decision = (
+                shared_intake.get("decision")
+                if isinstance(shared_intake.get("decision"), dict)
+                else {}
+            )
+        except Exception:
+            # Continuidade compartilhada e uma melhoria segura; uma falha do
+            # responder nunca pode impedir o runner read-only da Sidebar.
+            shared_intake = {}
+            shared_decision = {}
+
     task_status = "awaiting_approval" if approval_required else "queued"
     required_input: list[Any] = []
     proposal: dict[str, Any] = {}
@@ -8443,6 +8679,16 @@ def codex_criar_tarefa_para_sessao(
         elif proposal:
             task_status = "awaiting_approval"
             initial_response = str(proposal.get("summary") or "Revise e confirme a acao proposta.")
+    shared_action = str(shared_decision.get("action") or "").strip().lower()
+    shared_reply = str(shared_decision.get("reply_text") or "").strip()
+    if (
+        shared_action in {"reply", "request_information"}
+        and shared_reply
+        and not required_input
+        and not proposal
+    ):
+        task_status = "completed"
+        initial_response = shared_reply
     if required_input:
         plan = codex_agent_runtime.transition_plan(
             _codex_base_info_dir(),
@@ -8520,6 +8766,11 @@ def codex_criar_tarefa_para_sessao(
         "thread_schema_version": CODEX_SIDEBAR_TASK_SCHEMA_VERSION if is_full else "",
         "conversation_id": conversation_id,
         "conversation_generation": conversation_generation,
+        "shared_responder": bool(shared_continuity),
+        "shared_responder_action": shared_action[:40],
+        "shared_authorization_fingerprint": str(
+            shared_intake.get("authorization_fingerprint") or ""
+        )[:64],
         "prompt": prompt,
         "model": model,
         "requested_model": requested_model,
@@ -8585,7 +8836,7 @@ def codex_criar_tarefa_para_sessao(
         "tool_results_summary": [],
         "sources": [],
         "warnings": [],
-        "live_status": "Tarefa criada.",
+        "live_status": "Codex concluiu." if task_status == "completed" else "Tarefa criada.",
         "live_answer": "",
         "reasoning_summary": "",
         "live_plan": "",
@@ -8593,7 +8844,7 @@ def codex_criar_tarefa_para_sessao(
         "turn_id": "",
         "active_turn_id": "",
         "can_steer": False,
-        "wait_reason": "queue" if task_status == "queued" else task_status,
+        "wait_reason": "queue" if task_status == "queued" else ("" if task_status == "completed" else task_status),
         "progress_events": [],
         "last_progress_at": "",
         "deadline_enabled": deadline_enabled,
@@ -8603,12 +8854,12 @@ def codex_criar_tarefa_para_sessao(
         "mutable_intent": mutable_intent,
         "final_response": initial_response,
         "error": "",
-        "message_kind": "",
+        "message_kind": "conversation" if shared_continuity else "",
         "memory_excluded": False,
         "logs": [],
         "created_at": _codex_now(),
-        "started_at": "",
-        "completed_at": "",
+        "started_at": _codex_now() if task_status == "completed" else "",
+        "completed_at": _codex_now() if task_status == "completed" else "",
         "created_by": sessao["username"],
         "client_id": sessao["client_id"],
         "origin": origin,
@@ -8677,8 +8928,13 @@ def codex_criar_tarefa_para_sessao(
             _codex_log(task, "Aprovacao pelo WhatsApp e proibida; informe modulo ou caminhos no aplicativo.")
         elif whatsapp_full_access:
             _codex_log(task, "Aprovacao movel habilitada para o mesmo numero e usuario full que originaram a tarefa.")
-    else:
+    elif task_status == "queued":
         _codex_start_thread(task_id)
+    elif task_status == "completed":
+        try:
+            _codex_update_conversation_memory(task_id)
+        except Exception:
+            pass
     return {"success": True, "task": _codex_public_task(task)}
 
 
@@ -8694,8 +8950,13 @@ def codex_listar_tarefas(
     username = str(sessao.get("username") or "").strip().lower()
     max_items = max(1, min(100, int(limit or 20)))
     channel_filter = str(channel or "").strip().lower()
-    if channel_filter not in {"", "app", "whatsapp"}:
+    if channel_filter not in {"", "app", "whatsapp", "unified"}:
         raise HTTPException(status_code=400, detail="Canal de conversa invalido.")
+    shared_conversation_id = ""
+    if channel_filter == "unified":
+        shared_conversation_id = str(
+            _codex_shared_continuity_for_session(sessao).get("conversation_id") or ""
+        )
     if bool(sessao.get("is_full")):
         _codex_backfill_assistant_report_tasks(
             client_id,
@@ -8725,7 +8986,17 @@ def codex_listar_tarefas(
                 created_by = str(task.get("created_by") or "").strip().lower()
                 if not created_by or created_by != username:
                     continue
-                if channel_filter and _codex_task_channel(task) != channel_filter:
+                if channel_filter == "unified":
+                    is_app_task = _codex_task_channel(task) == "app"
+                    is_shared_whatsapp = bool(
+                        shared_conversation_id
+                        and _codex_task_channel(task) == "whatsapp"
+                        and _codex_task_stored_conversation_id(task) == shared_conversation_id
+                        and str(task.get("message_kind") or "") == "conversation"
+                    )
+                    if not (is_app_task or is_shared_whatsapp):
+                        continue
+                elif channel_filter and _codex_task_channel(task) != channel_filter:
                     continue
                 tasks.append(_codex_task_summary(task) if summary else _codex_public_task(task))
                 if len(tasks) >= max_items:
@@ -8747,6 +9018,10 @@ def codex_registrar_interacao_whatsapp_externa(
     call_id: str = "",
     duration_seconds: int = 0,
     sources: Optional[list[Any]] = None,
+    shared_continuity: bool = False,
+    delivery_confirmed: bool = False,
+    subject_id: str = "",
+    message_type: str = "voice_call",
 ) -> dict[str, Any]:
     """Persiste um par concluido produzido fora do runner sem inventar uma thread.
 
@@ -8760,25 +9035,67 @@ def codex_registrar_interacao_whatsapp_externa(
     client_norm = str(client_id or "default").strip() or "default"
     if not phone_norm or not username_norm or not prompt_text or not response_text:
         raise ValueError("external_whatsapp_exchange_invalid")
-    state = _codex_load_or_create_conversation_state(
-        client_norm,
-        username_norm,
-        channel="whatsapp",
-        phone=phone_norm,
+    if shared_continuity:
+        if not str(call_id or "").strip() or delivery_confirmed is not True:
+            raise ValueError("shared_exchange_requires_confirmed_delivery")
+        from backend.services.whatsapp import conversation_context as whatsapp_conversation_context
+
+        prompt_text, _prompt_categories = whatsapp_conversation_context.sanitize_turn_text(prompt_text)
+        response_text, _response_categories = whatsapp_conversation_context.sanitize_turn_text(response_text)
+        if not prompt_text or not response_text:
+            raise ValueError("shared_exchange_sanitized_empty")
+    state = (
+        _codex_load_or_create_shared_conversation_state(client_norm, username_norm)
+        if shared_continuity
+        else _codex_load_or_create_conversation_state(
+            client_norm,
+            username_norm,
+            channel="whatsapp",
+            phone=phone_norm,
+        )
     )
     conversation_id = str(state.get("conversation_id") or "")
-    task_id = f"wa_voice_{uuid.uuid4().hex}"
+    event_key = str(call_id or "").strip()
+    task_id = (
+        "wa_shared_"
+        + _codex_hmac_identifier(
+            f"{client_norm}:{username_norm}:{event_key}",
+            namespace="shared_exchange",
+        )[-32:]
+        if shared_continuity and event_key
+        else f"wa_voice_{uuid.uuid4().hex}"
+    )
+    existing = _codex_load_task(task_id)
+    if isinstance(existing, dict):
+        return _codex_public_task(existing)
     now = _codex_now()
-    metadata = {
-        "wa_id": phone_norm,
-        "phone": phone_norm,
-        "message_type": "voice_call",
-        "interaction_type": "call",
-        "source": str(source or "whatsapp_call")[:60],
-        "call_id": str(call_id or "")[:200],
-        "duration_seconds": max(0, int(duration_seconds or 0)),
-        "safe_read_only": True,
-    }
+    if shared_continuity:
+        metadata = {
+            "shared_continuity": True,
+            "message_type": str(message_type or "text")[:40],
+            "interaction_type": "conversation",
+            "source": str(source or "whatsapp_message")[:60],
+            "event_fingerprint": _codex_hmac_identifier(
+                event_key,
+                namespace="whatsapp_event",
+            )[-24:] if event_key else "",
+            "subject_fingerprint": _codex_hmac_identifier(
+                subject_id,
+                namespace="whatsapp_subject",
+            )[-24:] if subject_id else "",
+            "safe_read_only": True,
+        }
+    else:
+        metadata = {
+            "wa_id": phone_norm,
+            "phone": phone_norm,
+            "message_type": "voice_call",
+            "interaction_type": "call",
+            "source": str(source or "whatsapp_call")[:60],
+            "call_id": str(call_id or "")[:200],
+            "duration_seconds": max(0, int(duration_seconds or 0)),
+            "safe_read_only": True,
+        }
     task: dict[str, Any] = {
         "task_id": task_id,
         "status": "completed",
@@ -8793,7 +9110,10 @@ def codex_registrar_interacao_whatsapp_externa(
         "approval_mode": "read_only",
         "reasoning_effort": "",
         "paths": [],
-        "screen_context": {"channel": "whatsapp", "interaction_type": "call"},
+        "screen_context": {
+            "channel": "whatsapp",
+            "interaction_type": "conversation" if shared_continuity else "call",
+        },
         "history": [],
         "context_stats": _codex_context_stats(prompt_text, {}),
         "conversation_summary": {},
@@ -8817,7 +9137,10 @@ def codex_registrar_interacao_whatsapp_externa(
         "progress_events": [],
         "required_input": [],
         "proposal": {},
-        "verification": {"status": "confirmed", "source": "voice_sideband"},
+        "verification": {
+            "status": "confirmed",
+            "source": "shared_delivery" if shared_continuity else "voice_sideband",
+        },
         "mutable_intent": False,
         "final_response": response_text,
         "error": "",
@@ -8830,7 +9153,11 @@ def codex_registrar_interacao_whatsapp_externa(
         "created_by": username_norm,
         "client_id": client_norm,
         "origin": "whatsapp",
-        "channel_message_id": str(call_id or task_id)[:200],
+        "channel_message_id": (
+            str(metadata.get("event_fingerprint") or task_id)
+            if shared_continuity
+            else str(call_id or task_id)[:200]
+        ),
         "channel_metadata": metadata,
         "external_safe_mode": True,
         "whatsapp_full_access": False,
@@ -9262,8 +9589,13 @@ def codex_reset_current_conversation(
         raise HTTPException(status_code=400, detail="Confirme o reinicio da memoria do Black Jhon.")
     client_id = str(sessao.get("client_id") or "default")
     username = str(sessao.get("username") or "").strip().lower()
+    shared_continuity = _codex_shared_continuity_for_session(sessao)
     with CODEX_CONVERSATION_LOCK:
-        state = _codex_load_or_create_conversation_state(client_id, username, channel="app")
+        state = (
+            _codex_load_or_create_shared_conversation_state(client_id, username)
+            if shared_continuity
+            else _codex_load_or_create_conversation_state(client_id, username, channel="app")
+        )
         conversation_id = str(state.get("conversation_id") or "")
         generation = int(state.get("generation") or 1)
         active_statuses = {"queued", "running", "awaiting_approval", "cancel_requested"}
@@ -9308,11 +9640,44 @@ def codex_reset_current_conversation(
             }
         )
         _codex_save_conversation_summary(client_id, username, conversation_id, state)
+        if shared_continuity:
+            app_state = _codex_load_or_create_conversation_state(
+                client_id,
+                username,
+                channel="app",
+            )
+            app_state.update(
+                {
+                    "generation": int(state.get("generation") or generation + 1),
+                    "summary": "",
+                    "recent_messages": [],
+                    "latest_thread_id": "",
+                    "thread_prompt_fingerprint": "",
+                    "thread_schema_fingerprint": "",
+                    "thread_scope_fingerprint": "",
+                    "thread_conversation_key": "",
+                    "thread_restart_reason": "manual_reset",
+                    "updated_at": _codex_now(),
+                }
+            )
+            _codex_save_conversation_summary(
+                client_id,
+                username,
+                str(app_state.get("conversation_id") or ""),
+                app_state,
+            )
+    if shared_continuity:
+        try:
+            from backend.services import whatsapp_bridge
+
+            whatsapp_bridge._reset_shared_conversation_for_session(sessao)
+        except Exception:
+            pass
     return {
         "success": True,
         "conversation": {
             "conversation_id": conversation_id,
-            "channel": "app",
+            "channel": "shared" if shared_continuity else "app",
             "generation": int(state.get("generation") or generation + 1),
             "state": "active",
             "can_reset": True,

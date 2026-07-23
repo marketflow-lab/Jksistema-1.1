@@ -34,7 +34,7 @@ const iaEndpoints = read(path.join('backend', 'services', 'ia_endpoints.py'));
 const android = read(path.join('android_app', 'app', 'src', 'main', 'java', 'br', 'com', 'jksistema', 'mobile', 'MainActivity.java'));
 const vendasAssistant = read(path.join('static', 'vendas', 'assistente.js'));
 
-assert.match(loader, /20260720-black-jhon-codex-context-v2/);
+assert.match(loader, /20260722-black-jhon-unified/);
 assert.match(loader, /Abrir Black Jhon/);
 assert.match(loader, /params\.get\('embed'\) === 'share'/);
 
@@ -58,7 +58,7 @@ assert.match(codex, /_codexFetchJson\('\/api\/codex\/tasks'/);
 assert.match(codex, /_codexFetchJson\('\/api\/codex\/tasks\/' \+ encodeURIComponent/);
 assert.match(codex, /\/api\/codex\/conversations\//);
 assert.match(codex, /\/api\/codex\/conversations\/current\/reset/);
-assert.match(codex, /summary=true&channel=app/);
+assert.match(codex, /summary=true&channel=unified/);
 assert.doesNotMatch(codex, /function _codexNovoConversationId/);
 assert.match(codex, /function _codexReiniciarMemoria/);
 assert.match(bootstrap, /_codexReiniciarMemoria/);

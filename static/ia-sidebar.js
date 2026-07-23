@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '20260720-black-jhon-codex-context-v2-pos-venda-manual';
+  const VERSION = '20260722-black-jhon-unified-pos-venda-manual-v1';
   const FULL_AUTO_LOAD_DELAY_MS = 30000;
   const WORKER_PREFETCH_DELAY_MS = 10000;
   const FULL_RELOAD_AFTER_NAV_DELAY_MS = 500;

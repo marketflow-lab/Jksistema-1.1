@@ -736,6 +736,8 @@ def _decision_prompt(
     tick_index: int,
     contract_version: Any = None,
     quoted_context: Optional[dict[str, Any]] = None,
+    include_bootstrap: bool = True,
+    origin_channel: str = "whatsapp",
 ) -> str:
     contract = _decision_runtime_contract("v2" if contract_version is None else contract_version)
     active = active_job if isinstance(active_job, dict) else {}
@@ -745,6 +747,7 @@ def _decision_prompt(
         else {}
     )
     context = {
+        "channel": "app" if str(origin_channel or "").strip().lower() == "app" else "whatsapp",
         "event_type": event_type,
         "user_message": _clean_text(user_message, 12000),
         "quoted_context": {
@@ -772,7 +775,7 @@ def _decision_prompt(
             }
             for item in list(conversation_context or [])[-10:]
             if isinstance(item, dict) and _clean_text(item.get("text"), 900)
-        ],
+        ] if include_bootstrap else [],
         "conversation_state": {
             "store": _clean_text((conversation_state or {}).get("store"), 200),
             "store_mode": _clean_text((conversation_state or {}).get("store_mode"), 20) or "none",
@@ -799,6 +802,12 @@ def _decision_prompt(
         "waiting_turn_index": max(0, int(tick_index or 0)),
         "phone_behavior": _clean_text(ai_behavior, 2000),
     }
+    if not include_bootstrap:
+        return (
+            "Turno incremental da conversa ja inicializada. Preserve as instrucoes e o contexto da thread; "
+            "aplique apenas o evento e o estado atual abaixo.\n\n"
+            + black_jhon_prompting.bounded_context_json(context)
+        )
     return (
         (
             black_jhon_prompting.prompt_contract_v3_header("conversation_decision")
@@ -899,24 +908,13 @@ class WarmConversationRuntime:
         client_id: str = "",
         telemetry_trace_id: str = "",
         store_id: str = "",
+        origin_channel: str = "whatsapp",
     ) -> dict[str, Any]:
         from backend.services import codex_console
         from openai_codex.generated.v2_all import ReasoningSummary
 
         decision_contract = _decision_runtime_contract()
-        prompt = _decision_prompt(
-            event_type=event_type,
-            user_message=user_message,
-            active_job=active_job,
-            worker_result=worker_result,
-            conversation_context=conversation_context,
-            conversation_state=conversation_state,
-            quoted_context=quoted_context,
-            ai_behavior=ai_behavior,
-            tick_index=tick_index,
-            contract_version=decision_contract["mode"],
-        )
-        context_chars = len(prompt.rsplit("\n\n", 1)[-1])
+        context_chars = 0
         effective_speed = codex_console._codex_normalizar_speed(speed)
         effective_service_tier = codex_console._codex_normalizar_service_tier(
             service_tier,
@@ -936,7 +934,7 @@ class WarmConversationRuntime:
                 telemetry.start_trace(
                     tenant,
                     trace_id=trace_id,
-                    surface="whatsapp",
+                    surface=("app" if str(origin_channel or "").strip().lower() == "app" else "whatsapp"),
                     category="conversation",
                     requested_model=model,
                     store_id=store_id,
@@ -977,14 +975,19 @@ class WarmConversationRuntime:
                     requested_model=model,
                     effective_model=effective_model_for_telemetry,
                     provider="openai_codex",
-                    provider_path="whatsapp_conversation_agent",
+                    provider_path="black_jhon_shared_conversation_agent",
                     model_rerouted=(
                         effective_model_for_telemetry
                         != _clean_text(model, 100).removeprefix("codex:")
                     ),
                     duration_ms=duration_ms,
                     store_id=store_id,
-                    dimensions={"surface": "whatsapp", "category": "conversation"},
+                    dimensions={
+                        "surface": (
+                            "app" if str(origin_channel or "").strip().lower() == "app" else "whatsapp"
+                        ),
+                        "category": "conversation",
+                    },
                     error_code=error_code,
                 )
                 telemetry.finish_trace(
@@ -1016,13 +1019,33 @@ class WarmConversationRuntime:
                     thread_reset_reason = "new_conversation" if not thread_id else ""
                     if thread_id:
                         try:
-                            thread = client.thread_resume(thread_id, **kwargs)
+                            resume_kwargs = {
+                                key: value
+                                for key, value in kwargs.items()
+                                if key != "developer_instructions"
+                            }
+                            thread = client.thread_resume(thread_id, **resume_kwargs)
                             thread_reused = True
                         except Exception:
                             thread = client.thread_start(**kwargs)
                             thread_reset_reason = "thread_resume_failed"
                     else:
                         thread = client.thread_start(**kwargs)
+                    prompt = _decision_prompt(
+                        event_type=event_type,
+                        user_message=user_message,
+                        active_job=active_job,
+                        worker_result=worker_result,
+                        conversation_context=conversation_context,
+                        conversation_state=conversation_state,
+                        quoted_context=quoted_context,
+                        ai_behavior=ai_behavior,
+                        tick_index=tick_index,
+                        contract_version=decision_contract["mode"],
+                        include_bootstrap=not thread_reused,
+                        origin_channel=origin_channel,
+                    )
+                    context_chars = len(prompt.rsplit("\n\n", 1)[-1])
                     result = thread.run(
                         prompt,
                         model=effective_model,

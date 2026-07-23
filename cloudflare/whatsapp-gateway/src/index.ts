@@ -58,7 +58,7 @@ type JsonRecord = Record<string, unknown>;
 
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 const GATEWAY_PROTOCOL_VERSION = 1;
-const GATEWAY_BUILD_VERSION = "1.0.103";
+const GATEWAY_BUILD_VERSION = "1.0.104";
 const MAX_BINDINGS_PER_USER = 3;
 const INBOUND_MEDIA_MAX_ATTEMPTS = 5;
 const INBOUND_MEDIA_RETRY_DELAYS_SECONDS = [5 * 60, 15 * 60, 30 * 60, 60 * 60] as const;
@@ -1211,6 +1211,78 @@ async function queueInboundResultPart(
   }
 }
 
+const DELIVERY_RECEIPT_SCHEMA = "jk.whatsapp.delivery-receipt.v1";
+
+function deliveryReceipt(rows: JsonRecord[], expectedParts = 0): JsonRecord {
+  const statuses = rows.map((item) => String(item.status || "").toLowerCase());
+  const total = Math.max(expectedParts, statuses.length);
+  const sent = statuses.filter((status) => ["sent", "delivered", "read"].includes(status)).length;
+  const failed = statuses.filter((status) => ["failed", "template_not_approved"].includes(status)).length;
+  const pending = Math.max(0, total - sent - failed);
+  const confirmed = total > 0 && sent === total;
+  const terminal = confirmed || (total > 0 && pending === 0);
+  return {
+    schema_version: DELIVERY_RECEIPT_SCHEMA,
+    state: confirmed ? "sent" : failed > 0 && pending === 0 ? "failed" : total > 0 ? "pending" : "none",
+    confirmed,
+    terminal,
+    parts_total: total,
+    parts_sent: sent,
+    parts_pending: pending,
+    parts_failed: failed,
+  };
+}
+
+async function inboundResultReceipt(env: Env, messageId: string, expectedParts = 0): Promise<JsonRecord> {
+  const rows = await env.DB.prepare(
+    "SELECT status FROM outbox WHERE inbound_message_id=? AND idempotency_key LIKE ? ORDER BY created_at",
+  ).bind(messageId, `inbound_result:${messageId}:%`).all<JsonRecord>();
+  return deliveryReceipt(rows.results || [], expectedParts);
+}
+
+async function queueProactivePart(
+  env: Env,
+  subjectId: string,
+  textBody: string,
+  reason: string,
+  fingerprint: string,
+  partIndex: number,
+  templateName = "",
+  templateParams: string[] = [],
+): Promise<string> {
+  const idempotencyKey = `proactive:${fingerprint}:${partIndex}`;
+  const id = randomId("out");
+  const now = nowSeconds();
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO outbox(id,inbound_message_id,subject_id,recipient,message_type,text_body,template_name,template_params_json,status,created_at,updated_at,idempotency_key) "
+    + "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+  ).bind(
+    id,
+    `proactive:${fingerprint}`,
+    subjectId,
+    subjectId,
+    templateName ? "template" : "text",
+    compactReply(textBody),
+    templateName || null,
+    JSON.stringify(templateParams || []),
+    "queued",
+    now,
+    now,
+    idempotencyKey,
+  ).run();
+  const stored = await env.DB.prepare("SELECT id FROM outbox WHERE idempotency_key=?").bind(idempotencyKey).first<JsonRecord>();
+  const storedId = String(stored?.id || id);
+  await audit(env, "outbox_queued", subjectId, { outbox_id: storedId, reason, template_name: templateName || "", idempotent: true });
+  return storedId;
+}
+
+async function proactiveReceipt(env: Env, fingerprint: string, expectedParts = 0): Promise<JsonRecord> {
+  const rows = await env.DB.prepare(
+    "SELECT status FROM outbox WHERE inbound_message_id=? ORDER BY created_at",
+  ).bind(`proactive:${fingerprint}`).all<JsonRecord>();
+  return deliveryReceipt(rows.results || [], expectedParts);
+}
+
 async function maybeNotifyLocalUnavailable(
   env: Env,
   messageId: string,
@@ -1485,7 +1557,7 @@ async function bridgeStatus(request: Request, env: Env): Promise<Response> {
     "SELECT name,language,category,status,last_verified_at FROM template_registry ORDER BY name",
   ).all<JsonRecord>();
   const bindingRows = await env.DB.prepare(
-    "SELECT subject_id,wa_id,phone_number,client_id,username,machine_id,last_inbound_at,created_at FROM bindings WHERE active=1 AND machine_id=? ORDER BY created_at DESC LIMIT 100",
+    "SELECT subject_id,wa_id,phone_number,client_id,username,machine_id,is_primary,last_inbound_at,created_at FROM bindings WHERE active=1 AND machine_id=? ORDER BY created_at DESC LIMIT 100",
   ).bind(machineId).all<JsonRecord>();
   const outboundUsage = await env.DB.prepare(
     "SELECT COUNT(*) AS uploads,COALESCE(SUM(om.byte_size),0) AS bytes FROM outbound_media om "
@@ -1542,12 +1614,14 @@ async function bridgeStatus(request: Request, env: Env): Promise<Response> {
     machine_id: String(item.machine_id || ""),
     last_inbound_at: Number(item.last_inbound_at || 0),
     created_at: Number(item.created_at || 0),
+    is_primary: Number(item.is_primary || 0) === 1,
   }));
   const binding = bindings[0];
   return json({
     success: true,
     worker: true,
     gateway_protocol_version: GATEWAY_PROTOCOL_VERSION,
+    gateway_capabilities: ["primary_binding_v1", "delivery_receipt_v1"],
     build_version: GATEWAY_BUILD_VERSION,
     d1: true,
     r2: false,
@@ -1578,6 +1652,7 @@ async function bridgeStatus(request: Request, env: Env): Promise<Response> {
       username: binding.username,
       machine_id: binding.machine_id,
       last_inbound_at: binding.last_inbound_at,
+      is_primary: binding.is_primary,
     } : { paired: false },
     meta: {
       configured: Boolean(env.META_ACCESS_TOKEN && env.META_APP_SECRET && env.META_PHONE_NUMBER_ID && env.META_WABA_ID && env.META_APP_ID),
@@ -1650,7 +1725,7 @@ async function registerBinding(request: Request, env: Env): Promise<Response> {
   }
 
   const existing = await env.DB.prepare(
-    "SELECT subject_id,client_id,username,machine_id,active,last_inbound_at,created_at FROM bindings WHERE subject_id=? OR wa_id=? OR phone_number=? ORDER BY active DESC LIMIT 1",
+    "SELECT subject_id,client_id,username,machine_id,active,is_primary,last_inbound_at,created_at FROM bindings WHERE subject_id=? OR wa_id=? OR phone_number=? ORDER BY active DESC LIMIT 1",
   ).bind(phoneNumber, phoneNumber, phoneNumber).first<JsonRecord>();
   const existingActive = Number(existing?.active || 0) === 1;
   const sameOwner = String(existing?.client_id || "") === clientId && String(existing?.username || "").toLowerCase() === username;
@@ -1667,15 +1742,26 @@ async function registerBinding(request: Request, env: Env): Promise<Response> {
 
   const now = nowSeconds();
   const subjectId = String(existing?.subject_id || phoneNumber);
-  if (existing) {
-    await env.DB.prepare(
-      "UPDATE bindings SET wa_id=?,phone_number=?,client_id=?,username=?,machine_id=?,active=1,revoked_at=NULL WHERE subject_id=?",
-    ).bind(phoneNumber, phoneNumber, clientId, username, machineId, subjectId).run();
-  } else {
-    await env.DB.prepare(
-      "INSERT INTO bindings(subject_id,wa_id,phone_number,client_id,username,machine_id,active,last_inbound_at,created_at,revoked_at) VALUES(?,?,?,?,?,?,1,NULL,?,NULL)",
-    ).bind(subjectId, phoneNumber, phoneNumber, clientId, username, machineId, now).run();
+  const primaryProvided = Object.prototype.hasOwnProperty.call(body, "is_primary");
+  const requestedPrimary = body.is_primary === true;
+  const effectivePrimary = primaryProvided ? requestedPrimary : (existingActive && sameOwner && Number(existing?.is_primary || 0) === 1);
+  const mutations: D1PreparedStatement[] = [];
+  if (effectivePrimary) {
+    mutations.push(env.DB.prepare(
+      "UPDATE bindings SET is_primary=0 WHERE client_id=? AND username=? AND active=1 AND subject_id<>?",
+    ).bind(clientId, username, subjectId));
   }
+  if (existing) {
+    mutations.push(env.DB.prepare(
+      "UPDATE bindings SET wa_id=?,phone_number=?,client_id=?,username=?,machine_id=?,active=1,is_primary=?,revoked_at=NULL WHERE subject_id=?",
+    ).bind(phoneNumber, phoneNumber, clientId, username, machineId, effectivePrimary ? 1 : 0, subjectId));
+  } else {
+    mutations.push(env.DB.prepare(
+      "INSERT INTO bindings(subject_id,wa_id,phone_number,client_id,username,machine_id,active,is_primary,last_inbound_at,created_at,revoked_at) VALUES(?,?,?,?,?,?,1,?,NULL,?,NULL)",
+    ).bind(subjectId, phoneNumber, phoneNumber, clientId, username, machineId, effectivePrimary ? 1 : 0, now));
+  }
+  if (mutations.length === 1) await mutations[0].run();
+  else await env.DB.batch(mutations);
 
   const total = existingActive ? activeBindings : activeBindings + 1;
   await audit(env, "binding_registered_directly", subjectId, {
@@ -1699,7 +1785,63 @@ async function registerBinding(request: Request, env: Env): Promise<Response> {
       machine_id: machineId,
       last_inbound_at: Number(existing?.last_inbound_at || 0),
       created_at: Number(existing?.created_at || now),
+      is_primary: effectivePrimary,
     },
+  });
+}
+
+async function updatePrimaryBinding(request: Request, env: Env): Promise<Response> {
+  const body = await requestJson(request);
+  const subjectId = String(body.subject_id || "").trim();
+  const clientId = String(body.client_id || "").trim();
+  const username = String(body.username || "").trim().toLowerCase();
+  const machineId = String(body.machine_id || "").trim();
+  if (!subjectId || !clientId || !username || !machineId || typeof body.is_primary !== "boolean") {
+    return json({ success: false, error: "invalid_primary_binding_payload" }, 400);
+  }
+  const target = await env.DB.prepare(
+    "SELECT subject_id,machine_id,is_primary FROM bindings WHERE subject_id=? AND client_id=? AND username=? AND active=1",
+  ).bind(subjectId, clientId, username).first<JsonRecord>();
+  if (!target) return json({ success: false, error: "binding_missing" }, 404);
+  if (String(target.machine_id || "") !== machineId) {
+    return json({ success: false, error: "binding_machine_mismatch" }, 403);
+  }
+  const enabled = body.is_primary === true;
+  const previous = Number(target.is_primary || 0) === 1;
+  if (enabled) {
+    await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE bindings SET is_primary=0 WHERE client_id=? AND username=? AND active=1 AND subject_id<>?",
+      ).bind(clientId, username, subjectId),
+      env.DB.prepare(
+        "UPDATE bindings SET is_primary=1 WHERE subject_id=? AND client_id=? AND username=? AND machine_id=? AND active=1",
+      ).bind(subjectId, clientId, username, machineId),
+    ]);
+  } else {
+    await env.DB.prepare(
+      "UPDATE bindings SET is_primary=0 WHERE subject_id=? AND client_id=? AND username=? AND machine_id=? AND active=1",
+    ).bind(subjectId, clientId, username, machineId).run();
+  }
+  const confirmed = await env.DB.prepare(
+    "SELECT is_primary FROM bindings WHERE subject_id=? AND client_id=? AND username=? AND machine_id=? AND active=1",
+  ).bind(subjectId, clientId, username, machineId).first<JsonRecord>();
+  const actual = Number(confirmed?.is_primary || 0) === 1;
+  if (actual !== enabled) return json({ success: false, error: "primary_binding_conflict" }, 409);
+  await audit(env, "binding_primary_updated", subjectId, {
+    client_id: clientId,
+    username,
+    machine_id: machineId,
+    enabled,
+    changed: previous !== actual,
+  });
+  return json({
+    success: true,
+    applied: true,
+    changed: previous !== actual,
+    is_primary: actual,
+    owner_has_primary: enabled || Boolean(await env.DB.prepare(
+      "SELECT 1 AS present FROM bindings WHERE client_id=? AND username=? AND active=1 AND is_primary=1 LIMIT 1",
+    ).bind(clientId, username).first()),
   });
 }
 
@@ -1771,7 +1913,7 @@ async function claimMessages(request: Request, env: Env): Promise<Response> {
     env.DB.prepare("UPDATE inbox SET status='queued',lease_owner=NULL,lease_until=NULL WHERE status='leased' AND lease_until<? AND attempts<4").bind(now),
   ]);
   const rows = await env.DB.prepare(
-    "SELECT i.*,COALESCE(NULLIF(i.wa_id,''),b.wa_id) AS wa_id,b.client_id,b.username,b.machine_id FROM inbox i JOIN bindings b ON b.subject_id=i.subject_id AND b.active=1 WHERE i.status='queued' AND b.machine_id=? ORDER BY i.received_at LIMIT ?",
+    "SELECT i.*,COALESCE(NULLIF(i.wa_id,''),b.wa_id) AS wa_id,b.client_id,b.username,b.machine_id,b.is_primary AS binding_is_primary FROM inbox i JOIN bindings b ON b.subject_id=i.subject_id AND b.active=1 WHERE i.status='queued' AND b.machine_id=? ORDER BY i.received_at LIMIT ?",
   ).bind(machineId, limit).all<JsonRecord>();
   const claimed: JsonRecord[] = [];
   for (const row of rows.results || []) {
@@ -1963,7 +2105,9 @@ async function messageResult(request: Request, env: Env, messageId: string): Pro
   const requestedStatus = String(body.status || "");
   const currentStatus = String(row.status || "");
   if (["completed", "failed", "awaiting_approval"].includes(currentStatus)) {
-    return json({ success: true, status: currentStatus, queued_parts: 0, idempotent_replay: true });
+    await flushOutbox(env, String(row.subject_id || ""), 12);
+    const deliveryReceipt = await inboundResultReceipt(env, messageId);
+    return json({ success: true, status: currentStatus, queued_parts: deliveryReceipt.parts_total, idempotent_replay: true, delivery_receipt: deliveryReceipt });
   }
   if (requestedStatus === "retry") {
     const diagnostic = compactReply(body.error || "codex_temporarily_unavailable", 800);
@@ -2012,7 +2156,8 @@ async function messageResult(request: Request, env: Env, messageId: string): Pro
   } catch {
     await inboundMediaAudit(env, "media_release_deferred", { terminal_status: status });
   }
-  return json({ success: true, status, queued_parts: responseParts.length });
+  const deliveryReceipt = await inboundResultReceipt(env, messageId, responseParts.length);
+  return json({ success: true, status, queued_parts: responseParts.length, delivery_receipt: deliveryReceipt });
 }
 
 interface OutboundMediaLeaseInput {
@@ -2485,7 +2630,11 @@ async function proactive(request: Request, env: Env): Promise<Response> {
   const isScheduledReport = ["weekly_report", "monthly_report"].includes(eventType);
   if (!isTask && !isScheduledReport && !["high", "critical"].includes(severity)) return json({ success: true, status: "ignored_low_severity" });
   const existing = await env.DB.prepare("SELECT fingerprint FROM proactive_events WHERE fingerprint=?").bind(fingerprint).first();
-  if (existing) return json({ success: true, status: "duplicate" });
+  if (existing) {
+    await flushOutbox(env, subjectId, 12);
+    const deliveryReceipt = await proactiveReceipt(env, fingerprint);
+    return json({ success: true, status: "duplicate", delivery_receipt: deliveryReceipt });
+  }
   if (!isTask && !isScheduledReport) {
     const sinceDay = nowSeconds() - 86400;
     const sinceCooldown = nowSeconds() - 7200;
@@ -2499,18 +2648,20 @@ async function proactive(request: Request, env: Env): Promise<Response> {
   const templateName = String(body.template_name || "");
   const params = Array.isArray(body.template_params) ? body.template_params.map(String) : [];
   for (const [index, part] of textParts.entries()) {
-    await queueOutbound(
+    await queueProactivePart(
       env,
-      subjectId,
       subjectId,
       part,
       `${eventType}:${index + 1}/${textParts.length}`,
+      fingerprint,
+      index + 1,
       textParts.length === 1 ? templateName : "",
       textParts.length === 1 ? params : [],
     );
   }
   await flushOutbox(env, subjectId, Math.min(12, Math.max(3, textParts.length + 1)));
-  return json({ success: true, status: eligibility.allowed ? "queued" : eligibility.reason, queued_parts: textParts.length });
+  const deliveryReceipt = await proactiveReceipt(env, fingerprint, textParts.length);
+  return json({ success: true, status: eligibility.allowed ? "queued" : eligibility.reason, queued_parts: textParts.length, delivery_receipt: deliveryReceipt });
 }
 
 async function interactiveApproval(request: Request, env: Env): Promise<Response> {
@@ -2706,8 +2857,8 @@ async function revokeBinding(request: Request, env: Env): Promise<Response> {
   if (!clientId || !username || (!subjectId && !revokeAll)) return json({ success: false, error: "invalid_revoke_payload" }, 400);
   const now = nowSeconds();
   const result = subjectId
-    ? await env.DB.prepare("UPDATE bindings SET active=0,revoked_at=? WHERE subject_id=? AND client_id=? AND username=? AND active=1").bind(now, subjectId, clientId, username).run()
-    : await env.DB.prepare("UPDATE bindings SET active=0,revoked_at=? WHERE client_id=? AND username=? AND active=1").bind(now, clientId, username).run();
+    ? await env.DB.prepare("UPDATE bindings SET active=0,is_primary=0,revoked_at=? WHERE subject_id=? AND client_id=? AND username=? AND active=1").bind(now, subjectId, clientId, username).run()
+    : await env.DB.prepare("UPDATE bindings SET active=0,is_primary=0,revoked_at=? WHERE client_id=? AND username=? AND active=1").bind(now, clientId, username).run();
   const remaining = await env.DB.prepare("SELECT COUNT(*) AS total FROM bindings WHERE client_id=? AND username=? AND active=1")
     .bind(clientId, username).first<{ total: number }>();
   await audit(env, "binding_revoked", subjectId, { client_id: clientId, username, revoke_all: revokeAll, changed: result.meta.changes, remaining: Number(remaining?.total || 0) });
@@ -2797,6 +2948,7 @@ async function bridgeRoute(request: Request, env: Env): Promise<Response> {
   if (request.method === "POST" && url.pathname === "/bridge/meta/calling/prepare") return prepareMetaCallingSip(env);
   if (request.method === "POST" && url.pathname === "/bridge/pairing-codes") return createPairingCode(request, env);
   if (request.method === "POST" && url.pathname === "/bridge/bindings/register") return registerBinding(request, env);
+  if (request.method === "POST" && url.pathname === "/bridge/bindings/primary") return updatePrimaryBinding(request, env);
   if (request.method === "POST" && url.pathname === "/bridge/welcome") return welcomeMessage(request, env);
   if (request.method === "POST" && url.pathname === "/bridge/messages/send") return adhocMessage(request, env);
   if (request.method === "POST" && url.pathname === "/bridge/claim") return claimMessages(request, env);

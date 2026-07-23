@@ -91,6 +91,7 @@ class WhatsappPhoneSettingsRequest(BaseModel):
     username: str
     client_id: str
     label: Optional[str] = None
+    is_primary: Optional[bool] = None
     send_ml_question_suggestions: bool = True
     send_weekly_report: bool = False
     send_monthly_report: bool = False
@@ -103,6 +104,7 @@ class WhatsappPhoneRegistrationRequest(BaseModel):
     client_id: str
     name: str
     phone_number: str
+    is_primary: Optional[bool] = None
     send_ml_question_suggestions: bool = True
     send_weekly_report: bool = False
     send_monthly_report: bool = False

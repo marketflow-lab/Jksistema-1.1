@@ -331,11 +331,10 @@ def whatsapp_bridge_update_phone_settings(
     request: Request,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    _require_full(request, authorization)
+    session = _require_full(request, authorization)
     config = _load_config()
     subject_id = str(payload.subject_id or "").strip()
-    username = str(payload.username or "").strip().lower()
-    client_id = str(payload.client_id or "").strip()
+    username, client_id = _binding_target(session, payload.username, payload.client_id)
     if not subject_id or not username or not client_id:
         raise HTTPException(status_code=400, detail="Telefone, usuario e cliente sao obrigatorios.")
 
@@ -356,6 +355,29 @@ def whatsapp_bridge_update_phone_settings(
     if str(binding.get("machine_id") or "") != str(config.get("machine_id") or ""):
         raise HTTPException(status_code=409, detail="Este numero esta vinculado em outra maquina. Configure-o na maquina correspondente.")
 
+    authoritative_primary = payload.is_primary
+    if payload.is_primary is not None:
+        try:
+            primary_result = _gateway_json(
+                config,
+                "POST",
+                "/bridge/bindings/primary",
+                {
+                    "subject_id": subject_id,
+                    "client_id": client_id,
+                    "username": username,
+                    "machine_id": str(config.get("machine_id") or ""),
+                    "is_primary": payload.is_primary,
+                },
+                timeout=15,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="O gateway nao confirmou a selecao do numero principal.",
+            ) from exc
+        authoritative_primary = primary_result.get("is_primary") is True
+
     previous = _phone_notification_settings(
         config,
         subject_id,
@@ -365,6 +387,11 @@ def whatsapp_bridge_update_phone_settings(
     updated = _normalize_phone_notification_settings(
         {
             "label": payload.label,
+            "is_primary": (
+                previous.get("is_primary") is True
+                if payload.is_primary is None
+                else authoritative_primary
+            ),
             "send_ml_question_suggestions": payload.send_ml_question_suggestions,
             "send_weekly_report": payload.send_weekly_report,
             "send_monthly_report": payload.send_monthly_report,
@@ -372,7 +399,15 @@ def whatsapp_bridge_update_phone_settings(
             "allow_voice_calls": payload.allow_voice_calls,
         }
     )
-    updated.update({"subject_id": subject_id, "client_id": client_id, "username": username, "updated_at": _now()})
+    updated.update(
+        {
+            "subject_id": subject_id,
+            "client_id": client_id,
+            "username": username,
+            "phone_number": str(previous.get("phone_number") or binding.get("phone_number") or "").strip(),
+            "updated_at": _now(),
+        }
+    )
     try:
         _gateway_json(
             config,
@@ -395,8 +430,23 @@ def whatsapp_bridge_update_phone_settings(
     if not isinstance(settings_by_phone, dict):
         settings_by_phone = {}
     settings_by_phone[subject_id] = updated
+    settings_by_phone = whatsapp_settings.select_primary_phone_setting(
+        settings_by_phone,
+        subject_id=subject_id,
+        client_id=client_id,
+        username=username,
+        enabled=updated.get("is_primary") is True,
+    )
     config["phone_notification_settings"] = settings_by_phone
     config = _save_config(config)
+
+    if previous.get("is_primary") is not updated.get("is_primary"):
+        _rotate_shared_conversation(
+            config,
+            client_id=client_id,
+            username=username,
+            reason="primary_binding_changed",
+        )
 
     _remember_report_delivery_preferences(subject_id, previous, updated)
     return _public_status(config, worker)
@@ -421,16 +471,19 @@ def whatsapp_bridge_register_phone(
     machine_id = str(session.get("machine_id") or config.get("machine_id") or _host_machine_id())
     config["machine_id"] = machine_id
     try:
+        registration_payload = {
+            "phone_number": phone_number,
+            "client_id": target_client_id,
+            "username": target_username,
+            "machine_id": machine_id,
+        }
+        if payload.is_primary is not None:
+            registration_payload["is_primary"] = payload.is_primary
         result = _gateway_json(
             config,
             "POST",
             "/bridge/bindings/register",
-            {
-                "phone_number": phone_number,
-                "client_id": target_client_id,
-                "username": target_username,
-                "machine_id": machine_id,
-            },
+            registration_payload,
             timeout=15,
         )
     except RuntimeError as exc:
@@ -454,6 +507,11 @@ def whatsapp_bridge_register_phone(
     updated = _normalize_phone_notification_settings(
         {
             "label": label,
+            "is_primary": (
+                binding.get("is_primary") is True
+                if "is_primary" in binding
+                else previous.get("is_primary") is True
+            ),
             "send_ml_question_suggestions": payload.send_ml_question_suggestions,
             "send_weekly_report": payload.send_weekly_report,
             "send_monthly_report": payload.send_monthly_report,
@@ -473,6 +531,13 @@ def whatsapp_bridge_register_phone(
     if not isinstance(settings_by_phone, dict):
         settings_by_phone = {}
     settings_by_phone[subject_id] = updated
+    settings_by_phone = whatsapp_settings.select_primary_phone_setting(
+        settings_by_phone,
+        subject_id=subject_id,
+        client_id=target_client_id,
+        username=target_username,
+        enabled=updated.get("is_primary") is True,
+    )
     try:
         _gateway_json(
             config,
@@ -491,6 +556,14 @@ def whatsapp_bridge_register_phone(
         RUNTIME_STATE["voice_last_error"] = str(exc)[:1000]
     config["phone_notification_settings"] = settings_by_phone
     config = _save_config(config)
+
+    if previous.get("is_primary") is not updated.get("is_primary"):
+        _rotate_shared_conversation(
+            config,
+            client_id=target_client_id,
+            username=target_username,
+            reason="primary_binding_changed",
+        )
 
     _remember_report_delivery_preferences(subject_id, previous, updated)
     welcome_result = _send_registered_phone_welcome(
@@ -663,6 +736,12 @@ def whatsapp_bridge_revoke(
     target_username, target_client_id = _binding_target(session, payload.username, payload.client_id)
     config["machine_id"] = str(session.get("machine_id") or config.get("machine_id") or _host_machine_id())
     subject_id = str(payload.subject_id or "").strip()
+    primary_before = whatsapp_settings.primary_phone_setting(
+        config,
+        client_id=target_client_id,
+        username=target_username,
+        subject_id=subject_id if subject_id else "",
+    )
     result = _gateway_json(
         config,
         "POST",
@@ -701,7 +780,14 @@ def whatsapp_bridge_revoke(
     ]
     if not machine_bindings:
         config.update({"subject_id": "", "personal_phone": "", "enabled": False})
-    _save_config(config)
+    config = _save_config(config)
+    if primary_before and (subject_id or payload.revoke_all):
+        _rotate_shared_conversation(
+            config,
+            client_id=target_client_id,
+            username=target_username,
+            reason="primary_binding_revoked",
+        )
     state = _load_state()
     deliveries = state.get("scheduled_report_deliveries")
     if isinstance(deliveries, dict):

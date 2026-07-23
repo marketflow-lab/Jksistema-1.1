@@ -213,6 +213,9 @@ function typingEnvironment(options: {
 function registrationEnvironment(existing: Record<string, unknown> | null = null, activeBindings = 0) {
   const sqlCalls: Array<{ sql: string; values: unknown[]; operation: "first" | "run" }> = [];
   const db = {
+    async batch(statements: Array<{ run: () => Promise<unknown> }>) {
+      return Promise.all(statements.map((statement) => statement.run()));
+    },
     prepare(sql: string) {
       return {
         bind(...values: unknown[]) {
@@ -225,6 +228,40 @@ function registrationEnvironment(existing: Record<string, unknown> | null = null
             },
             async run() {
               sqlCalls.push({ sql, values, operation: "run" });
+              return { meta: { changes: 1 } };
+            },
+          };
+        },
+      };
+    },
+  };
+  return { env: { DB: db, BRIDGE_TOKEN: "bridge-secret" } as any, sqlCalls };
+}
+
+function primaryBindingEnvironment(machineId = "machine-1", initialPrimary = false) {
+  const sqlCalls: Array<{ sql: string; values: unknown[]; operation: "first" | "run" }> = [];
+  let primary = initialPrimary;
+  const db = {
+    async batch(statements: Array<{ run: () => Promise<unknown> }>) {
+      return Promise.all(statements.map((statement) => statement.run()));
+    },
+    prepare(sql: string) {
+      return {
+        bind(...values: unknown[]) {
+          return {
+            async first() {
+              sqlCalls.push({ sql, values, operation: "first" });
+              if (sql.includes("SELECT subject_id,machine_id,is_primary FROM bindings")) {
+                return { subject_id: "subject-1", machine_id: machineId, is_primary: primary ? 1 : 0 };
+              }
+              if (sql.includes("SELECT is_primary FROM bindings")) return { is_primary: primary ? 1 : 0 };
+              if (sql.includes("SELECT 1 AS present FROM bindings")) return primary ? { present: 1 } : null;
+              return null;
+            },
+            async run() {
+              sqlCalls.push({ sql, values, operation: "run" });
+              if (sql.includes("SET is_primary=1")) primary = true;
+              if (sql.includes("SET is_primary=0") && sql.includes("subject_id=?")) primary = false;
               return { meta: { changes: 1 } };
             },
           };
@@ -853,6 +890,9 @@ function inboundResultIdempotencyEnvironment() {
           if (sql.includes("SELECT * FROM outbox WHERE subject_id=")) {
             return { results: [...outboxByKey.values()].filter((item) => ["queued", "retry", "waiting_free_window"].includes(item.status)) };
           }
+          if (sql.includes("SELECT status FROM outbox WHERE inbound_message_id=")) {
+            return { results: [...outboxByKey.values()].map((item) => ({ status: item.status })) };
+          }
           return { results: [] };
         },
       });
@@ -1078,7 +1118,7 @@ describe("public gateway routes", () => {
       context(),
     );
     const statusPayload = await statusResponse.json() as any;
-    expect(statusPayload).toMatchObject({ gateway_protocol_version: 1, build_version: "1.0.103" });
+    expect(statusPayload).toMatchObject({ gateway_protocol_version: 1, build_version: "1.0.104" });
     expect(statusPayload.inbound_media).toMatchObject({
       durable_retry: true,
       max_attempts: 5,
@@ -1311,14 +1351,34 @@ describe("public gateway routes", () => {
     });
 
     const first = await worker.fetch(request(), target.env, context());
+    const firstPayload = await first.json() as any;
+    expect(firstPayload).toMatchObject({
+      success: true,
+      status: "completed",
+      queued_parts: 1,
+      delivery_receipt: {
+        schema_version: "jk.whatsapp.delivery-receipt.v1",
+        confirmed: false,
+        parts_total: 1,
+      },
+    });
+
+    const stored = [...target.outboxByKey.values()][0];
+    stored.status = "delivered";
     const replay = await worker.fetch(request(), target.env, context());
 
-    expect(await first.json()).toMatchObject({ success: true, status: "completed", queued_parts: 1 });
     expect(await replay.json()).toMatchObject({
       success: true,
       status: "completed",
-      queued_parts: 0,
+      queued_parts: 1,
       idempotent_replay: true,
+      delivery_receipt: {
+        state: "sent",
+        confirmed: true,
+        terminal: true,
+        parts_total: 1,
+        parts_sent: 1,
+      },
     });
     expect(target.outboxByKey.size).toBe(1);
     expect([...target.outboxByKey.keys()]).toEqual(["inbound_result:wamid.result.idempotent:1"]);
@@ -2132,6 +2192,62 @@ describe("public gateway routes", () => {
     expect(migration).toContain("meta_message_id text primary key");
     expect(migration).toContain("unique(fingerprint, subject_id, client_id, username)");
     expect(migration).toContain("on outbound_quote_context(meta_message_id, subject_id, client_id, username)");
+  });
+
+  it("selects one gateway-authoritative primary binding for the exact owner and machine", async () => {
+    const target = primaryBindingEnvironment();
+    const response = await worker.fetch(
+      new Request("https://example.test/bridge/bindings/primary", {
+        method: "POST",
+        body: JSON.stringify({
+          subject_id: "subject-1",
+          client_id: "cliente",
+          username: "operador",
+          machine_id: "machine-1",
+          is_primary: true,
+        }),
+        headers: { authorization: "Bearer bridge-secret", "content-type": "application/json" },
+      }),
+      target.env,
+      context(),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ success: true, applied: true, is_primary: true, owner_has_primary: true });
+    expect(target.sqlCalls.some((item) => item.operation === "run" && item.sql.includes("subject_id<>?"))).toBe(true);
+    expect(target.sqlCalls.some((item) => item.operation === "run" && item.sql.includes("SET is_primary=1"))).toBe(true);
+  });
+
+  it("does not change a primary binding owned by another machine", async () => {
+    const target = primaryBindingEnvironment("machine-2", true);
+    const response = await worker.fetch(
+      new Request("https://example.test/bridge/bindings/primary", {
+        method: "POST",
+        body: JSON.stringify({
+          subject_id: "subject-1",
+          client_id: "cliente",
+          username: "operador",
+          machine_id: "machine-1",
+          is_primary: false,
+        }),
+        headers: { authorization: "Bearer bridge-secret", "content-type": "application/json" },
+      }),
+      target.env,
+      context(),
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ success: false, error: "binding_machine_mismatch" });
+    expect(target.sqlCalls.some((item) => item.operation === "run" && item.sql.includes("UPDATE bindings SET is_primary"))).toBe(false);
+  });
+
+  it("ships one active primary binding per tenant and user", () => {
+    const migration = String.raw`${readFileSync(
+      new URL("../migrations/0011_primary_binding.sql", import.meta.url),
+      "utf8",
+    )}`.toLowerCase();
+    expect(migration).toContain("add column is_primary integer not null default 0");
+    expect(migration).toContain("create unique index if not exists uq_bindings_active_primary_per_user");
+    expect(migration).toContain("where active = 1 and is_primary = 1");
+    expect(migration).toContain("on bindings(client_id, username collate nocase)");
   });
 
   it("rejects an altered proactive chart before reserving outbound quota", async () => {

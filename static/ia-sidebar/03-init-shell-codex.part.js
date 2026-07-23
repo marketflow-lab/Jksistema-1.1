@@ -1938,7 +1938,7 @@
 
     async function _codexCarregarListaHistorico() {
       try {
-        const data = await _codexFetchJson('/api/codex/tasks?limit=100&summary=true&channel=app');
+        const data = await _codexFetchJson('/api/codex/tasks?limit=100&summary=true&channel=unified');
         codexHistoryTasks = Array.isArray(data && data.tasks) ? data.tasks.map(_codexCompactTaskForMemory) : [];
         _codexRenderHistoricoTasks(codexHistoryTasks);
         return codexHistoryTasks;
@@ -3065,7 +3065,7 @@
       if (!task) return;
       const memoryTask = _codexCompactTaskForMemory(task);
       codexTaskAtual = memoryTask;
-      if (task.conversation_id && String(task.channel || 'app') === 'app' && String(task.conversation_state || 'active') === 'active') {
+      if (task.conversation_id && ['app', 'shared'].includes(String(task.channel || 'app')) && String(task.conversation_state || 'active') === 'active') {
         codexCanonicalConversationId = String(task.conversation_id || '');
         codexConversationId = '';
         _codexSetActiveConversationId(codexCanonicalConversationId);

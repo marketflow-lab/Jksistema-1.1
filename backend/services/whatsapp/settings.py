@@ -372,6 +372,7 @@ def ai_settings(config: dict[str, Any]) -> dict[str, str]:
 def default_phone_notification_settings() -> dict[str, Any]:
     return {
         "label": "",
+        "is_primary": False,
         "send_ml_question_suggestions": True,
         "send_weekly_report": False,
         "send_monthly_report": False,
@@ -392,6 +393,7 @@ def normalize_phone_notification_settings(value: Any) -> dict[str, Any]:
     result.update(
         {
             "label": re.sub(r"\s+", " ", str(source.get("label") or "")).strip()[:60],
+            "is_primary": source.get("is_primary") is True,
             "send_ml_question_suggestions": source.get("send_ml_question_suggestions") is not False,
             "send_weekly_report": source.get("send_weekly_report") is True,
             "send_monthly_report": source.get("send_monthly_report") is True,
@@ -400,6 +402,129 @@ def normalize_phone_notification_settings(value: Any) -> dict[str, Any]:
         }
     )
     return result
+
+
+def primary_phone_setting(
+    config: Any,
+    *,
+    client_id: Any,
+    username: Any,
+    subject_id: Any = "",
+) -> dict[str, Any]:
+    """Return the one explicitly primary setting owned by this tenant/user."""
+
+    source = config if isinstance(config, dict) else {}
+    settings_by_phone = source.get("phone_notification_settings")
+    if not isinstance(settings_by_phone, dict):
+        return {}
+    client = str(client_id or "").strip()
+    user = str(username or "").strip().lower()
+    subject = str(subject_id or "").strip()
+    if not client or not user:
+        return {}
+    matches: list[dict[str, Any]] = []
+    for key, raw in settings_by_phone.items():
+        if not isinstance(raw, dict) or raw.get("is_primary") is not True:
+            continue
+        candidate_subject = str(raw.get("subject_id") or key or "").strip()
+        if subject and candidate_subject != subject:
+            continue
+        if str(raw.get("client_id") or "").strip() != client:
+            continue
+        if str(raw.get("username") or "").strip().lower() != user:
+            continue
+        normalized = normalize_phone_notification_settings(raw)
+        normalized.update(
+            {
+                "subject_id": candidate_subject,
+                "client_id": client,
+                "username": user,
+            }
+        )
+        matches.append(normalized)
+    return matches[0] if len(matches) == 1 else {}
+
+
+def primary_phone_binding(
+    config: Any,
+    bindings: Any,
+    *,
+    client_id: Any,
+    username: Any,
+    machine_id: Any = "",
+) -> dict[str, Any]:
+    """Resolve the gateway-authoritative active primary binding."""
+
+    client = str(client_id or "").strip()
+    user = str(username or "").strip().lower()
+    machine = str(machine_id or "").strip()
+    for raw in list(bindings or []):
+        if not isinstance(raw, dict):
+            continue
+        if raw.get("is_primary") is not True:
+            continue
+        if str(raw.get("client_id") or "").strip() != client:
+            continue
+        if str(raw.get("username") or "").strip().lower() != user:
+            continue
+        if machine and str(raw.get("machine_id") or "").strip() != machine:
+            continue
+        subject = str(raw.get("subject_id") or "").strip()
+        if not subject:
+            continue
+        setting = phone_notification_settings(
+            config,
+            subject,
+            client_id=client,
+            username=user,
+        )
+        setting["is_primary"] = True
+        return {**raw, "notification_settings": setting}
+    return {}
+
+
+def select_primary_phone_setting(
+    settings_by_phone: Any,
+    *,
+    subject_id: Any,
+    client_id: Any,
+    username: Any,
+    enabled: bool,
+) -> dict[str, Any]:
+    """Atomically select at most one primary subject for an owner."""
+
+    source = dict(settings_by_phone) if isinstance(settings_by_phone, dict) else {}
+    subject = str(subject_id or "").strip()
+    client = str(client_id or "").strip()
+    user = str(username or "").strip().lower()
+    output: dict[str, Any] = {}
+    for key, raw in source.items():
+        item = dict(raw) if isinstance(raw, dict) else {}
+        same_owner = (
+            str(item.get("client_id") or "").strip() == client
+            and str(item.get("username") or "").strip().lower() == user
+        )
+        if same_owner:
+            candidate_subject = str(item.get("subject_id") or key or "").strip()
+            if enabled:
+                item["is_primary"] = candidate_subject == subject
+            elif candidate_subject == subject:
+                item["is_primary"] = False
+        output[str(key)] = item
+    return output
+
+
+def migrate_legacy_primary_phone_labels(settings_by_phone: Any) -> dict[str, Any]:
+    """Normalize legacy entries without inferring consent from labels."""
+
+    source = dict(settings_by_phone) if isinstance(settings_by_phone, dict) else {}
+    output = {
+        str(key): (dict(raw) if isinstance(raw, dict) else {})
+        for key, raw in source.items()
+    }
+    for item in output.values():
+        item["is_primary"] = item.get("is_primary") is True
+    return output
 
 
 def phone_notification_settings(

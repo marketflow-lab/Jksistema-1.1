@@ -173,6 +173,10 @@ def _personal_number_status(config: dict[str, Any], worker: dict[str, Any]) -> t
         except Exception:
             full_access = False
         subject_id = str(item.get("subject_id") or "").strip()
+        notification_settings = _phone_notification_settings(
+            config, subject_id, client_id=client_id, username=username,
+        )
+        notification_settings["is_primary"] = item.get("is_primary") is True
         personal_numbers.append({
             "subject_id": subject_id,
             "phone_number": phone_number,
@@ -184,9 +188,7 @@ def _personal_number_status(config: dict[str, Any], worker: dict[str, Any]) -> t
             "last_inbound_at": int(item.get("last_inbound_at") or 0),
             "created_at": int(item.get("created_at") or 0),
             "this_machine": str(item.get("machine_id") or "") == str(config.get("machine_id") or ""),
-            "notification_settings": _phone_notification_settings(
-                config, subject_id, client_id=client_id, username=username,
-            ),
+            "notification_settings": notification_settings,
         })
     return personal_numbers, max(1, min(3, int(worker.get("binding_limit_per_user") or 3)))
 

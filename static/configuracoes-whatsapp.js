@@ -374,9 +374,10 @@
     const weeklyInput = byId('userWaNewWeekly');
     const monthlyInput = byId('userWaNewMonthly');
     const voiceInput = byId('userWaNewVoice');
+    const primaryInput = byId('userWaNewPrimary');
     const welcomeInput = byId('userWaWelcomeMessage');
     const sendWelcomeInput = byId('userWaSendWelcome');
-    if (!box || !counter || !saveButton || !nameInput || !numberInput || !questionsInput || !weeklyInput || !monthlyInput || !voiceInput || !welcomeInput || !sendWelcomeInput) return;
+    if (!box || !counter || !saveButton || !nameInput || !numberInput || !questionsInput || !weeklyInput || !monthlyInput || !voiceInput || !primaryInput || !welcomeInput || !sendWelcomeInput) return;
     const target = userPanelTarget;
     const allNumbers = Array.isArray(payload.personal_numbers) ? payload.personal_numbers : [];
     const list = target
@@ -394,6 +395,7 @@
     weeklyInput.disabled = registrationDisabled;
     monthlyInput.disabled = registrationDisabled;
     voiceInput.disabled = registrationDisabled;
+    primaryInput.disabled = registrationDisabled;
     welcomeInput.disabled = registrationDisabled;
     sendWelcomeInput.disabled = registrationDisabled;
     saveButton.title = !target
@@ -447,11 +449,12 @@
 
       const options = document.createElement('div');
       options.className = 'user-phone-options';
+      const primary = phoneOption('Número principal: compartilhar a conversa com a Sidebar', settings.is_primary === true, remoteMachine);
       const questions = phoneOption('Enviar sugestão de pergunta do Mercado Livre', settings.send_ml_question_suggestions !== false, remoteMachine);
       const weekly = phoneOption('Enviar relatório semanal', settings.send_weekly_report === true, remoteMachine);
       const monthly = phoneOption('Enviar relatório mensal', settings.send_monthly_report === true, remoteMachine);
       const voiceCalls = phoneOption('Permitir ligações com o Black Jhon', settings.allow_voice_calls === true, remoteMachine);
-      options.append(questions.wrapper, weekly.wrapper, monthly.wrapper, voiceCalls.wrapper);
+      options.append(primary.wrapper, questions.wrapper, weekly.wrapper, monthly.wrapper, voiceCalls.wrapper);
       card.appendChild(options);
 
       const behaviorCaption = document.createElement('label');
@@ -482,6 +485,7 @@
           username: item.username,
           client_id: item.client_id,
           label: labelInput.value.trim(),
+          is_primary: primary.input.checked,
           send_ml_question_suggestions: questions.input.checked,
           send_weekly_report: weekly.input.checked,
           send_monthly_report: monthly.input.checked,
@@ -783,6 +787,7 @@
         ...target,
         name,
         phone_number: phoneNumber,
+        is_primary: byId('userWaNewPrimary').checked,
         send_ml_question_suggestions: byId('userWaNewQuestions').checked,
         send_weekly_report: byId('userWaNewWeekly').checked,
         send_monthly_report: byId('userWaNewMonthly').checked,
@@ -810,6 +815,7 @@
     byId('userWaNewWeekly').checked = false;
     byId('userWaNewMonthly').checked = false;
     byId('userWaNewVoice').checked = false;
+    byId('userWaNewPrimary').checked = false;
     byId('userWaWelcomeMessage').value = DEFAULT_WELCOME_MESSAGE;
     byId('userWaSendWelcome').checked = true;
   });

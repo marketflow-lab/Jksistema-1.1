@@ -295,8 +295,23 @@ def _post_message_result(config: dict[str, Any], message_id: str, payload: dict[
     body = {"machine_id": config.get("machine_id"), **payload}
     result = _gateway_json(config, "POST", f"/bridge/messages/{message_id}/result", body, timeout=20)
     _stop_typing_pulse(message_id)
-    _record_message_timing(message_id, sent_at=_now())
+    if delivery_receipt_confirmed(result):
+        _record_message_timing(message_id, sent_at=_now())
     return result
+
+
+def delivery_receipt_confirmed(value: Any) -> bool:
+    result = value if isinstance(value, dict) else {}
+    receipt = result.get("delivery_receipt") if isinstance(result.get("delivery_receipt"), dict) else {}
+    total = max(0, int(receipt.get("parts_total") or 0))
+    return bool(
+        receipt.get("schema_version") == "jk.whatsapp.delivery-receipt.v1"
+        and receipt.get("confirmed") is True
+        and str(receipt.get("state") or "") == "sent"
+        and total > 0
+        and int(receipt.get("parts_sent") or 0) == total
+    )
+
 
 def _post_outbound_image(
     config: dict[str, Any],

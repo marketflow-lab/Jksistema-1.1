@@ -82,9 +82,13 @@ def _conversation_id(config: dict[str, Any], message: dict[str, Any]) -> str:
     phone = _message_phone(config, message)
     if not phone:
         raise RuntimeError("whatsapp_phone_identity_missing")
+    client_id = str(message.get("client_id") or config.get("client_id") or "default")
+    username = str(message.get("username") or config.get("username") or "user")
+    if message.get("binding_is_primary") is True or message.get("binding_is_primary") == 1:
+        return codex_console._codex_shared_conversation_id(client_id, username)
     return codex_console._codex_canonical_conversation_id(
-        str(message.get("client_id") or config.get("client_id") or "default"),
-        str(message.get("username") or config.get("username") or "user"),
+        client_id,
+        username,
         channel="whatsapp",
         phone=phone,
     )

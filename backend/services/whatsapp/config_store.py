@@ -256,7 +256,7 @@ def _phone_notification_settings(
 
 def _default_config() -> dict[str, Any]:
     return {
-        "version": 11,
+        "version": 12,
         "worker_url": "",
         "bridge_token": "",
         "business_phone": "",
@@ -374,8 +374,17 @@ def _load_config() -> dict[str, Any]:
                         "deadline_enabled": False,
                     }
                 )
+            if stored_version < 12:
+                result.update(
+                    {
+                        "version": 12,
+                        "phone_notification_settings": whatsapp_settings.migrate_legacy_primary_phone_labels(
+                            result.get("phone_notification_settings")
+                        ),
+                    }
+                )
         result["enabled"] = bool(result.get("enabled"))
-        result["version"] = 11
+        result["version"] = 12
         result["job_deadline_seconds"] = 0
         result["deadline_enabled"] = False
         result["pairing_pending"] = bool(result.get("pairing_pending"))
@@ -439,7 +448,7 @@ def _save_config(config: dict[str, Any]) -> dict[str, Any]:
                 context_hub_overrides[override_client_id] = override["enabled"]
         value = _default_config()
         value.update(source)
-        value["version"] = 11
+        value["version"] = 12
         value["context_hub_enabled_default"] = context_hub_default
         value["context_hub_enabled_by_client"] = context_hub_overrides
         value["client_id"] = str(value.get("client_id") or "").strip()
