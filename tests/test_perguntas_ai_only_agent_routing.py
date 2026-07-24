@@ -4,6 +4,11 @@ from unittest.mock import patch
 
 import pytest
 
+from ml_questions_gemini.schemas import AIAnswer
+from ml_questions_gemini.config import GeminiQuestionsSettings
+from ml_questions_gemini.adapters import context_from_agent_input
+from ml_questions_gemini.orchestrator import QuestionAnswerOrchestrator
+
 
 def _agent_module():
     from backend.services import perguntas_pos_venda_agent as agent
@@ -125,3 +130,76 @@ def test_missing_ai_category_is_blocked_before_orchestration() -> None:
                     "intent": {"fluxo": "perguntas_anuncio", "categoria": ""},
                 },
             )
+
+
+def test_public_answer_with_four_sentences_is_valid_and_returned(monkeypatch) -> None:
+    agent = _agent_module()
+    answer = (
+        "Primeira frase objetiva com os dados confirmados " + ("a" * 360) + ". "
+        "Segunda frase com a medida informada " + ("b" * 360) + ". "
+        "Terceira frase explica o uso correto " + ("c" * 360) + ". "
+        "Quarta frase conclui com seguranca " + ("d" * 300) + "."
+    )
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            self.model_usado = "codex:gpt-5.5"
+            self.context_pipeline = []
+            self.compatibility_analysis = {}
+            self.codex_thread_id = "thread-public"
+            self.evidence_records = []
+
+        def generate(self, _prompt, _metadata):
+            return AIAnswer(
+                answer=answer,
+                confidence=0.95,
+                requires_human_review=True,
+                reason="evidence_confirmed",
+            )
+
+    monkeypatch.setattr(agent, "_PerguntasCodexV3Client", FakeClient)
+    monkeypatch.setattr(agent, "GeminiQuestionsSettings", GeminiQuestionsSettings, raising=False)
+    monkeypatch.setattr(agent, "QuestionAnswerOrchestrator", QuestionAnswerOrchestrator, raising=False)
+    monkeypatch.setattr(agent, "context_from_agent_input", context_from_agent_input, raising=False)
+    monkeypatch.setattr(agent, "ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO", 2000, raising=False)
+    monkeypatch.setattr(agent, "ML_POS_VENDA_LIMITE_SEGURO", 340, raising=False)
+    monkeypatch.setattr(agent, "_perguntas_ia_fluxo_pos_venda", lambda _input: False, raising=False)
+    monkeypatch.setattr(agent, "_perguntas_ia_limpar_resposta", lambda value: value, raising=False)
+    monkeypatch.setattr(agent, "_perguntas_ia_resposta_final_loja", lambda value, _store: value, raising=False)
+    monkeypatch.setattr(agent, "_perguntas_ia_resposta_fallback_invalida", lambda _value: False, raising=False)
+    monkeypatch.setattr(agent, "_modelo_eh_vertex_ai", lambda _value: False, raising=False)
+    monkeypatch.setattr(agent, "_modelo_eh_codex", lambda _value: True, raising=False)
+    monkeypatch.setattr(agent, "_ia_modelo_perguntas_configurado", lambda: "codex:gpt-5.5", raising=False)
+    monkeypatch.setattr(agent, "_ia_raciocinio_perguntas_configurado", lambda: "medium", raising=False)
+    monkeypatch.setattr(agent, "_perguntas_ia_v2_exigir_aprovacao", lambda: True, raising=False)
+    monkeypatch.setattr(agent, "_ia_agent_perguntas_log_perf", lambda *_args, **_kwargs: None, raising=False)
+    monkeypatch.setattr(agent, "_ia_agent_perguntas_violacoes_resposta", lambda *_args, **_kwargs: [], raising=False)
+    monkeypatch.setattr(
+        agent,
+        "_perguntas_codex_provider_selection",
+        lambda *_args, **_kwargs: {
+            "model": "codex:gpt-5.5",
+            "policy": "codex_primary",
+            "codex_model": "gpt-5.5",
+            "configured_fallback": "",
+            "fallback_used": False,
+            "operational_failure_count": 0,
+        },
+        raising=False,
+    )
+
+    response, _model, diagnostics = agent._perguntas_ia_v2_gerar_resposta(
+        "000002",
+        {
+            "store": "JK Pecas",
+            "question": {"id": "Q-4-SENTENCES", "text": "Como funciona?", "item_id": "MLB1"},
+            "item": {"id": "MLB1", "title": "Produto", "description": "Descricao confirmada."},
+            "intent": _classification(category="product_feature", compatibility={}),
+        },
+    )
+
+    assert response.startswith(answer)
+    assert len(response) > 1400
+    assert len(response) <= 2000
+    assert diagnostics[0]["result"]["validation_ok"] is True
+    assert "too_many_sentences" not in diagnostics[0]["result"]["validation_issues"]

@@ -63,7 +63,7 @@ configure_perguntas_pos_venda_state_runtime()
 ML_RESPOSTA_PERGUNTA_MAX_CHARS = 2000
 
 
-ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO = 1900
+ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO = 2000
 
 
 ML_PERGUNTAS_IA_PROMPT_MAX_CHARS = 3600
@@ -1684,7 +1684,7 @@ def _perguntas_ia_pergunta_para_agente(pergunta: dict) -> dict:
     return {
         "id": pergunta.get("id") or "",
         "text": pergunta.get("text") or "",
-        "current_draft_to_avoid": resposta_atual[:1200],
+        "current_draft_to_avoid": resposta_atual[:ML_RESPOSTA_PERGUNTA_MAX_CHARS],
         "item_id": pergunta.get("item_id") or "",
         "date_created": pergunta.get("date_created") or "",
         "status": pergunta.get("status") or "",

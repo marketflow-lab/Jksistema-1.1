@@ -1437,7 +1437,7 @@ def ml_questions_v2_process(question_id: str, req: MLQuestionsV2ProcessRequest, 
     pergunta = req.pergunta if isinstance(req.pergunta, dict) else {}
     pergunta = {**pergunta, "id": str(question_id or pergunta.get("id") or "").strip()}
     if req.resposta_atual:
-        pergunta["_resposta_atual"] = str(req.resposta_atual or "")[:1200]
+        pergunta["_resposta_atual"] = str(req.resposta_atual or "")[:ML_RESPOSTA_PERGUNTA_MAX_CHARS]
     if not pergunta.get("id"):
         raise HTTPException(status_code=400, detail="Informe a pergunta.")
     if not str(pergunta.get("text") or "").strip() and not pergunta.get("buyer_question_chat"):
@@ -1559,6 +1559,8 @@ def _customer_reply_wait_or_raise(client_id: str, job: dict[str, Any]) -> dict[s
     if not job_id:
         raise HTTPException(status_code=500, detail="O orquestrador nao retornou a identificacao da tarefa.")
     if job.get("queued"):
+        # O job publico continua sem prazo total; apenas esta requisicao sincrona
+        # devolve o estado apos 180s para que o acompanhamento siga por polling.
         job = perguntas_pos_venda_codex.wait_job(client_id, job_id, timeout=180)
     status = str(job.get("status") or "")
     if status == "failed":
@@ -1584,7 +1586,7 @@ def ml_perguntas_gerar_resposta_manual(
     pergunta = req.pergunta if isinstance(req.pergunta, dict) else {}
     resposta_atual = str(req.resposta_atual or "").strip()
     if resposta_atual:
-        pergunta = {**pergunta, "_resposta_atual": resposta_atual[:1200]}
+        pergunta = {**pergunta, "_resposta_atual": resposta_atual[:ML_RESPOSTA_PERGUNTA_MAX_CHARS]}
     orientacao_usuario = str(req.orientacao_usuario or "").strip()
     if orientacao_usuario:
         pergunta = {**pergunta, "_orientacao_usuario": orientacao_usuario[:1200]}
@@ -1814,6 +1816,11 @@ def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest,
 
     tipo_treinamento = _ia_treinamento_ppv_tipo_normalizar(req.tipo)
     contexto_tipo = "pos-venda" if tipo_treinamento == "pos_venda" else "pergunta de anuncio"
+    limite_resposta = (
+        ML_POS_VENDA_LIMITE_SEGURO
+        if tipo_treinamento == "pos_venda"
+        else ML_RESPOSTA_PERGUNTA_MAX_CHARS
+    )
     contexto_extra = str(req.contexto or "").strip()
     loja = str(req.loja or "").strip()
     mensagem = (
@@ -1824,7 +1831,7 @@ def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest,
         "Responda como a equipe da loja, sem mencionar sistema interno, app, prompt, JSON, modelo ou treinamento. "
         f"Finalize exatamente com: {_perguntas_ia_assinatura_loja(loja)} "
         f"Se faltar informacao essencial, peÃ§a a informacao de forma educada. "
-        f"Mantenha a resposta com no maximo {ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO} caracteres para evitar falha no Mercado Livre.\n\n"
+        f"Mantenha a resposta com no maximo {limite_resposta} caracteres para evitar falha no Mercado Livre.\n\n"
         f"Pergunta do comprador:\n{pergunta}"
     )
     sku_selecionado = _normalizar_sku_mes(str(req.sku or "").strip())

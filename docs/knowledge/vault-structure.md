@@ -24,6 +24,10 @@ validada. `.obsidian` é criado sem plugins comunitários e sem um
 instala seis grupos visuais nativos: mapas e domínios em azul; categorias em
 âmbar; catálogo, famílias e cobertura SKU em rosa; montadoras em verde; raízes
 e índices de veículos em violeta; e modelos ou aplicações em ciano. Notas gerais
-permanecem na cor neutra do tema. Um `graph.json` já existente é sempre
-preservado como preferência do usuário. `80_Curadoria` e `90_Arquivo` nunca são
-apagados ou sobrescritos pelo gerador.
+permanecem na cor neutra do tema. Os padrões são publicados de forma atômica e
+somente quando `graph.json` ainda não existe; se o Obsidian criar o arquivo ao
+mesmo tempo, a versão do Obsidian vence. Um `graph.json` existente é sempre
+preservado byte a byte, mesmo que não contenha todos os grupos gerenciados ou
+tenha JSON inválido. Grupos ausentes devem ser configurados pela interface do
+Obsidian. O `workspace.json` nunca é alterado.
+`80_Curadoria` e `90_Arquivo` nunca são apagados ou sobrescritos pelo gerador.

@@ -36,11 +36,18 @@ function resolveMirrorPairPolicy(manifest, pair) {
 }
 
 function main() {
+  const checkOnly = process.argv.slice(2).includes('--check');
   const manifest = readJson(manifestPath);
   const pairs = manifest.mirrorPairs || [];
   let copied = 0;
   let skipped = 0;
   const failures = [];
+
+  if (checkOnly && (!Array.isArray(manifest.mirrorPairs) || manifest.mirrorPairs.length === 0)) {
+    console.error('[static-source] FALHOU');
+    console.error('- mirrorPairs deve ser uma lista nao vazia no modo --check.');
+    process.exit(1);
+  }
 
   for (const pair of pairs) {
     const { canonical, legacy } = resolveMirrorPairPolicy(manifest, pair);
@@ -52,14 +59,31 @@ function main() {
       continue;
     }
 
-    fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
-    const current = isFile(legacyPath) ? fs.readFileSync(legacyPath) : null;
     const next = fs.readFileSync(canonicalPath);
-    if (current && current.equals(next)) {
+    if (!isFile(legacyPath)) {
+      if (checkOnly) {
+        failures.push(`Espelho ausente: ${legacy}`);
+        continue;
+      }
+      fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
+      fs.copyFileSync(canonicalPath, legacyPath);
+      copied += 1;
+      console.log(`[static-source] ${canonical} -> ${legacy}`);
+      continue;
+    }
+
+    const current = fs.readFileSync(legacyPath);
+    if (current.equals(next)) {
       skipped += 1;
       continue;
     }
 
+    if (checkOnly) {
+      failures.push(`Espelho divergente: ${legacy} (fonte oficial: ${canonical})`);
+      continue;
+    }
+
+    fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
     fs.copyFileSync(canonicalPath, legacyPath);
     copied += 1;
     console.log(`[static-source] ${canonical} -> ${legacy}`);
@@ -71,7 +95,11 @@ function main() {
     process.exit(1);
   }
 
-  console.log(`[static-source] OK - ${copied} espelho(s) atualizado(s), ${skipped} ja alinhado(s).`);
+  if (checkOnly) {
+    console.log(`[static-source] OK - ${skipped} espelho(s) conferido(s), nenhuma alteracao realizada.`);
+  } else {
+    console.log(`[static-source] OK - ${copied} espelho(s) atualizado(s), ${skipped} ja alinhado(s).`);
+  }
 }
 
 main();

@@ -1,5 +1,8 @@
 context-bundle-manifest.json text eol=lf
 docs/knowledge/** text eol=lf
-static/favoritos/v2/browser/shell-bridge.js text eol=crlf
+favoritos.html text eol=crlf
+static/favoritos.html text eol=crlf
+static/favoritos/** text eol=crlf
+static/favoritos/asset-manifest.json text eol=lf
 requirements*.in text eol=lf
 requirements*.txt text eol=lf

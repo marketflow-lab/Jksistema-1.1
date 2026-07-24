@@ -13,7 +13,7 @@ def test_release_version_is_canonical_and_materialized():
     runtime_manifest = json.loads((root / ".installer_runtime" / "runtime-manifest.json").read_text(encoding="utf-8-sig"))
 
     release_version = electron_package["version"]
-    assert release_version == "1.0.115"
+    assert release_version == "1.0.116"
     assert root_package["version"] == release_version
     assert context_manifest["source_version"] == release_version
     assert runtime_manifest["version"] == release_version
@@ -29,6 +29,16 @@ def test_codex_status_distinguishes_authentication_pending(monkeypatch):
     monkeypatch.setattr(codex_console, "_codex_enabled", lambda: True)
     monkeypatch.setattr(codex_console, "_codex_auth_detected", lambda: False)
     monkeypatch.setattr(codex_console, "_codex_cli_version", lambda: (True, "codex.exe"))
+    monkeypatch.setattr(
+        codex_console,
+        "_codex_runtime_diagnostics",
+        lambda: {
+            "path": "codex.exe",
+            "version": "test",
+            "config_ok": True,
+            "config_error": "",
+        },
+    )
 
     payload = codex_console._codex_status_payload()
 

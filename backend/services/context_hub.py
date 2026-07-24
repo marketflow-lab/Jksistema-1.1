@@ -75,7 +75,7 @@ VAULT_DIRECTORIES = (
 # Native Obsidian graph groups. The queries use indexed frontmatter and stable
 # generated filenames, so the visual organization follows the semantic model
 # without adding plugins or one note per year. Existing graph.json files are
-# intentionally user-owned and are never replaced by bootstrap.
+# user-owned and are never rewritten by bootstrap.
 OBSIDIAN_GRAPH_DEFAULTS: dict[str, Any] = {
     "collapse-filter": False,
     "search": "",
@@ -496,6 +496,46 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     _write_text_atomic(path, json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
 
 
+def _write_obsidian_graph_json_if_absent(
+    path: Path,
+    payload: Mapping[str, Any],
+) -> bool:
+    """Atomically publish graph.json without ever replacing an existing file."""
+
+    temporary: Optional[Path] = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        rendered = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        ) + "\n"
+        temporary.write_text(rendered, encoding="utf-8", newline="\n")
+        # A hard-link publish is atomic and fails when the destination appears
+        # concurrently. Unlike os.replace, it can never overwrite preferences
+        # written by Obsidian after bootstrap observed the path as absent.
+        os.link(temporary, path)
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        return False
+    finally:
+        if temporary is not None:
+            with contextlib.suppress(OSError):
+                temporary.unlink()
+
+
+def _ensure_obsidian_graph_groups(path: Path) -> bool:
+    """Create graph defaults only when no user-owned graph.json exists."""
+
+    if os.path.lexists(path):
+        return True
+    return _write_obsidian_graph_json_if_absent(path, OBSIDIAN_GRAPH_DEFAULTS)
+
+
 @contextlib.contextmanager
 def _connect(paths: ContextHubPaths) -> Iterator[sqlite3.Connection]:
     connection = sqlite3.connect(paths.db_path, timeout=20, isolation_level=None)
@@ -734,8 +774,7 @@ def bootstrap_context_hub(
     _assert_path_chain_safe(obsidian, paths.info_root)
     graph_config = obsidian / "graph.json"
     _assert_path_chain_safe(graph_config, paths.info_root)
-    if not graph_config.exists():
-        _write_json_atomic(graph_config, OBSIDIAN_GRAPH_DEFAULTS)
+    _ensure_obsidian_graph_groups(graph_config)
     for private_dir in (
         paths.staging_dir,
         paths.generations_dir,

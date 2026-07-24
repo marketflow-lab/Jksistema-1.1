@@ -20,6 +20,35 @@ STATE_ROW_SCHEDULER = "scheduler_state"
 _LOCKS_LOCK = threading.RLock()
 _LOCKS: dict[str, threading.RLock] = {}
 
+_CUSTOMER_REPLY_TRANSIENT_LOCK = threading.RLock()
+_CUSTOMER_REPLY_TRANSIENT: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+_CUSTOMER_REPLY_ACTIVE_TRANSIENT_TTL_SECONDS = 24 * 60 * 60
+_CUSTOMER_REPLY_COMPLETED_TRANSIENT_TTL_SECONDS = 15 * 60
+_CUSTOMER_REPLY_TERMINAL_ROW_TTL_DAYS = 7
+
+# Customer prompts, buyer history, generated answers, evidence, queries, sources,
+# tool output and operator guidance are intentionally absent.  This table is a
+# durable scheduler/lease journal, not a conversation or proposal store.
+_CUSTOMER_REPLY_DURABLE_FIELDS = frozenset({
+    "job_id", "profile", "task_type", "subject_key", "event_subject_key",
+    "question_id", "item_id", "store", "client_id", "channel", "status",
+    "agent_state", "current_step", "idempotency_key", "request_hash",
+    "thread_id", "thread_reused", "thread_restart_reason", "prompt_version",
+    "prompt_hash", "schema_version", "conversation_id", "previous_job_id",
+    "plan_id", "proposal_id", "proposal_version", "proposal_hash", "action_id",
+    "cancel_requested", "request_generation", "attempt_count",
+    "operational_failure_count", "retry_count", "retry_policy",
+    "next_retry_at_epoch", "next_retry_delay_seconds", "deadline_seconds",
+    "deadline_at_epoch", "deadline_reached", "completed_with_partial",
+    "blocked_without_draft", "contract_quarantined", "lease_owner",
+    "lease_expires_ts", "lease_generation", "heartbeat_at", "retry_ready_at",
+    "last_attempt_completed_at", "created_at", "updated_at", "completed_at",
+    "data_sufficient", "publish_attempted", "requires_approval",
+})
+_CUSTOMER_REPLY_SCOPE_ID_FIELDS = frozenset({
+    "question_id", "item_id", "buyer_id", "pack_id", "order_id",
+})
+
 
 def _safe_id(value: Any, fallback: str = "default") -> str:
     safe = "".join(ch for ch in str(value or "") if ch.isalnum() or ch in {"-", "_"})[:80]
@@ -41,6 +70,185 @@ def _json_loads(raw: Any, fallback: Any) -> Any:
         return json.loads(raw)
     except Exception:
         return fallback
+
+
+def _customer_reply_cache_key(db_path: str, job_id: str) -> tuple[str, str]:
+    return (os.path.abspath(db_path), _safe_id(job_id, ""))
+
+
+def _customer_reply_durable_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    source = dict(payload or {}) if isinstance(payload, dict) else {}
+    durable = {key: value for key, value in source.items() if key in _CUSTOMER_REPLY_DURABLE_FIELDS}
+    scope = source.get("scope_verifiers") if isinstance(source.get("scope_verifiers"), dict) else {}
+    durable_scope = {
+        key: str(value or "")[:160]
+        for key, value in scope.items()
+        if key in _CUSTOMER_REPLY_SCOPE_ID_FIELDS and str(value or "").strip()
+    }
+    if durable_scope:
+        durable["scope_verifiers"] = durable_scope
+    result = source.get("result") if isinstance(source.get("result"), dict) else {}
+    for key in (
+        "proposal_id", "proposal_version", "proposal_hash", "data_sufficient",
+        "publish_attempted", "requires_approval", "completed_with_partial",
+        "blocked_without_draft",
+    ):
+        if key in result and key not in durable:
+            durable[key] = result.get(key)
+    steps = source.get("agent_steps") if isinstance(source.get("agent_steps"), list) else []
+    if steps:
+        durable["agent_steps"] = [
+            {
+                key: item.get(key)
+                for key in ("state", "step", "at")
+                if key in item
+            }
+            for item in steps[-60:]
+            if isinstance(item, dict)
+        ]
+    verification = source.get("verification") if isinstance(source.get("verification"), dict) else {}
+    if verification:
+        durable["verification"] = {
+            key: verification.get(key)
+            for key in ("status", "confirmed", "verified_at")
+            if key in verification
+        }
+    transient = {key: value for key, value in source.items() if key not in durable}
+    return durable, transient
+
+
+def _customer_reply_plan_durable_payload(payload: Any) -> dict[str, Any]:
+    source = dict(payload or {}) if isinstance(payload, dict) else {}
+    durable = {
+        key: source.get(key)
+        for key in (
+            "plan_id", "task_id", "conversation_id", "conversation_generation",
+            "channel", "agent_state", "current_step", "idempotency_key",
+            "created_at", "updated_at",
+        )
+        if key in source
+    }
+    durable["required_input"] = []
+    durable["guidance_applied"] = []
+    durable["steps"] = [
+        {
+            key: step.get(key)
+            for key in ("step_id", "status", "started_at", "completed_at")
+            if key in step
+        }
+        for step in (source.get("steps") or [])
+        if isinstance(step, dict)
+    ]
+    durable["state_history"] = [
+        {
+            key: state.get(key)
+            for key in ("state", "step", "at")
+            if key in state
+        }
+        for state in (source.get("state_history") or [])[-100:]
+        if isinstance(state, dict)
+    ]
+    proposal = source.get("proposal") if isinstance(source.get("proposal"), dict) else {}
+    durable["proposal"] = {
+        key: proposal.get(key)
+        for key in (
+            "proposal_id", "version", "proposal_hash", "action_id",
+            "channels_allowed", "requires_confirmation",
+        )
+        if key in proposal
+    }
+    verification = source.get("verification") if isinstance(source.get("verification"), dict) else {}
+    durable["verification"] = {
+        key: verification.get(key)
+        for key in ("status", "confirmed", "verified_at")
+        if key in verification
+    }
+    return durable
+
+
+def _customer_reply_transient_put(db_path: str, payload: dict[str, Any], transient: dict[str, Any]) -> None:
+    job_id = _safe_id(payload.get("job_id"), "")
+    if not job_id:
+        return
+    key = _customer_reply_cache_key(db_path, job_id)
+    status = str(payload.get("status") or "")
+    with _CUSTOMER_REPLY_TRANSIENT_LOCK:
+        if status == "cancelled":
+            _CUSTOMER_REPLY_TRANSIENT.pop(key, None)
+            return
+        previous = _CUSTOMER_REPLY_TRANSIENT.get(key)
+        merged = dict(previous[1]) if previous and previous[0] > time.time() else {}
+        merged.update(transient)
+        if not merged:
+            return
+        ttl = (
+            _CUSTOMER_REPLY_COMPLETED_TRANSIENT_TTL_SECONDS
+            if status == "completed"
+            else _CUSTOMER_REPLY_ACTIVE_TRANSIENT_TTL_SECONDS
+        )
+        _CUSTOMER_REPLY_TRANSIENT[key] = (time.time() + ttl, merged)
+
+
+def _customer_reply_transient_merge(db_path: str, payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    key = _customer_reply_cache_key(db_path, str(payload.get("job_id") or ""))
+    with _CUSTOMER_REPLY_TRANSIENT_LOCK:
+        cached = _CUSTOMER_REPLY_TRANSIENT.get(key)
+        if not cached:
+            return payload
+        if cached[0] <= time.time():
+            _CUSTOMER_REPLY_TRANSIENT.pop(key, None)
+            return payload
+        return {**payload, **cached[1]}
+
+
+def codex_assistant_customer_reply_job_has_transient(
+    info_base: str, client_id: str, job_id: str
+) -> bool:
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    key = _customer_reply_cache_key(db_path, job_id)
+    with _CUSTOMER_REPLY_TRANSIENT_LOCK:
+        cached = _CUSTOMER_REPLY_TRANSIENT.get(key)
+        if cached and cached[0] > time.time():
+            return True
+        _CUSTOMER_REPLY_TRANSIENT.pop(key, None)
+        return False
+
+
+def _customer_reply_cleanup_rows(conn: sqlite3.Connection) -> list[str]:
+    expired = [
+        str(row["job_id"] or "")
+        for row in conn.execute(
+            "SELECT job_id FROM assistant_customer_reply_jobs "
+            "WHERE status IN ('completed', 'cancelled') "
+            "AND julianday(updated_at) < julianday('now', ?)",
+            (f"-{_CUSTOMER_REPLY_TERMINAL_ROW_TTL_DAYS} days",),
+        ).fetchall()
+    ]
+    conn.execute(
+        "DELETE FROM assistant_customer_reply_jobs "
+        "WHERE status IN ('completed', 'cancelled') "
+        "AND julianday(updated_at) < julianday('now', ?)",
+        (f"-{_CUSTOMER_REPLY_TERMINAL_ROW_TTL_DAYS} days",),
+    )
+    return expired
+
+
+def codex_assistant_customer_reply_jobs_cleanup(info_base: str, client_id: str) -> int:
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    expired: list[str] = []
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            expired = _customer_reply_cleanup_rows(conn)
+    with _CUSTOMER_REPLY_TRANSIENT_LOCK:
+        for job_id in expired:
+            _CUSTOMER_REPLY_TRANSIENT.pop(_customer_reply_cache_key(db_path, job_id), None)
+    return len(expired)
 
 
 def _sha_text(raw: str) -> str:
@@ -304,6 +512,7 @@ def _ensure_state_schema(conn: sqlite3.Connection) -> None:
             thread_id TEXT,
             lease_owner TEXT,
             lease_expires_ts REAL,
+            lease_generation INTEGER NOT NULL DEFAULT 0,
             cancel_requested INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -311,6 +520,15 @@ def _ensure_state_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    customer_reply_columns = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(assistant_customer_reply_jobs)").fetchall()
+    }
+    if "lease_generation" not in customer_reply_columns:
+        conn.execute(
+            "ALTER TABLE assistant_customer_reply_jobs "
+            "ADD COLUMN lease_generation INTEGER NOT NULL DEFAULT 0"
+        )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_customer_reply_jobs_queue "
         "ON assistant_customer_reply_jobs(status, lease_expires_ts, created_at)"
@@ -323,6 +541,59 @@ def _ensure_state_schema(conn: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_reply_jobs_idempotency "
         "ON assistant_customer_reply_jobs(idempotency_key) WHERE idempotency_key <> ''"
     )
+    migration_key = "customer_reply_payload_allowlist_v1"
+    if _meta_get(conn, migration_key) != "1":
+        linked_plan_ids: set[str] = set()
+        legacy_rows = conn.execute(
+            "SELECT job_id, profile, task_type, subject_key, store, status, agent_state, "
+            "idempotency_key, thread_id, lease_owner, lease_expires_ts, lease_generation, "
+            "cancel_requested, created_at, updated_at, payload_json "
+            "FROM assistant_customer_reply_jobs"
+        ).fetchall()
+        for row in legacy_rows:
+            source = _json_loads(row["payload_json"], {})
+            if not isinstance(source, dict):
+                source = {}
+            plan_id = _safe_id(source.get("plan_id"), "")
+            if plan_id:
+                linked_plan_ids.add(plan_id)
+            source.update(
+                {
+                    "job_id": str(row["job_id"] or ""),
+                    "profile": str(row["profile"] or ""),
+                    "task_type": str(row["task_type"] or ""),
+                    "subject_key": str(row["subject_key"] or ""),
+                    "store": str(row["store"] or ""),
+                    "status": str(row["status"] or ""),
+                    "agent_state": str(row["agent_state"] or ""),
+                    "idempotency_key": str(row["idempotency_key"] or ""),
+                    "thread_id": str(row["thread_id"] or ""),
+                    "lease_owner": str(row["lease_owner"] or ""),
+                    "lease_expires_ts": float(row["lease_expires_ts"] or 0.0),
+                    "lease_generation": max(0, int(row["lease_generation"] or 0)),
+                    "cancel_requested": bool(row["cancel_requested"]),
+                    "created_at": str(row["created_at"] or ""),
+                    "updated_at": str(row["updated_at"] or ""),
+                }
+            )
+            durable, _discarded = _customer_reply_durable_payload(source)
+            conn.execute(
+                "UPDATE assistant_customer_reply_jobs SET payload_json = ? WHERE job_id = ?",
+                (_json_dumps(durable), str(row["job_id"] or "")),
+            )
+        for plan_id in linked_plan_ids:
+            plan_row = conn.execute(
+                "SELECT payload_json FROM assistant_agent_plans WHERE plan_id = ?",
+                (plan_id,),
+            ).fetchone()
+            if not plan_row:
+                continue
+            plan = _json_loads(plan_row["payload_json"], {})
+            conn.execute(
+                "UPDATE assistant_agent_plans SET payload_json = ? WHERE plan_id = ?",
+                (_json_dumps(_customer_reply_plan_durable_payload(plan)), plan_id),
+            )
+        _meta_set(conn, migration_key, "1")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS assistant_agent_guidance (
@@ -1142,6 +1413,9 @@ def codex_assistant_customer_reply_job_save(
     info_base: str,
     client_id: str,
     payload: dict[str, Any],
+    *,
+    expected_lease_owner: str = "",
+    expected_lease_generation: Optional[int] = None,
 ) -> dict[str, Any]:
     """Persist a Mercado Livre customer-reply orchestration job."""
 
@@ -1157,21 +1431,55 @@ def codex_assistant_customer_reply_job_save(
     data.setdefault("status", "queued")
     data.setdefault("agent_state", "entendendo")
     data.setdefault("created_at", now)
+    data.setdefault("lease_generation", 0)
     data["updated_at"] = now
-    raw = _json_dumps(data)
     db_path = codex_assistant_state_db_path(info_base, client_id)
     lock = _lock_for(db_path)
+    transient: dict[str, Any] = {}
+    expired_job_ids: list[str] = []
     with lock:
         with _connection(db_path) as conn:
             _ensure_state_schema(conn)
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            expired_job_ids = _customer_reply_cleanup_rows(conn)
+            existing_row = conn.execute(
+                "SELECT status, lease_owner, lease_generation, cancel_requested, payload_json "
+                "FROM assistant_customer_reply_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if existing_row:
+                existing = _json_loads(existing_row["payload_json"], {})
+                if not isinstance(existing, dict):
+                    existing = {}
+                if bool(existing_row["cancel_requested"]) or str(existing_row["status"] or "") == "cancelled":
+                    return _customer_reply_transient_merge(db_path, existing)
+                existing_owner = str(existing_row["lease_owner"] or "")
+                incoming_owner = str(data.get("lease_owner") or "")
+                expected_owner = str(expected_lease_owner or "")
+                existing_generation = max(0, int(existing_row["lease_generation"] or 0))
+                incoming_generation = max(0, int(data.get("lease_generation") or 0))
+                if expected_lease_generation is not None and int(expected_lease_generation) != existing_generation:
+                    return _customer_reply_transient_merge(db_path, existing)
+                if incoming_generation != existing_generation:
+                    return _customer_reply_transient_merge(db_path, existing)
+                if (
+                    str(existing_row["status"] or "") == "running"
+                    and existing_owner
+                    and existing_owner not in {incoming_owner, expected_owner}
+                ):
+                    return _customer_reply_transient_merge(db_path, existing)
+                data["lease_generation"] = existing_generation
+            durable, transient = _customer_reply_durable_payload(data)
+            raw = _json_dumps(durable)
             conn.execute(
                 """
                 INSERT INTO assistant_customer_reply_jobs(
                     job_id, profile, task_type, subject_key, store, status,
                     agent_state, idempotency_key, thread_id, lease_owner,
-                    lease_expires_ts, cancel_requested, created_at, updated_at,
+                    lease_expires_ts, lease_generation, cancel_requested, created_at, updated_at,
                     payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(job_id) DO UPDATE SET
                     profile=excluded.profile,
                     task_type=excluded.task_type,
@@ -1183,28 +1491,34 @@ def codex_assistant_customer_reply_job_save(
                     thread_id=excluded.thread_id,
                     lease_owner=excluded.lease_owner,
                     lease_expires_ts=excluded.lease_expires_ts,
+                    lease_generation=excluded.lease_generation,
                     cancel_requested=excluded.cancel_requested,
                     updated_at=excluded.updated_at,
                     payload_json=excluded.payload_json
                 """,
                 (
                     job_id,
-                    str(data.get("profile") or "mercado_livre_customer_reply"),
-                    str(data.get("task_type") or "question"),
-                    str(data.get("subject_key") or ""),
-                    str(data.get("store") or ""),
-                    str(data.get("status") or "queued"),
-                    str(data.get("agent_state") or "entendendo"),
-                    str(data.get("idempotency_key") or ""),
-                    str(data.get("thread_id") or ""),
-                    str(data.get("lease_owner") or ""),
-                    float(data.get("lease_expires_ts") or 0.0),
-                    1 if data.get("cancel_requested") else 0,
-                    str(data.get("created_at") or now),
+                    str(durable.get("profile") or "mercado_livre_customer_reply"),
+                    str(durable.get("task_type") or "question"),
+                    str(durable.get("subject_key") or ""),
+                    str(durable.get("store") or ""),
+                    str(durable.get("status") or "queued"),
+                    str(durable.get("agent_state") or "entendendo"),
+                    str(durable.get("idempotency_key") or ""),
+                    str(durable.get("thread_id") or ""),
+                    str(durable.get("lease_owner") or ""),
+                    float(durable.get("lease_expires_ts") or 0.0),
+                    max(0, int(durable.get("lease_generation") or 0)),
+                    1 if durable.get("cancel_requested") else 0,
+                    str(durable.get("created_at") or now),
                     now,
                     raw,
                 ),
             )
+    with _CUSTOMER_REPLY_TRANSIENT_LOCK:
+        for expired_job_id in expired_job_ids:
+            _CUSTOMER_REPLY_TRANSIENT.pop(_customer_reply_cache_key(db_path, expired_job_id), None)
+    _customer_reply_transient_put(db_path, data, transient)
     return data
 
 
@@ -1231,7 +1545,7 @@ def codex_assistant_customer_reply_job_get(
                 (value,),
             ).fetchone()
     payload = _json_loads(row["payload_json"] if row else "", None)
-    return payload if isinstance(payload, dict) else None
+    return _customer_reply_transient_merge(db_path, payload) if isinstance(payload, dict) else None
 
 
 def codex_assistant_customer_reply_job_latest(
@@ -1257,7 +1571,7 @@ def codex_assistant_customer_reply_job_latest(
                 (str(task_type or ""), str(store or ""), str(subject_key or "")),
             ).fetchone()
     payload = _json_loads(row["payload_json"] if row else "", None)
-    return payload if isinstance(payload, dict) else None
+    return _customer_reply_transient_merge(db_path, payload) if isinstance(payload, dict) else None
 
 
 def codex_assistant_customer_reply_jobs_list(
@@ -1285,7 +1599,7 @@ def codex_assistant_customer_reply_jobs_list(
     for row in rows:
         payload = _json_loads(row["payload_json"], None)
         if isinstance(payload, dict):
-            result.append(payload)
+            result.append(_customer_reply_transient_merge(db_path, payload))
     return result
 
 
@@ -1305,8 +1619,10 @@ def codex_assistant_customer_reply_job_claim(
     with lock:
         with _connection(db_path) as conn:
             _ensure_state_schema(conn)
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT status, lease_owner, lease_expires_ts, cancel_requested, payload_json "
+                "SELECT status, lease_owner, lease_expires_ts, lease_generation, cancel_requested, payload_json "
                 "FROM assistant_customer_reply_jobs WHERE job_id = ?",
                 (_safe_id(job_id, ""),),
             ).fetchone()
@@ -1322,26 +1638,34 @@ def codex_assistant_customer_reply_job_claim(
             data = _json_loads(row["payload_json"], {})
             if not isinstance(data, dict):
                 data = {}
+            data = _customer_reply_transient_merge(db_path, data)
+            next_generation = max(
+                0,
+                int(row["lease_generation"] or data.get("lease_generation") or 0),
+            ) + 1
             data.update(
                 {
                     "status": "running",
                     "lease_owner": str(owner or ""),
                     "lease_expires_ts": now_ts + max(10.0, float(lease_seconds or 45.0)),
+                    "lease_generation": next_generation,
                     "updated_at": _now_iso(),
                 }
             )
+            durable, _transient = _customer_reply_durable_payload(data)
             conn.execute(
                 """
                 UPDATE assistant_customer_reply_jobs
                 SET status = 'running', lease_owner = ?, lease_expires_ts = ?,
-                    updated_at = ?, payload_json = ?
+                    lease_generation = ?, updated_at = ?, payload_json = ?
                 WHERE job_id = ?
                 """,
                 (
                     data["lease_owner"],
                     data["lease_expires_ts"],
+                    data["lease_generation"],
                     data["updated_at"],
-                    _json_dumps(data),
+                    _json_dumps(durable),
                     _safe_id(job_id, ""),
                 ),
             )
@@ -1354,6 +1678,7 @@ def codex_assistant_customer_reply_job_heartbeat(
     job_id: str,
     *,
     owner: str,
+    lease_generation: Optional[int] = None,
     lease_seconds: float = 45.0,
 ) -> Optional[dict[str, Any]]:
     """Atomically renew an active customer-reply job lease.
@@ -1369,38 +1694,50 @@ def codex_assistant_customer_reply_job_heartbeat(
     with lock:
         with _connection(db_path) as conn:
             _ensure_state_schema(conn)
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT status, lease_owner, payload_json FROM assistant_customer_reply_jobs WHERE job_id = ?",
+                "SELECT status, lease_owner, lease_generation, payload_json "
+                "FROM assistant_customer_reply_jobs WHERE job_id = ?",
                 (_safe_id(job_id, ""),),
             ).fetchone()
             if not row or str(row["status"] or "") != "running":
                 return None
             if str(row["lease_owner"] or "") != str(owner or ""):
                 return None
+            current_generation = max(0, int(row["lease_generation"] or 0))
+            if current_generation > 0 and lease_generation is None:
+                return None
+            if lease_generation is not None and int(lease_generation) != current_generation:
+                return None
             data = _json_loads(row["payload_json"], {})
             if not isinstance(data, dict):
                 data = {}
+            data = _customer_reply_transient_merge(db_path, data)
             data.update(
                 {
                     "status": "running",
                     "lease_owner": str(owner or ""),
                     "lease_expires_ts": lease_expires,
+                    "lease_generation": current_generation,
                     "heartbeat_at": now,
                     "updated_at": now,
                 }
             )
+            durable, _transient = _customer_reply_durable_payload(data)
             updated = conn.execute(
                 """
                 UPDATE assistant_customer_reply_jobs
                 SET lease_expires_ts = ?, updated_at = ?, payload_json = ?
-                WHERE job_id = ? AND status = 'running' AND lease_owner = ?
+                WHERE job_id = ? AND status = 'running' AND lease_owner = ? AND lease_generation = ?
                 """,
                 (
                     lease_expires,
                     now,
-                    _json_dumps(data),
+                    _json_dumps(durable),
                     _safe_id(job_id, ""),
                     str(owner or ""),
+                    current_generation,
                 ),
             )
             if int(updated.rowcount or 0) != 1:
@@ -1413,15 +1750,56 @@ def codex_assistant_customer_reply_job_request_cancel(
     client_id: str,
     job_id: str,
 ) -> Optional[dict[str, Any]]:
-    data = codex_assistant_customer_reply_job_get(info_base, client_id, job_id)
-    if not isinstance(data, dict):
+    safe_job_id = _safe_id(job_id, "")
+    if not safe_job_id:
         return None
-    if str(data.get("status") or "") in {"completed", "cancelled"}:
-        return data
-    data["cancel_requested"] = True
-    if str(data.get("status") or "") in {"queued", "waiting_retry", "failed"}:
-        data.update({"status": "cancelled", "agent_state": "cancelado"})
-    return codex_assistant_customer_reply_job_save(info_base, client_id, data)
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT status, payload_json FROM assistant_customer_reply_jobs WHERE job_id = ?",
+                (safe_job_id,),
+            ).fetchone()
+            if not row:
+                return None
+            data = _json_loads(row["payload_json"], {})
+            if not isinstance(data, dict):
+                data = {}
+            data = _customer_reply_transient_merge(db_path, data)
+            if str(row["status"] or "") in {"completed", "cancelled"}:
+                return data
+            now = _now_iso()
+            data.update(
+                {
+                    "job_id": safe_job_id,
+                    "status": "cancelled",
+                    "agent_state": "cancelado",
+                    "current_step": "cancelar",
+                    "cancel_requested": True,
+                    "lease_owner": "",
+                    "lease_expires_ts": 0.0,
+                    "completed_at": now,
+                    "updated_at": now,
+                }
+            )
+            durable, _transient = _customer_reply_durable_payload(data)
+            conn.execute(
+                """
+                UPDATE assistant_customer_reply_jobs
+                SET status = 'cancelled', agent_state = 'cancelado',
+                    lease_owner = '', lease_expires_ts = 0,
+                    cancel_requested = 1, updated_at = ?, payload_json = ?
+                WHERE job_id = ?
+                """,
+                (now, _json_dumps(durable), safe_job_id),
+            )
+    with _CUSTOMER_REPLY_TRANSIENT_LOCK:
+        _CUSTOMER_REPLY_TRANSIENT.pop(_customer_reply_cache_key(db_path, safe_job_id), None)
+    return durable
 
 
 def codex_assistant_agent_guidance_save(

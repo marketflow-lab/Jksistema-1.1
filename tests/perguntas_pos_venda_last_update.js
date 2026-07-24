@@ -6,6 +6,10 @@ const path = require('path');
 
 const root = path.resolve(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'static', 'perguntas_pos_venda', 'perguntas.js'), 'utf8');
+
+assert.match(source, /maxlength="2000"/, 'perguntas publicas devem aceitar 2000 caracteres');
+assert.match(source, /async function aguardarJobAtendimentoCodex[\s\S]*while \(true\)/, 'polling do agente deve continuar sem prazo total');
+assert.doesNotMatch(source, /185000|limite de 180 segundos/, 'perguntas publicas nao devem expirar em 180 segundos');
 const runtime = fs.readFileSync(path.join(root, 'static', 'perguntas_pos_venda', 'runtime.js'), 'utf8');
 const styles = fs.readFileSync(path.join(root, 'static', 'perguntas_pos_venda', 'styles.css'), 'utf8');
 const canonicalHtml = fs.readFileSync(path.join(root, 'static', 'perguntas_pos_venda.html'), 'utf8');

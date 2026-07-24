@@ -516,6 +516,8 @@ def _perguntas_ia_agent_input(
         "_codex_thread_id": str((pergunta or {}).get("_codex_thread_id") or ""),
         "_codex_job_id": str((pergunta or {}).get("_codex_job_id") or ""),
         "_codex_conversation_key": str((pergunta or {}).get("_codex_conversation_key") or ""),
+        "_codex_active_turn_key": str((pergunta or {}).get("_codex_active_turn_key") or ""),
+        "_codex_on_thread_ready": (pergunta or {}).get("_codex_on_thread_ready"),
         "_codex_operational_failure_count": max(
             0, int((pergunta or {}).get("_codex_operational_failure_count") or 0)
         ),
@@ -523,6 +525,7 @@ def _perguntas_ia_agent_input(
         "_codex_schema_version": str((pergunta or {}).get("_codex_schema_version") or ""),
         "research_attempt": max(1, int((pergunta or {}).get("_research_attempt") or 1)),
         "research_history": list((pergunta or {}).get("_research_history") or [])[-6:],
+        "research_gaps": list((pergunta or {}).get("_research_gaps") or [])[:16],
         "force_external_research": bool((pergunta or {}).get("_force_external_research")),
         "research_directive": str((pergunta or {}).get("_research_directive") or "")[:1200],
         "context_collection_pipeline": [
@@ -2437,6 +2440,7 @@ def _ia_agent_perguntas_montar_prompt(client_id: str, agent_input: dict, tool_re
 def _ia_agent_perguntas_chamar_modelo(client_id: str, payload: IAChatRequest, model_req: str) -> tuple[str, str]:
     if _modelo_eh_codex(model_req):
         context = payload.context if isinstance(payload.context, dict) else {}
+        on_thread_ready = context.pop("_codex_on_thread_ready", None)
         thread_id = str(context.get("_codex_thread_id") or "").strip()
         persist_thread = bool(context.get("_codex_persist_thread"))
         if persist_thread or thread_id:
@@ -2446,6 +2450,8 @@ def _ia_agent_perguntas_chamar_modelo(client_id: str, payload: IAChatRequest, mo
                 thread_id=thread_id,
                 persist_thread=True,
                 conversation_key=str(context.get("_codex_conversation_key") or context.get("_codex_job_id") or ""),
+                active_turn_key=str(context.get("_codex_active_turn_key") or context.get("_codex_job_id") or ""),
+                on_thread_ready=on_thread_ready if callable(on_thread_ready) else None,
             )
             context["_codex_thread_id_result"] = resulting_thread_id
             payload.context = context
@@ -3807,11 +3813,17 @@ class _PerguntasVertexGeminiV2Client:
                 "_codex_thread_id": self.codex_thread_id,
                 "_codex_persist_thread": bool(self.agent_input.get("_codex_job_id")),
                 "_codex_job_id": str(self.agent_input.get("_codex_job_id") or ""),
+                "_codex_active_turn_key": str(
+                    self.agent_input.get("_codex_active_turn_key")
+                    or self.agent_input.get("_codex_job_id")
+                    or ""
+                ),
                 "_codex_conversation_key": str(
                     self.agent_input.get("_codex_conversation_key")
                     or self.agent_input.get("_codex_job_id")
                     or ""
                 ),
+                "_codex_on_thread_ready": self.agent_input.get("_codex_on_thread_ready"),
                 "research_attempt": research_attempt,
                 "_codex_reasoning_effort": self.reasoning_effort,
             },
@@ -4441,7 +4453,12 @@ def _perguntas_ia_v2_gerar_resposta(client_id: str, agent_input: dict) -> tuple[
         )
     settings = GeminiQuestionsSettings.from_env()
     fluxo_pos_venda = _perguntas_ia_fluxo_pos_venda(agent_input)
-    settings.max_chars = min(int(settings.max_chars or ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO), ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO)
+    settings.max_sentences = 3 if fluxo_pos_venda else 0
+    settings.max_chars = (
+        int(ML_POS_VENDA_LIMITE_SEGURO)
+        if fluxo_pos_venda
+        else int(globals().get("ML_RESPOSTA_PERGUNTA_MAX_CHARS", ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO))
+    )
     exige_aprovacao = _pos_venda_ia_v2_exigir_aprovacao() if fluxo_pos_venda else _perguntas_ia_v2_exigir_aprovacao()
     settings.auto_publish_enabled = bool(settings.auto_publish_enabled and not exige_aprovacao)
     modelo_configurado = _ia_modelo_pos_venda_configurado() if fluxo_pos_venda else _ia_modelo_perguntas_configurado()

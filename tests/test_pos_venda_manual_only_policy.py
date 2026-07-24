@@ -375,7 +375,7 @@ def test_legacy_post_sale_codex_worker_cancels_without_loading_ai(monkeypatch):
     monkeypatch.setattr(
         perguntas_pos_venda_codex.codex_assistant_storage,
         "codex_assistant_customer_reply_job_save",
-        lambda _info, _client, data: saved.update(data) or dict(data),
+        lambda _info, _client, data, **_kwargs: saved.update(data) or dict(data),
     )
     monkeypatch.setattr(
         perguntas_pos_venda_codex,

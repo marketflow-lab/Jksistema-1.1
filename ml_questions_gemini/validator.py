@@ -27,7 +27,7 @@ class AnswerValidator:
             issues.append("empty_answer")
         if len(text) > rules.max_chars:
             issues.append("too_long")
-        if count_sentences(text) > rules.max_sentences:
+        if int(rules.max_sentences or 0) > 0 and count_sentences(text) > int(rules.max_sentences):
             issues.append("too_many_sentences")
         if confidence < rules.min_confidence:
             issues.append("low_confidence")

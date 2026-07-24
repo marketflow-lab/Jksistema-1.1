@@ -57,7 +57,13 @@ def test_waiting_retry_is_active_and_never_reported_as_terminal(tmp_path, monkey
 
     public = orchestrator.get_job("cliente", job["job_id"])
     resumed = orchestrator.resume_incomplete_job("cliente", job["job_id"])
-    monkeypatch.setattr(orchestrator, "wait_job", lambda *_args, **_kwargs: public)
+    wait_calls: list[dict] = []
+
+    def wait_job(*_args, **kwargs):
+        wait_calls.append(dict(kwargs))
+        return public
+
+    monkeypatch.setattr(orchestrator, "wait_job", wait_job)
     endpoint_view = endpoints._customer_reply_wait_or_raise("cliente", public)
 
     assert "waiting_retry" in orchestrator.ACTIVE_STATUSES
@@ -68,6 +74,7 @@ def test_waiting_retry_is_active_and_never_reported_as_terminal(tmp_path, monkey
     assert public["result"] == {}
     assert resumed["job_id"] == job["job_id"]
     assert scheduled == [job["job_id"]]
+    assert wait_calls == [{"timeout": 180}]
 
 
 def test_approval_reconciles_crash_after_remote_send_idempotently(monkeypatch):

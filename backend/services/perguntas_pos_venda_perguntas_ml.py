@@ -59,6 +59,17 @@ def configure_perguntas_pos_venda_perguntas_ml_runtime(runtime_module=None, peer
 configure_perguntas_pos_venda_perguntas_ml_runtime()
 
 
+ML_POS_VENDA_MAX_SENTENCES = 3
+
+
+def _pos_venda_ia_limitar_sentencas(texto: str, limite: int = ML_POS_VENDA_MAX_SENTENCES) -> str:
+    resposta = re.sub(r"\s+", " ", str(texto or "")).strip()
+    if not resposta:
+        return ""
+    partes = [parte.strip() for parte in re.split(r"(?<=[.!?])\s+", resposta) if parte.strip()]
+    return " ".join(partes[: max(1, int(limite or 1))]).strip()
+
+
 def _pos_venda_ia_limpar_resposta(texto: str, limite: int | None = None) -> str:
     limite_num = int(limite or ML_POS_VENDA_DEFAULT_MAX_CHARS)
     limite_num = max(1, min(limite_num, ML_POS_VENDA_DEFAULT_MAX_CHARS))
@@ -87,6 +98,9 @@ def _pos_venda_ia_resposta_final_loja(texto: str, loja: str, limite: int | None 
         corpo,
     ).strip()
     corpo = _pos_venda_ia_limpar_resposta(corpo, limite_num)
+    # A assinatura obrigatoria conta como uma sentenca; o corpo fica com no
+    # maximo duas para manter o rascunho completo dentro do contrato 3/340.
+    corpo = _pos_venda_ia_limitar_sentencas(corpo, ML_POS_VENDA_MAX_SENTENCES - 1)
     if not corpo:
         return ""
     if len(assinatura) + len(separador) + 20 > limite_seguro and len(assinatura_curta) < len(assinatura):
@@ -960,7 +974,10 @@ def _perguntas_ia_gerar_resposta(
         linhas_historico.append(f"{rotulo}: {texto_evento[:500]}")
     historico_prompt = _perguntas_ia_compactar_contexto("\n".join(linhas_historico), 1600)
     bloco_historico_prompt = f"Historico da conversa:\n{historico_prompt}\n\n" if historico_prompt else ""
-    resposta_atual = _perguntas_ia_compactar_contexto(str((pergunta or {}).get("_resposta_atual") or ""), 1200)
+    resposta_atual = _perguntas_ia_compactar_contexto(
+        str((pergunta or {}).get("_resposta_atual") or ""),
+        ML_RESPOSTA_PERGUNTA_MAX_CHARS,
+    )
     bloco_resposta_atual = (
         "RESPOSTA ATUAL QUE O OPERADOR ESTA EDITANDO:\n"
         f"{resposta_atual}\n\n"
@@ -996,7 +1013,7 @@ def _perguntas_ia_gerar_resposta(
             "A resposta sera enviada ao comprador, portanto seja cordial, objetiva e comercial. "
             "Nunca se apresente como IA, assistente ou JK Sistema. "
             f"Finalize exatamente com: {_perguntas_ia_assinatura_loja(loja)} "
-            f"Nao use markdown. A resposta deve ter no maximo {ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO} caracteres.\n\n"
+            f"Nao use markdown. A resposta deve ter no maximo {ML_POS_VENDA_LIMITE_SEGURO} caracteres.\n\n"
             f"Loja: {loja}\n"
             f"ID da pergunta: {question_id}\n"
             f"ID do anuncio: {item_id}\n"
@@ -1014,7 +1031,7 @@ def _perguntas_ia_gerar_resposta(
             "Use o titulo e a descricao do anuncio como contexto interno, sem repetir dados desnecessarios ao comprador. "
             "Nao invente compatibilidade, medidas, estoque, prazo, garantia ou informacoes tecnicas que nao estejam no contexto. "
             "Se o comprador perguntar por outra peca, use a busca interna por outra peca quando ela estiver presente no contexto. "
-            "Somente quando a pergunta for sobre outra peca, e houver anuncio ativo encontrado dessa outra peca, informe de forma curta que temos a peca e envie o link retornado. "
+            "Somente quando a pergunta for sobre outra peca, e houver anuncio ativo encontrado dessa outra peca, informe que temos a peca e envie o link retornado. "
             "Se a pergunta for apenas sobre compatibilidade do anuncio atual, nao fale que o anuncio esta ativo e nao envie link do proprio anuncio. "
             "Quando citar o veiculo, nunca copie a pergunta inteira do comprador; extraia apenas modelo, motor, ano e cambio, ou use 'veiculo informado'. "
             "Nunca invente link; use somente links retornados na lista de anuncios ativos quando o link for realmente necessario. "
@@ -1025,8 +1042,7 @@ def _perguntas_ia_gerar_resposta(
             "A resposta sera enviada ao comprador, portanto seja cordial, objetiva e comercial. "
             "Nunca se apresente como IA, assistente ou JK Sistema. "
             f"Finalize exatamente com: {_perguntas_ia_assinatura_loja(loja)} "
-            f"Nao use markdown. A resposta deve ter no maximo {ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO} caracteres "
-            f"(o Mercado Livre aceita {ML_RESPOSTA_PERGUNTA_MAX_CHARS}; deixe margem de seguranca para evitar falha no envio).\n\n"
+            f"Nao use markdown. A resposta pode usar o detalhamento necessario e deve ter no maximo {ML_RESPOSTA_PERGUNTA_MAX_CHARS} caracteres.\n\n"
             f"Loja: {loja}\n"
             f"ID da pergunta: {question_id}\n"
             f"ID do anuncio: {item_id}\n"

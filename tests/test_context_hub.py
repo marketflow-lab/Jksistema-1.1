@@ -243,16 +243,29 @@ def test_bootstrap_preserves_existing_obsidian_configuration(hub_env) -> None:
     _base, info, _adapter = hub_env
     obsidian = info / "000002" / "ContextVault" / ".obsidian"
     _write(obsidian / "app.json", '{"userSetting":true}\n')
-    _write(obsidian / "workspace.json", '{"layout":"user"}\n')
-    _write(obsidian / "graph.json", '{"colorGroups":[{"query":"tag:#usuario"}]}\n')
+    workspace_content = '{"layout":"user"}\n'
+    _write(obsidian / "workspace.json", workspace_content)
+    existing_graph = {
+        "colorGroups": [
+            {
+                "query": "tag:#usuario",
+                "color": {"a": 1, "rgb": 123456},
+                "userExtra": True,
+            }
+        ],
+        "search": "tag:#usuario",
+        "scale": 0.42,
+        "centerStrength": 0.25,
+        "userExtra": {"preserve": True},
+    }
+    graph_content = json.dumps(existing_graph, ensure_ascii=False) + "\n"
+    _write(obsidian / "graph.json", graph_content)
 
     context_hub.bootstrap_context_hub("000002")
 
     assert json.loads((obsidian / "app.json").read_text(encoding="utf-8")) == {"userSetting": True}
-    assert (obsidian / "workspace.json").is_file()
-    assert json.loads((obsidian / "graph.json").read_text(encoding="utf-8")) == {
-        "colorGroups": [{"query": "tag:#usuario"}]
-    }
+    assert (obsidian / "workspace.json").read_text(encoding="utf-8") == workspace_content
+    assert (obsidian / "graph.json").read_text(encoding="utf-8") == graph_content
     assert not (obsidian / "community-plugins.json").exists()
 
 
@@ -270,6 +283,88 @@ def test_bootstrap_adds_graph_defaults_to_existing_obsidian_folder(hub_env) -> N
         context_hub.OBSIDIAN_GRAPH_DEFAULTS
     )
     assert not (obsidian / "community-plugins.json").exists()
+
+
+def test_bootstrap_preserves_existing_graph_byte_for_byte(hub_env) -> None:
+    _base, info, _adapter = hub_env
+    graph_path = info / "000002" / "ContextVault" / ".obsidian" / "graph.json"
+    existing_graph = {
+        "colorGroups": [],
+        "search": "path:70_Gerado",
+        "scale": 0.10767635844417837,
+        "showTags": True,
+        "customOption": ["preservar", 1],
+    }
+    _write(graph_path, json.dumps(existing_graph) + "\n")
+
+    context_hub.bootstrap_context_hub("000002")
+
+    first_bytes = (json.dumps(existing_graph) + "\n").encode("utf-8")
+    assert graph_path.read_bytes() == first_bytes
+    first_mtime_ns = graph_path.stat().st_mtime_ns
+    context_hub.bootstrap_context_hub("000002")
+    assert graph_path.read_bytes() == first_bytes
+    assert graph_path.stat().st_mtime_ns == first_mtime_ns
+
+
+@pytest.mark.parametrize(
+    "invalid_content",
+    [
+        b'{"colorGroups":[',
+        b"[]\n",
+        b'{"colorGroups":{}}\n',
+    ],
+    ids=["invalid-json", "non-object-root", "non-list-color-groups"],
+)
+def test_bootstrap_preserves_invalid_graph_configuration_best_effort(
+    hub_env,
+    invalid_content: bytes,
+) -> None:
+    _base, info, _adapter = hub_env
+    graph_path = info / "000002" / "ContextVault" / ".obsidian" / "graph.json"
+    graph_path.parent.mkdir(parents=True)
+    graph_path.write_bytes(invalid_content)
+
+    bootstrap = context_hub.bootstrap_context_hub("000002")
+    status = context_hub.get_status("000002")
+
+    assert bootstrap["client_id"] == "000002"
+    assert status["success"] is True
+    assert graph_path.read_bytes() == invalid_content
+
+
+def test_bootstrap_preserves_graph_created_during_atomic_publish(
+    hub_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _base, info, _adapter = hub_env
+    graph_path = info / "000002" / "ContextVault" / ".obsidian" / "graph.json"
+    newer_graph = {
+        "colorGroups": [
+            {
+                "query": "tag:#preferencia-nova",
+                "color": {"a": 1, "rgb": 11259375},
+            }
+        ],
+        "scale": 0.91,
+        "search": "tag:#preferencia-nova",
+        "newerPreference": True,
+    }
+    newer_bytes = (json.dumps(newer_graph, ensure_ascii=False) + "\n").encode("utf-8")
+    real_link = context_hub.os.link
+
+    def simulate_concurrent_obsidian_write(source, destination, *args, **kwargs):
+        assert Path(destination) == graph_path
+        graph_path.write_bytes(newer_bytes)
+        return real_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(context_hub.os, "link", simulate_concurrent_obsidian_write)
+
+    bootstrap = context_hub.bootstrap_context_hub("000002")
+
+    assert bootstrap["client_id"] == "000002"
+    assert graph_path.read_bytes() == newer_bytes
+    assert list(graph_path.parent.glob(".graph.json.*.tmp")) == []
 
 
 def test_external_symlink_inside_tenant_is_rejected(hub_env, tmp_path: Path) -> None:

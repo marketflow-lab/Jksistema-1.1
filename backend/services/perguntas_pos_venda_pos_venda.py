@@ -996,7 +996,8 @@ def _ml_pos_venda_gerar_resposta_ia(
         "Considere as perguntas anteriores feitas pelo comprador no anuncio apenas como contexto do atendimento. "
         "Use esse historico para entender o que ja foi perguntado e respondido, sem repetir tudo ao comprador. "
         "Se faltar informacao para resolver o atendimento, peca o dado necessario de forma educada. "
-        f"A resposta final completa deve ter no maximo {min(limite, ML_POS_VENDA_LIMITE_SEGURO)} caracteres. "
+        f"A resposta final completa deve ter no maximo {min(limite, ML_POS_VENDA_LIMITE_SEGURO)} caracteres "
+        "e no maximo 3 sentencas, incluindo a assinatura. "
         f"Finalize exatamente com: {assinatura_loja}\n\n"
         f"Contexto estruturado do pipeline:\n{contexto_estruturado or '-'}\n\n"
         f"{bloco_orientacao_usuario}"
@@ -1033,6 +1034,11 @@ def _ml_pos_venda_gerar_resposta_ia(
             "_codex_thread_id": str(conversa.get("_codex_thread_id") or ""),
             "_codex_persist_thread": bool(conversa.get("_codex_job_id")),
             "_codex_job_id": str(conversa.get("_codex_job_id") or ""),
+            "_codex_active_turn_key": str(
+                conversa.get("_codex_active_turn_key")
+                or conversa.get("_codex_job_id")
+                or ""
+            ),
             "_codex_conversation_key": str(
                 conversa.get("_codex_conversation_key")
                 or conversa.get("_codex_job_id")

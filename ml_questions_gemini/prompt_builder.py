@@ -21,9 +21,15 @@ class PromptBuilder:
     ) -> str:
         listing_link = _listing_link(listing)
         is_post_sale = category == QuestionCategory.POST_SALE
+        current_draft = ""
+        if not is_post_sale and isinstance(question.raw, dict):
+            current_draft = str(
+                question.raw.get("current_draft_to_avoid")
+                or question.raw.get("_resposta_atual")
+                or ""
+            ).strip()[:2000]
         app_rules = {
             "store_signature": _store_signature(rules.store_name),
-            "max_sentences": rules.max_sentences,
             "max_chars": rules.max_chars,
             "seller_guidance": rules.guidance[:8000],
             "security": [
@@ -36,6 +42,13 @@ class PromptBuilder:
                 "Nao use a frase 'nao conseguimos confirmar a compatibilidade'; prefira dizer que nao ha confirmacao objetiva da aplicacao.",
             ],
         }
+        if int(rules.max_sentences or 0) > 0:
+            app_rules["max_sentences"] = int(rules.max_sentences)
+        if current_draft:
+            app_rules["revision"] = (
+                "Revise ou substitua current_draft_to_revise, preservando as informacoes uteis; "
+                "nao o repita literalmente se precisar de correcao."
+            )
         if is_post_sale:
             app_rules["security"].extend([
                 "Pos-venda deve gerar somente rascunho para revisao humana; nunca publique automaticamente.",
@@ -94,7 +107,11 @@ class PromptBuilder:
             },
             "app_rules": app_rules,
             "output_schema": {
-                "answer": "string curta, em portugues do Brasil, sem markdown",
+                "answer": (
+                    "string curta, em portugues do Brasil, sem markdown"
+                    if is_post_sale
+                    else "string em portugues do Brasil, sem markdown"
+                ),
                 "confidence": "number de 0 a 1",
                 "category": category.value,
                 "requires_human_review": "boolean",
@@ -103,6 +120,8 @@ class PromptBuilder:
             "listing_context": _listing_payload(listing),
             "previous_questions_same_buyer_or_listing": [asdict(item) for item in previous_questions[-10:]],
         }
+        if current_draft:
+            payload["current_draft_to_revise"] = current_draft
         if is_post_sale:
             return (
                 "Fluxo V2 de pos-venda do Mercado Livre.\n"

@@ -20,7 +20,7 @@ import unicodedata
 import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, quote, quote_plus, unquote, urlencode, urlparse
 
 import numpy as np
@@ -43,6 +43,27 @@ from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.ia_common import *
 from backend.services.ia_context import get_tenant_id, get_tenant_path
 from backend.services.ia_state import *
+
+
+_CODEX_PERSISTENT_TURNS_LOCK = threading.RLock()
+_CODEX_PERSISTENT_TURNS: dict[str, Any] = {}
+
+
+def cancel_codex_persistent_turn(active_turn_key: str) -> bool:
+    """Interrupt the active read-only Codex turn for one persisted job."""
+
+    key = str(active_turn_key or "").strip()
+    if not key:
+        return False
+    with _CODEX_PERSISTENT_TURNS_LOCK:
+        turn = _CODEX_PERSISTENT_TURNS.get(key)
+    if turn is None:
+        return False
+    try:
+        turn.interrupt()
+        return True
+    except Exception:
+        return False
 from backend.services.transport_security import configure_requests_session, requests_tls_verify
 from backend.services.secure_credentials import (
     delete_secret as _secure_delete_secret,
@@ -781,7 +802,9 @@ def _chamar_codex_chat_com_thread(
     thread_id: str = "",
     persist_thread: bool = False,
     conversation_key: str = "",
+    active_turn_key: str = "",
     reasoning_effort: str | None = None,
+    on_thread_ready: Callable[[str], None] | None = None,
 ) -> tuple[str, str]:
     """Execute Codex in read-only mode and optionally resume an operational thread."""
     from backend.services import codex_console
@@ -820,6 +843,7 @@ def _chamar_codex_chat_com_thread(
         reasoning_effort or _ia_codex_reasoning_effort_payload(payload)
     )
     session_key = str(conversation_key or thread_id or uuid.uuid4().hex).strip()
+    registry_key = str(active_turn_key or conversation_key or thread_id or session_key).strip()
     cwd = codex_console._codex_readonly_cwd_for_session(
         {"client_id": str(client_id or "default"), "username": "ia-configurada"},
         session_key,
@@ -860,14 +884,29 @@ def _chamar_codex_chat_com_thread(
                     thread = codex.thread_start(**thread_kwargs)
             else:
                 thread = codex.thread_start(**thread_kwargs)
-            resultado = thread.run(
-                prompt,
-                cwd=cwd,
-                model=model,
-                approval_mode=ApprovalMode.deny_all,
-                effort=getattr(ReasoningEffort, reasoning_effort_name, ReasoningEffort.medium),
-                summary=ReasoningSummary.model_validate("auto"),
-            )
+            resolved_thread_id = str(getattr(thread, "id", "") or thread_id or "").strip()
+            if resolved_thread_id and callable(on_thread_ready):
+                on_thread_ready(resolved_thread_id)
+            turn_kwargs = {
+                "cwd": cwd,
+                "model": model,
+                "approval_mode": ApprovalMode.deny_all,
+                "effort": getattr(ReasoningEffort, reasoning_effort_name, ReasoningEffort.medium),
+                "summary": ReasoningSummary.model_validate("auto"),
+            }
+            create_turn = getattr(thread, "turn", None)
+            if callable(create_turn):
+                turn = create_turn(prompt, **turn_kwargs)
+                with _CODEX_PERSISTENT_TURNS_LOCK:
+                    _CODEX_PERSISTENT_TURNS[registry_key] = turn
+                try:
+                    resultado = turn.run()
+                finally:
+                    with _CODEX_PERSISTENT_TURNS_LOCK:
+                        if _CODEX_PERSISTENT_TURNS.get(registry_key) is turn:
+                            _CODEX_PERSISTENT_TURNS.pop(registry_key, None)
+            else:
+                resultado = thread.run(prompt, **turn_kwargs)
     except HTTPException:
         raise
     except Exception as exc:
@@ -883,7 +922,7 @@ def _chamar_codex_chat_com_thread(
     resposta = str(getattr(resultado, "final_response", "") or "").strip()
     if not resposta:
         raise HTTPException(status_code=502, detail="Codex concluiu sem resposta final.")
-    return resposta, str(getattr(thread, "id", "") or "")
+    return resposta, str(getattr(thread, "id", "") or resolved_thread_id or "")
 
 
 def _chamar_codex_chat(

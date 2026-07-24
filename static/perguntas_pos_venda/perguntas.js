@@ -248,6 +248,7 @@ function renderizarDetalhePerguntaAtendimento(pergunta) {
             </div>
             <div class="question-answer-actions">
                 <button class="action-btn secondary question-ai-answer-btn" type="button" data-action="gerar-ia">Gerar IA</button>
+                <button class="action-btn secondary question-ai-cancel-btn hidden" type="button" data-action="cancelar-pesquisa">Cancelar pesquisa</button>
                 <button class="action-btn secondary question-save-example-btn" type="button" data-action="salvar-exemplo" disabled>Salvar exemplo</button>
                 <button class="action-btn secondary question-send-save-example-btn" type="button" data-action="enviar-salvar-exemplo" disabled>Responder e salvar exemplo</button>
                 <button class="action-btn question-send-answer-btn" type="button" data-action="enviar-resposta" disabled>Responder</button>
@@ -418,6 +419,7 @@ function capturarInteracaoPerguntas() {
         proposalId: textarea ? String(textarea.dataset.codexProposalId || '') : '',
         proposalVersion: textarea ? String(textarea.dataset.codexProposalVersion || '') : '',
         proposalHash: textarea ? String(textarea.dataset.codexProposalHash || '') : '',
+        codexJobState: obterEstadoJobAtendimentoCodex(state.perguntaSelecionadaKey),
         selectionStart: textarea ? textarea.selectionStart : null,
         selectionEnd: textarea ? textarea.selectionEnd : null,
         selectionDirection: textarea ? textarea.selectionDirection : 'none',
@@ -446,6 +448,10 @@ function restaurarInteracaoPerguntas(snapshot) {
     if (checkbox && snapshot.checkboxMarcado !== null) {
         checkbox.checked = snapshot.checkboxMarcado;
         checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    if (snapshot.codexJobState && snapshot.perguntaSelecionadaKey) {
+        salvarEstadoJobAtendimentoCodex(snapshot.perguntaSelecionadaKey, snapshot.codexJobState);
+        aplicarEstadoJobAtendimentoCodex(snapshot.perguntaSelecionadaKey);
     }
     if (perguntasList) perguntasList.scrollTop = snapshot.listaScrollTop || 0;
     if (perguntasDetail) perguntasDetail.scrollTop = snapshot.detalheScrollTop || 0;
@@ -622,8 +628,10 @@ function configurarAcoesRespostaPerguntas() {
     [perguntasList, perguntasDetail].filter(Boolean).forEach((container) => container.querySelectorAll('[data-question-card]').forEach((card) => {
         const questionId = card.dataset.questionId || '';
         const questionLoja = card.dataset.questionLoja || '';
+        const questionKey = card.dataset.questionKey || `${questionLoja}::${questionId}`;
         const textarea = card.querySelector('.question-answer-text');
         const btnGerar = card.querySelector('.question-ai-answer-btn');
+        const btnCancelarPesquisa = card.querySelector('.question-ai-cancel-btn');
         const btnEnviar = card.querySelector('.question-send-answer-btn');
         const btnEnviarSalvar = card.querySelector('.question-send-save-example-btn');
         const btnSalvarExemplo = card.querySelector('.question-save-example-btn');
@@ -660,7 +668,23 @@ function configurarAcoesRespostaPerguntas() {
             });
         }
         if (btnGerar) {
-            btnGerar.addEventListener('click', () => gerarRespostaPerguntaIa(questionId, questionLoja, textarea, btnEnviar, btnGerar, status));
+            btnGerar.addEventListener('click', () => gerarRespostaPerguntaIa(
+                questionId,
+                questionLoja,
+                textarea,
+                btnEnviar,
+                btnGerar,
+                btnCancelarPesquisa,
+                status
+            ));
+        }
+        if (btnCancelarPesquisa) {
+            btnCancelarPesquisa.addEventListener('click', () => cancelarPesquisaAtendimentoCodex(questionKey));
+        }
+        aplicarEstadoJobAtendimentoCodex(questionKey);
+        const jobState = obterEstadoJobAtendimentoCodex(questionKey);
+        if (jobState && jobState.polling_active && jobState.job_id) {
+            garantirPollingJobAtendimentoCodex(questionKey).catch(() => {});
         }
         atualizarBotaoEnviar();
     }));
@@ -771,33 +795,283 @@ async function salvarExemploRespostaPergunta(questionId, loja, textarea, botao, 
     }
 }
 
-async function aguardarJobAtendimentoCodex(jobId, atualizarStatus) {
-    const inicio = Date.now();
-    while ((Date.now() - inicio) < 185000) {
-        const response = await fetch(`/api/mercadolivre/assistant/jobs/${encodeURIComponent(jobId)}`, {
-            headers: obterAuthHeaders(),
-            cache: 'no-store'
+const CODEX_JOB_STORAGE_PREFIX = 'jk_ppv_codex_job_v2:';
+
+function tenantJobAtendimentoCodex() {
+    try {
+        if (typeof obterClientId === 'function') return String(obterClientId() || 'default').trim() || 'default';
+    } catch (_error) {}
+    return 'default';
+}
+
+function memoriaJobsAtendimentoCodex() {
+    if (!state.codexJobsAtendimento || typeof state.codexJobsAtendimento !== 'object') state.codexJobsAtendimento = {};
+    return state.codexJobsAtendimento;
+}
+
+function pollsJobsAtendimentoCodex() {
+    if (!state.codexPollsAtendimento || typeof state.codexPollsAtendimento !== 'object') state.codexPollsAtendimento = {};
+    return state.codexPollsAtendimento;
+}
+
+function storageKeyJobAtendimentoCodex(questionKey, tenantScope = tenantJobAtendimentoCodex()) {
+    return `${CODEX_JOB_STORAGE_PREFIX}${encodeURIComponent(String(tenantScope || 'default'))}:${encodeURIComponent(String(questionKey || ''))}`;
+}
+
+function runtimeKeyJobAtendimentoCodex(questionKey, tenantScope = tenantJobAtendimentoCodex()) {
+    return `${String(tenantScope || 'default')}::${String(questionKey || '')}`;
+}
+
+function obterEstadoJobAtendimentoCodex(questionKey, tenantScope = tenantJobAtendimentoCodex()) {
+    const key = String(questionKey || '');
+    if (!key) return null;
+    const tenant = String(tenantScope || 'default');
+    const memory = memoriaJobsAtendimentoCodex();
+    const runtimeKey = runtimeKeyJobAtendimentoCodex(key, tenant);
+    if (memory[runtimeKey] && memory[runtimeKey].tenant === tenant) return { ...memory[runtimeKey] };
+    try {
+        const parsed = JSON.parse(sessionStorage.getItem(storageKeyJobAtendimentoCodex(key, tenant)) || 'null');
+        if (parsed && parsed.job_id && parsed.question_key === key && parsed.tenant === tenant) {
+            memory[runtimeKey] = parsed;
+            return { ...parsed };
+        }
+    } catch (_error) {}
+    return null;
+}
+
+function salvarEstadoJobAtendimentoCodex(questionKey, value, tenantScope = tenantJobAtendimentoCodex()) {
+    const key = String(questionKey || '');
+    if (!key || !value || !value.job_id) return null;
+    const tenant = String(tenantScope || 'default');
+    const safe = {
+        question_key: key,
+        tenant,
+        job_id: String(value.job_id || ''),
+        status_message: String(value.status_message || 'Pesquisa em andamento.'),
+        can_cancel: value.can_cancel !== false,
+        polling_active: value.polling_active !== false,
+        cancelled: value.cancelled === true
+    };
+    memoriaJobsAtendimentoCodex()[runtimeKeyJobAtendimentoCodex(key, tenant)] = safe;
+    try { sessionStorage.setItem(storageKeyJobAtendimentoCodex(key, tenant), JSON.stringify(safe)); } catch (_error) {}
+    return { ...safe };
+}
+
+function atualizarEstadoJobAtendimentoCodex(questionKey, patch, tenantScope = tenantJobAtendimentoCodex()) {
+    const current = obterEstadoJobAtendimentoCodex(questionKey, tenantScope) || {};
+    const saved = salvarEstadoJobAtendimentoCodex(questionKey, { ...current, ...(patch || {}) }, tenantScope);
+    aplicarEstadoJobAtendimentoCodex(questionKey, tenantScope);
+    return saved;
+}
+
+function limparEstadoJobAtendimentoCodex(questionKey, tenantScope = tenantJobAtendimentoCodex()) {
+    const key = String(questionKey || '');
+    delete memoriaJobsAtendimentoCodex()[runtimeKeyJobAtendimentoCodex(key, tenantScope)];
+    try { sessionStorage.removeItem(storageKeyJobAtendimentoCodex(key, tenantScope)); } catch (_error) {}
+    aplicarEstadoJobAtendimentoCodex(key, tenantScope);
+}
+
+function cardsAtuaisJobAtendimentoCodex(questionKey) {
+    const cards = [];
+    [perguntasDetail, perguntasList].filter(Boolean).forEach((container) => {
+        container.querySelectorAll('[data-question-card]').forEach((card) => {
+            if (String(card.dataset.questionKey || '') === String(questionKey || '') && !cards.includes(card)) cards.push(card);
+        });
+    });
+    return cards;
+}
+
+function aplicarEstadoJobAtendimentoCodex(questionKey, tenantScope = tenantJobAtendimentoCodex()) {
+    if (String(tenantScope || 'default') !== tenantJobAtendimentoCodex()) return;
+    const jobState = obterEstadoJobAtendimentoCodex(questionKey, tenantScope);
+    cardsAtuaisJobAtendimentoCodex(questionKey).forEach((card) => {
+        const button = card.querySelector('.question-ai-cancel-btn');
+        const generate = card.querySelector('.question-ai-answer-btn');
+        const status = card.querySelector('.question-answer-composer .question-answer-status');
+        if (jobState && jobState.polling_active) {
+            if (button) {
+                button.dataset.jobId = jobState.job_id;
+                button.disabled = !jobState.can_cancel;
+                button.classList.toggle('hidden', !jobState.can_cancel);
+            }
+            if (generate) generate.disabled = true;
+            setStatusRespostaPergunta(status, jobState.status_message || 'Pesquisa em andamento.');
+        } else {
+            if (button) {
+                button.classList.add('hidden');
+                button.disabled = false;
+                delete button.dataset.jobId;
+            }
+            if (generate) generate.disabled = false;
+        }
+    });
+}
+
+function aplicarResultadoJobAtendimentoCodex(questionKey, data, tenantScope = tenantJobAtendimentoCodex()) {
+    if (String(tenantScope || 'default') !== tenantJobAtendimentoCodex()) return;
+    const result = data && data.result && typeof data.result === 'object' ? data.result : (data || {});
+    cardsAtuaisJobAtendimentoCodex(questionKey).forEach((card) => {
+        const textarea = card.querySelector('.question-answer-text');
+        const status = card.querySelector('.question-answer-composer .question-answer-status');
+        if (!textarea) return;
+        textarea.value = result.resposta || data.resposta || '';
+        textarea.dataset.codexProposalId = String(result.proposal_id || data.proposal_id || data.job_id || '');
+        textarea.dataset.codexProposalVersion = String(result.proposal_version || data.proposal_version || 1);
+        textarea.dataset.codexProposalHash = String(result.proposal_hash || data.proposal_hash || '');
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        const aviso = Array.isArray(data.warnings) && data.warnings.length ? ` ${data.warnings[0]}` : '';
+        setStatusRespostaPergunta(status, `Sugestao gerada pelo agente Codex. Revise antes de enviar.${aviso}`, 'ok');
+    });
+}
+
+function mensagemProgressoJobAtendimentoCodex(data) {
+    const etapa = String(data.current_step || data.agent_state || 'consultar').replaceAll('_', ' ');
+    const tentativa = Math.max(0, Number(data.attempt_count || 0));
+    const ultimaAtividade = data.last_activity_at
+        ? new Date(data.last_activity_at).toLocaleTimeString('pt-BR')
+        : 'aguardando primeira atividade';
+    let mensagem = String(data.status_message || 'Pesquisa em andamento.').trim();
+    if (data.status === 'waiting_retry' && !/nova tentativa/i.test(mensagem)) {
+        mensagem += ` Nova tentativa em ${Math.max(0, Number(data.next_retry_in_seconds || 0))}s.`;
+    }
+    return `${mensagem} Etapa: ${etapa}. Tentativa: ${tentativa}. Ultima atividade: ${ultimaAtividade}.`;
+}
+
+async function aguardarJobAtendimentoCodex(jobId, atualizarStatus, cancelamentoLocal = () => false) {
+    let falhasPolling = 0;
+    let ultimoStatus = null;
+    while (true) {
+        if (cancelamentoLocal()) {
+            const cancelError = new Error('A pesquisa foi cancelada.');
+            cancelError.cancelled = true;
+            throw cancelError;
+        }
+        try {
+            const response = await fetch(`/api/mercadolivre/assistant/jobs/${encodeURIComponent(jobId)}`, {
+                headers: obterAuthHeaders(),
+                cache: 'no-store'
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                const error = new Error(mensagemErroApi(data, 'Falha temporaria ao acompanhar o agente Codex.'));
+                error.pollingStatus = response.status;
+                throw error;
+            }
+            falhasPolling = 0;
+            ultimoStatus = data;
+            if (typeof atualizarStatus === 'function') atualizarStatus(mensagemProgressoJobAtendimentoCodex(data), data);
+            if (data.status === 'completed') return data;
+            if (data.status === 'failed') throw new Error(data.error || 'O agente Codex nao conseguiu gerar a resposta.');
+            if (data.status === 'cancelled') {
+                const cancelError = new Error('A pesquisa foi cancelada.');
+                cancelError.cancelled = true;
+                throw cancelError;
+            }
+        } catch (error) {
+            if (error && (error.cancelled || error.pollingStatus === 401 || error.pollingStatus === 403)) throw error;
+            falhasPolling += 1;
+            const ultimaAtividade = ultimoStatus?.last_activity_at
+                ? new Date(ultimoStatus.last_activity_at).toLocaleTimeString('pt-BR')
+                : 'ainda nao recebida';
+            if (typeof atualizarStatus === 'function') {
+                atualizarStatus(
+                    `Falha temporaria ao atualizar o andamento (${falhasPolling}). `
+                    + `A pesquisa continua no servidor. Ultima atividade: ${ultimaAtividade}. Reconectando...`
+                );
+            }
+        }
+        await new Promise((resolve) => setTimeout(resolve, Math.min(5000, 800 + (falhasPolling * 500))));
+    }
+}
+
+async function garantirPollingJobAtendimentoCodex(questionKey) {
+    const key = String(questionKey || '');
+    const active = obterEstadoJobAtendimentoCodex(key);
+    if (!active || !active.job_id) return null;
+    const tenantScope = String(active.tenant || tenantJobAtendimentoCodex());
+    const polls = pollsJobsAtendimentoCodex();
+    const runtimeKey = runtimeKeyJobAtendimentoCodex(key, tenantScope);
+    if (polls[runtimeKey]) return polls[runtimeKey];
+    const polling = aguardarJobAtendimentoCodex(
+        active.job_id,
+        (message, data) => atualizarEstadoJobAtendimentoCodex(key, {
+            job_id: active.job_id,
+            status_message: message,
+            can_cancel: data?.can_cancel !== false,
+            polling_active: true
+        }, tenantScope),
+        () => obterEstadoJobAtendimentoCodex(key, tenantScope)?.cancelled === true
+    ).then((data) => {
+        aplicarResultadoJobAtendimentoCodex(key, data, tenantScope);
+        limparEstadoJobAtendimentoCodex(key, tenantScope);
+        return data;
+    }).catch((error) => {
+        if (error && error.cancelled) {
+            cardsAtuaisJobAtendimentoCodex(key).forEach((card) => setStatusRespostaPergunta(
+                card.querySelector('.question-answer-composer .question-answer-status'),
+                'Pesquisa cancelada pelo usuario.'
+            ));
+        }
+        limparEstadoJobAtendimentoCodex(key, tenantScope);
+        throw error;
+    }).finally(() => { delete polls[runtimeKey]; });
+    polls[runtimeKey] = polling;
+    return polling;
+}
+
+async function cancelarPesquisaAtendimentoCodex(questionKey) {
+    const key = String(questionKey || '');
+    const jobState = obterEstadoJobAtendimentoCodex(key);
+    const jobId = String(jobState?.job_id || '').trim();
+    if (!jobId || jobState.can_cancel === false) return null;
+    atualizarEstadoJobAtendimentoCodex(key, { ...jobState, can_cancel: false, status_message: 'Cancelando pesquisa...' });
+    try {
+        const response = await fetch(`/api/mercadolivre/assistant/jobs/${encodeURIComponent(jobId)}/cancel`, {
+            method: 'POST',
+            headers: obterAuthHeaders()
         });
         const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(mensagemErroApi(data, 'Erro ao acompanhar o agente Codex.'));
-        if (typeof atualizarStatus === 'function') {
-            const etapa = String(data.current_step || data.agent_state || 'consultando').replaceAll('_', ' ');
-            atualizarStatus(`Agente Codex: ${etapa}...`);
+        if (!response.ok) throw new Error(mensagemErroApi(data, 'Erro ao cancelar a pesquisa.'));
+        if (data.status === 'completed') {
+            aplicarResultadoJobAtendimentoCodex(key, data);
+            limparEstadoJobAtendimentoCodex(key);
+            return data;
         }
-        if (data.status === 'completed') return data;
-        if (data.status === 'failed') throw new Error(data.error || 'O agente Codex nao conseguiu gerar a resposta.');
-        if (data.status === 'cancelled') throw new Error('A geracao foi cancelada.');
-        await new Promise((resolve) => setTimeout(resolve, 800));
+        if (data.status === 'cancelled') {
+            atualizarEstadoJobAtendimentoCodex(key, {
+                ...jobState,
+                cancelled: true,
+                can_cancel: false,
+                polling_active: true,
+                status_message: data.status_message || 'Pesquisa cancelada.'
+            });
+            return data;
+        }
+        atualizarEstadoJobAtendimentoCodex(key, {
+            ...jobState,
+            can_cancel: data.can_cancel !== false,
+            status_message: data.status_message || 'Pesquisa ainda em andamento.'
+        });
+        return data;
+    } catch (error) {
+        atualizarEstadoJobAtendimentoCodex(key, { ...jobState, can_cancel: true });
+        cardsAtuaisJobAtendimentoCodex(key).forEach((card) => setStatusRespostaPergunta(
+            card.querySelector('.question-answer-composer .question-answer-status'),
+            `Erro ao cancelar: ${mensagemErro(error)}`,
+            'error'
+        ));
+        throw error;
     }
-    throw new Error('O agente excedeu o limite de 180 segundos. Tente novamente.');
 }
 
 window.aguardarJobAtendimentoCodex = aguardarJobAtendimentoCodex;
+window.cancelarPesquisaAtendimentoCodex = cancelarPesquisaAtendimentoCodex;
 
-async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, btnGerar, status) {
+async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, btnGerar, btnCancelarPesquisa, status) {
     const pergunta = obterPerguntaPorId(questionId, loja);
     const lojaResposta = lojaOrigemItem(pergunta) || (todasAsLojasSelecionadas() ? '' : state.lojaSelecionada);
     if (!pergunta || !lojaResposta) return;
+    const questionKey = `${lojaResposta}::${String(questionId || '').trim()}`;
     btnGerar.disabled = true;
     btnEnviar.disabled = true;
     setStatusRespostaPergunta(status, 'Gerando sugestao com IA...');
@@ -818,22 +1092,32 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
         let data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.detail || 'Erro ao gerar resposta com IA.');
         if (data.job_id && data.status !== 'completed') {
-            data = await aguardarJobAtendimentoCodex(data.job_id, (texto) => setStatusRespostaPergunta(status, texto));
+            salvarEstadoJobAtendimentoCodex(questionKey, {
+                job_id: String(data.job_id),
+                status_message: data.status_message || 'Pesquisa em andamento.',
+                can_cancel: data.can_cancel !== false,
+                polling_active: true,
+                cancelled: false
+            });
+            aplicarEstadoJobAtendimentoCodex(questionKey);
+            data = await garantirPollingJobAtendimentoCodex(questionKey);
         }
-        const result = data.result && typeof data.result === 'object' ? data.result : data;
-        textarea.value = result.resposta || data.resposta || '';
-        textarea.dataset.codexProposalId = String(result.proposal_id || data.proposal_id || data.job_id || '');
-        textarea.dataset.codexProposalVersion = String(result.proposal_version || data.proposal_version || 1);
-        textarea.dataset.codexProposalHash = String(result.proposal_hash || data.proposal_hash || '');
-        textarea.dispatchEvent(new Event('input'));
-        const aviso = Array.isArray(data.warnings) && data.warnings.length ? ` ${data.warnings[0]}` : '';
-        setStatusRespostaPergunta(status, `Sugestao gerada pelo agente Codex. Revise antes de enviar.${aviso}`, 'ok');
-        textarea.focus();
+        aplicarResultadoJobAtendimentoCodex(questionKey, data);
+        cardsAtuaisJobAtendimentoCodex(questionKey)[0]?.querySelector('.question-answer-text')?.focus();
     } catch (error) {
-        setStatusRespostaPergunta(status, `Erro ao gerar IA: ${mensagemErro(error)}`, 'error');
+        if (error && error.cancelled) {
+            setStatusRespostaPergunta(status, 'Pesquisa cancelada pelo usuario.');
+        } else {
+            setStatusRespostaPergunta(status, `Erro ao gerar IA: ${mensagemErro(error)}`, 'error');
+        }
     } finally {
-        btnGerar.disabled = false;
-        btnEnviar.disabled = !textarea.value.trim();
+        aplicarEstadoJobAtendimentoCodex(questionKey);
+        const currentCard = cardsAtuaisJobAtendimentoCodex(questionKey)[0];
+        const currentTextarea = currentCard?.querySelector('.question-answer-text') || textarea;
+        const currentGenerate = currentCard?.querySelector('.question-ai-answer-btn') || btnGerar;
+        const currentSend = currentCard?.querySelector('.question-send-answer-btn') || btnEnviar;
+        currentGenerate.disabled = Boolean(obterEstadoJobAtendimentoCodex(questionKey)?.polling_active);
+        currentSend.disabled = !String(currentTextarea?.value || '').trim();
     }
 }
 

@@ -42,8 +42,8 @@
     },
     {
       "path": "docs/knowledge/vault-structure.md",
-      "sha256": "547e6101c1e1e315ce5dbc952f4306f054971d7266a457c1232c0817615682da",
-      "size": 924
+      "sha256": "6a72db55883709312dd7e4123f2fe1c2c0924b073c3829f81df27ec1ec67f071",
+      "size": 1254
     },
     {
       "path": "docs/knowledge/whatsapp-ai-context-policy.md",
@@ -52,5 +52,5 @@
     }
   ],
   "schema_version": 1,
-  "source_version": "1.0.115"
+  "source_version": "1.0.116"
 }

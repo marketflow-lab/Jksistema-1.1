@@ -1,0 +1,4 @@
+# Em projetos confiaveis, qualquer escrita exige escalada aprovada pelo usuario.
+approval_policy = "on-request"
+approvals_reviewer = "user"
+sandbox_mode = "read-only"

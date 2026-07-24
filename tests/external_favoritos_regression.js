@@ -1,4 +1,5 @@
 const assert = require('assert');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
@@ -983,6 +984,8 @@ function validarColetaCanonicaEManifestoFavoritos() {
   const favoritosHtml = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos.html'), 'utf8');
   const tabelasLayout = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout.js'), 'utf8');
   const assetManifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'asset-manifest.json'), 'utf8'));
+  const favoritosHtmlRaiz = fs.readFileSync(path.join(repoRoot, 'favoritos.html'));
+  const favoritosHtmlStatic = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos.html'));
 
   assert.match(mlBrowser, /function normalizarMlbFavoritosCanonico/, 'coleta deve normalizar MLB como identidade principal');
   assert.match(mlBrowser, /function limparLinkProdutoMercadoLivreFavoritos/, 'coleta deve limpar links antes de usar como chave');
@@ -1053,8 +1056,18 @@ function validarColetaCanonicaEManifestoFavoritos() {
   assert.ok(htmlVersions.every(version => version === assetVersion), 'todos os assets do Favoritos devem usar a versao do manifesto');
   assert.match(favoritosHtml, /planilhas-colar-historico\.js\?v=/, 'HTML servido deve carregar o modulo de colar historico na planilha');
   assert.match(tabelasLayout, new RegExp(`const VERSION = ['"]${assetVersion}['"]`), 'loader das tabelas deve usar a versao do manifesto');
-  (assetManifest.assets || []).forEach(asset => {
-    assert.ok(fs.existsSync(path.join(repoRoot, 'static', asset)), `asset obrigatorio ausente: ${asset}`);
+  assert.deepStrictEqual(favoritosHtmlRaiz, favoritosHtmlStatic, 'HTML raiz e static devem ser byte-identicos');
+  const manifestFiles = [assetManifest.entrypoint, ...(assetManifest.assets || [])];
+  assert.deepStrictEqual(
+    Object.keys(assetManifest.sha256 || {}).sort(),
+    [...manifestFiles].sort(),
+    'manifesto deve declarar exatamente um hash por arquivo contratado',
+  );
+  manifestFiles.forEach(asset => {
+    const assetPath = path.join(repoRoot, 'static', asset);
+    assert.ok(fs.existsSync(assetPath), `asset obrigatorio ausente: ${asset}`);
+    const actualHash = crypto.createHash('sha256').update(fs.readFileSync(assetPath)).digest('hex');
+    assert.strictEqual(assetManifest.sha256[asset], actualHash, `hash real divergente: static/${asset}`);
   });
 }
 

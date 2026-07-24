@@ -46,12 +46,13 @@ PUBLIC_SUBQUESTION_INTENTS = frozenset({
     "other_product",
     "general",
 })
-PROMPT_VERSION = "jk_ml_customer_reply_codex_v4"
-SCHEMA_VERSION = "4.0"
+PROMPT_VERSION = "jk_ml_customer_reply_codex_v5"
+SCHEMA_VERSION = "5.0"
 PROMPT_HASH = hashlib.sha256(
     (
         "codex-native|public-question-by-item-buyer|post-sale-by-pack|"
-        "evidence-envelope-v3|ai-only-subquestions|human-review-required|no-direct-publish"
+        "evidence-envelope-v3|persistent-public-research|ai-only-subquestions|"
+        "human-review-required|no-direct-publish"
     ).encode("utf-8")
 ).hexdigest()
 THREAD_IDLE_TTL_SECONDS = 30 * 24 * 60 * 60
@@ -59,13 +60,12 @@ TERMINAL_STATUSES = {"completed", "cancelled"}
 ACTIVE_STATUSES = {"queued", "running", "waiting_retry"}
 MAX_GLOBAL_JOBS = 2
 MAX_SECONDS = 180.0
-RESEARCH_DEADLINE_SECONDS = 180.0
+PUBLIC_RESEARCH_DEADLINE_SECONDS = 0.0
+POST_SALE_DEADLINE_SECONDS = 180.0
+RESEARCH_DEADLINE_SECONDS = PUBLIC_RESEARCH_DEADLINE_SECONDS
 RETRY_DELAYS_SECONDS = (5, 15, 30, 60, 120, 300)
 RETRY_HISTORY_LIMIT = 12
-RESEARCH_DEADLINE_WARNING = (
-    "Limite de 3 minutos atingido; rascunho gerado com as informacoes disponiveis. "
-    "Revise antes de responder."
-)
+RESEARCH_DEADLINE_WARNING = "Pesquisa encerrada com o melhor rascunho disponivel. Revise antes de responder."
 
 logger = logging.getLogger(__name__)
 _RUNTIME: Any = None
@@ -75,6 +75,33 @@ _ACTIVE_STORES: set[str] = set()
 _RETRY_TIMERS: dict[str, threading.Timer] = {}
 _WORKER_ID = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
 _RECOVERY_STARTED = False
+
+
+class _LeaseLost(RuntimeError):
+    pass
+
+
+def _lease_generation(job: Any) -> int:
+    try:
+        return max(0, int((job or {}).get("lease_generation") or 0))
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
+def _saved_by_same_lease(
+    saved: Any,
+    attempted: dict[str, Any],
+    *,
+    status: str = "",
+    proposal_hash: str = "",
+) -> bool:
+    if not isinstance(saved, dict) or _lease_generation(saved) != _lease_generation(attempted):
+        return False
+    if status and str(saved.get("status") or "") != status:
+        return False
+    if proposal_hash and str(saved.get("proposal_hash") or (saved.get("result") or {}).get("proposal_hash") or "") != proposal_hash:
+        return False
+    return True
 
 
 def _now() -> str:
@@ -108,6 +135,14 @@ def _created_at_epoch(job: dict[str, Any]) -> float:
 def _canonical_task_type(task_type: Any) -> str:
     normalized = str(task_type or "").strip().lower()
     return TASK_TYPE_ALIASES.get(normalized, normalized)
+
+
+def _task_retry_policy(task_type: Any) -> str:
+    return "bounded" if _canonical_task_type(task_type) == TASK_TYPE_POST_SALE else "persistent_until_cancelled"
+
+
+def _task_deadline_seconds(task_type: Any) -> int:
+    return int(POST_SALE_DEADLINE_SECONDS) if _canonical_task_type(task_type) == TASK_TYPE_POST_SALE else 0
 
 
 def _request_question(request: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -189,6 +224,11 @@ def _thread_reuse_decision(
 
 
 def _job_deadline_epoch(job: dict[str, Any]) -> float:
+    deadline_seconds = _task_deadline_seconds(job.get("task_type"))
+    if deadline_seconds <= 0:
+        job["deadline_at_epoch"] = 0.0
+        job["deadline_seconds"] = 0
+        return 0.0
     try:
         explicit = float(job.get("deadline_at_epoch") or 0.0)
     except (TypeError, ValueError, OverflowError):
@@ -196,15 +236,16 @@ def _job_deadline_epoch(job: dict[str, Any]) -> float:
     if explicit > 0.0:
         return explicit
     created_epoch = _created_at_epoch(job)
-    deadline = (created_epoch or time.time()) + RESEARCH_DEADLINE_SECONDS
+    deadline = (created_epoch or time.time()) + deadline_seconds
     job["deadline_at_epoch"] = deadline
-    job["deadline_seconds"] = int(RESEARCH_DEADLINE_SECONDS)
+    job["deadline_seconds"] = deadline_seconds
     return deadline
 
 
 def _job_deadline_expired(job: dict[str, Any], *, now: Optional[float] = None) -> bool:
     current = time.time() if now is None else float(now)
-    return current >= _job_deadline_epoch(job)
+    deadline = _job_deadline_epoch(job)
+    return bool(deadline > 0.0 and current >= deadline)
 
 
 def _unique_warnings(*groups: Any) -> list[str]:
@@ -216,6 +257,160 @@ def _unique_warnings(*groups: Any) -> list[str]:
             if text and text not in result:
                 result.append(text)
     return result[:12]
+
+
+def _merge_unique_items(*groups: Any, limit: int = 64) -> list[Any]:
+    merged: list[Any] = []
+    seen: set[str] = set()
+    for group in groups:
+        values = group if isinstance(group, (list, tuple, set)) else []
+        for value in values:
+            if value in (None, "", [], {}):
+                continue
+            marker = _hash(value)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            merged.append(value)
+            if len(merged) >= limit:
+                return merged
+    return merged
+
+
+def _evidence_rank(value: Any) -> int:
+    return {
+        "": 0,
+        "missing": 0,
+        "pending": 0,
+        "unknown": 0,
+        "insufficient": 1,
+        "partial": 1,
+        "completed": 2,
+        "confirmed": 3,
+    }.get(_normal(value), 1)
+
+
+def _merge_evidence_envelopes(previous: Any, incoming: Any) -> dict[str, Any]:
+    old = previous if isinstance(previous, dict) else {}
+    new = incoming if isinstance(incoming, dict) else {}
+    records: list[dict[str, Any]] = []
+    record_indexes: dict[str, int] = {}
+    for candidate in list(old.get("records") or []) + list(new.get("records") or []):
+        if not isinstance(candidate, dict):
+            continue
+        identity = _hash({
+            "field": candidate.get("field"),
+            "value": candidate.get("value"),
+            "store": candidate.get("store"),
+            "source": candidate.get("source") or candidate.get("reference"),
+        })
+        if identity not in record_indexes:
+            record_indexes[identity] = len(records)
+            records.append(dict(candidate))
+            continue
+        index = record_indexes[identity]
+        current = records[index]
+        current_rank = max(_evidence_rank(current.get("coverage")), _evidence_rank(current.get("authority")))
+        candidate_rank = max(_evidence_rank(candidate.get("coverage")), _evidence_rank(candidate.get("authority")))
+        merged_record = {**current, **{key: value for key, value in candidate.items() if value not in (None, "", [], {})}}
+        if current_rank > candidate_rank:
+            merged_record["coverage"] = current.get("coverage") or current.get("authority")
+            merged_record["authority"] = current.get("authority") or current.get("coverage")
+        records[index] = merged_record
+    sources = _merge_unique_items(
+        old.get("sources"),
+        new.get("sources"),
+        [item.get("source") for item in records if item.get("source")],
+        limit=64,
+    )
+    gaps = _merge_unique_items(old.get("gaps"), new.get("gaps"), limit=32)
+    confidence_order = {"unknown": 0, "low": 1, "medium": 2, "high": 3}
+    old_confidence = str(old.get("confidence") or "unknown")
+    new_confidence = str(new.get("confidence") or "unknown")
+    confidence = old_confidence if confidence_order.get(old_confidence, 0) > confidence_order.get(new_confidence, 0) else new_confidence
+    merged = {
+        **old,
+        **new,
+        "schema_version": str(new.get("schema_version") or old.get("schema_version") or EVIDENCE_ENVELOPE_V2),
+        "records": records[:64],
+        "sources": sources,
+        "gaps": gaps,
+        "confidence": confidence,
+        "evidence_sufficient": bool(old.get("evidence_sufficient") or new.get("evidence_sufficient")),
+        "coverage_complete": bool(old.get("coverage_complete") or new.get("coverage_complete")),
+        "scope": _merge_context_values(old.get("scope"), new.get("scope")),
+    }
+    if merged["evidence_sufficient"] or merged["coverage_complete"]:
+        merged["status"] = "completed"
+        merged["gaps"] = []
+    if _evidence_rank(old.get("status")) > _evidence_rank(new.get("status")):
+        merged["status"] = old.get("status")
+    return normalize_evidence_envelope(merged).to_dict()
+
+
+def _merge_context_values(previous: Any, incoming: Any) -> Any:
+    if isinstance(previous, dict) or isinstance(incoming, dict):
+        old = previous if isinstance(previous, dict) else {}
+        new = incoming if isinstance(incoming, dict) else {}
+        merged: dict[str, Any] = {}
+        for key in dict.fromkeys([*old.keys(), *new.keys()]):
+            if key == "evidence_envelope":
+                merged[key] = _merge_evidence_envelopes(old.get(key), new.get(key))
+            elif key == "diagnostico_ia" and (isinstance(old.get(key), list) or isinstance(new.get(key), list)):
+                old_rows = list(old.get(key) or [])
+                new_rows = list(new.get(key) or [])
+                first = _merge_context_values(old_rows[0] if old_rows else {}, new_rows[0] if new_rows else {})
+                merged[key] = [first, *_merge_unique_items(old_rows[1:], new_rows[1:], limit=15)]
+            else:
+                merged[key] = _merge_context_values(old.get(key), new.get(key))
+        return merged
+    if isinstance(previous, (list, tuple, set)) or isinstance(incoming, (list, tuple, set)):
+        return _merge_unique_items(previous, incoming)
+    return incoming if incoming not in (None, "") else previous
+
+
+def _merge_evidence_matrix(previous: Any, incoming: Any) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    for candidate in list(previous or []) + list(incoming or []):
+        if not isinstance(candidate, dict):
+            continue
+        candidate_id = _normal(candidate.get("id"))
+        candidate_intent = _normal(candidate.get("intent"))
+        index = next((
+            idx for idx, row in enumerate(merged)
+            if (candidate_id and candidate_id == _normal(row.get("id")))
+            or (candidate_intent and candidate_intent == _normal(row.get("intent")))
+        ), -1)
+        if index < 0:
+            merged.append(dict(candidate))
+            continue
+        current = merged[index]
+        combined = _merge_context_values(current, candidate)
+        if _evidence_rank(current.get("status")) > _evidence_rank(candidate.get("status")):
+            combined["status"] = current.get("status")
+        merged[index] = combined
+    return merged[:16]
+
+
+def _context_evidence_sources(context: Any) -> list[str]:
+    data = context if isinstance(context, dict) else {}
+    diagnostic = _diagnostic_result(data)
+    analysis = diagnostic.get("compatibility_analysis") if isinstance(diagnostic.get("compatibility_analysis"), dict) else {}
+    envelopes = [data.get("evidence_envelope"), diagnostic.get("evidence_envelope")]
+    raw_sources: list[Any] = [*(analysis.get("sources") or []), *(data.get("sources") or [])]
+    for envelope in envelopes:
+        if not isinstance(envelope, dict):
+            continue
+        raw_sources.extend(envelope.get("sources") or [])
+        for record in envelope.get("records") or []:
+            if isinstance(record, dict):
+                raw_sources.extend([record.get("source"), record.get("reference"), record.get("url")])
+    result: list[str] = []
+    for source in raw_sources:
+        text = str(source or "").strip()[:500]
+        if text and text not in result:
+            result.append(text)
+    return result[:32]
 
 
 def _public_classification_missing(job: dict[str, Any]) -> bool:
@@ -263,16 +458,17 @@ def _complete_without_draft(
     job.pop("error", None)
     _cancel_retry_timer(str(job.get("job_id") or ""))
     return codex_assistant_storage.codex_assistant_customer_reply_job_save(
-        info_base, client_id, job
+        info_base,
+        client_id,
+        job,
+        expected_lease_owner=_WORKER_ID,
+        expected_lease_generation=_lease_generation(job),
     )
 
 
 def _retry_delay_seconds(retry_count: int, job_id: str = "") -> int:
     index = max(0, min(int(retry_count or 1) - 1, len(RETRY_DELAYS_SECONDS) - 1))
-    base = RETRY_DELAYS_SECONDS[index]
-    digest = hashlib.sha256(f"{job_id}|{retry_count}".encode("utf-8", "ignore")).digest()
-    jitter = ((int.from_bytes(digest[:2], "big") / 65535.0) * 0.4) - 0.2
-    return max(1, int(round(base * (1.0 + jitter))))
+    return int(RETRY_DELAYS_SECONDS[index])
 
 
 def _cancel_retry_timer(job_id: str) -> None:
@@ -288,10 +484,10 @@ def _schedule_retry_timer(job: dict[str, Any]) -> None:
     client_id = str(job.get("client_id") or "default")
     if not job_id or str(job.get("status") or "") != "waiting_retry" or job.get("cancel_requested"):
         return
-    wake_at = min(
-        float(job.get("next_retry_at_epoch") or 0.0),
-        _job_deadline_epoch(job),
-    )
+    wake_at = float(job.get("next_retry_at_epoch") or 0.0)
+    deadline = _job_deadline_epoch(job)
+    if deadline > 0.0:
+        wake_at = min(wake_at, deadline)
     delay = max(0.1, wake_at - time.time())
     with _SCHEDULER_LOCK:
         previous = _RETRY_TIMERS.pop(job_id, None)
@@ -328,8 +524,14 @@ def _wake_retry(client_id: str, job_id: str) -> None:
             "retry_ready_at": _now(),
         }
     )
-    saved = codex_assistant_storage.codex_assistant_customer_reply_job_save(info_base, client_id, job)
-    _schedule(saved)
+    saved = codex_assistant_storage.codex_assistant_customer_reply_job_save(
+        info_base,
+        client_id,
+        job,
+        expected_lease_generation=_lease_generation(job),
+    )
+    if _lease_generation(saved) == _lease_generation(job) and str(saved.get("status") or "") == "queued":
+        _schedule(saved)
 
 
 def _research_history_entry(
@@ -349,7 +551,8 @@ def _research_history_entry(
         for item in (analysis.get("queries") or [])
         if isinstance(item, dict) and str(item.get("query") or "").strip()
     ]
-    sources = [str(item or "").strip()[:500] for item in (analysis.get("sources") or []) if str(item or "").strip()]
+    sources = _context_evidence_sources(context)
+    answer_limit = 2000 if _canonical_task_type(job.get("task_type")) == TASK_TYPE_PUBLIC_QUESTION else 1200
     return {
         "attempt": max(1, int(job.get("attempt_count") or 1)),
         "at": _now(),
@@ -360,9 +563,40 @@ def _research_history_entry(
         "sources": sources[:16],
         "evidence_status": list(matrix or [])[:8],
         "warnings": [str(item or "")[:300] for item in (warnings or [])[:12]],
-        "answer": str(answer or "").strip()[:1200],
+        "answer": str(answer or "").strip()[:answer_limit],
         "error": str(error or "").strip()[:1000],
     }
+
+
+def _pending_research_gaps(job: dict[str, Any]) -> list[str]:
+    gaps: list[str] = []
+    partial = job.get("last_partial_result") if isinstance(job.get("last_partial_result"), dict) else {}
+    matrix = list(partial.get("evidence_status") or job.get("evidence_status") or [])
+    confirmed_markers: set[str] = set()
+    for row in matrix:
+        if not isinstance(row, dict):
+            continue
+        values = (row.get("intent"), row.get("id"), row.get("required_evidence"))
+        if str(row.get("status") or "") == "confirmed":
+            confirmed_markers.update(_normal(value) for value in values if _normal(value))
+            continue
+        text = str(row.get("required_evidence") or row.get("intent") or row.get("id") or "").strip()[:160]
+        if text and text not in gaps:
+            gaps.append(text)
+    for entry in reversed(list(job.get("research_history") or [])[-6:]):
+        if not isinstance(entry, dict):
+            continue
+        for value in entry.get("missing_fields") or []:
+            text = str(value or "").strip()[:160]
+            if text and _normal(text) not in confirmed_markers and text not in gaps:
+                gaps.append(text)
+    context = partial.get("contexto") if isinstance(partial.get("contexto"), dict) else {}
+    envelope = context.get("evidence_envelope") if isinstance(context.get("evidence_envelope"), dict) else {}
+    for value in envelope.get("gaps") or []:
+        text = str(value or "").strip()[:160]
+        if text and text != "coverage_incomplete" and _normal(text) not in confirmed_markers and text not in gaps:
+            gaps.append(text)
+    return gaps[:16]
 
 
 def _cancel_post_sale_job(job: dict[str, Any]) -> dict[str, Any]:
@@ -386,8 +620,14 @@ def _cancel_post_sale_job(job: dict[str, Any]) -> dict[str, Any]:
         }
     )
     saved = codex_assistant_storage.codex_assistant_customer_reply_job_save(
-        info_base, client_id, current
+        info_base,
+        client_id,
+        current,
+        expected_lease_owner=_WORKER_ID,
+        expected_lease_generation=_lease_generation(job),
     )
+    if not _saved_by_same_lease(saved, job, status="cancelled"):
+        return saved
     plan_id = str(current.get("plan_id") or "")
     if plan_id:
         try:
@@ -423,6 +663,12 @@ def _complete_with_best_available(
         info_base, client_id, job_id
     )
     current = dict(latest) if isinstance(latest, dict) else dict(job)
+    if (
+        isinstance(latest, dict)
+        and _lease_generation(job) > 0
+        and _lease_generation(current) != _lease_generation(job)
+    ):
+        return current
     if _canonical_task_type(current.get("task_type")) == TASK_TYPE_POST_SALE:
         return _cancel_post_sale_job(current)
     if current.get("cancel_requested"):
@@ -515,8 +761,8 @@ def _complete_with_best_available(
             "evidence_status": final_matrix,
             "warnings": final_warnings,
             "result": result,
-            "retry_policy": "bounded",
-            "deadline_seconds": int(RESEARCH_DEADLINE_SECONDS),
+            "retry_policy": _task_retry_policy(current.get("task_type")),
+            "deadline_seconds": _task_deadline_seconds(current.get("task_type")),
             "deadline_at_epoch": _job_deadline_epoch(current),
             "deadline_reached": True,
             "completed_with_partial": True,
@@ -538,8 +784,14 @@ def _complete_with_best_available(
     current["agent_steps"] = history[-60:]
     _cancel_retry_timer(job_id)
     saved = codex_assistant_storage.codex_assistant_customer_reply_job_save(
-        info_base, client_id, current
+        info_base,
+        client_id,
+        current,
+        expected_lease_owner=_WORKER_ID,
+        expected_lease_generation=_lease_generation(job),
     )
+    if not _saved_by_same_lease(saved, job, status="completed", proposal_hash=proposal_hash):
+        return saved
     plan_id = str(current.get("plan_id") or "")
     if plan_id:
         try:
@@ -562,7 +814,6 @@ def _complete_with_best_available(
                     "data_sufficient": False,
                     "completed_with_partial": True,
                     "completion_reason": "research_deadline_reached",
-                    "warnings": final_warnings,
                 },
             )
         except Exception:
@@ -586,6 +837,19 @@ def _persist_retry(
         info_base, client_id, str(job.get("job_id") or "")
     )
     current = dict(latest) if isinstance(latest, dict) else dict(job)
+    if (
+        isinstance(latest, dict)
+        and _lease_generation(job) > 0
+        and _lease_generation(latest) != _lease_generation(job)
+    ):
+        return latest
+    if (
+        isinstance(latest, dict)
+        and str(latest.get("status") or "") == "running"
+        and str(latest.get("lease_owner") or "")
+        and str(latest.get("lease_owner") or "") != _WORKER_ID
+    ):
+        return latest
     if str(job.get("thread_id") or "").strip():
         current["thread_id"] = str(job.get("thread_id") or "").strip()
     current["attempt_count"] = max(
@@ -600,32 +864,63 @@ def _persist_retry(
         current.update({"status": "cancelled", "agent_state": "cancelado", "current_step": "responder"})
         return codex_assistant_storage.codex_assistant_customer_reply_job_save(info_base, client_id, current)
 
+    previous_partial = (
+        current.get("last_partial_result")
+        if isinstance(current.get("last_partial_result"), dict)
+        else {}
+    )
+    merged_context = _merge_context_values(
+        previous_partial.get("contexto") if isinstance(previous_partial.get("contexto"), dict) else {},
+        context if isinstance(context, dict) else {},
+    )
+    merged_matrix = _merge_evidence_matrix(previous_partial.get("evidence_status"), matrix)
+    merged_envelope = merged_context.get("evidence_envelope") if isinstance(merged_context, dict) else None
+    if isinstance(merged_envelope, dict):
+        confirmed_markers = {
+            _normal(value)
+            for row in merged_matrix
+            if isinstance(row, dict) and str(row.get("status") or "") == "confirmed"
+            for value in (row.get("intent"), row.get("id"), row.get("required_evidence"))
+            if _normal(value)
+        }
+        merged_envelope["gaps"] = [
+            gap for gap in (merged_envelope.get("gaps") or [])
+            if _normal(gap) not in confirmed_markers
+        ]
+        if merged_matrix and all(str(row.get("status") or "") == "confirmed" for row in merged_matrix if isinstance(row, dict)):
+            merged_envelope.update({
+                "status": "completed",
+                "gaps": [],
+                "evidence_sufficient": True,
+                "coverage_complete": True,
+            })
+        merged_context["evidence_envelope"] = normalize_evidence_envelope(merged_envelope).to_dict()
     history = list(current.get("research_history") or [])
     history.append(
         _research_history_entry(
             job,
             answer=answer,
-            context=context,
-            matrix=matrix,
+            context=merged_context,
+            matrix=merged_matrix,
             warnings=warnings,
             error=error,
         )
     )
     retry_count = max(0, int(current.get("retry_count") or 0)) + 1
     partial_result = {
-        "resposta": str(answer or "").strip(),
-        "contexto": context if isinstance(context, dict) else {},
-        "evidence_status": list(matrix or []),
+        "resposta": str(answer or previous_partial.get("resposta") or "").strip(),
+        "contexto": merged_context,
+        "evidence_status": merged_matrix,
         "data_sufficient": False,
-        "warnings": list(warnings or []),
+        "warnings": _unique_warnings(previous_partial.get("warnings"), warnings),
         "publish_attempted": False,
     }
     current.update(
         {
             "research_history": history[-RETRY_HISTORY_LIMIT:],
             "last_partial_result": partial_result,
-            "evidence_status": list(matrix or []),
-            "warnings": list(warnings or []),
+            "evidence_status": merged_matrix,
+            "warnings": _unique_warnings(current.get("warnings"), warnings),
             "retry_count": retry_count,
             "last_attempt_completed_at": _now(),
         }
@@ -640,19 +935,19 @@ def _persist_retry(
             warnings=warnings,
         )
     delay = 0 if immediate else _retry_delay_seconds(retry_count, str(current.get("job_id") or ""))
-    remaining = max(0.0, deadline - time.time())
-    if not immediate:
+    remaining = max(0.0, deadline - time.time()) if deadline > 0.0 else 0.0
+    if not immediate and deadline > 0.0:
         delay = min(delay, max(1, int(remaining)))
     current.update(
         {
             "status": "waiting_retry",
             "agent_state": "pesquisando",
             "current_step": "consultar",
-            "retry_policy": "bounded",
+            "retry_policy": _task_retry_policy(current.get("task_type")),
             "retry_reason": str(error or "; ".join(warnings or []) or "evidencia_insuficiente")[:1000],
             "next_retry_at_epoch": time.time() + delay,
             "next_retry_delay_seconds": delay,
-            "deadline_seconds": int(RESEARCH_DEADLINE_SECONDS),
+            "deadline_seconds": _task_deadline_seconds(current.get("task_type")),
             "deadline_at_epoch": deadline,
             "lease_owner": "",
             "lease_expires_ts": 0.0,
@@ -660,7 +955,15 @@ def _persist_retry(
     )
     current.pop("result", None)
     current.pop("completed_at", None)
-    saved = codex_assistant_storage.codex_assistant_customer_reply_job_save(info_base, client_id, current)
+    saved = codex_assistant_storage.codex_assistant_customer_reply_job_save(
+        info_base,
+        client_id,
+        current,
+        expected_lease_owner=_WORKER_ID,
+        expected_lease_generation=_lease_generation(job),
+    )
+    if not _saved_by_same_lease(saved, job, status="waiting_retry"):
+        return saved
     _schedule_retry_timer(saved)
     return saved
 
@@ -1138,6 +1441,41 @@ def _evidence_matrix(
     return matrix, sufficient, list(dict.fromkeys(warnings))[:12]
 
 
+def _friendly_retry_reason(reason: Any) -> str:
+    normalized = _normal(reason)
+    if "evidencia" in normalized or "coverage" in normalized:
+        return "Ainda faltam evidencias confiaveis para responder com seguranca."
+    if "orientacao" in normalized:
+        return "A orientacao foi atualizada e a resposta sera revisada."
+    if any(marker in normalized for marker in ("429", "timeout", "connection", "indispon")):
+        return "O servico ficou temporariamente indisponivel."
+    return "A tentativa ainda nao produziu uma resposta valida."
+
+
+def _status_message(job: dict[str, Any], *, queue_position: int = 0) -> str:
+    status = str(job.get("status") or "queued")
+    attempt = max(0, int(job.get("attempt_count") or 0))
+    if status == "waiting_retry":
+        remaining = max(0, int(float(job.get("next_retry_at_epoch") or 0.0) - time.time() + 0.999))
+        return f"{_friendly_retry_reason(job.get('retry_reason'))} Nova tentativa em {remaining}s."
+    if status == "queued":
+        suffix = f" Posicao na fila: {queue_position}." if queue_position else ""
+        return f"Pesquisa aguardando execucao.{suffix}"
+    if status == "running":
+        step = str(job.get("current_step") or "consultar")
+        labels = {
+            "entender": "Entendendo a pergunta",
+            "consultar": "Consultando fontes e pesquisando lacunas",
+            "validar": "Validando as evidencias encontradas",
+        }
+        return f"{labels.get(step, 'Pesquisa em andamento')}. Tentativa {max(1, attempt)}."
+    if status == "completed":
+        return "Resposta valida encontrada e pronta para revisao humana."
+    if status == "cancelled":
+        return "Pesquisa cancelada pelo usuario."
+    return "Acompanhando a pesquisa."
+
+
 def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, Any]:
     result = job.get("result") if isinstance(job.get("result"), dict) else {}
     blocked_without_draft = bool(
@@ -1145,6 +1483,9 @@ def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, An
         or job.get("blocked_without_draft")
         or job.get("contract_quarantined")
     )
+    next_retry_at = float(job.get("next_retry_at_epoch") or 0.0)
+    next_retry_in = max(0, int(next_retry_at - time.time() + 0.999)) if next_retry_at else 0
+    status = str(job.get("status") or "queued")
     return {
         "success": str(job.get("status") or "") == "completed" and not blocked_without_draft,
         "queued": str(job.get("status") or "") in ACTIVE_STATUSES,
@@ -1161,7 +1502,7 @@ def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, An
         "prompt_version": str(job.get("prompt_version") or ""),
         "prompt_hash": str(job.get("prompt_hash") or ""),
         "schema_version": str(job.get("schema_version") or ""),
-        "status": str(job.get("status") or "queued"),
+        "status": status,
         "agent_state": str(job.get("agent_state") or "entendendo"),
         "current_step": str(job.get("current_step") or ""),
         "agent_steps": list(job.get("agent_steps") or []),
@@ -1174,11 +1515,16 @@ def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, An
         "warnings": list(result.get("warnings") or job.get("warnings") or []),
         "result": result,
         "error": str(job.get("error") or ""),
-        "retry_policy": str(job.get("retry_policy") or ""),
+        "retry_policy": str(job.get("retry_policy") or _task_retry_policy(job.get("task_type"))),
         "retry_count": max(0, int(job.get("retry_count") or 0)),
         "retry_reason": str(job.get("retry_reason") or ""),
-        "next_retry_at_epoch": float(job.get("next_retry_at_epoch") or 0.0),
-        "deadline_seconds": int(job.get("deadline_seconds") or RESEARCH_DEADLINE_SECONDS),
+        "next_retry_at_epoch": next_retry_at,
+        "next_retry_in_seconds": next_retry_in,
+        "deadline_seconds": int(
+            job.get("deadline_seconds")
+            if job.get("deadline_seconds") is not None
+            else _task_deadline_seconds(job.get("task_type"))
+        ),
         "deadline_at_epoch": float(job.get("deadline_at_epoch") or 0.0),
         "deadline_reached": bool(job.get("deadline_reached")),
         "completed_with_partial": bool(result.get("completed_with_partial") or job.get("completed_with_partial")),
@@ -1186,6 +1532,16 @@ def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, An
         "contract_quarantined": bool(job.get("contract_quarantined")),
         "research_history": list(job.get("research_history") or [])[-RETRY_HISTORY_LIMIT:],
         "queue_position": max(0, int(queue_position or 0)),
+        "attempt_count": max(0, int(job.get("attempt_count") or 0)),
+        "last_activity_at": str(
+            job.get("updated_at")
+            or job.get("heartbeat_at")
+            or job.get("last_attempt_completed_at")
+            or job.get("created_at")
+            or ""
+        ),
+        "can_cancel": bool(status in ACTIVE_STATUSES and not job.get("cancel_requested")),
+        "status_message": _status_message(job, queue_position=queue_position),
         "created_at": str(job.get("created_at") or ""),
         "updated_at": str(job.get("updated_at") or ""),
     }
@@ -1264,6 +1620,37 @@ def create_job(
     )
     if (
         isinstance(latest, dict)
+        and same_event
+        and str(latest.get("status") or "") == "completed"
+        and str(latest.get("agent_state") or "") == "aguardando_aprovacao"
+        and not codex_assistant_storage.codex_assistant_customer_reply_job_has_transient(
+            info_base, client_id, str(latest.get("job_id") or "")
+        )
+    ):
+        latest.update(
+            {
+                "status": "queued",
+                "agent_state": "pesquisando",
+                "current_step": "consultar",
+                "lease_owner": "",
+                "lease_expires_ts": 0.0,
+                "restart_requested": True,
+            }
+        )
+        latest.pop("proposal_hash", None)
+        latest = codex_assistant_storage.codex_assistant_customer_reply_job_save(
+            info_base,
+            client_id,
+            latest,
+            expected_lease_generation=_lease_generation(latest),
+        )
+        _schedule(latest)
+        return _public_job(
+            latest,
+            queue_position=_queue_position(info_base, client_id, str(latest.get("job_id") or "")),
+        )
+    if (
+        isinstance(latest, dict)
         and str(latest.get("status") or "") in ACTIVE_STATUSES
         and same_event
         and str(latest.get("prompt_version") or "") == PROMPT_VERSION
@@ -1284,9 +1671,13 @@ def create_job(
                     "next_retry_at_epoch": 0.0,
                     "retry_reason": "orientacao_do_operador_atualizada",
                     "retry_count": 0,
-                    "retry_policy": "bounded",
-                    "deadline_seconds": int(RESEARCH_DEADLINE_SECONDS),
-                    "deadline_at_epoch": time.time() + RESEARCH_DEADLINE_SECONDS,
+                    "retry_policy": _task_retry_policy(task_type),
+                    "deadline_seconds": _task_deadline_seconds(task_type),
+                    "deadline_at_epoch": (
+                        time.time() + _task_deadline_seconds(task_type)
+                        if _task_deadline_seconds(task_type) > 0
+                        else 0.0
+                    ),
                 }
             )
             if str(latest.get("status") or "") == "waiting_retry":
@@ -1320,10 +1711,10 @@ def create_job(
             return _public_job(existing, queue_position=_queue_position(info_base, client_id, str(existing.get("job_id") or "")))
         _quarantine_outdated_job(existing, client_id=client_id)
     job_id = uuid.uuid4().hex
-    text = str(request.get("question_text") or request.get("last_message_text") or "").strip()
-    if not text:
-        question = request.get("pergunta") if isinstance(request.get("pergunta"), dict) else {}
-        text = str(question.get("text") or "").strip()
+    question = request.get("pergunta") if isinstance(request.get("pergunta"), dict) else {}
+    question_id = str(question.get("id") or event_subject_key).strip()
+    item = request.get("item") if isinstance(request.get("item"), dict) else {}
+    item_id = str(question.get("item_id") or item.get("id") or "").strip()
     subquestions = _initial_subquestions(task_type)
     conversation_id = _subject_conversation_id(client_id, task_type, store, conversation_subject_key)
     guidance = codex_agent_runtime.resolve_guidance(
@@ -1343,10 +1734,10 @@ def create_job(
         conversation_generation=1,
         username=created_by,
         channel=channel,
-        message=text or f"{task_type}:{event_subject_key}",
+        message=f"{task_type}:{event_subject_key}",
         mutable=True,
         idempotency_key=idempotency_key,
-        guidance_applied=guidance,
+        guidance_applied=[],
     )
     thread_id, restart_reason, thread_reused = _thread_reuse_decision(
         latest,
@@ -1359,6 +1750,8 @@ def create_job(
         "task_type": task_type,
         "subject_key": conversation_subject_key,
         "event_subject_key": event_subject_key,
+        "question_id": question_id,
+        "item_id": item_id,
         "scope_verifiers": scope_verifiers,
         "store": str(store),
         "client_id": str(client_id),
@@ -1388,9 +1781,13 @@ def create_job(
         "attempt_count": 0,
         "operational_failure_count": 0,
         "retry_count": 0,
-        "retry_policy": "bounded",
-        "deadline_seconds": int(RESEARCH_DEADLINE_SECONDS),
-        "deadline_at_epoch": time.time() + RESEARCH_DEADLINE_SECONDS,
+        "retry_policy": _task_retry_policy(task_type),
+        "deadline_seconds": _task_deadline_seconds(task_type),
+        "deadline_at_epoch": (
+            time.time() + _task_deadline_seconds(task_type)
+            if _task_deadline_seconds(task_type) > 0
+            else 0.0
+        ),
         "research_history": [],
         "created_at": _now(),
     }
@@ -1430,6 +1827,31 @@ def get_job(client_id: str, job_id: str) -> Optional[dict[str, Any]]:
     if not _job_contract_current(job):
         job = _quarantine_outdated_job(job, client_id=client_id)
         return _public_job(job)
+    if (
+        str(job.get("status") or "") == "completed"
+        and str(job.get("agent_state") or "") == "aguardando_aprovacao"
+        and not codex_assistant_storage.codex_assistant_customer_reply_job_has_transient(
+            info_base, client_id, job_id
+        )
+    ):
+        job.update(
+            {
+                "status": "queued",
+                "agent_state": "pesquisando",
+                "current_step": "consultar",
+                "lease_owner": "",
+                "lease_expires_ts": 0.0,
+                "restart_requested": True,
+            }
+        )
+        job.pop("proposal_hash", None)
+        job = codex_assistant_storage.codex_assistant_customer_reply_job_save(
+            info_base,
+            client_id,
+            job,
+            expected_lease_generation=_lease_generation(job),
+        )
+        _schedule(job)
     if str(job.get("status") or "") == "waiting_retry" and _job_deadline_expired(job):
         job = _complete_with_best_available(job)
     return _public_job(job, queue_position=_queue_position(info_base, client_id, job_id))
@@ -1582,6 +2004,12 @@ def cancel_job(client_id: str, job_id: str) -> Optional[dict[str, Any]]:
     if not isinstance(job, dict):
         return None
     _cancel_retry_timer(job_id)
+    try:
+        from backend.services import ia_providers
+
+        ia_providers.cancel_codex_persistent_turn(job_id)
+    except Exception:
+        logger.exception("[PPV CODEX] Falha ao interromper turno ativo do job %s", job_id)
     plan_id = str(job.get("plan_id") or "")
     if plan_id and str(job.get("status") or "") == "cancelled":
         try:
@@ -1633,6 +2061,8 @@ def _save_step(job: dict[str, Any], state: str, step: str, message: str) -> dict
         str(job.get("client_id") or "default"),
         str(job.get("job_id") or ""),
     )
+    if isinstance(latest, dict) and _lease_generation(latest) != _lease_generation(job):
+        raise _LeaseLost("Geracao da lease transferida para outro worker.")
     if (
         isinstance(latest, dict)
         and int(latest.get("request_generation") or 1) > int(job.get("request_generation") or 1)
@@ -1654,8 +2084,16 @@ def _save_step(job: dict[str, Any], state: str, step: str, message: str) -> dict
     job["lease_owner"] = _WORKER_ID
     job["lease_expires_ts"] = time.time() + 60.0
     saved = codex_assistant_storage.codex_assistant_customer_reply_job_save(
-        _runtime_info_base(), str(job.get("client_id") or "default"), job
+        _runtime_info_base(),
+        str(job.get("client_id") or "default"),
+        job,
+        expected_lease_owner=_WORKER_ID,
+        expected_lease_generation=_lease_generation(job),
     )
+    if str(saved.get("status") or "") == "cancelled" or saved.get("cancel_requested"):
+        raise InterruptedError("Tarefa cancelada pelo usuario.")
+    if not _saved_by_same_lease(saved, job, status="running") or str(saved.get("lease_owner") or "") != _WORKER_ID:
+        raise _LeaseLost("Lease transferida para outro worker.")
     plan_id = str(job.get("plan_id") or "")
     if plan_id:
         try:
@@ -1666,7 +2104,7 @@ def _save_step(job: dict[str, Any], state: str, step: str, message: str) -> dict
                 state,
                 current_step=step,
                 step_status="in_progress",
-                details={"job_id": job.get("job_id"), "message": message},
+                details={"job_id": job.get("job_id"), "state": state, "step": step},
             )
         except Exception:
             logger.exception("[PPV CODEX] Falha ao atualizar plano %s", plan_id)
@@ -1680,7 +2118,12 @@ def _cancelled(job: dict[str, Any]) -> bool:
     return bool(isinstance(latest, dict) and latest.get("cancel_requested"))
 
 
-def _heartbeat_loop(client_id: str, job_id: str, stop_event: threading.Event) -> None:
+def _heartbeat_loop(
+    client_id: str,
+    job_id: str,
+    lease_generation: int,
+    stop_event: threading.Event,
+) -> None:
     while not stop_event.wait(15.0):
         try:
             renewed = codex_assistant_storage.codex_assistant_customer_reply_job_heartbeat(
@@ -1688,6 +2131,7 @@ def _heartbeat_loop(client_id: str, job_id: str, stop_event: threading.Event) ->
                 client_id,
                 job_id,
                 owner=_WORKER_ID,
+                lease_generation=lease_generation,
                 lease_seconds=60.0,
             )
             if not isinstance(renewed, dict):
@@ -1732,25 +2176,93 @@ def _is_operational_failure(exc: BaseException) -> bool:
     return any(marker in class_name or marker in message for marker in operational_markers)
 
 
+def _persist_thread_ready(job: dict[str, Any], thread_id: str) -> dict[str, Any]:
+    """Persist Codex continuity before the turn can fail or the process can stop."""
+
+    resolved = str(thread_id or "").strip()
+    if not resolved:
+        return job
+    info_base = _runtime_info_base()
+    client_id = str(job.get("client_id") or "default")
+    job_id = str(job.get("job_id") or "")
+    latest = codex_assistant_storage.codex_assistant_customer_reply_job_get(info_base, client_id, job_id)
+    if not isinstance(latest, dict):
+        raise _LeaseLost("Job indisponivel ao persistir thread Codex.")
+    if latest.get("cancel_requested") or str(latest.get("status") or "") == "cancelled":
+        raise InterruptedError("Tarefa cancelada pelo usuario.")
+    if (
+        str(latest.get("status") or "") != "running"
+        or str(latest.get("lease_owner") or "") != _WORKER_ID
+        or _lease_generation(latest) != _lease_generation(job)
+    ):
+        raise _LeaseLost("Lease transferida antes de persistir thread Codex.")
+    previous_thread_id = str(latest.get("thread_id") or job.get("thread_id") or "").strip()
+    latest["thread_id"] = resolved
+    latest["lease_owner"] = _WORKER_ID
+    if previous_thread_id and previous_thread_id != resolved:
+        latest["thread_reused"] = False
+        latest["thread_restart_reason"] = "resume_failed_new_thread"
+    elif previous_thread_id == resolved:
+        latest["thread_reused"] = True
+    saved = codex_assistant_storage.codex_assistant_customer_reply_job_save(
+        info_base,
+        client_id,
+        latest,
+        expected_lease_owner=_WORKER_ID,
+        expected_lease_generation=_lease_generation(job),
+    )
+    if not _saved_by_same_lease(saved, job, status="running") or str(saved.get("thread_id") or "") != resolved:
+        raise _LeaseLost("Thread Codex nao persistida pela lease atual.")
+    for key in ("thread_id", "thread_reused", "thread_restart_reason", "updated_at"):
+        if key in saved:
+            job[key] = saved.get(key)
+    return saved
+
+
 def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     runtime = _require_runtime()
     request = job.get("request") if isinstance(job.get("request"), dict) else {}
     client_id = str(job.get("client_id") or "default")
     store = str(job.get("store") or "")
     question = dict(request.get("pergunta") or {}) if isinstance(request.get("pergunta"), dict) else {}
+    question_id = str(job.get("question_id") or question.get("id") or job.get("event_subject_key") or "").strip()
+    if not question and question_id:
+        reload_cfg = runtime._obter_cfg_ml(client_id, store)
+        try:
+            response, reload_cfg = runtime._ml_api_request(
+                client_id,
+                store,
+                reload_cfg,
+                "GET",
+                f"https://api.mercadolibre.com/questions/{question_id}",
+                timeout=12,
+            )
+            if response.status_code == 200:
+                payload = response.json() or {}
+                question = dict(payload.get("question") or payload) if isinstance(payload, dict) else {}
+        except Exception as exc:
+            logger.warning("[PPV CODEX] Falha ao recarregar pergunta %s: %s", question_id, exc)
+    if not question:
+        raise RuntimeError("pergunta_canonica_indisponivel")
+    question.setdefault("id", question_id)
     question["_codex_thread_id"] = str(job.get("thread_id") or "")
     question["_codex_job_id"] = str(job.get("job_id") or "")
     question["_codex_conversation_key"] = str(job.get("conversation_id") or "")
+    question["_codex_active_turn_key"] = str(job.get("job_id") or "")
+    question["_codex_on_thread_ready"] = lambda thread_id: _persist_thread_ready(job, thread_id)
     question["_codex_operational_failure_count"] = max(0, int(job.get("operational_failure_count") or 0))
     question["_codex_prompt_version"] = str(job.get("prompt_version") or PROMPT_VERSION)
     question["_codex_schema_version"] = str(job.get("schema_version") or SCHEMA_VERSION)
     question["_agent_subquestions"] = list(job.get("subquestions") or [])
     question["_research_attempt"] = max(1, int(job.get("attempt_count") or 0) + 1)
     question["_research_history"] = list(job.get("research_history") or [])[-6:]
+    question["_research_gaps"] = _pending_research_gaps(job)
     question["_force_external_research"] = bool(job.get("retry_count") or job.get("research_history"))
+    gaps_text = ", ".join(question["_research_gaps"][:8])
     question["_research_directive"] = (
-        "Nao repita somente as consultas anteriores. Procure novas fontes oficiais, manuais, catalogos OEM, "
-        "referencias cruzadas e especificacoes tecnicas para resolver os campos ainda sem evidencia."
+        "Nao repita somente as consultas anteriores. Reutilize os resultados e fontes ja confirmados e pesquise "
+        "apenas as lacunas restantes em fontes oficiais, manuais, catalogos OEM, referencias cruzadas ou duas "
+        f"fontes tecnicas independentes. Lacunas atuais: {gaps_text or 'evidencias ainda nao confirmadas'}."
         if question["_force_external_research"]
         else ""
     )
@@ -1760,7 +2272,7 @@ def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         question["_orientacao_usuario"] = str(request.get("orientacao_usuario") or "").strip()[:1200]
     cfg = runtime._obter_cfg_ml(client_id, store)
     item = dict(request.get("item") or {}) if isinstance(request.get("item"), dict) else {}
-    item_id = str(question.get("item_id") or item.get("id") or "").strip()
+    item_id = str(question.get("item_id") or job.get("item_id") or item.get("id") or "").strip()
     if item_id and not item:
         try:
             response, cfg = runtime._ml_api_request(
@@ -1774,6 +2286,20 @@ def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         item = runtime._ml_api_item_com_oauth_tenant(client_id, item_id) or runtime._ml_api_item(item_id) or {}
     if isinstance(item, dict) and item and not runtime._ml_extrair_sku(item):
         item = runtime._ml_perguntas_completar_skus_itens(client_id, store, cfg, [item])[0]
+    codex_fields = {key: value for key, value in question.items() if str(key).startswith("_")}
+    try:
+        normalizer = getattr(runtime, "_ml_perguntas_normalizar", None)
+        if callable(normalizer):
+            question = normalizer(question, {item_id: item} if item_id else {}, {})
+        history_loader = getattr(runtime, "_ml_perguntas_anexar_historico_comprador", None)
+        seller_id = str((cfg or {}).get("user_id") or "").strip()
+        if callable(history_loader) and seller_id:
+            enriched, cfg = history_loader(client_id, store, cfg, seller_id, [question])
+            if enriched and isinstance(enriched[0], dict):
+                question = enriched[0]
+    except Exception as exc:
+        logger.warning("[PPV CODEX] Falha ao recarregar historico canonico da pergunta %s: %s", question_id, exc)
+    question.update(codex_fields)
     answer, _cfg, context = runtime._perguntas_ia_gerar_resposta(client_id, store, cfg, question, item or {})
     context = context if isinstance(context, dict) else {}
     context.setdefault("loja", store)
@@ -1806,6 +2332,7 @@ def _load_post_sale_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     conversation["_codex_thread_id"] = str(job.get("thread_id") or "")
     conversation["_codex_job_id"] = str(job.get("job_id") or "")
     conversation["_codex_conversation_key"] = str(job.get("conversation_id") or "")
+    conversation["_codex_active_turn_key"] = str(job.get("job_id") or "")
     conversation["_codex_operational_failure_count"] = max(0, int(job.get("operational_failure_count") or 0))
     conversation["_codex_prompt_version"] = str(job.get("prompt_version") or PROMPT_VERSION)
     conversation["_codex_schema_version"] = str(job.get("schema_version") or SCHEMA_VERSION)
@@ -1875,7 +2402,7 @@ def _run_job(client_id: str, job_id: str) -> None:
     heartbeat_stop = threading.Event()
     heartbeat_thread = threading.Thread(
         target=_heartbeat_loop,
-        args=(client_id, job_id, heartbeat_stop),
+        args=(client_id, job_id, _lease_generation(job), heartbeat_stop),
         name=f"ppv-codex-heartbeat-{job_id[:8]}",
         daemon=True,
     )
@@ -1967,6 +2494,18 @@ def _run_job(client_id: str, job_id: str) -> None:
             "publish_attempted": False,
         }
         latest = codex_assistant_storage.codex_assistant_customer_reply_job_get(info_base, client_id, job_id)
+        if isinstance(latest, dict) and (
+            latest.get("cancel_requested")
+            or str(latest.get("status") or "") == "cancelled"
+        ):
+            return
+        if (
+            isinstance(latest, dict)
+            and str(latest.get("status") or "") == "running"
+            and str(latest.get("lease_owner") or "")
+            and str(latest.get("lease_owner") or "") != _WORKER_ID
+        ):
+            return
         if (
             isinstance(latest, dict)
             and int(latest.get("request_generation") or 1) > attempt_generation
@@ -2024,7 +2563,15 @@ def _run_job(client_id: str, job_id: str) -> None:
             }
         )
         job["agent_steps"] = history[-60:]
-        codex_assistant_storage.codex_assistant_customer_reply_job_save(info_base, client_id, job)
+        saved = codex_assistant_storage.codex_assistant_customer_reply_job_save(
+            info_base,
+            client_id,
+            job,
+            expected_lease_owner=_WORKER_ID,
+            expected_lease_generation=_lease_generation(job),
+        )
+        if not _saved_by_same_lease(saved, job, status="completed", proposal_hash=proposal_hash):
+            return
         plan_id = str(job.get("plan_id") or "")
         if plan_id:
             codex_agent_runtime.transition_plan(
@@ -2042,8 +2589,10 @@ def _run_job(client_id: str, job_id: str) -> None:
                     "channels_allowed": ["app", "whatsapp"],
                     "requires_confirmation": True,
                 },
-                details={"data_sufficient": sufficient, "warnings": warnings},
+                details={"data_sufficient": sufficient, "completion_reason": "evidence_confirmed"},
             )
+    except _LeaseLost:
+        logger.info("[PPV CODEX] Worker perdeu a lease do job %s; resultado local descartado.", job_id)
     except InterruptedError as exc:
         job.update(
             {
@@ -2055,7 +2604,13 @@ def _run_job(client_id: str, job_id: str) -> None:
                 "lease_expires_ts": 0.0,
             }
         )
-        codex_assistant_storage.codex_assistant_customer_reply_job_save(info_base, client_id, job)
+        codex_assistant_storage.codex_assistant_customer_reply_job_save(
+            info_base,
+            client_id,
+            job,
+            expected_lease_owner=_WORKER_ID,
+            expected_lease_generation=_lease_generation(job),
+        )
     except Exception as exc:
         logger.exception("[PPV CODEX] Falha no job %s", job_id)
         if _is_operational_failure(exc):
@@ -2069,6 +2624,8 @@ def _run_job(client_id: str, job_id: str) -> None:
                 "A tentativa operacional falhou; o melhor rascunho disponivel sera usado ao atingir 3 minutos."
             ],
         )
+        if str(retry_job.get("status") or "") == "cancelled" or retry_job.get("cancel_requested"):
+            return
         plan_id = str(job.get("plan_id") or "")
         if plan_id and str(retry_job.get("status") or "") != "completed":
             try:
@@ -2079,7 +2636,7 @@ def _run_job(client_id: str, job_id: str) -> None:
                     "consultando",
                     current_step="consultar",
                     step_status="in_progress",
-                    verification={"status": "retry", "confirmed": False, "error": str(exc)[:1000]},
+                    verification={"status": "retry", "confirmed": False},
                 )
             except Exception:
                 logger.exception("[PPV CODEX] Falha ao registrar nova tentativa no plano.")
@@ -2102,8 +2659,9 @@ def _known_clients(info_base: str) -> list[str]:
 def recover_pending_jobs() -> None:
     info_base = _runtime_info_base()
     for client_id in _known_clients(info_base):
+        codex_assistant_storage.codex_assistant_customer_reply_jobs_cleanup(info_base, client_id)
         jobs = codex_assistant_storage.codex_assistant_customer_reply_jobs_list(
-            info_base, client_id, statuses=list(ACTIVE_STATUSES | {"failed"}), limit=500
+            info_base, client_id, statuses=list(ACTIVE_STATUSES | {"failed", "completed"}), limit=500
         )
         for job in jobs:
             if _canonical_task_type(job.get("task_type")) == TASK_TYPE_POST_SALE:
@@ -2113,6 +2671,32 @@ def recover_pending_jobs() -> None:
                 continue
             if not _job_contract_current(job):
                 _quarantine_outdated_job(job, client_id=client_id)
+                continue
+            if str(job.get("status") or "") == "completed":
+                if (
+                    str(job.get("agent_state") or "") == "aguardando_aprovacao"
+                    and not codex_assistant_storage.codex_assistant_customer_reply_job_has_transient(
+                        info_base, client_id, str(job.get("job_id") or "")
+                    )
+                ):
+                    job.update(
+                        {
+                            "status": "queued",
+                            "agent_state": "pesquisando",
+                            "current_step": "consultar",
+                            "lease_owner": "",
+                            "lease_expires_ts": 0.0,
+                            "restart_requested": True,
+                        }
+                    )
+                    job.pop("proposal_hash", None)
+                    job = codex_assistant_storage.codex_assistant_customer_reply_job_save(
+                        info_base,
+                        client_id,
+                        job,
+                        expected_lease_generation=_lease_generation(job),
+                    )
+                    _schedule(job)
                 continue
             if str(job.get("status") or "") == "failed":
                 job.update({"status": "waiting_retry", "next_retry_at_epoch": 0.0})
@@ -2163,17 +2747,32 @@ def approve_or_refresh_proposal(
     if str(job.get("store") or "") != str(store or "") or event_subject_key != str(subject_key or ""):
         raise PermissionError("A proposta não pertence a esta loja ou conversa.")
     result = job.get("result") if isinstance(job.get("result"), dict) else {}
-    if result.get("blocked_without_draft") or job.get("blocked_without_draft"):
-        raise ValueError("A tarefa nao possui proposta de resposta aprovavel. Gere uma nova resposta.")
-    current_answer = str(result.get("resposta") or "").strip()
-    current_version = max(1, int(result.get("proposal_version") or job.get("proposal_version") or 1))
-    current_hash = str(result.get("proposal_hash") or "")
     requested_answer = str(answer or "").strip()
-    unchanged = requested_answer == current_answer
-    if unchanged and int(proposal_version or 0) not in {0, current_version}:
+    if (
+        str(job.get("status") or "") != "completed"
+        or result.get("blocked_without_draft")
+        or job.get("blocked_without_draft")
+        or not requested_answer
+    ):
+        raise ValueError("A tarefa nao possui proposta de resposta aprovavel. Gere uma nova resposta.")
+    current_version = max(1, int(job.get("proposal_version") or result.get("proposal_version") or 1))
+    current_hash = str(job.get("proposal_hash") or result.get("proposal_hash") or "")
+    if int(proposal_version or 0) not in {0, current_version}:
         raise ValueError("A proposta foi atualizada. Revise a versão mais recente antes de aprovar.")
-    if unchanged and proposal_hash and proposal_hash != current_hash:
+    if proposal_hash and proposal_hash != current_hash:
         raise ValueError("A proposta foi alterada. Gere ou revise novamente antes de aprovar.")
+    unchanged = bool(
+        current_hash
+        and _hash(
+            {
+                "job_id": job.get("job_id"),
+                "version": current_version,
+                "store": store,
+                "subject": subject_key,
+                "answer": requested_answer,
+            }
+        ) == current_hash
+    )
     if not unchanged:
         current_version += 1
         current_hash = _hash(
@@ -2241,7 +2840,11 @@ def mark_verified(
                 "concluido" if success else "falhou",
                 current_step="verificar",
                 step_status="completed" if success else "failed",
-                verification=verification,
+                verification={
+                    "status": verification["status"],
+                    "confirmed": verification["confirmed"],
+                    "verified_at": verification["verified_at"],
+                },
             )
         except Exception:
             logger.exception("[PPV CODEX] Falha ao persistir verificação do job %s", job_id)
@@ -2280,7 +2883,11 @@ def mark_rejected(*, client_id: str, job_id: str, reason: str = "rejeitada_pelo_
                 "cancelado",
                 current_step="aprovar",
                 step_status="canceled",
-                verification=verification,
+                verification={
+                    "status": verification["status"],
+                    "confirmed": verification["confirmed"],
+                    "verified_at": verification["verified_at"],
+                },
             )
         except Exception:
             logger.exception("[PPV CODEX] Falha ao registrar rejeicao do job %s", job_id)

@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { captureGitSourceState, gitSourceStateIsStable } = require('./source-tree-fingerprint');
 const { writeInventory } = require('./test-inventory');
 
 const root = path.resolve(__dirname, '..');
@@ -11,6 +12,12 @@ const reportRoot = path.join(resultRoot, 'full-suite');
 const coverageRoot = path.join(resultRoot, 'coverage');
 const python = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const source = captureGitSourceState(root);
+
+console.log(
+  `[full-suite] origem commit=${source.commitSha} estado=${source.worktreeState} `
+    + `fingerprint=${source.worktreeFingerprint}`,
+);
 
 fs.mkdirSync(reportRoot, { recursive: true });
 fs.mkdirSync(path.join(resultRoot, 'python'), { recursive: true });
@@ -65,8 +72,32 @@ runStep('Contrato seguro do Bug Hunter', npm, ['run', 'test:bug-hunter:contract'
 });
 runStep('Sondas diagnosticas sem chamadas externas', process.execPath, ['scripts/verify-diagnostic-probes.js']);
 
+const integrityStartedAt = Date.now();
+let finalSource = null;
+try {
+  finalSource = captureGitSourceState(root);
+} catch (_error) {
+  // A mensagem publica e deliberadamente generica para nao vazar paths ou conteudo Git.
+}
+const sourceStable = gitSourceStateIsStable(source, finalSource);
+steps.push({
+  name: 'Integridade da arvore durante a suite',
+  passed: sourceStable,
+  exitCode: sourceStable ? 0 : 1,
+  signal: '',
+  error: sourceStable ? '' : 'A arvore mudou ou nao pode ser recapturada; resultados invalidados.',
+  durationMs: Date.now() - integrityStartedAt,
+});
+if (!sourceStable) {
+  console.error('[full-suite] INVALIDADA - a origem mudou ou nao pode ser recapturada durante a execucao.');
+}
+
 const summary = {
   generatedAt: new Date().toISOString(),
+  source,
+  finalSource,
+  sourceStable,
+  invalidated: !sourceStable,
   inventory: inventory.counts,
   totalSteps: steps.length,
   passedSteps: steps.filter(step => step.passed).length,
@@ -79,6 +110,14 @@ fs.writeFileSync(path.join(reportRoot, 'summary.json'), `${JSON.stringify(summar
 const markdown = [
   '# JK Sistema - Suite completa',
   '',
+  `- Commit: **${source.commitSha}**`,
+  `- Estado da arvore: **${source.worktreeState}**`,
+  `- Fingerprint da arvore: **${source.worktreeFingerprint}**`,
+  `- Integridade durante a suite: **${sourceStable ? 'ESTAVEL' : 'INVALIDADA'}**`,
+  ...(finalSource ? [
+    `- Commit ao final: **${finalSource.commitSha}**`,
+    `- Fingerprint ao final: **${finalSource.worktreeFingerprint}**`,
+  ] : ['- Proveniencia ao final: **INDISPONIVEL**']),
   `- Arquivos catalogados: **${inventory.counts.total}**`,
   `- Testes automatizados: **${inventory.counts.automated}**`,
   `- Sondas diagnosticas validadas sem chamadas externas: **${inventory.counts.diagnosticProbes}**`,
@@ -92,4 +131,4 @@ const markdown = [
 fs.writeFileSync(path.join(reportRoot, 'report.md'), markdown, 'utf8');
 
 console.log(`\n[full-suite] ${summary.passedSteps}/${summary.totalSteps} etapas aprovadas; ${inventory.counts.total} arquivos catalogados.`);
-if (summary.failedSteps) process.exitCode = 1;
+if (summary.failedSteps || summary.invalidated) process.exitCode = 1;
