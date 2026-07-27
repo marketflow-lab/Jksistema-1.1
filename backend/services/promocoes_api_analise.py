@@ -488,6 +488,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             preco_final_ml=preco_b,
             tarifa_base=tarifa_a_val,
             tarifa_ml=tarifa_b_tmp,
+            desconto_atual_confiavel=True,
         )
         desconto_tarifa_ml = _ml_ajustar_desconto_tarifa_recebivel_promocao(
             raw_b_item,
@@ -946,6 +947,7 @@ async def analisar_promo_via_api_sem_arquivos(
             preco_final_ml=preco_b,
             tarifa_base=tarifa_a_val,
             tarifa_ml=tarifa_b_val,
+            desconto_atual_confiavel=True,
         )
         desconto_tarifa_ml = _ml_ajustar_desconto_tarifa_recebivel_promocao(
             raw_b_item,

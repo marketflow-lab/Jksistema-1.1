@@ -346,15 +346,17 @@ def _calcular_desconto_ml_valor(
     preco_final_ml: Any = None,
     tarifa_base: Any = None,
     tarifa_ml: Any = None,
+    desconto_atual_confiavel: bool = False,
 ) -> float | None:
-    """Retorna somente desconto de tarifa explicitamente informado pelo ML/arquivo.
+    """Retorna somente desconto de tarifa atual com proveniencia confiavel.
 
     O percentual da campanha representa desconto no preco de venda ao comprador.
     Ele nao deve ser somado ao valor liquido como se fosse credito/reducao de
-    tarifa do Mercado Livre.
+    tarifa do Mercado Livre. Valores importados sem proveniencia atual tambem
+    nao devem alimentar a margem.
     """
     desconto = _to_float_safe(desconto_atual)
-    if desconto is not None and desconto > 0:
+    if desconto_atual_confiavel and desconto is not None and desconto >= 0:
         return desconto
     return None
 
