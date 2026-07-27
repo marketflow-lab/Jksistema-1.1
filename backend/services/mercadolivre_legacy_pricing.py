@@ -866,40 +866,16 @@ def _ml_ajustar_desconto_tarifa_recebivel_promocao(
 ) -> float | None:
     """Ajusta a reducao de tarifa usada no recebivel mostrado pelo ML."""
     desconto_atual = _to_float_safe(desconto_tarifa_ml)
+    desconto_boost = _ml_extrair_desconto_boost_tarifa_promocao_raw(raw_promocao)
+    if desconto_boost is not None:
+        return round(float(desconto_boost), 2) if desconto_boost > 0 else None
 
     desconto_explicito = _ml_extrair_valor_desconto_taxa_promocao_raw(raw_promocao)
     if desconto_explicito is not None and desconto_explicito > 0:
         return round(float(desconto_explicito), 2)
 
-    if not isinstance(raw_promocao, dict):
-        return desconto_atual
-
-    meli_pct = _parse_float_flex(raw_promocao.get("meli_percentage"))
-    pct_total = _to_float_safe(pct_desconto_campanha)
-    preco_promo = _to_float_safe(preco_promocional)
-    preco_original = (
-        _parse_float_flex(raw_promocao.get("original_price"))
-        or _parse_float_flex(raw_promocao.get("base_price"))
-        or _parse_float_flex(raw_promocao.get("standard_price"))
-    )
-    if (
-        meli_pct is not None
-        and meli_pct > 0
-        and pct_total is not None
-        and pct_total > 0
-        and preco_original is not None
-        and preco_promo is not None
-        and float(preco_original) > float(preco_promo)
-    ):
-        desconto_total_valor = float(preco_original) - float(preco_promo)
-        candidato = round(desconto_total_valor * (float(meli_pct) / float(pct_total)), 2)
-        if candidato > 0:
-            if desconto_atual is None:
-                return candidato
-            tolerancia = max(0.5, abs(candidato) * 0.25)
-            if abs(float(desconto_atual) - candidato) <= tolerancia:
-                return candidato
-
+    # Preserva valores monetarios explicitos das integracoes legadas, mas nao
+    # converte meli_percentage em reducao de tarifa: sao conceitos diferentes.
     return desconto_atual
 
 
@@ -1206,10 +1182,82 @@ def _ml_calcular_percentual_desconto_por_preco(preco_base, preco_final):
     return None
 
 
+def _ml_extrair_desconto_boost_tarifa_promocao_raw(entry: dict):
+    """Extrai o amount oficial de reducao de tarifa de uma oferta boosted."""
+    if not isinstance(entry, dict):
+        return None
+
+    boost_confirmado = False
+    stack = [(entry, 0)]
+    vistos = set()
+    nodes = 0
+    while stack:
+        obj, depth = stack.pop()
+        nodes += 1
+        if nodes > 1200:
+            break
+
+        if isinstance(obj, (dict, list)):
+            obj_id = id(obj)
+            if obj_id in vistos:
+                continue
+            vistos.add(obj_id)
+
+        if isinstance(obj, list):
+            if depth < 6:
+                for filho in reversed(obj[:250]):
+                    if isinstance(filho, (dict, list)):
+                        stack.append((filho, depth + 1))
+            continue
+        if not isinstance(obj, dict):
+            continue
+
+        # boosted_offer e amount precisam ser chaves diretas do mesmo objeto.
+        # Isso impede que siblings de uma lista sejam combinados entre si.
+        campos = {str(chave or "").strip().lower(): valor for chave, valor in obj.items()}
+        if "boosted_offer" not in campos:
+            boosted = False
+        else:
+            boosted_raw = campos.get("boosted_offer")
+            if isinstance(boosted_raw, bool):
+                boosted = boosted_raw
+            elif isinstance(boosted_raw, (int, float)) and not isinstance(boosted_raw, bool):
+                boosted = boosted_raw == 1
+            else:
+                boosted_txt = str(boosted_raw or "").strip().lower()
+                if boosted_txt in {"true", "1", "yes", "sim"}:
+                    boosted = True
+                elif boosted_txt in {"false", "0", "no", "nao", "não"}:
+                    boosted = False
+                else:
+                    boosted = False
+
+        if boosted:
+            boost_confirmado = True
+            amount_raw = campos.get("discount_meli_boost_amount")
+            if amount_raw not in (None, ""):
+                amount = _parse_float_flex(amount_raw)
+                if amount is not None and amount > 0:
+                    return round(float(amount), 2)
+
+        if depth < 6:
+            for filho in reversed(list(obj.values())):
+                if isinstance(filho, (dict, list)):
+                    stack.append((filho, depth + 1))
+
+    # 0.0 e um sentinel: houve boost confirmado, mas nenhum amount monetario
+    # positivo. Os consumidores devem bloquear fallbacks heurísticos/legados.
+    return 0.0 if boost_confirmado else None
+
+
 def _ml_extrair_desconto_tarifa_promocao_raw(entry: dict):
     """Extrai o valor em R$ de reduÃ§Ã£o de tarifa da campanha, quando a API retorna esse detalhe."""
     if not isinstance(entry, dict):
         return None
+
+    desconto_boost = _ml_extrair_desconto_boost_tarifa_promocao_raw(entry)
+    if desconto_boost is not None:
+        return desconto_boost if desconto_boost > 0 else None
 
     candidatos_explicitos = []
 
@@ -1240,15 +1288,6 @@ def _ml_extrair_desconto_tarifa_promocao_raw(entry: dict):
                 candidatos_explicitos.append(float(v))
     if candidatos_explicitos:
         return candidatos_explicitos[0]
-
-    meli_pct = _parse_float_flex(entry.get("meli_percentage"))
-    preco_base = (
-        _parse_float_flex(entry.get("original_price"))
-        or _parse_float_flex(entry.get("base_price"))
-        or _parse_float_flex(entry.get("standard_price"))
-    )
-    if meli_pct is not None and preco_base is not None:
-        return round(float(preco_base) * float(meli_pct) / 100.0, 2)
     return None
 
 
@@ -1325,6 +1364,11 @@ def _ml_extrair_valor_desconto_taxa_promocao_raw(entry: dict):
     """Extrai apenas reducao de taxa/tarifa explicitamente indicada no payload."""
     if not isinstance(entry, dict):
         return None
+
+    desconto_boost = _ml_extrair_desconto_boost_tarifa_promocao_raw(entry)
+    if desconto_boost is not None:
+        return desconto_boost if desconto_boost > 0 else None
+
     for caminho, valor in _ml_iterar_campos_payload_limitado(entry):
         caminho_norm = str(caminho or "").lower()
         caminho_ascii = normalizar_texto(caminho_norm)
