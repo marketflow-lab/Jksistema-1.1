@@ -282,6 +282,18 @@ def _ml_obter_frete_detalhado(
         except Exception:
             return None
 
+    def _shipping_to_bool(raw, default: bool = False) -> bool:
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            return raw != 0
+        texto = str(raw or "").strip().lower()
+        if texto in {"true", "1", "yes", "sim"}:
+            return True
+        if texto in {"false", "0", "no", "nao", "não"}:
+            return False
+        return bool(default)
+
     def _deve_reconsultar_zero(payload: dict) -> bool:
         if not reconsultar_zero:
             return False
@@ -305,13 +317,27 @@ def _ml_obter_frete_detalhado(
     contexto_dimensions = str(_pick_contexto("dimensions") or shipping_info.get("dimensions") or "").strip()
     if contexto_dimensions.lower() == "null":
         contexto_dimensions = ""
+    contexto_free_shipping = _shipping_to_bool(
+        _pick_contexto("free_shipping"),
+        default=_shipping_to_bool(shipping_info.get("free_shipping")),
+    )
     dimensions_cache = re.sub(r"\s+", "", contexto_dimensions.lower()) or "-"
     preco_cache = round(float(contexto_preco), 2) if contexto_preco is not None else "-"
-    contexto_cache = f":p{preco_cache}:{contexto_listing_type}:{contexto_mode}:{contexto_logistic_type}:d{dimensions_cache}"
+    contexto_cache = (
+        f":p{preco_cache}:{contexto_listing_type}:{contexto_mode}:"
+        f"{contexto_logistic_type}:d{dimensions_cache}:fs{int(contexto_free_shipping)}"
+    )
 
-    cache_key = f"v5:{client_id}:{loja}:{item_id}{contexto_cache}"
+    cache_key = f"v7:{client_id}:{loja}:{item_id}{contexto_cache}"
     cached = _cache_get(ML_ITEM_SHIPPING_CACHE, cache_key, ML_ITEM_SHIPPING_CACHE_TTL)
-    if cached and cached.get("shipping_cost") is not None and not _deve_reconsultar_zero(cached):
+    exige_frete_exato = bool(contexto_preco is not None and contexto_preco > 0 and cfg.get("user_id"))
+    cache_utilizavel = bool(
+        cached
+        and cached.get("shipping_cost") is not None
+        and not _deve_reconsultar_zero(cached)
+        and (not exige_frete_exato or cached.get("shipping_exact_for_price") is True)
+    )
+    if cache_utilizavel:
         return cached, cfg
 
     info = {
@@ -323,39 +349,42 @@ def _ml_obter_frete_detalhado(
         "shipping_base_cost": None,
         "shipping_seller_cost": None,
         "shipping_breakdown": "",
-        "free_shipping": bool(shipping_info.get("free_shipping")),
+        "free_shipping": contexto_free_shipping,
         "logistic_type": shipping_info.get("logistic_type") or "",
         "shipping_mode": shipping_info.get("mode") or "",
         "shipping_zip": "01310930",
         "shipping_exact_for_price": False,
         "shipping_price_context": contexto_preco,
         "shipping_dimensions_context": contexto_dimensions,
+        "shipping_cost_source_path": "",
     }
 
-    def _valores_positivos_frete_payload(payload) -> list[float]:
-        valores = []
+    def _candidatos_positivos_frete_payload(payload) -> list[tuple[float, str]]:
+        candidatos = []
 
-        def _add(valor):
+        def _add(valor, caminho: str):
             val = _shipping_to_money(valor)
             if val is not None and val > 0:
-                valores.append(float(val))
+                candidatos.append((float(val), caminho))
 
         if not isinstance(payload, dict):
-            return valores
+            return candidatos
 
         coverage = payload.get("coverage")
         if isinstance(coverage, dict):
             all_country = coverage.get("all_country")
             if isinstance(all_country, dict):
                 for campo in ("list_cost", "base_cost", "cost", "seller_cost", "shipping_cost"):
-                    _add(all_country.get(campo))
+                    _add(all_country.get(campo), f"coverage.all_country.{campo}")
                 discount = all_country.get("discount")
                 if isinstance(discount, dict):
-                    _add(discount.get("promoted_amount"))
-            for valor_cov in coverage.values():
+                    _add(discount.get("promoted_amount"), "coverage.all_country.discount.promoted_amount")
+            for chave_cov, valor_cov in coverage.items():
+                if chave_cov == "all_country":
+                    continue
                 if isinstance(valor_cov, dict):
                     for campo in ("list_cost", "base_cost", "cost", "seller_cost", "shipping_cost"):
-                        _add(valor_cov.get(campo))
+                        _add(valor_cov.get(campo), f"coverage.{chave_cov}.{campo}")
 
         options = payload.get("options")
         if isinstance(options, dict):
@@ -365,12 +394,40 @@ def _ml_obter_frete_detalhado(
                 if not isinstance(opt, dict):
                     continue
                 for campo in ("base_cost", "list_cost", "seller_cost", "shipping_cost", "cost"):
-                    _add(opt.get(campo))
+                    _add(opt.get(campo), f"options[].{campo}")
 
         for campo in ("base_cost", "list_cost", "seller_cost", "shipping_cost", "cost"):
-            _add(payload.get(campo))
+            _add(payload.get(campo), f"payload.{campo}")
 
-        return valores
+        return candidatos
+
+    def _frete_autoritativo_contextual(payload) -> tuple[float | None, str]:
+        if not isinstance(payload, dict):
+            return None, ""
+        coverage = payload.get("coverage")
+        all_country = coverage.get("all_country") if isinstance(coverage, dict) else None
+        if not isinstance(all_country, dict):
+            return None, ""
+        for campo in ("seller_cost", "list_cost"):
+            valor = _shipping_to_money(all_country.get(campo))
+            if valor is not None and valor >= 0:
+                return float(valor), f"coverage.all_country.{campo}"
+        return None, ""
+
+    def _payload_indica_frete_gratis(payload) -> bool:
+        if contexto_free_shipping:
+            return True
+        if not isinstance(payload, dict):
+            return False
+        coverage = payload.get("coverage")
+        all_country = coverage.get("all_country") if isinstance(coverage, dict) else None
+        if not isinstance(all_country, dict):
+            return False
+        if _shipping_to_bool(all_country.get("free_shipping_by_meli")):
+            return True
+        discount = all_country.get("discount")
+        tipo_desconto = str((discount or {}).get("type") or "").strip().lower() if isinstance(discount, dict) else ""
+        return tipo_desconto in {"mandatory", "mandatory_free_shipping"}
 
     def _params_frete_gratis_contexto() -> dict:
         params = {"item_id": item_id}
@@ -394,26 +451,44 @@ def _ml_obter_frete_detalhado(
             params["logistic_type"] = logistic_type
         if contexto_dimensions:
             params["dimensions"] = contexto_dimensions
-        if bool(_pick_contexto("free_shipping") if _pick_contexto("free_shipping") is not None else info["free_shipping"]):
-            params["free_shipping"] = "true"
+        # A API diferencia explicitamente as simulacoes com frete gratis
+        # opcional e com frete por conta do comprador.
+        params["free_shipping"] = "true" if contexto_free_shipping else "false"
         params["verbose"] = "true"
         return params
 
     def _aplicar_frete_payload(payload: dict, fonte: str, *, exato_para_preco: bool = False) -> bool:
-        valores = _valores_positivos_frete_payload(payload)
-        if not valores:
-            return False
-        charged_cost = min(valores)
+        charged_cost = None
+        caminho_origem = ""
+        frete_exato = False
+        if exato_para_preco:
+            charged_cost, caminho_origem = _frete_autoritativo_contextual(payload)
+            frete_exato = charged_cost is not None
+        if charged_cost is None:
+            candidatos = _candidatos_positivos_frete_payload(payload)
+            if not candidatos:
+                return False
+            charged_cost, caminho_origem = min(candidatos, key=lambda candidato: candidato[0])
         info["shipping_cost"] = charged_cost
         info["shipping_seller_cost"] = charged_cost
-        info["shipping_text"] = f"R$ {charged_cost:.2f}"
-        info["shipping_breakdown"] = f"Custo vendedor: {info['shipping_text']} | Fonte: {fonte}"
+        info["shipping_text"] = "Gratis" if charged_cost <= 0 else f"R$ {charged_cost:.2f}"
+        info["shipping_breakdown"] = (
+            f"Custo vendedor: {info['shipping_text']} | Fonte: {fonte}:{caminho_origem}"
+        )
         info["shipping_cost_retry_source"] = fonte
-        info["shipping_exact_for_price"] = bool(exato_para_preco)
+        info["shipping_cost_source_path"] = caminho_origem
+        info["shipping_exact_for_price"] = frete_exato
         if exato_para_preco:
-            info["shipping_buyer_cost"] = 0.0
-            info["shipping_buyer_text"] = "GrÃ¡tis"
-            info["free_shipping"] = True
+            coverage = payload.get("coverage") if isinstance(payload, dict) else None
+            all_country = coverage.get("all_country") if isinstance(coverage, dict) else None
+            list_cost = _shipping_to_money(all_country.get("list_cost")) if isinstance(all_country, dict) else None
+            if list_cost is not None:
+                info["shipping_list_cost"] = list_cost
+            frete_gratis_comprador = _payload_indica_frete_gratis(payload)
+            info["free_shipping"] = frete_gratis_comprador
+            if frete_gratis_comprador:
+                info["shipping_buyer_cost"] = 0.0
+                info["shipping_buyer_text"] = "GrÃ¡tis"
         return True
 
     item_list_cost = _shipping_to_money(shipping_info.get("list_cost"))
@@ -448,10 +523,10 @@ def _ml_obter_frete_detalhado(
         info["shipping_text"] = "Gratis" if val_inicial <= 0 else f"R$ {val_inicial:.2f}"
         info["shipping_breakdown"] = f"Custo vendedor: {info['shipping_text']} | Fonte: item.shipping.{fonte_inicial}"
 
-    # Para frete gratis, o custo do vendedor muda conforme o preco final.
-    # Consulta primeiro o endpoint que aceita item_price; o endpoint generico
-    # /items/{id}/shipping_options considera o preco atual do anuncio.
-    if info["free_shipping"] and contexto_preco is not None and contexto_preco > 0 and cfg.get("user_id"):
+    # O custo do vendedor muda conforme o preco final mesmo quando o anuncio
+    # atual esta com free_shipping=false. Consulta sempre o endpoint que aceita
+    # item_price; o endpoint generico considera apenas o preco atual do anuncio.
+    if contexto_preco is not None and contexto_preco > 0 and cfg.get("user_id"):
         try:
             fonte_contextual = "users/shipping_options/free/contexto"
             resp, cfg = request_fn(

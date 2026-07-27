@@ -436,6 +436,9 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         )
         frete_a_api_val = _parse_float_flex(shipping_data_a.get("shipping_cost"))
         frete_b_api_val = _parse_float_flex(shipping_data_b.get("shipping_cost"))
+        frete_a_exato = bool(shipping_data_a.get("shipping_exact_for_price"))
+        frete_b_exato = bool(shipping_data_b.get("shipping_exact_for_price"))
+        fretes_contextuais_confiaveis = frete_a_exato and frete_b_exato
         frete_fallback_val = 0.0
         frete_a_val = frete_a_api_val if frete_a_api_val is not None else frete_fallback_val
         frete_b_val = frete_b_api_val if frete_b_api_val is not None else frete_fallback_val
@@ -496,13 +499,15 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             preco_b,
             desconto_b,
         )
-        recebe_ml = _ml_calcular_recebivel_promocao(
-            raw_b_item,
-            preco_b,
-            tarifa_b_tmp,
-            frete_b_val,
-            desconto_tarifa_ml,
-        )
+        recebe_ml = None
+        if frete_b_exato:
+            recebe_ml = _ml_calcular_recebivel_promocao(
+                raw_b_item,
+                preco_b,
+                tarifa_b_tmp,
+                frete_b_val,
+                desconto_tarifa_ml,
+            )
 
         valor_liquido_a = None
         valor_liquido_b = None
@@ -510,7 +515,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         margem_b = None
         imposto_a = (preco_a * imposto_rate) if imposto_rate is not None else None
         imposto_b = (preco_b * imposto_rate) if imposto_rate is not None else None
-        if custo is not None:
+        if custo is not None and fretes_contextuais_confiaveis:
             valor_liquido_a = preco_a - float(custo) - frete_a_val - (imposto_a or 0.0) - (tarifa_a_val or 0.0)
             valor_liquido_b = preco_b - float(custo) - frete_b_val - (imposto_b or 0.0) - (_parse_float_flex(fee_b.get("ad_cost")) or 0.0)
             if desconto_tarifa_ml is not None:
@@ -541,10 +546,12 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             ),
             "SKU": sku_display or sku,
             "TÃ­tulo": str(item.get("title") or ""),
-            "Frete": formatar_moeda_br(frete_a_val),
-            "Frete ML": formatar_moeda_br(frete_b_val),
-            "frete_exato": bool(shipping_data_a.get("shipping_exact_for_price")),
-            "frete_ml_exato": bool(shipping_data_b.get("shipping_exact_for_price")),
+            "Frete": formatar_moeda_br(frete_a_val) if frete_a_exato else "A calcular",
+            "Frete ML": formatar_moeda_br(frete_b_val) if frete_b_exato else "A calcular",
+            "frete_exato": frete_a_exato,
+            "frete_ml_exato": frete_b_exato,
+            "frete_fonte": shipping_data_a.get("shipping_cost_retry_source") or "",
+            "frete_ml_fonte": shipping_data_b.get("shipping_cost_retry_source") or "",
             "Frete Gratis": "SIM" if frete_gratis_a else "NÃƒO",
             "Frete Gratis ML": "SIM" if frete_gratis_b else "NÃƒO",
             "Custo": formatar_moeda_br(custo) if custo is not None else "",
@@ -886,6 +893,8 @@ async def analisar_promo_via_api_sem_arquivos(
         )
         frete_a_api_val = _parse_float_flex(shipping_data_a.get("shipping_cost"))
         frete_b_api_val = _parse_float_flex(shipping_data_b.get("shipping_cost"))
+        frete_a_exato = bool(shipping_data_a.get("shipping_exact_for_price"))
+        frete_b_exato = bool(shipping_data_b.get("shipping_exact_for_price"))
         buyer_cost_a = _parse_float_flex(shipping_data_a.get("shipping_buyer_cost"))
         buyer_cost_b = _parse_float_flex(shipping_data_b.get("shipping_buyer_cost"))
         frete_gratis_a_api = bool(shipping_data_a.get("free_shipping")) or (buyer_cost_a is not None and buyer_cost_a <= 0)
@@ -955,24 +964,26 @@ async def analisar_promo_via_api_sem_arquivos(
             preco_b,
             desconto_b,
         )
-        recebe_ml = _ml_calcular_recebivel_promocao(
-            raw_b_item,
-            preco_b,
-            tarifa_b_val,
-            frete_b_val,
-            desconto_tarifa_ml,
-        )
+        recebe_ml = None
+        if frete_b_exato:
+            recebe_ml = _ml_calcular_recebivel_promocao(
+                raw_b_item,
+                preco_b,
+                tarifa_b_val,
+                frete_b_val,
+                desconto_tarifa_ml,
+            )
         imposto_a = (preco_a * imposto_rate) if (imposto_rate is not None and preco_a is not None) else None
         imposto_b = (preco_b * imposto_rate) if imposto_rate is not None else None
         valor_liquido_a = None
         valor_liquido_b = None
         margem_a = None
         margem_b = None
-        if custo is not None and preco_a is not None:
+        if custo is not None and preco_a is not None and frete_a_exato:
             valor_liquido_a = preco_a - float(custo) - (frete_a_val or 0.0) - (imposto_a or 0.0) - (tarifa_a_val or 0.0)
             if preco_a:
                 margem_a = (valor_liquido_a * 100.0) / preco_a
-        if custo is not None:
+        if custo is not None and frete_b_exato:
             valor_liquido_b = preco_b - float(custo) - (frete_b_val or 0.0) - (imposto_b or 0.0) - (tarifa_b_val or 0.0)
             if desconto_tarifa_ml is not None:
                 valor_liquido_b += float(desconto_tarifa_ml)
@@ -1004,10 +1015,12 @@ async def analisar_promo_via_api_sem_arquivos(
             ),
             "SKU": sku_display or sku,
             "TÃ­tulo": str(item.get("title") or raw_b_item.get("title") or ""),
-            "Frete": formatar_moeda_br(frete_a_val) if preco_a is not None else "",
-            "Frete ML": formatar_moeda_br(frete_b_val),
-            "frete_exato": bool(shipping_data_a.get("shipping_exact_for_price")),
-            "frete_ml_exato": bool(shipping_data_b.get("shipping_exact_for_price")),
+            "Frete": (formatar_moeda_br(frete_a_val) if frete_a_exato else "A calcular") if preco_a is not None else "",
+            "Frete ML": formatar_moeda_br(frete_b_val) if frete_b_exato else "A calcular",
+            "frete_exato": frete_a_exato,
+            "frete_ml_exato": frete_b_exato,
+            "frete_fonte": shipping_data_a.get("shipping_cost_retry_source") or "",
+            "frete_ml_fonte": shipping_data_b.get("shipping_cost_retry_source") or "",
             "Frete Gratis": ("SIM" if frete_gratis_a else "NAO") if preco_a is not None else "",
             "Frete Gratis ML": "SIM" if frete_gratis_b else "NAO",
             "Custo": formatar_moeda_br(custo) if custo is not None else "",
@@ -1509,6 +1522,8 @@ async def analisar_promo_via_api_com_arquivos(
         )
         frete_a_api_val = _parse_float_flex(shipping_data_a.get("shipping_cost"))
         frete_b_api_val = _parse_float_flex(shipping_data_b.get("shipping_cost"))
+        frete_a_exato = bool(shipping_data_a.get("shipping_exact_for_price"))
+        frete_b_exato = bool(shipping_data_b.get("shipping_exact_for_price"))
         buyer_cost_a = _parse_float_flex(shipping_data_a.get("shipping_buyer_cost"))
         buyer_cost_b = _parse_float_flex(shipping_data_b.get("shipping_buyer_cost"))
         frete_gratis_a_api = bool(shipping_data_a.get("free_shipping")) or (buyer_cost_a is not None and buyer_cost_a <= 0)
@@ -1584,24 +1599,26 @@ async def analisar_promo_via_api_com_arquivos(
             preco_b,
             desconto_b,
         )
-        recebe_ml = _ml_calcular_recebivel_promocao(
-            raw_b_item,
-            preco_b,
-            tarifa_b_val,
-            frete_b_val,
-            desconto_tarifa_ml,
-        )
+        recebe_ml = None
+        if frete_b_exato:
+            recebe_ml = _ml_calcular_recebivel_promocao(
+                raw_b_item,
+                preco_b,
+                tarifa_b_val,
+                frete_b_val,
+                desconto_tarifa_ml,
+            )
         imposto_a = (preco_a * imposto_rate) if (imposto_rate is not None and preco_a is not None) else None
         imposto_b = (preco_b * imposto_rate) if imposto_rate is not None else None
         valor_liquido_a = None
         valor_liquido_b = None
         margem_a = None
         margem_b = None
-        if custo is not None and preco_a is not None:
+        if custo is not None and preco_a is not None and frete_a_exato:
             valor_liquido_a = preco_a - float(custo) - (frete_a_val or 0.0) - (imposto_a or 0.0) - (tarifa_a_val or 0.0)
             if preco_a:
                 margem_a = (valor_liquido_a * 100.0) / preco_a
-        if custo is not None:
+        if custo is not None and frete_b_exato:
             valor_liquido_b = preco_b - float(custo) - (frete_b_val or 0.0) - (imposto_b or 0.0) - (tarifa_b_val or 0.0)
             if desconto_tarifa_ml is not None:
                 valor_liquido_b += float(desconto_tarifa_ml)
@@ -1645,10 +1662,12 @@ async def analisar_promo_via_api_com_arquivos(
             ),
             "SKU": sku_display or sku_base,
             "TÃ­tulo": str(item.get("title") or entrada_b.get("TÃ­tulo") or ""),
-            "Frete": formatar_moeda_br(frete_a_val) if preco_a is not None else "",
-            "Frete ML": formatar_moeda_br(frete_b_val),
-            "frete_exato": bool(shipping_data_a.get("shipping_exact_for_price")),
-            "frete_ml_exato": bool(shipping_data_b.get("shipping_exact_for_price")),
+            "Frete": (formatar_moeda_br(frete_a_val) if frete_a_exato else "A calcular") if preco_a is not None else "",
+            "Frete ML": formatar_moeda_br(frete_b_val) if frete_b_exato else "A calcular",
+            "frete_exato": frete_a_exato,
+            "frete_ml_exato": frete_b_exato,
+            "frete_fonte": shipping_data_a.get("shipping_cost_retry_source") or "",
+            "frete_ml_fonte": shipping_data_b.get("shipping_cost_retry_source") or "",
             "Frete Gratis": ("SIM" if frete_gratis_a else "NÃƒO") if preco_a is not None else "",
             "Frete Gratis ML": "SIM" if frete_gratis_b else "NÃƒO",
             "Custo": formatar_moeda_br(custo) if custo is not None else "",

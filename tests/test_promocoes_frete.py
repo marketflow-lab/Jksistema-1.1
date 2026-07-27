@@ -30,6 +30,16 @@ class _Response:
         }
 
 
+class _PayloadResponse:
+    status_code = 200
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def json(self):
+        return self.payload
+
+
 class PromocoesFreteTests(unittest.TestCase):
     def test_package_dimensions_are_built_from_value_name(self):
         item = {
@@ -133,10 +143,206 @@ class PromocoesFreteTests(unittest.TestCase):
         self.assertEqual(resultado["shipping_cost"], 16.15)
         self.assertTrue(resultado["shipping_exact_for_price"])
         self.assertEqual(resultado["shipping_price_context"], 116.01)
+        self.assertEqual(resultado["shipping_cost_source_path"], "coverage.all_country.list_cost")
         self.assertEqual(len(chamadas), 1)
         self.assertIn("/users/123/shipping_options/free", chamadas[0][0])
         self.assertEqual(chamadas[0][1]["item_price"], 116.01)
         self.assertEqual(chamadas[0][1]["dimensions"], "6x15x20,500")
+        self.assertEqual(chamadas[0][1]["free_shipping"], "true")
+
+    def test_price_aware_endpoint_is_used_when_current_listing_is_not_free_shipping(self):
+        chamadas = []
+        payload = {
+            "coverage": {
+                "all_country": {
+                    "list_cost": 13.25,
+                    "discount": {
+                        "rate": 0.5,
+                        "type": "mandatory",
+                        "promoted_amount": 26.50,
+                    },
+                }
+            }
+        }
+
+        def request_fn(_client_id, _loja, cfg, _method, url, **kwargs):
+            chamadas.append((url, kwargs.get("params") or {}))
+            return _PayloadResponse(payload), cfg
+
+        with (
+            patch.object(pricing, "_cache_get", return_value=None, create=True),
+            patch.object(pricing, "_cache_set", return_value=None, create=True),
+            patch.object(pricing, "ML_ITEM_SHIPPING_CACHE", {}, create=True),
+            patch.object(pricing, "ML_ITEM_SHIPPING_CACHE_TTL", 900, create=True),
+        ):
+            resultado, _cfg = pricing._ml_obter_frete_detalhado(
+                "000002",
+                "JK Pecas",
+                {"user_id": "123"},
+                "MLB2127140953",
+                {"free_shipping": False, "mode": "me2", "logistic_type": "cross_docking"},
+                request_fn=request_fn,
+                contexto_frete={
+                    "item_price": 87.66,
+                    "listing_type_id": "gold_special",
+                    "condition": "new",
+                    "category_id": "MLB33398",
+                    "mode": "me2",
+                    "logistic_type": "cross_docking",
+                    "free_shipping": False,
+                },
+            )
+
+        self.assertEqual(len(chamadas), 1)
+        self.assertIn("/users/123/shipping_options/free", chamadas[0][0])
+        self.assertEqual(chamadas[0][1]["item_price"], 87.66)
+        self.assertEqual(chamadas[0][1]["free_shipping"], "false")
+        self.assertEqual(resultado["shipping_cost"], 13.25)
+        self.assertTrue(resultado["shipping_exact_for_price"])
+        self.assertTrue(resultado["free_shipping"])
+        self.assertEqual(resultado["shipping_cost_source_path"], "coverage.all_country.list_cost")
+
+    def test_contextual_non_free_quote_does_not_force_buyer_free_shipping(self):
+        payload = {
+            "coverage": {
+                "all_country": {
+                    "list_cost": 5.95,
+                    "discount": {
+                        "rate": 0.3,
+                        "type": "none",
+                        "promoted_amount": 8.50,
+                    },
+                }
+            }
+        }
+
+        def request_fn(_client_id, _loja, cfg, _method, _url, **_kwargs):
+            return _PayloadResponse(payload), cfg
+
+        with (
+            patch.object(pricing, "_cache_get", return_value=None, create=True),
+            patch.object(pricing, "_cache_set", return_value=None, create=True),
+            patch.object(pricing, "ML_ITEM_SHIPPING_CACHE", {}, create=True),
+            patch.object(pricing, "ML_ITEM_SHIPPING_CACHE_TTL", 900, create=True),
+        ):
+            resultado, _cfg = pricing._ml_obter_frete_detalhado(
+                "000002",
+                "JK Pecas",
+                {"user_id": "123"},
+                "MLB2127140953",
+                {"free_shipping": False, "mode": "me2", "logistic_type": "cross_docking"},
+                request_fn=request_fn,
+                contexto_frete={"item_price": 18.99, "free_shipping": False},
+            )
+
+        self.assertEqual(resultado["shipping_cost"], 5.95)
+        self.assertTrue(resultado["shipping_exact_for_price"])
+        self.assertFalse(resultado["free_shipping"])
+        self.assertIsNone(resultado["shipping_buyer_cost"])
+
+    def test_contextual_quote_detects_free_shipping_paid_by_meli(self):
+        payload = {
+            "coverage": {
+                "all_country": {
+                    "list_cost": 7.85,
+                    "free_shipping_by_meli": True,
+                    "discount": {
+                        "rate": 0.3,
+                        "type": "none",
+                        "promoted_amount": 11.21,
+                    },
+                }
+            }
+        }
+
+        def request_fn(_client_id, _loja, cfg, _method, _url, **_kwargs):
+            return _PayloadResponse(payload), cfg
+
+        with (
+            patch.object(pricing, "_cache_get", return_value=None, create=True),
+            patch.object(pricing, "_cache_set", return_value=None, create=True),
+            patch.object(pricing, "ML_ITEM_SHIPPING_CACHE", {}, create=True),
+            patch.object(pricing, "ML_ITEM_SHIPPING_CACHE_TTL", 900, create=True),
+        ):
+            resultado, _cfg = pricing._ml_obter_frete_detalhado(
+                "000002",
+                "JK Pecas",
+                {"user_id": "123"},
+                "MLB2127140953",
+                {"free_shipping": False, "mode": "me2", "logistic_type": "cross_docking"},
+                request_fn=request_fn,
+                contexto_frete={"item_price": 65.17, "free_shipping": False},
+            )
+
+        self.assertEqual(resultado["shipping_cost"], 7.85)
+        self.assertTrue(resultado["shipping_exact_for_price"])
+        self.assertTrue(resultado["free_shipping"])
+        self.assertEqual(resultado["shipping_buyer_cost"], 0.0)
+
+    def test_contextual_shipping_prefers_authoritative_all_country_cost(self):
+        payload = {
+            "coverage": {
+                "all_country": {"seller_cost": 16.45, "list_cost": 18.00},
+                "regional": {"seller_cost": 12.00},
+            },
+            "cost": 9.00,
+        }
+
+        def request_fn(_client_id, _loja, cfg, _method, _url, **_kwargs):
+            return _PayloadResponse(payload), cfg
+
+        with (
+            patch.object(pricing, "_cache_get", return_value=None, create=True),
+            patch.object(pricing, "_cache_set", return_value=None, create=True),
+            patch.object(pricing, "ML_ITEM_SHIPPING_CACHE", {}, create=True),
+            patch.object(pricing, "ML_ITEM_SHIPPING_CACHE_TTL", 900, create=True),
+        ):
+            resultado, _cfg = pricing._ml_obter_frete_detalhado(
+                "000002",
+                "JK Pecas",
+                {"user_id": "123"},
+                "MLB999000111",
+                {"free_shipping": True, "mode": "me2", "logistic_type": "cross_docking"},
+                request_fn=request_fn,
+                contexto_frete={"item_price": 110.79, "free_shipping": True},
+            )
+
+        self.assertEqual(resultado["shipping_cost"], 16.45)
+        self.assertTrue(resultado["shipping_exact_for_price"])
+        self.assertEqual(resultado["shipping_cost_source_path"], "coverage.all_country.seller_cost")
+
+    def test_inexact_cached_shipping_is_not_reused_for_a_price_quote(self):
+        chamadas = []
+        payload = {"coverage": {"all_country": {"list_cost": 13.25}}}
+
+        def request_fn(_client_id, _loja, cfg, _method, url, **_kwargs):
+            chamadas.append(url)
+            return _PayloadResponse(payload), cfg
+
+        with (
+            patch.object(
+                pricing,
+                "_cache_get",
+                return_value={"shipping_cost": 7.85, "shipping_exact_for_price": False},
+                create=True,
+            ),
+            patch.object(pricing, "_cache_set", return_value=None, create=True),
+            patch.object(pricing, "ML_ITEM_SHIPPING_CACHE", {}, create=True),
+            patch.object(pricing, "ML_ITEM_SHIPPING_CACHE_TTL", 900, create=True),
+        ):
+            resultado, _cfg = pricing._ml_obter_frete_detalhado(
+                "000002",
+                "JK Pecas",
+                {"user_id": "123"},
+                "MLB2127140953",
+                {"free_shipping": False},
+                request_fn=request_fn,
+                contexto_frete={"item_price": 87.66, "free_shipping": False},
+            )
+
+        self.assertEqual(len(chamadas), 1)
+        self.assertEqual(resultado["shipping_cost"], 13.25)
+        self.assertTrue(resultado["shipping_exact_for_price"])
 
     def test_shipping_cache_separates_price_and_dimensions(self):
         cache_keys = []
@@ -158,10 +364,11 @@ class PromocoesFreteTests(unittest.TestCase):
         for item in patches:
             item.start()
         try:
-            for preco, dimensions in (
-                (71.0, "6x15x20,500"),
-                (95.11, "6x15x20,500"),
-                (95.11, "6x15x20,600"),
+            for preco, dimensions, free_shipping in (
+                (71.0, "6x15x20,500", True),
+                (95.11, "6x15x20,500", True),
+                (95.11, "6x15x20,600", True),
+                (95.11, "6x15x20,600", False),
             ):
                 pricing._ml_obter_frete_detalhado(
                     "000002",
@@ -177,16 +384,16 @@ class PromocoesFreteTests(unittest.TestCase):
                         "mode": "me2",
                         "logistic_type": "fulfillment",
                         "dimensions": dimensions,
-                        "free_shipping": True,
+                        "free_shipping": free_shipping,
                     },
                 )
         finally:
             for item in reversed(patches):
                 item.stop()
 
-        self.assertEqual(len(cache_keys), 3)
-        self.assertEqual(len(set(cache_keys)), 3)
-        self.assertTrue(all(key.startswith("v5:") for key in cache_keys))
+        self.assertEqual(len(cache_keys), 4)
+        self.assertEqual(len(set(cache_keys)), 4)
+        self.assertTrue(all(key.startswith("v7:") for key in cache_keys))
 
     def test_each_promotion_price_gets_its_own_shipping_query(self):
         precos_consultados = []
