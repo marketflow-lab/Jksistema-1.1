@@ -291,6 +291,26 @@
             };
         }
 
+        function normalizarEtapasAlteracaoFavoritos(stages) {
+            if (!stages || typeof stages !== 'object' || Array.isArray(stages)) return {};
+            const saida = {};
+            Object.entries(stages).forEach(([nome, etapa]) => {
+                const chave = textoHistoricoFavoritosSeguro(nome, 80);
+                if (!chave || !etapa || typeof etapa !== 'object' || Array.isArray(etapa)) return;
+                const etapaNormalizada = {
+                    status: textoHistoricoFavoritosSeguro(etapa.status || '', 60)
+                };
+                ['message', 'detail', 'error'].forEach(campo => {
+                    if (etapa[campo] !== undefined && etapa[campo] !== null && etapa[campo] !== '') {
+                        etapaNormalizada[campo] = textoHistoricoFavoritosSeguro(etapa[campo], 300);
+                    }
+                });
+                if (typeof etapa.retryable === 'boolean') etapaNormalizada.retryable = etapa.retryable;
+                saida[chave] = etapaNormalizada;
+            });
+            return saida;
+        }
+
         function normalizarVinculoAlteracaoFavoritos(vinculo) {
             const item = vinculo && typeof vinculo === 'object' ? vinculo : {};
             return {
@@ -301,6 +321,13 @@
                 itemId: textoHistoricoFavoritosSeguro(item.itemId || item.item_id || '', 40),
                 status: textoHistoricoFavoritosSeguro(item.status || item.tipo || 'info', 40),
                 status_texto: textoHistoricoFavoritosSeguro(item.status_texto || item.mensagem || '', 300),
+                outcome: textoHistoricoFavoritosSeguro(item.outcome || '', 80),
+                retryable: typeof item.retryable === 'boolean' ? item.retryable : null,
+                retry_requires_approval: typeof item.retry_requires_approval === 'boolean'
+                    ? item.retry_requires_approval
+                    : null,
+                terminal: item.terminal === true,
+                stages: normalizarEtapasAlteracaoFavoritos(item.stages),
                 nosso: normalizarAnuncioHistoricoFavoritosFrontend(item.nosso || item.anuncio || {}),
                 base: normalizarAnuncioHistoricoFavoritosFrontend(item.base || item.ranking || {}),
                 relatorio_inicial: normalizarLinhaRelatorioAlteracaoFavoritos(item.relatorio_inicial),

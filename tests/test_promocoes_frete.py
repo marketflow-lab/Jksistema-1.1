@@ -279,38 +279,6 @@ class PromocoesFreteTests(unittest.TestCase):
         self.assertTrue(resultado["free_shipping"])
         self.assertEqual(resultado["shipping_buyer_cost"], 0.0)
 
-    def test_contextual_shipping_prefers_authoritative_all_country_cost(self):
-        payload = {
-            "coverage": {
-                "all_country": {"seller_cost": 16.45, "list_cost": 18.00},
-                "regional": {"seller_cost": 12.00},
-            },
-            "cost": 9.00,
-        }
-
-        def request_fn(_client_id, _loja, cfg, _method, _url, **_kwargs):
-            return _PayloadResponse(payload), cfg
-
-        with (
-            patch.object(pricing, "_cache_get", return_value=None, create=True),
-            patch.object(pricing, "_cache_set", return_value=None, create=True),
-            patch.object(pricing, "ML_ITEM_SHIPPING_CACHE", {}, create=True),
-            patch.object(pricing, "ML_ITEM_SHIPPING_CACHE_TTL", 900, create=True),
-        ):
-            resultado, _cfg = pricing._ml_obter_frete_detalhado(
-                "000002",
-                "JK Pecas",
-                {"user_id": "123"},
-                "MLB999000111",
-                {"free_shipping": True, "mode": "me2", "logistic_type": "cross_docking"},
-                request_fn=request_fn,
-                contexto_frete={"item_price": 110.79, "free_shipping": True},
-            )
-
-        self.assertEqual(resultado["shipping_cost"], 16.45)
-        self.assertTrue(resultado["shipping_exact_for_price"])
-        self.assertEqual(resultado["shipping_cost_source_path"], "coverage.all_country.seller_cost")
-
     def test_inexact_cached_shipping_is_not_reused_for_a_price_quote(self):
         chamadas = []
         payload = {"coverage": {"all_country": {"list_cost": 13.25}}}
@@ -394,6 +362,87 @@ class PromocoesFreteTests(unittest.TestCase):
         self.assertEqual(len(cache_keys), 4)
         self.assertEqual(len(set(cache_keys)), 4)
         self.assertTrue(all(key.startswith("v7:") for key in cache_keys))
+
+    def test_contextual_shipping_prefers_authoritative_all_country_over_regional_minimum(self):
+        payload = {
+            "coverage": {
+                "all_country": {
+                    "seller_cost": 16.45,
+                    "list_cost": 18.00,
+                },
+                "regional": {"seller_cost": 12.00},
+            },
+            "cost": 9.00,
+        }
+
+        def request_fn(_client_id, _loja, cfg, _method, _url, **_kwargs):
+            return _PayloadResponse(payload), cfg
+
+        with (
+            patch.object(pricing, "_cache_get", return_value=None, create=True),
+            patch.object(pricing, "_cache_set", return_value=None, create=True),
+            patch.object(pricing, "ML_ITEM_SHIPPING_CACHE", {}, create=True),
+            patch.object(pricing, "ML_ITEM_SHIPPING_CACHE_TTL", 900, create=True),
+        ):
+            resultado, _cfg = pricing._ml_obter_frete_detalhado(
+                "000002",
+                "JK Pecas",
+                {"user_id": "123"},
+                "MLB999000111",
+                {"free_shipping": True, "mode": "me2", "logistic_type": "cross_docking"},
+                request_fn=request_fn,
+                contexto_frete={"item_price": 110.79, "free_shipping": True},
+            )
+
+        self.assertEqual(resultado["shipping_cost"], 16.45)
+        self.assertTrue(resultado["shipping_exact_for_price"])
+        self.assertEqual(resultado["shipping_cost_source_path"], "coverage.all_country.seller_cost")
+        self.assertEqual(resultado["shipping_cost_retry_source"], "users/shipping_options/free/contexto")
+
+    def test_contextual_shipping_fallback_is_not_exact_or_usable_for_receivable_reconciliation(self):
+        payload = {"coverage": {"regional": {"seller_cost": 12.00}}}
+
+        def request_fn(_client_id, _loja, cfg, _method, _url, **_kwargs):
+            return _PayloadResponse(payload), cfg
+
+        with (
+            patch.object(pricing, "_cache_get", return_value=None, create=True),
+            patch.object(pricing, "_cache_set", return_value=None, create=True),
+            patch.object(pricing, "ML_ITEM_SHIPPING_CACHE", {}, create=True),
+            patch.object(pricing, "ML_ITEM_SHIPPING_CACHE_TTL", 900, create=True),
+        ):
+            resultado, _cfg = pricing._ml_obter_frete_detalhado(
+                "000002",
+                "JK Pecas",
+                {"user_id": "123"},
+                "MLB999000111",
+                {"free_shipping": True, "mode": "me2", "logistic_type": "cross_docking"},
+                request_fn=request_fn,
+                contexto_frete={"item_price": 110.79, "free_shipping": True},
+            )
+
+        self.assertEqual(resultado["shipping_cost"], 12.00)
+        self.assertFalse(resultado["shipping_exact_for_price"])
+        self.assertEqual(resultado["shipping_cost_source_path"], "coverage.regional.seller_cost")
+
+        with (
+            patch.object(pricing, "_parse_float_flex", side_effect=_parse_float, create=True),
+            patch.object(pricing, "_to_float_safe", side_effect=_parse_float, create=True),
+            patch.object(pricing, "_ml_extrair_preco_promocao_raw", return_value=(110.79, None), create=True),
+        ):
+            desconto = pricing._ml_ajustar_desconto_tarifa_recebivel_promocao(
+                {"price": 110.79, "seller_receives": 82.15},
+                preco_promocional=110.79,
+                tarifa_ml=18.83,
+                frete_ml=resultado["shipping_cost"],
+                frete_exato=resultado["shipping_exact_for_price"],
+                frete_preco_contexto=resultado["shipping_price_context"],
+                tarifa_exata=True,
+                tarifa_preco_contexto=110.79,
+                tarifa_fonte="sites/MLB/listing_prices",
+                frete_fonte=resultado["shipping_cost_retry_source"],
+            )
+        self.assertIsNone(desconto)
 
     def test_each_promotion_price_gets_its_own_shipping_query(self):
         precos_consultados = []

@@ -459,6 +459,94 @@ function directRegisteredInboundEnvironment(registeredPhone: string) {
   };
 }
 
+function questionTemplateEnvironment() {
+  const graphRequests: Array<{ url: string; body: any }> = [];
+  let outbox: Record<string, any> | null = null;
+  const binding = {
+    subject_id: "subject",
+    wa_id: "5537999990000",
+    phone_number: "5537999990000",
+    client_id: "cliente",
+    username: "operador",
+    machine_id: "machine",
+    active: 1,
+    last_inbound_at: 0,
+  };
+  const db = {
+    prepare(sql: string) {
+      const make = (values: any[]) => ({
+        async first() {
+          if (sql.includes("SELECT machine_id FROM bindings WHERE subject_id=")) return binding;
+          if (sql.includes("SELECT fingerprint FROM proactive_events")) return null;
+          if (sql.includes("SELECT * FROM bindings WHERE subject_id=")) return binding;
+          if (sql.includes("SELECT id FROM outbox WHERE idempotency_key=")) return outbox ? { id: outbox.id } : null;
+          if (sql.includes("SELECT name,language,category,status FROM template_registry")) {
+            return {
+              name: "jk_black_jhon_nova_pergunta_v2",
+              language: "pt_BR",
+              category: "UTILITY",
+              status: "APPROVED",
+            };
+          }
+          return null;
+        },
+        async run() {
+          if (sql.includes("INSERT OR IGNORE INTO outbox")) {
+            outbox = {
+              id: values[0],
+              inbound_message_id: values[1],
+              subject_id: values[2],
+              recipient: values[3],
+              message_type: values[4],
+              text_body: values[5],
+              template_name: values[6],
+              template_params_json: values[7],
+              status: values[8],
+              created_at: values[9],
+              updated_at: values[10],
+              idempotency_key: values[11],
+              attempts: 0,
+            };
+          } else if (outbox && sql.includes("UPDATE outbox SET status='sent'")) {
+            outbox.status = "sent";
+            outbox.meta_message_id = values[2];
+          }
+          return { meta: { changes: 1 } };
+        },
+        async all() {
+          if (sql.includes("SELECT * FROM outbox WHERE subject_id=")) {
+            return { results: outbox && ["queued", "retry", "waiting_free_window"].includes(outbox.status) ? [{ ...outbox }] : [] };
+          }
+          if (sql.includes("SELECT status FROM outbox WHERE inbound_message_id=")) {
+            return { results: outbox ? [{ status: outbox.status }] : [] };
+          }
+          return { results: [] };
+        },
+      });
+      return {
+        bind(...values: any[]) { return make(values); },
+        first() { return make([]).first(); },
+        run() { return make([]).run(); },
+        all() { return make([]).all(); },
+      };
+    },
+  };
+  const env = {
+    DB: db,
+    BRIDGE_TOKEN: "bridge-secret",
+    ZERO_COST_POLICY_VALID_UNTIL: "2026-09-30T23:59:59Z",
+    FREE_WINDOW_SECONDS: "84600",
+    META_GRAPH_API_VERSION: "v25.0",
+    META_SYSTEM_USER_TOKEN: "meta-token",
+    META_PHONE_NUMBER_ID: "phone-id",
+  } as any;
+  vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    graphRequests.push({ url: String(input), body: JSON.parse(String(init?.body || "{}")) });
+    return new Response(JSON.stringify({ messages: [{ id: "wamid.question-template" }] }), { status: 200 });
+  });
+  return { env, graphRequests };
+}
+
 function quotedInboundEnvironment() {
   const now = Math.floor(Date.now() / 1000);
   const binding = {
@@ -1118,7 +1206,7 @@ describe("public gateway routes", () => {
       context(),
     );
     const statusPayload = await statusResponse.json() as any;
-    expect(statusPayload).toMatchObject({ gateway_protocol_version: 1, build_version: "1.0.104" });
+    expect(statusPayload).toMatchObject({ gateway_protocol_version: 1, build_version: "1.0.105" });
     expect(statusPayload.inbound_media).toMatchObject({
       durable_retry: true,
       max_attempts: 5,
@@ -1621,6 +1709,170 @@ describe("public gateway routes", () => {
     expect(insert?.values[1]).toBe(registeredPhone);
     expect(insert?.values[2]).toBe(metaPhoneWithoutNinthDigit);
     expect(direct.sqlCalls.some((item) => item.sql.includes("UPDATE bindings SET last_inbound_at"))).toBe(true);
+  });
+
+  it("stores a template quick-reply payload as the inbound command that reopens the window", async () => {
+    const registeredPhone = "5537999995515";
+    const direct = directRegisteredInboundEnvironment(registeredPhone);
+    const body = JSON.stringify({
+      entry: [{
+        changes: [{
+          value: {
+            metadata: { phone_number_id: "phone-id" },
+            messages: [{
+              id: "wamid.in.view-pending",
+              from: registeredPhone,
+              timestamp: String(Math.floor(Date.now() / 1000)),
+              type: "button",
+              button: { payload: "ppv_view_pending", text: "Ver sugestao" },
+            }],
+          },
+        }],
+      }],
+    });
+    const pending = pendingContext();
+
+    const response = await worker.fetch(
+      new Request("https://example.test/webhooks/whatsapp", {
+        method: "POST",
+        body,
+        headers: { "x-hub-signature-256": await signature("app-secret", body) },
+      }),
+      direct.env,
+      pending.context,
+    );
+    await pending.drain();
+
+    expect(response.status).toBe(200);
+    const insert = direct.sqlCalls.find((item) => item.sql.includes("INSERT INTO inbox"));
+    expect(insert?.values[1]).toBe(registeredPhone);
+    expect(insert?.values[4]).toBe("button");
+    expect(insert?.values[5]).toBe("ppv_view_pending");
+    expect(direct.sqlCalls.some((item) => item.sql.includes("UPDATE bindings SET last_inbound_at"))).toBe(true);
+  });
+
+  it("preserves readable text for unrelated legacy template buttons", async () => {
+    const registeredPhone = "5537999995515";
+    const direct = directRegisteredInboundEnvironment(registeredPhone);
+    const body = JSON.stringify({
+      entry: [{ changes: [{ value: {
+        metadata: { phone_number_id: "phone-id" },
+        messages: [{
+          id: "wamid.in.legacy-button",
+          from: registeredPhone,
+          timestamp: String(Math.floor(Date.now() / 1000)),
+          type: "button",
+          button: { payload: "opaque_legacy_payload", text: "Sim" },
+        }],
+      } }] }],
+    });
+    const pending = pendingContext();
+
+    const response = await worker.fetch(
+      new Request("https://example.test/webhooks/whatsapp", {
+        method: "POST",
+        body,
+        headers: { "x-hub-signature-256": await signature("app-secret", body) },
+      }),
+      direct.env,
+      pending.context,
+    );
+    await pending.drain();
+
+    expect(response.status).toBe(200);
+    const insert = direct.sqlCalls.find((item) => item.sql.includes("INSERT INTO inbox"));
+    expect(insert?.values[5]).toBe("Sim");
+  });
+
+  it("sends the question and suggestion in an approved v2 utility template with quick reply", async () => {
+    const target = questionTemplateEnvironment();
+    const response = await worker.fetch(
+      new Request("https://example.test/bridge/proactive", {
+        method: "POST",
+        body: JSON.stringify({
+          subject_id: "subject",
+          machine_id: "machine",
+          fingerprint: "ppv-template-v2:1234567890",
+          event_type: "task_awaiting_approval",
+          severity: "medium",
+          text: "Nova pergunta aguardando revisao.",
+          template_name: "jk_black_jhon_nova_pergunta_v2",
+          template_params: ["JK Pecas", "Este produto tem garantia?", "Sim, possui garantia."],
+        }),
+        headers: { authorization: "Bearer bridge-secret", "content-type": "application/json" },
+      }),
+      target.env,
+      context(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      success: true,
+      status: "sent",
+      delivery_receipt: { confirmed: true },
+    });
+    expect(target.graphRequests).toHaveLength(1);
+    expect(target.graphRequests[0].body).toMatchObject({
+      type: "template",
+      template: {
+        name: "jk_black_jhon_nova_pergunta_v2",
+        language: { code: "pt_BR" },
+        components: [
+          {
+            type: "body",
+            parameters: [
+              { type: "text", text: "JK Pecas" },
+              { type: "text", text: "Este produto tem garantia?" },
+              { type: "text", text: "Sim, possui garantia." },
+            ],
+          },
+          {
+            type: "button",
+            sub_type: "quick_reply",
+            index: "0",
+            parameters: [{ type: "payload", payload: "ppv_view_pending" }],
+          },
+        ],
+      },
+    });
+  });
+
+  it("submits the versioned question-suggestion template definition with its quick reply", async () => {
+    const graphRequests: Array<{ url: string; body: any }> = [];
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const method = String(init?.method || "GET").toUpperCase();
+      const parsed = init?.body ? JSON.parse(String(init.body)) : null;
+      graphRequests.push({ url: String(input), body: parsed });
+      return method === "GET"
+        ? new Response(JSON.stringify({ data: [] }), { status: 200 })
+        : new Response(JSON.stringify({ success: true }), { status: 200 });
+    });
+    const response = await worker.fetch(
+      new Request("https://example.test/bridge/templates/sync", {
+        method: "POST",
+        body: JSON.stringify({ create_missing: true }),
+        headers: { authorization: "Bearer bridge-secret", "content-type": "application/json" },
+      }),
+      {
+        DB: { prepare: () => { throw new Error("D1 should not be touched without returned templates"); } },
+        BRIDGE_TOKEN: "bridge-secret",
+        META_GRAPH_API_VERSION: "v25.0",
+        META_SYSTEM_USER_TOKEN: "meta-token",
+        META_WABA_ID: "waba-id",
+      } as any,
+      context(),
+    );
+
+    expect(response.status).toBe(200);
+    const definition = graphRequests.map((item) => item.body).find((item) => item?.name === "jk_black_jhon_nova_pergunta_v2");
+    expect(definition).toMatchObject({
+      category: "UTILITY",
+      language: "pt_BR",
+      components: [
+        { type: "BODY" },
+        { type: "BUTTONS", buttons: [{ type: "QUICK_REPLY", text: "Ver sugestao" }] },
+      ],
+    });
   });
 
   it("sends a written welcome message when the WhatsApp service window is open", async () => {

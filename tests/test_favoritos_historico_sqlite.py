@@ -235,6 +235,47 @@ class FavoritosHistoricoSqliteTest(unittest.TestCase):
             self.assertEqual(grupo["anuncios"][0]["titulo"], "Titulo recarregado")
             self.assertEqual(grupo["anuncios"][0]["pesquisas_origem"], ["pesquisa 1", "pesquisa 2"])
 
+    def test_sqlite_preserva_contrato_operacional_da_alteracao_de_favoritos(self):
+        entrada = {
+            "id": "hist-alteracao-terminal",
+            "tipo": "alteracao_favoritos",
+            "data_iso": "2026-07-27T10:00:00",
+            "loja": "JK Pecas",
+            "usuario": "caio",
+            "alteracoes_favoritos": [{
+                "sku": "001",
+                "vinculos": [{
+                    "itemId": "MLB2121768448",
+                    "loja": "JK Pecas",
+                    "status": "erro",
+                    "status_texto": "Preco nao modificavel",
+                    "outcome": "partial_failure",
+                    "retryable": False,
+                    "retry_requires_approval": False,
+                    "terminal": True,
+                    "stages": {
+                        "listing_type": {"status": "completed", "campo_nao_permitido": "segredo"},
+                        "price": {"status": "failed", "detail": "item.price.not_modifiable"},
+                        "promotion": {"status": "not_started"},
+                    },
+                }],
+            }],
+        }
+
+        salvo = favoritos_storage._favoritos_salvar_historico("000002", "caio", [entrada])
+        recarregado = favoritos_storage._favoritos_carregar_historico("000002", "caio")
+
+        for payload in (salvo, recarregado):
+            vinculo = payload["historico"][0]["alteracoes_favoritos"][0]["vinculos"][0]
+            self.assertEqual(vinculo["outcome"], "partial_failure")
+            self.assertIs(vinculo["retryable"], False)
+            self.assertIs(vinculo["retry_requires_approval"], False)
+            self.assertIs(vinculo["terminal"], True)
+            self.assertEqual(vinculo["stages"]["listing_type"]["status"], "completed")
+            self.assertEqual(vinculo["stages"]["price"]["status"], "failed")
+            self.assertEqual(vinculo["stages"]["price"]["detail"], "item.price.not_modifiable")
+            self.assertNotIn("campo_nao_permitido", vinculo["stages"]["listing_type"])
+
     def test_shared_sync_usa_db_e_aceita_json_legado(self):
         favoritos_storage._favoritos_salvar_historico(
             "000002",

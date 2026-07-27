@@ -58,7 +58,9 @@ type JsonRecord = Record<string, unknown>;
 
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 const GATEWAY_PROTOCOL_VERSION = 1;
-const GATEWAY_BUILD_VERSION = "1.0.104";
+const GATEWAY_BUILD_VERSION = "1.0.105";
+const QUESTION_SUGGESTION_TEMPLATE_NAME = "jk_black_jhon_nova_pergunta_v2";
+const QUESTION_SUGGESTION_OPEN_PAYLOAD = "ppv_view_pending";
 const MAX_BINDINGS_PER_USER = 3;
 const INBOUND_MEDIA_MAX_ATTEMPTS = 5;
 const INBOUND_MEDIA_RETRY_DELAYS_SECONDS = [5 * 60, 15 * 60, 30 * 60, 60 * 60] as const;
@@ -127,6 +129,19 @@ const TEMPLATE_DEFINITIONS = [
     category: "UTILITY",
     language: "pt_BR",
     components: [{ type: "BODY", text: "O Black Jhon encontrou uma nova pergunta de comprador na loja {{1}}. Abra esta conversa para revisar a resposta sugerida.", example: { body_text: [["JK Pecas"]] } }],
+  },
+  {
+    name: QUESTION_SUGGESTION_TEMPLATE_NAME,
+    category: "UTILITY",
+    language: "pt_BR",
+    components: [
+      {
+        type: "BODY",
+        text: "O Black Jhon encontrou uma nova pergunta de comprador na loja {{1}}.\n\nPergunta: {{2}}\n\nSugestao de resposta: {{3}}\n\nToque em Ver sugestao para aprovar, corrigir, gerar outra resposta ou negar.",
+        example: { body_text: [["JK Pecas", "Este produto tem garantia?", "Sim, o produto possui garantia conforme as condicoes do anuncio."]] },
+      },
+      { type: "BUTTONS", buttons: [{ type: "QUICK_REPLY", text: "Ver sugestao" }] },
+    ],
   },
 ];
 
@@ -650,7 +665,12 @@ async function finalizeMetaWebhook(request: Request, env: Env): Promise<Response
 function extractMessageText(message: JsonRecord): string {
   const type = String(message.type || "");
   if (type === "text") return String((message.text as JsonRecord | undefined)?.body || "").trim();
-  if (type === "button") return String((message.button as JsonRecord | undefined)?.text || "").trim();
+  if (type === "button") {
+    const button = (message.button as JsonRecord | undefined) || {};
+    const payload = String(button.payload || "").trim();
+    if (payload === QUESTION_SUGGESTION_OPEN_PAYLOAD) return payload;
+    return String(button.text || payload || "").trim();
+  }
   if (type === "interactive") {
     const interactive = (message.interactive as JsonRecord | undefined) || {};
     const reply = (interactive.button_reply as JsonRecord | undefined) || (interactive.list_reply as JsonRecord | undefined) || {};
@@ -1400,6 +1420,18 @@ async function sendOutboxItem(env: Env, item: JsonRecord): Promise<void> {
   if (templateName) {
     let params: unknown[] = [];
     try { params = JSON.parse(String(item.template_params_json || "[]")) as unknown[]; } catch { params = []; }
+    const components: JsonRecord[] = [{
+      type: "body",
+      parameters: params.map((value) => ({ type: "text", text: String(value || "").slice(0, 500) })),
+    }];
+    if (templateName === QUESTION_SUGGESTION_TEMPLATE_NAME) {
+      components.push({
+        type: "button",
+        sub_type: "quick_reply",
+        index: "0",
+        parameters: [{ type: "payload", payload: QUESTION_SUGGESTION_OPEN_PAYLOAD }],
+      });
+    }
     body = {
       messaging_product: "whatsapp",
       recipient_type: "individual",
@@ -1408,7 +1440,7 @@ async function sendOutboxItem(env: Env, item: JsonRecord): Promise<void> {
       template: {
         name: templateName,
         language: { code: String(template?.language || "pt_BR") },
-        components: [{ type: "body", parameters: params.map((value) => ({ type: "text", text: String(value || "").slice(0, 500) })) }],
+        components,
       },
     };
   } else {
@@ -2633,6 +2665,9 @@ async function proactive(request: Request, env: Env): Promise<Response> {
   if (existing) {
     await flushOutbox(env, subjectId, 12);
     const deliveryReceipt = await proactiveReceipt(env, fingerprint);
+    if (deliveryReceipt.confirmed === true) {
+      await env.DB.prepare("UPDATE proactive_events SET status='sent' WHERE fingerprint=?").bind(fingerprint).run();
+    }
     return json({ success: true, status: "duplicate", delivery_receipt: deliveryReceipt });
   }
   if (!isTask && !isScheduledReport) {
@@ -2661,7 +2696,13 @@ async function proactive(request: Request, env: Env): Promise<Response> {
   }
   await flushOutbox(env, subjectId, Math.min(12, Math.max(3, textParts.length + 1)));
   const deliveryReceipt = await proactiveReceipt(env, fingerprint, textParts.length);
-  return json({ success: true, status: eligibility.allowed ? "queued" : eligibility.reason, queued_parts: textParts.length, delivery_receipt: deliveryReceipt });
+  if (deliveryReceipt.confirmed === true) {
+    await env.DB.prepare("UPDATE proactive_events SET status='sent' WHERE fingerprint=?").bind(fingerprint).run();
+  }
+  const deliveryStatus = deliveryReceipt.confirmed === true
+    ? "sent"
+    : eligibility.allowed ? "queued" : eligibility.reason;
+  return json({ success: true, status: deliveryStatus, queued_parts: textParts.length, delivery_receipt: deliveryReceipt });
 }
 
 async function interactiveApproval(request: Request, env: Env): Promise<Response> {

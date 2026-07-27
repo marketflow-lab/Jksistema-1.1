@@ -225,6 +225,11 @@ def test_blocked_specific_question_template_selects_approved_generic_utility(
         lambda _config: {
             "templates": [
                 {
+                    "name": "jk_black_jhon_nova_pergunta_v2",
+                    "category": "UTILITY",
+                    "status": "PENDING",
+                },
+                {
                     "name": "jk_black_jhon_nova_pergunta",
                     "category": "UTILITY",
                     "status": "PENDING",
@@ -249,6 +254,8 @@ def test_blocked_specific_question_template_selects_approved_generic_utility(
         "approval-1",
         "subject-1",
         "JK Pecas",
+        "Tem garantia?",
+        "Sim, possui garantia.",
         specific_status,
     )
 
@@ -259,6 +266,217 @@ def test_blocked_specific_question_template_selects_approved_generic_utility(
     assert notifications["notification-key"]["status"] == "sent"
     assert notifications["notification-key"]["blocked"] is False
     assert recorded[-1]["status"] == "sent"
+
+
+def test_blocked_question_uses_v2_template_with_question_suggestion_and_quick_reply_contract(monkeypatch):
+    proactive_calls: list[dict] = []
+
+    monkeypatch.setattr(
+        question_workflow,
+        "_worker_health",
+        lambda _config: {
+            "templates": [
+                {
+                    "name": "jk_black_jhon_nova_pergunta_v2",
+                    "category": "UTILITY",
+                    "status": "APPROVED",
+                }
+            ]
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        question_workflow,
+        "_post_proactive",
+        lambda _config, payload: proactive_calls.append(dict(payload)) or {
+            "success": True,
+            "status": "waiting_free_window",
+            "delivery_receipt": {"confirmed": True},
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        question_workflow,
+        "_bridge_store",
+        lambda: SimpleNamespace(record_notification=lambda *_args, **_kwargs: None),
+        raising=False,
+    )
+    monkeypatch.setattr(question_workflow, "_now", lambda: "2026-07-24T18:00:00Z", raising=False)
+    notifications: dict[str, dict] = {}
+    long_store = "L" * 120
+    long_question = "Q" * 400
+    long_suggestion = "R" * 700
+
+    question_workflow._record_blocked_question_notification(
+        {"machine_id": "machine-1"},
+        notifications,
+        "notification-key",
+        "approval-1",
+        "subject-1",
+        long_store,
+        long_question,
+        long_suggestion,
+        "waiting_free_window",
+    )
+
+    assert len(proactive_calls) == 1
+    payload = proactive_calls[0]
+    assert payload["template_name"] == "jk_black_jhon_nova_pergunta_v2"
+    assert payload["template_params"][0].endswith("...")
+    assert len(payload["template_params"][0]) == 80
+    assert payload["template_params"][1].endswith("...")
+    assert len(payload["template_params"][1]) == 240
+    assert payload["template_params"][2].endswith("...")
+    assert len(payload["template_params"][2]) == 480
+    rendered = (
+        f"O Black Jhon encontrou uma nova pergunta de comprador na loja {payload['template_params'][0]}.\n\n"
+        f"Pergunta: {payload['template_params'][1]}\n\n"
+        f"Sugestao de resposta: {payload['template_params'][2]}\n\n"
+        "Toque em Ver sugestao para aprovar, corrigir, gerar outra resposta ou negar."
+    )
+    assert len(rendered) <= 1024
+    assert payload["fingerprint"] == "ppv-template:jk_black_jhon_nova_pergunta_v2:notification-key"
+    assert notifications["notification-key"]["status"] == "sent"
+    assert notifications["notification-key"]["blocked"] is False
+    assert notifications["notification-key"]["template_name"] == "jk_black_jhon_nova_pergunta_v2"
+
+
+def test_template_health_failure_uses_upgradeable_generic_fallback(monkeypatch):
+    proactive_calls: list[dict] = []
+
+    def unavailable_health(_config):
+        raise RuntimeError("health temporarily unavailable")
+
+    monkeypatch.setattr(question_workflow, "_worker_health", unavailable_health, raising=False)
+    monkeypatch.setattr(
+        question_workflow,
+        "_post_proactive",
+        lambda _config, payload: proactive_calls.append(dict(payload)) or {
+            "success": False,
+            "status": "template_not_approved",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        question_workflow,
+        "_bridge_store",
+        lambda: SimpleNamespace(record_notification=lambda *_args, **_kwargs: None),
+        raising=False,
+    )
+    monkeypatch.setattr(question_workflow, "_now", lambda: "2026-07-24T18:00:00Z", raising=False)
+    notifications: dict[str, dict] = {}
+
+    question_workflow._record_blocked_question_notification(
+        {"machine_id": "machine-1"},
+        notifications,
+        "notification-key",
+        "approval-1",
+        "subject-1",
+        "JK Pecas",
+        "Este produto tem garantia?",
+        "Sim, possui garantia.",
+        "waiting_free_window",
+        last_inbound_at=100,
+    )
+
+    assert proactive_calls[0]["template_name"] == "jk_joao_aprovacao_pendente"
+    assert proactive_calls[0]["fingerprint"] == (
+        "ppv-template:jk_joao_aprovacao_pendente:notification-key"
+    )
+    assert notifications["notification-key"]["template_name"] == "jk_joao_aprovacao_pendente"
+
+
+def test_template_fingerprint_changes_when_pending_question_upgrades_from_generic_to_v2(monkeypatch):
+    proactive_calls: list[dict] = []
+    v2_approved = {"value": False}
+
+    def worker_health(_config):
+        templates = [{
+            "name": "jk_joao_aprovacao_pendente",
+            "category": "UTILITY",
+            "status": "APPROVED",
+        }]
+        if v2_approved["value"]:
+            templates.append({
+                "name": "jk_black_jhon_nova_pergunta_v2",
+                "category": "UTILITY",
+                "status": "APPROVED",
+            })
+        return {"templates": templates}
+
+    monkeypatch.setattr(question_workflow, "_worker_health", worker_health, raising=False)
+    monkeypatch.setattr(
+        question_workflow,
+        "_post_proactive",
+        lambda _config, payload: proactive_calls.append(dict(payload)) or {"success": True, "status": "sent"},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        question_workflow,
+        "_bridge_store",
+        lambda: SimpleNamespace(record_notification=lambda *_args, **_kwargs: None),
+        raising=False,
+    )
+    monkeypatch.setattr(question_workflow, "_now", lambda: "2026-07-24T18:00:00Z", raising=False)
+    notifications: dict[str, dict] = {}
+    arguments = (
+        {"machine_id": "machine-1"},
+        notifications,
+        "notification-key",
+        "approval-1",
+        "subject-1",
+        "JK Pecas",
+        "Este produto tem garantia?",
+        "Sim, possui garantia.",
+        "waiting_free_window",
+    )
+
+    question_workflow._record_blocked_question_notification(*arguments)
+    v2_approved["value"] = True
+    question_workflow._record_blocked_question_notification(*arguments)
+
+    assert [item["template_name"] for item in proactive_calls] == [
+        "jk_joao_aprovacao_pendente",
+        "jk_black_jhon_nova_pergunta_v2",
+    ]
+    assert proactive_calls[0]["fingerprint"] != proactive_calls[1]["fingerprint"]
+    assert proactive_calls[1]["fingerprint"] == (
+        "ppv-template:jk_black_jhon_nova_pergunta_v2:notification-key"
+    )
+
+
+def test_view_pending_quick_reply_is_consumed_without_reaching_conversation_agent(monkeypatch):
+    completed: list[tuple[str, dict]] = []
+    replies: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        question_workflow,
+        "_post_message_result",
+        lambda _config, message_id, payload: completed.append((message_id, dict(payload))),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        question_workflow,
+        "_post_command_reply",
+        lambda _config, _message_id, text, title: replies.append((title, text)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        question_workflow,
+        "_question_approval_allowed",
+        lambda permissions: permissions.get("perguntas_pos_venda") is True,
+        raising=False,
+    )
+
+    handled = question_workflow._handle_question_approval_command(
+        {},
+        {},
+        {"message_id": "wamid.view", "subject_id": "subject-1", "text_body": "ppv_view_pending"},
+        {"client_id": "cliente", "username": "operador", "permissions": {"perguntas_pos_venda": True}},
+    )
+
+    assert handled is True
+    assert completed == [("wamid.view", {"status": "completed", "response_parts": []})]
+    assert replies == []
 
 
 def test_disabled_post_sale_automation_never_schedules_post_sale(monkeypatch):

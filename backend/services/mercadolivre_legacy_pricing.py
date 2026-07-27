@@ -479,6 +479,9 @@ def _ml_obter_frete_detalhado(
         info["shipping_cost_source_path"] = caminho_origem
         info["shipping_exact_for_price"] = frete_exato
         if exato_para_preco:
+            info["shipping_buyer_cost"] = 0.0
+            info["shipping_buyer_text"] = "GrÃ¡tis"
+            info["free_shipping"] = True
             coverage = payload.get("coverage") if isinstance(payload, dict) else None
             all_country = coverage.get("all_country") if isinstance(coverage, dict) else None
             list_cost = _shipping_to_money(all_country.get("list_cost")) if isinstance(all_country, dict) else None
@@ -486,9 +489,9 @@ def _ml_obter_frete_detalhado(
                 info["shipping_list_cost"] = list_cost
             frete_gratis_comprador = _payload_indica_frete_gratis(payload)
             info["free_shipping"] = frete_gratis_comprador
-            if frete_gratis_comprador:
-                info["shipping_buyer_cost"] = 0.0
-                info["shipping_buyer_text"] = "GrÃ¡tis"
+            if not frete_gratis_comprador:
+                info["shipping_buyer_cost"] = None
+                info["shipping_buyer_text"] = ""
         return True
 
     item_list_cost = _shipping_to_money(shipping_info.get("list_cost"))
@@ -759,6 +762,9 @@ def _ml_obter_taxas_anuncio(client_id: str, loja: str, cfg: dict, item: dict, re
         "fee_breakdown": "",
         "pct_scope": "",
         "pct_note": "",
+        "ad_cost_source": "",
+        "ad_cost_exact_for_price": False,
+        "ad_cost_price_context": _to_float_safe(item.get("price")),
     }
 
     category_id = item.get("category_id")
@@ -771,7 +777,7 @@ def _ml_obter_taxas_anuncio(client_id: str, loja: str, cfg: dict, item: dict, re
     logistic_type = str(shipping_info.get("logistic_type") or "").strip()
     shipping_mode = str(shipping_info.get("mode") or "").strip()
 
-    cache_key = f"v4:{client_id}:{category_id}:{listing_type_id}:{price}:{logistic_type}:{shipping_mode}"
+    cache_key = f"v5:{client_id}:{category_id}:{listing_type_id}:{price}:{logistic_type}:{shipping_mode}"
     cached = _cache_get(ML_LISTING_FEE_CACHE, cache_key, ML_LISTING_FEE_CACHE_TTL)
     if cached:
         return cached, cfg
@@ -815,6 +821,9 @@ def _ml_obter_taxas_anuncio(client_id: str, loja: str, cfg: dict, item: dict, re
             info["listing_type_name"] = data.get("listing_type_name") or info["listing_type_name"]
 
             info["ad_cost"] = sale_fee_amount
+            if sale_fee_amount is not None:
+                info["ad_cost_source"] = "sites/MLB/listing_prices"
+                info["ad_cost_exact_for_price"] = True
             info["listing_fee_amount"] = listing_fee_amount
             info["fixed_fee_amount"] = fixed_fee_amount
             # Exibe exatamente o percentual disponibilizado pela API: primeiro a tarifa ML
@@ -938,19 +947,63 @@ def _ml_ajustar_desconto_tarifa_recebivel_promocao(
     desconto_tarifa_ml: Any = None,
     preco_promocional: Any = None,
     pct_desconto_campanha: Any = None,
+    tarifa_ml: Any = None,
+    frete_ml: Any = None,
+    frete_exato: bool = False,
+    frete_preco_contexto: Any = None,
+    tarifa_exata: bool = False,
+    tarifa_preco_contexto: Any = None,
+    tarifa_fonte: Any = None,
+    frete_fonte: Any = None,
 ) -> float | None:
     """Ajusta a reducao de tarifa usada no recebivel mostrado pelo ML."""
     estado_boost, desconto_boost = _ml_resolver_desconto_boost_tarifa_promocao_raw(raw_promocao)
     if estado_boost == "boosted":
         return round(float(desconto_boost), 2)
-    if estado_boost == "boost_incompleto":
-        return None
     if estado_boost == "sem_boost":
         return 0.0
 
     desconto_explicito = _ml_extrair_valor_desconto_taxa_promocao_raw(raw_promocao)
     if desconto_explicito is not None and desconto_explicito > 0:
         return round(float(desconto_explicito), 2)
+
+    # Alguns payloads do ML ainda omitem os campos novos de boost, mas trazem
+    # o recebivel final. Nesse caso a reducao de tarifa pode ser conciliada sem
+    # usar meli_percentage: recebe - (preco - tarifa normal - frete).
+    recebido_raw = raw_promocao.get("seller_receives") if isinstance(raw_promocao, dict) else None
+    if isinstance(recebido_raw, dict):
+        recebido_raw = recebido_raw.get("amount") or recebido_raw.get("value")
+    recebido = _to_float_safe(recebido_raw)
+    preco = _to_float_safe(preco_promocional)
+    tarifa = _to_float_safe(tarifa_ml)
+    frete = _to_float_safe(frete_ml)
+    frete_contexto = _to_float_safe(frete_preco_contexto)
+    tarifa_contexto = _to_float_safe(tarifa_preco_contexto)
+    tarifa_fonte_txt = str(tarifa_fonte or "").strip()
+    frete_fonte_txt = str(frete_fonte or "").strip()
+    preco_raw, _ = _ml_extrair_preco_promocao_raw(raw_promocao)
+    if (
+        recebido is not None
+        and preco is not None
+        and preco_raw is not None
+        and abs(float(preco_raw) - float(preco)) <= 0.02
+        and tarifa is not None
+        and tarifa >= 0
+        and tarifa_exata is True
+        and tarifa_contexto is not None
+        and abs(float(tarifa_contexto) - float(preco)) <= 0.02
+        and tarifa_fonte_txt == "sites/MLB/listing_prices"
+        and frete is not None
+        and frete >= 0
+        and frete_exato is True
+        and frete_contexto is not None
+        and abs(float(frete_contexto) - float(preco)) <= 0.02
+        and frete_fonte_txt == "users/shipping_options/free/contexto"
+    ):
+        desconto_conciliado = float(recebido) - (float(preco) - float(tarifa) - float(frete))
+        if desconto_conciliado > 0.005 and desconto_conciliado <= float(tarifa) + 0.02:
+            return round(desconto_conciliado, 2)
+
     # Sem evidencia atual no payload, nao reutiliza valor historico ou importado.
     # Isso impede que o antigo calculo por meli_percentage contamine a margem.
     return None
@@ -1061,11 +1114,23 @@ def _ml_extrair_preco_promocao_raw(entry: dict, priorizar_percentual_total_api: 
     if not isinstance(entry, dict):
         return None, None
 
-    chaves_preco_ordem = (
+    chaves_preco_ordem = [
         # A analise enriquece candidatos de SELLER_CAMPAIGN com o mesmo preco
         # escolhido pelo painel de Anuncios do ML. O endpoint publico informa
         # apenas limite e sugestao; a escolha depende das ofertas SMART do item.
         "_jk_preco_painel_seller_campaign",
+    ]
+    boosted_raw = entry.get("boosted_offer")
+    boosted_ativo = (
+        boosted_raw is True
+        or (isinstance(boosted_raw, (int, float)) and not isinstance(boosted_raw, bool) and boosted_raw == 1)
+        or str(boosted_raw or "").strip().lower() in {"true", "1", "yes", "sim"}
+    )
+    if boosted_ativo:
+        # Em ofertas com boost, este e o preco final efetivamente mostrado ao
+        # comprador e precisa prevalecer sobre o preco-base da oferta.
+        chaves_preco_ordem.append("total_price_for_boosted_offer")
+    chaves_preco_ordem.extend((
         "price",
         "deal_price",
         "promotion_price",
@@ -1082,9 +1147,9 @@ def _ml_extrair_preco_promocao_raw(entry: dict, priorizar_percentual_total_api: 
         "suggested_price",
         "recommended_price",
         "max_discounted_price",
-    )
+    ))
     chaves_preco = set(chaves_preco_ordem)
-    termos_preco = (
+    termos_preco = [
         "price",
         "preco",
         "precio",
@@ -1101,7 +1166,10 @@ def _ml_extrair_preco_promocao_raw(entry: dict, priorizar_percentual_total_api: 
         "recommended_price",
         "max_discounted_price",
         "discounted_price",
-    )
+    ]
+    if boosted_ativo:
+        termos_preco.append("total_price_for_boosted_offer")
+    termos_preco = tuple(termos_preco)
     termos_excluir_preco = (
         "receive",
         "receives",
@@ -1260,101 +1328,39 @@ def _ml_calcular_percentual_desconto_por_preco(preco_base, preco_final):
 
 
 def _ml_resolver_desconto_boost_tarifa_promocao_raw(entry: dict):
-    """Classifica o boost e extrai seu amount oficial quando disponivel."""
+    """Aceita boost somente no objeto da promocao/oferta ja validado."""
     if not isinstance(entry, dict):
         return "desconhecido", None
 
-    boost_confirmado = False
-    boost_invalido = False
-    boost_explicitamente_inativo = False
-    payload_promocao_confirmado = False
-    stack = [(entry, 0)]
-    vistos = set()
-    nodes = 0
-    while stack:
-        obj, depth = stack.pop()
-        nodes += 1
-        if nodes > 1200:
-            break
+    campos = {str(chave or "").strip().lower(): valor for chave, valor in entry.items()}
+    if "boosted_offer" not in campos:
+        return "desconhecido", None
 
-        if isinstance(obj, (dict, list)):
-            obj_id = id(obj)
-            if obj_id in vistos:
-                continue
-            vistos.add(obj_id)
-
-        if isinstance(obj, list):
-            if depth < 6:
-                for filho in reversed(obj[:250]):
-                    if isinstance(filho, (dict, list)):
-                        stack.append((filho, depth + 1))
-            continue
-        if not isinstance(obj, dict):
-            continue
-
-        # boosted_offer e amount precisam ser chaves diretas do mesmo objeto.
-        # Isso impede que siblings de uma lista sejam combinados entre si.
-        campos = {str(chave or "").strip().lower(): valor for chave, valor in obj.items()}
-        chaves = set(campos)
-        tem_preco_promocao = "price" in chaves and bool(
-            chaves
-            & {
-                "original_price",
-                "meli_percentage",
-                "seller_percentage",
-                "offer_id",
-                "ref_id",
-            }
-        )
-        tem_participacao_promocao = bool(
-            chaves & {"meli_percentage", "seller_percentage"}
-        ) and "original_price" in chaves
-        tem_identidade_oferta = bool(
-            chaves & {"offer_id", "ref_id"}
-        ) and "status" in chaves and bool(chaves & {"promotion_type", "type"})
-        if tem_preco_promocao or tem_participacao_promocao or tem_identidade_oferta:
-            payload_promocao_confirmado = True
-
-        if "boosted_offer" not in campos:
+    boosted_raw = campos.get("boosted_offer")
+    if isinstance(boosted_raw, bool):
+        boosted = boosted_raw
+    elif isinstance(boosted_raw, (int, float)) and not isinstance(boosted_raw, bool):
+        if boosted_raw not in {0, 1}:
+            return "boost_incompleto", None
+        boosted = boosted_raw == 1
+    else:
+        boosted_txt = str(boosted_raw or "").strip().lower()
+        if boosted_txt in {"true", "1", "yes", "sim"}:
+            boosted = True
+        elif boosted_txt in {"false", "0", "no", "nao", "não"}:
             boosted = False
         else:
-            boosted_raw = campos.get("boosted_offer")
-            if isinstance(boosted_raw, bool):
-                boosted = boosted_raw
-            elif isinstance(boosted_raw, (int, float)) and not isinstance(boosted_raw, bool):
-                boosted = boosted_raw == 1
-            else:
-                boosted_txt = str(boosted_raw or "").strip().lower()
-                if boosted_txt in {"true", "1", "yes", "sim"}:
-                    boosted = True
-                elif boosted_txt in {"false", "0", "no", "nao", "não"}:
-                    boosted = False
-                else:
-                    boosted = False
-                    boost_invalido = True
-            if not boosted and not boost_invalido:
-                boost_explicitamente_inativo = True
+            return "boost_incompleto", None
 
-        if boosted:
-            boost_confirmado = True
-            amount_raw = campos.get("discount_meli_boost_amount")
-            if amount_raw not in (None, ""):
-                amount = _parse_float_flex(amount_raw)
-                if amount is not None and amount > 0:
-                    return "boosted", round(float(amount), 2)
-
-        if depth < 6:
-            for filho in reversed(list(obj.values())):
-                if isinstance(filho, (dict, list)):
-                    stack.append((filho, depth + 1))
-
-    if boost_confirmado or boost_invalido:
-        return "boost_incompleto", None
-    if boost_explicitamente_inativo or payload_promocao_confirmado:
-        # Os campos de boost sao condicionais na API oficial. Uma oferta atual
-        # completa sem esses campos confirma que nao ha beneficio monetario.
+    if not boosted:
+        # Somente a negacao explicita confirma ausencia do beneficio. A API pode
+        # omitir temporariamente os campos novos mesmo quando o painel os exibe.
         return "sem_boost", 0.0
-    return "desconhecido", None
+
+    amount = _parse_float_flex(campos.get("discount_meli_boost_amount"))
+    if amount is not None and amount > 0:
+        return "boosted", round(float(amount), 2)
+    return "boost_incompleto", None
 
 
 def _ml_extrair_desconto_boost_tarifa_promocao_raw(entry: dict):
@@ -1362,6 +1368,33 @@ def _ml_extrair_desconto_boost_tarifa_promocao_raw(entry: dict):
     estado, amount = _ml_resolver_desconto_boost_tarifa_promocao_raw(entry)
     if estado in {"boosted", "sem_boost"}:
         return amount
+    return None
+
+
+ML_PROMO_SALE_FEE_DISCOUNT_FIELDS = (
+    "sale_fee_discount",
+    "sale_fee_discount_amount",
+    "selling_fee_discount",
+    "selling_fee_discount_amount",
+    "fee_per_sale_discount",
+    "fee_per_sale_discount_amount",
+    "sale_fee_reduction",
+    "sale_fee_reduction_amount",
+)
+
+
+def _ml_extrair_desconto_tarifa_venda_direto(entry: dict):
+    """Le somente campos monetarios allowlisted do objeto validado."""
+    if not isinstance(entry, dict):
+        return None
+    campos = {str(chave or "").strip().lower(): valor for chave, valor in entry.items()}
+    for chave in ML_PROMO_SALE_FEE_DISCOUNT_FIELDS:
+        valor = campos.get(chave)
+        if isinstance(valor, dict):
+            valor = valor.get("amount") if valor.get("amount") is not None else valor.get("value")
+        numero = _parse_float_flex(valor)
+        if numero is not None and numero > 0:
+            return float(numero)
     return None
 
 
@@ -1378,36 +1411,7 @@ def _ml_extrair_desconto_tarifa_promocao_raw(entry: dict):
     if estado_boost == "sem_boost":
         return 0.0
 
-    candidatos_explicitos = []
-
-    for novo_caminho, valor in _ml_iterar_campos_payload_limitado(entry):
-        parece_valor_tarifa = (
-            "sale_fee" in novo_caminho
-            or "fee" in novo_caminho
-            or "tariff" in novo_caminho
-            or "tarifa" in novo_caminho
-        )
-        parece_desconto_tarifa = (
-            "fee_discount" in novo_caminho
-            or "discount_fee" in novo_caminho
-            or "tariff_discount" in novo_caminho
-            or "sale_fee_discount" in novo_caminho
-            or "sale_fee_reduction" in novo_caminho
-            or "reduction" in novo_caminho
-            or "reducao" in novo_caminho
-            or "reduÃ§Ã£o" in novo_caminho
-            or "discount" in novo_caminho
-            or "desconto" in novo_caminho
-            or "rebate" in novo_caminho
-        )
-        parece_percentual = "percent" in novo_caminho or "percentage" in novo_caminho or novo_caminho.endswith("_pct")
-        if parece_valor_tarifa and parece_desconto_tarifa and not parece_percentual:
-            v = _parse_float_flex(valor)
-            if v is not None and v > 0:
-                candidatos_explicitos.append(float(v))
-    if candidatos_explicitos:
-        return candidatos_explicitos[0]
-    return None
+    return _ml_extrair_desconto_tarifa_venda_direto(entry)
 
 
 def _ml_extrair_tarifa_cobrada_promocao_raw(entry: dict):
@@ -1492,49 +1496,7 @@ def _ml_extrair_valor_desconto_taxa_promocao_raw(entry: dict):
     if estado_boost == "sem_boost":
         return 0.0
 
-    for caminho, valor in _ml_iterar_campos_payload_limitado(entry):
-        caminho_norm = str(caminho or "").lower()
-        caminho_ascii = normalizar_texto(caminho_norm)
-        parece_taxa = (
-            "sale_fee" in caminho_norm
-            or "selling_fee" in caminho_norm
-            or "fee_per_sale" in caminho_norm
-            or "fee" in caminho_norm
-            or "tariff" in caminho_norm
-            or "tarifa" in caminho_ascii
-            or "taxa" in caminho_ascii
-        )
-        parece_desconto = (
-            "fee_discount" in caminho_norm
-            or "discount_fee" in caminho_norm
-            or "tariff_discount" in caminho_norm
-            or "sale_fee_discount" in caminho_norm
-            or "sale_fee_reduction" in caminho_norm
-            or "discount" in caminho_norm
-            or "reduction" in caminho_norm
-            or "rebate" in caminho_norm
-            or "desconto" in caminho_ascii
-            or "reducao" in caminho_ascii
-        )
-        parece_percentual = (
-            "percent" in caminho_norm
-            or "percentage" in caminho_norm
-            or caminho_norm.endswith("_pct")
-            or caminho_norm.endswith(".pct")
-        )
-        parece_desconto_preco = (
-            "price" in caminho_norm
-            or "preco" in caminho_ascii
-            or "loyalty" in caminho_norm
-            or "seller_percentage" in caminho_norm
-            or "meli_percentage" in caminho_norm
-            or "discount_percentage" in caminho_norm
-        )
-        if parece_taxa and parece_desconto and not parece_percentual and not parece_desconto_preco:
-            v = _parse_float_flex(valor)
-            if v is not None and v > 0:
-                return float(v)
-    return None
+    return _ml_extrair_desconto_tarifa_venda_direto(entry)
 
 
 def _ml_obter_desconto_taxa_promocao_item(

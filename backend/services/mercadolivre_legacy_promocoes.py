@@ -57,9 +57,17 @@ def configure_mercadolivre_legacy_promocoes_runtime(runtime_module=None, peers=N
 configure_mercadolivre_legacy_promocoes_runtime()
 
 
-def _ml_obter_promocoes_item(client_id: str, loja: str, cfg: dict, item_id: str, request_fn=None):
+def _ml_obter_promocoes_item(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    item_id: str,
+    request_fn=None,
+    *,
+    strict: bool = False,
+):
     request_fn = request_fn or _ml_api_request
-    cache_key = f"v2:{client_id}:{loja}:{item_id}"
+    cache_key = f"v3-strict:{client_id}:{loja}:{item_id}" if strict else f"v2:{client_id}:{loja}:{item_id}"
     cached = _cache_get(ML_ITEM_PROMOTIONS_CACHE, cache_key, ML_ITEM_PROMOTIONS_CACHE_TTL)
     if cached is not None:
         return cached, cfg
@@ -68,15 +76,52 @@ def _ml_obter_promocoes_item(client_id: str, loja: str, cfg: dict, item_id: str,
     resp, cfg = request_fn(client_id, loja, cfg, "GET", url, params={"app_version": "v2"}, timeout=12)
     if resp.status_code == 200:
         try:
-            data = resp.json() or []
+            data = resp.json()
             if isinstance(data, dict):
-                data = data.get("results") or []
+                data = data.get("results")
             if not isinstance(data, list):
+                if strict:
+                    raise ValueError("payload de promocoes sem lista results")
                 data = []
-        except Exception:
+        except Exception as exc:
+            if strict:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Mercado Livre retornou uma lista de promocoes invalida para {item_id}: {exc}",
+                ) from exc
             data = []
         _cache_set(ML_ITEM_PROMOTIONS_CACHE, cache_key, data)
         return data, cfg
+
+    if strict:
+        body = {}
+        try:
+            body = resp.json() or {}
+        except Exception:
+            body = {}
+        partes = []
+        if isinstance(body, dict):
+            for chave in ("error", "code", "message", "detail"):
+                valor = body.get(chave)
+                if valor not in (None, ""):
+                    partes.append(str(valor))
+        try:
+            if resp.text:
+                partes.append(str(resp.text))
+        except Exception:
+            pass
+        detalhe = " | ".join(dict.fromkeys(partes))[:600]
+        detalhe_norm = re.sub(r"\s+", " ", detalhe).strip().lower().replace("_", " ")
+        if resp.status_code == 404 and "no offers found" in detalhe_norm:
+            _cache_set(ML_ITEM_PROMOTIONS_CACHE, cache_key, [])
+            return [], cfg
+        raise HTTPException(
+            status_code=resp.status_code or 502,
+            detail=(
+                f"Nao foi possivel confirmar as promocoes atuais do anuncio {item_id}"
+                + (f": {detalhe}" if detalhe else ".")
+            ),
+        )
 
     if resp.status_code in (400, 404, 500):
         _cache_set(ML_ITEM_PROMOTIONS_CACHE, cache_key, [])
@@ -347,18 +392,84 @@ def _calcular_desconto_ml_valor(
     tarifa_base: Any = None,
     tarifa_ml: Any = None,
     desconto_atual_confiavel: bool = False,
-) -> float | None:
-    """Retorna somente desconto de tarifa atual com proveniencia confiavel.
+    seller_pct: Any = None,
+    boost_pct: Any = None,
+    retornar_fonte: bool = False,
+) -> float | None | tuple[float | None, str]:
+    """Resolve o beneficio ML sem confundir percentual isolado com dinheiro.
 
-    O percentual da campanha representa desconto no preco de venda ao comprador.
-    Ele nao deve ser somado ao valor liquido como se fosse credito/reducao de
-    tarifa do Mercado Livre. Valores importados sem proveniencia atual tambem
-    nao devem alimentar a margem.
+    Prioriza o valor absoluto confiavel publicado pela API. Na ausencia dele,
+    aceita somente percentuais que possam ser reconciliados com o desconto total
+    observado entre ``preco_base`` e ``preco_final_ml``. Tarifa e frete nao
+    participam do split percentual; os parametros de tarifa permanecem apenas
+    para compatibilidade com os chamadores legados.
     """
+
+    def _resultado(valor: float | None, fonte: str = ""):
+        if retornar_fonte:
+            return valor, fonte
+        return valor
+
     desconto = _to_float_safe(desconto_atual)
     if desconto_atual_confiavel and desconto is not None and desconto >= 0:
-        return desconto
-    return None
+        return _resultado(desconto, "seller_promotions.valor_direto")
+
+    preco_base_val = _to_float_safe(preco_base)
+    preco_final_val = _to_float_safe(preco_final_ml)
+    if (
+        preco_base_val is None
+        or preco_base_val <= 0
+        or preco_final_val is None
+        or preco_final_val < 0
+    ):
+        return _resultado(None)
+
+    desconto_total = round(float(preco_base_val) - float(preco_final_val), 2)
+    if desconto_total < 0:
+        return _resultado(None)
+
+    boost_pct_val = _to_float_safe(boost_pct)
+    if boost_pct_val is not None:
+        if not 0 <= boost_pct_val <= 100:
+            return _resultado(None)
+        boost_valor = round(float(preco_base_val) * float(boost_pct_val) / 100.0, 2)
+        # Um centavo de tolerancia cobre apenas o arredondamento monetario. Um
+        # percentual que ultrapasse materialmente todo o desconto e inconsistente.
+        if boost_valor > desconto_total + 0.01:
+            return _resultado(None)
+        boost_valor = min(boost_valor, desconto_total)
+        return _resultado(
+            boost_valor,
+            "seller_promotions.discount_meli_boosted_percentage_calculado",
+        )
+
+    ml_pct_val = _to_float_safe(ml_pct)
+    seller_pct_val = _to_float_safe(seller_pct)
+    if ml_pct_val is None or seller_pct_val is None:
+        return _resultado(None)
+    if (
+        not 0 <= ml_pct_val <= 100
+        or not 0 <= seller_pct_val <= 100
+        or ml_pct_val + seller_pct_val > 100
+    ):
+        return _resultado(None)
+
+    percentual_total_observado = desconto_total * 100.0 / float(preco_base_val)
+    percentual_total_informado = float(ml_pct_val) + float(seller_pct_val)
+    # Os percentuais da seller-promotions sao exibidos com uma casa decimal.
+    # A tolerancia cobre o arredondamento de ambos e mais um centavo no preco.
+    tolerancia_pct = 0.1 + (0.01 * 100.0 / float(preco_base_val))
+    if abs(percentual_total_informado - percentual_total_observado) > tolerancia_pct:
+        return _resultado(None)
+
+    parcela_vendedor = round(float(preco_base_val) * float(seller_pct_val) / 100.0, 2)
+    desconto_ml = round(desconto_total - parcela_vendedor, 2)
+    if desconto_ml < 0 or desconto_ml > desconto_total:
+        return _resultado(None)
+    return _resultado(
+        desconto_ml,
+        "seller_promotions.smart_split_reconciliado",
+    )
 
 
 def _ml_extrair_percentual_total_direto_promocao_raw(entry: dict):
@@ -695,22 +806,42 @@ def _ml_obter_item_promocao_raw(client_id: str, loja: str, cfg: dict, campaign_i
     if not campaign_id or not promotion_type or not item_id:
         return {}, cfg
 
+    # O endpoint campaign-items pode devolver registros de outra campanha no
+    # mesmo resultado. Resolve antes a identidade exata divulgada pelo endpoint
+    # por item para filtrar localmente por offer/ref e status.
+    raw_referencia = {}
+    try:
+        promocoes_item, cfg = _ml_obter_promocoes_item(
+            client_id,
+            loja,
+            cfg,
+            item_id,
+            request_fn=request_fn,
+        )
+        raw_referencia = _ml_encontrar_promocao_raw_item(promocoes_item, campaign_id) or {}
+    except Exception:
+        raw_referencia = {}
+    offer_id_esperado = _ml_promocao_raw_offer_id(raw_referencia).strip().lower()
+    status_esperado = _promo_status_item_promocao(raw_referencia)
+
     urls = [
         f"https://api.mercadolibre.com/seller-promotions/promotions/{campaign_id}/items",
     ]
-    consultas_status = [
-        ("", ""),
-        ("status_item", "pending"),
-        ("status", "pending"),
-        ("status_item", "started"),
-        ("status", "started"),
-        ("status_item", "active"),
-        ("status", "active"),
-        ("status_item", "candidate"),
-        ("status", "candidate"),
-        ("status_item", "eligible"),
-        ("status", "eligible"),
-    ]
+    consultas_status = []
+
+    def _adicionar_consulta_status(parametro: str, status: str):
+        chave = (str(parametro or ""), str(status or ""))
+        if chave not in consultas_status:
+            consultas_status.append(chave)
+
+    if status_esperado:
+        parametro = "status_item" if status_esperado in {"active", "paused"} else "status"
+        _adicionar_consulta_status(parametro, status_esperado)
+    for status in ("candidate", "eligible", "pending", "started"):
+        _adicionar_consulta_status("status", status)
+    for status in ("active", "paused"):
+        _adicionar_consulta_status("status_item", status)
+    _adicionar_consulta_status("", "")
     for status_param, status_item in consultas_status:
         params = {
             "app_version": "v2",
@@ -754,6 +885,25 @@ def _ml_obter_item_promocao_raw(client_id: str, loja: str, cfg: dict, campaign_i
                     item_obj_id = raw_item.get("id") if isinstance(raw_item, dict) else raw_item
                     entry_id = str(entry.get("item_id") or entry.get("itemId") or item_obj_id or entry.get("id") or "").strip()
                     if entry_id == item_id:
+                        status_entry = _promo_status_item_promocao(entry)
+                        if status_item and status_entry and status_entry != status_item:
+                            continue
+                        offer_id_entry = _ml_promocao_raw_offer_id(entry).strip().lower()
+                        if offer_id_esperado and offer_id_entry != offer_id_esperado:
+                            continue
+                        campaign_id_entry = _ml_promocao_raw_texto(
+                            entry,
+                            (
+                                "promotion_id",
+                                "promotionId",
+                                "campaign_id",
+                                "campaignId",
+                                "deal_id",
+                                "dealId",
+                            ),
+                        ).strip().lower()
+                        if campaign_id_entry and campaign_id_entry != campaign_id.lower():
+                            continue
                         entry = dict(entry)
                         if status_item and not _promo_status_item_promocao(entry):
                             entry["_jk_status_item_consultado"] = status_item
@@ -863,13 +1013,9 @@ def _ml_resolver_raw_promocao_equivalente_para_analise(
     preco_base=None,
     request_fn=None,
 ):
-    """Para SMART candidate, usa a campanha equivalente de mesmo nome com melhor oferta."""
-    if not item_id or not isinstance(raw_atual, dict):
-        return raw_atual, cfg
-    tipo_alvo = str(promotion_type or _ml_promocao_raw_tipo(raw_atual) or "").strip().upper()
-    if tipo_alvo != "SMART":
-        return raw_atual, cfg
-    if _promo_status_item_promocao(raw_atual) not in {"candidate", "eligible"}:
+    """Enriquece a analise somente com o registro da campanha selecionada."""
+    campaign_id = str(campaign_id or "").strip()
+    if not item_id or not campaign_id or not isinstance(raw_atual, dict):
         return raw_atual, cfg
 
     request_fn = request_fn or _ml_api_request
@@ -880,70 +1026,34 @@ def _ml_resolver_raw_promocao_equivalente_para_analise(
     if not promocoes_item:
         return raw_atual, cfg
 
-    raw_ref = _ml_encontrar_promocao_raw_item(promocoes_item, campaign_id) or {}
-    nome_ref = _ml_promocao_raw_nome(raw_atual) or _ml_promocao_raw_nome(raw_ref)
-    nome_ref_norm = normalizar_texto(nome_ref)
-    if not nome_ref_norm:
+    raw_exato = _ml_encontrar_promocao_raw_item(promocoes_item, campaign_id) or {}
+    if not raw_exato:
         return raw_atual, cfg
 
-    def _metricas(raw: dict) -> tuple[float | None, float | None]:
-        preco, desc = _ml_extrair_preco_promocao_raw(raw, priorizar_percentual_total_api=True)
-        if preco is None:
-            preco = _parse_float_flex((raw or {}).get("price"))
-        pct = _ml_extrair_percentual_sugerido_campanha_raw(raw, preco_base)
-        if pct is None:
-            pct = desc
-        if pct is None:
-            seller_pct = _parse_float_flex((raw or {}).get("seller_percentage"))
-            meli_pct = _parse_float_flex((raw or {}).get("meli_percentage"))
-            if seller_pct is not None or meli_pct is not None:
-                pct = float(seller_pct or 0.0) + float(meli_pct or 0.0)
-        return (_to_float_safe(preco), _to_float_safe(pct))
+    # O endpoint por item pode trazer os campos condicionais de boost que nao
+    # vieram no endpoint da campanha. Mescla apenas o mesmo ID: nome e tipo nao
+    # sao identidade suficiente, pois o ML pode publicar campanhas homonimas.
+    offer_atual = _ml_promocao_raw_offer_id(raw_atual).strip().lower()
+    offer_exato = _ml_promocao_raw_offer_id(raw_exato).strip().lower()
+    status_atual = _promo_status_item_promocao(raw_atual)
+    status_exato = _promo_status_item_promocao(raw_exato)
+    if (
+        (offer_exato and offer_atual != offer_exato)
+        or (status_exato and status_atual and status_atual != status_exato)
+    ):
+        return dict(raw_exato), cfg
 
-    melhor = raw_atual
-    melhor_preco, melhor_pct = _metricas(melhor)
-    for raw in promocoes_item:
-        if not isinstance(raw, dict):
-            continue
-        raw_tipo = str(_ml_promocao_raw_tipo(raw) or tipo_alvo or "").strip().upper()
-        if raw_tipo and raw_tipo != tipo_alvo:
-            continue
-        if normalizar_texto(_ml_promocao_raw_nome(raw)) != nome_ref_norm:
-            continue
-        candidato_preco, candidato_pct = _metricas(raw)
-        if candidato_preco is None and candidato_pct is None:
-            continue
-        melhorou_preco = (
-            candidato_preco is not None
-            and (melhor_preco is None or float(candidato_preco) < float(melhor_preco) - 0.01)
-        )
-        melhorou_pct = (
-            candidato_pct is not None
-            and (melhor_pct is None or float(candidato_pct) > float(melhor_pct) + 0.01)
-        )
-        if not (melhorou_preco or melhorou_pct):
-            continue
-
-        detalhe = {}
-        promo_id = _ml_promocao_raw_id(raw)
-        promo_type = _ml_promocao_raw_tipo(raw) or tipo_alvo
-        if promo_id and promo_type:
-            try:
-                detalhe, cfg = _ml_obter_item_promocao_raw(
-                    client_id,
-                    loja,
-                    cfg,
-                    promo_id,
-                    promo_type,
-                    item_id,
-                    request_fn=request_fn,
-                )
-            except Exception:
-                detalhe = {}
-        melhor = detalhe if detalhe else raw
-        melhor_preco, melhor_pct = _metricas(melhor)
-
-    return melhor, cfg
+    enriquecido = dict(raw_exato)
+    enriquecido.update(raw_atual)
+    for chave in (
+        "boosted_offer",
+        "discount_meli_boosted_percentage",
+        "discount_meli_boost_amount",
+        "total_price_for_boosted_offer",
+    ):
+        if chave in raw_exato:
+            enriquecido[chave] = raw_exato[chave]
+    return enriquecido, cfg
 
 
 def _ml_promocao_raw_esta_ativa_ou_indefinida(entry: dict) -> bool:

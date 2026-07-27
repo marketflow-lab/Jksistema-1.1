@@ -7,7 +7,9 @@ keeps the legacy import surface stable for backend_api and routers.
 from __future__ import annotations
 
 from backend.services.mercadolivre_anuncios import (
+    ML_EXPORT_XLSX_MEDIA_TYPE,
     buscar_anuncio_mercado_livre,
+    exportar_anuncios_ativos_mercado_livre,
     historico_visitas_anuncio_mercado_livre,
     listar_anuncios_mercado_livre,
 )
@@ -47,6 +49,8 @@ __all__ = [
     "_cache_invalidar_loja",
     "invalidar_cache_mercado_livre",
     "listar_anuncios_mercado_livre",
+    "exportar_anuncios_ativos_mercado_livre",
+    "ML_EXPORT_XLSX_MEDIA_TYPE",
     "historico_visitas_anuncio_mercado_livre",
     "buscar_anuncio_mercado_livre",
     "_ml_listar_promocoes_ativas_payload",

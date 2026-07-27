@@ -87,6 +87,144 @@ configure_promocoes_api_analise_runtime()
 
 logger = logging.getLogger("jk_sistema")
 
+PROMO_DESCONTO_ML_NAO_INFORMADO = "Não informado pela API"
+PROMO_DESCONTO_ML_CONFIAVEL_KEY = "_jk_desconto_ml_confiavel"
+PROMO_DESCONTO_ML_FONTE_KEY = "_jk_desconto_ml_fonte"
+PROMO_DESCONTO_ML_TARIFA_FIELDS = (
+    "sale_fee_discount",
+    "sale_fee_discount_amount",
+    "selling_fee_discount",
+    "selling_fee_discount_amount",
+    "fee_per_sale_discount",
+    "fee_per_sale_discount_amount",
+    "sale_fee_reduction",
+    "sale_fee_reduction_amount",
+)
+PROMO_DESCONTO_ML_FONTES_CALCULADAS = {
+    "seller_promotions.discount_meli_boosted_percentage_calculado",
+    "seller_promotions.smart_split_reconciliado",
+}
+
+
+def _promo_desconto_ml_parametros_calculo(raw_promocao: dict) -> tuple[Any, Any, Any]:
+    """Libera o fallback apenas quando o estado de boost nao e contraditorio."""
+    if not isinstance(raw_promocao, dict):
+        return None, None, None
+
+    meli_pct = raw_promocao.get("meli_percentage")
+    seller_pct = raw_promocao.get("seller_percentage")
+    if "boosted_offer" not in raw_promocao:
+        return meli_pct, seller_pct, None
+
+    boosted_raw = raw_promocao.get("boosted_offer")
+    if isinstance(boosted_raw, bool):
+        boosted_ativo = boosted_raw
+        boosted_valido = True
+    elif isinstance(boosted_raw, (int, float)) and not isinstance(boosted_raw, bool):
+        boosted_valido = boosted_raw in {0, 1}
+        boosted_ativo = boosted_raw == 1
+    else:
+        boosted_txt = str(boosted_raw or "").strip().lower()
+        boosted_valido = boosted_txt in {"true", "1", "yes", "sim", "false", "0", "no", "nao", "não"}
+        boosted_ativo = boosted_txt in {"true", "1", "yes", "sim"}
+
+    if not boosted_valido or not boosted_ativo:
+        return None, None, None
+
+    amount_raw = raw_promocao.get("discount_meli_boost_amount")
+    amount = _parse_float_flex(amount_raw)
+    if amount_raw not in (None, "") and (amount is None or amount <= 0):
+        return None, None, None
+
+    boost_pct = raw_promocao.get("discount_meli_boosted_percentage")
+    if amount_raw in (None, ""):
+        boost_pct_val = _parse_float_flex(boost_pct)
+        if boost_pct_val is None or boost_pct_val <= 0:
+            return None, None, None
+
+    return (
+        meli_pct,
+        seller_pct,
+        boost_pct,
+    )
+
+
+def _promo_desconto_ml_proveniencia(
+    raw_promocao: dict,
+    desconto_ml: Any,
+    fonte_calculo: str = "",
+) -> tuple[bool, str]:
+    """Identifica a evidencia da API que autorizou o desconto monetario."""
+    desconto = _parse_float_flex(desconto_ml)
+    if desconto is None or not isinstance(raw_promocao, dict):
+        return False, ""
+
+    boosted_raw = raw_promocao.get("boosted_offer")
+    boosted_txt = str(boosted_raw or "").strip().lower()
+    boosted_ativo = (
+        boosted_raw is True
+        or (isinstance(boosted_raw, (int, float)) and not isinstance(boosted_raw, bool) and boosted_raw == 1)
+        or boosted_txt in {"true", "1", "yes", "sim"}
+    )
+    boosted_inativo = (
+        boosted_raw is False
+        or (isinstance(boosted_raw, (int, float)) and not isinstance(boosted_raw, bool) and boosted_raw == 0)
+        or boosted_txt in {"false", "0", "no", "nao", "não"}
+    )
+    boost_amount = _parse_float_flex(raw_promocao.get("discount_meli_boost_amount"))
+    if boosted_ativo and boost_amount is not None and boost_amount > 0:
+        return True, "seller_promotions.discount_meli_boost_amount"
+    if boosted_inativo and abs(float(desconto)) <= 0.005:
+        return True, "seller_promotions.boosted_offer"
+
+    for chave in PROMO_DESCONTO_ML_TARIFA_FIELDS:
+        valor = raw_promocao.get(chave)
+        if isinstance(valor, dict):
+            valor = valor.get("amount") if valor.get("amount") is not None else valor.get("value")
+        desconto_tarifa = _parse_float_flex(valor)
+        if (
+            desconto_tarifa is not None
+            and desconto_tarifa > 0
+            and abs(round(float(desconto_tarifa), 2) - float(desconto)) <= 0.01
+        ):
+            return True, f"seller_promotions.{chave}"
+
+    fonte_calculo = str(fonte_calculo or "").strip()
+    if fonte_calculo in PROMO_DESCONTO_ML_FONTES_CALCULADAS and float(desconto) >= 0:
+        return True, fonte_calculo
+
+    seller_receives = raw_promocao.get("seller_receives")
+    if isinstance(seller_receives, dict):
+        seller_receives = seller_receives.get("amount") or seller_receives.get("value")
+    if _parse_float_flex(seller_receives) is not None and float(desconto) > 0.005:
+        return True, "seller_promotions.seller_receives_reconciliado"
+
+    return False, ""
+
+
+def _promo_desconto_ml_aplicar_ajuste(
+    desconto_calculado: Any,
+    fonte_calculo: str,
+    desconto_ajustado: Any,
+) -> tuple[Any, str]:
+    """Preserva o fallback calculado apenas quando o ajuste nao o contradiz."""
+    fonte = str(fonte_calculo or "").strip()
+    if desconto_ajustado is None:
+        if fonte in PROMO_DESCONTO_ML_FONTES_CALCULADAS:
+            return desconto_calculado, fonte
+        return None, fonte
+
+    calculado = _parse_float_flex(desconto_calculado)
+    ajustado = _parse_float_flex(desconto_ajustado)
+    if (
+        fonte in PROMO_DESCONTO_ML_FONTES_CALCULADAS
+        and calculado is not None
+        and ajustado is not None
+        and abs(float(calculado) - float(ajustado)) > 0.01
+    ):
+        fonte = ""
+    return desconto_ajustado, fonte
+
 
 async def get_tenant_id(request: Request, authorization: Optional[str] = Header(default=None)):
     resolver = globals().get("_PROMOCOES_RUNTIME_GET_TENANT_ID")
@@ -484,20 +622,42 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         if desconto_tarifa_ml is not None and tarifa_b_tmp is not None and desconto_tarifa_ml >= (tarifa_b_tmp * 0.8):
             # Alguns formatos chamam a prÃ³pria tarifa de sale_fee; nesse caso nÃ£o ÃƒÂ© o desconto.
             desconto_tarifa_ml = None
-        desconto_tarifa_ml = _calcular_desconto_ml_valor(
+        meli_pct_calculo, seller_pct_calculo, boost_pct_calculo = _promo_desconto_ml_parametros_calculo(raw_b_item)
+        desconto_tarifa_ml, desconto_ml_fonte_calculo = _calcular_desconto_ml_valor(
             desconto_atual=desconto_tarifa_ml,
-            ml_pct=desconto_b,
+            ml_pct=meli_pct_calculo,
+            seller_pct=seller_pct_calculo,
+            boost_pct=boost_pct_calculo,
             preco_base=preco_base_anuncio,
             preco_final_ml=preco_b,
             tarifa_base=tarifa_a_val,
             tarifa_ml=tarifa_b_tmp,
             desconto_atual_confiavel=True,
+            retornar_fonte=True,
         )
-        desconto_tarifa_ml = _ml_ajustar_desconto_tarifa_recebivel_promocao(
+        desconto_tarifa_ml_ajustado = _ml_ajustar_desconto_tarifa_recebivel_promocao(
             raw_b_item,
             desconto_tarifa_ml,
             preco_b,
             desconto_b,
+            tarifa_b_tmp,
+            frete_b_val,
+            bool(shipping_data_b.get("shipping_exact_for_price")),
+            shipping_data_b.get("shipping_price_context"),
+            bool(fee_b.get("ad_cost_exact_for_price")),
+            fee_b.get("ad_cost_price_context"),
+            fee_b.get("ad_cost_source"),
+            shipping_data_b.get("shipping_cost_retry_source"),
+        )
+        desconto_tarifa_ml, desconto_ml_fonte_calculo = _promo_desconto_ml_aplicar_ajuste(
+            desconto_tarifa_ml,
+            desconto_ml_fonte_calculo,
+            desconto_tarifa_ml_ajustado,
+        )
+        desconto_ml_confiavel, desconto_ml_fonte = _promo_desconto_ml_proveniencia(
+            raw_b_item,
+            desconto_tarifa_ml,
+            desconto_ml_fonte_calculo,
         )
         recebe_ml = None
         if frete_b_exato:
@@ -570,7 +730,13 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             "Imposto": formatar_moeda_br(imposto_a) if imposto_a is not None else "",
             "PreÃ§o Final ML": formatar_moeda_br(preco_b),
             "Imposto ML": formatar_moeda_br(imposto_b) if imposto_b is not None else "",
-            "Desconto ML": formatar_moeda_br(desconto_tarifa_ml) if desconto_tarifa_ml is not None else "",
+            "Desconto ML": (
+                formatar_moeda_br(desconto_tarifa_ml)
+                if desconto_ml_confiavel
+                else PROMO_DESCONTO_ML_NAO_INFORMADO
+            ),
+            PROMO_DESCONTO_ML_CONFIAVEL_KEY: desconto_ml_confiavel,
+            PROMO_DESCONTO_ML_FONTE_KEY: desconto_ml_fonte,
             "Valor LÃ­quido": formatar_moeda_br(valor_liquido_a) if valor_liquido_a is not None else "",
             "Valor lÃ­quido ML": formatar_moeda_br(valor_liquido_b) if valor_liquido_b is not None else "",
             "Status": status,
@@ -949,20 +1115,42 @@ async def analisar_promo_via_api_sem_arquivos(
         # A taxa fixa do ML pertence ao detalhamento da tarifa, nao substitui frete.
 
         desconto_tarifa_ml = _ml_extrair_desconto_tarifa_promocao_raw(raw_b_item)
-        desconto_tarifa_ml = _calcular_desconto_ml_valor(
+        meli_pct_calculo, seller_pct_calculo, boost_pct_calculo = _promo_desconto_ml_parametros_calculo(raw_b_item)
+        desconto_tarifa_ml, desconto_ml_fonte_calculo = _calcular_desconto_ml_valor(
             desconto_atual=desconto_tarifa_ml,
-            ml_pct=desconto_b,
+            ml_pct=meli_pct_calculo,
+            seller_pct=seller_pct_calculo,
+            boost_pct=boost_pct_calculo,
             preco_base=preco_base_anuncio,
             preco_final_ml=preco_b,
             tarifa_base=tarifa_a_val,
             tarifa_ml=tarifa_b_val,
             desconto_atual_confiavel=True,
+            retornar_fonte=True,
         )
-        desconto_tarifa_ml = _ml_ajustar_desconto_tarifa_recebivel_promocao(
+        desconto_tarifa_ml_ajustado = _ml_ajustar_desconto_tarifa_recebivel_promocao(
             raw_b_item,
             desconto_tarifa_ml,
             preco_b,
             desconto_b,
+            tarifa_b_val,
+            frete_b_val,
+            bool(shipping_data_b.get("shipping_exact_for_price")),
+            shipping_data_b.get("shipping_price_context"),
+            bool(fee_b.get("ad_cost_exact_for_price")),
+            fee_b.get("ad_cost_price_context"),
+            fee_b.get("ad_cost_source"),
+            shipping_data_b.get("shipping_cost_retry_source"),
+        )
+        desconto_tarifa_ml, desconto_ml_fonte_calculo = _promo_desconto_ml_aplicar_ajuste(
+            desconto_tarifa_ml,
+            desconto_ml_fonte_calculo,
+            desconto_tarifa_ml_ajustado,
+        )
+        desconto_ml_confiavel, desconto_ml_fonte = _promo_desconto_ml_proveniencia(
+            raw_b_item,
+            desconto_tarifa_ml,
+            desconto_ml_fonte_calculo,
         )
         recebe_ml = None
         if frete_b_exato:
@@ -1039,7 +1227,13 @@ async def analisar_promo_via_api_sem_arquivos(
             "Imposto": formatar_moeda_br(imposto_a) if imposto_a is not None else "",
             "PreÃ§o Final ML": formatar_moeda_br(preco_b),
             "Imposto ML": formatar_moeda_br(imposto_b) if imposto_b is not None else "",
-            "Desconto ML": formatar_moeda_br(desconto_tarifa_ml) if desconto_tarifa_ml is not None else "",
+            "Desconto ML": (
+                formatar_moeda_br(desconto_tarifa_ml)
+                if desconto_ml_confiavel
+                else PROMO_DESCONTO_ML_NAO_INFORMADO
+            ),
+            PROMO_DESCONTO_ML_CONFIAVEL_KEY: desconto_ml_confiavel,
+            PROMO_DESCONTO_ML_FONTE_KEY: desconto_ml_fonte,
             "Valor LÃ­quido": formatar_moeda_br(valor_liquido_a) if valor_liquido_a is not None else "",
             "Valor lÃ­quido ML": formatar_moeda_br(valor_liquido_b) if valor_liquido_b is not None else "",
             "Status": status,
@@ -1585,19 +1779,41 @@ async def analisar_promo_via_api_com_arquivos(
         # Frete fica com o valor da API de shipping_options.
         # A taxa fixa do ML pertence ao detalhamento da tarifa, nao substitui frete.
 
-        desconto_tarifa_ml = _calcular_desconto_ml_valor(
+        meli_pct_calculo, seller_pct_calculo, boost_pct_calculo = _promo_desconto_ml_parametros_calculo(raw_b_item)
+        desconto_tarifa_ml, desconto_ml_fonte_calculo = _calcular_desconto_ml_valor(
             desconto_atual=entrada_b.get("Desconto ML"),
-            ml_pct=desconto_b,
+            ml_pct=meli_pct_calculo,
+            seller_pct=seller_pct_calculo,
+            boost_pct=boost_pct_calculo,
             preco_base=preco_base_anuncio,
             preco_final_ml=preco_b,
             tarifa_base=tarifa_a_val,
             tarifa_ml=tarifa_b_val,
+            retornar_fonte=True,
         )
-        desconto_tarifa_ml = _ml_ajustar_desconto_tarifa_recebivel_promocao(
+        desconto_tarifa_ml_ajustado = _ml_ajustar_desconto_tarifa_recebivel_promocao(
             raw_b_item,
             desconto_tarifa_ml,
             preco_b,
             desconto_b,
+            tarifa_b_val,
+            frete_b_val,
+            bool(shipping_data_b.get("shipping_exact_for_price")),
+            shipping_data_b.get("shipping_price_context"),
+            bool(fee_b.get("ad_cost_exact_for_price")),
+            fee_b.get("ad_cost_price_context"),
+            fee_b.get("ad_cost_source"),
+            shipping_data_b.get("shipping_cost_retry_source"),
+        )
+        desconto_tarifa_ml, desconto_ml_fonte_calculo = _promo_desconto_ml_aplicar_ajuste(
+            desconto_tarifa_ml,
+            desconto_ml_fonte_calculo,
+            desconto_tarifa_ml_ajustado,
+        )
+        desconto_ml_confiavel, desconto_ml_fonte = _promo_desconto_ml_proveniencia(
+            raw_b_item,
+            desconto_tarifa_ml,
+            desconto_ml_fonte_calculo,
         )
         recebe_ml = None
         if frete_b_exato:
@@ -1686,7 +1902,13 @@ async def analisar_promo_via_api_com_arquivos(
             "Imposto": formatar_moeda_br(imposto_a) if imposto_a is not None else "",
             "PreÃ§o Final ML": formatar_moeda_br(preco_b),
             "Imposto ML": formatar_moeda_br(imposto_b) if imposto_b is not None else "",
-            "Desconto ML": formatar_moeda_br(desconto_tarifa_ml) if desconto_tarifa_ml is not None else "",
+            "Desconto ML": (
+                formatar_moeda_br(desconto_tarifa_ml)
+                if desconto_ml_confiavel
+                else PROMO_DESCONTO_ML_NAO_INFORMADO
+            ),
+            PROMO_DESCONTO_ML_CONFIAVEL_KEY: desconto_ml_confiavel,
+            PROMO_DESCONTO_ML_FONTE_KEY: desconto_ml_fonte,
             "Valor LÃ­quido": formatar_moeda_br(valor_liquido_a) if valor_liquido_a is not None else "",
             "Valor lÃ­quido ML": formatar_moeda_br(valor_liquido_b) if valor_liquido_b is not None else "",
             "Status": status,

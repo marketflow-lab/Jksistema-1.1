@@ -245,6 +245,7 @@
       'jk_joao_aprovacao_pendente',
       'jk_joao_alerta_operacional',
       'jk_black_jhon_nova_pergunta',
+      'jk_black_jhon_nova_pergunta_v2',
     ];
     const indexed = new Map((Array.isArray(templates) ? templates : []).map(item => [String(item.name || ''), item]));
     expected.forEach(name => {

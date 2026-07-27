@@ -706,24 +706,54 @@
 
         async function registrarConfirmacaoUsuarioLoginAvantProFavoritos(origem = 'prompt', estado = {}) {
             const api = obterElectronApiPersistenciaAvantProFavoritos();
+            let memoriaLocalSalva = false;
+            try {
+                localStorage.setItem('jk_favoritos_avant_login_confirmado_usuario_at', String(Date.now()));
+                memoriaLocalSalva = true;
+            } catch (_err) {}
+            let resultadoSnapshot = { success: true, skipped: true };
             if (api && typeof api.saveAvantProStorageSnapshot === 'function') {
-                const resultado = await api.saveAvantProStorageSnapshot('favoritos_usuario_confirmou_login_avant', {
+                resultadoSnapshot = await api.saveAvantProStorageSnapshot('favoritos_usuario_confirmou_login_avant', {
                     source: 'favoritos',
                     origem,
                     confirmedAt: Date.now(),
-                    liveAuthConfirmed: true,
+                    userConfirmed: true,
+                    liveAuthConfirmed: estado && estado.liveAuthConfirmed !== undefined
+                        ? estado.liveAuthConfirmed === true
+                        : true,
                     validation: {
                         url: String(estado && estado.url || '').split('#')[0],
                         markers: Number(estado && estado.marcadores || 0),
                         resources: Number(estado && estado.recursos || 0)
                     }
                 }).catch(() => null);
-                if (!resultado || resultado.success !== true) return resultado || { success: false };
             }
-            try {
-                localStorage.setItem('jk_favoritos_avant_login_confirmado_usuario_at', String(Date.now()));
-            } catch (_err) {}
-            return { success: true };
+            if (!resultadoSnapshot || resultadoSnapshot.success !== true) {
+                return {
+                    success: false,
+                    reason: String(resultadoSnapshot && resultadoSnapshot.reason || 'snapshot-unavailable'),
+                    memoriaLocalSalva
+                };
+            }
+            return { success: true, memoriaLocalSalva };
+        }
+
+        function registrarConfirmacaoUsuarioLoginAvantProBestEffortFavoritos(origem = 'prompt') {
+            registrarConfirmacaoUsuarioLoginAvantProFavoritos(origem, {
+                userConfirmed: true,
+                liveAuthConfirmed: false
+            }).then(resultado => {
+                if (!resultado || resultado.success !== true) {
+                    console.warn('Confirmacao do usuario registrada sem bloquear Favoritos; o snapshot do Avant Pro podera ser tentado novamente.', {
+                        reason: String(resultado && resultado.reason || '')
+                    });
+                }
+            }).catch(err => {
+                console.warn('Falha secundaria ao registrar a confirmacao do usuario no Avant Pro.', {
+                    reason: String(err && err.message || '')
+                });
+            });
+            return true;
         }
 
         async function perguntarLoginAvantProAntesFavoritos(opcoes = {}) {
@@ -890,11 +920,8 @@
                 sim.textContent = 'Sim, continuar';
                 sim.addEventListener('click', async () => {
                     sim.disabled = true;
-                    const confirmado = await validarLoginAvantProAntesDeContinuarFavoritos(() => finalizar(true), sim).catch(() => false);
-                    if (!confirmado && !concluido) {
-                        sim.disabled = false;
-                        await abrirTelaLogin().catch(() => null);
-                    }
+                    registrarConfirmacaoUsuarioLoginAvantProBestEffortFavoritos('prompt_usuario_confirmou');
+                    finalizar(true);
                 });
 
                 const nao = document.createElement('button');

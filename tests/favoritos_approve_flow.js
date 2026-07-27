@@ -224,11 +224,14 @@ function criarHarness(opcoes = {}) {
             return String(erro || 'erro');
         }
     };
+    context.parsePrecoAnuncioFavoritos = valor => {
+        const numero = Number(valor);
+        return Number.isFinite(numero) ? numero : null;
+    };
     context.formatarPrecoFavoritosMl = valor => `R$ ${Number(valor || 0).toFixed(2)}`;
     context.formatarMargemAnuncioFavoritos = valor => `${Number(valor || 0).toFixed(2)}%`;
     context.carregarFavoritosAnunciosSku = async () => [];
     context.montarHistoricoAlteracoesFavoritosPayload = () => ({ vinculos: [] });
-    context.salvarHistoricoAlteracoesFavoritosProcesso = () => null;
     context.renderizarComparativoEfetivacaoFavoritos = () => {};
     context.agendarOcultarStatusEfetivarFavoritos = () => {};
     context.textoTipoEnvioFavoritos = () => 'sem troca';
@@ -282,7 +285,8 @@ async function testarAprovacaoSomenteDepoisDaConfirmacao() {
             item_id: chamada.body.item_id,
             campanha_id: chamada.body.campanha_id,
             preco_anuncio: chamada.body.preco_anuncio,
-            preco_promocional: chamada.body.preco_promocional
+            preco_promocional: chamada.body.preco_promocional,
+            preco_ideal: chamada.body.preco_ideal
         },
         {
             loja: 'JK Pecas',
@@ -290,7 +294,8 @@ async function testarAprovacaoSomenteDepoisDaConfirmacao() {
             item_id: 'MLB1234567890',
             campanha_id: 'CAMPANHA-1',
             preco_anuncio: 100,
-            preco_promocional: 79
+            preco_promocional: 79,
+            preco_ideal: 79
         }
     );
     assert.strictEqual(harness.context.favMlEfetivacaoEmPreparacao, false);
@@ -323,6 +328,7 @@ async function testarValidacaoLentaComLatch() {
         itens: [{
             loja: 'JK Pecas',
             item_id: 'MLB1234567890',
+            preco_anuncio_alvo: 100,
             listing_type_id_alvo: 'gold_special',
             tipo_anuncio_alvo: 'Classico'
         }]
@@ -380,13 +386,189 @@ async function testarExcecaoPainelLiberaPreparacao() {
     assert.strictEqual(harness.state.mutationCalls, 0);
 }
 
+async function testarParcialExplicitaEtapasETerminal() {
+    const harness = criarHarness({ requerValidacao: true });
+    const resultado = {
+        success: false,
+        outcome: 'partial_failure',
+        retryable: false,
+        retry_requires_approval: true,
+        preco_anuncio_atual: 287.22,
+        preco_anuncio_alvo: 214.33,
+        current_state: {
+            status: 'active',
+            listing_type_name: 'Classico',
+            price: 287.22
+        },
+        listing_type_update: {
+            changed: true,
+            current_name: 'Premium',
+            target_name: 'Classico'
+        },
+        stages: {
+            preflight: { status: 'completed' },
+            promotion_removal: { status: 'skipped' },
+            listing_type: { status: 'completed' },
+            price: { status: 'failed' },
+            promotion: { status: 'not_started' },
+            verification: { status: 'not_started' }
+        }
+    };
+    const item = {
+        itemId: harness.registro.itemId,
+        registro: harness.registro,
+        resultado,
+        erro: 'Cannot update item [status:active, has_bids:true] | price is not modifiable.'
+    };
+    const detalhe = harness.context.descreverFalhaEfetivacaoFavoritos(item);
+    assert.match(detalhe, /tipo alterado: Premium -> Classico/i);
+    assert.doesNotMatch(detalhe, /tipo previsto/i);
+    assert.match(detalhe, /preco nao alterado: R\$ 287\.22/i);
+    assert.match(detalhe, /campanha nao iniciada/i);
+    assert.match(detalhe, /bloqueio terminal/i);
+    assert.match(detalhe, /nao ha repeticao automatica/i);
+
+    const vinculo = harness.context.montarVinculoHistoricoAlteracaoFavoritos(item, false, 'SKU-TESTE');
+    assert.strictEqual(vinculo.outcome, 'partial_failure');
+    assert.strictEqual(vinculo.retryable, false);
+    assert.strictEqual(vinculo.retry_requires_approval, true);
+    assert.strictEqual(vinculo.terminal, true);
+    assert.strictEqual(vinculo.stages.listing_type.status, 'completed');
+    assert.strictEqual(vinculo.stages.price.status, 'failed');
+    assert.strictEqual(vinculo.stages.promotion.status, 'not_started');
+}
+
+async function testarHistoricoSoConfirmaDepoisDoServidor() {
+    const harness = criarHarness();
+    const idsConfirmados = [];
+    harness.context.registrarHistoricoAlteracoesFavoritos = () => ({ id: 'alt_teste_1' });
+    harness.context.confirmarSalvamentoHistoricoFavoritosServidor = async ids => {
+        idsConfirmados.push(...ids);
+        return { success: true, ids };
+    };
+    const confirmado = await harness.context.salvarHistoricoAlteracoesFavoritosProcesso({ vinculos: [{}] });
+    assert.strictEqual(confirmado.confirmado, true);
+    assert.deepStrictEqual(idsConfirmados, ['alt_teste_1']);
+
+    harness.context.confirmarSalvamentoHistoricoFavoritosServidor = async () => ({
+        success: false,
+        erro: 'servidor indisponivel'
+    });
+    const pendente = await harness.context.salvarHistoricoAlteracoesFavoritosProcesso({ vinculos: [{}] });
+    assert.strictEqual(pendente.confirmado, false);
+    assert.strictEqual(pendente.pendente, true);
+    assert.match(pendente.erro, /servidor indisponivel/i);
+}
+
+async function testarEstadoRemotoIncertoNaoAfirmaAusenciaDeAlteracao() {
+    const harness = criarHarness({ requerValidacao: true });
+    const resultado = {
+        success: false,
+        outcome: 'partial_unknown',
+        retryable: true,
+        retry_requires_approval: true,
+        current_state: { status: 'active', price: 214.33 },
+        stages: {
+            preflight: { status: 'completed' },
+            promotion_removal: { status: 'completed' },
+            listing_type: { status: 'skipped' },
+            price: { status: 'completed' },
+            promotion: { status: 'unknown' },
+            verification: { status: 'unknown' }
+        }
+    };
+    const item = {
+        itemId: harness.registro.itemId,
+        registro: harness.registro,
+        resultado,
+        erro: 'A resposta remota nao pode ser reconciliada.'
+    };
+    const detalhe = harness.context.descreverFalhaEfetivacaoFavoritos(item);
+    assert.match(detalhe, /estado remoto incerto/i);
+    assert.match(detalhe, /campanha pode ter sido aplicada/i);
+    assert.doesNotMatch(detalhe, /nao foi alterado/i);
+
+    const vinculo = harness.context.montarVinculoHistoricoAlteracaoFavoritos(item, false, 'SKU-TESTE');
+    assert.strictEqual(vinculo.outcome, 'partial_unknown');
+    assert.strictEqual(vinculo.status_texto, 'Estado remoto incerto');
+    assert.strictEqual(vinculo.stages.promotion.status, 'unknown');
+    assert.strictEqual(vinculo.stages.verification.status, 'unknown');
+}
+
+async function testarSucessoEHistoricoPreferemValoresObservados() {
+    const harness = criarHarness();
+    const data = {
+        success: true,
+        completed: true,
+        preco_anuncio: 100,
+        preco_promocional: 79,
+        campanha_nome: 'Campanha teste',
+        promotion_id: 'CAMPANHA-1',
+        observados_autoritativos: {
+            base_price: 100.05,
+            final_price: 78.95
+        },
+        preco_confirmacao: {
+            standard_price: 100.03,
+            item_price: 79.02
+        },
+        verificacao: {
+            standard_price: 100.03,
+            promotion_price_raw: 78.97,
+            price_info: {
+                standard_price: 100.03,
+                price: 78.97
+            }
+        }
+    };
+    const item = { itemId: harness.registro.itemId, registro: harness.registro, data };
+    const detalhe = harness.context.descreverSucessoEfetivacaoFavoritos(item);
+    assert.match(detalhe, /preco cheio observado: R\$ 100\.05/i);
+    assert.match(detalhe, /preco final promocional observado: R\$ 78\.95/i);
+    assert.doesNotMatch(detalhe, /preco cheio aplicado: R\$ 100\.00/i);
+
+    const historico = harness.context.montarSimulacaoHistoricoAlteracaoFavoritos(harness.registro, data);
+    assert.strictEqual(historico.preco_ideal, 79);
+    assert.strictEqual(historico.preco_previsto, 100);
+    assert.strictEqual(historico.preco_promocional_previsto, 79);
+    assert.strictEqual(historico.preco_aplicado, 100.05);
+    assert.strictEqual(historico.preco_promocional_aplicado, 78.95);
+
+    const fallback = {
+        success: true,
+        completed: true,
+        fallback_sem_promocao_aplicado: true,
+        preco_anuncio: 82,
+        preco_promocional: null,
+        observados_autoritativos: {
+            final_price: 82.06
+        },
+        preco_confirmacao_fallback: {
+            standard_price: 82.04,
+            item_price: 82.04
+        },
+        fallback_motivo: 'Campanha nao mantida no Mercado Livre.'
+    };
+    const itemFallback = { itemId: harness.registro.itemId, registro: harness.registro, data: fallback };
+    const detalheFallback = harness.context.descreverSucessoEfetivacaoFavoritos(itemFallback);
+    assert.match(detalheFallback, /preco direto observado: R\$ 82\.06/i);
+    assert.doesNotMatch(detalheFallback, /preco cheio aplicado/i);
+    const historicoFallback = harness.context.montarSimulacaoHistoricoAlteracaoFavoritos(harness.registro, fallback);
+    assert.strictEqual(historicoFallback.preco_aplicado, 82.06);
+    assert.strictEqual(historicoFallback.preco_promocional_aplicado, null);
+}
+
 async function main() {
     await testarCancelamentoSemPost();
     await testarAprovacaoSomenteDepoisDaConfirmacao();
     await testarValidacaoLentaComLatch();
     await testarErroLiberaPreparacao();
     await testarExcecaoPainelLiberaPreparacao();
-    console.log('OK: aprovacao, cancelamento, validacao lenta, latch e erros respeitam o contrato sem rede real.');
+    await testarParcialExplicitaEtapasETerminal();
+    await testarEstadoRemotoIncertoNaoAfirmaAusenciaDeAlteracao();
+    await testarHistoricoSoConfirmaDepoisDoServidor();
+    await testarSucessoEHistoricoPreferemValoresObservados();
+    console.log('OK: aprovacao, preflight de preco, parcial terminal, historico confirmado, latch e erros respeitam o contrato sem rede real.');
 }
 
 main().catch(error => {

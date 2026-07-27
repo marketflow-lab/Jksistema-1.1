@@ -4,6 +4,8 @@ export const TEMPLATE_NAMES = new Set([
   "jk_joao_tarefa_concluida",
   "jk_joao_aprovacao_pendente",
   "jk_joao_alerta_operacional",
+  "jk_black_jhon_nova_pergunta",
+  "jk_black_jhon_nova_pergunta_v2",
 ]);
 
 export function timingSafeEqualText(left: string, right: string): boolean {

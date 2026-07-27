@@ -9,7 +9,8 @@ class FavoritosEfetivarPromocaoRequest(BaseModel):
     loja: str
     item_id: str
     sku: Optional[str] = ""
-    preco_anuncio: float
+    preco_anuncio: Optional[float] = None
+    preco_ideal: Optional[float] = None
     preco_promocional: Optional[float] = None
     preco_competitivo: Optional[float] = None
     percentual_promocao: Optional[float] = None
@@ -28,6 +29,7 @@ class FavoritosValidarEfetivacaoItemRequest(BaseModel):
     item_id: str
     listing_type_id_alvo: Optional[str] = ""
     tipo_anuncio_alvo: Optional[str] = ""
+    preco_anuncio_alvo: Optional[float] = None
 
 
 class FavoritosValidarEfetivacaoRequest(BaseModel):

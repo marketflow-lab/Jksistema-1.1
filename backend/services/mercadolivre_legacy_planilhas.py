@@ -56,6 +56,10 @@ def configure_mercadolivre_legacy_planilhas_runtime(runtime_module=None, peers=N
 
 configure_mercadolivre_legacy_planilhas_runtime()
 
+PROMO_DESCONTO_ML_NAO_INFORMADO = "Não informado pela API"
+PROMO_DESCONTO_ML_CONFIAVEL_KEY = "_jk_desconto_ml_confiavel"
+PROMO_DESCONTO_ML_FONTE_KEY = "_jk_desconto_ml_fonte"
+
 
 def _normalizar_sku_saida(v):
     sku_raw = str(v or "").strip()
@@ -70,6 +74,7 @@ def _normalizar_sku_saida(v):
 def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_exibicao: bool = False) -> pd.DataFrame:
     linhas = []
     for item in dados_analise or []:
+        item = dict(item or {})
         preco_final = _to_float_safe(item.get('M 21 Fixa'))
         preco_final_ml = _to_float_safe(item.get('M ML'))
         preco_final_ml_display = _to_float_safe(item.get('preco_final_ml_display') or item.get('recebe_ml'))
@@ -77,6 +82,11 @@ def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_ex
         taxa_pct = _to_rate_safe(item.get('%'))
         imposto_pct_rate = _to_rate_safe(item.get('Imposto %', item.get('Imposto', '')))
         desconto_ml_val = _to_float_safe(item.get('Desconto ML'))
+        desconto_ml_fonte = str(item.get(PROMO_DESCONTO_ML_FONTE_KEY) or "").strip()
+        desconto_ml_confiavel = bool(
+            item.get(PROMO_DESCONTO_ML_CONFIAVEL_KEY) is True
+            and desconto_ml_fonte
+        )
 
         # Normaliza preÃ§os finais priorizando campos explÃƒÂ­citos quando disponÃƒÂ­veis.
         preco_final_base = _to_float_safe(item.get('PreÃ§o Final'))
@@ -153,6 +163,7 @@ def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_ex
             preco_final_ml=preco_final_ml,
             tarifa_base=tarifa,
             tarifa_ml=tarifa_ml,
+            desconto_atual_confiavel=desconto_ml_confiavel,
         )
         imposto_valor = (preco_final * imposto_pct_rate) if (preco_final is not None and imposto_pct_rate is not None) else None
         imposto_ml_valor = (preco_final_ml * imposto_pct_rate) if (preco_final_ml is not None and imposto_pct_rate is not None) else None
@@ -165,10 +176,16 @@ def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_ex
         valor_liquido_ml = None
         if preco_final is not None and custo is not None:
             valor_liquido = preco_final - custo - (frete_val or 0.0) - (imposto_valor or 0.0) - (tarifa or 0.0)
-        if preco_final_ml is not None and custo is not None:
+        if preco_final_ml is not None and custo is not None and desconto_ml_val is not None:
             valor_liquido_ml = preco_final_ml - custo - (frete_ml_val or 0.0) - (imposto_ml_valor or 0.0) - (tarifa_ml or 0.0)
-            if desconto_ml_val is not None:
-                valor_liquido_ml += desconto_ml_val
+            valor_liquido_ml += desconto_ml_val
+        elif desconto_ml_val is None:
+            # Nao reutiliza liquido/margem calculados anteriormente assumindo
+            # implicitamente que um desconto desconhecido seria zero.
+            for chave in tuple(item):
+                if "quido ML" in str(chave):
+                    item[chave] = ""
+            item["Margem ML"] = ""
 
         margem_pct = None
         margem_ml_pct = None
@@ -203,7 +220,11 @@ def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_ex
             'Imposto Fixa': item.get('Imposto Fixa', formatar_moeda_br(imposto_valor) if imposto_valor is not None else item.get('Imposto', '')),
             'PreÃ§o Final ML': formatar_moeda_br(preco_final_ml) if preco_final_ml is not None else item.get('PreÃ§o Final ML', item.get('M ML', '')),
             'Imposto ML': formatar_moeda_br(imposto_ml_valor) if imposto_ml_valor is not None else item.get('Imposto ML', ''),
-            'Desconto ML': formatar_moeda_br(desconto_ml_val) if desconto_ml_val is not None else item.get('Desconto ML', item.get('Desconto', '')),
+            'Desconto ML': (
+                formatar_moeda_br(desconto_ml_val)
+                if desconto_ml_val is not None
+                else PROMO_DESCONTO_ML_NAO_INFORMADO
+            ),
             'Valor LÃ­quido': formatar_moeda_br(valor_liquido) if valor_liquido is not None else item.get('Valor LÃ­quido', ''),
             'Valor lÃ­quido ML': formatar_moeda_br(valor_liquido_ml) if valor_liquido_ml is not None else item.get('Valor lÃ­quido ML', ''),
             'Status': status_raw,

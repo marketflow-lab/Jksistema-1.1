@@ -110,6 +110,8 @@ describe("input policies", () => {
 
   it("allows only approved utility templates", () => {
     expect(safeTemplate("jk_joao_tarefa_concluida", "UTILITY", "APPROVED")).toBe(true);
+    expect(safeTemplate("jk_black_jhon_nova_pergunta", "UTILITY", "APPROVED")).toBe(true);
+    expect(safeTemplate("jk_black_jhon_nova_pergunta_v2", "UTILITY", "APPROVED")).toBe(true);
     expect(safeTemplate("jk_joao_tarefa_concluida", "MARKETING", "APPROVED")).toBe(false);
     expect(safeTemplate("qualquer", "UTILITY", "APPROVED")).toBe(false);
   });

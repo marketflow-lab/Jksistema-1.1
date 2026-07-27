@@ -715,8 +715,13 @@ function formatApiPromoBCardMeta(campanha) {
     const status = String(campanha?.status || '').trim();
     const tipo = String(campanha?.type || campanha?.promotion_type || '').trim();
     const id = String(campanha?.id || '').trim();
+    const inicio = formatPromoDateShort(campanha?.start_date || campanha?.date_start || campanha?.begin_date);
+    const fim = formatPromoDateShort(campanha?.finish_date || campanha?.end_date || campanha?.date_end);
     if (status) partes.push(status);
     if (tipo && tipo !== '-') partes.push(tipo);
+    if (inicio && fim) partes.push(`${inicio} a ${fim}`);
+    else if (inicio) partes.push(`desde ${inicio}`);
+    else if (fim) partes.push(`ate ${fim}`);
     if (id) partes.push(id);
     return partes.join(' · ');
 }

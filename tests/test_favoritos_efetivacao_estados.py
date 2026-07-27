@@ -117,6 +117,7 @@ def test_execucao_preflight_nao_muta_anuncio_que_ja_esta_em_revisao(monkeypatch)
 def test_troca_de_tipo_que_abre_revisao_para_antes_do_preco_e_campanha(monkeypatch):
     estados = iter([
         (_estado("active", [], "gold_pro"), {}),
+        (_estado("active", [], "gold_pro"), {}),
         (_estado("under_review", ["forbidden"], "gold_special"), {}),
     ])
     chamadas = []
@@ -232,25 +233,39 @@ def _preparar_fluxo_ate_promocao(monkeypatch, *, estados=None):
 
 
 def test_excecao_ao_aplicar_promocao_preserva_preco_e_retorna_parcial(monkeypatch):
-    _preparar_fluxo_ate_promocao(monkeypatch)
+    _preparar_fluxo_ate_promocao(monkeypatch, estados=[
+        _estado("active", [], "gold_special"),
+        _estado("active", [], "gold_special", 183.53),
+        _estado("active", [], "gold_special", 183.53),
+    ])
 
     def _falhar_promocao(*_args, **_kwargs):
         raise HTTPException(status_code=503, detail="Mercado Livre indisponivel")
 
     monkeypatch.setattr(favoritos_endpoints, "_promo_aplicar_item_participacao_ml", _falhar_promocao)
+    monkeypatch.setattr(
+        favoritos_endpoints,
+        "_favoritos_ml_verificar_efetivacao",
+        lambda *_args: (_ for _ in ()).throw(HTTPException(status_code=502, detail="Estado remoto indisponivel")),
+    )
 
     response = favoritos_endpoints.favoritos_ml_efetivar_promocao(_req(""), client_id="cliente")
     payload = _payload_json(response)
 
-    assert response.status_code == 503
-    assert payload["outcome"] == "partial_failure"
+    assert response.status_code == 502
+    assert payload["outcome"] == "partial_unknown"
     assert payload["preco_anuncio_atual"] == 183.53
     assert payload["stages"]["price"]["status"] == "completed"
-    assert payload["stages"]["promotion"]["status"] == "failed"
+    assert payload["stages"]["promotion"]["status"] == "unknown"
+    assert payload["stages"]["verification"]["status"] == "unknown"
 
 
 def test_excecao_na_verificacao_final_retorna_parcial_sem_perder_estado(monkeypatch):
-    _preparar_fluxo_ate_promocao(monkeypatch)
+    _preparar_fluxo_ate_promocao(monkeypatch, estados=[
+        _estado("active", [], "gold_special"),
+        _estado("active", [], "gold_special", 183.53),
+        _estado("active", [], "gold_special", 183.53),
+    ])
     monkeypatch.setattr(
         favoritos_endpoints,
         "_promo_aplicar_item_participacao_ml",
@@ -266,14 +281,18 @@ def test_excecao_na_verificacao_final_retorna_parcial_sem_perder_estado(monkeypa
     payload = _payload_json(response)
 
     assert response.status_code == 502
-    assert payload["outcome"] == "partial_failure"
+    assert payload["outcome"] == "partial_unknown"
     assert payload["preco_anuncio_atual"] == 183.53
     assert payload["stages"]["promotion"]["status"] == "completed"
-    assert payload["stages"]["verification"]["status"] == "failed"
+    assert payload["stages"]["verification"]["status"] == "unknown"
 
 
 def test_excecao_no_fallback_de_margem_retorna_parcial(monkeypatch):
-    _preparar_fluxo_ate_promocao(monkeypatch)
+    _preparar_fluxo_ate_promocao(monkeypatch, estados=[
+        _estado("active", [], "gold_special"),
+        _estado("active", [], "gold_special", 183.53),
+        _estado("active", [], "gold_special", 183.53),
+    ])
     monkeypatch.setattr(
         favoritos_endpoints,
         "_promo_aplicar_item_participacao_ml",
@@ -346,7 +365,7 @@ def test_helper_de_remocao_anexa_resultados_anteriores_ao_erro(monkeypatch):
     monkeypatch.setattr(
         favoritos_ml,
         "_ml_obter_promocoes_item",
-        lambda *_args: ([
+        lambda *_args, **_kwargs: ([
             {"id": "PROMO-1", "status": "started", "promotion_type": "SELLER_CAMPAIGN"},
             {"id": "PROMO-2", "status": "started", "promotion_type": "SELLER_CAMPAIGN"},
         ], {}),
@@ -390,7 +409,7 @@ def test_helper_de_remocao_preserva_resultados_quando_refresh_lanca_http_excepti
     monkeypatch.setattr(
         favoritos_ml,
         "_ml_obter_promocoes_item",
-        lambda *_args: ([
+        lambda *_args, **_kwargs: ([
             {"id": "PROMO-1", "status": "started", "promotion_type": "SELLER_CAMPAIGN"},
             {"id": "PROMO-2", "status": "started", "promotion_type": "SELLER_CAMPAIGN"},
         ], {}),

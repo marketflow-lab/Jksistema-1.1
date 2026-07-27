@@ -968,6 +968,112 @@ def _prepare_question_forwarding(monkeypatch, approvals, sent):
     monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
 
 
+def test_blocked_question_template_is_followed_by_the_same_interactive_draft_after_window_reopens(monkeypatch):
+    approval = {
+        "id": "approval-window",
+        "status": "pending",
+        "loja": "JK Pecas",
+        "pergunta": "Este produto tem garantia?",
+        "resposta_sugerida": "Sim, possui garantia.",
+    }
+    interactive: list[dict] = []
+    proactive: list[dict] = []
+    delivery_statuses = iter(("waiting_free_window", "sent"))
+    binding_last_inbound = {"value": 100}
+    v2_approved = {"value": False}
+
+    def worker_health(_cfg):
+        templates = [{
+            "name": "jk_joao_aprovacao_pendente",
+            "category": "UTILITY",
+            "status": "APPROVED",
+        }]
+        if v2_approved["value"]:
+            templates.append({
+                "name": "jk_black_jhon_nova_pergunta_v2",
+                "category": "UTILITY",
+                "status": "APPROVED",
+            })
+        return {
+            "bindings": [{
+                "machine_id": "machine-1",
+                "client_id": "cliente",
+                "username": "operador",
+                "subject_id": "subject-1",
+                "last_inbound_at": binding_last_inbound["value"],
+            }],
+            "templates": templates,
+        }
+
+    monkeypatch.setattr(whatsapp_bridge, "_worker_health", worker_health)
+    monkeypatch.setattr(
+        admin_usuarios_common,
+        "_carregar_permissoes_usuario",
+        lambda _user, _client: {"perguntas_pos_venda": True},
+    )
+    monkeypatch.setattr(perguntas_pos_venda_state, "_perguntas_loja_configs_carregar", lambda _client: {
+        "JK Pecas": {"notificar_whatsapp_aprovacoes": True}
+    })
+    monkeypatch.setattr(
+        perguntas_pos_venda_state,
+        "_perguntas_ia_aprovacoes_carregar",
+        lambda _client: [approval],
+    )
+    monkeypatch.setattr(perguntas_pos_venda_codex, "approval_job_current", lambda *_args: True)
+    monkeypatch.setattr(perguntas_pos_venda_codex, "job_contract_current", lambda *_args: True)
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_post_interactive_approval",
+        lambda _cfg, **payload: interactive.append(dict(payload)) or {"status": next(delivery_statuses)},
+    )
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_post_proactive",
+        lambda _cfg, payload: proactive.append(dict(payload)) or {"status": "sent"},
+    )
+    monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_bridge_store",
+        lambda: type("BridgeStore", (), {"record_notification": lambda *_args, **_kwargs: None})(),
+    )
+    state: dict = {}
+
+    whatsapp_bridge._forward_question_approvals({"machine_id": "machine-1"}, state)
+    whatsapp_bridge._forward_question_approvals({"machine_id": "machine-1"}, state)
+    assert len(interactive) == 1
+    assert len(proactive) == 1
+    assert proactive[0]["template_name"] == "jk_joao_aprovacao_pendente"
+
+    v2_approved["value"] = True
+    whatsapp_bridge._forward_question_approvals({"machine_id": "machine-1"}, state)
+    whatsapp_bridge._forward_question_approvals({"machine_id": "machine-1"}, state)
+    assert len(interactive) == 1
+    assert [item["template_name"] for item in proactive] == [
+        "jk_joao_aprovacao_pendente",
+        "jk_black_jhon_nova_pergunta_v2",
+    ]
+
+    binding_last_inbound["value"] = 200
+    whatsapp_bridge._forward_question_approvals({"machine_id": "machine-1"}, state)
+    whatsapp_bridge._forward_question_approvals({"machine_id": "machine-1"}, state)
+
+    assert len(interactive) == 2
+    assert interactive[0]["token"] == interactive[1]["token"]
+    assert interactive[0]["body"] == interactive[1]["body"]
+    assert len(proactive) == 2
+    assert proactive[0]["fingerprint"] != proactive[1]["fingerprint"]
+    assert proactive[1]["template_params"] == [
+        "JK Pecas",
+        "Este produto tem garantia?",
+        "Sim, possui garantia.",
+    ]
+    notification = next(iter(state["question_approval_notifications"].values()))
+    assert notification["interactive_sent"] is True
+    active = next(iter(state["question_active_threads"].values()))
+    assert active["approval_id"] == "approval-window"
+
+
 def test_post_sale_active_thread_is_invalidated_and_next_public_question_is_forwarded(monkeypatch):
     approvals = [
         {

@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '20260724-favoritos-v116-integrada-v1';
+  const VERSION = '20260727-favoritos-promo-sequence-v1';
   const CHUNKS = [
     "01-ml-base-busca.js",
     "02-ia-datas-selecao.js",

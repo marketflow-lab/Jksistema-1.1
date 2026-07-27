@@ -100,6 +100,7 @@ assert(ui.includes("conversation_agent_model: String(conversationAgentModel.valu
 assert(ui.includes("task_agent_model: String(taskAgentModel.value || 'gpt-5.6-sol').trim()"), 'Sol task model is not saved');
 assert(ui.includes('progress_messages_enabled: false'), 'legacy progress messages must stay disabled');
 assert(ui.includes('jk_black_jhon_nova_pergunta'), 'new-question utility template is not displayed');
+assert(ui.includes('jk_black_jhon_nova_pergunta_v2'), 'question-suggestion quick-reply template is not displayed');
 assert(ui.includes('BLOQUEIO'), 'pending or rejected templates are not shown as explicit blockers');
 assert(ui.includes('/api/admin/whatsapp/whisper/download'), 'Whisper endpoint missing from UI');
 assert(!ui.includes('payload.bridge_token_configured ? payload.bridge_token'), 'UI must never render the saved bridge token');
@@ -190,6 +191,9 @@ assert(gateway.includes('bridge_heartbeats'), 'gateway heartbeat persistence is 
 assert(gateway.includes('offline_notified_at'), 'offline notification deduplication is missing');
 assert(gateway.includes('template_not_approved'), 'template approval blocker is missing');
 assert(gateway.includes('jk_black_jhon_nova_pergunta'), 'new-question utility template definition is missing');
+assert(gateway.includes('jk_black_jhon_nova_pergunta_v2'), 'versioned question-suggestion template definition is missing');
+assert(gateway.includes('ppv_view_pending'), 'question-suggestion quick-reply payload is missing');
+assert(gateway.includes('type: "QUICK_REPLY", text: "Ver sugestao"'), 'question-suggestion quick-reply button is missing');
 assert(gateway.includes('/webhooks/openai/realtime'), 'OpenAI Realtime webhook route is missing');
 assert(gateway.includes('/bridge/voice/calls/claim'), 'voice claim route is missing');
 assert(voiceGateway.includes('verifyOpenAIWebhook'), 'OpenAI webhook signature is not validated');

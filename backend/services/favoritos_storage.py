@@ -987,6 +987,26 @@ def _favoritos_normalizar_opcoes_promocao_historico(raw: Any) -> dict | None:
     }
 
 
+def _favoritos_normalizar_etapas_alteracao_historico(raw: Any) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+    etapas = {}
+    for nome, etapa in list(raw.items())[:20]:
+        chave = _favoritos_limpar_texto_historico(nome, 80)
+        if not chave or not isinstance(etapa, dict):
+            continue
+        etapa_normalizada = {
+            "status": _favoritos_limpar_texto_historico(etapa.get("status"), 60),
+        }
+        for campo in ("message", "detail", "error"):
+            if etapa.get(campo) not in (None, ""):
+                etapa_normalizada[campo] = _favoritos_limpar_texto_historico(etapa.get(campo), 300)
+        if isinstance(etapa.get("retryable"), bool):
+            etapa_normalizada["retryable"] = etapa.get("retryable")
+        etapas[chave] = etapa_normalizada
+    return etapas
+
+
 def _favoritos_normalizar_vinculo_alteracao_historico(raw: Any) -> dict | None:
     if not isinstance(raw, dict):
         return None
@@ -1002,6 +1022,15 @@ def _favoritos_normalizar_vinculo_alteracao_historico(raw: Any) -> dict | None:
         "loja": _favoritos_limpar_texto_historico(raw.get("loja"), 180),
         "status": _favoritos_limpar_texto_historico(raw.get("status") or raw.get("tipo") or "info", 40),
         "status_texto": _favoritos_limpar_texto_historico(raw.get("status_texto") or raw.get("mensagem"), 300),
+        "outcome": _favoritos_limpar_texto_historico(raw.get("outcome"), 80),
+        "retryable": raw.get("retryable") if isinstance(raw.get("retryable"), bool) else None,
+        "retry_requires_approval": (
+            raw.get("retry_requires_approval")
+            if isinstance(raw.get("retry_requires_approval"), bool)
+            else None
+        ),
+        "terminal": raw.get("terminal") is True,
+        "stages": _favoritos_normalizar_etapas_alteracao_historico(raw.get("stages")),
         "nosso": nosso,
         "base": base,
         "simulacao": _favoritos_normalizar_simulacao_alteracao_historico(raw.get("simulacao")),

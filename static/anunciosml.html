@@ -68,6 +68,8 @@
             font-weight: bold;
         }
         button:hover { background: #0073e6; }
+        #btnExportarExcel:disabled { opacity: 0.65; cursor: not-allowed; }
+        .export-status { min-height: 1.2em; margin-top: 8px; }
         table {
             width: 100%;
             border-collapse: collapse;
@@ -393,8 +395,13 @@
                     <label>&nbsp;</label>
                     <button id="btnRefresh"> Atualizar anuncios</button>
                 </div>
+                <div>
+                    <label>&nbsp;</label>
+                    <button id="btnExportarExcel" type="button" aria-describedby="exportarExcelMsg" title="Exportar todos os anúncios ativos da loja selecionada" disabled>Exportar ativos (Excel)</button>
+                </div>
             </div>
             <div id="lojaMsg" class="error"></div>
+            <div id="exportarExcelMsg" class="export-status" role="status" aria-live="polite"></div>
         </div>
 
         <div class="card">
@@ -591,16 +598,24 @@
         const loadingText = document.getElementById('loadingText');
         const loadingTimer = document.getElementById('loadingTimer');
         const btnCancelarRequisicao = document.getElementById('btnCancelarRequisicao');
+        const btnExportarExcel = document.getElementById('btnExportarExcel');
+        const exportarExcelMsg = document.getElementById('exportarExcelMsg');
 
         // Controle global de cancelamento
         let _abortController = null;
+        let _exportAbortController = null;
         let _loadingTimerInterval = null;
         let _loadingTimerStart = null;
+        let exportacaoAnunciosEmAndamento = false;
 
         function cancelarRequisicaoAtual() {
             if (_abortController) {
                 _abortController.abort();
                 _abortController = null;
+            }
+            if (_exportAbortController) {
+                _exportAbortController.abort();
+                _exportAbortController = null;
             }
             hideLoader();
         }
@@ -669,6 +684,126 @@
             }
         }
 
+        function atualizarDisponibilidadeExportacao() {
+            btnExportarExcel.disabled = exportacaoAnunciosEmAndamento || !String(lojaSelect.value || '').trim();
+        }
+
+        function definirStatusExportacao(mensagem, tipo = '') {
+            exportarExcelMsg.textContent = mensagem || '';
+            exportarExcelMsg.className = `export-status${tipo ? ` ${tipo}` : ''}`;
+        }
+
+        function nomeArquivoExportacaoAnuncios(contentDisposition, loja) {
+            const data = new Date().toISOString().slice(0, 10);
+            const lojaSegura = String(loja || 'loja')
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .replace(/[^a-zA-Z0-9_-]+/g, '_')
+                .replace(/^_+|_+$/g, '')
+                .slice(0, 60) || 'loja';
+            const fallback = `anuncios_ativos_${lojaSegura}_${data}.xlsx`;
+            const header = String(contentDisposition || '');
+            let nome = '';
+            const utf8Match = header.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+            if (utf8Match) {
+                try {
+                    nome = decodeURIComponent(utf8Match[1].trim().replace(/^"|"$/g, ''));
+                } catch (e) {}
+            }
+            if (!nome) {
+                const filenameMatch = header.match(/filename\s*=\s*(?:"([^"]+)"|([^;]+))/i);
+                nome = filenameMatch ? String(filenameMatch[1] || filenameMatch[2] || '').trim() : '';
+            }
+            nome = nome
+                .split(/[\\/]/)
+                .pop()
+                .replace(/[\u0000-\u001f<>:"/\\|?*]/g, '_')
+                .replace(/[. ]+$/g, '')
+                .trim();
+            if (!nome || nome === '.' || nome === '..') return fallback;
+            return /\.xlsx$/i.test(nome) ? nome : `${nome}.xlsx`;
+        }
+
+        async function mensagemErroExportacao(response) {
+            const fallback = `Falha ao exportar anúncios (${response.status || 'erro'}).`;
+            const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+            if (contentType.includes('application/json')) {
+                const data = await response.json().catch(() => ({}));
+                return String(data.detail || data.message || fallback);
+            }
+            const texto = await response.text().catch(() => '');
+            return String(texto || fallback).trim();
+        }
+
+        async function exportarAnunciosAtivosExcel() {
+            if (exportacaoAnunciosEmAndamento) return;
+            const loja = String(lojaSelect.value || '').trim();
+            if (!loja) {
+                definirStatusExportacao('Selecione uma loja para exportar os anúncios ativos.', 'error');
+                atualizarDisponibilidadeExportacao();
+                return;
+            }
+
+            exportacaoAnunciosEmAndamento = true;
+            atualizarDisponibilidadeExportacao();
+            btnExportarExcel.textContent = 'Gerando Excel...';
+            btnExportarExcel.setAttribute('aria-busy', 'true');
+            const mensagemGeracao = `Gerando Excel com todos os anúncios ativos da loja ${loja}...`;
+            const exportAbortController = new AbortController();
+            _exportAbortController = exportAbortController;
+            definirStatusExportacao(mensagemGeracao);
+            showLoader(mensagemGeracao, true);
+
+            try {
+                const response = await fetch(`/api/mercadolivre/anuncios/exportar?loja=${encodeURIComponent(loja)}`, {
+                    method: 'GET',
+                    headers: { ...obterAuthHeaders() },
+                    cache: 'no-store',
+                    signal: exportAbortController.signal
+                });
+                if (!response.ok) throw new Error(await mensagemErroExportacao(response));
+
+                const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+                const mimeXlsx = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+                if (!contentType.includes(mimeXlsx)) {
+                    throw new Error('A exportação não retornou uma planilha Excel válida.');
+                }
+
+                const blob = await response.blob();
+                if (!blob || !blob.size) throw new Error('A exportação retornou um arquivo vazio.');
+
+                const nomeArquivo = nomeArquivoExportacaoAnuncios(
+                    response.headers.get('content-disposition'),
+                    loja
+                );
+                const objectUrl = window.URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                try {
+                    link.href = objectUrl;
+                    link.download = nomeArquivo;
+                    link.style.display = 'none';
+                    document.body.appendChild(link);
+                    link.click();
+                } finally {
+                    link.remove();
+                    window.URL.revokeObjectURL(objectUrl);
+                }
+                definirStatusExportacao(`Download de ${nomeArquivo} iniciado.`, 'success');
+            } catch (e) {
+                const mensagemErro = e.name === 'AbortError'
+                    ? 'Exportação cancelada.'
+                    : (e.message || 'Erro ao exportar os anúncios ativos.');
+                definirStatusExportacao(mensagemErro, 'error');
+            } finally {
+                if (_exportAbortController === exportAbortController) _exportAbortController = null;
+                hideLoader();
+                exportacaoAnunciosEmAndamento = false;
+                btnExportarExcel.textContent = 'Exportar ativos (Excel)';
+                btnExportarExcel.removeAttribute('aria-busy');
+                atualizarDisponibilidadeExportacao();
+            }
+        }
+
         async function carregarLojas() {
             try {
                 const lojas = await apiFetch('/api/lojas');
@@ -676,6 +811,7 @@
                 lojaSelect.innerHTML = '';
                 if (!filtradas.length) {
                     lojaMsg.textContent = 'Nenhuma loja com Mercado Livre conectado.';
+                    atualizarDisponibilidadeExportacao();
                     return;
                 }
                 lojaMsg.textContent = '';
@@ -686,9 +822,11 @@
                     lojaSelect.appendChild(opt);
                 });
                 lojaSelect.selectedIndex = 0;
+                atualizarDisponibilidadeExportacao();
                 await atualizarAnuncios(1);
             } catch (e) {
                 lojaMsg.textContent = e.message;
+                atualizarDisponibilidadeExportacao();
             }
         }
 
@@ -1301,6 +1439,7 @@
             });
         });
         lojaSelect.addEventListener('change', async () => {
+            atualizarDisponibilidadeExportacao();
             campanhasPromocaoMap = {};
             campanhasPromocaoDetalhesMap = {};
             campanhasPromocaoPromise = null;
@@ -1608,6 +1747,7 @@
             _buildTableHeader();
             if (anunciosCache.length) renderAnuncios({ results: anunciosCache, total: totalAnuncios }, false, false);
         });
+        btnExportarExcel.addEventListener('click', exportarAnunciosAtivosExcel);
 
         carregarLojas();
     </script>

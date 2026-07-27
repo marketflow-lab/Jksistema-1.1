@@ -26,7 +26,7 @@ import uuid
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
@@ -1030,6 +1030,39 @@ def _favoritos_ml_float_close(valor, esperado, tolerancia: float = 0.08) -> bool
     return abs(float(valor_num) - float(esperado_num)) <= float(tolerancia)
 
 
+def _favoritos_ml_preco_ideal_req(req: FavoritosEfetivarPromocaoRequest) -> Optional[float]:
+    for valor in (req.preco_ideal, req.preco_promocional, req.preco_competitivo):
+        preco = _parse_float_flex(valor)
+        if preco is not None and preco > 0:
+            return round(float(preco), 2)
+    return None
+
+
+def _favoritos_ml_calcular_preco_cheio_centavos(preco_ideal: Any, percentual: Any) -> Optional[float]:
+    ideal_num = _parse_float_flex(preco_ideal)
+    percentual_num = _parse_float_flex(percentual)
+    if ideal_num is None or ideal_num <= 0 or percentual_num is None or not (0 < percentual_num < 100):
+        return None
+
+    centavo = Decimal("0.01")
+    ideal = Decimal(str(ideal_num)).quantize(centavo, rounding=ROUND_HALF_UP)
+    fator = (Decimal("100") - Decimal(str(percentual_num))) / Decimal("100")
+    bruto_centavos = (ideal / fator) * Decimal("100")
+    centro = int(bruto_centavos.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+    offsets = sorted(range(-12, 13), key=lambda valor: (abs(valor), valor))
+    for offset in offsets:
+        centavos = centro + offset
+        if centavos <= 0:
+            continue
+        candidato = (Decimal(centavos) / Decimal("100")).quantize(centavo)
+        final_calculado = (candidato * fator).quantize(centavo, rounding=ROUND_HALF_UP)
+        if final_calculado == ideal:
+            return float(candidato)
+
+    return float((Decimal(centro) / Decimal("100")).quantize(centavo, rounding=ROUND_HALF_UP))
+
+
 def _favoritos_ml_preco_minimo_margem_simulado(req: FavoritosEfetivarPromocaoRequest) -> Optional[float]:
     sim = req.simulacao if isinstance(req.simulacao, dict) else {}
     for campo in (
@@ -1074,6 +1107,7 @@ def _favoritos_ml_margem_estimada(req: FavoritosEfetivarPromocaoRequest, preco_v
         sim.get("precoCompetitivo")
         or sim.get("precoPromocionalCalculado")
         or sim.get("precoPromocional")
+        or req.preco_ideal
         or req.preco_promocional
         or req.preco_competitivo
     )
@@ -1090,9 +1124,7 @@ def _favoritos_ml_preco_contingencia_sem_promocao(
     req: FavoritosEfetivarPromocaoRequest,
     desconto_maximo: float = 1.5,
 ) -> Optional[float]:
-    preco_final_previsto = _parse_float_flex(req.preco_promocional)
-    if preco_final_previsto is None:
-        preco_final_previsto = _parse_float_flex(req.preco_competitivo)
+    preco_final_previsto = _favoritos_ml_preco_ideal_req(req)
     if preco_final_previsto is not None and preco_final_previsto > 0:
         margem_prevista = _favoritos_ml_margem_estimada(req, preco_final_previsto)
         if margem_prevista is None or margem_prevista >= 15.0:
@@ -1120,9 +1152,7 @@ def _favoritos_ml_verificacao_exige_contingencia_por_margem(
     verificacao: Optional[dict],
 ) -> tuple[bool, str, dict]:
     preco_final = _favoritos_ml_preco_final_verificacao(verificacao)
-    preco_simulado = _parse_float_flex(req.preco_promocional)
-    if preco_simulado is None:
-        preco_simulado = _parse_float_flex(req.preco_competitivo)
+    preco_simulado = _favoritos_ml_preco_ideal_req(req)
     preco_minimo_margem = _favoritos_ml_preco_minimo_margem_simulado(req)
     margem = _favoritos_ml_margem_estimada(req, preco_final)
     preco_proximo = bool(
@@ -1238,8 +1268,23 @@ def _favoritos_ml_aplicar_contingencia_sem_promocao(
         )
 
     removidas, cfg = _favoritos_ml_remover_promocoes_atuais(client_id, loja, cfg, item_id, req)
-    if removidas:
-        time.sleep(1.0)
+    estado_pos_clear, cfg = _favoritos_ml_obter_estado_item(
+        client_id,
+        loja,
+        cfg,
+        item_id,
+        preco_contingencia,
+    )
+    preflight = estado_pos_clear.get("price_preflight") or {}
+    if estado_pos_clear.get("mutation_blocked") or not preflight.get("ok", True):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                estado_pos_clear.get("block_reason")
+                or preflight.get("message")
+                or "O preco ideal direto ficou bloqueado depois da remocao da promocao."
+            ),
+        )
 
     preco_update, cfg = _favoritos_ml_atualizar_preco_item(client_id, loja, cfg, item_id, preco_contingencia)
     preco_confirmacao, cfg = _favoritos_ml_aguardar_preco_anuncio(
@@ -1259,6 +1304,79 @@ def _favoritos_ml_aplicar_contingencia_sem_promocao(
             ),
         )
 
+    confirmacao_sem_promocao_final, cfg = _favoritos_ml_confirmar_sem_promocoes(
+        client_id,
+        loja,
+        cfg,
+        item_id,
+        preco_direto=preco_contingencia,
+    )
+    removidas_reconciliacao = []
+    preco_update_reconciliacao = None
+    preco_confirmacao_reconciliacao = None
+    promocao_reapareceu = bool(
+        confirmacao_sem_promocao_final.get("active_promotions")
+        or confirmacao_sem_promocao_final.get("sale_price_has_promotion")
+    )
+    if not confirmacao_sem_promocao_final.get("success") and promocao_reapareceu:
+        try:
+            removidas_reconciliacao, cfg = _favoritos_ml_remover_promocoes_atuais(
+                client_id,
+                loja,
+                cfg,
+                item_id,
+                req,
+            )
+            removidas.extend(removidas_reconciliacao)
+            preco_update_reconciliacao, cfg = _favoritos_ml_atualizar_preco_item(
+                client_id,
+                loja,
+                cfg,
+                item_id,
+                preco_contingencia,
+            )
+            preco_confirmacao_reconciliacao, cfg = _favoritos_ml_aguardar_preco_anuncio(
+                client_id,
+                loja,
+                cfg,
+                item_id,
+                float(preco_contingencia),
+                tentativas=8,
+            )
+            if not preco_confirmacao_reconciliacao.get("success"):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "A promocao reapareceu, foi removida novamente, mas o preco ideal direto "
+                        f"nao foi reconfirmado: {preco_confirmacao_reconciliacao}"
+                    ),
+                )
+            confirmacao_sem_promocao_final, cfg = _favoritos_ml_confirmar_sem_promocoes(
+                client_id,
+                loja,
+                cfg,
+                item_id,
+                preco_direto=preco_contingencia,
+            )
+        except Exception as exc:
+            detalhe = getattr(exc, "detail", None) or str(exc or "falha desconhecida")
+            raise HTTPException(
+                status_code=getattr(exc, "status_code", 409) or 409,
+                detail=(
+                    "A promocao reapareceu depois do preco ideal e a reconciliacao final falhou: "
+                    f"{detalhe}"
+                ),
+            ) from exc
+    if not confirmacao_sem_promocao_final.get("success"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "O preco ideal direto foi confirmado, mas o fallback nao provou ausencia estavel de promocao "
+                "nas consultas seller-promotions e sale_price: "
+                f"{confirmacao_sem_promocao_final}"
+            ),
+        )
+
     return {
         "fallback_sem_promocao_aplicado": True,
         "fallback_motivo": motivo,
@@ -1273,6 +1391,11 @@ def _favoritos_ml_aplicar_contingencia_sem_promocao(
         "promocoes_removidas_fallback": removidas,
         "preco_update_fallback": preco_update,
         "preco_confirmacao_fallback": preco_confirmacao,
+        "price_preflight_fallback": preflight,
+        "promocao_clear_confirmada_fallback": confirmacao_sem_promocao_final,
+        "promocoes_removidas_reconciliacao": removidas_reconciliacao,
+        "preco_update_reconciliacao": preco_update_reconciliacao,
+        "preco_confirmacao_reconciliacao": preco_confirmacao_reconciliacao,
     }, cfg
 
 
@@ -1421,6 +1544,148 @@ def _favoritos_ml_remocao_retry_delay(resp, tentativa: int) -> float:
     return min(18.0, max(1.0, float(padrao)) + random.uniform(0.2, 1.0))
 
 
+def _favoritos_ml_invalidar_cache_promocoes_item(client_id: str, loja: str, item_id: str) -> None:
+    cache = globals().get("ML_ITEM_PROMOTIONS_CACHE")
+    if not isinstance(cache, dict):
+        return
+    for versao in ("v2", "v3-strict"):
+        cache.pop(f"{versao}:{client_id}:{loja}:{item_id}", None)
+
+
+def _favoritos_ml_confirmar_sem_promocoes(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    item_id: str,
+    *,
+    preco_direto: Optional[float] = None,
+    tentativas: int = 8,
+    leituras_estaveis: int = 3,
+) -> tuple[dict, dict]:
+    preco_alvo = _parse_float_flex(preco_direto)
+    estabilidade = 0
+    assinatura_anterior = None
+    ultimo = {
+        "success": False,
+        "attempt": 0,
+        "active_promotions": [],
+        "strict": True,
+        "sale_price_observable": False,
+        "sale_price_has_promotion": False,
+        "sale_price_amount": None,
+        "sale_price_regular_amount": None,
+        "sale_price_promotion_id": None,
+        "sale_price_campaign_id": None,
+        "direct_price_ok": False if preco_alvo is not None else True,
+        "stable_reads": 0,
+        "required_stable_reads": max(2, int(leituras_estaveis)),
+    }
+    for tentativa in range(max(1, int(tentativas))):
+        if tentativa:
+            time.sleep(2.0)
+        _favoritos_ml_invalidar_cache_promocoes_item(client_id, loja, item_id)
+        promocoes_item, cfg = _ml_obter_promocoes_item(
+            client_id,
+            loja,
+            cfg,
+            item_id,
+            strict=True,
+        )
+        ativas = []
+        for raw in promocoes_item if isinstance(promocoes_item, list) else []:
+            info = _favoritos_ml_promocao_para_remocao(raw, item_id)
+            if info:
+                ativas.append(info)
+
+        sale_price = {}
+        sale_price_observable = False
+        try:
+            resp_sale_price, cfg = _ml_api_request(
+                client_id,
+                loja,
+                cfg,
+                "GET",
+                f"https://api.mercadolibre.com/items/{item_id}/sale_price",
+                params={"context": "channel_marketplace"},
+                timeout=15,
+            )
+            if resp_sale_price.status_code == 200:
+                payload_sale_price = resp_sale_price.json() or {}
+                if isinstance(payload_sale_price, dict):
+                    sale_price = payload_sale_price
+                    sale_price_observable = True
+        except Exception as exc:
+            logger.warning(
+                "[Favoritos ML] Falha ao reconciliar sale_price sem promocao de %s: %s",
+                item_id,
+                exc,
+            )
+
+        metadata_sale_price = sale_price.get("metadata") if isinstance(sale_price.get("metadata"), dict) else {}
+        sale_amount = _parse_float_flex(sale_price.get("amount"))
+        regular_amount = _parse_float_flex(sale_price.get("regular_amount"))
+        sale_promotion_id = str(metadata_sale_price.get("promotion_id") or "").strip()
+        sale_campaign_id = str(metadata_sale_price.get("campaign_id") or "").strip()
+        sale_promotion_type = str(metadata_sale_price.get("promotion_type") or "").strip()
+        desconto_por_preco = bool(
+            sale_amount is not None
+            and regular_amount is not None
+            and float(regular_amount) > float(sale_amount) + 0.005
+        )
+        sale_price_has_promotion = bool(
+            sale_promotion_id
+            or sale_campaign_id
+            or sale_promotion_type
+            or desconto_por_preco
+        )
+        direct_price_ok = bool(
+            preco_alvo is None
+            or (
+                sale_amount is not None
+                and _favoritos_ml_float_close(sale_amount, preco_alvo, tolerancia=0.009)
+            )
+        )
+        leitura_limpa = bool(
+            not ativas
+            and sale_price_observable
+            and not sale_price_has_promotion
+            and direct_price_ok
+        )
+        assinatura = (
+            round(float(sale_amount), 2) if sale_amount is not None else None,
+            round(float(regular_amount), 2) if regular_amount is not None else None,
+            sale_promotion_id.lower(),
+            sale_campaign_id.lower(),
+            sale_promotion_type.lower(),
+        )
+        if leitura_limpa:
+            estabilidade = estabilidade + 1 if assinatura == assinatura_anterior else 1
+            assinatura_anterior = assinatura
+        else:
+            estabilidade = 0
+            assinatura_anterior = None
+        ultimo = {
+            "success": False,
+            "attempt": tentativa + 1,
+            "active_promotions": ativas,
+            "strict": True,
+            "sale_price_observable": sale_price_observable,
+            "sale_price_has_promotion": sale_price_has_promotion,
+            "sale_price_amount": round(float(sale_amount), 2) if sale_amount is not None else None,
+            "sale_price_regular_amount": round(float(regular_amount), 2) if regular_amount is not None else None,
+            "sale_price_promotion_id": sale_promotion_id or None,
+            "sale_price_campaign_id": sale_campaign_id or None,
+            "sale_price_promotion_type": sale_promotion_type or None,
+            "direct_price_ok": direct_price_ok,
+            "stable_reads": estabilidade,
+            "required_stable_reads": max(2, int(leituras_estaveis)),
+        }
+        if estabilidade >= max(2, int(leituras_estaveis)):
+            ultimo["success"] = True
+            return ultimo, cfg
+    return ultimo, cfg
+
+
 def _favoritos_ml_remover_promocoes_atuais(
     client_id: str,
     loja: str,
@@ -1428,11 +1693,14 @@ def _favoritos_ml_remover_promocoes_atuais(
     item_id: str,
     req: FavoritosEfetivarPromocaoRequest,
 ) -> tuple[list[dict], dict]:
-    promocoes_item = []
-    try:
-        promocoes_item, cfg = _ml_obter_promocoes_item(client_id, loja, cfg, item_id)
-    except Exception as exc:
-        logger.warning("[Favoritos ML] Falha ao listar promocoes atuais de %s: %s", item_id, exc)
+    _favoritos_ml_invalidar_cache_promocoes_item(client_id, loja, item_id)
+    promocoes_item, cfg = _ml_obter_promocoes_item(
+        client_id,
+        loja,
+        cfg,
+        item_id,
+        strict=True,
+    )
 
     remover = []
     vistos = set()
@@ -1592,6 +1860,29 @@ def _favoritos_ml_remover_promocoes_atuais(
                 )
             break
 
+    if resultados:
+        time.sleep(1.0)
+    confirmacao, cfg = _favoritos_ml_confirmar_sem_promocoes(
+        client_id,
+        loja,
+        cfg,
+        item_id,
+    )
+    if not confirmacao.get("success"):
+        erro = _erro_remocao_com_resultados(
+            409,
+            (
+                "Mercado Livre respondeu a remocao, mas a reconciliacao ainda encontrou promocao ativa "
+                "ou sale_price promocional: "
+                f"promocoes={confirmacao.get('active_promotions') or []}; "
+                f"sale_price_has_promotion={bool(confirmacao.get('sale_price_has_promotion'))}; "
+                f"sale_price_amount={confirmacao.get('sale_price_amount')}; "
+                f"sale_price_regular_amount={confirmacao.get('sale_price_regular_amount')}"
+            ),
+        )
+        erro.favoritos_clear_confirmation = confirmacao
+        raise erro
+
     return resultados, cfg
 
 
@@ -1629,6 +1920,134 @@ def _favoritos_ml_nome_listing_type(listing_type_id: str) -> str:
     return str(listing_type_id or "").strip()
 
 
+def _favoritos_ml_tags_item(item_data: Any) -> list[str]:
+    item = item_data if isinstance(item_data, dict) else {}
+    tags_raw = item.get("tags")
+    if isinstance(tags_raw, str):
+        tags_raw = [tags_raw]
+    tags = []
+    for valor in tags_raw if isinstance(tags_raw, list) else []:
+        tag = str(valor or "").strip().lower()
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags
+
+
+def _favoritos_ml_preco_cheio_estado(estado: Any) -> tuple[Optional[float], str]:
+    dados = estado if isinstance(estado, dict) else {}
+    for campo in ("original_price", "base_price", "price"):
+        valor = _parse_float_flex(dados.get(campo))
+        if valor is not None:
+            return float(valor), campo
+    return None, ""
+
+
+def _favoritos_ml_obter_automacao_preco(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    item_id: str,
+) -> tuple[dict, dict]:
+    resp, cfg = _ml_api_request(
+        client_id,
+        loja,
+        cfg,
+        "GET",
+        f"https://api.mercadolibre.com/pricing-automation/items/{item_id}/automation",
+        timeout=15,
+    )
+    try:
+        data = resp.json() or {}
+    except Exception:
+        data = {}
+    if resp.status_code == 200:
+        if not isinstance(data, dict) or not data.get("item_id"):
+            raise HTTPException(
+                status_code=502,
+                detail="Mercado Livre retornou uma automacao de precos invalida.",
+            )
+        return {
+            "configured": True,
+            "status": str(data.get("status") or "").strip().upper(),
+            "rule_id": str((data.get("item_rule") or {}).get("rule_id") or "").strip()
+            if isinstance(data.get("item_rule"), dict)
+            else "",
+        }, cfg
+
+    erro = str(data.get("error") or data.get("code") or "").strip().lower() if isinstance(data, dict) else ""
+    if resp.status_code == 404 and erro == "automation_not_found":
+        return {"configured": False, "status": "", "rule_id": ""}, cfg
+
+    detalhe = _ml_parse_error_detail(resp, "Nao foi possivel verificar a automacao de precos do anuncio")
+    raise HTTPException(status_code=resp.status_code or 502, detail=detalhe)
+
+
+def _favoritos_ml_validar_preco_mutavel(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    item_id: str,
+    estado: dict,
+    preco_alvo: Any,
+) -> tuple[dict, dict]:
+    alvo = _parse_float_flex(preco_alvo)
+    atual, campo_atual = _favoritos_ml_preco_cheio_estado(estado)
+    base = {
+        "checked": alvo is not None,
+        "ok": True,
+        "price_update_required": None,
+        "target_price": round(float(alvo), 2) if alvo is not None else None,
+        "current_price": atual,
+        "current_price_field": campo_atual,
+        "dynamic_standard_price": bool((estado or {}).get("dynamic_standard_price")),
+        "automation_configured": False,
+        "automation_status": "",
+        "automation_rule_id": "",
+        "retryable": False,
+        "reason": "",
+        "message": "Preco-alvo nao informado; verificacao de editabilidade adiada para a execucao."
+        if alvo is None
+        else "Preco do anuncio apto para a alteracao solicitada.",
+    }
+    if alvo is None:
+        return base, cfg
+
+    update_required = bool(atual is None or not _favoritos_ml_float_close(atual, alvo))
+    base["price_update_required"] = update_required
+    if not update_required:
+        base["message"] = "O preco cheio ja esta no valor alvo; nenhuma edicao de preco e necessaria."
+        return base, cfg
+
+    if base["dynamic_standard_price"]:
+        base.update({
+            "ok": False,
+            "reason": "dynamic_standard_price",
+            "message": (
+                "O anuncio possui automatizacao de precos ativa no Mercado Livre. "
+                "Desative ou ajuste a automacao antes de alterar tipo, preco ou campanha."
+            ),
+        })
+        return base, cfg
+
+    automacao, cfg = _favoritos_ml_obter_automacao_preco(client_id, loja, cfg, item_id)
+    base.update({
+        "automation_configured": bool(automacao.get("configured")),
+        "automation_status": str(automacao.get("status") or ""),
+        "automation_rule_id": str(automacao.get("rule_id") or ""),
+    })
+    if automacao.get("configured"):
+        base.update({
+            "ok": False,
+            "reason": "pricing_automation_configured",
+            "message": (
+                "O anuncio possui uma automacao de precos configurada no Mercado Livre"
+                + (f" (status {automacao.get('status')})." if automacao.get("status") else ".")
+                + " Desative ou ajuste a automacao antes de alterar tipo, preco ou campanha."
+            ),
+        })
+    return base, cfg
+
+
 def _favoritos_ml_resumir_estado_item(item_id: str, item_data: Any) -> dict:
     item = item_data if isinstance(item_data, dict) else {}
     status = str(item.get("status") or "").strip().lower()
@@ -1660,6 +2079,9 @@ def _favoritos_ml_resumir_estado_item(item_id: str, item_data: Any) -> dict:
     else:
         motivo = ""
     listing_type_id = _favoritos_ml_listing_type_id(item.get("listing_type_id"))
+    tags = _favoritos_ml_tags_item(item)
+    sold_quantity = _parse_float_flex(item.get("sold_quantity"))
+    has_bids_raw = item.get("has_bids")
     return {
         "item_id": str(item.get("id") or item_id or "").strip(),
         "status": status,
@@ -1669,6 +2091,10 @@ def _favoritos_ml_resumir_estado_item(item_id: str, item_data: Any) -> dict:
         "price": _parse_float_flex(item.get("price")),
         "base_price": _parse_float_flex(item.get("base_price")),
         "original_price": _parse_float_flex(item.get("original_price")),
+        "tags": tags,
+        "dynamic_standard_price": "dynamic_standard_price" in tags,
+        "has_bids": has_bids_raw if isinstance(has_bids_raw, bool) else None,
+        "sold_quantity": int(sold_quantity) if sold_quantity is not None else None,
         "catalog_listing": bool(item.get("catalog_listing")),
         "catalog_product_id": str(item.get("catalog_product_id") or "").strip(),
         "last_updated": str(item.get("last_updated") or "").strip(),
@@ -1683,6 +2109,7 @@ def _favoritos_ml_obter_estado_item(
     loja: str,
     cfg: dict,
     item_id: str,
+    preco_alvo: Any = None,
 ) -> tuple[dict, dict]:
     resp, cfg = _ml_api_request(
         client_id,
@@ -1701,7 +2128,17 @@ def _favoritos_ml_obter_estado_item(
         item_data = {}
     if not isinstance(item_data, dict):
         raise HTTPException(status_code=502, detail="Mercado Livre retornou um estado de anuncio invalido.")
-    return _favoritos_ml_resumir_estado_item(item_id, item_data), cfg
+    estado = _favoritos_ml_resumir_estado_item(item_id, item_data)
+    price_preflight, cfg = _favoritos_ml_validar_preco_mutavel(
+        client_id,
+        loja,
+        cfg,
+        item_id,
+        estado,
+        preco_alvo,
+    )
+    estado["price_preflight"] = price_preflight
+    return estado, cfg
 
 
 def _favoritos_ml_troca_listing_type_favoritos_suportada(atual: str, alvo: str) -> bool:
@@ -2044,7 +2481,6 @@ def _favoritos_ml_atualizar_tipo_listing_item(
 def _favoritos_ml_atualizar_preco_item(client_id: str, loja: str, cfg: dict, item_id: str, preco: float) -> tuple[dict, dict]:
     preco_num = round(float(preco), 2)
     ultimo_resp = None
-    erro_api_precos = None
     ultima_conferencia_apos_erro = None
 
     def _json_response(resp) -> Any:
@@ -2091,7 +2527,28 @@ def _favoritos_ml_atualizar_preco_item(client_id: str, loja: str, cfg: dict, ite
             return True
         return False
 
+    def _erro_preco_regra_negocio(resp, detalhe: str = "") -> bool:
+        texto = f"{detalhe or ''} {getattr(resp, 'text', '') or ''}"
+        texto_norm = normalizar_texto(texto).replace("_", " ")
+        gatilhos = (
+            "item.price.not modifiable",
+            "price is not modifiable",
+            "cannot modify price",
+            "dynamic pricing",
+            "dynamic standard price",
+            "pricing automation",
+            "automatizacao de precos",
+            "automacao de precos",
+            "field not updatable",
+            "catalog listing",
+            "catalog item",
+            "business rule",
+        )
+        return any(gatilho in texto_norm for gatilho in gatilhos)
+
     def _erro_preco_transitorio(resp, detalhe: str = "") -> bool:
+        if _erro_preco_regra_negocio(resp, detalhe):
+            return False
         status = getattr(resp, "status_code", None)
         texto = f"{detalhe or ''} {getattr(resp, 'text', '') or ''}"
         texto_norm = normalizar_texto(texto)
@@ -2111,17 +2568,9 @@ def _favoritos_ml_atualizar_preco_item(client_id: str, loja: str, cfg: dict, ite
             "try again",
         )
         return bool(
-            status in (408, 409, 423, 425, 429, 500, 502, 503, 504)
+            status in (408, 425, 429, 500, 502, 503, 504)
             or any(gatilho in texto_norm for gatilho in gatilhos)
         )
-
-    def _erro_api_precos_amigavel(detalhe: str) -> str:
-        texto_norm = normalizar_texto(detalhe or "")
-        if "resource not found" in texto_norm:
-            return "API de precos padrao nao disponivel para este anuncio/contexto."
-        if not detalhe:
-            return ""
-        return detalhe
 
     def _resumir_conferencia_preco(conferencia: Any) -> str:
         if not isinstance(conferencia, dict):
@@ -2182,116 +2631,10 @@ def _favoritos_ml_atualizar_preco_item(client_id: str, loja: str, cfg: dict, ite
         ]
         if detalhe_principal:
             partes.append(f"Resposta do Mercado Livre: {detalhe_principal}")
-        erro_precos = _erro_api_precos_amigavel(erro_api_precos or "")
-        if erro_precos:
-            partes.append(f"API de precos: {erro_precos}")
         resumo_conf = _resumir_conferencia_preco(conferencia or ultima_conferencia_apos_erro)
         if resumo_conf:
             partes.append(f"Conferencia pos-erro: {resumo_conf}.")
         return " ".join(partes)
-
-    def _normalizar_contextos_standard(contextos: Any) -> list[str]:
-        if isinstance(contextos, str):
-            contextos = [contextos]
-        if not isinstance(contextos, list):
-            return []
-        vistos = set()
-        saida = []
-        for contexto in contextos:
-            ctx = str(contexto or "").strip()
-            if not ctx or ctx in vistos:
-                continue
-            vistos.add(ctx)
-            saida.append(ctx)
-        return saida
-
-    def _montar_payload_preco_standard() -> tuple[Optional[dict], dict, dict]:
-        details = {"source": "prices"}
-        currency_id = None
-        prices_payload = []
-
-        prices_resp, cfg_local = _ml_api_request(
-            client_id,
-            loja,
-            cfg,
-            "GET",
-            f"https://api.mercadolibre.com/items/{item_id}/prices",
-            timeout=15,
-        )
-        if prices_resp.status_code == 200:
-            prices_data = _json_response(prices_resp)
-            details["prices_response"] = prices_data
-            for price_obj in (prices_data.get("prices") or []):
-                if not isinstance(price_obj, dict):
-                    continue
-                if str(price_obj.get("type") or "").lower() != "standard":
-                    continue
-                currency_id = price_obj.get("currency_id") or currency_id
-                conditions = price_obj.get("conditions") if isinstance(price_obj.get("conditions"), dict) else {}
-                contexts = _normalizar_contextos_standard(conditions.get("context_restrictions"))
-                prices_payload.append({
-                    "conditions": {"context_restrictions": contexts},
-                    "amount": preco_num,
-                    "currency_id": currency_id or "BRL",
-                })
-        else:
-            details["prices_status_code"] = prices_resp.status_code
-            details["prices_error"] = _ml_parse_error_detail(prices_resp, "Nao foi possivel consultar /prices")
-
-        if prices_payload:
-            return {"prices": prices_payload}, details, cfg_local
-
-        item_resp, cfg_local = _ml_api_request(
-            client_id,
-            loja,
-            cfg_local,
-            "GET",
-            f"https://api.mercadolibre.com/items/{item_id}",
-            timeout=15,
-        )
-        item_data = _json_response(item_resp) if item_resp.status_code == 200 else {}
-        details["source"] = "item_fallback"
-        details["item_status_code"] = item_resp.status_code
-        currency_id = item_data.get("currency_id") or currency_id or "BRL"
-        canais = item_data.get("channels") if isinstance(item_data.get("channels"), list) else []
-        contextos = []
-        for canal in canais:
-            canal_norm = str(canal or "").strip().lower()
-            if canal_norm in {"marketplace", "channel_marketplace"}:
-                contextos.append("channel_marketplace")
-            elif canal_norm in {"mshops", "channel_mshops"}:
-                contextos.append("channel_mshops")
-        if not contextos:
-            contextos = ["channel_marketplace"]
-        prices_payload = [
-            {
-                "conditions": {"context_restrictions": [ctx]},
-                "amount": preco_num,
-                "currency_id": currency_id,
-            }
-            for ctx in dict.fromkeys(contextos)
-        ]
-        return {"prices": prices_payload}, details, cfg_local
-
-    payload_standard, detalhes_standard, cfg = _montar_payload_preco_standard()
-    if payload_standard:
-        resp_standard, cfg = _ml_api_request(
-            client_id,
-            loja,
-            cfg,
-            "POST",
-            f"https://api.mercadolibre.com/items/{item_id}/prices/standard",
-            json=payload_standard,
-            timeout=25,
-        )
-        if resp_standard.status_code in (200, 201, 202, 204):
-            return {
-                "method": "prices_standard",
-                "payload": payload_standard,
-                "response": _json_response(resp_standard),
-                "details": detalhes_standard,
-            }, cfg
-        erro_api_precos = _ml_parse_error_detail(resp_standard, "Erro ao atualizar preco pela API de precos")
 
     max_tentativas_put = 5
     for tentativa in range(max_tentativas_put):
@@ -2326,14 +2669,15 @@ def _favoritos_ml_atualizar_preco_item(client_id: str, loja: str, cfg: dict, ite
                         "response": data,
                         "warning": detalhe_ignorado,
                         "preco_confirmacao_apos_erro": conferencia,
-                        "prices_standard_error": erro_api_precos,
                     }, cfg
-                raise HTTPException(status_code=409, detail=_montar_erro_preco_final(detalhe_ignorado, conferencia))
+                erro = HTTPException(status_code=409, detail=_montar_erro_preco_final(detalhe_ignorado, conferencia))
+                erro.favoritos_retryable = False
+                erro.favoritos_price_business_rule = True
+                raise erro
             return {
                 "method": "items_put",
                 "payload": {"price": preco_num},
                 "response": data,
-                "prices_standard_error": erro_api_precos,
             }, cfg
 
         detalhe_tentativa = _ml_parse_error_detail(resp, "Erro ao atualizar preco do anuncio no Mercado Livre")
@@ -2347,16 +2691,30 @@ def _favoritos_ml_atualizar_preco_item(client_id: str, loja: str, cfg: dict, ite
                 "error_status_code": resp.status_code,
                 "error_detail": detalhe_tentativa,
                 "preco_confirmacao_apos_erro": conferencia,
-                "prices_standard_error": erro_api_precos,
             }, cfg
         if not _erro_preco_transitorio(resp, detalhe_tentativa):
             break
 
     detalhe = _ml_parse_error_detail(ultimo_resp, "Erro ao atualizar preco do anuncio no Mercado Livre")
-    raise HTTPException(
+    erro = HTTPException(
         status_code=getattr(ultimo_resp, "status_code", 500) or 500,
         detail=_montar_erro_preco_final(detalhe, ultima_conferencia_apos_erro),
     )
+    erro.favoritos_retryable = _erro_preco_transitorio(ultimo_resp, detalhe)
+    erro.favoritos_price_business_rule = _erro_preco_regra_negocio(ultimo_resp, detalhe)
+    raise erro
+
+
+def _favoritos_ml_preco_base_autoritativo(item: Any, price_info: Any) -> tuple[Optional[float], str]:
+    item_data = item if isinstance(item, dict) else {}
+    price_data = price_info if isinstance(price_info, dict) else {}
+    standard_price = _parse_float_flex(price_data.get("standard_price"))
+    if standard_price is not None:
+        return round(float(standard_price), 2), "standard_price"
+    base_price = _parse_float_flex(item_data.get("base_price"))
+    if base_price is not None:
+        return round(float(base_price), 2), "base_price"
+    return None, ""
 
 
 def _favoritos_ml_aguardar_preco_anuncio(
@@ -2398,13 +2756,8 @@ def _favoritos_ml_aguardar_preco_anuncio(
             consultar_sale_price_sempre=True,
         )
 
-        candidatos = [
-            price_info.get("standard_price"),
-            price_info.get("original_price"),
-            item.get("price"),
-            item.get("base_price"),
-        ]
-        ok = any(_favoritos_ml_float_close(v, preco_alvo) for v in candidatos)
+        preco_base, campo_base = _favoritos_ml_preco_base_autoritativo(item, price_info)
+        ok = _favoritos_ml_float_close(preco_base, preco_alvo, tolerancia=0.009)
         ultimo = {
             "success": ok,
             "attempt": tentativa + 1,
@@ -2413,6 +2766,8 @@ def _favoritos_ml_aguardar_preco_anuncio(
             "base_price": item.get("base_price"),
             "standard_price": price_info.get("standard_price"),
             "original_price": price_info.get("original_price"),
+            "authoritative_price": preco_base,
+            "authoritative_price_field": campo_base,
             "price_info": price_info,
         }
         if ok:
@@ -2431,13 +2786,28 @@ def _favoritos_ml_verificar_efetivacao(
     promotion_type: str,
     preco_anuncio: float,
     preco_promocional: Optional[float],
+    percentual_promocao: Optional[float] = None,
+    *,
+    tentativas: int = 8,
+    leituras_estaveis: int = 3,
 ) -> tuple[dict, dict]:
     ultimo = {}
-    for tentativa in range(6):
+    assinatura_anterior = None
+    estabilidade = 0
+    assinatura_divergente_anterior = None
+    estabilidade_divergente = 0
+    observacoes = []
+    percentual_esperado = _parse_float_flex(percentual_promocao)
+    if percentual_esperado is None and preco_anuncio and preco_promocional:
+        percentual_esperado = max(
+            0.0,
+            ((float(preco_anuncio) - float(preco_promocional)) / float(preco_anuncio)) * 100.0,
+        )
+
+    for tentativa in range(max(2, int(tentativas))):
         if tentativa:
             time.sleep(1.8)
 
-        item = {}
         resp_item, cfg = _ml_api_request(
             client_id,
             loja,
@@ -2446,11 +2816,15 @@ def _favoritos_ml_verificar_efetivacao(
             f"https://api.mercadolibre.com/items/{item_id}",
             timeout=15,
         )
-        if resp_item.status_code == 200:
-            try:
-                item = resp_item.json() or {}
-            except Exception:
-                item = {}
+        if resp_item.status_code != 200:
+            detalhe = _ml_parse_error_detail(resp_item, "Nao foi possivel reconciliar o item depois da promocao")
+            raise HTTPException(status_code=resp_item.status_code or 502, detail=detalhe)
+        try:
+            item = resp_item.json() or {}
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="Mercado Livre retornou um item invalido na reconciliacao.") from exc
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=502, detail="Mercado Livre retornou um item invalido na reconciliacao.")
 
         price_info, cfg = _ml_obter_preco_detalhado(
             client_id,
@@ -2461,76 +2835,134 @@ def _favoritos_ml_verificar_efetivacao(
             request_fn=_ml_api_request,
             consultar_sale_price_sempre=True,
         )
-        promocoes_item, cfg = _ml_obter_promocoes_item(client_id, loja, cfg, item_id)
+        _favoritos_ml_invalidar_cache_promocoes_item(client_id, loja, item_id)
+        promocoes_item, cfg = _ml_obter_promocoes_item(
+            client_id,
+            loja,
+            cfg,
+            item_id,
+            strict=True,
+        )
         raw_promocao = _ml_encontrar_promocao_raw_item(promocoes_item, campanha_id)
-        ids_promocoes = _ml_extrair_ids_promocoes_item(promocoes_item)
-        promocao_ok = bool(
-            raw_promocao
-            or str(campanha_id or "").strip().lower() in {str(v).strip().lower() for v in ids_promocoes}
+        tipo_observado = _favoritos_ml_texto_promocao(
+            raw_promocao or {},
+            ("promotion_type", "promotionType", "campaign_type", "campaignType", "type"),
         )
+        tipo_esperado = str(promotion_type or "").strip().lower()
+        tipo_ok = bool(tipo_observado) and str(tipo_observado).strip().lower() == tipo_esperado
+        promocao_ok = bool(raw_promocao) and tipo_ok
 
-        preco_standard = (
-            price_info.get("standard_price")
-            or price_info.get("original_price")
-            or item.get("price")
-            or item.get("base_price")
-        )
-        preco_final = price_info.get("price")
+        preco_base, campo_base = _favoritos_ml_preco_base_autoritativo(item, price_info)
         preco_raw_promocao, desconto_raw = _ml_extrair_preco_promocao_raw(raw_promocao or {})
-
-        preco_anuncio_ok = (
-            _favoritos_ml_float_close(preco_standard, preco_anuncio)
-            or _favoritos_ml_float_close(item.get("price"), preco_anuncio)
-            or _favoritos_ml_float_close(price_info.get("original_price"), preco_anuncio)
-        )
-        preco_promocional_ok = True
-        if preco_promocional is not None:
-            preco_promocional_ok = (
-                _favoritos_ml_float_close(preco_final, preco_promocional)
-                or _favoritos_ml_float_close(preco_raw_promocao, preco_promocional)
+        preco_final = _parse_float_flex(preco_raw_promocao)
+        if preco_final is None and raw_promocao:
+            preco_final = _parse_float_flex(
+                price_info.get("price")
+                or price_info.get("sale_price")
+                or price_info.get("promotional_price")
             )
-        desconto_esperado = None
+
+        preco_anuncio_ok = _favoritos_ml_float_close(preco_base, preco_anuncio, tolerancia=0.009)
+        preco_promocional_ok = _favoritos_ml_float_close(preco_final, preco_promocional, tolerancia=0.009)
         desconto_info = _parse_float_flex(price_info.get("discount_pct"))
         if desconto_info is None:
             desconto_info = _parse_float_flex(desconto_raw)
-        try:
-            if preco_anuncio and preco_promocional:
-                desconto_esperado = max(0.0, ((float(preco_anuncio) - float(preco_promocional)) / float(preco_anuncio)) * 100.0)
-        except Exception:
-            desconto_esperado = None
-        desconto_ok = True
-        if desconto_esperado is not None and desconto_info is not None:
-            desconto_ok = abs(float(desconto_info) - float(desconto_esperado)) <= 0.35
-        promocao_por_preco_ok = bool(
-            not promocao_ok
-            and price_info.get("has_promotion")
-            and preco_anuncio_ok
-            and preco_promocional_ok
-            and desconto_ok
+        if desconto_info is None and preco_base and preco_final is not None:
+            desconto_info = max(0.0, ((float(preco_base) - float(preco_final)) / float(preco_base)) * 100.0)
+        desconto_ok = bool(
+            percentual_esperado is not None
+            and desconto_info is not None
+            and abs(float(desconto_info) - float(percentual_esperado)) <= 0.35
         )
+        leitura_ok = bool(promocao_ok and preco_anuncio_ok and preco_promocional_ok and desconto_ok)
+        ids_promocoes_observadas = tuple(sorted(
+            str(valor or "").strip().lower()
+            for valor in _ml_extrair_ids_promocoes_item(promocoes_item)
+            if str(valor or "").strip()
+        ))
+        observacao_completa = bool(
+            preco_base is not None
+            and (
+                not raw_promocao
+                or (tipo_observado and preco_final is not None and desconto_info is not None)
+            )
+        )
+        assinatura = (
+            str(campanha_id or "").strip().lower(),
+            str(tipo_observado or "").strip().lower(),
+            round(float(preco_base), 2) if preco_base is not None else None,
+            round(float(preco_final), 2) if preco_final is not None else None,
+            round(float(desconto_info), 2) if desconto_info is not None else None,
+            ids_promocoes_observadas,
+        )
+        if leitura_ok:
+            estabilidade = estabilidade + 1 if assinatura == assinatura_anterior else 1
+            assinatura_anterior = assinatura
+            estabilidade_divergente = 0
+            assinatura_divergente_anterior = None
+        else:
+            estabilidade = 0
+            assinatura_anterior = None
+            if observacao_completa:
+                estabilidade_divergente = (
+                    estabilidade_divergente + 1
+                    if assinatura == assinatura_divergente_anterior
+                    else 1
+                )
+                assinatura_divergente_anterior = assinatura
+            else:
+                estabilidade_divergente = 0
+                assinatura_divergente_anterior = None
 
         ultimo = {
             "promotion_id": campanha_id,
             "promotion_type": promotion_type,
             "promocao_ok": promocao_ok,
-            "promocao_por_preco_ok": promocao_por_preco_ok,
+            "promotion_type_observed": tipo_observado,
+            "promotion_type_ok": tipo_ok,
+            "promocao_por_preco_ok": False,
             "preco_anuncio_ok": preco_anuncio_ok,
             "preco_promocional_ok": preco_promocional_ok,
             "desconto_ok": desconto_ok,
-            "desconto_esperado": desconto_esperado,
+            "desconto_esperado": percentual_esperado,
             "desconto_info": desconto_info,
             "price_info": price_info,
             "item_price": item.get("price"),
-            "standard_price": preco_standard,
+            "standard_price": price_info.get("standard_price"),
+            "base_price": preco_base,
+            "base_price_field": campo_base,
             "promotion_price_raw": preco_raw_promocao,
+            "final_price": round(float(preco_final), 2) if preco_final is not None else None,
             "promotion_discount_raw": desconto_raw,
             "attempt": tentativa + 1,
+            "stable_reads": estabilidade,
+            "divergent_stable_reads": estabilidade_divergente,
+            "required_stable_reads": max(2, int(leituras_estaveis)),
+            "observable": observacao_completa,
+            "confirmed_divergence": False,
         }
-        if (promocao_ok or promocao_por_preco_ok) and preco_anuncio_ok and preco_promocional_ok and desconto_ok:
+        observacoes.append({
+            "attempt": tentativa + 1,
+            "promotion_id_ok": bool(raw_promocao),
+            "promotion_type_ok": tipo_ok,
+            "base_price": ultimo["base_price"],
+            "final_price": round(float(preco_final), 2) if preco_final is not None else None,
+            "discount_pct": round(float(desconto_info), 2) if desconto_info is not None else None,
+            "valid": leitura_ok,
+            "complete": observacao_completa,
+            "divergent_stable_reads": estabilidade_divergente,
+        })
+        ultimo["observations"] = observacoes[-4:]
+        if leitura_ok and estabilidade >= max(2, int(leituras_estaveis)):
             ultimo["success"] = True
+            return ultimo, cfg
+        if not leitura_ok and estabilidade_divergente >= max(2, int(leituras_estaveis)):
+            ultimo["success"] = False
+            ultimo["confirmed_divergence"] = True
             return ultimo, cfg
 
     ultimo["success"] = False
+    ultimo["confirmed_divergence"] = False
     return ultimo, cfg
 
 
@@ -3285,6 +3717,13 @@ def _ml_data_criacao_cache_local(client_id: str | None, item_id: str | None):
     return _ml_datas_cache_local(client_id).get(item_id)
 
 PEER_EXPORTS = ['_ml_favoritos_buscar_itens_por_sku', '_ml_favoritos_buscar_primeiros_itens_por_skus', '_ml_favoritos_listar_itens_ativos_loja', '_ml_favoritos_listar_todos_itens_ativos_loja', '_favoritos_ml_dividir_skus', '_favoritos_ml_imagem_item', '_favoritos_ml_url_item_id', '_favoritos_ml_resumo_anuncio_sku', '_favoritos_ml_skus_unicos_itens', '_favoritos_ml_garantir_sku_busca', '_ml_favoritos_mapear_itens_ativos_por_skus', '_ml_favoritos_extrair_texto_descricao', '_ml_favoritos_montar_descricao_por_item', '_ml_favoritos_obter_descricao_item', '_ml_favoritos_obter_descricao_item_rapida', '_favoritos_ml_float_close', '_favoritos_ml_preco_minimo_margem_simulado', '_favoritos_ml_preco_final_verificacao', '_favoritos_ml_margem_estimada', '_favoritos_ml_preco_contingencia_sem_promocao', '_favoritos_ml_verificacao_exige_contingencia_por_margem', '_favoritos_ml_falha_por_percentual_promocao', '_favoritos_ml_aplicar_contingencia_sem_promocao', '_favoritos_ml_texto_promocao', '_favoritos_ml_promocao_para_remocao', '_favoritos_ml_promocoes_remocao_fallback', '_favoritos_ml_remocao_max_attempts', '_favoritos_ml_textos_resposta_remocao', '_favoritos_ml_remocao_erro_transitorio', '_favoritos_ml_remocao_retry_delay', '_favoritos_ml_remover_promocoes_atuais', '_favoritos_ml_listing_type_id', '_favoritos_ml_nome_listing_type', '_favoritos_ml_resumir_estado_item', '_favoritos_ml_obter_estado_item', '_favoritos_ml_troca_listing_type_favoritos_suportada', '_favoritos_ml_listing_type_alvo_req', '_favoritos_ml_obter_listing_type_atual_e_disponiveis', '_favoritos_ml_validar_listing_type_disponivel', '_favoritos_ml_atualizar_tipo_listing_item', '_favoritos_ml_atualizar_preco_item', '_favoritos_ml_aguardar_preco_anuncio', '_favoritos_ml_verificar_efetivacao', '_favoritos_resolver_sku_para_margem', '_favoritos_aplicar_margem_anuncio_ml', '_ml_headers', '_ml_api_get', '_ml_api_item', '_ml_api_items_multiget_tenant', '_ml_api_item_com_oauth_tenant', '_ml_api_user', '_ml_api_user_com_oauth_tenant', '_ml_total_visitas_payload', '_ml_api_visitas_com_oauth_tenant', '_ml_api_search', '_ml_api_search_paginated', '_ml_parcelamento_sem_juros_api', '_ml_parcelamento_sem_juros_texto', '_ml_data_sort_key', '_ml_primeira_pergunta_publica_data', '_ml_wayback_timestamp_iso', '_ml_wayback_primeira_captura_data', '_ml_normalizar_data_cache_local', '_ml_data_criacao_por_imagem', '_ml_datas_cache_local', '_ml_data_criacao_cache_local']
+PEER_EXPORTS.extend([
+    '_favoritos_ml_preco_ideal_req',
+    '_favoritos_ml_calcular_preco_cheio_centavos',
+    '_favoritos_ml_invalidar_cache_promocoes_item',
+    '_favoritos_ml_confirmar_sem_promocoes',
+    '_favoritos_ml_preco_base_autoritativo',
+])
 __all__ = PEER_EXPORTS + ["configure_favoritos_ml_runtime"]
 
 configure_favoritos_ml_runtime()

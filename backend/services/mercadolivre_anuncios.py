@@ -3,15 +3,526 @@
 from __future__ import annotations
 
 import datetime as dt
+import io
+import json
 import re
+import threading
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
+from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 from backend.services.mercadolivre_cache import _ml_cache_get, _ml_cache_set
 from backend.services.mercadolivre_context import _ctx
+
+
+ML_EXPORT_XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_ML_EXPORT_PAGE_LIMIT = 100
+_ML_EXPORT_DETAIL_BATCH = 100
+# XLSX aceita 1.048.576 linhas; a primeira fica reservada ao cabecalho.
+_ML_EXPORT_MAX_ITEMS = 1_048_575
+_ML_EXPORT_ACTIVE_LOCK = threading.Lock()
+_ML_EXPORT_ACTIVE_KEYS: set[tuple[str, str]] = set()
+
+_ML_EXPORT_ANUNCIOS_HEADERS = (
+    "Loja",
+    "ID do anuncio",
+    "SKU",
+    "SKUs das variacoes",
+    "Titulo",
+    "Familia",
+    "Tipo do anuncio",
+    "Condicao",
+    "Preco atual",
+    "Preco padrao",
+    "Preco original",
+    "Desconto (%)",
+    "Custo do anuncio",
+    "Tarifa fixa",
+    "Tarifa de publicacao",
+    "Taxa de venda (%)",
+    "Custo de frete do vendedor",
+    "Frete do comprador",
+    "Frete base",
+    "Frete de lista",
+    "Frete gratis",
+    "Tipo logistico",
+    "Modo de envio",
+    "Estoque disponivel",
+    "Vendidas acumuladas",
+    "Status",
+    "Tem promocao",
+    "ID da promocao",
+    "Tipo da promocao",
+    "Anuncio de catalogo",
+    "ID do produto de catalogo",
+    "ID do produto do vendedor",
+    "Categoria",
+    "Dominio",
+    "Canais",
+    "Data de criacao",
+    "Ultima atualizacao",
+    "Data de inicio",
+    "Data de termino",
+    "Link",
+    "Miniatura",
+)
+
+_ML_EXPORT_VARIACOES_HEADERS = (
+    "Loja",
+    "ID do anuncio",
+    "SKU pai",
+    "ID da variacao",
+    "Variacao",
+    "SKU da variacao",
+    "ID de inventario",
+    "Preco",
+    "Estoque disponivel",
+    "Vendidas acumuladas",
+    "ID da imagem",
+)
+
+
+def _ml_export_http_error(ctx, resp, fallback: str) -> HTTPException:
+    try:
+        detail = ctx.ml_parse_error_detail(resp, fallback)
+    except Exception:
+        detail = fallback
+    return HTTPException(status_code=502, detail=detail or fallback)
+
+
+def _ml_export_item_id(raw: Any) -> str:
+    if isinstance(raw, dict):
+        raw = raw.get("id")
+    return str(raw or "").strip()
+
+
+def _ml_export_total(raw: Any) -> Optional[int]:
+    try:
+        total = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return max(0, total)
+
+
+def _ml_export_listar_ids_offset(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    url: str,
+) -> tuple[list[str], dict]:
+    """Fallback paginado com prova de cobertura pelo paging.total."""
+    ctx = _ctx()
+    ids: list[str] = []
+    vistos: set[str] = set()
+    offset = 0
+    total_esperado: Optional[int] = None
+
+    while True:
+        resp, cfg = ctx.ml_api_request_com_retry(
+            client_id,
+            loja,
+            cfg,
+            "GET",
+            url,
+            params={"offset": offset, "limit": _ML_EXPORT_PAGE_LIMIT, "status": "active"},
+            timeout=35,
+            max_attempts=3,
+        )
+        if resp.status_code != 200:
+            raise _ml_export_http_error(ctx, resp, "Erro ao listar todos os anuncios ativos do Mercado Livre")
+
+        data = resp.json() or {}
+        batch = data.get("results") or []
+        total_pagina = _ml_export_total((data.get("paging") or {}).get("total"))
+        if total_pagina is None:
+            raise HTTPException(status_code=502, detail="Mercado Livre nao informou o total de anuncios ativos.")
+        total_esperado = max(total_esperado or 0, total_pagina)
+        if total_esperado > _ML_EXPORT_MAX_ITEMS:
+            raise HTTPException(
+                status_code=413,
+                detail=f"A loja possui mais de {_ML_EXPORT_MAX_ITEMS} anuncios ativos; a exportacao foi interrompida sem gerar arquivo parcial.",
+            )
+
+        for raw in batch:
+            item_id = _ml_export_item_id(raw)
+            if item_id and item_id not in vistos:
+                vistos.add(item_id)
+                ids.append(item_id)
+                if len(ids) > _ML_EXPORT_MAX_ITEMS:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="A quantidade de anuncios ativos excede o limite de linhas de uma planilha Excel.",
+                    )
+
+        if len(ids) >= total_esperado:
+            return ids, cfg
+        if not batch:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Exportacao incompleta: o Mercado Livre informou {total_esperado} anuncios, mas somente {len(ids)} IDs unicos foram coletados.",
+            )
+
+        offset += len(batch)
+        if offset > _ML_EXPORT_MAX_ITEMS:
+            raise HTTPException(status_code=413, detail="Limite seguro da exportacao de anuncios excedido.")
+
+
+def _ml_export_listar_ids_ativos(client_id: str, loja: str, cfg: dict, user_id: str) -> tuple[list[str], dict]:
+    """Lista todos os IDs ativos por scan e nunca aceita truncamento silencioso."""
+    ctx = _ctx()
+    url = f"https://api.mercadolibre.com/users/{user_id}/items/search"
+    ids: list[str] = []
+    vistos: set[str] = set()
+    scroll_vistos: set[str] = set()
+    scroll_id = ""
+    total_esperado: Optional[int] = None
+
+    for pagina in range((_ML_EXPORT_MAX_ITEMS // _ML_EXPORT_PAGE_LIMIT) + 2):
+        params = {"search_type": "scan", "limit": _ML_EXPORT_PAGE_LIMIT}
+        if pagina == 0:
+            params["status"] = "active"
+        else:
+            params["scroll_id"] = scroll_id
+
+        resp, cfg = ctx.ml_api_request_com_retry(
+            client_id,
+            loja,
+            cfg,
+            "GET",
+            url,
+            params=params,
+            timeout=35,
+            max_attempts=3,
+        )
+        if resp.status_code != 200:
+            if pagina == 0:
+                return _ml_export_listar_ids_offset(client_id, loja, cfg, url)
+            raise _ml_export_http_error(ctx, resp, "Erro durante a coleta completa dos anuncios ativos")
+
+        data = resp.json() or {}
+        batch = data.get("results") or []
+        total_pagina = _ml_export_total((data.get("paging") or {}).get("total"))
+        if total_pagina is not None:
+            total_esperado = max(total_esperado or 0, total_pagina)
+            if total_esperado > _ML_EXPORT_MAX_ITEMS:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"A loja possui mais de {_ML_EXPORT_MAX_ITEMS} anuncios ativos; a exportacao foi interrompida sem gerar arquivo parcial.",
+                )
+
+        adicionados = 0
+        for raw in batch:
+            item_id = _ml_export_item_id(raw)
+            if item_id and item_id not in vistos:
+                vistos.add(item_id)
+                ids.append(item_id)
+                adicionados += 1
+                if len(ids) > _ML_EXPORT_MAX_ITEMS:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="A quantidade de anuncios ativos excede o limite de linhas de uma planilha Excel.",
+                    )
+
+        if total_esperado is not None and len(ids) >= total_esperado:
+            return ids, cfg
+        if not batch:
+            if total_esperado in (None, len(ids)):
+                return ids, cfg
+            raise HTTPException(
+                status_code=502,
+                detail=f"Exportacao incompleta: o Mercado Livre informou {total_esperado} anuncios, mas somente {len(ids)} IDs unicos foram coletados.",
+            )
+
+        proximo_scroll = str(data.get("scroll_id") or "").strip()
+        if not proximo_scroll:
+            return _ml_export_listar_ids_offset(client_id, loja, cfg, url)
+        if proximo_scroll in scroll_vistos or (pagina > 0 and adicionados == 0):
+            raise HTTPException(status_code=502, detail="Exportacao interrompida porque a paginacao do Mercado Livre nao avancou.")
+        scroll_vistos.add(proximo_scroll)
+        scroll_id = proximo_scroll
+
+    raise HTTPException(status_code=413, detail="Limite seguro da exportacao de anuncios excedido.")
+
+
+def _ml_export_iterar_detalhes(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    item_ids: list[str],
+) -> Iterator[tuple[dict, dict]]:
+    """Enriquece em lotes limitados para nao acumular itens e futures na memoria."""
+    ctx = _ctx()
+    cfg_local = cfg
+    for inicio in range(0, len(item_ids), _ML_EXPORT_DETAIL_BATCH):
+        ids_lote = item_ids[inicio: inicio + _ML_EXPORT_DETAIL_BATCH]
+        itens, cfg_local = ctx.ml_buscar_itens_batch(client_id, loja, cfg_local, ids_lote)
+        itens_por_id = {
+            str(item.get("id") or "").strip(): item
+            for item in itens or []
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        }
+        faltantes = [item_id for item_id in ids_lote if item_id not in itens_por_id]
+        if faltantes:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Exportacao incompleta: faltaram detalhes de {len(faltantes)} anuncio(s). Nenhum arquivo parcial foi gerado.",
+            )
+
+        ativos = [
+            itens_por_id[item_id]
+            for item_id in ids_lote
+            if str(itens_por_id[item_id].get("status") or "").lower() == "active"
+        ]
+        detalhes_lote: list[Optional[tuple[dict, dict]]] = [None] * len(ativos)
+        erros: list[str] = []
+        if ativos:
+            max_workers = min(6, max(2, len(ativos)))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futuros = {
+                    executor.submit(
+                        ctx.ml_montar_detalhe_anuncio_listagem,
+                        client_id,
+                        loja,
+                        dict(cfg_local),
+                        item,
+                        "",
+                    ): (idx, item)
+                    for idx, item in enumerate(ativos)
+                }
+                for futuro in as_completed(futuros):
+                    idx, item = futuros[futuro]
+                    try:
+                        detalhe = futuro.result()
+                        if not isinstance(detalhe, dict):
+                            raise ValueError("detalhe vazio")
+                        detalhes_lote[idx] = (detalhe, item)
+                    except Exception as exc:
+                        erros.append(f"{item.get('id')}: {exc}")
+
+        ausentes = sum(detalhe is None for detalhe in detalhes_lote)
+        if erros or ausentes:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Exportacao incompleta: nao foi possivel preparar {max(len(erros), ausentes)} anuncio(s). Nenhum arquivo parcial foi gerado.",
+            )
+        for detalhe in detalhes_lote:
+            if detalhe is not None:
+                yield detalhe
+
+
+def _ml_excel_valor_seguro(valor: Any) -> Any:
+    if valor is None or isinstance(valor, (bool, int, float, dt.date, dt.datetime)):
+        return valor
+    if isinstance(valor, (list, tuple, set)):
+        valor = ", ".join(str(item) for item in valor if item not in (None, ""))
+    elif isinstance(valor, dict):
+        valor = json.dumps(valor, ensure_ascii=False, separators=(",", ":"))
+    texto = str(valor)
+    if texto and texto[0] in "=+-@\t\r\n":
+        return "'" + texto
+    return texto
+
+
+def _ml_excel_data(valor: Any) -> Any:
+    if valor in (None, ""):
+        return None
+    if isinstance(valor, dt.datetime):
+        return valor.replace(tzinfo=None) if valor.tzinfo else valor
+    if isinstance(valor, dt.date):
+        return valor
+    try:
+        parsed = dt.datetime.fromisoformat(str(valor).strip().replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+    except (TypeError, ValueError):
+        return _ml_excel_valor_seguro(valor)
+
+
+def _ml_export_nome_arquivo(loja: str) -> str:
+    loja_ascii = unicodedata.normalize("NFKD", str(loja or "")).encode("ascii", "ignore").decode("ascii")
+    loja_segura = re.sub(r"[^A-Za-z0-9_-]+", "-", loja_ascii).strip("-_")[:60] or "loja"
+    timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    return f"anuncios-ativos-{loja_segura}-{timestamp}.xlsx"
+
+
+def _ml_export_preparar_planilha(ws, headers: tuple[str, ...]) -> None:
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+    header_alignment = Alignment(horizontal="center", vertical="center")
+    header_cells = []
+    for index, value in enumerate(headers, start=1):
+        cell = WriteOnlyCell(ws, value=value)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_alignment
+        header_cells.append(cell)
+        ws.column_dimensions[get_column_letter(index)].width = min(max(len(value) + 2, 12), 48)
+    ws.freeze_panes = "A2"
+    ws.append(header_cells)
+
+
+def _ml_export_append_linha(
+    ws,
+    valores: list[Any],
+    *,
+    currency_columns: set[int],
+    percent_columns: set[int],
+    date_columns: set[int],
+) -> None:
+    cells = []
+    for index, valor in enumerate(valores, start=1):
+        cell = WriteOnlyCell(ws, value=_ml_excel_valor_seguro(valor))
+        if index in currency_columns:
+            cell.number_format = 'R$ #,##0.00'
+        elif index in percent_columns:
+            cell.number_format = '0.00'
+        elif index in date_columns:
+            cell.number_format = 'yyyy-mm-dd hh:mm:ss'
+        cells.append(cell)
+    ws.append(cells)
+
+
+def _ml_export_escrever_workbook(
+    workbook: Workbook,
+    loja: str,
+    detalhes: Iterable[tuple[dict, dict]],
+) -> io.BytesIO:
+    anuncios_ws = workbook.create_sheet("Anuncios")
+    variacoes_ws = workbook.create_sheet("Variacoes")
+    _ml_export_preparar_planilha(anuncios_ws, _ML_EXPORT_ANUNCIOS_HEADERS)
+    _ml_export_preparar_planilha(variacoes_ws, _ML_EXPORT_VARIACOES_HEADERS)
+    total_anuncios = 0
+    total_variacoes = 0
+
+    for detalhe, raw in detalhes:
+        total_anuncios += 1
+        variacoes = detalhe.get("variations") if isinstance(detalhe.get("variations"), list) else []
+        skus_variacoes = [str(var.get("sku") or "").strip() for var in variacoes if str(var.get("sku") or "").strip()]
+        _ml_export_append_linha(anuncios_ws, [
+            _ml_excel_valor_seguro(loja),
+            _ml_excel_valor_seguro(detalhe.get("id")),
+            _ml_excel_valor_seguro(detalhe.get("sku")),
+            _ml_excel_valor_seguro(skus_variacoes),
+            _ml_excel_valor_seguro(detalhe.get("title")),
+            _ml_excel_valor_seguro(detalhe.get("family_name")),
+            _ml_excel_valor_seguro(detalhe.get("listing_type_name") or detalhe.get("listing_type_id")),
+            _ml_excel_valor_seguro(detalhe.get("item_condition") or raw.get("condition")),
+            _ml_excel_valor_seguro(detalhe.get("price")),
+            _ml_excel_valor_seguro(detalhe.get("standard_price")),
+            _ml_excel_valor_seguro(detalhe.get("original_price")),
+            _ml_excel_valor_seguro(detalhe.get("discount_pct")),
+            _ml_excel_valor_seguro(detalhe.get("ad_cost")),
+            _ml_excel_valor_seguro(detalhe.get("fixed_fee_amount")),
+            _ml_excel_valor_seguro(detalhe.get("listing_fee_amount")),
+            _ml_excel_valor_seguro(detalhe.get("sale_fee_pct")),
+            _ml_excel_valor_seguro(detalhe.get("shipping_cost")),
+            _ml_excel_valor_seguro(detalhe.get("shipping_buyer_cost")),
+            _ml_excel_valor_seguro(detalhe.get("shipping_base_cost")),
+            _ml_excel_valor_seguro(detalhe.get("shipping_list_cost")),
+            bool(detalhe.get("free_shipping")),
+            _ml_excel_valor_seguro(detalhe.get("logistic_type")),
+            _ml_excel_valor_seguro(detalhe.get("shipping_mode")),
+            _ml_excel_valor_seguro(detalhe.get("available_quantity")),
+            _ml_excel_valor_seguro(detalhe.get("sold_quantity")),
+            _ml_excel_valor_seguro(detalhe.get("status")),
+            bool(detalhe.get("has_promotion")),
+            _ml_excel_valor_seguro(detalhe.get("promotion_id")),
+            _ml_excel_valor_seguro(detalhe.get("promotion_type")),
+            bool(detalhe.get("catalog_listing")),
+            _ml_excel_valor_seguro(detalhe.get("catalog_product_id")),
+            _ml_excel_valor_seguro(detalhe.get("user_product_id")),
+            _ml_excel_valor_seguro(raw.get("category_id")),
+            _ml_excel_valor_seguro(raw.get("domain_id")),
+            _ml_excel_valor_seguro(detalhe.get("channels")),
+            _ml_excel_data(raw.get("date_created")),
+            _ml_excel_data(raw.get("last_updated")),
+            _ml_excel_data(raw.get("start_time")),
+            _ml_excel_data(raw.get("stop_time") or raw.get("expiration_time")),
+            _ml_excel_valor_seguro(detalhe.get("permalink")),
+            _ml_excel_valor_seguro(detalhe.get("thumbnail")),
+        ], currency_columns={9, 10, 11, 13, 14, 15, 17, 18, 19, 20}, percent_columns={12, 16}, date_columns={36, 37, 38, 39})
+
+        for variacao in variacoes:
+            total_variacoes += 1
+            if total_variacoes > _ML_EXPORT_MAX_ITEMS:
+                raise HTTPException(
+                    status_code=413,
+                    detail="A quantidade de variacoes excede o limite de linhas de uma planilha Excel.",
+                )
+            _ml_export_append_linha(variacoes_ws, [
+                _ml_excel_valor_seguro(loja),
+                _ml_excel_valor_seguro(detalhe.get("id")),
+                _ml_excel_valor_seguro(variacao.get("parent_sku") or detalhe.get("sku")),
+                _ml_excel_valor_seguro(variacao.get("id")),
+                _ml_excel_valor_seguro(variacao.get("title")),
+                _ml_excel_valor_seguro(variacao.get("sku")),
+                _ml_excel_valor_seguro(variacao.get("inventory_id")),
+                _ml_excel_valor_seguro(variacao.get("price")),
+                _ml_excel_valor_seguro(variacao.get("available_quantity")),
+                _ml_excel_valor_seguro(variacao.get("sold_quantity")),
+                _ml_excel_valor_seguro(variacao.get("picture_id")),
+            ], currency_columns={8}, percent_columns=set(), date_columns=set())
+
+    anuncios_ws.auto_filter.ref = f"A1:{get_column_letter(len(_ML_EXPORT_ANUNCIOS_HEADERS))}{total_anuncios + 1}"
+    variacoes_ws.auto_filter.ref = f"A1:{get_column_letter(len(_ML_EXPORT_VARIACOES_HEADERS))}{total_variacoes + 1}"
+    output = io.BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return output
+
+
+def _ml_export_criar_workbook(loja: str, detalhes: Iterable[tuple[dict, dict]]) -> io.BytesIO:
+    workbook = Workbook(write_only=True)
+    try:
+        return _ml_export_escrever_workbook(workbook, loja, detalhes)
+    except Exception:
+        # Write-only usa arquivos temporarios; feche e remova-os se a coleta falhar
+        # antes do save para nao deixar residuos nem geradores XML pendentes.
+        for worksheet in workbook.worksheets:
+            try:
+                worksheet.close()
+            except Exception:
+                pass
+            writer = getattr(worksheet, "_writer", None)
+            if writer is not None:
+                try:
+                    writer.cleanup()
+                except Exception:
+                    pass
+        raise
+
+
+def exportar_anuncios_ativos_mercado_livre(client_id: str, loja: str) -> tuple[io.BytesIO, str]:
+    """Gera um XLSX completo da loja selecionada sem persistir dados no disco."""
+    ctx = _ctx()
+    chave_ativa = (str(client_id or "").strip(), str(loja or "").strip().casefold())
+    with _ML_EXPORT_ACTIVE_LOCK:
+        if chave_ativa in _ML_EXPORT_ACTIVE_KEYS:
+            raise HTTPException(status_code=409, detail="Ja existe uma exportacao em andamento para esta loja.")
+        _ML_EXPORT_ACTIVE_KEYS.add(chave_ativa)
+    try:
+        try:
+            cfg = ctx.obter_cfg_ml(client_id, loja)
+            user_id = str(cfg.get("user_id") or "").strip()
+            if not user_id:
+                raise HTTPException(status_code=400, detail="ID do usuario Mercado Livre nao encontrado")
+            item_ids, cfg = _ml_export_listar_ids_ativos(client_id, loja, cfg, user_id)
+            detalhes = _ml_export_iterar_detalhes(client_id, loja, cfg, item_ids)
+            return _ml_export_criar_workbook(loja, detalhes), _ml_export_nome_arquivo(loja)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            ctx.logger.exception("[ML EXPORT] Falha ao exportar anuncios ativos da loja %s: %s", loja, exc)
+            raise HTTPException(status_code=500, detail="Erro ao exportar anuncios ativos do Mercado Livre.")
+    finally:
+        with _ML_EXPORT_ACTIVE_LOCK:
+            _ML_EXPORT_ACTIVE_KEYS.discard(chave_ativa)
 
 
 def listar_anuncios_mercado_livre(

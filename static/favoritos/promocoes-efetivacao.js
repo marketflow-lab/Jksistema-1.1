@@ -424,6 +424,67 @@
                 || ''
             );
         }
+        function escolherPrecoObservadoEfetivacaoFavoritos(alvo, valores = []) {
+            const alvoNumero = parsePrecoAnuncioFavoritos(alvo);
+            const observados = (Array.isArray(valores) ? valores : [])
+                .map(parsePrecoAnuncioFavoritos)
+                .filter(valor => valor !== null && Number.isFinite(valor) && valor > 0);
+            if (!observados.length) return null;
+            if (alvoNumero === null) return observados[0];
+            return observados.sort((a, b) => Math.abs(a - alvoNumero) - Math.abs(b - alvoNumero))[0];
+        }
+        function obterPrecosObservadosEfetivacaoFavoritos(data = {}) {
+            const fallbackSemPromocao = !!data.fallback_sem_promocao_aplicado;
+            const autoritativos = data.observados_autoritativos && typeof data.observados_autoritativos === 'object'
+                ? data.observados_autoritativos
+                : {};
+            const verificacao = data.verificacao && typeof data.verificacao === 'object' ? data.verificacao : {};
+            const priceInfo = verificacao.price_info && typeof verificacao.price_info === 'object' ? verificacao.price_info : {};
+            const confirmacao = (fallbackSemPromocao ? data.preco_confirmacao_fallback : data.preco_confirmacao) || {};
+            const confirmacaoInfo = confirmacao.price_info && typeof confirmacao.price_info === 'object' ? confirmacao.price_info : {};
+            const candidatosBase = [
+                verificacao.standard_price,
+                priceInfo.standard_price,
+                priceInfo.original_price,
+                confirmacao.standard_price,
+                confirmacao.original_price,
+                confirmacao.base_price,
+                confirmacaoInfo.standard_price,
+                confirmacaoInfo.original_price
+            ];
+            const candidatosDiretos = [
+                confirmacao.standard_price,
+                confirmacao.original_price,
+                confirmacao.item_price,
+                confirmacao.base_price,
+                confirmacaoInfo.standard_price,
+                confirmacaoInfo.original_price,
+                confirmacaoInfo.price,
+                confirmacaoInfo.sale_price
+            ];
+            const precoDiretoFallback = fallbackSemPromocao
+                ? (parsePrecoAnuncioFavoritos(autoritativos.final_price)
+                    ?? escolherPrecoObservadoEfetivacaoFavoritos(data.preco_anuncio, candidatosDiretos))
+                : null;
+            return {
+                fallbackSemPromocao,
+                precoCheio: fallbackSemPromocao
+                    ? precoDiretoFallback
+                    : (parsePrecoAnuncioFavoritos(autoritativos.base_price)
+                        ?? escolherPrecoObservadoEfetivacaoFavoritos(data.preco_anuncio, candidatosBase)),
+                precoPromocional: fallbackSemPromocao
+                    ? null
+                    : (parsePrecoAnuncioFavoritos(autoritativos.final_price)
+                        ?? escolherPrecoObservadoEfetivacaoFavoritos(data.preco_promocional, [
+                        verificacao.promotion_price_raw,
+                        priceInfo.price,
+                        priceInfo.sale_price,
+                        priceInfo.promotional_price,
+                        verificacao.item_price
+                    ])),
+                precoDiretoFallback
+            };
+        }
         async function efetivarFavoritoMercadoLivre(anuncioConta, anuncioRanking, sim, opcoesPromocao, botao, config = {}) {
             const itemId = String(anuncioConta && (anuncioConta.mlb || anuncioConta.id || anuncioConta.item_id || '') || '').trim();
             const campanha = opcoesPromocao && opcoesPromocao.campanha || {};
@@ -457,7 +518,7 @@
                 botao.textContent = '...';
             }
             if (config.mostrarStatus !== false) {
-                mostrarBalaoFavoritosStatus(`Efetivando favorito ${itemId}: saindo da promocao atual, ajustando tipo/preco e aplicando a campanha selecionada...`, {
+                mostrarBalaoFavoritosStatus(`Efetivando favorito ${itemId}: removendo a promocao atual, ajustando o preco cheio calculado, aplicando e conferindo a campanha; se ela falhar, sera tentado o preco direto seguro sem promocao...`, {
                     larga: true
                 });
             }
@@ -468,6 +529,7 @@
                     item_id: itemId,
                     preco_anuncio: sim.preco,
                     preco_promocional: precoPromocional,
+                    preco_ideal: sim.precoCompetitivo,
                     preco_competitivo: sim.precoCompetitivo,
                     percentual_promocao: sim.percentualPromocao,
                     campanha_id: campanhaId,
@@ -509,13 +571,16 @@
                     throw erro;
                 }
                 const fallbackSemPromocao = !!(resultado && resultado.fallback_sem_promocao_aplicado);
+                const precosObservados = obterPrecosObservadosEfetivacaoFavoritos(resultado || {});
                 if (config.mostrarStatus !== false) {
                     if (fallbackSemPromocao) {
                         const margemFallback = resultado.margem_estimada_contingencia !== null && resultado.margem_estimada_contingencia !== undefined
                             ? ` Margem estimada: ${formatarMargemAnuncioFavoritos(resultado.margem_estimada_contingencia)}.`
                             : '';
                         mostrarBalaoFavoritosStatus(
-                            `Campanha removida/recusada no ML para ${itemId}. Aplicado fallback sem campanha com preco ${formatarPrecoFavoritosMl(resultado.preco_anuncio)}.${margemFallback}`,
+                            precosObservados.precoDiretoFallback !== null
+                                ? `A campanha nao foi mantida no ML para ${itemId}. Fallback direto sem promocao confirmado em ${formatarPrecoFavoritosMl(precosObservados.precoDiretoFallback)}.${margemFallback}`
+                                : `A campanha nao foi mantida no ML para ${itemId}. O fallback direto sem promocao foi concluido, mas o retorno nao trouxe preco observado.${margemFallback}`,
                             { tempoMs: 8000, larga: true }
                         );
                     } else {
@@ -526,9 +591,13 @@
                 }
                 if (favMlStatusEl && config.atualizarStatus !== false) {
                     if (fallbackSemPromocao) {
-                        favMlStatusEl.textContent = `Favorito ajustado sem campanha: ${itemId} ficou em ${formatarPrecoFavoritosMl(resultado.preco_anuncio)} (fallback).`;
+                        favMlStatusEl.textContent = precosObservados.precoDiretoFallback !== null
+                            ? `Favorito ajustado sem campanha: ${itemId} teve preco direto confirmado em ${formatarPrecoFavoritosMl(precosObservados.precoDiretoFallback)}.`
+                            : `Favorito ajustado sem campanha: ${itemId} concluiu o fallback, sem preco observado no retorno.`;
                     } else {
-                        favMlStatusEl.textContent = `Favorito feito: ${itemId} ficou em ${formatarPrecoFavoritosMl(resultado.preco_anuncio)} com promocao ${campanha.nome || campanhaId}.`;
+                        favMlStatusEl.textContent = precosObservados.precoPromocional !== null
+                            ? `Favorito feito: ${itemId} teve preco promocional observado em ${formatarPrecoFavoritosMl(precosObservados.precoPromocional)} com ${campanha.nome || campanhaId}.`
+                            : `Favorito feito: ${itemId} teve a campanha ${campanha.nome || campanhaId} confirmada, sem preco promocional observado no retorno.`;
                     }
                 }
                 if (config.recarregar !== false) {
@@ -727,6 +796,7 @@
             const data = item && item.data || {};
             const registro = item && item.registro || {};
             const sim = registro.sim || {};
+            const observados = obterPrecosObservadosEfetivacaoFavoritos(data);
             const partes = [];
             const loja = String((data && data.loja) || registro.loja || '').trim();
             if (loja) partes.push(`Loja: ${loja}`);
@@ -735,14 +805,27 @@
             if (sim.tipoMantidoPorBloqueioMl && sim.tipoBloqueioMlMotivo) {
                 partes.push(`motivo tipo: ${sim.tipoBloqueioMlMotivo}`);
             }
-            partes.push(`preco cheio aplicado: ${formatarPrecoFavoritosMl(data.preco_anuncio ?? sim.preco)}`);
-            const precoPromocional = data.preco_promocional ?? sim.precoPromocionalCalculado ?? sim.precoPromocional ?? sim.precoCompetitivo;
             if (data.fallback_sem_promocao_aplicado) {
                 partes.push('campanha nao aplicada');
+                if (observados.precoDiretoFallback !== null) {
+                    partes.push(`preco direto observado: ${formatarPrecoFavoritosMl(observados.precoDiretoFallback)}`);
+                } else {
+                    partes.push('preco direto sem valor observado no retorno');
+                }
                 const motivo = normalizarErroEfetivacaoFavoritos(data.fallback_motivo || data.message || '');
                 if (motivo) partes.push(`motivo: ${motivo}`);
             } else {
-                partes.push(`preco final promocional conferido: ${formatarPrecoFavoritosMl(precoPromocional)}`);
+                if (observados.precoCheio !== null) {
+                    partes.push(`preco cheio observado: ${formatarPrecoFavoritosMl(observados.precoCheio)}`);
+                } else {
+                    partes.push(`preco cheio solicitado: ${formatarPrecoFavoritosMl(data.preco_anuncio ?? sim.preco)} (sem valor observado no retorno)`);
+                }
+                if (observados.precoPromocional !== null) {
+                    partes.push(`preco final promocional observado: ${formatarPrecoFavoritosMl(observados.precoPromocional)}`);
+                } else {
+                    const precoSolicitado = data.preco_promocional ?? sim.precoPromocionalCalculado ?? sim.precoPromocional ?? sim.precoCompetitivo;
+                    partes.push(`preco final promocional solicitado: ${formatarPrecoFavoritosMl(precoSolicitado)} (sem valor observado no retorno)`);
+                }
                 partes.push(`campanha aplicada: ${data.campanha_nome || data.promotion_id || '-'}`);
             }
             const removidas = Array.isArray(data.promocoes_removidas) ? data.promocoes_removidas.length : 0;
@@ -781,6 +864,82 @@
             if (motivo) partes.push(`proximo passo: ${motivo}`);
             return partes.filter(Boolean).join(' | ');
         }
+        function statusEtapaEfetivacaoFavoritos(resultado, etapa) {
+            const stages = resultado && resultado.stages;
+            const info = stages && typeof stages === 'object' ? stages[etapa] : null;
+            return String(info && info.status || '').trim().toLowerCase();
+        }
+        function resultadoEfetivacaoTerminalFavoritos(resultado) {
+            if (!resultado || typeof resultado !== 'object' || resultado.success === true) return false;
+            if (resultado.terminal === true || resultado.terminal_failure === true || resultado.retryable === false) return true;
+            const codigo = String(resultado.error_code || resultado.code || '').trim().toLowerCase();
+            return ['price_not_modifiable', 'catalog_price_locked', 'terminal'].includes(codigo);
+        }
+        function resultadoEfetivacaoIncertoFavoritos(resultado) {
+            return !!(resultado && resultado.outcome === 'partial_unknown');
+        }
+        function resultadoEfetivacaoParcialFavoritos(resultado) {
+            return !!(resultado && ['partial_failure', 'partial_unknown'].includes(resultado.outcome));
+        }
+        function descreverTipoFalhaEfetivacaoFavoritos(registro, resultado, parcial) {
+            const sim = registro && registro.sim || {};
+            const update = resultado && resultado.listing_type_update || {};
+            if (!parcial) {
+                const tipoPrevisto = descreverTipoEfetivacaoFavoritos(registro, null)
+                    .replace(/^tipo alterado:\s*/i, '')
+                    .replace(/^ja estava no tipo alvo:\s*/i, '')
+                    .replace(/^tipo:\s*/i, '');
+                return tipoPrevisto ? `tipo previsto: ${tipoPrevisto}` : '';
+            }
+            const atual = String(
+                update.current_name
+                || update.current_listing_type_name
+                || sim.tipoAnuncioAtual
+                || ''
+            ).trim();
+            const alvo = String(
+                update.target_name
+                || update.target_listing_type_name
+                || sim.tipoAnuncioAlvo
+                || atual
+                || ''
+            ).trim();
+            if (update.changed === true) {
+                return `tipo alterado: ${atual || '-'} -> ${alvo || '-'}`;
+            }
+            const estado = resultado && resultado.current_state || {};
+            const tipoAtual = String(estado.listing_type_name || estado.listing_type_id || atual || alvo || '').trim();
+            return tipoAtual ? `tipo inalterado: ${tipoAtual}` : 'tipo inalterado';
+        }
+        function descreverEtapasFalhaEfetivacaoFavoritos(registro, resultado) {
+            const partes = [];
+            const sim = registro && registro.sim || {};
+            const precoStatus = statusEtapaEfetivacaoFavoritos(resultado, 'price');
+            const promocaoStatus = statusEtapaEfetivacaoFavoritos(resultado, 'promotion');
+            if (['failed', 'blocked', 'pending', 'not_started'].includes(precoStatus)) {
+                const estado = resultado && resultado.current_state || {};
+                const precoAtual = parsePrecoAnuncioFavoritos((resultado && resultado.preco_anuncio_atual) ?? estado.price);
+                const precoAlvo = parsePrecoAnuncioFavoritos((resultado && resultado.preco_anuncio_alvo) ?? sim.preco);
+                const precoNoAlvo = precoAtual !== null && precoAlvo !== null && Math.abs(precoAtual - precoAlvo) <= 0.02;
+                partes.push(
+                    precoNoAlvo
+                        ? `preco no alvo, mas nao confirmado: ${formatarPrecoFavoritosMl(precoAtual)}`
+                        : `preco nao alterado${precoAtual !== null ? `: ${formatarPrecoFavoritosMl(precoAtual)}` : ''}`
+                );
+            } else if (precoStatus === 'unknown') {
+                partes.push('preco enviado, mas o estado remoto ficou incerto');
+            }
+            if (['not_started', 'pending'].includes(promocaoStatus)) {
+                partes.push('campanha nao iniciada');
+            } else if (['failed', 'blocked', 'fallback_failed'].includes(promocaoStatus)) {
+                partes.push('campanha nao aplicada');
+            } else if (promocaoStatus === 'completed' && statusEtapaEfetivacaoFavoritos(resultado, 'verification') === 'failed') {
+                partes.push('campanha enviada, mas a conferencia nao foi concluida');
+            } else if (promocaoStatus === 'unknown' || statusEtapaEfetivacaoFavoritos(resultado, 'verification') === 'unknown') {
+                partes.push('campanha pode ter sido aplicada; estado remoto incerto');
+            }
+            return partes;
+        }
         function descreverFalhaEfetivacaoFavoritos(item) {
             const registro = item && item.registro || {};
             const sim = registro.sim || {};
@@ -788,14 +947,10 @@
             const partes = [];
             const loja = String(resultado.loja || registro.loja || '').trim();
             if (loja) partes.push(`Loja: ${loja}`);
-            const tipo = descreverTipoEfetivacaoFavoritos(registro, null);
-            if (tipo) {
-                const tipoPrevisto = tipo
-                    .replace(/^tipo alterado:\s*/i, '')
-                    .replace(/^ja estava no tipo alvo:\s*/i, '')
-                    .replace(/^tipo:\s*/i, '');
-                partes.push(`tipo previsto: ${tipoPrevisto}`);
-            }
+            const parcial = resultadoEfetivacaoParcialFavoritos(resultado);
+            const incerto = resultadoEfetivacaoIncertoFavoritos(resultado);
+            const tipo = descreverTipoFalhaEfetivacaoFavoritos(registro, resultado, parcial);
+            if (tipo) partes.push(tipo);
             if (sim && sim.ok) {
                 partes.push(`preco cheio previsto: ${formatarPrecoFavoritosMl(sim.preco)}`);
                 const precoPromocional = sim.precoPromocionalCalculado ?? sim.precoPromocional ?? sim.precoCompetitivo;
@@ -804,9 +959,12 @@
                 partes.push(`simulacao invalida: ${textoCurtoStatusSimuladorFavoritos(sim.status)}`);
             }
             partes.push(...descreverEstadoAtualEfetivacaoFavoritos(resultado));
+            if (parcial) partes.push(...descreverEtapasFalhaEfetivacaoFavoritos(registro, resultado));
             const erro = normalizarErroEfetivacaoFavoritos(item && item.erro || '');
-            const parcial = resultado.outcome === 'partial_failure';
-            partes.push(`${parcial ? 'concluido parcialmente' : 'nao concluido'}: ${erro || 'O Mercado Livre recusou a alteracao sem detalhar o motivo.'}`);
+            partes.push(`${incerto ? 'estado remoto incerto; confira o anuncio antes de aprovar novamente' : (parcial ? 'concluido parcialmente' : 'nao concluido')}: ${erro || 'O Mercado Livre recusou a alteracao sem detalhar o motivo.'}`);
+            if (resultadoEfetivacaoTerminalFavoritos(resultado)) {
+                partes.push('bloqueio terminal: corrija a restricao no Mercado Livre antes de aprovar novamente; nao ha repeticao automatica');
+            }
             return partes.filter(Boolean).join(' | ');
         }
         function criarLinhaResultadoBalaoFavoritos(tipo, titulo, detalhe) {
@@ -849,10 +1007,11 @@
             });
             naoFeitos.forEach(item => {
                 const itemId = item && item.itemId || '-';
-                const parcial = item && item.resultado && item.resultado.outcome === 'partial_failure';
+                const parcial = resultadoEfetivacaoParcialFavoritos(item && item.resultado);
+                const incerto = resultadoEfetivacaoIncertoFavoritos(item && item.resultado);
                 wrap.appendChild(criarLinhaResultadoBalaoFavoritos(
                     'error',
-                    `${itemId} - ${parcial ? 'alteracao parcial' : 'alteracao nao feita'}`,
+                    `${itemId} - ${incerto ? 'estado remoto incerto' : (parcial ? 'alteracao parcial' : 'alteracao nao feita')}`,
                     descreverFalhaEfetivacaoFavoritos(item)
                 ));
             });
@@ -950,10 +1109,11 @@
                     const registro = item.registro || {};
                     const data = item.data || {};
                     const sim = registro.sim || {};
+                    const observados = obterPrecosObservadosEfetivacaoFavoritos(data);
                     const substitutosNosso = item.tipo === 'sucesso'
                         ? {
-                            preco: data.preco_anuncio,
-                            promocional: data.preco_promocional
+                            preco: observados.precoCheio,
+                            promocional: observados.precoPromocional
                         }
                         : item.tipo === 'pendente'
                             ? {
@@ -995,7 +1155,7 @@
                                 ? 'Alterado'
                                 : item.tipo === 'pendente'
                                     ? 'Pendente de revisao no ML; preco/campanha nao enviados'
-                                    : `${data.outcome === 'partial_failure' ? 'Alteracao parcial' : 'Nao concluido'}${item.erro ? `: ${item.erro}` : ''}`
+                                    : `${resultadoEfetivacaoIncertoFavoritos(data) ? 'Estado remoto incerto' : (resultadoEfetivacaoParcialFavoritos(data) ? 'Alteracao parcial' : 'Nao concluido')}${item.erro ? `: ${item.erro}` : ''}`
                         });
                     }
                     const tr = document.createElement('tr');
@@ -1181,11 +1341,12 @@
                     detalhe: descreverPendenteEfetivacaoFavoritos(item)
                 };
             }
-            const parcial = item && item.resultado && item.resultado.outcome === 'partial_failure';
+            const parcial = resultadoEfetivacaoParcialFavoritos(item && item.resultado);
+            const incerto = resultadoEfetivacaoIncertoFavoritos(item && item.resultado);
             return {
                 tipo: 'error',
                 itemId,
-                titulo: `${itemId} - ${parcial ? 'alteracao parcial' : 'alteracao nao feita'}`,
+                titulo: `${itemId} - ${incerto ? 'estado remoto incerto' : (parcial ? 'alteracao parcial' : 'alteracao nao feita')}`,
                 detalhe: descreverFalhaEfetivacaoFavoritos(item)
             };
         }
@@ -1193,34 +1354,31 @@
         function montarSimulacaoHistoricoAlteracaoFavoritos(registro, data = null) {
             const sim = registro && registro.sim || {};
             const anuncio = registro && registro.anuncio || {};
+            const observados = obterPrecosObservadosEfetivacaoFavoritos(data || {});
             const custoBase = sim.custo ?? anuncio.custo ?? anuncio.custo_unitario ?? anuncio.custo_produto ?? anuncio.preco_custo ?? anuncio.valor_custo ?? null;
             const custoIdeal = sim.custoIdealAbaixoBase ?? sim.custo_ideal_abaixo_base ?? null;
             const precoAlvoCustoIdeal = sim.precoAlvoCustoIdeal ?? sim.preco_alvo_custo_ideal ?? null;
             const estadoAtual = data && data.current_state && typeof data.current_state === 'object' ? data.current_state : {};
+            const verificacaoMargem = data && data.verificacao_margem && typeof data.verificacao_margem === 'object'
+                ? data.verificacao_margem
+                : {};
             const precoAtualMl = data && data.preco_anuncio_atual !== undefined
                 ? data.preco_anuncio_atual
-                : (estadoAtual.price !== undefined ? estadoAtual.price : null);
-            const precoConcluido = !!(
-                data
-                && (
-                    data.success
-                    || data.completed
-                    || data.stages && data.stages.price && data.stages.price.status === 'completed'
-                )
-            );
+                : (estadoAtual.price !== undefined
+                    ? estadoAtual.price
+                    : (observados.precoDiretoFallback ?? observados.precoCheio));
             return {
                 ok: !!sim.ok,
                 preco_previsto: sim.preco ?? null,
+                preco_ideal: sim.precoCompetitivo ?? null,
                 preco_promocional_previsto: sim.precoPromocionalCalculado ?? sim.precoPromocional ?? sim.precoCompetitivo ?? null,
                 preco_atual_ml: precoAtualMl,
-                preco_aplicado: data && data.preco_anuncio !== undefined
-                    ? data.preco_anuncio
-                    : (precoConcluido ? precoAtualMl : null),
-                preco_promocional_aplicado: data && data.preco_promocional !== undefined
-                    ? data.preco_promocional
-                    : (precoConcluido && estadoAtual.promotional_price !== undefined ? estadoAtual.promotional_price : null),
+                preco_aplicado: observados.precoDiretoFallback ?? observados.precoCheio,
+                preco_promocional_aplicado: observados.precoPromocional,
                 margem_prevista: sim.margem ?? null,
-                margem_aplicada: data && data.margem_estimada_contingencia !== undefined ? data.margem_estimada_contingencia : sim.margem ?? null,
+                margem_aplicada: data && data.margem_estimada_contingencia !== undefined
+                    ? data.margem_estimada_contingencia
+                    : (verificacaoMargem.margem_estimada ?? null),
                 custo: custoBase,
                 custo_base: custoBase,
                 custo_unitario: custoBase,
@@ -1252,7 +1410,11 @@
             const relatorioFinal = montarLinhaRelatorioFinalAlteracaoFavoritos(item, sucesso, pendente);
             const fallback = !!(sucesso && item && item.data && item.data.fallback_sem_promocao_aplicado);
             const resultadoFalha = item && item.resultado && typeof item.resultado === 'object' ? item.resultado : null;
-            const parcial = !!(resultadoFalha && resultadoFalha.outcome === 'partial_failure');
+            const resultado = sucesso || pendente
+                ? (item && item.data && typeof item.data === 'object' ? item.data : {})
+                : (resultadoFalha || {});
+            const parcial = resultadoEfetivacaoParcialFavoritos(resultadoFalha);
+            const incerto = resultadoEfetivacaoIncertoFavoritos(resultadoFalha);
             return {
                 ordem: Number(registro.index) + 1 || 0,
                 sku: String(sku || '').trim(),
@@ -1261,13 +1423,22 @@
                 status: sucesso ? 'success' : (pendente ? 'warning' : 'error'),
                 status_texto: sucesso
                     ? (fallback ? 'Feito sem campanha' : 'Alterado')
-                    : (pendente ? 'Pendente de revisao' : (parcial ? 'Alteracao parcial' : 'Nao concluido')),
+                    : (pendente ? 'Pendente de revisao' : (incerto ? 'Estado remoto incerto' : (parcial ? 'Alteracao parcial' : 'Nao concluido'))),
                 nosso: clonarAnuncioHistoricoAlteracaoFavoritos(registro.anuncio),
                 base: clonarAnuncioHistoricoAlteracaoFavoritos(registro.ranking),
                 simulacao: montarSimulacaoHistoricoAlteracaoFavoritos(
                     registro,
-                    sucesso || pendente ? item.data || {} : resultadoFalha
+                    resultado
                 ),
+                outcome: String(resultado.outcome || '').trim(),
+                retryable: typeof resultado.retryable === 'boolean' ? resultado.retryable : null,
+                retry_requires_approval: typeof resultado.retry_requires_approval === 'boolean'
+                    ? resultado.retry_requires_approval
+                    : null,
+                terminal: resultadoEfetivacaoTerminalFavoritos(resultado),
+                stages: resultado.stages && typeof resultado.stages === 'object'
+                    ? JSON.parse(JSON.stringify(resultado.stages))
+                    : {},
                 relatorio_inicial: montarLinhaRelatorioInicialAlteracaoFavoritos(registro),
                 relatorio_final: relatorioFinal
             };
@@ -1321,13 +1492,43 @@
             };
         }
 
-        function salvarHistoricoAlteracoesFavoritosProcesso(payload) {
+        async function salvarHistoricoAlteracoesFavoritosProcesso(payload) {
             if (!payload || !Array.isArray(payload.vinculos) || !payload.vinculos.length) return null;
             if (typeof registrarHistoricoAlteracoesFavoritos !== 'function') {
                 console.warn('registrarHistoricoAlteracoesFavoritos ainda nao esta disponivel.');
                 return null;
             }
-            return registrarHistoricoAlteracoesFavoritos(payload);
+            const entrada = registrarHistoricoAlteracoesFavoritos(payload);
+            if (!entrada) return null;
+            if (typeof confirmarSalvamentoHistoricoFavoritosServidor !== 'function') {
+                return {
+                    entrada,
+                    confirmado: false,
+                    pendente: true,
+                    erro: 'O historico foi mantido no cache local, mas a confirmacao do servidor ainda nao esta disponivel.'
+                };
+            }
+            try {
+                const confirmacao = await confirmarSalvamentoHistoricoFavoritosServidor([entrada.id]);
+                const confirmado = !!(confirmacao && confirmacao.success === true);
+                return {
+                    entrada,
+                    confirmado,
+                    pendente: !confirmado,
+                    confirmacao: confirmacao || null,
+                    erro: confirmado ? '' : normalizarErroEfetivacaoFavoritos(
+                        confirmacao && confirmacao.erro
+                        || 'O servidor ainda nao confirmou o registro do historico.'
+                    )
+                };
+            } catch (err) {
+                return {
+                    entrada,
+                    confirmado: false,
+                    pendente: true,
+                    erro: normalizarErroEfetivacaoFavoritos(err)
+                };
+            }
         }
 
         function criarCelulaSimuladorPrecoFavoritos(anuncioConta, anuncioRanking, opcoesPromocao = null, simCalculada = null) {
@@ -1595,7 +1796,8 @@
                 totalTrocaTipo ? `${totalTrocaTipo} anuncio(s) tambem terao o tipo alterado para igual ao ranking.` : '',
                 totalTrocaAposPromocao ? `${totalTrocaAposPromocao} anuncio(s) so mostraram downgrade bloqueado antes da limpeza; o sistema vai remover promocoes atuais e tentar de novo.` : '',
                 totalTipoMantido ? `${totalTipoMantido} anuncio(s) serao recalculados mantendo Premium porque o Mercado Livre nao liberou downgrade para Classico.` : '',
-                'O sistema vai sair da promocao atual, ajustar tipo/preco cheio, aplicar a promocao e conferir no Mercado Livre.',
+                'Sequencia: remover a promocao atual, ajustar tipo quando necessario, aplicar o preco cheio calculado, aplicar a nova promocao e conferir o resultado.',
+                'Se a promocao nao for mantida ou a margem ficar insegura, sera tentado fallback direto com preco seguro e sem promocao.',
                 'Quando houver mais de um anuncio nosso, os precos finais e cheios nao serao iguais.'
             ].filter(Boolean).join('\n');
             if (!mlFavoritosBalloonEl || !mlFavoritosBalloonTextEl || !mlFavoritosBalloonActionsEl) {
@@ -1659,8 +1861,9 @@
                         : (totalTipoMantido
                         ? 'Alterar o tipo quando o Mercado Livre liberar; quando bloquear downgrade, manter o tipo atual e recalcular o preco.'
                         : 'Alterar o tipo para ficar igual ao anuncio do ranking.'),
-                    'Alterar o preco cheio e aplicar a campanha selecionada.',
-                    'Conferir no Mercado Livre se o preco final promocional ficou correto.'
+                    'Aplicar o preco cheio calculado e confirmar essa base no Mercado Livre.',
+                    'Aplicar a campanha com o percentual desejado e conferir os precos observados.',
+                    'Se a promocao falhar ou a margem ficar insegura, remover a campanha e tentar o preco direto seguro.'
                 ].forEach(texto => {
                     const li = document.createElement('li');
                     li.textContent = texto;
@@ -1776,6 +1979,7 @@
                     itens: paraValidar.map(registro => ({
                         loja: registro.loja || '',
                         item_id: registro.itemId || '',
+                        preco_anuncio_alvo: (registro.sim && registro.sim.preco) ?? null,
                         listing_type_id_alvo: registro.sim && registro.sim.listingTypeIdAlvo || '',
                         tipo_anuncio_alvo: registro.sim && registro.sim.tipoAnuncioAlvo || ''
                     }))
@@ -2127,7 +2331,7 @@
             favMlEfetivacaoEmExecucao = true;
             favMlEfetivacaoEmPreparacao = false;
             limparLogEfetivarFavoritos();
-            adicionarStatusEfetivarFavoritos('info', 'Iniciando alteracoes no Mercado Livre', `${validos.length} anuncio(s) serao conferidos: sair da promocao atual, ajustar tipo Premium/Classico quando necessario, alterar preco cheio, aplicar campanha e validar o preco final promocional.`);
+            adicionarStatusEfetivarFavoritos('info', 'Iniciando alteracoes no Mercado Livre', `${validos.length} anuncio(s) seguirao a sequencia: remover promocao atual, ajustar tipo quando necessario, confirmar o preco cheio calculado, aplicar campanha/percentual e verificar os precos observados. Se a campanha nao for mantida ou a margem ficar insegura, sera tentado fallback direto sem promocao.`);
             if (favMlEfetivarBtnEl) {
                 favMlEfetivarBtnEl.disabled = true;
                 favMlEfetivarBtnEl.textContent = 'Alterando...';
@@ -2196,6 +2400,7 @@
                             continue;
                         }
                         sucessos.push({ itemId, data, registro });
+                        const observados = obterPrecosObservadosEfetivacaoFavoritos(data || {});
                         if (data && data.fallback_sem_promocao_aplicado) {
                             const margemFallback = data.margem_estimada_contingencia !== null && data.margem_estimada_contingencia !== undefined
                                 ? ` | Margem estimada: ${formatarMargemAnuncioFavoritos(data.margem_estimada_contingencia)}`
@@ -2203,7 +2408,7 @@
                             adicionarStatusEfetivarFavoritos(
                                 'info',
                                 `${itemId} ajustado sem campanha (fallback)`,
-                                `Campanha removida/recusada pelo ML ou margem abaixo de 15%. Preco aplicado sem campanha: ${formatarPrecoFavoritosMl(data.preco_anuncio)} | Referencia ranking: ${formatarPrecoFavoritosMl(data.preco_ranking_referencia)}${margemFallback} | Motivo: ${normalizarErroEfetivacaoFavoritos(data.fallback_motivo || '')}`
+                                `${observados.precoDiretoFallback !== null ? `Preco direto observado sem promocao: ${formatarPrecoFavoritosMl(observados.precoDiretoFallback)}` : 'Fallback concluido sem preco observado no retorno'} | Referencia ranking: ${formatarPrecoFavoritosMl(data.preco_ranking_referencia)}${margemFallback} | Motivo: ${normalizarErroEfetivacaoFavoritos(data.fallback_motivo || data.message || '')}`
                             );
                     } else {
                         const tipoUpdate = data && data.listing_type_update;
@@ -2212,8 +2417,8 @@
                             : '';
                         adicionarStatusEfetivarFavoritos(
                             'success',
-                            `${itemId} alterado e conferido`,
-                            `Preco cheio aplicado: ${formatarPrecoFavoritosMl(data && data.preco_anuncio)} | Preco final promocional: ${formatarPrecoFavoritosMl(data && data.preco_promocional)} | Campanha: ${(data && (data.campanha_nome || data.promotion_id)) || '-'}${tipoTxt}`
+                            `${itemId} com sequencia concluida`,
+                            `${observados.precoCheio !== null ? `Preco cheio observado: ${formatarPrecoFavoritosMl(observados.precoCheio)}` : `Preco cheio solicitado: ${formatarPrecoFavoritosMl(data && data.preco_anuncio)} (sem observado no retorno)`} | ${observados.precoPromocional !== null ? `Preco promocional observado: ${formatarPrecoFavoritosMl(observados.precoPromocional)}` : `Preco promocional solicitado: ${formatarPrecoFavoritosMl(data && data.preco_promocional)} (sem observado no retorno)`} | Campanha: ${(data && (data.campanha_nome || data.promotion_id)) || '-'}${tipoTxt}`
                         );
                     }
                     } catch (err) {
@@ -2221,11 +2426,14 @@
                             ? err.favoritosResultado
                             : null;
                         const erroTxt = normalizarErroEfetivacaoFavoritos(resultado && resultado.message || err);
+                        const terminal = resultadoEfetivacaoTerminalFavoritos(resultado);
                         falhas.push({ itemId, erro: erroTxt, registro, resultado });
                         adicionarStatusEfetivarFavoritos(
                             'error',
-                            `${itemId} ${resultado && resultado.outcome === 'partial_failure' ? 'teve alteracao parcial' : 'nao foi alterado'}`,
-                            erroTxt || 'O Mercado Livre recusou a alteracao sem detalhar o motivo.'
+                            `${itemId} ${resultadoEfetivacaoIncertoFavoritos(resultado) ? 'ficou com estado remoto incerto' : (resultadoEfetivacaoParcialFavoritos(resultado) ? 'teve alteracao parcial' : 'nao foi alterado')}${terminal ? ' - bloqueio terminal' : ''}`,
+                            terminal
+                                ? `${erroTxt || 'O Mercado Livre recusou a alteracao.'} Corrija a restricao no Mercado Livre antes de aprovar novamente; nao ha repeticao automatica.`
+                                : (erroTxt || 'O Mercado Livre recusou a alteracao sem detalhar o motivo.')
                         );
                     }
                 }
@@ -2235,17 +2443,25 @@
                 }
                 let mensagemFinalEfetivacao = '';
                 const totalFallbackSemCampanha = sucessos.filter(item => item && item.data && item.data.fallback_sem_promocao_aplicado).length;
+                const totalBloqueiosTerminais = falhas.filter(item => resultadoEfetivacaoTerminalFavoritos(item && item.resultado)).length;
+                const totalEstadosIncertos = falhas.filter(item => resultadoEfetivacaoIncertoFavoritos(item && item.resultado)).length;
                 if (falhas.length) {
                     const primeiraFalha = falhas[0];
                     const txtFallback = totalFallbackSemCampanha ? ` ${totalFallbackSemCampanha} concluido(s) em fallback sem campanha.` : '';
                     const txtPendentes = pendentes.length ? ` ${pendentes.length} pendente(s) de revisao.` : '';
-                    mensagemFinalEfetivacao = `${sucessos.length} favorito(s) feito(s). ${falhas.length} nao concluido(s).${txtPendentes}${txtFallback} Primeiro erro em ${primeiraFalha.itemId}: ${primeiraFalha.erro}`;
+                    const txtTerminais = totalBloqueiosTerminais
+                        ? ` ${totalBloqueiosTerminais} bloqueio(s) terminal(is); corrija no Mercado Livre antes de aprovar novamente. Nao ha repeticao automatica.`
+                        : '';
+                    const txtIncertos = totalEstadosIncertos
+                        ? ` ${totalEstadosIncertos} estado(s) remoto(s) incerto(s); confira esses anuncios antes de aprovar novamente.`
+                        : '';
+                    mensagemFinalEfetivacao = `${sucessos.length} favorito(s) feito(s). ${falhas.length} nao concluido(s).${txtPendentes}${txtFallback}${txtIncertos}${txtTerminais} Primeiro erro em ${primeiraFalha.itemId}: ${primeiraFalha.erro}`;
                     mostrarBalaoFavoritosStatus(mensagemFinalEfetivacao, {
                         erro: true,
                         larga: true
                     });
-                    if (favMlStatusEl) favMlStatusEl.textContent = `${sucessos.length} favorito(s) feito(s); ${pendentes.length} pendente(s); ${falhas.length} nao concluido(s); ${totalFallbackSemCampanha} fallback(s) sem campanha.`;
-                    adicionarStatusEfetivarFavoritos('error', 'Processo concluido com falhas', `Sucesso: ${sucessos.length}. Pendentes: ${pendentes.length}. Nao concluidos: ${falhas.length}. Fallback sem campanha: ${totalFallbackSemCampanha}. Veja acima o estado de cada MLB.`);
+                    if (favMlStatusEl) favMlStatusEl.textContent = `${sucessos.length} favorito(s) feito(s); ${pendentes.length} pendente(s); ${falhas.length} nao concluido(s); ${totalEstadosIncertos} incerto(s); ${totalFallbackSemCampanha} fallback(s) sem campanha.`;
+                    adicionarStatusEfetivarFavoritos('error', 'Processo concluido com falhas', `Sucesso: ${sucessos.length}. Pendentes: ${pendentes.length}. Nao concluidos: ${falhas.length}. Estados remotos incertos: ${totalEstadosIncertos}. Fallback sem campanha: ${totalFallbackSemCampanha}. Veja acima o estado de cada MLB.`);
                 } else if (pendentes.length) {
                     mensagemFinalEfetivacao = `${sucessos.length} favorito(s) feito(s). ${pendentes.length} anuncio(s) ficaram pendentes de revisao no Mercado Livre; o preco e a nova campanha desses anuncios nao foram enviados.`;
                     mostrarBalaoFavoritosStatus(mensagemFinalEfetivacao, {
@@ -2262,7 +2478,7 @@
                     });
                     if (favMlStatusEl) favMlStatusEl.textContent = `${sucessos.length} favorito(s) feito(s) no Mercado Livre${txtFallback}.`;
                     if (totalFallbackSemCampanha) {
-                        adicionarStatusEfetivarFavoritos('info', 'Processo concluido', `${sucessos.length} anuncio(s) ajustado(s). ${totalFallbackSemCampanha} sem campanha (fallback por rejeicao da promocao).`);
+                        adicionarStatusEfetivarFavoritos('info', 'Processo concluido', `${sucessos.length} anuncio(s) ajustado(s). ${totalFallbackSemCampanha} em fallback direto sem promocao apos campanha nao mantida ou protecao de margem.`);
                     } else {
                         adicionarStatusEfetivarFavoritos('success', 'Processo concluido', `${sucessos.length} anuncio(s) alterado(s), com promocao aplicada e conferida no Mercado Livre.`);
                     }
@@ -2281,12 +2497,18 @@
                         mensagemFinal: mensagemFinalEfetivacao
                     });
                     historicoAlteracoesResultado = historicoAlteracoes;
-                    const entradaHistorico = salvarHistoricoAlteracoesFavoritosProcesso(historicoAlteracoes);
-                    if (entradaHistorico) {
+                    const persistenciaHistorico = await salvarHistoricoAlteracoesFavoritosProcesso(historicoAlteracoes);
+                    if (persistenciaHistorico && persistenciaHistorico.confirmado === true) {
                         adicionarStatusEfetivarFavoritos(
                             'info',
-                            'Historico de favoritos salvo',
+                            'Historico de favoritos confirmado',
                             `${historicoAlteracoes.vinculos.length} vinculo(s) e relatorio(s) da alteracao foram salvos para consulta.`
+                        );
+                    } else if (persistenciaHistorico && (persistenciaHistorico.entrada || persistenciaHistorico.id)) {
+                        adicionarStatusEfetivarFavoritos(
+                            'warning',
+                            'Historico mantido no cache local',
+                            persistenciaHistorico.erro || 'O servidor ainda nao confirmou o salvamento; o registro permanece pendente de confirmacao.'
                         );
                     }
                 } catch (err) {

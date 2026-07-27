@@ -6,9 +6,12 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 
 from backend.services.mercadolivre import (
+    ML_EXPORT_XLSX_MEDIA_TYPE,
     buscar_anuncio_mercado_livre,
+    exportar_anuncios_ativos_mercado_livre,
     historico_visitas_anuncio_mercado_livre,
     invalidar_cache_mercado_livre,
     listar_anuncios_mercado_livre,
@@ -43,6 +46,21 @@ def create_mercado_livre_router(config: MercadoLivreRouterConfig) -> APIRouter:
             offset=offset,
             limit=limit,
             sku=sku,
+        )
+
+    @router.get("/api/mercadolivre/anuncios/exportar", name="ml_exportar_anuncios_ativos")
+    def ml_exportar_anuncios_ativos(
+        loja: str,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        output, filename = exportar_anuncios_ativos_mercado_livre(client_id=client_id, loja=loja)
+        return StreamingResponse(
+            output,
+            media_type=ML_EXPORT_XLSX_MEDIA_TYPE,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Cache-Control": "no-store",
+            },
         )
 
     @router.get("/api/mercadolivre/anuncios/{item_id}/visitas", name="ml_historico_visitas_anuncio")
