@@ -1,6 +1,6 @@
 {
   "name": "jk-sistema-desktop",
-  "version": "1.0.117",
+  "version": "1.0.118",
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
   "packageManager": "npm@11.6.2",
@@ -30,7 +30,7 @@
   "author": "JK",
   "license": "ISC",
   "dependencies": {
-    "electron-updater": "6.3.9"
+    "electron-updater": "6.8.9"
   },
   "devDependencies": {
     "@playwright/test": "1.60.0",
