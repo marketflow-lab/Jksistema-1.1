@@ -142,7 +142,7 @@ assert.ok(shellMessages.some(message => (
 
 assert.match(cancelSource, /AbortController[\s\S]*\.abort\(\)[\s\S]*pararPollingFavoritosJob[\s\S]*limparStatusTerminalFavoritos[\s\S]*pararNavegadorFavoritosBackground/, 'cancelamento deve abortar, parar polling e fechar worker/status');
 assert.doesNotMatch(cancelSource, /Cancelando favoritos\.\.\./, 'cancelamento nao deve manter aviso intermediario aberto');
-assert.match(executionSource, /signal:\s*sinalFavoritosAtual\(\)[\s\S]*if \(mlFavoritosCancelado \|\| !mlFavoritosEmExecucao\) return;/, 'coletor deve receber signal e bloquear progresso atrasado');
+assert.match(executionSource, /signal:\s*signal \|\| sinalFavoritosAtual\(\)[\s\S]*if \(mlFavoritosCancelado \|\| !mlFavoritosEmExecucao\) return;/, 'coletor deve receber o signal do timeout ou do cancelamento e bloquear progresso atrasado');
 assert.match(executionSource, /mlFavoritosPoolStatusTimer[\s\S]*setTimeout\([\s\S]*250\)/, 'progresso agregado do pool deve ser limitado a uma atualizacao a cada 250 ms');
 assert.match(executionSource, /if \(mlFavoritosEmExecucao\) return;[\s\S]{0,120}mlFavoritosCancelado = false;[\s\S]{0,120}mlFavoritosPausado = false;/, 'nova tentativa deve limpar cancelamento antigo antes do primeiro status');
 assert.match(executionSource, /function pararNavegadorFavoritosBackground\(opcoes = \{\}\)[\s\S]*status[\s\S]*message[\s\S]*reason/, 'encerramento do worker deve preservar estado terminal solicitado');

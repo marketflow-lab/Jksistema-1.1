@@ -321,6 +321,52 @@ async function run() {
     assert.equal(result.resumo.com_dados_avant, 3, 'todos devem receber dados Avant');
     assert.equal(result.resumo.incompletos, 0, 'nenhum anuncio completo deve ser marcado como incompleto');
 
+    const mutationStorm = await page.evaluate(async () => {
+      document.body.innerHTML = `
+        <main>
+          <div id="mutation-status"></div>
+          <section id="resultado-tardio"></section>
+          ${Array.from({ length: 600 }, (_, index) => `<span data-noise="${index}">Atualizacao dinamica ${index}</span>`).join('')}
+        </main>
+      `;
+      let mutations = 0;
+      const status = document.getElementById('mutation-status');
+      const interval = setInterval(() => {
+        mutations += 1;
+        status.textContent = `Atualizacao dinamica ${mutations}`;
+      }, 5);
+      setTimeout(() => {
+        document.getElementById('resultado-tardio').innerHTML = `
+          <ol class="ui-search-layout">
+            <li class="ui-search-layout__item">
+              <article class="poly-card">
+                <a class="poly-component__title" href="https://produto.mercadolivre.com.br/MLB-444555666-Teste-Mutacao-_JM">Teste Mutacao</a>
+              </article>
+            </li>
+          </ol>
+        `;
+      }, 250);
+      const startedAt = performance.now();
+      try {
+        const ready = await aguardarPrimeirosDadosAvantOuCardsWebview({
+          timeoutMs: 2200,
+          idleMs: 120,
+          acaoUsuario: true,
+          solicitadoPeloUsuario: true
+        });
+        return {
+          ready,
+          mutations,
+          elapsedMs: performance.now() - startedAt
+        };
+      } finally {
+        clearInterval(interval);
+      }
+    });
+    assert.ok(mutationStorm.mutations >= 20, `fixture deve manter mutacoes continuas do AvantPro\n${JSON.stringify(mutationStorm, null, 2)}`);
+    assert.ok(mutationStorm.ready && mutationStorm.ready.cardCount >= 1, `espera deve reconhecer o card mesmo sob mutacoes continuas\n${JSON.stringify(mutationStorm, null, 2)}`);
+    assert.ok(mutationStorm.elapsedMs < 2200, `mutacoes continuas nao podem impedir o prazo da espera inicial\n${JSON.stringify(mutationStorm, null, 2)}`);
+
     const first = result.merged.find(item => item.id === 'MLB1687891923');
     assert.ok(first, 'primeiro MLB deve existir no merge');
     assert.match(first.titulo, /Cebolao Radiador/i, 'titulo nao pode virar JM');

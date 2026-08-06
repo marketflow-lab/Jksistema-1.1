@@ -574,6 +574,8 @@ function validarFluxoFavoritosAvantProSemReload() {
   assert.match(coletaNovaFavoritos, /abrirMercadoLivreNoPrograma\(\{[\s\S]*termoPesquisa:\s*termo/, 'coleta nova deve abrir a pesquisa uma vez no navegador interno');
   assert.match(coletaNovaFavoritos, /abrirMercadoLivreNoPrograma\(\{[\s\S]*apenasAbrirUrl:\s*true[\s\S]*confirmarPesquisa:\s*false[\s\S]*agendarPosicaoAntes:\s*false[\s\S]*reposicionarDepois:\s*false/, 'coleta nova deve abrir a URL uma unica vez, sem confirmar/reposicionar a pesquisa antiga');
   assert.match(coletaNovaFavoritos, /coletarPrimeiraPaginaFavoritosControlada\(\{[\s\S]*loteCliques:\s*6[\s\S]*onProgress/, 'coleta nova deve usar fila controlada para acionar os cards Avant da primeira pagina');
+  assert.match(coletaNovaFavoritos, /executarComTimeoutFavoritos\(executarColetaControlada,\s*92000,\s*sinalFavoritosAtual\(\)\)/, 'coleta nova deve ter timeout externo que interrompe executeJavaScript pendente');
+  assert.match(coletaNovaFavoritos, /err\.name === 'TimeoutError'[\s\S]*err\.favoritosTimeout[\s\S]*throw err/, 'timeout da coleta controlada deve subir ao fluxo principal e destruir o navegador travado');
   assert.doesNotMatch(coletaNovaFavoritos, /extrairAnunciosWebviewVisivel\(|coletarDadosAvantComRolagem\(/, 'coleta nova pos-login nao deve chamar leitores legados no caminho ativo');
   assert.doesNotMatch(coletaNovaFavoritos, /buscarAnunciosFavoritosPorTermo|aguardarPrimeirosDadosAvantOuCardsWebview|aguardarPesquisaMercadoLivreAtual|garantirPesquisaMercadoLivreSubmetida|validarAnunciosFavoritosPertencemAoTermo|forcarNavegadorMlShellVisivel|location\.reload|recarregarNavegador/i, 'coleta nova pos-login nao pode chamar motor antigo, monitoramento, validacao de termo, forcar BrowserView nem recarregar a pesquisa');
   assert.match(coletaNovaFavoritos, /loginAvantProNecessario:\s*true[\s\S]*workerId/, 'coleta paralela deve elevar login do AvantPro como erro global e identificar o trabalhador problematico');
@@ -599,6 +601,16 @@ function validarFluxoFavoritosAvantProSemReload() {
   assert.match(mlBrowser, /function statusAvantProPedeLoginOuVinculo[\s\S]*cardsPedemLoginAvant[\s\S]*return true/, 'login repetido nos cards sem dados deve obrigar conexao do AvantPro');
   assert.match(mlBrowser, /function aguardarPrimeirosDadosAvantOuCardsWebview[\s\S]*cardLoginPanelsAvant[\s\S]*needsAvantLoginCards[\s\S]*needsAvantLogin = needsAvantLoginGlobal \|\| needsAvantLoginCards/, 'detector inicial deve tratar login AvantPro nos cards como login necessario');
   assert.match(mlBrowser, /function aguardarPrimeirosDadosAvantOuCardsWebview[\s\S]*poly-component__title[\s\S]*var resultadoMlVisivel = cardCount > 0 \|\| productLinks\.length > 0 \|\| !!resultadoVisual[\s\S]*var noResults = !loadingScreen && !resultadoMlVisivel && !hasAvantData/, 'detector inicial nao pode marcar sem resultados quando ha cards, contagem visual ou dados AvantPro');
+  const inicioEsperaInicial = mlBrowser.indexOf('async function aguardarPrimeirosDadosAvantOuCardsWebview');
+  const fimEsperaInicial = mlBrowser.indexOf('async function diagnosticarResultadosMercadoLivreWebview', inicioEsperaInicial);
+  const esperaInicial = mlBrowser.slice(inicioEsperaInicial, fimEsperaInicial);
+  assert.ok(inicioEsperaInicial >= 0 && fimEsperaInicial > inicioEsperaInicial, 'espera inicial do navegador deve permanecer isolavel para validacao');
+  assert.doesNotMatch(esperaInicial, /MutationObserver/, 'espera inicial nao pode varrer todo o DOM a cada mutacao do AvantPro');
+  assert.match(esperaInicial, /pollMs[\s\S]*elapsedMs >= timeoutMs[\s\S]*setTimeout\(check,/, 'espera inicial deve usar polling limitado e respeitar seu prazo');
+  const inicioBaseColetavel = mlBrowser.indexOf('async function aguardarBaseMercadoLivreColetavelFavoritos');
+  const fimBaseColetavel = mlBrowser.indexOf('function normalizarMlbFavoritosCanonico', inicioBaseColetavel);
+  const baseColetavel = mlBrowser.slice(inicioBaseColetavel, fimBaseColetavel);
+  assert.ok(baseColetavel.indexOf('extrairCardsMercadoLivreBasicoWebview') < baseColetavel.indexOf('aguardarPrimeirosDadosAvantOuCardsWebview'), 'cards ja visiveis devem ser extraidos antes do monitor profundo do AvantPro');
   assert.match(mlBrowser, /function diagnosticarResultadosMercadoLivreWebview[\s\S]*poly-component__title[\s\S]*var resultadoMlVisivel = cardCount > 0 \|\| productLinks\.length > 0 \|\| !!resultadoVisual[\s\S]*var noResults = !loadingScreen && !resultadoMlVisivel && !hasRealAvantData/, 'diagnostico de resultados nao pode marcar sem resultados quando a busca carregou cards ou AvantPro');
   assert.match(mlBrowser, /cardSelectorsParaLoginAvant[\s\S]*cardLoginPanelsAvant[\s\S]*needsAvantLoginCards[\s\S]*needsAvantLogin = needsAvantLoginGlobal \|\| needsAvantLoginCards/, 'extracao principal deve tratar login AvantPro nos cards como login necessario');
   assert.match(mlBrowser, /function fecharModalBloqueanteAvantProNoWebview[\s\S]*textoEscopoGlobalAvant[\s\S]*escopoAvant = cardCountAvant > 0 \? globalBusca : bodyBusca[\s\S]*modalAvantPromocional/, 'fechamento de modal AvantPro deve ignorar texto de login dentro dos cards');

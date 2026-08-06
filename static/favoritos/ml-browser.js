@@ -7170,18 +7170,6 @@
 
             while (Date.now() < deadline) {
                 const restante = Math.max(0, deadline - Date.now());
-                if (typeof aguardarPrimeirosDadosAvantOuCardsWebview === 'function' && restante > 250) {
-                    ultimoStatus = await aguardarPrimeirosDadosAvantOuCardsWebview({
-                        timeoutMs: Math.min(2600, restante),
-                        idleMs: 160,
-                        acaoUsuario: true,
-                        solicitadoPeloUsuario: true,
-                        webview
-                    }).catch(() => null);
-                } else {
-                    await esperar(Math.min(420, restante));
-                }
-
                 ultimoBasico = await extrairCardsMercadoLivreBasicoWebview({ limite, webview }).catch(() => null);
                 const anuncios = Array.isArray(ultimoBasico && ultimoBasico.anuncios) ? ultimoBasico.anuncios : [];
                 if (anuncios.length) {
@@ -7194,6 +7182,18 @@
                         status: ultimoStatus,
                         elapsedMs: Date.now() - inicio
                     };
+                }
+
+                if (typeof aguardarPrimeirosDadosAvantOuCardsWebview === 'function' && restante > 250) {
+                    ultimoStatus = await aguardarPrimeirosDadosAvantOuCardsWebview({
+                        timeoutMs: Math.min(2600, restante),
+                        idleMs: 160,
+                        acaoUsuario: true,
+                        solicitadoPeloUsuario: true,
+                        webview
+                    }).catch(() => null);
+                } else {
+                    await esperar(Math.min(420, restante));
                 }
 
                 const statusVisiveis = Math.min(limite, Math.max(
@@ -9604,9 +9604,9 @@
                 (function () {
                     var timeoutMs = ${JSON.stringify(timeoutMs)};
                     var idleMs = ${JSON.stringify(idleMs)};
+                    var pollMs = Math.max(120, Math.min(400, idleMs));
                     var startedAt = Date.now();
                     var timer = null;
-                    var observer = null;
                     var normalizarBusca = function (value) {
                         var text = String(value || '').replace(/\\s+/g, ' ').trim();
                         try { text = text.normalize('NFD').replace(/[\\u0300-\\u036f]/g, ''); } catch (_err) {}
@@ -9789,30 +9789,33 @@
                     };
                     return new Promise(function (resolve) {
                         var done = false;
+                        var readyAt = 0;
                         var finish = function (result) {
                             if (done) return;
                             done = true;
-                            try { if (observer) observer.disconnect(); } catch (_err) {}
                             try { clearTimeout(timer); } catch (_err) {}
                             resolve(result || snapshot());
                         };
                         var check = function () {
+                            if (done) return;
                             var atual = snapshot();
                             if (atual.ready) {
-                                setTimeout(function () { finish(snapshot()); }, idleMs);
+                                if (!readyAt) readyAt = Date.now();
+                                if (Date.now() - readyAt >= idleMs) {
+                                    finish(atual);
+                                    return;
+                                }
+                            } else {
+                                readyAt = 0;
                             }
+                            var elapsedMs = Date.now() - startedAt;
+                            if (elapsedMs >= timeoutMs) {
+                                atual.timeout = true;
+                                finish(atual);
+                                return;
+                            }
+                            timer = setTimeout(check, Math.min(pollMs, Math.max(1, timeoutMs - elapsedMs)));
                         };
-                        timer = setTimeout(function () {
-                            var finalState = snapshot();
-                            finalState.timeout = true;
-                            finish(finalState);
-                        }, timeoutMs);
-                        observer = new MutationObserver(check);
-                        observer.observe(document.documentElement || document.body, {
-                            childList: true,
-                            subtree: true,
-                            characterData: true
-                        });
                         check();
                     });
                 })();

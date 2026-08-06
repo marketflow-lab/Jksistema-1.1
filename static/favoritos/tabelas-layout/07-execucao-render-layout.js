@@ -561,12 +561,12 @@
             });
             let resultado = null;
             if (typeof coletarPrimeiraPaginaFavoritosControlada === 'function') {
-                resultado = await coletarPrimeiraPaginaFavoritosControlada({
+                const executarColetaControlada = (signal) => coletarPrimeiraPaginaFavoritosControlada({
                     maxAnuncios: limiteAnunciosPrimeiraPesquisa,
                     tempoLimiteMs: 90000,
                     maxPassadas: 2,
                     loteCliques: 6,
-                    signal: sinalFavoritosAtual(),
+                    signal: signal || sinalFavoritosAtual(),
                     webview: webviewColeta || undefined,
                     onProgress: (progresso) => {
                         if (mlFavoritosCancelado || !mlFavoritosEmExecucao) return;
@@ -576,8 +576,17 @@
                             titulo: 'Coleta da pagina'
                         });
                     }
-                }).catch((err) => {
-                    if (mlFavoritosCancelado || (err && (err.loginMercadoLivreNecessario || err.name === 'AbortError'))) throw err;
+                });
+                const promiseColetaControlada = typeof executarComTimeoutFavoritos === 'function'
+                    ? executarComTimeoutFavoritos(executarColetaControlada, 92000, sinalFavoritosAtual())
+                    : executarColetaControlada(sinalFavoritosAtual());
+                resultado = await promiseColetaControlada.catch((err) => {
+                    if (mlFavoritosCancelado || (err && (
+                        err.loginMercadoLivreNecessario
+                        || err.name === 'AbortError'
+                        || err.name === 'TimeoutError'
+                        || err.favoritosTimeout
+                    ))) throw err;
                     console.warn('Coleta controlada da primeira pagina falhou:', err);
                     return null;
                 });
