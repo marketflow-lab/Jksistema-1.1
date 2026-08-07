@@ -2,7 +2,7 @@
     'use strict';
 
     function inicializarFavoritosPagina() {
-        favoritosTableLayout = carregarLayoutTabelasFavoritos();
+        favoritosTableLayout = window.FavoritosV2.execution.publicApi.carregarLayoutTabelasFavoritos();
         // Bootstrap moved from the former inline script so split files can load safely.
         if (btnSkuIaTodos) {
             btnSkuIaTodos.addEventListener('click', () => {
@@ -48,7 +48,7 @@
             });
         }
         if (favMlSkuSidebarSearchEl) {
-            favMlSkuSidebarSearchEl.addEventListener('input', renderizarFavoritosSkuSidebar);
+            favMlSkuSidebarSearchEl.addEventListener('input', window.FavoritosV2.execution.publicApi.renderizarFavoritosSkuSidebar);
         }
         if (histMlSkuSidebarSearchEl) {
             histMlSkuSidebarSearchEl.addEventListener('input', renderizarHistoricoSkuSidebar);
@@ -56,7 +56,7 @@
         if (mlSkuSelectAllEl) {
             mlSkuSelectAllEl.addEventListener('click', alternarSelecaoTodosSkuSidebar);
         }
-        const fazerFavoritosSkusSelecionadosCompleto = fazerFavoritosSkusSelecionados;
+        const fazerFavoritosSkusSelecionadosCompleto = window.FavoritosV2.execution.publicApi.fazerFavoritosSkusSelecionados;
         const executarFavoritos = () => fazerFavoritosSkusSelecionadosCompleto();
         if (mlSkuFazerFavoritosEl) {
             mlSkuFazerFavoritosEl.addEventListener('click', executarFavoritos);
@@ -66,19 +66,19 @@
             mlSkuUsarIaFavoritosEl.addEventListener('change', salvarPreferenciaUsarIaFavoritos);
         }
         if (mlSkuCancelarFavoritosEl) {
-            mlSkuCancelarFavoritosEl.addEventListener('click', cancelarFavoritosEmExecucao);
+            mlSkuCancelarFavoritosEl.addEventListener('click', window.FavoritosV2.searchRanking.publicApi.control.cancelarFavoritosEmExecucao);
         }
         if (mlSkuPausarFavoritosEl) {
-            mlSkuPausarFavoritosEl.addEventListener('click', pausarFavoritosJobAtual);
+            mlSkuPausarFavoritosEl.addEventListener('click', window.FavoritosV2.execution.publicApi.pausarFavoritosJobAtual);
         }
         if (mlSkuRetomarFavoritosEl) {
-            mlSkuRetomarFavoritosEl.addEventListener('click', retomarFavoritosJobAtual);
+            mlSkuRetomarFavoritosEl.addEventListener('click', window.FavoritosV2.execution.publicApi.retomarFavoritosJobAtual);
         }
         if (favMlEfetivarBtnEl) {
-            favMlEfetivarBtnEl.addEventListener('click', efetivarFavoritosMercadoLivreAprovados);
+            favMlEfetivarBtnEl.addEventListener('click', window.FavoritosV2.promotionEffectuation.publicApi.execution.efetivarFavoritosMercadoLivreAprovados);
         }
         if (favMlPromocaoBtnEl) {
-            favMlPromocaoBtnEl.addEventListener('click', () => escolherPromocaoFavoritosSkuAtual({ mostrarStatus: true }));
+            favMlPromocaoBtnEl.addEventListener('click', () => window.FavoritosV2.promotionEffectuation.publicApi.options.escolherPromocaoFavoritosSkuAtual({ mostrarStatus: true }));
         }
         if (favRankingIncluirAnuncioBtnEl) {
             favRankingIncluirAnuncioBtnEl.addEventListener('click', mostrarFormularioIncluirAnuncioRankingFavoritos);
@@ -101,7 +101,7 @@
             });
         }
         if (favMlEfetivarOutrasContasEl) {
-            favMlEfetivarOutrasContasEl.addEventListener('change', atualizarPainelEfetivarFavoritos);
+            favMlEfetivarOutrasContasEl.addEventListener('change', window.FavoritosV2.promotionEffectuation.publicApi.execution.atualizarPainelEfetivarFavoritos);
         }
         if (mlHistoricoFavoritosLimparEl) {
             mlHistoricoFavoritosLimparEl.addEventListener('click', limparHistoricoFavoritos);
@@ -128,13 +128,13 @@
             });
         }
         if (mlWorkModalCancelEl) {
-            mlWorkModalCancelEl.addEventListener('click', cancelarFavoritosEmExecucao);
+            mlWorkModalCancelEl.addEventListener('click', window.FavoritosV2.searchRanking.publicApi.control.cancelarFavoritosEmExecucao);
         }
         if (mlWorkModalPauseEl) {
-            mlWorkModalPauseEl.addEventListener('click', pausarFavoritosJobAtual);
+            mlWorkModalPauseEl.addEventListener('click', window.FavoritosV2.execution.publicApi.pausarFavoritosJobAtual);
         }
         if (mlWorkModalResumeEl) {
-            mlWorkModalResumeEl.addEventListener('click', retomarFavoritosJobAtual);
+            mlWorkModalResumeEl.addEventListener('click', window.FavoritosV2.execution.publicApi.retomarFavoritosJobAtual);
         }
 
         let navegadorMlEncerradoAoSairFavoritos = false;
@@ -164,7 +164,7 @@
 
         obterCamposPesquisaAvulsaMl().forEach(item => {
             item.input.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') rankearAvulsoMercadoLivre();
+                if (e.key === 'Enter') window.FavoritosV2.execution.publicApi.rankearAvulsoMercadoLivre();
             });
         });
 
@@ -183,11 +183,11 @@
         }
 
         inicializarBalaoResultadosMl();
-        inicializarLarguraTabelasFavoritos();
-        if (typeof inicializarSincronizacaoWorkerFavoritos === 'function') {
-            inicializarSincronizacaoWorkerFavoritos();
+        window.FavoritosV2.execution.publicApi.inicializarLarguraTabelasFavoritos();
+        if (typeof window.FavoritosV2.searchRanking.publicApi.control.inicializarSincronizacaoWorkerFavoritos === 'function') {
+            window.FavoritosV2.searchRanking.publicApi.control.inicializarSincronizacaoWorkerFavoritos();
         }
-        atualizarTabelasFavoritosEditaveis();
+        window.FavoritosV2.execution.publicApi.atualizarTabelasFavoritosEditaveis();
         renderizarVendedoresIgnoradosRanking();
         inicializarSincronizacaoSelecaoFavoritos();
         inicializarSincronizacaoHistoricoFavoritos();
@@ -199,12 +199,18 @@
         setBrowserStatus('Pronto para abrir dentro do programa.');
     }
 
+    const skuReady = window.__FAVORITOS_SKU_READY__;
+    const browserReady = window.__FAVORITOS_ML_BROWSER_READY__;
     const layoutReady = window.__FAVORITOS_TABELAS_LAYOUT_READY__;
-    if (layoutReady && typeof layoutReady.then === 'function') {
-        layoutReady
+    const promotionEffectuationReady = window.__FAVORITOS_PROMOCOES_EFETIVACAO_READY__;
+    const componentReadiness = [skuReady, browserReady, layoutReady, promotionEffectuationReady]
+        .filter(ready => ready && typeof ready.then === 'function');
+
+    if (componentReadiness.length) {
+        Promise.all(componentReadiness)
             .then(inicializarFavoritosPagina)
             .catch(error => {
-                console.error('[Favoritos] Falha ao inicializar layout:', error);
+                console.error('[Favoritos] Falha ao inicializar componentes:', error);
                 if (typeof setBrowserStatus === 'function') {
                     setBrowserStatus('Falha ao carregar os componentes do Favoritos.');
                 }

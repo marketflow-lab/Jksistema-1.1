@@ -89,6 +89,7 @@ def vendas_source_paths(
             paths.append(os.path.join(tenant_path, "produtos_compilado.csv"))
         if include_stock:
             paths.append(os.path.join(tenant_path, "estoque_historico.db"))
+            paths.append(os.path.join(tenant_path, "lojas_config.json"))
     return paths
 
 

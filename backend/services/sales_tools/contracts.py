@@ -1,0 +1,73 @@
+"""Stable legacy identifiers and result schemas for sales tools."""
+
+LEGACY_EXPORTS = (
+    "_ia_tool_get_days_without_sale",
+    "_ia_tool_get_days_without_sale_top",
+    "_ia_tool_float",
+    "_ia_tool_resolver_sku",
+    "_ia_tool_get_stock_data",
+    "_ia_tool_get_sales_by_period",
+    "_ia_tool_get_sales_quantity_by_period",
+    "_ia_extrair_mes_ano_mensagem",
+    "_ia_periodo_mensal_padrao",
+    "_ia_tool_get_sales_by_month_period",
+    "_ia_tool_get_top_skus_sales_by_month",
+    "_ia_tool_get_top_skus_returns_by_month",
+    "_ia_tool_get_month_sales_returns_details",
+    "_ia_tool_get_sku_sales_by_month",
+    "_ia_extrair_meses_ano_mensagem",
+    "_ia_tool_compare_sku_sales_months",
+    "_ia_devolucoes_db_resumo",
+    "_ia_tool_get_returns_quantity_by_period",
+    "_ia_tool_get_returns_by_period",
+    "_ia_obter_data_referencia_vendas",
+    "_ia_tool_get_stockout_forecast",
+    "_ia_metricas_periodo_raw",
+    "_ia_tool_get_avg_ticket_by_period",
+    "_ia_tool_get_return_rate_by_period",
+    "_ia_tool_get_period_comparison",
+    "_ia_vendas_timeseries_raw",
+    "_ia_tool_get_sales_timeseries",
+    "_ia_tool_detect_sales_anomalies",
+    "_ia_tool_get_profit_by_period",
+    "_ia_chat_scope_notice",
+    "_ia_tool_get_returns_data",
+    "_ia_tool_get_returns_by_sku_period",
+    "_ia_vendas_db_consulta_sku_vendas_devolucoes",
+    "_ia_vendas_db_consulta_sku",
+    "_ia_extrair_item_ids_ml",
+    "_ia_lojas_ml_conectadas",
+    "_ia_vendas_db_texto",
+    "_ia_extrair_periodo_mensagem_vendas",
+    "_ia_extrair_periodos_comparacao",
+    "_ia_resolver_loja_mensagem_vendas",
+    "_ia_vendas_db_top_skus",
+    "_ia_tool_get_sales_by_virtual_store_period",
+    "_ia_tool_get_sales_by_sku_virtual_store",
+    "_ia_vendas_contexto_exato",
+)
+
+TOOL_EXECUTORS = (
+    "_ia_tool_get_avg_ticket_by_period",
+    "_ia_tool_get_period_comparison",
+    "_ia_tool_get_profit_by_period",
+    "_ia_tool_get_return_rate_by_period",
+    "_ia_tool_get_returns_by_period",
+    "_ia_tool_detect_sales_anomalies",
+    "_ia_tool_get_sales_by_period",
+    "_ia_tool_get_sales_quantity_by_period",
+    "_ia_tool_get_sales_timeseries",
+    "_ia_tool_get_days_without_sale_top",
+    "_ia_tool_get_stock_data",
+    "_ia_tool_get_stockout_forecast",
+)
+
+STALE_STOCK_SCHEMA = "jk.stock.stale_inventory.v1"
+STOCKOUT_SCHEMA = "jk.stock.stockout_forecast.v1"
+
+__all__ = [
+    "LEGACY_EXPORTS",
+    "STALE_STOCK_SCHEMA",
+    "STOCKOUT_SCHEMA",
+    "TOOL_EXECUTORS",
+]

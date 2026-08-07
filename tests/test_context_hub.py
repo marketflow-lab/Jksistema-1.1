@@ -12,8 +12,19 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from backend.modules.context_hub import contracts as hub_contracts
+from backend.modules.context_hub import curation_records as hub_curation_records
+from backend.modules.context_hub import dlp_core as hub_dlp_core
+from backend.modules.context_hub import filesystem as hub_filesystem
+from backend.modules.context_hub import journal as hub_journal
+from backend.modules.context_hub import locking as hub_locking
+from backend.modules.context_hub import path_safety as hub_path_safety
+from backend.modules.context_hub import paths as hub_paths
+from backend.modules.context_hub import publication as hub_publication
+from backend.modules.context_hub import status as hub_status
 from backend.routers.context_hub import create_context_hub_router
 from backend.services import context_hub, context_hub_endpoints
+from backend.services.context_inventory import api as context_inventory_api
 
 
 def _sha(value: str) -> str:
@@ -138,6 +149,19 @@ class FakeInventoryAdapter:
         return rendered
 
 
+def _bind_inventory_adapter(monkeypatch: pytest.MonkeyPatch, adapter: FakeInventoryAdapter) -> None:
+    monkeypatch.setattr(
+        context_inventory_api,
+        "build_context_inventory",
+        adapter.build_context_inventory,
+    )
+    monkeypatch.setattr(
+        context_inventory_api,
+        "render_context_inventory_markdown",
+        adapter.render_context_inventory_markdown,
+    )
+
+
 @pytest.fixture
 def hub_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base = tmp_path / "app"
@@ -146,7 +170,7 @@ def hub_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     info.mkdir()
     _write_bundle(base)
     adapter = FakeInventoryAdapter([_entity("jk:domain:test")])
-    monkeypatch.setattr(context_hub, "_load_inventory_adapter", lambda: adapter)
+    _bind_inventory_adapter(monkeypatch, adapter)
     context_hub.configure_context_hub(base_dir=base, info_root=info, surface="development")
     yield base, info, adapter
     context_hub.stop_all_context_hub_watchers()
@@ -158,11 +182,11 @@ def test_bootstrap_creates_persistent_vault_without_workspace(hub_env) -> None:
 
     vault = info / "000002" / "ContextVault"
     assert result["client_id"] == "000002"
-    for relative in context_hub.VAULT_DIRECTORIES:
+    for relative in hub_contracts.VAULT_DIRECTORIES:
         assert (vault / relative).is_dir()
     assert json.loads((vault / ".obsidian" / "community-plugins.json").read_text(encoding="utf-8")) == []
     graph = json.loads((vault / ".obsidian" / "graph.json").read_text(encoding="utf-8"))
-    assert graph == context_hub.OBSIDIAN_GRAPH_DEFAULTS
+    assert graph == hub_contracts.OBSIDIAN_GRAPH_DEFAULTS
     assert graph["hideUnresolved"] is True
     assert graph["showAttachments"] is False
     assert [group["query"] for group in graph["colorGroups"]] == [
@@ -189,7 +213,7 @@ def test_bootstrap_creates_persistent_vault_without_workspace(hub_env) -> None:
     ]
     assert not (vault / ".obsidian" / "workspace.json").exists()
     assert (info / "000002" / "context_hub" / "context_hub.db").is_file()
-    dashboard = vault / context_hub.CURATION_DASHBOARD_RELATIVE_PATH
+    dashboard = vault / hub_contracts.CURATION_DASHBOARD_RELATIVE_PATH
     assert dashboard.is_file()
     assert "ai_usage: denied" in dashboard.read_text(encoding="utf-8")
     assert "- Total: 0" in dashboard.read_text(encoding="utf-8")
@@ -204,14 +228,14 @@ def test_repeated_settings_poll_does_not_rescan_curation_dashboard(
     _base, _info, _adapter = hub_env
     context_hub.bootstrap_context_hub("000002")
     calls = 0
-    original = context_hub._refresh_curation_dashboard_best_effort
+    original = hub_curation_records._refresh_curation_dashboard_best_effort
 
     def counted(paths):
         nonlocal calls
         calls += 1
         return original(paths)
 
-    monkeypatch.setattr(context_hub, "_refresh_curation_dashboard_best_effort", counted)
+    monkeypatch.setattr(hub_curation_records, "_refresh_curation_dashboard_best_effort", counted)
     context_hub.get_settings("000002")
     context_hub.get_settings("000002")
 
@@ -234,9 +258,9 @@ def test_repeated_settings_poll_does_not_rescan_curation_dashboard(
 )
 def test_client_id_rejects_windows_collisions(client_id: str) -> None:
     with pytest.raises(context_hub.ContextHubValidationError):
-        context_hub._normalize_client_id(client_id)
+        hub_paths._normalize_client_id(client_id)
 
-    assert context_hub._normalize_client_id("000002") == "000002"
+    assert hub_paths._normalize_client_id("000002") == "000002"
 
 
 def test_bootstrap_preserves_existing_obsidian_configuration(hub_env) -> None:
@@ -280,7 +304,7 @@ def test_bootstrap_adds_graph_defaults_to_existing_obsidian_folder(hub_env) -> N
         "userSetting": True
     }
     assert json.loads((obsidian / "graph.json").read_text(encoding="utf-8")) == (
-        context_hub.OBSIDIAN_GRAPH_DEFAULTS
+        hub_contracts.OBSIDIAN_GRAPH_DEFAULTS
     )
     assert not (obsidian / "community-plugins.json").exists()
 
@@ -351,14 +375,14 @@ def test_bootstrap_preserves_graph_created_during_atomic_publish(
         "newerPreference": True,
     }
     newer_bytes = (json.dumps(newer_graph, ensure_ascii=False) + "\n").encode("utf-8")
-    real_link = context_hub.os.link
+    real_link = hub_filesystem.os.link
 
     def simulate_concurrent_obsidian_write(source, destination, *args, **kwargs):
         assert Path(destination) == graph_path
         graph_path.write_bytes(newer_bytes)
         return real_link(source, destination, *args, **kwargs)
 
-    monkeypatch.setattr(context_hub.os, "link", simulate_concurrent_obsidian_write)
+    monkeypatch.setattr(hub_filesystem.os, "link", simulate_concurrent_obsidian_write)
 
     bootstrap = context_hub.bootstrap_context_hub("000002")
 
@@ -391,7 +415,7 @@ def test_configured_info_root_cannot_be_a_junction(
     base.mkdir()
     info.mkdir()
     monkeypatch.setattr(
-        context_hub,
+        hub_path_safety,
         "_is_link_or_junction",
         lambda path: Path(path).absolute() == info.absolute(),
     )
@@ -413,16 +437,16 @@ def test_configured_info_root_is_revalidated_for_every_tenant_operation(
     base.mkdir()
     info.mkdir()
     context_hub.configure_context_hub(base_dir=base, info_root=info, surface="development")
-    real_is_link = context_hub._is_link_or_junction
+    real_is_link = hub_path_safety._is_link_or_junction
 
     monkeypatch.setattr(
-        context_hub,
+        hub_path_safety,
         "_is_link_or_junction",
         lambda path: Path(path).absolute() == info.absolute() or real_is_link(path),
     )
 
     with pytest.raises(context_hub.ContextHubValidationError, match="raiz info"):
-        context_hub._tenant_paths("000002")
+        hub_paths._tenant_paths("000002")
 
 
 def test_dlp_blocks_categories_without_match_and_allows_hashes_and_oem() -> None:
@@ -465,7 +489,7 @@ def test_atomic_replace_retries_transient_permission_errors(
     target = tmp_path / "target.txt"
     source.write_text("novo", encoding="utf-8")
     target.write_text("antigo", encoding="utf-8")
-    real_replace = context_hub.os.replace
+    real_replace = hub_filesystem.os.replace
     calls = 0
 
     def transient_replace(source_path, target_path):
@@ -475,9 +499,9 @@ def test_atomic_replace_retries_transient_permission_errors(
             raise PermissionError(5, "bloqueio transitorio")
         return real_replace(source_path, target_path)
 
-    monkeypatch.setattr(context_hub.os, "replace", transient_replace)
+    monkeypatch.setattr(hub_filesystem.os, "replace", transient_replace)
 
-    context_hub._replace_with_retry(source, target, attempts=3)
+    hub_filesystem._replace_with_retry(source, target, attempts=3)
 
     assert calls == 3
     assert target.read_text(encoding="utf-8") == "novo"
@@ -494,7 +518,7 @@ def test_dlp_scans_all_nested_metadata_and_omits_sensitive_source_ref() -> None:
     }
 
     blocked = context_hub.scan_dlp(
-        context_hub._dlp_document_text(metadata, "Corpo editorial seguro."),
+        hub_dlp_core._dlp_document_text(metadata, "Corpo editorial seguro."),
         source_ref="80_Curadoria/pessoa@example.com.md",
     )
 
@@ -540,9 +564,9 @@ def test_dlp_sensitive_metadata_never_reaches_generation_database(hub_env) -> No
 def test_file_lock_only_removes_its_own_token(hub_env) -> None:
     _base, info, _adapter = hub_env
     context_hub.bootstrap_context_hub("000002")
-    paths = context_hub._tenant_paths("000002", info_root=info)
+    paths = hub_paths._tenant_paths("000002", info_root=info)
 
-    with context_hub._exclusive_file_lock(paths):
+    with hub_locking._exclusive_file_lock(paths):
         replacement = {"pid": os.getpid(), "token": "replacement", "created_at": "future"}
         paths.lock_path.write_text(json.dumps(replacement), encoding="utf-8")
 
@@ -647,7 +671,7 @@ def test_status_reads_database_from_one_snapshot(hub_env, monkeypatch: pytest.Mo
     _base, info, _adapter = hub_env
     active = _rebuild_and_publish()
     database = info / "000002" / "context_hub" / "context_hub.db"
-    real_active_generation_id = context_hub._active_generation_id
+    real_active_generation_id = hub_status._active_generation_id
     mutation_done = False
 
     def mutate_after_pointer_read(connection: sqlite3.Connection):
@@ -662,7 +686,7 @@ def test_status_reads_database_from_one_snapshot(hub_env, monkeypatch: pytest.Mo
                 )
         return generation_id
 
-    monkeypatch.setattr(context_hub, "_active_generation_id", mutate_after_pointer_read)
+    monkeypatch.setattr(hub_status, "_active_generation_id", mutate_after_pointer_read)
 
     status = context_hub.get_status("000002")
 
@@ -757,14 +781,14 @@ def test_manual_publish_rollback_cas_and_failed_swap_restore(hub_env, monkeypatc
     adapter.entities = [_entity("jk:domain:test", title="Versao cinco", content="Conteudo cinco.")]
     fifth = context_hub.rebuild_context("000002")
     before_failure = next((info / "000002" / "ContextVault" / "70_Gerado").rglob("*.md")).read_text(encoding="utf-8")
-    real_replace = context_hub.os.replace
+    real_replace = hub_filesystem.os.replace
 
     def fail_new_directory(source, target):
         if Path(source).name == f".context_hub_publish_{fifth['generation_id']}" and Path(target).name == "70_Gerado":
             raise OSError("simulated swap failure")
         return real_replace(source, target)
 
-    monkeypatch.setattr(context_hub.os, "replace", fail_new_directory)
+    monkeypatch.setattr(hub_filesystem.os, "replace", fail_new_directory)
     with pytest.raises(OSError, match="simulated"):
         context_hub.publish_generation("000002", fifth["generation_id"])
     after_failure = next((info / "000002" / "ContextVault" / "70_Gerado").rglob("*.md")).read_text(encoding="utf-8")
@@ -775,7 +799,7 @@ def test_manual_publish_rollback_cas_and_failed_swap_restore(hub_env, monkeypatc
 def test_recovery_restores_backup_when_crash_happens_before_old_moved_journal(hub_env) -> None:
     _base, info, adapter = hub_env
     active = _rebuild_and_publish()
-    paths = context_hub._tenant_paths("000002", info_root=info)
+    paths = hub_paths._tenant_paths("000002", info_root=info)
     before = {
         path.relative_to(paths.generated_dir).as_posix(): path.read_bytes()
         for path in paths.generated_dir.rglob("*")
@@ -785,8 +809,8 @@ def test_recovery_restores_backup_when_crash_happens_before_old_moved_journal(hu
     adapter.entities = [_entity("jk:domain:test", title="Candidata", content="Nova candidata")]
     context_hub.update_settings("000002", auto_publish_enabled=False)
     candidate = context_hub.rebuild_context("000002")
-    temporary, backup = context_hub._copy_publish_candidate(paths, candidate["generation_id"])
-    context_hub._write_json_atomic(
+    temporary, backup = hub_publication._copy_publish_candidate(paths, candidate["generation_id"])
+    hub_filesystem._write_json_atomic(
         paths.journal_path,
         {
             "generation_id": candidate["generation_id"],
@@ -798,7 +822,7 @@ def test_recovery_restores_backup_when_crash_happens_before_old_moved_journal(hu
     )
     os.replace(paths.generated_dir, backup)
 
-    context_hub._recover_publish_journal(paths)
+    hub_journal._recover_publish_journal(paths)
 
     after = {
         path.relative_to(paths.generated_dir).as_posix(): path.read_bytes()
@@ -815,12 +839,12 @@ def test_recovery_restores_backup_when_crash_happens_before_old_moved_journal(hu
 def test_recovery_fails_closed_when_previous_backup_is_missing(hub_env) -> None:
     _base, info, adapter = hub_env
     active = _rebuild_and_publish()
-    paths = context_hub._tenant_paths("000002", info_root=info)
+    paths = hub_paths._tenant_paths("000002", info_root=info)
     adapter.entities = [_entity("jk:domain:test", title="Candidata", content="Nova candidata")]
     context_hub.update_settings("000002", auto_publish_enabled=False)
     candidate = context_hub.rebuild_context("000002")
-    temporary, _backup = context_hub._copy_publish_candidate(paths, candidate["generation_id"])
-    context_hub._write_json_atomic(
+    temporary, _backup = hub_publication._copy_publish_candidate(paths, candidate["generation_id"])
+    hub_filesystem._write_json_atomic(
         paths.journal_path,
         {
             "generation_id": candidate["generation_id"],
@@ -832,7 +856,7 @@ def test_recovery_fails_closed_when_previous_backup_is_missing(hub_env) -> None:
     )
 
     with pytest.raises(context_hub.ContextHubValidationError, match="Backup"):
-        context_hub._recover_publish_journal(paths)
+        hub_journal._recover_publish_journal(paths)
 
     assert temporary.exists()
     assert paths.journal_path.exists()
@@ -873,7 +897,7 @@ def test_curation_dashboard_tracks_workflow_without_indexing_note_body(hub_env) 
         info
         / "000002"
         / "ContextVault"
-        / context_hub.CURATION_DASHBOARD_RELATIVE_PATH
+        / hub_contracts.CURATION_DASHBOARD_RELATIVE_PATH
     )
 
     draft_text = dashboard.read_text(encoding="utf-8")
@@ -902,7 +926,7 @@ def test_curation_dashboard_tracks_workflow_without_indexing_note_body(hub_env) 
     with sqlite3.connect(info / "000002" / "context_hub" / "context_hub.db") as connection:
         count = connection.execute(
             "SELECT COUNT(*) FROM context_hub_documents WHERE relative_path=?",
-            (context_hub.CURATION_DASHBOARD_RELATIVE_PATH,),
+            (hub_contracts.CURATION_DASHBOARD_RELATIVE_PATH,),
         ).fetchone()[0]
     assert count == 0
 
@@ -922,7 +946,7 @@ def test_curation_dashboard_table_wikilinks_create_recognizable_backlinks(hub_en
         info
         / "000002"
         / "ContextVault"
-        / context_hub.CURATION_DASHBOARD_RELATIVE_PATH
+        / hub_contracts.CURATION_DASHBOARD_RELATIVE_PATH
     ).read_text(encoding="utf-8")
 
     targets: list[str] = []
@@ -976,7 +1000,7 @@ def test_moving_or_deleting_curated_note_tombstones_old_state(hub_env) -> None:
     assert context_hub.list_curated_notes("000002")["count"] == 0
     assert context_hub.get_status("000002")["curation"]["states"] == {}
     dashboard = (
-        info / "000002" / "ContextVault" / context_hub.CURATION_DASHBOARD_RELATIVE_PATH
+        info / "000002" / "ContextVault" / hub_contracts.CURATION_DASHBOARD_RELATIVE_PATH
     ).read_text(encoding="utf-8")
     assert "- Total: 0" in dashboard
 
@@ -996,11 +1020,11 @@ def test_curation_dashboard_withholds_identifier_for_unreadable_note(hub_env) ->
 
     context_hub.list_curated_notes("000002")
     dashboard = (
-        info / "000002" / "ContextVault" / context_hub.CURATION_DASHBOARD_RELATIVE_PATH
+        info / "000002" / "ContextVault" / hub_contracts.CURATION_DASHBOARD_RELATIVE_PATH
     ).read_text(encoding="utf-8")
 
     assert "| Nota retida | Indisponivel | Bloqueada | Indisponivel | Consultiva |" in dashboard
-    assert context_hub._curated_note_id("Notas/nota-invalida.md")[:8] not in dashboard
+    assert hub_curation_records._curated_note_id("Notas/nota-invalida.md")[:8] not in dashboard
 
 
 def test_superseded_curated_note_cannot_be_approved(hub_env) -> None:
@@ -1026,7 +1050,7 @@ def test_superseded_curated_note_cannot_be_approved(hub_env) -> None:
     with pytest.raises(context_hub.ContextHubValidationError, match="substituida"):
         context_hub.approve_curated_note("000002", created["note_id"])
     dashboard = (
-        info / "000002" / "ContextVault" / context_hub.CURATION_DASHBOARD_RELATIVE_PATH
+        info / "000002" / "ContextVault" / hub_contracts.CURATION_DASHBOARD_RELATIVE_PATH
     ).read_text(encoding="utf-8")
     assert "| Revisada | Somente historico | Substituida | Consultiva |" in dashboard
     with sqlite3.connect(info / "000002" / "context_hub" / "context_hub.db") as connection:
@@ -1075,7 +1099,7 @@ def test_450_skus_are_searchable_without_individual_vault_notes(tmp_path: Path, 
         for number in range(450)
     ]
     adapter = FakeInventoryAdapter(entities, sku_map_only=True)
-    monkeypatch.setattr(context_hub, "_load_inventory_adapter", lambda: adapter)
+    _bind_inventory_adapter(monkeypatch, adapter)
     context_hub.configure_context_hub(base_dir=base, info_root=info, surface="development")
 
     result = _publish_ready(context_hub.rebuild_context("000002"))
@@ -1140,7 +1164,7 @@ def test_reviewed_bundle_guide_is_visible_in_obsidian_without_duplicate_index(tm
             )
         },
     )
-    monkeypatch.setattr(context_hub, "_load_inventory_adapter", lambda: adapter)
+    _bind_inventory_adapter(monkeypatch, adapter)
     context_hub.configure_context_hub(base_dir=base, info_root=info, surface="development")
 
     active = _publish_ready(context_hub.rebuild_context("000002"))
@@ -1256,7 +1280,7 @@ def test_watcher_fingerprint_observes_only_curated_notes(tmp_path: Path) -> None
     curated = info / "000002" / "ContextVault" / "80_Curadoria" / "Notas" / "rascunho.md"
     _write(curated, "# Rascunho\n\nMudanca humana.\n")
     fourth = context_hub.scan_context_hub_changes("000002")
-    dashboard = info / "000002" / "ContextVault" / context_hub.CURATION_DASHBOARD_RELATIVE_PATH
+    dashboard = info / "000002" / "ContextVault" / hub_contracts.CURATION_DASHBOARD_RELATIVE_PATH
     dashboard.write_text(dashboard.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     fifth = context_hub.scan_context_hub_changes("000002")
     original_stat = curated.stat()

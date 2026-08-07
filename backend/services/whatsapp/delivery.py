@@ -49,15 +49,8 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services.codex.console import tasks as console_tasks
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -141,17 +134,17 @@ def _progress_message(task: dict[str, Any], sequence: int, elapsed_seconds: int)
     previous = [item for item in (task.get("progress_events") or []) if isinstance(item, dict)]
     previous_stage = str(previous[-1].get("stage") or "") if previous else ""
     prefix = "Avancei para a próxima etapa." if previous_stage and previous_stage != stage else "Ainda estou trabalhando nesta solicitação."
-    queue_position = int(task.get("queue_position") or codex_console._codex_task_queue_position(task) or 0)
+    queue_position = int(task.get("queue_position") or console_tasks.queue_position(task) or 0)
     queue_note = f" Posição atual na fila: {queue_position}." if stage == "fila" and queue_position else ""
     text = f"*Andamento ({elapsed_seconds}s):* {prefix} {explanation}{queue_note}"
     return stage, text[:1200]
 
 def _record_progress_event(task_id: str, event: dict[str, Any]) -> None:
-    task = codex_console._codex_load_task(task_id)
+    task = console_tasks.load(task_id)
     if not isinstance(task, dict):
         return
     events = [item for item in (task.get("progress_events") or []) if isinstance(item, dict)]
-    codex_console._codex_update_task(
+    console_tasks.update(
         task_id,
         progress_events=(events + [event])[-120:],
         last_progress_at=str(event.get("created_at") or _now()),
@@ -167,7 +160,7 @@ def _progress_pulse_worker(
     started_at = time.monotonic()
     try:
         while not stop_event.wait(interval) and not BRIDGE_STOP_EVENT.is_set():
-            task = codex_console._codex_load_task(task_id)
+            task = console_tasks.load(task_id)
             if not isinstance(task, dict):
                 break
             status = str(task.get("status") or "")

@@ -114,7 +114,7 @@
                     tr.appendChild(criarCelulaPrecoAnuncioFavoritos(anuncio, [
                         { rotulo: 'Vendas', valor: formatarVendasAvantPro(anuncio) }
                     ]));
-                    tr.appendChild(criarCelulaTipoAnuncioFavoritos(anuncio, anuncio.vendedor || ''));
+                    tr.appendChild(window.FavoritosV2.promotionEffectuation.publicApi.listings.criarCelulaTipoAnuncioFavoritos(anuncio, anuncio.vendedor || ''));
                     tbody.appendChild(tr);
                 });
                 wrap.appendChild(table);
@@ -142,11 +142,11 @@
                 item.link_normalizado = item.link_normalizado || url;
             }
             let titulo = String(item.titulo || item.title || '').replace(/\s+/g, ' ').trim();
-            if (typeof tituloAnuncioFavoritosPrecisaComplemento === 'function' && tituloAnuncioFavoritosPrecisaComplemento(titulo, id)) {
+            if (typeof window.FavoritosV2.searchRanking.publicApi.listings.tituloAnuncioFavoritosPrecisaComplemento === 'function' && window.FavoritosV2.searchRanking.publicApi.listings.tituloAnuncioFavoritosPrecisaComplemento(titulo, id)) {
                 titulo = '';
             }
-            if (!titulo && typeof extrairTituloAnuncioFavoritosPorLink === 'function') {
-                titulo = extrairTituloAnuncioFavoritosPorLink(item.url || item.permalink || item.link);
+            if (!titulo && typeof window.FavoritosV2.searchRanking.publicApi.listings.extrairTituloAnuncioFavoritosPorLink === 'function') {
+                titulo = window.FavoritosV2.searchRanking.publicApi.listings.extrairTituloAnuncioFavoritosPorLink(item.url || item.permalink || item.link);
             }
             item.titulo = titulo;
             item.title = titulo;
@@ -187,8 +187,8 @@
             const normalizados = (Array.isArray(lista) ? lista : [])
                 .map(normalizarAnuncioHistoricoFavoritosFrontend)
                 .filter(Boolean);
-            if (typeof deduplicarAnunciosFavoritos !== 'function') return normalizados;
-            return deduplicarAnunciosFavoritos(normalizados, { preservarSemChave: true });
+            if (typeof window.FavoritosV2.searchRanking.publicApi.listings.deduplicarAnunciosFavoritos !== 'function') return normalizados;
+            return window.FavoritosV2.searchRanking.publicApi.listings.deduplicarAnunciosFavoritos(normalizados, { preservarSemChave: true });
         }
 
         function anuncioRankingHistoricoEstaticoFavoritos(anuncio) {
@@ -754,11 +754,11 @@
                 ? limparLinkProdutoMercadoLivreFavoritos(anuncio && (anuncio.url || anuncio.permalink || anuncio.link), id)
                 : (anuncio && (anuncio.url || anuncio.permalink || anuncio.link) || '');
             let titulo = String(anuncio && (anuncio.titulo || anuncio.title) || '').replace(/\s+/g, ' ').trim();
-            if (typeof tituloAnuncioFavoritosPrecisaComplemento === 'function' && tituloAnuncioFavoritosPrecisaComplemento(titulo, id)) {
+            if (typeof window.FavoritosV2.searchRanking.publicApi.listings.tituloAnuncioFavoritosPrecisaComplemento === 'function' && window.FavoritosV2.searchRanking.publicApi.listings.tituloAnuncioFavoritosPrecisaComplemento(titulo, id)) {
                 titulo = '';
             }
-            if (!titulo && typeof extrairTituloAnuncioFavoritosPorLink === 'function') {
-                titulo = extrairTituloAnuncioFavoritosPorLink(anuncio && (anuncio.url || anuncio.permalink || anuncio.link) || url);
+            if (!titulo && typeof window.FavoritosV2.searchRanking.publicApi.listings.extrairTituloAnuncioFavoritosPorLink === 'function') {
+                titulo = window.FavoritosV2.searchRanking.publicApi.listings.extrairTituloAnuncioFavoritosPorLink(anuncio && (anuncio.url || anuncio.permalink || anuncio.link) || url);
             }
             const imagem = obterImagemAnuncioFavoritos(anuncio);
             return {
@@ -780,7 +780,7 @@
                 vendedor: anuncio && (anuncio.vendedor || anuncio.seller_name || anuncio.sellerName || anuncio.seller_nickname || anuncio.sellerNickname || anuncio.nickname || anuncio.official_store_name || anuncio.officialStoreName || '') || '',
                 vendedorFonte: anuncio && (anuncio.vendedorFonte || anuncio.vendedor_fonte || anuncio.fonte_vendedor || ''),
                 vendedor_fonte: anuncio && (anuncio.vendedorFonte || anuncio.vendedor_fonte || anuncio.fonte_vendedor || ''),
-                loja_vendedora: obterNomeLojaVendedoraHistoricoFavoritos(anuncio),
+                loja_vendedora: window.FavoritosV2.execution.publicApi.obterNomeLojaVendedoraHistoricoFavoritos(anuncio),
                 seller_name: anuncio && (anuncio.seller_name || anuncio.sellerName || '') || '',
                 seller_nickname: anuncio && (anuncio.seller_nickname || anuncio.sellerNickname || '') || '',
                 official_store_name: anuncio && (anuncio.official_store_name || anuncio.officialStoreName || '') || '',
@@ -813,14 +813,14 @@
                 preco_fonte: anuncio && (anuncio.precoFonte || anuncio.preco_fonte || anuncio.fonte_preco || ''),
                 moeda: anuncio && (anuncio.moeda || anuncio.currency_id || 'BRL'),
                 currency_id: anuncio && (anuncio.currency_id || anuncio.moeda || 'BRL'),
-                parcelamento_sem_juros: obterParcelamentoSemJurosFavoritos(anuncio),
-                tipo_anuncio: obterTipoAnuncioFavoritos(anuncio),
+                parcelamento_sem_juros: window.FavoritosV2.promotionEffectuation.publicApi.listings.obterParcelamentoSemJurosFavoritos(anuncio),
+                tipo_anuncio: window.FavoritosV2.promotionEffectuation.publicApi.listings.obterTipoAnuncioFavoritos(anuncio),
                 listing_type_id: anuncio && (anuncio.listing_type_id || anuncio.listingTypeId || ''),
                 listing_type_name: anuncio && (anuncio.listing_type_name || anuncio.tipo_anuncio || ''),
                 shipping: anuncio && (anuncio.shipping || anuncio.shipping_info || anuncio.shippingInfo || null),
                 logistic_type: anuncio && (anuncio.logistic_type || anuncio.logisticType || anuncio.shipping_logistic_type || ''),
                 shipping_mode: anuncio && (anuncio.shipping_mode || anuncio.shippingMode || ''),
-                is_full: temIndicadorFullFavoritos(anuncio) ? obterFullAnuncioFavoritos(anuncio) : '',
+                is_full: window.FavoritosV2.promotionEffectuation.publicApi.listings.temIndicadorFullFavoritos(anuncio) ? window.FavoritosV2.promotionEffectuation.publicApi.listings.obterFullAnuncioFavoritos(anuncio) : '',
                 media_mensal: anuncio && (anuncio.media_mensal ?? anuncio.ritmo_atual ?? anuncio.ritmo_vendas_mes ?? ''),
                 ritmo_atual: anuncio && (anuncio.ritmo_atual ?? anuncio.media_mensal ?? ''),
                 media_mensal_fonte: anuncio && (anuncio.media_mensal_fonte || anuncio.ritmo_atual_fonte || ''),
@@ -852,7 +852,7 @@
                     };
                     const anuncios = grupo.anuncios.slice(0, ML_FAVORITOS_RANKING_ANUNCIOS_MAX).map(anuncioHistoricoPayload);
                     const removidosIa = grupo.removidos_ia.slice(0, 80).map(anuncioHistoricoPayload);
-                    const opcoesPromocao = resolverOpcoesPromocaoGrupoFavoritos(grupo, grupo && grupo.sku);
+                    const opcoesPromocao = window.FavoritosV2.promotionEffectuation.publicApi.options.resolverOpcoesPromocaoGrupoFavoritos(grupo, grupo && grupo.sku);
                     const duracaoExecucaoMs = normalizarDuracaoExecucaoFavoritosMs(grupo && grupo.duracao_execucao_ms);
                     return {
                         sku: grupo && grupo.sku || '',
@@ -1139,8 +1139,8 @@
             for (const entrada of filtrarHistoricoFavoritosPorLojaAtual(lerHistoricoFavoritos(), sku)) {
                 const grupo = (entrada.grupos || []).find(item => skuChaveSku(item && item.sku) === chave);
                 if (grupo) {
-                    const opcoesPromocao = resolverOpcoesPromocaoGrupoFavoritos(grupo, sku)
-                        || resolverOpcoesPromocaoGrupoFavoritos(entrada, sku);
+                    const opcoesPromocao = window.FavoritosV2.promotionEffectuation.publicApi.options.resolverOpcoesPromocaoGrupoFavoritos(grupo, sku)
+                        || window.FavoritosV2.promotionEffectuation.publicApi.options.resolverOpcoesPromocaoGrupoFavoritos(entrada, sku);
                     return {
                         entrada,
                         grupo: {
@@ -1174,8 +1174,8 @@
                 if (idEntradaHistoricoFavoritos(entrada) !== idSelecionado) continue;
                 const grupo = (entrada.grupos || []).find(item => skuChaveSku(item && item.sku) === chave);
                 if (!grupo) return null;
-                const opcoesPromocao = resolverOpcoesPromocaoGrupoFavoritos(grupo, sku)
-                    || resolverOpcoesPromocaoGrupoFavoritos(entrada, sku);
+                const opcoesPromocao = window.FavoritosV2.promotionEffectuation.publicApi.options.resolverOpcoesPromocaoGrupoFavoritos(grupo, sku)
+                    || window.FavoritosV2.promotionEffectuation.publicApi.options.resolverOpcoesPromocaoGrupoFavoritos(entrada, sku);
                 return {
                     entrada,
                     grupo: {
@@ -1544,8 +1544,8 @@
         }
 
         function obterTipoHistoricoFavorito(anuncio, tipoFallback = '') {
-            const tipoDireto = typeof obterTipoCompletoAnuncioFavoritos === 'function'
-                ? obterTipoCompletoAnuncioFavoritos(anuncio)
+            const tipoDireto = typeof window.FavoritosV2.promotionEffectuation.publicApi.listings.obterTipoCompletoAnuncioFavoritos === 'function'
+                ? window.FavoritosV2.promotionEffectuation.publicApi.listings.obterTipoCompletoAnuncioFavoritos(anuncio)
                 : '';
             if (tipoDireto) return tipoDireto;
             const candidatos = [
@@ -1559,12 +1559,12 @@
                 tipoFallback
             ];
             for (const candidato of candidatos) {
-                const tipo = typeof normalizarTipoAnuncioFavoritos === 'function'
-                    ? normalizarTipoAnuncioFavoritos(candidato)
+                const tipo = typeof window.FavoritosV2.promotionEffectuation.publicApi.listings.normalizarTipoAnuncioFavoritos === 'function'
+                    ? window.FavoritosV2.promotionEffectuation.publicApi.listings.normalizarTipoAnuncioFavoritos(candidato)
                     : String(candidato || '').trim();
                 if (tipo) return tipo;
-                if (typeof nomeTipoPorListingTypeFavoritos === 'function') {
-                    const nome = nomeTipoPorListingTypeFavoritos(candidato);
+                if (typeof window.FavoritosV2.promotionEffectuation.publicApi.listings.nomeTipoPorListingTypeFavoritos === 'function') {
+                    const nome = window.FavoritosV2.promotionEffectuation.publicApi.listings.nomeTipoPorListingTypeFavoritos(candidato);
                     if (nome) return nome;
                 }
             }
@@ -1683,7 +1683,7 @@
             tr.appendChild(criarCelulaOrdemHistoricoFavorito(vinculo.ordem));
             tr.appendChild(criarCelulaFotoAnuncioFavoritos(anuncio));
             tr.appendChild(criarCelulaMlbHistoricoFavorito(anuncio, vinculo.loja, vinculo && vinculo.simulacao && (vinculo.simulacao.tipo_anuncio_atual || vinculo.simulacao.tipoAnuncioAtual)));
-            tr.appendChild(criarCelulaTextoFavoritos(obterTituloAnuncioLinksAlinhadosFavoritos(anuncio), { long: true }));
+            tr.appendChild(window.FavoritosV2.execution.publicApi.criarCelulaTextoFavoritos(obterTituloAnuncioLinksAlinhadosFavoritos(anuncio), { long: true }));
             const tdPreco = criarCelulaPrecoCompletoHistoricoFavorito(anuncio);
             const indicadorMargem = criarIndicadorTravaMargemHistoricoFavorito(vinculo);
             if (indicadorMargem) tdPreco.appendChild(indicadorMargem);
@@ -1698,9 +1698,9 @@
             tr.appendChild(criarCelulaOrdemHistoricoFavorito(vinculo.ordem));
             tr.appendChild(criarCelulaFotoAnuncioFavoritos(anuncio));
             tr.appendChild(criarCelulaMlbHistoricoFavorito(anuncio, '', vinculo && vinculo.simulacao && (vinculo.simulacao.tipo_anuncio_alvo || vinculo.simulacao.tipoAnuncioAlvo)));
-            tr.appendChild(criarCelulaMediaHistoricoFavoritos(anuncio));
+            tr.appendChild(window.FavoritosV2.promotionEffectuation.publicApi.listings.criarCelulaMediaHistoricoFavoritos(anuncio));
             tr.appendChild(criarCelulaPrecoCompletoHistoricoFavorito(anuncio));
-            tr.appendChild(criarCelulaTextoFavoritos(obterTituloAnuncioLinksAlinhadosFavoritos(anuncio), { long: true }));
+            tr.appendChild(window.FavoritosV2.execution.publicApi.criarCelulaTextoFavoritos(obterTituloAnuncioLinksAlinhadosFavoritos(anuncio), { long: true }));
             return tr;
         }
 
@@ -1723,7 +1723,7 @@
             const partes = [];
             const addPreco = (rotulo, valor) => {
                 const numero = parsePrecoAnuncioFavoritos(valor);
-                if (numero !== null) partes.push(`${rotulo}: ${formatarPrecoFavoritosMl(numero)}`);
+                if (numero !== null) partes.push(`${rotulo}: ${window.FavoritosV2.execution.publicApi.formatarPrecoFavoritosMl(numero)}`);
             };
             addPreco('Preco previsto', simulacao.preco_previsto);
             addPreco('Promocional previsto', simulacao.preco_promocional_previsto);
@@ -1747,7 +1747,7 @@
                 ? parsePrecoAnuncioFavoritos(valor)
                 : Number(valor);
             if (numero === null || numero === undefined || !Number.isFinite(Number(numero))) return '-';
-            return typeof formatarPrecoFavoritosMl === 'function' ? formatarPrecoFavoritosMl(numero) : String(numero);
+            return typeof window.FavoritosV2?.execution?.publicApi?.formatarPrecoFavoritosMl === 'function' ? window.FavoritosV2.execution.publicApi.formatarPrecoFavoritosMl(numero) : String(numero);
         }
 
         function formatarMargemResumoHistoricoFavorito(valor) {
@@ -2185,7 +2185,7 @@
                 favMlLojaSelecionada = item.loja || grupoItem?.loja || favoritosLojaSelecionadaParaApi() || '';
                 favMlAnunciosSkuAtual = [];
                 mudarAba('favoritos');
-                renderizarFavoritosSkuSidebar();
+                window.FavoritosV2.execution.publicApi.renderizarFavoritosSkuSidebar();
                 renderizarFavoritosAnunciosMl([], sku);
                 renderizarFavoritosOutrosAnuncios(sku);
                 return;
@@ -2193,7 +2193,7 @@
             favMlSkuSelecionado = sku;
             favMlLojaSelecionada = item.loja || item.grupo?.loja || favMlLojaSelecionada || favoritosLojaSelecionadaParaApi() || '';
             mudarAba('favoritos');
-            renderizarFavoritosSkuSidebar();
+            window.FavoritosV2.execution.publicApi.renderizarFavoritosSkuSidebar();
             renderizarSkuSidebarMercadoLivre();
             renderizarFavoritosOutrosAnuncios(sku);
             carregarFavoritosAnunciosSku(sku, favMlLojaSelecionada, {
@@ -2229,7 +2229,7 @@
         function refazerRankingHistoricoFavoritos(grupo, entrada = null) {
             const termos = normalizarTermosPesquisaFavoritos(grupo && grupo.termos);
             if (!termos.length) {
-                mostrarBalaoFavoritosStatus('Este histórico não tem termos salvos para refazer a consulta.', {
+                window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus('Este histórico não tem termos salvos para refazer a consulta.', {
                     erro: true,
                     tempoMs: 3500
                 });
@@ -2242,7 +2242,7 @@
             };
             preencherCamposPesquisaAvulsaMl(termos);
             mudarAba('navegador');
-            rankearAvulsoMercadoLivre({
+            window.FavoritosV2.execution.publicApi.rankearAvulsoMercadoLivre({
                 termos,
                 sku: grupoRefazer.sku || 'AVULSO',
                 titulo: grupoRefazer.titulo || '',
@@ -2282,7 +2282,7 @@
 
         function chavesRemocaoAnuncioRankingFavoritos(anuncio) {
             if (!anuncio) return [];
-            const chaves = new Set(chavesAnuncioFavoritos(anuncio));
+            const chaves = new Set(window.FavoritosV2.searchRanking.publicApi.listings.chavesAnuncioFavoritos(anuncio));
             const id = extrairItemIdAnuncio(anuncio.id || anuncio.mlb || anuncio.url || anuncio.permalink || anuncio.link)
                 || String(anuncio.id || anuncio.mlb || '').trim().toUpperCase().replace(/-/g, '');
             if (id) chaves.add(`id:${id}`);

@@ -195,7 +195,7 @@
             const sku = String(item.sku || skuFallback || '').trim();
             const chaveSku = skuChaveSku(sku);
             if (!chaveSku) return null;
-            const id = normalizarIdAnuncioFavoritosIa(item) || obterIdAnuncioFavoritos(item);
+            const id = window.FavoritosV2.searchRanking.publicApi.ranking.normalizarIdAnuncioFavoritosIa(item) || obterIdAnuncioFavoritos(item);
             const chaves = [];
             if (Array.isArray(item.chaves)) {
                 item.chaves.forEach(chave => {
@@ -823,8 +823,8 @@
             img.src = imagem;
             img.alt = anuncio && anuncio.id ? `Foto ${anuncio.id}` : 'Foto do anuncio';
             img.loading = 'lazy';
-            img.addEventListener('load', agendarSincronizarLinhasFavoritos, { once: true });
-            img.addEventListener('error', agendarSincronizarLinhasFavoritos, { once: true });
+            img.addEventListener('load', window.FavoritosV2.execution.publicApi.agendarSincronizarLinhasFavoritos, { once: true });
+            img.addEventListener('error', window.FavoritosV2.execution.publicApi.agendarSincronizarLinhasFavoritos, { once: true });
             if (anuncio && anuncio.url) {
                 const wrap = document.createElement('span');
                 wrap.className = 'ml-favoritos-foto-wrap';
@@ -1075,7 +1075,7 @@
                 valueStack.className = 'ml-favoritos-preco-value-stack';
                 const base = document.createElement('span');
                 base.className = 'ml-favoritos-preco-base' + (precos.promocional !== null ? ' is-original' : '');
-                base.textContent = formatarPrecoFavoritosMl(precos.preco !== null ? precos.preco : precos.promocional);
+                base.textContent = window.FavoritosV2.execution.publicApi.formatarPrecoFavoritosMl(precos.preco !== null ? precos.preco : precos.promocional);
                 const descontoTexto = formatarDescontoPrecoFavoritos(precos.desconto);
                 const promoTexto = anuncioEstaEmPromocaoFavoritos(anuncio) ? (descontoTexto || 'Promo') : '';
                 valueStack.appendChild(base);
@@ -1088,10 +1088,10 @@
                 if (precos.promocional !== null && precos.preco !== null) {
                     const promo = document.createElement('span');
                     promo.className = 'ml-favoritos-preco-promo';
-                    promo.textContent = formatarPrecoFavoritosMl(precos.promocional);
+                    promo.textContent = window.FavoritosV2.execution.publicApi.formatarPrecoFavoritosMl(precos.promocional);
                     valueStack.appendChild(promo);
                 }
-                const margemCell = criarCelulaMargemAnuncioFavoritos(anuncio);
+                const margemCell = window.FavoritosV2.promotionEffectuation.publicApi.listings.criarCelulaMargemAnuncioFavoritos(anuncio);
                 const margemBadge = margemCell.firstElementChild;
                 if (margemBadge) {
                     const margemWrap = document.createElement('span');
@@ -1123,7 +1123,7 @@
             baseLabel.className = 'ml-favoritos-preco-label';
             baseLabel.textContent = temPromocional ? 'Normal:' : 'Preco:';
             base.appendChild(baseLabel);
-            base.append(` ${formatarPrecoFavoritosMl(precoBase)}`);
+            base.append(` ${window.FavoritosV2.execution.publicApi.formatarPrecoFavoritosMl(precoBase)}`);
             stack.appendChild(base);
 
             const descontoTexto = formatarDescontoPrecoFavoritos(precos.desconto);
@@ -1141,11 +1141,11 @@
                 promoLabel.className = 'ml-favoritos-preco-label';
                 promoLabel.textContent = 'Com desconto:';
                 promo.appendChild(promoLabel);
-                promo.append(` ${formatarPrecoFavoritosMl(precos.promocional)}`);
+                promo.append(` ${window.FavoritosV2.execution.publicApi.formatarPrecoFavoritosMl(precos.promocional)}`);
                 stack.appendChild(promo);
             }
 
-            const margemCell = criarCelulaMargemAnuncioFavoritos(anuncio);
+            const margemCell = window.FavoritosV2.promotionEffectuation.publicApi.listings.criarCelulaMargemAnuncioFavoritos(anuncio);
             const margemBadge = margemCell.firstElementChild;
             if (margemBadge) {
                 const margemWrap = document.createElement('span');

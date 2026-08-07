@@ -4,12 +4,10 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { searchRankingSource } = require('./helpers/favoritos_search_ranking_sources');
 
 const root = path.resolve(__dirname, '..');
-const source = fs.readFileSync(
-    path.join(root, 'static', 'favoritos', 'tabelas-layout', '04-promocoes-busca-ranking.js'),
-    'utf8'
-);
+const source = searchRankingSource(root, { includeRuntime: false, includePublicApi: false });
 
 function extractFunction(name, context) {
     const marker = `function ${name}`;

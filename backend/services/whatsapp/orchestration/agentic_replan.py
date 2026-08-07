@@ -117,7 +117,7 @@ def prepare_evidence_replan(pending: dict[str, Any], evidence: dict[str, Any]) -
         for item in list(evidence.get("validations") or [])[:12]
         if isinstance(item, dict)
         and item.get("required") is True
-        and item.get("dados_suficientes") is not True
+        and str(item.get("status") or "") not in {"complete", "confirmed_zero"}
     ]
     if not validations or any(
         str(item.get("error_class") or "").strip().lower()
@@ -139,7 +139,7 @@ def prepare_evidence_replan(pending: dict[str, Any], evidence: dict[str, Any]) -
         {
             "kind": "alternate_source_or_refined_arguments",
             "tool_id": str(item.get("tool_id") or "")[:100],
-            "reason": str(item.get("motivo") or "insufficient_evidence")[:500],
+            "reason": str(item.get("reason") or "insufficient_evidence")[:500],
         }
         for item in validations
     ]

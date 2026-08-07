@@ -30,6 +30,7 @@ const bridgeToolResults = fs.readFileSync(path.join(root, 'backend', 'services',
 const bridgeReportScheduling = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'report_scheduling.py'), 'utf8');
 const voiceService = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp_voice.py'), 'utf8');
 const codexConsole = fs.readFileSync(path.join(root, 'backend', 'services', 'codex_console.py'), 'utf8');
+const codexWorkerSetup = fs.readFileSync(path.join(root, 'backend', 'services', 'codex', 'console', 'worker_setup.py'), 'utf8');
 const bridgeStore = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp_bridge_store.py'), 'utf8');
 const reportFiles = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp_report_files.py'), 'utf8');
 const setup = fs.readFileSync(path.join(root, 'scripts', 'setup-whatsapp-zero-cost.ps1'), 'utf8');
@@ -154,14 +155,14 @@ assert(service.includes('def whatsapp_bridge_update_phone_settings('), 'phone se
 assert(service.includes('def _normalize_phone_ai_behavior('), 'per-phone AI behavior normalization is missing');
 assert(service.includes('"phone_ai_behavior": phone_ai_behavior'), 'per-phone AI behavior is not attached to WhatsApp tasks');
 assert(bridgeMessage.includes('Instrucoes administrativas especificas para atender este numero'), 'per-phone AI behavior is not applied to provider prompts');
-assert(codexConsole.includes('Instrucao administrativa especifica para este numero de WhatsApp'), 'per-phone AI behavior is not applied as a Codex developer instruction');
+assert(codexWorkerSetup.includes('Instrucao administrativa especifica para este numero de WhatsApp'), 'per-phone AI behavior is not applied as a Codex developer instruction');
 assert(service.includes('def whatsapp_bridge_register_phone('), 'direct phone registration endpoint is missing');
 assert(service.includes('"/bridge/welcome"'), 'welcome message is not sent by the local bridge');
 assert(service.includes('def whatsapp_bridge_send_adhoc_message('), 'ad hoc message endpoint is missing');
 assert(service.includes('def whatsapp_bridge_voice_preflight('), 'voice preflight service is missing');
 assert(service.includes('def whatsapp_bridge_voice_enable('), 'voice enable service is missing');
 assert(voiceService.includes('ia_providers._obter_openai_api_key()'), 'voice does not reuse the existing OpenAI key');
-assert(voiceService.includes('codex_registrar_interacao_whatsapp_externa'), 'voice transcript is not connected to canonical WhatsApp history');
+assert(voiceService.includes('console_tasks.register_external_exchange'), 'voice transcript is not connected to canonical WhatsApp history');
 assert(!voiceService.includes('open("audio'), 'voice service must not persist raw audio');
 assert(service.includes('"/bridge/messages/send"'), 'ad hoc message is not routed to the gateway');
 assert(service.includes('settings["send_ml_question_suggestions"]'), 'question suggestions do not honor the selected phone preference');

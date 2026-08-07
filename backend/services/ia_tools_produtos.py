@@ -73,9 +73,12 @@ from fastapi import Depends, File, Form, Header, HTTPException, Request, UploadF
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
+from backend.services.marketplace_tools import integrations as marketplace_integrations
+from backend.services.marketplace_tools import images as marketplace_images
 from backend.services.ia_common import *
 from backend.services.ia_context import get_tenant_id, get_tenant_path
 from backend.services.ia_state import *
+from backend.services.sales_tools import api as sales_tools
 
 
 def configure_ia_tools_produtos_runtime(runtime_module=None, peers=None):
@@ -453,9 +456,9 @@ def _ia_tool_get_product_margin(client_id: str, mensagem: str, produto_tool: Opt
         }
 
     item = matches[0]
-    preco = _ia_tool_float(item.get("preco"))
-    custo = _ia_tool_float(item.get("custo"))
-    imposto_pct = _ia_tool_float(item.get("imposto"))
+    preco = sales_tools.to_float(item.get("preco"))
+    custo = sales_tools.to_float(item.get("custo"))
+    imposto_pct = sales_tools.to_float(item.get("imposto"))
     imposto_valor = preco * (imposto_pct / 100.0) if preco > 0 and imposto_pct > 0 else 0.0
     margem_valor = preco - custo - imposto_valor if preco > 0 else 0.0
     margem_pct = ((margem_valor / preco) * 100.0) if preco > 0 else 0.0
@@ -594,8 +597,8 @@ def _ia_bling_resumir_produto(produto: dict, loja: str, saldo: Optional[dict] = 
         "unidade": str(produto.get("unidade") or "").strip(),
         "preco": produto.get("preco"),
         "preco_custo": produto.get("precoCusto") or produto.get("preco_custo"),
-        "ncm": _ia_bling_valor_tributario(produto, "ncm"),
-        "cest": _ia_bling_valor_tributario(produto, "cest"),
+        "ncm": marketplace_integrations.bling_tax_value(produto, "ncm"),
+        "cest": marketplace_integrations.bling_tax_value(produto, "cest"),
         "saldo_loja": float((saldo or {}).get("loja") or estoque.get("saldoVirtualTotal") or 0),
         "saldo_full": float((saldo or {}).get("full") or 0),
         "estoque_minimo": estoque.get("minimo"),
@@ -612,7 +615,7 @@ def _ia_tool_get_bling_product(
 ) -> Optional[dict]:
     try:
         ref = _ia_extrair_referencia_produto_mensagem(mensagem)
-        sku = _ia_tool_resolver_sku(client_id, mensagem, produto_tool)
+        sku = sales_tools.resolve_sku(client_id, mensagem, produto_tool)
         if not sku and ref.get("sku"):
             sku = _normalizar_sku_mes(str(ref.get("sku") or "").strip()).upper()
 
@@ -632,7 +635,7 @@ def _ia_tool_get_bling_product(
         if not sku and not ids_bling:
             return None
 
-        lojas = _ia_lojas_com_integracao(client_id, "bling", loja)
+        lojas = marketplace_integrations.connected_stores(client_id, "bling", loja)
         if not lojas:
             return {
                 "function": "get_bling_product",
@@ -646,7 +649,7 @@ def _ia_tool_get_bling_product(
             if len(matches) >= limite:
                 break
             try:
-                cfg = _ia_obter_cfg_bling(client_id, nome_loja)
+                cfg = marketplace_integrations.get_bling_config(client_id, nome_loja)
                 candidatos = []
                 if ids_bling:
                     candidatos = [{"id": pid} for pid in ids_bling[:limite]]
@@ -754,14 +757,14 @@ def _ia_tool_get_product_image(client_id: str, mensagem: str, produto_tool: Opti
                         imagem_url = _ia_normalizar_imagem_cadastro_url(foto_local)
                         origem_imagem = "cadastro"
                     else:
-                        ml_imagem = _ia_buscar_imagem_ml_sku(client_id, sku, produto=produto, cadastro=cad)
+                        ml_imagem = marketplace_images.find_listing_image(client_id, sku, produto=produto, cadastro=cad)
             else:
                 foto_local = _cadastro_resolver_foto_local(_cadastro_mapa_fotos_locais(client_id), sku)
                 if foto_local:
                     imagem_url = _ia_normalizar_imagem_cadastro_url(foto_local)
                     origem_imagem = "cadastro"
                 else:
-                    ml_imagem = _ia_buscar_imagem_ml_sku(client_id, sku, produto=produto, cadastro=None)
+                    ml_imagem = marketplace_images.find_listing_image(client_id, sku, produto=produto, cadastro=None)
 
         if not imagem_url and ml_imagem:
             imagem_url = str(ml_imagem.get("imagem_url") or "").strip()

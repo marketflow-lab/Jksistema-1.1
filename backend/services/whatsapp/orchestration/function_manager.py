@@ -20,6 +20,7 @@ from backend.services.whatsapp.orchestration.function_manager_contracts import (
 )
 from backend.services.whatsapp.orchestration import retry_coordinator as whatsapp_retry_coordinator
 from backend.services import codex_whatsapp_agents
+from backend.services.codex.assistant import evidence as assistant_evidence, execution as assistant_execution
 from backend.services.whatsapp.composition import BridgeDependencies, bind_component_namespace, invoke_component
 WHATSAPP_MAX_OUTBOUND_IMAGES = whatsapp_media.WHATSAPP_MAX_OUTBOUND_IMAGES
 WHATSAPP_PART_BODY_CHARS = whatsapp_formatting.WHATSAPP_PART_BODY_CHARS
@@ -74,8 +75,8 @@ def _local_stock_contract(result: Any) -> dict[str, Any]:
 def _stock_tool_result_confirmed(result: dict[str, Any]) -> bool:
     return whatsapp_tool_results.stock_tool_result_confirmed(result)
 def _function_manager_result_sufficient(value: dict[str, Any]) -> bool:
-    validation = value.get("tool_validation") if isinstance(value.get("tool_validation"), dict) else {}
-    return value.get("dados_suficientes") is True or validation.get("dados_suficientes") is True
+    evidence = value.get("evidence") if isinstance(value.get("evidence"), dict) else {}
+    return str(evidence.get("status") or "") in assistant_evidence.CONCLUSIVE_EVIDENCE_STATUSES
 
 
 def _function_manager_execute_one(
@@ -84,8 +85,6 @@ def _function_manager_execute_one(
     pending: dict[str, Any],
     config: Optional[dict[str, Any]],
 ) -> tuple[int, dict[str, Any]]:
-    from backend.services import codex_assistant
-
     index, call, store_index, store, dependency_results = entry
     args = dict(call.get("arguments") or {}) if isinstance(call.get("arguments"), dict) else {}
     for untrusted_tenant_key in (
@@ -107,7 +106,7 @@ def _function_manager_execute_one(
         if not bound_client_id:
             raise RuntimeError("data_selection_tenant_required")
         permissions = bound_session.get("permissions") if is_hub else pending.get("session_permissions")
-        raw = codex_assistant.codex_assistant_execute_tool_call(
+        raw = assistant_execution.execute_tool_call(
             client_id=bound_client_id,
             tool_id=str(call.get("tool_id") or ""),
             args=args,
@@ -128,7 +127,7 @@ def _function_manager_execute_one(
             "error": error_code,
             "error_class": error_class,
             "retryable": retryable,
-            "tool_validation": {"dados_suficientes": False, "motivo": error_code},
+            "evidence": assistant_evidence.unavailable_evidence(error_code, retryable=True) if retryable else assistant_evidence.failed_evidence(error_code),
         }
     value.setdefault("tool_id", str(call.get("tool_id") or ""))
     value["manager_call_index"] = index
@@ -189,7 +188,7 @@ def _function_manager_execute_tools(
                     "error": "dependency_failed",
                     "error_class": "dependency",
                     "retryable": False,
-                    "tool_validation": {"dados_suficientes": False, "motivo": "dependency_failed"},
+                    "evidence": assistant_evidence.failed_evidence("dependency_failed"),
                     "manager_call_index": call_index,
                     "manager_required": call.get("required") is not False,
                     "manager_store": store,
@@ -277,7 +276,7 @@ def _record_function_manager_diagnostic(
             {
                 "tool_id": str(item.get("tool_id") or "")[:100],
                 "required": item.get("required") is True,
-                "dados_suficientes": item.get("dados_suficientes") is True,
+                "evidence_status": str(item.get("status") or "")[:40], "claim_scope": str(item.get("claim_scope") or "")[:40],
             }
             for item in list(evidence.get("validations") or [])[:12]
             if isinstance(item, dict)
@@ -689,7 +688,7 @@ def _function_manager_finish_job(
         direct_evidence = (
             compact_direct_evidence
             if isinstance(compact_direct_evidence, dict)
-            else {"status": "completed", "summary": "Nenhuma coleta automatica foi executada."}
+            else {"status": "complete", "summary": "Nenhuma coleta automatica foi executada."}
         )
         pending.update({
             "manager_evidence": direct_evidence,
@@ -705,14 +704,14 @@ def _function_manager_finish_job(
     required_retryable = any(
         isinstance(item, dict)
         and item.get("required") is True
-        and item.get("dados_suficientes") is not True
+        and str(item.get("status") or "") not in {"complete", "confirmed_zero"}
         and item.get("retryable") is True
         for item in list(evidence.get("validations") or [])
     )
     required_incomplete = any(
         isinstance(item, dict)
         and item.get("required") is True
-        and item.get("dados_suficientes") is not True
+        and str(item.get("status") or "") not in {"complete", "confirmed_zero"}
         for item in list(evidence.get("validations") or [])
     )
     if (
@@ -730,7 +729,8 @@ def _function_manager_finish_job(
         return
     terminal_non_retryable_evidence = bool(
         results and not required_retryable and any(
-            isinstance(item, dict) and item.get("dados_suficientes") is True
+            isinstance(item, dict)
+            and str(item.get("status") or "") in {"complete", "confirmed_zero", "partial"}
             for item in list(evidence.get("validations") or [])
         )
     )

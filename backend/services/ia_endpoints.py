@@ -40,6 +40,8 @@ from backend.schemas import (
 )
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services import codex_turn_context
+from backend.modules.perguntas_pos_venda.ai import api as perguntas_agent_api
+from backend.modules.perguntas_pos_venda.ai.validation import ML_PERGUNTAS_IA_V2_MODO
 from backend.services.ia_common import *
 from backend.services.ia_conversas import (
     _ia_conversas_atualizar_thread_codex,
@@ -96,11 +98,11 @@ async def ia_secrets_provisionar(
 
 
 def ia_agent_perguntas_query(payload: IAAgentQueryRequest, request: Request):
-    _ia_agent_endpoint_autorizar(request)
+    perguntas_agent_api.authorize_request(request)
     metodo = str(payload.classMethod or "query").strip() or "query"
     if metodo not in {"query", "run"}:
         raise HTTPException(status_code=400, detail="Metodo do agente nao suportado.")
-    agent_input = _ia_agent_input_dict(payload)
+    agent_input = perguntas_agent_api.parse_request_input(payload)
     client_id = str(
         agent_input.get("tenant_id")
         or agent_input.get("client_id")
@@ -113,17 +115,17 @@ def ia_agent_perguntas_query(payload: IAAgentQueryRequest, request: Request):
     if task and task not in {"mercado_livre_question_draft", "mercado_livre_question_draft_v2"}:
         raise HTTPException(status_code=400, detail="Tarefa do agente nao suportada neste endpoint.")
     try:
-        resposta, model_usado, diagnostico_ia = _perguntas_ia_v2_gerar_resposta(client_id, agent_input)
+        generated = perguntas_agent_api.generate_response(client_id, agent_input)
     except PerguntasIARespostaIndisponivel as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
         "output": {
             "success": True,
-            "resposta": resposta,
-            "answer": resposta,
-            "model": model_usado,
+            "resposta": generated.answer,
+            "answer": generated.answer,
+            "model": generated.model,
             "tool_results": [],
-            "diagnostico_ia": diagnostico_ia,
+            "diagnostico_ia": generated.diagnostics,
             "modo_ia": ML_PERGUNTAS_IA_V2_MODO,
             "read_only": True,
         }
@@ -486,7 +488,7 @@ def _ia_chat_selection_compact_result(tool_id: str, result: Any) -> dict[str, An
                 "records": len(rows),
                 "rows": rows[:6],
                 "generation": generation,
-                "coverage_complete": raw.get("coverage_complete") is not False,
+                "evidence": raw.get("evidence") if isinstance(raw.get("evidence"), dict) else {},
             }
         except Exception:
             return {
@@ -500,7 +502,7 @@ def _ia_chat_selection_compact_result(tool_id: str, result: Any) -> dict[str, An
     preferred_fields = (
         "tool_id", "success", "records", "source_label", "source", "loja", "store", "sku", "item_id",
         "summary", "totals", "rows", "items", "data", "por_loja", "sources_human", "sources",
-        "coverage_complete", "confidence", "empty_reason", "error_code", "error", "tool_validation",
+        "evidence", "empty_reason", "error_code", "error",
     )
     compact: dict[str, Any] = {}
     omitted = False
@@ -560,11 +562,12 @@ def _ia_chat_selection_permission_catalog(
     if not str(username or "").strip():
         return {}, [], False
     try:
-        from backend.services import admin_usuarios_common, codex_assistant
+        from backend.services import admin_usuarios_common
+        from backend.services.codex.assistant import catalog as assistant_catalog
 
         permissions = admin_usuarios_common._carregar_permissoes_usuario(username, client_id)
         catalog = []
-        for raw_item in codex_assistant._assistant_tools_public(permissions):
+        for raw_item in assistant_catalog.public_tools(permissions):
             if (
                 not isinstance(raw_item, dict)
                 or raw_item.get("read_only") is not True
@@ -611,7 +614,7 @@ def _ia_chat_execute_selected_calls(
     conversation_anchors: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[str]]:
     try:
-        from backend.services import codex_assistant
+        from backend.services.codex.assistant import execution as assistant_execution
     except Exception:
         return [], ["executor_read_only_indisponivel"]
     allowed_by_id = {
@@ -759,7 +762,7 @@ def _ia_chat_execute_selected_calls(
             continue
         seen.add(signature)
         try:
-            raw_result = codex_assistant.codex_assistant_execute_tool_call(
+            raw_result = assistant_execution.execute_tool_call(
                 client_id=str(client_id or "").strip(),
                 tool_id=tool_id,
                 args=arguments,
@@ -1523,9 +1526,9 @@ async def ia_rag_status(client_id: str = Depends(get_tenant_id)):
 
 
 def _ia_rag_require_full_admin(request: Request, authorization: Optional[str], client_id: str) -> dict:
-    from backend.services.codex_console import _codex_require_full_admin
+    from backend.services.codex.console.security import require_full_admin
 
-    sessao = _codex_require_full_admin(request, authorization)
+    sessao = require_full_admin(request, authorization)
     if str(sessao.get("client_id") or "").strip() != str(client_id or "").strip():
         raise HTTPException(status_code=403, detail="Sessao sem acesso ao tenant solicitado.")
     return sessao

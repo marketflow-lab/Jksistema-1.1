@@ -4,16 +4,15 @@ from unittest.mock import patch
 
 import pytest
 
+from backend.modules.perguntas_pos_venda.ai import execution as agent_execution
+from backend.modules.perguntas_pos_venda.ai import inputs as agent_inputs
+from backend.modules.perguntas_pos_venda.ai import queries as agent_queries
+from backend.modules.perguntas_pos_venda.ai import runtime as agent_runtime
+from backend.services import perguntas_pos_venda_agent as agent_facade
 from ml_questions_gemini.schemas import AIAnswer
 from ml_questions_gemini.config import GeminiQuestionsSettings
 from ml_questions_gemini.adapters import context_from_agent_input
 from ml_questions_gemini.orchestrator import QuestionAnswerOrchestrator
-
-
-def _agent_module():
-    from backend.services import perguntas_pos_venda_agent as agent
-
-    return agent
 
 
 def _classification(*, category: str, compatibility: dict, web: bool = False) -> dict:
@@ -34,7 +33,6 @@ def _classification(*, category: str, compatibility: dict, web: bool = False) ->
 
 
 def test_product_feature_keeps_ai_category_and_can_use_public_web() -> None:
-    agent = _agent_module()
     intent = _classification(
         category="product_feature",
         compatibility={
@@ -53,41 +51,39 @@ def test_product_feature_keeps_ai_category_and_can_use_public_web() -> None:
         "item": {"id": "MLB1", "title": "Suporte automotivo BMW"},
     }
 
-    assert agent._perguntas_ia_categoria_classificada(payload) == "product_feature"
-    with patch.object(agent, "_ia_web_busca_ativa", return_value=True, create=True):
-        assert agent._ia_agent_perguntas_precisa_web(payload) is True
-    assert agent._perguntas_ia_allowed_tools_classificadas(payload) == [
+    assert agent_inputs._perguntas_ia_categoria_classificada(payload) == "product_feature"
+    with patch.object(agent_queries, "_ia_web_busca_ativa", return_value=True):
+        assert agent_queries._ia_agent_perguntas_precisa_web(payload) is True
+    assert agent_inputs._perguntas_ia_allowed_tools_classificadas(payload) == [
         "get_product_data",
         "context_hub_search",
         "web_search",
         "web_search_product_identity",
         "web_search_question_context",
     ]
-    assert agent._perguntas_ia_v2_alvo_compatibilidade(payload) == ""
-    assert agent._perguntas_ia_v2_perfil_compatibilidade(payload) == {
+    assert agent_queries._perguntas_ia_v2_alvo_compatibilidade(payload) == ""
+    assert agent_queries._perguntas_ia_v2_perfil_compatibilidade(payload) == {
         "target_type": "",
         "compatibility_profile": "",
     }
 
 
 def test_price_does_not_use_public_web_even_if_ai_requests_it() -> None:
-    agent = _agent_module()
     payload = {
         "intent": _classification(category="price", compatibility={}, web=True),
         "question": {"id": "Q-PRECO", "text": "Qual o preco?"},
         "item": {"id": "MLB1", "title": "Produto"},
     }
 
-    with patch.object(agent, "_ia_web_busca_ativa", return_value=True, create=True):
-        assert agent._ia_agent_perguntas_precisa_web(payload) is False
-    assert agent._perguntas_ia_allowed_tools_classificadas(payload) == [
+    with patch.object(agent_queries, "_ia_web_busca_ativa", return_value=True):
+        assert agent_queries._ia_agent_perguntas_precisa_web(payload) is False
+    assert agent_inputs._perguntas_ia_allowed_tools_classificadas(payload) == [
         "get_product_data",
         "context_hub_search",
     ]
 
 
 def test_compatibility_uses_only_structured_target_profile_focus_and_missing_fields() -> None:
-    agent = _agent_module()
     intent = _classification(
         category="compatibility",
         compatibility={
@@ -106,18 +102,37 @@ def test_compatibility_uses_only_structured_target_profile_focus_and_missing_fie
         "item": {"id": "MLB2", "title": "Adaptador"},
     }
 
-    assert "web_search_question_context" in agent._perguntas_ia_allowed_tools_classificadas(payload)
-    assert agent._perguntas_ia_v2_alvo_compatibilidade(payload) == "BMW R1300GS"
-    assert agent._perguntas_ia_v2_foco_tecnico_pergunta(payload) == "interface base conector"
-    assert agent._perguntas_ia_v2_perfil_compatibilidade(payload) == {
+    assert "web_search_question_context" in agent_inputs._perguntas_ia_allowed_tools_classificadas(payload)
+    assert agent_queries._perguntas_ia_v2_alvo_compatibilidade(payload) == "BMW R1300GS"
+    assert agent_queries._perguntas_ia_v2_foco_tecnico_pergunta(payload) == "interface base conector"
+    assert agent_queries._perguntas_ia_v2_perfil_compatibilidade(payload) == {
         "target_type": "vehicle",
         "compatibility_profile": "vehicle_fitment",
     }
-    assert not hasattr(agent, "_perguntas_ia_v2_resposta_segura_compatibilidade")
+    assert not hasattr(agent_facade, "_perguntas_ia_v2_resposta_segura_compatibilidade")
+
+
+def test_response_policy_v4_answers_first_and_requests_only_when_necessary() -> None:
+    assert agent_runtime._PERGUNTAS_IA_RESPONSE_POLICY_VERSION == "jk_ppv_response_policy_v4"
+    policy = agent_runtime._PERGUNTAS_IA_RESPONSE_POLICY["perguntas_anuncio"]
+    assert "evidencias dos dois lados" in policy
+    assert "busca vazia" in policy
+    assert "mantenha a conclusao insuficiente" in policy
+    assert "responda primeiro com os fatos disponiveis" in policy
+    assert "Evite solicitar dados" in policy
+
+
+def test_codex_prompt_v8_changes_hash_without_changing_external_schema() -> None:
+    from backend.services import perguntas_pos_venda_codex as codex
+
+    assert codex.PROMPT_VERSION == "jk_ml_customer_reply_codex_v8"
+    assert codex.QUEUE_POLICY_VERSION == "jk_ppv_queue_v3"
+    assert codex.SCHEMA_VERSION == "5.0"
+    assert len(codex.PROMPT_HASH) == 64
 
 
 def test_missing_ai_category_is_blocked_before_orchestration() -> None:
-    agent = _agent_module()
+    agent = agent_execution
     class ClassificationUnavailable(Exception):
         pass
 
@@ -132,8 +147,8 @@ def test_missing_ai_category_is_blocked_before_orchestration() -> None:
             )
 
 
-def test_public_answer_with_four_sentences_is_valid_and_returned(monkeypatch) -> None:
-    agent = _agent_module()
+def test_public_answer_with_four_sentences_is_rejected_by_render_contract(monkeypatch) -> None:
+    agent = agent_execution
     answer = (
         "Primeira frase objetiva com os dados confirmados " + ("a" * 360) + ". "
         "Segunda frase com a medida informada " + ("b" * 360) + ". "
@@ -201,5 +216,5 @@ def test_public_answer_with_four_sentences_is_valid_and_returned(monkeypatch) ->
     assert response.startswith(answer)
     assert len(response) > 1400
     assert len(response) <= 2000
-    assert diagnostics[0]["result"]["validation_ok"] is True
-    assert "too_many_sentences" not in diagnostics[0]["result"]["validation_issues"]
+    assert diagnostics[0]["result"]["validation_ok"] is False
+    assert "too_many_sentences" in diagnostics[0]["result"]["validation_issues"]

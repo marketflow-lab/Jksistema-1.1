@@ -4,6 +4,13 @@ from backend.services import whatsapp_bridge
 from backend.services.whatsapp import retry_policy
 
 
+def _insufficient_evidence() -> dict:
+    return {"schema": "jk.codex.evidence.v1", "status": "insufficient", "claim_scope": "none",
+        "coverage_complete": False, "confidence": "low", "freshness": "live", "retryable": False,
+        "reason": "sem evidencia decisiva", "missing_fields": ["decisive_evidence"], "sources": [],
+        "attempted_fallbacks": [], "next_sources": []}
+
+
 @pytest.mark.parametrize(
     ("reason", "classification"),
     [
@@ -79,7 +86,7 @@ def test_unique_evidence_is_trimmed_deduplicated_and_limited() -> None:
             "waiting_retry",
         ),
         (
-            {"tool_results_summary": [{"tool_validation": {"dados_suficientes": False}}]},
+            {"tool_results_summary": [{"evidence": _insufficient_evidence()}]},
             {"status": "completed"},
             "waiting_retry",
         ),

@@ -1,5 +1,4 @@
 """Extracted WhatsApp bridge component: retry_coordinator."""
-
 from __future__ import annotations
 import base64
 import concurrent.futures
@@ -38,6 +37,7 @@ from backend.services.whatsapp import report_scheduling as whatsapp_report_sched
 from backend.services.whatsapp import retry_policy as whatsapp_retry_policy
 from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp import tool_results as whatsapp_tool_results
+from backend.services.codex.assistant import evidence as assistant_evidence
 from backend.services.whatsapp.contracts import (
     _QuestionResearchPending,
     WhatsappAdhocMessageRequest,
@@ -49,15 +49,8 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services.codex.console import tasks as console_tasks
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -219,7 +212,7 @@ def _pending_task_ids(pending: dict[str, Any]) -> list[str]:
 def _pending_codex_tasks(pending: dict[str, Any]) -> list[dict[str, Any]]:
     tasks: list[dict[str, Any]] = []
     for task_id in _pending_task_ids(pending):
-        task = codex_console._codex_load_task(task_id)
+        task = console_tasks.load(task_id)
         if isinstance(task, dict):
             tasks.append(task)
     return tasks
@@ -227,7 +220,7 @@ def _pending_codex_tasks(pending: dict[str, Any]) -> list[dict[str, Any]]:
 def _update_pending_codex_tasks(pending: dict[str, Any], **changes: Any) -> None:
     for task_id in _pending_task_ids(pending):
         try:
-            codex_console._codex_update_task(task_id, **changes)
+            console_tasks.update(task_id, **changes)
         except Exception:
             continue
 
@@ -256,8 +249,10 @@ def _local_web_fallback_context(query: str, client_id: str) -> dict[str, Any]:
                 "success": False,
                 "data": [],
                 "sources": [],
-                "dados_suficientes": False,
-                "coverage_complete": False,
+                "evidence": assistant_evidence.unavailable_evidence(
+                    "O circuito da pesquisa local esta temporariamente aberto.",
+                    retryable=True,
+                ),
                 "error_class": "circuit_open",
                 "retryable": True,
             }
@@ -279,10 +274,23 @@ def _local_web_fallback_context(query: str, client_id: str) -> dict[str, Any]:
             "success": True,
             "data": clean,
             "sources": [str(item.get("url") or "")[:600] for item in clean],
-            "dados_suficientes": True,
-            # Resultados de busca sao pistas para o agente de tarefa, nao
-            # prova conclusiva de cobertura integral.
-            "coverage_complete": False,
+            "evidence": {
+                "schema": assistant_evidence.EVIDENCE_SCHEMA,
+                "status": "partial",
+                "claim_scope": "observed_only",
+                "coverage_complete": False,
+                "confidence": "medium",
+                "freshness": "live",
+                "retryable": False,
+                "reason": "Resultados de busca sao pistas observadas, nao prova de cobertura integral.",
+                "missing_fields": ["decisive_primary_evidence"],
+                "sources": [
+                    {"id": str(item.get("url") or "")[:600], "label": "Pesquisa web", "role": "supporting"}
+                    for item in clean
+                ],
+                "attempted_fallbacks": [],
+                "next_sources": [],
+            },
             "error_class": "",
             "retryable": False,
         }
@@ -300,8 +308,10 @@ def _local_web_fallback_context(query: str, client_id: str) -> dict[str, Any]:
             "success": False,
             "data": [],
             "sources": [],
-            "dados_suficientes": False,
-            "coverage_complete": False,
+            "evidence": assistant_evidence.unavailable_evidence(
+                "A pesquisa local ficou temporariamente indisponivel.",
+                retryable=True,
+            ),
             "error_class": "transient_dependency",
             "retryable": True,
         }
@@ -448,7 +458,7 @@ def _dual_schedule_retry(
         if pending.get("auth_notice_sent") is not True:
             pending["auth_notice_pending"] = True
     if task_id:
-        codex_console._codex_update_task(
+        console_tasks.update(
             task_id,
             handoff_status="retry_scheduled",
             delivery_state="waiting_retry",
@@ -478,7 +488,7 @@ def _dual_migrate_pending_v7(pending: dict[str, Any]) -> bool:
             changed = True
         state = str(holder.get("state") or "")
         task_id = str(holder.get("task_id") or "")
-        task = codex_console._codex_load_task(task_id) if task_id else None
+        task = console_tasks.load(task_id) if task_id else None
         status = str((task or {}).get("status") or "")
         canceled_by_deadline = bool(
             status == "canceled"
@@ -559,7 +569,7 @@ def _recover_dual_pending_after_restart(state: dict[str, Any]) -> int:
                     else [pending]
                 )
                 deadline_canceled = any(
-                    str((codex_console._codex_load_task(str(holder.get("task_id") or "")) or {}).get("cancel_source") or "")
+                    str((console_tasks.load(str(holder.get("task_id") or "")) or {}).get("cancel_source") or "")
                     == "whatsapp_deadline"
                     for holder in holders
                     if str(holder.get("task_id") or "")
@@ -690,7 +700,7 @@ def _mark_retry_task_started(
         "delivery_state": "worker_retry_running",
         "last_retry_started_at": _now(),
     })
-    codex_console._codex_update_task(
+    console_tasks.update(
         task_id,
         retry_root_job_id=str(pending.get("job_group_id") or pending.get("message_id") or ""),
         retry_count=int(holder.get("retry_count") or 0),

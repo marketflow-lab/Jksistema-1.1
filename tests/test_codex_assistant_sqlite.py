@@ -6,9 +6,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from backend.services import codex_assistant
 from backend.services import codex_assistant_storage
 from backend.services import codex_console
+from backend.services.codex.assistant import api as assistant_api
+from backend.services.codex.assistant import reports_artifacts as assistant_reports
+from backend.services.codex.assistant import runtime as assistant_runtime
+from backend.services.codex.console import state as console_state
+from backend.services.codex.console import bindings as console_bindings
+from backend.services.codex.console import task_store as console_task_store
 
 
 def _db_count(path: Path, table: str) -> int:
@@ -39,15 +44,26 @@ class CodexAssistantSqliteTest(unittest.TestCase):
         self.reports_dir = self.tenant / "reports"
         self.cache_dir.mkdir(parents=True)
         self.reports_dir.mkdir(parents=True)
+        current_runtime = console_bindings.current()
         self.patches = [
-            patch.object(codex_assistant, "PASTA_INFO", str(self.info), create=True),
-            patch.object(codex_console, "PASTA_INFO", str(self.info), create=True),
+            patch.object(assistant_runtime, "_RUNTIME_INFO_BASE", str(self.info)),
+            patch.object(
+                console_bindings,
+                "_RUNTIME",
+                console_bindings.ConsoleRuntime(
+                    str(Path(self.tmp.name)),
+                    str(self.info),
+                    current_runtime.session_loader,
+                    current_runtime.permissions_loader,
+                    current_runtime.source_module,
+                ),
+            ),
         ]
         for item in self.patches:
             item.start()
             self.addCleanup(item.stop)
-        codex_console.CODEX_TASKS.clear()
-        self.addCleanup(codex_console.CODEX_TASKS.clear)
+        console_state.CODEX_TASKS.clear()
+        self.addCleanup(console_state.CODEX_TASKS.clear)
 
     def _write_json(self, path: Path, payload: dict) -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -104,8 +120,8 @@ class CodexAssistantSqliteTest(unittest.TestCase):
             },
         )
 
-        state = codex_assistant._assistant_scheduler_state(self.client_id)
-        codex_assistant._assistant_save_scheduler_state(self.client_id, {**state, "last_proactive_at": "agora"})
+        state = assistant_api._assistant_scheduler_state(self.client_id)
+        assistant_api._assistant_save_scheduler_state(self.client_id, {**state, "last_proactive_at": "agora"})
 
         self.assertEqual(scheduler_path.stat().st_mtime_ns, scheduler_mtime)
         self.assertEqual(state["last_daily_report"]["report_id"], "daily-1")
@@ -145,12 +161,12 @@ class CodexAssistantSqliteTest(unittest.TestCase):
         def fake_pdf(path, title, suggestions, sources, analysis=None, context=None):
             Path(path).write_text("pdf", encoding="utf-8")
 
-        with patch.object(codex_assistant, "_assistant_write_xlsx", fake_xlsx), patch.object(
-            codex_assistant,
+        with patch.object(assistant_reports, "_assistant_write_xlsx", fake_xlsx), patch.object(
+            assistant_reports,
             "_assistant_write_pdf",
             fake_pdf,
         ):
-            created = codex_assistant._assistant_create_report(
+            created = assistant_reports._assistant_create_report(
                 self.client_id,
                 "Relatorio novo",
                 {"sources": [], "suggestions": [], "tool_results": [], "management_analysis": {}},
@@ -192,12 +208,12 @@ class CodexAssistantSqliteTest(unittest.TestCase):
             },
         )
 
-        codex_console._codex_backfill_assistant_report_tasks(self.client_id, username="caio", limit=10)
+        console_task_store._codex_backfill_assistant_report_tasks(self.client_id, username="caio", limit=10)
 
         self.assertTrue((self.info / "codex_console" / "db-report.json").exists())
         self.assertTrue((self.info / "codex_console" / "legacy-backfill.json").exists())
-        self.assertIn("db-report", codex_console.CODEX_TASKS)
-        self.assertIn("legacy-backfill", codex_console.CODEX_TASKS)
+        self.assertIn("db-report", console_state.CODEX_TASKS)
+        self.assertIn("legacy-backfill", console_state.CODEX_TASKS)
 
 
 if __name__ == "__main__":

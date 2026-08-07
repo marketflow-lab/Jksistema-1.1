@@ -5,19 +5,19 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const vm = require('vm');
+const { searchRankingSource } = require('./helpers/favoritos_search_ranking_sources');
 
 const root = path.resolve(__dirname, '..');
 const localPathsFile = path.join(root, 'electron_app', 'main', 'modules', 'local-app-paths.js');
 const backendFile = path.join(root, 'electron_app', 'main', 'modules', 'backend.js');
 const ipcFile = path.join(root, 'electron_app', 'main', 'modules', 'ipc.js');
 const syncFile = path.join(root, 'scripts', 'sync-favoritos-runtime.js');
-const favoritosLoginFlowFile = path.join(root, 'static', 'favoritos', 'tabelas-layout', '04-promocoes-busca-ranking.js');
 
 const localPaths = fs.readFileSync(localPathsFile, 'utf8');
 const backend = fs.readFileSync(backendFile, 'utf8');
 const ipc = fs.readFileSync(ipcFile, 'utf8');
 const sync = fs.readFileSync(syncFile, 'utf8');
-const favoritosLoginFlow = fs.readFileSync(favoritosLoginFlowFile, 'utf8');
+const favoritosLoginFlow = searchRankingSource(root, { includeRuntime: false, includePublicApi: false });
 
 function extractFunction(source, name, context = {}) {
     const marker = `function ${name}`;
@@ -163,7 +163,7 @@ assert.match(localPaths, /previousSnapshot[\s\S]*\.then\(\(\) => saveAvantProExt
 assert.match(localPaths, /liveAuthConfirmed[\s\S]*!liveAuthConfirmed && avantProStorageAuthLooksUsable\(existingSnapshotAuth\)[\s\S]*existing-good-kept-without-live-auth-confirmation/, 'snapshot nao confirmado nao pode sobrescrever a ultima sessao AvantPro preservada');
 assert.match(favoritosLoginFlow, /getAvantProStorageStatus[\s\S]*storageUsable[\s\S]*validarLoginAvantProAntesDeContinuarFavoritos[\s\S]*liveAuthConfirmed:\s*estado[\s\S]*:\s*true/, 'validacao manual deve aceitar sessao AvantPro persistida e manter confirmacao DOM por padrao');
 assert.match(favoritosLoginFlow, /estado\.indeterminado && storageUsable[\s\S]*persisted-session-reused/, 'fallback persistido nao deve sobrescrever snapshot sem nova confirmacao DOM');
-assert.match(favoritosLoginFlow, /registrarConfirmacaoUsuarioLoginAvantProBestEffortFavoritos[\s\S]*liveAuthConfirmed:\s*false[\s\S]*\.then\([\s\S]*\.catch\([\s\S]*sim\.addEventListener\('click', async[\s\S]*prompt_usuario_confirmou/, 'confirmacao Sim deve disparar snapshot best-effort sem alegar validacao DOM nem aguardar IPC');
+assert.match(favoritosLoginFlow, /registrarConfirmacaoUsuarioLoginAvantProBestEffortFavoritos[\s\S]*liveAuthConfirmed:\s*false[\s\S]*\.then\([\s\S]*\.catch\([\s\S]*function renderizarPerguntaLoginAvantFavoritos[\s\S]*criarBotaoLoginFavoritos\('Sim, continuar'[\s\S]*prompt_usuario_confirmou/, 'confirmacao Sim deve disparar snapshot best-effort sem alegar validacao DOM nem aguardar IPC');
 assert.match(favoritosLoginFlow, /localStorage\.setItem[\s\S]*saveAvantProStorageSnapshot\('favoritos_usuario_confirmou_login_avant'[\s\S]*\.catch\(\(\) => null\);[\s\S]*if \(!resultadoSnapshot/, 'memoria local deve ser gravada antes do snapshot IPC e sobreviver a falha secundaria');
 assert.match(localPaths, /previousDir[\s\S]*fs\.renameSync\(snapshotDir, previousDir\)[\s\S]*fs\.renameSync\(tempDir, snapshotDir\)[\s\S]*fs\.renameSync\(previousDir, snapshotDir\)/, 'troca do snapshot deve preservar e restaurar a versao anterior');
 assert.match(localPaths, /function rollbackAvantProStorageRestore[\s\S]*fs\.renameSync\(backupDir, targetDir\)/, 'restore AvantPro deve recolocar storage anterior em caso de falha');

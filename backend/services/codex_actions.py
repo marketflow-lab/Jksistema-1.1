@@ -1844,7 +1844,7 @@ def _execute_estoque_lancamentos_lote(run_id: str, proposal: dict[str, Any]) -> 
 
 def _execute_ml_pergunta_responder(run_id: str, proposal: dict[str, Any]) -> dict[str, Any]:
     from backend.schemas.perguntas_pos_venda import PerguntasEnviarRespostaRequest
-    from backend.services import perguntas_pos_venda_endpoints
+    from backend.modules.perguntas_pos_venda.endpoints import api as perguntas_pos_venda_endpoints
 
     client_id = str(proposal.get("client_id") or "default")
     params = proposal.get("params") or {}
@@ -1863,7 +1863,7 @@ def _execute_ml_pergunta_responder(run_id: str, proposal: dict[str, Any]) -> dic
 
 def _execute_ml_aprovacao_aprovar(run_id: str, proposal: dict[str, Any]) -> dict[str, Any]:
     from backend.schemas.perguntas_pos_venda import PerguntasAprovacaoRequest
-    from backend.services import perguntas_pos_venda_endpoints
+    from backend.modules.perguntas_pos_venda.endpoints import api as perguntas_pos_venda_endpoints
 
     client_id = str(proposal.get("client_id") or "default")
     params = proposal.get("params") or {}
@@ -1878,7 +1878,8 @@ def _execute_ml_aprovacao_aprovar(run_id: str, proposal: dict[str, Any]) -> dict
 
 
 def _execute_internal_report_queue(run_id: str, proposal: dict[str, Any]) -> dict[str, Any]:
-    from backend.services import codex_assistant, codex_assistant_storage, codex_reports_advanced
+    from backend.services import codex_assistant_storage, codex_reports_advanced
+    from backend.services.codex.assistant import runtime as assistant_runtime
 
     params = proposal.get("params") if isinstance(proposal.get("params"), dict) else {}
     report_action = dict(params.get("report_action") or {}) if isinstance(params.get("report_action"), dict) else {}
@@ -1895,7 +1896,7 @@ def _execute_internal_report_queue(run_id: str, proposal: dict[str, Any]) -> dic
         raise RuntimeError("O tipo da recomendacao nao corresponde a acao aprovada.")
     client_id = str(proposal.get("client_id") or "default")
     username = str(proposal.get("created_by") or proposal.get("username") or "")
-    report = codex_assistant_storage.codex_assistant_report_get(codex_assistant._assistant_info_base(), client_id, report_id)
+    report = codex_assistant_storage.codex_assistant_report_get(assistant_runtime.info_base(), client_id, report_id)
     if not isinstance(report, dict):
         raise RuntimeError("Relatorio de origem nao encontrado.")
     valid_action = next(
@@ -1911,7 +1912,7 @@ def _execute_internal_report_queue(run_id: str, proposal: dict[str, Any]) -> dic
         raise RuntimeError("A recomendacao nao possui confianca suficiente para entrar na fila.")
     queue_payload = {**valid_action, "report_id": report_id, "status": "queued", "approved_by": username}
     queue_item = codex_reports_advanced.create_queue_action(
-        info_base=codex_assistant._assistant_info_base(),
+        info_base=assistant_runtime.info_base(),
         client_id=client_id,
         username=username,
         payload=queue_payload,
@@ -1919,13 +1920,13 @@ def _execute_internal_report_queue(run_id: str, proposal: dict[str, Any]) -> dic
     result: dict[str, Any] = {"queue_action": queue_item, "external_mutation": False}
     if expected_type == "replenishment":
         linked = codex_reports_advanced.create_replenishment_list(
-            info_base=codex_assistant._assistant_info_base(),
+            info_base=assistant_runtime.info_base(),
             client_id=client_id,
             action=queue_payload,
             username=username,
         )
         queue_item = codex_reports_advanced.update_queue_action(
-            info_base=codex_assistant._assistant_info_base(),
+            info_base=assistant_runtime.info_base(),
             client_id=client_id,
             action_id=str(queue_item.get("action_id") or ""),
             username=username,
@@ -1992,7 +1993,7 @@ def _sync_task_from_action(proposal: dict[str, Any], run: dict[str, Any]) -> Non
     if not task_id:
         return
     try:
-        from backend.services import codex_console
+        from backend.services.codex.console import tasks as console_tasks
 
         status = str(run.get("status") or "")
         verification = run.get("verification") if isinstance(run.get("verification"), dict) else {}
@@ -2004,7 +2005,7 @@ def _sync_task_from_action(proposal: dict[str, Any], run: dict[str, Any]) -> Non
             response = f"{label}: execucao concluida, mas a verificacao retornou evidencias parciais."
         else:
             response = f"{label}: a execucao falhou. {str(run.get('error') or '').strip()}".strip()
-        codex_console._codex_update_task(
+        console_tasks.update(
             task_id,
             status=status if status in {"completed", "partial", "failed", "canceled"} else "running",
             completed_at=str(run.get("completed_at") or ""),

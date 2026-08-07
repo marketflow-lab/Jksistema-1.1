@@ -1,0 +1,199 @@
+        .favoritos-sheets-panel {
+            display: grid;
+            gap: 16px;
+        }
+        .favoritos-sheets-head {
+            align-items: flex-start;
+            display: flex;
+            gap: 12px;
+            justify-content: space-between;
+        }
+        .favoritos-sheets-head .section-title {
+            margin: 0;
+        }
+        .favoritos-sheets-current {
+            background: #f8fbff;
+            border: 1px solid #d9e6fb;
+            border-radius: 8px;
+            display: grid;
+            gap: 10px;
+            padding: 14px;
+        }
+        .favoritos-sheets-current-title,
+        .favoritos-sheets-row-name {
+            color: #111827;
+            font-weight: 800;
+        }
+        .favoritos-sheets-current-meta,
+        .favoritos-sheets-row-meta {
+            color: #64748b;
+            font-size: 12px;
+        }
+        .favoritos-sheets-input-row {
+            align-items: center;
+            display: grid;
+            gap: 8px;
+            grid-template-columns: minmax(220px, 1fr) auto auto;
+        }
+        .favoritos-sheets-input-row input {
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            font-size: 13px;
+            min-width: 0;
+            padding: 10px 12px;
+            width: 100%;
+        }
+        .favoritos-sheets-input-row input:focus {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
+            outline: none;
+        }
+        .favoritos-sheets-list {
+            display: grid;
+            gap: 10px;
+        }
+        .favoritos-sheets-row {
+            align-items: center;
+            background: #fff;
+            border: 1px solid #d9e6fb;
+            border-radius: 8px;
+            display: grid;
+            gap: 10px;
+            grid-template-columns: minmax(160px, 240px) minmax(220px, 1fr) auto auto;
+            padding: 12px 14px;
+        }
+        .favoritos-sheets-open {
+            align-items: center;
+            background: #eef6ff;
+            border: 1px solid #bfdbfe;
+            border-radius: 8px;
+            color: #1d4ed8;
+            display: inline-flex;
+            font-size: 12px;
+            font-weight: 800;
+            justify-content: center;
+            min-height: 34px;
+            padding: 8px 12px;
+            text-decoration: none;
+            white-space: nowrap;
+        }
+        .favoritos-sheets-open:hover {
+            background: #dbeafe;
+        }
+        .favoritos-sheets-open.is-disabled {
+            cursor: default;
+            opacity: 0.45;
+            pointer-events: none;
+        }
+        .ml-ignored-sku-group {
+            border: 1px solid #d9e6fb;
+            border-radius: 8px;
+            background: #fff;
+            overflow: hidden;
+        }
+        .ml-ignored-sku-head {
+            align-items: center;
+            background: #f8fbff;
+            border: 0;
+            border-bottom: 1px solid #e5edf9;
+            color: inherit;
+            cursor: pointer;
+            display: flex;
+            font: inherit;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 10px 12px;
+            text-align: left;
+            width: 100%;
+        }
+        .ml-ignored-sku-head:hover {
+            background: #eef6ff;
+        }
+        .ml-ignored-sku-head:focus-visible {
+            outline: 2px solid #3b82f6;
+            outline-offset: -2px;
+        }
+        .ml-ignored-sku-group:not(.is-expanded) .ml-ignored-sku-head {
+            border-bottom: 0;
+        }
+        .ml-ignored-sku-title {
+            color: #111827;
+            font-weight: 800;
+        }
+        .ml-ignored-sku-head-side {
+            align-items: center;
+            display: flex;
+            flex: 0 0 auto;
+            gap: 10px;
+            justify-content: flex-end;
+        }
+        .ml-ignored-sku-head-side .ml-ignored-page-meta {
+            margin-top: 0;
+            text-align: right;
+        }
+        .ml-ignored-sku-toggle {
+            align-items: center;
+            border: 1px solid #bfdbfe;
+            border-radius: 999px;
+            color: #2563eb;
+            display: inline-flex;
+            flex: 0 0 auto;
+            font-size: 18px;
+            font-weight: 800;
+            height: 28px;
+            justify-content: center;
+            line-height: 1;
+            width: 28px;
+        }
+        .ml-ignored-sku-group.is-expanded .ml-ignored-sku-toggle {
+            background: #dbeafe;
+        }
+        .ml-ignored-ad-list {
+            display: grid;
+            gap: 0;
+        }
+        .ml-ignored-ad-item {
+            align-items: center;
+            border-top: 1px solid #edf2fb;
+            display: grid;
+            grid-template-columns: 56px minmax(220px, 1fr) auto;
+            gap: 12px;
+            padding: 10px 12px;
+        }
+        .ml-ignored-ad-item:first-child {
+            border-top: 0;
+        }
+        .ml-ignored-ad-thumb {
+            align-items: center;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            color: inherit;
+            display: flex;
+            height: 48px;
+            justify-content: center;
+            overflow: hidden;
+            padding: 0;
+            width: 48px;
+        }
+        .ml-ignored-ad-thumb-button {
+            cursor: pointer;
+        }
+        .ml-ignored-ad-thumb-button:hover {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
+        }
+        .ml-ignored-ad-thumb img {
+            height: 100%;
+            object-fit: contain;
+            width: 100%;
+        }
+        .ml-ignored-ad-title {
+            color: #111827;
+            font-weight: 700;
+        }
+        .ml-ignored-ad-meta {
+            color: #64748b;
+            font-size: 12px;
+            margin-top: 3px;
+        }

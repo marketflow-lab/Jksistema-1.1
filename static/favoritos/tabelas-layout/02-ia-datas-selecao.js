@@ -229,8 +229,8 @@
             ));
             const avantStatusSemDados = (status) => {
                 if (!status || avantStatusTemDados(status) || avantStatusPrecisaAcao(status)) return false;
-                if (typeof statusAvantProSemDadosColetaveis === 'function') {
-                    return statusAvantProSemDadosColetaveis(status);
+                if (typeof window.FavoritosV2.searchRanking.publicApi.status.statusAvantProSemDadosColetaveis === 'function') {
+                    return window.FavoritosV2.searchRanking.publicApi.status.statusAvantProSemDadosColetaveis(status);
                 }
                 return !!(status.shellOnly || status.extensionDetected || status.widgets > 0 || status.actionButtons > 0 || status.toolsButtons > 0);
             };
@@ -238,8 +238,8 @@
                 const itemId = anuncio && (anuncio.id || extrairItemIdAnuncio(anuncio.url));
                 const alvo = itemId || (anuncio && anuncio.titulo) || (anuncio && anuncio.url) || 'anuncio';
                 const mensagem = `Mercado Livre/Avant Pro nao retornou vendedor, data e vendas para "${alvo}". ${detalhe || 'Conecte o Avant Pro no navegador interno e tente novamente.'}`;
-                if (typeof erroColetaMercadoLivreFavoritos === 'function') {
-                    return erroColetaMercadoLivreFavoritos(mensagem);
+                if (typeof window.FavoritosV2.searchRanking.publicApi.status.erroColetaMercadoLivreFavoritos === 'function') {
+                    return window.FavoritosV2.searchRanking.publicApi.status.erroColetaMercadoLivreFavoritos(mensagem);
                 }
                 const erro = new Error(mensagem);
                 erro.coletaMercadoLivreFalhou = true;
@@ -249,7 +249,7 @@
                 const atualizado = { vendedor: false, data: false, vendas: false };
                 if (!anuncio || !resultado) return atualizado;
                 const fonteVendedorResultado = resultado.vendedorFonte || resultado.vendedor_fonte || fontePadrao;
-                if (deveAtualizarVendedor(anuncio.vendedor, anuncio.vendedorFonte, resultado.vendedor, fonteVendedorResultado)) {
+                if (window.FavoritosV2.promotionEffectuation.publicApi.merge.deveAtualizarVendedor(anuncio.vendedor, anuncio.vendedorFonte, resultado.vendedor, fonteVendedorResultado)) {
                     anuncio.vendedor = resultado.vendedor;
                     anuncio.vendedorFonte = fonteVendedorResultado;
                     atualizarCelulaVendedor(anuncio, resultado.vendedor);
@@ -262,7 +262,7 @@
                 }
                 const vendasResultado = parseNumeroVendas(resultado.vendas);
                 const fonteVendasResultado = resultado.vendasFonte || resultado.vendas_fonte || '';
-                if (deveAtualizarVendas(anuncio.vendas, anuncio.vendasFonte, vendasResultado, fonteVendasResultado)) {
+                if (window.FavoritosV2.promotionEffectuation.publicApi.merge.deveAtualizarVendas(anuncio.vendas, anuncio.vendasFonte, vendasResultado, fonteVendasResultado)) {
                     anuncio.vendas = vendasResultado;
                     anuncio.vendasFonte = fonteVendasResultado;
                     atualizarCelulaVendas(anuncio, vendasResultado);
@@ -286,7 +286,7 @@
                     setTimeout(() => forcarNavegadorMlShellVisivel(), 500);
                 }
                 const itemId = anuncio.id || extrairItemIdAnuncio(anuncio.url);
-                mostrarBalaoFavoritosStatus(`Abrindo anuncio ${itemId || ''} para ler data, vendedor e vendas no Avant Pro...`, {
+                window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus(`Abrindo anuncio ${itemId || ''} para ler data, vendedor e vendas no Avant Pro...`, {
                     manterNavegadorVisivel: true
                 });
                 await carregarUrlNoWebview(mlWebviewEl, anuncio.url);
@@ -311,7 +311,7 @@
                     : null;
                 if (avantStatusPrecisaAcao(statusAvant) || avantStatusSemDados(statusAvant)) {
                     if (avantStatusSemDados(statusAvant) && typeof aguardarAvantProNoWebview === 'function') {
-                        mostrarBalaoFavoritosStatus(`Aguardando Avant Pro liberar dados do anuncio ${itemId || ''}...`, {
+                        window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus(`Aguardando Avant Pro liberar dados do anuncio ${itemId || ''}...`, {
                             manterNavegadorVisivel: true,
                             larga: true,
                             titulo: 'Aguardando Avant Pro'
@@ -327,7 +327,7 @@
                     }
                 }
                 if (avantStatusPrecisaAcao(statusAvant)) {
-                    await aguardarConexaoAvantProFavoritos(statusAvant, {
+                    await window.FavoritosV2.searchRanking.publicApi.auth.aguardarConexaoAvantProFavoritos(statusAvant, {
                         termo: anuncio.titulo || itemId || anuncio.url
                     });
                     if (typeof montarScriptAcionarControlesAvantPro === 'function') {
@@ -372,7 +372,7 @@
                                 anuncio.titulo = apiInfo.titulo;
                                 atualizarCelulaTitulo(anuncio, apiInfo.titulo);
                             }
-                            if (apiInfo.vendedor && deveAtualizarVendedor(anuncio.vendedor, anuncio.vendedorFonte, apiInfo.vendedor, fonteApi)) {
+                            if (apiInfo.vendedor && window.FavoritosV2.promotionEffectuation.publicApi.merge.deveAtualizarVendedor(anuncio.vendedor, anuncio.vendedorFonte, apiInfo.vendedor, fonteApi)) {
                                 anuncio.vendedor = apiInfo.vendedor;
                                 anuncio.vendedorFonte = fonteApi;
                                 atualizarCelulaVendedor(anuncio, apiInfo.vendedor);
@@ -384,7 +384,7 @@
                                 contagem.datas += 1;
                             }
                             const vendasApi = parseNumeroVendas(apiInfo.vendas);
-                            if (deveAtualizarVendas(anuncio.vendas, anuncio.vendasFonte, vendasApi, fonteApi)) {
+                            if (window.FavoritosV2.promotionEffectuation.publicApi.merge.deveAtualizarVendas(anuncio.vendas, anuncio.vendasFonte, vendasApi, fonteApi)) {
                                 anuncio.vendas = vendasApi;
                                 anuncio.vendasFonte = fonteApi;
                                 atualizarCelulaVendas(anuncio, vendasApi);
@@ -405,7 +405,7 @@
                     for (const anuncio of restantesApi) {
                         if (!precisaRever(anuncio)) continue;
                         try {
-                            verificarCancelamentoFavoritos();
+                            window.FavoritosV2.searchRanking.publicApi.control.verificarCancelamentoFavoritos();
                             const resultadoVisivel = await extrairNoNavegadorPrincipal(anuncio);
                             somarAtualizacao(aplicarResultadoRico(anuncio, resultadoVisivel));
                             if (precisaRever(anuncio)) {
@@ -443,7 +443,7 @@
                             const itemId = anuncio.id || extrairItemIdAnuncio(anuncio.url);
                             if (itemId) {
                                 const browserInfo = await window.electronAPI.getMlBrowserItemInfo(itemId, anuncio.url);
-                                if (browserInfo && browserInfo.vendedor && deveAtualizarVendedor(anuncio.vendedor, anuncio.vendedorFonte, browserInfo.vendedor, 'browser_item')) {
+                                if (browserInfo && browserInfo.vendedor && window.FavoritosV2.promotionEffectuation.publicApi.merge.deveAtualizarVendedor(anuncio.vendedor, anuncio.vendedorFonte, browserInfo.vendedor, 'browser_item')) {
                                     anuncio.vendedor = browserInfo.vendedor;
                                     anuncio.vendedorFonte = 'browser_item';
                                     atualizarCelulaVendedor(anuncio, browserInfo.vendedor);
@@ -456,7 +456,7 @@
                                 }
                                 const vendasBrowser = parseNumeroVendas(browserInfo && browserInfo.vendas);
                                 const fonteVendasBrowser = browserInfo && (browserInfo.vendasFonte || browserInfo.vendas_fonte || browserInfo.source || 'browser_item');
-                                if (deveAtualizarVendas(anuncio.vendas, anuncio.vendasFonte, vendasBrowser, fonteVendasBrowser)) {
+                                if (window.FavoritosV2.promotionEffectuation.publicApi.merge.deveAtualizarVendas(anuncio.vendas, anuncio.vendasFonte, vendasBrowser, fonteVendasBrowser)) {
                                     anuncio.vendasFonte = fonteVendasBrowser;
                                     anuncio.vendas = vendasBrowser;
                                     atualizarCelulaVendas(anuncio, vendasBrowser);

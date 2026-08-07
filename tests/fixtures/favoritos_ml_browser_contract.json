@@ -1,0 +1,722 @@
+{
+  "schema": "jk.favoritos.ml-browser-contract.v1",
+  "source_sha256": "beb06127662af245bd5ae53b2ca6c6b80e13251e90ac2cbe979ed4476784f678",
+  "globals": [
+    {
+      "name": "monitoramentoPaginaFavoritosAutomaticoAtivo",
+      "arity": 0
+    },
+    {
+      "name": "acaoUsuarioFavoritosPermiteLeituraPagina",
+      "arity": 0
+    },
+    {
+      "name": "statusMonitoramentoPaginaFavoritosDesativado",
+      "arity": 0
+    },
+    {
+      "name": "cancelarAberturaMercadoLivreAoEntrar",
+      "arity": 0
+    },
+    {
+      "name": "agendarAberturaMercadoLivreAoEntrar",
+      "arity": 0
+    },
+    {
+      "name": "favoritosBrowserUrlUtils",
+      "arity": 0
+    },
+    {
+      "name": "normalizarUrl",
+      "arity": 1
+    },
+    {
+      "name": "normalizarUrlMercadoLivreParaComparacao",
+      "arity": 1
+    },
+    {
+      "name": "normalizarMlbFavoritosCanonico",
+      "arity": 1
+    },
+    {
+      "name": "construirUrlProdutoMercadoLivreCanonico",
+      "arity": 1
+    },
+    {
+      "name": "limparLinkProdutoMercadoLivreFavoritos",
+      "arity": 1
+    },
+    {
+      "name": "chaveCanonicaAnuncioFavoritos",
+      "arity": 1
+    },
+    {
+      "name": "tituloFracoFavoritosCanonico",
+      "arity": 1
+    },
+    {
+      "name": "tituloValidoFavoritosCanonico",
+      "arity": 1
+    },
+    {
+      "name": "imagemValidaFavoritosCanonico",
+      "arity": 1
+    },
+    {
+      "name": "precoValidoFavoritosCanonico",
+      "arity": 1
+    },
+    {
+      "name": "anuncioTemDadosAvantFavoritosCanonico",
+      "arity": 1
+    },
+    {
+      "name": "similaridadeTitulosFavoritosCanonico",
+      "arity": 2
+    },
+    {
+      "name": "classificarQualidadeAnuncioFavoritosCanonico",
+      "arity": 1
+    },
+    {
+      "name": "prepararAnuncioMercadoLivreCanonico",
+      "arity": 1
+    },
+    {
+      "name": "urlsMercadoLivreEquivalentes",
+      "arity": 2
+    },
+    {
+      "name": "construirUrlPesquisaMercadoLivre",
+      "arity": 1
+    },
+    {
+      "name": "montarScriptGarantirPesquisaMercadoLivreSubmetida",
+      "arity": 2
+    },
+    {
+      "name": "garantirPesquisaMercadoLivreSubmetida",
+      "arity": 2
+    },
+    {
+      "name": "montarScriptDiagnosticarPesquisaMercadoLivreAtual",
+      "arity": 2
+    },
+    {
+      "name": "aguardarPesquisaMercadoLivreAtual",
+      "arity": 1
+    },
+    {
+      "name": "obterElectronApiFavoritosMlBrowser",
+      "arity": 0
+    },
+    {
+      "name": "salvarMemoriaAvantProConfirmadaFavoritos",
+      "arity": 0
+    },
+    {
+      "name": "favoritosBrowserAvantCache",
+      "arity": 0
+    },
+    {
+      "name": "normalizarChaveCacheAvant",
+      "arity": 1
+    },
+    {
+      "name": "obterLojaContextoAvant",
+      "arity": 0
+    },
+    {
+      "name": "obterSkuContextoAvant",
+      "arity": 0
+    },
+    {
+      "name": "normalizarUrlCacheAvant",
+      "arity": 1
+    },
+    {
+      "name": "chaveCacheAvantAnuncio",
+      "arity": 1
+    },
+    {
+      "name": "carregarCacheAvantFavoritos",
+      "arity": 0
+    },
+    {
+      "name": "salvarCacheAvantFavoritos",
+      "arity": 1
+    },
+    {
+      "name": "cacheAvantAindaValido",
+      "arity": 1
+    },
+    {
+      "name": "dadosAvantCacheaveis",
+      "arity": 1
+    },
+    {
+      "name": "aplicarCacheAvantAosAnuncios",
+      "arity": 1
+    },
+    {
+      "name": "salvarCacheAvantDosAnuncios",
+      "arity": 1
+    },
+    {
+      "name": "obterCamposPesquisaAvulsaMl",
+      "arity": 0
+    },
+    {
+      "name": "normalizarTermosPesquisaFavoritos",
+      "arity": 1
+    },
+    {
+      "name": "obterTermosPesquisaAvulsaMl",
+      "arity": 0
+    },
+    {
+      "name": "formatarTermosPesquisaFavoritos",
+      "arity": 1
+    },
+    {
+      "name": "preencherCamposPesquisaAvulsaMl",
+      "arity": 1
+    },
+    {
+      "name": "obterPrimeiroTermoPesquisaAvulsaMl",
+      "arity": 0
+    },
+    {
+      "name": "formatarDataCriacao",
+      "arity": 1
+    },
+    {
+      "name": "parseDataCriacao",
+      "arity": 1
+    },
+    {
+      "name": "formatarNumeroDecimal",
+      "arity": 1
+    },
+    {
+      "name": "parseNumeroDecimalFavoritos",
+      "arity": 1
+    },
+    {
+      "name": "calcularMetricasMediaVendas",
+      "arity": 1
+    },
+    {
+      "name": "formatarMediaVendas",
+      "arity": 1
+    },
+    {
+      "name": "calcularDiasAnuncio",
+      "arity": 1
+    },
+    {
+      "name": "formatarDiasAnuncio",
+      "arity": 1
+    },
+    {
+      "name": "formatarMesesMedia",
+      "arity": 1
+    },
+    {
+      "name": "mostrarHintAbertura",
+      "arity": 0
+    },
+    {
+      "name": "rankingSidebarEstaMinimizado",
+      "arity": 0
+    },
+    {
+      "name": "aplicarEstadoRankingSidebar",
+      "arity": 1
+    },
+    {
+      "name": "alternarRankingSidebar",
+      "arity": 0
+    },
+    {
+      "name": "skuSidebarEstaMinimizado",
+      "arity": 0
+    },
+    {
+      "name": "aplicarEstadoSkuSidebar",
+      "arity": 0
+    },
+    {
+      "name": "alternarSkuSidebar",
+      "arity": 0
+    },
+    {
+      "name": "limitarLarguraSidebarRanking",
+      "arity": 1
+    },
+    {
+      "name": "aplicarLarguraSidebarRanking",
+      "arity": 1
+    },
+    {
+      "name": "carregarLarguraSidebarRanking",
+      "arity": 0
+    },
+    {
+      "name": "salvarLarguraSidebarRanking",
+      "arity": 1
+    },
+    {
+      "name": "limitarLarguraSkuSidebar",
+      "arity": 1
+    },
+    {
+      "name": "aplicarLarguraSkuSidebar",
+      "arity": 1
+    },
+    {
+      "name": "carregarLarguraSkuSidebar",
+      "arity": 0
+    },
+    {
+      "name": "salvarLarguraSkuSidebar",
+      "arity": 1
+    },
+    {
+      "name": "iniciarAjusteLarguraSidebar",
+      "arity": 1
+    },
+    {
+      "name": "iniciarAjusteLarguraSkuSidebar",
+      "arity": 1
+    },
+    {
+      "name": "atualizarEstadoSidebarRanking",
+      "arity": 0
+    },
+    {
+      "name": "setBrowserStatus",
+      "arity": 1
+    },
+    {
+      "name": "aplicarScrollbarsDiscretasNoWebview",
+      "arity": 1
+    },
+    {
+      "name": "inicializarBalaoResultadosMl",
+      "arity": 0
+    },
+    {
+      "name": "balaoResultadosMlAberto",
+      "arity": 0
+    },
+    {
+      "name": "navegadorMlEmSegundoPlano",
+      "arity": 0
+    },
+    {
+      "name": "abrirBalaoResultadosMl",
+      "arity": 0
+    },
+    {
+      "name": "fecharBalaoResultadosMl",
+      "arity": 0
+    },
+    {
+      "name": "garantirCamadaBalaoFavoritosStatus",
+      "arity": 0
+    },
+    {
+      "name": "posicionarBalaoFavoritosStatus",
+      "arity": 0
+    },
+    {
+      "name": "criarMlWebview",
+      "arity": 0
+    },
+    {
+      "name": "navegarMlWebviewUmaTentativa",
+      "arity": 2
+    },
+    {
+      "name": "urlPertenceAoMercadoLivre",
+      "arity": 1
+    },
+    {
+      "name": "urlNavegadorMlSeguraParaLog",
+      "arity": 1
+    },
+    {
+      "name": "confirmarAberturaNavegadorMlAposTimeout",
+      "arity": 1
+    },
+    {
+      "name": "navegarMlWebview",
+      "arity": 1
+    },
+    {
+      "name": "promiseComTimeout",
+      "arity": 3
+    },
+    {
+      "name": "esperar",
+      "arity": 1
+    },
+    {
+      "name": "usarNavegadorMlNoShellElectron",
+      "arity": 0
+    },
+    {
+      "name": "obterBoundsNavegadorMl",
+      "arity": 0
+    },
+    {
+      "name": "enviarNavegadorMlParaShell",
+      "arity": 1
+    },
+    {
+      "name": "ocultarNavegadorMlShellDefinitivo",
+      "arity": 0
+    },
+    {
+      "name": "atualizarPosicaoNavegadorMlShell",
+      "arity": 0
+    },
+    {
+      "name": "ocultarNavegadorMlShellTemporariamente",
+      "arity": 0
+    },
+    {
+      "name": "restaurarNavegadorMlShellSeVisivel",
+      "arity": 0
+    },
+    {
+      "name": "agendarAtualizacaoPosicaoNavegadorMlShell",
+      "arity": 0
+    },
+    {
+      "name": "criarProxyNavegadorMlShell",
+      "arity": 0
+    },
+    {
+      "name": "forcarProxyNavegadorFavoritosWorker",
+      "arity": 0
+    },
+    {
+      "name": "reexibirNavegadorMlShellAoRetornar",
+      "arity": 0
+    },
+    {
+      "name": "forcarNavegadorMlShellVisivel",
+      "arity": 0
+    },
+    {
+      "name": "abrirHomeMercadoLivreParaLoginAvantPro",
+      "arity": 0
+    },
+    {
+      "name": "montarScriptAcionarControlesAvantPro",
+      "arity": 0
+    },
+    {
+      "name": "acionarControlesAvantProNoWebview",
+      "arity": 0
+    },
+    {
+      "name": "montarScriptLocalizarBolinhaAvantPro",
+      "arity": 0
+    },
+    {
+      "name": "abrirBolinhaAvantProSeNecessario",
+      "arity": 0
+    },
+    {
+      "name": "montarScriptLocalizarFerramentasAvantPro",
+      "arity": 0
+    },
+    {
+      "name": "clicarFerramentasAvantProPorCoordenada",
+      "arity": 0
+    },
+    {
+      "name": "montarScriptLocalizarVincularContaAvantPro",
+      "arity": 0
+    },
+    {
+      "name": "clicarVincularContaAvantProPorCoordenada",
+      "arity": 0
+    },
+    {
+      "name": "diagnosticarEntradaAvantProNoWebview",
+      "arity": 0
+    },
+    {
+      "name": "aguardarEntradaAvantProAposFerramentas",
+      "arity": 0
+    },
+    {
+      "name": "mostrarStatusConexaoAvantPro",
+      "arity": 1
+    },
+    {
+      "name": "abrirFerramentasAvantProAntesLogin",
+      "arity": 0
+    },
+    {
+      "name": "montarScriptLocalizarLoginAvantPro",
+      "arity": 0
+    },
+    {
+      "name": "clicarNavegadorMlPorCoordenada",
+      "arity": 1
+    },
+    {
+      "name": "montarScriptLocalizarCampoEmailAvantProParaDigitacao",
+      "arity": 0
+    },
+    {
+      "name": "montarScriptLocalizarBotaoConfirmarAvantProParaClique",
+      "arity": 0
+    },
+    {
+      "name": "digitarTextoNativoNoNavegadorMl",
+      "arity": 1
+    },
+    {
+      "name": "tentarLoginAvantProPorElectronNativo",
+      "arity": 0
+    },
+    {
+      "name": "tentarLoginAvantProPorDigitacaoNativa",
+      "arity": 0
+    },
+    {
+      "name": "clicarLoginAvantProPorCoordenada",
+      "arity": 0
+    },
+    {
+      "name": "fecharModalBloqueanteAvantProNoWebview",
+      "arity": 0
+    },
+    {
+      "name": "abrirLoginAvantProNoWebview",
+      "arity": 0
+    },
+    {
+      "name": "mostrarAcaoConectarAvantPro",
+      "arity": 0
+    },
+    {
+      "name": "criarErroAvantProObrigatorioFavoritos",
+      "arity": 1
+    },
+    {
+      "name": "criarErroConfirmacaoAvantProObrigatoriaFavoritos",
+      "arity": 1
+    },
+    {
+      "name": "statusAvantProPedeLoginOuVinculo",
+      "arity": 1
+    },
+    {
+      "name": "statusAvantProPedeEntradaAntesPesquisa",
+      "arity": 1
+    },
+    {
+      "name": "registrarLoginAvantProConfirmadoFavoritos",
+      "arity": 0
+    },
+    {
+      "name": "limparConfirmacaoAvantProFavoritos",
+      "arity": 0
+    },
+    {
+      "name": "detectarConfirmacaoLoginAvantProNoWebview",
+      "arity": 0
+    },
+    {
+      "name": "aguardarConfirmacaoLoginAvantProNoWebview",
+      "arity": 0
+    },
+    {
+      "name": "entrarAvantProPorFerramentasAntesPesquisa",
+      "arity": 0
+    },
+    {
+      "name": "statusAvantProTemDadosColetaveis",
+      "arity": 1
+    },
+    {
+      "name": "statusAvantProShellSemDados",
+      "arity": 1
+    },
+    {
+      "name": "normalizarStatusAvantProCarregadoParaColeta",
+      "arity": 1
+    },
+    {
+      "name": "normalizarStatusAvantProPronto",
+      "arity": 1
+    },
+    {
+      "name": "prepararAvantProAntesDaPesquisaFavoritos",
+      "arity": 0
+    },
+    {
+      "name": "garantirAvantProProntoParaFavoritos",
+      "arity": 0
+    },
+    {
+      "name": "extrairAnunciosWebviewVisivel",
+      "arity": 0
+    },
+    {
+      "name": "resolverWebviewFavoritosColeta",
+      "arity": 0
+    },
+    {
+      "name": "extrairAnunciosWebviewFastDom",
+      "arity": 0
+    },
+    {
+      "name": "extrairAnunciosAvantProDomWebview",
+      "arity": 0
+    },
+    {
+      "name": "extrairCardsMercadoLivreBasicoWebview",
+      "arity": 0
+    },
+    {
+      "name": "extrairBaseMercadoLivreEmergencialWebview",
+      "arity": 0
+    },
+    {
+      "name": "aguardarBaseMercadoLivreColetavelFavoritos",
+      "arity": 0
+    },
+    {
+      "name": "chaveAnuncioPrimeiraPaginaFavoritos",
+      "arity": 1
+    },
+    {
+      "name": "anuncioPrimeiraPaginaTemDadosAvant",
+      "arity": 1
+    },
+    {
+      "name": "resumoPrimeiraPaginaFavoritos",
+      "arity": 2
+    },
+    {
+      "name": "assinaturaEstabilidadePrimeiraPaginaFavoritos",
+      "arity": 1
+    },
+    {
+      "name": "deveEncerrarPlateauPrimeiraPaginaFavoritos",
+      "arity": 0
+    },
+    {
+      "name": "montarPosicoesVarreduraPrimeiraPaginaFavoritos",
+      "arity": 3
+    },
+    {
+      "name": "alturaVarreduraPrimeiraPaginaFavoritos",
+      "arity": 3
+    },
+    {
+      "name": "emitirProgressoPrimeiraPaginaFavoritos",
+      "arity": 2
+    },
+    {
+      "name": "executarFilaLimitadaFavoritos",
+      "arity": 3
+    },
+    {
+      "name": "completarBaseMercadoLivreComApiFavoritos",
+      "arity": 1
+    },
+    {
+      "name": "extrairCacheAvantProCardsWebview",
+      "arity": 0
+    },
+    {
+      "name": "capturarAvantProCardsVisiveisRapidoWebview",
+      "arity": 0
+    },
+    {
+      "name": "obterMetricaRolagemMercadoLivreFavoritos",
+      "arity": 0
+    },
+    {
+      "name": "rolarMercadoLivreFavoritos",
+      "arity": 1
+    },
+    {
+      "name": "materializarCardsPrimeiraPaginaMercadoLivreFavoritos",
+      "arity": 0
+    },
+    {
+      "name": "acionarCardsAvantProFilaWebview",
+      "arity": 0
+    },
+    {
+      "name": "coletarPrimeiraPaginaFavoritosControlada",
+      "arity": 0
+    },
+    {
+      "name": "aguardarDadosAvantProEstaveisWebview",
+      "arity": 0
+    },
+    {
+      "name": "diagnosticarAvantProNoWebview",
+      "arity": 0
+    },
+    {
+      "name": "aguardarPrimeirosDadosAvantOuCardsWebview",
+      "arity": 0
+    },
+    {
+      "name": "diagnosticarResultadosMercadoLivreWebview",
+      "arity": 0
+    },
+    {
+      "name": "aguardarResultadosMercadoLivreWebview",
+      "arity": 0
+    },
+    {
+      "name": "recarregarNavegadorMlParaAvantPro",
+      "arity": 0
+    },
+    {
+      "name": "aguardarAvantProNoWebview",
+      "arity": 0
+    },
+    {
+      "name": "recarregarNavegadorMlAposLoginAvantProFavoritos",
+      "arity": 0
+    },
+    {
+      "name": "mesclarAnunciosAvant",
+      "arity": 2
+    },
+    {
+      "name": "coletarDadosAvantComRolagem",
+      "arity": 0
+    },
+    {
+      "name": "extrairDadosAvantDoWebviewVisivel",
+      "arity": 1
+    },
+    {
+      "name": "normalizarTextoMl",
+      "arity": 1
+    },
+    {
+      "name": "normalizarSkuBuscaMl",
+      "arity": 1
+    },
+    {
+      "name": "normalizarNomeVendedor",
+      "arity": 1
+    }
+  ]
+}

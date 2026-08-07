@@ -6,9 +6,11 @@ from types import SimpleNamespace
 import openai_codex
 
 from backend.schemas.ia import IAChatRequest
+from backend.modules.perguntas_pos_venda.endpoints import customer_reply as endpoints
 from backend.services import codex_console, ia_providers
 from backend.services import perguntas_pos_venda_codex as orchestrator
-from backend.services import perguntas_pos_venda_endpoints as endpoints
+from backend.services.codex.console import execution as console_execution
+from backend.services.codex.console import security as console_security
 
 
 def _completed_job(
@@ -29,6 +31,9 @@ def _completed_job(
         "prompt_version": orchestrator.PROMPT_VERSION,
         "schema_version": orchestrator.SCHEMA_VERSION,
         "prompt_hash": orchestrator.PROMPT_HASH,
+        "queue_policy_version": orchestrator.QUEUE_POLICY_VERSION,
+        "queue_origin": orchestrator.QUEUE_ORIGIN_MANUAL,
+        "queue_priority": orchestrator.QUEUE_PRIORITY_MANUAL,
         "result": {
             "resposta": f"Resposta tardia {job_id}",
             "requires_approval": True,
@@ -48,6 +53,11 @@ def _patch_latest_job(monkeypatch, job: dict) -> list[dict]:
 
     monkeypatch.setattr(orchestrator, "_runtime_info_base", lambda: "runtime-test")
     monkeypatch.setattr(orchestrator, "_queue_position", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(
+        orchestrator.codex_assistant_storage,
+        "codex_assistant_customer_reply_queue_metrics",
+        lambda *_args, **_kwargs: {"queued": 0, "running": 0, "waiting_retry": 0, "active": 0},
+    )
     monkeypatch.setattr(
         orchestrator.codex_assistant_storage,
         "codex_assistant_customer_reply_job_latest",
@@ -214,13 +224,13 @@ def test_codex_resume_omits_ephemeral_and_fallback_start_keeps_it(monkeypatch):
 
     with ExitStack() as stack:
         stack.enter_context(monkeypatch.context())
-        monkeypatch.setattr(codex_console, "_codex_enabled", lambda: True)
-        monkeypatch.setattr(codex_console, "_codex_sdk_installed", lambda: True)
-        monkeypatch.setattr(codex_console, "_codex_auth_detected", lambda: True)
-        monkeypatch.setattr(codex_console, "_codex_runtime_bin", lambda: "codex")
-        monkeypatch.setattr(codex_console, "_codex_sdk_env", lambda: {})
-        monkeypatch.setattr(codex_console, "_codex_nonfull_config_overrides", lambda: {})
-        monkeypatch.setattr(codex_console, "_codex_readonly_cwd_for_session", lambda *_args: ".")
+        monkeypatch.setattr(console_execution, "enabled", lambda: True)
+        monkeypatch.setattr(console_execution, "sdk_installed", lambda: True)
+        monkeypatch.setattr(console_execution, "auth_detected", lambda: True)
+        monkeypatch.setattr(console_execution, "runtime_bin", lambda: "codex")
+        monkeypatch.setattr(console_execution, "sdk_env", lambda: {})
+        monkeypatch.setattr(console_execution, "readonly_config_overrides", lambda: {})
+        monkeypatch.setattr(console_security, "readonly_cwd", lambda *_args: ".")
         monkeypatch.setattr(openai_codex, "Codex", Codex)
         monkeypatch.setattr(openai_codex, "CodexConfig", lambda **kwargs: kwargs)
         response, thread_id = ia_providers._chamar_codex_chat_com_thread(

@@ -2,6 +2,7 @@ const { app, BrowserWindow, session } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { componentFiles: promotionEffectuationComponents } = require('../tests/helpers/favoritos_promotion_effectuation_sources');
 
 if (!app || !BrowserWindow || !session) {
     throw new Error('Este script precisa ser executado pelo electron.exe, nao pelo node/electron.cmd.');
@@ -221,7 +222,7 @@ async function injectFavoritosScripts(win) {
         'static/favoritos/v2/browser/avant-cache.js',
         'static/favoritos/ml-browser.js',
         'static/favoritos/ranking.js',
-        'static/favoritos/promocoes-efetivacao.js',
+        ...promotionEffectuationComponents.map(fileName => `static/favoritos/v2/promotion-effectuation/${fileName}`),
         'static/favoritos/tabelas-layout/01-ml-base-busca.js',
         'static/favoritos/tabelas-layout/04-promocoes-busca-ranking.js'
     ]) {

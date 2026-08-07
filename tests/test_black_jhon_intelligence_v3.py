@@ -8,6 +8,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from backend.modules.context_hub import paths as hub_paths
+from backend.modules.context_hub import retrieval_filters as hub_retrieval_filters
+from backend.modules.context_hub import storage as hub_storage
 from backend.services import codex_data_selection_agent, codex_whatsapp_agents, context_hub
 from backend.services.context_hub_endpoints import ContextHubSearchRequest
 from backend.services.whatsapp import black_jhon_prompting
@@ -190,7 +193,7 @@ def test_data_selection_plan_v2_normalizes_v1_and_rejects_unknown_ml_resource() 
 
 
 def test_context_retrieval_v3_adds_citations_authority_validity_and_conflicts() -> None:
-    result = context_hub._finalize_context_retrieval_v3(
+    result = hub_retrieval_filters._finalize_context_retrieval_v3(
         {
             "success": True,
             "query": "compatibilidade ABC123",
@@ -241,7 +244,7 @@ def test_context_retrieval_v3_adds_citations_authority_validity_and_conflicts() 
 
 def test_context_retrieval_filters_are_closed_in_service_and_http_contract() -> None:
     with pytest.raises(context_hub.ContextHubValidationError, match="nao permitido"):
-        context_hub._closed_context_filters({"unknown_filter": "x"})
+        hub_retrieval_filters._closed_context_filters({"unknown_filter": "x"})
     with pytest.raises(ValidationError):
         ContextHubSearchRequest(query="x", unknown_filter="x")
 
@@ -273,11 +276,11 @@ def test_search_context_returns_v3_and_executes_authority_validity_filters(tmp_p
     info.mkdir()
     context_hub.configure_context_hub(base_dir=base, info_root=info, surface="installed")
     context_hub.bootstrap_context_hub("tenant-v3")
-    paths = context_hub._tenant_paths("tenant-v3", info_root=info)
+    paths = hub_paths._tenant_paths("tenant-v3", info_root=info)
     generation_id = "b" * 32
     source_version = "1.0.109"
     content = "Manual tecnico confirmado para o SKU ABC123 e o anuncio MLB123456789."
-    with context_hub._connect(paths) as connection:
+    with hub_storage._connect(paths) as connection:
         connection.execute(
             """
             INSERT INTO context_hub_generations(

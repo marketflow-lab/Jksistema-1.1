@@ -49,15 +49,9 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services.codex.console import queueing as console_queueing
+from backend.services.codex.console import telemetry as console_telemetry
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -214,7 +208,7 @@ def _apply_bridge_enabled(config: dict[str, Any], payload: WhatsappBridgeConfigR
         return
     worker = _worker_health(config)
     whisper = _whisper_status()
-    codex = codex_console._codex_status_payload()
+    codex = console_telemetry.status_payload()
     machine_bindings = [
         item for item in (worker.get("bindings") or [])
         if isinstance(item, dict) and str(item.get("machine_id") or "") == str(config.get("machine_id") or "")
@@ -244,7 +238,7 @@ def _warm_bridge_runtimes(config: dict[str, Any]) -> None:
     settings = _whatsapp_dual_agent_settings(config)
     try:
         _configure_phone_dispatcher(settings["conversation_worker_count"])
-        codex_console._codex_configure_dual_sol_limit(
+        console_queueing.configure_dual_limit(
             settings["max_active_task_agents_global"], settings["max_active_task_agents_per_conversation"],
         )
         codex_whatsapp_agents.CONVERSATION_RUNTIME.warm(

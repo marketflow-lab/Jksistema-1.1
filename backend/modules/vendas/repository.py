@@ -808,6 +808,22 @@ class VendasRepository:
     def listar_todas(self, client_id: str): return listar_vendas_todas(client_id)
     def limites(self, **kwargs): return limites_vendas(**kwargs)
 
+    def relatorio_pareto(self, **kwargs):
+        from .reports import generate_pareto_report
+        return generate_pareto_report(**kwargs)
+
+    def exportar_relatorio_pareto(self, **kwargs):
+        from .reports import export_pareto_report
+        return export_pareto_report(**kwargs)
+
+    def relatorio_geral_skus(self, **kwargs):
+        from .general_report import generate_general_sku_report
+        return generate_general_sku_report(**kwargs)
+
+    def exportar_relatorio_geral_skus(self, **kwargs):
+        from .general_report import export_general_sku_report
+        return export_general_sku_report(**kwargs)
+
     def grafico(self, **kwargs):
         from .analytics import grafico_vendas
         return grafico_vendas(**kwargs)

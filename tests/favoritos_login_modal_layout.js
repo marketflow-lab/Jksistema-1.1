@@ -1,12 +1,12 @@
 'use strict';
 
 const assert = require('assert');
-const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
+const { readFavoritosStyles } = require('./helpers/favoritos_styles_sources');
 
 const repoRoot = path.resolve(__dirname, '..');
-const styles = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'styles.css'), 'utf8');
+const styles = readFavoritosStyles(repoRoot);
 
 async function checkLayout(page, viewport) {
   await page.setViewportSize(viewport);

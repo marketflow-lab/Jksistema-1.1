@@ -9,7 +9,13 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from backend.services import codex_actions, codex_assistant, codex_assistant_storage, codex_reports_advanced, ia_tools_vendas
+from backend.services import codex_actions, codex_assistant_storage, codex_reports_advanced, ia_tools_vendas
+from backend.services.codex.assistant import analysis_management as assistant_management
+from backend.services.codex.assistant import analysis_stock as assistant_stock
+from backend.services.codex.assistant import reports_artifacts as assistant_artifacts
+from backend.services.codex.assistant import reports_html as assistant_html
+from backend.services.codex.assistant import runtime as assistant_runtime
+from backend.services.sales_tools import inventory as sales_inventory
 
 
 class CodexAdvancedReportTest(unittest.TestCase):
@@ -271,13 +277,13 @@ class CodexAdvancedReportTest(unittest.TestCase):
             "store_summaries": [],
             "purchase_pipeline_rows": [],
         }
-        html = codex_assistant._assistant_build_advanced_report_html("Relatório Roçadeira", context)
+        html = assistant_html._assistant_build_advanced_report_html("Relatório Roçadeira", context)
         self.assertIn("Relatório Roçadeira", html)
         self.assertIn("SKU-00019", html)
         self.assertNotIn("SKU-00119", html)
         with tempfile.TemporaryDirectory() as root:
             path = Path(root, "report.xlsx")
-            codex_assistant._assistant_write_advanced_xlsx(str(path), context)
+            assistant_artifacts._assistant_write_advanced_xlsx(str(path), context)
             import openpyxl
 
             workbook = openpyxl.load_workbook(path, read_only=True)
@@ -348,7 +354,7 @@ class CodexAdvancedReportTest(unittest.TestCase):
                 "params": {"report_id": "report-1", "report_action": action},
             }
             with (
-                patch.object(codex_assistant, "_assistant_info_base", return_value=root),
+                patch.object(assistant_runtime, "info_base", return_value=root),
                 patch.object(codex_actions, "PASTA_INFO", root, create=True),
             ):
                 result = codex_actions._execute_internal_report_queue("run-1", proposal)
@@ -402,7 +408,7 @@ class CodexAdvancedReportTest(unittest.TestCase):
                 },
             ],
         }
-        suggestions = codex_assistant._assistant_suggestions_from_results(
+        suggestions = assistant_management._assistant_suggestions_from_results(
             [
                 {
                     "function": "get_days_without_sale_top",
@@ -449,7 +455,7 @@ class CodexAdvancedReportTest(unittest.TestCase):
                 }
             ]
         }
-        rows = codex_assistant._assistant_collect_stale_stock_rows(context, limit=20)
+        rows = assistant_stock._assistant_collect_stale_stock_rows(context, limit=20)
 
         self.assertEqual([row["sku"] for row in rows], ["A", "B", "C"])
         self.assertEqual(rows[0]["prioridade"], "1 - Imediata")
@@ -483,11 +489,11 @@ class CodexAdvancedReportTest(unittest.TestCase):
             connection.commit()
             connection.close()
             with (
-                patch.object(ia_tools_vendas, "_ia_carregar_produtos_tool_df", return_value=products, create=True),
-                patch.object(ia_tools_vendas, "_listar_bancos_vendas_tenant", return_value=[str(db_path)], create=True),
-                patch.object(ia_tools_vendas, "_sql_filtro_loja_vendas", return_value=("", []), create=True),
-                patch.object(ia_tools_vendas, "_ia_obter_data_referencia_vendas", return_value=date(2026, 7, 12), create=True),
-                patch.object(ia_tools_vendas, "_cadastro_ler_custos_lojas", return_value=store_costs, create=True),
+                patch.object(sales_inventory, "_ia_carregar_produtos_tool_df", return_value=products),
+                patch.object(sales_inventory, "_listar_bancos_vendas_tenant", return_value=[str(db_path)]),
+                patch.object(sales_inventory, "_sql_filtro_loja_vendas", return_value=("", [])),
+                patch.object(sales_inventory, "_ia_obter_data_referencia_vendas", return_value=date(2026, 7, 12)),
+                patch.object(sales_inventory, "_cadastro_ler_custos_lojas", return_value=store_costs),
             ):
                 payload = ia_tools_vendas._ia_tool_get_days_without_sale_top(
                     "tenant-a",

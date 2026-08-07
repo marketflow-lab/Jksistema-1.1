@@ -3,10 +3,11 @@
 const assert = require('assert');
 const path = require('path');
 const { chromium } = require('playwright');
+const { promotionEffectuationSource } = require('./helpers/favoritos_promotion_effectuation_sources');
 
 const root = path.resolve(__dirname, '..');
 const sourcePath = path.join(root, 'static', 'favoritos', 'v2', 'ui', 'status-modal.js');
-const promotionsSourcePath = path.join(root, 'static', 'favoritos', 'promocoes-efetivacao.js');
+const promotionsSource = promotionEffectuationSource(root);
 
 async function criarPagina(browser, modoRaf) {
     const page = await browser.newPage();
@@ -85,8 +86,16 @@ async function testarDecisaoCruzada(browser) {
         window.mlFavoritosBalloonTextEl = document.getElementById('ml-favoritos-status-balloon-text');
         window.mlFavoritosBalloonActionsEl = document.getElementById('ml-favoritos-status-balloon-actions');
         window.mlFavoritosPerguntaResolver = null;
+        window.FavoritosV2.searchRanking = {
+            publicApi: {
+                status: {
+                    mostrarBalaoFavoritosStatus: (...args) => window.FavoritosV2.ui.statusModal.mostrarBalaoFavoritosStatus(...args),
+                    esconderBalaoFavoritosStatus: (...args) => window.FavoritosV2.ui.statusModal.esconderBalaoFavoritosStatus(...args)
+                }
+            }
+        };
     });
-    await page.addScriptTag({ path: promotionsSourcePath });
+    await page.addScriptTag({ content: promotionsSource });
     const resultado = await page.evaluate(async () => {
         const decisao = window.perguntarConfirmacaoEfetivarFavoritos({
             total: 1,

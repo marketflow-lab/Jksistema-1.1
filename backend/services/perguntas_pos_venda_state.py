@@ -41,7 +41,10 @@ from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.vendas_sync_progress import _corrigir_texto_mojibake
 from backend.services.transport_security import requests_tls_verify
+from ml_questions_gemini.compatibility import PROFILE_BY_TARGET_TYPE, TARGET_TYPES
 from ml_questions_gemini.schemas import QuestionCategory
+from backend.modules.perguntas_pos_venda.ai import provider_transport as perguntas_agent_provider_transport
+from backend.modules.perguntas_pos_venda.ai import telemetry_core as perguntas_agent_telemetry
 
 
 def configure_perguntas_pos_venda_state_runtime(runtime_module=None, peers=None):
@@ -537,15 +540,42 @@ ML_PERGUNTAS_IA_INTENCAO_CATEGORIAS = {
     "reclamacao": {"post_sale"},
     "nao_entendi": {"unknown"},
 }
-ML_PERGUNTAS_IA_COMPATIBILITY_TARGET_TYPES = {
-    "", "vehicle", "machine_tool", "phone_computing",
-    "electrical_electronic", "hydraulic", "dimensional", "generic",
-}
-ML_PERGUNTAS_IA_COMPATIBILITY_PROFILES = {
-    "", "vehicle_fitment", "machine_interface", "device_interface",
-    "electrical_interface", "hydraulic_interface", "dimensional_fit",
-    "generic_interface",
-}
+ML_PERGUNTAS_IA_COMPATIBILITY_TARGET_TYPES = {"", *TARGET_TYPES}
+ML_PERGUNTAS_IA_COMPATIBILITY_PROFILES = {"", *PROFILE_BY_TARGET_TYPE.values()}
+ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_VERSION = "jk_ml_question_classification_v2"
+ML_PERGUNTAS_IA_COMPATIBILITY_PROFILE_BY_TARGET_TYPE = dict(PROFILE_BY_TARGET_TYPE)
+ML_PERGUNTAS_IA_CLASSIFICATION_PAGE = "Perguntas e pós venda"
+ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_HASH = hashlib.sha256(
+    json.dumps(
+        {
+            "version": ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_VERSION,
+            "intent_categories": {
+                intent: sorted(categories)
+                for intent, categories in ML_PERGUNTAS_IA_INTENCAO_CATEGORIAS.items()
+            },
+            "subquestion_categories": ML_PERGUNTAS_IA_SUBQUESTION_CATEGORY,
+            "compatibility_applicable_iff_category": True,
+            "compatibility_target_types": sorted(ML_PERGUNTAS_IA_COMPATIBILITY_TARGET_TYPES),
+            "compatibility_profiles": sorted(ML_PERGUNTAS_IA_COMPATIBILITY_PROFILES),
+            "compatibility_profile_by_target_type": ML_PERGUNTAS_IA_COMPATIBILITY_PROFILE_BY_TARGET_TYPE,
+            "no_local_inference_or_reclassification": True,
+            "repair_attempts": 1,
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+).hexdigest()
+
+
+class _PerguntasIAContratoClassificacaoInvalido(PerguntasIARespostaIndisponivel):
+    """Internal, parseable classification that violated the canonical contract."""
+
+    def __init__(self, campo: str, violation_code: str):
+        super().__init__(
+            f"Classificacao de intencao da IA em formato invalido: {campo}."
+        )
+        self.violation_code = violation_code
 
 
 def _perguntas_ia_json_obj(texto: str) -> dict:
@@ -571,8 +601,18 @@ def _perguntas_ia_json_obj(texto: str) -> dict:
 
 
 def _perguntas_ia_schema_invalido(campo: str) -> None:
-    raise PerguntasIARespostaIndisponivel(
-        f"Classificacao de intencao da IA em formato invalido: {campo}."
+    codigos = {
+        "coerencia de compatibilidade": "compatibility_applicable_iff_category",
+        "tipo e perfil da compatibilidade": "compatibility_target_profile_required",
+        "par tipo e perfil da compatibilidade": "compatibility_target_profile_pair",
+        "compatibilidade nao aplicavel nao pode definir alvo ou perfil": "compatibility_not_applicable_fields",
+        "compatibilidade.target_type": "compatibility_target_type",
+        "compatibilidade.compatibility_profile": "compatibility_profile",
+        "objeto JSON obrigatorio": "classification_object_required",
+    }
+    raise _PerguntasIAContratoClassificacaoInvalido(
+        campo,
+        codigos.get(campo, "classification_contract_violation"),
     )
 
 
@@ -707,6 +747,11 @@ def _perguntas_ia_intencao_normalizar(data: object) -> dict:
         _perguntas_ia_schema_invalido("coerencia de compatibilidade")
     if aplicavel and (not target_type.strip() or not compatibility_profile.strip()):
         _perguntas_ia_schema_invalido("tipo e perfil da compatibilidade")
+    if aplicavel and (
+        ML_PERGUNTAS_IA_COMPATIBILITY_PROFILE_BY_TARGET_TYPE.get(target_type.strip())
+        != compatibility_profile.strip()
+    ):
+        _perguntas_ia_schema_invalido("par tipo e perfil da compatibilidade")
     if not aplicavel and (
         target_item.strip() or target_type.strip() or compatibility_profile.strip()
         or missing_fields
@@ -741,6 +786,68 @@ def _perguntas_ia_intencao_normalizar(data: object) -> dict:
     return normalizada
 
 
+def _perguntas_ia_classification_prompt(entrada: dict, *, violation_code: str = "") -> str:
+    mapa_perfis = ", ".join(
+        f"{target_type}={profile}"
+        for target_type, profile in ML_PERGUNTAS_IA_COMPATIBILITY_PROFILE_BY_TARGET_TYPE.items()
+    )
+    reparo = ""
+    if violation_code:
+        reparo = (
+            "A resposta anterior era um objeto JSON parseavel, mas violou o contrato canonico "
+            f"no codigo {violation_code}. Gere uma classificacao nova a partir dos Dados; "
+            "nao tente reproduzir nem completar a resposta anterior. "
+        )
+    return (
+        f"Contrato interno: {ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_VERSION}; "
+        f"hash={ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_HASH}. "
+        + reparo
+        + "Classifique pela IA a ultima mensagem do comprador do Mercado Livre. "
+        "Use o historico apenas para entender continuidade, mas classifique a ultima mensagem. "
+        "Se o comprador diz que ja comprou, recebeu, quer trocar, relata defeito, problema, item apagando, quebrado, nao funciona, entrega ou garantia, classifique como pos-venda. "
+        "Nao confunda relato de defeito pos-compra com compatibilidade do produto. Classifique lateralidade, lado esquerdo/direito ou lado especifico como product_feature, salvo quando a pergunta realmente comparar aplicacao em outro alvo. "
+        "Retorne somente JSON valido, sem markdown e exatamente com o contrato pedido. "
+        "intencao deve ser uma de: duvida_produto, compatibilidade, outra_peca, preco_estoque, pos_venda_defeito, troca_garantia, entrega, cancelamento, reclamacao, nao_entendi. "
+        "categoria deve ser uma de: greeting, price, stock, shipping, compatibility, product_feature, warranty_originality, invoice, other_product, prohibited_contact, regulated_product, post_sale, unknown. "
+        "categorias deve ser uma lista sem repeticao dessas categorias e deve conter categoria. "
+        "Mantenha coerencia semantica estrita: duvida_produto aceita somente greeting, shipping, product_feature, warranty_originality, invoice, prohibited_contact ou regulated_product; "
+        "compatibilidade aceita somente compatibility; outra_peca aceita somente other_product; preco_estoque aceita somente price e/ou stock; "
+        "pos_venda_defeito, troca_garantia, entrega, cancelamento e reclamacao aceitam somente post_sale; nao_entendi aceita somente unknown. "
+        "fluxo deve ser perguntas_anuncio ou pos_venda. confianca deve ser numero entre 0 e 1. "
+        "flags deve conter os booleanos usar_busca_web, usar_mercado_livre_anuncio e usar_bling. Em pos_venda todos devem ser false. "
+        "subperguntas deve ser uma lista nao vazia de objetos somente com intent, question e required_evidence. "
+        "intent deve ser um de: compatibility, shipping, stock, price, invoice, warranty_originality, product_feature, other_product, general, post_sale. "
+        "Cada categoria deve ser coberta por uma subpergunta semanticamente correspondente e nenhuma subpergunta pode introduzir categoria ausente. Nao invente assunto ausente. "
+        "compatibilidade deve conter aplicavel, target_item, target_type, compatibility_profile, technical_focus, missing_fields e decisive_fields. "
+        "REGRA IFF OBRIGATORIA: compatibilidade.aplicavel deve ser true se, e somente se, categorias contiver compatibility. "
+        "aplicavel=true significa que a pergunta exige analise de compatibilidade; nao significa que o produto serve. "
+        "target_type deve ser vazio ou vehicle, machine_tool, phone_computing, electrical_electronic, hydraulic, dimensional, generic. "
+        "Quando aplicavel=true, target_type e compatibility_profile devem formar exatamente um destes pares: "
+        f"{mapa_perfis}. "
+        "Nao invente target_item ausente e nao use generic como correcao automatica de um alvo desconhecido; descreva os dados decisivos ausentes em missing_fields. "
+        "Quando compatibilidade.aplicavel for false, target_item, target_type, compatibility_profile e missing_fields devem estar vazios; technical_focus e decisive_fields podem descrever a caracteristica tecnica pedida. "
+        "Exemplo valido de compatibilidade, sem copiar os valores: {\"intencao\":\"compatibilidade\",\"categoria\":\"compatibility\",\"categorias\":[\"compatibility\"],\"fluxo\":\"perguntas_anuncio\",\"confianca\":0.95,\"flags\":{\"usar_busca_web\":true,\"usar_mercado_livre_anuncio\":true,\"usar_bling\":true},\"subperguntas\":[{\"intent\":\"compatibility\",\"question\":\"Serve no Honda Civic 2008?\",\"required_evidence\":\"codigo e interface decisiva\"}],\"compatibilidade\":{\"aplicavel\":true,\"target_item\":\"Honda Civic 2008\",\"target_type\":\"vehicle\",\"compatibility_profile\":\"vehicle_fitment\",\"technical_focus\":\"codigo e encaixe\",\"missing_fields\":[\"codigo OEM\"],\"decisive_fields\":[\"codigo OEM\",\"conector\"]}}. "
+        "Exemplo valido sem compatibilidade, sem copiar os valores: {\"intencao\":\"duvida_produto\",\"categoria\":\"product_feature\",\"categorias\":[\"product_feature\"],\"fluxo\":\"perguntas_anuncio\",\"confianca\":0.95,\"flags\":{\"usar_busca_web\":false,\"usar_mercado_livre_anuncio\":true,\"usar_bling\":true},\"subperguntas\":[{\"intent\":\"product_feature\",\"question\":\"pergunta objetiva\",\"required_evidence\":\"atributo do anuncio ou fonte tecnica\"}],\"compatibilidade\":{\"aplicavel\":false,\"target_item\":\"\",\"target_type\":\"\",\"compatibility_profile\":\"\",\"technical_focus\":\"\",\"missing_fields\":[],\"decisive_fields\":[]}}.\n\n"
+        f"Dados:\n{json.dumps(entrada, ensure_ascii=False, default=str)[:6000]}"
+    )
+
+
+def _perguntas_ia_classificacao_parsear(texto: str) -> dict:
+    data = _perguntas_ia_json_obj(texto)
+    if not data:
+        bruto = str(texto or "").strip()
+        try:
+            candidato = json.loads(bruto)
+        except (TypeError, ValueError):
+            raise PerguntasIARespostaIndisponivel(
+                "Classificacao de intencao da IA sem objeto JSON parseavel."
+            )
+        if not isinstance(candidato, dict):
+            _perguntas_ia_schema_invalido("objeto JSON obrigatorio")
+        data = candidato
+    return _perguntas_ia_intencao_normalizar(data)
+
+
 def _perguntas_ia_classificar_intencao(client_id: str, loja: str, pergunta: dict, item: dict) -> dict:
     historico = pergunta.get("buyer_question_chat") if isinstance(pergunta.get("buyer_question_chat"), list) else []
     mensagens = []
@@ -764,36 +871,16 @@ def _perguntas_ia_classificar_intencao(client_id: str, loja: str, pergunta: dict
         "titulo_anuncio": (item or {}).get("title") or pergunta.get("item_title") or "",
         "sku": _ml_extrair_sku(item or {}) or pergunta.get("item_sku") or "",
     }
-    prompt = (
-        "Classifique pela IA a ultima mensagem do comprador do Mercado Livre. "
-        "Use o historico apenas para entender continuidade, mas classifique a ultima mensagem. "
-        "Se o comprador diz que ja comprou, recebeu, quer trocar, relata defeito, problema, item apagando, quebrado, nao funciona, entrega ou garantia, classifique como pos-venda. "
-        "Nao confunda relato de defeito pos-compra com compatibilidade do produto. Classifique lateralidade, lado esquerdo/direito ou lado especifico como product_feature, salvo quando a pergunta realmente comparar aplicacao em outro alvo. "
-        "Retorne somente JSON valido, sem markdown e exatamente com o contrato pedido. "
-        "intencao deve ser uma de: duvida_produto, compatibilidade, outra_peca, preco_estoque, pos_venda_defeito, troca_garantia, entrega, cancelamento, reclamacao, nao_entendi. "
-        "categoria deve ser uma de: greeting, price, stock, shipping, compatibility, product_feature, warranty_originality, invoice, other_product, prohibited_contact, regulated_product, post_sale, unknown. "
-        "categorias deve ser uma lista sem repeticao dessas categorias e deve conter categoria. "
-        "Mantenha coerencia semantica estrita: duvida_produto aceita somente greeting, shipping, product_feature, warranty_originality, invoice, prohibited_contact ou regulated_product; "
-        "compatibilidade aceita somente compatibility; outra_peca aceita somente other_product; preco_estoque aceita somente price e/ou stock; "
-        "pos_venda_defeito, troca_garantia, entrega, cancelamento e reclamacao aceitam somente post_sale; nao_entendi aceita somente unknown. "
-        "fluxo deve ser perguntas_anuncio ou pos_venda. confianca deve ser numero entre 0 e 1. "
-        "flags deve conter os booleanos usar_busca_web, usar_mercado_livre_anuncio e usar_bling. Em pos_venda todos devem ser false. "
-        "subperguntas deve ser uma lista nao vazia de objetos somente com intent, question e required_evidence. "
-        "intent deve ser um de: compatibility, shipping, stock, price, invoice, warranty_originality, product_feature, other_product, general, post_sale. "
-        "Cada categoria deve ser coberta por uma subpergunta semanticamente correspondente e nenhuma subpergunta pode introduzir categoria ausente. Nao invente assunto ausente. "
-        "compatibilidade deve conter aplicavel, target_item, target_type, compatibility_profile, technical_focus, missing_fields e decisive_fields. "
-        "target_type deve ser vazio ou vehicle, machine_tool, phone_computing, electrical_electronic, hydraulic, dimensional, generic; compatibility_profile deve ser vazio ou vehicle_fitment, machine_interface, device_interface, electrical_interface, hydraulic_interface, dimensional_fit, generic_interface. "
-        "Quando compatibilidade.aplicavel for false, target_item, target_type, compatibility_profile e missing_fields devem estar vazios; technical_focus e decisive_fields podem descrever a caracteristica tecnica pedida. "
-        "Exemplo de forma, sem copiar os valores: {\"intencao\":\"duvida_produto\",\"categoria\":\"product_feature\",\"categorias\":[\"product_feature\"],\"fluxo\":\"perguntas_anuncio\",\"confianca\":0.95,\"flags\":{\"usar_busca_web\":false,\"usar_mercado_livre_anuncio\":true,\"usar_bling\":true},\"subperguntas\":[{\"intent\":\"product_feature\",\"question\":\"pergunta objetiva\",\"required_evidence\":\"atributo do anuncio ou fonte tecnica\"}],\"compatibilidade\":{\"aplicavel\":false,\"target_item\":\"\",\"target_type\":\"\",\"compatibility_profile\":\"\",\"technical_focus\":\"\",\"missing_fields\":[],\"decisive_fields\":[]}}.\n\n"
-        f"Dados:\n{json.dumps(entrada, ensure_ascii=False, default=str)[:6000]}"
-    )
+    prompt = _perguntas_ia_classification_prompt(entrada)
     model_req = _normalizar_ia_modelo_padrao(_ia_modelo_perguntas_configurado())
     payload = IAChatRequest(
         message=prompt,
-        page="Perguntas e pós venda",
+        page=ML_PERGUNTAS_IA_CLASSIFICATION_PAGE,
         context={
             "modulo": "perguntas_pos_venda",
             "tipo": "classificacao_intencao_perguntas_ml",
+            "classification_contract_version": ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_VERSION,
+            "classification_contract_hash": ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_HASH,
             "desativar_recursos_chat": True,
             "desativar_busca_web_chat": True,
             "modo_rapido_sidebar": True,
@@ -803,12 +890,42 @@ def _perguntas_ia_classificar_intencao(client_id: str, loja: str, pergunta: dict
     )
     perf_t0 = time.perf_counter()
     try:
-        resposta, model_usado = _ia_agent_perguntas_chamar_modelo(client_id, payload, model_req)
-        data = _perguntas_ia_json_obj(resposta)
-        classificada = _perguntas_ia_intencao_normalizar(data)
+        resposta, model_usado = perguntas_agent_provider_transport.invoke_model(client_id, payload, model_req)
+        repair_attempted = False
+        repair_violation_code = ""
+        try:
+            classificada = _perguntas_ia_classificacao_parsear(resposta)
+        except _PerguntasIAContratoClassificacaoInvalido as exc:
+            repair_attempted = True
+            repair_violation_code = exc.violation_code
+            repair_payload = IAChatRequest(
+                message=_perguntas_ia_classification_prompt(
+                    entrada,
+                    violation_code=repair_violation_code,
+                ),
+                page=ML_PERGUNTAS_IA_CLASSIFICATION_PAGE,
+                context={
+                    "modulo": "perguntas_pos_venda",
+                    "tipo": "classificacao_intencao_perguntas_ml_reparo_contrato",
+                    "classification_contract_version": ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_VERSION,
+                    "classification_contract_hash": ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_HASH,
+                    "contract_violation_code": repair_violation_code,
+                    "desativar_recursos_chat": True,
+                    "desativar_busca_web_chat": True,
+                    "modo_rapido_sidebar": True,
+                    "loja": loja,
+                },
+                model=model_req,
+            )
+            resposta_reparada, model_usado = perguntas_agent_provider_transport.invoke_model(
+                client_id,
+                repair_payload,
+                model_req,
+            )
+            classificada = _perguntas_ia_classificacao_parsear(resposta_reparada)
         classificada["model"] = model_usado
         classificada["source"] = "ia"
-        _ia_agent_perguntas_log_perf(
+        perguntas_agent_telemetry.record(
             client_id,
             loja,
             {
@@ -823,10 +940,14 @@ def _perguntas_ia_classificar_intencao(client_id: str, loja: str, pergunta: dict
             confianca=classificada.get("confianca"),
             source=classificada.get("source"),
             modelo=classificada.get("model"),
+            classification_contract_version=ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_VERSION,
+            classification_contract_hash=ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_HASH,
+            contract_repair_attempted=repair_attempted,
+            contract_violation_code=repair_violation_code,
         )
         return classificada
     except Exception as exc:
-        _ia_agent_perguntas_log_perf(
+        perguntas_agent_telemetry.record(
             client_id,
             loja,
             {
@@ -1130,7 +1251,7 @@ def _perguntas_ia_memoria_compactar_com_ia(client_id: str, memoria: dict, removi
         model=model_req,
     )
     try:
-        resposta, _model_usado = _ia_agent_perguntas_chamar_modelo(client_id, payload, model_req)
+        resposta, _model_usado = perguntas_agent_provider_transport.invoke_model(client_id, payload, model_req)
         resumo = _perguntas_ia_compactar_contexto(resposta, 12000)
         return resumo or _perguntas_ia_memoria_compactar_local(memoria, removidos)
     except Exception as exc:

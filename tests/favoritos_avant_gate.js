@@ -4,12 +4,10 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { searchRankingSource } = require('./helpers/favoritos_search_ranking_sources');
 
 const root = path.resolve(__dirname, '..');
-const source = fs.readFileSync(
-    path.join(root, 'static', 'favoritos', 'tabelas-layout', '04-promocoes-busca-ranking.js'),
-    'utf8'
-);
+const source = searchRankingSource(root, { includeRuntime: false, includePublicApi: false });
 
 function extractFunction(name, context = {}) {
     const marker = `function ${name}`;
@@ -250,6 +248,17 @@ async function run() {
         },
         mostrarBotaoContinuarLoginAvantProFavoritos: () => ({})
     };
+    [
+        'cicloLoginContinuaAtivoFavoritos',
+        'finalizarPerguntaLoginAvantFavoritos',
+        'agendarEnquantoLoginFavoritos',
+        'criarBotaoLoginFavoritos',
+        'renderizarControlesLoginAbertoFavoritos',
+        'abrirTelaLoginAvantFavoritos',
+        'renderizarPerguntaLoginAvantFavoritos'
+    ].forEach(name => {
+        promptContext[name] = extractFunction(name, promptContext);
+    });
     const perguntarLogin = extractFunction('perguntarLoginAvantProAntesFavoritos', promptContext);
     const respostaPrompt = perguntarLogin({ selecionados: [], quantidade: 1 });
     assert.ok(
@@ -314,12 +323,12 @@ async function run() {
     );
     assert.match(
         source,
-        /async function perguntarLoginAvantProAntesFavoritos[\s\S]*Antes de fazer favoritos, o Avant Pro ja esta logado\?[\s\S]*Nao, abrir login/,
+        /function renderizarPerguntaLoginAvantFavoritos[\s\S]*Nao, abrir login[\s\S]*Antes de fazer favoritos, o Avant Pro ja esta logado\?[\s\S]*async function perguntarLoginAvantProAntesFavoritos/,
         'cada nova execucao deve perguntar se o Avant Pro ja esta logado'
     );
     assert.match(
         source,
-        /sim\.addEventListener\('click', async[\s\S]*registrarConfirmacaoUsuarioLoginAvantProBestEffortFavoritos\('prompt_usuario_confirmou'\)[\s\S]*finalizar\(true\)/,
+        /criarBotaoLoginFavoritos\('Sim, continuar'[\s\S]*registrarConfirmacaoUsuarioLoginAvantProBestEffortFavoritos\('prompt_usuario_confirmou'\)[\s\S]*finalizarPerguntaLoginAvantFavoritos\(contexto, true\)/,
         'Sim deve registrar a confirmacao humana e finalizar sem validar o DOM'
     );
     assert.doesNotMatch(
@@ -344,7 +353,7 @@ async function run() {
     );
     assert.match(
         source,
-        /const validarEFinalizar = botao => validarLoginMercadoLivreAntesDeContinuarFavoritos\([\s\S]*validarLoginAvantProAntesDeContinuarFavoritos\(\(\) => finalizar\(true\), botao\)/,
+        /const validarEFinalizar = botao => validarLoginMercadoLivreAntesDeContinuarFavoritos\([\s\S]*validarLoginAvantProAntesDeContinuarFavoritos\([\s\S]*finalizarPerguntaLoginAvantFavoritos\(contexto, true\)/,
         'fluxo Nao deve manter as validacoes Mercado Livre e Avant Pro'
     );
     assert.match(

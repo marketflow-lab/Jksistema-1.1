@@ -4,7 +4,9 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 
-from backend.services import perguntas_pos_venda_endpoints as endpoints
+from backend.modules.perguntas_pos_venda.endpoints import post_sale_queries
+from backend.modules.perguntas_pos_venda.endpoints import post_sale_sync as endpoints
+from backend.modules.perguntas_pos_venda.endpoints.contracts import _ML_POS_VENDA_RECENT_DAYS
 from backend.services import perguntas_pos_venda_store as store
 
 
@@ -47,7 +49,7 @@ def _prepare_endpoint_globals(monkeypatch) -> None:
         lambda value, _limit=500: str(value or "").strip(),
         raising=False,
     )
-    endpoints._ML_POS_VENDA_SYNC_THREADS.clear()
+    endpoints.ENDPOINTS_STATE.pos_sale_sync_threads.clear()
 
 
 def test_bootstrap_365_persists_all_pages_and_marks_complete(tmp_path, monkeypatch):
@@ -128,7 +130,7 @@ def test_incremental_uses_recent_window_and_keeps_365_day_history(tmp_path, monk
         loja="Loja A",
         seller_id="SELLER-A",
         mode="incremental",
-        coverage_days=endpoints._ML_POS_VENDA_RECENT_DAYS,
+        coverage_days=_ML_POS_VENDA_RECENT_DAYS,
         max_orders=10000,
     )
 
@@ -241,19 +243,19 @@ def test_endpoint_schedules_bootstrap_once_then_only_recent_refresh(tmp_path, mo
     _prepare_endpoint_globals(monkeypatch)
     scheduled = []
     monkeypatch.setattr(
-        endpoints,
+        post_sale_queries,
         "_obter_cfg_ml",
         lambda *_args: {"user_id": "SELLER-A"},
         raising=False,
     )
-    monkeypatch.setattr(endpoints, "get_tenant_path", lambda _client_id: str(tmp_path), raising=False)
+    monkeypatch.setattr(post_sale_queries, "get_tenant_path", lambda _client_id: str(tmp_path), raising=False)
     monkeypatch.setattr(
-        endpoints,
+        post_sale_queries,
         "_ml_pos_venda_schedule_sync",
         lambda **kwargs: scheduled.append(dict(kwargs)) or True,
     )
 
-    first = endpoints.ml_pos_venda_listar_conversas(loja="Loja A", client_id="CLIENT-A")
+    first = post_sale_queries.ml_pos_venda_listar_conversas(loja="Loja A", client_id="CLIENT-A")
     assert first["source"] == "local_cache"
     assert [(item["mode"], item["coverage_days"]) for item in scheduled] == [("bootstrap", 365)]
 
@@ -265,7 +267,7 @@ def test_endpoint_schedules_bootstrap_once_then_only_recent_refresh(tmp_path, mo
         coverage_days=365,
         bootstrap_complete=True,
     )
-    endpoints.ml_pos_venda_listar_conversas(
+    post_sale_queries.ml_pos_venda_listar_conversas(
         loja="Loja A",
         client_id="CLIENT-A",
         force_refresh=True,
@@ -275,7 +277,7 @@ def test_endpoint_schedules_bootstrap_once_then_only_recent_refresh(tmp_path, mo
         ("incremental", 30),
     ]
 
-    endpoints.ml_pos_venda_listar_conversas(
+    post_sale_queries.ml_pos_venda_listar_conversas(
         loja="Loja A",
         client_id="CLIENT-A",
         summary_only=True,

@@ -58,13 +58,15 @@ class PromptBuilder:
             ])
         else:
             app_rules["security"].extend([
+                "Responda como vendedor cordial, com a informacao principal na primeira frase e no maximo tres frases de conteudo antes da assinatura.",
                 "Perguntas publicas do Mercado Livre nao aceitam anexos: nunca solicite que o comprador envie, mande, anexe ou forneca foto ou imagem.",
                 "E permitido mencionar de forma informativa as fotos que ja fazem parte do anuncio, sem pedir novo arquivo ao comprador.",
                 "Em compatibilidade, compare a interface, encaixe, base, eixo, estrias, rosca, conector, medida, tensao, protocolo ou codigo do produto com o item consultado; nao decida apenas porque o modelo aparece ou nao aparece no anuncio.",
                 "Uma fonte oficial dizendo que o alvo aceita uma interface, medida, conexao ou geracao comprova a interface alvo; se o produto usa a mesma especificacao, a equivalencia pode ser derivada sem exigir a expressao literal 'mesmo encaixe'.",
                 "Apresente uma decisao de compatibilidade clara nas primeiras frases, com redacao natural; nao existe palavra ou prefixo obrigatorio para iniciar a resposta.",
                 "Se faltar evidencia de compatibilidade, nao peca foto, chassi ou VIN e nao recomende genericamente um mecanico ou oficina.",
-                "Nesse caso, identifique o tipo de alvo e solicite no maximo dois dados textuais decisivos apropriados: em veiculos, ano/versao ou se a base e original ou paralela; nos demais perfis, interface da maquina, modelo do aparelho, conexao eletrica, rosca, medida ou fixacao; marque revisao humana quando a duvida permanecer.",
+                "Nesse caso, responda primeiro com os fatos disponiveis. Somente quando nenhuma resposta util for possivel, solicite no maximo dois dados textuais decisivos apropriados: em veiculos, ano/versao ou se a base e original ou paralela; nos demais perfis, interface da maquina, modelo do aparelho, conexao eletrica, rosca, medida ou fixacao.",
+                "O rascunho final nao exige revisao humana; mantenha requires_human_review=false. A aprovacao antes do envio e controlada separadamente pelo aplicativo.",
             ])
         payload = {
             "role": (
@@ -110,7 +112,7 @@ class PromptBuilder:
                 "answer": (
                     "string curta, em portugues do Brasil, sem markdown"
                     if is_post_sale
-                    else "string em portugues do Brasil, sem markdown"
+                    else "string curta, em portugues do Brasil, sem markdown"
                 ),
                 "confidence": "number de 0 a 1",
                 "category": category.value,
@@ -149,7 +151,7 @@ class PromptBuilder:
             )
         return (
             "Fluxo V2 de perguntas publicas do Mercado Livre.\n"
-            "Escreva como equipe da loja, sem dizer que e IA ou assistente.\n"
+            "Escreva como vendedor cordial da equipe da loja, sem dizer que e IA ou assistente. Coloque a informacao principal na primeira frase e use no maximo tres frases de conteudo antes da assinatura.\n"
             f"A resposta final deve terminar exatamente com: {_store_signature(rules.store_name)}\n"
             "ORDEM OBRIGATORIA DE ANALISE:\n"
             "1. Leia a PERGUNTA_DO_COMPRADOR.\n"
@@ -158,10 +160,10 @@ class PromptBuilder:
             "4. Verifique se o anuncio ou o historico ja contem evidencia suficiente para responder.\n"
             "5. Somente se a resposta nao estiver no anuncio ou historico, nao encerre a analise: marque requires_human_review=true e reason=missing_listing_evidence. O orquestrador continuara automaticamente, identificara o produto e pesquisara na internet compatibilidade, aplicacao, caracteristicas e funcoes.\n"
             "6. Depois da pesquisa, compare codigos, modelos, interfaces, medidas e especificacoes. Priorize fabricante, manual, catalogo OEM e documentacao oficial; use duas fontes tecnicas independentes quando nao houver fonte oficial.\n"
-            "7. Responda somente com evidencia e aplique as REGRAS_DO_APP. Se as fontes autorizadas forem insuficientes ou divergentes, informe apenas o que foi confirmado e solicite somente o dado indispensavel; nunca invente informacao ausente.\n\n"
+            "7. Responda somente com evidencia e aplique as REGRAS_DO_APP. Se as fontes autorizadas forem insuficientes ou divergentes, gere um rascunho util com o que foi confirmado; solicite dado somente quando nenhuma resposta util for possivel e nunca invente informacao ausente.\n\n"
             "CONTRATO_PARA_COMPATIBILIDADE:\n"
             "A conclusao pode ser compativel, incompativel, condicional ou evidencia insuficiente e deve ficar clara nas primeiras frases, sem inicio padronizado. "
-            "Compare interfaces e encaixes tecnicos conforme o tipo de alvo. Se faltar um dado, peca no maximo dois campos textuais decisivos do perfil correto. "
+            "Compare interfaces e encaixes tecnicos conforme o tipo de alvo. Se faltar um dado, responda primeiro com os fatos disponiveis e somente quando indispensavel peca no maximo dois campos textuais decisivos do perfil correto. "
             "Quando fabricante e produto confirmarem a mesma geracao de interface, aceite a equivalencia derivada sem exigir uma frase literal sobre o encaixe. "
             "Nunca solicite foto/anexo, chassi/VIN ou confirmacao generica com mecanico em pergunta publica.\n\n"
             f"PERGUNTA_DO_COMPRADOR:\n{question.text}\n\n"

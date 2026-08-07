@@ -4,13 +4,14 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { executionSource: readExecutionSource } = require('./helpers/favoritos_execution_sources');
 
 const root = path.resolve(__dirname, '..');
 const read = relative => fs.readFileSync(path.join(root, relative), 'utf8');
 const timerSource = read('static/favoritos/v2/ui/elapsed-timer.js');
 const historySource = read('static/favoritos/tabelas-layout/05-resultados-historico.js');
 const historyUiSource = read('static/favoritos/tabelas-layout/06-ranking-manual-historico-ui.js');
-const executionSource = read('static/favoritos/tabelas-layout/07-execucao-render-layout.js');
+const executionSource = readExecutionSource(root);
 const statusModalSource = read('static/favoritos/v2/ui/status-modal.js');
 const backendHistorySource = read('backend/services/favoritos_storage.py');
 const shellSource = read('electron_shell.html');

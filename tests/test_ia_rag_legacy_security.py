@@ -6,6 +6,7 @@ from starlette.requests import Request
 
 from backend.schemas import IARagDocumento, IARagIndexRequest, IARagReindexRequest
 from backend.services import codex_console, ia_endpoints, ia_rag
+from backend.services.codex.console import runtime as console_runtime
 
 
 def test_legacy_rag_flags_are_disabled_by_default(monkeypatch):
@@ -131,9 +132,7 @@ def test_local_status_never_exposes_absolute_database_path(monkeypatch, tmp_path
 
 
 def test_legacy_index_and_reindex_routes_reject_non_full_user(monkeypatch):
-    monkeypatch.setattr(
-        codex_console,
-        "_codex_require_authenticated",
+    monkeypatch.setattr(console_runtime, "_codex_require_authenticated",
         lambda _request, _authorization: {
             "client_id": "000002",
             "username": "operador",

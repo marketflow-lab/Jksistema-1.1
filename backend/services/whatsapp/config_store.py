@@ -49,15 +49,8 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services.codex.console import paths as console_paths
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -75,10 +68,10 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 def _base_dir() -> Path:
-    return Path(codex_console._codex_base_dir()).resolve()
+    return Path(console_paths.base_dir()).resolve()
 
 def _info_dir() -> Path:
-    path = Path(codex_console._codex_base_info_dir()).resolve()
+    path = Path(console_paths.base_info_dir()).resolve()
     path.mkdir(parents=True, exist_ok=True)
     return path
 

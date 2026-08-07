@@ -677,7 +677,7 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         self.assertEqual(result.source, "policy")
         self.assertTrue(result.needs_human)
 
-    def test_post_sale_defect_generates_draft_for_review(self):
+    def test_post_sale_defect_keeps_draft_available(self):
         result = process(
             "Radiador seus nao valem nada. 5 meses e ja deu ruim, vou acionar o Procon.",
             ai="Sentimos pelo ocorrido. Por favor, envie fotos do item e do problema pelo detalhe da compra para verificarmos o atendimento. Equipe Minha Loja agradece o seu contato.",
@@ -688,7 +688,8 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         self.assertEqual(result.source, "gemini")
         self.assertIn("fotos", result.answer)
         self.assertEqual(result.decision, PublishDecision.HUMAN_REVIEW)
-        self.assertIn("post_sale_requires_review", result.validation.issues)
+        self.assertTrue(result.validation.ok)
+        self.assertNotIn("post_sale_requires_review", result.validation.issues)
         self.assertNotIn("public_question_asks_for_photo", result.validation.issues)
 
     def test_post_sale_keeps_visual_attachment_request_available(self):
@@ -709,9 +710,11 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         result = process("Qual material?", ai="E de metal. Produto novo. Temos envio rapido. Obrigado.")
         self.assertIn("too_many_sentences", result.validation.issues)
 
-    def test_low_confidence_goes_review(self):
+    def test_low_confidence_does_not_block_draft(self):
         result = process("Qual medida?", ai="A medida e 10 cm.", confidence=0.5)
-        self.assertIn("low_confidence", result.validation.issues)
+        self.assertNotIn("low_confidence", result.validation.issues)
+        self.assertTrue(result.validation.ok)
+        self.assertEqual(result.answer, "A medida e 10 cm.")
         self.assertTrue(result.needs_human)
 
     def test_gemini_error_goes_review(self):

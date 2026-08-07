@@ -49,15 +49,8 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services.codex.console import security as console_security
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -87,9 +80,9 @@ def _normalize_worker_url(value: Any) -> str:
     return whatsapp_gateway.normalize_worker_url(value)
 
 def _require_full(request: Request, authorization: Optional[str]) -> dict[str, Any]:
-    session = codex_console._codex_require_full_admin(request, authorization)
+    session = console_security.require_full_admin(request, authorization)
     try:
-        raw = codex_console._codex_payload_sessao(authorization)
+        raw = console_security.resolve_session(authorization)
     except Exception:
         raw = {}
     session["machine_id"] = str(raw.get("machine_id") or _host_machine_id())

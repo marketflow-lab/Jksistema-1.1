@@ -717,9 +717,11 @@ def _telemetried_ia_provider(provider: str, provider_path: str):
             started = time.perf_counter()
             telemetry = None
             try:
-                from backend.services import codex_console
+                from backend.services.codex.console import execution as console_execution
+                from backend.services.codex.console import security as console_security
+                from backend.services.codex.console import telemetry as console_telemetry
 
-                telemetry = codex_console._codex_ai_telemetry_instance()
+                telemetry = console_telemetry.instance()
                 telemetry.schedule_retention(tenant)
                 telemetry.start_trace(
                     tenant,
@@ -807,13 +809,15 @@ def _chamar_codex_chat_com_thread(
     on_thread_ready: Callable[[str], None] | None = None,
 ) -> tuple[str, str]:
     """Execute Codex in read-only mode and optionally resume an operational thread."""
-    from backend.services import codex_console
+    from backend.services.codex.console import execution as console_execution
+    from backend.services.codex.console import security as console_security
+    from backend.services.codex.console import telemetry as console_telemetry
 
-    if not codex_console._codex_enabled():
+    if not console_execution.enabled():
         raise HTTPException(status_code=503, detail="Codex esta desabilitado neste runtime.")
-    if not codex_console._codex_sdk_installed():
+    if not console_execution.sdk_installed():
         raise HTTPException(status_code=503, detail="Dependencia do Codex nao instalada neste runtime.")
-    if not codex_console._codex_auth_detected():
+    if not console_execution.auth_detected():
         raise HTTPException(status_code=503, detail="Autenticacao local do Codex nao encontrada.")
 
     mensagem = _ia_chat_mensagem_contextual(payload)
@@ -844,7 +848,7 @@ def _chamar_codex_chat_com_thread(
     )
     session_key = str(conversation_key or thread_id or uuid.uuid4().hex).strip()
     registry_key = str(active_turn_key or conversation_key or thread_id or session_key).strip()
-    cwd = codex_console._codex_readonly_cwd_for_session(
+    cwd = console_security.readonly_cwd(
         {"client_id": str(client_id or "default"), "username": "ia-configurada"},
         session_key,
     )
@@ -855,10 +859,10 @@ def _chamar_codex_chat_com_thread(
 
         with Codex(
             CodexConfig(
-                codex_bin=codex_console._codex_runtime_bin(),
-                env=codex_console._codex_sdk_env(),
+                codex_bin=console_execution.runtime_bin(),
+                env=console_execution.sdk_env(),
                 cwd=cwd,
-                config_overrides=codex_console._codex_nonfull_config_overrides(),
+                config_overrides=console_execution.readonly_config_overrides(),
             )
         ) as codex:
             thread_kwargs = {

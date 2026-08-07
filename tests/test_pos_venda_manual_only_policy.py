@@ -12,7 +12,9 @@ from backend.schemas.perguntas_pos_venda import (
     PosVendaGerarRespostaRequest,
     PosVendaMensagemRequest,
 )
-from backend.services import perguntas_pos_venda_endpoints as endpoints
+from backend.modules.perguntas_pos_venda.endpoints import approvals as endpoints
+from backend.modules.perguntas_pos_venda.endpoints import post_sale_actions
+from backend.modules.perguntas_pos_venda.endpoints import post_sale_automation
 from backend.services import perguntas_pos_venda_codex as codex_jobs
 from backend.services import perguntas_pos_venda_state as state
 from backend.services import codex_actions
@@ -54,13 +56,13 @@ def test_post_sale_automatic_flag_is_always_false_when_normalized_and_saved(tmp_
 
 
 def test_post_sale_poll_is_noop_without_loading_ml_or_ai(monkeypatch):
-    monkeypatch.setattr(endpoints, "_perguntas_ia_state_carregar", _fail("state should not load"), raising=False)
-    monkeypatch.setattr(endpoints, "_perguntas_ia_aprovacoes_carregar", _fail("approvals should not load"), raising=False)
-    monkeypatch.setattr(endpoints, "carregar_lojas", _fail("stores should not load"), raising=False)
-    monkeypatch.setattr(endpoints, "_obter_cfg_ml", _fail("Mercado Livre should not be called"), raising=False)
-    monkeypatch.setattr(endpoints, "_ml_pos_venda_executar_pipeline_ia", _fail("AI should not be called"), raising=False)
+    monkeypatch.setattr(post_sale_automation, "_perguntas_ia_state_carregar", _fail("state should not load"), raising=False)
+    monkeypatch.setattr(post_sale_automation, "_perguntas_ia_aprovacoes_carregar", _fail("approvals should not load"), raising=False)
+    monkeypatch.setattr(post_sale_automation, "carregar_lojas", _fail("stores should not load"), raising=False)
+    monkeypatch.setattr(post_sale_automation, "_obter_cfg_ml", _fail("Mercado Livre should not be called"), raising=False)
+    monkeypatch.setattr(post_sale_automation, "_ml_pos_venda_executar_pipeline_ia", _fail("AI should not be called"), raising=False)
 
-    result = endpoints.ml_pos_venda_automacao_poll(client_id="cliente")
+    result = post_sale_automation.ml_pos_venda_automacao_poll(client_id="cliente")
 
     assert result == {
         "success": True,
@@ -74,13 +76,13 @@ def test_post_sale_poll_is_noop_without_loading_ml_or_ai(monkeypatch):
 
 
 def test_post_sale_suggestion_is_rejected_before_codex_or_ai(monkeypatch):
-    monkeypatch.setattr(endpoints.perguntas_pos_venda_codex, "enabled", _fail("Codex should not be inspected"))
-    monkeypatch.setattr(endpoints.perguntas_pos_venda_codex, "create_job", _fail("Codex job should not be created"))
-    monkeypatch.setattr(endpoints, "_obter_cfg_ml", _fail("Mercado Livre should not be called"), raising=False)
-    monkeypatch.setattr(endpoints, "_ml_pos_venda_executar_pipeline_ia", _fail("AI should not be called"), raising=False)
+    monkeypatch.setattr(post_sale_actions.perguntas_pos_venda_codex, "enabled", _fail("Codex should not be inspected"))
+    monkeypatch.setattr(post_sale_actions.perguntas_pos_venda_codex, "create_job", _fail("Codex job should not be created"))
+    monkeypatch.setattr(post_sale_actions, "_obter_cfg_ml", _fail("Mercado Livre should not be called"), raising=False)
+    monkeypatch.setattr(post_sale_actions, "_ml_pos_venda_executar_pipeline_ia", _fail("AI should not be called"), raising=False)
 
     with pytest.raises(HTTPException) as exc_info:
-        endpoints.ml_pos_venda_gerar_resposta_conversa(
+        post_sale_actions.ml_pos_venda_gerar_resposta_conversa(
             PosVendaGerarRespostaRequest(loja="JK Pecas", pack_id="PACK-1"),
             client_id="cliente",
         )
@@ -271,19 +273,19 @@ def test_typed_manual_post_sale_response_still_sends(monkeypatch):
         calls.append(args)
         return {"id": "MSG-OUT"}, {"access_token": "fixture"}
 
-    monkeypatch.setattr(endpoints, "_obter_cfg_ml", lambda *_args: {"access_token": "fixture"}, raising=False)
-    monkeypatch.setattr(endpoints, "_pos_venda_ia_limpar_resposta", lambda value, _max: str(value).strip(), raising=False)
+    monkeypatch.setattr(post_sale_actions, "_obter_cfg_ml", lambda *_args: {"access_token": "fixture"}, raising=False)
+    monkeypatch.setattr(post_sale_actions, "_pos_venda_ia_limpar_resposta", lambda value, _max: str(value).strip(), raising=False)
     monkeypatch.setattr(
-        endpoints,
+        post_sale_actions,
         "_ml_pos_venda_enviar_resposta_ml",
         send_manual,
         raising=False,
     )
-    monkeypatch.setattr(endpoints, "_ml_pos_venda_preparar_conversa_ia", lambda _client, _loja, cfg, conversa: (conversa, cfg), raising=False)
-    monkeypatch.setattr(endpoints, "_perguntas_ia_resolver_aprovacoes_pendentes", lambda *_args, **_kwargs: [], raising=False)
-    monkeypatch.setattr(endpoints, "_ml_pos_venda_memoria_registrar_resposta_enviada", lambda *_args, **_kwargs: [], raising=False)
+    monkeypatch.setattr(post_sale_actions, "_ml_pos_venda_preparar_conversa_ia", lambda _client, _loja, cfg, conversa: (conversa, cfg), raising=False)
+    monkeypatch.setattr(post_sale_actions, "_perguntas_ia_resolver_aprovacoes_pendentes", lambda *_args, **_kwargs: [], raising=False)
+    monkeypatch.setattr(post_sale_actions, "_ml_pos_venda_memoria_registrar_resposta_enviada", lambda *_args, **_kwargs: [], raising=False)
 
-    result = endpoints.ml_pos_venda_responder_conversa(
+    result = post_sale_actions.ml_pos_venda_responder_conversa(
         PosVendaMensagemRequest(
             loja="JK Pecas",
             pack_id="PACK-1",
@@ -300,15 +302,15 @@ def test_typed_manual_post_sale_response_still_sends(monkeypatch):
 
 
 def test_manual_post_sale_route_rejects_legacy_black_jhon_proposal_before_any_call(monkeypatch):
-    monkeypatch.setattr(endpoints, "_obter_cfg_ml", _fail("Mercado Livre should not be called"), raising=False)
+    monkeypatch.setattr(post_sale_actions, "_obter_cfg_ml", _fail("Mercado Livre should not be called"), raising=False)
     monkeypatch.setattr(
-        endpoints.perguntas_pos_venda_codex,
+        post_sale_actions.perguntas_pos_venda_codex,
         "approve_or_refresh_proposal",
         _fail("Black Jhon proposal should not be inspected"),
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        endpoints.ml_pos_venda_responder_conversa(
+        post_sale_actions.ml_pos_venda_responder_conversa(
             PosVendaMensagemRequest(
                 loja="JK Pecas",
                 pack_id="PACK-1",

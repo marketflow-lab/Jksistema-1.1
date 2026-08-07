@@ -4,6 +4,7 @@ import pytest
 
 from backend.services import codex_console, whatsapp_bridge
 from backend.services.whatsapp import intent
+from backend.services.codex.console import prompt_context as console_prompt_context
 
 
 @pytest.mark.parametrize(
@@ -32,12 +33,12 @@ def test_query_domains_component_matches_facade(text: str, domains: list[str]) -
 )
 def test_readonly_and_mutation_classification(text: str, readonly: bool, mutation: bool) -> None:
     assert intent.readonly_inquiry(text) == whatsapp_bridge._whatsapp_readonly_inquiry(text) is readonly
-    component = intent.mutation_intent(text, mutation_detector=codex_console._codex_prompt_pede_alteracao)
+    component = intent.mutation_intent(text, mutation_detector=console_prompt_context._codex_prompt_pede_alteracao)
     assert component == whatsapp_bridge._whatsapp_mutation_intent(text) is mutation
 
 
 def test_protected_mutation_domains_keep_post_sale_exception() -> None:
-    detector = codex_console._codex_prompt_pede_alteracao
+    detector = console_prompt_context._codex_prompt_pede_alteracao
     assert intent.protected_mutation_domains(
         "pause o anuncio do Mercado Livre", mutation_detector=detector
     ) == whatsapp_bridge._whatsapp_protected_mutation_domains("pause o anuncio do Mercado Livre") == [

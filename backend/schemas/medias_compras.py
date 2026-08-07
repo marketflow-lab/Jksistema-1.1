@@ -26,6 +26,7 @@ class ListaCompraRequest(BaseModel):
     nome_lista: str | None = None
     loja: str | None = None
     periodo_meses: int | None = None
+    quantidades_sugeridas: dict[str, int] | None = None
 
 
 class ListaPedidoUpdateRequest(BaseModel):

@@ -223,12 +223,14 @@ class JKCodexMCP:
         # Importing backend_api binds the extracted service modules to the same
         # runtime configuration and data paths used by the desktop backend.
         import backend_api  # noqa: F401
-        from backend.services import codex_assistant, codex_console
         from backend.services import codex_mcp_rollout
+        from backend.services.codex.assistant import execution as assistant_execution
+        from backend.services.codex.assistant import runtime as assistant_runtime
+        from backend.services.codex.console import execution as console_execution
 
-        codex_assistant.configure_codex_assistant_runtime(backend_api)
-        self.codex_assistant = codex_assistant
-        self.codex_console = codex_console
+        assistant_runtime.configure_codex_assistant_runtime(backend_api)
+        self.assistant_execution = assistant_execution
+        self.console_execution = console_execution
         self.codex_mcp_rollout = codex_mcp_rollout
         self.context = context
         self.task_id = str(context.get("task_id") or "").strip()
@@ -351,7 +353,7 @@ class JKCodexMCP:
             return
 
     def tools(self) -> list[dict[str, Any]]:
-        catalog = self.codex_console._codex_agent_tool_catalog(
+        catalog = self.console_execution.tool_catalog(
             self.permissions,
             read_only_only=True,
             source_policy=self.source_policy,
@@ -456,7 +458,7 @@ class JKCodexMCP:
                 {"success": False, "tool_id": name, "error_code": "mcp_plan_dependency_pending", "error": "Dependencia do plano ainda nao concluida."},
                 is_error=True,
             )
-        policy_error = self.codex_console._codex_agent_source_policy_error(
+        policy_error = self.console_execution.source_policy_error(
             name,
             self.source_policy,
             self.previous_results,
@@ -538,7 +540,7 @@ class JKCodexMCP:
         self.external_call_count += 1
         execution_started = time.perf_counter()
         try:
-            result = self.codex_assistant.codex_assistant_execute_tool_call(
+            result = self.assistant_execution.execute_tool_call(
                 client_id=client_id,
                 tool_id=name,
                 args=dict(planned["arguments"]),

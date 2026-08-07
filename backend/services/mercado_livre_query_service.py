@@ -308,23 +308,24 @@ def _delegated_query(
     limit: int,
     deadline: Optional[float],
 ) -> dict[str, Any]:
-    from backend.services import codex_readonly_sources, ia_tools_marketplaces
+    from backend.services import codex_readonly_sources
+    from backend.services.marketplace_tools import listings, orders, promotions, traffic
 
     tool = str(resource.get("delegated_tool") or "")
     if tool == "mercado_livre_listing":
-        return ia_tools_marketplaces._ia_tool_get_mercado_livre_listing(
+        return listings.query(
             client_id, message, loja=loja, limite=limit,
             item_id=path_values.get("item_id", ""),
             incluir_descricao=str(resource.get("resource_id")) == "ml.items.description",
             incluir_detalhes=True, query_deadline=deadline,
         )
     if tool == "mercado_livre_visits":
-        return ia_tools_marketplaces._ia_tool_get_mercado_livre_visits(
+        return traffic.query_visits(
             client_id, message, loja=loja, item_id=path_values.get("item_id", ""),
             dias=int(params.get("last") or 30), query_deadline=deadline,
         )
     if tool == "mercado_livre_promotions":
-        return ia_tools_marketplaces._ia_tool_get_mercado_livre_promotions(
+        return promotions.query(
             client_id, message, loja=loja, limite=min(limit, 50), query_deadline=deadline,
         )
     if tool == "questions_post_sale_query":
@@ -339,7 +340,7 @@ def _delegated_query(
         )
     if tool == "mercado_livre_orders":
         identifier = path_values.get("order_id") or path_values.get("pack_id") or ""
-        return ia_tools_marketplaces._ia_tool_get_mercado_livre_orders(
+        return orders.query(
             client_id, message, loja=loja, id_pedido=identifier,
             status=str(params.get("order.status") or "paid,partially_refunded"),
             offset=int(params.get("offset") or 0), limite=limit, query_deadline=deadline,
@@ -386,9 +387,11 @@ def execute_mercado_livre_query(
             resource=dict(resource),
         )
 
-    from backend.services import ia_tools_marketplaces, mercadolivre_legacy_api
+    from backend.services import mercadolivre_legacy_api
+    from backend.services.marketplace_tools import client as marketplace_client
+    from backend.services.marketplace_tools import listing_search
 
-    store, store_failure = ia_tools_marketplaces._ia_ml_resolver_loja_exata(client_id, loja)
+    store, store_failure = marketplace_client.resolve_store(client_id, loja)
     if not store:
         return _failure(arguments, str(store_failure.get("code") or "store_required"), str(store_failure.get("message") or "Informe uma loja exata."), available_stores=list(store_failure.get("available_stores") or []))
     deadline = time.monotonic() + 30
@@ -424,7 +427,7 @@ def execute_mercado_livre_query(
         preflight_payload: Any = None
         preflight_path = ""
         if ownership == "owned_item":
-            item, cfg, failure = ia_tools_marketplaces._ia_ml_owned_item(client_id, store, cfg, path_values.get("item_id", ""), deadline=deadline)
+            item, cfg, failure = listing_search.resolve_owned_item(client_id, store, cfg, path_values.get("item_id", ""), deadline=deadline)
             if failure:
                 return _failure(arguments, str(failure.get("code") or "ownership_denied"), str(failure.get("message") or "Propriedade nao confirmada."))
             preflight_payload = item
@@ -445,7 +448,7 @@ def execute_mercado_livre_query(
             preflight_path = f"/post-purchase/v1/claims/{path_values.get('claim_id', '')}"
 
         if preflight_path:
-            preflight_response, cfg = ia_tools_marketplaces._ia_ml_request_get(
+            preflight_response, cfg = marketplace_client.request_get(
                 client_id, store, cfg, API_BASE + preflight_path,
                 headers={"x-format-new": "true"} if ownership == "owned_shipment" else None,
                 timeout=15, deadline=deadline,
@@ -464,7 +467,7 @@ def execute_mercado_livre_query(
                     if not _NUMERIC_ID_RE.fullmatch(linked_id):
                         owned = False
                         break
-                    linked_response, cfg = ia_tools_marketplaces._ia_ml_request_get(
+                    linked_response, cfg = marketplace_client.request_get(
                         client_id, store, cfg, API_BASE + f"/orders/{linked_id}",
                         timeout=15, deadline=deadline,
                     )
@@ -497,7 +500,7 @@ def execute_mercado_livre_query(
         status = 200
         selected_response_headers: dict[str, str] = {}
         if final_payload is None:
-            response, cfg = ia_tools_marketplaces._ia_ml_request_get(
+            response, cfg = marketplace_client.request_get(
                 client_id, store, cfg, API_BASE + path, params=safe_params,
                 headers=dict(resource.get("required_headers") or {}), timeout=20, deadline=deadline,
             )

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from backend.modules.context_hub import paths as hub_paths
+from backend.modules.context_hub import storage as hub_storage
 from backend.services import context_hub
 
 
@@ -22,7 +24,7 @@ def retrieval_hub(tmp_path: Path):
     info.mkdir()
     context_hub.configure_context_hub(base_dir=base, info_root=info, surface="installed")
     context_hub.bootstrap_context_hub("tenant-rag")
-    paths = context_hub._tenant_paths("tenant-rag", info_root=info)
+    paths = hub_paths._tenant_paths("tenant-rag", info_root=info)
     generation_id = "a" * 32
     source_version = "1.0.105"
 
@@ -50,7 +52,7 @@ def retrieval_hub(tmp_path: Path):
             ]
         documents.append((f"jk:guide:{index}", f"Guia produto {index}", chunks))
 
-    with context_hub._connect(paths) as connection:
+    with hub_storage._connect(paths) as connection:
         connection.execute(
             """
             INSERT INTO context_hub_generations(
@@ -196,8 +198,8 @@ def test_whatsapp_limit_deduplicates_and_diversifies_documents(retrieval_hub: Pa
 
 
 def test_local_lexical_fallback_preserves_strict_then_relaxed_contract(retrieval_hub: Path) -> None:
-    paths = context_hub._tenant_paths("tenant-rag", info_root=retrieval_hub)
-    with context_hub._connect(paths) as connection:
+    paths = hub_paths._tenant_paths("tenant-rag", info_root=retrieval_hub)
+    with hub_storage._connect(paths) as connection:
         connection.execute("DELETE FROM context_hub_chunks_fts")
         connection.commit()
 

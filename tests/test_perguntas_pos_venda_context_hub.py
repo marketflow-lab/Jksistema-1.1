@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-
-def _agent_module():
-    import backend_api  # noqa: F401
-    from backend.services import perguntas_pos_venda_agent
-
-    return perguntas_pos_venda_agent
+from backend.modules.perguntas_pos_venda.ai import clients as agent_clients
+from backend.modules.perguntas_pos_venda.ai import context as agent_context
+from backend.modules.perguntas_pos_venda.ai import evidence as agent_evidence
+from backend.modules.perguntas_pos_venda.ai import execution as agent_execution
+from backend.modules.perguntas_pos_venda.ai import sources as agent_sources
+from ml_questions_gemini import AIAnswer
 
 
 def _structured_intent(
@@ -99,8 +99,8 @@ def _hub_result(*, truth_class: str = "canonical", snippet: str = "SKU 001 usa b
 
 
 def test_context_hub_search_binds_server_tenant_and_allowlists_untrusted_rows(monkeypatch):
-    agent = _agent_module()
-    from backend.services import context_hub
+    from backend.modules.context_hub import dlp as context_hub_dlp
+    from backend.modules.context_hub import retrieval as context_hub_retrieval
 
     calls = []
 
@@ -148,10 +148,10 @@ def test_context_hub_search_binds_server_tenant_and_allowlists_untrusted_rows(mo
             ],
         }
 
-    monkeypatch.setattr(context_hub, "search_context", fake_search)
-    monkeypatch.setattr(context_hub, "scan_dlp", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(context_hub_retrieval, "search_context", fake_search)
+    monkeypatch.setattr(context_hub_dlp, "scan_dlp", lambda *_args, **_kwargs: [])
 
-    result = agent._perguntas_ia_context_hub_tool("000002", _compatibility_input(tenant_id="999999"))
+    result = agent_context._perguntas_ia_context_hub_tool("000002", _compatibility_input(tenant_id="999999"))
 
     assert calls and calls[0][0] == "000002"
     assert calls[0][2] == {"source_type": "sku", "ids": ["jk:sku:001"]}
@@ -174,8 +174,8 @@ def test_context_hub_search_binds_server_tenant_and_allowlists_untrusted_rows(mo
 
 
 def test_context_hub_without_known_sku_stays_inside_sku_documents(monkeypatch):
-    agent = _agent_module()
-    from backend.services import context_hub
+    from backend.modules.context_hub import dlp as context_hub_dlp
+    from backend.modules.context_hub import retrieval as context_hub_retrieval
 
     calls = []
 
@@ -203,10 +203,10 @@ def test_context_hub_without_known_sku_stays_inside_sku_documents(monkeypatch):
     payload = _compatibility_input()
     payload["item"].pop("seller_sku", None)
     payload["context"].pop("sku", None)
-    monkeypatch.setattr(context_hub, "search_context", fake_search)
-    monkeypatch.setattr(context_hub, "scan_dlp", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(context_hub_retrieval, "search_context", fake_search)
+    monkeypatch.setattr(context_hub_dlp, "scan_dlp", lambda *_args, **_kwargs: [])
 
-    result = agent._perguntas_ia_context_hub_tool("000002", payload)
+    result = agent_context._perguntas_ia_context_hub_tool("000002", payload)
 
     assert calls == [("000002", {"source_type": "sku"}, 6)]
     assert [row["doc_id"] for row in result["result"]["results"]] == ["jk:sku:001"]
@@ -214,33 +214,30 @@ def test_context_hub_without_known_sku_stays_inside_sku_documents(monkeypatch):
 
 
 def test_context_hub_reference_rejects_encoded_traversal_and_external_authority():
-    agent = _agent_module()
-
-    assert agent._perguntas_ia_context_hub_referencia_segura("%2e%2e/secret.md", "jk:sku:001") == "jk:sku:001"
-    assert agent._perguntas_ia_context_hub_referencia_segura("%2F%2Fevil.test/x", "jk:sku:001") == "jk:sku:001"
-    assert agent._perguntas_ia_context_hub_referencia_segura("%252e%252e/secret.md", "jk:sku:001") == "jk:sku:001"
-    assert agent._perguntas_ia_context_hub_referencia_segura("SKU/001.json", "jk:sku:001") == "SKU/001.json"
+    assert agent_context._perguntas_ia_context_hub_referencia_segura("%2e%2e/secret.md", "jk:sku:001") == "jk:sku:001"
+    assert agent_context._perguntas_ia_context_hub_referencia_segura("%2F%2Fevil.test/x", "jk:sku:001") == "jk:sku:001"
+    assert agent_context._perguntas_ia_context_hub_referencia_segura("%252e%252e/secret.md", "jk:sku:001") == "jk:sku:001"
+    assert agent_context._perguntas_ia_context_hub_referencia_segura("SKU/001.json", "jk:sku:001") == "SKU/001.json"
 
 
 def test_web_failure_logs_only_query_hash(monkeypatch, caplog):
-    agent = _agent_module()
     canary = "PERGUNTA-PRIVADA-CANARY-NAO-LOGAR"
-    monkeypatch.setattr(agent, "_ia_agent_perguntas_buscar_web_publica", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("falha")))
+    monkeypatch.setattr(agent_sources, "_ia_agent_perguntas_buscar_web_publica", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("falha")))
 
     with caplog.at_level("WARNING"):
-        agent._ia_agent_perguntas_contexto_web("000002", "JK Pecas", [{"query": canary, "type": "web"}])
+        agent_sources._ia_agent_perguntas_contexto_web("000002", "JK Pecas", [{"query": canary, "type": "web"}])
 
     assert canary not in caplog.text
     assert "query_hash=" in caplog.text
 
 
 def test_context_hub_retrieval_dlp_drops_secret_without_persisting_value(monkeypatch):
-    agent = _agent_module()
-    from backend.services import context_hub
+    from backend.modules.context_hub import dlp as context_hub_dlp
+    from backend.modules.context_hub import retrieval as context_hub_retrieval
 
     canary = "api_key=CANARY-SECRET-123456789"
     monkeypatch.setattr(
-        context_hub,
+        context_hub_retrieval,
         "search_context",
         lambda *_args, **_kwargs: {
             "generation_id": "g-active",
@@ -254,12 +251,12 @@ def test_context_hub_retrieval_dlp_drops_secret_without_persisting_value(monkeyp
         },
     )
     monkeypatch.setattr(
-        context_hub,
+        context_hub_dlp,
         "scan_dlp",
         lambda payload, **_kwargs: [{"code": "dlp_blocked"}] if canary in str(payload) else [],
     )
 
-    result = agent._perguntas_ia_context_hub_tool("000002", _compatibility_input())
+    result = agent_context._perguntas_ia_context_hub_tool("000002", _compatibility_input())
     serialized = json.dumps(result, ensure_ascii=False)
 
     assert result["result"]["found"] is False
@@ -269,7 +266,6 @@ def test_context_hub_retrieval_dlp_drops_secret_without_persisting_value(monkeyp
 
 
 def test_grounding_never_promotes_legacy_context_hub_row_to_product_evidence():
-    agent = _agent_module()
     tool = _hub_result(truth_class="canonical")
     tool["result"]["results"].append({
         "doc_id": "jk:document:guia-antigo",
@@ -280,7 +276,7 @@ def test_grounding_never_promotes_legacy_context_hub_row_to_product_evidence():
         "eligible_as_solo_evidence": False,
     })
 
-    grounding = agent._perguntas_ia_v2_grounding_coletar([tool], _compatibility_input())
+    grounding = agent_evidence._perguntas_ia_v2_grounding_coletar([tool], _compatibility_input())
 
     assert any(item.get("authority") == "context_hub_canonical" for item in grounding["product"])
     assert not any(
@@ -291,9 +287,8 @@ def test_grounding_never_promotes_legacy_context_hub_row_to_product_evidence():
 
 
 def test_compatibility_pipeline_orders_internal_hub_legacy_then_web():
-    agent = _agent_module()
     agent_input = _compatibility_input()
-    client = agent._PerguntasVertexGeminiV2Client("000002", "JK Pecas", "codex:gpt-5.5", agent_input)
+    client = agent_clients._PerguntasVertexGeminiV2Client("000002", "JK Pecas", "codex:gpt-5.5", agent_input)
 
     def api_tool(function_name):
         return {
@@ -312,19 +307,19 @@ def test_compatibility_pipeline_orders_internal_hub_legacy_then_web():
         "arguments": {"queries": []},
         "result": {"found": False, "context": "", "read_only": True},
     }
-    answer = agent.AIAnswer(
+    answer = AIAnswer(
         answer="Ainda precisamos confirmar a interface.",
         confidence=0.4,
         requires_human_review=True,
         reason="missing_listing_evidence",
     )
-    with patch.object(agent, "_ia_tool_get_mercado_livre_listing", return_value=api_tool("get_mercado_livre_listing")), \
-         patch.object(agent, "_ia_tool_get_product_data", return_value=api_tool("get_product_data")), \
-         patch.object(agent, "_ia_tool_get_bling_product", return_value=api_tool("get_bling_product")), \
-         patch.object(agent, "_perguntas_ia_context_hub_tool", return_value=_hub_result()), \
-         patch.object(agent, "_perguntas_ia_memoria_bloco_prompt", return_value="Memoria aprovada"), \
-         patch.object(agent, "_ia_agent_perguntas_product_identity_web_tool", return_value=web_identity), \
-         patch.object(agent, "_ia_agent_perguntas_web_tool", return_value=web_final), \
+    with patch.object(agent_clients, "marketplace_listing_query", return_value=api_tool("get_mercado_livre_listing")), \
+         patch.object(agent_clients, "_ia_tool_get_product_data", return_value=api_tool("get_product_data")), \
+         patch.object(agent_clients, "_ia_tool_get_bling_product", return_value=api_tool("get_bling_product")), \
+         patch.object(agent_clients, "_perguntas_ia_context_hub_tool", return_value=_hub_result()), \
+         patch.object(agent_clients, "_perguntas_ia_memoria_bloco_prompt", return_value="Memoria aprovada"), \
+         patch.object(agent_clients, "_ia_agent_perguntas_product_identity_web_tool", return_value=web_identity), \
+         patch.object(agent_clients, "_ia_agent_perguntas_web_tool", return_value=web_final), \
          patch.object(client, "_call_model", return_value=answer):
         client._generate_compatibility("prompt", {
             "category": "compatibility",
@@ -342,32 +337,31 @@ def test_compatibility_pipeline_orders_internal_hub_legacy_then_web():
         "approved_sku_memory_and_legacy_rules",
         "product_interface_research",
         "official_technical_research",
-        "compatibility_decision_and_answer",
+        "seller_response_render",
     ]
 
 
 def test_technical_fallback_uses_canonical_context_hub_before_web():
-    agent = _agent_module()
     agent_input = _compatibility_input()
     agent_input["intent"] = _structured_intent("product_feature", web=True)
     agent_input["question"]["text"] = "Qual tipo de conector acompanha?"
-    client = agent._PerguntasVertexGeminiV2Client("000002", "JK Pecas", "codex:gpt-5.5", agent_input)
+    client = agent_clients._PerguntasVertexGeminiV2Client("000002", "JK Pecas", "codex:gpt-5.5", agent_input)
     respostas = [
-        agent.AIAnswer(
+        AIAnswer(
             answer="Nao consta no anuncio.",
             confidence=0.3,
             requires_human_review=True,
             reason="missing_listing_evidence",
         ),
-        agent.AIAnswer(
+        AIAnswer(
             answer="O produto usa conector USB-C.",
             confidence=0.92,
             requires_human_review=False,
             reason="context_hub_canonical_reference",
         ),
     ]
-    with patch.object(agent, "_perguntas_ia_context_hub_tool", return_value=_hub_result(snippet="SKU 001 usa conector USB-C.")), \
-         patch.object(agent, "_ia_agent_perguntas_web_tool", side_effect=AssertionError("web nao deveria ser chamada")), \
+    with patch.object(agent_clients, "_perguntas_ia_context_hub_tool", return_value=_hub_result(snippet="SKU 001 usa conector USB-C.")), \
+         patch.object(agent_clients, "_ia_agent_perguntas_web_tool", side_effect=AssertionError("web nao deveria ser chamada")), \
          patch.object(client, "_call_model", side_effect=respostas):
         result = client.generate("prompt", {
             "category": "product_feature",
@@ -382,18 +376,18 @@ def test_technical_fallback_uses_canonical_context_hub_before_web():
         "listing_product_analysis",
         "context_hub_sku_reference",
         "external_research_fallback",
+        "seller_response_render",
     ]
-    assert client.context_pipeline[-1]["reason"] == "answer_found_in_context_hub_canonical_reference"
+    assert client.context_pipeline[-2]["reason"] == "answer_found_in_context_hub_canonical_reference"
 
 
 def test_legacy_json_guidance_is_labeled_behavioral_not_factual():
-    agent = _agent_module()
     agent_input = _compatibility_input()
     agent_input["app_guidance_source"] = "jk_ppv_response_policy_v1"
     agent_input["app_guidance_truth_class"] = "versioned_technical"
 
-    with patch.object(agent, "_perguntas_ia_memoria_bloco_prompt", return_value="nao deve ser carregada antes do Hub") as memory:
-        prompt = agent._perguntas_ia_v2_prompt("000002", agent_input)
+    with patch.object(agent_execution, "_perguntas_ia_memoria_bloco_prompt", return_value="nao deve ser carregada antes do Hub") as memory:
+        prompt = agent_execution._perguntas_ia_v2_prompt("000002", agent_input)
 
     assert "truth_class=versioned_technical" in prompt
     assert "nunca como evidencia" in prompt
@@ -401,19 +395,18 @@ def test_legacy_json_guidance_is_labeled_behavioral_not_factual():
 
 
 def test_post_sale_classification_does_not_promote_context_hub_or_web():
-    agent = _agent_module()
     agent_input = _compatibility_input()
     agent_input["intent"] = _structured_intent("post_sale")
     agent_input["question"]["text"] = "O produto parou de funcionar, como seguimos?"
-    client = agent._PerguntasVertexGeminiV2Client("000002", "JK Pecas", "codex:gpt-5.5", agent_input)
-    listing_answer = agent.AIAnswer(
+    client = agent_clients._PerguntasVertexGeminiV2Client("000002", "JK Pecas", "codex:gpt-5.5", agent_input)
+    listing_answer = AIAnswer(
         answer="Vamos verificar o atendimento.",
         confidence=0.5,
         requires_human_review=True,
         reason="post_sale_listing_only",
     )
-    with patch.object(agent, "_perguntas_ia_context_hub_tool", return_value=_hub_result()) as hub, \
-         patch.object(agent, "_ia_agent_perguntas_web_tool", side_effect=AssertionError("web nao deveria ser chamada")), \
+    with patch.object(agent_clients, "_perguntas_ia_context_hub_tool", return_value=_hub_result()) as hub, \
+         patch.object(agent_clients, "_ia_agent_perguntas_web_tool", side_effect=AssertionError("web nao deveria ser chamada")), \
          patch.object(client, "_call_model", return_value=listing_answer):
         result = client.generate("prompt", {
             "category": "post_sale",

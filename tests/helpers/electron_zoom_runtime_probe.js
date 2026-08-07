@@ -82,7 +82,8 @@ async function main() {
         });
         await page.waitForFunction(() => document.querySelector('.shell')?.classList.contains('search-expanded'));
         await page.locator('#screen-search-input').fill('runtime-find-probe');
-        await page.waitForFunction(() => !['Buscando...', 'Digite'].includes(document.querySelector('#screen-search-status')?.textContent || ''));
+        await page.locator('#screen-search-input').press('Enter');
+        await page.waitForFunction(() => document.querySelector('#screen-search-status')?.textContent === '1 de 2');
         const initialFindStatus = await page.locator('#screen-search-status').textContent();
         assert.strictEqual(initialFindStatus, '1 de 2', `a pesquisa real deve encontrar apenas as duas ocorrencias visiveis (recebido: ${initialFindStatus})`);
 

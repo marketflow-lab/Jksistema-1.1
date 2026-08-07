@@ -158,6 +158,7 @@
           { key: 'anuncios_ml', href: 'anunciosml.html', icon: '&#128230;', label: 'Anuncios ML' },
           { key: 'mercado_full', href: 'full.html', icon: '&#128666;', label: 'Full' },
           { key: 'favoritos', href: 'favoritos.html', icon: '&#11088;', label: 'Favoritos ML' },
+          { key: 'pesquisa_mercado', permissionKey: 'favoritos', href: 'pesquisa_mercado.html', icon: 'PM', label: 'Pesquisa de Mercado' },
         ],
       },
       { key: 'etiquetas', href: 'frontend_etiquetas.html', icon: '&#127991;', label: 'Etiquetas' },
@@ -199,6 +200,7 @@
       'devolucoes.html': 'vendas',
       'devolucoes_sku.html': 'vendas',
       'favoritos.html': 'favoritos',
+      'pesquisa_mercado.html': 'pesquisa_mercado',
       'pesquisa_ml.html': 'favoritos',
       'produtos_sem_venda.html': 'favoritos',
       'perguntas_pos_venda.html': 'perguntas_pos_venda',
@@ -232,7 +234,7 @@
       if (Array.isArray(mod.children)) {
         return mod.children.some(child => _leftModuloPermitido(child));
       }
-      return permissions.full === true || permissions[mod.key] === true;
+      return permissions.full === true || permissions[mod.permissionKey || mod.key] === true;
     }
 
     function _leftFiltrarModulosVisiveis(atual) {

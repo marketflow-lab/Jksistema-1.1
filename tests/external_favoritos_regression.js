@@ -3,6 +3,22 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { browserSource, createPageScriptRenderer } = require('./helpers/favoritos_browser_sources');
+const { readFavoritosStyles } = require('./helpers/favoritos_styles_sources');
+const { executionSource } = require('./helpers/favoritos_execution_sources');
+const { searchRankingSource } = require('./helpers/favoritos_search_ranking_sources');
+const { promotionEffectuationSource } = require('./helpers/favoritos_promotion_effectuation_sources');
+
+function normalizeSearchRankingApiReferences(source) {
+  return source.replace(
+    /window\.FavoritosV2\.searchRanking\.publicApi\.[A-Za-z0-9_$]+\./g,
+    ''
+  );
+}
+
+function normalizePromotionEffectuationReferences(source) {
+  return source.replace(/\b(?:internal|adapters)\./g, '');
+}
 
 function parseVendas(value) {
   if (value === null || value === undefined) return null;
@@ -416,10 +432,9 @@ function criarNoTeste(texto, rect, attrs = {}) {
 }
 
 function executarLocalizadorFerramentasAvant(nodes, bodyText) {
-  const mlBrowserPath = path.join(process.cwd(), 'static', 'favoritos', 'ml-browser.js');
-  const source = fs.readFileSync(mlBrowserPath, 'utf8');
+  const source = browserSource(process.cwd());
   const funcSource = extrairFuncaoDeclarada(source, 'montarScriptLocalizarFerramentasAvantPro');
-  const montarScript = vm.runInNewContext(`(${funcSource})`, {});
+  const montarScript = vm.runInNewContext(`(${funcSource})`, { pageScripts: createPageScriptRenderer(process.cwd()) });
   const script = montarScript();
   const body = criarNoTeste(bodyText || '', { left: 0, top: 0, width: 1328, height: 676 }, { class: 'body' });
   const allNodes = nodes.map((node) => {
@@ -448,10 +463,9 @@ function executarLocalizadorFerramentasAvant(nodes, bodyText) {
 }
 
 function executarLocalizadorBolinhaAvant(nodes, bodyText) {
-  const mlBrowserPath = path.join(process.cwd(), 'static', 'favoritos', 'ml-browser.js');
-  const source = fs.readFileSync(mlBrowserPath, 'utf8');
+  const source = browserSource(process.cwd());
   const funcSource = extrairFuncaoDeclarada(source, 'montarScriptLocalizarBolinhaAvantPro');
-  const montarScript = vm.runInNewContext(`(${funcSource})`, {});
+  const montarScript = vm.runInNewContext(`(${funcSource})`, { pageScripts: createPageScriptRenderer(process.cwd()) });
   const script = montarScript();
   const body = criarNoTeste(bodyText || '', { left: 0, top: 0, width: 1328, height: 676 }, { class: 'body' });
   const allNodes = nodes.map((node) => {
@@ -531,26 +545,34 @@ function validarLocalizadorFerramentasAvantPro() {
 
 function validarFluxoFavoritosAvantProSemReload() {
   const repoRoot = process.cwd();
-  const mlBrowserCore = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'ml-browser.js'), 'utf8');
+  const mlBrowserCore = browserSource(repoRoot, { preloaded: false });
   const urlUtils = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'v2', 'browser', 'url-utils.js'), 'utf8');
   const shellBridgeV2 = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'v2', 'browser', 'shell-bridge.js'), 'utf8');
   const avantCacheV2 = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'v2', 'browser', 'avant-cache.js'), 'utf8');
   const mlBrowser = [urlUtils, shellBridgeV2, avantCacheV2, mlBrowserCore].join('\n');
   const statusModal = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'v2', 'ui', 'status-modal.js'), 'utf8');
   const elapsedTimer = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'v2', 'ui', 'elapsed-timer.js'), 'utf8');
-  const buscaRanking = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '04-promocoes-busca-ranking.js'), 'utf8');
-  const skuSidebar = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '03-sku-sidebar-modal.js'), 'utf8');
-  const promocoesEfetivacao = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'promocoes-efetivacao.js'), 'utf8');
-  const execucao = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '07-execucao-render-layout.js'), 'utf8');
-  const historico = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '05-resultados-historico.js'), 'utf8');
-  const historicoUi = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '06-ranking-manual-historico-ui.js'), 'utf8');
-  const ranking = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'ranking.js'), 'utf8');
-  const init = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'init.js'), 'utf8');
-  const styles = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'styles.css'), 'utf8');
+  const buscaRanking = searchRankingSource(repoRoot, { includeRuntime: false, includePublicApi: false });
+  const skuSidebar = normalizeSearchRankingApiReferences([
+    '01-core.js',
+    '02-ui.js'
+  ].map(fileName => fs.readFileSync(
+    path.join(repoRoot, 'static', 'favoritos', 'v2', 'sku-sidebar', fileName),
+    'utf8'
+  )).join('\n'));
+  const promocoesEfetivacao = normalizePromotionEffectuationReferences(
+    normalizeSearchRankingApiReferences(promotionEffectuationSource(repoRoot, { installTestGlobals: false }))
+  );
+  const execucao = normalizeSearchRankingApiReferences(executionSource(repoRoot));
+  const historico = normalizeSearchRankingApiReferences(fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '05-resultados-historico.js'), 'utf8'));
+  const historicoUi = normalizeSearchRankingApiReferences(fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '06-ranking-manual-historico-ui.js'), 'utf8'));
+  const ranking = normalizeSearchRankingApiReferences(fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'ranking.js'), 'utf8'));
+  const init = normalizeSearchRankingApiReferences(fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'init.js'), 'utf8'));
+  const styles = readFavoritosStyles(repoRoot);
   const runtime = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'runtime.js'), 'utf8');
   const favoritosHtml = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos.html'), 'utf8');
   const mlBaseBusca = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '01-ml-base-busca.js'), 'utf8');
-  const renderAvantMercadoLivre = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '08-render-avant-mercadolivre.js'), 'utf8');
+  const renderAvantMercadoLivre = normalizeSearchRankingApiReferences(fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '08-render-avant-mercadolivre.js'), 'utf8'));
   const jobsBackend = fs.readFileSync(path.join(repoRoot, 'backend', 'services', 'favoritos_jobs.py'), 'utf8');
   const favoritosStorageBackend = fs.readFileSync(path.join(repoRoot, 'backend', 'services', 'favoritos_storage.py'), 'utf8');
   const favoritosMlBackend = fs.readFileSync(path.join(repoRoot, 'backend', 'services', 'favoritos_ml.py'), 'utf8');
@@ -585,7 +607,7 @@ function validarFluxoFavoritosAvantProSemReload() {
   assert.match(renderAvantMercadoLivre, /if \(opcoes\.reposicionarDepois !== false\) \{[\s\S]*agendarAtualizacaoPosicaoNavegadorMlShell\(\)/, 'modo de abertura deve permitir pular reposicionamento depois da navegacao');
   assert.match(renderAvantMercadoLivre, /catch \(err\) \{[\s\S]*confirmarAberturaNavegadorMlAposTimeout\(url, err\)[\s\S]*if \(verificacao\.confirmado\)[\s\S]*return true;[\s\S]*setBrowserStatus\('Falha ao abrir no quadro interno do programa\.'/,
     'mensagem de falha so pode aparecer depois de consultar a URL real do BrowserView');
-  assert.match(mlBrowser, /async function coletarDadosAvantComRolagem\(opcoes = \{\}\)[\s\S]*coletarPrimeiraPaginaFavoritosControlada\(\{[\s\S]*maxAnuncios:[\s\S]*tempoLimiteMs:[\s\S]*maxPassadas:[\s\S]*loteCliques:[\s\S]*onProgress:\s*opcoes\.onProgress[\s\S]*resultadoNovo\.anuncios/, 'fachada legada da rolagem deve delegar ao coletor controlado e preservar limites, cliques e progresso');
+  assert.match(mlBrowser, /async function coletarDadosAvantComRolagem\(opcoes = \{\}\)[\s\S]*coletarPrimeiraPaginaFavoritosControlada\(\{[\s\S]*maxAnuncios:[\s\S]*tempoLimiteMs:[\s\S]*maxPassadas:[\s\S]*loteCliques:[\s\S]*onProgress:\s*opcoes\.onProgress[\s\S]*resultado\.anuncios/, 'fachada legada da rolagem deve delegar ao coletor controlado e preservar limites, cliques e progresso');
   assert.doesNotMatch(mlBrowser.match(/async function coletarDadosAvantComRolagem\(opcoes = \{\}\)[\s\S]*?\n\s*\}/)?.[0] || '', /diagnosticarAvantProNoWebview|aguardarPrimeirosDadosAvantOuCardsWebview|location\.reload/, 'fachada legada da rolagem nao deve reintroduzir monitoramento ou reload');
   assert.match(execucao, /await abrirPrimeiraPesquisaFavoritosAposConfirmacaoAvantPro\(selecionados,\s*quantidade,[\s\S]*return;/, 'fluxo principal deve parar na coleta nova pos-login antes do job/renderer antigo');
   assert.doesNotMatch(execucao, /forcarNavegadorMlShellVisivel/, 'execucao do Favoritos nao deve forcar reexibicao do BrowserView durante a pesquisa');
@@ -599,21 +621,22 @@ function validarFluxoFavoritosAvantProSemReload() {
   assert.match(mlBrowser, /function statusAvantProPedeLoginOuVinculo[\s\S]*accountLinkButtonsGlobais[\s\S]*accountLinkButtonsCards[\s\S]*botoesLoginSemSeparacao/, 'login repetido somente nos cards nao deve contar como login global pendente');
   assert.doesNotMatch(mlBrowser, /\|\|\s*\(botoesLoginCards\s*>\s*0\s*&&\s*!temDadosFortes\)/, 'botoes dos cards nao devem virar login global sem confirmar paineis de login');
   assert.match(mlBrowser, /function statusAvantProPedeLoginOuVinculo[\s\S]*cardsPedemLoginAvant[\s\S]*return true/, 'login repetido nos cards sem dados deve obrigar conexao do AvantPro');
-  assert.match(mlBrowser, /function aguardarPrimeirosDadosAvantOuCardsWebview[\s\S]*cardLoginPanelsAvant[\s\S]*needsAvantLoginCards[\s\S]*needsAvantLogin = needsAvantLoginGlobal \|\| needsAvantLoginCards/, 'detector inicial deve tratar login AvantPro nos cards como login necessario');
-  assert.match(mlBrowser, /function aguardarPrimeirosDadosAvantOuCardsWebview[\s\S]*poly-component__title[\s\S]*var resultadoMlVisivel = cardCount > 0 \|\| productLinks\.length > 0 \|\| !!resultadoVisual[\s\S]*var noResults = !loadingScreen && !resultadoMlVisivel && !hasAvantData/, 'detector inicial nao pode marcar sem resultados quando ha cards, contagem visual ou dados AvantPro');
-  const inicioEsperaInicial = mlBrowser.indexOf('async function aguardarPrimeirosDadosAvantOuCardsWebview');
-  const fimEsperaInicial = mlBrowser.indexOf('async function diagnosticarResultadosMercadoLivreWebview', inicioEsperaInicial);
-  const esperaInicial = mlBrowser.slice(inicioEsperaInicial, fimEsperaInicial);
-  assert.ok(inicioEsperaInicial >= 0 && fimEsperaInicial > inicioEsperaInicial, 'espera inicial do navegador deve permanecer isolavel para validacao');
-  assert.doesNotMatch(esperaInicial, /MutationObserver/, 'espera inicial nao pode varrer todo o DOM a cada mutacao do AvantPro');
-  assert.match(esperaInicial, /pollMs[\s\S]*elapsedMs >= timeoutMs[\s\S]*setTimeout\(check,/, 'espera inicial deve usar polling limitado e respeitar seu prazo');
+  assert.match(mlBrowser, /function aguardarPrimeirosDadosAvantOuCardsWebview/, 'detector inicial do AvantPro deve permanecer publico');
+  assert.match(mlBrowser, /cardLoginPanelsAvant[\s\S]*needsAvantLoginCards[\s\S]*needsAvantLogin = needsAvantLoginGlobal \|\| needsAvantLoginCards/, 'detector inicial deve tratar login AvantPro nos cards como login necessario');
+  assert.match(mlBrowser, /poly-component__title[\s\S]*var resultadoMlVisivel = cardCount > 0 \|\| productLinks\.length > 0 \|\| !!resultadoVisual[\s\S]*var noResults = !loadingScreen && !resultadoMlVisivel && !hasAvantData/, 'detector inicial nao pode marcar sem resultados quando ha cards, contagem visual ou dados AvantPro');
+  const esperaInicialHost = extrairFuncaoDeclarada(mlBrowser, 'aguardarPrimeirosDadosAvantOuCardsWebview');
+  const esperaInicialScript = createPageScriptRenderer(repoRoot).source('aguardar-primeiros-dados-avant-ou-cards-webview-1');
+  assert.doesNotMatch(esperaInicialHost + esperaInicialScript, /MutationObserver/, 'espera inicial nao pode varrer todo o DOM a cada mutacao do AvantPro');
+  assert.match(esperaInicialScript, /pollMs[\s\S]*elapsedMs >= timeoutMs[\s\S]*setTimeout\(check,/, 'espera inicial deve usar polling limitado e respeitar seu prazo');
   const inicioBaseColetavel = mlBrowser.indexOf('async function aguardarBaseMercadoLivreColetavelFavoritos');
-  const fimBaseColetavel = mlBrowser.indexOf('function normalizarMlbFavoritosCanonico', inicioBaseColetavel);
-  const baseColetavel = mlBrowser.slice(inicioBaseColetavel, fimBaseColetavel);
-  assert.ok(baseColetavel.indexOf('extrairCardsMercadoLivreBasicoWebview') < baseColetavel.indexOf('aguardarPrimeirosDadosAvantOuCardsWebview'), 'cards ja visiveis devem ser extraidos antes do monitor profundo do AvantPro');
-  assert.match(mlBrowser, /function diagnosticarResultadosMercadoLivreWebview[\s\S]*poly-component__title[\s\S]*var resultadoMlVisivel = cardCount > 0 \|\| productLinks\.length > 0 \|\| !!resultadoVisual[\s\S]*var noResults = !loadingScreen && !resultadoMlVisivel && !hasRealAvantData/, 'diagnostico de resultados nao pode marcar sem resultados quando a busca carregou cards ou AvantPro');
+  const leituraBaseColetavel = mlBrowser.indexOf('extrairCardsMercadoLivreBasicoWebview', inicioBaseColetavel);
+  const esperaBaseColetavel = mlBrowser.indexOf('aguardarPrimeirosDadosAvantOuCardsWebview', inicioBaseColetavel);
+  assert.ok(inicioBaseColetavel >= 0 && leituraBaseColetavel < esperaBaseColetavel, 'cards ja visiveis devem ser extraidos antes do monitor profundo do AvantPro');
+  assert.match(mlBrowser, /function diagnosticarResultadosMercadoLivreWebview/, 'diagnostico de resultados deve permanecer publico');
+  assert.match(mlBrowser, /poly-component__title[\s\S]*var resultadoMlVisivel = cardCount > 0 \|\| productLinks\.length > 0 \|\| !!resultadoVisual[\s\S]*var noResults = !loadingScreen && !resultadoMlVisivel && !hasRealAvantData/, 'diagnostico de resultados nao pode marcar sem resultados quando a busca carregou cards ou AvantPro');
   assert.match(mlBrowser, /cardSelectorsParaLoginAvant[\s\S]*cardLoginPanelsAvant[\s\S]*needsAvantLoginCards[\s\S]*needsAvantLogin = needsAvantLoginGlobal \|\| needsAvantLoginCards/, 'extracao principal deve tratar login AvantPro nos cards como login necessario');
-  assert.match(mlBrowser, /function fecharModalBloqueanteAvantProNoWebview[\s\S]*textoEscopoGlobalAvant[\s\S]*escopoAvant = cardCountAvant > 0 \? globalBusca : bodyBusca[\s\S]*modalAvantPromocional/, 'fechamento de modal AvantPro deve ignorar texto de login dentro dos cards');
+  assert.match(mlBrowser, /function fecharModalBloqueanteAvantProNoWebview/, 'fechamento de modal AvantPro deve permanecer publico');
+  assert.match(mlBrowser, /textoEscopoGlobalAvant[\s\S]*escopoAvant = cardCountAvant > 0 \? globalBusca : bodyBusca[\s\S]*modalAvantPromocional/, 'fechamento de modal AvantPro deve ignorar texto de login dentro dos cards');
   assert.ok(
     mlBrowser.includes('vincule\\\\s+o\\\\s+avantpro|vincular\\\\s+agora') && mlBrowser.includes("via: 'top_right_point'"),
     'modal de vinculo do AvantPro deve ser fechado por botao ou geometria'
@@ -624,17 +647,18 @@ function validarFluxoFavoritosAvantProSemReload() {
   );
   assert.match(mlBrowser, /function diagnosticarAvantProNoWebview[\s\S]*var modalAvantPromocional[\s\S]*modalAvantPromocional:\s*!!modalAvantPromocional/, 'diagnostico deve separar convite de vinculo do login real');
   assert.match(mlBrowser, /function statusAvantProPedeLoginOuVinculo[\s\S]*status\.modalAvantPromocional[\s\S]*return false/, 'convite de vinculo do AvantPro nao deve virar login obrigatorio');
-  assert.match(mlBrowser, /async function coletarPrimeiraPaginaFavoritosControlada[\s\S]*if \(clickInfo && clickInfo\.loginBlocked\)[\s\S]*cliquesAvantDesligados = true[\s\S]*loginAvantBloqueado = true[\s\S]*if \(loginAvantBloqueado && anuncios\.length\) break/, 'coleta controlada deve interromper novos cliques Avant quando o login bloquear a pagina');
+  assert.match(mlBrowser, /if \(clickInfo && clickInfo\.loginBlocked\)[\s\S]*ctx\.cliquesAvantDesligados = true[\s\S]*ctx\.loginAvantBloqueado = true/, 'coleta controlada deve desativar novos cliques quando o login bloquear a pagina');
+  assert.match(mlBrowser, /ctx\.loginAvantBloqueado && ctx\.anuncios\.length[\s\S]*break/, 'coleta controlada deve interromper a varredura quando o login bloquear a pagina');
   assert.match(mlBrowser, /__JK_AVANT_PRO_LOGIN_CLICKED_AT[\s\S]*loginClickAt[\s\S]*cardClickAt[\s\S]*legacyPareceLogin/, 'reload pos-login deve diferenciar login AvantPro de clique em card sem dados');
   assert.match(mlBrowser, /jkAvantCardClickCount[\s\S]*jkAvantCardClickedAt[\s\S]*Date\.now\(\) - ultimoClique < 1800/, 'cards AvantPro sem dados devem permitir novas tentativas controladas');
   assert.match(mlBrowser, /ehLinkProduto[\s\S]*clicarCardsSemDados[\s\S]*clicarCardsAvantSemDados/, 'AvantPro sem dados deve gerar cliques nos widgets dos cards sem abrir link de produto');
   assert.match(mlBrowser, /clicarCardsSemDados:\s*opcoes\.clicarCardsSemDados !== false/, 'extracao deve ativar clique nos cards AvantPro sem dados por padrao');
   assert.match(mlBrowser, /async function acionarCardsAvantProFilaWebview[\s\S]*const maxClicks = Math\.max\(0,\s*Math\.min\(8,[\s\S]*const maxTentativasPorCard = Math\.max\(1,\s*Math\.min\(3,[\s\S]*const maxRuntimeMs = Math\.max\(1200,\s*Math\.min\(8000,/, 'fila controlada deve limitar cliques, tentativas por card e tempo de cada rodada AvantPro');
   assert.doesNotMatch(mlBrowser, /if \(item\.score <= 5\) break;/, 'clique em carregar dados AvantPro nao deve parar no primeiro card da viewport');
-  assert.match(mlBrowser, /function mesclarAnunciosAvant[\s\S]*copiarCampoSeVazio[\s\S]*tituloValidoFavoritosCanonico\(atual, id\)[\s\S]*!imagemValidaFavoritosCanonico\(combinado\) && imagemValidaFavoritosCanonico\(item\)/, 'merge AvantPro deve preservar titulo e foto validos e preencher apenas campos ausentes ou fracos');
+  assert.match(mlBrowser, /function copiarCampoMesclagemSeVazio[\s\S]*tituloValidoFavoritosCanonico\(atual, id\)[\s\S]*function aplicarImagemPrecoTituloMesclagem[\s\S]*!imagemValidaFavoritosCanonico\(combinado\) && imagemValidaFavoritosCanonico\(item\)[\s\S]*function mesclarAnunciosAvant/, 'merge AvantPro deve preservar titulo e foto validos e preencher apenas campos ausentes ou fracos');
   assert.match(mlBrowser, /tentouLoginAvant[\s\S]*recarregarAposLoginSePreciso\(status\)/, 'preparacao obrigatoria do AvantPro deve recarregar somente depois de tentar login');
   assert.match(buscaRanking, /statusAvantProLoginConcluidoSemDados[\s\S]*reloadAposLoginAvantRecomendado[\s\S]*recarregarAposLoginAvantProFavoritosSePossivel/, 'acao manual de login AvantPro deve retomar a coleta pelo helper pos-login');
-  assert.match(buscaRanking, /reloadedAfterAvantLogin \|\| statusFinal\.resumedAfterAvantLogin/, 'coleta deve repetir extracao quando o pos-login AvantPro retomar sem reload');
+  assert.match(buscaRanking, /reloadedAfterAvantLogin \|\| contexto\.statusFinal\.resumedAfterAvantLogin/, 'coleta deve repetir extracao quando o pos-login AvantPro retomar sem reload');
   assert.match(mlBrowser, /function normalizarStatusAvantProCarregadoParaColeta[\s\S]*avantShellProntoParaColeta:\s*true/, 'shell do AvantPro carregado deve liberar inicio da coleta');
   assert.match(mlBrowser, /!statusAvantProPedeLoginOuVinculo\(status\) && statusAvantProShellSemDados\(status\)[\s\S]*normalizarStatusAvantProCarregadoParaColeta\(status\)/, 'shell sem login real nao deve abrir login nem travar favoritos antes da coleta');
   assert.match(buscaRanking, /function statusAvantProPodeRetomarColeta[\s\S]*accountActionRequired[\s\S]*infoButtons[\s\S]*bodyHasAvantInfo/, 'tela de conexao deve reconhecer AvantPro carregado nos cards e retomar a coleta');
@@ -650,7 +674,8 @@ function validarFluxoFavoritosAvantProSemReload() {
   assert.match(mlBrowser, /bolinha_avant_dom_ajuste_borda[\s\S]*originalTarget:\s*alvo/, 'clique real na bolinha deve usar o canto inferior direito que abre o menu AvantPro no navegador interno');
   assert.doesNotMatch(mlBrowser, /const vincularConta = await clicarVincularContaAvantProPorCoordenada/, 'fluxo de login nao deve usar Vincular conta antes de Ferramentas');
   assert.doesNotMatch(mlBrowser, /source:\s*'vincular_conta_avant_estimado'/, 'Vincular conta nao pode usar coordenada estimada para nao clicar no menu do Mercado Livre');
-  assert.match(mlBrowser, /rotuloFerramentasMenuVisivel[\s\S]*\/\^\(ferramentas\|tools\)\$\/[\s\S]*source:\s*`\$\{alvo\.source\}_ajuste_\$\{dx\}_\$\{dy\}`/, 'clique em Ferramentas deve mirar o item lateral real e tentar ajustes verticais');
+  assert.match(mlBrowser, /rotuloFerramentasMenuVisivel[\s\S]*\/\^\(ferramentas\|tools\)\$\//, 'localizador deve reconhecer o item lateral real de Ferramentas');
+  assert.match(mlBrowser, /source:\s*`\$\{alvo\.source\}_ajuste_\$\{dx\}_\$\{dy\}`/, 'clique em Ferramentas deve tentar ajustes verticais');
   assert.match(mlBrowser, /diagnostico_entrada_dom[\s\S]*if \(entradaDom && entradaDom\.prontoParaLogin\)[\s\S]*clicarFerramentasAvantProPorCoordenada/, 'fluxo de Ferramentas deve reconhecer login aberto pelo clique DOM antes do clique por coordenada');
   assert.match(mlBrowser, /ehFerramentasAvant\(item\.text, item\.context, item\.visibleText\) \|\| ehMenuFlutuanteAvant\(item\.text, item\.context\)[\s\S]*rect\.width < 40 \|\| rect\.height < 20/, 'clique DOM de Ferramentas deve ignorar rotulos pequenos e deixar o clique real por coordenada agir');
   assert.match(mlBrowser, /if \(\/estimado\|rotulo\|dom\/i\.test\(String\(alvo\.source \|\| ''\)\)\)[\s\S]*\[-45, 45, -75\][\s\S]*\[60, 95, 130\][\s\S]*diagnosticarEntradaAvantProNoWebview\(\)[\s\S]*entrada && entrada\.prontoParaLogin/, 'clique real em Ferramentas deve tentar alvos alternativos quando o AvantPro expuser rotulo/estimativa/DOM deslocado');
@@ -792,7 +817,7 @@ function validarFluxoFavoritosAvantProSemReload() {
   assert.match(mlBaseBusca, /const permalink = normalizarUrlItemMercadoLivreFavoritos\(item\.permalink \|\| item\.url \|\| item\.link,[\s\S]*url:\s*permalink,[\s\S]*permalink,[\s\S]*link:\s*permalink,[\s\S]*pictures:\s*Array\.isArray\(item\.pictures\)/, 'consulta do item ML deve retornar link, permalink, foto e pictures para enriquecer o ranking');
   assert.match(buscaRanking, /function tituloAnuncioFavoritosPrecisaComplemento[\s\S]*\/\^jm\$\/i[\s\S]*function anuncioFavoritosCandidatoRanking[\s\S]*if \(id\) return true/, 'ranking deve manter anuncio com MLB mesmo quando o titulo vier fraco como JM');
   assert.match(buscaRanking, /function aplicarMetadataBasicaAnuncioFavoritos[\s\S]*normalizarUrlAnuncioFavoritosRanking[\s\S]*preencherImagemAnuncioFavoritos[\s\S]*tituloAnuncioFavoritosPrecisaComplemento/, 'ranking deve aplicar url, titulo e foto vindos da API/cache do item');
-  assert.match(buscaRanking, /const semComplemento = pendentes\.filter\(item => item && \(!item\.url \|\| tituloAnuncioFavoritosPrecisaComplemento\(item\.titulo, item\.id\) \|\| !vendedorValido\(item\.vendedor\) \|\| !obterImagemAnuncioFavoritos\(item\)/, 'enriquecimento deve chamar API tambem quando faltar link, foto ou titulo bom');
+  assert.match(buscaRanking, /function precisaComplementoApiFavoritos[\s\S]*!item\.url[\s\S]*tituloAnuncioFavoritosPrecisaComplemento\(item\.titulo, item\.id\)[\s\S]*!vendedorValido\(item\.vendedor\)[\s\S]*!obterImagemAnuncioFavoritos\(item\)/, 'enriquecimento deve chamar API tambem quando faltar link, foto ou titulo bom');
   assert.match(execucao, /deduplicarAnunciosFavoritos\(coletados\)[\s\S]*\.filter\(anuncioFavoritosCandidatoRanking\)/, 'execucao nao deve descartar MLB antes do enriquecimento de metadata');
   assert.match(historico, /grupo\.anuncios\.slice\(0, ML_FAVORITOS_RANKING_ANUNCIOS_MAX\)\.map\(anuncioHistoricoPayload\)/, 'historico deve gravar os 80 primeiros anuncios do ranking');
   assert.match(schemasFavoritos, /modo_coleta:\s*str \| None[\s\S]*class FavoritosJobColetaTermoRequest/, 'job de favoritos deve aceitar modo avantpro_browser e payload de coleta por termo');
@@ -815,13 +840,14 @@ function validarFluxoFavoritosAvantProSemReload() {
   assert.match(mlBrowser, /function montarScriptGarantirPesquisaMercadoLivreSubmetida[\s\S]*\['keydown', 'keypress', 'keyup'\][\s\S]*KeyboardEvent\(name[\s\S]*key:\s*'Enter'[\s\S]*requestSubmit[\s\S]*location\.assign\(urlAlvo\)/, 'pesquisa do ML deve forcar Enter/form submit e fallback por URL');
   assert.match(mlBrowser, /var paginaProduto = !!\([\s\S]*ui-pdp-title[\s\S]*if \(cards > 0 && paginaCombinaComTermo && !paginaProduto\)/, 'pagina de produto nao pode ser aceita como resultado de busca do ML');
   assert.match(mlBrowser, /async function garantirPesquisaMercadoLivreSubmetida[\s\S]*montarScriptGarantirPesquisaMercadoLivreSubmetida\(valor,\s*urlAlvo\)/, 'navegador interno deve expor helper para garantir envio da pesquisa');
-  assert.match(mlBrowser, /function montarScriptDiagnosticarPesquisaMercadoLivreAtual[\s\S]*paginaProduto[\s\S]*termo_nao_confere[\s\S]*async function aguardarPesquisaMercadoLivreAtual/, 'navegador interno deve validar se a pagina atual corresponde ao termo pesquisado');
+  assert.match(mlBrowser, /function montarScriptDiagnosticarPesquisaMercadoLivreAtual[\s\S]*async function aguardarPesquisaMercadoLivreAtual/, 'navegador interno deve manter o diagnostico e a espera da pesquisa');
+  assert.match(mlBrowser, /paginaProduto[\s\S]*termo_nao_confere/, 'navegador interno deve validar se a pagina atual corresponde ao termo pesquisado');
   assert.match(buscaRanking, /abrirMercadoLivreNoPrograma\(\{[\s\S]*termoPesquisa:\s*termo[\s\S]*aguardarPesquisaMs:\s*opcoes\.segundoPlano \? 1200 : 900/, 'coleta de favoritos deve submeter a pesquisa do termo no Mercado Livre');
-  assert.match(buscaRanking, /opcoes\.loginAvantAntesDaColeta === true[\s\S]*prepararAvantProAntesDaPesquisaFavoritos\([\s\S]*const urlPesquisaMl = construirUrlPesquisaMercadoLivre\(termo\)/, 'primeira pesquisa deve conectar o AvantPro antes de abrir a busca no Mercado Livre');
-  assert.match(buscaRanking, /typeof prepararAvantProAntesDaPesquisaFavoritos !== 'function'[\s\S]*throw erroLoginAvantProFavoritos[\s\S]*const preparacaoAvant = await prepararAvantProAntesDaPesquisaFavoritos[\s\S]*!preparacaoAvantPrePesquisaConfirmada\(preparacaoAvant\)[\s\S]*const urlPesquisaMl = construirUrlPesquisaMercadoLivre\(termo\)/, 'coletor nao pode abrir a pesquisa se o login AvantPro nao foi confirmado');
-  assert.match(buscaRanking, /let avantStatus = avantStatusPreColeta \|\| null[\s\S]*else if \(!avantStatus\)[\s\S]*diagnosticarAvantProNoWebview/, 'status AvantPro pre-coleta nao deve ser sobrescrito por diagnostico novo');
-  assert.match(buscaRanking, /aguardarPesquisaMercadoLivreAtual\(termo,[\s\S]*url:\s*urlPesquisaMl[\s\S]*Pesquisa confirmada para[\s\S]*Acionando Avant Pro para carregar dados/, 'coleta deve validar a busca correta antes de acionar o AvantPro');
-  assert.match(buscaRanking, /function validarAnunciosFavoritosPertencemAoTermo[\s\S]*nao correspondem a pesquisa[\s\S]*validarAnunciosFavoritosPertencemAoTermo\(termo,\s*anunciosAvant\)/, 'coleta deve abortar lote de anuncios sem afinidade com o termo pesquisado');
+  assert.match(buscaRanking, /function prepararAvantAntesDaBuscaFavoritos[\s\S]*opcoes\.loginAvantAntesDaColeta !== true[\s\S]*prepararAvantProAntesDaPesquisaFavoritos\([\s\S]*function abrirPesquisaMercadoLivreFavoritos[\s\S]*construirUrlPesquisaMercadoLivre\(termo\)[\s\S]*await prepararAvantAntesDaBuscaFavoritos\(contexto\);[\s\S]*await abrirPesquisaMercadoLivreFavoritos\(contexto\)/, 'primeira pesquisa deve conectar o AvantPro antes de abrir a busca no Mercado Livre');
+  assert.match(buscaRanking, /typeof prepararAvantProAntesDaPesquisaFavoritos !== 'function'[\s\S]*throw erroLoginAvantProFavoritos[\s\S]*const preparacaoAvant = await prepararAvantProAntesDaPesquisaFavoritos[\s\S]*!preparacaoAvantPrePesquisaConfirmada\(preparacaoAvant\)[\s\S]*function abrirPesquisaMercadoLivreFavoritos/, 'coletor nao pode abrir a pesquisa se o login AvantPro nao foi confirmado');
+  assert.match(buscaRanking, /contexto\.avantStatus = contexto\.avantStatusPreColeta \|\| null[\s\S]*else if \(!contexto\.avantStatus\)[\s\S]*diagnosticarAvantProNoWebview/, 'status AvantPro pre-coleta nao deve ser sobrescrito por diagnostico novo');
+  assert.match(buscaRanking, /aguardarPesquisaMercadoLivreAtual\(termo,[\s\S]*url:\s*contexto\.urlPesquisaMl[\s\S]*Pesquisa confirmada para[\s\S]*Acionando Avant Pro para carregar dados/, 'coleta deve validar a busca correta antes de acionar o AvantPro');
+  assert.match(buscaRanking, /function validarAnunciosFavoritosPertencemAoTermo[\s\S]*nao correspondem a pesquisa[\s\S]*validarAnunciosFavoritosPertencemAoTermo\(contexto\.termo, contexto\.anunciosAvant\)/, 'coleta deve abortar lote de anuncios sem afinidade com o termo pesquisado');
   assert.doesNotMatch(execucao, /mostrarBalaoFavoritosStatus\(`SKU \$\{destino\.sku \|\| ''\}: pesquisando[\s\S]*abrirMercadoLivreNoPrograma\(\{[\s\S]*termoPesquisa:\s*destino\.termo/, 'worker visual nao deve abrir a pesquisa antes da funcao de coleta para evitar reload duplicado');
   assert.match(statusModal, /FavoritosV2[\s\S]*ui\.statusModal[\s\S]*function mostrarBalaoFavoritosStatus[\s\S]*function posicionarBalaoFavoritosStatus/, 'status/modal do Favoritos deve ficar centralizado no namespace V2');
   assert.match(statusModal, /has-status-overlay[\s\S]*--ml-favoritos-status-overlay-height[\s\S]*agendarPosicaoNavegador\(\)/, 'status de favoritos deve reservar faixa e reposicionar BrowserView do Mercado Livre');
@@ -845,16 +871,16 @@ function validarFluxoFavoritosAvantProSemReload() {
   assert.match(buscaRanking, /function mostrarBalaoFavoritosStatus\(mensagem, opcoes = \{\}\)[\s\S]*FavoritosV2\?\.ui\?\.statusModal\?\.mostrarBalaoFavoritosStatus/, 'busca/ranking deve manter wrapper publico para mostrar status');
   assert.match(buscaRanking, /function resolverAcaoBalaoFavoritos\(resolve, valor, botao, opcoes = \{\}\)[\s\S]*favoritosResolverAcaoBalao\(resolve, valor, botao, opcoes\)/, 'perguntas devem delegar o feedback visual ao controlador V2');
   assert.match(buscaRanking, /resolverAcaoBalaoFavoritos\(resolve, null, cancelar, \{[\s\S]*esconder:\s*true/, 'acao Cancelar deve fechar o balao antes de resolver o fluxo');
-  assert.match(buscaRanking, /function perguntarLoginAvantProAntesFavoritos[\s\S]*Antes de fazer favoritos, o Avant Pro ja esta logado\?[\s\S]*Nao, abrir login/, 'Fazer favoritos deve perguntar se o Avant Pro ja esta logado antes de iniciar a coleta');
+  assert.match(buscaRanking, /function renderizarPerguntaLoginAvantFavoritos[\s\S]*Nao, abrir login[\s\S]*Antes de fazer favoritos, o Avant Pro ja esta logado\?[\s\S]*function perguntarLoginAvantProAntesFavoritos/, 'Fazer favoritos deve perguntar se o Avant Pro ja esta logado antes de iniciar a coleta');
   assert.doesNotMatch(buscaRanking, /function perguntarLoginAvantProAntesFavoritos[\s\S]*estadoPersistido\.storageUsable[\s\S]*Sessao salva do Avant Pro encontrada[\s\S]*return true;/, 'sessao AvantPro persistida nao pode pular a confirmacao de cada nova execucao');
   assert.match(buscaRanking, /function mostrarBotaoContinuarLoginAvantProFavoritos[\s\S]*ml-work-modal-continue-login-favoritos[\s\S]*Continuar favoritos[\s\S]*insertBefore\(botao,\s*fechar\)/, 'login manual deve mostrar botao Continuar favoritos fixo no cabecalho do navegador');
   assert.match(buscaRanking, /function urlEmFluxoAutenticacaoMercadoLivreFavoritos[\s\S]*account-verification[\s\S]*password[\s\S]*totp/, 'tela deve reconhecer email, senha, desafio e TOTP do Mercado Livre');
   assert.match(buscaRanking, /indeterminado:\s*!leituraConfiavel[\s\S]*if \(!estado \|\| estado\.indeterminado\)[\s\S]*return false/, 'falha ou transicao na leitura do login deve bloquear Continuar em vez de liberar a coleta');
   assert.match(buscaRanking, /async function validarLoginMercadoLivreAntesDeContinuarFavoritos[\s\S]*estado\.pendente[\s\S]*return false[\s\S]*await onContinuar\(\)/, 'Continuar favoritos deve aguardar o fim real da autenticacao');
-  assert.match(buscaRanking, /const validarEFinalizar = botao => validarLoginMercadoLivreAntesDeContinuarFavoritos\([\s\S]*validarLoginAvantProAntesDeContinuarFavoritos\(\(\) => finalizar\(true\), botao\)[\s\S]*mostrarBotaoContinuarLoginAvantProFavoritos\(validarEFinalizar\)/, 'os botoes de continuar devem validar Mercado Livre e Avant Pro antes de salvar a sessao');
+  assert.match(buscaRanking, /const validarEFinalizar = botao => validarLoginMercadoLivreAntesDeContinuarFavoritos\([\s\S]*validarLoginAvantProAntesDeContinuarFavoritos\([\s\S]*finalizarPerguntaLoginAvantFavoritos\(contexto, true\)[\s\S]*mostrarBotaoContinuarLoginAvantProFavoritos\(validarEFinalizar\)/, 'os botoes de continuar devem validar Mercado Livre e Avant Pro antes de salvar a sessao');
   assert.doesNotMatch(buscaRanking, /mostrarBotaoContinuarLoginAvantProFavoritos\(\(\) => finalizar\(true\)\)|continuar\.addEventListener\('click',\s*\(\) => finalizar\(true\)\)/, 'fluxo manual nao pode confirmar login cegamente');
   assert.match(buscaRanking, /function registrarConfirmacaoUsuarioLoginAvantProFavoritos[\s\S]*saveAvantProStorageSnapshot\('favoritos_usuario_confirmou_login_avant'[\s\S]*function perguntarLoginAvantProAntesFavoritos/, 'confirmacao manual do usuario deve salvar a memoria atual do AvantPro');
-  assert.match(buscaRanking, /sim\.addEventListener\('click', async[\s\S]*registrarConfirmacaoUsuarioLoginAvantProBestEffortFavoritos\('prompt_usuario_confirmou'\)[\s\S]*finalizar\(true\)/, 'ao clicar Sim, o fluxo deve confiar na confirmacao humana e registrar a memoria sem bloquear');
+  assert.match(buscaRanking, /criarBotaoLoginFavoritos\('Sim, continuar'[\s\S]*registrarConfirmacaoUsuarioLoginAvantProBestEffortFavoritos\('prompt_usuario_confirmou'\)[\s\S]*finalizarPerguntaLoginAvantFavoritos\(contexto, true\)/, 'ao clicar Sim, o fluxo deve confiar na confirmacao humana e registrar a memoria sem bloquear');
   assert.doesNotMatch(buscaRanking, /sim\.addEventListener\('click', async[^}]*validarLoginAvantProAntesDeContinuarFavoritos/, 'ao clicar Sim, o fluxo nao deve repetir a validacao DOM do AvantPro');
   assert.doesNotMatch(buscaRanking, /sim\.addEventListener\('click', async[^}]*await registrarConfirmacaoUsuarioLoginAvantProBestEffortFavoritos/, 'ao clicar Sim, o fluxo nao deve aguardar o snapshot IPC');
   assert.match(buscaRanking, /function registrarConfirmacaoUsuarioLoginAvantProBestEffortFavoritos[\s\S]*liveAuthConfirmed:\s*false[\s\S]*\.then\([\s\S]*\.catch\([\s\S]*return true/, 'snapshot best-effort do Sim nao deve fingir confirmacao DOM nem bloquear Favoritos');
@@ -888,19 +914,23 @@ function validarFluxoFavoritosAvantProSemReload() {
   assert.match(mlBrowser, /Extracao completa parcial; tentando leitura rapida dos cards visiveis/, 'extracao completa parcial deve cair para a leitura rapida');
   assert.match(mlBrowser, /__JK_ML_FAST_DOM_MAX[\s\S]*maxFastDom[\s\S]*mesclarAnunciosAvant\(resultadoCompleto\.anuncios,\s*rapido\.anuncios\)[\s\S]*complete_fast_dom_merged/, 'extracao completa e DOM rapido devem ser mesclados ate o limite de coleta');
   assert.ok(mlBrowser.includes('carregar\\\\s+dado?s?\\\\s+avant'), 'clique AvantPro deve reconhecer Carregar dado Avantpro sem plural');
-  assert.match(buscaRanking, /maxCliquesAvantColeta[\s\S]*Math\.min\([\s\S]*100[\s\S]*Number\(opcoes\.maxCliquesAvant\) \|\| maxAnunciosColeta/, 'coleta principal deve permitir clicar todos os controles AvantPro da primeira pagina');
-  assert.match(buscaRanking, /coletarDadosAvantComRolagem\(\{[\s\S]*maxAnuncios:\s*maxAnunciosColeta[\s\S]*mesclarAnunciosAvant\(anunciosAvant,\s*anunciosRolagem\)/, 'coleta principal deve percorrer a primeira pagina e mesclar os cards carregados por rolagem');
-  assert.match(buscaRanking, /\(anunciosAvant\.length \|\| resultadosMlVisiveis\)[\s\S]*coletarDadosAvantComRolagem/, 'rolagem deve tentar coletar quando ha cards visiveis mesmo se a primeira leitura Avant veio vazia');
-  assert.match(buscaRanking, /extrairAnunciosWebviewVisivel\(\{[\s\S]*clicarCardsSemDados:\s*false[\s\S]*permitirFerramentasAvant:\s*false[\s\S]*permitirAutoLoginAvant:\s*false/, 'coleta de Favoritos nao deve clicar em cards, ferramentas ou auto-login que abrem Vincular AvantPro');
-  assert.match(mlBrowser, /const loteCliquesValor = opcoes\.loteCliques === undefined \? 0[\s\S]*const loteCliques = Math\.max\(0, Math\.min[\s\S]*const deveTentarCliqueAvant = loteCliques > 0 && !cliquesAvantDesligados[\s\S]*acionarCardsAvantProFilaWebview/, 'coleta controlada so deve clicar nos controles Avant quando um lote positivo for autorizado');
-  assert.match(mlBrowser, /totalVisiveis > 0 && resumo\.com_dados_avant >= totalVisiveis[\s\S]*totalVisiveis > 0 && resumoPassada\.com_dados_avant >= totalVisiveis/, 'coleta nao deve parar apenas pela quantidade de cards sem dados AvantPro');
-  assert.match(mlBrowser, /for \(let passada = 1; passada <= maxPassadas[\s\S]*for \(let index = 0; index < posicoesUnicas\.length[\s\S]*Date\.now\(\) < deadline[\s\S]*loginAvantBloqueado/, 'coleta deve percorrer as posicoes da pagina em ate tres passadas, respeitando prazo e bloqueio de login');
-  assert.match(buscaRanking, /const maxPosicoesRolagem[\s\S]*segundoPlano \? 28 : 24[\s\S]*maxPosicoes:\s*maxPosicoesRolagem/, 'coleta por rolagem deve varrer a primeira pagina com cobertura suficiente');
-  assert.match(execucao, /async function abrirPrimeiraPesquisaFavoritosAposConfirmacaoAvantPro[\s\S]*obterTermoInicialLoginAvantProFavoritos\(selecionadosLista, quantidadePesquisas\)[\s\S]*coletarAnunciosPrimeiraPaginaFavoritosSemFluxoAntigo\(info, pesquisa, \{[\s\S]*maxAnuncios:\s*limiteAnunciosPrimeiraPesquisa[\s\S]*registrarHistoricoRankingSkuFavoritosImediato\(grupoRanking\)/, 'apos confirmar AvantPro, Favoritos deve abrir, coletar e salvar cada ranking da primeira pagina');
+  assert.match(buscaRanking, /contexto\.maxCliquesAvantColeta = Math\.min\([\s\S]*100[\s\S]*Number\(contexto\.opcoes\.maxCliquesAvant\) \|\| contexto\.maxAnunciosColeta/, 'coleta principal deve permitir clicar todos os controles AvantPro da primeira pagina');
+  assert.match(buscaRanking, /coletarDadosAvantComRolagem\(\{[\s\S]*maxAnuncios:\s*contexto\.maxAnunciosColeta[\s\S]*mesclarAnunciosAvant\(contexto\.anunciosAvant, anunciosRolagem\)/, 'coleta principal deve percorrer a primeira pagina e mesclar os cards carregados por rolagem');
+  assert.match(buscaRanking, /\(contexto\.anunciosAvant\.length \|\| contexto\.resultadosMlVisiveis\)[\s\S]*coletarDadosAvantComRolagem/, 'rolagem deve tentar coletar quando ha cards visiveis mesmo se a primeira leitura Avant veio vazia');
+  assert.match(buscaRanking, /function coletarRolagemBuscaFavoritos[\s\S]*coletarDadosAvantComRolagem\(\{[\s\S]*clicarCardsSemDados:\s*false[\s\S]*permitirFerramentasAvant:\s*false[\s\S]*permitirAutoLoginAvant:\s*false/, 'coleta de Favoritos nao deve clicar em cards, ferramentas ou auto-login que abrem Vincular AvantPro');
+  assert.match(mlBrowser, /const loteValor = opcoes\.loteCliques === undefined \? 0[\s\S]*const loteCliques = Math\.max\(0, Math\.min/, 'coleta controlada deve manter cliques desligados quando o lote nao for informado');
+  assert.match(mlBrowser, /ctx\.loteCliques > 0 && !ctx\.cliquesAvantDesligados[\s\S]*acionarCardsAvantProFilaWebview/, 'coleta controlada so deve clicar nos controles Avant quando um lote positivo for autorizado');
+  assert.ok((mlBrowser.match(/ctx\.totalVisiveis > 0 && resumo\.com_dados_avant >= ctx\.totalVisiveis/g) || []).length >= 2,
+    'coleta nao deve parar apenas pela quantidade de cards sem dados AvantPro');
+  assert.match(mlBrowser, /for \(let passada = 1; passada <= ctx\.maxPassadas[\s\S]*for \(let index = 0; index < ctx\.posicoesUnicas\.length[\s\S]*Date\.now\(\) < ctx\.deadline[\s\S]*ctx\.loginAvantBloqueado/, 'coleta deve percorrer as posicoes da pagina em ate tres passadas, respeitando prazo e bloqueio de login');
+  assert.match(buscaRanking, /const maxPosicoes = Number\(contexto\.opcoes\.maxPosicoesRolagem\)[\s\S]*contexto\.segundoPlano \? 28 : 24[\s\S]*maxPosicoes,/, 'coleta por rolagem deve varrer a primeira pagina com cobertura suficiente');
+  assert.match(execucao, /function prepararFluxoConfirmadoFavoritos[\s\S]*obterTermoInicialLoginAvantProFavoritos\(selecionadosLista, quantidadePesquisas\)/, 'fluxo confirmado deve resolver o termo inicial do AvantPro');
+  assert.match(execucao, /async function coletarPesquisasSequenciaisFluxoConfirmadoFavoritos[\s\S]*coletarAnunciosPrimeiraPaginaFavoritosSemFluxoAntigo\(info, pesquisa, \{[\s\S]*maxAnuncios:\s*contexto\.limiteAnunciosPrimeiraPesquisa/, 'fluxo confirmado deve coletar a primeira pagina com o limite congelado');
+  assert.match(execucao, /async function executarColetaSequencialFluxoConfirmadoFavoritos[\s\S]*registrarHistoricoRankingSkuFavoritosImediato\(grupo\)/, 'fluxo confirmado deve salvar cada ranking individual');
   assert.match(execucao, /Ranking salvo[\s\S]*rotina antiga de coleta continua desligada/, 'coleta nova deve salvar ranking sem religar a rotina antiga');
   assert.match(execucao, /function montarResumoPesquisaFavoritos[\s\S]*com_foto[\s\S]*com_link[\s\S]*com_dados_avant[\s\S]*incompletos/, 'execucao deve calcular resumo de foto, link e dados Avant por pesquisa');
   assert.match(execucao, /function formatarResumoPesquisaFavoritos[\s\S]*\$\{resumo\.visiveis\} visiveis[\s\S]*\$\{resumo\.com_dados_avant \|\| 0\} com Avant[\s\S]*\$\{resumo\.incompletos \|\| 0\} incompletos/, 'resumo da coleta deve mostrar visiveis, dados Avant e incompletos');
-  assert.match(execucao, /let normalizadosPesquisa = anuncios\.map[\s\S]*await enriquecerAnunciosFavoritosRanking\(normalizadosPesquisa,\s*contextoEnriquecimentoFavoritos\)[\s\S]*mostrarBalaoFavoritosStatus\(formatarResumoPesquisaFavoritos\(resumoPesquisa\)/, 'cada pesquisa deve enriquecer uma vez no contexto da execucao e exibir resumo antes de seguir');
+  assert.match(execucao, /let normalizadosPesquisa = anuncios\.map[\s\S]*await enriquecerAnunciosFavoritosRanking\(normalizadosPesquisa,[\s\S]*mostrarBalaoFavoritosStatus\(formatarResumoPesquisaFavoritos\(resumoPesquisa\)/, 'cada pesquisa deve enriquecer uma vez no contexto da execucao e exibir resumo antes de seguir');
   assert.match(execucao, /resumo_coleta:\s*resumosColeta/, 'ranking salvo deve carregar os resumos de coleta por pesquisa');
   assert.match(historico, /function formatarResumoColetaFavoritosTela[\s\S]*Pesquisa \$\{pesquisa\} concluida[\s\S]*\$\{comDadosAvant\} com Avant[\s\S]*function criarBlocoResumoColetaFavoritos[\s\S]*ml-favoritos-resumo-coleta/, 'resultado deve mostrar resumo persistente de coleta por pesquisa');
   assert.match(historico, /renderizarFavoritosPesquisaResultados[\s\S]*criarBlocoResumoColetaFavoritos\(grupo\)[\s\S]*head\.appendChild\(resumoColeta\)/, 'card do ranking deve exibir o resumo da coleta');
@@ -926,15 +956,21 @@ function validarFluxoFavoritosAvantProSemReload() {
   assert.match(execucao, /function fecharNavegadorFavoritosAposColeta[\s\S]*hideEmbeddedMlBrowser\(\{[\s\S]*destroy:\s*true[\s\S]*preserveAvantProSession:\s*true/, 'fim da coleta deve descarregar BrowserView sobreposto preservando sessao AvantPro');
   assert.match(syncFavoritosRuntime, /runtimeCodeFiles\s*=\s*\[[\s\S]*['"]electron_shell\.html['"]/, 'sincronizador deve incluir o shell que exibe o cronometro');
   assert.match(mlBrowser, /function fecharBalaoResultadosMl[\s\S]*ocultarNavegadorMlShellDefinitivo\(\{[\s\S]*descarregarConteudo:[\s\S]*opcoes\.descarregarConteudo[\s\S]*preserveAvantProSession:/, 'fechamento do modal deve repassar destroy/descarregar para o BrowserView');
-  assert.match(execucao, /if \(!avantLoginConfirmadoPeloUsuario\) return;\s*await abrirPrimeiraPesquisaFavoritosAposConfirmacaoAvantPro\(selecionados,\s*quantidade,\s*\{[\s\S]*opcoesPromocao,[\s\S]*usarIaRanking[\s\S]*\}\);\s*return;\s*mlFavoritosEmExecucao = true/, 'fluxo antigo deve chamar a coleta nova e manter a rotina antiga depois de um return obrigatorio');
-  assert.match(execucao, /if \(!avantLoginConfirmadoPeloUsuario\) return;\s*await abrirPrimeiraPesquisaFavoritosAposConfirmacaoAvantPro\(selecionados,\s*quantidade,\s*\{[\s\S]*opcoesPromocao,[\s\S]*usarIaRanking[\s\S]*\}\);\s*return;\s*const executarEmBackground = opcoes\.background === true/, 'job de favoritos deve chamar a coleta nova e manter o worker antigo depois de um return obrigatorio');
+  const blocoFachadaRendererAntigo = execucao.match(/async function fazerFavoritosSkusSelecionadosRendererAntigo[\s\S]*?(?=async function executarRendererAntigoFavoritosIsolado)/)?.[0] || '';
+  assert.match(blocoFachadaRendererAntigo, /if \(!avantLoginConfirmadoPeloUsuario\) return;[\s\S]*await abrirPrimeiraPesquisaFavoritosAposConfirmacaoAvantPro\(selecionados,\s*quantidade,\s*\{[\s\S]*opcoesPromocao,[\s\S]*usarIaRanking/, 'fachada legada deve delegar ao fluxo confirmado');
+  assert.doesNotMatch(blocoFachadaRendererAntigo, /executarRendererAntigoFavoritosIsolado\(/, 'renderer antigo isolado nao pode voltar ao caminho ativo');
+  assert.match(execucao, /async function executarRendererAntigoFavoritosIsolado\(dados\)/, 'implementacao legada deve permanecer isolada para regressao controlada');
+  const blocoFachadaFavoritos = execucao.match(/async function fazerFavoritosSkusSelecionados\(opcoes = \{\}\)[\s\S]*?(?=async function executarBackendJobFavoritosIsolado)/)?.[0] || '';
+  assert.match(blocoFachadaFavoritos, /if \(!avantLoginConfirmadoPeloUsuario\) return;[\s\S]*await abrirPrimeiraPesquisaFavoritosAposConfirmacaoAvantPro\(selecionados,\s*quantidade,\s*\{[\s\S]*opcoesPromocao,[\s\S]*usarIaRanking/, 'entrada principal deve delegar ao fluxo confirmado');
+  assert.doesNotMatch(blocoFachadaFavoritos, /executarBackendJobFavoritosIsolado\(/, 'backend job antigo isolado nao pode voltar ao caminho ativo');
+  assert.match(execucao, /async function executarBackendJobFavoritosIsolado\(dados\)/, 'backend job antigo deve permanecer isolado para regressao controlada');
   assert.match(execucao, /async function iniciarWorkerFavoritosAvantProJob\(opcoes = \{\}\) \{[\s\S]*opcoes\.permitirRotinaAntigaAposLoginAvantPro !== true[\s\S]*pararFavoritosAposConfirmacaoAvantProNovaEtapa/, 'worker antigo deve ficar bloqueado ate religacao expressa');
   assert.doesNotMatch(execucao, /if \(loginAvantAntesDaColeta\)[\s\S]*termoPesquisa:\s*destino\.termo[\s\S]*const limiteAnunciosPrimeiraPesquisa/, 'worker visual nao pode abrir a pesquisa no bloco de preparacao do AvantPro');
   assert.match(execucao, /async function coletarAnunciosPrimeiraPaginaFavoritosSemFluxoAntigo[\s\S]*limiteAnunciosPrimeiraPesquisa[\s\S]*ML_FAVORITOS_COLETA_ANUNCIOS_MAX[\s\S]*coletarPrimeiraPaginaFavoritosControlada\(\{[\s\S]*maxAnuncios:\s*limiteAnunciosPrimeiraPesquisa[\s\S]*tempoLimiteMs:\s*90000[\s\S]*maxPassadas:\s*2[\s\S]*loteCliques:\s*6/, 'primeira pesquisa pos-login deve manter o limite completo com prazo de 90 segundos, duas passadas e lote controlado de cliques');
   assert.doesNotMatch(execucao, /permitirFallbackSemAvant:\s*true/, 'Fazer favoritos nao deve cair em fallback legado quando o AvantPro pede login');
   assert.doesNotMatch(buscaRanking, /permitirFallbackSemAvant/, 'AvantPro obrigatorio deve voltar para conexao/login, nao fallback silencioso');
   assert.ok(mlBrowser.includes('valorNoTexto(card, /vendas?\\\\s+do\\\\s+produto\\\\s+'), 'leitura rapida deve ler valor inline de Vendas do produto');
-  assert.match(buscaRanking, /const permitirComplementoProdutoAvant = !mlFavoritosEmExecucao/, 'Fazer favoritos nao deve abrir paginas individuais para complemento');
+  assert.match(buscaRanking, /function complementarEnriquecimentoAvantFavoritos[\s\S]*if \(mlFavoritosEmExecucao \|\| !pendentesAvant\.length[\s\S]*return;/, 'Fazer favoritos nao deve abrir paginas individuais para complemento');
   assert.match(buscaRanking, /function filtrarAnunciosFavoritosComDadosAvant/, 'ranking deve ter filtro para anuncios com dados ricos do AvantPro');
   assert.match(execucao, /function prepararAnunciosFavoritosRankingComDadosAvant[\s\S]*filtrarAnunciosFavoritosComDadosAvant\(todos\)[\s\S]*const baseRanking = todos[\s\S]*removidosPorDadosAvant:\s*0/, 'ranking deve considerar todos os anuncios validos e nao descartar quem ainda nao tem dados AvantPro');
   assert.match(execucao, /IA verifica anuncios fora do produto/, 'IA do Fazer favoritos nao deve anunciar limite de 8 confirmados');
@@ -964,9 +1000,9 @@ function validarFluxoFavoritosAvantProSemReload() {
   assert.match(mlBrowser, /function ocultarNavegadorMlShellDefinitivo\(opcoes = \{\}\)[\s\S]*favoritosBrowserShellBridge\?\.ocultarDefinitivo\(opcoes\)/, 'fachada deve delegar o fechamento ao shell V2');
   assert.match(shellBridgeV2, /function ocultarDefinitivo\(opcoes = \{\}\)[\s\S]*preserveAvantProSession:\s*opcoes\.preserveAvantProSession !== false[\s\S]*enviar\('jk-ml-browser-hide', payload\)/, 'fechar o modulo Favoritos deve pedir preservacao da sessao AvantPro');
   assert.match(shellBridgeV2, /function forcarVisivel\(\)[\s\S]*if \(!isBalloonOpen\(\)\)[\s\S]*favoritos-force-visible-after-close[\s\S]*return false/, 'timer atrasado nao pode tornar o navegador visivel depois de fechar o modal');
-  assert.match(buscaRanking, /cicloLoginContinuaAtivo[\s\S]*agendarEnquantoLoginAberto/, 'fluxo de login deve cancelar timers atrasados quando a tela for fechada');
+  assert.match(buscaRanking, /function cicloLoginContinuaAtivoFavoritos[\s\S]*function agendarEnquantoLoginFavoritos[\s\S]*cicloLoginContinuaAtivoFavoritos\(contexto, ciclo\)/, 'fluxo de login deve cancelar timers atrasados quando a tela for fechada');
   assert.match(buscaRanking, /favoritos-login-confirmado[\s\S]*favoritos-login-cancelado/, 'fluxo de login deve fechar o navegador ao continuar ou cancelar');
-  assert.match(buscaRanking, /__JK_FAVORITOS_LOGIN_CLOSE_HANDLER__[\s\S]*fecharLoginPeloModal = \(\) => finalizar\(false\)/, 'fluxo de login deve registrar um encerramento especifico para o botao Fechar');
+  assert.match(buscaRanking, /__JK_FAVORITOS_LOGIN_CLOSE_HANDLER__[\s\S]*contexto\.fecharLoginPeloModal = \(\) => finalizarPerguntaLoginAvantFavoritos\(contexto, false\)/, 'fluxo de login deve registrar um encerramento especifico para o botao Fechar');
   assert.match(init, /mlWorkModalCloseEl\.addEventListener\('click'[\s\S]*__JK_FAVORITOS_LOGIN_CLOSE_HANDLER__[\s\S]*fecharLoginPendente\(\)/, 'botao Fechar deve resolver somente a pergunta de login pendente');
   assert.match(init, /favoritos-pagehide[\s\S]*jk-shell-history-back[\s\S]*pageshow[\s\S]*event\.persisted[\s\S]*pagehide/, 'Voltar ou sair da pagina deve descarregar o navegador preservando a sessao e permitir novo ciclo apos restauracao');
   assert.match(styles, /body\.ml-work-modal-open \.jk-nav-card-group[\s\S]*display:\s*none !important/, 'Voltar interno deve ficar oculto enquanto o modal ocupa a tela');
@@ -974,7 +1010,7 @@ function validarFluxoFavoritosAvantProSemReload() {
   assert.match(shell, /const hideOptions = \{[\s\S]*\.\.\.\(payload \|\| \{\}\)[\s\S]*hideEmbeddedMlBrowserShell\(hideOptions\)/, 'shell deve repassar a opcao de preservar sessao AvantPro ao Electron');
   assert.match(mlBrowser, /const ML_FAVORITOS_MONITORAMENTO_PAGINA_AUTOMATICO = false/, 'monitoramento automatico da pagina deve ficar desligado por padrao');
   assert.match(mlBrowser, /function aguardarAvantProNoWebview[\s\S]*statusMonitoramentoPaginaFavoritosDesativado/, 'aguardo do AvantPro deve recusar chamadas automaticas sem acao do usuario');
-  assert.match(buscaRanking, /mostrarControles\(status\);\s*\}\);\s*\}/, 'conexao AvantPro deve parar nos botoes manuais, sem verificacao automatica');
+  assert.match(buscaRanking, /function aguardarConexaoAvantProFavoritos[\s\S]*return new Promise\(\(resolve, reject\)[\s\S]*mostrarControlesConexaoAvantProFavoritos\(contexto, status\)/, 'conexao AvantPro deve parar nos botoes manuais, sem verificacao automatica');
   assert.doesNotMatch(buscaRanking, /setInterval\(|const verificarAutomaticamente|setTimeout\(\(\) => abrirLogin|setTimeout\(\(\) => verificarAutomaticamente/, 'conexao AvantPro nao deve usar timer de monitoramento ou abrir login sozinha');
   assert.match(renderAvantMercadoLivre, /function agendarAtualizacaoAvantAutomatica[\s\S]*mlAvantAutoRunId \+= 1[\s\S]*agendado:\s*false[\s\S]*desativado:\s*true/, 'atualizacao automatica antiga do Avant deve permanecer como no-op bloqueado');
   assert.match(renderAvantMercadoLivre, /if \(typeof monitoramentoPaginaFavoritosAutomaticoAtivo === 'function' && monitoramentoPaginaFavoritosAutomaticoAtivo\(\)\) \{[\s\S]*enriquecerDatasCriacaoAnuncios/, 'enriquecimento pos-render so pode rodar se o monitoramento for religado explicitamente');
@@ -992,18 +1028,18 @@ function validarFluxoFavoritosAvantProSemReload() {
 
 function validarColetaCanonicaEManifestoFavoritos() {
   const repoRoot = process.cwd();
-  const mlBrowserCore = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'ml-browser.js'), 'utf8');
+  const mlBrowserCore = browserSource(repoRoot, { preloaded: false });
   const urlUtils = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'v2', 'browser', 'url-utils.js'), 'utf8');
   const shellBridgeV2 = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'v2', 'browser', 'shell-bridge.js'), 'utf8');
   const avantCacheV2 = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'v2', 'browser', 'avant-cache.js'), 'utf8');
   const mlBrowser = [urlUtils, shellBridgeV2, avantCacheV2, mlBrowserCore].join('\n');
-  const buscaRanking = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '04-promocoes-busca-ranking.js'), 'utf8');
-  const execucao = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '07-execucao-render-layout.js'), 'utf8');
+  const buscaRanking = searchRankingSource(repoRoot, { includeRuntime: false, includePublicApi: false });
+  const execucao = executionSource(repoRoot);
   const historico = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '05-resultados-historico.js'), 'utf8');
   const historicoUi = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '06-ranking-manual-historico-ui.js'), 'utf8');
   const mlBaseBusca = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '01-ml-base-busca.js'), 'utf8');
   const renderAvantMercadoLivre = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout', '08-render-avant-mercadolivre.js'), 'utf8');
-  const stylesColeta = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'styles.css'), 'utf8');
+  const stylesColeta = readFavoritosStyles(repoRoot);
   const favoritosHtml = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos.html'), 'utf8');
   const tabelasLayout = fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'tabelas-layout.js'), 'utf8');
   const assetManifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'static', 'favoritos', 'asset-manifest.json'), 'utf8'));
@@ -1023,20 +1059,20 @@ function validarColetaCanonicaEManifestoFavoritos() {
   assert.match(mlBrowser, /function mesclarAnunciosAvant/, 'merge seguro deve existir');
   assert.match(mlBrowser, /sem_match_mlb_link/, 'dados Avant com MLB\/link divergente devem ser marcados como nao vinculados');
   assert.match(mlBrowser, /sem_base_mercado_livre[\s\S]*__avantNaoVinculado|__avantNaoVinculado[\s\S]*sem_base_mercado_livre/, 'dados Avant sem base ML devem ir para nao vinculados');
-  assert.match(mlBrowser, /function mesclarAnunciosAvant[\s\S]*copiarPrecoSeguro[\s\S]*fonteMl\(item\)/, 'Avant nao deve sobrescrever preco confiavel do Mercado Livre');
+  assert.match(mlBrowser, /function copiarPrecoMesclagemSeguro[\s\S]*fonteMercadoLivreMesclagem\(item\)[\s\S]*function mesclarAnunciosAvant/, 'Avant nao deve sobrescrever preco confiavel do Mercado Livre');
   assert.match(mlBrowser, /similaridadeTitulosFavoritosCanonico[\s\S]*titulo_divergente_mesmo_mlb_link/, 'merge deve marcar suspeito quando titulo divergir fortemente');
   assert.match(mlBrowser, /classificarQualidadeAnuncioFavoritosCanonico[\s\S]*completo[\s\S]*incompleto[\s\S]*suspeito/, 'anuncios devem receber estado de qualidade');
   assert.match(mlBrowser, /var capturarPainelAvantParaCard[\s\S]*__JK_AVANT_CARD_DATA_CACHE[\s\S]*cache\[canonical\]/, 'clique do Avant deve cachear dados do painel pelo MLB/link do card clicado');
   assert.match(mlBrowser, /origem_dados:\s*'avantpro_card_panel_cache'/, 'cache do painel Avant deve marcar a origem dos dados capturados');
   assert.match(mlBrowser, /var cachePainel = window\.__JK_AVANT_CARD_DATA_CACHE[\s\S]*cached\.chave_canonica = key[\s\S]*rows\.forEach/, 'extracao final do Avant deve ler o cache card->painel antes da heuristica visual');
   assert.match(mlBrowser, /function extrairAnunciosAvantProDomWebview[\s\S]*rootGenericoDemais[\s\S]*rootProdutoSeguro[\s\S]*nearestProductLink/, 'painel Avant flutuante deve ser vinculado pelo link visual mais proximo, sem usar body como card');
-  assert.match(mlBrowser, /const avantCacheFinal = Date\.now\(\) < deadline[\s\S]*aguardarCancelavel\(extrairCacheAvantProCardsWebview[\s\S]*const avantDomFinal = Date\.now\(\) < deadline[\s\S]*aguardarCancelavel\(extrairAnunciosAvantProDomWebview[\s\S]*mesclarAnunciosAvant\(anuncios,\s*\(avantCacheFinal[\s\S]*mesclarAnunciosAvant\(anuncios,\s*\(avantDomFinal/, 'fechamento deve mesclar cache e DOM do Avant sem prolongar a coleta depois do prazo');
-  assert.match(mlBrowser, /const avantDomDepois = \(!incrementalAtivo \|\| usarBuscaProfunda \|\| \(clickInfo && clickInfo\.clicked\)\)[\s\S]*extrairAnunciosAvantProDomWebview[\s\S]*mesclarAnunciosAvant\(anuncios,\s*\(avantDomDepois/, 'apos cliques Avant ou na contingencia profunda, coleta deve ler o painel DOM global antes de seguir');
+  assert.match(mlBrowser, /const cache = Date\.now\(\) < ctx\.deadline[\s\S]*ctx\.controle\.aguardar\(extrairCacheAvantProCardsWebview[\s\S]*const dom = Date\.now\(\) < ctx\.deadline[\s\S]*ctx\.controle\.aguardar\(extrairAnunciosAvantProDomWebview[\s\S]*mesclarAnunciosAvant\(ctx\.anuncios, \(cache[\s\S]*mesclarAnunciosAvant\(ctx\.anuncios, \(dom/, 'fechamento deve mesclar cache e DOM do Avant sem prolongar a coleta depois do prazo');
+  assert.match(mlBrowser, /const avantDom = \(!ctx\.incrementalAtivo \|\| buscaProfunda \|\| \(clickInfo && clickInfo\.clicked\)\)[\s\S]*extrairAnunciosAvantProDomWebview[\s\S]*mesclarAnunciosAvant\(ctx\.anuncios, \(avantDom/, 'apos cliques Avant ou na contingencia profunda, coleta deve ler o painel DOM global antes de seguir');
   assert.match(mlBrowser, /async function extrairBaseMercadoLivreEmergencialWebview[\s\S]*extrairAnunciosWebviewVisivel[\s\S]*clicarAvant:\s*false[\s\S]*mercado_livre_dom_emergencial/, 'coleta deve ter fallback emergencial de leitura ML sem acionar Avant ou fluxo antigo');
-  assert.match(mlBrowser, /if \(!anuncios\.length\) \{[\s\S]*const emergenciaFinal = await aguardarCancelavel\(extrairBaseMercadoLivreEmergencialWebview[\s\S]*mesclarAnunciosAvant\(emergenciaFinal\.anuncios,\s*anuncios\)/, 'fechamento da coleta deve tentar fallback emergencial antes de retornar ranking vazio');
+  assert.match(mlBrowser, /if \(!ctx\.anuncios\.length\) \{[\s\S]*const emergencia = await ctx\.controle\.aguardar\(extrairBaseMercadoLivreEmergencialWebview[\s\S]*mesclarAnunciosAvant\(emergencia\.anuncios, ctx\.anuncios\)/, 'fechamento da coleta deve tentar fallback emergencial antes de retornar ranking vazio');
 
   assert.match(execucao, /coletarPrimeiraPaginaFavoritosControlada[\s\S]*maxPassadas:\s*2[\s\S]*loteCliques:\s*6/, 'execucao deve usar coleta controlada da primeira pagina com fila segura de cliques Avant');
-  assert.match(mlBrowser, /const loteCliquesValor = opcoes\.loteCliques === undefined \? 0/, 'coleta controlada deve manter cliques Avant desligados por padrao');
+  assert.match(mlBrowser, /const loteValor = opcoes\.loteCliques === undefined \? 0/, 'coleta controlada deve manter cliques Avant desligados por padrao');
   assert.match(mlBrowser, /__JK_FAVORITOS_DOWNLOAD_GUARD_REGISTERED[\s\S]*event\.stopImmediatePropagation/, 'coleta deve bloquear downloads do Avant no webview');
   assert.match(mlBrowser, /var cardMaisProximoFila[\s\S]*var cardsSelector = deepScan[\s\S]*queryAllDeep\(cardSelectors\)[\s\S]*cardsSelector\.forEach[\s\S]*var anchorsProduto = deepScan[\s\S]*queryAllDeep\('a\[href\]'\)[\s\S]*incluirCard\(cardMaisProximoFila\(anchor\)\)/, 'fila Avant deve manter a busca profunda como contingencia e usar os mesmos cards\/links da base ML');
   assert.match(mlBrowser, /var cardsPorKey = \{\}[\s\S]*duplicateKeys[\s\S]*candidateKeys: Object\.keys\(cardsPorKey\)/, 'fila Avant deve deduplicar candidatos por MLB/link antes de clicar');

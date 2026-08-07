@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from fastapi import APIRouter
 
-from backend.services import perguntas_pos_venda_endpoints
+from backend.modules.perguntas_pos_venda.endpoints import api as perguntas_pos_venda_endpoints
 
 
 @dataclass(frozen=True)

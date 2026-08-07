@@ -4,9 +4,18 @@ import pytest
 
 from backend.services import codex_whatsapp_agents
 from backend.services import whatsapp_bridge as _whatsapp_bridge  # binds extracted component dependencies
-from backend.services import codex_assistant
+from backend.services.codex.assistant import execution as assistant_execution
 from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp.orchestration import function_manager
+
+
+def _evidence(status: str) -> dict:
+    conclusive = status in {"complete", "confirmed_zero"}
+    return {"schema": "jk.codex.evidence.v1", "status": status,
+        "claim_scope": "full" if conclusive else "none", "coverage_complete": conclusive,
+        "confidence": "high" if conclusive else "low", "freshness": "live",
+        "retryable": False, "reason": status, "missing_fields": [] if conclusive else ["decisive_evidence"],
+        "sources": [], "attempted_fallbacks": [], "next_sources": []}
 
 
 def _plan(*, action="collect", calls=None, hub_mode="not_applicable", missing=None, entities=None, hub_filters=None):
@@ -375,13 +384,10 @@ def test_tool_dependencies_run_in_plan_order_and_block_failed_required_source(mo
             "success": sufficient,
             "records": 1 if sufficient else 0,
             "data": [{"ok": True}] if sufficient else [],
-            "tool_validation": {
-                "dados_suficientes": sufficient,
-                "motivo": "ok" if sufficient else "source_unavailable",
-            },
+            "evidence": _evidence("complete" if sufficient else "unavailable"),
         }
 
-    monkeypatch.setattr(codex_assistant, "codex_assistant_execute_tool_call", execute_tool_call)
+    monkeypatch.setattr(assistant_execution, "execute_tool_call", execute_tool_call)
     plan = function_manager._function_manager_enforce_plan(
         _plan(calls=[
             {
@@ -414,8 +420,8 @@ def test_tool_dependencies_run_in_plan_order_and_block_failed_required_source(mo
 def test_tool_execution_without_bound_tenant_fails_closed(monkeypatch):
     monkeypatch.setattr(function_manager, "_record_latency", lambda *_args, **_kwargs: None, raising=False)
     monkeypatch.setattr(
-        codex_assistant,
-        "codex_assistant_execute_tool_call",
+        assistant_execution,
+        "execute_tool_call",
         lambda **_kwargs: pytest.fail("tool must not run without a bound tenant"),
     )
 

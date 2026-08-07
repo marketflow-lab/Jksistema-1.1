@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from backend.lifecycle import SHUTDOWN_EVENTS, STARTUP_EVENTS, register_startup_events
 from backend.routers.context_hub import create_context_hub_router
 from backend.services import codex_console
+from backend.services.codex.console import runtime as console_runtime
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -93,19 +94,29 @@ def test_release_manifest_requires_context_hub_runtime_files() -> None:
     source_files = set(manifest.get("requiredSourceFiles") or [])
     packaged_files = set(manifest.get("requiredPackagedFiles") or [])
     parity = set(manifest.get("requiredPackagedSourceParity") or [])
+    source_directories = {
+        str(item.get("path") or ""): int(item.get("minFiles") or 0)
+        for item in manifest.get("requiredSourceDirectories") or []
+        if isinstance(item, dict)
+    }
+    packaged_directories = {
+        str(item.get("path") or ""): int(item.get("minFiles") or 0)
+        for item in manifest.get("requiredPackagedDirectories") or []
+        if isinstance(item, dict)
+    }
 
     assert critical <= source_files
     assert {item for item in critical if item.startswith("backend/")} <= parity
     assert {f"local_app/{item}" for item in critical} <= packaged_files
+    assert source_directories["backend/services/context_inventory"] >= 16
+    assert packaged_directories["local_app/backend/services/context_inventory"] >= 16
 
 
 def test_non_full_user_gets_403_on_every_mutating_or_search_route(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(
-        codex_console,
-        "_codex_require_authenticated",
+    monkeypatch.setattr(console_runtime, "_codex_require_authenticated",
         lambda _request, _authorization: {
             "client_id": "000002",
             "username": "operador",
@@ -136,9 +147,7 @@ def test_non_full_user_gets_403_on_every_mutating_or_search_route(
 
 
 def test_request_body_cannot_select_another_tenant(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(
-        codex_console,
-        "_codex_require_authenticated",
+    monkeypatch.setattr(console_runtime, "_codex_require_authenticated",
         lambda _request, _authorization: {
             "client_id": "000002",
             "username": "admin",

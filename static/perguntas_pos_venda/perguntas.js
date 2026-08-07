@@ -914,13 +914,33 @@ function aplicarResultadoJobAtendimentoCodex(questionKey, data, tenantScope = te
         const textarea = card.querySelector('.question-answer-text');
         const status = card.querySelector('.question-answer-composer .question-answer-status');
         if (!textarea) return;
-        textarea.value = result.resposta || data.resposta || '';
+        const resposta = String(result.resposta || data.resposta || '').trim();
+        if (!resposta) {
+            textarea.value = '';
+            delete textarea.dataset.codexProposalId;
+            delete textarea.dataset.codexProposalVersion;
+            delete textarea.dataset.codexProposalHash;
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            const avisoBloqueio = Array.isArray(data?.warnings) && data.warnings.length
+                ? ` ${data.warnings[0]}`
+                : '';
+            setStatusRespostaPergunta(
+                status,
+                `Nao foi possivel carregar o rascunho.${avisoBloqueio}`,
+                'error'
+            );
+            return;
+        }
+        textarea.value = resposta;
         textarea.dataset.codexProposalId = String(result.proposal_id || data.proposal_id || data.job_id || '');
         textarea.dataset.codexProposalVersion = String(result.proposal_version || data.proposal_version || 1);
         textarea.dataset.codexProposalHash = String(result.proposal_hash || data.proposal_hash || '');
         textarea.dispatchEvent(new Event('input', { bubbles: true }));
-        const aviso = Array.isArray(data.warnings) && data.warnings.length ? ` ${data.warnings[0]}` : '';
-        setStatusRespostaPergunta(status, `Sugestao gerada pelo agente Codex. Revise antes de enviar.${aviso}`, 'ok');
+        const parcial = data?.data_sufficient === false && Boolean(data?.completed_with_partial);
+        const mensagem = parcial
+            ? 'Rascunho gerado com as informacoes disponiveis.'
+            : 'Sugestao gerada pelo Black Jhon.';
+        setStatusRespostaPergunta(status, mensagem, 'ok');
     });
 }
 
@@ -934,7 +954,10 @@ function mensagemProgressoJobAtendimentoCodex(data) {
     if (data.status === 'waiting_retry' && !/nova tentativa/i.test(mensagem)) {
         mensagem += ` Nova tentativa em ${Math.max(0, Number(data.next_retry_in_seconds || 0))}s.`;
     }
-    return `${mensagem} Etapa: ${etapa}. Tentativa: ${tentativa}. Ultima atividade: ${ultimaAtividade}.`;
+    const fila = data.status === 'queued'
+        ? ` Fila: ${Math.max(0, Number(data.queue_position || 0))}/${Math.max(0, Number(data.queue_total || 0))}. Em execucao: ${Math.max(0, Number(data.running_total || 0))}.`
+        : '';
+    return `${mensagem}${fila} Etapa: ${etapa}. Tentativa: ${tentativa}. Ultima atividade: ${ultimaAtividade}.`;
 }
 
 async function aguardarJobAtendimentoCodex(jobId, atualizarStatus, cancelamentoLocal = () => false) {

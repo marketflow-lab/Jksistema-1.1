@@ -49,15 +49,10 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services.codex.console import contracts as console_contracts
+from backend.services.codex.console import security as console_security
+from backend.services.codex.console import tasks as console_tasks
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -117,7 +112,7 @@ def _try_create_action_pending(
     action_reference = "\n".join(
         item for item in (str(followup.get("message") or "").strip(), str(request_text or "").strip()) if item
     )
-    if not followup and not codex_console._codex_prompt_pede_alteracao(request_text):
+    if not followup and not console_security.prompt_requests_mutation(request_text):
         return False
     history = [{"role": "user", "text": str(followup.get("message") or "")}] if followup else []
     raw_wa_id = str(message.get("wa_id") or "").strip()
@@ -297,10 +292,10 @@ def _handle_approval_command(
                 run = result.get("run") if isinstance(result, dict) and isinstance(result.get("run"), dict) else {}
                 pending["run_id"] = str(run.get("run_id") or "")
             else:
-                codex_console.codex_aprovar_tarefa_para_sessao(
+                console_tasks.approve(
                     str(pending.get("task_id") or ""),
                     session,
-                    codex_console.CodexTaskApprovalRequest(
+                    console_contracts.CodexTaskApprovalRequest(
                         screen_context={
                             "title": "WhatsApp — confirmação móvel",
                             "pathname": "/whatsapp",
@@ -328,7 +323,7 @@ def _handle_approval_command(
                     source="whatsapp",
                 )
             else:
-                codex_console.codex_cancelar_tarefa_para_sessao(
+                console_tasks.cancel(
                     str(pending.get("task_id") or ""),
                     session,
                     cancel_source="whatsapp",

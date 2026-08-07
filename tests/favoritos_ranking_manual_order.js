@@ -103,6 +103,17 @@ function createHarness({
     };
 
     const context = {
+        window: {
+            FavoritosV2: {
+                searchRanking: {
+                    publicApi: {
+                        listings: {
+                            chavesAnuncioFavoritos: item => [...itemKeys(item)]
+                        }
+                    }
+                }
+            }
+        },
         Array,
         Boolean,
         Map,

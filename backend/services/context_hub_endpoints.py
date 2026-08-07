@@ -12,7 +12,8 @@ from typing import Any, Literal, Optional
 from fastapi import Header, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-from backend.services import context_hub
+from backend.modules.context_hub import api as context_hub_api
+from backend.modules.context_hub import contracts as context_hub_contracts
 
 
 class ContextHubSettingsRequest(BaseModel):
@@ -114,9 +115,9 @@ class CuratedPublishRequest(BaseModel):
 
 def _require_full_admin(request: Request, authorization: Optional[str]) -> dict[str, Any]:
     # Late import avoids coupling this module's import to backend_api composition.
-    from backend.services import codex_console
+    from backend.services.codex.console import security as console_security
 
-    return codex_console._codex_require_full_admin(request, authorization)
+    return console_security.require_full_admin(request, authorization)
 
 
 def _client_id_from_session(session: dict[str, Any]) -> str:
@@ -137,13 +138,13 @@ def _actor_from_session(session: dict[str, Any]) -> str:
 
 
 def _translate_error(error: Exception) -> HTTPException:
-    if isinstance(error, context_hub.ContextHubNotFoundError):
+    if isinstance(error, context_hub_contracts.ContextHubNotFoundError):
         return HTTPException(status_code=404, detail=str(error))
-    if isinstance(error, context_hub.ContextHubConflictError):
+    if isinstance(error, context_hub_contracts.ContextHubConflictError):
         return HTTPException(status_code=409, detail=str(error))
-    if isinstance(error, context_hub.ContextHubValidationError):
+    if isinstance(error, context_hub_contracts.ContextHubValidationError):
         return HTTPException(status_code=422, detail=str(error))
-    if isinstance(error, context_hub.ContextHubError):
+    if isinstance(error, context_hub_contracts.ContextHubError):
         return HTTPException(status_code=503, detail="Context Hub temporariamente indisponivel.")
     return HTTPException(status_code=500, detail="Falha interna no Context Hub.")
 
@@ -154,7 +155,7 @@ def context_hub_status(
 ):
     session = _require_full_admin(request, authorization)
     try:
-        return context_hub.get_status(_client_id_from_session(session))
+        return context_hub_api.get_status(_client_id_from_session(session))
     except Exception as error:
         raise _translate_error(error) from error
 
@@ -176,7 +177,7 @@ def context_hub_settings_put(
     try:
         return {
             "success": True,
-            "settings": context_hub.update_settings(
+            "settings": context_hub_api.update_settings(
                 _client_id_from_session(session),
                 auto_publish_enabled=(
                     payload.auto_publish_enabled
@@ -201,7 +202,7 @@ def context_hub_rebuild(
     session = _require_full_admin(request, authorization)
     safe_payload = payload or ContextHubRebuildRequest()
     try:
-        return context_hub.rebuild_context(
+        return context_hub_api.rebuild_context(
             _client_id_from_session(session),
             reason=safe_payload.reason,
             force=safe_payload.force,
@@ -217,7 +218,7 @@ def context_hub_generations(
 ):
     session = _require_full_admin(request, authorization)
     try:
-        return context_hub.list_generations(_client_id_from_session(session), limit=limit)
+        return context_hub_api.list_generations(_client_id_from_session(session), limit=limit)
     except Exception as error:
         raise _translate_error(error) from error
 
@@ -229,7 +230,7 @@ def context_hub_generation_get(
 ):
     session = _require_full_admin(request, authorization)
     try:
-        return context_hub.get_generation(_client_id_from_session(session), generation_id)
+        return context_hub_api.get_generation(_client_id_from_session(session), generation_id)
     except Exception as error:
         raise _translate_error(error) from error
 
@@ -241,7 +242,7 @@ def context_hub_generation_publish(
 ):
     session = _require_full_admin(request, authorization)
     try:
-        return context_hub.publish_generation(_client_id_from_session(session), generation_id)
+        return context_hub_api.publish_generation(_client_id_from_session(session), generation_id)
     except Exception as error:
         raise _translate_error(error) from error
 
@@ -253,7 +254,7 @@ def context_hub_generation_rollback(
 ):
     session = _require_full_admin(request, authorization)
     try:
-        return context_hub.rollback_generation(_client_id_from_session(session), generation_id)
+        return context_hub_api.rollback_generation(_client_id_from_session(session), generation_id)
     except Exception as error:
         raise _translate_error(error) from error
 
@@ -274,7 +275,7 @@ def context_hub_search(
         if value not in ("", [], None):
             filters[key] = value
     try:
-        return context_hub.search_context(
+        return context_hub_api.search_context(
             _client_id_from_session(session),
             payload.query,
             filters=filters,
@@ -290,7 +291,7 @@ def context_hub_curated_notes(
 ):
     session = _require_full_admin(request, authorization)
     try:
-        return context_hub.list_curated_notes(_client_id_from_session(session))
+        return context_hub_api.list_curated_notes(_client_id_from_session(session))
     except Exception as error:
         raise _translate_error(error) from error
 
@@ -302,7 +303,7 @@ def context_hub_curated_note_create(
 ):
     session = _require_full_admin(request, authorization)
     try:
-        return context_hub.create_curated_note(
+        return context_hub_api.create_curated_note(
             _client_id_from_session(session),
             title=payload.title,
             body=payload.body,
@@ -325,15 +326,15 @@ def _curated_transition(
     client_id = _client_id_from_session(session)
     actor = _actor_from_session(session)
     function = {
-        "validate": context_hub.validate_curated_note,
-        "review": context_hub.review_curated_note,
-        "approve": context_hub.approve_curated_note,
+        "validate": context_hub_api.validate_curated_note,
+        "review": context_hub_api.review_curated_note,
+        "approve": context_hub_api.approve_curated_note,
     }.get(action)
     try:
         if action == "reject":
-            return context_hub.reject_curated_note(client_id, note_id, actor=actor, reason=reason)
+            return context_hub_api.reject_curated_note(client_id, note_id, actor=actor, reason=reason)
         if function is None:
-            raise context_hub.ContextHubValidationError("Acao de curadoria invalida.")
+            raise context_hub_contracts.ContextHubValidationError("Acao de curadoria invalida.")
         return function(client_id, note_id, actor=actor)
     except Exception as error:
         raise _translate_error(error) from error
@@ -368,7 +369,7 @@ def context_hub_curated_publish(
     session = _require_full_admin(request, authorization)
     safe_payload = payload or CuratedPublishRequest()
     try:
-        return context_hub.publish_curated_context(
+        return context_hub_api.publish_curated_context(
             _client_id_from_session(session),
             reason=safe_payload.reason,
             force=safe_payload.force,
@@ -383,7 +384,7 @@ def context_hub_curated_backups(
 ):
     session = _require_full_admin(request, authorization)
     try:
-        return context_hub.list_curated_backups(_client_id_from_session(session))
+        return context_hub_api.list_curated_backups(_client_id_from_session(session))
     except Exception as error:
         raise _translate_error(error) from error
 
@@ -395,7 +396,7 @@ def context_hub_curated_backup_create(
 ):
     session = _require_full_admin(request, authorization)
     try:
-        return context_hub.create_curated_backup(
+        return context_hub_api.create_curated_backup(
             _client_id_from_session(session),
             passphrase=payload.passphrase.get_secret_value(),
         )
@@ -411,7 +412,7 @@ def context_hub_curated_backup_restore(
 ):
     session = _require_full_admin(request, authorization)
     try:
-        return context_hub.restore_curated_backup(
+        return context_hub_api.restore_curated_backup(
             _client_id_from_session(session),
             backup_id,
             passphrase=payload.passphrase.get_secret_value(),

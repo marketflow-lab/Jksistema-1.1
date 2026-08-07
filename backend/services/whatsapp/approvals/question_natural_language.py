@@ -350,7 +350,7 @@ def _resolve_natural_question_context(
     message: dict[str, Any],
     request: dict[str, str],
 ) -> Optional[tuple[Any, Any, list[dict[str, Any]], dict[str, Any], str, dict[str, Any]]]:
-    from backend.services import perguntas_pos_venda_endpoints as ppv_endpoints
+    from backend.modules.perguntas_pos_venda.endpoints import api as ppv_endpoints
     from backend.services import perguntas_pos_venda_state as ppv_state
 
     client_id = request["client_id"]

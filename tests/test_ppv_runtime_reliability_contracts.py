@@ -10,10 +10,12 @@ import pytest
 from fastapi import HTTPException
 
 from backend.schemas.perguntas_pos_venda import PerguntasAprovacaoRequest
+from backend.modules.perguntas_pos_venda.endpoints import approvals as endpoints
+from backend.modules.perguntas_pos_venda.endpoints import jobs as endpoint_jobs
+from backend.modules.perguntas_pos_venda.endpoints import post_sale_sync
 from backend.services import codex_assistant_storage
 from backend.services import perguntas_pos_venda_automacao as automation
 from backend.services import perguntas_pos_venda_codex as orchestrator
-from backend.services import perguntas_pos_venda_endpoints as endpoints
 from backend.services import perguntas_pos_venda_store as store
 from backend.services.whatsapp.approvals import question_workflow
 
@@ -45,6 +47,9 @@ def test_waiting_retry_is_active_and_never_reported_as_terminal(tmp_path, monkey
         "prompt_version": orchestrator.PROMPT_VERSION,
         "schema_version": orchestrator.SCHEMA_VERSION,
         "prompt_hash": orchestrator.PROMPT_HASH,
+        "queue_policy_version": orchestrator.QUEUE_POLICY_VERSION,
+        "queue_origin": orchestrator.QUEUE_ORIGIN_MANUAL,
+        "queue_priority": orchestrator.QUEUE_PRIORITY_MANUAL,
         "deadline_at_epoch": time.time() + 120,
         "next_retry_at_epoch": time.time() + 30,
         "retry_count": 1,
@@ -64,7 +69,7 @@ def test_waiting_retry_is_active_and_never_reported_as_terminal(tmp_path, monkey
         return public
 
     monkeypatch.setattr(orchestrator, "wait_job", wait_job)
-    endpoint_view = endpoints._customer_reply_wait_or_raise("cliente", public)
+    endpoint_view = endpoint_jobs._customer_reply_wait_or_raise("cliente", public)
 
     assert "waiting_retry" in orchestrator.ACTIVE_STATUSES
     assert "waiting_retry" not in orchestrator.TERMINAL_STATUSES
@@ -546,15 +551,15 @@ def test_post_sale_cursor_and_rate_limit_failures_leave_terminal_failed_state(
         def warning(self, *_args, **_kwargs):
             return None
 
-    monkeypatch.setattr(endpoints, "logger", Logger(), raising=False)
+    monkeypatch.setattr(post_sale_sync, "logger", Logger(), raising=False)
     monkeypatch.setattr(
-        endpoints,
+        post_sale_sync,
         "_integracoes_nome_normalizado",
         lambda value: str(value or "").strip().casefold(),
         raising=False,
     )
     monkeypatch.setattr(
-        endpoints,
+        post_sale_sync,
         "_perguntas_ia_diagnostico_texto",
         lambda value, _limit=500: str(value or "").strip(),
         raising=False,
@@ -565,7 +570,7 @@ def test_post_sale_cursor_and_rate_limit_failures_leave_terminal_failed_state(
         calls.append(int(kwargs["offset"]))
         raise HTTPException(status_code=429, detail=detail)
 
-    monkeypatch.setattr(endpoints, "_ml_pos_venda_listar_conversas_remoto", remote_failure)
+    monkeypatch.setattr(post_sale_sync, "_ml_pos_venda_listar_conversas_remoto", remote_failure)
     if initial_cursor:
         store.begin_sync(tmp_path, "JK Pecas", "SELLER-1", mode, 365, cursor=0)
         store.update_sync_progress(
@@ -584,7 +589,7 @@ def test_post_sale_cursor_and_rate_limit_failures_leave_terminal_failed_state(
             cursor=initial_cursor,
         )
 
-    endpoints._ml_pos_venda_sync_worker(
+    post_sale_sync._ml_pos_venda_sync_worker(
         client_id="cliente",
         tenant_path=str(tmp_path),
         loja="JK Pecas",

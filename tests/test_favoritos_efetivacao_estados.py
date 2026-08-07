@@ -312,6 +312,12 @@ def test_excecao_no_fallback_de_margem_retorna_parcial(monkeypatch):
     assert payload["outcome"] == "partial_failure"
     assert payload["preco_anuncio_atual"] == 183.53
     assert payload["stages"]["promotion"]["status"] == "fallback_failed"
+    assert payload["commercial_safety"]["state"] == "unknown"
+    assert payload["commercial_safety"]["promotion_active_known"] is False
+    assert payload["promotion_still_active"] is False
+    assert payload["stop_batch"] is True
+    assert payload["observados_autoritativos"]["observation_stage"] == "pre_fallback"
+    assert payload["observados_autoritativos"]["current_state_confirmed"] is False
 
 
 def test_remocao_parcial_preserva_promocoes_ja_removidas_e_nao_altera_preco(monkeypatch):

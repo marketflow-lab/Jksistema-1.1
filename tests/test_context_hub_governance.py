@@ -8,8 +8,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.routers.context_hub import create_context_hub_router
+from backend.modules.context_hub import bundles as hub_bundles
+from backend.modules.context_hub import curation_records as hub_curation_records
+from backend.modules.context_hub import generations as hub_generations
 from backend.services import context_hub
 from backend.services import context_hub_endpoints
+from backend.modules.context_hub import api as context_hub_api
 
 
 @pytest.fixture()
@@ -36,10 +40,10 @@ def governed_hub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "findings": [],
         "stats": {"entities": 1},
     }
-    monkeypatch.setattr(context_hub, "_build_inventory", lambda config, client_id: (inventory, []))
-    monkeypatch.setattr(context_hub, "_load_context_bundle", lambda *args, **kwargs: ([], [], []))
+    monkeypatch.setattr(hub_generations, "_build_inventory", lambda config, client_id: (inventory, []))
+    monkeypatch.setattr(hub_generations, "_load_context_bundle", lambda *args, **kwargs: ([], [], []))
     monkeypatch.setattr(
-        context_hub,
+        hub_curation_records,
         "_render_inventory",
         lambda current: {"Dominios/base.md": "# Base segura\n\nConhecimento tecnico base.\n"},
     )
@@ -158,7 +162,7 @@ def test_encrypted_backup_wrong_key_and_restore_to_draft(governed_hub) -> None:
 
 
 def test_semantic_chunking_keeps_markdown_units() -> None:
-    chunks = context_hub._chunks_for_document(
+    chunks = hub_bundles._chunks_for_document(
         "jk:test",
         """# Produto
 
@@ -195,7 +199,7 @@ def test_admin_endpoint_rejects_tenant_injection(governed_hub, monkeypatch: pyte
         captured["client_id"] = client_id
         return {"success": True}
 
-    monkeypatch.setattr(context_hub, "create_curated_note", fake_create)
+    monkeypatch.setattr(context_hub_api, "create_curated_note", fake_create)
     app = FastAPI()
     app.include_router(create_context_hub_router())
     client = TestClient(app)

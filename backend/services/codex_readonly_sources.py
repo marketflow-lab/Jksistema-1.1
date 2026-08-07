@@ -778,7 +778,7 @@ def _question_status_filter(message: str, status: Any = "") -> str:
 
 def _question_store_catalog(client_id: str) -> tuple[list[dict[str, Any]], str]:
     try:
-        from backend.services import perguntas_pos_venda_endpoints
+        from backend.modules.perguntas_pos_venda.endpoints import api as perguntas_pos_venda_endpoints
 
         payload = perguntas_pos_venda_endpoints.ml_perguntas_listar_lojas(client_id)
         stores = payload.get("lojas") if isinstance(payload, dict) else []
@@ -859,7 +859,7 @@ def questions_post_sale_query(
 ) -> dict[str, Any]:
     """Consulta a fila viva do Mercado Livre; caches historicos nunca provam fila vazia."""
 
-    from backend.services import perguntas_pos_venda_endpoints
+    from backend.modules.perguntas_pos_venda.endpoints import api as perguntas_pos_venda_endpoints
 
     all_stores_requested = _safe_bool(all_stores)
     status_filter = _question_status_filter(message, status)
@@ -1096,7 +1096,7 @@ def mercado_livre_post_sale_detail(
 ) -> dict[str, Any]:
     """Le uma conversa de pos-venda exata sem expor comprador ou URLs privadas."""
 
-    from backend.services import ia_tools_marketplaces
+    from backend.services.marketplace_tools import client as marketplace_client
 
     pack = str(pack_id or "").strip()
     order = str(order_id or "").strip()
@@ -1120,7 +1120,7 @@ def mercado_livre_post_sale_detail(
         result.update({"success": False, "error": "order_id_invalid", "coverage_complete": False, "zero_is_authoritative": False})
         return result
 
-    exact_store, failure = ia_tools_marketplaces._ia_ml_resolver_loja_exata(client_id, loja)
+    exact_store, failure = marketplace_client.resolve_store(client_id, loja)
     if not exact_store:
         result = _result(
             "mercado_livre_post_sale_detail", [], [],
@@ -1137,7 +1137,7 @@ def mercado_livre_post_sale_detail(
         return result
 
     try:
-        from backend.services import perguntas_pos_venda_endpoints
+        from backend.modules.perguntas_pos_venda.endpoints import api as perguntas_pos_venda_endpoints
 
         raw = perguntas_pos_venda_endpoints.ml_pos_venda_detalhe_conversa(
             loja=exact_store,
@@ -1248,9 +1248,9 @@ def mercado_livre_readonly(
     warnings = []
     sources = []
     try:
-        from backend.services import ia_tools_marketplaces
+        from backend.services.marketplace_tools import listings as marketplace_listings
 
-        raw = ia_tools_marketplaces._ia_tool_get_mercado_livre_listing(client_id, message or "listar anuncios ativos mercado livre", loja or None, None, _safe_int(limit, 20, 1, 100))
+        raw = marketplace_listings.query(client_id, message or "listar anuncios ativos mercado livre", loja or None, None, _safe_int(limit, 20, 1, 100))
         result = (raw or {}).get("result") if isinstance(raw, dict) else {}
         matches = result.get("matches") if isinstance(result, dict) else []
         if isinstance(matches, list):

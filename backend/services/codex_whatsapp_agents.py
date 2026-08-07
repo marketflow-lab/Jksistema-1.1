@@ -588,23 +588,29 @@ def normalize_worker_result(task: dict[str, Any]) -> dict[str, Any]:
         for item in list(task.get("tool_results_summary") or [])
         if isinstance(item, dict)
     ]
-    validations = [
-        item.get("tool_validation")
+    evidences = [
+        item.get("evidence")
         for item in summaries
-        if isinstance(item.get("tool_validation"), dict)
+        if isinstance(item.get("evidence"), dict)
     ]
+    required_evidences = [
+        item.get("evidence")
+        for item in summaries
+        if item.get("manager_required") is not False and isinstance(item.get("evidence"), dict)
+    ]
+    decisive = required_evidences or evidences
     confirmed_by_tools = bool(
         verification.get("confirmed") is True
         or (
             mapped_status == "completed"
-            and validations
-            and any(item.get("dados_suficientes") is True for item in validations)
+            and decisive
+            and all(str(item.get("status") or "") in {"complete", "confirmed_zero"} for item in decisive)
         )
     )
     sources = [_clean_text(item, 1000) for item in list(task.get("sources") or [])[:30] if _clean_text(item, 1000)]
     for item in summaries:
-        validation = item.get("tool_validation") if isinstance(item.get("tool_validation"), dict) else {}
-        if validation.get("dados_suficientes") is not True:
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        if str(evidence.get("status") or "") not in {"complete", "confirmed_zero"}:
             continue
         source = _clean_text(
             item.get("source_label") or item.get("source") or item.get("tool_label") or item.get("tool_id"),
@@ -618,8 +624,8 @@ def normalize_worker_result(task: dict[str, Any]) -> dict[str, Any]:
     fallback_facts = [raw_response] if raw_response else []
     if confirmed_by_tools and not fallback_facts:
         for item in summaries:
-            validation = item.get("tool_validation") if isinstance(item.get("tool_validation"), dict) else {}
-            if validation.get("dados_suficientes") is not True:
+            evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+            if str(evidence.get("status") or "") not in {"complete", "confirmed_zero"}:
                 continue
             payload = {
                 key: item.get(key)
@@ -839,17 +845,19 @@ class WarmConversationRuntime:
     def _start_locked(self) -> Any:
         if self._codex is not None:
             return self._codex
-        from backend.services import codex_console
+        from backend.services.codex.console import execution as console_execution
+        from backend.services.codex.console import paths as console_paths
+        from backend.services.codex.console import telemetry as console_telemetry
         from openai_codex import Codex, CodexConfig
 
-        codex_console._codex_apply_sdk_protocol_compat()
-        runtime_bin = codex_console._codex_runtime_require_ready()
+        console_execution.apply_sdk_protocol_compat()
+        runtime_bin = console_execution.require_runtime_ready()
         client = Codex(
             CodexConfig(
                 codex_bin=runtime_bin,
-                env=codex_console._codex_sdk_env(),
-                cwd=str(codex_console._codex_base_dir()),
-                config_overrides=codex_console._codex_nonfull_config_overrides(fast_mode=True),
+                env=console_execution.sdk_env(),
+                cwd=str(console_paths.base_dir()),
+                config_overrides=console_execution.readonly_config_overrides(fast_mode=True),
             )
         )
         client.__enter__()
@@ -910,13 +918,15 @@ class WarmConversationRuntime:
         store_id: str = "",
         origin_channel: str = "whatsapp",
     ) -> dict[str, Any]:
-        from backend.services import codex_console
+        from backend.services.codex.console import execution as console_execution
+        from backend.services.codex.console import paths as console_paths
+        from backend.services.codex.console import telemetry as console_telemetry
         from openai_codex.generated.v2_all import ReasoningSummary
 
         decision_contract = _decision_runtime_contract()
         context_chars = 0
-        effective_speed = codex_console._codex_normalizar_speed(speed)
-        effective_service_tier = codex_console._codex_normalizar_service_tier(
+        effective_speed = console_execution.normalize_speed(speed)
+        effective_service_tier = console_execution.normalize_service_tier(
             service_tier,
             effective_speed,
         )
@@ -929,7 +939,7 @@ class WarmConversationRuntime:
         effective_model_for_telemetry = _clean_text(model, 100).removeprefix("codex:")
         if client_id:
             try:
-                telemetry = codex_console._codex_ai_telemetry_instance()
+                telemetry = console_telemetry.instance()
                 telemetry.schedule_retention(tenant)
                 telemetry.start_trace(
                     tenant,
@@ -1009,9 +1019,9 @@ class WarmConversationRuntime:
                     effective_model = self.resolve_model(model)
                     effective_model_for_telemetry = effective_model
                     kwargs = {
-                        "cwd": str(codex_console._codex_base_dir()),
+                        "cwd": str(console_paths.base_dir()),
                         "model": effective_model,
-                        "approval_mode": codex_console._codex_approval_mode_enum("read_only", "read_only"),
+                        "approval_mode": console_execution.approval_mode("read_only", "read_only"),
                         "developer_instructions": black_jhon_prompting.CONVERSATION_DEVELOPER_INSTRUCTIONS,
                         "service_tier": effective_service_tier,
                     }
@@ -1049,8 +1059,8 @@ class WarmConversationRuntime:
                     result = thread.run(
                         prompt,
                         model=effective_model,
-                        effort=codex_console._codex_reasoning_effort_enum(reasoning_effort),
-                        approval_mode=codex_console._codex_approval_mode_enum("read_only", "read_only"),
+                        effort=console_execution.reasoning_effort(reasoning_effort),
+                        approval_mode=console_execution.approval_mode("read_only", "read_only"),
                         output_schema=decision_contract["schema"],
                         summary=ReasoningSummary.model_validate("none"),
                         service_tier=effective_service_tier,
@@ -1109,7 +1119,9 @@ class WarmConversationRuntime:
         speed: str = "fast",
         service_tier: str = "priority",
     ) -> dict[str, Any]:
-        from backend.services import codex_console
+        from backend.services.codex.console import execution as console_execution
+        from backend.services.codex.console import paths as console_paths
+        from backend.services.codex.console import telemetry as console_telemetry
         from openai_codex.generated.v2_all import ReasoningSummary
 
         prompt = _manager_prompt(
@@ -1120,8 +1132,8 @@ class WarmConversationRuntime:
             previous_evidence=previous_evidence,
             data_requests=data_requests,
         )
-        effective_speed = codex_console._codex_normalizar_speed(speed)
-        effective_service_tier = codex_console._codex_normalizar_service_tier(service_tier, effective_speed)
+        effective_speed = console_execution.normalize_speed(speed)
+        effective_service_tier = console_execution.normalize_service_tier(service_tier, effective_speed)
         last_error: Optional[Exception] = None
         for attempt in range(2):
             with self._lock:
@@ -1129,9 +1141,9 @@ class WarmConversationRuntime:
                     client = self._start_locked()
                     effective_model = self.resolve_model(model)
                     kwargs = {
-                        "cwd": str(codex_console._codex_base_dir()),
+                        "cwd": str(console_paths.base_dir()),
                         "model": effective_model,
-                        "approval_mode": codex_console._codex_approval_mode_enum("read_only", "read_only"),
+                        "approval_mode": console_execution.approval_mode("read_only", "read_only"),
                         "developer_instructions": black_jhon_prompting.FUNCTION_MANAGER_DEVELOPER_INSTRUCTIONS,
                         "service_tier": effective_service_tier,
                     }
@@ -1145,8 +1157,8 @@ class WarmConversationRuntime:
                     result = thread.run(
                         prompt,
                         model=effective_model,
-                        effort=codex_console._codex_reasoning_effort_enum(reasoning_effort),
-                        approval_mode=codex_console._codex_approval_mode_enum("read_only", "read_only"),
+                        effort=console_execution.reasoning_effort(reasoning_effort),
+                        approval_mode=console_execution.approval_mode("read_only", "read_only"),
                         output_schema=FUNCTION_MANAGER_PLAN_SCHEMA,
                         summary=ReasoningSummary.model_validate("none"),
                         service_tier=effective_service_tier,

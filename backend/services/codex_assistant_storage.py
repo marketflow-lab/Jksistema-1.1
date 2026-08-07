@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"
 STATE_ROW_SCHEDULER = "scheduler_state"
 
 _LOCKS_LOCK = threading.RLock()
@@ -38,12 +38,17 @@ _CUSTOMER_REPLY_DURABLE_FIELDS = frozenset({
     "plan_id", "proposal_id", "proposal_version", "proposal_hash", "action_id",
     "cancel_requested", "request_generation", "attempt_count",
     "operational_failure_count", "retry_count", "retry_policy",
+    "queue_origin", "queue_priority", "queue_policy_version",
+    "evidence_attempt_count", "evidence_attempt_limit",
+    "operational_failure_limit", "total_attempt_limit",
+    "first_started_at_epoch", "execution_deadline_epoch",
     "next_retry_at_epoch", "next_retry_delay_seconds", "deadline_seconds",
     "deadline_at_epoch", "deadline_reached", "completed_with_partial",
     "blocked_without_draft", "contract_quarantined", "lease_owner",
     "lease_expires_ts", "lease_generation", "heartbeat_at", "retry_ready_at",
     "last_attempt_completed_at", "created_at", "updated_at", "completed_at",
     "data_sufficient", "publish_attempted", "requires_approval",
+    "completion_reason", "review_required", "draft_expired", "retry_kind",
 })
 _CUSTOMER_REPLY_SCOPE_ID_FIELDS = frozenset({
     "question_id", "item_id", "buyer_id", "pack_id", "order_id",
@@ -510,6 +515,9 @@ def _ensure_state_schema(conn: sqlite3.Connection) -> None:
             agent_state TEXT NOT NULL,
             idempotency_key TEXT,
             thread_id TEXT,
+            queue_origin TEXT NOT NULL DEFAULT 'legacy',
+            queue_priority INTEGER NOT NULL DEFAULT 0,
+            queue_policy_version TEXT NOT NULL DEFAULT '',
             lease_owner TEXT,
             lease_expires_ts REAL,
             lease_generation INTEGER NOT NULL DEFAULT 0,
@@ -529,9 +537,28 @@ def _ensure_state_schema(conn: sqlite3.Connection) -> None:
             "ALTER TABLE assistant_customer_reply_jobs "
             "ADD COLUMN lease_generation INTEGER NOT NULL DEFAULT 0"
         )
+    if "queue_origin" not in customer_reply_columns:
+        conn.execute(
+            "ALTER TABLE assistant_customer_reply_jobs "
+            "ADD COLUMN queue_origin TEXT NOT NULL DEFAULT 'legacy'"
+        )
+    if "queue_priority" not in customer_reply_columns:
+        conn.execute(
+            "ALTER TABLE assistant_customer_reply_jobs "
+            "ADD COLUMN queue_priority INTEGER NOT NULL DEFAULT 0"
+        )
+    if "queue_policy_version" not in customer_reply_columns:
+        conn.execute(
+            "ALTER TABLE assistant_customer_reply_jobs "
+            "ADD COLUMN queue_policy_version TEXT NOT NULL DEFAULT ''"
+        )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_customer_reply_jobs_queue "
         "ON assistant_customer_reply_jobs(status, lease_expires_ts, created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_customer_reply_jobs_priority_queue "
+        "ON assistant_customer_reply_jobs(status, queue_priority DESC, created_at, job_id)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_customer_reply_jobs_subject "
@@ -1416,6 +1443,8 @@ def codex_assistant_customer_reply_job_save(
     *,
     expected_lease_owner: str = "",
     expected_lease_generation: Optional[int] = None,
+    max_origin_active: int = 0,
+    max_origin_active_store: int = 0,
 ) -> dict[str, Any]:
     """Persist a Mercado Livre customer-reply orchestration job."""
 
@@ -1448,6 +1477,44 @@ def codex_assistant_customer_reply_job_save(
                 "FROM assistant_customer_reply_jobs WHERE job_id = ?",
                 (job_id,),
             ).fetchone()
+            if (
+                not existing_row
+                and str(data.get("status") or "queued") in {"queued", "running", "waiting_retry"}
+                and str(data.get("queue_origin") or "").strip()
+                and (int(max_origin_active or 0) > 0 or int(max_origin_active_store or 0) > 0)
+            ):
+                origin = str(data.get("queue_origin") or "").strip()
+                store = str(data.get("store") or "").strip()
+                active_statuses = "('queued', 'running', 'waiting_retry')"
+                if int(max_origin_active or 0) > 0:
+                    total_row = conn.execute(
+                        "SELECT COUNT(*) AS total FROM assistant_customer_reply_jobs "
+                        f"WHERE status IN {active_statuses} AND cancel_requested = 0 AND queue_origin = ?",
+                        (origin,),
+                    ).fetchone()
+                    if int(total_row["total"] or 0) >= int(max_origin_active):
+                        return {
+                            "job_id": job_id,
+                            "status": "deferred",
+                            "queue_admission_blocked": True,
+                            "blocked_reason": "queue_backpressure",
+                            "queue_origin": origin,
+                        }
+                if int(max_origin_active_store or 0) > 0:
+                    store_row = conn.execute(
+                        "SELECT COUNT(*) AS total FROM assistant_customer_reply_jobs "
+                        f"WHERE status IN {active_statuses} AND cancel_requested = 0 "
+                        "AND queue_origin = ? AND store = ?",
+                        (origin, store),
+                    ).fetchone()
+                    if int(store_row["total"] or 0) >= int(max_origin_active_store):
+                        return {
+                            "job_id": job_id,
+                            "status": "deferred",
+                            "queue_admission_blocked": True,
+                            "blocked_reason": "queue_backpressure",
+                            "queue_origin": origin,
+                        }
             if existing_row:
                 existing = _json_loads(existing_row["payload_json"], {})
                 if not isinstance(existing, dict):
@@ -1476,10 +1543,11 @@ def codex_assistant_customer_reply_job_save(
                 """
                 INSERT INTO assistant_customer_reply_jobs(
                     job_id, profile, task_type, subject_key, store, status,
-                    agent_state, idempotency_key, thread_id, lease_owner,
+                    agent_state, idempotency_key, thread_id,
+                    queue_origin, queue_priority, queue_policy_version, lease_owner,
                     lease_expires_ts, lease_generation, cancel_requested, created_at, updated_at,
                     payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(job_id) DO UPDATE SET
                     profile=excluded.profile,
                     task_type=excluded.task_type,
@@ -1489,6 +1557,9 @@ def codex_assistant_customer_reply_job_save(
                     agent_state=excluded.agent_state,
                     idempotency_key=excluded.idempotency_key,
                     thread_id=excluded.thread_id,
+                    queue_origin=excluded.queue_origin,
+                    queue_priority=excluded.queue_priority,
+                    queue_policy_version=excluded.queue_policy_version,
                     lease_owner=excluded.lease_owner,
                     lease_expires_ts=excluded.lease_expires_ts,
                     lease_generation=excluded.lease_generation,
@@ -1506,6 +1577,9 @@ def codex_assistant_customer_reply_job_save(
                     str(durable.get("agent_state") or "entendendo"),
                     str(durable.get("idempotency_key") or ""),
                     str(durable.get("thread_id") or ""),
+                    str(durable.get("queue_origin") or "legacy"),
+                    int(durable.get("queue_priority") or 0),
+                    str(durable.get("queue_policy_version") or ""),
                     str(durable.get("lease_owner") or ""),
                     float(durable.get("lease_expires_ts") or 0.0),
                     max(0, int(durable.get("lease_generation") or 0)),
@@ -1580,6 +1654,8 @@ def codex_assistant_customer_reply_jobs_list(
     *,
     statuses: Optional[list[str]] = None,
     limit: int = 100,
+    offset: int = 0,
+    priority_order: bool = False,
 ) -> list[dict[str, Any]]:
     params: list[Any] = []
     sql = "SELECT payload_json FROM assistant_customer_reply_jobs"
@@ -1587,8 +1663,12 @@ def codex_assistant_customer_reply_jobs_list(
     if clean_statuses:
         sql += " WHERE status IN (" + ",".join("?" for _ in clean_statuses) + ")"
         params.extend(clean_statuses)
-    sql += " ORDER BY created_at ASC LIMIT ?"
+    if priority_order:
+        sql += " ORDER BY queue_priority DESC, created_at ASC, job_id ASC LIMIT ? OFFSET ?"
+    else:
+        sql += " ORDER BY created_at ASC, job_id ASC LIMIT ? OFFSET ?"
     params.append(max(1, min(int(limit or 100), 1000)))
+    params.append(max(0, int(offset or 0)))
     db_path = codex_assistant_state_db_path(info_base, client_id)
     lock = _lock_for(db_path)
     with lock:
@@ -1603,6 +1683,42 @@ def codex_assistant_customer_reply_jobs_list(
     return result
 
 
+def codex_assistant_customer_reply_queue_metrics(
+    info_base: str,
+    client_id: str,
+    *,
+    origin: str = "",
+    store: str = "",
+) -> dict[str, int]:
+    """Return secret-free durable queue counters for one tenant database."""
+
+    clauses = ["status IN ('queued', 'running', 'waiting_retry')", "cancel_requested = 0"]
+    params: list[Any] = []
+    if str(origin or "").strip():
+        clauses.append("queue_origin = ?")
+        params.append(str(origin).strip())
+    if str(store or "").strip():
+        clauses.append("store = ?")
+        params.append(str(store).strip())
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS total FROM assistant_customer_reply_jobs "
+                f"WHERE {' AND '.join(clauses)} GROUP BY status",
+                params,
+            ).fetchall()
+    counts = {"queued": 0, "running": 0, "waiting_retry": 0}
+    for row in rows:
+        status = str(row["status"] or "")
+        if status in counts:
+            counts[status] = max(0, int(row["total"] or 0))
+    counts["active"] = sum(counts.values())
+    return counts
+
+
 def codex_assistant_customer_reply_job_claim(
     info_base: str,
     client_id: str,
@@ -1610,6 +1726,9 @@ def codex_assistant_customer_reply_job_claim(
     *,
     owner: str,
     lease_seconds: float = 45.0,
+    max_running: int = 0,
+    enforce_priority: bool = False,
+    queue_policy_version: str = "",
 ) -> Optional[dict[str, Any]]:
     """Atomically claim a queued job or a running job whose lease expired."""
 
@@ -1622,7 +1741,8 @@ def codex_assistant_customer_reply_job_claim(
             if not conn.in_transaction:
                 conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT status, lease_owner, lease_expires_ts, lease_generation, cancel_requested, payload_json "
+                "SELECT status, store, queue_priority, queue_policy_version, created_at, "
+                "lease_owner, lease_expires_ts, lease_generation, cancel_requested, payload_json "
                 "FROM assistant_customer_reply_jobs WHERE job_id = ?",
                 (_safe_id(job_id, ""),),
             ).fetchone()
@@ -1635,6 +1755,46 @@ def codex_assistant_customer_reply_job_claim(
                 return None
             if status == "running" and lease_expires > now_ts and lease_owner != str(owner or ""):
                 return None
+            expected_policy = str(queue_policy_version or "").strip()
+            if expected_policy and str(row["queue_policy_version"] or "") != expected_policy:
+                return None
+            if max(0, int(max_running or 0)):
+                running_total = conn.execute(
+                    "SELECT COUNT(*) FROM assistant_customer_reply_jobs "
+                    "WHERE status = 'running' AND cancel_requested = 0 "
+                    "AND lease_expires_ts > ? AND job_id <> ?",
+                    (now_ts, _safe_id(job_id, "")),
+                ).fetchone()[0]
+                if int(running_total or 0) >= max(1, int(max_running)):
+                    return None
+                same_store = conn.execute(
+                    "SELECT 1 FROM assistant_customer_reply_jobs "
+                    "WHERE status = 'running' AND cancel_requested = 0 "
+                    "AND lease_expires_ts > ? AND store = ? AND job_id <> ? LIMIT 1",
+                    (now_ts, str(row["store"] or ""), _safe_id(job_id, "")),
+                ).fetchone()
+                if same_store:
+                    return None
+            if enforce_priority:
+                higher_priority = conn.execute(
+                    "SELECT 1 FROM assistant_customer_reply_jobs "
+                    "WHERE status = 'queued' AND cancel_requested = 0 AND job_id <> ? "
+                    "AND (? = '' OR queue_policy_version = ?) "
+                    "AND (queue_priority > ? OR (queue_priority = ? AND "
+                    "(created_at < ? OR (created_at = ? AND job_id < ?)))) "
+                    "AND store NOT IN ("
+                    "SELECT store FROM assistant_customer_reply_jobs "
+                    "WHERE status = 'running' AND cancel_requested = 0 AND lease_expires_ts > ?"
+                    ") LIMIT 1",
+                    (
+                        _safe_id(job_id, ""), expected_policy, expected_policy,
+                        int(row["queue_priority"] or 0), int(row["queue_priority"] or 0),
+                        str(row["created_at"] or ""), str(row["created_at"] or ""),
+                        _safe_id(job_id, ""), now_ts,
+                    ),
+                ).fetchone()
+                if higher_priority:
+                    return None
             data = _json_loads(row["payload_json"], {})
             if not isinstance(data, dict):
                 data = {}

@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 
 from backend.services import (
-    codex_assistant,
     codex_bling_tools,
     ia_tools_vendas,
     report_charts,
     whatsapp_report_visuals,
 )
+from backend.services.codex.assistant import evidence as assistant_evidence
 
 
 def _stale_provider_result() -> dict:
@@ -285,7 +285,7 @@ def test_codex_package_preserves_only_the_requested_provider_chart_contract():
         "function": "get_mercado_livre_orders",
         "result": {"chart_data": {"schema": "jk.marketplace.sales_by_day.v1", "points": []}},
     }
-    package = codex_assistant._assistant_agent_result_package(
+    package = assistant_evidence._assistant_agent_result_package(
         "tenant-a",
         "stale_stock",
         {},

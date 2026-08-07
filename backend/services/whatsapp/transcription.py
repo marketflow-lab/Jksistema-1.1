@@ -52,15 +52,9 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services.codex.console import attachments_api as console_attachments
+from backend.services.codex.console import telemetry as console_telemetry
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -186,7 +180,7 @@ def _record_audio_durable_event(
     )
     event_suffix = f"{stage}:{attempt}"
     try:
-        telemetry = codex_console._codex_ai_telemetry_instance()
+        telemetry = console_telemetry.instance()
         telemetry.schedule_retention(client_id)
         telemetry.record_event(
             client_id,
@@ -686,8 +680,8 @@ def _download_media(config: dict[str, Any], message: dict[str, Any], conversatio
         raise RuntimeError(f"media_type_not_allowed:{actual_mime or 'unknown'}")
     client_id = str(message.get("client_id") or config.get("client_id") or "default")
     username = str(message.get("username") or config.get("username") or "user")
-    attachment_root = codex_console._codex_attachments_base_dir()
-    target_dir = codex_console._codex_attachment_dir(client_id, username, conversation_id)
+    attachment_root = console_attachments.base_dir()
+    target_dir = console_attachments.conversation_dir(client_id, username, conversation_id)
     if actual_mime in SUPPORTED_AUDIO_MIMES:
         try:
             target_dir = whatsapp_audio_processing.validate_audio_attachment_directory(
@@ -700,7 +694,7 @@ def _download_media(config: dict[str, Any], message: dict[str, Any], conversatio
     original = _safe_filename(response.headers.get("x-jk-filename"), f"whatsapp{_media_extension(actual_mime)}")
     if not os.path.splitext(original)[1]:
         original += _media_extension(actual_mime)
-    target = target_dir / f"{codex_console._codex_safe_id(message_id, 'wa')}_{original}"
+    target = target_dir / f"{console_attachments.safe_id(message_id, 'wa')}_{original}"
     if actual_mime in SUPPORTED_AUDIO_MIMES and (target.exists() or target.is_symlink()):
         try:
             whatsapp_audio_processing.validate_inbound_audio_path(target, attachment_root)
@@ -709,7 +703,7 @@ def _download_media(config: dict[str, Any], message: dict[str, Any], conversatio
             raise RuntimeError("media_local_path_invalid") from exc
     try:
         descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{codex_console._codex_safe_id(message_id, 'wa')}-",
+            prefix=f".{console_attachments.safe_id(message_id, 'wa')}-",
             suffix=".part",
             dir=str(target_dir),
         )
@@ -737,7 +731,7 @@ def _download_media(config: dict[str, Any], message: dict[str, Any], conversatio
     finally:
         temporary.unlink(missing_ok=True)
         response.close()
-    public_payload = dict(codex_console._codex_attachment_public_payload(target, original, actual_mime, total))
+    public_payload = dict(console_attachments.public_payload(target, original, actual_mime, total))
     public_payload.pop("path", None)
     public_payload.pop("local_path", None)
     try:

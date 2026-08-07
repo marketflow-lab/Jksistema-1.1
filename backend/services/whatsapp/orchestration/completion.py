@@ -51,15 +51,8 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services.codex.console import tasks as console_tasks
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -79,7 +72,7 @@ def _load_terminal_dual_worker(
     pending: dict[str, Any],
 ) -> tuple[str, dict[str, Any], float]:
     task_id = str(pending.get("task_id") or "")
-    task = codex_console._codex_load_task(task_id) if task_id else None
+    task = console_tasks.load(task_id) if task_id else None
     if not isinstance(task, dict):
         return "", {}, 0.0
     status = str(task.get("status") or "")
@@ -104,7 +97,7 @@ def _dual_worker_requeue_manager(
     worker_result: dict[str, Any],
 ) -> None:
     _dual_preserve_worker_result(pending, worker_result)
-    codex_console._codex_update_task(
+    console_tasks.update(
         task_id,
         worker_result=worker_result,
         handoff_status="manager_data_requested",
@@ -246,7 +239,7 @@ def _dual_worker_report_response(
     if task.get("whatsapp_artifacts") and not all(item.get("success") for item in artifact_results):
         final_text += "\n\nUm ou mais arquivos nao puderam ser anexados; o resumo em texto foi preservado."
     if task.get("whatsapp_artifacts"):
-        codex_console._codex_update_task(task_id, whatsapp_artifacts=[])
+        console_tasks.update(task_id, whatsapp_artifacts=[])
     return final_text
 
 def _deliver_dual_worker_final(
@@ -276,13 +269,13 @@ def _deliver_dual_worker_final(
     if delivery not in {"sent", "queued", "duplicate", "waiting_free_window"}:
         pending["delivery_state"] = f"final_{delivery or 'failed'}"
         _save_pending(state, message_id, pending)
-        codex_console._codex_update_task(task_id, delivery_state=pending["delivery_state"])
+        console_tasks.update(task_id, delivery_state=pending["delivery_state"])
         return False
     delivery_confirmed = whatsapp_delivery.delivery_receipt_confirmed(result)
     if not delivery_confirmed:
         pending["delivery_state"] = "final_delivery_pending"
         _save_pending(state, message_id, pending)
-        codex_console._codex_update_task(
+        console_tasks.update(
             task_id,
             handoff_status="delivery_pending",
             delivery_state=pending["delivery_state"],
@@ -294,7 +287,7 @@ def _deliver_dual_worker_final(
             final_text,
         )
         return False
-    codex_console._codex_update_task(
+    console_tasks.update(
         task_id,
         handoff_status="delivered_by_conversation_agent",
         delivery_state=delivery,
@@ -364,7 +357,7 @@ def _complete_standard_task_artifacts(
         response = (response.rstrip() + "\n\n_O relatório em texto está completo. O gráfico visual ficou indisponível nesta execução; "
                     "a proteção de custo zero não permitiu usar uma alternativa paga._").strip()
     if task.get("whatsapp_artifacts"):
-        codex_console._codex_update_task(
+        console_tasks.update(
             task_id,
             whatsapp_artifacts=[],
             whatsapp_chart_status="sent" if report_files_sent else "send_failed",
@@ -442,7 +435,7 @@ def _complete_dual_worker_pending(
             config, state, message_id, pending, task_id, task, worker_result, disposition,
         )
     _dual_preserve_worker_result(pending, worker_result)
-    codex_console._codex_update_task(
+    console_tasks.update(
         task_id,
         worker_result=worker_result,
         handoff_status="result_ready",
@@ -473,7 +466,7 @@ def _complete_pending(config: dict[str, Any], state: dict[str, Any], message_id:
             _maybe_send_dual_conversation_tick(config, state, message_id, pending, task)
         return False
     task_id = str(pending.get("task_id") or "")
-    task = codex_console._codex_load_task(task_id) if task_id else None
+    task = console_tasks.load(task_id) if task_id else None
     if not task:
         return False
     status = str(task.get("status") or "")

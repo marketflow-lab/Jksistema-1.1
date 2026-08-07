@@ -51,15 +51,8 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services.codex.console import tasks as console_tasks
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -156,16 +149,16 @@ def _finalize_dual_worker_task(
             "logical_subtask_id": logical_id,
             "attempt": attempt,
         }
-        codex_console._codex_update_task(
+        console_tasks.update(
             task_id, orchestration_profile="whatsapp_dual_codex_worker", agent_role="task",
             agent_lane="worker", parent_job_id=group_id, job_group_id=group_id,
             subtask_id=child_id, channel_metadata=metadata,
         )
-    codex_console._codex_update_task(
+    console_tasks.update(
         task_id, job_group_id=group_id, subtask_id=child_id, logical_subtask_id=logical_id,
         current_attempt=attempt, attempt_task_ids=[task_id], retry_count=max(0, attempt - 1),
     )
-    return codex_console._codex_load_task(task_id) or {**task, "channel_metadata": metadata}
+    return console_tasks.load(task_id) or {**task, "channel_metadata": metadata}
 
 
 def _create_dual_worker_task(

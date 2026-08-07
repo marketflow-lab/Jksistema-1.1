@@ -141,7 +141,7 @@ def _safe_replay_result(value: Any) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     allowed = {
         "success", "tool_id", "status", "error_code", "retryable",
-        "dados_suficientes", "coverage_complete", "total", "count", "source",
+        "coverage_complete", "total", "count", "source",
     }
     safe: dict[str, Any] = {
         str(key): item
@@ -155,10 +155,23 @@ def _safe_replay_result(value: Any) -> dict[str, Any]:
         safe.update(
             {
                 "success": False,
-                "dados_suficientes": False,
                 "coverage_complete": False,
                 "error_code": "mcp_persisted_result_summary_only",
                 "retryable": False,
+                "evidence": {
+                    "schema": "jk.codex.evidence.v1",
+                    "status": "insufficient",
+                    "claim_scope": "none",
+                    "coverage_complete": False,
+                    "confidence": "low",
+                    "freshness": "local_snapshot",
+                    "retryable": False,
+                    "reason": "O resumo persistido nao contem as linhas necessarias para sustentar uma alegacao.",
+                    "missing_fields": ["records"],
+                    "sources": [],
+                    "attempted_fallbacks": [],
+                    "next_sources": [],
+                },
             }
         )
     safe["sanitization_version"] = SANITIZATION_VERSION

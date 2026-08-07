@@ -3,6 +3,7 @@ from fastapi import HTTPException
 
 from backend.services import codex_console, whatsapp_bridge
 from backend.services.whatsapp import message as whatsapp_message
+from backend.services.codex.console import attachments as console_attachments
 
 
 @pytest.mark.parametrize(
@@ -44,7 +45,7 @@ def test_message_phone_uses_injected_normalizer_and_subject_fallback() -> None:
     assert whatsapp_message.message_phone(
         config,
         event,
-        normalize_phone=codex_console._codex_normalize_phone,
+        normalize_phone=console_attachments._codex_normalize_phone,
     ) == whatsapp_bridge._message_phone(config, event)
 
 

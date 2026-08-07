@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pesquisa de Mercado - JK Sistema</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #07111d;
+            --surface: rgba(11, 25, 40, 0.95);
+            --surface-2: rgba(16, 35, 55, 0.92);
+            --line: rgba(125, 211, 252, 0.2);
+            --line-strong: rgba(56, 189, 248, 0.48);
+            --text: #e6f5ff;
+            --muted: #91a9bc;
+            --brand: #38bdf8;
+            --brand-2: #22d3ee;
+            --success: #34d399;
+            --warning: #fbbf24;
+            --danger: #fb7185;
+            --shadow: 0 24px 68px rgba(0, 0, 0, 0.35);
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: Inter, "Segoe UI", system-ui, sans-serif;
+            color: var(--text);
+            background:
+                radial-gradient(circle at 12% 0%, rgba(34, 211, 238, 0.14), transparent 34%),
+                radial-gradient(circle at 95% 12%, rgba(56, 189, 248, 0.12), transparent 32%),
+                linear-gradient(145deg, #07111d 0%, #091928 52%, #07111d 100%);
+        }
+
+        button, input, select { font: inherit; }
+
+        button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible {
+            outline: 3px solid rgba(56, 189, 248, 0.28);
+            outline-offset: 2px;
+        }
+
+        .container {
+            width: min(1540px, calc(100% - 34px));
+            margin: 0 auto;
+            padding: 22px 0 56px;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 18px;
+            margin-bottom: 18px;
+        }
+
+        .header-title { display: flex; align-items: center; gap: 14px; min-width: 0; }
+
+        .module-mark {
+            display: grid;
+            place-items: center;
+            width: 52px;
+            height: 52px;
+            flex: 0 0 52px;
+            border: 1px solid var(--line-strong);
+            border-radius: 16px;
+            color: #06131e;
+            background: linear-gradient(135deg, var(--brand-2), var(--brand));
+            box-shadow: 0 12px 32px rgba(34, 211, 238, 0.23);
+            font-size: 15px;
+            font-weight: 900;
+            letter-spacing: 0.06em;
+        }
+
+        h1, h2, p { margin: 0; }
+        h1 { font-size: clamp(24px, 3vw, 36px); letter-spacing: -0.035em; }
+        .subtitle { margin-top: 4px; color: var(--muted); line-height: 1.45; }
+
+        .header-actions, .action-row, .analysis-actions, .filter-row {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            min-height: 40px;
+            padding: 9px 14px;
+            border: 1px solid var(--line);
+            border-radius: 11px;
+            color: var(--text);
+            background: rgba(12, 29, 46, 0.9);
+            cursor: pointer;
+            font-weight: 750;
+            transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+        }
+
+        .btn:hover:not(:disabled) { transform: translateY(-1px); border-color: var(--line-strong); }
+        .btn:disabled { cursor: not-allowed; opacity: 0.48; }
+        .btn-primary { color: #04131e; border-color: transparent; background: linear-gradient(135deg, var(--brand-2), var(--brand)); }
+        .btn-danger { color: #ffd9df; border-color: rgba(251, 113, 133, 0.38); background: rgba(136, 31, 52, 0.25); }
+        .btn-warning { color: #ffe8a3; border-color: rgba(251, 191, 36, 0.34); background: rgba(133, 92, 8, 0.2); }
+
+        .panel {
+            border: 1px solid var(--line);
+            border-radius: 20px;
+            background: linear-gradient(160deg, var(--surface), rgba(8, 20, 33, 0.97));
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .controls { padding: 18px; border-bottom: 1px solid var(--line); }
+
+        .control-grid {
+            display: grid;
+            grid-template-columns: minmax(300px, 1fr) 150px 150px;
+            gap: 12px;
+            align-items: end;
+        }
+
+        .field { display: grid; gap: 6px; min-width: 0; }
+        .field label { color: #bcd0de; font-size: 12px; font-weight: 800; letter-spacing: 0.035em; text-transform: uppercase; }
+        .field-hint { color: var(--muted); font-size: 12px; line-height: 1.35; }
+
+        input, select {
+            width: 100%;
+            min-height: 42px;
+            border: 1px solid var(--line);
+            border-radius: 11px;
+            padding: 9px 11px;
+            color: var(--text);
+            background: rgba(4, 15, 26, 0.78);
+        }
+
+        input::placeholder { color: #637d90; }
+
+        .action-row { margin-top: 13px; justify-content: space-between; }
+        .analysis-actions { flex: 1 1 auto; }
+
+        .status-block {
+            margin-top: 14px;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 10px 18px;
+            align-items: center;
+        }
+
+        .status-message { min-height: 21px; color: #cce8f7; font-weight: 650; }
+        .status-message.error { color: var(--danger); }
+        .status-message.success { color: var(--success); }
+        .progress-label { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+        .progress-track {
+            grid-column: 1 / -1;
+            height: 8px;
+            overflow: hidden;
+            border-radius: 999px;
+            background: rgba(83, 116, 138, 0.2);
+        }
+
+        .progress-bar {
+            width: 0;
+            height: 100%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, var(--brand-2), var(--brand));
+            transition: width 0.25s ease;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 10px;
+            padding: 14px 18px 0;
+        }
+
+        .stat-card {
+            min-height: 88px;
+            padding: 14px;
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            background: rgba(13, 31, 49, 0.72);
+        }
+
+        .stat-label { color: var(--muted); font-size: 12px; font-weight: 750; }
+        .stat-value { margin-top: 5px; font-size: 25px; font-weight: 900; font-variant-numeric: tabular-nums; }
+        .stat-detail { margin-top: 3px; color: #7892a5; font-size: 11px; }
+
+        .browser-section { padding: 14px 18px 18px; }
+        .section-heading { display: flex; justify-content: space-between; align-items: end; gap: 12px; margin-bottom: 9px; }
+        .section-heading h2 { font-size: 17px; }
+        .section-note { color: var(--muted); font-size: 12px; }
+
+        .browser-frame {
+            position: relative;
+            height: min(54vh, 610px);
+            min-height: 390px;
+            overflow: hidden;
+            border: 1px solid var(--line-strong);
+            border-radius: 15px;
+            background: #fff;
+        }
+
+        .browser-host {
+            position: absolute;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            padding: 24px;
+            color: #b8cfde;
+            text-align: center;
+            background: linear-gradient(145deg, #0c1c2c, #07131f);
+        }
+
+        .browser-placeholder { max-width: 520px; }
+        .browser-placeholder strong { display: block; margin-bottom: 8px; color: #e6f5ff; font-size: 17px; }
+        .browser-placeholder span { color: var(--muted); line-height: 1.5; }
+
+        .ranking { padding: 18px; border-top: 1px solid var(--line); }
+
+        .ranking-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            gap: 16px;
+            margin-bottom: 12px;
+        }
+
+        .ranking-copy h2 { font-size: 19px; }
+        .ranking-copy p { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+        .filter-row { justify-content: flex-end; }
+        .filter-row input { width: min(300px, 48vw); }
+
+        .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 14px; }
+        table { width: 100%; min-width: 1030px; border-collapse: collapse; }
+        th, td { padding: 11px 10px; border-bottom: 1px solid rgba(125, 211, 252, 0.11); text-align: left; vertical-align: middle; }
+        th { position: sticky; top: 0; z-index: 1; color: #a9cde1; background: #102236; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
+        td { color: #d9ebf5; font-size: 13px; }
+        tbody tr:hover { background: rgba(56, 189, 248, 0.055); }
+        tbody tr:last-child td { border-bottom: 0; }
+        .rank-cell { width: 58px; color: var(--brand-2); font-size: 16px; font-weight: 900; }
+        .sales-cell { color: #72f0bc; font-size: 17px; font-weight: 900; font-variant-numeric: tabular-nums; }
+        .title-cell { min-width: 300px; font-weight: 700; }
+        .muted { color: var(--muted); }
+        .source-chip, .status-chip {
+            display: inline-flex;
+            align-items: center;
+            min-height: 25px;
+            padding: 4px 8px;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            color: #acd7eb;
+            background: rgba(13, 43, 61, 0.62);
+            font-size: 11px;
+            white-space: nowrap;
+        }
+
+        .status-chip.warning { color: #ffe59a; border-color: rgba(251, 191, 36, 0.32); }
+        .link { color: #7dd3fc; font-weight: 800; text-decoration: none; }
+        .link:hover { text-decoration: underline; }
+
+        .empty-state { padding: 34px 18px; color: var(--muted); text-align: center; }
+        .footer-note { margin-top: 12px; color: #7892a5; font-size: 11px; line-height: 1.5; }
+
+        @media (max-width: 980px) {
+            .control-grid { grid-template-columns: 1fr 1fr; }
+            .control-grid .field:first-child { grid-column: 1 / -1; }
+            .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .ranking-head { align-items: stretch; flex-direction: column; }
+            .filter-row { justify-content: flex-start; }
+        }
+
+        @media (max-width: 640px) {
+            .container { width: min(100% - 20px, 1540px); padding-top: 12px; }
+            .header { align-items: flex-start; }
+            .header-actions { display: none; }
+            .control-grid { grid-template-columns: 1fr; }
+            .control-grid .field:first-child { grid-column: auto; }
+            .action-row { align-items: stretch; flex-direction: column; }
+            .analysis-actions .btn { flex: 1 1 130px; }
+            .stats-grid { grid-template-columns: 1fr 1fr; padding-inline: 12px; }
+            .browser-section, .ranking, .controls { padding-inline: 12px; }
+            .browser-frame { min-height: 360px; height: 52vh; }
+            .status-block { grid-template-columns: 1fr; }
+            .progress-track { grid-column: auto; }
+            .filter-row input { width: 100%; }
+        }
+    </style>
+    <script src="/auth.js?v=20260618-persist-login"></script>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="header-title">
+                <span class="module-mark">PM</span>
+                <div>
+                    <h1>Pesquisa de Mercado</h1>
+                    <p class="subtitle">Percorre o perfil de um vendedor, abre os an&uacute;ncios e organiza os mais vendidos.</p>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button class="btn" type="button" id="pm-btn-home">Home</button>
+                <button class="btn" type="button" id="pm-btn-voltar">Voltar</button>
+            </div>
+        </header>
+
+        <main class="panel">
+            <section class="controls" aria-label="Configura&ccedil;&atilde;o da pesquisa de mercado">
+                <div class="control-grid">
+                    <div class="field">
+                        <label for="pm-vendedor">Perfil do vendedor</label>
+                        <input id="pm-vendedor" type="text" autocomplete="off" placeholder="Cole o link do perfil, ID ou apelido do vendedor">
+                        <span class="field-hint">Tamb&eacute;m aceita o link de um an&uacute;ncio; o sistema procura o perfil do vendedor antes de mapear.</span>
+                    </div>
+                    <div class="field">
+                        <label for="pm-top">Exibir no ranking</label>
+                        <select id="pm-top">
+                            <option value="10">Top 10</option>
+                            <option value="20" selected>Top 20</option>
+                            <option value="50">Top 50</option>
+                            <option value="0">Todos com vendas</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="pm-minimo">M&iacute;nimo de vendas</label>
+                        <input id="pm-minimo" type="number" min="0" step="1" value="1">
+                    </div>
+                </div>
+
+                <div class="action-row">
+                    <div class="analysis-actions">
+                        <button class="btn btn-primary" type="button" id="pm-btn-analisar">Analisar vendedor</button>
+                        <button class="btn btn-warning" type="button" id="pm-btn-pausar" disabled>Pausar</button>
+                        <button class="btn btn-danger" type="button" id="pm-btn-cancelar" disabled>Cancelar</button>
+                        <button class="btn" type="button" id="pm-btn-limpar">Limpar resultado</button>
+                    </div>
+                    <button class="btn" type="button" id="pm-btn-abrir-perfil">Somente abrir perfil</button>
+                </div>
+
+                <div class="status-block" aria-live="polite">
+                    <div id="pm-status" class="status-message">Informe um vendedor para iniciar.</div>
+                    <div id="pm-progress-label" class="progress-label">0%</div>
+                    <div class="progress-track" aria-hidden="true"><div id="pm-progress" class="progress-bar"></div></div>
+                </div>
+            </section>
+
+            <section class="stats-grid" aria-label="Resumo da coleta">
+                <article class="stat-card"><div class="stat-label">P&aacute;ginas do perfil</div><div id="pm-stat-paginas" class="stat-value">0</div><div class="stat-detail">percorridas</div></article>
+                <article class="stat-card"><div class="stat-label">An&uacute;ncios encontrados</div><div id="pm-stat-encontrados" class="stat-value">0</div><div class="stat-detail">sem duplicidade</div></article>
+                <article class="stat-card"><div class="stat-label">An&uacute;ncios abertos</div><div id="pm-stat-abertos" class="stat-value">0</div><div class="stat-detail">detalhados</div></article>
+                <article class="stat-card"><div class="stat-label">Com vendas leg&iacute;veis</div><div id="pm-stat-com-vendas" class="stat-value">0</div><div class="stat-detail">aptos ao ranking</div></article>
+                <article class="stat-card"><div class="stat-label">Maior volume</div><div id="pm-stat-maior" class="stat-value">0</div><div class="stat-detail">vendas acumuladas</div></article>
+            </section>
+
+            <section class="browser-section" aria-label="Navegador do Mercado Livre">
+                <div class="section-heading">
+                    <h2>Navegador do vendedor</h2>
+                    <span id="pm-current-url" class="section-note">Sess&atilde;o persistente do Mercado Livre</span>
+                </div>
+                <div id="pm-browser-frame" class="browser-frame">
+                    <div id="pm-browser-host" class="browser-host">
+                        <div class="browser-placeholder">
+                            <strong>O perfil ser&aacute; aberto diretamente dentro do JK Sistema.</strong>
+                            <span>Durante a an&aacute;lise, esta &aacute;rea percorre as p&aacute;ginas do vendedor e depois abre cada an&uacute;ncio. Se o Mercado Livre solicitar login, conclua aqui e execute novamente.</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="ranking" aria-label="Ranking dos mais vendidos">
+                <div class="ranking-head">
+                    <div class="ranking-copy">
+                        <h2>Mais vendidos do vendedor</h2>
+                        <p>Ranking pela quantidade acumulada exibida no an&uacute;ncio. N&atilde;o representa vendas de um per&iacute;odo recente.</p>
+                    </div>
+                    <div class="filter-row">
+                        <input id="pm-busca-ranking" type="search" placeholder="Filtrar por t&iacute;tulo, MLB ou vendedor">
+                        <span id="pm-ranking-count" class="source-chip">0 resultado(s)</span>
+                    </div>
+                </div>
+
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Pos.</th>
+                                <th>Vendas</th>
+                                <th>MLB</th>
+                                <th>An&uacute;ncio</th>
+                                <th>Pre&ccedil;o</th>
+                                <th>Vendedor exibido</th>
+                                <th>Fonte</th>
+                                <th>Situa&ccedil;&atilde;o</th>
+                                <th>Link</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pm-ranking-body"></tbody>
+                    </table>
+                    <div id="pm-empty" class="empty-state">Nenhuma an&aacute;lise executada ainda.</div>
+                </div>
+                <p class="footer-note">An&uacute;ncios sem quantidade de vendas leg&iacute;vel ficam fora do ranking, mas continuam contabilizados no resumo. Quando uma p&aacute;gina de cat&aacute;logo abre com vendedor diferente, o valor dessa p&aacute;gina n&atilde;o &eacute; atribu&iacute;do ao perfil pesquisado.</p>
+            </section>
+        </main>
+    </div>
+
+    <script src="/pesquisa-mercado/core.js?v=20260804-pesquisa-mercado-v1"></script>
+    <script src="/pesquisa-mercado/runtime.js?v=20260804-pesquisa-mercado-v1"></script>
+    <script src="/ia-sidebar.js?v=20260722-black-jhon-unified-pos-venda-manual-v1"></script>
+</body>
+</html>

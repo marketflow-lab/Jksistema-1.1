@@ -45,14 +45,18 @@ PUBLIC_SUBQUESTION_INTENTS = frozenset({
     "product_feature",
     "other_product",
     "general",
+    "post_sale",
 })
-PROMPT_VERSION = "jk_ml_customer_reply_codex_v5"
+PROMPT_VERSION = "jk_ml_customer_reply_codex_v8"
 SCHEMA_VERSION = "5.0"
+QUEUE_POLICY_VERSION = "jk_ppv_queue_v3"
 PROMPT_HASH = hashlib.sha256(
     (
         "codex-native|public-question-by-item-buyer|post-sale-by-pack|"
-        "evidence-envelope-v3|persistent-public-research|ai-only-subquestions|"
-        "human-review-required|no-direct-publish"
+        "evidence-envelope-v3|bounded-public-research|ai-only-subquestions|"
+        "classification-contract-v2|response-policy-v4|compatibility-coverage-v1|"
+        "compatibility-interface-evidence|seller-voice-v1|priority-queue-v3|"
+        "available-draft-always|no-direct-publish"
     ).encode("utf-8")
 ).hexdigest()
 THREAD_IDLE_TTL_SECONDS = 30 * 24 * 60 * 60
@@ -60,12 +64,21 @@ TERMINAL_STATUSES = {"completed", "cancelled"}
 ACTIVE_STATUSES = {"queued", "running", "waiting_retry"}
 MAX_GLOBAL_JOBS = 2
 MAX_SECONDS = 180.0
-PUBLIC_RESEARCH_DEADLINE_SECONDS = 0.0
+PUBLIC_RESEARCH_DEADLINE_SECONDS = 15 * 60.0
 POST_SALE_DEADLINE_SECONDS = 180.0
 RESEARCH_DEADLINE_SECONDS = PUBLIC_RESEARCH_DEADLINE_SECONDS
-RETRY_DELAYS_SECONDS = (5, 15, 30, 60, 120, 300)
+RETRY_DELAYS_SECONDS = (5, 15, 30)
+MAX_EVIDENCE_ATTEMPTS = 2
+MAX_OPERATIONAL_FAILURES = 3
+MAX_TOTAL_ATTEMPTS = 5
+AUTOMATION_QUEUE_PER_STORE_LIMIT = 3
+AUTOMATION_QUEUE_TOTAL_LIMIT = 12
+QUEUE_ORIGIN_MANUAL = "manual"
+QUEUE_ORIGIN_AUTOMATION = "automation"
+QUEUE_PRIORITY_MANUAL = 100
+QUEUE_PRIORITY_AUTOMATION = 10
 RETRY_HISTORY_LIMIT = 12
-RESEARCH_DEADLINE_WARNING = "Pesquisa encerrada com o melhor rascunho disponivel. Revise antes de responder."
+RESEARCH_DEADLINE_WARNING = "Rascunho gerado com as informacoes disponiveis."
 
 logger = logging.getLogger(__name__)
 _RUNTIME: Any = None
@@ -138,11 +151,15 @@ def _canonical_task_type(task_type: Any) -> str:
 
 
 def _task_retry_policy(task_type: Any) -> str:
-    return "bounded" if _canonical_task_type(task_type) == TASK_TYPE_POST_SALE else "persistent_until_cancelled"
+    return "bounded"
 
 
 def _task_deadline_seconds(task_type: Any) -> int:
-    return int(POST_SALE_DEADLINE_SECONDS) if _canonical_task_type(task_type) == TASK_TYPE_POST_SALE else 0
+    return (
+        int(POST_SALE_DEADLINE_SECONDS)
+        if _canonical_task_type(task_type) == TASK_TYPE_POST_SALE
+        else int(PUBLIC_RESEARCH_DEADLINE_SECONDS)
+    )
 
 
 def _request_question(request: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -235,9 +252,16 @@ def _job_deadline_epoch(job: dict[str, Any]) -> float:
         explicit = 0.0
     if explicit > 0.0:
         return explicit
-    created_epoch = _created_at_epoch(job)
-    deadline = (created_epoch or time.time()) + deadline_seconds
+    try:
+        first_started = float(job.get("first_started_at_epoch") or 0.0)
+    except (TypeError, ValueError, OverflowError):
+        first_started = 0.0
+    if first_started <= 0.0:
+        job["deadline_seconds"] = deadline_seconds
+        return 0.0
+    deadline = first_started + deadline_seconds
     job["deadline_at_epoch"] = deadline
+    job["execution_deadline_epoch"] = deadline
     job["deadline_seconds"] = deadline_seconds
     return deadline
 
@@ -423,32 +447,59 @@ def _public_classification_missing(job: dict[str, Any]) -> bool:
 def _complete_without_draft(
     job: dict[str, Any], *, warning: str, completion_reason: str
 ) -> dict[str, Any]:
-    """Finish safely without inventing customer-facing text outside the model."""
+    """Compatibility entrypoint that now always returns an editable safe draft."""
 
     info_base = _runtime_info_base()
     client_id = str(job.get("client_id") or "default")
+    job_id = str(job.get("job_id") or "")
+    version = max(1, int(job.get("proposal_version") or 1))
+    fallback_answer = (
+        "Ola! Pelas informacoes disponiveis, esse ponto ainda nao esta confirmado com seguranca. "
+        "Considere somente as especificacoes ja informadas no anuncio."
+    )
+    proposal_hash = _hash(
+        {
+            "job_id": job_id,
+            "version": version,
+            "store": job.get("store"),
+            "subject": job.get("event_subject_key") or job.get("subject_key"),
+            "answer": fallback_answer,
+        }
+    )
     result = {
-        "resposta": "",
+        "resposta": fallback_answer,
         "contexto": {},
         "evidence_envelope": {},
         "evidence_status": [],
         "data_sufficient": False,
         "warnings": _unique_warnings(job.get("warnings"), [warning]),
-        "requires_approval": False,
+        "proposal_id": job_id,
+        "proposal_version": version,
+        "proposal_hash": proposal_hash,
+        "requires_approval": True,
         "publish_attempted": False,
-        "blocked_without_draft": True,
+        "completed_with_partial": True,
+        "blocked_without_draft": False,
         "completion_reason": completion_reason,
+        "review_required": False,
     }
     job.update(
         {
             "status": "completed",
-            "agent_state": "revisao_humana",
-            "current_step": "revisar",
+            "agent_state": "aguardando_aprovacao",
+            "current_step": "aprovar",
             "result": result,
             "warnings": list(result["warnings"]),
             "deadline_reached": True,
-            "completed_with_partial": False,
-            "blocked_without_draft": True,
+            "completed_with_partial": True,
+            "blocked_without_draft": False,
+            "completion_reason": completion_reason,
+            "review_required": False,
+            "proposal_id": job_id,
+            "proposal_version": version,
+            "proposal_hash": proposal_hash,
+            "requires_approval": True,
+            "publish_attempted": False,
             "lease_owner": "",
             "lease_expires_ts": 0.0,
             "completed_at": _now(),
@@ -509,7 +560,7 @@ def _wake_retry(client_id: str, job_id: str) -> None:
     if str(job.get("status") or "") != "waiting_retry":
         return
     if _job_deadline_expired(job):
-        _complete_with_best_available(job)
+        _complete_retry_limit(job)
         return
     if float(job.get("next_retry_at_epoch") or 0.0) > time.time():
         _schedule_retry_timer(job)
@@ -646,6 +697,58 @@ def _cancel_post_sale_job(job: dict[str, Any]) -> dict[str, Any]:
     return saved
 
 
+def _safe_insufficient_draft(answer: Any, context: Any) -> bool:
+    """Accept a safe informative draft; questions are optional and bounded."""
+
+    text = str(answer or "").strip()
+    normalized = _normal(text)
+    if not text or len(text) > 2000 or text.count("?") > 2:
+        return False
+    diagnostic = _diagnostic_result(context if isinstance(context, dict) else {})
+    category = str(diagnostic.get("category") or "").strip().lower()
+    if category and category != "compatibility":
+        return diagnostic.get("validation_ok") is True
+    analysis = (
+        diagnostic.get("compatibility_analysis")
+        if isinstance(diagnostic.get("compatibility_analysis"), dict)
+        else {}
+    )
+    decision = _normal(analysis.get("decision"))
+    if decision and decision != "insufficient":
+        return False
+    prohibited_requests = (
+        "foto", "imagem", "anexo", "chassi", " vin ", "mecanico", "mecânico", "oficina",
+    )
+    padded = f" {normalized} "
+    if any(marker in padded for marker in prohibited_requests):
+        return False
+    conditional = normalized.replace("se serve", "").replace("se e compativel", "")
+    unsupported_assertions = (
+        "sim, serve", "sim serve", "serve perfeitamente", "e compativel",
+        "nao serve", "nao e compativel", "pode usar", "nao pode usar", "garantimos",
+    )
+    if any(marker in conditional for marker in unsupported_assertions):
+        return False
+    request_markers = (
+        "informe", "informar", "confirme", "confirmar", "qual ", "quais ",
+        "precisamos do", "precisamos da", "envie o codigo", "envie a medida",
+    )
+    if not any(marker in normalized for marker in request_markers):
+        return True
+    requested_fields = 0
+    for match in re.finditer(
+        r"(?:informe|confirme|qual|quais|precisamos d[oa]|envie)\s+([^?.!]+)",
+        normalized,
+    ):
+        parts = [
+            part.strip(" ,;:")
+            for part in re.split(r"\s*,\s*|\s+e\s+", match.group(1))
+            if part.strip(" ,;:")
+        ]
+        requested_fields += max(1, len(parts))
+    return requested_fields <= 2
+
+
 def _complete_with_best_available(
     job: dict[str, Any],
     *,
@@ -653,6 +756,7 @@ def _complete_with_best_available(
     context: Optional[dict[str, Any]] = None,
     matrix: Optional[list[dict[str, Any]]] = None,
     warnings: Optional[list[str]] = None,
+    completion_reason: str = "evidence_insufficient_after_retry_limit",
 ) -> dict[str, Any]:
     """Finish a bounded research job with the safest partial draft available."""
 
@@ -680,8 +784,7 @@ def _complete_with_best_available(
         return _complete_without_draft(
             current,
             warning=(
-                "Classificacao estruturada da IA indisponivel; nenhuma proposta de resposta foi gerada. "
-                "Encaminhe a pergunta para revisao humana."
+                "A classificacao estruturada ficou indisponivel; foi gerado um rascunho neutro com as informacoes disponiveis."
             ),
             completion_reason="ai_classification_unavailable",
         )
@@ -697,8 +800,7 @@ def _complete_with_best_available(
         return _complete_without_draft(
             current,
             warning=(
-                "A IA nao produziu um rascunho valido dentro do prazo; nenhuma resposta local foi criada. "
-                "Encaminhe a pergunta para revisao humana."
+                "A IA nao concluiu a resposta no prazo; foi gerado um rascunho neutro editavel."
             ),
             completion_reason="ai_response_unavailable",
         )
@@ -706,6 +808,17 @@ def _complete_with_best_available(
     final_context = context if isinstance(context, dict) and context else partial.get("contexto")
     if not isinstance(final_context, dict):
         final_context = {}
+    if completion_reason == "evidence_insufficient_after_retry_limit" and not _safe_insufficient_draft(
+        final_answer,
+        final_context,
+    ):
+        return _complete_without_draft(
+            current,
+            warning=(
+                "A resposta original nao passou pela politica segura; foi gerado um rascunho neutro editavel."
+            ),
+            completion_reason="available_information_fallback",
+        )
     final_matrix = list(matrix or partial.get("evidence_status") or current.get("evidence_status") or [])
     final_warnings = _unique_warnings(
         warnings,
@@ -750,7 +863,8 @@ def _complete_with_best_available(
         "requires_approval": True,
         "publish_attempted": False,
         "completed_with_partial": True,
-        "completion_reason": "research_deadline_reached",
+        "completion_reason": completion_reason,
+        "review_required": False,
     }
     current.update(
         {
@@ -766,6 +880,8 @@ def _complete_with_best_available(
             "deadline_at_epoch": _job_deadline_epoch(current),
             "deadline_reached": True,
             "completed_with_partial": True,
+            "completion_reason": completion_reason,
+            "review_required": False,
             "lease_owner": "",
             "lease_expires_ts": 0.0,
             "completed_at": _now(),
@@ -778,7 +894,7 @@ def _complete_with_best_available(
             "state": "aguardando_aprovacao",
             "step": "aprovar",
             "at": _now(),
-            "message": "Limite de 3 minutos atingido; melhor rascunho disponivel enviado para revisao.",
+            "message": "Evidencia insuficiente apos duas pesquisas; rascunho gerado com os fatos disponiveis.",
         }
     )
     current["agent_steps"] = history[-60:]
@@ -813,12 +929,22 @@ def _complete_with_best_available(
                 details={
                     "data_sufficient": False,
                     "completed_with_partial": True,
-                    "completion_reason": "research_deadline_reached",
+                    "completion_reason": completion_reason,
                 },
             )
         except Exception:
             logger.exception("[PPV CODEX] Falha ao concluir plano parcial %s", plan_id)
     return saved
+
+
+def _complete_retry_limit(job: dict[str, Any]) -> dict[str, Any]:
+    if str(job.get("retry_kind") or "") == "evidence":
+        return _complete_with_best_available(job)
+    return _complete_without_draft(
+        job,
+        warning="O limite operacional foi atingido; foi gerado um rascunho neutro editavel.",
+        completion_reason="operational_retry_exhausted",
+    )
 
 
 def _persist_retry(
@@ -830,6 +956,7 @@ def _persist_retry(
     warnings: Optional[list[str]] = None,
     error: str = "",
     immediate: bool = False,
+    retry_kind: str = "evidence",
 ) -> dict[str, Any]:
     info_base = _runtime_info_base()
     client_id = str(job.get("client_id") or "default")
@@ -856,9 +983,17 @@ def _persist_retry(
         int(current.get("attempt_count") or 0),
         int(job.get("attempt_count") or 0),
     )
-    current["operational_failure_count"] = max(
-        int(current.get("operational_failure_count") or 0),
-        int(job.get("operational_failure_count") or 0),
+    current["operational_failure_count"] = (
+        max(
+            int(current.get("operational_failure_count") or 0),
+            int(job.get("operational_failure_count") or 0),
+        )
+        if retry_kind == "operational"
+        else max(0, int(job.get("operational_failure_count") or 0))
+    )
+    current["evidence_attempt_count"] = max(
+        int(current.get("evidence_attempt_count") or 0),
+        int(job.get("evidence_attempt_count") or 0),
     )
     if current.get("cancel_requested"):
         current.update({"status": "cancelled", "agent_state": "cancelado", "current_step": "responder"})
@@ -922,19 +1057,31 @@ def _persist_retry(
             "evidence_status": merged_matrix,
             "warnings": _unique_warnings(current.get("warnings"), warnings),
             "retry_count": retry_count,
+            "retry_kind": retry_kind,
             "last_attempt_completed_at": _now(),
         }
     )
     deadline = _job_deadline_epoch(current)
-    if _job_deadline_expired(current):
-        return _complete_with_best_available(
+    if _job_deadline_expired(current) or int(current.get("attempt_count") or 0) >= MAX_TOTAL_ATTEMPTS:
+        if retry_kind == "evidence":
+            return _complete_with_best_available(
+                current,
+                answer=answer,
+                context=context,
+                matrix=matrix,
+                warnings=warnings,
+            )
+        return _complete_without_draft(
             current,
-            answer=answer,
-            context=context,
-            matrix=matrix,
-            warnings=warnings,
+            warning="O limite operacional foi atingido; foi gerado um rascunho neutro editavel.",
+            completion_reason="operational_retry_exhausted",
         )
-    delay = 0 if immediate else _retry_delay_seconds(retry_count, str(current.get("job_id") or ""))
+    retry_index = (
+        int(current.get("operational_failure_count") or 1)
+        if retry_kind == "operational"
+        else 1
+    )
+    delay = 0 if immediate else _retry_delay_seconds(retry_index, str(current.get("job_id") or ""))
     remaining = max(0.0, deadline - time.time()) if deadline > 0.0 else 0.0
     if not immediate and deadline > 0.0:
         delay = min(delay, max(1, int(remaining)))
@@ -944,6 +1091,7 @@ def _persist_retry(
             "agent_state": "pesquisando",
             "current_step": "consultar",
             "retry_policy": _task_retry_policy(current.get("task_type")),
+            "retry_kind": retry_kind,
             "retry_reason": str(error or "; ".join(warnings or []) or "evidencia_insuficiente")[:1000],
             "next_retry_at_epoch": time.time() + delay,
             "next_retry_delay_seconds": delay,
@@ -989,6 +1137,7 @@ def _job_contract_current(job: Any) -> bool:
         and str(job.get("prompt_version") or "") == PROMPT_VERSION
         and str(job.get("schema_version") or "") == SCHEMA_VERSION
         and str(job.get("prompt_hash") or "") == PROMPT_HASH
+        and str(job.get("queue_policy_version") or "") == QUEUE_POLICY_VERSION
     )
 
 
@@ -1000,8 +1149,10 @@ def _quarantine_outdated_job(
     info_base = _runtime_info_base()
     scoped_client_id = str(client_id or job.get("client_id") or "default")
     previous_result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    queue_policy_outdated = str(job.get("queue_policy_version") or "") != QUEUE_POLICY_VERSION
+    completion_reason = "queue_policy_outdated" if queue_policy_outdated else "contract_outdated"
     warning = (
-        "Tarefa criada com contrato de IA anterior e colocada em quarentena. "
+        "Tarefa criada com contrato ou politica de fila anterior e colocada em quarentena. "
         "Gere uma nova resposta antes de revisar ou aprovar."
     )
     result = {
@@ -1013,7 +1164,7 @@ def _quarantine_outdated_job(
         "requires_approval": False,
         "publish_attempted": False,
         "blocked_without_draft": True,
-        "completion_reason": "contract_outdated",
+        "completion_reason": completion_reason,
     }
     job.update(
         {
@@ -1025,6 +1176,8 @@ def _quarantine_outdated_job(
             "thread_restart_reason": "contract_outdated",
             "idempotency_key": "",
             "contract_quarantined": True,
+            "completion_reason": completion_reason,
+            "review_required": True,
             "quarantined_result_hash": _hash(previous_result) if previous_result else "",
             "result": result,
             "warnings": [warning],
@@ -1414,6 +1567,13 @@ def _evidence_matrix(
             row["status"] = "confirmed" if confirmed else ("partial" if answer.strip() else "no_evidence")
             row["confidence"] = float(analysis.get("confidence") or diagnostic.get("confidence") or 0.0)
             row["sources"] = sources[:12]
+        elif intent == "post_sale":
+            # A post-sale classification inside the public-question surface is
+            # allowed to produce a draft and is not a missing classification.
+            confirmed = bool(validation_ok)
+            row["status"] = "confirmed" if confirmed else ("partial" if answer.strip() else "no_evidence")
+            row["confidence"] = float(diagnostic.get("confidence") or (0.65 if validation_ok else 0.35))
+            row["sources"] = []
         else:
             intent_records = _intent_evidence_records(intent, normalized_envelope)
             records_confirmed = bool(intent_records) and all(
@@ -1437,7 +1597,7 @@ def _evidence_matrix(
         matrix.append(row)
     sufficient = bool(matrix) and all(str(item.get("status")) == "confirmed" for item in matrix)
     if not sufficient:
-        warnings.append("O rascunho responde apenas os pontos sustentados pelas fontes e requer revisão humana.")
+        warnings.append("O rascunho responde somente com as informacoes disponiveis.")
     return matrix, sufficient, list(dict.fromkeys(warnings))[:12]
 
 
@@ -1454,13 +1614,19 @@ def _friendly_retry_reason(reason: Any) -> str:
 
 def _status_message(job: dict[str, Any], *, queue_position: int = 0) -> str:
     status = str(job.get("status") or "queued")
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
     attempt = max(0, int(job.get("attempt_count") or 0))
     if status == "waiting_retry":
         remaining = max(0, int(float(job.get("next_retry_at_epoch") or 0.0) - time.time() + 0.999))
         return f"{_friendly_retry_reason(job.get('retry_reason'))} Nova tentativa em {remaining}s."
     if status == "queued":
         suffix = f" Posicao na fila: {queue_position}." if queue_position else ""
-        return f"Pesquisa aguardando execucao.{suffix}"
+        prefix = (
+            "Solicitacao manual prioritaria aguardando execucao."
+            if str(job.get("queue_origin") or "") == QUEUE_ORIGIN_MANUAL
+            else "Pesquisa automatica aguardando execucao."
+        )
+        return f"{prefix}{suffix}"
     if status == "running":
         step = str(job.get("current_step") or "consultar")
         labels = {
@@ -1470,7 +1636,11 @@ def _status_message(job: dict[str, Any], *, queue_position: int = 0) -> str:
         }
         return f"{labels.get(step, 'Pesquisa em andamento')}. Tentativa {max(1, attempt)}."
     if status == "completed":
-        return "Resposta valida encontrada e pronta para revisao humana."
+        if job.get("blocked_without_draft") or result.get("blocked_without_draft"):
+            return "A pesquisa terminou e disponibilizou uma resposta alternativa."
+        if job.get("completed_with_partial") or result.get("completed_with_partial"):
+            return "Rascunho gerado com as informacoes disponiveis."
+        return "Resposta gerada e pronta para uso."
     if status == "cancelled":
         return "Pesquisa cancelada pelo usuario."
     return "Acompanhando a pesquisa."
@@ -1486,6 +1656,14 @@ def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, An
     next_retry_at = float(job.get("next_retry_at_epoch") or 0.0)
     next_retry_in = max(0, int(next_retry_at - time.time() + 0.999)) if next_retry_at else 0
     status = str(job.get("status") or "queued")
+    try:
+        queue_metrics = codex_assistant_storage.codex_assistant_customer_reply_queue_metrics(
+            _runtime_info_base(),
+            str(job.get("client_id") or "default"),
+        )
+    except Exception:
+        queue_metrics = {"queued": 0, "running": 0, "waiting_retry": 0, "active": 0}
+    completion_reason = str(result.get("completion_reason") or job.get("completion_reason") or "")
     return {
         "success": str(job.get("status") or "") == "completed" and not blocked_without_draft,
         "queued": str(job.get("status") or "") in ACTIVE_STATUSES,
@@ -1502,6 +1680,9 @@ def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, An
         "prompt_version": str(job.get("prompt_version") or ""),
         "prompt_hash": str(job.get("prompt_hash") or ""),
         "schema_version": str(job.get("schema_version") or ""),
+        "queue_policy_version": str(job.get("queue_policy_version") or ""),
+        "queue_origin": str(job.get("queue_origin") or "legacy"),
+        "queue_priority": max(0, int(job.get("queue_priority") or 0)),
         "status": status,
         "agent_state": str(job.get("agent_state") or "entendendo"),
         "current_step": str(job.get("current_step") or ""),
@@ -1530,9 +1711,19 @@ def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, An
         "completed_with_partial": bool(result.get("completed_with_partial") or job.get("completed_with_partial")),
         "blocked_without_draft": blocked_without_draft,
         "contract_quarantined": bool(job.get("contract_quarantined")),
+        "completion_reason": completion_reason,
+        "review_required": bool(result.get("review_required") or job.get("review_required")),
         "research_history": list(job.get("research_history") or [])[-RETRY_HISTORY_LIMIT:],
         "queue_position": max(0, int(queue_position or 0)),
+        "queue_total": max(0, int(queue_metrics.get("queued") or 0)),
+        "running_total": max(0, int(queue_metrics.get("running") or 0)),
+        "waiting_retry_total": max(0, int(queue_metrics.get("waiting_retry") or 0)),
         "attempt_count": max(0, int(job.get("attempt_count") or 0)),
+        "evidence_attempt_count": max(0, int(job.get("evidence_attempt_count") or 0)),
+        "evidence_attempt_limit": max(1, int(job.get("evidence_attempt_limit") or MAX_EVIDENCE_ATTEMPTS)),
+        "operational_failure_count": max(0, int(job.get("operational_failure_count") or 0)),
+        "operational_failure_limit": max(1, int(job.get("operational_failure_limit") or MAX_OPERATIONAL_FAILURES)),
+        "total_attempt_limit": max(1, int(job.get("total_attempt_limit") or MAX_TOTAL_ATTEMPTS)),
         "last_activity_at": str(
             job.get("updated_at")
             or job.get("heartbeat_at")
@@ -1548,13 +1739,75 @@ def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, An
 
 
 def _queue_position(info_base: str, client_id: str, job_id: str) -> int:
-    queued = codex_assistant_storage.codex_assistant_customer_reply_jobs_list(
-        info_base, client_id, statuses=list(ACTIVE_STATUSES), limit=500
-    )
-    for index, item in enumerate(queued, start=1):
-        if str(item.get("job_id") or "") == str(job_id or ""):
-            return index
+    offset = 0
+    while True:
+        queued = codex_assistant_storage.codex_assistant_customer_reply_jobs_list(
+            info_base,
+            client_id,
+            statuses=["queued"],
+            limit=500,
+            offset=offset,
+            priority_order=True,
+        )
+        for page_index, item in enumerate(queued, start=1):
+            if str(item.get("job_id") or "") == str(job_id or ""):
+                return offset + page_index
+        if len(queued) < 500:
+            break
+        offset += len(queued)
     return 0
+
+
+def automation_queue_admission(client_id: str, store: str) -> dict[str, Any]:
+    info_base = _runtime_info_base()
+    tenant_metrics = codex_assistant_storage.codex_assistant_customer_reply_queue_metrics(
+        info_base,
+        client_id,
+        origin=QUEUE_ORIGIN_AUTOMATION,
+    )
+    store_metrics = codex_assistant_storage.codex_assistant_customer_reply_queue_metrics(
+        info_base,
+        client_id,
+        origin=QUEUE_ORIGIN_AUTOMATION,
+        store=str(store or ""),
+    )
+    tenant_active = max(0, int(tenant_metrics.get("active") or 0))
+    store_active = max(0, int(store_metrics.get("active") or 0))
+    allowed = bool(
+        tenant_active < AUTOMATION_QUEUE_TOTAL_LIMIT
+        and store_active < AUTOMATION_QUEUE_PER_STORE_LIMIT
+    )
+    return {
+        "allowed": allowed,
+        "queue_saturated": not allowed,
+        "active_automatic": tenant_active,
+        "active_automatic_store": store_active,
+        "limit_total": AUTOMATION_QUEUE_TOTAL_LIMIT,
+        "limit_per_store": AUTOMATION_QUEUE_PER_STORE_LIMIT,
+    }
+
+
+def automation_terminal_blocker(job: Any) -> str:
+    """Prevent periodic polls from recreating a current terminal review job."""
+
+    current = job if isinstance(job, dict) else {}
+    result = current.get("result") if isinstance(current.get("result"), dict) else {}
+    status = str(current.get("status") or "").strip().lower()
+    completion_reason = str(
+        result.get("completion_reason") or current.get("completion_reason") or ""
+    ).strip().lower()
+    blocked_without_draft = bool(
+        result.get("blocked_without_draft")
+        or current.get("blocked_without_draft")
+    )
+    if status not in TERMINAL_STATUSES or not blocked_without_draft:
+        return ""
+    if current.get("contract_quarantined") or completion_reason in {
+        "queue_policy_outdated",
+        "contract_outdated",
+    }:
+        return ""
+    return "terminal_review_required"
 
 
 def create_job(
@@ -1567,6 +1820,16 @@ def create_job(
     channel: str = "app",
     created_by: str = "module_user",
 ) -> dict[str, Any]:
+    queue_origin = (
+        QUEUE_ORIGIN_AUTOMATION
+        if str(created_by or "").strip() == "perguntas_automacao"
+        else QUEUE_ORIGIN_MANUAL
+    )
+    queue_priority = (
+        QUEUE_PRIORITY_AUTOMATION
+        if queue_origin == QUEUE_ORIGIN_AUTOMATION
+        else QUEUE_PRIORITY_MANUAL
+    )
     task_type = _canonical_task_type(task_type)
     if task_type not in TASK_TYPES:
         raise ValueError("Tipo de tarefa de atendimento inválido.")
@@ -1609,9 +1872,7 @@ def create_job(
         and str(latest.get("status") or "") == "completed"
         and latest_result.get("data_sufficient") is True
         and str(latest.get("request_hash") or "") == request_hash
-        and str(latest.get("prompt_version") or "") == PROMPT_VERSION
-        and str(latest.get("schema_version") or "") == SCHEMA_VERSION
-        and str(latest.get("prompt_hash") or "") == PROMPT_HASH
+        and _job_contract_current(latest)
     ):
         return _public_job(latest)
     same_event = bool(
@@ -1629,34 +1890,51 @@ def create_job(
     ):
         latest.update(
             {
-                "status": "queued",
-                "agent_state": "pesquisando",
-                "current_step": "consultar",
+                "status": "completed",
+                "agent_state": "concluido",
+                "current_step": "responder",
+                "draft_expired": True,
+                "blocked_without_draft": False,
+                "review_required": False,
+                "completion_reason": "draft_expired",
                 "lease_owner": "",
                 "lease_expires_ts": 0.0,
-                "restart_requested": True,
             }
         )
-        latest.pop("proposal_hash", None)
         latest = codex_assistant_storage.codex_assistant_customer_reply_job_save(
             info_base,
             client_id,
             latest,
             expected_lease_generation=_lease_generation(latest),
         )
-        _schedule(latest)
-        return _public_job(
-            latest,
-            queue_position=_queue_position(info_base, client_id, str(latest.get("job_id") or "")),
-        )
+        latest_result = {}
     if (
         isinstance(latest, dict)
         and str(latest.get("status") or "") in ACTIVE_STATUSES
         and same_event
-        and str(latest.get("prompt_version") or "") == PROMPT_VERSION
-        and str(latest.get("schema_version") or "") == SCHEMA_VERSION
-        and str(latest.get("prompt_hash") or "") == PROMPT_HASH
+        and _job_contract_current(latest)
     ):
+        if (
+            queue_origin == QUEUE_ORIGIN_MANUAL
+            and str(latest.get("queue_origin") or "") == QUEUE_ORIGIN_AUTOMATION
+        ):
+            latest.update(
+                {
+                    "queue_origin": QUEUE_ORIGIN_MANUAL,
+                    "queue_priority": QUEUE_PRIORITY_MANUAL,
+                    "queue_policy_version": QUEUE_POLICY_VERSION,
+                }
+            )
+            latest = codex_assistant_storage.codex_assistant_customer_reply_job_save(
+                info_base,
+                client_id,
+                latest,
+                expected_lease_generation=_lease_generation(latest),
+            )
+            if str(latest.get("status") or "") == "queued":
+                _schedule(latest)
+            elif str(latest.get("status") or "") == "waiting_retry":
+                _schedule_retry_timer(latest)
         if revision_requested:
             latest_request = dict(latest.get("request") or {}) if isinstance(latest.get("request"), dict) else {}
             latest_request.update(dict(request or {}))
@@ -1688,7 +1966,7 @@ def create_job(
             )
             _schedule(latest)
         elif _job_deadline_expired(latest):
-            latest = _complete_with_best_available(latest)
+            latest = _complete_retry_limit(latest)
         return _public_job(
             latest,
             queue_position=_queue_position(info_base, client_id, str(latest.get("job_id") or "")),
@@ -1700,6 +1978,7 @@ def create_job(
             "store": store,
             "subject": event_subject_key,
             "request": request,
+            "origin": queue_origin,
             "bucket": int(time.time() // 5),
         }
     )
@@ -1757,6 +2036,9 @@ def create_job(
         "client_id": str(client_id),
         "channel": str(channel or "app"),
         "created_by": str(created_by or "module_user"),
+        "queue_origin": queue_origin,
+        "queue_priority": queue_priority,
+        "queue_policy_version": QUEUE_POLICY_VERSION,
         "status": "queued",
         "agent_state": "entendendo",
         "current_step": "entender",
@@ -1780,18 +2062,57 @@ def create_job(
         "request_generation": 1,
         "attempt_count": 0,
         "operational_failure_count": 0,
+        "evidence_attempt_count": 0,
+        "evidence_attempt_limit": MAX_EVIDENCE_ATTEMPTS,
+        "operational_failure_limit": MAX_OPERATIONAL_FAILURES,
+        "total_attempt_limit": MAX_TOTAL_ATTEMPTS,
+        "first_started_at_epoch": 0.0,
+        "execution_deadline_epoch": 0.0,
         "retry_count": 0,
         "retry_policy": _task_retry_policy(task_type),
         "deadline_seconds": _task_deadline_seconds(task_type),
-        "deadline_at_epoch": (
-            time.time() + _task_deadline_seconds(task_type)
-            if _task_deadline_seconds(task_type) > 0
-            else 0.0
-        ),
+        "deadline_at_epoch": 0.0,
         "research_history": [],
         "created_at": _now(),
     }
-    saved = codex_assistant_storage.codex_assistant_customer_reply_job_save(info_base, client_id, job)
+    save_limits = (
+        {
+            "max_origin_active": AUTOMATION_QUEUE_TOTAL_LIMIT,
+            "max_origin_active_store": AUTOMATION_QUEUE_PER_STORE_LIMIT,
+        }
+        if queue_origin == QUEUE_ORIGIN_AUTOMATION
+        else {}
+    )
+    saved = codex_assistant_storage.codex_assistant_customer_reply_job_save(
+        info_base,
+        client_id,
+        job,
+        **save_limits,
+    )
+    if saved.get("queue_admission_blocked"):
+        try:
+            codex_agent_runtime.transition_plan(
+                info_base,
+                client_id,
+                str(plan.get("plan_id") or ""),
+                "cancelado",
+                current_step="entender",
+                step_status="canceled",
+                details={"reason": "queue_backpressure"},
+            )
+        except Exception:
+            logger.exception("[PPV CODEX] Falha ao encerrar plano recusado por backpressure.")
+        admission = automation_queue_admission(client_id, str(store))
+        return {
+            "job_id": job_id,
+            "status": "deferred",
+            "queued": False,
+            "queue_saturated": True,
+            "blocked_reason": "queue_backpressure",
+            "queue_origin": queue_origin,
+            "queue_policy_version": QUEUE_POLICY_VERSION,
+            "queue_backpressure": admission,
+        }
     codex_agent_runtime.audit(
         info_base,
         client_id,
@@ -1811,6 +2132,8 @@ def create_job(
             "prompt_version": PROMPT_VERSION,
             "prompt_hash": PROMPT_HASH,
             "schema_version": SCHEMA_VERSION,
+            "queue_origin": queue_origin,
+            "queue_policy_version": QUEUE_POLICY_VERSION,
         },
     )
     _schedule(saved)
@@ -1829,31 +2152,21 @@ def get_job(client_id: str, job_id: str) -> Optional[dict[str, Any]]:
         return _public_job(job)
     if (
         str(job.get("status") or "") == "completed"
-        and str(job.get("agent_state") or "") == "aguardando_aprovacao"
+        and (
+            str(job.get("agent_state") or "") == "aguardando_aprovacao"
+            or bool(job.get("draft_expired"))
+        )
         and not codex_assistant_storage.codex_assistant_customer_reply_job_has_transient(
             info_base, client_id, job_id
         )
     ):
-        job.update(
-            {
-                "status": "queued",
-                "agent_state": "pesquisando",
-                "current_step": "consultar",
-                "lease_owner": "",
-                "lease_expires_ts": 0.0,
-                "restart_requested": True,
-            }
-        )
-        job.pop("proposal_hash", None)
-        job = codex_assistant_storage.codex_assistant_customer_reply_job_save(
-            info_base,
-            client_id,
+        job = _complete_without_draft(
             job,
-            expected_lease_generation=_lease_generation(job),
+            warning="O rascunho anterior expirou; foi gerada uma resposta neutra com as informacoes disponiveis.",
+            completion_reason="draft_expired_available_fallback",
         )
-        _schedule(job)
     if str(job.get("status") or "") == "waiting_retry" and _job_deadline_expired(job):
-        job = _complete_with_best_available(job)
+        job = _complete_retry_limit(job)
     return _public_job(job, queue_position=_queue_position(info_base, client_id, job_id))
 
 
@@ -1948,7 +2261,7 @@ def latest_job_for_request(
 
 
 def resume_incomplete_job(client_id: str, job_id: str, reason: str = "evidencia_tecnica_insuficiente") -> Optional[dict[str, Any]]:
-    """Resume a legacy job that was incorrectly completed without enough evidence."""
+    """Keep active jobs scheduled without ever reactivating a terminal job."""
 
     info_base = _runtime_info_base()
     job = codex_assistant_storage.codex_assistant_customer_reply_job_get(info_base, client_id, job_id)
@@ -1966,21 +2279,7 @@ def resume_incomplete_job(client_id: str, job_id: str, reason: str = "evidencia_
         else:
             _schedule(job)
         return _public_job(job, queue_position=_queue_position(info_base, client_id, job_id))
-    result = job.get("result") if isinstance(job.get("result"), dict) else {}
-    if result.get("blocked_without_draft") or job.get("blocked_without_draft"):
-        return _public_job(job)
-    if str(job.get("status") or "") != "completed" or result.get("data_sufficient") is not False:
-        return _public_job(job)
-    resumed = _persist_retry(
-        job,
-        answer=str(result.get("resposta") or ""),
-        context=result.get("contexto") if isinstance(result.get("contexto"), dict) else {},
-        matrix=list(result.get("evidence_status") or job.get("evidence_status") or []),
-        warnings=list(result.get("warnings") or job.get("warnings") or []),
-        error=str(reason or "evidencia_tecnica_insuficiente"),
-        immediate=True,
-    )
-    return _public_job(resumed, queue_position=_queue_position(info_base, client_id, job_id))
+    return _public_job(job)
 
 
 def wait_job(client_id: str, job_id: str, timeout: float = MAX_SECONDS) -> dict[str, Any]:
@@ -2166,6 +2465,7 @@ def _is_operational_failure(exc: BaseException) -> bool:
         "connection",
         "broken pipe",
         "rate limit",
+        "429",
         "too many requests",
         "service unavailable",
         "temporarily unavailable",
@@ -2174,6 +2474,16 @@ def _is_operational_failure(exc: BaseException) -> bool:
         "respostaindisponivel",
     )
     return any(marker in class_name or marker in message for marker in operational_markers)
+
+
+def _is_classification_contract_failure(exc: BaseException) -> bool:
+    code = str(getattr(exc, "violation_code", "") or "").strip()
+    message = _normal(exc)
+    return bool(
+        code
+        or "classificacao de intencao da ia" in message
+        or "classificacao estruturada da ia" in message
+    )
 
 
 def _persist_thread_ready(job: dict[str, Any], thread_id: str) -> dict[str, Any]:
@@ -2382,7 +2692,14 @@ def _refresh_thread_from_previous_job(job: dict[str, Any]) -> dict[str, Any]:
 def _run_job(client_id: str, job_id: str) -> None:
     info_base = _runtime_info_base()
     claimed = codex_assistant_storage.codex_assistant_customer_reply_job_claim(
-        info_base, client_id, job_id, owner=_WORKER_ID, lease_seconds=60.0
+        info_base,
+        client_id,
+        job_id,
+        owner=_WORKER_ID,
+        lease_seconds=60.0,
+        max_running=MAX_GLOBAL_JOBS,
+        enforce_priority=True,
+        queue_policy_version=QUEUE_POLICY_VERSION,
     )
     if not isinstance(claimed, dict):
         return
@@ -2393,11 +2710,34 @@ def _run_job(client_id: str, job_id: str) -> None:
         _quarantine_outdated_job(claimed, client_id=client_id)
         return
     job = _refresh_thread_from_previous_job(claimed)
+    now_epoch = time.time()
+    if float(job.get("first_started_at_epoch") or 0.0) <= 0.0:
+        job["first_started_at_epoch"] = now_epoch
+    job.update(
+        {
+            "queue_policy_version": QUEUE_POLICY_VERSION,
+            "evidence_attempt_limit": MAX_EVIDENCE_ATTEMPTS,
+            "operational_failure_limit": MAX_OPERATIONAL_FAILURES,
+            "total_attempt_limit": MAX_TOTAL_ATTEMPTS,
+        }
+    )
+    _job_deadline_epoch(job)
     if _job_deadline_expired(job):
-        _complete_with_best_available(job)
+        _complete_without_draft(
+            job,
+            warning="O limite total da pesquisa foi atingido; foi gerado um rascunho neutro editavel.",
+            completion_reason="execution_deadline_reached",
+        )
         return
     attempt_generation = max(1, int(job.get("request_generation") or 1))
     job["attempt_count"] = max(0, int(job.get("attempt_count") or 0)) + 1
+    if int(job["attempt_count"]) > MAX_TOTAL_ATTEMPTS:
+        _complete_without_draft(
+            job,
+            warning="O limite total de tentativas foi atingido; foi gerado um rascunho neutro editavel.",
+            completion_reason="total_attempt_limit_reached",
+        )
+        return
     job["restart_requested"] = False
     heartbeat_stop = threading.Event()
     heartbeat_thread = threading.Thread(
@@ -2455,6 +2795,8 @@ def _run_job(client_id: str, job_id: str) -> None:
             "coverage_complete": sufficient,
         }).to_dict()
         context["evidence_envelope"] = envelope
+        job["operational_failure_count"] = 0
+        job["evidence_attempt_count"] = max(0, int(job.get("evidence_attempt_count") or 0)) + 1
         thread_id = str(
             context.get("codex_thread_id")
             or context.get("_codex_thread_id_result")
@@ -2521,13 +2863,18 @@ def _run_job(client_id: str, job_id: str) -> None:
             )
             return
         if not sufficient:
-            if _job_deadline_expired(job):
+            if (
+                int(job.get("evidence_attempt_count") or 0) >= MAX_EVIDENCE_ATTEMPTS
+                or _job_deadline_expired(job)
+                or int(job.get("attempt_count") or 0) >= MAX_TOTAL_ATTEMPTS
+            ):
                 _complete_with_best_available(
                     job,
                     answer=answer,
                     context=context,
                     matrix=matrix,
                     warnings=warnings,
+                    completion_reason="evidence_insufficient_after_retry_limit",
                 )
             else:
                 _persist_retry(
@@ -2537,6 +2884,7 @@ def _run_job(client_id: str, job_id: str) -> None:
                     matrix=matrix,
                     warnings=warnings,
                     error="evidencia_tecnica_insuficiente",
+                    retry_kind="evidence",
                 )
             return
         job.update(
@@ -2559,7 +2907,7 @@ def _run_job(client_id: str, job_id: str) -> None:
                 "state": "aguardando_aprovacao",
                 "step": "aprovar",
                 "at": _now(),
-                "message": "Rascunho concluído e aguardando aprovação humana.",
+                "message": "Rascunho concluido e disponivel para uso.",
             }
         )
         job["agent_steps"] = history[-60:]
@@ -2613,16 +2961,42 @@ def _run_job(client_id: str, job_id: str) -> None:
         )
     except Exception as exc:
         logger.exception("[PPV CODEX] Falha no job %s", job_id)
-        if _is_operational_failure(exc):
-            job["operational_failure_count"] = (
-                max(0, int(job.get("operational_failure_count") or 0)) + 1
+        if _is_classification_contract_failure(exc):
+            _complete_without_draft(
+                job,
+                warning=(
+                    "Classificacao estruturada da IA indisponivel apos a regeneracao controlada; "
+                    "foi gerado um rascunho neutro editavel."
+                ),
+                completion_reason="classification_contract_violation",
             )
+            return
+        if not _is_operational_failure(exc):
+            _complete_without_draft(
+                job,
+                warning="A pesquisa encontrou uma violacao de contrato interno; foi gerado um rascunho neutro editavel.",
+                completion_reason="non_operational_failure",
+            )
+            return
+        job["operational_failure_count"] = (
+            max(0, int(job.get("operational_failure_count") or 0)) + 1
+        )
+        if (
+            int(job.get("operational_failure_count") or 0) >= MAX_OPERATIONAL_FAILURES
+            or int(job.get("attempt_count") or 0) >= MAX_TOTAL_ATTEMPTS
+            or _job_deadline_expired(job)
+        ):
+            _complete_without_draft(
+                job,
+                warning="O limite de falhas operacionais foi atingido; foi gerado um rascunho neutro editavel.",
+                completion_reason="operational_retry_exhausted",
+            )
+            return
         retry_job = _persist_retry(
             job,
             error=str(exc)[:1200],
-            warnings=[
-                "A tentativa operacional falhou; o melhor rascunho disponivel sera usado ao atingir 3 minutos."
-            ],
+            warnings=["Falha operacional temporaria; uma nova tentativa sera executada."],
+            retry_kind="operational",
         )
         if str(retry_job.get("status") or "") == "cancelled" or retry_job.get("cancel_requested"):
             return
@@ -2660,9 +3034,21 @@ def recover_pending_jobs() -> None:
     info_base = _runtime_info_base()
     for client_id in _known_clients(info_base):
         codex_assistant_storage.codex_assistant_customer_reply_jobs_cleanup(info_base, client_id)
-        jobs = codex_assistant_storage.codex_assistant_customer_reply_jobs_list(
-            info_base, client_id, statuses=list(ACTIVE_STATUSES | {"failed", "completed"}), limit=500
-        )
+        jobs: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page = codex_assistant_storage.codex_assistant_customer_reply_jobs_list(
+                info_base,
+                client_id,
+                statuses=list(ACTIVE_STATUSES | {"failed", "completed"}),
+                limit=500,
+                offset=offset,
+                priority_order=True,
+            )
+            jobs.extend(page)
+            if len(page) < 500:
+                break
+            offset += len(page)
         for job in jobs:
             if _canonical_task_type(job.get("task_type")) == TASK_TYPE_POST_SALE:
                 _cancel_post_sale_job(job)
@@ -2681,28 +3067,31 @@ def recover_pending_jobs() -> None:
                 ):
                     job.update(
                         {
-                            "status": "queued",
-                            "agent_state": "pesquisando",
-                            "current_step": "consultar",
+                            "status": "completed",
+                            "agent_state": "concluido",
+                            "current_step": "responder",
+                            "draft_expired": True,
+                            "blocked_without_draft": False,
+                            "review_required": False,
+                            "completion_reason": "draft_expired",
                             "lease_owner": "",
                             "lease_expires_ts": 0.0,
-                            "restart_requested": True,
                         }
                     )
-                    job.pop("proposal_hash", None)
-                    job = codex_assistant_storage.codex_assistant_customer_reply_job_save(
+                    codex_assistant_storage.codex_assistant_customer_reply_job_save(
                         info_base,
                         client_id,
                         job,
                         expected_lease_generation=_lease_generation(job),
                     )
-                    _schedule(job)
                 continue
             if str(job.get("status") or "") == "failed":
-                job.update({"status": "waiting_retry", "next_retry_at_epoch": 0.0})
-                job = codex_assistant_storage.codex_assistant_customer_reply_job_save(
-                    info_base, client_id, job
+                _complete_without_draft(
+                    job,
+                    warning="Falha anterior encerrada pela politica limitada; foi gerado um rascunho neutro editavel.",
+                    completion_reason="legacy_failed_job_closed",
                 )
+                continue
             if str(job.get("status") or "") == "waiting_retry":
                 if float(job.get("next_retry_at_epoch") or 0.0) <= time.time():
                     _wake_retry(client_id, str(job.get("job_id") or ""))

@@ -50,15 +50,9 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services.codex.console import queueing as console_queueing
+from backend.services.codex.console import telemetry as console_telemetry
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -346,7 +340,8 @@ def _data_selection_recent_for_client(state: dict[str, Any], client_id: Any) -> 
                 {
                     "tool_id": _diagnostic_code(validation.get("tool_id"), 100),
                     "required": validation.get("required") is True,
-                    "dados_suficientes": validation.get("dados_suficientes") is True,
+                    "evidence_status": _diagnostic_code(validation.get("status"), 40),
+                    "claim_scope": _diagnostic_code(validation.get("claim_scope"), 40),
                 }
                 for validation in list(item.get("validations") or [])[:12]
                 if isinstance(validation, dict) and _diagnostic_code(validation.get("tool_id"), 100)
@@ -371,13 +366,13 @@ def _function_manager_recent_for_client(state: dict[str, Any], client_id: Any) -
 def _public_status(config: dict[str, Any], worker: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     whisper = _whisper_status()
     audio_messages = _audio_messages_status()
-    codex = codex_console._codex_status_payload()
+    codex = console_telemetry.status_payload()
     ai_settings = _whatsapp_ai_settings(config)
     dual_settings = _whatsapp_dual_agent_settings(config)
     dual_runtime = codex_whatsapp_agents.CONVERSATION_RUNTIME.diagnostics()
     data_selection_runtime = codex_whatsapp_agents.DATA_SELECTION_RUNTIME.diagnostics()
     dispatcher = _phone_dispatch_diagnostics()
-    sol_capacity = codex_console._codex_dual_sol_diagnostics()
+    sol_capacity = console_queueing.diagnostics()
     worker = worker if isinstance(worker, dict) else _worker_health(config) if config.get("worker_url") and config.get("bridge_token") else {"success": False, "worker": False, "error": "nao_configurado"}
     voice_status = _voice_public_status(config)
     state = _load_state()

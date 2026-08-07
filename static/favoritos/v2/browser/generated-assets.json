@@ -1,0 +1,42 @@
+{
+  "schema": "jk.favoritos.browser-assets.v1",
+  "runtime": "static/favoritos/v2/browser/browser-runtime.js",
+  "pageRuntime": "static/favoritos/v2/browser/page-scripts/runtime.js",
+  "pageScripts": [
+    "static/favoritos/v2/browser/page-scripts/template-bundle-01.js",
+    "static/favoritos/v2/browser/page-scripts/template-bundle-02.js",
+    "static/favoritos/v2/browser/page-scripts/template-bundle-03.js",
+    "static/favoritos/v2/browser/page-scripts/template-bundle-04.js",
+    "static/favoritos/v2/browser/page-scripts/template-bundle-05.js",
+    "static/favoritos/v2/browser/page-scripts/template-bundle-06.js",
+    "static/favoritos/v2/browser/page-scripts/template-bundle-07.js",
+    "static/favoritos/v2/browser/page-scripts/template-bundle-08.js",
+    "static/favoritos/v2/browser/page-scripts/template-bundle-09.js",
+    "static/favoritos/v2/browser/page-scripts/template-bundle-10.js",
+    "static/favoritos/v2/browser/page-scripts/template-bundle-11.js",
+    "static/favoritos/v2/browser/page-scripts/legacy-extract.js"
+  ],
+  "modules": [
+    "static/favoritos/v2/browser/navigation-search.js",
+    "static/favoritos/v2/browser/avant-cache-compat.js",
+    "static/favoritos/v2/browser/browser-ui.js",
+    "static/favoritos/v2/browser/webview-navigation.js",
+    "static/favoritos/v2/browser/shell-runtime.js",
+    "static/favoritos/v2/browser/avant-entry.js",
+    "static/favoritos/v2/browser/avant-controls.js",
+    "static/favoritos/v2/browser/avant-login-native.js",
+    "static/favoritos/v2/browser/avant-login-modal.js",
+    "static/favoritos/v2/browser/avant-session.js",
+    "static/favoritos/v2/browser/extraction-fast.js",
+    "static/favoritos/v2/browser/extraction-avant.js",
+    "static/favoritos/v2/browser/extraction-mercado-livre.js",
+    "static/favoritos/v2/browser/first-page-support.js",
+    "static/favoritos/v2/browser/avant-card-queue.js",
+    "static/favoritos/v2/browser/first-page-controller.js",
+    "static/favoritos/v2/browser/diagnostics.js",
+    "static/favoritos/v2/browser/readiness.js",
+    "static/favoritos/v2/browser/merge.js"
+  ],
+  "publicApi": "static/favoritos/v2/browser/public-api.js",
+  "facade": "static/favoritos/ml-browser.js"
+}

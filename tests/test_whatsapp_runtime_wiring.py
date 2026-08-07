@@ -5,6 +5,8 @@ from pathlib import Path
 
 from backend.lifecycle import SHUTDOWN_EVENTS, STARTUP_EVENTS
 from backend.services import codex_console
+from backend.services.codex.console import agent_loop as console_agent_loop
+from backend.services.codex.console import agent_prompt as console_agent_prompt
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,7 +84,7 @@ def test_whatsapp_injects_original_latest_event_request_into_ml_call() -> None:
         ),
     }
 
-    prepared, report_mode = codex_console._codex_whatsapp_prepare_agent_tool_call(
+    prepared, report_mode = console_agent_prompt._codex_whatsapp_prepare_agent_tool_call(
         task,
         "mercado_livre_returns",
         {"loja": "JK Pecas", "limite": 100},
@@ -101,7 +103,7 @@ def test_whatsapp_required_marketplace_calls_keep_policy_order() -> None:
         {"tool_id": "sales_returns_query", "args": {}},
         {"tool_id": "mercado_livre_orders", "args": {}},
     ]
-    ordered = codex_console._codex_agent_order_calls_by_source_policy(
+    ordered = console_agent_loop._codex_agent_order_calls_by_source_policy(
         calls,
         {"required_tools": ["mercado_livre_orders", "mercado_livre_returns"]},
     )

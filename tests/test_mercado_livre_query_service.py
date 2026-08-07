@@ -19,18 +19,19 @@ class _Response:
 
 
 def _wire_store(monkeypatch, responses):
-    from backend.services import ia_tools_marketplaces, mercadolivre_legacy_api
+    from backend.services import mercadolivre_legacy_api
+    from backend.services.marketplace_tools import client as marketplace_client
 
     calls = []
     queue = list(responses)
-    monkeypatch.setattr(ia_tools_marketplaces, "_ia_ml_resolver_loja_exata", lambda client_id, loja: ("Loja A", {}))
+    monkeypatch.setattr(marketplace_client, "resolve_store", lambda client_id, loja: ("Loja A", {}))
     monkeypatch.setattr(mercadolivre_legacy_api, "_obter_cfg_ml", lambda client_id, loja: {"user_id": "123", "site_id": "MLB", "access_token": "never-return"})
 
     def request_get(client_id, loja, cfg, url, **kwargs):
         calls.append({"url": url, "params": kwargs.get("params") or {}, "headers": kwargs.get("headers") or {}})
         return queue.pop(0), cfg
 
-    monkeypatch.setattr(ia_tools_marketplaces, "_ia_ml_request_get", request_get)
+    monkeypatch.setattr(marketplace_client, "request_get", request_get)
     return calls
 
 
@@ -64,8 +65,8 @@ def test_catalog_search_document_only_and_tombstone_never_touch_network():
 def test_free_url_unknown_parameter_and_missing_store_fail_closed(monkeypatch):
     assert service.execute_mercado_livre_query("000002", resource_id="https://api.mercadolibre.com/users/me")["result"]["error_code"] == "free_url_blocked"
 
-    from backend.services import ia_tools_marketplaces
-    monkeypatch.setattr(ia_tools_marketplaces, "_ia_ml_resolver_loja_exata", lambda client_id, loja: (None, {"code": "store_required", "message": "exact"}))
+    from backend.services.marketplace_tools import client as marketplace_client
+    monkeypatch.setattr(marketplace_client, "resolve_store", lambda client_id, loja: (None, {"code": "store_required", "message": "exact"}))
     missing = service.execute_mercado_livre_query("000002", resource_id="ml.users.me")
     assert missing["result"]["error_code"] == "store_required"
 
@@ -88,11 +89,11 @@ def test_server_injects_seller_and_site_filters(monkeypatch):
 
 
 def test_owned_item_is_checked_before_query(monkeypatch):
-    from backend.services import ia_tools_marketplaces
+    from backend.services.marketplace_tools import listing_search
 
     _wire_store(monkeypatch, [])
     monkeypatch.setattr(
-        ia_tools_marketplaces, "_ia_ml_owned_item",
+        listing_search, "resolve_owned_item",
         lambda *args, **kwargs: (None, args[2], {"code": "listing_not_in_store", "message": "foreign"}),
     )
     output = service.execute_mercado_livre_query(
@@ -276,19 +277,20 @@ def test_rate_limit_and_reconnect_have_stable_public_errors(monkeypatch):
 
 
 def test_assistant_contract_is_full_only_and_can_search_catalog(monkeypatch):
-    from backend.services import codex_assistant
+    from backend.services.codex.assistant import catalog as assistant_catalog
+    from backend.services.codex.assistant import execution as assistant_execution
 
-    contract = next(item for item in codex_assistant.CODEX_DATA_TOOLS if item["id"] == "mercado_livre_resource_query")
+    contract = assistant_catalog.tool_meta("mercado_livre_resource_query")
     assert contract["read_only"] is True
     assert contract["executor"] == "mercado_livre_query_service.execute_mercado_livre_query"
-    assert "mercado_livre_resource_query" in codex_assistant.ASSISTANT_FULL_ONLY_TOOLS
+    assert "mercado_livre_resource_query" in assistant_catalog.ASSISTANT_FULL_ONLY_TOOLS
 
-    denied = codex_assistant.codex_assistant_execute_tool_call(
+    denied = assistant_execution.execute_tool_call(
         "000002", "mercado_livre_resource_query", {"mensagem": "estoque"}, permissions={"anuncios_ml": True},
     )
     assert denied["error_code"] == "tool_permission_denied"
 
-    allowed = codex_assistant.codex_assistant_execute_tool_call(
+    allowed = assistant_execution.execute_tool_call(
         "000002", "mercado_livre_resource_query", {"mensagem": "estoque", "limite": 3}, permissions={"full": True},
     )
     assert allowed["success"] is True

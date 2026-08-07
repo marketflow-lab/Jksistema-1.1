@@ -7,6 +7,11 @@ import time
 import pytest
 
 from backend.services import codex_console, codex_whatsapp_agents, whatsapp_bridge
+from backend.services.codex.console import queue_worker as console_queue_worker
+from backend.services.codex.console import state as console_state
+from backend.services.codex.console import tasks as console_tasks
+from backend.services.codex.console import runtime as console_runtime
+from backend.services.codex.console import task_store as console_task_store
 
 
 def _config(workers: int = 2) -> dict:
@@ -226,7 +231,7 @@ def test_local_queue_is_bounded_at_32(monkeypatch):
 
 
 def test_thirteenth_sol_waits_for_one_of_twelve_global_slots():
-    gate = codex_console._ResizableConcurrencyGate(12, 12)
+    gate = console_state._ResizableConcurrencyGate(12, 12)
     for index in range(12):
         assert gate.acquire(f"task-{index}", f"phone-{index}") is True
     acquired = threading.Event()
@@ -249,8 +254,8 @@ def test_thirteenth_sol_waits_for_one_of_twelve_global_slots():
 
 
 def test_sol_gate_allows_six_siblings_but_blocks_seventh_for_same_phone(monkeypatch):
-    gate = codex_console._ResizableConcurrencyGate(12, 6)
-    monkeypatch.setattr(codex_console, "_codex_load_task", lambda _task_id: {"status": "queued"})
+    gate = console_state._ResizableConcurrencyGate(12, 6)
+    monkeypatch.setattr(console_task_store, "_codex_load_task", lambda _task_id: {"status": "queued"})
     for index in range(6):
         assert gate.acquire(f"task-{index}", "phone-a") is True
     acquired = threading.Event()
@@ -295,8 +300,8 @@ def test_dual_sibling_tasks_have_distinct_queues_but_same_conversation_gate():
         **base,
         "channel_metadata": {**first["channel_metadata"], "subtask_id": "two"},
     }
-    assert codex_console._codex_task_queue_key(first) != codex_console._codex_task_queue_key(second)
-    assert codex_console._codex_task_conversation_gate_key(first) == codex_console._codex_task_conversation_gate_key(second)
+    assert console_queue_worker._codex_task_queue_key(first) != console_queue_worker._codex_task_queue_key(second)
+    assert console_queue_worker._codex_task_conversation_gate_key(first) == console_queue_worker._codex_task_conversation_gate_key(second)
 
 
 def test_runtime_pool_uses_isolated_slots(monkeypatch):
@@ -365,16 +370,21 @@ def test_restart_recovers_readonly_dual_sol_even_with_legacy_mutation_flags(monk
     }
     (tmp_path / f"{task_id}.json").write_text(json.dumps(task), encoding="utf-8")
     started: list[str] = []
-    monkeypatch.setattr(codex_console, "_codex_info_dir", lambda: str(tmp_path))
-    monkeypatch.setattr(codex_console, "_codex_start_thread", lambda value: started.append(value))
-    with codex_console.CODEX_TASKS_LOCK:
-        codex_console.CODEX_TASKS.pop(task_id, None)
-    result = codex_console.codex_console_recuperar_fila_background()
+    monkeypatch.setattr(console_queue_worker, "_codex_info_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        console_task_store,
+        "_codex_task_path",
+        lambda value: str(tmp_path / f"{value}.json"),
+    )
+    monkeypatch.setattr(console_queue_worker, "_codex_start_thread", lambda value: started.append(value))
+    with console_state.CODEX_TASKS_LOCK:
+        console_state.CODEX_TASKS.pop(task_id, None)
+    result = console_tasks.recover()
     recovered = json.loads((tmp_path / f"{task_id}.json").read_text(encoding="utf-8"))
     assert result["queued_task_ids"] == [task_id]
     assert recovered["status"] == "queued"
     assert recovered["wait_reason"] == "restart_recovery"
     assert recovered["restart_recovery_count"] == 1
     assert started == [task_id]
-    with codex_console.CODEX_TASKS_LOCK:
-        codex_console.CODEX_TASKS.pop(task_id, None)
+    with console_state.CODEX_TASKS_LOCK:
+        console_state.CODEX_TASKS.pop(task_id, None)

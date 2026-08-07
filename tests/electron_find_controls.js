@@ -124,6 +124,12 @@ async function runBrowserContract() {
         assert.strictEqual(await page.locator('#screen-search-input').evaluate(element => document.activeElement === element), true, 'o campo deve receber foco');
 
         await page.locator('#screen-search-input').fill('produto');
+        await page.waitForTimeout(250);
+        assert.strictEqual(await page.locator('#screen-search-status').textContent(), 'Enter', 'digitar deve aguardar a confirmacao por Enter');
+        assert.strictEqual((await page.evaluate(() => window.__screenFindMock.calls)).length, 0, 'digitar nao deve iniciar a pesquisa');
+        assert.strictEqual(await page.locator('#screen-search-next').isDisabled(), true, 'a navegacao deve aguardar a primeira pesquisa');
+
+        await page.locator('#screen-search-input').press('Enter');
         await page.waitForFunction(() => document.querySelector('#screen-search-status')?.textContent === '1 de 2');
         assert.strictEqual(await page.locator('#screen-search-next').isDisabled(), false, 'a navegacao deve habilitar quando houver resultados');
 
@@ -133,7 +139,7 @@ async function runBrowserContract() {
         await page.waitForFunction(() => document.querySelector('#screen-search-status')?.textContent === '1 de 2');
 
         const calls = await page.evaluate(() => window.__screenFindMock.calls);
-        assert.strictEqual(calls[0].options.newSession, true, 'digitar deve iniciar uma nova sessao de pesquisa');
+        assert.strictEqual(calls[0].options.newSession, true, 'o primeiro Enter deve iniciar uma nova sessao de pesquisa');
         assert.deepStrictEqual(calls.slice(-2).map(call => [call.options.newSession, call.options.forward]), [[false, true], [false, false]], 'Enter e Shift+Enter devem navegar na sessao atual');
 
         await page.locator('#screen-search-input').press('Escape');
@@ -144,7 +150,12 @@ async function runBrowserContract() {
         await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true })));
         await page.waitForFunction(() => document.activeElement === document.querySelector('#screen-search-input'));
         assert.strictEqual(await page.locator('#screen-search-input').evaluate(element => document.activeElement === element), true, 'Ctrl+F deve reabrir e focar a pesquisa');
+        const callsBeforeMissingQuery = (await page.evaluate(() => window.__screenFindMock.calls)).length;
         await page.locator('#screen-search-input').fill('ausente');
+        await page.waitForTimeout(250);
+        assert.strictEqual(await page.locator('#screen-search-status').textContent(), 'Enter', 'um novo termo deve aguardar Enter');
+        assert.strictEqual((await page.evaluate(() => window.__screenFindMock.calls)).length, callsBeforeMissingQuery, 'alterar o termo nao deve pesquisar automaticamente');
+        await page.locator('#screen-search-input').press('Enter');
         await page.waitForFunction(() => document.querySelector('#screen-search-status')?.textContent === 'Nenhum');
         assert.strictEqual(await page.locator('#screen-search-next').isDisabled(), true, 'sem resultados a navegacao deve permanecer desabilitada');
 

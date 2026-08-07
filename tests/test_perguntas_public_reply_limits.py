@@ -46,8 +46,8 @@ def test_public_question_draft_preserves_2000_characters_for_revision():
     assert len(payload["current_draft_to_avoid"]) == 2000
 
 
-def test_public_question_prompt_and_validator_have_no_sentence_cap():
-    rules = SellerRules(store_name="JK Pecas", max_chars=2000, max_sentences=0, min_confidence=0)
+def test_public_question_prompt_and_validator_enforce_three_content_sentences():
+    rules = SellerRules(store_name="JK Pecas", max_chars=2000, max_sentences=3, min_confidence=0)
     question = QuestionContext(id="Q1", text="Explique os detalhes confirmados.")
     listing = ListingSnapshot(id="MLB1", title="Produto", description="Descricao confirmada.")
 
@@ -69,9 +69,9 @@ def test_public_question_prompt_and_validator_have_no_sentence_cap():
     )
 
     assert '"max_chars": 2000' in prompt
-    assert '"max_sentences"' not in prompt
-    assert "string curta, em portugues do Brasil" not in prompt
-    assert "too_many_sentences" not in validation.issues
+    assert '"max_sentences": 3' in prompt
+    assert "string curta, em portugues do Brasil" in prompt
+    assert "too_many_sentences" in validation.issues
 
 
 def test_public_question_main_v3_prompt_receives_full_2000_character_draft():
@@ -86,7 +86,7 @@ def test_public_question_main_v3_prompt_receives_full_2000_character_draft():
         "item": {"id": "MLB-DRAFT", "title": "Produto"},
     })
     rules.max_chars = 2000
-    rules.max_sentences = 0
+    rules.max_sentences = 3
 
     prompt = PromptBuilder().build(
         question=question,
@@ -117,18 +117,19 @@ def test_post_sale_prompt_keeps_its_short_answer_contract():
     assert "string curta, em portugues do Brasil" in prompt
 
 
-def test_public_question_jobs_have_no_total_deadline():
+def test_public_question_jobs_have_bounded_total_deadline_after_first_claim():
     job = {
         "task_type": codex.TASK_TYPE_PUBLIC_QUESTION,
-        "deadline_seconds": 180,
-        "deadline_at_epoch": 1,
+        "first_started_at_epoch": 100,
+        "deadline_at_epoch": 0,
     }
 
-    assert codex._job_deadline_epoch(job) == 0
-    assert codex._job_deadline_expired(job, now=10_000) is False
-    assert job["deadline_seconds"] == 0
-    assert job["deadline_at_epoch"] == 0
-    assert codex._task_retry_policy(job["task_type"]) == "persistent_until_cancelled"
+    assert codex._job_deadline_epoch(job) == 1000
+    assert codex._job_deadline_expired(job, now=999) is False
+    assert codex._job_deadline_expired(job, now=1000) is True
+    assert job["deadline_seconds"] == 900
+    assert job["deadline_at_epoch"] == 1000
+    assert codex._task_retry_policy(job["task_type"]) == "bounded"
     assert codex._task_deadline_seconds(codex.TASK_TYPE_POST_SALE) == 180
     assert codex._task_retry_policy(codex.TASK_TYPE_POST_SALE) == "bounded"
 

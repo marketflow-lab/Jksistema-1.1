@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any, Callable, Optional
 
-from backend.services.context_hub_inventory import _slug as _context_hub_slug
+from backend.services.context_inventory.normalization import slug as _context_hub_slug
 from backend.services.whatsapp import formatting as whatsapp_formatting
 from backend.services.whatsapp import intent as whatsapp_intent
 

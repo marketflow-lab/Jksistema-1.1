@@ -7,7 +7,8 @@ from typing import Optional
 
 from fastapi import APIRouter
 
-from backend.services import context_hub, context_hub_endpoints
+from backend.modules.context_hub import api as context_hub_api
+from backend.services import context_hub_endpoints
 
 
 def create_context_hub_router(
@@ -17,7 +18,7 @@ def create_context_hub_router(
     surface: Optional[str] = None,
 ) -> APIRouter:
     if base_dir is not None or info_root is not None or surface is not None:
-        context_hub.configure_context_hub(base_dir=base_dir, info_root=info_root, surface=surface)
+        context_hub_api.configure_context_hub(base_dir=base_dir, info_root=info_root, surface=surface)
 
     router = APIRouter(tags=["context-hub"])
     router.add_api_route(

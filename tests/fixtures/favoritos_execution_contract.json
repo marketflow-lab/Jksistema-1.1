@@ -1,0 +1,52 @@
+{
+  "schema": "jk.favoritos.execution.contract.v1",
+  "legacy_source": {
+    "lines": 3346,
+    "sha256_lf": "006fda37e1a944ad3fa569745d64ac4140b9e1540578dc59630d7b0e42ee52c3"
+  },
+  "component_order": [
+    "00-runtime.js",
+    "01-collection-evidence.js",
+    "02-collection-controller.js",
+    "03-worker-pool.js",
+    "04-confirmed-flow.js",
+    "05-legacy-renderer.js",
+    "06-job-runtime.js",
+    "07-job-controls.js",
+    "08-ranking-entrypoints.js",
+    "09-sidebar-render.js",
+    "10-table-layout.js",
+    "11-public-api.js"
+  ],
+  "public_api": {
+    "obterElectronApiFavoritosExecucao": "",
+    "formatarProgressoColetaPrimeiraPaginaFavoritos": "numeroPesquisa, progresso = {}",
+    "pararPollingFavoritosJob": "",
+    "cancelarFavoritosJobAtualServidor": "",
+    "pausarFavoritosJobAtual": "",
+    "retomarFavoritosJobAtual": "",
+    "pararNavegadorFavoritosBackground": "opcoes = {}",
+    "fazerFavoritosSkusSelecionados": "opcoes = {}",
+    "rankearAvulsoMercadoLivre": "opcoes = {}",
+    "formatarPrecoFavoritosMl": "valor",
+    "renderizarFavoritosSkuSidebar": "",
+    "criarCelulaTextoFavoritos": "valor, opcoes = {}",
+    "criarCelulaMlbLojaFavoritos": "mlb, loja, status = '', tipo = '', vendedor = ''",
+    "obterNomeLojaVendedoraHistoricoFavoritos": "anuncio",
+    "carregarLayoutTabelasFavoritos": "",
+    "atualizarTabelasFavoritosEditaveis": "",
+    "agendarSincronizarLinhasFavoritos": "",
+    "inicializarLarguraTabelasFavoritos": ""
+  },
+  "invariants": {
+    "collection_timeout_ms": 90000,
+    "collection_outer_timeout_ms": 92000,
+    "collection_passes": 2,
+    "avant_click_batch": 6,
+    "max_workers": 4,
+    "fallback_worker": "w0",
+    "job_next_collection_path": "/proxima-coleta",
+    "job_term_collection_path": "/coleta-termo",
+    "preserve_avant_session_on_success": true
+  }
+}

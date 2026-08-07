@@ -2,10 +2,21 @@ import json
 
 import pytest
 
-from backend.services import codex_assistant
 from backend.services import codex_data_selection_agent
+from backend.services.codex.assistant import execution as assistant_execution
+from backend.services.codex.assistant import references as assistant_references
 from backend.services import whatsapp_bridge as _whatsapp_bridge  # binds extracted component dependencies
 from backend.services.whatsapp.orchestration import function_manager
+
+
+def _evidence(status: str, reason: str = "") -> dict:
+    conclusive = status in {"complete", "confirmed_zero"}
+    return {"schema": "jk.codex.evidence.v1", "status": status,
+        "claim_scope": "full" if conclusive else "observed_only" if status == "partial" else "none",
+        "coverage_complete": conclusive, "confidence": "high" if conclusive else "medium" if status == "partial" else "low",
+        "freshness": "live", "retryable": status == "unavailable", "reason": reason or status,
+        "missing_fields": [] if conclusive else ["decisive_evidence"], "sources": [],
+        "attempted_fallbacks": [], "next_sources": []}
 
 
 def _plan(*, tool_id: str, arguments: dict, store: str = "Uai Mineirinho") -> dict:
@@ -47,14 +58,14 @@ def _catalog(*tool_ids: str) -> list[dict]:
 
 
 def test_false_preposition_is_not_accepted_as_sku():
-    assert codex_assistant._assistant_extract_sku_filter("E o mesmo SKU na Uai Mineirinho?") == ""
-    assert codex_assistant._assistant_extract_sku_filter(
+    assert assistant_references._assistant_extract_sku_filter("E o mesmo SKU na Uai Mineirinho?") == ""
+    assert assistant_references._assistant_extract_sku_filter(
         "E o mesmo SKU na Uai Mineirinho? Contexto anterior: SKU 001."
     ) == "001"
 
 
 def test_materialized_sku_precedes_untrusted_conversation_text():
-    enriched = codex_assistant._assistant_bling_message_with_refs(
+    enriched = assistant_references._assistant_bling_message_with_refs(
         "E o mesmo SKU na Uai Mineirinho?",
         {"sku": "001", "loja": "Uai Mineirinho"},
         None,
@@ -101,10 +112,10 @@ def test_tool_executor_receives_only_materialized_agent_context(monkeypatch):
             "success": True,
             "records": 1,
             "data": [{"sku": "001", "stock": 3}],
-            "tool_validation": {"dados_suficientes": True, "motivo": "ok"},
+            "evidence": _evidence("complete", "ok"),
         }
 
-    monkeypatch.setattr(codex_assistant, "codex_assistant_execute_tool_call", execute)
+    monkeypatch.setattr(assistant_execution, "execute_tool_call", execute)
     results = function_manager._function_manager_execute_tools(
         {
             "client_id": "tenant-a",
@@ -127,7 +138,7 @@ def test_tool_executor_receives_only_materialized_agent_context(monkeypatch):
         {},
     )
 
-    assert results[0]["dados_suficientes"] is True
+    assert results[0]["evidence"]["status"] == "complete"
     assert captured[0]["materialized_context"] is True
     assert captured[0]["args"]["sku"] == "001"
     assert captured[0]["args"]["loja"] == "Uai Mineirinho"
@@ -159,8 +170,10 @@ def test_insufficient_evidence_schedules_one_different_agent_replan(monkeypatch)
         "validations": [{
             "tool_id": "stock_data",
             "required": True,
-            "dados_suficientes": False,
-            "motivo": "fonte sem escopo de loja",
+            "status": "insufficient",
+            "claim_scope": "none",
+            "reason": "fonte sem escopo de loja",
+            "evidence": _evidence("insufficient", "fonte sem escopo de loja"),
             "error_class": "incomplete_result",
         }],
     }
@@ -184,7 +197,7 @@ def test_replan_prompt_exposes_attempted_sources_without_raw_content():
         conversation_anchors={
             "resolved_context": {"store": "Uai Mineirinho", "sku": "001", "revision": 2},
         },
-        previous_evidence={"validations": [{"dados_suficientes": False}]},
+        previous_evidence={"validations": [{"status": "insufficient", "evidence": _evidence("insufficient")}]},
         data_gap={
             "attempted_tools": ["stock_data"],
             "attempted_call_signatures": ["abc123"],

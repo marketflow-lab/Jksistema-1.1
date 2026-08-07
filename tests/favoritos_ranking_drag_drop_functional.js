@@ -4,6 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { readFavoritosStyles } = require('./helpers/favoritos_styles_sources');
 
 const root = path.resolve(__dirname, '..');
 const source = fs.readFileSync(
@@ -14,7 +15,7 @@ const renderSource = fs.readFileSync(
     path.join(root, 'static/favoritos/tabelas-layout/08-render-avant-mercadolivre.js'),
     'utf8'
 );
-const styleSource = fs.readFileSync(path.join(root, 'static/favoritos/styles.css'), 'utf8');
+const styleSource = readFavoritosStyles(root);
 
 function extractFunction(name, context) {
     const marker = `function ${name}`;

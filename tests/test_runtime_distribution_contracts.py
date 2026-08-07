@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 from backend.services import codex_console, whatsapp_bridge
+from backend.services.codex.console import runtime as console_runtime
 
 
 def test_release_version_is_canonical_and_materialized():
@@ -13,7 +14,7 @@ def test_release_version_is_canonical_and_materialized():
     runtime_manifest = json.loads((root / ".installer_runtime" / "runtime-manifest.json").read_text(encoding="utf-8-sig"))
 
     release_version = electron_package["version"]
-    assert release_version == "1.0.118"
+    assert release_version == "1.0.119"
     assert root_package["version"] == release_version
     assert context_manifest["source_version"] == release_version
     assert runtime_manifest["version"] == release_version
@@ -25,13 +26,11 @@ def test_release_version_is_canonical_and_materialized():
 
 
 def test_codex_status_distinguishes_authentication_pending(monkeypatch):
-    monkeypatch.setattr(codex_console, "_codex_sdk_installed", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_enabled", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_auth_detected", lambda: False)
-    monkeypatch.setattr(codex_console, "_codex_cli_version", lambda: (True, "codex.exe"))
-    monkeypatch.setattr(
-        codex_console,
-        "_codex_runtime_diagnostics",
+    monkeypatch.setattr(console_runtime, "_codex_sdk_installed", lambda: True)
+    monkeypatch.setattr(console_runtime, "_codex_enabled", lambda: True)
+    monkeypatch.setattr(console_runtime, "_codex_auth_detected", lambda: False)
+    monkeypatch.setattr(console_runtime, "_codex_cli_version", lambda: (True, "codex.exe"))
+    monkeypatch.setattr(console_runtime, "_codex_runtime_diagnostics",
         lambda: {
             "path": "codex.exe",
             "version": "test",
@@ -40,7 +39,7 @@ def test_codex_status_distinguishes_authentication_pending(monkeypatch):
         },
     )
 
-    payload = codex_console._codex_status_payload()
+    payload = console_runtime._codex_status_payload()
 
     assert payload["ready"] is True
     assert payload["runtime_status"] == "authentication_pending"

@@ -2,7 +2,17 @@ from __future__ import annotations
 
 import json
 
-from backend.services import codex_assistant, codex_console, codex_data_selection_agent, integracoes
+from backend.services import codex_console, codex_data_selection_agent, integracoes
+from backend.services.codex.assistant import execution as assistant_execution
+from backend.services.codex.console import agent_cycle as console_agent_cycle
+from backend.services.codex.console import agent_prompt as console_agent_prompt
+from backend.services.codex.console import runtime as console_runtime
+from backend.services.codex.console import worker_execution as console_worker_execution
+from backend.services.codex.console import worker_setup as console_worker_setup
+from backend.services.codex.console import agent_loop as console_agent_loop
+from backend.services.codex.console import exact_reports as console_exact_reports
+from backend.services.codex.console import task_store as console_task_store
+from backend.services.codex.console import task_views as console_task_views
 
 
 def _selection(*tool_ids: str, hub_mode: str = "not_applicable") -> dict:
@@ -22,13 +32,13 @@ def test_screen_context_cannot_supply_or_expand_data_selection(monkeypatch):
         calls.append({"planned": True})
         return _selection()
 
-    monkeypatch.setattr(codex_console, "_codex_agent_plan_short_data_selection", plan)
+    monkeypatch.setattr(console_agent_prompt, "_codex_agent_plan_short_data_selection", plan)
     monkeypatch.setattr(
-        codex_console.codex_agent_runtime,
+        console_agent_prompt.codex_agent_runtime,
         "resolve_guidance",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy guidance must stay disabled")),
     )
-    prompt = codex_console._codex_agent_initial_prompt(
+    prompt = console_agent_prompt._codex_agent_initial_prompt(
         "explique margem",
         {
             "title": "Painel",
@@ -51,13 +61,13 @@ def test_screen_context_cannot_supply_or_expand_data_selection(monkeypatch):
 
 
 def test_context_hub_mode_adds_only_its_short_catalog_id():
-    assert codex_console._codex_agent_data_selection_tool_ids(
+    assert console_agent_prompt._codex_agent_data_selection_tool_ids(
         _selection(hub_mode="required")
     ) == ["context_hub_search"]
 
 
 def test_missing_tenant_fails_closed_before_store_or_model_lookup():
-    result = codex_console._codex_agent_plan_short_data_selection(
+    result = console_agent_prompt._codex_agent_plan_short_data_selection(
         "qual o estoque?",
         "",
         [{"id": "stock_data"}],
@@ -74,8 +84,8 @@ def test_cutover_forces_agent_mode_and_disables_native_mcp(monkeypatch):
     monkeypatch.setenv("JK_CODEX_LEGACY_CONTEXT_MODE", "true")
     monkeypatch.setenv("JK_CODEX_AGENT_MODE_ENABLED", "false")
 
-    assert codex_console._codex_agent_mode_enabled() is True
-    assert codex_console._codex_native_mcp_enabled({"origin": "whatsapp", "mcp_migration": {"native_enabled": True}}) is False
+    assert console_runtime._codex_agent_mode_enabled() is True
+    assert console_runtime._codex_native_mcp_enabled({"origin": "whatsapp", "mcp_migration": {"native_enabled": True}}) is False
 
 
 def test_selector_receives_only_bounded_server_conversation_memory(monkeypatch):
@@ -99,7 +109,7 @@ def test_selector_receives_only_bounded_server_conversation_memory(monkeypatch):
         }
 
     monkeypatch.setattr(codex_data_selection_agent.DATA_SELECTION_RUNTIME, "plan", plan)
-    codex_console._codex_agent_plan_short_data_selection(
+    console_agent_prompt._codex_agent_plan_short_data_selection(
         "e esse SKU?",
         "tenant-a",
         [],
@@ -127,9 +137,7 @@ def test_selector_receives_only_bounded_server_conversation_memory(monkeypatch):
 
 
 def test_materialized_selection_clears_legacy_source_policy_and_marks_task(monkeypatch):
-    monkeypatch.setattr(
-        codex_console,
-        "_codex_agent_plan_short_data_selection",
+    monkeypatch.setattr(console_agent_prompt, "_codex_agent_plan_short_data_selection",
         lambda *_args, **_kwargs: _selection("sales_ranking"),
     )
     task = {
@@ -138,7 +146,7 @@ def test_materialized_selection_clears_legacy_source_policy_and_marks_task(monke
         "query_policy": {"source_policy": {"required_tools": ["stock_data"]}},
     }
 
-    result = codex_console._codex_agent_materialize_task_data_selection(
+    result = console_agent_prompt._codex_agent_materialize_task_data_selection(
         task,
         prompt="ranking",
         screen_context={},
@@ -147,7 +155,7 @@ def test_materialized_selection_clears_legacy_source_policy_and_marks_task(monke
 
     assert result["tool_calls"] == [{"tool_id": "sales_ranking"}]
     assert task["query_policy"]["source_policy"] == {}
-    assert task["data_selection_trust_marker"] == codex_console._CODEX_AGENT_DATA_SELECTION_TRUST_MARKER
+    assert task["data_selection_trust_marker"] == console_agent_prompt._CODEX_AGENT_DATA_SELECTION_TRUST_MARKER
     assert task["data_selection_tool_ids"] == ["sales_ranking"]
 
 
@@ -169,17 +177,17 @@ def test_executor_rejects_invented_jk_tool_call_outside_selected_ids(monkeypatch
         def turn(_prompt, **_kwargs):
             return _Turn()
 
-    monkeypatch.setattr(codex_console, "_codex_final_response_from_items", lambda *_args, **_kwargs: next(responses))
-    monkeypatch.setattr(codex_console, "_codex_agent_update_trace", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(codex_console, "_codex_update_live", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(codex_console, "_codex_register_active_turn", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(codex_console, "_codex_unregister_active_turn", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(codex_console, "_codex_native_mcp_read_results", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(codex_console, "_codex_capture_whatsapp_listing_bundle", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(codex_console, "_codex_generate_whatsapp_chart_artifacts", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_agent_cycle, "_codex_final_response_from_items", lambda *_args, **_kwargs: next(responses))
+    monkeypatch.setattr(console_agent_cycle, "_codex_agent_update_trace", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_agent_cycle, "_codex_update_live", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_agent_cycle, "_codex_register_active_turn", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_agent_cycle, "_codex_unregister_active_turn", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_agent_cycle, "_codex_native_mcp_read_results", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(console_agent_cycle, "_codex_capture_whatsapp_listing_bundle", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_agent_cycle, "_codex_generate_whatsapp_chart_artifacts", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        codex_assistant,
-        "codex_assistant_execute_tool_call",
+        assistant_execution,
+        "execute_tool_call",
         lambda **_kwargs: (_ for _ in ()).throw(AssertionError("invented tool must not execute")),
     )
 
@@ -191,11 +199,11 @@ def test_executor_rejects_invented_jk_tool_call_outside_selected_ids(monkeypatch
         "permissions": {"full": True},
         "deadline_seconds": 180,
         "query_policy": {"source_policy": {"required_tools": ["stock_data"]}},
-        "data_selection_trust_marker": codex_console._CODEX_AGENT_DATA_SELECTION_TRUST_MARKER,
+        "data_selection_trust_marker": console_agent_prompt._CODEX_AGENT_DATA_SELECTION_TRUST_MARKER,
         "data_selection": _selection("sales_ranking"),
     }
 
-    final_response, _state, trace = codex_console._codex_agent_run_loop(
+    final_response, _state, trace = console_agent_cycle._codex_agent_run_loop(
         task["task_id"],
         task,
         _Thread(),
@@ -234,19 +242,19 @@ def test_planned_call_arguments_are_exact_and_each_call_runs_once(monkeypatch):
         def turn(_prompt, **_kwargs):
             return _Turn()
 
-    monkeypatch.setattr(codex_console, "_codex_final_response_from_items", lambda *_args, **_kwargs: next(responses))
-    monkeypatch.setattr(codex_console, "_codex_agent_update_trace", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(codex_console, "_codex_update_live", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(codex_console, "_codex_register_active_turn", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(codex_console, "_codex_unregister_active_turn", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(codex_console, "_codex_capture_whatsapp_listing_bundle", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(codex_console, "_codex_generate_whatsapp_chart_artifacts", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_agent_cycle, "_codex_final_response_from_items", lambda *_args, **_kwargs: next(responses))
+    monkeypatch.setattr(console_agent_cycle, "_codex_agent_update_trace", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_agent_cycle, "_codex_update_live", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_agent_cycle, "_codex_register_active_turn", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_agent_cycle, "_codex_unregister_active_turn", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_agent_cycle, "_codex_capture_whatsapp_listing_bundle", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_agent_cycle, "_codex_generate_whatsapp_chart_artifacts", lambda *_args, **_kwargs: None)
 
     def execute(**kwargs):
         executed.append(kwargs)
         return {"tool_id": kwargs["tool_id"], "success": True, "records": 1}
 
-    monkeypatch.setattr(codex_assistant, "codex_assistant_execute_tool_call", execute)
+    monkeypatch.setattr(assistant_execution, "execute_tool_call", execute)
     monkeypatch.setattr(
         codex_data_selection_agent.DATA_SELECTION_RUNTIME,
         "record_evidence_size",
@@ -259,7 +267,7 @@ def test_planned_call_arguments_are_exact_and_each_call_runs_once(monkeypatch):
         "created_by": "admin",
         "permissions": {"full": True},
         "deadline_seconds": 180,
-        "data_selection_trust_marker": codex_console._CODEX_AGENT_DATA_SELECTION_TRUST_MARKER,
+        "data_selection_trust_marker": console_agent_prompt._CODEX_AGENT_DATA_SELECTION_TRUST_MARKER,
         "data_selection": {
             "schema_version": "1.0",
             "action": "collect",
@@ -268,7 +276,7 @@ def test_planned_call_arguments_are_exact_and_each_call_runs_once(monkeypatch):
         },
     }
 
-    final_response, _state, trace = codex_console._codex_agent_run_loop(
+    final_response, _state, trace = console_agent_cycle._codex_agent_run_loop(
         task["task_id"], task, _Thread(), {}, "prompt", {"selection": {"sku": "BAD"}}, False,
     )
 
@@ -293,18 +301,16 @@ def test_native_mcp_never_executes_legacy_parser_in_same_turn(monkeypatch):
         def turn(_prompt, **_kwargs):
             return _Turn()
 
-    monkeypatch.setattr(
-        codex_console,
-        "_codex_final_response_from_items",
+    monkeypatch.setattr(console_agent_cycle, "_codex_final_response_from_items",
         lambda *_args, **_kwargs: '<jk_tool_calls>[{"tool_id":"sales_ranking","args":{}}]</jk_tool_calls>',
     )
-    monkeypatch.setattr(codex_console, "_codex_agent_update_trace", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(codex_console, "_codex_update_live", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(codex_console, "_codex_register_active_turn", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(codex_console, "_codex_unregister_active_turn", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_agent_cycle, "_codex_agent_update_trace", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_agent_cycle, "_codex_update_live", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_agent_cycle, "_codex_register_active_turn", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_agent_cycle, "_codex_unregister_active_turn", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        codex_assistant,
-        "codex_assistant_execute_tool_call",
+        assistant_execution,
+        "execute_tool_call",
         lambda **_kwargs: (_ for _ in ()).throw(AssertionError("legacy parser must not execute")),
     )
     task = {
@@ -312,10 +318,10 @@ def test_native_mcp_never_executes_legacy_parser_in_same_turn(monkeypatch):
         "client_id": "tenant-a",
         "permissions": {"full": True},
         "deadline_seconds": 180,
-        "data_selection_trust_marker": codex_console._CODEX_AGENT_DATA_SELECTION_TRUST_MARKER,
+        "data_selection_trust_marker": console_agent_prompt._CODEX_AGENT_DATA_SELECTION_TRUST_MARKER,
         "data_selection": _selection("sales_ranking"),
     }
-    final_response, _state, trace = codex_console._codex_agent_run_loop(
+    final_response, _state, trace = console_agent_cycle._codex_agent_run_loop(
         task["task_id"], task, _Thread(), {}, "prompt", {}, False, native_mcp=True,
     )
     assert "Nenhuma chamada pelo parser legado" in final_response
@@ -331,30 +337,30 @@ def test_planned_call_order_and_dependencies_fail_closed():
         ],
         "context_hub": {"mode": "not_applicable"},
     }
-    planned = codex_console._codex_agent_planned_calls(selection)
+    planned = console_agent_prompt._codex_agent_planned_calls(selection)
     attempted: set[int] = set()
     success: dict[int, bool] = {}
 
-    call, code, _message = codex_console._codex_agent_authorize_planned_call(
+    call, code, _message = console_agent_prompt._codex_agent_authorize_planned_call(
         "first", {"extra": True}, planned, attempted, success,
     )
     assert call is None
     assert code == "data_selection_arguments_mismatch"
 
-    call, code, _message = codex_console._codex_agent_authorize_planned_call(
+    call, code, _message = console_agent_prompt._codex_agent_authorize_planned_call(
         "second", {"id": 2}, planned, attempted, success,
     )
     assert call is None
     assert code == "data_selection_call_out_of_order"
 
-    first, code, _message = codex_console._codex_agent_authorize_planned_call(
+    first, code, _message = console_agent_prompt._codex_agent_authorize_planned_call(
         "first", {}, planned, attempted, success,
     )
     assert code == ""
     attempted.add(first["index"])
     success[first["index"]] = False
 
-    call, code, _message = codex_console._codex_agent_authorize_planned_call(
+    call, code, _message = console_agent_prompt._codex_agent_authorize_planned_call(
         "second", {"id": 2}, planned, attempted, success,
     )
     assert call is None
@@ -365,12 +371,15 @@ def test_worker_without_tenant_fails_before_loading_codex(monkeypatch):
     task = {"task_id": "missing-tenant", "status": "queued", "sandbox": "read_only", "origin": "app"}
     updates: list[dict] = []
 
-    monkeypatch.setattr(codex_console, "_codex_load_task", lambda _task_id: dict(task))
-    monkeypatch.setattr(codex_console, "_codex_update_task", lambda _task_id, **kwargs: updates.append(kwargs) or {})
-    monkeypatch.setattr(codex_console, "_codex_transition_task_plan", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(codex_console, "_codex_native_mcp_cleanup", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_worker_setup, "_codex_load_task", lambda _task_id: dict(task))
+    monkeypatch.setattr(console_worker_execution, "_codex_load_task", lambda _task_id: dict(task))
+    monkeypatch.setattr(console_worker_setup, "_codex_update_task", lambda _task_id, **kwargs: updates.append(kwargs) or {})
+    monkeypatch.setattr(console_worker_execution, "_codex_update_task", lambda _task_id, **kwargs: updates.append(kwargs) or {})
+    monkeypatch.setattr(console_worker_setup, "_codex_transition_task_plan", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(console_worker_execution, "_codex_transition_task_plan", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(console_worker_execution, "_codex_native_mcp_cleanup", lambda *_args, **_kwargs: None)
 
-    codex_console._codex_run_worker(task["task_id"])
+    console_worker_execution._codex_run_worker(task["task_id"])
 
     assert updates[-1]["status"] == "failed"
     assert updates[-1]["error"] == "data_selection_tenant_required"

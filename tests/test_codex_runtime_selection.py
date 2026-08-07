@@ -6,19 +6,22 @@ import pytest
 
 import backend_api  # noqa: F401
 from backend.services import codex_console
+from backend.services.codex.console import runtime as console_runtime
+from backend.services.codex.console import state as console_state
 
 
 @pytest.fixture(autouse=True)
 def reset_runtime_selection_cache():
-    codex_console.CODEX_RUNTIME_BIN_CACHE = None
-    codex_console.CODEX_RUNTIME_SELECTED_PATH_CACHE = ""
-    codex_console.CODEX_RUNTIME_SELECTED_VERSION_CACHE = ()
-    codex_console.CODEX_RUNTIME_CONFIG_ERROR_CACHE = ""
+    state = console_state.CONSOLE_STATE
+    state.runtime_bin_cache = None
+    state.runtime_selected_path_cache = ""
+    state.runtime_selected_version_cache = ()
+    state.runtime_config_error_cache = ""
     yield
-    codex_console.CODEX_RUNTIME_BIN_CACHE = None
-    codex_console.CODEX_RUNTIME_SELECTED_PATH_CACHE = ""
-    codex_console.CODEX_RUNTIME_SELECTED_VERSION_CACHE = ()
-    codex_console.CODEX_RUNTIME_CONFIG_ERROR_CACHE = ""
+    state.runtime_bin_cache = None
+    state.runtime_selected_path_cache = ""
+    state.runtime_selected_version_cache = ()
+    state.runtime_config_error_cache = ""
 
 
 def _prepare_runtime_candidates(monkeypatch, tmp_path: Path):
@@ -34,8 +37,8 @@ def _prepare_runtime_candidates(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
     monkeypatch.delenv("JK_CODEX_BIN", raising=False)
     monkeypatch.delenv("CODEX_BIN", raising=False)
-    monkeypatch.setattr(codex_console.shutil, "which", lambda name: None)
-    monkeypatch.setattr(codex_console.Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    monkeypatch.setattr(console_runtime.shutil, "which", lambda name: None)
+    monkeypatch.setattr(console_runtime.Path, "home", classmethod(lambda cls: tmp_path / "home"))
 
     import codex_cli_bin
 
@@ -45,9 +48,7 @@ def _prepare_runtime_candidates(monkeypatch, tmp_path: Path):
         str(desktop_newer.resolve()).lower(): (0, 200, 0, 0),
         str(bundled.resolve()).lower(): (0, 137, 0, 4),
     }
-    monkeypatch.setattr(
-        codex_console,
-        "_codex_bin_version",
+    monkeypatch.setattr(console_runtime, "_codex_bin_version",
         lambda path: versions.get(str(Path(path).resolve()).lower(), ()),
     )
     return desktop_older.resolve(), desktop_newer.resolve(), bundled.resolve()
@@ -62,7 +63,7 @@ def test_desktop_runtime_discovery_includes_versioned_installations(monkeypatch,
         candidate.write_bytes(b"test")
     monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
 
-    discovered = {path.resolve() for path in codex_console._codex_desktop_runtime_candidates()}
+    discovered = {path.resolve() for path in console_runtime._codex_desktop_runtime_candidates()}
 
     assert direct.resolve() in discovered
     assert versioned.resolve() in discovered
@@ -70,10 +71,10 @@ def test_desktop_runtime_discovery_includes_versioned_installations(monkeypatch,
 
 def test_runtime_selection_prefers_newest_compatible_desktop_codex(monkeypatch, tmp_path):
     _, desktop_newer, _ = _prepare_runtime_candidates(monkeypatch, tmp_path)
-    monkeypatch.setattr(codex_console, "_codex_bin_config_preflight", lambda path: (True, ""))
+    monkeypatch.setattr(console_runtime, "_codex_bin_config_preflight", lambda path: (True, ""))
 
-    selected = codex_console._codex_runtime_bin()
-    diagnostics = codex_console._codex_runtime_diagnostics()
+    selected = console_runtime._codex_runtime_bin()
+    diagnostics = console_runtime._codex_runtime_diagnostics()
 
     assert selected == str(desktop_newer)
     assert diagnostics["path"] == str(desktop_newer)
@@ -89,24 +90,22 @@ def test_runtime_selection_skips_newest_when_it_cannot_load_node_repl(monkeypatc
             return False, "invalid transport in mcp_servers.node_repl"
         return True, ""
 
-    monkeypatch.setattr(codex_console, "_codex_bin_config_preflight", preflight)
+    monkeypatch.setattr(console_runtime, "_codex_bin_config_preflight", preflight)
 
-    selected = codex_console._codex_runtime_bin()
+    selected = console_runtime._codex_runtime_bin()
 
     assert selected == str(desktop_older)
-    assert codex_console._codex_runtime_diagnostics()["config_ok"] is True
+    assert console_runtime._codex_runtime_diagnostics()["config_ok"] is True
 
 
 def test_runtime_preflight_returns_actionable_error_when_all_candidates_fail(monkeypatch, tmp_path):
     _prepare_runtime_candidates(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        codex_console,
-        "_codex_bin_config_preflight",
+    monkeypatch.setattr(console_runtime, "_codex_bin_config_preflight",
         lambda path: (False, "invalid transport in mcp_servers.node_repl"),
     )
 
     with pytest.raises(RuntimeError) as exc_info:
-        codex_console._codex_runtime_require_ready()
+        console_runtime._codex_runtime_require_ready()
 
     message = str(exc_info.value)
     assert "login continua valido" in message
@@ -115,14 +114,12 @@ def test_runtime_preflight_returns_actionable_error_when_all_candidates_fail(mon
 
 
 def test_codex_status_uses_detected_desktop_runtime_and_reports_config_failure(monkeypatch):
-    monkeypatch.setattr(codex_console, "_codex_sdk_installed", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_enabled", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_auth_detected", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_auth_file_path", lambda: "auth.json")
-    monkeypatch.setattr(codex_console, "_codex_cli_version", lambda: (False, ""))
-    monkeypatch.setattr(
-        codex_console,
-        "_codex_runtime_diagnostics",
+    monkeypatch.setattr(console_runtime, "_codex_sdk_installed", lambda: True)
+    monkeypatch.setattr(console_runtime, "_codex_enabled", lambda: True)
+    monkeypatch.setattr(console_runtime, "_codex_auth_detected", lambda: True)
+    monkeypatch.setattr(console_runtime, "_codex_auth_file_path", lambda: "auth.json")
+    monkeypatch.setattr(console_runtime, "_codex_cli_version", lambda: (False, ""))
+    monkeypatch.setattr(console_runtime, "_codex_runtime_diagnostics",
         lambda: {
             "path": "C:/OpenAI/Codex/bin/new/codex.exe",
             "version": "0.200.0.0",
@@ -131,7 +128,7 @@ def test_codex_status_uses_detected_desktop_runtime_and_reports_config_failure(m
         },
     )
 
-    status = codex_console._codex_status_payload()
+    status = console_runtime._codex_status_payload()
 
     assert status["cli_available"] is True
     assert status["cli_path"].endswith("codex.exe")

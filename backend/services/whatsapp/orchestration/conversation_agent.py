@@ -8,7 +8,9 @@ import time
 import uuid
 from typing import Any, Optional
 
-from backend.services import admin_usuarios_common, codex_console, codex_whatsapp_agents
+from backend.services import admin_usuarios_common, codex_whatsapp_agents
+from backend.services.codex.console import security as console_security
+from backend.services.codex.console import tasks as console_tasks
 from backend.services.whatsapp import conversation_context as whatsapp_conversation_context
 from backend.services.whatsapp import response_fallback as whatsapp_response_fallback
 from backend.services.whatsapp.composition import BridgeDependencies, bind_component_namespace
@@ -78,7 +80,7 @@ def _dual_active_job_snapshot(
             if str(candidate_pending.get("conversation_id") or "") != str(conversation_id or ""):
                 continue
             candidate_task_id = str(candidate_pending.get("task_id") or "")
-            candidate_task = codex_console._codex_load_task(candidate_task_id) if candidate_task_id else None
+            candidate_task = console_tasks.load(candidate_task_id) if candidate_task_id else None
             if isinstance(candidate_task, dict) and str(candidate_task.get("status") or "") == "running":
                 message_id, pending, task = str(candidate_message_id), candidate_pending, candidate_task
                 break
@@ -262,7 +264,7 @@ def _current_shared_authorization(record: dict[str, Any]) -> tuple[list[str], st
 
 
 def _conversation_schema_fingerprint(runtime_contract: dict[str, Any]) -> str:
-    return codex_console._codex_hmac_identifier(
+    return console_security.hmac_identifier(
         json.dumps(runtime_contract.get("schema") or {}, ensure_ascii=False, sort_keys=True, default=str),
         namespace="conversation_schema",
     )[-40:]

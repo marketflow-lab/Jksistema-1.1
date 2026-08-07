@@ -5,6 +5,9 @@ from types import SimpleNamespace
 
 from backend.schemas import IAChatRequest
 from backend.services import codex_assistant, codex_data_selection_agent, ia_endpoints
+from backend.services.codex.assistant import api as assistant_api
+from backend.services.codex.assistant import collection as assistant_collection
+from backend.services.codex.assistant import execution as assistant_execution
 
 
 def _request(username: str = "admin") -> SimpleNamespace:
@@ -68,8 +71,8 @@ def test_system_general_question_executes_zero_tools(monkeypatch):
         lambda **_kwargs: _plan(action="answer_without_data"),
     )
     monkeypatch.setattr(
-        codex_assistant,
-        "codex_assistant_execute_tool_call",
+        assistant_execution,
+        "execute_tool_call",
         lambda **_kwargs: (_ for _ in ()).throw(AssertionError("nenhuma ferramenta deveria executar")),
     )
 
@@ -144,7 +147,7 @@ def test_system_executes_only_agent_selected_read_only_call(monkeypatch):
             "sources_human": ["Bling"],
         }
 
-    monkeypatch.setattr(codex_assistant, "codex_assistant_execute_tool_call", execute)
+    monkeypatch.setattr(assistant_execution, "execute_tool_call", execute)
     envelope, evidence = ia_endpoints._ia_chat_prepare_data_selection(
         IAChatRequest(message="Qual o estoque do SKU 001?"),
         "tenant-a",
@@ -198,7 +201,7 @@ def test_system_context_hub_evidence_is_limited_to_six_short_snippets():
 
 def test_legacy_deterministic_chat_route_delegates_to_unified_flow(monkeypatch):
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_api,
         "_assistant_require_full_admin",
         lambda *_args, **_kwargs: {"client_id": "tenant-a", "username": "admin", "permissions": {"full": True}},
     )
@@ -213,7 +216,7 @@ def test_legacy_deterministic_chat_route_delegates_to_unified_flow(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_collection,
         "_assistant_collect_data",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("roteador deterministico reativado")),
     )

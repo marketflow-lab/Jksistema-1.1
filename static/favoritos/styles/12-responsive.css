@@ -1,0 +1,229 @@
+
+        @media (min-width: 1180px) {
+            body.ml-ranking-sidebar-active .container {
+                max-width: min(1100px, calc(100vw - var(--ml-ranking-sidebar-width, 320px) - 60px));
+                margin-right: calc(var(--ml-ranking-sidebar-width, 320px) + 40px);
+            }
+            body.ml-sku-sidebar-active .container {
+                max-width: min(1100px, calc(100vw - var(--ml-sku-sidebar-width, 300px) - 60px));
+                margin-left: calc(var(--ml-sku-sidebar-width, 300px) + 40px);
+            }
+            body.ml-ranking-sidebar-active.ml-sku-sidebar-active .container {
+                max-width: min(1100px, calc(100vw - var(--ml-ranking-sidebar-width, 320px) - var(--ml-sku-sidebar-width, 300px) - 100px));
+            }
+            .ml-ranking-sidebar {
+                position: fixed;
+                top: 18px;
+                right: 16px;
+                z-index: 30;
+                width: var(--ml-ranking-sidebar-width, 320px);
+                max-height: calc(100vh - 36px);
+                margin-top: 0;
+                box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+            }
+            .ml-sku-sidebar {
+                position: absolute;
+                top: 18px;
+                left: 16px;
+                z-index: 30;
+                width: var(--ml-sku-sidebar-width, 300px);
+                max-height: calc(100vh - 36px);
+                overflow: hidden;
+                margin-top: 0;
+                box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+            }
+            .ml-sidebar-resizer {
+                bottom: 0;
+                cursor: col-resize;
+                display: block;
+                position: absolute;
+                top: 0;
+                width: 12px;
+            }
+            .ml-ranking-sidebar .ml-sidebar-resizer {
+                left: -7px;
+            }
+            .ml-sku-sidebar .ml-sidebar-resizer {
+                right: -7px;
+            }
+            .ml-ranking-sidebar .ml-sidebar-resizer,
+            .ml-sku-sidebar .ml-sidebar-resizer {
+                position: absolute;
+                top: 0;
+            }
+            .ml-sidebar-resizer::after {
+                background: #b8d7fb;
+                border-radius: 999px;
+                content: "";
+                display: block;
+                height: 54px;
+                opacity: 0.8;
+                position: absolute;
+                top: 50%;
+                transform: translateY(-50%);
+                width: 3px;
+            }
+            .ml-ranking-sidebar .ml-sidebar-resizer::after { left: 4px; }
+            .ml-sku-sidebar .ml-sidebar-resizer::after { right: 4px; }
+            body.ml-ranking-sidebar-active.ml-ranking-sidebar-collapsed .container {
+                max-width: min(1100px, calc(100vw - 98px));
+                margin-right: 78px;
+            }
+            body.ml-sku-sidebar-active.ml-sku-sidebar-collapsed .container {
+                margin-left: 78px;
+            }
+            .ml-ranking-sidebar.is-collapsed {
+                width: 44px;
+                max-height: 48px;
+            }
+            .ml-sku-sidebar.is-hidden {
+                width: 44px;
+                max-height: 48px;
+            }
+            body.ml-sku-sidebar-active .container {
+                margin-left: calc(var(--ml-sku-sidebar-width, 300px) + 24px);
+                margin-right: 24px;
+                max-width: none;
+                width: calc(100vw - var(--ml-sku-sidebar-width, 300px) - 72px);
+            }
+            body.ml-ranking-sidebar-active.ml-sku-sidebar-active .container {
+                margin-right: calc(var(--ml-ranking-sidebar-width, 320px) + 40px);
+                width: calc(100vw - var(--ml-sku-sidebar-width, 300px) - var(--ml-ranking-sidebar-width, 320px) - 112px);
+            }
+            body.ml-sku-sidebar-active.ml-sku-sidebar-collapsed .container {
+                margin-left: 78px;
+                margin-right: 24px;
+                max-width: none;
+                width: calc(100vw - 126px);
+            }
+            body.ml-ranking-sidebar-active.ml-sku-sidebar-active.ml-sku-sidebar-collapsed .container {
+                margin-right: calc(var(--ml-ranking-sidebar-width, 320px) + 40px);
+                width: calc(100vw - var(--ml-ranking-sidebar-width, 320px) - 158px);
+            }
+        }
+
+        @media (max-width: 899px) {
+            .favoritos-ml-tables.is-resizable {
+                grid-template-columns: minmax(0, 1fr);
+            }
+            .favoritos-ml-tables.is-resizable > .panel {
+                display: block;
+                min-width: 0;
+            }
+            .favoritos-ml-tables.is-resizable .favoritos-ml-table-wrap {
+                flex: none;
+            }
+            .favoritos-ml-split-resizer {
+                display: none;
+            }
+        }
+
+        @media (min-width: 1180px) and (max-width: 1399px) {
+            body.ml-sku-sidebar-active .container {
+                margin-left: calc(var(--ml-sku-sidebar-width, 300px) + 16px);
+                margin-right: 16px;
+                width: calc(100vw - var(--ml-sku-sidebar-width, 300px) - 48px);
+            }
+            body.ml-ranking-sidebar-active.ml-sku-sidebar-active .container {
+                margin-right: 16px;
+                width: calc(100vw - var(--ml-sku-sidebar-width, 300px) - 48px);
+            }
+            body.ml-ranking-sidebar-active.ml-sku-sidebar-active .ml-ranking-sidebar {
+                margin: 16px 16px 16px calc(var(--ml-sku-sidebar-width, 300px) + 16px);
+                max-height: none;
+                position: static;
+                width: auto;
+            }
+            body.ml-ranking-sidebar-active.ml-sku-sidebar-active .ml-ranking-sidebar .ml-sidebar-resizer {
+                display: none;
+            }
+        }
+
+        @media (max-width: 1100px) {
+            .browser-toolbar input,
+            .browser-search-row input {
+                min-width: 0;
+            }
+            .browser-search-fields {
+                grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            }
+            .favoritos-sheets-input-row,
+            .favoritos-sheets-row {
+                grid-template-columns: minmax(0, 1fr);
+            }
+            .favoritos-sheets-open,
+            .favoritos-sheets-input-row .btn-back,
+            .favoritos-sheets-row .btn-back {
+                width: 100%;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                width: calc(100vw - 16px);
+            }
+            .header {
+                align-items: stretch;
+                flex-direction: column;
+            }
+            .header-title-row,
+            .module-store-card-row {
+                flex-basis: auto;
+                width: 100%;
+            }
+            .module-store-card {
+                flex-basis: 100%;
+            }
+            .tab-button {
+                flex-basis: auto;
+            }
+            .tabs {
+                position: static;
+            }
+            .panel {
+                padding: 10px;
+            }
+            .sku-toolbar {
+                align-items: stretch;
+                flex-direction: column;
+            }
+            .ml-ranking-sidebar,
+            .ml-sku-sidebar {
+                position: static;
+                width: auto;
+                max-height: none;
+                box-shadow: none;
+            }
+            .browser-toolbar {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .browser-search-row {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .browser-search-fields {
+                grid-template-columns: 1fr;
+            }
+            .browser-frame-wrap {
+                min-height: 420px;
+                height: calc(100vh - 360px);
+            }
+            .ml-favoritos-efetivar-panel {
+                position: static;
+            }
+            .ml-favoritos-efetivar-actions {
+                justify-content: stretch;
+            }
+            .ml-favoritos-confirm-grid {
+                grid-template-columns: 1fr;
+            }
+            .ml-favoritos-efetivar-actions > *,
+            .ml-favoritos-include-form > * {
+                flex: 1 1 100%;
+            }
+            .ml-favoritos-efetivar-btn,
+            .ml-favoritos-include-btn {
+                width: 100%;
+            }
+        }

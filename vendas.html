@@ -12,7 +12,7 @@
     <script src="/auth.js?v=20260623-vendas-sidebar"></script>
     <script src="/ncm-sync.js"></script>
     <script src="/global-status.js"></script>
-    <link rel="stylesheet" href="/vendas/styles.css?v=20260707-vendas-estoque-chart-v1">
+    <link rel="stylesheet" href="/vendas/styles.css?v=20260730-vendas-skus-grafico-v1">
 </head>
 <body>
 
@@ -31,6 +31,14 @@
                     <span>Abrir</span>
                     <strong>Importa&ccedil;&atilde;o</strong>
                 </a>
+                <button id="btnPareto80" class="vendas-shortcut-card vendas-shortcut-pareto" type="button">
+                    <span>Gerar relat&oacute;rio</span>
+                    <strong>Pareto 80%</strong>
+                </button>
+                <button id="btnRelatorioGeralSkus" class="vendas-shortcut-card vendas-shortcut-geral" type="button">
+                    <span>Vendas, estoque e devolu&ccedil;&otilde;es</span>
+                    <strong>Relat&oacute;rio Geral de SKUs</strong>
+                </button>
             </div>
         </div>
         <div class="nav-actions">
@@ -139,12 +147,23 @@
             <div class="grafico-estoque-header">
                 <div class="grafico-estoque-title">
                     <span class="grafico-estoque-kicker">Estoque</span>
-                    <strong>Saldo total e hist&oacute;rico</strong>
+                    <strong>Saldo total e unidades vendidas</strong>
                 </div>
                 <div id="graficoEstoqueResumo" class="grafico-estoque-resumo">Carregando...</div>
             </div>
             <div id="graficoEstoqueEstado" class="grafico-estoque-estado" hidden></div>
             <canvas id="graficoEstoque"></canvas>
+        </div>
+        <div id="graficoSkusEstoqueWrapper" class="grafico-wrapper grafico-skus-estoque-wrapper">
+            <div class="grafico-estoque-header">
+                <div class="grafico-estoque-title">
+                    <span class="grafico-estoque-kicker">Cobertura</span>
+            <strong>SKUs com estoque e Pareto 80%</strong>
+                </div>
+                <div id="graficoSkusEstoqueResumo" class="grafico-estoque-resumo grafico-skus-estoque-resumo">Carregando...</div>
+            </div>
+            <div id="graficoSkusEstoqueEstado" class="grafico-estoque-estado grafico-skus-estoque-estado" hidden></div>
+            <canvas id="graficoSkusEstoque"></canvas>
         </div>
         <aside id="graficoSidebarVendas" class="grafico-sidebar-vendas" aria-label="Observações do gráfico de vendas">
             <div id="graficoSidebarResizerVendas" class="grafico-sidebar-resizer-vendas" role="separator" aria-orientation="vertical" aria-label="Redimensionar sidebar" tabindex="0"></div>
@@ -265,9 +284,11 @@
     <script src="/vendas/periodo-cache.js?v=20260714-vendas-opt-v1"></script>
     <script src="/vendas/sync.js?v=20260714-vendas-opt-v1"></script>
     <script src="/vendas/dados-render.js?v=20260714-vendas-opt-v1"></script>
-    <script src="/vendas/grafico.js?v=20260714-vendas-opt-v1"></script>
+  <script src="/vendas/grafico.js?v=20260731-vendas-skus-pareto-v1"></script>
     <script src="/vendas/assistente.js?v=20260710-black-jhon-unificado-v1"></script>
     <script src="/vendas/sidebar-ranking.js?v=20260625-vendas-lite-v1"></script>
+    <script src="/vendas/pareto-report.js?v=20260728-vendas-relatorios-v2"></script>
+    <script src="/vendas/general-sku-report.js?v=20260728-vendas-relatorios-v2"></script>
     <script src="/vendas/init.js?v=20260625-vendas-lite-v1"></script>
     <script src="/ia-sidebar.js?v=20260722-black-jhon-unified-pos-venda-manual-v1"></script>
 </body>

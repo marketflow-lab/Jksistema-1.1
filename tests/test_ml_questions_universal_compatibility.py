@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
+from backend.modules.perguntas_pos_venda.ai import clients as agent_clients
+from backend.modules.perguntas_pos_venda.ai import compatibility as agent_compatibility
+from backend.modules.perguntas_pos_venda.ai import evidence as agent_evidence
+from backend.modules.perguntas_pos_venda.ai import queries as agent_queries
+from backend.modules.perguntas_pos_venda.ai import sources as agent_sources
+from backend.services import perguntas_pos_venda_agent as agent_facade
 from ml_questions_gemini.classifier import QuestionClassifier
 from ml_questions_gemini.compatibility import normalize_comparison_attributes
 from ml_questions_gemini.schemas import ListingSnapshot, QuestionCategory, QuestionContext, SellerRules
@@ -74,8 +82,6 @@ def _compatibility_intent(
 )
 def test_classifier_and_profile_respect_ai_targets(question, title, target, target_type):
     import backend_api  # noqa: F401
-    from backend.services import perguntas_pos_venda_agent as agent
-
     classifier = QuestionClassifier()
     classification = classifier.classify(
         _classified_question(question, QuestionCategory.COMPATIBILITY),
@@ -84,8 +90,8 @@ def test_classifier_and_profile_respect_ai_targets(question, title, target, targ
     agent_input = {"intent": _compatibility_intent(target, target_type)}
 
     assert classification.category == QuestionCategory.COMPATIBILITY
-    assert agent._perguntas_ia_v2_alvo_compatibilidade(agent_input) == target
-    assert agent._perguntas_ia_v2_perfil_compatibilidade(agent_input) == {
+    assert agent_queries._perguntas_ia_v2_alvo_compatibilidade(agent_input) == target
+    assert agent_queries._perguntas_ia_v2_perfil_compatibilidade(agent_input) == {
         "target_type": target_type,
         "compatibility_profile": _COMPATIBILITY_PROFILE_BY_TARGET_TYPE[target_type],
     }
@@ -113,8 +119,6 @@ def test_phone_as_device_is_not_confused_with_external_contact():
 
 def test_automotive_fuel_pump_pressure_uses_ai_vehicle_profile():
     import backend_api  # noqa: F401
-    from backend.services import perguntas_pos_venda_agent as agent
-
     agent_input = {
         "intent": _compatibility_intent(
             "Evoque SE 2.0 gasolina 2017",
@@ -122,11 +126,11 @@ def test_automotive_fuel_pump_pressure_uses_ai_vehicle_profile():
             decisive_fields=["vehicle_version", "fuel_pressure"],
         ),
     }
-    profile = agent._perguntas_ia_v2_perfil_compatibilidade(agent_input)
+    profile = agent_queries._perguntas_ia_v2_perfil_compatibilidade(agent_input)
 
     assert profile["target_type"] == "vehicle"
     assert profile["compatibility_profile"] == "vehicle_fitment"
-    assert agent._perguntas_ia_v2_alvo_compatibilidade(agent_input) == "Evoque SE 2.0 gasolina 2017"
+    assert agent_queries._perguntas_ia_v2_alvo_compatibilidade(agent_input) == "Evoque SE 2.0 gasolina 2017"
 
 
 def test_comparison_attributes_normalize_units_and_results():
@@ -228,8 +232,6 @@ def test_machine_profile_blocks_vehicle_language():
 
 def test_stihl_insufficient_analysis_does_not_create_local_customer_text():
     import backend_api  # noqa: F401
-    from backend.services import perguntas_pos_venda_agent as agent
-
     agent_input = {
         "question": {"text": "Serve na stihl 120?"},
         "item": {"title": "Enxada Rotativa Rocadeira Disco Capina Grama Universal"},
@@ -240,15 +242,94 @@ def test_stihl_insufficient_analysis_does_not_create_local_customer_text():
             decisive_fields=["shaft_diameter", "spline_count"],
         ),
     }
-    analysis = agent._perguntas_ia_v2_compatibilidade_padrao(agent_input)
+    analysis = agent_compatibility._perguntas_ia_v2_compatibilidade_padrao(agent_input)
     assert analysis["target_type"] == "machine_tool"
     assert analysis["target_item"].lower() == "stihl 120"
-    assert not hasattr(agent, "_perguntas_ia_v2_resposta_segura_compatibilidade")
+    assert not hasattr(agent_facade, "_perguntas_ia_v2_resposta_segura_compatibilidade")
+
+
+def test_repeated_marketplace_evidence_on_both_sides_remains_insufficient_and_human_review(monkeypatch):
+    import backend_api  # noqa: F401
+    base = agent_compatibility._perguntas_ia_v2_compatibilidade_padrao({
+        "question": {"text": "Serve na Stihl 120?"},
+        "item": {"title": "Enxada Rotativa Rocadeira Disco Capina Grama Universal"},
+        "intent": _compatibility_intent("Stihl 120", "machine_tool"),
+    })
+    claimed_analysis = {
+        "target_type": "machine_tool",
+        "target_item": "Stihl 120",
+        "compatibility_profile": "machine_interface",
+        "product_interface": "eixo de 26 mm com 9 estrias",
+        "target_interface": "eixo de 26 mm com 9 estrias",
+        "comparison_attributes": [{
+            "attribute": "eixo e estrias",
+            "product_value": "26 mm / 9 estrias",
+            "target_value": "26 mm / 9 estrias",
+            "unit": "mm",
+            "result": "match",
+            "decisive": True,
+            "evidence_refs": ["anuncio repetido A", "anuncio repetido B"],
+        }],
+        "decision": "yes",
+        "condition": "",
+        "missing_fields": [],
+        "evidence": {
+            "product": [
+                {"authority": "marketplace", "reference": "anuncio comercial repetido: eixo 26 mm"},
+                {"authority": "marketplace", "reference": "outro anuncio repetido: eixo 26 mm"},
+            ],
+            "target": [
+                {"authority": "marketplace", "reference": "anuncio comercial: Stihl 120 eixo 26 mm"},
+                {"authority": "marketplace", "reference": "snippet repetido: Stihl 120 eixo 26 mm"},
+            ],
+            "equivalence": [
+                {"authority": "marketplace", "reference": "anuncio afirma compativel e mesma interface"},
+            ],
+        },
+        "confidence": 0.96,
+    }
+    normalized = agent_compatibility._perguntas_ia_v2_compatibilidade_normalizar(claimed_analysis, base=base)
+
+    assert normalized["decision"] == "insufficient"
+    assert normalized["reason"] == "compatibility_decision_without_sufficient_evidence"
+    assert "authoritative_technical_evidence" in normalized["missing_fields"]
+
+    model_payload = json.dumps({
+        "answer": "Esse produto serve na Stihl 120 porque os anuncios repetem a mesma interface.",
+        "confidence": 0.96,
+        "requires_human_review": False,
+        "reason": "marketplace_claim",
+        "compatibility_analysis": claimed_analysis,
+    })
+    client = agent_clients._PerguntasVertexGeminiV2Client(
+        "000002",
+        "JK Pecas",
+        "codex:gpt-5.5",
+        {
+            "intent": _compatibility_intent("Stihl 120", "machine_tool"),
+            "question": {"text": "Serve na Stihl 120?"},
+            "item": {"title": "Enxada Rotativa Rocadeira"},
+        },
+    )
+    monkeypatch.setattr(
+        agent_clients,
+        "_ia_agent_perguntas_chamar_modelo",
+        lambda *_args, **_kwargs: (model_payload, "codex:gpt-5.5"),
+    )
+
+    result = client._call_model(
+        "prompt",
+        {"category": "compatibility"},
+        stage="compatibility_final",
+    )
+
+    assert client.compatibility_analysis["decision"] == "insufficient"
+    assert result.requires_human_review is True
+    assert result.confidence == 0.49
 
 
 def test_universal_analysis_persists_canonical_target_and_legacy_alias():
     import backend_api  # noqa: F401
-    from backend.services import perguntas_pos_venda_agent as agent
 
     agent_input = {
         "question": {"text": "Serve na Stihl 120?"},
@@ -259,9 +340,9 @@ def test_universal_analysis_persists_canonical_target_and_legacy_alias():
             decisive_fields=["shaft_diameter", "spline_count"],
         ),
     }
-    analysis = agent._perguntas_ia_v2_compatibilidade_normalizar(
+    analysis = agent_compatibility._perguntas_ia_v2_compatibilidade_normalizar(
         _machine_analysis("yes"),
-        base=agent._perguntas_ia_v2_compatibilidade_padrao(agent_input),
+        base=agent_compatibility._perguntas_ia_v2_compatibilidade_padrao(agent_input),
     )
 
     assert analysis["decision"] == "yes"
@@ -273,7 +354,7 @@ def test_universal_analysis_persists_canonical_target_and_legacy_alias():
 
 
 def test_approval_diagnostics_persist_universal_profile_and_comparison():
-    from backend.services import perguntas_pos_venda_endpoints as endpoints
+    from backend.modules.perguntas_pos_venda.endpoints import diagnostics as endpoints
 
     persisted = endpoints._perguntas_ia_compatibility_analysis_normalizar(_machine_analysis("yes"))
 
@@ -287,8 +368,6 @@ def test_approval_diagnostics_persist_universal_profile_and_comparison():
 
 def test_question_research_prefetches_separate_queries_in_fast_mode(monkeypatch):
     import backend_api  # noqa: F401
-    from backend.services import perguntas_pos_venda_agent as agent
-
     calls = []
 
     def fake_search(query, client_id=None, max_results=5, *, fast=False):
@@ -301,8 +380,8 @@ def test_question_research_prefetches_separate_queries_in_fast_mode(monkeypatch)
             "provider": "fake",
         }]
 
-    monkeypatch.setattr(agent, "_ia_agent_perguntas_buscar_web_publica", fake_search)
-    context = agent._ia_agent_perguntas_contexto_web("000002", "JK Pecas", [
+    monkeypatch.setattr(agent_sources, "_ia_agent_perguntas_buscar_web_publica", fake_search)
+    context = agent_sources._ia_agent_perguntas_contexto_web("000002", "JK Pecas", [
         {"type": "product_interface_identity", "query": "produto eixo 26mm"},
         {"type": "target_interface_official", "query": "stihl 120 eixo manual"},
         {"type": "interface_equivalence", "query": "produto stihl 120 equivalencia"},
@@ -315,26 +394,22 @@ def test_question_research_prefetches_separate_queries_in_fast_mode(monkeypatch)
 
 def test_question_research_caps_public_search_prefetch_at_twelve_queries(monkeypatch):
     import backend_api  # noqa: F401
-    from backend.services import perguntas_pos_venda_agent as agent
-
     calls = []
 
     def fake_search(query, client_id=None, max_results=8, *, fast=True):
         calls.append((query, client_id, max_results, fast))
         return []
 
-    monkeypatch.setattr(agent, "_ia_agent_perguntas_buscar_web_publica", fake_search)
+    monkeypatch.setattr(agent_sources, "_ia_agent_perguntas_buscar_web_publica", fake_search)
     queries = [{"type": "web", "query": f"produto consulta {index}"} for index in range(20)]
 
-    assert agent._ia_agent_perguntas_contexto_web("000002", "JK Pecas", queries) == ""
+    assert agent_sources._ia_agent_perguntas_contexto_web("000002", "JK Pecas", queries) == ""
     assert len(calls) == 12
     assert all(call[1:] == ("000002", 8, True) for call in calls)
 
 
 def test_public_web_prompt_injection_stays_untrusted_and_not_official():
     import backend_api  # noqa: F401
-    from backend.services import perguntas_pos_venda_agent as agent
-
     tool_result = {
         "function": "web_search_question_context",
         "result": {
@@ -349,7 +424,7 @@ def test_public_web_prompt_injection_stays_untrusted_and_not_official():
         },
     }
 
-    grounding = agent._perguntas_ia_v2_grounding_coletar(
+    grounding = agent_evidence._perguntas_ia_v2_grounding_coletar(
         [tool_result],
         {"item": {"title": "Produto anunciado"}},
     )
@@ -361,13 +436,11 @@ def test_public_web_prompt_injection_stays_untrusted_and_not_official():
 
 def test_technical_page_reader_rejects_non_public_and_executable_urls():
     import backend_api  # noqa: F401
-    from backend.services import perguntas_pos_venda_agent as agent
-
-    assert agent._perguntas_ia_v2_url_fonte_tecnica_segura("https://docs.example/manual.pdf") is True
-    assert agent._perguntas_ia_v2_url_fonte_tecnica_segura("http://produto.onion/manual") is False
-    assert agent._perguntas_ia_v2_url_fonte_tecnica_segura("http://192.168.1.5/manual") is False
-    assert agent._perguntas_ia_v2_url_fonte_tecnica_segura("https://usuario:senha@example.com/manual") is False
-    assert agent._perguntas_ia_v2_url_fonte_tecnica_segura("https://example.com/manual.zip") is False
+    assert agent_sources._perguntas_ia_v2_url_fonte_tecnica_segura("https://docs.example/manual.pdf") is True
+    assert agent_sources._perguntas_ia_v2_url_fonte_tecnica_segura("http://produto.onion/manual") is False
+    assert agent_sources._perguntas_ia_v2_url_fonte_tecnica_segura("http://192.168.1.5/manual") is False
+    assert agent_sources._perguntas_ia_v2_url_fonte_tecnica_segura("https://usuario:senha@example.com/manual") is False
+    assert agent_sources._perguntas_ia_v2_url_fonte_tecnica_segura("https://example.com/manual.zip") is False
 
 
 _PROFILE_CASES = [

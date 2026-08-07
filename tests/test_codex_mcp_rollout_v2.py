@@ -10,6 +10,7 @@ import time
 import pytest
 
 from backend.services import codex_console, codex_mcp_rollout, jk_codex_mcp_server
+from backend.services.codex.console import runtime_policy as console_runtime_policy
 
 
 def test_rollout_is_off_without_signed_server_configuration():
@@ -253,9 +254,7 @@ def test_shadow_observer_validates_and_compares_without_executing_mcp(monkeypatc
     ).decode("ascii").rstrip("=")
     secret = "shadow-secret-only-for-test"
     signature = hmac.new(secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).hexdigest()
-    monkeypatch.setattr(
-        codex_console,
-        "_codex_native_mcp_thread_config",
+    monkeypatch.setattr(console_runtime_policy, "_codex_native_mcp_thread_config",
         lambda *_args, **_kwargs: {
             "mcp_servers": {
                 "jk_system": {
@@ -268,15 +267,15 @@ def test_shadow_observer_validates_and_compares_without_executing_mcp(monkeypatc
             }
         },
     )
-    monkeypatch.setattr(codex_console, "_codex_base_info_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(console_runtime_policy, "_codex_base_info_dir", lambda: str(tmp_path))
 
-    probe = codex_console._codex_mcp_shadow_prepare(
+    probe = console_runtime_policy._codex_mcp_shadow_prepare(
         {"task_id": "task-shadow-1", "client_id": "tenant-shadow"},
         {},
         policy,
     )
     assert probe["status"] == "prepared"
-    result = codex_console._codex_mcp_shadow_finish(
+    result = console_runtime_policy._codex_mcp_shadow_finish(
         probe,
         {"tool_calls": [{"tool_id": "product_data", "args": arguments}]},
     )
@@ -323,9 +322,7 @@ def test_shadow_observer_rejects_rollout_database_from_another_tenant(monkeypatc
     ).decode("ascii").rstrip("=")
     secret = "shadow-scope-secret-for-test"
     signature = hmac.new(secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).hexdigest()
-    monkeypatch.setattr(
-        codex_console,
-        "_codex_native_mcp_thread_config",
+    monkeypatch.setattr(console_runtime_policy, "_codex_native_mcp_thread_config",
         lambda *_args, **_kwargs: {
             "mcp_servers": {"jk_system": {"env": {
                 "JK_CODEX_MCP_CONTEXT_B64": encoded,
@@ -334,9 +331,9 @@ def test_shadow_observer_rejects_rollout_database_from_another_tenant(monkeypatc
             }}}
         },
     )
-    monkeypatch.setattr(codex_console, "_codex_base_info_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(console_runtime_policy, "_codex_base_info_dir", lambda: str(tmp_path))
 
-    probe = codex_console._codex_mcp_shadow_prepare(
+    probe = console_runtime_policy._codex_mcp_shadow_prepare(
         {"task_id": "task-shadow-scope", "client_id": "tenant-alpha"},
         {},
         policy,
@@ -358,7 +355,7 @@ def test_shadow_observer_records_divergence_without_tool_dispatch(tmp_path):
         "rollout_version": policy["version"],
         "expected_calls": [
             {
-                "fingerprint": codex_console._codex_mcp_shadow_call_fingerprint(
+                "fingerprint": console_runtime_policy._codex_mcp_shadow_call_fingerprint(
                     "product_data", {"loja": "Loja Alfa", "sku": "SKU-FICTICIO-001"}
                 ),
                 "required": True,
@@ -366,7 +363,7 @@ def test_shadow_observer_records_divergence_without_tool_dispatch(tmp_path):
         ],
     }
 
-    result = codex_console._codex_mcp_shadow_finish(probe, {"tool_calls": []})
+    result = console_runtime_policy._codex_mcp_shadow_finish(probe, {"tool_calls": []})
 
     assert result["shadow_status"] == "divergence"
     assert result["external_call_executed"] is False
@@ -413,7 +410,7 @@ def test_shadow_observation_is_discarded_after_rollout_stage_changes(tmp_path):
         observations={"shadow_decisions": 200},
     )
 
-    result = codex_console._codex_mcp_shadow_finish(probe, {"tool_calls": []})
+    result = console_runtime_policy._codex_mcp_shadow_finish(probe, {"tool_calls": []})
 
     assert result["shadow_status"] == "stale_rollout"
     assert result["shadow_observed"] is False

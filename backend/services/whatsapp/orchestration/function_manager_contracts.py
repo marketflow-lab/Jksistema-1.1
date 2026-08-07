@@ -13,10 +13,10 @@ _FORBIDDEN_ACTION_TOOLS = {
 
 
 def function_manager_catalog(permissions: Any) -> list[dict[str, Any]]:
-    from backend.services import codex_assistant
+    from backend.services.codex.assistant import catalog as assistant_catalog
 
     catalog: list[dict[str, Any]] = []
-    for item in codex_assistant._assistant_tools_public(permissions):
+    for item in assistant_catalog.public_tools(permissions):
         if not isinstance(item, dict) or item.get("read_only") is not True:
             continue
         tool_id = str(item.get("id") or "").strip()

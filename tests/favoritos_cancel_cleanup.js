@@ -5,14 +5,20 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const { EventEmitter } = require('events');
+const { browserSource } = require('./helpers/favoritos_browser_sources');
+const { executionSource: readExecutionSource } = require('./helpers/favoritos_execution_sources');
+const { searchRankingSource } = require('./helpers/favoritos_search_ranking_sources');
 
 const root = path.resolve(__dirname, '..');
 const read = relative => fs.readFileSync(path.join(root, relative), 'utf8');
 
 const statusModalSource = read('static/favoritos/v2/ui/status-modal.js');
-const cancelSource = read('static/favoritos/tabelas-layout/04-promocoes-busca-ranking.js');
-const executionSource = read('static/favoritos/tabelas-layout/07-execucao-render-layout.js');
-const mlBrowserSource = read('static/favoritos/ml-browser.js');
+const cancelSource = searchRankingSource(root, { includeRuntime: false, includePublicApi: false });
+const executionSource = readExecutionSource(root).replace(
+    /window\.FavoritosV2\.searchRanking\.publicApi\.[A-Za-z0-9_$]+\./g,
+    ''
+);
+const mlBrowserSource = browserSource(root);
 const workerSource = read('electron_app/main/modules/favoritos-worker-browser.js');
 const shellSource = read('electron_shell.html');
 const jobsSource = read('backend/services/favoritos_jobs.py');
@@ -142,11 +148,12 @@ assert.ok(shellMessages.some(message => (
 
 assert.match(cancelSource, /AbortController[\s\S]*\.abort\(\)[\s\S]*pararPollingFavoritosJob[\s\S]*limparStatusTerminalFavoritos[\s\S]*pararNavegadorFavoritosBackground/, 'cancelamento deve abortar, parar polling e fechar worker/status');
 assert.doesNotMatch(cancelSource, /Cancelando favoritos\.\.\./, 'cancelamento nao deve manter aviso intermediario aberto');
-assert.match(executionSource, /signal:\s*signal \|\| sinalFavoritosAtual\(\)[\s\S]*if \(mlFavoritosCancelado \|\| !mlFavoritosEmExecucao\) return;/, 'coletor deve receber o signal do timeout ou do cancelamento e bloquear progresso atrasado');
+assert.match(executionSource, /signal:\s*signal \|\| sinalFavoritosAtual\(\)/, 'coletor deve receber o signal do timeout ou do cancelamento');
+assert.match(executionSource, /if \(mlFavoritosCancelado \|\| !mlFavoritosEmExecucao\) return;/, 'coletor deve bloquear progresso atrasado');
 assert.match(executionSource, /mlFavoritosPoolStatusTimer[\s\S]*setTimeout\([\s\S]*250\)/, 'progresso agregado do pool deve ser limitado a uma atualizacao a cada 250 ms');
 assert.match(executionSource, /if \(mlFavoritosEmExecucao\) return;[\s\S]{0,120}mlFavoritosCancelado = false;[\s\S]{0,120}mlFavoritosPausado = false;/, 'nova tentativa deve limpar cancelamento antigo antes do primeiro status');
 assert.match(executionSource, /function pararNavegadorFavoritosBackground\(opcoes = \{\}\)[\s\S]*status[\s\S]*message[\s\S]*reason/, 'encerramento do worker deve preservar estado terminal solicitado');
-assert.match(mlBrowserSource, /const signal = opcoes\.signal[\s\S]*err\.name = 'AbortError'[\s\S]*Promise\.race[\s\S]*verificarCancelamento\(\)/, 'coleta longa deve ser abortavel entre esperas e scripts');
+assert.match(mlBrowserSource, /criarControleCancelamentoPrimeiraPagina[\s\S]*err\.name = 'AbortError'[\s\S]*Promise\.race[\s\S]*controle\.verificar\(\)/, 'coleta longa deve ser abortavel entre esperas e scripts');
 assert.match(workerSource, /favoritosWorkerBrowsers\s*=\s*new Map\(\)[\s\S]*generation:\s*0[\s\S]*assertFavoritosWorkerGeneration[\s\S]*async function startFavoritosWorkerBrowser[\s\S]*assertFavoritosWorkerGeneration\(record, generation, worker\)/, 'cada worker deve invalidar inicializacoes antigas por geracao independente');
 assert.match(workerSource, /async function cancelFavoritosWorkerBrowser[\s\S]*status:\s*'canceled'[\s\S]*worker\.destroy\(\)[\s\S]*salvarSessaoAvantProAntesDeOcultarNavegador/, 'Electron deve destruir o worker antes de salvar o snapshot de cancelamento');
 assert.match(shellSource, /favoritosWorkerCancellationLocked[\s\S]*canceled \|\| \(!favoritosWorkerBrowserActive && !message\)[\s\S]*if \(canceled\) return;/, 'shell deve ocultar canceled imediatamente e bloquear progresso tardio');

@@ -15,8 +15,8 @@
                 atualizarBotaoRecarregarAnunciosSkuFavoritos(false, true);
                 favMlAnunciosEmptyEl.textContent = `Carregando anuncios do SKU ${sku}...`;
                 favMlAnunciosEmptyEl.classList.remove('hidden');
-                atualizarPainelEfetivarFavoritos();
-                atualizarTabelasFavoritosEditaveis();
+                window.FavoritosV2.promotionEffectuation.publicApi.execution.atualizarPainelEfetivarFavoritos();
+                window.FavoritosV2.execution.publicApi.atualizarTabelasFavoritosEditaveis();
                 return;
             }
 
@@ -24,8 +24,8 @@
                 atualizarBotaoRecarregarAnunciosSkuFavoritos(false);
                 favMlAnunciosEmptyEl.textContent = 'Ranqueamento avulso: veja a lista classificada no painel Ranking do SKU selecionado.';
                 favMlAnunciosEmptyEl.classList.remove('hidden');
-                atualizarPainelEfetivarFavoritos();
-                atualizarTabelasFavoritosEditaveis();
+                window.FavoritosV2.promotionEffectuation.publicApi.execution.atualizarPainelEfetivarFavoritos();
+                window.FavoritosV2.execution.publicApi.atualizarTabelasFavoritosEditaveis();
                 return;
             }
 
@@ -33,8 +33,8 @@
                 atualizarBotaoRecarregarAnunciosSkuFavoritos(false);
                 favMlAnunciosEmptyEl.textContent = 'Selecione um SKU para carregar os anuncios do Mercado Livre.';
                 favMlAnunciosEmptyEl.classList.remove('hidden');
-                atualizarPainelEfetivarFavoritos();
-                atualizarTabelasFavoritosEditaveis();
+                window.FavoritosV2.promotionEffectuation.publicApi.execution.atualizarPainelEfetivarFavoritos();
+                window.FavoritosV2.execution.publicApi.atualizarTabelasFavoritosEditaveis();
                 return;
             }
 
@@ -42,19 +42,19 @@
                 atualizarBotaoRecarregarAnunciosSkuFavoritos(true);
                 favMlAnunciosEmptyEl.textContent = `Nenhum anuncio do Mercado Livre encontrado para o SKU ${sku}.`;
                 favMlAnunciosEmptyEl.classList.remove('hidden');
-                atualizarPainelEfetivarFavoritos();
-                atualizarTabelasFavoritosEditaveis();
+                window.FavoritosV2.promotionEffectuation.publicApi.execution.atualizarPainelEfetivarFavoritos();
+                window.FavoritosV2.execution.publicApi.atualizarTabelasFavoritosEditaveis();
                 return;
             }
 
             atualizarBotaoRecarregarAnunciosSkuFavoritos(false);
             favMlAnunciosEmptyEl.classList.add('hidden');
             const anunciosRanking = obterRankingFavoritosParaSimulador(sku);
-            const opcoesPromocaoSku = obterOpcoesPromocaoFavoritosSku(sku);
+            const opcoesPromocaoSku = window.FavoritosV2.promotionEffectuation.publicApi.options.obterOpcoesPromocaoFavoritosSku(sku);
             const precosFinaisReservados = new Set();
             const precosCheiosReservados = new Set();
             lista.forEach((anuncio, index) => {
-                const sim = calcularSimulacaoPrecoFavoritos(anuncio, anunciosRanking[index], opcoesPromocaoSku, {
+                const sim = window.FavoritosV2.promotionEffectuation.publicApi.pricing.calcularSimulacaoPrecoFavoritos(anuncio, anunciosRanking[index], opcoesPromocaoSku, {
                     precosFinaisReservados,
                     precosCheiosReservados
                 });
@@ -76,35 +76,35 @@
                 labelAlterar.title = 'Desmarque para nao alterar este anuncio com base no ranking alinhado.';
                 const inputAlterar = document.createElement('input');
                 inputAlterar.type = 'checkbox';
-                inputAlterar.checked = anuncioSelecionadoAlteracaoFavoritos(sku, anuncio);
+                inputAlterar.checked = window.FavoritosV2.promotionEffectuation.publicApi.selection.anuncioSelecionadoAlteracaoFavoritos(sku, anuncio);
                 inputAlterar.setAttribute('aria-label', `Alterar anuncio ${obterIdAnuncioFavoritos(anuncio) || index + 1}`);
                 tr.classList.toggle('is-favoritos-nao-alterar', !inputAlterar.checked);
                 inputAlterar.addEventListener('change', () => {
-                    definirAnuncioSelecionadoAlteracaoFavoritos(sku, anuncio, inputAlterar.checked);
+                    window.FavoritosV2.promotionEffectuation.publicApi.selection.definirAnuncioSelecionadoAlteracaoFavoritos(sku, anuncio, inputAlterar.checked);
                     tr.classList.toggle('is-favoritos-nao-alterar', !inputAlterar.checked);
-                    atualizarPainelEfetivarFavoritos();
+                    window.FavoritosV2.promotionEffectuation.publicApi.execution.atualizarPainelEfetivarFavoritos();
                 });
                 labelAlterar.appendChild(inputAlterar);
                 tdAlterar.appendChild(labelAlterar);
                 tr.appendChild(tdAlterar);
                 tr.appendChild(criarCelulaFotoAnuncioFavoritos(anuncio));
-                tr.appendChild(criarCelulaMlbLojaFavoritos(
+                tr.appendChild(window.FavoritosV2.execution.publicApi.criarCelulaMlbLojaFavoritos(
                     anuncio.mlb || anuncio.id || '',
                     anuncio.loja || anuncio.loja_sync || anuncio.loja_conta || '',
                     anuncio.status || '',
-                    obterTipoCompletoAnuncioFavoritos(anuncio)
+                    window.FavoritosV2.promotionEffectuation.publicApi.listings.obterTipoCompletoAnuncioFavoritos(anuncio)
                 ));
-                tr.appendChild(criarCelulaTextoFavoritos(anuncio.titulo || '', { long: true }));
+                tr.appendChild(window.FavoritosV2.execution.publicApi.criarCelulaTextoFavoritos(anuncio.titulo || '', { long: true }));
 
                 tr.appendChild(criarCelulaPrecoAnuncioFavoritos(anuncio, [
                     { rotulo: 'Estoque', valor: anuncio.estoque ?? '' },
                     { rotulo: 'Vendas', valor: anuncio.vendidos ?? '' }
                 ]));
-                tr.appendChild(criarCelulaSimuladorPrecoFavoritos(anuncio, anunciosRanking[index], opcoesPromocaoSku, sim));
+                tr.appendChild(window.FavoritosV2.promotionEffectuation.publicApi.simulator.criarCelulaSimuladorPrecoFavoritos(anuncio, anunciosRanking[index], opcoesPromocaoSku, sim));
                 favMlAnunciosBodyEl.appendChild(tr);
             });
-            atualizarPainelEfetivarFavoritos();
-            atualizarTabelasFavoritosEditaveis();
+            window.FavoritosV2.promotionEffectuation.publicApi.execution.atualizarPainelEfetivarFavoritos();
+            window.FavoritosV2.execution.publicApi.atualizarTabelasFavoritosEditaveis();
         }
 
         if (favMlAnunciosRecarregarBtnEl) {
@@ -150,7 +150,7 @@
             td.appendChild(lista);
             tr.appendChild(td);
             favOutrosAnunciosBodyEl.appendChild(tr);
-            atualizarTabelasFavoritosEditaveis();
+            window.FavoritosV2.execution.publicApi.atualizarTabelasFavoritosEditaveis();
             return true;
         }
 
@@ -168,7 +168,7 @@
                 if (renderizarFavoritosHistoricoDisponivel('')) return;
                 favOutrosAnunciosEmptyEl.textContent = 'Nenhum historico de favoritos salvo ainda.';
                 favOutrosAnunciosEmptyEl.classList.remove('hidden');
-                atualizarTabelasFavoritosEditaveis();
+                window.FavoritosV2.execution.publicApi.atualizarTabelasFavoritosEditaveis();
                 return;
             }
 
@@ -177,7 +177,7 @@
                 if (renderizarFavoritosHistoricoDisponivel(skuSelecionado)) return;
                 favOutrosAnunciosEmptyEl.textContent = `Nenhum historico de favoritos salvo para o SKU ${skuSelecionado}. Use Fazer favoritos na aba Pagina de Pesquisa.`;
                 favOutrosAnunciosEmptyEl.classList.remove('hidden');
-                atualizarTabelasFavoritosEditaveis();
+                window.FavoritosV2.execution.publicApi.atualizarTabelasFavoritosEditaveis();
                 return;
             }
 
@@ -188,7 +188,7 @@
                     ? 'Nenhum ranking atual carregado para este SKU.'
                     : 'Esse item do historico nao foi localizado para este SKU.';
                 favOutrosAnunciosEmptyEl.classList.remove('hidden');
-                atualizarTabelasFavoritosEditaveis();
+                window.FavoritosV2.execution.publicApi.atualizarTabelasFavoritosEditaveis();
                 return;
             }
             atualizarBotaoIncluirAnuncioRankingFavoritos(true);
@@ -203,7 +203,7 @@
             if (grupo.erro) {
                 favOutrosAnunciosEmptyEl.textContent = grupo.erro;
                 favOutrosAnunciosEmptyEl.classList.remove('hidden');
-                atualizarTabelasFavoritosEditaveis();
+                window.FavoritosV2.execution.publicApi.atualizarTabelasFavoritosEditaveis();
                 return;
             }
 
@@ -219,14 +219,14 @@
                     tdRemovidos.appendChild(removidosIaVazio);
                     trRemovidos.appendChild(tdRemovidos);
                     favOutrosAnunciosBodyEl.appendChild(trRemovidos);
-                    atualizarTabelasFavoritosEditaveis();
+                    window.FavoritosV2.execution.publicApi.atualizarTabelasFavoritosEditaveis();
                     return;
                 }
                 favOutrosAnunciosEmptyEl.textContent = Array.isArray(grupo.anuncios) && grupo.anuncios.length
                     ? 'Todos os anuncios rankeados para este SKU estao na lista de ignorados.'
                     : 'Nenhum anuncio rankeado para este SKU.';
                 favOutrosAnunciosEmptyEl.classList.remove('hidden');
-                atualizarTabelasFavoritosEditaveis();
+                window.FavoritosV2.execution.publicApi.atualizarTabelasFavoritosEditaveis();
                 return;
             }
 
@@ -234,7 +234,7 @@
             const rankingHistoricoEstatico = typeof grupoRankingHistoricoEstaticoFavoritos === 'function'
                 && grupoRankingHistoricoEstaticoFavoritos(grupo, entradaSelecionada);
             if (!rankingHistoricoEstatico) {
-                complementarTiposRankingFavoritos(skuSelecionado, anuncios);
+                window.FavoritosV2.searchRanking.publicApi.ranking.complementarTiposRankingFavoritos(skuSelecionado, anuncios);
             }
             anuncios.forEach((anuncio, index) => {
                 const anuncioRender = aplicarMargemRankingFavoritos(rankingHistoricoEstatico ? { ...anuncio } : anuncio);
@@ -252,17 +252,17 @@
                 const valores = [
                     { valor: anuncioRender.titulo || '', long: true }
                 ];
-                const lojaVendedoraHistorico = obterNomeLojaVendedoraHistoricoFavoritos(anuncioRender);
-                tr.appendChild(criarCelulaMlbLojaFavoritos(
+                const lojaVendedoraHistorico = window.FavoritosV2.execution.publicApi.obterNomeLojaVendedoraHistoricoFavoritos(anuncioRender);
+                tr.appendChild(window.FavoritosV2.execution.publicApi.criarCelulaMlbLojaFavoritos(
                     anuncioRender.id || extrairItemIdAnuncio(anuncioRender.url) || '',
                     lojaVendedoraHistorico,
                     anuncioRender.status || '',
-                    obterTipoCompletoAnuncioFavoritos(anuncioRender),
+                    window.FavoritosV2.promotionEffectuation.publicApi.listings.obterTipoCompletoAnuncioFavoritos(anuncioRender),
                     anuncioRender.vendedor || lojaVendedoraHistorico || ''
                 ));
-                tr.appendChild(criarCelulaMediaHistoricoFavoritos(anuncioRender));
+                tr.appendChild(window.FavoritosV2.promotionEffectuation.publicApi.listings.criarCelulaMediaHistoricoFavoritos(anuncioRender));
                 valores.forEach(item => {
-                    tr.appendChild(criarCelulaTextoFavoritos(item.valor, item));
+                    tr.appendChild(window.FavoritosV2.execution.publicApi.criarCelulaTextoFavoritos(item.valor, item));
                 });
                 favOutrosAnunciosBodyEl.appendChild(tr);
             });
@@ -276,11 +276,11 @@
                 trRemovidos.appendChild(tdRemovidos);
                 favOutrosAnunciosBodyEl.appendChild(trRemovidos);
             }
-            atualizarTabelasFavoritosEditaveis();
+            window.FavoritosV2.execution.publicApi.atualizarTabelasFavoritosEditaveis();
         }
 
         function prepararAbaFavoritosMl() {
-            renderizarFavoritosSkuSidebar();
+            window.FavoritosV2.execution.publicApi.renderizarFavoritosSkuSidebar();
             renderizarSkuSidebarMercadoLivre();
             renderizarFavoritosOutrosAnuncios(favMlSkuSelecionado);
             if (favMlSkuSelecionado) {
@@ -306,7 +306,7 @@
             favMlAnunciosSkuAtual = [];
             favMlSimulacoesSkuAtual = [];
             atualizarBotaoRecarregarAnunciosSkuFavoritos(false, false);
-            executarRenderFavoritosSeguro('sidebar favoritos', () => renderizarFavoritosSkuSidebar());
+            executarRenderFavoritosSeguro('sidebar favoritos', () => window.FavoritosV2.execution.publicApi.renderizarFavoritosSkuSidebar());
             executarRenderFavoritosSeguro('sidebar Mercado Livre', () => renderizarSkuSidebarMercadoLivre());
             executarRenderFavoritosSeguro('anuncios do SKU', () => renderizarFavoritosAnunciosMl([], ''));
             executarRenderFavoritosSeguro('historico do SKU', () => renderizarFavoritosOutrosAnuncios(''));
@@ -334,8 +334,8 @@
             }
             favMlAnunciosSkuAtual = [];
             favMlSimulacoesSkuAtual = [];
-            limparSelecaoAlteracaoFavoritosSku(skuSelecionado);
-            executarRenderFavoritosSeguro('sidebar favoritos', () => renderizarFavoritosSkuSidebar());
+            window.FavoritosV2.promotionEffectuation.publicApi.selection.limparSelecaoAlteracaoFavoritosSku(skuSelecionado);
+            executarRenderFavoritosSeguro('sidebar favoritos', () => window.FavoritosV2.execution.publicApi.renderizarFavoritosSkuSidebar());
             executarRenderFavoritosSeguro('sidebar Mercado Livre', () => renderizarSkuSidebarMercadoLivre());
             executarRenderFavoritosSeguro('anuncios do SKU', () => renderizarFavoritosAnunciosMl([], skuSelecionado, true));
             executarRenderFavoritosSeguro('historico do SKU', () => renderizarFavoritosOutrosAnuncios(skuSelecionado));
@@ -607,7 +607,7 @@
 
             const vendedor = normalizarNomeVendedor(String(dados.vendedor || ''));
             const fonteVendedor = dados.vendedorFonte || dados.vendedor_fonte || (/avantpro/i.test(String(dados.source || '')) ? 'avantpro_card' : 'pagina_produto');
-            if (deveAtualizarVendedor(anuncio.vendedor, anuncio.vendedorFonte, vendedor, fonteVendedor)) {
+            if (window.FavoritosV2.promotionEffectuation.publicApi.merge.deveAtualizarVendedor(anuncio.vendedor, anuncio.vendedorFonte, vendedor, fonteVendedor)) {
                 anuncio.vendedor = vendedor;
                 anuncio.vendedorFonte = fonteVendedor;
                 atualizado.vendedor = atualizarCelulaVendedor(anuncio, vendedor);
@@ -620,7 +620,7 @@
 
             const vendas = parseNumeroVendas(dados.vendas);
             const fonteVendas = dados.vendasFonte || dados.vendas_fonte || (/avantpro/i.test(String(dados.source || '')) ? 'avantpro_anuncio' : '');
-            if (deveAtualizarVendas(anuncio.vendas, anuncio.vendasFonte, vendas, fonteVendas)) {
+            if (window.FavoritosV2.promotionEffectuation.publicApi.merge.deveAtualizarVendas(anuncio.vendas, anuncio.vendasFonte, vendas, fonteVendas)) {
                 anuncio.vendasFonte = fonteVendas;
                 anuncio.vendas = vendas;
                 atualizado.vendas = atualizarCelulaVendas(anuncio, vendas);

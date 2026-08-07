@@ -5,7 +5,17 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from backend.services import codex_assistant
+from backend.services.codex.assistant import catalog as assistant_catalog
+from backend.services.codex.assistant import collection as assistant_collection
+from backend.services.codex.assistant import catalog_data as assistant_catalog_data
+from backend.services.codex.assistant import evidence as assistant_evidence
+from backend.services.codex.assistant import execution as assistant_execution
+from backend.services.codex.assistant import normalization as assistant_normalization
+from backend.services.codex.assistant import references as assistant_references
+from backend.services.codex.assistant import registry as assistant_registry
+from backend.services.codex.assistant import routing as assistant_routing
+from backend.services.codex.assistant import runtime as assistant_runtime
+from backend.services.codex.assistant import utils as assistant_utils
 
 
 def _permissions() -> dict[str, bool]:
@@ -23,7 +33,7 @@ def _api_raw(function: str, rows: list[dict[str, Any]] | None = None, **extra: A
 def _contains_sensitive_key(value: Any) -> bool:
     if isinstance(value, dict):
         for key, item in value.items():
-            if codex_assistant._ASSISTANT_CACHE_SECRET_KEY_RE.search(str(key)):
+            if assistant_runtime._ASSISTANT_CACHE_SECRET_KEY_RE.search(str(key)):
                 return True
             if _contains_sensitive_key(item):
                 return True
@@ -33,8 +43,8 @@ def _contains_sensitive_key(value: Any) -> bool:
 
 
 def test_mercado_livre_orders_contract_is_explicit_read_only_and_permission_scoped():
-    meta = codex_assistant._assistant_tool_meta("mercado_livre_orders")
-    schema = codex_assistant._assistant_tool_input_schema("mercado_livre_orders")
+    meta = assistant_catalog._assistant_tool_meta("mercado_livre_orders")
+    schema = assistant_catalog._assistant_tool_input_schema("mercado_livre_orders")
 
     assert meta["external"] is True
     assert meta["read_only"] is True
@@ -43,7 +53,7 @@ def test_mercado_livre_orders_contract_is_explicit_read_only_and_permission_scop
     assert meta["zero_is_authoritative"] is True
     assert meta["fallbacks"] == []
     assert meta["companion_tools"] == ["bling_sales_orders"]
-    assert codex_assistant.ASSISTANT_TOOL_PERMISSION_REQUIREMENTS["mercado_livre_orders"] == (
+    assert assistant_catalog.ASSISTANT_TOOL_PERMISSION_REQUIREMENTS["mercado_livre_orders"] == (
         "vendas",
         "anuncios_ml",
     )
@@ -61,15 +71,15 @@ def test_mercado_livre_orders_contract_is_explicit_read_only_and_permission_scop
         "incluir_detalhes",
         "force_refresh",
     } <= set(schema)
-    assert all(tool.get("read_only") is True for tool in codex_assistant.CODEX_DATA_TOOLS)
-    full_catalog = codex_assistant._assistant_tools_public({"full": True})
+    assert all(tool.get("read_only") is True for tool in assistant_catalog_data.CODEX_DATA_TOOLS)
+    full_catalog = assistant_catalog._assistant_tools_public({"full": True})
     assert all(tool.get("read_only") is True for tool in full_catalog)
     public_orders = next(tool for tool in full_catalog if tool["id"] == "mercado_livre_orders")
     assert public_orders["companion_tools"] == ["bling_sales_orders"]
     assert public_orders["zero_is_authoritative"] is True
     assert public_orders["aggregation_policy"] == "separate_sources_no_sum"
 
-    denied = codex_assistant.codex_assistant_execute_tool_call(
+    denied = assistant_execution.execute_tool_call(
         client_id="tenant",
         tool_id="mercado_livre_orders",
         args={"message": "pedidos via API"},
@@ -88,8 +98,8 @@ def test_mercado_livre_order_normalizer_prioritizes_complete_sku_aggregation():
         "orders": [{"order_id": "1"}, {"order_id": "2"}, {"order_id": "3"}],
     }
 
-    assert codex_assistant._assistant_tool_rows(result) == result["by_sku"]
-    assert codex_assistant._assistant_result_count(result) == 2
+    assert assistant_routing._assistant_tool_rows(result) == result["by_sku"]
+    assert assistant_utils._assistant_result_count(result) == 2
 
 
 def test_latest_sale_normalizer_preserves_the_order_instead_of_the_sku_aggregate():
@@ -99,7 +109,7 @@ def test_latest_sale_normalizer_preserves_the_order_instead_of_the_sku_aggregate
         "paid_amount": 79.9,
         "items": [{"sku": "001", "title": "Produto", "quantity": 1}],
     }
-    normalized = codex_assistant._assistant_standard_result(
+    normalized = assistant_routing._assistant_standard_result(
         "mercado_livre_orders",
         {
             "function": "get_mercado_livre_orders",
@@ -115,7 +125,7 @@ def test_latest_sale_normalizer_preserves_the_order_instead_of_the_sku_aggregate
     assert normalized["records"] == 1
     assert normalized["rows"] == [order]
 
-    exact = codex_assistant._assistant_standard_result(
+    exact = assistant_routing._assistant_standard_result(
         "mercado_livre_orders",
         {
             "function": "get_mercado_livre_orders",
@@ -137,7 +147,7 @@ def test_latest_sale_normalizer_preserves_the_order_instead_of_the_sku_aggregate
 def test_daily_report_period_is_today_in_sao_paulo():
     today = datetime.now(ZoneInfo("America/Sao_Paulo")).date().isoformat()
 
-    assert codex_assistant._assistant_resolve_period(
+    assert assistant_references._assistant_resolve_period(
         "tenant",
         "Relatorio do dia da JK Pecas",
         {},
@@ -166,11 +176,11 @@ def test_period_comparison_honors_explicit_months_and_orders_them_chronologicall
                 "comparativo": {"variacao_faturamento": -100},
             },
         }
-        return [raw], [codex_assistant._assistant_standard_result(tool_id, raw, plan)], []
+        return [raw], [assistant_routing._assistant_standard_result(tool_id, raw, plan)], []
 
-    monkeypatch.setattr(codex_assistant, "_assistant_execute_registry_tool", fake_execute_registry_tool)
+    monkeypatch.setattr(assistant_execution, "_assistant_execute_registry_tool", fake_execute_registry_tool)
 
-    result = codex_assistant.codex_assistant_execute_tool_call(
+    result = assistant_execution.execute_tool_call(
         client_id="tenant",
         tool_id="period_comparison",
         args={
@@ -195,15 +205,15 @@ def test_period_comparison_honors_explicit_months_and_orders_them_chronologicall
     }
     assert captured_plans[0]["data_inicio"] == "2026-06-01"
     assert captured_plans[0]["data_fim"] == "2026-06-30"
-    assert codex_assistant._assistant_result_count({
+    assert assistant_utils._assistant_result_count({
         "periodo_a": {"data_inicio": "2026-05-01"},
         "periodo_b": {"data_inicio": "2026-06-01"},
     }) == 2
 
 
 def test_mercado_livre_returns_contract_is_direct_read_only_and_permission_scoped():
-    meta = codex_assistant._assistant_tool_meta("mercado_livre_returns")
-    schema = codex_assistant._assistant_tool_input_schema("mercado_livre_returns")
+    meta = assistant_catalog._assistant_tool_meta("mercado_livre_returns")
+    schema = assistant_catalog._assistant_tool_input_schema("mercado_livre_returns")
 
     assert meta["external"] is True
     assert meta["read_only"] is True
@@ -212,7 +222,7 @@ def test_mercado_livre_returns_contract_is_direct_read_only_and_permission_scope
     assert meta["zero_is_authoritative"] is True
     assert meta["fallbacks"] == []
     assert meta["source_role"] == "primary_api"
-    assert codex_assistant.ASSISTANT_TOOL_PERMISSION_REQUIREMENTS["mercado_livre_returns"] == (
+    assert assistant_catalog.ASSISTANT_TOOL_PERMISSION_REQUIREMENTS["mercado_livre_returns"] == (
         "vendas",
         "anuncios_ml",
     )
@@ -227,7 +237,7 @@ def test_mercado_livre_returns_contract_is_direct_read_only_and_permission_scope
         "force_refresh",
     } <= set(schema)
 
-    denied = codex_assistant.codex_assistant_execute_tool_call(
+    denied = assistant_execution.execute_tool_call(
         client_id="tenant",
         tool_id="mercado_livre_returns",
         args={"message": "ultima devolucao", "loja": "JK Pecas"},
@@ -239,8 +249,8 @@ def test_mercado_livre_returns_contract_is_direct_read_only_and_permission_scope
 
 def test_generic_sales_api_plan_keeps_two_apis_and_local_history_separate():
     message = "Consulte vendas via API de 01/07/2026 a 12/07/2026"
-    selected = codex_assistant._assistant_select_tool_ids(message, "chat", {})
-    plan = codex_assistant._assistant_registry_plan("tenant", message, {}, "chat")
+    selected = assistant_routing._assistant_select_tool_ids(message, "chat", {})
+    plan = assistant_routing._assistant_registry_plan("tenant", message, {}, "chat")
 
     assert selected[:2] == ["mercado_livre_orders", "bling_sales_orders"]
     assert "bling_sales_orders" in selected
@@ -248,8 +258,8 @@ def test_generic_sales_api_plan_keeps_two_apis_and_local_history_separate():
     assert "sales_returns_query" in selected
     assert "sales_ranking" in selected
     assert "product_data" not in selected
-    assert codex_assistant._assistant_message_has_product_ref(message) is False
-    assert codex_assistant._assistant_normalize_sku("01/07/2026") == ""
+    assert assistant_normalization._assistant_message_has_product_ref(message) is False
+    assert assistant_references._assistant_normalize_sku("01/07/2026") == ""
     assert plan["source_roles"]["bling_sales_orders"] == "primary_api"
     assert plan["source_roles"]["mercado_livre_orders"] == "primary_api"
     assert plan["source_roles"]["sales_returns_query"] == "supporting_local_history"
@@ -257,41 +267,41 @@ def test_generic_sales_api_plan_keeps_two_apis_and_local_history_separate():
 
 
 def test_source_routing_prefers_bling_stock_and_ml_for_sales_listings_and_full():
-    stock = codex_assistant._assistant_source_routing_policy("Qual o estoque atual do SKU 001?")
+    stock = assistant_routing._assistant_source_routing_policy("Qual o estoque atual do SKU 001?")
     assert stock["required_tools"] == ["bling_stock_balances"]
     assert stock["preferred_providers"] == ["bling"]
     assert stock["bling_stock_scope"] == "exclude_full"
 
-    listing = codex_assistant._assistant_source_routing_policy("Qual a descricao do anuncio MLB123456789?")
+    listing = assistant_routing._assistant_source_routing_policy("Qual a descricao do anuncio MLB123456789?")
     assert listing["required_tools"] == ["mercado_livre_listing"]
     assert listing["include_listing_details"] is True
 
-    gallery = codex_assistant._assistant_source_routing_policy(
+    gallery = assistant_routing._assistant_source_routing_policy(
         "Mande os links e as fotos do SKU 001 no Mercado Livre"
     )
     assert gallery["required_tools"] == ["mercado_livre_listing"]
     assert gallery["include_listing_details"] is True
 
-    sales = codex_assistant._assistant_source_routing_policy("Mostre os pedidos e vendas de hoje")
+    sales = assistant_routing._assistant_source_routing_policy("Mostre os pedidos e vendas de hoje")
     assert sales["required_tools"] == ["mercado_livre_orders"]
-    assert codex_assistant._assistant_select_tool_ids("Mostre os pedidos e vendas de hoje", "chat", {})[0] == "mercado_livre_orders"
+    assert assistant_routing._assistant_select_tool_ids("Mostre os pedidos e vendas de hoje", "chat", {})[0] == "mercado_livre_orders"
 
-    full = codex_assistant._assistant_source_routing_policy("Some o estoque Full dos SKUs 001 e 002")
+    full = assistant_routing._assistant_source_routing_policy("Some o estoque Full dos SKUs 001 e 002")
     assert full["required_tools"] == ["mercado_livre_full_stock"]
     assert full["full_exclusive"] is True
     assert "bling_stock_balances" in full["forbidden_tools"]
     assert "stock_data" in full["forbidden_tools"]
 
-    combined = codex_assistant._assistant_source_routing_policy("Some o estoque da loja + Full do SKU 001")
+    combined = assistant_routing._assistant_source_routing_policy("Some o estoque da loja + Full do SKU 001")
     assert combined["required_tools"] == ["bling_stock_balances", "mercado_livre_full_stock"]
     assert combined["aggregation_policy"] == "sum_bling_store_plus_mercado_livre_full"
 
 
 def test_latest_sale_and_return_use_only_the_corresponding_mercado_livre_api():
     latest_sale = "Qual foi a ultima venda da loja JK Pecas?"
-    sale_policy = codex_assistant._assistant_source_routing_policy(latest_sale)
-    sale_selected = codex_assistant._assistant_select_tool_ids(latest_sale, "chat", {})
-    sale_plan = codex_assistant._assistant_registry_plan("tenant", latest_sale, {}, "chat")
+    sale_policy = assistant_routing._assistant_source_routing_policy(latest_sale)
+    sale_selected = assistant_routing._assistant_select_tool_ids(latest_sale, "chat", {})
+    sale_plan = assistant_routing._assistant_registry_plan("tenant", latest_sale, {}, "chat")
 
     assert sale_policy["required_tools"] == ["mercado_livre_orders"]
     assert sale_policy["force_refresh"] is True
@@ -300,9 +310,9 @@ def test_latest_sale_and_return_use_only_the_corresponding_mercado_livre_api():
     assert sale_plan["source_roles"]["mercado_livre_orders"] == "primary_api"
 
     latest_return = "Qual foi a ultima devolucao da loja JK Pecas?"
-    return_policy = codex_assistant._assistant_source_routing_policy(latest_return)
-    return_selected = codex_assistant._assistant_select_tool_ids(latest_return, "chat", {})
-    return_plan = codex_assistant._assistant_registry_plan("tenant", latest_return, {}, "chat")
+    return_policy = assistant_routing._assistant_source_routing_policy(latest_return)
+    return_selected = assistant_routing._assistant_select_tool_ids(latest_return, "chat", {})
+    return_plan = assistant_routing._assistant_registry_plan("tenant", latest_return, {}, "chat")
 
     assert return_policy["required_tools"] == ["mercado_livre_returns"]
     assert return_policy["force_refresh"] is True
@@ -320,12 +330,12 @@ def test_latest_sale_and_return_use_only_the_corresponding_mercado_livre_api():
 def test_latest_return_order_number_routes_once_and_extracts_sku():
     message = "Qual foi o numero da venda da ultima devolucao do 200 na JK Pecas?"
 
-    assert codex_assistant._assistant_latest_ml_event_kind(message) == "return"
-    assert codex_assistant._assistant_extract_sku_filter(message) == "200"
-    assert codex_assistant._assistant_source_routing_policy(message)["required_tools"] == [
+    assert assistant_normalization._assistant_latest_ml_event_kind(message) == "return"
+    assert assistant_references._assistant_extract_sku_filter(message) == "200"
+    assert assistant_routing._assistant_source_routing_policy(message)["required_tools"] == [
         "mercado_livre_returns"
     ]
-    assert codex_assistant._assistant_select_tool_ids(message, "chat", {}) == [
+    assert assistant_routing._assistant_select_tool_ids(message, "chat", {}) == [
         "mercado_livre_returns"
     ]
 
@@ -333,10 +343,10 @@ def test_latest_return_order_number_routes_once_and_extracts_sku():
 def test_latest_sale_and_return_together_have_deterministic_api_order():
     message = "Busque a ultima venda e a ultima devolucao do SKU 200 no Mercado Livre"
 
-    assert codex_assistant._assistant_latest_ml_event_kind(message) == "both"
-    policy = codex_assistant._assistant_source_routing_policy(message)
+    assert assistant_normalization._assistant_latest_ml_event_kind(message) == "both"
+    policy = assistant_routing._assistant_source_routing_policy(message)
     assert policy["required_tools"] == ["mercado_livre_orders", "mercado_livre_returns"]
-    assert codex_assistant._assistant_select_tool_ids(message, "chat", {})[:2] == [
+    assert assistant_routing._assistant_select_tool_ids(message, "chat", {})[:2] == [
         "mercado_livre_orders",
         "mercado_livre_returns",
     ]
@@ -345,9 +355,9 @@ def test_latest_sale_and_return_together_have_deterministic_api_order():
 def test_implicit_latest_sku_on_ml_is_a_sale_not_stock():
     message = "E a ultima do SKU 200 na JK Pecas. Busque pelo ML"
 
-    assert codex_assistant._assistant_latest_ml_event_kind(message) == "sale"
-    assert codex_assistant._assistant_extract_sku_filter(message) == "200"
-    policy = codex_assistant._assistant_source_routing_policy(message)
+    assert assistant_normalization._assistant_latest_ml_event_kind(message) == "sale"
+    assert assistant_references._assistant_extract_sku_filter(message) == "200"
+    policy = assistant_routing._assistant_source_routing_policy(message)
     assert policy["intent"] == "orders_and_sales"
     assert policy["required_tools"] == ["mercado_livre_orders"]
     assert policy["preferred_providers"] == ["mercado_livre"]
@@ -361,19 +371,19 @@ def test_sales_from_a_named_period_are_not_reduced_to_one_latest_order(monkeypat
         calls.append((name, args, kwargs))
         return _api_raw("get_mercado_livre_orders")
 
-    monkeypatch.setattr(codex_assistant, "_assistant_call_ia_tool", fake_call)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_get", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_api_query_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(assistant_registry, "_assistant_call_ia_tool", fake_call)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_get", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_set", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_api_query_audit", lambda *_args, **_kwargs: None)
 
     for message in (
         "Mostre o pedido da ultima semana",
         "Qual foi o valor da venda na ultima semana?",
         "Mostre o pedido do ultimo mes",
     ):
-        assert codex_assistant._assistant_latest_ml_event_kind(message) == ""
+        assert assistant_normalization._assistant_latest_ml_event_kind(message) == ""
         calls.clear()
-        codex_assistant.codex_assistant_execute_tool_call(
+        assistant_execution.execute_tool_call(
             "tenant",
             "mercado_livre_orders",
             {"message": message, "loja": "JK Pecas", "limite": 37},
@@ -387,43 +397,43 @@ def test_return_order_id_does_not_request_the_sale_api():
     latest_return = "Qual foi a ultima devolucao do pedido 2000017389080442?"
     refund = "Mostre o reembolso do pedido 2000017389080442"
 
-    assert codex_assistant._assistant_latest_ml_event_kind(latest_return) == "return"
-    assert codex_assistant._assistant_source_routing_policy(latest_return)["required_tools"] == [
+    assert assistant_normalization._assistant_latest_ml_event_kind(latest_return) == "return"
+    assert assistant_routing._assistant_source_routing_policy(latest_return)["required_tools"] == [
         "mercado_livre_returns"
     ]
-    assert codex_assistant._assistant_source_routing_policy(refund)["required_tools"] == [
+    assert assistant_routing._assistant_source_routing_policy(refund)["required_tools"] == [
         "mercado_livre_returns"
     ]
 
 
 def test_latest_ml_event_context_does_not_add_local_direct_or_dispatcher_sources(monkeypatch):
     message = "Qual foi a ultima devolucao da loja JK Pecas?"
-    plan = codex_assistant._assistant_registry_plan("tenant", message, {}, "chat")
+    plan = assistant_routing._assistant_registry_plan("tenant", message, {}, "chat")
     cache_reads = []
 
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_collection,
         "_assistant_cache_get",
         lambda *_args, **_kwargs: cache_reads.append(True) or {"stale": True},
     )
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(assistant_collection, "_assistant_cache_set", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_collection,
         "_assistant_execute_registry",
         lambda *_args, **_kwargs: ([], [], plan, []),
     )
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_collection,
         "_assistant_direct_tools",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("local direct tools are forbidden")),
     )
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_collection,
         "_assistant_prompt_queries",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("dispatcher fallbacks are forbidden")),
     )
 
-    context = codex_assistant._assistant_collect_data("tenant", message, {}, mode="chat")
+    context = assistant_collection._assistant_collect_data("tenant", message, {}, mode="chat")
 
     assert cache_reads == []
     assert context["tool_plan"]["selected_tools"][0] == "mercado_livre_returns"
@@ -434,8 +444,8 @@ def test_mercado_livre_full_stock_tool_uses_inventory_api_and_sums_only_full(mon
     from backend.services import full_mercadolivre
 
     calls = []
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_get", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_get", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_set", lambda *_args: None)
 
     def fake_full(client_id, loja, limite, *, force_refresh=False):
         calls.append((client_id, loja, limite, force_refresh))
@@ -449,7 +459,7 @@ def test_mercado_livre_full_stock_tool_uses_inventory_api_and_sums_only_full(mon
         }
 
     monkeypatch.setattr(full_mercadolivre, "listar_anuncios_full_mercadolivre_payload", fake_full)
-    result = codex_assistant.codex_assistant_execute_tool_call(
+    result = assistant_execution.execute_tool_call(
         "tenant",
         "mercado_livre_full_stock",
         {"message": "some o estoque full", "loja": "JK Pecas", "force_refresh": True},
@@ -471,16 +481,16 @@ def test_mercado_livre_orders_normalizes_and_forwards_explicit_arguments(monkeyp
         calls.append((name, args, kwargs))
         return _api_raw("get_mercado_livre_orders")
 
-    monkeypatch.setattr(codex_assistant, "_assistant_call_ia_tool", fake_call)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_get", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args: None)
+    monkeypatch.setattr(assistant_registry, "_assistant_call_ia_tool", fake_call)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_get", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_set", lambda *_args: None)
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_execution,
         "_assistant_agent_fallback_ids",
         lambda *_args: (_ for _ in ()).throw(AssertionError("API zero must not trigger fallback")),
     )
 
-    result = codex_assistant.codex_assistant_execute_tool_call(
+    result = assistant_execution.execute_tool_call(
         client_id="tenant",
         tool_id="mercado_livre_orders",
         args={
@@ -502,7 +512,7 @@ def test_mercado_livre_orders_normalizes_and_forwards_explicit_arguments(monkeyp
 
     assert result["success"] is True
     assert result["records"] == 0
-    assert result["next_fallbacks"] == []
+    assert result["evidence"]["next_sources"] == []
     assert len(calls) == 1
     name, positional, kwargs = calls[0]
     assert name == "_ia_tool_get_mercado_livre_orders"
@@ -553,12 +563,12 @@ def test_bling_auth_failure_skips_external_fallback_and_uses_local_stock(monkeyp
         }
 
     monkeypatch.setattr(codex_bling_tools, "execute_bling_tool", fake_bling)
-    monkeypatch.setattr(codex_assistant, "_assistant_call_ia_tool", fake_local)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_get", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_api_query_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(assistant_registry, "_assistant_call_ia_tool", fake_local)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_get", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_set", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_api_query_audit", lambda *_args, **_kwargs: None)
 
-    result = codex_assistant.codex_assistant_execute_tool_call(
+    result = assistant_execution.execute_tool_call(
         client_id="tenant",
         tool_id="bling_stock_balances",
         args={"message": "estoque SKU 001", "loja": "Deckas", "force_refresh": True},
@@ -568,8 +578,9 @@ def test_bling_auth_failure_skips_external_fallback_and_uses_local_stock(monkeyp
     assert bling_calls == ["bling_stock_balances"]
     assert local_calls == ["_ia_tool_get_stock_data"]
     assert result["records"] == 1
-    assert "bling_products" not in result["tool_validation"]["fallbacks_tentados_ids"]
-    assert "stock_data" in result["tool_validation"]["fallbacks_tentados_ids"]
+    attempted = [item["tool_id"] for item in result["evidence"]["attempted_fallbacks"]]
+    assert "bling_products" not in attempted
+    assert "stock_data" in attempted
 
 
 def test_complete_zero_listing_is_conclusive_but_partial_zero_is_not():
@@ -584,7 +595,7 @@ def test_complete_zero_listing_is_conclusive_but_partial_zero_is_not():
         "summary": {"coverage_complete": False, "partial_response": True, "error": "timeout"},
     }
 
-    confirmed = codex_assistant._assistant_tool_validation(
+    confirmed = assistant_evidence.classify_evidence(
         tool_id="mercado_livre_listing",
         records=0,
         sources=["get_mercado_livre_listing"],
@@ -593,7 +604,7 @@ def test_complete_zero_listing_is_conclusive_but_partial_zero_is_not():
         next_fallbacks=[],
         registry_results=[complete],
     )
-    inconclusive = codex_assistant._assistant_tool_validation(
+    inconclusive = assistant_evidence.classify_evidence(
         tool_id="mercado_livre_listing",
         records=0,
         sources=["get_mercado_livre_listing"],
@@ -603,15 +614,15 @@ def test_complete_zero_listing_is_conclusive_but_partial_zero_is_not():
         registry_results=[partial],
     )
 
-    assert confirmed["dados_suficientes"] is True
-    assert confirmed["campos_faltantes"] == []
-    assert confirmed["confidence"] == "alta"
-    assert inconclusive["dados_suficientes"] is False
-    assert inconclusive["confidence"] == "baixa"
+    assert confirmed["status"] == "confirmed_zero"
+    assert confirmed["missing_fields"] == []
+    assert confirmed["confidence"] == "high"
+    assert inconclusive["status"] == "unavailable"
+    assert inconclusive["confidence"] == "low"
 
 
 def test_product_fallback_cannot_make_empty_local_stock_sufficient():
-    validation = codex_assistant._assistant_tool_validation(
+    validation = assistant_evidence.classify_evidence(
         tool_id="stock_data",
         records=1,
         sources=["get_stock_data", "get_product_data"],
@@ -623,7 +634,7 @@ def test_product_fallback_cannot_make_empty_local_stock_sufficient():
             {"tool_id": "product_data", "records": 1, "summary": {"found": True, "canonical_sku": "001"}},
         ],
     )
-    zero_stock = codex_assistant._assistant_standard_result(
+    zero_stock = assistant_routing._assistant_standard_result(
         "stock_data",
         {
             "function": "get_stock_data",
@@ -638,15 +649,15 @@ def test_product_fallback_cannot_make_empty_local_stock_sufficient():
         {},
     )
 
-    assert validation["dados_suficientes"] is False
-    assert validation["campos_faltantes"] == ["saldo_numerico_confirmado"]
+    assert validation["status"] == "insufficient"
+    assert "numeric_stock_balance" in validation["missing_fields"]
     assert zero_stock["records"] == 1
     assert zero_stock["empty_reason"] == ""
 
 
 def test_exact_order_audit_records_only_technical_metadata(monkeypatch, tmp_path):
     audit_path = tmp_path / "api_query_audit.jsonl"
-    monkeypatch.setattr(codex_assistant, "_assistant_path", lambda *_args: audit_path)
+    monkeypatch.setattr(assistant_runtime, "_assistant_path", lambda *_args: audit_path)
     result = {
         "records": 1,
         "summary": [],
@@ -664,7 +675,7 @@ def test_exact_order_audit_records_only_technical_metadata(monkeypatch, tmp_path
         },
     }
 
-    codex_assistant._assistant_api_query_audit(
+    assistant_runtime._assistant_api_query_audit(
         "000002",
         "mercado_livre_orders",
         {"loja": "JK Peças", "id_pedido": "2000013990113115", "limite": 1},
@@ -688,12 +699,12 @@ def test_period_report_forwards_multipage_contract_to_mercado_livre(monkeypatch)
         calls.append((name, args, kwargs))
         return _api_raw("get_mercado_livre_orders")
 
-    monkeypatch.setattr(codex_assistant, "_assistant_call_ia_tool", fake_call)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_get", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_api_query_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(assistant_registry, "_assistant_call_ia_tool", fake_call)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_get", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_set", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_api_query_audit", lambda *_args, **_kwargs: None)
 
-    result = codex_assistant.codex_assistant_execute_tool_call(
+    result = assistant_execution.execute_tool_call(
         client_id="tenant",
         tool_id="mercado_livre_orders",
         args={
@@ -711,7 +722,7 @@ def test_period_report_forwards_multipage_contract_to_mercado_livre(monkeypatch)
     assert kwargs["modo_relatorio"] is True
     assert kwargs["max_paginas"] == 400
 
-    plan = codex_assistant._assistant_registry_plan(
+    plan = assistant_routing._assistant_registry_plan(
         "tenant",
         "relatorio de vendas de 01/07/2026 a 12/07/2026",
         {},
@@ -731,12 +742,12 @@ def test_latest_return_forwards_365_day_period_limit_one_and_force_refresh(monke
             "result": {"devolucoes": [], "read_only": True},
         }
 
-    monkeypatch.setattr(codex_assistant, "_assistant_call_ia_tool", fake_call)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_get", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_api_query_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(assistant_registry, "_assistant_call_ia_tool", fake_call)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_get", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_set", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_api_query_audit", lambda *_args, **_kwargs: None)
 
-    result = codex_assistant.codex_assistant_execute_tool_call(
+    result = assistant_execution.execute_tool_call(
         client_id="tenant",
         tool_id="mercado_livre_returns",
         args={
@@ -748,7 +759,7 @@ def test_latest_return_forwards_365_day_period_limit_one_and_force_refresh(monke
 
     assert result["success"] is True
     assert result["records"] == 0
-    assert result["next_fallbacks"] == []
+    assert result["evidence"]["next_sources"] == []
     assert result["source_role"] == "primary_api"
     assert len(calls) == 1
     name, positional, kwargs = calls[0]
@@ -760,8 +771,8 @@ def test_latest_return_forwards_365_day_period_limit_one_and_force_refresh(monke
     assert kwargs["force_refresh"] is True
     assert isinstance(kwargs["query_deadline"], float)
     period_days = (
-        codex_assistant.datetime.fromisoformat(kwargs["data_fim"])
-        - codex_assistant.datetime.fromisoformat(kwargs["data_inicio"])
+        datetime.fromisoformat(kwargs["data_fim"])
+        - datetime.fromisoformat(kwargs["data_inicio"])
     ).days
     assert period_days in {364, 365}
 
@@ -783,13 +794,13 @@ def test_real_latest_return_question_forces_one_result_and_forwards_sku(monkeypa
             },
         }
 
-    monkeypatch.setattr(codex_assistant, "_assistant_call_ia_tool", fake_call)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_get", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_api_query_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(assistant_registry, "_assistant_call_ia_tool", fake_call)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_get", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_set", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_api_query_audit", lambda *_args, **_kwargs: None)
 
     message = "Qual foi o numero da venda da ultima devolucao do 200 na JK Pecas?"
-    result = codex_assistant.codex_assistant_execute_tool_call(
+    result = assistant_execution.execute_tool_call(
         client_id="tenant",
         tool_id="mercado_livre_returns",
         args={"message": message, "loja": "JK Pecas", "limite": 100, "offset": 300},
@@ -824,12 +835,12 @@ def test_latest_sale_exposes_exact_order_instead_of_sku_aggregate(monkeypatch):
             },
         }
 
-    monkeypatch.setattr(codex_assistant, "_assistant_call_ia_tool", fake_call)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_get", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_api_query_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(assistant_registry, "_assistant_call_ia_tool", fake_call)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_get", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_set", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_api_query_audit", lambda *_args, **_kwargs: None)
 
-    result = codex_assistant.codex_assistant_execute_tool_call(
+    result = assistant_execution.execute_tool_call(
         "tenant",
         "mercado_livre_orders",
         {
@@ -842,8 +853,8 @@ def test_latest_sale_exposes_exact_order_instead_of_sku_aggregate(monkeypatch):
     )
 
     assert result["top_rows"] == [{"order_id": "65657", "sku": "200"}]
-    assert result["dados_suficientes"] is True
-    assert result["tool_validation"]["confidence"] == "alta"
+    assert result["evidence"]["status"] == "complete"
+    assert result["evidence"]["confidence"] == "high"
 
 
 def test_listing_forwards_explicit_filters_and_has_legacy_signature_fallback(monkeypatch):
@@ -855,11 +866,11 @@ def test_listing_forwards_explicit_filters_and_has_legacy_signature_fallback(mon
             return {"function": "listing", "result": {"error": "unexpected keyword argument 'status'"}}
         return {"function": "get_mercado_livre_listing", "result": {"matches": [{"id": "MLB123456789"}]}}
 
-    monkeypatch.setattr(codex_assistant, "_assistant_call_ia_tool", fake_call)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_get", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args: None)
+    monkeypatch.setattr(assistant_registry, "_assistant_call_ia_tool", fake_call)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_get", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_set", lambda *_args: None)
 
-    result = codex_assistant.codex_assistant_execute_tool_call(
+    result = assistant_execution.execute_tool_call(
         client_id="tenant",
         tool_id="mercado_livre_listing",
         args={
@@ -910,18 +921,18 @@ def test_external_cache_is_120_seconds_redacted_and_bypassed(monkeypatch):
             access_token="must-not-be-cached",
         )
 
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_get", fake_get)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", fake_set)
-    monkeypatch.setattr(codex_assistant, "_assistant_call_ia_tool", fake_call)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_get", fake_get)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_set", fake_set)
+    monkeypatch.setattr(assistant_registry, "_assistant_call_ia_tool", fake_call)
 
     base_args = {"message": "pedidos ML", "data_inicio": "2026-07-01", "data_fim": "2026-07-12"}
-    first = codex_assistant.codex_assistant_execute_tool_call(
+    first = assistant_execution.execute_tool_call(
         "tenant", "mercado_livre_orders", base_args, permissions=_permissions()
     )
-    second = codex_assistant.codex_assistant_execute_tool_call(
+    second = assistant_execution.execute_tool_call(
         "tenant", "mercado_livre_orders", base_args, permissions=_permissions()
     )
-    refreshed = codex_assistant.codex_assistant_execute_tool_call(
+    refreshed = assistant_execution.execute_tool_call(
         "tenant",
         "mercado_livre_orders",
         {**base_args, "force_refresh": True},
@@ -937,18 +948,18 @@ def test_external_cache_is_120_seconds_redacted_and_bypassed(monkeypatch):
 def test_atualize_agora_phrase_bypasses_an_existing_cache(monkeypatch):
     provider_calls: list[bool] = []
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_execution,
         "_assistant_cache_get",
         lambda *_args: {"success": True, "tool_id": "mercado_livre_orders", "records": 99},
     )
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_set", lambda *_args: None)
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_registry,
         "_assistant_call_ia_tool",
         lambda *_args, **_kwargs: provider_calls.append(True) or _api_raw("get_mercado_livre_orders"),
     )
 
-    result = codex_assistant.codex_assistant_execute_tool_call(
+    result = assistant_execution.execute_tool_call(
         "tenant",
         "mercado_livre_orders",
         {"message": "atualize agora os pedidos via API"},
@@ -961,7 +972,7 @@ def test_atualize_agora_phrase_bypasses_an_existing_cache(monkeypatch):
 
 def test_retryable_api_failure_uses_recent_cache(monkeypatch):
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_execution,
         "_assistant_cache_get",
         lambda *_args: {
             "success": True,
@@ -971,9 +982,9 @@ def test_retryable_api_failure_uses_recent_cache(monkeypatch):
             "summary": [{"summary": {"status": "ok"}}],
         },
     )
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_set", lambda *_args: None)
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_registry,
         "_assistant_call_ia_tool",
         lambda *_args, **_kwargs: _api_raw(
             "get_mercado_livre_orders",
@@ -983,12 +994,12 @@ def test_retryable_api_failure_uses_recent_cache(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_registry,
         "_assistant_sales_returns_query",
         lambda *_args, **_kwargs: {"function": "sales_returns_query", "result": {"rows": []}},
     )
 
-    result = codex_assistant.codex_assistant_execute_tool_call(
+    result = assistant_execution.execute_tool_call(
         "tenant",
         "mercado_livre_orders",
         {"message": "atualize agora os pedidos via API", "force_refresh": True},
@@ -1001,15 +1012,15 @@ def test_retryable_api_failure_uses_recent_cache(monkeypatch):
 
 
 def test_api_zero_preserves_primary_and_adds_local_history_as_separate_support(monkeypatch):
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_get", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_get", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_set", lambda *_args: None)
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_registry,
         "_assistant_call_ia_tool",
         lambda *_args, **_kwargs: _api_raw("get_mercado_livre_orders", []),
     )
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_registry,
         "_assistant_sales_returns_query",
         lambda *_args, **_kwargs: {
             "function": "sales_returns_query",
@@ -1017,7 +1028,7 @@ def test_api_zero_preserves_primary_and_adds_local_history_as_separate_support(m
         },
     )
 
-    result = codex_assistant.codex_assistant_execute_tool_call(
+    result = assistant_execution.execute_tool_call(
         "tenant",
         "mercado_livre_orders",
         {"message": "pedidos do Mercado Livre da loja JK Pecas"},
@@ -1039,10 +1050,10 @@ def test_latest_sale_never_falls_back_to_local_history_or_sums_records(monkeypat
         "paid_amount": 79.9,
         "items": [{"sku": "001", "title": "Produto", "quantity": 1}],
     }
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_get", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_get", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_set", lambda *_args: None)
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_registry,
         "_assistant_call_ia_tool",
         lambda *_args, **_kwargs: {
             "function": "get_mercado_livre_orders",
@@ -1057,12 +1068,12 @@ def test_latest_sale_never_falls_back_to_local_history_or_sums_records(monkeypat
         },
     )
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_registry,
         "_assistant_sales_returns_query",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("histórico local não pode ser consultado")),
     )
 
-    result = codex_assistant.codex_assistant_execute_tool_call(
+    result = assistant_execution.execute_tool_call(
         "tenant",
         "mercado_livre_orders",
         {
@@ -1082,7 +1093,7 @@ def test_latest_sale_never_falls_back_to_local_history_or_sums_records(monkeypat
 
 def test_latest_sale_api_failure_is_not_masked_by_local_history(monkeypatch):
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_execution,
         "_assistant_cache_get",
         lambda *_args: {
             "success": True,
@@ -1093,9 +1104,9 @@ def test_latest_sale_api_failure_is_not_masked_by_local_history(monkeypatch):
             "warnings": [],
         },
     )
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_set", lambda *_args: None)
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_registry,
         "_assistant_call_ia_tool",
         lambda *_args, **_kwargs: {
             "function": "get_mercado_livre_orders",
@@ -1108,12 +1119,12 @@ def test_latest_sale_api_failure_is_not_masked_by_local_history(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        codex_assistant,
+        assistant_registry,
         "_assistant_sales_returns_query",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("histórico local não pode mascarar a API")),
     )
 
-    result = codex_assistant.codex_assistant_execute_tool_call(
+    result = assistant_execution.execute_tool_call(
         "tenant",
         "mercado_livre_orders",
         {"message": "Última venda", "loja": "JK Pecas", "force_refresh": True},
@@ -1121,11 +1132,11 @@ def test_latest_sale_api_failure_is_not_masked_by_local_history(monkeypatch):
     )
 
     assert result["records"] == 0
-    assert result["dados_suficientes"] is False
+    assert result["evidence"]["status"] == "unavailable"
     assert result.get("cache_fallback") is not True
     assert [item["tool_id"] for item in result["summary"]] == ["mercado_livre_orders"]
 
-    exact = codex_assistant.codex_assistant_execute_tool_call(
+    exact = assistant_execution.execute_tool_call(
         "tenant",
         "mercado_livre_orders",
         {
@@ -1142,9 +1153,9 @@ def test_latest_sale_api_failure_is_not_masked_by_local_history(monkeypatch):
 
 def test_api_query_audit_uses_safe_whitelist(tmp_path, monkeypatch):
     audit_path = tmp_path / "api_query_audit.jsonl"
-    monkeypatch.setattr(codex_assistant, "_assistant_path", lambda _client_id, _name: str(audit_path))
+    monkeypatch.setattr(assistant_runtime, "_assistant_path", lambda _client_id, _name: str(audit_path))
 
-    codex_assistant._assistant_api_query_audit(
+    assistant_runtime._assistant_api_query_audit(
         "tenant-1",
         "mercado_livre_orders",
         {
@@ -1187,7 +1198,7 @@ def test_exact_latest_event_validation_requires_complete_direct_coverage():
             "exact_coverage": {"complete": True, "stop_reason": "matched"},
         },
     }
-    complete = codex_assistant._assistant_tool_validation(
+    complete = assistant_evidence.classify_evidence(
         tool_id="mercado_livre_returns",
         records=1,
         sources=["get_mercado_livre_returns"],
@@ -1196,8 +1207,8 @@ def test_exact_latest_event_validation_requires_complete_direct_coverage():
         next_fallbacks=[],
         registry_results=[direct_complete],
     )
-    assert complete["dados_suficientes"] is True
-    assert complete["confidence"] == "alta"
+    assert complete["status"] == "complete"
+    assert complete["confidence"] == "high"
 
     direct_partial = {
         "tool_id": "mercado_livre_returns",
@@ -1219,7 +1230,7 @@ def test_exact_latest_event_validation_requires_complete_direct_coverage():
         "source_role": "supporting_local_history",
         "summary": {"records": 1},
     }
-    partial = codex_assistant._assistant_tool_validation(
+    partial = assistant_evidence.classify_evidence(
         tool_id="mercado_livre_returns",
         records=1,
         sources=["get_mercado_livre_returns", "sales_returns_query"],
@@ -1228,9 +1239,9 @@ def test_exact_latest_event_validation_requires_complete_direct_coverage():
         next_fallbacks=[],
         registry_results=[direct_partial, local_support],
     )
-    assert partial["dados_suficientes"] is False
-    assert partial["confidence"] == "baixa"
-    assert "evidencia_conclusiva" in partial["campos_faltantes"]
+    assert partial["status"] == "unavailable"
+    assert partial["confidence"] == "low"
+    assert "conclusive_coverage" in partial["missing_fields"]
 
 
 def test_exact_latest_event_complete_zero_is_authoritative():
@@ -1243,7 +1254,7 @@ def test_exact_latest_event_complete_zero_is_authoritative():
             "exact_coverage": {"complete": True, "stop_reason": "exhausted"},
         },
     }
-    validation = codex_assistant._assistant_tool_validation(
+    validation = assistant_evidence.classify_evidence(
         tool_id="mercado_livre_orders",
         records=0,
         sources=["get_mercado_livre_orders"],
@@ -1253,14 +1264,14 @@ def test_exact_latest_event_complete_zero_is_authoritative():
         registry_results=[direct_empty],
     )
 
-    assert validation["dados_suficientes"] is True
-    assert validation["confidence"] == "alta"
-    assert validation["campos_faltantes"] == []
+    assert validation["status"] == "confirmed_zero"
+    assert validation["confidence"] == "high"
+    assert validation["missing_fields"] == []
 
 
 def test_exact_target_audit_excludes_personal_data(tmp_path, monkeypatch):
     audit_path = tmp_path / "api_query_audit.jsonl"
-    monkeypatch.setattr(codex_assistant, "_assistant_path", lambda *_args: audit_path)
+    monkeypatch.setattr(assistant_runtime, "_assistant_path", lambda *_args: audit_path)
     result = {
         "records": 1,
         "warnings": [],
@@ -1283,7 +1294,7 @@ def test_exact_target_audit_excludes_personal_data(tmp_path, monkeypatch):
         ],
     }
 
-    codex_assistant._assistant_api_query_audit(
+    assistant_runtime._assistant_api_query_audit(
         "tenant",
         "mercado_livre_returns",
         {"loja": "JK Pecas", "sku": "200", "limite": 1},

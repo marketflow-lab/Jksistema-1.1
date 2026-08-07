@@ -6,6 +6,10 @@ from types import SimpleNamespace
 
 from backend.services import codex_console, codex_whatsapp_agents
 from backend.services.whatsapp import black_jhon_prompting
+from backend.services.codex.console import agent_loop as console_agent_loop
+from backend.services.codex.console import runtime as console_runtime
+from backend.services.codex.console import execution as console_execution
+from backend.services.codex.console import paths as console_paths
 
 
 def _decision_payload(**overrides):
@@ -166,11 +170,11 @@ def test_warm_runtime_uses_v3_schema_in_read_only_mode_without_tools(monkeypatch
             return FakeThread()
 
     monkeypatch.delenv("JK_BLACK_JHON_DECISION_CONTRACT", raising=False)
-    monkeypatch.setattr(codex_console, "_codex_base_dir", lambda: Path("."))
-    monkeypatch.setattr(codex_console, "_codex_normalizar_speed", lambda value: value)
-    monkeypatch.setattr(codex_console, "_codex_normalizar_service_tier", lambda value, _speed: value)
-    monkeypatch.setattr(codex_console, "_codex_approval_mode_enum", lambda value, _fallback: value)
-    monkeypatch.setattr(codex_console, "_codex_reasoning_effort_enum", lambda value: value)
+    monkeypatch.setattr(console_paths, "base_dir", lambda: Path("."))
+    monkeypatch.setattr(console_execution, "normalize_speed", lambda value: value)
+    monkeypatch.setattr(console_execution, "normalize_service_tier", lambda value, _speed: value)
+    monkeypatch.setattr(console_execution, "approval_mode", lambda value, _fallback: value)
+    monkeypatch.setattr(console_execution, "reasoning_effort", lambda value: value)
     runtime = codex_whatsapp_agents.WarmConversationRuntime()
     runtime._codex = FakeClient()
     runtime._available_models = ["gpt-5.6-terra"]

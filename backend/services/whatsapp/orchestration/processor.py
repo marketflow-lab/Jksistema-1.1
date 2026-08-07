@@ -14,11 +14,11 @@ from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import marketplace_listing_delivery as whatsapp_marketplace_listing
 from backend.services.whatsapp import message as whatsapp_message
 from backend.services.whatsapp import provider_processing as whatsapp_provider_processing
-from backend.services import (
-    codex_console,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-)
+from backend.services import whatsapp_report_files, whatsapp_report_visuals
+from backend.services.codex.console import contracts as console_contracts
+from backend.services.codex.console import execution as console_execution
+from backend.services.codex.console import paths as console_paths
+from backend.services.codex.console import tasks as console_tasks
 
 from backend.services.whatsapp.composition import (
     BridgeDependencies,
@@ -43,7 +43,7 @@ def _whatsapp_execute_source_policy_tools(task: dict[str, Any], query_policy: di
     forbidden_tools = {str(item or "").strip() for item in (source_policy.get("forbidden_tools") or []) if str(item or "").strip()}
     if not required_tools:
         return []
-    from backend.services import codex_assistant
+    from backend.services.codex.assistant import execution as assistant_execution
 
     stores = [str(item or "").strip() for item in (query_policy.get("stores") or []) if str(item or "").strip()]
     if not stores and str(query_policy.get("store") or "").strip():
@@ -75,7 +75,7 @@ def _whatsapp_execute_source_policy_tools(task: dict[str, Any], query_policy: di
                     args["data_inicio"] = str(query_policy.get("data_inicio")).strip()
                 if str(query_policy.get("data_fim") or "").strip():
                     args["data_fim"] = str(query_policy.get("data_fim")).strip()
-            result = codex_assistant.codex_assistant_execute_tool_call(
+            result = assistant_execution.execute_tool_call(
                 client_id=str(task.get("client_id") or "default"),
                 tool_id=tool_id,
                 args=args,
@@ -105,16 +105,16 @@ def _provider_direct_api_result(
 
 
 def _whatsapp_provider_task_worker(task_id: str) -> None:
-    task = codex_console._codex_load_task(task_id)
+    task = console_tasks.load(task_id)
     if not task:
         return
     try:
         from backend.services import ia as ia_service
 
-        codex_console._codex_update_task(
+        console_tasks.update(
             task_id,
             status="running",
-            started_at=codex_console._codex_now(),
+            started_at=console_tasks.now(),
             live_status="IA do WhatsApp esta processando.",
             error="",
         )
@@ -146,7 +146,7 @@ def _whatsapp_provider_task_worker(task_id: str) -> None:
                 payload.tool_results = ia_service._ia_chat_executar_funcoes(payload, str(task.get("client_id") or "default"))
         except Exception as exc:
             payload.tool_results = []
-            codex_console._codex_log(task, f"Consultas auxiliares indisponiveis: {exc}", "warning")
+            console_tasks.log(task, f"Consultas auxiliares indisponiveis: {exc}", "warning")
 
         response, model_used, listing_bundle = _provider_direct_api_result(
             list(payload.tool_results or []),
@@ -171,7 +171,7 @@ def _whatsapp_provider_task_worker(task_id: str) -> None:
         requested_formats = whatsapp_report_files.requested_report_formats(task.get("prompt") or "")
         chart_outcome = (
             whatsapp_report_visuals.generate_task_chart_artifacts(
-                base_info_dir=codex_console._codex_base_info_dir(),
+                base_info_dir=console_paths.base_info_dir(),
                 client_id=task.get("client_id") or "default",
                 task_id=task_id,
                 prompt=task.get("prompt") or "",
@@ -183,7 +183,7 @@ def _whatsapp_provider_task_worker(task_id: str) -> None:
             else {"expected": False, "status": "not_requested", "artifacts": []}
         )
         document_outcome = whatsapp_report_files.generate_report_documents(
-            base_info_dir=codex_console._codex_base_info_dir(),
+            base_info_dir=console_paths.base_info_dir(),
             client_id=task.get("client_id") or "default",
             task_id=task_id,
             prompt=task.get("prompt") or "",
@@ -196,10 +196,10 @@ def _whatsapp_provider_task_worker(task_id: str) -> None:
             *list(document_outcome.get("artifacts") or []),
         ][:4]
         summaries = _provider_tool_summary(list(payload.tool_results or []))
-        codex_console._codex_update_task(
+        console_tasks.update(
             task_id,
             status="completed",
-            completed_at=codex_console._codex_now(),
+            completed_at=console_tasks.now(),
             final_response=response,
             model=model_used,
             live_status="IA do WhatsApp concluiu.",
@@ -214,10 +214,10 @@ def _whatsapp_provider_task_worker(task_id: str) -> None:
         )
     except Exception as exc:
         detail = str(getattr(exc, "detail", "") or exc or "Falha na IA selecionada.")[:2000]
-        codex_console._codex_update_task(
+        console_tasks.update(
             task_id,
             status="failed",
-            completed_at=codex_console._codex_now(),
+            completed_at=console_tasks.now(),
             final_response="",
             live_status="IA do WhatsApp falhou.",
             error=detail,
@@ -274,7 +274,7 @@ def _create_provider_task(
         "final_response": "",
         "error": "",
         "logs": [],
-        "created_at": codex_console._codex_now(),
+        "created_at": console_tasks.now(),
         "started_at": "",
         "completed_at": "",
         "created_by": str(session.get("username") or "user"),
@@ -296,17 +296,17 @@ def _create_provider_task(
         "approved": True,
         "provider_task": True,
     }
-    with codex_console.CODEX_TASKS_LOCK:
-        codex_console.CODEX_TASKS[task_id] = task
-        codex_console._codex_persist_task(task)
-    codex_console._codex_log(task, f"Tarefa WhatsApp criada com {model} em modo somente leitura.")
+    with console_tasks.records_lock:
+        console_tasks.records[task_id] = task
+        console_tasks.persist(task)
+    console_tasks.log(task, f"Tarefa WhatsApp criada com {model} em modo somente leitura.")
     threading.Thread(
         target=_whatsapp_provider_task_worker,
         args=(task_id,),
         name=f"jk-whatsapp-ia-{task_id[:8]}",
         daemon=True,
     ).start()
-    return {"success": True, "task": codex_console._codex_public_task(task)}
+    return {"success": True, "task": console_tasks.public(task)}
 
 def _create_selected_ai_task(
     config: dict[str, Any],
@@ -330,7 +330,7 @@ def _create_selected_ai_task(
     )
     request_text = str(incoming_metadata.get("request_text") or prompt or "")
     reasoning_level = str(dual_settings.get("task_agent_reasoning") or "low")
-    report_mode = codex_console._codex_agent_is_report_request(request_text)
+    report_mode = console_execution.is_report_request(request_text)
     requested_profile = str(incoming_metadata.get("orchestration_profile") or "").strip()
     requested_role = str(incoming_metadata.get("agent_role") or "").strip().lower()
     requested_lane = str(incoming_metadata.get("agent_lane") or "").strip().lower()
@@ -362,7 +362,7 @@ def _create_selected_ai_task(
         "admin_configured_ai": True,
     }
     codex_model = str(dual_settings["task_agent_model"])
-    payload = codex_console.CodexTaskRequest(
+    payload = console_contracts.CodexTaskRequest(
         prompt=prompt,
         # O WhatsApp nunca eleva o sandbox do assistente interno. Acoes
         # operacionais seguem exclusivamente o fluxo tipado aprovado no app.
@@ -377,7 +377,7 @@ def _create_selected_ai_task(
         service_tier=WHATSAPP_CODEX_SERVICE_TIER_DEFAULT,
         request_id=str(channel_metadata.get("message_id") or uuid.uuid4().hex),
     )
-    return codex_console.codex_criar_tarefa_para_sessao(
+    return console_tasks.create(
         payload,
         session,
         origin="whatsapp",

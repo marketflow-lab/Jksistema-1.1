@@ -112,6 +112,7 @@ def _promo_aplicar_item_participacao_ml(
     offer_id: Optional[str] = None,
     deal_price: Optional[float] = None,
     discount_percentage: Optional[float] = None,
+    allow_alternative_deal_price: bool = True,
 ) -> tuple[bool, str, dict]:
     item_id = _promo_normalizar_mlb(item_id)
     promotion_id = str(promotion_id or "").strip()
@@ -355,6 +356,13 @@ def _promo_aplicar_item_participacao_ml(
             ultimo_erro = _ml_parse_error_detail(edit_resp, f"Erro {edit_resp.status_code} ao atualizar item na promocao")
             continue
         if _erro_credibilidade(erro_completo):
+            if not allow_alternative_deal_price:
+                ultimo_erro = (
+                    "Mercado Livre rejeitou o preco promocional exato por credibilidade; "
+                    "nenhum valor alternativo foi enviado. "
+                    f"Detalhe: {erro_completo}"
+                )
+                continue
             if raw_credibilidade is None:
                 try:
                     raw_credibilidade, cfg = _ml_obter_item_promocao_raw(

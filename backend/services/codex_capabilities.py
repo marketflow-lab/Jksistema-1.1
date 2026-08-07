@@ -372,11 +372,11 @@ def _category_for_tool(tool: dict[str, Any]) -> str:
 
 def _capabilities_from_tools() -> list[dict[str, Any]]:
     try:
-        from backend.services import codex_assistant
+        from backend.services.codex.assistant import catalog as assistant_catalog
 
         # O catalogo interno precisa conhecer todas as capacidades. A filtragem
         # por usuario ocorre antes de expor/enviar o catalogo ao agente.
-        tools = codex_assistant._assistant_tools_public({"full": True})
+        tools = assistant_catalog.public_tools({"full": True})
     except Exception:
         tools = []
     caps: list[dict[str, Any]] = []

@@ -7,6 +7,16 @@ from fastapi import HTTPException
 from backend.services import whatsapp_bridge
 
 
+def _evidence(status: str, reason: str = "") -> dict:
+    conclusive = status in {"complete", "confirmed_zero"}
+    return {"schema": "jk.codex.evidence.v1", "status": status,
+        "claim_scope": "full" if conclusive else "none", "coverage_complete": conclusive,
+        "confidence": "high" if conclusive else "low", "freshness": "live",
+        "retryable": status == "unavailable", "reason": reason or status,
+        "missing_fields": [] if conclusive else ["decisive_evidence"], "sources": [],
+        "attempted_fallbacks": [], "next_sources": []}
+
+
 def _raw_bling_balance(store: str, quantity, *, auth_expired: bool = False) -> dict:
     ranking = [] if quantity is None else [
         {
@@ -39,10 +49,11 @@ def _raw_bling_balance(store: str, quantity, *, auth_expired: bool = False) -> d
                 },
             }
         ],
-        "tool_validation": {
-            "dados_suficientes": quantity is not None,
-            "warnings": ["Token Bling expirado para esta loja."] if auth_expired else [],
-        },
+        "warnings": ["Token Bling expirado para esta loja."] if auth_expired else [],
+        "evidence": _evidence(
+            "unavailable" if auth_expired else "confirmed_zero" if quantity == 0 else "complete",
+            "token expirado" if auth_expired else "saldo confirmado",
+        ),
     }
 
 
@@ -184,12 +195,12 @@ def test_phase2_tool_result_contracts_keep_zero_auth_and_partial_evidence() -> N
         _raw_bling_balance("Uai Mineirinho", None, auth_expired=True)
     )
     assert positive["stock_balance"]["store_available"] == 12
-    assert positive["dados_suficientes"] is True
+    assert positive["evidence"]["status"] == "complete"
     assert zero["stock_balance"]["store_available"] == 0
-    assert zero["dados_suficientes"] is True
+    assert zero["evidence"]["status"] == "confirmed_zero"
     assert expired["stock_balance"]["auth_failed"] is True
     assert expired["error_class"] == "authentication"
-    assert expired["dados_suficientes"] is False
+    assert expired["evidence"]["status"] == "unavailable"
 
     for store, item in (("JK Pecas", positive), ("Deckas", zero), ("Uai Mineirinho", expired)):
         item.update({"manager_store": store, "manager_required": True})
@@ -197,20 +208,22 @@ def test_phase2_tool_result_contracts_keep_zero_auth_and_partial_evidence() -> N
     assert evidence["answerable"] is True
     assert evidence["evidence_sufficient"] is False
     assert evidence["coverage_complete"] is False
-    assert any("autenticacao" in value.lower() for value in evidence["missing"])
+    assert any(
+        item.get("store") == "Uai Mineirinho" and item.get("status") == "unavailable"
+        for item in evidence["validations"]
+    )
 
 
 def test_phase2_tool_contracts_cover_marketplace_local_and_timeout() -> None:
     listing = whatsapp_bridge._marketplace_listing_stock_contract(
         {
-            "dados_suficientes": True,
-            "coverage_complete": True,
+            "evidence": _evidence("complete"),
             "top_rows": [{"id": "MLB1", "seller_sku": "001", "available_quantity": 7}],
         }
     )
     local = whatsapp_bridge._local_stock_contract(
         {
-            "dados_suficientes": True,
+            "evidence": _evidence("complete"),
             "summary": [
                 {
                     "tool_id": "stock_data",
@@ -227,13 +240,13 @@ def test_phase2_tool_contracts_cover_marketplace_local_and_timeout() -> None:
         }
     )
     timeout = whatsapp_bridge._normalize_tool_result_contract(
-        {"success": False, "error": "HTTP 504 timeout", "data": []}
+        {"success": False, "error": "HTTP 504 timeout", "data": [], "evidence": _evidence("unavailable", "timeout")}
     )
     assert listing["confirmed"] is True
     assert listing["rows"][0]["available_quantity"] == 7
     assert local["confirmed"] is True
     assert local["total_available"] == 7
-    assert timeout["dados_suficientes"] is False
+    assert timeout["evidence"]["status"] == "unavailable"
     assert timeout["retryable"] is True
 
 

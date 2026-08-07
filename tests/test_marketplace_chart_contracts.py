@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from backend.services import ia_tools_marketplaces as ml_tools, whatsapp_report_visuals
+from backend.services import whatsapp_report_visuals
+from backend.services.marketplace_tools import analytics as marketplace_analytics
+from backend.services.marketplace_tools import listings as marketplace_listings
+from backend.services.marketplace_tools import listing_search as marketplace_listing_search
+from backend.services.marketplace_tools import orders as marketplace_orders
+from backend.services.marketplace_tools import runtime as marketplace_runtime
 
 
 class _Response:
@@ -18,10 +23,10 @@ class _Response:
 
 
 def _configure_store(monkeypatch):
-    monkeypatch.setattr(ml_tools, "_ia_lojas_ml_conectadas", lambda _client_id: ["JK Pecas"], raising=False)
+    monkeypatch.setattr(marketplace_runtime, "ml_connected_stores", lambda _client_id: ["JK Pecas"], raising=False)
     monkeypatch.setattr(
-        ml_tools,
-        "_obter_cfg_ml",
+        marketplace_runtime,
+        "ml_config",
         lambda _client_id, _store: {"access_token": "secret", "user_id": "12345"},
         raising=False,
     )
@@ -72,9 +77,9 @@ def test_sales_by_day_uses_sao_paulo_closes_totals_and_contains_no_pii():
         _sanitized_order("1", "2026-07-13T01:30:00Z", quantity=2, gross=20),
         _sanitized_order("2", "2026-07-13T04:00:00Z", quantity=1, gross=15, refund=5),
     ]
-    totals, _by_sku, _warnings = ml_tools._ia_ml_aggregate_orders(orders)
-    by_day, daily_warnings = ml_tools._ia_ml_aggregate_orders_by_day(orders)
-    chart = ml_tools._ia_ml_sales_chart_data(
+    totals, _by_sku, _warnings = marketplace_analytics.aggregate_orders(orders)
+    by_day, daily_warnings = marketplace_analytics.aggregate_orders_by_day(orders)
+    chart = marketplace_analytics.sales_chart_data(
         by_day,
         totals,
         coverage_complete=True,
@@ -102,9 +107,9 @@ def test_sales_by_day_uses_sao_paulo_closes_totals_and_contains_no_pii():
 
 def test_unknown_refund_remains_null_in_day_and_reconciliation():
     orders = [_sanitized_order("1", "2026-07-13T10:00:00-03:00", quantity=1, gross=20, refund=None)]
-    totals, _by_sku, _warnings = ml_tools._ia_ml_aggregate_orders(orders)
-    by_day, _daily_warnings = ml_tools._ia_ml_aggregate_orders_by_day(orders)
-    chart = ml_tools._ia_ml_sales_chart_data(by_day, totals, coverage_complete=True)
+    totals, _by_sku, _warnings = marketplace_analytics.aggregate_orders(orders)
+    by_day, _daily_warnings = marketplace_analytics.aggregate_orders_by_day(orders)
+    chart = marketplace_analytics.sales_chart_data(by_day, totals, coverage_complete=True)
 
     assert totals["refund_amount"] is None
     assert by_day[0]["refund_amount"] is None
@@ -127,7 +132,7 @@ def test_by_sku_values_reconcile_order_totals_after_discount_and_cent_rounding()
         ],
     }]
 
-    totals, by_sku, _warnings = ml_tools._ia_ml_aggregate_orders(orders)
+    totals, by_sku, _warnings = marketplace_analytics.aggregate_orders(orders)
 
     assert sum(row["quantity"] for row in by_sku) == totals["items_quantity"] == 2
     assert sum(row["gross_amount"] for row in by_sku) == totals["gross_amount"] == 9.99
@@ -138,9 +143,9 @@ def test_by_sku_values_reconcile_order_totals_after_discount_and_cent_rounding()
 
 def test_missing_order_date_is_retained_but_marks_temporal_chart_partial():
     orders = [_sanitized_order("1", "", quantity=1, gross=20)]
-    totals, _by_sku, _warnings = ml_tools._ia_ml_aggregate_orders(orders)
-    by_day, daily_warnings = ml_tools._ia_ml_aggregate_orders_by_day(orders)
-    chart = ml_tools._ia_ml_sales_chart_data(by_day, totals, coverage_complete=True)
+    totals, _by_sku, _warnings = marketplace_analytics.aggregate_orders(orders)
+    by_day, daily_warnings = marketplace_analytics.aggregate_orders_by_day(orders)
+    chart = marketplace_analytics.sales_chart_data(by_day, totals, coverage_complete=True)
 
     assert by_day[0]["date"] is None
     assert by_day[0]["label"] == "Data indisponível"
@@ -159,8 +164,8 @@ def test_orders_result_exposes_partial_chart_contract_from_sanitized_rows(monkey
     ]
 
     monkeypatch.setattr(
-        ml_tools,
-        "_ml_api_request",
+        marketplace_runtime,
+        "ml_api_request",
         lambda _client_id, _store, cfg, method, url, **kwargs: (
             _Response(206, {"paging": {"total": 100}, "results": rows}, {"X-Content-Missing": "buyer"}),
             cfg,
@@ -168,7 +173,7 @@ def test_orders_result_exposes_partial_chart_contract_from_sanitized_rows(monkey
         raising=False,
     )
 
-    result = ml_tools._ia_tool_get_mercado_livre_orders(
+    result = marketplace_orders.query(
         "000002",
         "vendas do periodo",
         "JK Pecas",
@@ -191,11 +196,11 @@ def test_orders_result_exposes_partial_chart_contract_from_sanitized_rows(monkey
 
 def test_listing_result_exposes_read_only_snapshot_fields(monkeypatch):
     _configure_store(monkeypatch)
-    monkeypatch.setattr(ml_tools, "_ia_tool_resolver_sku", lambda *_args, **_kwargs: "", raising=False)
-    monkeypatch.setattr(ml_tools, "_ia_extrair_referencia_produto_mensagem", lambda *_args, **_kwargs: {}, raising=False)
+    monkeypatch.setattr(marketplace_runtime, "resolve_sku", lambda *_args, **_kwargs: "", raising=False)
+    monkeypatch.setattr(marketplace_runtime, "extract_product_reference", lambda *_args, **_kwargs: {}, raising=False)
     monkeypatch.setattr(
-        ml_tools,
-        "_ia_ml_search_listing_ids",
+        marketplace_listing_search,
+        "search_listing_ids",
         lambda *_args, **_kwargs: (
             ["MLB1", "MLB2"],
             {"access_token": "secret", "user_id": "12345"},
@@ -204,15 +209,15 @@ def test_listing_result_exposes_read_only_snapshot_fields(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        ml_tools,
-        "_ia_ml_fetch_listing_items",
+        marketplace_listing_search,
+        "fetch_listing_items",
         lambda *_args, **_kwargs: ([
             {"id": "MLB1", "title": "Anúncio 1", "status": "active", "seller_sku": "SKU-1", "currency_id": "BRL", "price": 50, "available_quantity": 4, "sold_quantity": 10},
             {"id": "MLB2", "title": "Anúncio 2", "status": "active", "seller_sku": "SKU-2", "currency_id": "BRL", "price": 70, "available_quantity": 6, "sold_quantity": 20},
         ], {"access_token": "secret", "user_id": "12345"}, None),
     )
 
-    result = ml_tools._ia_tool_get_mercado_livre_listing(
+    result = marketplace_listings.query(
         "000002",
         "listar anuncios ativos",
         "JK Pecas",

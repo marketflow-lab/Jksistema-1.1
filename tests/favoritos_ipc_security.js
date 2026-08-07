@@ -3,14 +3,16 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const { browserSource } = require('./helpers/favoritos_browser_sources');
+const { executionSource: readExecutionSource } = require('./helpers/favoritos_execution_sources');
 
 const root = path.resolve(__dirname, '..');
 const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8');
 
 const ipc = read('electron_app/main/modules/ipc.js');
 const worker = read('electron_app/main/modules/favoritos-worker-browser.js');
-const mlBrowser = read('static/favoritos/ml-browser.js');
-const executionLayout = read('static/favoritos/tabelas-layout/07-execucao-render-layout.js');
+const mlBrowser = browserSource(root);
+const executionLayout = readExecutionSource(root);
 
 assert.match(ipc, /function assertTrustedFavoritosIpcSender\s*\(/);
 assert.match(ipc, /sender === mainWindow\.webContents/);

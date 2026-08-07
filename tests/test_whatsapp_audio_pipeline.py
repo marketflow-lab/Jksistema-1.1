@@ -18,6 +18,7 @@ from backend.services.whatsapp import message as whatsapp_message
 from backend.services.whatsapp import transcription as transcription_component
 from backend.services.whatsapp.runtime import lifecycle as lifecycle_component
 from backend.services.whatsapp.orchestration import processor as processor_component
+from backend.services.codex.console import runtime_policy as console_runtime_policy
 
 
 def _downloaded_audio(path: Path, *, size: int | None = None):
@@ -299,13 +300,13 @@ def test_real_download_flows_through_processor_and_routes_only_text(monkeypatch,
     monkeypatch.setattr(whatsapp_bridge, "_base_dir", lambda: tmp_path)
     monkeypatch.setattr(whatsapp_bridge, "_gateway_request", lambda *_args, **_kwargs: FakeResponse())
     monkeypatch.setattr(
-        whatsapp_bridge.codex_console,
-        "_codex_attachment_dir",
+        transcription_component.console_attachments,
+        "conversation_dir",
         lambda *_args: attachment_dir,
     )
     monkeypatch.setattr(
-        whatsapp_bridge.codex_console,
-        "_codex_attachments_base_dir",
+        transcription_component.console_attachments,
+        "base_dir",
         lambda: attachment_root,
     )
     monkeypatch.setattr(whatsapp_bridge, "_start_typing_pulse", lambda *_args: None)
@@ -659,8 +660,8 @@ def test_download_rejects_junction_before_writing_audio_bytes(monkeypatch, tmp_p
             closed.append(True)
 
     monkeypatch.setattr(whatsapp_bridge, "_gateway_request", lambda *_args, **_kwargs: FakeResponse())
-    monkeypatch.setattr(whatsapp_bridge.codex_console, "_codex_attachments_base_dir", lambda: attachment_root)
-    monkeypatch.setattr(whatsapp_bridge.codex_console, "_codex_attachment_dir", lambda *_args: junction)
+    monkeypatch.setattr(transcription_component.console_attachments, "base_dir", lambda: attachment_root)
+    monkeypatch.setattr(transcription_component.console_attachments, "conversation_dir", lambda *_args: junction)
     try:
         with pytest.raises(RuntimeError, match="media_local_path_invalid"):
             whatsapp_bridge._download_media(
@@ -713,7 +714,7 @@ def test_audio_cleanup_telemetry_uses_only_hmac_and_safe_buckets(monkeypatch, tm
             recorded.append((str(client_id), dict(payload)))
             return True
 
-    monkeypatch.setattr(codex_console, "_codex_ai_telemetry_instance", lambda: FakeTelemetry())
+    monkeypatch.setattr(transcription_component.console_telemetry, "instance", lambda: FakeTelemetry())
     attachment_root = tmp_path / ".codex-remote-attachments"
     attachment = attachment_root / "client" / "5511999999999-texto-secreto.ogg"
     attachment.parent.mkdir(parents=True)
@@ -749,7 +750,7 @@ def test_audio_telemetry_is_recorded_per_client_without_content(monkeypatch, tmp
             recorded.append((str(client_id), dict(payload)))
             return True
 
-    monkeypatch.setattr(codex_console, "_codex_ai_telemetry_instance", lambda: FakeTelemetry())
+    monkeypatch.setattr(transcription_component.console_telemetry, "instance", lambda: FakeTelemetry())
     private_path = tmp_path / "5511999999999-transcricao-secreta.ogg"
     with whatsapp_audio_processing.audio_telemetry_scope(
         client_id="tenant-a",
@@ -870,7 +871,7 @@ def test_stale_audio_cleanup_is_bounded_and_recorded_per_client(monkeypatch, tmp
             recorded.append((str(client_id), dict(payload)))
             return True
 
-    monkeypatch.setattr(codex_console, "_codex_ai_telemetry_instance", lambda: FakeTelemetry())
+    monkeypatch.setattr(transcription_component.console_telemetry, "instance", lambda: FakeTelemetry())
     attachment_root = tmp_path / ".codex-remote-attachments"
     owned_dir = attachment_root / "client-a" / "user-a"
     owned_dir.mkdir(parents=True)

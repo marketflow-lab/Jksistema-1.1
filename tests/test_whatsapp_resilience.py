@@ -10,9 +10,20 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+from backend.modules.perguntas_pos_venda.endpoints import approvals as perguntas_pos_venda_endpoints
 from backend.schemas.perguntas_pos_venda import PerguntasAprovacaoRequest
-from backend.services import perguntas_pos_venda_endpoints, whatsapp_bridge, whatsapp_report_files
+from backend.services import whatsapp_bridge, whatsapp_report_files
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
+
+
+def _evidence(status: str) -> dict:
+    conclusive = status in {"complete", "confirmed_zero"}
+    return {"schema": "jk.codex.evidence.v1", "status": status,
+        "claim_scope": "full" if conclusive else "none", "coverage_complete": conclusive,
+        "confidence": "high" if conclusive else "low", "freshness": "live",
+        "retryable": status == "unavailable", "reason": status,
+        "missing_fields": [] if conclusive else ["decisive_evidence"], "sources": [],
+        "attempted_fallbacks": [], "next_sources": []}
 
 
 def test_sqlite_store_migrates_legacy_state_once_and_uses_wal(tmp_path: Path):
@@ -179,8 +190,7 @@ def _tool_result() -> dict:
         "source_label": "API do Mercado Livre",
         "manager_store": "JK Pecas",
         "success": True,
-        "dados_suficientes": True,
-        "coverage_complete": True,
+        "evidence": _evidence("complete"),
         "data": [
             {"pedido": "2000001", "valor": 199.9, "status": "paid"},
             {"pedido": "2000002", "valor": 89.5, "status": "paid"},
@@ -268,9 +278,9 @@ def test_tool_result_contract_never_treats_empty_or_timeout_as_conclusive():
     )
 
     for result in (empty, timeout):
-        assert set(("success", "data", "sources", "dados_suficientes", "coverage_complete", "error_class", "retryable")).issubset(result)
-        assert result["dados_suficientes"] is False
-        assert result["coverage_complete"] is False
+        assert set(("success", "data", "sources", "evidence", "error_class", "retryable")).issubset(result)
+        assert result["evidence"]["status"] in {"failed", "unavailable"}
+        assert result["evidence"]["coverage_complete"] is False
     assert timeout["retryable"] is True
 
 

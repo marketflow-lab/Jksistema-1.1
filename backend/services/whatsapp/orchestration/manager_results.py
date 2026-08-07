@@ -50,15 +50,7 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -326,9 +318,14 @@ def _deterministic_tool_result_text(evidence: dict[str, Any], pending: dict[str,
             label = str(result.get("tool_label") or result.get("tool_id") or "Fonte consultada").replace("_", " ").strip()
             summary = result.get("summary")
             message = re.sub(r"\s+", " ", str(result.get("message") or "")).strip()
-            if result.get("dados_suficientes") is not True:
-                validation = result.get("tool_validation") if isinstance(result.get("tool_validation"), dict) else {}
-                reason = str(result.get("empty_reason") or result.get("error") or validation.get("motivo") or "dados insuficientes")
+            evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
+            evidence_status = str(evidence.get("status") or "")
+            if evidence_status == "partial" and int(result.get("records") or 0) > 0:
+                lines.append(f"{label}: {int(result.get('records') or 0)} registro(s) observado(s), com cobertura parcial.")
+                lines.append(f"Limitacao: {str(evidence.get('reason') or 'A cobertura nao permite conclusao geral.')[:500]}.")
+                continue
+            if evidence_status not in {"complete", "confirmed_zero"}:
+                reason = str(evidence.get("reason") or result.get("empty_reason") or result.get("error") or "dados insuficientes")
                 lines.append(f"{label}: dados insuficientes para confirmar a resposta.")
                 lines.append(f"Limitacao: {reason[:500]}.")
                 continue

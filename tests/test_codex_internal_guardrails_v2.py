@@ -8,29 +8,36 @@ from fastapi import HTTPException
 
 from backend.routers.codex_console import create_codex_console_router
 from backend.services import codex_console, codex_mcp_rollout
+from backend.services.codex.console import prompt_context as console_prompt_context
+from backend.services.codex.console import scope as console_scope
+from backend.services.codex.console import task_store as console_task_store
+from backend.services.codex.console import task_views as console_task_views
+from backend.services.codex.console import api_admin as console_api_admin
+from backend.services.codex.console import runtime as console_runtime
+from backend.services.codex.console import runtime_policy as console_runtime_policy
 
 
 def test_internal_sandbox_rejects_development_write() -> None:
-    assert codex_console._codex_normalizar_sandbox("read_only") == "read_only"
+    assert console_task_store._codex_normalizar_sandbox("read_only") == "read_only"
     for sandbox in ("workspace_write", "full_access"):
         with pytest.raises(HTTPException) as error:
-            codex_console._codex_normalizar_sandbox(sandbox)
+            console_task_store._codex_normalizar_sandbox(sandbox)
         assert error.value.status_code == 409
         assert error.value.detail["error_code"] == "DEVELOPMENT_REQUIRES_CODEX_DESKTOP"
 
 
 def test_development_intent_is_separate_from_typed_commercial_action() -> None:
-    assert codex_console._codex_prompt_pede_desenvolvimento(
+    assert console_prompt_context._codex_prompt_pede_desenvolvimento(
         "Implemente esta rota no backend e edite o arquivo Python"
     ) is True
-    assert codex_console._codex_prompt_pede_desenvolvimento(
+    assert console_prompt_context._codex_prompt_pede_desenvolvimento(
         "Pause o anuncio MLB123 na Loja Alfa"
     ) is False
-    assert codex_console._codex_prompt_pede_alteracao("Pause o anuncio MLB123") is True
+    assert console_prompt_context._codex_prompt_pede_alteracao("Pause o anuncio MLB123") is True
 
 
 def test_public_task_hides_internal_context_paths_and_logs() -> None:
-    public = codex_console._codex_public_task(
+    public = console_task_views._codex_public_task(
         {
             "task_id": "task-a",
             "status": "completed",
@@ -61,7 +68,7 @@ def test_public_task_hides_internal_context_paths_and_logs() -> None:
 
 def test_public_task_projects_nested_state_without_sensitive_payloads() -> None:
     canary = "CPF 123.456.789-00 token=segredo Rua das Flores, 123 secret@example.com C:\\secret\\x.json"
-    public = codex_console._codex_public_task(
+    public = console_task_views._codex_public_task(
         {
             "task_id": "task-sensitive",
             "status": "awaiting_approval",
@@ -141,8 +148,8 @@ def test_public_task_and_summary_project_internal_dlp_fields() -> None:
     }
 
     for projected in (
-        codex_console._codex_public_task(task),
-        codex_console._codex_task_summary(task),
+        console_task_views._codex_public_task(task),
+        console_task_views._codex_task_summary(task),
     ):
         encoded = json.dumps(projected, ensure_ascii=False)
         assert "thread_id" not in projected
@@ -173,9 +180,9 @@ def test_public_task_and_summary_project_internal_dlp_fields() -> None:
 def test_task_persistence_never_writes_raw_mcp_fallback_error(tmp_path: Path, monkeypatch) -> None:
     canary = "token=segredo secret@example.com " + r"C:\secret\mcp.json"
     task_path = tmp_path / "task.json"
-    monkeypatch.setattr(codex_console, "_codex_task_path", lambda _task_id: str(task_path))
+    monkeypatch.setattr(console_task_store, "_codex_task_path", lambda _task_id: str(task_path))
 
-    codex_console._codex_persist_task(
+    console_task_store._codex_persist_task(
         {
             "task_id": "task-mcp-fallback",
             "status": "failed",
@@ -198,7 +205,7 @@ def test_task_persistence_never_writes_raw_mcp_fallback_error(tmp_path: Path, mo
 
 
 def test_public_shadow_status_is_content_free_and_confirms_no_external_call() -> None:
-    projected = codex_console._codex_public_mcp_migration(
+    projected = console_task_views._codex_public_mcp_migration(
         {
             "target": "jk_system_mcp",
             "rollout_mode": "shadow",
@@ -227,7 +234,7 @@ def test_public_shadow_status_is_content_free_and_confirms_no_external_call() ->
 
 def test_technical_logs_never_store_supplied_content() -> None:
     task = {"logs": []}
-    codex_console._codex_log(task, "prompt token=secret@example.com arguments={'cpf':'123'}")
+    console_task_store._codex_log(task, "prompt token=secret@example.com arguments={'cpf':'123'}")
     assert task["logs"][0]["text"] == "Evento tecnico registrado."
     assert "secret" not in str(task["logs"])
 
@@ -241,7 +248,7 @@ def test_reference_roots_are_tenant_partitioned(tmp_path: Path, monkeypatch) -> 
     (tenant_a / "a.txt").write_text("a", encoding="utf-8")
     (tenant_b / "b.txt").write_text("b", encoding="utf-8")
     monkeypatch.setenv("JK_CODEX_REFERENCE_ROOTS", str(shared))
-    roots = codex_console._codex_authorized_reference_roots(
+    roots = console_scope._codex_authorized_reference_roots(
         {"client_id": "tenant-a", "username": "user"}, "conversation-a"
     )
     assert tenant_a.resolve() in roots
@@ -292,12 +299,10 @@ def test_mcp_admin_api_uses_server_metrics_instead_of_browser_observations(monke
             captured["advance_metrics"] = dict(observations)
             return {"enabled": True, "mode": "shadow"}
 
-    monkeypatch.setattr(
-        codex_console,
-        "_codex_require_full_admin",
+    monkeypatch.setattr(console_api_admin, "_codex_require_full_admin",
         lambda *_args, **_kwargs: {"client_id": "tenant-a", "username": "admin"},
     )
-    monkeypatch.setattr(codex_console, "_codex_mcp_rollout_store", lambda _session: FakeStore())
+    monkeypatch.setattr(console_api_admin, "_codex_mcp_rollout_store", lambda _session: FakeStore())
     result = codex_console.codex_mcp_rollout_put(
         codex_console.CodexMCPRolloutRequest(
             mode="shadow",
@@ -356,12 +361,10 @@ def test_admin_telemetry_api_forwards_safe_dimension_filters(monkeypatch) -> Non
         def diagnostics(self):
             return {}
 
-    monkeypatch.setattr(
-        codex_console,
-        "_codex_require_full_admin",
+    monkeypatch.setattr(console_api_admin, "_codex_require_full_admin",
         lambda *_args, **_kwargs: {"client_id": "tenant-a", "username": "admin"},
     )
-    monkeypatch.setattr(codex_console, "_codex_ai_telemetry_instance", lambda: FakeTelemetry())
+    monkeypatch.setattr(console_api_admin, "_codex_ai_telemetry_instance", lambda: FakeTelemetry())
     arguments = {
         "surface": "whatsapp",
         "model": "gpt-5.6-terra",

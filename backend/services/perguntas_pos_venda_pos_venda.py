@@ -40,6 +40,9 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.vendas_sync_progress import _corrigir_texto_mojibake
+from backend.modules.perguntas_pos_venda.ai import providers as perguntas_agent_providers
+from backend.modules.perguntas_pos_venda.ai import api as perguntas_agent_api
+from backend.modules.perguntas_pos_venda.ai.validation import ML_POS_VENDA_IA_V2_MODO
 
 
 def configure_perguntas_pos_venda_pos_venda_runtime(runtime_module=None, peers=None):
@@ -965,7 +968,7 @@ def _ml_pos_venda_gerar_resposta_ia(
     ])
     ultima = str(conversa.get("last_message_text") or (mensagens[-1].get("text") if mensagens else "") or "").strip()
     assinatura_loja = _perguntas_ia_assinatura_loja(loja)
-    contexto_estruturado = _ml_pos_venda_contexto_prompt(contexto_pipeline)
+    contexto_estruturado = perguntas_agent_api.build_post_sale_context(contexto_pipeline)
     resposta_atual = str(conversa.get("_resposta_atual") or "").strip()[:1200]
     bloco_resposta_atual = (
         "RESPOSTA ATUAL QUE O OPERADOR ESTA EDITANDO:\n"
@@ -1015,7 +1018,7 @@ def _ml_pos_venda_gerar_resposta_ia(
     if subquestions:
         mensagem += (
             "\n\nSUBPERGUNTAS OBRIGATORIAS IDENTIFICADAS PELO ORQUESTRADOR:\n"
-            + _perguntas_codex_compact_json(subquestions[:8], 5000)
+            + perguntas_agent_providers.compact_json(subquestions[:8], 5000)
             + "\nResponda todos os assuntos confirmados pelo contexto e sinalize de forma objetiva o que ainda depende de dado do comprador."
         )
     payload = IAChatRequest(
@@ -1047,7 +1050,7 @@ def _ml_pos_venda_gerar_resposta_ia(
         },
         model=None,
     )
-    provider_selection = _perguntas_codex_provider_selection(
+    provider_selection = perguntas_agent_providers.select_response_provider(
         _ia_modelo_pos_venda_configurado(),
         conversa.get("_codex_operational_failure_count"),
     )
@@ -1057,7 +1060,7 @@ def _ml_pos_venda_gerar_resposta_ia(
     payload.context["configured_fallback"] = provider_selection.get("configured_fallback")
     payload.context["fallback_used"] = bool(provider_selection.get("fallback_used"))
     payload.context["operational_failure_count"] = provider_selection.get("operational_failure_count")
-    resposta, model_usado = _ia_agent_perguntas_chamar_modelo(client_id, payload, model_req)
+    resposta, model_usado = perguntas_agent_providers.invoke_model(client_id, payload, model_req)
     if isinstance(payload.context, dict) and payload.context.get("_codex_thread_id_result"):
         conversa["_codex_thread_id_result"] = str(payload.context.get("_codex_thread_id_result") or "")
     resposta_limpa = _pos_venda_ia_resposta_final_loja(resposta, loja, limite)

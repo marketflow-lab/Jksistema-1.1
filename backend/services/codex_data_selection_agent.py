@@ -1026,17 +1026,18 @@ class _CodexPlannerRuntime:
     def _start_locked(self) -> Any:
         if self._codex is not None:
             return self._codex
-        from backend.services import codex_console
+        from backend.services.codex.console import execution as console_execution
+        from backend.services.codex.console import telemetry as console_telemetry
         from openai_codex import Codex, CodexConfig
 
-        codex_console._codex_apply_sdk_protocol_compat()
-        runtime_bin = codex_console._codex_runtime_require_ready()
+        console_execution.apply_sdk_protocol_compat()
+        runtime_bin = console_execution.require_runtime_ready()
         client = Codex(
             CodexConfig(
                 codex_bin=runtime_bin,
-                env=codex_console._codex_sdk_env(),
+                env=console_execution.sdk_env(),
                 cwd=_isolated_planner_cwd(),
-                config_overrides=codex_console._codex_nonfull_config_overrides(fast_mode=True),
+                config_overrides=console_execution.readonly_config_overrides(fast_mode=True),
             )
         )
         client.__enter__()
@@ -1091,7 +1092,8 @@ class _CodexPlannerRuntime:
         telemetry_manage_trace: bool = True,
         attempt: int = 0,
     ) -> dict[str, Any]:
-        from backend.services import codex_console
+        from backend.services.codex.console import execution as console_execution
+        from backend.services.codex.console import telemetry as console_telemetry
         from openai_codex.generated.v2_all import ReasoningSummary
 
         tenant = _clean_text(client_id, 80) or "default"
@@ -1101,7 +1103,7 @@ class _CodexPlannerRuntime:
         telemetry = None
         effective_model = _clean_text(model, 100).removeprefix("codex:") or DEFAULT_MODEL
         try:
-            telemetry = codex_console._codex_ai_telemetry_instance()
+            telemetry = console_telemetry.instance()
             telemetry.schedule_retention(tenant)
             telemetry.start_span(
                 tenant,
@@ -1115,12 +1117,12 @@ class _CodexPlannerRuntime:
             try:
                 client = self._start_locked()
                 effective_model = self.resolve_model(model)
-                service_tier = codex_console._codex_normalizar_service_tier("priority", "fast")
+                service_tier = console_execution.normalize_service_tier("priority", "fast")
                 thread = client.thread_start(
                     cwd=_isolated_planner_cwd(),
                     model=effective_model,
-                    approval_mode=codex_console._codex_approval_mode_enum("read_only", "read_only"),
-                    sandbox=codex_console._codex_sandbox_enum("read_only"),
+                    approval_mode=console_execution.approval_mode("read_only", "read_only"),
+                    sandbox=console_execution.sandbox("read_only"),
                     ephemeral=True,
                     developer_instructions=(
                         "Voce e o CodexDataSelectionAgent do Black Jhon. Voce nao conversa com o usuario, nao "
@@ -1132,8 +1134,8 @@ class _CodexPlannerRuntime:
                 result = thread.run(
                     prompt,
                     model=effective_model,
-                    effort=codex_console._codex_reasoning_effort_enum(reasoning_effort),
-                    approval_mode=codex_console._codex_approval_mode_enum("read_only", "read_only"),
+                    effort=console_execution.reasoning_effort(reasoning_effort),
+                    approval_mode=console_execution.approval_mode("read_only", "read_only"),
                     output_schema=DATA_SELECTION_PLAN_SCHEMA,
                     summary=ReasoningSummary.model_validate("none"),
                     service_tier=service_tier,
@@ -1366,9 +1368,10 @@ class CodexDataSelectionRuntime:
         telemetry = None
         if telemetry_manage_trace and client_id:
             try:
-                from backend.services import codex_console
+                from backend.services.codex.console import execution as console_execution
+                from backend.services.codex.console import telemetry as console_telemetry
 
-                telemetry = codex_console._codex_ai_telemetry_instance()
+                telemetry = console_telemetry.instance()
                 telemetry.schedule_retention(tenant)
                 telemetry.start_trace(
                     tenant,

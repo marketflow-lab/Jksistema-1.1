@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
+from backend.modules.perguntas_pos_venda.endpoints import question_automation
 from backend.schemas.perguntas_pos_venda import PerguntasGerarRespostaRequest, PosVendaGerarRespostaRequest
 from backend.services import codex_assistant_storage
 from backend.services import ia_providers
@@ -294,34 +295,26 @@ def test_missing_ai_subquestions_fails_safe_without_assuming_general(tmp_path, m
     assert partial["evidence_status"] == []
     assert partial["data_sufficient"] is False
     assert partial["publish_attempted"] is False
-    assert any("revisão humana" in warning for warning in partial["warnings"])
+    assert not any("revisão humana" in warning for warning in partial["warnings"])
 
     stored["deadline_at_epoch"] = time.time() - 1
     codex_assistant_storage.codex_assistant_customer_reply_job_save(
         str(tmp_path), "cliente", stored
     )
-    blocked = orchestrator.get_job("cliente", created["job_id"])
-    assert blocked["status"] == "waiting_retry"
-    assert blocked["success"] is False
-    assert blocked["blocked_without_draft"] is False
-    assert blocked["result"] == {}
-    assert blocked["deadline_at_epoch"] == 0
-    assert blocked["deadline_seconds"] == 0
-    assert blocked["can_cancel"] is True
-    assert blocked["proposal_hash"] == ""
+    completed = orchestrator.get_job("cliente", created["job_id"])
+    assert completed["status"] == "completed"
+    assert completed["success"] is True
+    assert completed["blocked_without_draft"] is False
+    assert completed["result"]["resposta"]
+    assert completed["result"]["requires_approval"] is True
+    assert completed["review_required"] is False
+    assert completed["completion_reason"] == "ai_classification_unavailable"
+    assert completed["deadline_seconds"] == orchestrator.PUBLIC_RESEARCH_DEADLINE_SECONDS
+    assert completed["can_cancel"] is False
+    assert completed["proposal_hash"]
     assert orchestrator.resume_incomplete_job(
         "cliente", created["job_id"]
-    )["status"] == "waiting_retry"
-    with pytest.raises(ValueError, match="nao possui proposta"):
-        orchestrator.approve_or_refresh_proposal(
-            client_id="cliente",
-            proposal_id=created["job_id"],
-            proposal_version=0,
-            proposal_hash="",
-            answer="Resposta manual sem classificacao.",
-            store="Uai Mineirinho",
-            subject_key="Q-NO-CLASSIFICATION",
-        )
+    )["status"] == "completed"
 
 
 def test_two_independent_sources_are_sufficient_without_official_authority():
@@ -344,13 +337,15 @@ def test_two_independent_sources_are_sufficient_without_official_authority():
 
 def test_automation_has_no_direct_auto_publish_branch():
     questions_source = inspect.getsource(endpoints.ml_perguntas_automacao_poll)
+    question_execution_source = inspect.getsource(question_automation._question_poll_process_candidate)
     post_sale_source = inspect.getsource(endpoints.ml_pos_venda_automacao_poll)
     assert '"sent_auto"' not in questions_source
     assert '"sent_auto_pos_venda"' not in post_sale_source
     assert "_perguntas_ia_enviar_resposta_ml" not in questions_source
     assert "_ml_pos_venda_enviar_resposta_ml" not in post_sale_source
-    assert "codex_job_id" in questions_source
-    assert "codex_job_id" in post_sale_source
+    assert "codex_job_id" in question_execution_source
+    assert '"disabled": True' in post_sale_source
+    assert '"motivo": "pos_venda_somente_manual"' in post_sale_source
 
 
 def test_frontend_uses_async_job_polling():
@@ -360,7 +355,7 @@ def test_frontend_uses_async_job_polling():
     assert "req.async_mode" in post_sale_js
 
 
-def test_insufficient_question_research_persists_until_evidence_is_sufficient(tmp_path, monkeypatch):
+def test_insufficient_question_research_retries_once_then_can_be_sufficient(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
     monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
     monkeypatch.setattr(orchestrator, "_schedule_retry_timer", lambda job: None)
@@ -409,10 +404,11 @@ def test_insufficient_question_research_persists_until_evidence_is_sufficient(tm
     assert waiting["status"] == "waiting_retry"
     assert waiting["queued"] is True
     assert waiting["data_sufficient"] is False
-    assert waiting["retry_policy"] == "persistent_until_cancelled"
-    assert waiting["deadline_seconds"] == 0
-    assert waiting["deadline_at_epoch"] == 0
+    assert waiting["retry_policy"] == "bounded"
+    assert waiting["deadline_seconds"] == orchestrator.PUBLIC_RESEARCH_DEADLINE_SECONDS
+    assert waiting["deadline_at_epoch"] > time.time()
     assert waiting["attempt_count"] == 1
+    assert waiting["evidence_attempt_count"] == 1
     assert waiting["can_cancel"] is True
     assert waiting["status_message"]
     assert waiting["retry_count"] == 1
@@ -558,12 +554,12 @@ def test_elapsed_public_research_keeps_same_job_and_partial_for_next_retry(tmp_p
     assert waiting["queued"] is True
     assert waiting["data_sufficient"] is False
     assert waiting["deadline_reached"] is False
-    assert waiting["deadline_at_epoch"] == 0
+    assert waiting["deadline_at_epoch"] > time.time()
     assert stored["last_partial_result"]["resposta"] == partial_answer
     assert stored["last_partial_result"]["publish_attempted"] is False
 
 
-def test_polling_old_elapsed_marker_is_cleared_and_job_remains_waiting(tmp_path, monkeypatch):
+def test_elapsed_current_job_completes_with_safe_partial_draft(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
     monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
     job = {
@@ -577,12 +573,16 @@ def test_polling_old_elapsed_marker_is_cleared_and_job_remains_waiting(tmp_path,
         "agent_state": "pesquisando",
         "current_step": "consultar",
         "deadline_at_epoch": time.time() - 1,
-        "deadline_seconds": 180,
-        "retry_count": 12,
-        "retry_policy": "persistent_until_cancelled",
+        "deadline_seconds": orchestrator.PUBLIC_RESEARCH_DEADLINE_SECONDS,
+        "retry_count": 1,
+        "retry_kind": "evidence",
+        "retry_policy": "bounded",
         "prompt_version": orchestrator.PROMPT_VERSION,
         "prompt_hash": orchestrator.PROMPT_HASH,
         "schema_version": orchestrator.SCHEMA_VERSION,
+        "queue_policy_version": orchestrator.QUEUE_POLICY_VERSION,
+        "queue_origin": orchestrator.QUEUE_ORIGIN_MANUAL,
+        "queue_priority": orchestrator.QUEUE_PRIORITY_MANUAL,
         "subquestions": [{
             "id": "sq_1",
             "intent": "compatibility",
@@ -590,7 +590,7 @@ def test_polling_old_elapsed_marker_is_cleared_and_job_remains_waiting(tmp_path,
             "required_evidence": "evidencia tecnica",
         }],
         "last_partial_result": {
-            "resposta": "Rascunho conservador com os dados disponiveis.",
+            "resposta": "Para confirmar a aplicacao, informe o codigo da peca instalada.",
             "contexto": {"model": "codex:gpt-5.6-sol"},
             "evidence_status": [{"intent": "compatibility", "status": "partial"}],
             "data_sufficient": False,
@@ -599,16 +599,16 @@ def test_polling_old_elapsed_marker_is_cleared_and_job_remains_waiting(tmp_path,
     }
     codex_assistant_storage.codex_assistant_customer_reply_job_save(str(tmp_path), "cliente", job)
 
-    waiting = orchestrator.get_job("cliente", "job-expired-partial")
+    completed = orchestrator.get_job("cliente", "job-expired-partial")
 
-    assert waiting["status"] == "waiting_retry"
-    assert waiting["result"] == {}
-    assert waiting["deadline_at_epoch"] == 0
-    assert waiting["deadline_seconds"] == 0
-    assert waiting["can_cancel"] is True
+    assert completed["status"] == "completed"
+    assert completed["result"]["data_sufficient"] is False
+    assert completed["result"]["requires_approval"] is True
+    assert completed["completion_reason"] == "evidence_insufficient_after_retry_limit"
+    assert completed["can_cancel"] is False
 
 
-def test_elapsed_job_without_model_draft_keeps_researching_without_local_text(tmp_path, monkeypatch):
+def test_elapsed_job_without_model_draft_returns_neutral_available_draft(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
     monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
     job = {
@@ -622,9 +622,13 @@ def test_elapsed_job_without_model_draft_keeps_researching_without_local_text(tm
         "agent_state": "pesquisando",
         "current_step": "consultar",
         "deadline_at_epoch": time.time() - 1,
+        "retry_kind": "evidence",
         "prompt_version": orchestrator.PROMPT_VERSION,
         "prompt_hash": orchestrator.PROMPT_HASH,
         "schema_version": orchestrator.SCHEMA_VERSION,
+        "queue_policy_version": orchestrator.QUEUE_POLICY_VERSION,
+        "queue_origin": orchestrator.QUEUE_ORIGIN_MANUAL,
+        "queue_priority": orchestrator.QUEUE_PRIORITY_MANUAL,
         "subquestions": [{
             "id": "sq_1",
             "intent": "product_feature",
@@ -634,12 +638,14 @@ def test_elapsed_job_without_model_draft_keeps_researching_without_local_text(tm
     }
     codex_assistant_storage.codex_assistant_customer_reply_job_save(str(tmp_path), "cliente", job)
 
-    waiting = orchestrator.get_job("cliente", job["job_id"])
+    completed = orchestrator.get_job("cliente", job["job_id"])
 
-    assert waiting["status"] == "waiting_retry"
-    assert waiting["result"] == {}
-    assert waiting["blocked_without_draft"] is False
-    assert waiting["can_cancel"] is True
+    assert completed["status"] == "completed"
+    assert completed["result"]["resposta"]
+    assert completed["blocked_without_draft"] is False
+    assert completed["review_required"] is False
+    assert completed["completion_reason"] == "ai_response_unavailable"
+    assert completed["can_cancel"] is False
 
 
 def test_legacy_jobs_are_hidden_from_latest_recovery_and_approval(tmp_path, monkeypatch):
@@ -758,9 +764,9 @@ def test_post_sale_draft_remains_bounded_to_340_chars_and_three_sentences(monkey
 
 @pytest.mark.parametrize(
     ("retry_count", "expected"),
-    [(1, 5), (2, 15), (3, 30), (4, 60), (5, 120), (6, 300), (7, 300), (20, 300)],
+    [(1, 5), (2, 15), (3, 30), (4, 30), (5, 30), (6, 30), (7, 30), (20, 30)],
 )
-def test_public_retry_backoff_is_progressive_and_capped(retry_count, expected):
+def test_public_retry_backoff_uses_bounded_operational_schedule(retry_count, expected):
     assert orchestrator._retry_delay_seconds(retry_count, "same-job") == expected
 
 
@@ -869,6 +875,9 @@ def test_restart_recovers_same_job_after_expired_lease(tmp_path, monkeypatch):
         "prompt_version": orchestrator.PROMPT_VERSION,
         "prompt_hash": orchestrator.PROMPT_HASH,
         "schema_version": orchestrator.SCHEMA_VERSION,
+        "queue_policy_version": orchestrator.QUEUE_POLICY_VERSION,
+        "queue_origin": orchestrator.QUEUE_ORIGIN_MANUAL,
+        "queue_priority": orchestrator.QUEUE_PRIORITY_MANUAL,
     }
     codex_assistant_storage.codex_assistant_customer_reply_job_save(str(tmp_path), "cliente", job)
 
@@ -921,10 +930,10 @@ def test_report_settings_save_is_unchanged_by_job_terminal_guard(tmp_path):
 
 
 def test_retry_policy_and_deadline_are_separated_by_task_type():
-    assert orchestrator._task_retry_policy("public_question") == "persistent_until_cancelled"
-    assert orchestrator._task_deadline_seconds("public_question") == 0
-    assert orchestrator._task_retry_policy("question") == "persistent_until_cancelled"
-    assert orchestrator._task_deadline_seconds("question") == 0
+    assert orchestrator._task_retry_policy("public_question") == "bounded"
+    assert orchestrator._task_deadline_seconds("public_question") == 900
+    assert orchestrator._task_retry_policy("question") == "bounded"
+    assert orchestrator._task_deadline_seconds("question") == 900
     assert orchestrator._task_retry_policy("post_sale") == "bounded"
     assert orchestrator._task_deadline_seconds("post_sale") == 180
 
@@ -1445,7 +1454,7 @@ def test_new_customer_job_and_plan_never_persist_request_or_guidance_plaintext(t
     assert json.loads(raw_plan).get("guidance_applied") == []
 
 
-def test_restart_requeues_completed_job_without_ephemeral_proposal(tmp_path, monkeypatch):
+def test_restart_keeps_completed_job_unblocked_and_rehydrates_available_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
     monkeypatch.setattr(orchestrator, "_known_clients", lambda _base: ["cliente"])
     scheduled = []
@@ -1457,17 +1466,32 @@ def test_restart_requeues_completed_job_without_ephemeral_proposal(tmp_path, mon
         "store": "Loja", "status": "completed", "agent_state": "aguardando_aprovacao",
         "thread_id": "thread-same", "prompt_version": orchestrator.PROMPT_VERSION,
         "prompt_hash": orchestrator.PROMPT_HASH, "schema_version": orchestrator.SCHEMA_VERSION,
+        "queue_policy_version": orchestrator.QUEUE_POLICY_VERSION,
+        "queue_origin": orchestrator.QUEUE_ORIGIN_MANUAL,
+        "queue_priority": orchestrator.QUEUE_PRIORITY_MANUAL,
         "proposal_version": 1, "result": {"resposta": "CANARY_DRAFT", "proposal_hash": "hash"},
     }
     codex_assistant_storage.codex_assistant_customer_reply_job_save(str(tmp_path), "cliente", completed)
     with codex_assistant_storage._CUSTOMER_REPLY_TRANSIENT_LOCK:
         codex_assistant_storage._CUSTOMER_REPLY_TRANSIENT.clear()
     orchestrator.recover_pending_jobs()
-    assert len(scheduled) == 1
-    assert scheduled[0]["job_id"] == completed["job_id"]
-    assert scheduled[0]["thread_id"] == "thread-same"
-    assert scheduled[0]["status"] == "queued"
-    assert "result" not in scheduled[0]
+    assert scheduled == []
+    stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", completed["job_id"]
+    )
+    assert stored["status"] == "completed"
+    assert stored["agent_state"] == "concluido"
+    assert stored["blocked_without_draft"] is False
+    assert stored["review_required"] is False
+    assert stored["completion_reason"] == "draft_expired"
+
+    rehydrated = orchestrator.get_job("cliente", completed["job_id"])
+    assert rehydrated["status"] == "completed"
+    assert rehydrated["success"] is True
+    assert rehydrated["result"]["resposta"]
+    assert rehydrated["blocked_without_draft"] is False
+    assert rehydrated["review_required"] is False
+    assert rehydrated["completion_reason"] == "draft_expired_available_fallback"
 
 
 def test_canonical_question_item_and_history_are_reloaded_by_ids(tmp_path, monkeypatch):

@@ -4,6 +4,7 @@ from copy import deepcopy
 from datetime import datetime
 
 from backend.services import ia_web
+from backend.modules.perguntas_pos_venda.ai import sources as perguntas_agent_sources
 
 
 class _FakeResponse:
@@ -277,7 +278,6 @@ def test_broad_search_filters_unsafe_results_from_last_fallback(monkeypatch):
 
 def test_question_agent_runtime_uses_broad_tenant_cached_search(monkeypatch):
     import backend_api  # noqa: F401
-    from backend.services import perguntas_pos_venda_agent as agent
 
     chamadas = []
 
@@ -285,9 +285,9 @@ def test_question_agent_runtime_uses_broad_tenant_cached_search(monkeypatch):
         chamadas.append((query, client_id, max_results, fast))
         return [{"title": "Fonte", "url": "https://docs.example/manual", "snippet": "Dado"}]
 
-    monkeypatch.setattr(agent, "_ia_web_buscar_amplo_cached", fake_broad, raising=False)
+    monkeypatch.setattr(perguntas_agent_sources, "_ia_web_buscar_amplo_cached", fake_broad)
 
-    resultados = agent._ia_agent_perguntas_buscar_web_publica(
+    resultados = perguntas_agent_sources._ia_agent_perguntas_buscar_web_publica(
         "produto 123",
         client_id="cliente-a",
         max_results=8,

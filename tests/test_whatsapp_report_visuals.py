@@ -5,6 +5,9 @@ import json
 from pathlib import Path
 
 from backend.services import codex_console, whatsapp_bridge, whatsapp_report_visuals
+from backend.services.codex.console import exact_reports as console_exact_reports
+from backend.services.codex.console import task_store as console_task_store
+from backend.services.codex.console import task_views as console_task_views
 
 
 def _sales_result(store: str = "JK Peças", *, offset: int = 0) -> dict:
@@ -463,10 +466,10 @@ def test_codex_task_persists_private_artifacts_without_exposing_them(tmp_path, m
         "whatsapp_chart_error": "",
     }
     task_path = tmp_path / "task.json"
-    monkeypatch.setattr(codex_console, "_codex_task_path", lambda _task_id: str(task_path))
+    monkeypatch.setattr(console_task_store, "_codex_task_path", lambda _task_id: str(task_path))
 
-    public = codex_console._codex_public_task(task)
-    codex_console._codex_persist_task(task)
+    public = console_task_views._codex_public_task(task)
+    console_task_store._codex_persist_task(task)
     persisted = json.loads(task_path.read_text(encoding="utf-8"))
 
     assert "whatsapp_artifacts" not in public
@@ -483,7 +486,7 @@ def test_codex_chart_keeps_store_scope_from_channel_metadata(monkeypatch):
         return {"expected": False, "status": "test", "artifacts": []}
 
     monkeypatch.setattr(whatsapp_report_visuals, "generate_task_chart_artifacts", fake_generate)
-    monkeypatch.setattr(codex_console, "_codex_update_task", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_exact_reports, "_codex_update_task", lambda *_args, **_kwargs: None)
     task = {
         "task_id": "chart-store-scope",
         "origin": "whatsapp",
@@ -500,7 +503,7 @@ def test_codex_chart_keeps_store_scope_from_channel_metadata(monkeypatch):
         },
     }
 
-    outcome = codex_console._codex_generate_whatsapp_chart_artifacts(
+    outcome = console_exact_reports._codex_generate_whatsapp_chart_artifacts(
         "chart-store-scope", task, [],
     )
 

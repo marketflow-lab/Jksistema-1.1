@@ -24,6 +24,8 @@ const localApp = path.join(tempRoot, 'resources', 'local_app');
 try {
   write(path.join(localApp, 'package.json'), '{"version":"1.0.105"}\n');
   write(path.join(localApp, 'backend', 'api.py'), 'VERSION = 1\n');
+  write(path.join(localApp, 'backend', 'modules', 'context_hub', 'api.py'), 'SOURCE = true\n');
+  write(path.join(localApp, 'static', 'favoritos', 'v2', 'sku', '00-runtime.js'), 'window.SKU = true;\n');
   write(path.join(localApp, 'backend', '__pycache__', 'api.pyc'));
   write(path.join(localApp, 'backend', 'orphan.pyo'));
   write(path.join(localApp, 'python_runtime', 'portable', 'Lib', '__pycache__', 'os.pyc'));
@@ -44,6 +46,8 @@ try {
   fs.rmSync(path.join(localApp, 'info'), { recursive: true, force: true });
   const written = manifestTools.writeLocalAppManifest(localApp, '1.0.105');
   assert.strictEqual(written.manifest.version, '1.0.105');
+  assert(written.manifest.files.some(item => item.path === 'backend/modules/context_hub/api.py'));
+  assert(written.manifest.files.some(item => item.path === 'static/favoritos/v2/sku/00-runtime.js'));
   assert.deepStrictEqual(
     manifestTools.validateLocalAppManifestAtRoot(localApp, '1.0.105'),
     [],

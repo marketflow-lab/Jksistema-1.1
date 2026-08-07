@@ -151,16 +151,11 @@ def build_report_dataset(query_policy: Any, tool_results: Any) -> dict[str, Any]
         for source in _source_values(result):
             if source not in sources:
                 sources.append(source)
-        complete = bool(
-            result.get("coverage_complete") is True
-            or (
-                result.get("dados_suficientes") is True
-                and not (isinstance(result.get("paging"), dict) and result.get("paging", {}).get("has_more") is True)
-            )
-        )
+        evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
+        complete = str(evidence.get("status") or "") in {"complete", "confirmed_zero"}
         coverage_complete = coverage_complete and complete
         if not complete:
-            reason = str(result.get("empty_reason") or result.get("error") or "cobertura parcial").strip()
+            reason = str(evidence.get("reason") or result.get("empty_reason") or result.get("error") or "cobertura parcial").strip()
             if reason and reason not in limitations:
                 limitations.append(reason[:500])
         for row in _result_rows(result):

@@ -1,6 +1,8 @@
 import asyncio
+import json
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -297,6 +299,7 @@ def test_leitura_recupera_pending_publicado_sem_reusar_event_id(monkeypatch, tmp
     )
     assert vendas_pendente["estoque_geral"] == [None]
     assert vendas_pendente["estoque_sku"] == [None]
+    assert vendas_pendente["estoque_skus_com_saldo"] == [None]
     conn = sqlite3.connect(tmp_path / "cliente-divergente" / "estoque_historico.db")
     try:
         assert conn.execute(
@@ -392,6 +395,7 @@ def test_series_usam_eventos_por_atualizacao_sku_loja_e_preservam_lacuna(monkeyp
     assert vendas["estoque_meta"]["fonte"] == "eventos"
     assert vendas["estoque_geral"] == [37.0, 30.0]
     assert vendas["estoque_sku"] == [12.0, None]
+    assert vendas["estoque_skus_com_saldo"] == [2, 1]
 
 
 def test_vendas_multiloja_carrega_snapshot_anterior_sem_total_parcial(monkeypatch, tmp_path):
@@ -422,7 +426,95 @@ def test_vendas_multiloja_carrega_snapshot_anterior_sem_total_parcial(monkeypatc
     )
     assert vendas["estoque_geral"] == [330.0, 430.0]
     assert vendas["estoque_sku"] == [110.0, 160.0]
+    assert vendas["estoque_skus_com_saldo"] == [2, 2]
     assert vendas["estoque_meta"]["lojas"] == 2
+
+
+def test_vendas_multiloja_usa_cadastro_atual_e_expoe_cobertura_parcial(monkeypatch, tmp_path):
+    tenant_path = _configurar_tenant(monkeypatch, tmp_path)
+    caminho_config = Path(tenant_path("cliente-a")) / "lojas_config.json"
+    caminho_config.write_text(
+        json.dumps([
+            {"nome": "Loja A"},
+            {"nome": "Loja B"},
+            {"nome": "Loja C"},
+        ]),
+        encoding="utf-8",
+    )
+    estoque_historico._registrar_snapshot_historico_estoque(
+        "cliente-a", "Loja A", _registros(10, 20),
+        event_id="loja-a", recorded_at="2026-07-23T10:00:00-03:00",
+    )
+    estoque_historico._registrar_snapshot_historico_estoque(
+        "cliente-a", "Loja B", _registros(100, 200),
+        event_id="loja-b", recorded_at="2026-07-24T10:00:00-03:00",
+    )
+    estoque_historico._registrar_snapshot_historico_estoque(
+        "cliente-a", "Loja Antiga", _registros(1000, 2000),
+        event_id="loja-antiga", recorded_at="2026-07-23T11:00:00-03:00",
+    )
+
+    vendas = estoque_historico._vendas_series_estoque_historico(
+        "cliente-a",
+        "__todas",
+        "dia",
+        datetime.fromisoformat("2026-07-23"),
+        datetime.fromisoformat("2026-07-24"),
+        ["2026-07-23", "2026-07-24"],
+        True,
+        False,
+        None,
+    )
+
+    assert vendas["estoque_geral"] == [30.0, 330.0]
+    assert vendas["estoque_skus_com_saldo"] == [2, 2]
+    assert vendas["estoque_meta"]["lojas"] == 3
+    assert vendas["estoque_meta"]["lojas_com_historico"] == 2
+    assert vendas["estoque_meta"]["lojas_sem_historico"] == ["Loja C"]
+    assert vendas["estoque_meta"]["lojas_historicas_ignoradas"] == 1
+    assert vendas["estoque_meta"]["lojas_cobertas_por_periodo"] == [1, 2]
+    assert "Cobertura parcial: 2 de 3 lojas" in vendas["estoque_meta"]["detail"]
+
+
+def test_vendas_conta_skus_positivos_unicos_no_estoque_multiloja(monkeypatch, tmp_path):
+    _configurar_tenant(monkeypatch, tmp_path)
+    estoque_historico._registrar_snapshot_historico_estoque(
+        "cliente-a",
+        "Loja A",
+        [
+            {"sku": "A", "saldo_loja": 5},
+            {"sku": "B", "saldo_loja": 0},
+            {"sku": "C", "saldo_loja": -2},
+        ],
+        event_id="loja-a",
+        recorded_at="2026-07-23T10:00:00-03:00",
+    )
+    estoque_historico._registrar_snapshot_historico_estoque(
+        "cliente-a",
+        "Loja B",
+        [
+            {"sku": "a", "saldo_loja": 7},
+            {"sku": "C", "saldo_loja": 3},
+            {"sku": "D", "saldo_loja": 4},
+        ],
+        event_id="loja-b",
+        recorded_at="2026-07-23T10:30:00-03:00",
+    )
+
+    vendas = estoque_historico._vendas_series_estoque_historico(
+        "cliente-a",
+        "__todas",
+        "dia",
+        datetime.fromisoformat("2026-07-23"),
+        datetime.fromisoformat("2026-07-23"),
+        ["2026-07-23"],
+        True,
+        False,
+        None,
+    )
+
+    assert vendas["estoque_geral"] == [17.0]
+    assert vendas["estoque_skus_com_saldo"] == [3]
 
 
 def test_migracao_aditiva_combina_legado_anterior_com_evento_novo(monkeypatch, tmp_path):
@@ -490,6 +582,7 @@ def test_migracao_aditiva_combina_legado_anterior_com_evento_novo(monkeypatch, t
     )
     assert vendas["estoque_geral"] == [7.0, 7.0, 7.0, 9.0]
     assert vendas["estoque_sku"] == [7.0, 7.0, 7.0, 9.0]
+    assert vendas["estoque_skus_com_saldo"] == [1, 1, 1, 1]
 
     conn = sqlite3.connect(db_path)
     try:

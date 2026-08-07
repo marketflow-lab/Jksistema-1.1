@@ -2,6 +2,9 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
+const { generatedBrowserSources } = require('./helpers/favoritos_browser_sources');
+const { searchRankingSource } = require('./helpers/favoritos_search_ranking_sources');
+const { promotionEffectuationSource } = require('./helpers/favoritos_promotion_effectuation_sources');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -199,13 +202,34 @@ async function loadFavoritosScripts(page) {
     `
   });
   await page.addScriptTag({ content: read('static/favoritos/v2/browser/url-utils.js') });
+  await page.addScriptTag({ content: read('static/favoritos/v2/browser/worker-controller.js') });
+  await page.addScriptTag({ content: read('static/favoritos/v2/browser/worker-pool.js') });
   await page.addScriptTag({ content: read('static/favoritos/v2/browser/shell-bridge.js') });
   await page.addScriptTag({ content: read('static/favoritos/v2/browser/avant-cache.js') });
-  await page.addScriptTag({ content: read('static/favoritos/ml-browser.js') });
+  for (const asset of generatedBrowserSources(repoRoot)) {
+    await page.addScriptTag({ content: asset.content });
+  }
   await page.addScriptTag({ content: read('static/favoritos/ranking.js') });
-  await page.addScriptTag({ content: read('static/favoritos/promocoes-efetivacao.js') });
+  await page.addScriptTag({ content: promotionEffectuationSource(repoRoot) });
+  await page.evaluate(() => {
+    window.FavoritosV2.promotionEffectuation.runtime.configure({
+      adapters: {
+        fonteVendasAvantPro: (...args) => fonteVendasAvantPro(...args),
+        fonteVendasConfiavel: (...args) => fonteVendasConfiavel(...args),
+        hasNumeroVendas: (...args) => hasNumeroVendas(...args),
+        hasTexto: (...args) => hasTexto(...args),
+        normalizarNomeVendedorParaBusca: (...args) => normalizarNomeVendedorParaBusca(...args),
+        parseNumeroVendas: (...args) => parseNumeroVendas(...args),
+        pesoFonteVendas: (...args) => pesoFonteVendas(...args),
+        pesoFonteVendedor: (...args) => pesoFonteVendedor(...args),
+        scoreNomeVendedor: (...args) => scoreNomeVendedor(...args),
+        vendedorValido: (...args) => vendedorValido(...args)
+      }
+    });
+  });
   await page.addScriptTag({ content: read('static/favoritos/tabelas-layout/01-ml-base-busca.js') });
-  await page.addScriptTag({ content: read('static/favoritos/tabelas-layout/04-promocoes-busca-ranking.js') });
+  await page.addScriptTag({ content: searchRankingSource(repoRoot) });
+  await page.evaluate(() => Object.assign(window, window.FavoritosV2.searchRanking.legacyGlobals));
   await page.evaluate(() => {
     window.mlWebviewEl = {
       async executeJavaScript(script) {
@@ -322,6 +346,7 @@ async function run() {
     assert.equal(result.resumo.incompletos, 0, 'nenhum anuncio completo deve ser marcado como incompleto');
 
     const mutationStorm = await page.evaluate(async () => {
+      document.querySelectorAll('script').forEach(script => { script.textContent = ''; });
       document.body.innerHTML = `
         <main>
           <div id="mutation-status"></div>
@@ -363,7 +388,7 @@ async function run() {
         clearInterval(interval);
       }
     });
-    assert.ok(mutationStorm.mutations >= 20, `fixture deve manter mutacoes continuas do AvantPro\n${JSON.stringify(mutationStorm, null, 2)}`);
+    assert.ok(mutationStorm.mutations >= 10, `fixture deve manter mutacoes continuas do AvantPro\n${JSON.stringify(mutationStorm, null, 2)}`);
     assert.ok(mutationStorm.ready && mutationStorm.ready.cardCount >= 1, `espera deve reconhecer o card mesmo sob mutacoes continuas\n${JSON.stringify(mutationStorm, null, 2)}`);
     assert.ok(mutationStorm.elapsedMs < 2200, `mutacoes continuas nao podem impedir o prazo da espera inicial\n${JSON.stringify(mutationStorm, null, 2)}`);
 

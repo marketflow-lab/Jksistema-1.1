@@ -11,9 +11,11 @@ from backend.services import configuracoes, configuracoes_api
 from backend.services import ia as _ia_facade  # noqa: F401
 from backend.services import ia_providers
 from backend.services import codex_assistant_storage
-from backend.services import perguntas_pos_venda_agent as agent
+from backend.modules.perguntas_pos_venda.ai import execution as agent
 from backend.services import perguntas_pos_venda_codex as orchestrator
 from ml_questions_gemini.config import GeminiQuestionsSettings
+from backend.services.codex.console import execution as console_execution
+from backend.services.codex.console import security as console_security
 
 
 class _ConfigApiFake:
@@ -112,13 +114,13 @@ def test_codex_thread_run_receives_configured_post_sale_effort(monkeypatch, tmp_
         def thread_start(self, **_kwargs):
             return _Thread()
 
-    monkeypatch.setattr(codex_console, "_codex_enabled", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_sdk_installed", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_auth_detected", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_runtime_bin", lambda: "codex")
-    monkeypatch.setattr(codex_console, "_codex_sdk_env", lambda: {})
-    monkeypatch.setattr(codex_console, "_codex_nonfull_config_overrides", lambda: {})
-    monkeypatch.setattr(codex_console, "_codex_readonly_cwd_for_session", lambda *_args: str(tmp_path))
+    monkeypatch.setattr(console_execution, "enabled", lambda: True)
+    monkeypatch.setattr(console_execution, "sdk_installed", lambda: True)
+    monkeypatch.setattr(console_execution, "auth_detected", lambda: True)
+    monkeypatch.setattr(console_execution, "runtime_bin", lambda: "codex")
+    monkeypatch.setattr(console_execution, "sdk_env", lambda: {})
+    monkeypatch.setattr(console_execution, "readonly_config_overrides", lambda: {})
+    monkeypatch.setattr(console_security, "readonly_cwd", lambda *_args: str(tmp_path))
     monkeypatch.setattr(ia_providers, "_ia_raciocinio_pos_venda_configurado", lambda: "xhigh")
     monkeypatch.setattr(openai_codex, "Codex", _Codex)
     monkeypatch.setattr(openai_codex, "CodexConfig", lambda **kwargs: kwargs)
@@ -181,13 +183,13 @@ def test_codex_turn_path_registers_interruptible_turn(monkeypatch, tmp_path):
         def thread_start(self, **_kwargs):
             return _Thread()
 
-    monkeypatch.setattr(codex_console, "_codex_enabled", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_sdk_installed", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_auth_detected", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_runtime_bin", lambda: "codex")
-    monkeypatch.setattr(codex_console, "_codex_sdk_env", lambda: {})
-    monkeypatch.setattr(codex_console, "_codex_nonfull_config_overrides", lambda: {})
-    monkeypatch.setattr(codex_console, "_codex_readonly_cwd_for_session", lambda *_args: str(tmp_path))
+    monkeypatch.setattr(console_execution, "enabled", lambda: True)
+    monkeypatch.setattr(console_execution, "sdk_installed", lambda: True)
+    monkeypatch.setattr(console_execution, "auth_detected", lambda: True)
+    monkeypatch.setattr(console_execution, "runtime_bin", lambda: "codex")
+    monkeypatch.setattr(console_execution, "sdk_env", lambda: {})
+    monkeypatch.setattr(console_execution, "readonly_config_overrides", lambda: {})
+    monkeypatch.setattr(console_security, "readonly_cwd", lambda *_args: str(tmp_path))
     monkeypatch.setattr(openai_codex, "Codex", _Codex)
     monkeypatch.setattr(openai_codex, "CodexConfig", lambda **kwargs: kwargs)
 
@@ -252,13 +254,13 @@ def test_thread_id_is_persisted_before_failed_turn_and_reused_on_retry(monkeypat
 
     monkeypatch.setattr(orchestrator, "_RUNTIME", SimpleNamespace(PASTA_INFO=str(tmp_path)))
     monkeypatch.setattr(orchestrator, "_schedule_retry_timer", lambda _job: None)
-    monkeypatch.setattr(codex_console, "_codex_enabled", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_sdk_installed", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_auth_detected", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_runtime_bin", lambda: "codex")
-    monkeypatch.setattr(codex_console, "_codex_sdk_env", lambda: {})
-    monkeypatch.setattr(codex_console, "_codex_nonfull_config_overrides", lambda: {})
-    monkeypatch.setattr(codex_console, "_codex_readonly_cwd_for_session", lambda *_args: str(tmp_path))
+    monkeypatch.setattr(console_execution, "enabled", lambda: True)
+    monkeypatch.setattr(console_execution, "sdk_installed", lambda: True)
+    monkeypatch.setattr(console_execution, "auth_detected", lambda: True)
+    monkeypatch.setattr(console_execution, "runtime_bin", lambda: "codex")
+    monkeypatch.setattr(console_execution, "sdk_env", lambda: {})
+    monkeypatch.setattr(console_execution, "readonly_config_overrides", lambda: {})
+    monkeypatch.setattr(console_security, "readonly_cwd", lambda *_args: str(tmp_path))
     monkeypatch.setattr(openai_codex, "Codex", _Codex)
     monkeypatch.setattr(openai_codex, "CodexConfig", lambda **kwargs: kwargs)
     job = {
@@ -310,7 +312,7 @@ def test_thread_id_is_persisted_before_failed_turn_and_reused_on_retry(monkeypat
 
 @pytest.mark.parametrize(
     ("post_sale", "expected_max_chars", "expected_max_sentences"),
-    ((False, 2000, 0), (True, 340, 3)),
+    ((False, 2000, 3), (True, 340, 3)),
 )
 def test_v2_applies_channel_reply_limits_and_keeps_provider_only_as_fallback(
     monkeypatch,
@@ -404,3 +406,127 @@ def test_v2_applies_channel_reply_limits_and_keeps_provider_only_as_fallback(
     assert diagnostics[0]["result"]["response_provider_policy"] == "codex_only"
     assert diagnostics[0]["result"]["configured_fallback"] == "deepseek-chat"
     assert diagnostics[0]["result"]["fallback_used"] is False
+
+
+def _configure_v2_insufficient_draft_case(
+    monkeypatch,
+    corrected_answer: str,
+    *,
+    initial_answer: str = "Ainda nao ha dados suficientes para responder.",
+) -> dict:
+    captured: dict = {"repair_calls": 0}
+
+    class _Rules:
+        min_confidence = 0.0
+        max_chars = 0
+        max_sentences = 0
+        whitelisted_domains: list[str] = []
+
+    class _Client:
+        def __init__(self, _client_id, _store, model, _agent_input, reasoning_effort=None):
+            self.model_usado = model
+            self.context_pipeline = []
+            self.compatibility_analysis = {
+                "decision": "insufficient",
+                "missing_fields": ["codigo_da_peca", "medida_bcd"],
+                "confidence": 0.3,
+            }
+            self.evidence_records = []
+            self.codex_thread_id = ""
+
+    result = SimpleNamespace(
+        answer=initial_answer,
+        category=SimpleNamespace(value="compatibility"),
+        route=SimpleNamespace(value="search_and_ai"),
+        decision=SimpleNamespace(value="human_review"),
+        needs_human=True,
+        confidence=0.3,
+        source="gemini",
+        reason="compatibility_evidence_insufficient",
+        validation=SimpleNamespace(
+            ok=False,
+            issues=["low_confidence", "compatibility_missing_detail_request"],
+        ),
+        prompt="prompt",
+        audit={},
+    )
+
+    monkeypatch.setattr(agent, "GeminiQuestionsSettings", GeminiQuestionsSettings, raising=False)
+    monkeypatch.setattr(agent, "ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO", 900, raising=False)
+    monkeypatch.setattr(agent, "ML_RESPOSTA_PERGUNTA_MAX_CHARS", 2000, raising=False)
+    monkeypatch.setattr(agent, "ML_POS_VENDA_LIMITE_SEGURO", 340, raising=False)
+    monkeypatch.setattr(agent, "_normalizar_ia_modelo_padrao", ia_providers._normalizar_ia_modelo_padrao, raising=False)
+    monkeypatch.setattr(agent, "_modelo_eh_vertex_ai", ia_providers._modelo_eh_vertex_ai, raising=False)
+    monkeypatch.setattr(agent, "_modelo_eh_codex", ia_providers._modelo_eh_codex, raising=False)
+    monkeypatch.setattr(agent, "_ia_modelo_perguntas_configurado", lambda: "deepseek-chat", raising=False)
+    monkeypatch.setattr(agent, "_ia_raciocinio_perguntas_configurado", lambda: "high", raising=False)
+    monkeypatch.setattr(agent, "_perguntas_ia_fluxo_pos_venda", lambda _input: False, raising=False)
+    monkeypatch.setattr(agent, "_perguntas_ia_v2_exigir_aprovacao", lambda: True, raising=False)
+    monkeypatch.setattr(
+        agent,
+        "context_from_agent_input",
+        lambda *_args, **_kwargs: (object(), object(), [], _Rules()),
+        raising=False,
+    )
+    monkeypatch.setattr(agent, "_PerguntasCodexV3Client", _Client)
+    monkeypatch.setattr(
+        agent,
+        "QuestionAnswerOrchestrator",
+        lambda **_kwargs: SimpleNamespace(process=lambda **_process_kwargs: result),
+        raising=False,
+    )
+    monkeypatch.setattr(agent, "_perguntas_ia_limpar_resposta", lambda value: value, raising=False)
+    monkeypatch.setattr(agent, "_perguntas_ia_resposta_final_loja", lambda value, _store: value, raising=False)
+    monkeypatch.setattr(agent, "_perguntas_ia_resposta_fallback_invalida", lambda _value: False, raising=False)
+    monkeypatch.setattr(agent, "_ia_agent_perguntas_violacoes_resposta", lambda *_args: [], raising=False)
+    monkeypatch.setattr(agent, "_ia_agent_perguntas_log_perf", lambda *_args, **_kwargs: None, raising=False)
+
+    def repair(_client_id, _store, _input, _model, _blocked, violations):
+        captured["repair_calls"] += 1
+        captured["violations"] = list(violations)
+        return corrected_answer, "codex:gpt-5.5"
+
+    monkeypatch.setattr(agent, "_perguntas_ia_v2_corrigir_resposta_bloqueada", repair, raising=False)
+    return captured
+
+
+def test_v2_accepts_safe_available_information_draft_without_requesting_data(monkeypatch):
+    captured = _configure_v2_insufficient_draft_case(
+        monkeypatch,
+        "Para confirmar, informe o codigo da coroa e a medida BCD.",
+    )
+
+    answer, _model, diagnostics = agent._perguntas_ia_v2_gerar_resposta(
+        "tenant-test",
+        {
+            "store": "JK Pecas",
+            "question": {"text": "Essa coroa serve no pe de vela BCD 96?"},
+            "item": {},
+            "intent": {"categoria": "compatibility"},
+        },
+    )
+
+    assert answer == "Ainda nao ha dados suficientes para responder."
+    assert captured["repair_calls"] == 0
+    assert "app_validation_repaired" not in diagnostics[0]["result"]
+
+
+def test_v2_keeps_fail_closed_when_safe_partial_repair_is_still_unsafe(monkeypatch):
+    captured = _configure_v2_insufficient_draft_case(
+        monkeypatch,
+        "Sim, serve perfeitamente. Envie uma foto para confirmar.",
+        initial_answer="Sim, serve perfeitamente. Envie uma foto para confirmar.",
+    )
+
+    with pytest.raises(agent.PerguntasIARespostaIndisponivel):
+        agent._perguntas_ia_v2_gerar_resposta(
+            "tenant-test",
+            {
+                "store": "JK Pecas",
+                "question": {"text": "Essa coroa serve no pe de vela BCD 96?"},
+                "item": {},
+                "intent": {"categoria": "compatibility"},
+            },
+        )
+
+    assert captured["repair_calls"] == 1

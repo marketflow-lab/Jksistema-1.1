@@ -11,7 +11,7 @@ _DEFAULT_BASE_DIR = Path(__file__).resolve().parents[1]
 if str(_DEFAULT_BASE_DIR) not in sys.path:
     sys.path.insert(0, str(_DEFAULT_BASE_DIR))
 
-from backend.services.context_hub_inventory import build_context_bundle_manifest
+from backend.services.context_inventory.manifest import build_context_bundle_manifest
 
 
 def _source_version(base_dir: Path) -> str:

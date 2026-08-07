@@ -32,6 +32,10 @@ EXPECTED_ROUTES = {
     ("GET", "/api/vendas/grafico", "grafico_vendas"),
     ("GET", "/api/vendas/skus-sem-venda", "skus_sem_venda"),
     ("GET", "/api/vendas/limites", "limites_vendas"),
+    ("GET", "/api/vendas/relatorios/pareto-80", "relatorio_pareto_80"),
+    ("GET", "/api/vendas/relatorios/pareto-80/exportar", "exportar_relatorio_pareto_80"),
+    ("GET", "/api/vendas/relatorios/vendas-estoque-devolucoes", "relatorio_geral_skus"),
+    ("GET", "/api/vendas/relatorios/vendas-estoque-devolucoes/exportar", "exportar_relatorio_geral_skus"),
     ("POST", "/api/vendas/sync/cancel", "cancelar_sincronizacao_vendas"),
     ("GET", "/api/vendas/sync/progress", "progresso_sincronizacao_vendas"),
     ("POST", "/api/vendas/sync", "sincronizar_vendas"),
@@ -93,10 +97,10 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result == {
-        "routes": 423,
-        "pairs": 421,
+        "routes": 427,
+        "pairs": 425,
         "duplicates": [],
-        "openapi": "04713913bfef7316d200b0e3b07e1161de4cf49a54c93dfa9876b93d489593a4",
+        "openapi": "5a653c9f14bab6b1b8aaebeb41c934f2ec1c657a1b82668b10e4f2c20df236bc",
     }
 
 
@@ -114,7 +118,7 @@ def test_domain_has_no_dynamic_runtime_bridge_or_wildcard_imports() -> None:
             assert "from fastapi" not in source and "import fastapi" not in source, path.name
 
 
-def test_module_factory_preserves_the_sixteen_route_contracts(tmp_path: Path) -> None:
+def test_module_factory_preserves_the_twenty_route_contracts(tmp_path: Path) -> None:
     module = _create_module(tmp_path)
     actual = set()
     for route in module.router.routes:

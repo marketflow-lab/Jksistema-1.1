@@ -181,8 +181,8 @@
                             moeda: retorno.moeda ?? retorno.currency_id ?? retorno.currency ?? 'BRL',
                             currency_id: retorno.currency_id ?? retorno.moeda ?? retorno.currency ?? 'BRL',
                             installments: retorno.installments || null,
-                            parcelamento_sem_juros: obterParcelamentoSemJurosFavoritos(retorno),
-                            tipo_anuncio: normalizarTipoAnuncioFavoritos(retorno.tipo_anuncio ?? retorno.tipoAnuncio ?? retorno.listing_type_name ?? retorno.listingTypeName ?? retorno.listing_type_id ?? retorno.listingTypeId ?? retorno.listing_type ?? ''),
+                            parcelamento_sem_juros: window.FavoritosV2.promotionEffectuation.publicApi.listings.obterParcelamentoSemJurosFavoritos(retorno),
+                            tipo_anuncio: window.FavoritosV2.promotionEffectuation.publicApi.listings.normalizarTipoAnuncioFavoritos(retorno.tipo_anuncio ?? retorno.tipoAnuncio ?? retorno.listing_type_name ?? retorno.listingTypeName ?? retorno.listing_type_id ?? retorno.listingTypeId ?? retorno.listing_type ?? ''),
                             listing_type_id: retorno.listing_type_id ?? retorno.listingTypeId ?? '',
                             listing_type_name: retorno.listing_type_name ?? retorno.tipo_anuncio ?? retorno.tipoAnuncio ?? '',
                             shipping: retorno.shipping || null,
@@ -288,10 +288,10 @@
                     moeda: item.currency_id || 'BRL',
                     currency_id: item.currency_id || 'BRL',
                     installments: item.installments || null,
-                    parcelamento_sem_juros: obterParcelamentoSemJurosFavoritos(item),
-                    tipo_anuncio: normalizarTipoAnuncioFavoritos(item.listing_type_id || item.listing_type || item.listing_type_name || ''),
+                    parcelamento_sem_juros: window.FavoritosV2.promotionEffectuation.publicApi.listings.obterParcelamentoSemJurosFavoritos(item),
+                    tipo_anuncio: window.FavoritosV2.promotionEffectuation.publicApi.listings.normalizarTipoAnuncioFavoritos(item.listing_type_id || item.listing_type || item.listing_type_name || ''),
                     listing_type_id: item.listing_type_id || (item.listing_type && item.listing_type.id) || '',
-                    listing_type_name: normalizarTipoAnuncioFavoritos(item.listing_type_id || item.listing_type || item.listing_type_name || ''),
+                    listing_type_name: window.FavoritosV2.promotionEffectuation.publicApi.listings.normalizarTipoAnuncioFavoritos(item.listing_type_id || item.listing_type || item.listing_type_name || ''),
                     shipping: shippingInfo,
                     logistic_type: logisticType,
                     shipping_mode: shippingInfo.mode || '',
@@ -361,7 +361,7 @@
                     finalInfo.pictures = info.pictures || [];
                 }
                 preencherPrecoAnuncioFavoritos(finalInfo, info);
-                preencherTipoAnuncioFavoritos(finalInfo, info);
+                window.FavoritosV2.promotionEffectuation.publicApi.listings.preencherTipoAnuncioFavoritos(finalInfo, info);
                 preencherCondicaoAnuncioFavoritos(finalInfo, info);
                 if (!finalInfo.seller_id) {
                     finalInfo.seller_id = info.seller_id;
@@ -1419,7 +1419,7 @@
                 const resultado = await webview.executeJavaScript(ML_DATE_EXTRACT_SCRIPT, true);
 
                 const fonteVendedorResultado = resultado && (resultado.vendedorFonte || resultado.vendedor_fonte || 'pagina_produto');
-                if (resultado && resultado.vendedor && deveAtualizarVendedor(anuncio.vendedor, anuncio.vendedorFonte, resultado.vendedor, fonteVendedorResultado)) {
+                if (resultado && resultado.vendedor && window.FavoritosV2.promotionEffectuation.publicApi.merge.deveAtualizarVendedor(anuncio.vendedor, anuncio.vendedorFonte, resultado.vendedor, fonteVendedorResultado)) {
                     anuncio.vendedor = resultado.vendedor;
                     anuncio.vendedorFonte = fonteVendedorResultado;
                     atualizarCelulaVendedor(anuncio, resultado.vendedor);
@@ -1430,7 +1430,7 @@
                 }
                 const vendasResultado = parseNumeroVendas(resultado && resultado.vendas);
                 const fonteVendasResultado = resultado && (resultado.vendasFonte || resultado.vendas_fonte || '');
-                if (deveAtualizarVendas(anuncio.vendas, anuncio.vendasFonte, vendasResultado, fonteVendasResultado)) {
+                if (window.FavoritosV2.promotionEffectuation.publicApi.merge.deveAtualizarVendas(anuncio.vendas, anuncio.vendasFonte, vendasResultado, fonteVendasResultado)) {
                     anuncio.vendas = vendasResultado;
                     anuncio.vendasFonte = fonteVendasResultado;
                     atualizarCelulaVendas(anuncio, vendasResultado);

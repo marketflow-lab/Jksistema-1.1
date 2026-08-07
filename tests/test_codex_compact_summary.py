@@ -9,6 +9,9 @@ from unittest.mock import patch
 from starlette.requests import Request
 
 from backend.services import codex_assistant, codex_console
+from backend.services.codex.console import api_create as console_api_create
+from backend.services.codex.assistant import api as assistant_api
+from backend.services.codex.assistant import reports_artifacts as assistant_reports
 
 
 def _request(path: str) -> Request:
@@ -41,19 +44,19 @@ def _report(chat_text: str) -> dict:
 class CodexAssistantCompactResponseTest(unittest.TestCase):
     def test_weekly_is_due_once_after_monday_8am_even_if_app_opens_later(self):
         monday = datetime(2026, 7, 13, 9, 0, 0)
-        with patch.object(codex_assistant, "datetime") as mocked_datetime:
+        with patch.object(assistant_api, "datetime") as mocked_datetime:
             mocked_datetime.now.return_value = monday
             mocked_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
-            self.assertTrue(codex_assistant._assistant_weekly_due({}))
-            self.assertFalse(codex_assistant._assistant_weekly_due({"last_weekly_key": "2026-W29"}))
-            self.assertTrue(codex_assistant._assistant_weekly_due({"last_weekly_key": "2026-W29"}, force=True))
+            self.assertTrue(assistant_api._assistant_weekly_due({}))
+            self.assertFalse(assistant_api._assistant_weekly_due({"last_weekly_key": "2026-W29"}))
+            self.assertTrue(assistant_api._assistant_weekly_due({"last_weekly_key": "2026-W29"}, force=True))
 
         tuesday = datetime(2026, 7, 14, 14, 0, 0)
-        with patch.object(codex_assistant, "datetime") as mocked_datetime:
+        with patch.object(assistant_api, "datetime") as mocked_datetime:
             mocked_datetime.now.return_value = tuesday
             mocked_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
-            self.assertTrue(codex_assistant._assistant_weekly_due({}))
-            self.assertFalse(codex_assistant._assistant_weekly_due({"last_weekly_key": "2026-W29"}))
+            self.assertTrue(assistant_api._assistant_weekly_due({}))
+            self.assertFalse(assistant_api._assistant_weekly_due({"last_weekly_key": "2026-W29"}))
 
     def test_daily_compact_omits_full_chat_text_without_mutating_scheduler_state(self):
         full_text = "R" * 1200
@@ -61,9 +64,9 @@ class CodexAssistantCompactResponseTest(unittest.TestCase):
         payload = codex_assistant.CodexAssistantRunRequest(compact=True)
 
         with (
-            patch.object(codex_assistant, "_assistant_require_full_admin", return_value={"client_id": "000002", "username": "owner"}),
-            patch.object(codex_assistant, "_assistant_scheduler_state", return_value=state),
-            patch.object(codex_assistant, "_assistant_daily_due", return_value=False),
+            patch.object(assistant_api, "_assistant_require_full_admin", return_value={"client_id": "000002", "username": "owner"}),
+            patch.object(assistant_api, "_assistant_scheduler_state", return_value=state),
+            patch.object(assistant_api, "_assistant_daily_due", return_value=False),
         ):
             result = codex_assistant.codex_assistant_daily_analysis_run(payload, _request("/daily"), "Bearer test")
 
@@ -80,9 +83,9 @@ class CodexAssistantCompactResponseTest(unittest.TestCase):
         payload = codex_assistant.CodexAssistantRunRequest()
 
         with (
-            patch.object(codex_assistant, "_assistant_require_full_admin", return_value={"client_id": "000002", "username": "owner"}),
-            patch.object(codex_assistant, "_assistant_scheduler_state", return_value=state),
-            patch.object(codex_assistant, "_assistant_daily_due", return_value=False),
+            patch.object(assistant_api, "_assistant_require_full_admin", return_value={"client_id": "000002", "username": "owner"}),
+            patch.object(assistant_api, "_assistant_scheduler_state", return_value=state),
+            patch.object(assistant_api, "_assistant_daily_due", return_value=False),
         ):
             result = codex_assistant.codex_assistant_daily_analysis_run(payload, _request("/daily"), "Bearer test")
 
@@ -99,9 +102,9 @@ class CodexAssistantCompactResponseTest(unittest.TestCase):
         payload = codex_assistant.CodexAssistantRunRequest(compact=True)
 
         with (
-            patch.object(codex_assistant, "_assistant_require_full_admin", return_value={"client_id": "000002", "username": "owner"}),
-            patch.object(codex_assistant, "_assistant_scheduler_state", return_value=state),
-            patch.object(codex_assistant, "_assistant_read_json", return_value=[]),
+            patch.object(assistant_api, "_assistant_require_full_admin", return_value={"client_id": "000002", "username": "owner"}),
+            patch.object(assistant_api, "_assistant_scheduler_state", return_value=state),
+            patch.object(assistant_api, "_assistant_read_json", return_value=[]),
         ):
             result = codex_assistant.codex_assistant_proactive_run(payload, _request("/proactive"), "Bearer test")
 
@@ -153,7 +156,7 @@ class CodexAssistantCompactResponseTest(unittest.TestCase):
         }
         self.assertGreater(len(json.dumps(persisted).encode("utf-8")), 2_000_000)
 
-        result = codex_assistant._assistant_compact_chat_text_response(persisted)
+        result = assistant_reports._assistant_compact_chat_text_response(persisted)
         compact_size = len(json.dumps(result).encode("utf-8"))
 
         self.assertLess(compact_size, 50_000)
@@ -229,9 +232,9 @@ class CodexTaskSummaryListTest(unittest.TestCase):
     def _list(self, directory: str, *, summary: bool = False) -> dict:
         session = {"client_id": "000002", "username": "owner", "is_full": False}
         with (
-            patch.object(codex_console, "_codex_require_authenticated", return_value=session),
-            patch.object(codex_console, "_codex_info_dir", return_value=directory),
-            patch.object(codex_console, "_codex_deleted_conversation_ids", return_value=set()),
+            patch.object(console_api_create, "_codex_require_authenticated", return_value=session),
+            patch.object(console_api_create, "_codex_info_dir", return_value=directory),
+            patch.object(console_api_create, "_codex_deleted_conversation_ids", return_value=set()),
         ):
             return codex_console.codex_listar_tarefas(
                 _request("/api/codex/tasks"),

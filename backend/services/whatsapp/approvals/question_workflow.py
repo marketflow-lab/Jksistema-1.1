@@ -48,14 +48,7 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -64,21 +57,12 @@ from backend.services.whatsapp.composition import (
     invoke_component,
 )
 from backend.services.whatsapp.approvals import question_natural_language as _question_natural_language
-from backend.services.whatsapp.approvals.question_selection import (
-    approved_utility_template_names as _approved_utility_template_names_impl,
-    is_post_sale_question_approval as _is_post_sale_question_approval,
-    pending_question_approval as _pending_question_approval,
-    question_active_token_invalid_reason as _question_active_token_invalid_reason,
-    question_approval_marker as _question_approval_marker,
-    question_has_active_research as _question_has_active_research,
-    question_notification_key as _question_notification_key,
-    question_research_delivery_state as _question_research_delivery_state,
-    question_template_excerpt as _question_template_excerpt,
-)
+from backend.services.whatsapp.approvals import question_delivery as _question_delivery
 from backend.services.whatsapp.approvals.question_tokens import (
     _question_card_context,
     _question_thread_key,
     _question_token_approval_matches,
+    _question_token_scope_matches,
 )
 
 WHATSAPP_MAX_OUTBOUND_IMAGES = whatsapp_media.WHATSAPP_MAX_OUTBOUND_IMAGES
@@ -88,8 +72,35 @@ QUESTION_SUGGESTION_TEMPLATE_NAME = "jk_black_jhon_nova_pergunta_v2"
 QUESTION_SUGGESTION_OPEN_PAYLOAD = "ppv_view_pending"
 
 
+def _question_template_excerpt(value: Any, fallback: str, limit: int = 480) -> str:
+    text = " ".join(str(value or "").split()).strip() or fallback
+    if len(text) <= limit:
+        return text
+    return text[: max(1, limit - 3)].rstrip() + "..."
+
+
+def _question_notification_key(client_id: str, subject_id: str, approval: dict[str, Any]) -> str:
+    approval_id = str(approval.get("id") or "").strip()
+    draft = str(approval.get("resposta_sugerida") or "").strip()
+    draft_hash = hashlib.sha256(draft.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(
+        f"{client_id}|{subject_id}|{approval_id}|{draft_hash}".encode("utf-8")
+    ).hexdigest()
+
+
 def _approved_utility_template_names(config: dict[str, Any]) -> set[str]:
-    return _approved_utility_template_names_impl(config, _worker_health)
+    try:
+        worker = _worker_health(config)
+        templates = worker.get("templates") if isinstance(worker.get("templates"), list) else []
+        return {
+            str(item.get("name") or "").strip()
+            for item in templates
+            if isinstance(item, dict)
+            and str(item.get("category") or "").strip().upper() == "UTILITY"
+            and str(item.get("status") or "").strip().upper() == "APPROVED"
+        }
+    except Exception:
+        return set()
 
 
 def _deliver_completed_question_research(
@@ -102,109 +113,15 @@ def _deliver_completed_question_research(
     subject_id: str,
     username: str,
 ) -> bool:
-    job_id = str(approval.get("research_job_id") or approval.get("codex_job_id") or "").strip()
-    delivery_state = _question_research_delivery_state(approval, job_id)
-    if not job_id or delivery_state not in {"waiting_evidence", "ready"}:
-        return False
-    if str(approval.get("research_delivered_job_id") or "") == job_id:
-        return False
-    try:
-        from backend.services import perguntas_pos_venda_codex as ppv_codex
-        from backend.services import perguntas_pos_venda_state as ppv_state
-
-        job = ppv_codex.get_job(client_id, job_id)
-    except Exception as exc:
-        RUNTIME_STATE["last_error"] = f"question_research_status: {str(exc)[:800]}"
-        return False
-    if not isinstance(job, dict):
-        return False
-    job_status = str(job.get("status") or "").strip().lower()
-    if job_status == "completed" and job.get("data_sufficient") is False:
-        try:
-            job = ppv_codex.resume_incomplete_job(
-                client_id,
-                job_id,
-                reason="retomada_de_resposta_ativa_sem_evidencia_suficiente",
-            ) or job
-            job_status = str(job.get("status") or "").strip().lower()
-            approval["research_delivery_state"] = "waiting_evidence"
-            approval["research_resumed_at"] = _now()
-            ppv_state._perguntas_ia_aprovacoes_salvar(client_id, approvals)
-        except Exception as exc:
-            RUNTIME_STATE["last_error"] = f"question_research_resume: {str(exc)[:800]}"
-            return False
-    approval["research_status"] = job_status
-    approval["research_retry_count"] = max(0, int(job.get("retry_count") or 0))
-    approval["research_next_retry_at_epoch"] = float(job.get("next_retry_at_epoch") or 0.0)
-    if job_status != "completed" or job.get("data_sufficient") is not True:
-        if job_status == "cancelled":
-            approval["research_delivery_state"] = "cancelled"
-        return False
-    result = job.get("result") if isinstance(job.get("result"), dict) else {}
-    response = str(result.get("resposta") or "").strip()[:1200]
-    if not response:
-        return False
-
-    approval.update(
-        {
-            "resposta_sugerida": response,
-            "regenerated_at": _now(),
-            "regenerated_via": "whatsapp_research_loop",
-            "research_status": "completed",
-            "research_delivery_state": "ready",
-            "data_sufficient": True,
-            "proposal_id": job_id,
-            "codex_job_id": job_id,
-            "proposal_version": int(result.get("proposal_version") or job.get("proposal_version") or 1),
-            "proposal_hash": str(result.get("proposal_hash") or job.get("proposal_hash") or ""),
-            "warnings": list(result.get("warnings") or job.get("warnings") or [])[:8],
-        }
-    )
-    ppv_state._perguntas_ia_aprovacoes_salvar(client_id, approvals)
-
-    tokens = state.get("question_approval_tokens") if isinstance(state.get("question_approval_tokens"), dict) else {}
-    approval_id = str(approval.get("id") or "").strip()
-    for item in tokens.values():
-        if isinstance(item, dict) and str(item.get("approval_id") or "") == approval_id:
-            item.update({"used": True, "decision": "superseded_by_verified_research"})
-    token, token_item = _question_approval_token(
-        state,
-        approval=approval,
-        subject_id=subject_id,
-        client_id=client_id,
-        username=username,
-        force_new=True,
-        user_guidance=str(approval.get("whatsapp_user_guidance") or ""),
-    )
-    delivery = _post_interactive_approval(
+    return _question_delivery.deliver_completed_question_research(
         config,
-        subject_id=subject_id,
-        fingerprint=f"ppv-research:{client_id}:{subject_id}:{job_id}:{result.get('proposal_hash') or ''}",
-        token=token,
-        body=_question_approval_body(approval, response),
-        state=state,
-    )
-    if str(delivery.get("status") or "") not in {"sent", "duplicate"}:
-        return False
-    approval.update(
-        {
-            "research_delivery_state": "delivered",
-            "research_delivered_job_id": job_id,
-            "research_delivered_at": _now(),
-        }
-    )
-    ppv_state._perguntas_ia_aprovacoes_salvar(client_id, approvals)
-    _question_set_active_thread(
         state,
-        approval_id=approval_id,
-        token=token,
-        subject_id=subject_id,
+        approvals,
+        approval,
         client_id=client_id,
+        subject_id=subject_id,
         username=username,
-        card_context=_question_card_context(approval, token_item),
     )
-    _save_state(state)
-    return True
 
 def _eligible_question_bindings(config: dict[str, Any]) -> list[tuple[dict[str, Any], str, str, str]]:
     worker = _worker_health(config)
@@ -223,6 +140,93 @@ def _eligible_question_bindings(config: dict[str, Any]) -> list[tuple[dict[str, 
         if _question_approval_allowed(permissions) and settings["send_ml_question_suggestions"]:
             eligible.append((binding, client_id, username, subject_id))
     return eligible
+
+def _question_approval_marker(value: Any) -> str:
+    return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _is_post_sale_question_approval(item: dict[str, Any]) -> bool:
+    tipo = _question_approval_marker(item.get("tipo") or item.get("approval_type"))
+    origens = (
+        item.get("origem"),
+        item.get("ia_origem"),
+        item.get("ia_finalidade"),
+    )
+    return tipo == "pos_venda" or any(
+        "pos_venda" in _question_approval_marker(origem)
+        for origem in origens
+    )
+
+def _pending_question_approval(
+    ppv_state: Any,
+    configs: Any,
+    approvals: list[dict[str, Any]],
+    *,
+    client_id: str = "",
+) -> Optional[dict[str, Any]]:
+    return next(
+        (
+            item for item in approvals
+            if isinstance(item, dict)
+            and not _is_post_sale_question_approval(item)
+            and perguntas_pos_venda_codex.approval_job_current(client_id, str(item.get("proposal_id") or item.get("codex_job_id") or item.get("research_job_id") or ""))
+            and str(item.get("status") or "pending") == "pending"
+            and str(item.get("id") or "").strip()
+            and str(item.get("resposta_sugerida") or "").strip()
+            and ppv_state._perguntas_loja_config_normalizar(
+                ppv_state._perguntas_loja_config_obter(configs, str(item.get("loja") or "").strip())
+            ).get("notificar_whatsapp_aprovacoes") is True
+        ),
+        None,
+    )
+
+
+def _question_has_active_research(approval: dict[str, Any]) -> bool:
+    job_id = str(approval.get("research_job_id") or approval.get("codex_job_id") or "").strip()
+    if not job_id or str(approval.get("research_delivered_job_id") or "").strip() == job_id:
+        return False
+    return _question_delivery._question_research_delivery_state(approval, job_id) in {
+        "waiting_evidence",
+        "ready",
+    }
+
+
+def _question_active_token_invalid_reason(
+    state: dict[str, Any],
+    approval: dict[str, Any],
+    token: str,
+    *,
+    subject_id: str,
+    client_id: str,
+    username: str,
+) -> str:
+    if _is_post_sale_question_approval(approval):
+        return "ineligible_post_sale"
+    tokens = state.get("question_approval_tokens") if isinstance(state.get("question_approval_tokens"), dict) else {}
+    token_item = tokens.get(str(token or "").strip().upper())
+    if not isinstance(token_item, dict):
+        return "missing_token"
+    approval_id = str(approval.get("id") or "").strip()
+    if (
+        not _question_token_approval_matches(token_item, approval)
+        or str(token_item.get("subject_id") or "").strip() != str(subject_id or "").strip()
+        or str(token_item.get("client_id") or "").strip() != str(client_id or "").strip()
+        or str(token_item.get("username") or "").strip().lower() != str(username or "").strip().lower()
+    ):
+        return "invalid_token_scope"
+    try:
+        token_age = time.time() - float(token_item.get("created_at") or 0)
+    except (TypeError, ValueError):
+        token_age = QUESTION_APPROVAL_TOKEN_TTL_SECONDS + 1
+    if token_age > QUESTION_APPROVAL_TOKEN_TTL_SECONDS:
+        return "expired_token"
+    decision = _question_approval_marker(token_item.get("decision"))
+    if token_item.get("used") is True or "superseded" in decision:
+        if _question_has_active_research(approval):
+            return ""
+        return "consumed_token"
+    return ""
+
 
 def _question_invalidate_active_thread(
     state: dict[str, Any],
@@ -340,13 +344,13 @@ def _record_blocked_question_notification(
     except Exception:
         pass
 
-def _handle_active_question_approval(
+def _resolve_active_question_approval(
     config: dict[str, Any],
     state: dict[str, Any],
     approvals: list[dict[str, Any]],
     active: Optional[dict[str, Any]],
     active_token: str,
-    token_item: Optional[dict[str, Any]],
+    token_item: Any,
     notifications: dict[str, Any],
     client_id: str,
     username: str,
@@ -359,91 +363,57 @@ def _handle_active_question_approval(
         return True, None
     if active is None or active_status != "pending":
         return False, None
-
     invalid_reason = _question_active_token_invalid_reason(
-        state,
-        active,
-        active_token,
-        subject_id=subject_id,
-        client_id=client_id,
-        username=username,
-        token_ttl_seconds=QUESTION_APPROVAL_TOKEN_TTL_SECONDS,
-        token_approval_matches=_question_token_approval_matches,
+        state, active, active_token,
+        subject_id=subject_id, client_id=client_id, username=username,
     )
     if invalid_reason:
-        active_approval_id = str(active.get("id") or "").strip()
+        approval_id = str(active.get("id") or "").strip()
         active_research = _question_has_active_research(active)
         _question_invalidate_active_thread(
-            state,
-            notifications=notifications,
-            approval_id=active_approval_id,
-            token=active_token,
-            subject_id=subject_id,
-            client_id=client_id,
-            username=username,
-            reason=invalid_reason,
+            state, notifications=notifications, approval_id=approval_id,
+            token=active_token, subject_id=subject_id, client_id=client_id,
+            username=username, reason=invalid_reason,
         )
         if active_research and invalid_reason != "ineligible_post_sale":
             rebound_token, _rebound_item = _question_approval_token(
-                state,
-                approval=active,
-                subject_id=subject_id,
-                client_id=client_id,
-                username=username,
-                force_new=True,
+                state, approval=active, subject_id=subject_id, client_id=client_id,
+                username=username, force_new=True,
             )
             _question_set_active_thread(
-                state,
-                approval_id=active_approval_id,
-                token=rebound_token,
-                subject_id=subject_id,
-                client_id=client_id,
-                username=username,
+                state, approval_id=approval_id, token=rebound_token,
+                subject_id=subject_id, client_id=client_id, username=username,
             )
             _deliver_completed_question_research(
-                config,
-                state,
-                approvals,
-                active,
-                client_id=client_id,
-                subject_id=subject_id,
-                username=username,
+                config, state, approvals, active,
+                client_id=client_id, subject_id=subject_id, username=username,
             )
             return True, None
         return False, None
-
     if _question_has_active_research(active):
         _deliver_completed_question_research(
             config, state, approvals, active,
             client_id=client_id, subject_id=subject_id, username=username,
         )
         return True, None
-    active_notification = notifications.get(
-        _question_notification_key(client_id, subject_id, active)
-    )
+    notification_key = _question_notification_key(client_id, subject_id, active)
+    active_notification = notifications.get(notification_key)
     interactive_sent = bool(
         isinstance(token_item, dict) and token_item.get("outbound_message_id")
     ) or bool(
         isinstance(active_notification, dict)
-        and (
-            active_notification.get("interactive_sent") is True
-            or active_notification.get("sent_at")
-        )
+        and (active_notification.get("interactive_sent") is True or active_notification.get("sent_at"))
     )
     if interactive_sent or not isinstance(active_notification, dict):
+        # Estado legado sem recibo de bloqueio representa um cartao ja ativo.
         return True, None
     if (
-        str(active_notification.get("template_name") or "")
-        != QUESTION_SUGGESTION_TEMPLATE_NAME
+        str(active_notification.get("template_name") or "") != QUESTION_SUGGESTION_TEMPLATE_NAME
         and QUESTION_SUGGESTION_TEMPLATE_NAME in _approved_utility_template_names(config)
     ):
         _record_blocked_question_notification(
-            config,
-            notifications,
-            _question_notification_key(client_id, subject_id, active),
-            str(active.get("id") or "").strip(),
-            subject_id,
-            str(active.get("loja") or "").strip(),
+            config, notifications, notification_key, str(active.get("id") or "").strip(),
+            subject_id, str(active.get("loja") or "").strip(),
             str(active.get("pergunta") or "").strip(),
             str(active.get("resposta_sugerida") or "").strip(),
             str(active_notification.get("interactive_status") or "waiting_free_window"),
@@ -455,38 +425,20 @@ def _handle_active_question_approval(
         blocked_last_inbound_at = float(active_notification.get("last_inbound_at") or 0)
     except (TypeError, ValueError):
         return True, None
-    if current_last_inbound_at <= blocked_last_inbound_at:
-        return True, None
-    return False, active
+    return (True, None) if current_last_inbound_at <= blocked_last_inbound_at else (False, active)
 
 
-def _forward_pending_question_approval(
+def _send_question_approval_card(
     config: dict[str, Any],
     state: dict[str, Any],
-    ppv_state: Any,
-    configs: Any,
-    approvals: list[dict[str, Any]],
     notifications: dict[str, Any],
-    active: Optional[dict[str, Any]],
-    active_token: str,
-    retry_active: Optional[dict[str, Any]],
+    approval: dict[str, Any],
     client_id: str,
     username: str,
     subject_id: str,
     *,
     last_inbound_at: Any = 0,
 ) -> None:
-    if retry_active is None:
-        if active is not None or active_token:
-            _question_clear_active_thread(state, subject_id=subject_id, client_id=client_id, username=username)
-        else:
-            threads = state.get("question_active_threads") if isinstance(state.get("question_active_threads"), dict) else {}
-            thread_key = _question_thread_key(client_id, subject_id, username)
-            if isinstance(threads.get(thread_key), dict):
-                _question_clear_active_thread(state, subject_id=subject_id, client_id=client_id, username=username)
-    approval = retry_active or _pending_question_approval(ppv_state, configs, approvals, client_id=client_id)
-    if approval is None:
-        return
     store = str(approval.get("loja") or "").strip()
     approval_id = str(approval.get("id") or "").strip()
     draft = str(approval.get("resposta_sugerida") or "").strip()
@@ -517,17 +469,10 @@ def _forward_pending_question_approval(
             card_context=_question_card_context(approval, token_item),
         )
         return
-    blocked_status = str(result.get("status") or result.get("error") or "interactive_blocked")
     _record_blocked_question_notification(
-        config,
-        notifications,
-        notification_key,
-        approval_id,
-        subject_id,
-        store,
-        str(approval.get("pergunta") or "").strip(),
-        draft,
-        blocked_status,
+        config, notifications, notification_key, approval_id, subject_id, store,
+        str(approval.get("pergunta") or "").strip(), draft,
+        str(result.get("status") or result.get("error") or "interactive_blocked"),
         last_inbound_at=last_inbound_at,
     )
 
@@ -549,15 +494,25 @@ def _forward_question_approval_for_binding(
         state, approvals, subject_id=subject_id, client_id=client_id, username=username,
         require_current_contract=True,
     )
-    handled, retry_active = _handle_active_question_approval(
+    handled, retry_active = _resolve_active_question_approval(
         config, state, approvals, active, active_token, token_item, notifications,
         client_id, username, subject_id, last_inbound_at=last_inbound_at,
     )
     if handled:
         return
-    _forward_pending_question_approval(
-        config, state, ppv_state, configs, approvals, notifications,
-        active, active_token, retry_active, client_id, username, subject_id,
+    if retry_active is None:
+        if active is not None or active_token:
+            _question_clear_active_thread(state, subject_id=subject_id, client_id=client_id, username=username)
+        else:
+            threads = state.get("question_active_threads") if isinstance(state.get("question_active_threads"), dict) else {}
+            thread_key = _question_thread_key(client_id, subject_id, username)
+            if isinstance(threads.get(thread_key), dict):
+                _question_clear_active_thread(state, subject_id=subject_id, client_id=client_id, username=username)
+    approval = retry_active or _pending_question_approval(ppv_state, configs, approvals, client_id=client_id)
+    if approval is None:
+        return
+    _send_question_approval_card(
+        config, state, notifications, approval, client_id, username, subject_id,
         last_inbound_at=last_inbound_at,
     )
 
@@ -811,7 +766,7 @@ def _handle_question_approval_command(
     username = str(session.get("username") or "")
     approval_id = str(token_item.get("approval_id") or "")
     try:
-        from backend.services import perguntas_pos_venda_endpoints as ppv_endpoints
+        from backend.modules.perguntas_pos_venda.endpoints import api as ppv_endpoints
         from backend.services import perguntas_pos_venda_state as ppv_state
 
         approvals = ppv_state._perguntas_ia_aprovacoes_carregar(client_id)
@@ -889,6 +844,7 @@ _IMPLEMENTATIONS = {
 
 def bind_bridge_dependencies(dependencies: BridgeDependencies) -> None:
     bind_component_namespace(globals(), _IMPLEMENTATIONS, dependencies)
+    _question_delivery.bind_bridge_dependencies(dependencies)
     _question_natural_language.bind_bridge_dependencies(dependencies)
 
 

@@ -1,10 +1,11 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const { readSkuComponents } = require('./helpers/favoritos_sku_sources');
 
 const root = process.cwd();
 const runtime = fs.readFileSync(path.join(root, 'static', 'favoritos', 'runtime.js'), 'utf8');
-const sku = fs.readFileSync(path.join(root, 'static', 'favoritos', 'sku.js'), 'utf8');
+const sku = readSkuComponents(root);
 const endpoints = fs.readFileSync(path.join(root, 'backend', 'services', 'favoritos_endpoints.py'), 'utf8');
 
 assert.match(runtime, /skuDescricaoAutoAbortController/);

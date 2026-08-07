@@ -5,8 +5,12 @@ import sys
 import types
 import uuid
 
-from backend.services import codex_assistant, codex_console, codex_mcp_rollout
+from backend.services import codex_console, codex_mcp_rollout
+from backend.services.codex.assistant import execution as assistant_execution
+from backend.services.codex.assistant import runtime as assistant_runtime
 from backend.services import jk_codex_mcp_server as mcp_server
+from backend.services.codex.console import agent_loop as console_agent_loop
+from backend.services.codex.console import prompt_context as console_prompt_context
 
 
 def _context(tmp_path, *, rollout_mode="enabled"):
@@ -38,13 +42,11 @@ def _context(tmp_path, *, rollout_mode="enabled"):
 
 def _server(monkeypatch, tmp_path, *, rollout_mode="enabled"):
     monkeypatch.setitem(sys.modules, "backend_api", types.SimpleNamespace())
-    monkeypatch.setattr(codex_assistant, "configure_codex_assistant_runtime", lambda *_args: None)
-    monkeypatch.setattr(
-        codex_console,
-        "_codex_agent_tool_catalog",
+    monkeypatch.setattr(assistant_runtime, "configure_codex_assistant_runtime", lambda *_args: None)
+    monkeypatch.setattr(console_prompt_context, "_codex_agent_tool_catalog",
         lambda *_args, **_kwargs: [{"id": "product_data", "description": "Consulta", "external": False}],
     )
-    monkeypatch.setattr(codex_console, "_codex_agent_source_policy_error", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(console_agent_loop, "_codex_agent_source_policy_error", lambda *_args, **_kwargs: "")
     context = _context(tmp_path, rollout_mode=rollout_mode)
     codex_mcp_rollout.MCPRolloutPolicyStore(
         tmp_path / "rollout.sqlite3"
@@ -67,8 +69,8 @@ def test_plan_hash_schema_and_stable_store_scope_are_required(tmp_path):
 def test_tools_use_closed_exact_schema_and_dispatch_materialized_arguments(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(
-        codex_assistant,
-        "codex_assistant_execute_tool_call",
+        assistant_execution,
+        "execute_tool_call",
         lambda **kwargs: calls.append(kwargs) or {"success": True, "tool_id": kwargs["tool_id"], "rows": [{"saldo": 7}]},
     )
     server = _server(monkeypatch, tmp_path)
@@ -92,8 +94,8 @@ def test_tools_use_closed_exact_schema_and_dispatch_materialized_arguments(monke
 
 def test_shadow_validates_without_external_execution(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        codex_assistant,
-        "codex_assistant_execute_tool_call",
+        assistant_execution,
+        "execute_tool_call",
         lambda **_kwargs: (_ for _ in ()).throw(AssertionError("shadow executed tool")),
     )
     server = _server(monkeypatch, tmp_path, rollout_mode="shadow")
@@ -105,8 +107,8 @@ def test_shadow_validates_without_external_execution(monkeypatch, tmp_path):
 def test_idempotency_survives_server_restart_without_reexecuting(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(
-        codex_assistant,
-        "codex_assistant_execute_tool_call",
+        assistant_execution,
+        "execute_tool_call",
         lambda **kwargs: calls.append(kwargs) or {"success": True, "tool_id": kwargs["tool_id"], "rows": [{"private": "not-persisted"}]},
     )
     first = _server(monkeypatch, tmp_path)

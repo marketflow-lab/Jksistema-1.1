@@ -1,0 +1,40 @@
+{
+  "schema": "jk.favoritos.styles.contract.v1",
+  "source_sha256_normalized": "d983054956428f1f94e07819f0951721ed0fe3ed1e3996c0a73dbc72ceed20e1",
+  "physical_lines": 4071,
+  "rules": 711,
+  "unique_selectors": 665,
+  "class_tokens": 399,
+  "id_tokens": 2,
+  "media_queries": [
+    "(max-width: 980px)",
+    "(min-width: 900px)",
+    "(max-width: 900px)",
+    "(max-width: 1180px)",
+    "(max-width: 760px)",
+    "(min-width: 1180px)",
+    "(max-width: 899px)",
+    "(min-width: 1180px) and (max-width: 1399px)",
+    "(max-width: 1100px)",
+    "(max-width: 768px)"
+  ],
+  "keyframes": [
+    "skuAiProgressPulse"
+  ],
+  "important_count": 11,
+  "custom_property_declarations": 7,
+  "components": [
+    { "path": "static/favoritos/styles/01-foundation.css", "lines": 268 },
+    { "path": "static/favoritos/styles/02-sku.css", "lines": 480 },
+    { "path": "static/favoritos/styles/03-sidebars.css", "lines": 286 },
+    { "path": "static/favoritos/styles/04-feedback-balloon.css", "lines": 258 },
+    { "path": "static/favoritos/styles/05-work-modal.css", "lines": 327 },
+    { "path": "static/favoritos/styles/06-marketplace-tables.css", "lines": 516 },
+    { "path": "static/favoritos/styles/07-favorites-actions.css", "lines": 602 },
+    { "path": "static/favoritos/styles/08-history-reports.css", "lines": 577 },
+    { "path": "static/favoritos/styles/09-management-tools.css", "lines": 231 },
+    { "path": "static/favoritos/styles/10-sheets-and-ignored.css", "lines": 199 },
+    { "path": "static/favoritos/styles/11-browser.css", "lines": 98 },
+    { "path": "static/favoritos/styles/12-responsive.css", "lines": 229 }
+  ]
+}

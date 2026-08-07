@@ -5,7 +5,14 @@ from typing import Any
 
 import pytest
 
-from backend.services import ia_tools_marketplaces as ml_tools
+import requests
+from backend.services.marketplace_tools import client as marketplace_client
+from backend.services.marketplace_tools import items as marketplace_items
+from backend.services.marketplace_tools import listings as marketplace_listings
+from backend.services.marketplace_tools import order_models as marketplace_order_models
+from backend.services.marketplace_tools import orders as marketplace_orders
+from backend.services.marketplace_tools import returns as marketplace_returns
+from backend.services.marketplace_tools import runtime as marketplace_runtime
 
 
 class FakeResponse:
@@ -20,19 +27,19 @@ class FakeResponse:
 
 
 def test_complete_query_deadline_caps_each_call_and_fails_closed(monkeypatch):
-    monkeypatch.setattr(ml_tools.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(marketplace_client.time, "monotonic", lambda: 100.0)
 
-    assert ml_tools._ia_ml_remaining_timeout(105.0, 20) == 5
-    with pytest.raises(ml_tools.requests.exceptions.Timeout):
-        ml_tools._ia_ml_remaining_timeout(100.0, 20)
+    assert marketplace_client.remaining_timeout(105.0, 20) == 5
+    with pytest.raises(requests.exceptions.Timeout):
+        marketplace_client.remaining_timeout(100.0, 20)
 
 
 def _configure_store(monkeypatch, stores=None):
     stores = stores or ["JK Pecas"]
-    monkeypatch.setattr(ml_tools, "_ia_lojas_ml_conectadas", lambda _client_id: list(stores), raising=False)
+    monkeypatch.setattr(marketplace_runtime, "ml_connected_stores", lambda _client_id: list(stores), raising=False)
     monkeypatch.setattr(
-        ml_tools,
-        "_obter_cfg_ml",
+        marketplace_runtime,
+        "ml_config",
         lambda _client_id, _store: {"access_token": "secret", "user_id": "12345"},
         raising=False,
     )
@@ -53,13 +60,13 @@ def _contains_forbidden_pii(value: Any) -> bool:
 
 def test_store_resolution_accepts_legacy_mojibake_name(monkeypatch):
     monkeypatch.setattr(
-        ml_tools,
-        "_ia_lojas_ml_conectadas",
+        marketplace_runtime,
+        "ml_connected_stores",
         lambda _client_id: ["JK PeÃ§as", "Uai Mineirinho"],
         raising=False,
     )
 
-    store, failure = ml_tools._ia_ml_resolver_loja_exata("000002", "JK Peças")
+    store, failure = marketplace_client.resolve_store("000002", "JK Peças")
 
     assert store == "JK PeÃ§as"
     assert failure == {}
@@ -101,9 +108,9 @@ def test_orders_uses_get_paginates_aggregates_and_removes_pii(monkeypatch):
         rows = first_page if offset == 0 else second_page
         return FakeResponse(200, {"paging": {"total": 51, "offset": offset}, "results": rows}), cfg
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
 
-    response = ml_tools._ia_tool_get_mercado_livre_orders(
+    response = marketplace_orders.query(
         "000002",
         "vendas de julho",
         "jk pecas",
@@ -147,8 +154,8 @@ def test_period_report_fetches_more_than_two_mercado_livre_pages(monkeypatch):
         rows = [_order(index) for index in range(offset + 1, min(120, offset + page_limit) + 1)]
         return FakeResponse(200, {"paging": {"total": 120, "offset": offset}, "results": rows}), cfg
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_orders(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    response = marketplace_orders.query(
         "000002",
         "relatorio de vendas do periodo",
         "JK Pecas",
@@ -182,8 +189,8 @@ def test_period_report_marks_coverage_incomplete_when_page_budget_is_reached(mon
         rows = [_order(index) for index in range(offset + 1, offset + 51)]
         return FakeResponse(200, {"paging": {"total": 2_000, "offset": offset}, "results": rows}), cfg
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    result = ml_tools._ia_tool_get_mercado_livre_orders(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    result = marketplace_orders.query(
         "000002",
         "relatorio de vendas do periodo",
         "JK Pecas",
@@ -205,13 +212,13 @@ def test_period_report_marks_coverage_incomplete_when_page_budget_is_reached(mon
 def test_orders_classifies_401_after_oauth_refresh(monkeypatch):
     _configure_store(monkeypatch)
     monkeypatch.setattr(
-        ml_tools,
-        "_ml_api_request",
+        marketplace_runtime,
+        "ml_api_request",
         lambda _client_id, _store, cfg, method, url, **kwargs: (FakeResponse(401, {"message": "unauthorized"}), cfg),
         raising=False,
     )
 
-    response = ml_tools._ia_tool_get_mercado_livre_orders(
+    response = marketplace_orders.query(
         "000002", "vendas", "JK Pecas", "2026-07-01", "2026-07-12"
     )
 
@@ -248,8 +255,8 @@ def test_order_details_exposes_only_buyer_name_and_city(monkeypatch):
             }), cfg
         return FakeResponse(200, {"paging": {"total": 1}, "results": [raw_order]}), cfg
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_orders(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    response = marketplace_orders.query(
         "000002",
         "detalhes da ultima venda e do comprador",
         "JK Pecas",
@@ -278,15 +285,15 @@ def test_order_buyer_name_falls_back_to_public_nickname(monkeypatch):
     raw_order["buyer"] = {"id": 1, "nickname": "CLIENTE-ML", "email": "oculto@example.com"}
     raw_order["shipping"] = {"receiver_address": {"city": {"name": "Divinopolis"}, "street_name": "Oculta"}}
     monkeypatch.setattr(
-        ml_tools,
-        "_ml_api_request",
+        marketplace_runtime,
+        "ml_api_request",
         lambda _client_id, _store, cfg, method, url, **kwargs: (
             FakeResponse(200, {"paging": {"total": 1}, "results": [raw_order]}), cfg
         ),
         raising=False,
     )
 
-    result = ml_tools._ia_tool_get_mercado_livre_orders(
+    result = marketplace_orders.query(
         "000002", "qual a cidade e comprador da ultima venda", "JK Pecas", "2026-07-01", "2026-07-12", limite=1
     )["result"]
 
@@ -298,8 +305,8 @@ def test_order_buyer_name_falls_back_to_public_nickname(monkeypatch):
 def test_orders_accepts_206_and_marks_partial_response(monkeypatch):
     _configure_store(monkeypatch)
     monkeypatch.setattr(
-        ml_tools,
-        "_ml_api_request",
+        marketplace_runtime,
+        "ml_api_request",
         lambda _client_id, _store, cfg, method, url, **kwargs: (
             FakeResponse(
                 206,
@@ -311,7 +318,7 @@ def test_orders_accepts_206_and_marks_partial_response(monkeypatch):
         raising=False,
     )
 
-    response = ml_tools._ia_tool_get_mercado_livre_orders(
+    response = marketplace_orders.query(
         "000002", "vendas", "JK Pecas", "2026-07-01", "2026-07-12"
     )
     result = response["result"]
@@ -331,8 +338,8 @@ def test_orders_429_is_not_retried(monkeypatch):
         call_count += 1
         return FakeResponse(429, {"message": "too many requests"}), cfg
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_orders(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    response = marketplace_orders.query(
         "000002", "vendas", "JK Pecas", "2026-07-01", "2026-07-12"
     )
 
@@ -349,8 +356,8 @@ def test_orders_5xx_is_retried_only_once(monkeypatch):
         payload = {"message": "unavailable"} if status_code == 503 else {"paging": {"total": 0}, "results": []}
         return FakeResponse(status_code, payload), cfg
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_orders(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    response = marketplace_orders.query(
         "000002", "vendas", "JK Pecas", "2026-07-01", "2026-07-12"
     )
 
@@ -366,11 +373,11 @@ def test_orders_timeout_is_retried_only_once(monkeypatch):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            raise ml_tools.requests.exceptions.Timeout("timeout")
+            raise requests.exceptions.Timeout("timeout")
         return FakeResponse(200, {"paging": {"total": 0}, "results": []}), cfg
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_orders(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    response = marketplace_orders.query(
         "000002", "vendas", "JK Pecas", "2026-07-01", "2026-07-12"
     )
 
@@ -388,8 +395,8 @@ def test_orders_filters_sku_locally_without_unsupported_q(monkeypatch):
         rows[1]["order_items"][0]["item"]["seller_sku"] = "OUTRO-SKU"
         return FakeResponse(200, {"paging": {"total": 2}, "results": rows}), cfg
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_orders(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    response = marketplace_orders.query(
         "000002",
         "vendas do produto",
         "JK Pecas",
@@ -419,8 +426,8 @@ def test_orders_scans_up_to_100_before_cutting_sku_matches(monkeypatch):
             rows = [_order(51)]
         return FakeResponse(200, {"paging": {"total": 51}, "results": rows}), cfg
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_orders(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    response = marketplace_orders.query(
         "000002",
         "vendas do SKU-1",
         "JK Pecas",
@@ -453,8 +460,8 @@ def test_orders_supports_exact_order_id_with_direct_get(monkeypatch):
             return FakeResponse(200, {"messages": [], "paging": {"total": 0}}), cfg
         return FakeResponse(404, {}), cfg
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_orders(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    response = marketplace_orders.query(
         "000002",
         "pedido 987654321",
         "JK Pecas",
@@ -550,8 +557,8 @@ def test_exact_pack_ignores_period_and_loads_full_claim_return_and_all_messages(
             return FakeResponse(200, {"messages": page, "paging": {"total": 51}}), cfg
         raise AssertionError(f"endpoint inesperado: {url}")
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_orders(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    response = marketplace_orders.query(
         "000002",
         f"verifique a venda {pack_id}",
         "JK Pecas",
@@ -599,8 +606,8 @@ def test_exact_order_never_searches_other_store_after_selected_store_misses(monk
             return FakeResponse(200, {"messages": [], "paging": {"total": 0}}), cfg
         return FakeResponse(404, {}), cfg
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    result = ml_tools._ia_tool_get_mercado_livre_orders(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    result = marketplace_orders.query(
         "000002",
         f"venda {order_id}",
         "JK Pecas",
@@ -640,8 +647,8 @@ def test_exact_pack_keeps_only_orders_confirmed_in_selected_store(monkeypatch):
             return FakeResponse(200, {"messages": [], "paging": {"total": 0}}), cfg
         return FakeResponse(404, {}), cfg
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    result = ml_tools._ia_tool_get_mercado_livre_orders(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    result = marketplace_orders.query(
         "000002",
         f"venda {pack_id}",
         "JK Pecas",
@@ -664,8 +671,8 @@ def test_orders_older_than_twelve_months_uses_local_history_signal_without_api(m
         called = True
         raise AssertionError("ML API must not be called for historical-only coverage")
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", should_not_call, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_orders(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", should_not_call, raising=False)
+    response = marketplace_orders.query(
         "000002", "vendas antigas", "JK Pecas", "2024-01-01", "2024-01-31"
     )
 
@@ -684,8 +691,8 @@ def test_orders_rejects_non_exact_or_ambiguous_store_without_api_call(monkeypatc
         called = True
         raise AssertionError("API must not be called")
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", should_not_call, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_orders("000002", "vendas", "JK")
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", should_not_call, raising=False)
+    response = marketplace_orders.query("000002", "vendas", "JK")
 
     assert response["result"]["error"] == "ambiguous_store"
     assert response["result"]["available_stores"] == ["JK Pecas", "JK Pecas Centro"]
@@ -736,8 +743,8 @@ def test_latest_return_uses_claims_api_and_enriches_order_without_pii(monkeypatc
             }), cfg
         raise AssertionError(f"URL inesperada: {url}")
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_returns(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    response = marketplace_returns.query(
         "000002",
         "qual foi a ultima devolucao",
         "JK Pecas",
@@ -796,8 +803,8 @@ def test_latest_return_detects_return_related_to_mediation_claim(monkeypatch):
             return FakeResponse(200, _order(987654322)), cfg
         raise AssertionError(f"URL inesperada: {url}")
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_returns(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    response = marketplace_returns.query(
         "000002", "qual foi a ultima devolucao", "JK Pecas", limite=1
     )
     result = response["result"]
@@ -845,11 +852,11 @@ def test_listing_defaults_active_paginates_five_pages_and_caps_at_100(monkeypatc
         ]
         return FakeResponse(200, payload), cfg
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    monkeypatch.setattr(ml_tools, "_ia_tool_resolver_sku", lambda *_args, **_kwargs: "", raising=False)
-    monkeypatch.setattr(ml_tools, "_ia_extrair_referencia_produto_mensagem", lambda *_args: {}, raising=False)
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    monkeypatch.setattr(marketplace_runtime, "resolve_sku", lambda *_args, **_kwargs: "", raising=False)
+    monkeypatch.setattr(marketplace_runtime, "extract_product_reference", lambda *_args: {}, raising=False)
 
-    response = ml_tools._ia_tool_get_mercado_livre_listing(
+    response = marketplace_listings.query(
         "000002", "liste os anuncios", "JK Pecas", limite=500
     )
     result = response["result"]
@@ -921,8 +928,8 @@ def test_listing_resolves_exact_variation_sku_without_exposing_parent_as_match(m
             ]), cfg
         raise AssertionError(f"URL inesperada: {url}")
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_listing(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    response = marketplace_listings.query(
         "000002",
         "agora o 299-2",
         "Uai Mineirinho",
@@ -974,8 +981,8 @@ def test_listing_discards_search_result_when_detailed_variations_do_not_confirm_
             }]), cfg
         raise AssertionError(f"URL inesperada: {url}")
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_listing(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    response = marketplace_listings.query(
         "000002", "consulte o 299-2", "JK Pecas", sku="299-2"
     )
     result = response["result"]
@@ -1001,11 +1008,11 @@ def test_listing_accepts_206_and_marks_partial(monkeypatch):
             ), cfg
         return FakeResponse(200, [{"body": {"id": "MLB1", "title": "Produto", "status": "active"}}]), cfg
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    monkeypatch.setattr(ml_tools, "_ia_tool_resolver_sku", lambda *_args, **_kwargs: "", raising=False)
-    monkeypatch.setattr(ml_tools, "_ia_extrair_referencia_produto_mensagem", lambda *_args: {}, raising=False)
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    monkeypatch.setattr(marketplace_runtime, "resolve_sku", lambda *_args, **_kwargs: "", raising=False)
+    monkeypatch.setattr(marketplace_runtime, "extract_product_reference", lambda *_args: {}, raising=False)
 
-    response = ml_tools._ia_tool_get_mercado_livre_listing("000002", "liste anuncios", "JK Pecas")
+    response = marketplace_listings.query("000002", "liste anuncios", "JK Pecas")
 
     assert response["result"]["partial_response"] is True
     assert response["result"]["truncated"] is True
@@ -1028,11 +1035,11 @@ def test_listing_explicit_items_limits_descriptions_to_ten(monkeypatch):
         description_calls.append(item_id)
         return f"Descricao {item_id}", cfg
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    monkeypatch.setattr(ml_tools, "_ia_ml_obter_descricao_item", fake_description)
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    monkeypatch.setattr(marketplace_items, "get_item_description", fake_description)
     ids = ",".join(f"MLB{index}" for index in range(1, 13))
 
-    response = ml_tools._ia_tool_get_mercado_livre_listing(
+    response = marketplace_listings.query(
         "000002",
         "detalhes dos anuncios",
         "JK Pecas",
@@ -1070,8 +1077,8 @@ def test_listing_explicit_mlb_preserves_pictures_and_validates_store_owner(monke
             },
         }]), cfg
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_listing(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    response = marketplace_listings.query(
         "000002", "dados do MLB-123456789", "JK Pecas", item_id="MLB-123456789"
     )
     result = response["result"]
@@ -1101,8 +1108,8 @@ def test_listing_explicit_mlb_from_another_seller_is_rejected_fail_closed(monkey
             "body": {"id": "MLB987654321", "seller_id": 99999, "title": "Outra conta", "status": "active"},
         }]), cfg
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_listing(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    response = marketplace_listings.query(
         "000002", "dados do MLB987654321", "JK Pecas", item_id="MLB987654321"
     )
     result = response["result"]
@@ -1125,11 +1132,11 @@ def test_listing_does_not_treat_date_as_sku(monkeypatch):
             return FakeResponse(200, {"paging": {"total": 0}, "results": []}), cfg
         raise AssertionError("No item detail request expected")
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    monkeypatch.setattr(ml_tools, "_ia_tool_resolver_sku", lambda *_args, **_kwargs: "01/07/2026", raising=False)
-    monkeypatch.setattr(ml_tools, "_ia_extrair_referencia_produto_mensagem", lambda *_args: {}, raising=False)
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    monkeypatch.setattr(marketplace_runtime, "resolve_sku", lambda *_args, **_kwargs: "01/07/2026", raising=False)
+    monkeypatch.setattr(marketplace_runtime, "extract_product_reference", lambda *_args: {}, raising=False)
 
-    response = ml_tools._ia_tool_get_mercado_livre_listing(
+    response = marketplace_listings.query(
         "000002", "liste anuncios de 01/07/2026 a 12/07/2026", "JK Pecas"
     )
 
@@ -1138,10 +1145,10 @@ def test_listing_does_not_treat_date_as_sku(monkeypatch):
 
 
 def test_latest_deadline_is_capped_at_twenty_five_seconds(monkeypatch):
-    monkeypatch.setattr(ml_tools.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(marketplace_client.time, "monotonic", lambda: 100.0)
 
-    assert ml_tools._ia_ml_latest_deadline() == 125.0
-    assert ml_tools._ia_ml_latest_deadline(118.0) == 118.0
+    assert marketplace_order_models.latest_deadline() == 125.0
+    assert marketplace_order_models.latest_deadline(118.0) == 118.0
 
 
 def test_latest_sale_timeout_keeps_exact_coverage_inconclusive(monkeypatch):
@@ -1151,11 +1158,11 @@ def test_latest_sale_timeout_keeps_exact_coverage_inconclusive(monkeypatch):
         if url.endswith("/items/search"):
             return FakeResponse(200, {"paging": {"total": 1}, "results": ["MLB200"]}), cfg
         if url.endswith("/orders/search"):
-            raise ml_tools.requests.exceptions.Timeout("deadline")
+            raise requests.exceptions.Timeout("deadline")
         raise AssertionError(f"URL inesperada: {url}")
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    result = ml_tools._ia_tool_get_mercado_livre_orders(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    result = marketplace_orders.query(
         "000002",
         "ultima venda do SKU 200",
         "JK Pecas",
@@ -1176,8 +1183,8 @@ def test_latest_sale_http_failure_never_becomes_authoritative_empty(monkeypatch,
         assert url.endswith("/items/search")
         return FakeResponse(status_code, {"message": "provider failure"}), cfg
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    result = ml_tools._ia_tool_get_mercado_livre_orders(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    result = marketplace_orders.query(
         "000002",
         "ultima venda do SKU 200",
         "JK Pecas",
@@ -1193,8 +1200,8 @@ def test_latest_sale_http_failure_never_becomes_authoritative_empty(monkeypatch,
 def test_latest_sale_401_requests_reconnection(monkeypatch):
     _configure_store(monkeypatch)
     monkeypatch.setattr(
-        ml_tools,
-        "_ml_api_request",
+        marketplace_runtime,
+        "ml_api_request",
         lambda _client_id, _store, cfg, method, url, **kwargs: (
             FakeResponse(401, {"message": "unauthorized"}),
             cfg,
@@ -1202,7 +1209,7 @@ def test_latest_sale_401_requests_reconnection(monkeypatch):
         raising=False,
     )
 
-    result = ml_tools._ia_tool_get_mercado_livre_orders(
+    result = marketplace_orders.query(
         "000002",
         "ultima venda do SKU 200",
         "JK Pecas",
@@ -1241,8 +1248,8 @@ def test_latest_sale_resolves_sku_and_searches_item_until_exact_variation(monkey
             return FakeResponse(200, {"paging": {"total": 101}, "results": rows}), cfg
         raise AssertionError(f"URL inesperada: {url}")
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_orders(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    response = marketplace_orders.query(
         "000002",
         "qual foi a ultima venda do 200",
         "JK Pecas",
@@ -1310,8 +1317,8 @@ def test_latest_return_filters_order_before_fetching_claim_and_return_details(mo
             return FakeResponse(200, {"id": 9002, "status": "closed", "last_updated": "2026-07-14T10:05:00.000-03:00"}), cfg
         raise AssertionError(f"URL inesperada: {url}")
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    response = ml_tools._ia_tool_get_mercado_livre_returns(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    response = marketplace_returns.query(
         "000002",
         "qual foi o numero da venda da ultima devolucao do 200",
         "JK Pecas",
@@ -1347,8 +1354,8 @@ def test_latest_return_empty_is_authoritative_only_after_complete_scan(monkeypat
             return FakeResponse(200, {"paging": {"total": 0}, "data": []}), cfg
         raise AssertionError(f"URL inesperada: {url} {params}")
 
-    monkeypatch.setattr(ml_tools, "_ml_api_request", fake_api, raising=False)
-    result = ml_tools._ia_tool_get_mercado_livre_returns(
+    monkeypatch.setattr(marketplace_runtime, "ml_api_request", fake_api, raising=False)
+    result = marketplace_returns.query(
         "000002",
         "ultima devolucao do 200",
         "JK Pecas",

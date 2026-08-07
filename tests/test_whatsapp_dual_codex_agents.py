@@ -5,11 +5,28 @@ import time
 
 import pytest
 
-from backend.services import codex_assistant, codex_console, codex_whatsapp_agents, whatsapp_bridge
+from backend.services import codex_console, codex_whatsapp_agents, whatsapp_bridge
+from backend.services.codex.assistant import execution as assistant_execution
 from backend.services.whatsapp import black_jhon_prompting, conversation_context, marketplace_listing_delivery
 from backend.services.whatsapp.orchestration import conversation as whatsapp_conversation
 from backend.services.whatsapp.orchestration import function_manager as whatsapp_function_manager
 from backend.services.whatsapp.orchestration import manager_results as whatsapp_manager_results
+from backend.services.codex.console import agent_loop as console_agent_loop
+from backend.services.codex.console import attachments as console_attachments
+from backend.services.codex.console import scope as console_scope
+from backend.services.codex.console import task_store as console_task_store
+from backend.services.codex.console import tasks as console_tasks
+from backend.services.codex.console import queueing as console_queueing
+
+
+def _evidence(status: str, reason: str = "") -> dict:
+    conclusive = status in {"complete", "confirmed_zero"}
+    return {"schema": "jk.codex.evidence.v1", "status": status,
+        "claim_scope": "full" if conclusive else "observed_only" if status == "partial" else "none",
+        "coverage_complete": conclusive, "confidence": "high" if conclusive else "medium" if status == "partial" else "low",
+        "freshness": "live", "retryable": status == "unavailable", "reason": reason or status,
+        "missing_fields": [] if conclusive else ["decisive_evidence"], "sources": [],
+        "attempted_fallbacks": [], "next_sources": []}
 
 
 def _config() -> dict:
@@ -290,7 +307,7 @@ def test_status_probe_never_creates_or_steers_another_worker(monkeypatch):
         },
     )
     monkeypatch.setattr(whatsapp_bridge, "_create_dual_worker_task", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no worker")))
-    monkeypatch.setattr(codex_console, "codex_complementar_tarefa_para_sessao", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no steer")))
+    monkeypatch.setattr(console_tasks, "steer", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no steer")))
     monkeypatch.setattr(whatsapp_bridge, "_post_message_result", lambda _cfg, _mid, payload: sent.append(payload) or {"status": "sent"})
     assert whatsapp_bridge._process_dual_codex_message(
         _config(), {}, {"message_id": "probe", "text_body": "?"},
@@ -318,8 +335,8 @@ def test_worker_result_is_rewritten_by_luna_before_proactive_delivery(monkeypatc
     proactive = []
     updates = []
     removed = []
-    monkeypatch.setattr(codex_console, "_codex_load_task", lambda _task_id: raw_worker)
-    monkeypatch.setattr(codex_console, "_codex_update_task", lambda task_id, **values: updates.append((task_id, values)))
+    monkeypatch.setattr(console_tasks, "load", lambda _task_id: raw_worker)
+    monkeypatch.setattr(console_tasks, "update", lambda task_id, **values: updates.append((task_id, values)))
     monkeypatch.setattr(
         whatsapp_bridge,
         "_run_conversation_agent",
@@ -367,8 +384,8 @@ def test_job_group_buffers_partial_and_delivers_one_final_answer(monkeypatch):
     proactive = []
     removed = []
     state = {}
-    monkeypatch.setattr(codex_console, "_codex_load_task", lambda task_id: tasks.get(task_id))
-    monkeypatch.setattr(codex_console, "_codex_update_task", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_tasks, "load", lambda task_id: tasks.get(task_id))
+    monkeypatch.setattr(console_tasks, "update", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         whatsapp_bridge,
         "_run_conversation_agent",
@@ -419,9 +436,9 @@ def test_expired_legacy_job_deadline_is_cleared_without_canceling_tasks(monkeypa
     canceled = []
     updates = []
     saved = []
-    monkeypatch.setattr(codex_console, "_codex_load_task", lambda task_id: {"task_id": task_id, "status": statuses[task_id]})
-    monkeypatch.setattr(codex_console, "_codex_interrupt_active_turn", lambda task_id: canceled.append(task_id) or True)
-    monkeypatch.setattr(codex_console, "_codex_update_task", lambda task_id, **values: updates.append((task_id, values)))
+    monkeypatch.setattr(console_tasks, "load", lambda task_id: {"task_id": task_id, "status": statuses[task_id]})
+    monkeypatch.setattr(console_queueing, "interrupt_active_turn", lambda task_id: canceled.append(task_id) or True)
+    monkeypatch.setattr(console_tasks, "update", lambda task_id, **values: updates.append((task_id, values)))
     monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda _state, mid, value: saved.append((mid, dict(value))))
     monkeypatch.setattr(whatsapp_bridge, "_post_proactive", lambda *_args, **_kwargs: {"success": True, "status": "sent"})
     monkeypatch.setattr(whatsapp_bridge, "_remove_pending", lambda *_args, **_kwargs: None)
@@ -445,8 +462,8 @@ def test_waiting_tick_uses_deterministic_text_at_fifteen_seconds(monkeypatch):
     proactive = []
     saved = []
     monkeypatch.setattr(whatsapp_bridge, "_run_conversation_agent", lambda *_args, **_kwargs: pytest.fail("wait notices must not call AI"))
-    monkeypatch.setattr(codex_console, "_codex_load_task", lambda _task_id: task)
-    monkeypatch.setattr(codex_console, "_codex_update_task", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_tasks, "load", lambda _task_id: task)
+    monkeypatch.setattr(console_tasks, "update", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(whatsapp_bridge, "_post_proactive", lambda _cfg, payload: proactive.append(payload) or {"status": "queued"})
     monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda _state, message_id, pending: saved.append((message_id, dict(pending))))
 
@@ -465,11 +482,11 @@ def test_waiting_tick_uses_deterministic_text_at_fifteen_seconds(monkeypatch):
 
 
 def test_codex_conversation_lanes_are_distinct_and_legacy_identity_is_stable():
-    legacy = codex_console._codex_canonical_conversation_id("cliente", "admin", channel="whatsapp", phone="5511999999999")
-    conversation = codex_console._codex_canonical_conversation_id(
+    legacy = console_attachments._codex_canonical_conversation_id("cliente", "admin", channel="whatsapp", phone="5511999999999")
+    conversation = console_attachments._codex_canonical_conversation_id(
         "cliente", "admin", channel="whatsapp", phone="5511999999999", lane="conversation"
     )
-    worker = codex_console._codex_canonical_conversation_id(
+    worker = console_attachments._codex_canonical_conversation_id(
         "cliente", "admin", channel="whatsapp", phone="5511999999999", lane="worker"
     )
     assert legacy.startswith("wa_")
@@ -479,7 +496,7 @@ def test_codex_conversation_lanes_are_distinct_and_legacy_identity_is_stable():
 
 
 def test_new_codex_reasoning_aliases_are_accepted_by_beta_sdk_compatibility():
-    normalized = codex_console._codex_sdk_response_compat({
+    normalized = console_agent_loop._codex_sdk_response_compat({
         "supportedReasoningEfforts": [
             {"reasoningEffort": "max"},
             {"reasoningEffort": "ultra"},
@@ -528,7 +545,7 @@ def test_completed_result_requires_evidence_and_full_coverage_for_absence():
     assert whatsapp_bridge._dual_worker_disposition(task, absence) == "completed"
 
 
-def test_non_json_sol_result_uses_confirmed_tool_validation_and_stops_retry():
+def test_non_json_sol_result_uses_confirmed_evidence_and_stops_retry():
     task = {
         "task_id": "task-confirmed",
         "status": "completed",
@@ -539,11 +556,11 @@ def test_non_json_sol_result_uses_confirmed_tool_validation_and_stops_retry():
                 "tool_id": "product_data",
                 "source_label": "cadastro do JK Sistema",
                 "records": 1,
-                "tool_validation": {"dados_suficientes": True, "motivo": "SKU localizado"},
+                "status": "complete", "claim_scope": "full", "evidence": _evidence("complete", "SKU localizado"),
             },
             {
                 "tool_id": "fallback_optional",
-                "tool_validation": {"dados_suficientes": False, "motivo": "sem retorno"},
+                "status": "insufficient", "claim_scope": "none", "evidence": _evidence("insufficient", "sem retorno"),
             },
         ],
     }
@@ -829,8 +846,6 @@ def test_simple_stock_query_has_no_deterministic_source_chain():
 
 
 def test_stock_executor_runs_only_the_agent_plan_in_call_order(monkeypatch):
-    from backend.services import codex_assistant
-
     calls: list[tuple[str, str]] = []
 
     def execute_tool_call(*, tool_id, args, **_kwargs):
@@ -856,7 +871,7 @@ def test_stock_executor_runs_only_the_agent_plan_in_call_order(monkeypatch):
                         "partial": False,
                     },
                 }],
-                "tool_validation": {"dados_suficientes": True},
+                "evidence": _evidence("complete"),
             }
         if tool_id == "bling_stock_balances":
             return {
@@ -864,7 +879,7 @@ def test_stock_executor_runs_only_the_agent_plan_in_call_order(monkeypatch):
                 "tool_id": tool_id,
                 "records": 0,
                 "summary": [],
-                "tool_validation": {"dados_suficientes": False, "motivo": "Bling indisponivel"},
+                "evidence": _evidence("unavailable", "Bling indisponivel"),
             }
         if tool_id == "mercado_livre_listing" and store == "ML OK":
             return {
@@ -872,9 +887,7 @@ def test_stock_executor_runs_only_the_agent_plan_in_call_order(monkeypatch):
                 "tool_id": tool_id,
                 "records": 1,
                 "top_rows": [{"id": "MLB123", "seller_sku": "001", "available_quantity": 5}],
-                "dados_suficientes": True,
-                "coverage_complete": True,
-                "tool_validation": {"dados_suficientes": True},
+                "evidence": _evidence("complete"),
             }
         if tool_id == "mercado_livre_listing":
             return {
@@ -882,9 +895,7 @@ def test_stock_executor_runs_only_the_agent_plan_in_call_order(monkeypatch):
                 "tool_id": tool_id,
                 "records": 0,
                 "top_rows": [],
-                "dados_suficientes": True,
-                "coverage_complete": True,
-                "tool_validation": {"dados_suficientes": True},
+                "evidence": _evidence("confirmed_zero"),
             }
         return {
             "success": True,
@@ -900,12 +911,10 @@ def test_stock_executor_runs_only_the_agent_plan_in_call_order(monkeypatch):
                     "saldo_total": 13,
                 },
             }],
-            "dados_suficientes": True,
-            "coverage_complete": True,
-            "tool_validation": {"dados_suficientes": True},
+            "evidence": _evidence("complete"),
         }
 
-    monkeypatch.setattr(codex_assistant, "codex_assistant_execute_tool_call", execute_tool_call)
+    monkeypatch.setattr(assistant_execution, "execute_tool_call", execute_tool_call)
     plan = {
         "tool_calls": [
             {"tool_id": "bling_stock_balances", "arguments": {}, "required": False},
@@ -1392,11 +1401,11 @@ def test_stock_wrapper_uses_numeric_bling_balance_and_never_turns_empty_data_int
             "records": 0 if quantity is None else 1,
             "data": [],
             "summary": nested,
-            "tool_validation": {
-                "dados_suficientes": True,
-                "motivo": "fallback generico considerou o SKU localizado",
-                "warnings": ["Token Bling expirado para esta loja."] if token_expired else [],
-            },
+            "warnings": ["Token Bling expirado para esta loja."] if token_expired else [],
+            "evidence": _evidence(
+                "unavailable" if token_expired else "confirmed_zero" if quantity == 0 else "complete",
+                "token expirado" if token_expired else "saldo confirmado",
+            ),
         }
 
     uai = whatsapp_bridge._function_manager_compact_result(raw_balance("Uai Mineirinho", 57))
@@ -1405,11 +1414,11 @@ def test_stock_wrapper_uses_numeric_bling_balance_and_never_turns_empty_data_int
     for store, item in (("Uai Mineirinho", uai), ("Carlos Jose", carlos), ("Deckas", deckas)):
         item.update({"manager_store": store, "manager_required": True})
 
-    assert uai["dados_suficientes"] is True
+    assert uai["evidence"]["status"] == "complete"
     assert uai["stock_balance"]["store_available"] == 57
-    assert carlos["dados_suficientes"] is True
+    assert carlos["evidence"]["status"] == "confirmed_zero"
     assert carlos["stock_balance"]["store_available"] == 0
-    assert deckas["dados_suficientes"] is False
+    assert deckas["evidence"]["status"] == "unavailable"
     assert deckas["error_class"] == "authentication"
     assert deckas["retryable"] is False
 
@@ -1478,8 +1487,7 @@ def test_deterministic_listing_bundle_formats_api_fields_without_llm():
                 "pictures": [{"secure_url": "https://http2.mlstatic.com/B.jpg"}],
             },
         ],
-        "dados_suficientes": True,
-        "coverage_complete": True,
+        "evidence": _evidence("complete"),
         "manager_store": "JK Pecas",
         "manager_required": True,
     }
@@ -1520,8 +1528,7 @@ def test_deterministic_latest_sale_response_shows_order_instead_of_aggregate_cou
             "buyer_city": "Belo Horizonte",
             "items": [{"sku": "001", "title": "Produto de teste", "quantity": 1}],
         }],
-        "dados_suficientes": True,
-        "coverage_complete": True,
+        "evidence": _evidence("complete"),
         "manager_store": "JK Pecas",
         "manager_required": True,
         "sources": ["get_mercado_livre_orders"],
@@ -1583,7 +1590,7 @@ def test_listing_bundle_preserves_partial_coverage_from_standard_codex_shape():
                 },
             }
         ],
-        "tool_validation": {"dados_suficientes": True, "campos_faltantes": ["cobertura_lojas"]},
+        "evidence": _evidence("partial", "cobertura de lojas incompleta"),
     }
 
     bundle = marketplace_listing_delivery.build_listing_bundle([result])
@@ -1650,7 +1657,7 @@ def test_internal_manager_evidence_answers_without_creating_sol(monkeypatch):
             "tool_id": "product_data", "manager_required": True, "records": 1,
             "data": {"sku": "001", "produto": "Cebolao Shadow Hornet"},
             "source_label": "cadastro do JK Sistema",
-            "tool_validation": {"dados_suficientes": True, "motivo": "localizado"},
+            "evidence": _evidence("complete", "localizado"),
         }],
     )
     delivered = []
@@ -1687,8 +1694,7 @@ def test_direct_listing_delivery_sends_official_photos_before_structured_text(mo
             "description": "Descricao oficial",
             "pictures": [{"secure_url": "https://http2.mlstatic.com/A.jpg"}],
         }],
-        "dados_suficientes": True,
-        "coverage_complete": True,
+        "evidence": _evidence("complete"),
         "manager_store": "JK Pecas",
         "manager_required": True,
     }
@@ -1757,8 +1763,8 @@ def test_sol_data_request_returns_to_same_manager_job(monkeypatch):
         "current_attempt": 1, "attempt_task_ids": ["sol-1"], "requires_web": True,
     }
     submitted = []
-    monkeypatch.setattr(codex_console, "_codex_load_task", lambda *_args: task)
-    monkeypatch.setattr(codex_console, "_codex_update_task", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_tasks, "load", lambda *_args: task)
+    monkeypatch.setattr(console_tasks, "update", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(whatsapp_bridge, "_submit_function_manager_job", lambda *_args: submitted.append(True) or True)
 
@@ -1790,8 +1796,8 @@ def test_incomplete_nontransient_result_finishes_as_partial(monkeypatch):
     }
     proactive = []
     removed = []
-    monkeypatch.setattr(codex_console, "_codex_load_task", lambda _task_id: task)
-    monkeypatch.setattr(codex_console, "_codex_update_task", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_tasks, "load", lambda _task_id: task)
+    monkeypatch.setattr(console_tasks, "update", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         whatsapp_bridge,
         "_run_conversation_agent",
@@ -1875,7 +1881,7 @@ def test_failed_third_subtask_does_not_cancel_created_siblings(monkeypatch):
 
 def test_restart_keeps_deadline_canceled_pending_terminal_partial(monkeypatch):
     task = {"task_id": "old-task", "status": "canceled", "cancel_source": "whatsapp_deadline"}
-    monkeypatch.setattr(codex_console, "_codex_load_task", lambda _task_id: task)
+    monkeypatch.setattr(console_tasks, "load", lambda _task_id: task)
     monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda *_args, **_kwargs: None)
     pending = {
         "kind": "dual_worker",
@@ -1894,7 +1900,7 @@ def test_restart_keeps_deadline_canceled_pending_terminal_partial(monkeypatch):
 
 def test_restart_retries_stale_readonly_attempt_waiting_for_approval(monkeypatch):
     task = {"task_id": "stale-task", "status": "awaiting_approval", "origin": "whatsapp"}
-    monkeypatch.setattr(codex_console, "_codex_load_task", lambda _task_id: task)
+    monkeypatch.setattr(console_tasks, "load", lambda _task_id: task)
     monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda *_args, **_kwargs: None)
     pending = {
         "kind": "dual_worker",
@@ -1949,7 +1955,7 @@ def test_agent_query_policy_does_not_inherit_unselected_store_context():
 
 
 def test_sol_web_profile_is_live_search_but_remains_restricted():
-    overrides = set(codex_console._codex_web_readonly_config_overrides())
+    overrides = set(console_scope._codex_web_readonly_config_overrides())
     assert "tools.web_search=true" in overrides
     assert 'web_search="live"' in overrides
     assert "tools.web_search=false" not in overrides
@@ -1973,7 +1979,7 @@ def test_only_authenticated_readonly_sol_worker_enables_live_web_search():
             "allow_web_search": True,
         },
     }
-    assert codex_console._codex_dual_worker_web_search_enabled(
+    assert console_scope._codex_dual_worker_web_search_enabled(
         task,
         read_only_channel_mode=True,
         sandbox="read_only",
@@ -1987,19 +1993,19 @@ def test_only_authenticated_readonly_sol_worker_enables_live_web_search():
     ):
         blocked = {**task, **changed}
         blocked["channel_metadata"] = {**task["channel_metadata"], **changed}
-        assert codex_console._codex_dual_worker_web_search_enabled(
+        assert console_scope._codex_dual_worker_web_search_enabled(
             blocked,
             read_only_channel_mode=True,
             sandbox="read_only",
         ) is False
 
     no_permission = {**task, "channel_metadata": {**task["channel_metadata"], "allow_web_search": False}}
-    assert codex_console._codex_dual_worker_web_search_enabled(
+    assert console_scope._codex_dual_worker_web_search_enabled(
         no_permission,
         read_only_channel_mode=True,
         sandbox="read_only",
     ) is False
-    assert codex_console._codex_dual_worker_web_search_enabled(
+    assert console_scope._codex_dual_worker_web_search_enabled(
         task,
         read_only_channel_mode=True,
         sandbox="workspace_write",
@@ -2016,7 +2022,7 @@ def test_waiting_tick_is_deterministic_even_when_agent_would_stay_silent(monkeyp
         "_run_conversation_agent",
         lambda *_args, **_kwargs: {"action": "wait", "reply_text": "", "thread_id": "thread-luna"},
     )
-    monkeypatch.setattr(codex_console, "_codex_update_task", lambda task_id, **values: updates.append((task_id, values)))
+    monkeypatch.setattr(console_tasks, "update", lambda task_id, **values: updates.append((task_id, values)))
     monkeypatch.setattr(whatsapp_bridge, "_post_proactive", lambda *_args, **_kwargs: proactive.append(True) or {"status": "sent"})
     monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda _state, message_id, pending: saved.append((message_id, dict(pending))))
 
@@ -2065,9 +2071,7 @@ def test_active_job_routing_follows_agent_decision_without_lexical_override(monk
             "thread_id": "thread-luna",
         },
     )
-    monkeypatch.setattr(
-        codex_console,
-        "codex_complementar_tarefa_para_sessao",
+    monkeypatch.setattr(console_tasks, "steer",
         lambda task_id, prompt, *_args, **_kwargs: steered.append((task_id, prompt)) or {"accepted": True},
     )
     monkeypatch.setattr(

@@ -17,11 +17,12 @@ import time
 import traceback
 import unicodedata
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 import pandas as pd
 
-from .dependencies import get_vendas_dependencies, logger
+from .dependencies import get_tenant_path, get_vendas_dependencies, logger
 from .errors import VendasDomainError as HTTPException
 from .legacy import (
     _carregar_mapeamento_lojas_virtuais_cliente,
@@ -47,6 +48,101 @@ def _grafico_cache_paths(arguments: dict) -> list[str]:
     client_id = arguments["client_id"]
     db_paths = _listar_bancos_vendas_tenant(client_id, arguments.get("loja"))
     return vendas_source_paths(client_id, db_paths, include_stock=True)
+
+
+def _calcular_skus_pareto_80(rows: list[tuple]) -> tuple[list[str], dict[str, Any]]:
+    def texto_regra(value: Any) -> str:
+        texto = unicodedata.normalize("NFKD", str(value or ""))
+        return "".join(char for char in texto if not unicodedata.combining(char)).strip().upper()
+
+    chaves_faturadas = {
+        (
+            texto_regra(row[6] if len(row) > 6 else ""),
+            str(row[12] if len(row) > 12 and row[12] is not None else "").strip(),
+            str(row[3] if len(row) > 3 and row[3] is not None else "").strip().upper(),
+        )
+        for row in rows
+        if len(row) > 12
+        and str(row[12] or "").strip()
+        and "FATURAD" in texto_regra(row[11] if len(row) > 11 else "")
+    }
+    faturamento_por_sku: dict[str, Decimal] = {}
+    for row in rows:
+        sku_norm = str(row[3] if len(row) > 3 and row[3] is not None else "").strip().upper()
+        situacao_norm = texto_regra(row[11] if len(row) > 11 else "")
+        nota_fiscal_id = str(row[12] if len(row) > 12 and row[12] is not None else "").strip()
+        chave_fatura = (
+            texto_regra(row[6] if len(row) > 6 else ""),
+            nota_fiscal_id,
+            sku_norm,
+        )
+        if (
+            not sku_norm
+            or texto_regra(sku_norm) == "ESTORNO DE CREDITO ICMS"
+            or "CANCEL" in situacao_norm
+            or (nota_fiscal_id and chave_fatura in chaves_faturadas and "FATURAD" not in situacao_norm)
+        ):
+            continue
+        try:
+            valor = Decimal(str(row[5] if len(row) > 5 and row[5] is not None else 0))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if not valor.is_finite():
+            continue
+        faturamento_por_sku[sku_norm] = faturamento_por_sku.get(sku_norm, Decimal("0")) + valor
+
+    ordenados = sorted(
+        faturamento_por_sku.items(),
+        key=lambda item: (-item[1], item[0]),
+    )
+    faturamento_total = sum((valor for _sku, valor in ordenados), Decimal("0"))
+    if faturamento_total <= 0:
+        return [], {
+            "pareto_skus_total": 0,
+            "pareto_participacao": 0.0,
+            "pareto_sku_corte": None,
+        }
+
+    alvo = faturamento_total * Decimal("0.80")
+    acumulado = Decimal("0")
+    skus_pareto: list[str] = []
+    for sku_item, valor in ordenados:
+        skus_pareto.append(sku_item)
+        acumulado += valor
+        if acumulado >= alvo:
+            break
+
+    return skus_pareto, {
+        "pareto_skus_total": len(skus_pareto),
+        "pareto_participacao": float(acumulado / faturamento_total),
+        "pareto_sku_corte": skus_pareto[-1] if skus_pareto else None,
+    }
+
+
+def _filtrar_vendas_lojas_ativas(rows: list[tuple], client_id: str, loja: str | None) -> list[tuple]:
+    if loja and loja != "__todas":
+        return rows
+    try:
+        caminho = os.path.join(get_tenant_path(client_id), "lojas_config.json")
+        with open(caminho, "r", encoding="utf-8-sig") as arquivo:
+            payload = json.load(arquivo)
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return rows
+    if not isinstance(payload, list):
+        return rows
+
+    def chave_loja(value: Any) -> str:
+        texto = unicodedata.normalize("NFKD", str(value or ""))
+        return "".join(char for char in texto if not unicodedata.combining(char)).strip().casefold()
+
+    lojas_ativas = {
+        chave_loja(item.get("nome"))
+        for item in payload
+        if isinstance(item, dict) and chave_loja(item.get("nome"))
+    }
+    if not lojas_ativas:
+        return rows
+    return [row for row in rows if len(row) > 6 and chave_loja(row[6]) in lojas_ativas]
 
 
 @cache_vendas_response("grafico", _grafico_cache_paths)
@@ -78,11 +174,16 @@ def grafico_vendas(
             "quantidades_devolucoes": [],
             "estoque_geral": [],
             "estoque_sku": [],
+            "estoque_skus_com_saldo": [],
+            "estoque_skus_pareto_com_saldo": [],
             "estoque_meta": {
                 "success": True,
                 "requested": bool(mostrar_estoque_geral or mostrar_estoque_sku),
                 "lojas": 0,
                 "sku": _normalizar_sku_estoque(sku) if sku else None,
+                "pareto_skus_total": 0,
+                "pareto_participacao": 0.0,
+                "pareto_sku_corte": None,
                 "detail": "Sem bancos de vendas para o filtro informado.",
             },
         }
@@ -136,7 +237,7 @@ def grafico_vendas(
                 data_inicio_dt = hoje - timedelta(days=90)
 
         query = """
-            SELECT id_unico, data, devolucao, sku, quantidade, valor, loja_conta, unidade_negocio, numero, comprador, canal
+            SELECT id_unico, data, devolucao, sku, quantidade, valor, loja_conta, unidade_negocio, numero, comprador, canal, situacao, nota_fiscal_id
             FROM vendas
         """
         conditions = ["coalesce(devolucao, 0) = 0"]
@@ -200,6 +301,16 @@ def grafico_vendas(
                 continue
             vistos.add(chave)
             rows_unicos.append(row)
+
+        rows_pareto = _filtrar_vendas_lojas_ativas(rows_unicos, client_id, loja)
+        pareto_skus, pareto_meta = _calcular_skus_pareto_80(rows_pareto)
+        if not mostrar_estoque_geral or sku:
+            pareto_skus = []
+            pareto_meta = {
+                "pareto_skus_total": 0,
+                "pareto_participacao": 0.0,
+                "pareto_sku_corte": None,
+            }
 
         dados_agrupados = {}
 
@@ -379,7 +490,9 @@ def grafico_vendas(
             mostrar_estoque_geral=mostrar_estoque_geral,
             mostrar_estoque_sku=mostrar_estoque_sku,
             sku=sku,
+            pareto_skus=pareto_skus,
         )
+        estoque_series.setdefault("estoque_meta", {}).update(pareto_meta)
 
         return {
             "labels": labels,

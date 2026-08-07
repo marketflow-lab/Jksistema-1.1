@@ -75,9 +75,9 @@ def create_admin_usuarios_router() -> APIRouter:
 
     from backend.routers.codex_console import create_codex_console_router
     from backend.services import codex_assistant as codex_assistant_service
-    from backend.services import codex_console as codex_console_service
+    from backend.services.codex.console import bootstrap as codex_console_service
 
-    codex_console_service.configure_codex_console_runtime(sys.modules.get("backend_api"))
+    codex_console_service.configure(sys.modules.get("backend_api"))
     codex_assistant_service.configure_codex_assistant_runtime(sys.modules.get("backend_api"))
     admin_usuarios_router.include_router(create_codex_console_router())
 

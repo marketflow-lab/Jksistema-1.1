@@ -9,6 +9,9 @@ from starlette.datastructures import Headers
 
 from backend.services import codex_console, local_audio_transcription
 from backend.services.whatsapp import audio_processing as whatsapp_audio_processing
+from backend.services.codex.console import agent_loop as console_agent_loop
+from backend.services.codex.console import attachments_api as console_attachments
+from backend.services.codex.console import task_store as console_task_store
 
 
 @pytest.fixture(autouse=True)
@@ -21,8 +24,8 @@ def _isolated_local_voice_root(monkeypatch, tmp_path):
         target.mkdir(parents=True, exist_ok=True)
         return target
 
-    monkeypatch.setattr(codex_console, "_codex_attachments_base_dir", lambda: attachment_root)
-    monkeypatch.setattr(codex_console, "_codex_attachment_dir", attachment_dir)
+    monkeypatch.setattr(console_attachments, "base_dir", lambda: attachment_root)
+    monkeypatch.setattr(console_attachments, "conversation_dir", attachment_dir)
     return attachment_root
 
 
@@ -145,7 +148,7 @@ def test_local_voice_transcription_requires_authenticated_tenant():
 
 def test_codex_router_exposes_authenticated_audio_transcription_contract():
     router_source = Path("backend/routers/codex_console.py").read_text(encoding="utf-8")
-    service_source = Path("backend/services/codex_console.py").read_text(encoding="utf-8")
+    service_source = Path("backend/services/codex/console/api_admin.py").read_text(encoding="utf-8")
     assert '"/api/codex/audio/transcriptions"' in router_source
     assert "codex_console.codex_transcribe_audio" in router_source
     assert "_codex_require_authenticated(request, authorization)" in service_source
@@ -154,7 +157,7 @@ def test_codex_router_exposes_authenticated_audio_transcription_contract():
 
 def test_whatsapp_codex_task_keeps_bounded_listing_bundle_for_voice_delivery(monkeypatch):
     updates: list[tuple[str, dict]] = []
-    monkeypatch.setattr(codex_console, "_codex_update_task", lambda task_id, **payload: updates.append((task_id, payload)))
+    monkeypatch.setattr(console_agent_loop, "_codex_update_task", lambda task_id, **payload: updates.append((task_id, payload)))
     task = {"origin": "whatsapp"}
     result = {
         "tool_id": "mercado_livre_listing",
@@ -169,7 +172,7 @@ def test_whatsapp_codex_task_keeps_bounded_listing_bundle_for_voice_delivery(mon
             "picture_urls": ["https://http2.mlstatic.com/photo.jpg"],
         }],
     }
-    codex_console._codex_capture_whatsapp_listing_bundle("task-1", task, result)
+    console_agent_loop._codex_capture_whatsapp_listing_bundle("task-1", task, result)
     assert task["whatsapp_listing_bundle"]["listings"][0]["item_id"] == "MLB123456789"
     assert task["whatsapp_listing_bundle"]["listings"][0]["sku"] == "ABC-123"
     assert updates[0][0] == "task-1"

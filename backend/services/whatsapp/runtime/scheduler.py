@@ -49,15 +49,7 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -187,18 +179,20 @@ def _whatsapp_weekly_operational_parts(suggestions: list[dict[str, Any]], week_k
 
 def _forward_operational_alerts(config: dict[str, Any], week_key: str) -> None:
     try:
-        from backend.services import codex_assistant
+        from backend.services.codex.assistant import api as assistant_api
+        from backend.services.codex.assistant import collection as assistant_collection
+        from backend.services.codex.assistant import runtime as assistant_runtime
 
         client_id = str(config.get("client_id") or "default")
-        with codex_assistant.ASSISTANT_LOCK:
-            context = codex_assistant._assistant_collect_data(
+        with assistant_runtime.ASSISTANT_LOCK:
+            context = assistant_collection.collect_data(
                 client_id,
                 "resumo operacional semanal para WhatsApp",
                 {},
                 mode="report",
                 force_refresh=True,
             )
-            suggestions = codex_assistant._assistant_save_suggestions(client_id, context.get("suggestions") or [])
+            suggestions = assistant_api.save_suggestions(client_id, context.get("suggestions") or [])
         important = [
             item
             for item in suggestions
@@ -284,7 +278,9 @@ def _scheduled_report_parts(
     kind: str,
     current: datetime,
 ) -> tuple[dict[str, str], list[str], dict[str, Any]]:
-    from backend.services import codex_assistant
+    from backend.services.codex.assistant import answers as assistant_answers
+    from backend.services.codex.assistant import collection as assistant_collection
+    from backend.services.codex.assistant import runtime as assistant_runtime
 
     period = _scheduled_report_period(kind, current)
     prompt = (
@@ -293,8 +289,8 @@ def _scheduled_report_parts(
         "Incluir resumo executivo, indicadores de vendas e pedidos, ranking de SKUs, devoluções, ticket médio, "
         "comparação entre lojas, alertas, próximos passos, fontes e avisos de dados incompletos."
     )
-    with codex_assistant.ASSISTANT_LOCK:
-        context = codex_assistant._assistant_collect_data(
+    with assistant_runtime.ASSISTANT_LOCK:
+        context = assistant_collection.collect_data(
             client_id,
             prompt,
             {
@@ -306,7 +302,7 @@ def _scheduled_report_parts(
             force_refresh=True,
         )
     suggestions = context.get("suggestions") if isinstance(context.get("suggestions"), list) else []
-    answer = codex_assistant._assistant_report_chat_text(period["title"], context, suggestions)
+    answer = assistant_answers.render_chat(period["title"], context, suggestions)
     # O formatador móvel recebe um único título controlado pelo agendamento;
     # elimina-se apenas o primeiro H1 produzido pelo relatório-base.
     answer = re.sub(r"^\s*#\s+[^\n]+\n*", "", str(answer or ""), count=1).strip()

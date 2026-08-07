@@ -4,7 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
-from backend.services import codex_assistant, codex_bling_tools, whatsapp_bridge
+from backend.services import codex_bling_tools, whatsapp_bridge
+from backend.services.codex.assistant import routing as assistant_routing
 from backend.services.whatsapp import intent, tool_results
 from backend.services.whatsapp.orchestration import manager_results
 
@@ -37,19 +38,19 @@ def test_positive_stock_count_intent_does_not_replace_exact_or_full_balance(mess
 
 def test_assistant_routes_count_only_to_aggregate_tool() -> None:
     message = "Ok, mas quero saber quantos SKU estao com estoque na loja"
-    policy = codex_assistant._assistant_source_routing_policy(message)
+    policy = assistant_routing._assistant_source_routing_policy(message)
 
     assert policy["required_tools"] == ["bling_positive_stock_sku_count"]
     assert "bling_stock_balances" in policy["forbidden_tools"]
     assert policy["aggregation_policy"] == "single_store_scalar_no_sum"
-    assert codex_assistant._assistant_select_tool_ids(message, "chat", {}) == [
+    assert assistant_routing._assistant_select_tool_ids(message, "chat", {}) == [
         "bling_positive_stock_sku_count"
     ]
 
 
 def test_whatsapp_manager_keeps_only_aggregate_call_and_drops_false_sku() -> None:
     message = "Quantos SKUs estao com estoque? Loja selecionada: Loja 245"
-    source_policy = codex_assistant._assistant_source_routing_policy(message)
+    source_policy = assistant_routing._assistant_source_routing_policy(message)
     plan = whatsapp_bridge._function_manager_enforce_plan(
         {
             "tool_calls": [
@@ -234,6 +235,20 @@ def test_zero_is_confirmed_and_formats_as_sku_count() -> None:
     result = {
         "tool_id": "bling_positive_stock_sku_count",
         "manager_store": "JK Pecas",
+        "evidence": {
+            "schema": "jk.codex.evidence.v1",
+            "status": "complete",
+            "claim_scope": "full",
+            "coverage_complete": True,
+            "confidence": "high",
+            "freshness": "live",
+            "retryable": False,
+            "reason": "Cobertura completa.",
+            "missing_fields": [],
+            "sources": [],
+            "attempted_fallbacks": [],
+            "next_sources": [],
+        },
         "top_rows": [
             {
                 "schema": "jk.stock.bling_positive_sku_count.v1",
@@ -260,8 +275,8 @@ def test_zero_is_confirmed_and_formats_as_sku_count() -> None:
     assert "SKU 245" not in text
 
     compact = tool_results.function_manager_compact_result({"success": True, **result})
-    assert compact["dados_suficientes"] is True
-    assert compact["coverage_complete"] is True
+    assert compact["evidence"]["status"] == "complete"
+    assert compact["evidence"]["coverage_complete"] is True
     assert compact["positive_stock_sku_count"]["positive_sku_count"] == 0
 
 

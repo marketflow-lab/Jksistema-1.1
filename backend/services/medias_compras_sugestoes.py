@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import json
+import math
 import os
 import re
 import sqlite3
@@ -60,6 +62,74 @@ def _exigir_loja_especifica_para_lista(loja: str | None) -> str:
     return loja_final
 
 
+def _normalizar_quantidades_sugeridas(valor) -> dict[str, int]:
+    if valor is None or valor == "":
+        return {}
+
+    dados = valor
+    if isinstance(valor, str):
+        try:
+            dados = json.loads(valor)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Quantidades sugeridas devem ser enviadas em JSON válido.",
+            ) from exc
+
+    if not isinstance(dados, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Quantidades sugeridas devem ser um objeto por SKU.",
+        )
+    if len(dados) > 10000:
+        raise HTTPException(
+            status_code=400,
+            detail="Quantidade de ajustes de compra excede o limite permitido.",
+        )
+
+    resultado: dict[str, int] = {}
+    for sku_original, quantidade_original in dados.items():
+        sku = _normalizar_sku_mes(str(sku_original or "").strip()).upper()
+        if not sku:
+            raise HTTPException(status_code=400, detail="SKU inválido nas quantidades sugeridas.")
+        if isinstance(quantidade_original, bool):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Quantidade sugerida inválida para o SKU {sku}.",
+            )
+        try:
+            quantidade_numero = float(quantidade_original)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Quantidade sugerida inválida para o SKU {sku}.",
+            ) from exc
+        if (
+            not math.isfinite(quantidade_numero)
+            or quantidade_numero < 0
+            or not quantidade_numero.is_integer()
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Quantidade sugerida do SKU {sku} deve ser um inteiro maior ou igual a zero.",
+            )
+        resultado[sku] = int(quantidade_numero)
+    return resultado
+
+
+def _resolver_quantidade_sugerida(
+    sku: str,
+    quantidade_calculada,
+    quantidades_sugeridas: dict[str, int],
+    quantidades_aplicadas: set[str],
+) -> int:
+    sku_cmp = _normalizar_sku_mes(str(sku or "").strip()).upper()
+    if sku_cmp in quantidades_sugeridas:
+        quantidades_aplicadas.add(sku_cmp)
+        return quantidades_sugeridas[sku_cmp]
+    return int(quantidade_calculada or 0)
+
+
 async def api_medias_compras_gerar_lista_compra(
     req: ListaCompraRequest,
     client_id: str = Depends(medias_common.get_tenant_id)
@@ -81,6 +151,7 @@ async def api_medias_compras_gerar_lista_compra(
             for sku in (req.hidden_skus or [])
             if str(sku or "").strip()
         }
+        quantidades_sugeridas = _normalizar_quantidades_sugeridas(req.quantidades_sugeridas)
 
         nome_lista = str(req.nome_lista or "").strip()
         if not nome_lista:
@@ -268,6 +339,7 @@ async def api_medias_compras_gerar_lista_compra(
         todos_skus = set(vendas_total_periodo.keys()) | set(saldo_por_sku.keys())
         itens_lista = []
         fator_crescimento = 1 + (crescimento_percent / 100.0)
+        quantidades_sugeridas_aplicadas = set()
 
         for sku in sorted(todos_skus, key=_sku_sort_key):
             sku_cmp = _normalizar_sku_mes(sku).upper()
@@ -288,7 +360,12 @@ async def api_medias_compras_gerar_lista_compra(
                 margem_seguranca_meses=1,
                 fator_crescimento=fator_reposicao,
             )
-            quantidade_compra = int(reposicao.get("compra_sugerida", 0) or 0)
+            quantidade_compra = _resolver_quantidade_sugerida(
+                sku,
+                reposicao.get("compra_sugerida", 0),
+                quantidades_sugeridas,
+                quantidades_sugeridas_aplicadas,
+            )
 
             if quantidade_compra <= 0:
                 continue
@@ -515,6 +592,7 @@ async def api_medias_compras_gerar_lista_compra(
             "crescimento_percent": crescimento_percent,
             "periodo_meses": periodo_meses,
             "lead_time_meses": lead_time_meses,
+            "total_quantidades_ajustadas": len(quantidades_sugeridas_aplicadas),
         }
     except HTTPException:
         raise
@@ -530,6 +608,7 @@ async def api_medias_compras_gerar_lista_compra_get(
     nome_lista: str = "",
     loja: str = "__todas",
     periodo_meses: int = 6,
+    quantidades_sugeridas: str = "",
     client_id: str = Depends(medias_common.get_tenant_id)
 ):
     req = ListaCompraRequest(
@@ -539,6 +618,7 @@ async def api_medias_compras_gerar_lista_compra_get(
         nome_lista=nome_lista,
         loja=loja,
         periodo_meses=periodo_meses,
+        quantidades_sugeridas=_normalizar_quantidades_sugeridas(quantidades_sugeridas),
     )
     return await api_medias_compras_gerar_lista_compra(req, client_id)
 
@@ -546,11 +626,24 @@ async def api_medias_compras_gerar_lista_compra_get(
 async def api_medias_compras_gerar_lista_sugestao(
     meses: int = 12,
     loja: str = "__todas",
+    quantidades_sugeridas: str = "",
     client_id: str = Depends(medias_common.get_tenant_id)
 ):
     loja = _exigir_loja_especifica_para_lista(loja)
     data = await api_medias_compras_visao(meses=meses, loja=loja, client_id=client_id)
-    itens = [i for i in (data.get("itens") or []) if int(i.get("compra_sugerida", 0) or 0) > 0]
+    quantidades_ajustadas = _normalizar_quantidades_sugeridas(quantidades_sugeridas)
+    quantidades_ajustadas_aplicadas = set()
+    itens = []
+    for item_original in (data.get("itens") or []):
+        item = dict(item_original)
+        item["compra_sugerida"] = _resolver_quantidade_sugerida(
+            item.get("sku", ""),
+            item.get("compra_sugerida", 0),
+            quantidades_ajustadas,
+            quantidades_ajustadas_aplicadas,
+        )
+        if int(item.get("compra_sugerida", 0) or 0) > 0:
+            itens.append(item)
     itens_lista = [
         _normalizar_item_lista_pedido({
             "SKU": str(item.get("sku", "") or ""),
@@ -619,6 +712,7 @@ async def api_medias_compras_gerar_lista_sugestao(
         "total_itens": len(itens),
         "loja": loja,
         "periodo_meses": meses,
+        "total_quantidades_ajustadas": len(quantidades_ajustadas_aplicadas),
     }
 
 

@@ -240,8 +240,8 @@ def test_active_snapshot_fallback_does_not_resurrect_terminal_worker(monkeypatch
         raising=False,
     )
     monkeypatch.setattr(
-        conversation.codex_console,
-        "_codex_load_task",
+        conversation.console_tasks,
+        "load",
         lambda _task_id: {"task_id": "terminal-task", "status": "running"},
     )
 

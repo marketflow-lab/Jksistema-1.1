@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '20260805-favoritos-ranking-timeout-v1';
+  const VERSION = '20260807-favoritos-sku-modular-v1';
   const CHUNKS = [
     "01-ml-base-busca.js",
     "02-ia-datas-selecao.js",
@@ -24,14 +24,38 @@
     return '/favoritos/tabelas-layout/' + fileName + '?v=' + VERSION;
   }
 
-  function carregarEmOrdem() {
-    return CHUNKS.reduce((chain, fileName) => chain.then(() => new Promise((resolve, reject) => {
+  function carregarChunk(fileName) {
+    return new Promise((resolve, reject) => {
       const script = document.createElement('script');
       script.src = chunkUrl(fileName);
-      script.onload = resolve;
+      script.onload = () => {
+        const readyNames = {
+          '03-sku-sidebar-modal.js': '__FAVORITOS_SKU_SIDEBAR_READY__',
+          '04-promocoes-busca-ranking.js': '__FAVORITOS_PROMOCOES_BUSCA_RANKING_READY__',
+          '07-execucao-render-layout.js': '__FAVORITOS_EXECUCAO_RENDER_LAYOUT_READY__'
+        };
+        const readyName = readyNames[fileName];
+        if (!readyName) {
+          resolve();
+          return;
+        }
+        const componentReady = window[readyName];
+        if (!componentReady || typeof componentReady.then !== 'function') {
+          reject(new Error(fileName + ' nao publicou a prontidao esperada.'));
+          return;
+        }
+        componentReady.then(resolve, reject);
+      };
       script.onerror = () => reject(new Error('Falha ao carregar ' + fileName));
       (document.head || document.documentElement).appendChild(script);
-    })), Promise.resolve());
+    });
+  }
+
+  function carregarEmOrdem() {
+    return CHUNKS.reduce(
+      (chain, fileName) => chain.then(() => carregarChunk(fileName)),
+      Promise.resolve()
+    );
   }
 
   window.__FAVORITOS_TABELAS_LAYOUT_READY__ = carregarEmOrdem().catch((error) => {

@@ -72,12 +72,12 @@
 
             preencherImagemAnuncioFavoritos(destino, info);
             preencherPrecoAnuncioFavoritos(destino, info);
-            preencherTipoAnuncioFavoritos(destino, info);
+            window.FavoritosV2.promotionEffectuation.publicApi.listings.preencherTipoAnuncioFavoritos(destino, info);
             preencherCondicaoAnuncioFavoritos(destino, info);
 
             const vendedor = normalizarNomeVendedor(info.vendedor || info.seller || '');
             const fonteVendedor = normalizarFonte(info.vendedorFonte || info.vendedor_fonte || info.fonte_vendedor || fonte || 'pagina_produto');
-            if (deveAtualizarVendedor(destino.vendedor, destino.vendedorFonte, vendedor, fonteVendedor)) {
+            if (window.FavoritosV2.promotionEffectuation.publicApi.merge.deveAtualizarVendedor(destino.vendedor, destino.vendedorFonte, vendedor, fonteVendedor)) {
                 destino.vendedor = vendedor;
                 destino.vendedorFonte = fonteVendedor;
                 destino.vendedor_fonte = fonteVendedor;
@@ -94,7 +94,7 @@
                 || (fonteVendasConfiavel(fonte) ? fonte : '')
             );
             const vendas = parseNumeroVendas(info.vendas);
-            if (deveAtualizarVendas(destino.vendas, destino.vendasFonte, vendas, fonteVendas)) {
+            if (window.FavoritosV2.promotionEffectuation.publicApi.merge.deveAtualizarVendas(destino.vendas, destino.vendasFonte, vendas, fonteVendas)) {
                 destino.vendas = vendas;
                 destino.vendasFonte = fonteVendas;
                 destino.vendas_fonte = fonteVendas;
@@ -337,7 +337,7 @@
                     browserCompleto: true,
                     forcarExibicao: true
                 });
-                mostrarBalaoFavoritosStatus(`Abrindo ${alvo.id} e aguardando Avant Pro...`);
+                window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus(`Abrindo ${alvo.id} e aguardando Avant Pro...`);
                 await navegarMlWebview(url);
                 await aguardarAvantProNoWebview({
                     timeoutMs: 6500,
@@ -363,7 +363,7 @@
             }
 
             if (!anuncio.titulo) anuncio.titulo = `Anuncio ${alvo.id}`;
-            const normalizado = normalizarAnuncioFavoritosPesquisa(anuncio, sku, {
+            const normalizado = window.FavoritosV2.searchRanking.publicApi.listings.normalizarAnuncioFavoritosPesquisa(anuncio, sku, {
                 campo: 'manual',
                 termo: 'Incluir anuncio'
             });
@@ -409,7 +409,7 @@
                     browserCompleto: true,
                     forcarExibicao: true
                 });
-                mostrarBalaoFavoritosStatus(`Abrindo ${alvo.id} e relendo dados do Avant Pro...`);
+                window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus(`Abrindo ${alvo.id} e relendo dados do Avant Pro...`);
                 await navegarMlWebview(url);
                 await aguardarAvantProNoWebview({
                     timeoutMs: 9000,
@@ -435,7 +435,7 @@
                 mesclarInfoAnuncioIncluidoRanking(anuncio, browserInfo, browserInfo && browserInfo.source || 'browser_item');
             }
 
-            const normalizado = normalizarAnuncioFavoritosPesquisa(anuncio, sku, {
+            const normalizado = window.FavoritosV2.searchRanking.publicApi.listings.normalizarAnuncioFavoritosPesquisa(anuncio, sku, {
                 campo: 'sincronizacao',
                 termo: 'Sincronizacao manual'
             });
@@ -460,9 +460,9 @@
             const semDuplicado = chavesAlvo.size
                 ? existentes.filter(item => !anuncioCorrespondeRemocaoRankingFavoritos(item, chavesAlvo))
                 : existentes.slice();
-            const combinados = deduplicarAnunciosFavoritos([...semDuplicado, anuncio])
+            const combinados = window.FavoritosV2.searchRanking.publicApi.listings.deduplicarAnunciosFavoritos([...semDuplicado, anuncio])
                 .filter(item => item && !tituloPareceFiltroOuCategoriaMl(item.titulo));
-            grupo.anuncios = limitarAnunciosFavoritosRanking(ordenarAnunciosFavoritosRanking(combinados, sku));
+            grupo.anuncios = window.FavoritosV2.searchRanking.publicApi.ranking.limitarAnunciosFavoritosRanking(window.FavoritosV2.searchRanking.publicApi.ranking.ordenarAnunciosFavoritosRanking(combinados, sku));
             grupo.total_anuncios = grupo.anuncios.length;
             grupo.ordem_manual = false;
             if (opcoes && opcoes.sincronizacao) {
@@ -518,7 +518,7 @@
             const skuSelecionado = String(sku || favMlSkuSelecionado || '').trim();
             const entradaSelecionada = String(opcoes.entradaId || favMlHistoricoExecucaoSelecionadaId || '').trim();
             if (!skuSelecionado || !entradaSelecionada || !anuncio) {
-                mostrarBalaoFavoritosStatus('Abra um ranking antes de sincronizar o anuncio.', {
+                window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus('Abra um ranking antes de sincronizar o anuncio.', {
                     erro: true,
                     tempoMs: 3500
                 });
@@ -561,12 +561,12 @@
                 if (favMlStatusEl) {
                     favMlStatusEl.textContent = `${alvo} sincronizado pelo Avant Pro e reclassificado${posicao}.`;
                 }
-                mostrarBalaoFavoritosStatus(`${alvo} sincronizado e reclassificado${posicao}.`, { tempoMs: 4500 });
+                window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus(`${alvo} sincronizado e reclassificado${posicao}.`, { tempoMs: 4500 });
                 fecharBalaoResultadosMl({ forcar: true });
             } catch (err) {
                 const mensagem = err && err.message ? err.message : String(err);
                 if (favMlStatusEl) favMlStatusEl.textContent = `Erro ao sincronizar ${id || 'anuncio'}: ${mensagem}`;
-                mostrarBalaoFavoritosStatus(`Erro ao sincronizar anuncio: ${mensagem}`, {
+                window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus(`Erro ao sincronizar anuncio: ${mensagem}`, {
                     erro: true,
                     tempoMs: 6500
                 });
@@ -594,7 +594,7 @@
                     favMlStatusEl.classList.remove('hidden');
                     favMlStatusEl.textContent = 'Cole o MLB ou link do anuncio para incluir no ranking.';
                 }
-                mostrarBalaoFavoritosStatus('Cole o MLB ou link do anuncio para incluir.', {
+                window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus('Cole o MLB ou link do anuncio para incluir.', {
                     erro: true,
                     tempoMs: 3500
                 });
@@ -640,14 +640,14 @@
                 if (favMlStatusEl) {
                     favMlStatusEl.textContent = `Anuncio ${anuncio.id || alvo.id} ${acao}${posicao} do ranking do SKU ${skuSelecionado}.`;
                 }
-                mostrarBalaoFavoritosStatus(`Anuncio ${anuncio.id || alvo.id} ${acao}${posicao}.`, { tempoMs: 4500 });
+                window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus(`Anuncio ${anuncio.id || alvo.id} ${acao}${posicao}.`, { tempoMs: 4500 });
                 if (favRankingIncluirInputEl) favRankingIncluirInputEl.value = '';
                 fecharFormularioIncluirAnuncioRankingFavoritos();
                 fecharBalaoResultadosMl({ forcar: true });
             } catch (err) {
                 const mensagem = err && err.message ? err.message : String(err);
                 if (favMlStatusEl) favMlStatusEl.textContent = `Erro ao incluir anuncio ${alvo.id}: ${mensagem}`;
-                mostrarBalaoFavoritosStatus(`Erro ao incluir anuncio: ${mensagem}`, {
+                window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus(`Erro ao incluir anuncio: ${mensagem}`, {
                     erro: true,
                     tempoMs: 6500
                 });
@@ -895,15 +895,15 @@
                     entradaId: opcoes.entradaId || ''
                 });
                 tr.appendChild(criarCelulaFotoAnuncioFavoritos(anuncio));
-                const lojaVendedora = obterNomeLojaVendedoraHistoricoFavoritos(anuncio);
-                tr.appendChild(criarCelulaMlbLojaFavoritos(
+                const lojaVendedora = window.FavoritosV2.execution.publicApi.obterNomeLojaVendedoraHistoricoFavoritos(anuncio);
+                tr.appendChild(window.FavoritosV2.execution.publicApi.criarCelulaMlbLojaFavoritos(
                     anuncio.id || extrairItemIdAnuncio(anuncio.url) || '',
                     lojaVendedora,
                     anuncio.status || '',
-                    obterTipoCompletoAnuncioFavoritos(anuncio),
+                    window.FavoritosV2.promotionEffectuation.publicApi.listings.obterTipoCompletoAnuncioFavoritos(anuncio),
                     anuncio.vendedor || lojaVendedora || ''
                 ));
-                tr.appendChild(criarCelulaMediaHistoricoFavoritos(anuncio));
+                tr.appendChild(window.FavoritosV2.promotionEffectuation.publicApi.listings.criarCelulaMediaHistoricoFavoritos(anuncio));
                 if (typeof criarCelulaPrecoHistoricoFavoritos === 'function') {
                     tr.appendChild(criarCelulaPrecoHistoricoFavoritos(anuncio));
                 } else if (typeof criarCelulaPrecoAnuncioFavoritos === 'function') {
@@ -1314,10 +1314,10 @@
         function guardarResultadoRankingFavorito(grupo) {
             const chave = skuChaveSku(grupo && grupo.sku);
             if (!chave) return;
-            const opcoesPromocao = resolverOpcoesPromocaoGrupoFavoritos(grupo, grupo && grupo.sku);
+            const opcoesPromocao = window.FavoritosV2.promotionEffectuation.publicApi.options.resolverOpcoesPromocaoGrupoFavoritos(grupo, grupo && grupo.sku);
             if (opcoesPromocao) {
                 grupo.opcoes_promocao = opcoesPromocao;
-                salvarOpcoesPromocaoFavoritosSku(grupo.sku || chave, opcoesPromocao);
+                window.FavoritosV2.promotionEffectuation.publicApi.options.salvarOpcoesPromocaoFavoritosSku(grupo.sku || chave, opcoesPromocao);
             }
             if (!grupo.data_iso && !grupo.data_ranking_iso) {
                 grupo.data_ranking_iso = new Date().toISOString();

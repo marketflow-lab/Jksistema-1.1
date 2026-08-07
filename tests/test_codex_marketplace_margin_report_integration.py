@@ -1,6 +1,10 @@
 from unittest.mock import patch
 
-from backend.services import codex_assistant, codex_reports_advanced
+from backend.services import codex_reports_advanced
+from backend.services.codex.assistant import answers as assistant_answers
+from backend.services.codex.assistant import margin_analysis as assistant_margin
+from backend.services.codex.assistant import marketplace as assistant_marketplace
+from backend.services.codex.assistant import reports_html as assistant_html
 
 
 def _advanced_base():
@@ -40,16 +44,16 @@ def test_weekly_profile_makes_readonly_commercial_collection_mandatory():
 
     with (
         patch.object(codex_reports_advanced, "build_profile_context", return_value=_advanced_base()),
-        patch.object(codex_assistant, "_assistant_connected_ml_stores", return_value=["Loja A"]),
-        patch.object(codex_assistant, "_assistant_marketplace_fetchers", return_value={
+        patch.object(assistant_marketplace, "_assistant_connected_ml_stores", return_value=["Loja A"]),
+        patch.object(assistant_marketplace, "_assistant_marketplace_fetchers", return_value={
             "listing_fetcher": object(), "orders_fetcher": object(), "shipping_fetcher": object(),
             "billing_fetcher": object(), "order_billing_fetcher": object(),
         }),
         patch("backend.services.codex_marketplace_margin.collect_marketplace_commercial_snapshot", return_value=snapshot) as collect,
-        patch.object(codex_assistant, "_assistant_enrich_marketplace_ledger", side_effect=lambda _client, _advanced, value: value),
-        patch.object(codex_assistant, "_assistant_info_base", return_value="C:/tmp/info"),
+        patch.object(assistant_marketplace, "_assistant_enrich_marketplace_ledger", side_effect=lambda _client, _advanced, value: value),
+        patch.object(assistant_marketplace, "_assistant_info_base", return_value="C:/tmp/info"),
     ):
-        result = codex_assistant._assistant_apply_advanced_profile(
+        result = assistant_marketplace._assistant_apply_advanced_profile(
             "tenant-a",
             context,
             "weekly_sales_stock",
@@ -72,7 +76,7 @@ def test_import_order_and_nonfinancial_custom_do_not_collect_marketplace():
             patch.object(codex_reports_advanced, "build_profile_context", return_value=base),
             patch("backend.services.codex_marketplace_margin.collect_marketplace_commercial_snapshot") as collect,
         ):
-            codex_assistant._assistant_apply_advanced_profile(
+            assistant_marketplace._assistant_apply_advanced_profile(
                 "tenant-a",
                 {"tool_plan": {}, "warnings": []},
                 profile,
@@ -82,13 +86,13 @@ def test_import_order_and_nonfinancial_custom_do_not_collect_marketplace():
 
 
 def test_marketplace_collection_profile_contract_is_explicit():
-    assert codex_assistant._assistant_profile_requires_marketplace("weekly_sales_stock") is True
-    assert codex_assistant._assistant_profile_requires_marketplace("daily_exceptions") is True
-    assert codex_assistant._assistant_profile_requires_marketplace(
+    assert assistant_marketplace._assistant_profile_requires_marketplace("weekly_sales_stock") is True
+    assert assistant_marketplace._assistant_profile_requires_marketplace("daily_exceptions") is True
+    assert assistant_marketplace._assistant_profile_requires_marketplace(
         "custom", "analise financeira de margem e custo do Mercado Livre"
     ) is True
-    assert codex_assistant._assistant_profile_requires_marketplace("custom", "posicao de estoque") is False
-    assert codex_assistant._assistant_profile_requires_marketplace(
+    assert assistant_marketplace._assistant_profile_requires_marketplace("custom", "posicao de estoque") is False
+    assert assistant_marketplace._assistant_profile_requires_marketplace(
         "import_order", "margem financeira da importacao"
     ) is False
 
@@ -116,13 +120,13 @@ def test_nested_commercial_payload_does_not_choose_first_mlb_for_same_sku():
         ],
     }
     with (
-        patch.object(codex_assistant, "_assistant_collect_sales_rank_rows", return_value=[
+        patch.object(assistant_margin, "_assistant_collect_sales_rank_rows", return_value=[
             {"sku": "A", "quantidade_num": 10, "valor_num": 1000, "produto": "Produto A", "store": "Loja A"}
         ]),
-        patch.object(codex_assistant, "_assistant_load_margin_cost_maps", return_value=({"A": 30}, {"A": 10}, [])),
-        patch.object(codex_assistant, "_assistant_resolve_margin_cost_tax", return_value=(30, 10)),
+        patch.object(assistant_margin, "_assistant_load_margin_cost_maps", return_value=({"A": 30}, {"A": 10}, [])),
+        patch.object(assistant_margin, "_assistant_resolve_margin_cost_tax", return_value=(30, 10)),
     ):
-        rows = codex_assistant._assistant_collect_margin_rows(context)
+        rows = assistant_margin._assistant_collect_margin_rows(context)
 
     assert [row["MLB"] for row in rows] == ["MLB1", "MLB2"]
     assert rows[0]["Contribuicao unitaria atual"] == "R$ 40,00"
@@ -186,8 +190,8 @@ def test_old_sale_with_current_cost_snapshot_stays_out_of_historical_margin(tmp_
             }
         ],
     }
-    with patch.object(codex_assistant, "_assistant_info_base", return_value=str(tmp_path)):
-        enriched = codex_assistant._assistant_enrich_marketplace_ledger("tenant-a", advanced, snapshot)
+    with patch.object(assistant_marketplace, "_assistant_info_base", return_value=str(tmp_path)):
+        enriched = assistant_marketplace._assistant_enrich_marketplace_ledger("tenant-a", advanced, snapshot)
 
     ledger_row = enriched["ledger_rows"][0]
     assert ledger_row["unit_cost"] == 30
@@ -224,8 +228,8 @@ def test_historical_deduplication_preserves_repeated_order_lines():
 def test_financial_output_uses_contribution_language_not_net_profit_claim():
     context = _advanced_base()
     context["financial_summary"]["net_profit_after_ads_brl"] = 40
-    html = codex_assistant._assistant_build_advanced_report_html("Relatorio", context)
-    chat = codex_assistant._assistant_advanced_report_chat_text("Relatorio", context)
+    html = assistant_html._assistant_build_advanced_report_html("Relatorio", context)
+    chat = assistant_answers._assistant_advanced_report_chat_text("Relatorio", context)
     assert "Resultado de contribuicao apos publicidade" in html
     assert "Resultado de contribuicao apos publicidade" in chat
     assert "Lucro apos publicidade" not in html

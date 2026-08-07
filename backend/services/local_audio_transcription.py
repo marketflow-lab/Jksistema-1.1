@@ -120,10 +120,10 @@ def transcribe_authenticated_upload(
 
     # Keep local voice under the same private attachment root as WhatsApp.
     # The global operating-system temp directory must never be scanned/deleted.
-    from backend.services import codex_console
+    from backend.services.codex.console import attachments_api as console_attachments
 
-    attachment_root = codex_console._codex_attachments_base_dir()
-    target_dir = codex_console._codex_attachment_dir(client_id, username, "local-voice")
+    attachment_root = console_attachments.base_dir()
+    target_dir = console_attachments.conversation_dir(client_id, username, "local-voice")
     target_dir = whatsapp_audio_processing.validate_audio_attachment_directory(
         target_dir,
         attachment_root,

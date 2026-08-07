@@ -4,12 +4,10 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { promotionEffectuationSource } = require('./helpers/favoritos_promotion_effectuation_sources');
 
 const root = path.resolve(__dirname, '..');
-const source = fs.readFileSync(
-    path.join(root, 'static', 'favoritos', 'promocoes-efetivacao.js'),
-    'utf8'
-);
+const source = promotionEffectuationSource(root);
 
 function respostaJson(data, ok = true, status = 200) {
     return {
@@ -39,12 +37,13 @@ function aguardarCondicao(condicao, timeoutMs = 1200) {
     });
 }
 
-function criarRegistro({ requerValidacao = false } = {}) {
+function criarRegistro({ requerValidacao = false, itemId = 'MLB1234567890', indice = 0 } = {}) {
     return {
-        itemId: 'MLB1234567890',
+        itemId,
+        index: indice,
         loja: 'JK Pecas',
         anuncio: {
-            mlb: 'MLB1234567890',
+            mlb: itemId,
             sku: 'SKU-TESTE',
             loja: 'JK Pecas',
             preco: 100
@@ -80,10 +79,15 @@ function criarHarness(opcoes = {}) {
         panelUpdates: 0,
         messages: [],
         statusRows: [],
+        historicoArgs: null,
+        historicoPayload: null,
         pendingValidations: [],
         pendingConfirmations: []
     };
     const registro = criarRegistro({ requerValidacao: !!opcoes.requerValidacao });
+    const registros = Array.isArray(opcoes.registros) && opcoes.registros.length
+        ? opcoes.registros
+        : [registro];
     const botao = { disabled: false, textContent: 'Aprovar e alterar' };
     const info = { textContent: '' };
     const status = { textContent: '' };
@@ -116,14 +120,16 @@ function criarHarness(opcoes = {}) {
         URLSearchParams,
         setTimeout,
         clearTimeout,
-        window: { electronAPI: null },
+        electronAPI: null,
         favMlEfetivacaoEmExecucao: false,
         favMlEfetivacaoEmPreparacao: false,
         favMlSkuSelecionado: 'SKU-TESTE',
         favMlLojaSelecionada: 'JK Pecas',
+        favMlHistoricoExecucaoSelecionadaId: '',
+        FAV_ML_RANKING_ATUAL_ID: 'ranking-atual',
         mlSkuLojaSelecionada: 'JK Pecas',
         skuLojaSelecionada: 'JK Pecas',
-        favMlAnunciosSkuAtual: [registro.anuncio],
+        favMlAnunciosSkuAtual: registros.map(item => item.anuncio),
         favMlSimulacoesSkuAtual: null,
         favMlEfetivarOutrasContasEl: { checked: false },
         favMlEfetivarBtnEl: botao,
@@ -159,6 +165,13 @@ function criarHarness(opcoes = {}) {
             }
             if (chamada.url === '/api/favoritos/ml/efetivar-promocao') {
                 state.mutationCalls += 1;
+                if (typeof opcoes.mutationHandler === 'function') {
+                    return opcoes.mutationHandler({
+                        chamada,
+                        numeroChamada: state.mutationCalls,
+                        respostaJson
+                    });
+                }
                 return respostaJson({
                     success: true,
                     item_id: chamada.body.item_id,
@@ -173,11 +186,16 @@ function criarHarness(opcoes = {}) {
         }
     };
     vm.createContext(context);
+    vm.runInContext('window = globalThis;', context);
     vm.runInContext(source, context, { filename: 'promocoes-efetivacao.js' });
+    const promotionInternal = context.FavoritosV2.promotionEffectuation.internal;
+    Object.keys(promotionInternal).forEach(name => {
+        if (name !== 'components') delete context[name];
+    });
 
     context.garantirPromocaoFavoritosSkuAtual = async () => opcoesPromocao;
     context.carregarFavoritosAnunciosSkuTodasContas = async () => [registro.anuncio];
-    context.obterRegistrosSimulacaoFavoritos = () => [registro];
+    context.obterRegistrosSimulacaoFavoritos = () => registros;
     context.filtrarRegistrosSelecionadosAlteracaoFavoritos = registros => registros;
     context.filtrarRegistrosEfetivaveisFavoritos = registros => registros;
     context.explicarRegistrosNaoEfetivaveisFavoritos = () => 'sem registros validos';
@@ -229,17 +247,71 @@ function criarHarness(opcoes = {}) {
         return Number.isFinite(numero) ? numero : null;
     };
     context.formatarPrecoFavoritosMl = valor => `R$ ${Number(valor || 0).toFixed(2)}`;
+    context.FavoritosV2.searchRanking = {
+            publicApi: {
+                status: {
+                    mostrarBalaoFavoritosStatus: (...args) => context.mostrarBalaoFavoritosStatus(...args),
+                    esconderBalaoFavoritosStatus: (...args) => context.esconderBalaoFavoritosStatus?.(...args)
+                },
+                promotions: {
+                    carregarPromocoesAtivasFavoritos: (...args) => context.carregarPromocoesAtivasFavoritos?.(...args),
+                    perguntarOpcoesPromocaoFavoritos: (...args) => context.perguntarOpcoesPromocaoFavoritos?.(...args)
+                }
+            }
+        };
+    context.FavoritosV2.execution = {
+            publicApi: {
+                formatarPrecoFavoritosMl: context.formatarPrecoFavoritosMl
+            }
+        };
     context.formatarMargemAnuncioFavoritos = valor => `${Number(valor || 0).toFixed(2)}%`;
     context.carregarFavoritosAnunciosSku = async () => [];
-    context.montarHistoricoAlteracoesFavoritosPayload = () => ({ vinculos: [] });
+    context.registrarHistoricoAlteracoesFavoritos = () => null;
+    const montarHistoricoReal = promotionInternal.montarHistoricoAlteracoesFavoritosPayload;
+    context.montarHistoricoAlteracoesFavoritosPayload = payload => {
+        state.historicoArgs = payload;
+        state.historicoPayload = montarHistoricoReal(payload);
+        return state.historicoPayload;
+    };
     context.renderizarComparativoEfetivacaoFavoritos = () => {};
     context.agendarOcultarStatusEfetivarFavoritos = () => {};
     context.textoTipoEnvioFavoritos = () => 'sem troca';
+
+    [
+        'garantirPromocaoFavoritosSkuAtual',
+        'carregarFavoritosAnunciosSkuTodasContas',
+        'obterRegistrosSimulacaoFavoritos',
+        'filtrarRegistrosSelecionadosAlteracaoFavoritos',
+        'filtrarRegistrosEfetivaveisFavoritos',
+        'explicarRegistrosNaoEfetivaveisFavoritos',
+        'registroFavoritosExigeTrocaTipoAnuncio',
+        'perguntarConfirmacaoEfetivarFavoritos',
+        'atualizarPainelEfetivarFavoritos',
+        'limparLogEfetivarFavoritos',
+        'adicionarStatusEfetivarFavoritos',
+        'definirProtecaoAutomacaoMlFavoritos',
+        'resolverOpcoesPromocaoEfetivacaoParaLoja',
+        'normalizarErroEfetivacaoFavoritos',
+        'montarHistoricoAlteracoesFavoritosPayload',
+        'renderizarComparativoEfetivacaoFavoritos',
+        'agendarOcultarStatusEfetivarFavoritos',
+        'textoTipoEnvioFavoritos'
+    ].forEach(name => { promotionInternal[name] = context[name]; });
+    Object.keys(promotionInternal).forEach(name => {
+        if (name === 'components') return;
+        Object.defineProperty(context, name, {
+            configurable: true,
+            enumerable: true,
+            get: () => promotionInternal[name],
+            set: value => { promotionInternal[name] = value; }
+        });
+    });
 
     return {
         context,
         state,
         registro,
+        registros,
         botao,
         executar: () => context.efetivarFavoritosMercadoLivreAprovados(),
         resolverValidacao() {
@@ -558,6 +630,240 @@ async function testarSucessoEHistoricoPreferemValoresObservados() {
     assert.strictEqual(historicoFallback.preco_promocional_aplicado, null);
 }
 
+async function testarPromocaoDivergenteInterrompeLoteERegistraNaoEnviados() {
+    const registros = [
+        criarRegistro({ itemId: 'MLB3575450631', indice: 0 }),
+        criarRegistro({ itemId: 'MLB1884997419', indice: 1 }),
+        criarRegistro({ itemId: 'MLB1931044355', indice: 2 })
+    ];
+    const harness = criarHarness({
+        registros,
+        mutationHandler: ({ respostaJson: responder }) => responder({
+            success: false,
+            completed: false,
+            outcome: 'partial_failure',
+            operation_state: 'partial_failure',
+            message: 'A divergencia foi confirmada, mas o fallback seguro falhou.',
+            item_id: 'MLB3575450631',
+            preco_anuncio_alvo: 101.01,
+            preco_promocional_alvo: 79.80,
+            preco_ideal: 79.80,
+            percentual_promocao: 21,
+            commercial_safety: {
+                state: 'unsafe',
+                reason: 'Promoção divergente ainda ativa após a tentativa de remoção.',
+                batch_abort_required: true,
+                promotion_active: true,
+                active_promotions: [{ id: 'CAMPANHA-1', type: 'SELLER_CAMPAIGN' }],
+                sale_price_has_promotion: true,
+                sale_price: {
+                    observable: true,
+                    amount: 36.90,
+                    regular_amount: 101.01
+                },
+                observed_discount_pct: 63.47,
+                stable_reads: 3,
+                required_stable_reads: 3
+            },
+            stages: {
+                price: { status: 'completed' },
+                promotion: { status: 'fallback_failed' },
+                verification: { status: 'fallback_failed' }
+            }
+        }, false, 409)
+    });
+
+    await harness.executar();
+
+    assert.strictEqual(harness.state.mutationCalls, 1, 'estado inseguro deve impedir o POST do anuncio seguinte');
+    assert.ok(harness.state.historicoArgs, 'resultado do lote deve chegar ao historico');
+    assert.strictEqual(harness.state.historicoArgs.falhas.length, 1);
+    assert.strictEqual(harness.state.historicoArgs.naoEnviados.length, 2);
+    assert.strictEqual(harness.state.historicoArgs.naoEnviados[0].itemId, 'MLB1884997419');
+    assert.strictEqual(harness.state.historicoArgs.naoEnviados[1].itemId, 'MLB1931044355');
+    assert.strictEqual(harness.state.historicoPayload.relatorio_final.nao_enviados, 2);
+    assert.strictEqual(
+        harness.state.historicoPayload.vinculos.find(item => item.itemId === 'MLB1884997419').outcome,
+        'not_sent_safety_block'
+    );
+
+    const falha = harness.state.historicoArgs.falhas[0];
+    const detalhe = harness.context.descreverFalhaEfetivacaoFavoritos(falha);
+    assert.match(detalhe, /promoção divergente ainda ativa/i);
+    assert.match(detalhe, /% solicitada: 21,00%/i);
+    assert.match(detalhe, /% observada: 63,47%/i);
+    assert.match(detalhe, /preço final pretendido: R\$ 79\.80/i);
+    assert.match(detalhe, /preço final observado: R\$ 36\.90/i);
+    const vinculoFalha = harness.state.historicoPayload.vinculos.find(item => item.itemId === 'MLB3575450631');
+    assert.strictEqual(vinculoFalha.status_texto, 'Promoção divergente ainda ativa');
+    assert.strictEqual(vinculoFalha.commercial_safety.state, 'unsafe');
+    assert.strictEqual(vinculoFalha.simulacao.percentual_promocao_previsto, 21);
+    assert.strictEqual(vinculoFalha.simulacao.percentual_promocao_observado, 63.47);
+    assert.strictEqual(vinculoFalha.simulacao.preco_final_observado, 36.90);
+}
+
+async function testarFalhaSemRespostaDepoisDoEnvioInterrompeLote() {
+    const registros = [
+        criarRegistro({ itemId: 'MLB1931044355', indice: 0 }),
+        criarRegistro({ itemId: 'MLB3575450631', indice: 1 }),
+        criarRegistro({ itemId: 'MLB1884997419', indice: 2 })
+    ];
+    const harness = criarHarness({
+        registros,
+        mutationHandler: () => {
+            throw new Error('conexao encerrada depois do envio');
+        }
+    });
+
+    await harness.executar();
+
+    assert.strictEqual(harness.state.mutationCalls, 1, 'falha sem resposta apos o envio deve bloquear os POSTs restantes');
+    assert.strictEqual(harness.state.historicoArgs.naoEnviados.length, 2);
+    assert.strictEqual(harness.state.historicoArgs.naoEnviados[0].itemId, 'MLB3575450631');
+    assert.strictEqual(harness.state.historicoArgs.naoEnviados[1].itemId, 'MLB1884997419');
+    const resultado = harness.state.historicoArgs.falhas[0].resultado;
+    assert.strictEqual(resultado.outcome, 'partial_unknown');
+    assert.strictEqual(resultado.commercial_safety.state, 'unknown');
+    assert.strictEqual(resultado.commercial_safety.batch_abort_required, true);
+    assert.match(resultado.commercial_safety.reason, /requisição de alteração foi iniciada/i);
+}
+
+async function testarHttpSemContratoDepoisDoEnvioInterrompeLote() {
+    const respostas = [
+        { nome: 'corpo vazio', corpo: {} },
+        { nome: 'detail textual', corpo: { detail: 'falha interna do servidor' } },
+        { nome: 'seguranca vazia', corpo: { commercial_safety: {} } },
+        { nome: 'abort falso isolado', corpo: { commercial_safety: { batch_abort_required: false } } },
+        { nome: 'etapas vazias', corpo: { stages: {} } },
+        { nome: 'stop_batch falso isolado', corpo: { stop_batch: false } }
+    ];
+
+    for (const resposta of respostas) {
+        const registros = [
+            criarRegistro({ itemId: 'MLB1931044355', indice: 0 }),
+            criarRegistro({ itemId: 'MLB3575450631', indice: 1 }),
+            criarRegistro({ itemId: 'MLB1884997419', indice: 2 })
+        ];
+        const harness = criarHarness({
+            registros,
+            mutationHandler: ({ respostaJson: responder }) => responder(resposta.corpo, false, 500)
+        });
+
+        await harness.executar();
+
+        assert.strictEqual(
+            harness.state.mutationCalls,
+            1,
+            `${resposta.nome}: HTTP sem resultado autoritativo deve bloquear os POSTs restantes`
+        );
+        assert.strictEqual(harness.state.historicoArgs.naoEnviados.length, 2, resposta.nome);
+        const falha = harness.state.historicoArgs.falhas[0];
+        assert.strictEqual(falha.resultado.outcome, 'partial_unknown', resposta.nome);
+        assert.strictEqual(falha.resultado.commercial_safety.state, 'unknown', resposta.nome);
+        assert.strictEqual(falha.resultado.commercial_safety.batch_abort_required, true, resposta.nome);
+        assert.match(falha.resultado.commercial_safety.reason, /requisição de alteração foi iniciada/i);
+        if (typeof resposta.corpo.detail === 'string') {
+            assert.match(String(falha.erro || ''), /falha interna do servidor/i);
+        }
+    }
+}
+
+async function testarSegurancaExplicitaSemOutcomeInterrompeLote() {
+    for (const estado of ['unknown', 'unsafe']) {
+        const registros = [
+            criarRegistro({ itemId: 'MLB1931044355', indice: 0 }),
+            criarRegistro({ itemId: 'MLB3575450631', indice: 1 }),
+            criarRegistro({ itemId: 'MLB1884997419', indice: 2 })
+        ];
+        const harness = criarHarness({
+            registros,
+            mutationHandler: ({ respostaJson: responder }) => responder({
+                commercial_safety: {
+                    state: estado,
+                    reason: `estado comercial ${estado}`
+                }
+            }, false, 409)
+        });
+
+        await harness.executar();
+
+        assert.strictEqual(harness.state.mutationCalls, 1, estado);
+        assert.strictEqual(harness.state.historicoArgs.naoEnviados.length, 2, estado);
+        const resultado = harness.state.historicoArgs.falhas[0].resultado;
+        assert.strictEqual(resultado.commercial_safety.state, estado);
+        assert.strictEqual(
+            harness.context.normalizarSegurancaComercialEfetivacaoFavoritos(resultado).batch_abort_required,
+            true,
+            estado
+        );
+    }
+}
+
+async function testarComparacaoSolicitadoEObservadoDeTrintaEOitoPorcento() {
+    const harness = criarHarness();
+    const resultado = {
+        success: false,
+        completed: false,
+        outcome: 'partial_failure',
+        preco_anuncio_alvo: 61.35,
+        preco_promocional_alvo: 48.47,
+        preco_ideal: 48.47,
+        percentual_promocao: 21,
+        commercial_safety: {
+            state: 'unsafe',
+            reason: 'Promoção divergente ainda ativa.',
+            batch_abort_required: true,
+            promotion_active: true,
+            active_promotions: [{ id: 'CAMPANHA-1' }],
+            sale_price_has_promotion: true,
+            sale_price: { observable: true, amount: 37.90, regular_amount: 61.35 },
+            observed_discount_pct: 38.22,
+            stable_reads: 3,
+            required_stable_reads: 3
+        },
+        stages: {
+            price: { status: 'completed' },
+            promotion: { status: 'fallback_failed' },
+            verification: { status: 'fallback_failed' }
+        }
+    };
+    const item = {
+        itemId: 'MLB1884997419',
+        registro: criarRegistro({ itemId: 'MLB1884997419' }),
+        resultado,
+        erro: 'fallback seguro falhou'
+    };
+    const detalhe = harness.context.descreverFalhaEfetivacaoFavoritos(item);
+    assert.match(detalhe, /% solicitada: 21,00%/i);
+    assert.match(detalhe, /% observada: 38,22%/i);
+    assert.match(detalhe, /preço final pretendido: R\$ 48\.47/i);
+    assert.match(detalhe, /preço final observado: R\$ 37\.90/i);
+    const historico = harness.context.montarSimulacaoHistoricoAlteracaoFavoritos(item.registro, resultado);
+    assert.strictEqual(historico.percentual_promocao_previsto, 21);
+    assert.strictEqual(historico.percentual_promocao_observado, 38.22);
+    assert.strictEqual(historico.preco_final_solicitado, 48.47);
+    assert.strictEqual(historico.preco_final_observado, 37.90);
+
+    const legado = {
+        success: false,
+        outcome: 'partial_failure',
+        message: 'Mercado Livre respondeu a remocao, mas a reconciliacao ainda encontrou promocao ativa ou sale_price promocional.',
+        stages: {
+            price: { status: 'completed' },
+            promotion: { status: 'fallback_failed' },
+            verification: { status: 'fallback_failed' }
+        }
+    };
+    const segurancaLegada = harness.context.normalizarSegurancaComercialEfetivacaoFavoritos(legado);
+    assert.strictEqual(segurancaLegada.state, 'unsafe');
+    assert.strictEqual(segurancaLegada.promotion_active, true);
+    assert.strictEqual(segurancaLegada.batch_abort_required, true);
+    assert.match(
+        harness.context.descreverEtapasFalhaEfetivacaoFavoritos(item.registro, legado).join(' | '),
+        /promoção divergente ainda ativa/i
+    );
+}
+
 async function main() {
     await testarCancelamentoSemPost();
     await testarAprovacaoSomenteDepoisDaConfirmacao();
@@ -568,7 +874,12 @@ async function main() {
     await testarEstadoRemotoIncertoNaoAfirmaAusenciaDeAlteracao();
     await testarHistoricoSoConfirmaDepoisDoServidor();
     await testarSucessoEHistoricoPreferemValoresObservados();
-    console.log('OK: aprovacao, preflight de preco, parcial terminal, historico confirmado, latch e erros respeitam o contrato sem rede real.');
+    await testarPromocaoDivergenteInterrompeLoteERegistraNaoEnviados();
+    await testarFalhaSemRespostaDepoisDoEnvioInterrompeLote();
+    await testarHttpSemContratoDepoisDoEnvioInterrompeLote();
+    await testarSegurancaExplicitaSemOutcomeInterrompeLote();
+    await testarComparacaoSolicitadoEObservadoDeTrintaEOitoPorcento();
+    console.log('OK: aprovacao, preflight, seguranca comercial, interrupcao do lote, historico, latch e erros respeitam o contrato sem rede real.');
 }
 
 main().catch(error => {

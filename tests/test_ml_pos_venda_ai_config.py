@@ -7,6 +7,16 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
+from backend.modules.perguntas_pos_venda.ai import clients as agent_clients
+from backend.modules.perguntas_pos_venda.ai import compatibility as agent_compatibility
+from backend.modules.perguntas_pos_venda.ai import evidence as agent_evidence
+from backend.modules.perguntas_pos_venda.ai import execution as agent_execution
+from backend.modules.perguntas_pos_venda.ai import inputs as agent_inputs
+from backend.modules.perguntas_pos_venda.ai import queries as agent_queries
+from backend.modules.perguntas_pos_venda.ai import sources as agent_sources
+from backend.modules.perguntas_pos_venda.ai import validation as agent_validation
+from ml_questions_gemini import AIAnswer
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend_api.py"
@@ -97,7 +107,6 @@ def ai_classification(
 class MlPosVendaAIConfigTests(unittest.TestCase):
     def test_compatibility_intent_enables_required_web_research_from_ai_classification(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
 
         context = {
             "intencao_atendimento": ai_classification(
@@ -111,8 +120,8 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 required_evidence="interface do produto, interface da moto e equivalencia tecnica",
             )
         }
-        with patch.object(agent, "_ia_treinamento_ppv_bloco_prompt", return_value=""):
-            payload = agent._perguntas_ia_agent_input(
+        with patch.object(agent_inputs, "_ia_treinamento_ppv_bloco_prompt", return_value=""):
+            payload = agent_inputs._perguntas_ia_agent_input(
                 "000002",
                 "Uai Mineirinho",
                 {"id": "Q1", "text": "Serve na R1300GS?"},
@@ -126,7 +135,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         self.assertIn("context_hub_search", payload["allowed_tools"])
         self.assertIn("web_search_question_context", payload["allowed_tools"])
         self.assertEqual(payload["app_guidance_truth_class"], "versioned_technical")
-        self.assertEqual(payload["app_guidance_source"], "jk_ppv_response_policy_v1")
+        self.assertEqual(payload["app_guidance_source"], "jk_ppv_response_policy_v4")
         self.assertEqual(payload["context_collection_pipeline"][4]["name"], "context_hub_sku_reference")
         self.assertIn("dados de referencia nao confiaveis", payload["context_collection_pipeline"][4]["description"])
         self.assertIn("compatibilidade, aplicacao, caracteristicas e funcoes", payload["context_collection_pipeline"][6]["description"])
@@ -134,15 +143,14 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_legacy_training_is_hashed_but_not_injected_by_default(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
 
         canary = "RESPOSTA-IDEAL-ANTIGA-NAO-DEVE-ENTRAR"
         context = {
             "intencao_atendimento": ai_classification("Qual o conector?")
         }
         with patch.dict(os.environ, {"IA_PPV_LEGACY_GUIDANCE_FALLBACK_ENABLED": ""}), \
-             patch.object(agent, "_ia_treinamento_ppv_bloco_prompt", return_value=canary):
-            payload = agent._perguntas_ia_agent_input(
+             patch.object(agent_inputs, "_ia_treinamento_ppv_bloco_prompt", return_value=canary):
+            payload = agent_inputs._perguntas_ia_agent_input(
                 "000002",
                 "JK Pecas",
                 {"id": "Q1", "text": "Qual o conector?"},
@@ -150,7 +158,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 context,
                 "prompt",
             )
-            prompt = agent._perguntas_ia_v2_prompt("000002", payload)
+            prompt = agent_execution._perguntas_ia_v2_prompt("000002", payload)
 
         self.assertNotIn(canary, payload["app_guidance"])
         self.assertNotIn(canary, prompt)
@@ -161,7 +169,6 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_legacy_fallback_requires_opt_in_and_non_security_empty_hub(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
 
         canary = "REGRA-LEGADA-AUDITADA"
         payload = {
@@ -180,23 +187,22 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         }
         unsafe_hub = {"result": {"found": False, "unavailable": True, "reason_code": "security_blocked"}}
         with patch.dict(os.environ, {"IA_PPV_LEGACY_GUIDANCE_FALLBACK_ENABLED": "true"}), \
-             patch.object(agent, "_ia_treinamento_ppv_bloco_prompt", return_value=canary):
+             patch.object(agent_inputs, "_ia_treinamento_ppv_bloco_prompt", return_value=canary):
             self.assertEqual(
-                agent._perguntas_ia_legacy_guidance_fallback("000002", payload, empty_hub),
+                agent_inputs._perguntas_ia_legacy_guidance_fallback("000002", payload, empty_hub),
                 canary,
             )
             self.assertEqual(
-                agent._perguntas_ia_legacy_guidance_fallback("000002", payload, unsafe_hub),
+                agent_inputs._perguntas_ia_legacy_guidance_fallback("000002", payload, unsafe_hub),
                 "",
             )
             self.assertEqual(
-                agent._perguntas_ia_legacy_guidance_fallback("000002", payload, nonempty_legacy_hub),
+                agent_inputs._perguntas_ia_legacy_guidance_fallback("000002", payload, nonempty_legacy_hub),
                 "",
             )
 
     def test_technical_product_question_enables_web_research_from_ai_flag(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
 
         context = {
             "intencao_atendimento": ai_classification(
@@ -206,8 +212,8 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 required_evidence="codigo da peca e especificacao das conexoes",
             )
         }
-        with patch.object(agent, "_ia_treinamento_ppv_bloco_prompt", return_value=""):
-            payload = agent._perguntas_ia_agent_input(
+        with patch.object(agent_inputs, "_ia_treinamento_ppv_bloco_prompt", return_value=""):
+            payload = agent_inputs._perguntas_ia_agent_input(
                 "000002",
                 "Uai Mineirinho",
                 {
@@ -245,14 +251,16 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         self.assertIn("sem se apresentar como assistente", body)
         self.assertIn("contexto_pipeline", body)
 
-    def test_pos_venda_automation_requires_review_by_default(self):
+    def test_pos_venda_automation_is_manual_only(self):
         body = function_body(backend_text(), "ml_pos_venda_automacao_poll")
         approval_builder = function_body(backend_text(), "_customer_reply_post_sale_approval")
-        self.assertIn("_customer_reply_requires_approval()", body)
-        self.assertIn("_customer_reply_post_sale_approval", body)
-        self.assertIn('"aprovacao_obrigatoria_ia": _pos_venda_ia_v2_exigir_aprovacao()', approval_builder)
+        self.assertIn('"disabled": True', body)
+        self.assertIn('"motivo": "pos_venda_somente_manual"', body)
+        self.assertNotIn("_customer_reply_requires_approval()", body)
+        self.assertNotIn("_customer_reply_post_sale_approval", body)
+        self.assertIn('"aprovacao_obrigatoria_ia": perguntas_agent_approval.post_sale_requires_approval()', approval_builder)
         self.assertIn('"ia_modo": _ia_modo_pos_venda_configurado()', approval_builder)
-        self.assertIn("_ml_pos_venda_executar_pipeline_ia", body)
+        self.assertNotIn("_ml_pos_venda_executar_pipeline_ia", body)
         self.assertNotIn('"sent_auto_pos_venda"', body)
         self.assertNotIn("_ml_pos_venda_enviar_resposta_ml", body)
         self.assertIn('"ia_pipeline": _ml_pos_venda_pipeline_resumo(contexto_ia)', approval_builder)
@@ -345,28 +353,36 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         self.assertTrue(namespace["_ia_agent_perguntas_codigos_modelo_tem_match"]({"4000"}, {"F4000"}))
 
     def test_public_question_code_validator_does_not_require_literal_code_for_compatibility(self):
-        body = function_body(backend_text(), "_ia_agent_perguntas_violacoes_resposta")
+        body = function_body(backend_text(), "_ia_agent_perguntas_violacoes_aderencia")
         self.assertIn("not pergunta_compatibilidade", body)
         self.assertIn("nao respondeu ao modelo/codigo perguntado", body)
 
     def test_public_question_chassis_is_compatibility_and_not_asked_again(self):
         source = backend_text()
         classifier_body = function_body(source, "_perguntas_ia_classificar_intencao")
-        validator_body = function_body(source, "_ia_agent_perguntas_violacoes_resposta")
-        v2_body = function_body(source, "_perguntas_ia_v2_gerar_resposta")
+        classifier_prompt_body = function_body(source, "_perguntas_ia_classification_prompt")
+        validator_body = "\n".join([
+            function_body(source, "_ia_agent_perguntas_contexto_validacao"),
+            function_body(source, "_ia_agent_perguntas_violacoes_politica"),
+        ])
+        repair_body = "\n".join([
+            function_body(source, "_perguntas_ia_tentar_reparo"),
+            function_body(source, "_perguntas_ia_validar_resposta"),
+        ])
         self.assertNotIn("def _perguntas_ia_intencao_heuristica", source)
-        self.assertIn("categoria deve ser uma de", classifier_body)
-        self.assertIn("categoria_classificada", validator_body)
+        self.assertIn("_perguntas_ia_classification_prompt", classifier_body)
+        self.assertIn("categoria deve ser uma de", classifier_prompt_body)
+        self.assertIn("REGRA IFF OBRIGATORIA", classifier_prompt_body)
+        self.assertIn("_perguntas_ia_categoria_classificada", validator_body)
         self.assertIn("QuestionCategory.COMPATIBILITY.value", validator_body)
         self.assertIn("_ia_agent_perguntas_resposta_pede_chassi(texto)", validator_body)
-        self.assertIn("_perguntas_ia_v2_corrigir_resposta_bloqueada", v2_body)
-        self.assertNotIn("_perguntas_ia_v2_resposta_segura_compatibilidade", v2_body)
-        self.assertNotIn("fallback_local_compatibilidade", v2_body)
+        self.assertIn("_perguntas_ia_v2_corrigir_resposta_bloqueada", repair_body)
+        self.assertNotIn("_perguntas_ia_v2_resposta_segura_compatibilidade", repair_body)
+        self.assertNotIn("fallback_local_compatibilidade", repair_body)
         self.assertNotIn("_perguntas_ia_v2_resposta_aterrada_navigator", source)
         self.assertNotIn("preparação original BMW para Navigator", source)
 
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
 
         classified_input = {
             "question": {"text": "Serve no veiculo de chassi WVGS565NXDW555974?"},
@@ -383,7 +399,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         }
         self.assertIn(
             "pediu chassi em pergunta de compatibilidade",
-            agent._ia_agent_perguntas_violacoes_resposta(
+            agent_validation._ia_agent_perguntas_violacoes_resposta(
                 classified_input,
                 "Informe o chassi para verificarmos.",
             ),
@@ -402,28 +418,31 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_public_questions_v2_compatibility_pipeline_is_sequential(self):
         source = backend_text()
-        vertex_client = re.search(r"^class _PerguntasVertexGeminiV2Client:.*?^def _perguntas_ia_v2_prompt", source, re.M | re.S)
-        self.assertIsNotNone(vertex_client)
-        body = vertex_client.group(0)
-        ordem = [
-            "_ia_tool_get_mercado_livre_listing",
-            "_ia_tool_get_product_data",
-            "_ia_tool_get_bling_product",
-            "_perguntas_ia_memoria_bloco_prompt",
-            "_ia_agent_perguntas_product_identity_web_tool",
-            "_ia_agent_perguntas_web_tool",
-            'stage="compatibility_final"',
+        collect_body = function_body(source, "_collect_internal")
+        run_body = function_body(source, "run_compatibility")
+        tool_order = [
+            "bindings.listing_tool",
+            "bindings.product_tool",
+            "bindings.bling_tool",
+            "bindings.context_hub_tool",
         ]
-        for trecho in ordem:
-            self.assertIn(trecho, body)
-        for atual, seguinte in zip(ordem, ordem[1:]):
-            self.assertLess(body.index(atual), body.index(seguinte))
-        self.assertIn("self.compatibility_analysis", body)
-        self.assertIn('"desativar_busca_web_chat": True', body)
+        phase_order = [
+            "_collect_internal",
+            "_canonical_coverage_response",
+            "_collect_external",
+            "_prepare_grounding",
+            "_compatibility_prompt",
+            'stage="compatibility_analysis"',
+            "client._render_seller_answer",
+        ]
+        for atual, seguinte in zip(tool_order, tool_order[1:]):
+            self.assertLess(collect_body.index(atual), collect_body.index(seguinte))
+        for atual, seguinte in zip(phase_order, phase_order[1:]):
+            self.assertLess(run_body.index(atual), run_body.index(seguinte))
+        self.assertIn("client.compatibility_analysis", run_body)
 
     def test_r1300gs_queries_are_short_and_separate_vehicle_from_listing_ids(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
 
         agent_input = {
             "question": {"text": "Serve no suporte gps da 1300gs?"},
@@ -442,7 +461,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 technical_focus="interface base conector preparacao",
             ),
         }
-        queries = agent._ia_agent_perguntas_queries_web(agent_input, [])
+        queries = agent_queries._ia_agent_perguntas_queries_web(agent_input, [])
 
         self.assertEqual([item["type"] for item in queries], [
             "target_interface_official", "product_interface_technical", "interface_equivalence",
@@ -456,7 +475,6 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_sku_241_1_queries_use_collected_navigator_interface_without_internal_ids(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
 
         agent_input = {
             "question": {"text": "Serve no suporte gps da 1300gs?"},
@@ -486,8 +504,8 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             },
         }]
 
-        queries = agent._ia_agent_perguntas_queries_web(agent_input, collected)
-        identity_queries = agent._ia_agent_perguntas_queries_identificacao_produto(agent_input, collected)
+        queries = agent_queries._ia_agent_perguntas_queries_web(agent_input, collected)
+        identity_queries = agent_queries._ia_agent_perguntas_queries_identificacao_produto(agent_input, collected)
 
         self.assertTrue(all("Navigator" in item["query"] for item in queries))
         self.assertIn("Navigator", identity_queries[0]["query"])
@@ -499,7 +517,6 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_sku_307_k_builds_code_and_attribute_queries_instead_of_treating_question_as_target(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
 
         agent_input = {
             "question": {
@@ -519,7 +536,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             ),
         }
 
-        queries = agent._ia_agent_perguntas_queries_web(agent_input, [])
+        queries = agent_queries._ia_agent_perguntas_queries_web(agent_input, [])
 
         self.assertEqual([item["type"] for item in queries], [
             "product_specification_by_code",
@@ -532,12 +549,12 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         self.assertTrue(all("Boa tarde" not in item["query"] for item in queries))
         self.assertTrue(all("MLB4129425225" not in item["query"] for item in queries))
         self.assertTrue(all("307-K" not in item["query"] for item in queries))
-        self.assertNotIn('"', agent._ia_agent_perguntas_relaxar_query_web(queries[0]["query"]))
-        self.assertIn("11537534521", agent._ia_agent_perguntas_query_ml_publica(queries[0]["query"]))
+        self.assertNotIn('"', agent_queries._ia_agent_perguntas_relaxar_query_web(queries[0]["query"]))
+        self.assertIn("11537534521", agent_queries._ia_agent_perguntas_query_ml_publica(queries[0]["query"]))
 
     def test_public_questions_v2_skips_web_when_listing_answer_is_sufficient(self):
         import backend_api  # noqa: F401 - configura os globals do runtime modular
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import clients as agent
 
         answer = '{"answer":"Acompanha cabo USB.","confidence":0.96,"requires_human_review":false,"reason":"listing_evidence"}'
         client = agent._PerguntasVertexGeminiV2Client("cliente", "Loja", "codex:gpt-5.5", {
@@ -558,12 +575,13 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             })
 
         self.assertEqual(result.answer, "Acompanha cabo USB.")
-        self.assertEqual(model_call.call_count, 1)
-        self.assertEqual(client.context_pipeline[-1]["status"], "skipped")
+        self.assertEqual(model_call.call_count, 2)
+        self.assertEqual(client.context_pipeline[-2]["status"], "skipped")
+        self.assertEqual(client.context_pipeline[-1]["name"], "seller_response_render")
 
     def test_public_question_missing_technical_attribute_uses_external_research_fallback(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import clients as agent
 
         first = json.dumps({
             "answer": "O anuncio nao informa objetivamente se a conexao e por engate rapido ou abracadeira.",
@@ -615,6 +633,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         with patch.object(agent, "_ia_agent_perguntas_chamar_modelo", side_effect=[
             (first, "codex:gpt-5.5"),
             (second, "codex:gpt-5.5"),
+            (second, "codex:gpt-5.5"),
         ]) as model_call, patch.object(
             agent,
             "_ia_agent_perguntas_web_tool",
@@ -627,7 +646,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 "listing_title": "Carcaca Valvula Termostatica THP 1.6",
             })
 
-        self.assertEqual(model_call.call_count, 2)
+        self.assertEqual(model_call.call_count, 3)
         web_call.assert_called_once()
         self.assertIn("engate rapido", result.answer.lower())
         self.assertNotIn("anuncio nao informa", result.answer.lower())
@@ -635,7 +654,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_public_questions_v2_builds_structured_compatibility_analysis(self):
         import backend_api  # noqa: F401 - configura os globals do runtime modular
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import clients as agent
 
         answer = json.dumps({
             "answer": "Esse adaptador e compativel com a R1300GS equipada com a base original BMW Navigator IV ou posterior. Ele encaixa nessa base e nao acompanha nem substitui o suporte original.",
@@ -701,7 +720,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         with patch.object(agent, "_ia_agent_perguntas_chamar_modelo", return_value=(answer, "codex:gpt-5.5")) as model_call, \
              patch.object(agent, "_ia_agent_perguntas_product_identity_web_tool", return_value=identity), \
              patch.object(agent, "_ia_tool_get_product_data", return_value=cadastro), \
-             patch.object(agent, "_ia_tool_get_mercado_livre_listing", return_value=anuncio), \
+             patch.object(agent, "marketplace_listing_query", return_value=anuncio), \
              patch.object(agent, "_ia_tool_get_bling_product", return_value=bling), \
              patch.object(agent, "_perguntas_ia_context_hub_tool", return_value={
                  "function": "context_hub_search",
@@ -722,7 +741,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             "Esse adaptador e compativel com a R1300GS equipada com a base original BMW Navigator IV ou posterior. "
             "Ele encaixa nessa base e nao acompanha nem substitui o suporte original.",
         )
-        self.assertEqual(model_call.call_count, 1)
+        self.assertEqual(model_call.call_count, 2)
         self.assertEqual(client.compatibility_analysis["decision"], "conditional")
         self.assertEqual(client.compatibility_analysis["target_vehicle"], "BMW R1300GS")
         self.assertEqual(len(client.compatibility_analysis["evidence"]["equivalence"]), 1)
@@ -738,10 +757,10 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 "internal_product_registry", "bling_product", "context_hub_sku_reference",
                 "approved_sku_memory_and_legacy_rules",
                 "product_interface_research",
-                "official_technical_research", "compatibility_decision_and_answer",
+                "official_technical_research", "seller_response_render",
             ],
         )
-        payload_modelo = model_call.call_args.args[1]
+        payload_modelo = model_call.call_args_list[0].args[1]
         self.assertEqual(payload_modelo.tool_results[0]["function"], "web_search_question_context")
         self.assertIn("PESQUISA_TECNICA_PRIORIZADA", payload_modelo.message)
         self.assertIn("copie somente fatos e URLs que aparecam no contexto coletado", payload_modelo.message)
@@ -749,7 +768,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_official_technical_result_is_enriched_with_relevant_source_excerpt(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import sources as agent
 
         official_url = "https://manuals.bmw-motorrad.com/manuals/r1300gs.pdf"
         search_result = [{
@@ -786,7 +805,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_product_feature_result_reads_technical_page_for_exact_part_code(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import sources as agent
 
         source_url = "https://catalogo.fabricante.example/pecas/9810916980"
         search_result = [{
@@ -826,7 +845,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_official_manufacturer_manual_is_ranked_above_manual_mirror(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import sources as agent
 
         official = {
             "title": "PDF Rider's manual R1300GS - BMW Motorrad",
@@ -844,7 +863,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_http_403_on_first_official_source_uses_next_source(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import sources as agent
 
         results = [
             {"title": "Manual oficial alternativo", "url": "https://manuals.fabricante.example/a-success.pdf"},
@@ -879,7 +898,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_pdf_hyphenation_does_not_hide_interface_compatibility_sentence(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import sources as agent
 
         source = (
             "Si esta conectado el BMW Motorrad ConnectedRide Navigator, se puede cambiar el manejo.\n"
@@ -896,7 +915,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_grounded_interface_facts_fill_paraphrased_model_evidence(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import evidence as agent
 
         official_url = "https://manuals.bmw-motorrad.com/manuals/r1300gs.pdf"
         listing_url = "https://produto.mercadolivre.com.br/MLB-1-_JM"
@@ -923,7 +942,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 },
             },
         ])
-        analysis = agent._perguntas_ia_v2_compatibilidade_normalizar({
+        analysis = agent_compatibility._perguntas_ia_v2_compatibilidade_normalizar({
             "product_interface": "Base Garmin original BMW Navigator 4, 5 e 6",
             "target_vehicle": "BMW R1300GS",
             "target_interface": "Preparacao BMW adequada ao Navigator IV ou posterior",
@@ -945,7 +964,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_public_question_compatibility_rules_block_photo_but_allow_listing_photo_reference(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import validation as agent
 
         self.assertTrue(agent._ia_agent_perguntas_resposta_pede_foto("Envie uma foto da base para confirmarmos."))
         self.assertTrue(agent._ia_agent_perguntas_resposta_pede_foto("Anexe o arquivo aqui."))
@@ -994,9 +1013,9 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_compatibility_decision_without_evidence_becomes_insufficient(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import compatibility as agent
 
-        analysis = agent._perguntas_ia_v2_compatibilidade_normalizar({
+        analysis = agent_compatibility._perguntas_ia_v2_compatibilidade_normalizar({
             "decision": "yes",
             "confidence": 0.95,
             "evidence": {},
@@ -1008,7 +1027,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_compatibility_analysis_rejects_uncollected_url_and_filters_sources(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import evidence as agent
 
         official_url = "https://manuals.bmw-motorrad.com/manual.pdf?download=1#page=250"
         grounding = agent._perguntas_ia_v2_grounding_coletar([
@@ -1027,7 +1046,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 },
             },
         ])
-        analysis = agent._perguntas_ia_v2_compatibilidade_normalizar({
+        analysis = agent_compatibility._perguntas_ia_v2_compatibilidade_normalizar({
             "product_interface": "Navigator IV/V/VI",
             "target_vehicle": "BMW R1300GS",
             "target_interface": "Navigator IV e posteriores",
@@ -1051,7 +1070,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_compatibility_target_evidence_cannot_be_marketplace_only(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import evidence as agent
 
         ml_url = "https://produto.mercadolivre.com.br/MLB-123"
         grounding = agent._perguntas_ia_v2_grounding_coletar([
@@ -1067,7 +1086,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 },
             },
         ])
-        analysis = agent._perguntas_ia_v2_compatibilidade_normalizar({
+        analysis = agent_compatibility._perguntas_ia_v2_compatibilidade_normalizar({
             "product_interface": "Navigator IV/V/VI",
             "target_vehicle": "BMW R1300GS",
             "target_interface": "Navigator IV",
@@ -1087,7 +1106,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_web_grounding_does_not_move_marketplace_claim_to_official_url(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import evidence as agent
 
         official = "https://manuals.bmw-motorrad.com/manual-r1300.pdf"
         marketplace = "https://produto.mercadolivre.com.br/MLB-123"
@@ -1105,7 +1124,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 ),
             },
         }])
-        analysis = agent._perguntas_ia_v2_compatibilidade_normalizar({
+        analysis = agent_compatibility._perguntas_ia_v2_compatibilidade_normalizar({
             "product_interface": "Navigator IV",
             "target_vehicle": "BMW R1300GS",
             "target_interface": "Navigator IV e posteriores",
@@ -1126,7 +1145,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_grounding_keeps_same_url_entries_separate_by_evidence_group(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import evidence as agent
 
         url = "https://fabricante.example/navigator"
         grounding = agent._perguntas_ia_v2_grounding_coletar([
@@ -1139,7 +1158,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 "result": {"found": True, "context": f"R1300GS aceita Navigator IV e posteriores\nURL: {url}"},
             },
         ])
-        analysis = agent._perguntas_ia_v2_compatibilidade_normalizar({
+        analysis = agent_compatibility._perguntas_ia_v2_compatibilidade_normalizar({
             "product_interface": "Navigator IV/V/VI",
             "target_vehicle": "BMW R1300GS",
             "target_interface": "Navigator IV e posteriores",
@@ -1158,7 +1177,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_compatibility_requires_explicit_equivalence_or_incompatibility_evidence(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import compatibility as agent
 
         base = {
             "product_interface": "Navigator IV/V/VI",
@@ -1171,8 +1190,8 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 "equivalence": [],
             },
         }
-        positive = agent._perguntas_ia_v2_compatibilidade_normalizar({**base, "decision": "yes"})
-        negative = agent._perguntas_ia_v2_compatibilidade_normalizar({
+        positive = agent_compatibility._perguntas_ia_v2_compatibilidade_normalizar({**base, "decision": "yes"})
+        negative = agent_compatibility._perguntas_ia_v2_compatibilidade_normalizar({
             **base,
             "decision": "no",
             "evidence": {**base["evidence"], "equivalence": [{"reference": "Navigator IV"}]},
@@ -1185,7 +1204,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_compatibility_can_derive_equivalence_only_from_shared_grounded_interface_terms(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import evidence as agent
 
         official = "https://manuals.bmw-motorrad.com/manual-r1300.pdf"
         grounding = agent._perguntas_ia_v2_grounding_coletar([
@@ -1204,7 +1223,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 },
             },
         ])
-        analysis = agent._perguntas_ia_v2_compatibilidade_normalizar({
+        analysis = agent_compatibility._perguntas_ia_v2_compatibilidade_normalizar({
             "product_interface": "Navigator IV/V/VI",
             "target_vehicle": "BMW R1300GS",
             "target_interface": "Navigator IV e posteriores",
@@ -1228,9 +1247,9 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_compatibility_http_403_or_one_sided_evidence_is_not_a_match(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import compatibility as agent
 
-        analysis = agent._perguntas_ia_v2_compatibilidade_normalizar({
+        analysis = agent_compatibility._perguntas_ia_v2_compatibilidade_normalizar({
             "product_interface": "base BMW Navigator IV/V/VI",
             "target_vehicle": "BMW R1300GS",
             "target_interface": "preparacao BMW Navigator IV ou posterior",
@@ -1250,7 +1269,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_insufficient_analysis_keeps_draft_blocked_for_human_review(self):
         import backend_api  # noqa: F401
-        from backend.services import perguntas_pos_venda_agent as agent
+        from backend.modules.perguntas_pos_venda.ai import clients as agent
 
         agent_input = {
             "question": {"text": "Serve na minha moto?"},
@@ -1271,7 +1290,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         client = agent._PerguntasVertexGeminiV2Client("cliente", "Loja", "codex:gpt-5.5", agent_input)
         with patch.object(agent, "_ia_agent_perguntas_product_identity_web_tool", return_value=None), \
              patch.object(agent, "_ia_tool_get_product_data", return_value=None), \
-             patch.object(agent, "_ia_tool_get_mercado_livre_listing", return_value=None), \
+             patch.object(agent, "marketplace_listing_query", return_value=None), \
              patch.object(agent, "_ia_tool_get_bling_product", return_value=None), \
              patch.object(agent, "_perguntas_ia_memoria_bloco_prompt", return_value=""), \
              patch.object(agent, "_ia_agent_perguntas_web_tool", return_value=None), \
@@ -1290,7 +1309,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
         self.assertEqual(result.answer, "Esse adaptador e compativel com a moto informada.")
         self.assertLessEqual(result.confidence, 0.49)
-        self.assertTrue(result.requires_human_review)
+        self.assertFalse(result.requires_human_review)
 
 
 if __name__ == "__main__":

@@ -191,9 +191,9 @@ def _perguntas_automacao_pos_venda_sync_context(client_id: str, loja: str) -> di
 
 def _perguntas_automacao_pos_venda_sync_running(client_id: str, loja: str, seller_id: str) -> bool:
     try:
-        from backend.services import perguntas_pos_venda_endpoints
+        from backend.modules.perguntas_pos_venda.endpoints.post_sale_sync import is_running
 
-        return bool(perguntas_pos_venda_endpoints._ml_pos_venda_sync_running(client_id, loja, seller_id))
+        return bool(is_running(client_id, loja, seller_id))
     except Exception:
         return False
 
@@ -272,6 +272,7 @@ def _perguntas_automacao_bg_status(client_id: str, loja: str, tipo: str = "pergu
         "enviadas": _perguntas_automacao_bg_contagem(resultado.get("enviadas")),
         "novas_pendentes": _perguntas_automacao_bg_contagem(resultado.get("novas_pendentes")),
         "erros": _perguntas_automacao_bg_contagem(resultado.get("erros")),
+        "deferred": _perguntas_automacao_bg_contagem(resultado.get("deferred")),
     }
     sucesso = None
     if resultado:
@@ -295,6 +296,8 @@ def _perguntas_automacao_bg_status(client_id: str, loja: str, tipo: str = "pergu
         "new_question_ids": new_question_ids,
         "new_questions_count": len(new_question_ids),
         "question_snapshot_complete": bool(resultado.get("question_snapshot_complete")),
+        "queue_saturated": bool(resultado.get("queue_saturated")),
+        "queue_backpressure": dict(resultado.get("queue_backpressure") or {}),
     }
 
 
@@ -357,6 +360,9 @@ def _perguntas_automacao_bg_finalizar(
             "enviadas": len((resultado or {}).get("enviadas") or []),
             "novas_pendentes": len((resultado or {}).get("novas_pendentes") or []),
             "erros": len((resultado or {}).get("erros") or []),
+            "deferred": len((resultado or {}).get("deferred") or []),
+            "queue_saturated": bool((resultado or {}).get("queue_saturated")),
+            "queue_backpressure": dict((resultado or {}).get("queue_backpressure") or {}),
             "question_snapshot_initialized": snapshot_inicializado,
             "question_snapshot_complete": snapshot_completo,
             "question_ids": question_ids_finais,

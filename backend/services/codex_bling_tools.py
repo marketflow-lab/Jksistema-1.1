@@ -284,8 +284,9 @@ def _resource_url(path: str) -> str:
 
 def _ia_func(name: str) -> Callable[..., Any]:
     from backend.services import ia as ia_service
+    from backend.services.marketplace_tools.registry import TOOL_EXECUTORS, resolve_executor
 
-    func = getattr(ia_service, name, None)
+    func = resolve_executor(name) if name in TOOL_EXECUTORS else getattr(ia_service, name, None)
     if not callable(func):
         raise RuntimeError(f"Funcao IA indisponivel: {name}")
     return func

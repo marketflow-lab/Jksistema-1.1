@@ -6,7 +6,7 @@ import time
 import uuid
 from typing import Any, Optional
 
-from backend.services import codex_console
+from backend.services.codex.console import tasks as console_tasks
 from backend.services.whatsapp import conversation_context as whatsapp_conversation_context
 from backend.services.whatsapp import delivery as whatsapp_delivery
 from backend.services.whatsapp import message as whatsapp_message
@@ -120,7 +120,7 @@ def _cancel_dual_active_job(
 ) -> dict[str, Any]:
     outcomes: list[str] = []
     for task_id in _pending_task_ids(active_pending):
-        result = codex_console.codex_cancelar_tarefa_para_sessao(
+        result = console_tasks.cancel(
             task_id,
             session,
             cancel_source="whatsapp_conversation_agent",
@@ -128,7 +128,7 @@ def _cancel_dual_active_job(
         result_task = result.get("task") if isinstance(result, dict) and isinstance(result.get("task"), dict) else {}
         task_status = str(result_task.get("status") or "")
         outcomes.append(task_status)
-        codex_console._codex_update_task(
+        console_tasks.update(
             task_id,
             handoff_status=(
                 "cancel_requested_by_conversation_agent"
@@ -177,10 +177,10 @@ def _steer_dual_active_job(
         return True, delivery
     outcomes: list[bool] = []
     for task_id in _pending_task_ids(active_pending):
-        task = active_task if task_id == active_task_id else (codex_console._codex_load_task(task_id) or {})
+        task = active_task if task_id == active_task_id else (console_tasks.load(task_id) or {})
         if str(task.get("status") or "") not in {"queued", "running"}:
             continue
-        steer = codex_console.codex_complementar_tarefa_para_sessao(
+        steer = console_tasks.steer(
             task_id, prompt, session,
             request_id=f"{message_id}:{task_id}", subject_id=subject, wa_id=phone,
         )

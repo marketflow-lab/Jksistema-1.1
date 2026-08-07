@@ -7,15 +7,9 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from backend.modules.perguntas_pos_venda.ai import inputs as agent_inputs
 from backend.services import codex_assistant_storage
 from backend.services import perguntas_pos_venda_codex as codex_surface
-
-
-def _agent_module():
-    import backend_api  # noqa: F401
-    from backend.services import perguntas_pos_venda_agent
-
-    return perguntas_pos_venda_agent
 
 
 def _structured_intent(
@@ -151,16 +145,15 @@ def test_new_public_event_reuses_item_buyer_thread(tmp_path, monkeypatch):
 
 
 def test_provider_policy_is_codex_only_until_two_operational_failures(monkeypatch):
-    agent = _agent_module()
     monkeypatch.delenv("JK_PPV_RESPONSE_PROVIDER_POLICY", raising=False)
-    selected = agent._perguntas_codex_provider_selection("vertex:gemini-2.5-flash", 20)
+    selected = agent_inputs._perguntas_codex_provider_selection("vertex:gemini-2.5-flash", 20)
     assert selected["policy"] == "codex_only"
     assert selected["model"].startswith("codex:")
     assert selected["fallback_used"] is False
 
     monkeypatch.setenv("JK_PPV_RESPONSE_PROVIDER_POLICY", "codex_then_configured_fallback")
-    assert agent._perguntas_codex_provider_selection("vertex:gemini-2.5-flash", 1)["model"].startswith("codex:")
-    fallback = agent._perguntas_codex_provider_selection("vertex:gemini-2.5-flash", 2)
+    assert agent_inputs._perguntas_codex_provider_selection("vertex:gemini-2.5-flash", 1)["model"].startswith("codex:")
+    fallback = agent_inputs._perguntas_codex_provider_selection("vertex:gemini-2.5-flash", 2)
     assert fallback["model"].startswith("vertex:")
     assert fallback["fallback_used"] is True
 
@@ -193,9 +186,8 @@ def test_retry_persists_operational_failure_count(tmp_path, monkeypatch):
 
 
 def test_public_web_follows_ai_flags_and_category_not_question_text():
-    agent = _agent_module()
-    with patch.object(agent, "_perguntas_ia_legacy_guidance_metadata", return_value=(False, "")):
-        technical_text_without_ai_web = agent._perguntas_ia_agent_input(
+    with patch.object(agent_inputs, "_perguntas_ia_legacy_guidance_metadata", return_value=(False, "")):
+        technical_text_without_ai_web = agent_inputs._perguntas_ia_agent_input(
             "cliente",
             "Loja",
             {"id": "Q1", "text": "Qual o conector e a medida da rosca?"},
@@ -203,7 +195,7 @@ def test_public_web_follows_ai_flags_and_category_not_question_text():
             {"intencao_atendimento": _structured_intent("product_feature", web=False)},
             "",
         )
-        simple_text_with_ai_web = agent._perguntas_ia_agent_input(
+        simple_text_with_ai_web = agent_inputs._perguntas_ia_agent_input(
             "cliente",
             "Loja",
             {"id": "Q2", "text": "Tem pronta entrega?"},
@@ -211,7 +203,7 @@ def test_public_web_follows_ai_flags_and_category_not_question_text():
             {"intencao_atendimento": _structured_intent("product_feature", web=True)},
             "",
         )
-        compatibility_without_flag = agent._perguntas_ia_agent_input(
+        compatibility_without_flag = agent_inputs._perguntas_ia_agent_input(
             "cliente",
             "Loja",
             {"id": "Q3", "text": "Serve?"},
@@ -228,8 +220,7 @@ def test_public_web_follows_ai_flags_and_category_not_question_text():
 
 
 def test_structural_compaction_never_slices_json():
-    agent = _agent_module()
-    compacted = agent._perguntas_codex_compact_json(
+    compacted = agent_inputs._perguntas_codex_compact_json(
         {"question": "x" * 10_000, "history": [{"text": "y" * 2000}] * 40},
         900,
     )
@@ -410,11 +401,10 @@ def test_empty_other_product_search_is_not_confirmed():
 
 
 def test_normal_flows_do_not_read_or_write_variable_sku_memory():
-    agent = _agent_module()
     from backend.services import perguntas_pos_venda_perguntas_ml, perguntas_pos_venda_pos_venda
 
     with patch.dict("os.environ", {}, clear=False):
-        assert agent._perguntas_ia_legacy_sku_memory_reader_enabled() is False
+        assert agent_inputs._perguntas_ia_legacy_sku_memory_reader_enabled() is False
     pipeline_source = inspect.getsource(perguntas_pos_venda_perguntas_ml._ml_pos_venda_montar_contexto_pipeline)
     generator_source = inspect.getsource(perguntas_pos_venda_pos_venda._ml_pos_venda_gerar_resposta_ia)
     assert 'contexto["memoria_sku"] = ""' in pipeline_source

@@ -5,6 +5,14 @@ from types import SimpleNamespace
 
 from backend.services import codex_console, codex_whatsapp_agents, whatsapp_bridge
 from backend.services.whatsapp import settings
+from backend.services.codex.console import bindings as console_bindings
+from backend.services.codex.console import attachments as console_attachments
+from backend.services.codex.console import state as console_state
+from backend.services.codex.console import tasks as console_tasks
+from backend.services.codex.console import task_creation as console_task_creation
+from backend.services.codex.console import queue_worker as console_queue_worker
+from backend.services.codex.console import runtime as console_runtime
+from backend.services.codex.console import scope as console_scope
 
 
 def _phone_setting(subject: str, *, client: str, user: str, primary: bool, label: str = ""):
@@ -160,11 +168,11 @@ def test_primary_whatsapp_and_sidebar_share_pii_free_identity(monkeypatch):
     }
     shared = whatsapp_bridge._conversation_id(config, message)
 
-    assert shared == codex_console._codex_shared_conversation_id("000002", "caio")
+    assert shared == console_attachments._codex_shared_conversation_id("000002", "caio")
     assert shared.startswith("bj_")
     assert "3818" not in shared
-    assert shared != codex_console._codex_shared_conversation_id("000002", "outro")
-    assert shared != codex_console._codex_shared_conversation_id("000003", "caio")
+    assert shared != console_attachments._codex_shared_conversation_id("000002", "outro")
+    assert shared != console_attachments._codex_shared_conversation_id("000003", "caio")
 
     message["subject_id"] = "subject-secondary"
     message["binding_is_primary"] = 0
@@ -306,17 +314,18 @@ def test_sidebar_direct_reply_uses_shared_history_without_starting_worker(tmp_pa
         "permissions": {"full": True, "vendas": True},
         "is_full": True,
     }
-    shared_id = codex_console._codex_shared_conversation_id("000002", "caio")
+    shared_id = console_attachments._codex_shared_conversation_id("000002", "caio")
     started: list[str] = []
-    monkeypatch.setitem(codex_console.__dict__, "BASE_DIR", str(tmp_path))
-    monkeypatch.setitem(codex_console.__dict__, "PASTA_INFO", str(tmp_path / "info"))
-    monkeypatch.setattr(codex_console, "_codex_enabled", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_sdk_installed", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_start_thread", started.append)
-    monkeypatch.setattr(codex_console, "_codex_readonly_cwd_for_session", lambda *_args: str(tmp_path))
-    monkeypatch.setattr(
-        codex_console,
-        "_codex_shared_continuity_for_session",
+    current_runtime = console_bindings.current()
+    monkeypatch.setattr(console_bindings, "_RUNTIME", console_bindings.ConsoleRuntime(
+        str(tmp_path), str(tmp_path / "info"), current_runtime.session_loader,
+        current_runtime.permissions_loader, current_runtime.source_module,
+    ))
+    monkeypatch.setattr(console_task_creation, "_codex_enabled", lambda: True)
+    monkeypatch.setattr(console_task_creation, "_codex_sdk_installed", lambda: True)
+    monkeypatch.setattr(console_task_creation, "_codex_start_thread", started.append)
+    monkeypatch.setattr(console_task_creation, "_codex_readonly_cwd_for_session", lambda *_args: str(tmp_path))
+    monkeypatch.setattr(console_task_creation, "_codex_shared_continuity_for_session",
         lambda _session: {"conversation_id": shared_id, "subject_id": "primary"},
     )
     monkeypatch.setattr(
@@ -327,9 +336,9 @@ def test_sidebar_direct_reply_uses_shared_history_without_starting_worker(tmp_pa
             "decision": {"action": "reply", "reply_text": "Olá, Caio."},
         },
     )
-    codex_console.CODEX_TASKS.clear()
+    console_state.CODEX_TASKS.clear()
 
-    task = codex_console.codex_criar_tarefa_para_sessao(
+    task = console_tasks.create(
         codex_console.CodexTaskRequest(prompt="Oi"),
         session,
     )["task"]
@@ -339,7 +348,7 @@ def test_sidebar_direct_reply_uses_shared_history_without_starting_worker(tmp_pa
     assert task["status"] == "completed"
     assert task["final_response"] == "Olá, Caio."
     assert started == []
-    codex_console.CODEX_TASKS.clear()
+    console_state.CODEX_TASKS.clear()
 
 
 def test_sidebar_shared_responder_failure_falls_back_to_readonly_worker(tmp_path, monkeypatch):
@@ -349,17 +358,18 @@ def test_sidebar_shared_responder_failure_falls_back_to_readonly_worker(tmp_path
         "permissions": {"full": True, "vendas": True},
         "is_full": True,
     }
-    shared_id = codex_console._codex_shared_conversation_id("000002", "caio")
+    shared_id = console_attachments._codex_shared_conversation_id("000002", "caio")
     started: list[str] = []
-    monkeypatch.setitem(codex_console.__dict__, "BASE_DIR", str(tmp_path))
-    monkeypatch.setitem(codex_console.__dict__, "PASTA_INFO", str(tmp_path / "info"))
-    monkeypatch.setattr(codex_console, "_codex_enabled", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_sdk_installed", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_start_thread", started.append)
-    monkeypatch.setattr(codex_console, "_codex_readonly_cwd_for_session", lambda *_args: str(tmp_path))
-    monkeypatch.setattr(
-        codex_console,
-        "_codex_shared_continuity_for_session",
+    current_runtime = console_bindings.current()
+    monkeypatch.setattr(console_bindings, "_RUNTIME", console_bindings.ConsoleRuntime(
+        str(tmp_path), str(tmp_path / "info"), current_runtime.session_loader,
+        current_runtime.permissions_loader, current_runtime.source_module,
+    ))
+    monkeypatch.setattr(console_task_creation, "_codex_enabled", lambda: True)
+    monkeypatch.setattr(console_task_creation, "_codex_sdk_installed", lambda: True)
+    monkeypatch.setattr(console_task_creation, "_codex_start_thread", started.append)
+    monkeypatch.setattr(console_task_creation, "_codex_readonly_cwd_for_session", lambda *_args: str(tmp_path))
+    monkeypatch.setattr(console_task_creation, "_codex_shared_continuity_for_session",
         lambda _session: {"conversation_id": shared_id, "subject_id": "primary"},
     )
 
@@ -367,9 +377,9 @@ def test_sidebar_shared_responder_failure_falls_back_to_readonly_worker(tmp_path
         raise TimeoutError("conversation responder timed out")
 
     monkeypatch.setattr(whatsapp_bridge, "_shared_sidebar_conversation_turn", fail_responder)
-    codex_console.CODEX_TASKS.clear()
+    console_state.CODEX_TASKS.clear()
 
-    task = codex_console.codex_criar_tarefa_para_sessao(
+    task = console_tasks.create(
         codex_console.CodexTaskRequest(prompt="Consulte o estoque"),
         session,
     )["task"]
@@ -377,4 +387,4 @@ def test_sidebar_shared_responder_failure_falls_back_to_readonly_worker(tmp_path
     assert task["conversation_id"] == shared_id
     assert task["status"] == "queued"
     assert started == [task["task_id"]]
-    codex_console.CODEX_TASKS.clear()
+    console_state.CODEX_TASKS.clear()

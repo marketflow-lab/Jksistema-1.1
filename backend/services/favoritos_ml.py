@@ -1360,15 +1360,26 @@ def _favoritos_ml_aplicar_contingencia_sem_promocao(
             )
         except Exception as exc:
             detalhe = getattr(exc, "detail", None) or str(exc or "falha desconhecida")
-            raise HTTPException(
+            erro_reconciliacao = HTTPException(
                 status_code=getattr(exc, "status_code", 409) or 409,
                 detail=(
                     "A promocao reapareceu depois do preco ideal e a reconciliacao final falhou: "
                     f"{detalhe}"
                 ),
-            ) from exc
+            )
+            for atributo in (
+                "favoritos_remocoes",
+                "favoritos_cfg",
+                "favoritos_clear_confirmation",
+                "favoritos_commercial_safety",
+                "favoritos_observados_autoritativos",
+                "favoritos_stop_batch",
+            ):
+                if hasattr(exc, atributo):
+                    setattr(erro_reconciliacao, atributo, getattr(exc, atributo))
+            raise erro_reconciliacao from exc
     if not confirmacao_sem_promocao_final.get("success"):
-        raise HTTPException(
+        erro_confirmacao_final = HTTPException(
             status_code=409,
             detail=(
                 "O preco ideal direto foi confirmado, mas o fallback nao provou ausencia estavel de promocao "
@@ -1376,7 +1387,23 @@ def _favoritos_ml_aplicar_contingencia_sem_promocao(
                 f"{confirmacao_sem_promocao_final}"
             ),
         )
+        erro_confirmacao_final.favoritos_remocoes = list(removidas)
+        erro_confirmacao_final.favoritos_cfg = cfg
+        erro_confirmacao_final.favoritos_clear_confirmation = confirmacao_sem_promocao_final
+        erro_confirmacao_final.favoritos_commercial_safety = _favoritos_ml_commercial_safety_clear(
+            confirmacao_sem_promocao_final,
+            reason="fallback_final_state_not_confirmed",
+        )
+        erro_confirmacao_final.favoritos_observados_autoritativos = _favoritos_ml_observados_clear(
+            confirmacao_sem_promocao_final
+        )
+        erro_confirmacao_final.favoritos_stop_batch = True
+        raise erro_confirmacao_final
 
+    commercial_safety = _favoritos_ml_commercial_safety_clear(
+        confirmacao_sem_promocao_final,
+        reason="fallback_direct_price_confirmed_without_promotion",
+    )
     return {
         "fallback_sem_promocao_aplicado": True,
         "fallback_motivo": motivo,
@@ -1396,6 +1423,10 @@ def _favoritos_ml_aplicar_contingencia_sem_promocao(
         "promocoes_removidas_reconciliacao": removidas_reconciliacao,
         "preco_update_reconciliacao": preco_update_reconciliacao,
         "preco_confirmacao_reconciliacao": preco_confirmacao_reconciliacao,
+        "commercial_safety": commercial_safety,
+        "observados_autoritativos": _favoritos_ml_observados_clear(confirmacao_sem_promocao_final),
+        "stop_batch": False,
+        "promotion_still_active": False,
     }, cfg
 
 
@@ -1502,6 +1533,14 @@ def _favoritos_ml_remocao_max_attempts() -> int:
     return max(1, min(tentativas, 6))
 
 
+def _favoritos_ml_remocao_max_cycles() -> int:
+    try:
+        ciclos = int(float(str(os.getenv("ML_PROMO_REMOVE_MAX_CYCLES", "2") or "2").replace(",", ".")))
+    except Exception:
+        ciclos = 2
+    return max(1, min(ciclos, 3))
+
+
 def _favoritos_ml_textos_resposta_remocao(resp, body_resp: Any, erros_payload: Optional[list[str]] = None) -> list[str]:
     textos = list(erros_payload or [])
     if isinstance(body_resp, dict):
@@ -1519,7 +1558,7 @@ def _favoritos_ml_textos_resposta_remocao(resp, body_resp: Any, erros_payload: O
 
 def _favoritos_ml_remocao_erro_transitorio(resp, textos_resposta: list[str]) -> bool:
     status_code = getattr(resp, "status_code", None)
-    if status_code in (408, 429, 500, 502, 503, 504):
+    if status_code in (408, 423, 429, 500, 502, 503, 504):
         return True
 
     texto = " ".join(str(t or "") for t in (textos_resposta or []))
@@ -1550,6 +1589,72 @@ def _favoritos_ml_invalidar_cache_promocoes_item(client_id: str, loja: str, item
         return
     for versao in ("v2", "v3-strict"):
         cache.pop(f"{versao}:{client_id}:{loja}:{item_id}", None)
+
+
+def _favoritos_ml_percentual_observado_sale_price(confirmacao: Optional[dict]) -> Optional[float]:
+    dados = confirmacao if isinstance(confirmacao, dict) else {}
+    final_price = _parse_float_flex(dados.get("sale_price_amount"))
+    regular_price = _parse_float_flex(dados.get("sale_price_regular_amount"))
+    if final_price is None or regular_price is None or regular_price <= 0:
+        return None
+    return round(max(0.0, (float(regular_price) - float(final_price)) * 100.0 / float(regular_price)), 2)
+
+
+def _favoritos_ml_observados_clear(confirmacao: Optional[dict]) -> dict:
+    dados = confirmacao if isinstance(confirmacao, dict) else {}
+    promocoes = dados.get("active_promotions") if isinstance(dados.get("active_promotions"), list) else []
+    primeira = promocoes[0] if promocoes and isinstance(promocoes[0], dict) else {}
+    final_price = _parse_float_flex(dados.get("sale_price_amount"))
+    regular_price = _parse_float_flex(dados.get("sale_price_regular_amount"))
+    return {
+        "promotion_id": primeira.get("promotion_id") or dados.get("sale_price_promotion_id"),
+        "promotion_type": primeira.get("promotion_type") or dados.get("sale_price_promotion_type"),
+        "base_price": round(float(regular_price), 2) if regular_price is not None else (
+            round(float(final_price), 2) if final_price is not None else None
+        ),
+        "final_price": round(float(final_price), 2) if final_price is not None else None,
+        "discount_pct": _favoritos_ml_percentual_observado_sale_price(dados),
+        "sale_price_observable": bool(dados.get("sale_price_observable")),
+        "stable_reads": dados.get("stable_reads"),
+        "required_stable_reads": dados.get("required_stable_reads"),
+    }
+
+
+def _favoritos_ml_commercial_safety_clear(
+    confirmacao: Optional[dict],
+    *,
+    reason: str,
+) -> dict:
+    dados = confirmacao if isinstance(confirmacao, dict) else {}
+    promocoes = dados.get("active_promotions") if isinstance(dados.get("active_promotions"), list) else []
+    sale_price_has_promotion = bool(dados.get("sale_price_has_promotion"))
+    promotion_active = bool(promocoes or sale_price_has_promotion)
+    comprovadamente_seguro = bool(dados.get("success"))
+    if comprovadamente_seguro:
+        state = "safe"
+    elif promotion_active:
+        state = "unsafe"
+    else:
+        state = "unknown"
+    return {
+        "state": state,
+        "reason": reason,
+        "batch_abort_required": state != "safe",
+        "promotion_active": promotion_active,
+        "active_promotions": promocoes,
+        "sale_price_has_promotion": sale_price_has_promotion,
+        "sale_price": {
+            "observable": bool(dados.get("sale_price_observable")),
+            "amount": dados.get("sale_price_amount"),
+            "regular_amount": dados.get("sale_price_regular_amount"),
+            "promotion_id": dados.get("sale_price_promotion_id"),
+            "campaign_id": dados.get("sale_price_campaign_id"),
+            "promotion_type": dados.get("sale_price_promotion_type"),
+        },
+        "observed_discount_pct": _favoritos_ml_percentual_observado_sale_price(dados),
+        "stable_reads": dados.get("stable_reads"),
+        "required_stable_reads": dados.get("required_stable_reads"),
+    }
 
 
 def _favoritos_ml_confirmar_sem_promocoes(
@@ -1624,6 +1729,11 @@ def _favoritos_ml_confirmar_sem_promocoes(
         metadata_sale_price = sale_price.get("metadata") if isinstance(sale_price.get("metadata"), dict) else {}
         sale_amount = _parse_float_flex(sale_price.get("amount"))
         regular_amount = _parse_float_flex(sale_price.get("regular_amount"))
+        sale_price_observable = bool(
+            sale_price_observable
+            and sale_amount is not None
+            and float(sale_amount) > 0
+        )
         sale_promotion_id = str(metadata_sale_price.get("promotion_id") or "").strip()
         sale_campaign_id = str(metadata_sale_price.get("campaign_id") or "").strip()
         sale_promotion_type = str(metadata_sale_price.get("promotion_type") or "").strip()
@@ -1686,7 +1796,7 @@ def _favoritos_ml_confirmar_sem_promocoes(
     return ultimo, cfg
 
 
-def _favoritos_ml_remover_promocoes_atuais(
+def _favoritos_ml_remover_promocoes_atuais_uma_vez(
     client_id: str,
     loja: str,
     cfg: dict,
@@ -1884,6 +1994,230 @@ def _favoritos_ml_remover_promocoes_atuais(
         raise erro
 
     return resultados, cfg
+
+
+def _favoritos_ml_bulk_clear_permitido(confirmacao: Optional[dict]) -> bool:
+    dados = confirmacao if isinstance(confirmacao, dict) else {}
+    tipos = []
+    for promocao in dados.get("active_promotions") or []:
+        if isinstance(promocao, dict):
+            tipo = str(promocao.get("promotion_type") or "").strip().upper()
+            if tipo:
+                tipos.append(tipo)
+    tipo_sale_price = str(dados.get("sale_price_promotion_type") or "").strip().upper()
+    if tipo_sale_price:
+        tipos.append(tipo_sale_price)
+    def _exige_remocao_individual(tipo: str) -> bool:
+        return tipo in {"DOD", "DEAL_OF_THE_DAY"} or "LIGHTNING" in tipo
+
+    return not tipos or any(not _exige_remocao_individual(tipo) for tipo in tipos)
+
+
+def _favoritos_ml_remover_promocoes_bulk_v2(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    item_id: str,
+) -> tuple[dict, dict]:
+    max_attempts = _favoritos_ml_remocao_max_attempts()
+    ultimo_resultado = {
+        "method": "bulk_v2",
+        "success": False,
+        "status_code": 502,
+        "detail": "A exclusao geral das ofertas nao foi executada.",
+        "response": {},
+        "attempts": 0,
+    }
+    for tentativa in range(1, max_attempts + 1):
+        resp = None
+        try:
+            resp, cfg = _ml_api_request(
+                client_id,
+                loja,
+                cfg,
+                "DELETE",
+                f"https://api.mercadolibre.com/seller-promotions/items/{item_id}",
+                params={"app_version": "v2"},
+                timeout=20,
+            )
+        except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout, requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            ultimo_resultado = {
+                **ultimo_resultado,
+                "status_code": 503,
+                "detail": f"Mercado Livre nao respondeu a exclusao geral das ofertas: {exc}",
+                "attempts": tentativa,
+            }
+            if tentativa < max_attempts:
+                time.sleep(_favoritos_ml_remocao_retry_delay(None, tentativa))
+                continue
+            return ultimo_resultado, cfg
+        except Exception as exc:
+            status_code = getattr(exc, "status_code", 502) or 502
+            ultimo_resultado = {
+                **ultimo_resultado,
+                "status_code": status_code,
+                "detail": str(getattr(exc, "detail", None) or exc or "Falha inesperada na API do Mercado Livre"),
+                "attempts": tentativa,
+            }
+            if status_code == 423 and tentativa < max_attempts:
+                time.sleep(_favoritos_ml_remocao_retry_delay(None, tentativa))
+                continue
+            return ultimo_resultado, cfg
+
+        body_resp = {}
+        try:
+            body_resp = resp.json() or {}
+        except Exception:
+            body_resp = {}
+        erros_payload = []
+        if isinstance(body_resp, dict):
+            for erro in body_resp.get("errors") or []:
+                if isinstance(erro, dict):
+                    erros_payload.append(str(erro.get("error") or erro.get("message") or erro))
+                else:
+                    erros_payload.append(str(erro))
+            for item_sucesso in body_resp.get("successful_ids") or []:
+                if isinstance(item_sucesso, dict) and item_sucesso.get("error"):
+                    erros_payload.append(str(item_sucesso.get("error")))
+        textos_resposta = _favoritos_ml_textos_resposta_remocao(resp, body_resp, erros_payload)
+        textos_normalizados = [normalizar_texto(texto).replace("_", " ") for texto in textos_resposta]
+        sem_oferta = any(
+            "no offers found" in texto
+            or "resource you are trying to access does not exist" in texto
+            for texto in textos_normalizados
+        )
+        if sem_oferta:
+            erros_payload = []
+        ok = bool(resp.status_code in (200, 202, 204, 404) and not erros_payload)
+        detalhe = "" if ok else (
+            " | ".join([erro for erro in erros_payload if erro][:5])
+            or _ml_parse_error_detail(resp, "Erro ao remover todas as ofertas do anuncio")
+        )
+        ultimo_resultado = {
+            "method": "bulk_v2",
+            "success": ok,
+            "status_code": resp.status_code,
+            "detail": detalhe,
+            "response": body_resp,
+            "attempts": tentativa,
+        }
+        if ok:
+            return ultimo_resultado, cfg
+        if tentativa < max_attempts and _favoritos_ml_remocao_erro_transitorio(resp, textos_resposta):
+            espera = _favoritos_ml_remocao_retry_delay(resp, tentativa)
+            logger.warning(
+                "[Favoritos ML] Exclusao geral das ofertas de %s bloqueada/transitoria (%s/%s, HTTP %s). Nova tentativa em %.1fs.",
+                item_id,
+                tentativa,
+                max_attempts,
+                resp.status_code,
+                espera,
+            )
+            time.sleep(espera)
+            continue
+        return ultimo_resultado, cfg
+    return ultimo_resultado, cfg
+
+
+def _favoritos_ml_remover_promocoes_atuais(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    item_id: str,
+    req: FavoritosEfetivarPromocaoRequest,
+) -> tuple[list[dict], dict]:
+    resultados: list[dict] = []
+    ultima_confirmacao: dict = {}
+    ultimo_erro: Optional[Exception] = None
+    max_cycles = _favoritos_ml_remocao_max_cycles()
+
+    def _erro_final() -> HTTPException:
+        detalhe_original = getattr(ultimo_erro, "detail", None) or str(ultimo_erro or "remocao nao confirmada")
+        try:
+            status_code = int(getattr(ultimo_erro, "status_code", 409) or 409)
+        except (TypeError, ValueError):
+            status_code = 409
+        if status_code < 400:
+            status_code = 409
+        erro = HTTPException(
+            status_code=status_code,
+            detail=(
+                "Nao foi possivel provar a remocao estavel da promocao apos os ciclos de seguranca. "
+                f"Detalhe: {detalhe_original}"
+            ),
+        )
+        erro.favoritos_remocoes = list(resultados)
+        erro.favoritos_cfg = cfg
+        erro.favoritos_clear_confirmation = dict(ultima_confirmacao)
+        erro.favoritos_commercial_safety = _favoritos_ml_commercial_safety_clear(
+            ultima_confirmacao,
+            reason="promotion_clear_not_confirmed",
+        )
+        erro.favoritos_observados_autoritativos = _favoritos_ml_observados_clear(ultima_confirmacao)
+        erro.favoritos_stop_batch = True
+        return erro
+
+    for ciclo in range(1, max_cycles + 1):
+        try:
+            removidas_ciclo, cfg = _favoritos_ml_remover_promocoes_atuais_uma_vez(
+                client_id,
+                loja,
+                cfg,
+                item_id,
+                req,
+            )
+            for resultado in removidas_ciclo:
+                if isinstance(resultado, dict):
+                    resultados.append({**resultado, "cycle": ciclo, "method": resultado.get("method") or "targeted"})
+            return resultados, cfg
+        except Exception as exc:
+            ultimo_erro = exc
+            cfg_excecao = getattr(exc, "favoritos_cfg", None)
+            if isinstance(cfg_excecao, dict):
+                cfg = cfg_excecao
+            for resultado in getattr(exc, "favoritos_remocoes", []) or []:
+                if isinstance(resultado, dict):
+                    resultados.append({**resultado, "cycle": ciclo, "method": resultado.get("method") or "targeted"})
+            confirmacao = getattr(exc, "favoritos_clear_confirmation", None)
+            if not isinstance(confirmacao, dict):
+                # Falha definitiva do DELETE direcionado; nao e seguro ampliar a mutacao.
+                raise _erro_final() from exc
+            ultima_confirmacao = confirmacao
+
+        if _favoritos_ml_bulk_clear_permitido(ultima_confirmacao):
+            resultado_bulk, cfg = _favoritos_ml_remover_promocoes_bulk_v2(
+                client_id,
+                loja,
+                cfg,
+                item_id,
+            )
+            resultados.append({**resultado_bulk, "cycle": ciclo})
+            if resultado_bulk.get("success"):
+                ultima_confirmacao, cfg = _favoritos_ml_confirmar_sem_promocoes(
+                    client_id,
+                    loja,
+                    cfg,
+                    item_id,
+                    tentativas=8,
+                    leituras_estaveis=3,
+                )
+                if ultima_confirmacao.get("success"):
+                    return resultados, cfg
+                ultimo_erro = HTTPException(
+                    status_code=409,
+                    detail="A exclusao geral foi aceita, mas a promocao continuou observavel.",
+                )
+            else:
+                ultimo_erro = HTTPException(
+                    status_code=int(resultado_bulk.get("status_code") or 409),
+                    detail=resultado_bulk.get("detail") or "A exclusao geral das ofertas falhou.",
+                )
+
+        if ciclo < max_cycles:
+            continue
+        raise _erro_final() from ultimo_erro
+
+    raise _erro_final() from ultimo_erro
 
 
 def _favoritos_ml_listing_type_id(valor: Any) -> str:

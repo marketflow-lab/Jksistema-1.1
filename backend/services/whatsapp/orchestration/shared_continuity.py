@@ -8,7 +8,10 @@ import threading
 import time
 from typing import Any, Optional
 
-from backend.services import codex_console, codex_whatsapp_agents
+from backend.services import codex_whatsapp_agents
+from backend.services.codex.console import conversations as console_conversations
+from backend.services.codex.console import security as console_security
+from backend.services.codex.console import tasks as console_tasks
 from backend.services.whatsapp import conversation_context as whatsapp_conversation_context
 from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import settings as whatsapp_settings
@@ -47,7 +50,7 @@ def _shared_authorization_fingerprint(
         ),
         "stores": sorted(str(item).strip() for item in list(authorized_stores or []) if str(item).strip()),
     }
-    return codex_console._codex_hmac_identifier(
+    return console_security.hmac_identifier(
         json.dumps(payload, ensure_ascii=False, sort_keys=True),
         namespace="shared_authorization",
     )[-32:]
@@ -90,7 +93,7 @@ def _ensure_shared_conversation_record(
     if not primary:
         raise RuntimeError("shared_conversation_primary_binding_required")
     legacy_id = (
-        codex_console._codex_canonical_conversation_id(
+        console_conversations.canonical_id(
             client_id,
             username,
             channel="whatsapp",
@@ -99,7 +102,7 @@ def _ensure_shared_conversation_record(
         if phone
         else ""
     )
-    subject_fingerprint = codex_console._codex_hmac_identifier(
+    subject_fingerprint = console_security.hmac_identifier(
         subject_id,
         namespace="whatsapp_subject",
     )[-24:]
@@ -139,7 +142,7 @@ def _ensure_shared_conversation_record(
             }
         )
         if not list(current.get("recent_turns") or []):
-            app_state = codex_console._codex_load_or_create_conversation_state(
+            app_state = console_conversations.load_or_create(
                 client_id,
                 username,
                 channel="app",
@@ -242,7 +245,7 @@ def _shared_continuity_for_session(session: dict[str, Any]) -> dict[str, Any]:
     if not subject_id:
         return {}
     return {
-        "conversation_id": codex_console._codex_shared_conversation_id(client_id, username),
+        "conversation_id": console_conversations.shared_id(client_id, username),
         "client_id": client_id,
         "username": username,
         "subject_id": subject_id,
@@ -489,7 +492,7 @@ def _record_shared_delivered_exchange(
     response_text, _response_categories = whatsapp_conversation_context.sanitize_turn_text(response)
     if not prompt_text or not response_text:
         return {}
-    return codex_console.codex_registrar_interacao_whatsapp_externa(
+    return console_tasks.register_external_exchange(
         client_id=client_id,
         username=username,
         phone=phone,
@@ -578,7 +581,7 @@ def _rotate_shared_conversation(
     clear_memory: bool = False,
 ) -> dict[str, Any]:
     del config
-    conversation_id = codex_console._codex_shared_conversation_id(client_id, username)
+    conversation_id = console_conversations.shared_id(client_id, username)
     state = _load_state()
     with _shared_turn_lock(conversation_id), DUAL_AGENT_STATE_LOCK:
         record = _dual_conversation_record(state, conversation_id)

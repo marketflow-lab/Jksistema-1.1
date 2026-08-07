@@ -9,6 +9,18 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from backend.services import codex_console, whatsapp_bridge
+from backend.services.codex.console import bindings as console_bindings
+from backend.services.codex.console import attachments as console_attachments
+from backend.services.codex.console import api_conversations as console_api_conversations
+from backend.services.codex.console import conversation_store as console_conversation_store
+from backend.services.codex.console import queue_worker as console_queue_worker
+from backend.services.codex.console import runtime as console_runtime
+from backend.services.codex.console import state as console_state
+from backend.services.codex.console import task_store as console_task_store
+from backend.services.codex.console import task_creation as console_task_creation
+from backend.services.codex.console import task_views as console_task_views
+from backend.services.codex.console import tasks as console_tasks
+from backend.services.codex.console import worker_execution as console_worker_execution
 
 
 def _request(path: str = "/api/codex/tasks") -> Request:
@@ -25,16 +37,19 @@ def _request(path: str = "/api/codex/tasks") -> Request:
 
 @pytest.fixture()
 def conversation_runtime(tmp_path, monkeypatch):
-    monkeypatch.setitem(codex_console.__dict__, "BASE_DIR", str(tmp_path))
-    monkeypatch.setitem(codex_console.__dict__, "PASTA_INFO", str(tmp_path / "info"))
-    monkeypatch.setattr(codex_console, "_codex_enabled", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_sdk_installed", lambda: True)
-    monkeypatch.setattr(codex_console, "_codex_start_thread", lambda _task_id: None)
-    codex_console.CODEX_TASKS.clear()
-    codex_console.CODEX_ACTIVE_QUEUES.clear()
+    current_runtime = console_bindings.current()
+    monkeypatch.setattr(console_bindings, "_RUNTIME", console_bindings.ConsoleRuntime(
+        str(tmp_path), str(tmp_path / "info"), current_runtime.session_loader,
+        current_runtime.permissions_loader, current_runtime.source_module,
+    ))
+    monkeypatch.setattr(console_task_creation, "_codex_enabled", lambda: True)
+    monkeypatch.setattr(console_task_creation, "_codex_sdk_installed", lambda: True)
+    monkeypatch.setattr(console_task_creation, "_codex_start_thread", lambda _task_id: None)
+    console_state.CODEX_TASKS.clear()
+    console_state.CODEX_ACTIVE_QUEUES.clear()
     yield tmp_path
-    codex_console.CODEX_TASKS.clear()
-    codex_console.CODEX_ACTIVE_QUEUES.clear()
+    console_state.CODEX_TASKS.clear()
+    console_state.CODEX_ACTIVE_QUEUES.clear()
 
 
 def _session(username: str = "admin", client_id: str = "cliente", full: bool = True):
@@ -47,7 +62,7 @@ def _session(username: str = "admin", client_id: str = "cliente", full: bool = T
 
 
 def test_app_identity_ignores_client_conversation_and_thread_ids(conversation_runtime):
-    first = codex_console.codex_criar_tarefa_para_sessao(
+    first = console_tasks.create(
         codex_console.CodexTaskRequest(
             prompt="Primeira pergunta",
             conversation_id="cliente-tentou-criar-uma",
@@ -55,7 +70,7 @@ def test_app_identity_ignores_client_conversation_and_thread_ids(conversation_ru
         ),
         _session(),
     )["task"]
-    second = codex_console.codex_criar_tarefa_para_sessao(
+    second = console_tasks.create(
         codex_console.CodexTaskRequest(
             prompt="Segunda pergunta",
             conversation_id="outra-conversa-forjada",
@@ -73,7 +88,7 @@ def test_app_identity_ignores_client_conversation_and_thread_ids(conversation_ru
 
 def test_full_thread_reuse_requires_prompt_schema_and_store_scope(conversation_runtime):
     session = _session()
-    first = codex_console.codex_criar_tarefa_para_sessao(
+    first = console_tasks.create(
         codex_console.CodexTaskRequest(
             prompt="Consulte o SKU 001",
             screen_context={
@@ -84,8 +99,8 @@ def test_full_thread_reuse_requires_prompt_schema_and_store_scope(conversation_r
         ),
         session,
     )["task"]
-    first_task = codex_console.CODEX_TASKS[first["task_id"]]
-    codex_console._codex_save_conversation_state(
+    first_task = console_state.CODEX_TASKS[first["task_id"]]
+    console_conversation_store._codex_save_conversation_state(
         first_task,
         latest_thread_id="thread-jk-pecas",
         thread_prompt_fingerprint=first_task["thread_prompt_fingerprint"],
@@ -94,7 +109,7 @@ def test_full_thread_reuse_requires_prompt_schema_and_store_scope(conversation_r
         thread_conversation_key=first_task["thread_conversation_key"],
     )
 
-    same_store = codex_console.codex_criar_tarefa_para_sessao(
+    same_store = console_tasks.create(
         codex_console.CodexTaskRequest(
             prompt="E a quantidade?",
             screen_context={
@@ -105,7 +120,7 @@ def test_full_thread_reuse_requires_prompt_schema_and_store_scope(conversation_r
         ),
         session,
     )["task"]
-    other_store = codex_console.codex_criar_tarefa_para_sessao(
+    other_store = console_tasks.create(
         codex_console.CodexTaskRequest(
             prompt="Agora consulte a outra loja",
             screen_context={
@@ -117,8 +132,8 @@ def test_full_thread_reuse_requires_prompt_schema_and_store_scope(conversation_r
         session,
     )["task"]
 
-    same_internal = codex_console.CODEX_TASKS[same_store["task_id"]]
-    other_internal = codex_console.CODEX_TASKS[other_store["task_id"]]
+    same_internal = console_state.CODEX_TASKS[same_store["task_id"]]
+    other_internal = console_state.CODEX_TASKS[other_store["task_id"]]
     assert "thread_id" not in same_store
     assert "thread_id" not in other_store
     assert same_internal["thread_id"] == "thread-jk-pecas"
@@ -129,7 +144,7 @@ def test_full_thread_reuse_requires_prompt_schema_and_store_scope(conversation_r
 
 
 def test_compacted_durable_memory_drops_variable_operational_facts():
-    summary = codex_console._codex_compact_summary(
+    summary = console_conversation_store._codex_compact_summary(
         "Prefere respostas curtas.",
         [
             {"role": "user", "text": "O estoque atual e 12 e o preco e R$ 50."},
@@ -145,7 +160,7 @@ def test_compacted_durable_memory_drops_variable_operational_facts():
 
 def test_whatsapp_identity_is_one_conversation_per_normalized_phone(conversation_runtime):
     def create(phone: str, subject: str = "subject"):
-        return codex_console.codex_criar_tarefa_para_sessao(
+        return console_tasks.create(
             codex_console.CodexTaskRequest(prompt="Consulta de estoque", conversation_id="ignorar"),
             _session(),
             origin="whatsapp",
@@ -163,10 +178,10 @@ def test_whatsapp_identity_is_one_conversation_per_normalized_phone(conversation
 
 
 def test_whatsapp_identity_unifies_brazilian_mobile_with_or_without_ninth_digit(conversation_runtime):
-    with_ninth_digit = codex_console._codex_canonical_conversation_id(
+    with_ninth_digit = console_attachments._codex_canonical_conversation_id(
         "cliente", "admin", channel="whatsapp", phone="5537999995515"
     )
-    meta_variant = codex_console._codex_canonical_conversation_id(
+    meta_variant = console_attachments._codex_canonical_conversation_id(
         "cliente", "admin", channel="whatsapp", phone="553799995515"
     )
 
@@ -175,16 +190,16 @@ def test_whatsapp_identity_unifies_brazilian_mobile_with_or_without_ninth_digit(
 
 def test_same_phone_is_isolated_between_users_and_clients(conversation_runtime):
     phone = "5511999990000"
-    base = codex_console._codex_canonical_conversation_id("cliente", "admin", channel="whatsapp", phone=phone)
-    other_user = codex_console._codex_canonical_conversation_id("cliente", "operador", channel="whatsapp", phone=phone)
-    other_client = codex_console._codex_canonical_conversation_id("outro", "admin", channel="whatsapp", phone=phone)
+    base = console_attachments._codex_canonical_conversation_id("cliente", "admin", channel="whatsapp", phone=phone)
+    other_user = console_attachments._codex_canonical_conversation_id("cliente", "operador", channel="whatsapp", phone=phone)
+    other_client = console_attachments._codex_canonical_conversation_id("outro", "admin", channel="whatsapp", phone=phone)
 
     assert len({base, other_user, other_client}) == 3
 
 
 def test_whatsapp_missing_phone_never_uses_unknown_bucket(conversation_runtime):
     with pytest.raises(HTTPException) as exc:
-        codex_console.codex_criar_tarefa_para_sessao(
+        console_tasks.create(
             codex_console.CodexTaskRequest(prompt="Consulta"),
             _session(),
             origin="whatsapp",
@@ -200,13 +215,13 @@ def test_whatsapp_missing_phone_never_uses_unknown_bucket(conversation_runtime):
 
 
 def test_fifo_runs_same_conversation_sequentially(conversation_runtime, monkeypatch):
-    conversation_id = codex_console._codex_canonical_conversation_id("cliente", "admin", channel="app")
+    conversation_id = console_attachments._codex_canonical_conversation_id("cliente", "admin", channel="app")
     order: list[str] = []
     running = {"value": False}
 
     for index in (1, 2):
         task_id = f"task-{index}"
-        codex_console.CODEX_TASKS[task_id] = {
+        console_state.CODEX_TASKS[task_id] = {
             "task_id": task_id,
             "status": "queued",
             "conversation_id": conversation_id,
@@ -221,27 +236,27 @@ def test_fifo_runs_same_conversation_sequentially(conversation_runtime, monkeypa
         assert running["value"] is False
         running["value"] = True
         order.append(task_id)
-        codex_console.CODEX_TASKS[task_id]["status"] = "completed"
+        console_state.CODEX_TASKS[task_id]["status"] = "completed"
         running["value"] = False
 
-    monkeypatch.setattr(codex_console, "_codex_run_worker", fake_worker)
-    queue_key = codex_console._codex_task_queue_key(codex_console.CODEX_TASKS["task-1"])
-    codex_console._codex_run_conversation_queue(queue_key)
+    monkeypatch.setattr(console_queue_worker, "_codex_run_worker", fake_worker)
+    queue_key = console_queue_worker._codex_task_queue_key(console_state.CODEX_TASKS["task-1"])
+    console_queue_worker._codex_run_conversation_queue(queue_key)
 
     assert order == ["task-1", "task-2"]
 
 
 def test_reset_keeps_id_and_archives_previous_generation(conversation_runtime):
     session = _session()
-    created = codex_console.codex_criar_tarefa_para_sessao(
+    created = console_tasks.create(
         codex_console.CodexTaskRequest(prompt="Contexto anterior"),
         session,
     )["task"]
-    task = codex_console.CODEX_TASKS[created["task_id"]]
+    task = console_state.CODEX_TASKS[created["task_id"]]
     task.update({"status": "completed", "final_response": "Resposta anterior"})
-    codex_console._codex_persist_task(task)
+    console_task_store._codex_persist_task(task)
 
-    with patch.object(codex_console, "_codex_require_authenticated", return_value=session):
+    with patch.object(console_api_conversations, "_codex_require_authenticated", return_value=session):
         result = codex_console.codex_reset_current_conversation(
             codex_console.CodexConversationResetRequest(confirm=True),
             _request("/api/codex/conversations/current/reset"),
@@ -250,12 +265,12 @@ def test_reset_keeps_id_and_archives_previous_generation(conversation_runtime):
 
     assert result["conversation"]["conversation_id"] == created["conversation_id"]
     assert result["conversation"]["generation"] == 2
-    public_old = codex_console._codex_public_task(task)
+    public_old = console_task_views._codex_public_task(task)
     assert public_old["conversation_state"] == "archived"
 
 
 def test_reports_are_visible_but_excluded_from_conversation_memory(conversation_runtime):
-    report = codex_console.codex_register_report_history(
+    report = console_tasks.register_report_history(
         client_id="cliente",
         username="admin",
         prompt="Relatorio diario",
@@ -263,15 +278,15 @@ def test_reports_are_visible_but_excluded_from_conversation_memory(conversation_
         conversation_id="forjada",
         thread_id="forjada",
     )
-    task = codex_console.CODEX_TASKS[report["task_id"]]
+    task = console_state.CODEX_TASKS[report["task_id"]]
 
     assert report["conversation_id"].startswith("app_")
     assert report["memory_excluded"] is True
-    assert codex_console._codex_task_history_messages(task) == []
+    assert console_conversation_store._codex_task_history_messages(task) == []
 
 
 def test_restart_requeues_pending_and_marks_interrupted_without_memory(conversation_runtime, monkeypatch):
-    conversation_id = codex_console._codex_canonical_conversation_id("cliente", "admin", channel="app")
+    conversation_id = console_attachments._codex_canonical_conversation_id("cliente", "admin", channel="app")
     base = {
         "conversation_id": conversation_id,
         "conversation_generation": 1,
@@ -283,33 +298,33 @@ def test_restart_requeues_pending_and_marks_interrupted_without_memory(conversat
         "permissions": {"full": True},
     }
     for task_id, status in (("queued-restart", "queued"), ("running-restart", "running")):
-        path = Path(codex_console._codex_task_path(task_id))
+        path = Path(console_runtime._codex_task_path(task_id))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps({**base, "task_id": task_id, "status": status}, ensure_ascii=False),
             encoding="utf-8",
         )
     started: list[str] = []
-    monkeypatch.setattr(codex_console, "_codex_start_thread", lambda task_id: started.append(task_id))
+    monkeypatch.setattr(console_queue_worker, "_codex_start_thread", lambda task_id: started.append(task_id))
 
-    result = codex_console.codex_console_recuperar_fila_background()
+    result = console_tasks.recover()
 
     assert result["queued_task_ids"] == ["queued-restart"]
     assert result["interrupted_task_ids"] == ["running-restart"]
     assert started == ["queued-restart"]
-    interrupted = codex_console.CODEX_TASKS["running-restart"]
+    interrupted = console_state.CODEX_TASKS["running-restart"]
     assert interrupted["status"] == "failed"
-    assert codex_console._codex_task_history_messages(interrupted) == []
+    assert console_conversation_store._codex_task_history_messages(interrupted) == []
 
 
 def _completed_whatsapp_task(session, phone: str, prompt: str, response: str):
-    public = codex_console.codex_criar_tarefa_para_sessao(
+    public = console_tasks.create(
         codex_console.CodexTaskRequest(prompt=prompt),
         session,
         origin="whatsapp",
         channel_metadata={"wa_id": phone, "subject_id": "subject-test"},
     )["task"]
-    task = codex_console.CODEX_TASKS[public["task_id"]]
+    task = console_state.CODEX_TASKS[public["task_id"]]
     task.update(
         {
             "status": "completed",
@@ -317,7 +332,7 @@ def _completed_whatsapp_task(session, phone: str, prompt: str, response: str):
             "completed_at": "2026-07-13T12:00:00Z",
         }
     )
-    codex_console._codex_persist_task(task)
+    console_task_store._codex_persist_task(task)
     return task
 
 
@@ -328,7 +343,7 @@ def test_whatsapp_history_groups_by_phone_and_isolates_authenticated_user(conver
     _completed_whatsapp_task(session, "5511888880000", "Outro telefone", "Outra resposta")
     _completed_whatsapp_task(_session("operador", "cliente"), "5511999990000", "Pergunta privada", "Resposta privada")
 
-    with patch.object(codex_console, "_codex_require_authenticated", return_value=session):
+    with patch.object(console_api_conversations, "_codex_require_authenticated", return_value=session):
         result = codex_console.codex_listar_conversas_whatsapp(
             _request("/api/codex/conversations/whatsapp"),
             "Bearer token",
@@ -350,7 +365,7 @@ def test_whatsapp_history_returns_paginated_previews_and_explicit_full_text(conv
     task = _completed_whatsapp_task(session, "5511999990000", "Detalhe da venda", long_response)
     conversation_id = str(task["conversation_id"])
 
-    with patch.object(codex_console, "_codex_require_authenticated", return_value=session):
+    with patch.object(console_api_conversations, "_codex_require_authenticated", return_value=session):
         page = codex_console.codex_listar_mensagens_conversa_whatsapp(
             conversation_id,
             _request(f"/api/codex/conversations/whatsapp/{conversation_id}/messages"),
@@ -371,7 +386,7 @@ def test_whatsapp_history_returns_paginated_previews_and_explicit_full_text(conv
     assert full["message"]["response"] == long_response
 
     other_session = _session("operador", "cliente")
-    with patch.object(codex_console, "_codex_require_authenticated", return_value=other_session):
+    with patch.object(console_api_conversations, "_codex_require_authenticated", return_value=other_session):
         with pytest.raises(HTTPException) as exc:
             codex_console.codex_listar_mensagens_conversa_whatsapp(
                 conversation_id,
@@ -384,7 +399,7 @@ def test_whatsapp_history_returns_paginated_previews_and_explicit_full_text(conv
 def test_whatsapp_history_lists_registered_phones_before_first_exchange(conversation_runtime):
     session = _session("admin", "cliente")
     phone = "5537999999791"
-    conversation_id = codex_console._codex_canonical_conversation_id(
+    conversation_id = console_attachments._codex_canonical_conversation_id(
         "cliente", "admin", channel="whatsapp", phone=phone
     )
     registered = [{
@@ -396,8 +411,8 @@ def test_whatsapp_history_lists_registered_phones_before_first_exchange(conversa
     }]
 
     with (
-        patch.object(codex_console, "_codex_require_authenticated", return_value=session),
-        patch.object(codex_console, "_codex_registered_whatsapp_bindings", return_value=registered),
+        patch.object(console_api_conversations, "_codex_require_authenticated", return_value=session),
+        patch.object(console_api_conversations, "_codex_registered_whatsapp_bindings", return_value=registered),
     ):
         conversations = codex_console.codex_listar_conversas_whatsapp(
             _request("/api/codex/conversations/whatsapp"),

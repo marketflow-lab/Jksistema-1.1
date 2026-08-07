@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from backend.services import codex_assistant, codex_console
+from backend.services import codex_assistant
+from backend.services.codex.console import api as codex_console
 
 
 def create_codex_console_router() -> APIRouter:

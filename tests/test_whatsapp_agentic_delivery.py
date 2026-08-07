@@ -181,7 +181,7 @@ def test_bridge_heartbeat_renews_only_active_pending_message_leases_when_due(mon
         raising=False,
     )
     monkeypatch.setattr(lifecycle, "_configure_phone_dispatcher", lambda _workers: None, raising=False)
-    monkeypatch.setattr(lifecycle.codex_console, "_codex_configure_dual_sol_limit", lambda *_args: None)
+    monkeypatch.setattr(lifecycle.console_queueing, "configure_dual_limit", lambda *_args: None)
     monkeypatch.setattr(lifecycle, "_phone_dispatch_capacity", lambda: 1, raising=False)
     monkeypatch.setattr(lifecycle, "CLAIM_LIMIT", 5, raising=False)
     monkeypatch.setattr(lifecycle, "RUNTIME_STATE", {}, raising=False)

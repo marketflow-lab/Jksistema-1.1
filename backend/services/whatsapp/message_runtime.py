@@ -49,15 +49,8 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services.codex.console import conversations as console_conversations
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -75,7 +68,7 @@ def _message_phone(config: dict[str, Any], message: dict[str, Any]) -> str:
     return whatsapp_message.message_phone(
         config,
         message,
-        normalize_phone=codex_console._codex_normalize_phone,
+        normalize_phone=console_conversations.normalize_phone,
     )
 
 def _conversation_id(config: dict[str, Any], message: dict[str, Any]) -> str:
@@ -85,8 +78,8 @@ def _conversation_id(config: dict[str, Any], message: dict[str, Any]) -> str:
     client_id = str(message.get("client_id") or config.get("client_id") or "default")
     username = str(message.get("username") or config.get("username") or "user")
     if message.get("binding_is_primary") is True or message.get("binding_is_primary") == 1:
-        return codex_console._codex_shared_conversation_id(client_id, username)
-    return codex_console._codex_canonical_conversation_id(
+        return console_conversations.shared_id(client_id, username)
+    return console_conversations.canonical_id(
         client_id,
         username,
         channel="whatsapp",

@@ -912,9 +912,14 @@ def favoritos_ml_efetivar_promocao(
         current_state: Optional[dict] = None,
         retryable: bool = False,
         stages: Optional[dict] = None,
+        commercial_safety: Optional[dict] = None,
+        observados_autoritativos: Optional[dict] = None,
+        stop_batch: Optional[bool] = None,
+        verificacao_detalhada: Optional[dict] = None,
+        clear_confirmation: Optional[dict] = None,
     ):
         estado_resposta = current_state or {}
-        return _favoritos_ml_resposta_efetivacao(status_code, {
+        payload = {
             "success": False,
             "completed": False,
             "outcome": outcome,
@@ -933,12 +938,31 @@ def favoritos_ml_efetivar_promocao(
             "preco_anuncio_informado": preco_anuncio_informado,
             "preco_ideal": round(float(preco_promocional), 2),
             "preco_promocional_alvo": round(float(preco_promocional), 2),
+            "percentual_promocao": percentual,
             "promocoes_removidas": removidas,
             "listing_type_update": listing_type_update,
             "preco_update": preco_update,
             "price_preflight": price_preflight,
             "stages": stages or _favoritos_ml_etapas_efetivacao(),
-        })
+        }
+        if isinstance(commercial_safety, dict):
+            payload["commercial_safety"] = commercial_safety
+            abortar = bool(
+                commercial_safety.get("batch_abort_required")
+                if stop_batch is None
+                else stop_batch
+            )
+            payload["stop_batch"] = abortar
+            payload["promotion_still_active"] = bool(commercial_safety.get("promotion_active"))
+        elif stop_batch is not None:
+            payload["stop_batch"] = bool(stop_batch)
+        if isinstance(observados_autoritativos, dict):
+            payload["observados_autoritativos"] = observados_autoritativos
+        if isinstance(verificacao_detalhada, dict):
+            payload["verificacao"] = verificacao_detalhada
+        if isinstance(clear_confirmation, dict):
+            payload["promocao_clear_confirmation"] = clear_confirmation
+        return _favoritos_ml_resposta_efetivacao(status_code, payload)
 
     try:
         estado_inicial, cfg = _favoritos_ml_obter_estado_item(
@@ -975,6 +999,11 @@ def favoritos_ml_efetivar_promocao(
         fallback_state: Optional[dict] = None,
         outcome: str = "partial_failure",
         retryable: bool = True,
+        commercial_safety: Optional[dict] = None,
+        observados_autoritativos: Optional[dict] = None,
+        stop_batch: Optional[bool] = None,
+        verificacao_detalhada: Optional[dict] = None,
+        clear_confirmation: Optional[dict] = None,
     ):
         nonlocal cfg
         try:
@@ -989,6 +1018,11 @@ def favoritos_ml_efetivar_promocao(
             current_state=estado_atual,
             retryable=retryable,
             stages=stages,
+            commercial_safety=commercial_safety,
+            observados_autoritativos=observados_autoritativos,
+            stop_batch=stop_batch,
+            verificacao_detalhada=verificacao_detalhada,
+            clear_confirmation=clear_confirmation,
         )
 
     try:
@@ -1000,12 +1034,35 @@ def favoritos_ml_efetivar_promocao(
         cfg_excecao = getattr(exc, "favoritos_cfg", None)
         if isinstance(cfg_excecao, dict):
             cfg = cfg_excecao
+        commercial_safety_remocao = getattr(exc, "favoritos_commercial_safety", None)
+        observados_remocao = getattr(exc, "favoritos_observados_autoritativos", None)
+        clear_confirmation_remocao = getattr(exc, "favoritos_clear_confirmation", None)
+        stop_batch_remocao = bool(getattr(exc, "favoritos_stop_batch", False))
         parcial = bool(removidas)
         if parcial:
             return _interromper_apos_mutacao(
                 getattr(exc, "status_code", 409) or 409,
                 f"Uma promocao anterior foi removida, mas a remocao das demais falhou: {_favoritos_ml_mensagem_excecao(exc)}",
                 stages=_favoritos_ml_etapas_efetivacao(remocao_promocoes="partial"),
+                commercial_safety=commercial_safety_remocao if isinstance(commercial_safety_remocao, dict) else None,
+                observados_autoritativos=observados_remocao if isinstance(observados_remocao, dict) else None,
+                stop_batch=stop_batch_remocao if isinstance(commercial_safety_remocao, dict) else None,
+                clear_confirmation=clear_confirmation_remocao if isinstance(clear_confirmation_remocao, dict) else None,
+            )
+        if isinstance(commercial_safety_remocao, dict) and commercial_safety_remocao.get("batch_abort_required"):
+            return _interromper_apos_mutacao(
+                getattr(exc, "status_code", 409) or 409,
+                f"A remocao foi enviada, mas o estado comercial seguro nao foi confirmado: {_favoritos_ml_mensagem_excecao(exc)}",
+                stages=_favoritos_ml_etapas_efetivacao(remocao_promocoes="unknown"),
+                outcome=(
+                    "partial_unknown"
+                    if commercial_safety_remocao.get("state") == "unknown"
+                    else "partial_failure"
+                ),
+                commercial_safety=commercial_safety_remocao,
+                observados_autoritativos=observados_remocao if isinstance(observados_remocao, dict) else None,
+                stop_batch=True,
+                clear_confirmation=clear_confirmation_remocao if isinstance(clear_confirmation_remocao, dict) else None,
             )
         return _interromper(
             getattr(exc, "status_code", 409) or 409,
@@ -1014,6 +1071,10 @@ def favoritos_ml_efetivar_promocao(
             current_state=estado_inicial,
             retryable=_favoritos_ml_excecao_preco_retryable(exc),
             stages=_favoritos_ml_etapas_efetivacao(remocao_promocoes="failed"),
+            commercial_safety=commercial_safety_remocao if isinstance(commercial_safety_remocao, dict) else None,
+            observados_autoritativos=observados_remocao if isinstance(observados_remocao, dict) else None,
+            stop_batch=stop_batch_remocao if isinstance(commercial_safety_remocao, dict) else None,
+            clear_confirmation=clear_confirmation_remocao if isinstance(clear_confirmation_remocao, dict) else None,
         )
     status_remocao = "completed"
     try:
@@ -1222,6 +1283,50 @@ def favoritos_ml_efetivar_promocao(
                 motivo,
             )
         except Exception as exc:
+            cfg_excecao = getattr(exc, "favoritos_cfg", None)
+            if isinstance(cfg_excecao, dict):
+                cfg = cfg_excecao
+            for remocao in getattr(exc, "favoritos_remocoes", []) or []:
+                if isinstance(remocao, dict) and remocao not in removidas:
+                    removidas.append(remocao)
+
+            verificacao_dados = verificacao_atual if isinstance(verificacao_atual, dict) else {}
+            price_info = verificacao_dados.get("price_info") if isinstance(verificacao_dados.get("price_info"), dict) else {}
+            observados = getattr(exc, "favoritos_observados_autoritativos", None)
+            if not isinstance(observados, dict) or not observados:
+                observados = {
+                    "observation_stage": "pre_fallback",
+                    "current_state_confirmed": False,
+                    "promotion_id": verificacao_dados.get("promotion_id"),
+                    "promotion_type": verificacao_dados.get("promotion_type_observed"),
+                    "base_price": verificacao_dados.get("base_price"),
+                    "base_price_field": verificacao_dados.get("base_price_field"),
+                    "final_price": verificacao_dados.get("final_price"),
+                    "discount_pct": verificacao_dados.get("desconto_info") or price_info.get("discount_pct"),
+                    "stable_reads": verificacao_dados.get("stable_reads"),
+                    "required_stable_reads": verificacao_dados.get("required_stable_reads"),
+                }
+            commercial_safety = getattr(exc, "favoritos_commercial_safety", None)
+            if not isinstance(commercial_safety, dict) or not commercial_safety:
+                commercial_safety = {
+                    "state": "unknown",
+                    "reason": "confirmed_divergence_fallback_current_state_not_observed",
+                    "batch_abort_required": True,
+                    "promotion_active": None,
+                    "promotion_active_known": False,
+                    "active_promotions": [],
+                    "sale_price_has_promotion": None,
+                    "sale_price": {
+                        "observable": False,
+                        "amount": None,
+                        "regular_amount": None,
+                        "promotion_id": None,
+                        "promotion_type": None,
+                    },
+                    "observed_discount_pct": None,
+                    "stable_reads": None,
+                    "required_stable_reads": verificacao_dados.get("required_stable_reads"),
+                }
             return _interromper_apos_mutacao(
                 getattr(exc, "status_code", 409) or 409,
                 f"A divergencia foi confirmada, mas o fallback seguro falhou: {_favoritos_ml_mensagem_excecao(exc)}",
@@ -1231,6 +1336,15 @@ def favoritos_ml_efetivar_promocao(
                     preco="completed",
                     promocao="fallback_failed",
                     verificacao="fallback_failed",
+                ),
+                commercial_safety=commercial_safety,
+                observados_autoritativos=observados,
+                stop_batch=bool(getattr(exc, "favoritos_stop_batch", True)),
+                verificacao_detalhada=verificacao_dados,
+                clear_confirmation=(
+                    getattr(exc, "favoritos_clear_confirmation", None)
+                    if isinstance(getattr(exc, "favoritos_clear_confirmation", None), dict)
+                    else None
                 ),
             )
         _cache_invalidar_loja(client_id, loja)
@@ -1293,6 +1407,7 @@ def favoritos_ml_efetivar_promocao(
             promotion_type=promotion_type,
             deal_price=preco_promocional,
             discount_percentage=percentual,
+            allow_alternative_deal_price=False,
         )
     except Exception as exc:
         try:

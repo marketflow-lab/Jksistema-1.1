@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import inspect
 
-from backend.services import perguntas_pos_venda_endpoints as endpoints
+from backend.modules.perguntas_pos_venda.endpoints import customer_reply
+from backend.modules.perguntas_pos_venda.endpoints import diagnostics as endpoints
 
 
 def test_approval_diagnostics_extracts_bounded_compatibility_context():
@@ -105,8 +106,8 @@ def test_approval_diagnostics_omits_absent_or_invalid_values():
 
 
 def test_diagnostic_persistence_is_only_wired_to_listing_question_approval():
-    listing_source = inspect.getsource(endpoints._customer_reply_question_approval)
-    post_sale_source = inspect.getsource(endpoints._customer_reply_post_sale_approval)
+    listing_source = inspect.getsource(customer_reply._customer_reply_question_approval)
+    post_sale_source = inspect.getsource(customer_reply._customer_reply_post_sale_approval)
 
     assert "approval.update(_perguntas_ia_diagnostico_aprovacao(contexto))" in listing_source
     assert "_perguntas_ia_diagnostico_aprovacao" not in post_sale_source

@@ -1,0 +1,258 @@
+        .ml-favoritos-balloon {
+            background: #0f172a;
+            border: 1px solid #1e3a8a;
+            border-radius: 8px;
+            box-sizing: border-box;
+            box-shadow: 0 8px 22px rgba(15, 23, 42, 0.22);
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            left: 50vw;
+            max-height: min(640px, calc(100vh - 32px));
+            max-height: min(640px, calc(100dvh - 32px));
+            max-width: 300px;
+            overflow: hidden;
+            padding: 7px 8px;
+            position: fixed;
+            top: 50vh;
+            top: 50dvh;
+            transform: translate(-50%, -50%);
+            width: min(300px, calc(100vw - 16px));
+            z-index: 80;
+        }
+        .ml-favoritos-balloon.is-wide {
+            max-width: 560px;
+            width: min(560px, calc(100vw - 40px));
+        }
+        .ml-favoritos-balloon.is-comparison {
+            max-width: 920px;
+            width: min(920px, calc(100vw - 40px));
+        }
+        .ml-favoritos-balloon.hidden {
+            display: none;
+        }
+        .ml-favoritos-balloon.is-error {
+            background: #7f1d1d;
+            border-color: #ef4444;
+        }
+        .ml-favoritos-balloon.is-warning {
+            background: #78350f;
+            border-color: #f59e0b;
+        }
+        .ml-favoritos-balloon-title {
+            flex: 0 0 auto;
+            font-size: 11px;
+            font-weight: 700;
+            line-height: 1.15;
+            margin-bottom: 2px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .ml-favoritos-balloon-text {
+            flex: 1 1 auto;
+            font-size: 10px;
+            line-height: 1.15;
+            min-height: 0;
+            overflow: auto;
+            padding-right: 2px;
+        }
+        .ml-favoritos-balloon-status-summary {
+            background: rgba(255, 255, 255, 0.10);
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            border-radius: 8px;
+            font-size: 12px;
+            line-height: 1.35;
+            margin-bottom: 10px;
+            padding: 8px 9px;
+        }
+        .ml-favoritos-balloon-result-list {
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+            margin-bottom: 10px;
+        }
+        .ml-favoritos-balloon-result-row {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-left-width: 4px;
+            border-radius: 8px;
+            color: #e5e7eb;
+            font-size: 11px;
+            line-height: 1.35;
+            padding: 8px 9px;
+        }
+        .ml-favoritos-balloon-result-row.is-success {
+            border-left-color: #22c55e;
+        }
+        .ml-favoritos-balloon-result-row.is-error {
+            border-left-color: #ef4444;
+            background: rgba(127, 29, 29, 0.28);
+        }
+        .ml-favoritos-balloon-result-row.is-warning {
+            border-left-color: #f59e0b;
+            background: rgba(120, 53, 15, 0.24);
+        }
+        .ml-favoritos-balloon-result-title {
+            color: #fff;
+            font-weight: 800;
+            margin-bottom: 3px;
+        }
+        .ml-favoritos-balloon-result-detail {
+            overflow-wrap: anywhere;
+        }
+        .ml-favoritos-confirm-layout {
+            color: #e5e7eb;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .ml-favoritos-confirm-hero {
+            background: rgba(37, 99, 235, 0.18);
+            border: 1px solid rgba(147, 197, 253, 0.34);
+            border-radius: 9px;
+            padding: 10px 11px;
+        }
+        .ml-favoritos-confirm-hero strong {
+            color: #ffffff;
+            display: block;
+            font-size: 13px;
+            margin-bottom: 4px;
+        }
+        .ml-favoritos-confirm-grid {
+            display: grid;
+            gap: 8px;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .ml-favoritos-confirm-card {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 8px;
+            min-width: 0;
+            padding: 8px 9px;
+        }
+        .ml-favoritos-confirm-label {
+            color: #bfdbfe;
+            display: block;
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: .03em;
+            margin-bottom: 3px;
+            text-transform: uppercase;
+        }
+        .ml-favoritos-confirm-value {
+            color: #ffffff;
+            display: block;
+            font-size: 12px;
+            font-weight: 800;
+            overflow-wrap: anywhere;
+        }
+        .ml-favoritos-confirm-steps {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+        .ml-favoritos-confirm-steps li {
+            align-items: flex-start;
+            background: rgba(255, 255, 255, 0.07);
+            border: 1px solid rgba(255, 255, 255, 0.13);
+            border-radius: 8px;
+            display: flex;
+            gap: 7px;
+            padding: 7px 9px;
+        }
+        .ml-favoritos-confirm-steps li::before {
+            background: #60a5fa;
+            border-radius: 999px;
+            content: "";
+            flex: 0 0 7px;
+            height: 7px;
+            margin-top: 5px;
+            width: 7px;
+        }
+        .ml-favoritos-confirm-warning {
+            background: rgba(234, 179, 8, 0.14);
+            border: 1px solid rgba(250, 204, 21, 0.34);
+            border-radius: 8px;
+            color: #fef3c7;
+            font-size: 11px;
+            line-height: 1.35;
+            padding: 8px 9px;
+        }
+        .ml-favoritos-balloon-actions {
+            display: flex;
+            flex: 0 0 auto;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-top: 5px;
+        }
+        .ml-favoritos-balloon-actions:empty {
+            display: none;
+        }
+        .ml-favoritos-balloon-actions button {
+            background: #fff;
+            border: none;
+            border-radius: 999px;
+            color: #0f172a;
+            cursor: pointer;
+            font-size: 10px;
+            font-weight: 700;
+            line-height: 1.1;
+            padding: 4px 7px;
+        }
+        .ml-favoritos-balloon-actions button:hover {
+            background: #dbeafe;
+        }
+        .ml-favoritos-balloon-actions button.is-primary {
+            background: #2563eb;
+            color: #ffffff;
+        }
+        .ml-favoritos-balloon-actions button.is-primary:hover {
+            background: #1d4ed8;
+        }
+        .ml-favoritos-balloon-actions button.is-muted {
+            background: rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.24);
+            color: #e5e7eb;
+        }
+        .ml-favoritos-balloon-actions button.is-muted:hover {
+            background: rgba(255, 255, 255, 0.18);
+        }
+        .ml-favoritos-balloon-comparison-wrap {
+            background: #fff;
+            border: 1px solid #bfdbfe;
+            border-radius: 8px;
+            max-height: min(360px, calc(100vh - 220px));
+            max-width: 100%;
+            overflow-x: auto;
+            overflow-y: auto;
+        }
+        .ml-favoritos-balloon-comparison-table {
+            border-collapse: collapse;
+            color: #334155;
+            min-width: 720px;
+            table-layout: fixed;
+            width: 100%;
+        }
+        .ml-favoritos-balloon-comparison-table th,
+        .ml-favoritos-balloon-comparison-table td {
+            border-bottom: 1px solid #dbeafe;
+            font-size: 10px;
+            padding: 6px 7px;
+            text-align: left;
+            vertical-align: top;
+        }
+        .ml-favoritos-balloon-comparison-table th {
+            background: #eff6ff;
+            color: #0f172a;
+            font-weight: 800;
+        }
+        .ml-favoritos-balloon-comparison-table td {
+            overflow-wrap: anywhere;
+        }
+        .ml-favoritos-balloon-comparison-table .is-money {
+            white-space: nowrap;
+        }

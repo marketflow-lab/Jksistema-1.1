@@ -73,6 +73,9 @@ from fastapi import Depends, File, Form, Header, HTTPException, Request, UploadF
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
+from backend.services.marketplace_tools import integrations as marketplace_integrations
+from backend.services.marketplace_tools import listings as marketplace_listings
+from backend.services.sales_tools import api as sales_tools
 from backend.services.ia_common import *
 from backend.services.ia_context import get_tenant_id, get_tenant_path
 from backend.services.ia_state import *
@@ -104,26 +107,26 @@ def _ia_chat_executar_funcoes(payload: IAChatRequest, client_id: str) -> list[di
     pede_top_vendas = any(chave in texto_norm for chave in ("MAIS VENDEU", "MAIS VENDIDO", "TOP", "LIDER"))
     pede_vendas_loja_virtual = _ia_chat_pede_vendas_por_loja_virtual(mensagem)
     pede_analise_especialista = _ia_chat_pede_analise_especialista_vendas(mensagem, payload.page, contexto)
-    data_inicio, data_fim = _ia_extrair_periodo_mensagem_vendas(mensagem, contexto)
-    loja = _ia_resolver_loja_mensagem_vendas(client_id, mensagem, contexto)
+    data_inicio, data_fim = sales_tools.extract_sales_period(mensagem, contexto)
+    loja = sales_tools.resolve_store(client_id, mensagem, contexto)
     pede_recorte_mensal = _ia_chat_pede_recorte_mensal(mensagem)
-    mes_ano = _ia_extrair_mes_ano_mensagem(mensagem, contexto) if pede_recorte_mensal else None
+    mes_ano = sales_tools.extract_month_year(mensagem, contexto) if pede_recorte_mensal else None
     limite_top_mensal = _ia_chat_extrair_limite_top(mensagem, padrao=5, maximo=50)
     sku_mensal = ""
-    meses_comparacao_mensal = _ia_extrair_meses_ano_mensagem(mensagem, contexto) if pede_recorte_mensal else []
+    meses_comparacao_mensal = sales_tools.extract_months_year(mensagem, contexto) if pede_recorte_mensal else []
 
     if pede_recorte_mensal and (_ia_chat_pede_consulta_vendas(mensagem) or _ia_chat_pede_consulta_devolucoes(mensagem) or pede_analise_especialista):
         if not data_inicio or not data_fim:
-            data_inicio, data_fim = _ia_periodo_mensal_padrao(client_id, loja, meses=12)
+            data_inicio, data_fim = sales_tools.default_month_period(client_id, loja, meses=12)
 
         if _ia_chat_pede_consulta_vendas(mensagem):
-            sku_mensal = _ia_tool_resolver_sku(client_id, mensagem, produto_tool)
+            sku_mensal = sales_tools.resolve_sku(client_id, mensagem, produto_tool)
             if sku_mensal and mes_ano:
-                venda_sku_mes = _ia_tool_get_sku_sales_by_month(client_id, sku_mensal, mes_ano, loja)
+                venda_sku_mes = sales_tools.get_sku_sales_by_month(client_id, sku_mensal, mes_ano, loja)
                 if venda_sku_mes:
                     resultados.append(venda_sku_mes)
             if sku_mensal and len(meses_comparacao_mensal) >= 2 and _ia_chat_pede_comparativo_periodo(mensagem):
-                comparativo_sku_meses = _ia_tool_compare_sku_sales_months(
+                comparativo_sku_meses = sales_tools.compare_sku_sales_months(
                     client_id,
                     sku_mensal,
                     meses_comparacao_mensal,
@@ -133,7 +136,7 @@ def _ia_chat_executar_funcoes(payload: IAChatRequest, client_id: str) -> list[di
                     resultados.append(comparativo_sku_meses)
 
         if mes_ano:
-            detalhes_mes = _ia_tool_get_month_sales_returns_details(
+            detalhes_mes = sales_tools.get_month_sales_returns_details(
                 client_id,
                 mes_ano,
                 loja,
@@ -144,7 +147,7 @@ def _ia_chat_executar_funcoes(payload: IAChatRequest, client_id: str) -> list[di
 
         if _ia_chat_pede_consulta_vendas(mensagem) or pede_analise_especialista:
             if mes_ano:
-                top_vendas_mes = _ia_tool_get_top_skus_sales_by_month(
+                top_vendas_mes = sales_tools.get_top_skus_sales_by_month(
                     client_id,
                     mes_ano,
                     loja,
@@ -153,7 +156,7 @@ def _ia_chat_executar_funcoes(payload: IAChatRequest, client_id: str) -> list[di
                 if top_vendas_mes:
                     resultados.append(top_vendas_mes)
             else:
-                vendas_mensais = _ia_tool_get_sales_by_month_period(
+                vendas_mensais = sales_tools.get_sales_by_month_period(
                     client_id,
                     data_inicio,
                     data_fim,
@@ -165,7 +168,7 @@ def _ia_chat_executar_funcoes(payload: IAChatRequest, client_id: str) -> list[di
 
         if _ia_chat_pede_consulta_devolucoes(mensagem) or pede_analise_especialista:
             if mes_ano:
-                top_devolucoes_mes = _ia_tool_get_top_skus_returns_by_month(
+                top_devolucoes_mes = sales_tools.get_top_skus_returns_by_month(
                     client_id,
                     mes_ano,
                     loja,
@@ -180,12 +183,12 @@ def _ia_chat_executar_funcoes(payload: IAChatRequest, client_id: str) -> list[di
             resultados.append(produto_tool)
 
     if _ia_chat_pede_status_integracoes(mensagem):
-        status_integracoes = _ia_tool_get_integrations_status(client_id, loja)
+        status_integracoes = marketplace_integrations.get_status(client_id, loja)
         if status_integracoes:
             resultados.append(status_integracoes)
 
     if _ia_chat_pede_consulta_mercado_livre(mensagem):
-        ml_tool = _ia_tool_get_mercado_livre_listing(client_id, mensagem, loja, produto_tool)
+        ml_tool = marketplace_listings.query(client_id, mensagem, loja, produto_tool)
         if ml_tool:
             resultados.append(ml_tool)
 
@@ -200,7 +203,7 @@ def _ia_chat_executar_funcoes(payload: IAChatRequest, client_id: str) -> list[di
             resultados.append(imagem_produto)
 
     if _ia_chat_pede_consulta_estoque(mensagem):
-        estoque_tool = _ia_tool_get_stock_data(client_id, mensagem, produto_tool)
+        estoque_tool = sales_tools.get_stock_data(client_id, mensagem, produto_tool)
         if estoque_tool:
             resultados.append(estoque_tool)
 
@@ -211,7 +214,7 @@ def _ia_chat_executar_funcoes(payload: IAChatRequest, client_id: str) -> list[di
 
     if _ia_chat_pede_top_dias_sem_venda(mensagem):
         opcoes_top_sem_venda = _ia_chat_extrair_opcoes_top_dias_sem_venda(mensagem)
-        dias_sem_venda_top = _ia_tool_get_days_without_sale_top(
+        dias_sem_venda_top = sales_tools.get_days_without_sale_top(
             client_id,
             loja,
             limite=int(opcoes_top_sem_venda.get("limite") or 20),
@@ -221,12 +224,12 @@ def _ia_chat_executar_funcoes(payload: IAChatRequest, client_id: str) -> list[di
         if dias_sem_venda_top:
             resultados.append(dias_sem_venda_top)
     elif _ia_chat_pede_dias_sem_venda(mensagem):
-        dias_sem_venda = _ia_tool_get_days_without_sale(client_id, mensagem, produto_tool, loja)
+        dias_sem_venda = sales_tools.get_days_without_sale(client_id, mensagem, produto_tool, loja)
         if dias_sem_venda:
             resultados.append(dias_sem_venda)
 
     if _ia_chat_pede_previsao_ruptura_estoque(mensagem):
-        previsao_ruptura = _ia_tool_get_stockout_forecast(client_id, mensagem, produto_tool, loja, lookback_days=30, limite=100)
+        previsao_ruptura = sales_tools.get_stockout_forecast(client_id, mensagem, produto_tool, loja, lookback_days=30, limite=100)
         if previsao_ruptura:
             resultados.append(previsao_ruptura)
 
@@ -237,16 +240,16 @@ def _ia_chat_executar_funcoes(payload: IAChatRequest, client_id: str) -> list[di
 
     if _ia_chat_pede_consulta_vendas(mensagem) or pede_analise_especialista:
         if data_inicio and data_fim:
-            qtd_vendas = _ia_tool_get_sales_quantity_by_period(client_id, data_inicio, data_fim, loja)
+            qtd_vendas = sales_tools.get_sales_quantity_by_period(client_id, data_inicio, data_fim, loja)
             if qtd_vendas:
                 resultados.append(qtd_vendas)
             if pede_vendas_loja_virtual:
-                vendas_loja_virtual = _ia_tool_get_sales_by_virtual_store_period(client_id, data_inicio, data_fim, loja, limite=10)
+                vendas_loja_virtual = sales_tools.get_sales_by_virtual_store_period(client_id, data_inicio, data_fim, loja, limite=10)
                 if vendas_loja_virtual:
                     resultados.append(vendas_loja_virtual)
 
         if data_inicio and data_fim and pede_top_vendas:
-            resumo_periodo = _ia_tool_get_sales_by_period(client_id, data_inicio, data_fim, loja, limite=5)
+            resumo_periodo = sales_tools.get_sales_by_period(client_id, data_inicio, data_fim, loja, limite=5)
             if resumo_periodo:
                 resultados.append(resumo_periodo)
                 resultados.append({
@@ -255,16 +258,16 @@ def _ia_chat_executar_funcoes(payload: IAChatRequest, client_id: str) -> list[di
                     "result": {"mode": "top_skus", "items": (resumo_periodo.get("result") or {}).get("top_skus") or []},
                 })
         else:
-            sku = _ia_tool_resolver_sku(client_id, mensagem, produto_tool)
+            sku = sales_tools.resolve_sku(client_id, mensagem, produto_tool)
             if sku and data_inicio and data_fim:
-                vendas_devolucoes = _ia_vendas_db_consulta_sku_vendas_devolucoes(client_id, data_inicio, data_fim, sku, loja)
+                vendas_devolucoes = sales_tools.query_sku_sales_returns(client_id, data_inicio, data_fim, sku, loja)
                 if vendas_devolucoes:
                     resultados.append({
                         "function": "get_sales_and_returns_data",
                         "arguments": {"sku": sku, "data_inicio": data_inicio, "data_fim": data_fim, "loja": loja or ""},
                         "result": vendas_devolucoes,
                     })
-                venda = _ia_vendas_db_consulta_sku(client_id, data_inicio, data_fim, sku, loja)
+                venda = sales_tools.query_sku_sales(client_id, data_inicio, data_fim, sku, loja)
                 if venda:
                     resultados.append({
                         "function": "get_sales_data",
@@ -272,7 +275,7 @@ def _ia_chat_executar_funcoes(payload: IAChatRequest, client_id: str) -> list[di
                         "result": venda,
                     })
                 if pede_vendas_loja_virtual:
-                    vendas_sku_loja_virtual = _ia_tool_get_sales_by_sku_virtual_store(
+                    vendas_sku_loja_virtual = sales_tools.get_sales_by_sku_virtual_store(
                         client_id,
                         mensagem,
                         contexto,
@@ -283,63 +286,63 @@ def _ia_chat_executar_funcoes(payload: IAChatRequest, client_id: str) -> list[di
                     if vendas_sku_loja_virtual:
                         resultados.append(vendas_sku_loja_virtual)
             elif data_inicio and data_fim:
-                resumo_periodo = _ia_tool_get_sales_by_period(client_id, data_inicio, data_fim, loja, limite=5)
+                resumo_periodo = sales_tools.get_sales_by_period(client_id, data_inicio, data_fim, loja, limite=5)
                 if resumo_periodo:
                     resultados.append(resumo_periodo)
 
     if _ia_chat_pede_consulta_devolucoes(mensagem) or pede_analise_especialista:
-        sku_devolucao = _ia_tool_resolver_sku(client_id, mensagem, produto_tool)
+        sku_devolucao = sales_tools.resolve_sku(client_id, mensagem, produto_tool)
         if data_inicio and data_fim:
-            qtd_devolucoes = _ia_tool_get_returns_quantity_by_period(client_id, data_inicio, data_fim, loja)
+            qtd_devolucoes = sales_tools.get_returns_quantity_by_period(client_id, data_inicio, data_fim, loja)
             if qtd_devolucoes:
                 resultados.append(qtd_devolucoes)
-            resumo_devolucoes = _ia_tool_get_returns_by_period(client_id, data_inicio, data_fim, loja, limite=10)
+            resumo_devolucoes = sales_tools.get_returns_by_period(client_id, data_inicio, data_fim, loja, limite=10)
             if resumo_devolucoes:
                 resultados.append(resumo_devolucoes)
-            taxa_dev = _ia_tool_get_return_rate_by_period(client_id, data_inicio, data_fim, loja)
+            taxa_dev = sales_tools.get_return_rate_by_period(client_id, data_inicio, data_fim, loja)
             if taxa_dev:
                 resultados.append(taxa_dev)
 
         if sku_devolucao and data_inicio and data_fim:
-            devolucoes_sku = _ia_tool_get_returns_by_sku_period(client_id, mensagem, contexto, produto_tool, loja)
+            devolucoes_sku = sales_tools.get_returns_by_sku_period(client_id, mensagem, contexto, produto_tool, loja)
             if devolucoes_sku:
                 resultados.append(devolucoes_sku)
 
-        devolucoes = _ia_tool_get_returns_data(client_id, mensagem, contexto, produto_tool, loja)
+        devolucoes = sales_tools.get_returns_data(client_id, mensagem, contexto, produto_tool, loja)
         if devolucoes:
             resultados.append(devolucoes)
 
     if data_inicio and data_fim:
         if _ia_chat_pede_ticket_medio(mensagem):
-            ticket = _ia_tool_get_avg_ticket_by_period(client_id, data_inicio, data_fim, loja)
+            ticket = sales_tools.get_avg_ticket_by_period(client_id, data_inicio, data_fim, loja)
             if ticket:
                 resultados.append(ticket)
 
         if _ia_chat_pede_taxa_devolucao(mensagem):
-            taxa_dev = _ia_tool_get_return_rate_by_period(client_id, data_inicio, data_fim, loja)
+            taxa_dev = sales_tools.get_return_rate_by_period(client_id, data_inicio, data_fim, loja)
             if taxa_dev:
                 resultados.append(taxa_dev)
 
         if _ia_chat_pede_serie_temporal(mensagem):
-            serie = _ia_tool_get_sales_timeseries(client_id, data_inicio, data_fim, loja)
+            serie = sales_tools.get_sales_timeseries(client_id, data_inicio, data_fim, loja)
             if serie:
                 resultados.append(serie)
 
         if _ia_chat_pede_anomalia(mensagem):
-            anomalias = _ia_tool_detect_sales_anomalies(client_id, data_inicio, data_fim, loja)
+            anomalias = sales_tools.detect_sales_anomalies(client_id, data_inicio, data_fim, loja)
             if anomalias:
                 resultados.append(anomalias)
 
         if _ia_chat_pede_lucro_periodo(mensagem):
-            lucro = _ia_tool_get_profit_by_period(client_id, data_inicio, data_fim, loja)
+            lucro = sales_tools.get_profit_by_period(client_id, data_inicio, data_fim, loja)
             if lucro:
                 resultados.append(lucro)
 
     if _ia_chat_pede_comparativo_periodo(mensagem):
-        periodos = _ia_extrair_periodos_comparacao(mensagem, contexto)
+        periodos = sales_tools.extract_comparison_periods(mensagem, contexto)
         if periodos:
             (data_inicio_a, data_fim_a), (data_inicio_b, data_fim_b) = periodos
-            comparativo = _ia_tool_get_period_comparison(
+            comparativo = sales_tools.get_period_comparison(
                 client_id,
                 data_inicio_a,
                 data_fim_a,
@@ -351,7 +354,7 @@ def _ia_chat_executar_funcoes(payload: IAChatRequest, client_id: str) -> list[di
                 resultados.append(comparativo)
 
     if data_inicio and data_fim and (_ia_chat_pede_consulta_vendas(mensagem) or _ia_chat_pede_consulta_devolucoes(mensagem)):
-        aviso_escopo = _ia_chat_scope_notice(client_id, loja)
+        aviso_escopo = sales_tools.scope_notice(client_id, loja)
         if aviso_escopo:
             resultados.append(aviso_escopo)
 
@@ -730,7 +733,7 @@ def _ia_chat_contexto_funcoes(payload: IAChatRequest, client_id: str) -> str:
                 )
         elif nome_funcao == "get_profit_by_period":
             cobertura = float(resultado.get("cobertura_faturamento_percentual") or 0)
-            if resultado.get("dados_suficientes"):
+            if resultado.get("coverage_sufficient"):
                 linhas.append(
                     "Resultado: "
                     f"periodo {resultado.get('data_inicio')} a {resultado.get('data_fim')} | faturamento R$ {float(resultado.get('faturamento_total') or 0):.2f} | "

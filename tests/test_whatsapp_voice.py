@@ -7,6 +7,11 @@ from pathlib import Path
 import pytest
 
 from backend.services import codex_console, whatsapp_voice
+from backend.services.codex.console import bindings as console_bindings
+from backend.services.codex.console import runtime as console_runtime
+from backend.services.codex.console import state as console_state
+from backend.services.codex.console import task_store as console_task_store
+from backend.services.codex.console import tasks as console_tasks
 
 
 class _Response:
@@ -70,12 +75,15 @@ def test_voice_defaults_are_fail_closed_and_read_only():
 
 
 def test_completed_voice_exchange_uses_phone_conversation_and_history(tmp_path, monkeypatch):
-    monkeypatch.setitem(codex_console.__dict__, "BASE_DIR", str(tmp_path))
-    monkeypatch.setitem(codex_console.__dict__, "PASTA_INFO", str(tmp_path / "info"))
-    codex_console.CODEX_TASKS.clear()
+    current_runtime = console_bindings.current()
+    monkeypatch.setattr(console_bindings, "_RUNTIME", console_bindings.ConsoleRuntime(
+        str(tmp_path), str(tmp_path / "info"), current_runtime.session_loader,
+        current_runtime.permissions_loader, current_runtime.source_module,
+    ))
+    console_state.CODEX_TASKS.clear()
     session = {"client_id": "cliente", "username": "operador", "permissions": {"full": True}}
 
-    result = codex_console.codex_registrar_interacao_whatsapp_externa(
+    result = console_tasks.register_external_exchange(
         client_id="cliente",
         username="operador",
         phone="+55 (37) 99999-3818",
@@ -85,17 +93,17 @@ def test_completed_voice_exchange_uses_phone_conversation_and_history(tmp_path, 
         duration_seconds=47,
         sources=["Bling"],
     )
-    records = codex_console._codex_whatsapp_history_records(session)
+    records = console_task_store._codex_whatsapp_history_records(session)
     assert len(records) == 1
     assert records[0]["conversation_id"] == result["conversation_id"]
-    message = codex_console._codex_whatsapp_history_message_preview(records[0]["task"])
+    message = console_task_store._codex_whatsapp_history_message_preview(records[0]["task"])
     assert message["interaction_type"] == "call"
     assert message["call_id"] == "call-test-1"
     assert message["duration_seconds"] == 47
-    task_file = Path(codex_console._codex_task_path(result["task_id"]))
+    task_file = Path(console_runtime._codex_task_path(result["task_id"]))
     stored = task_file.read_text(encoding="utf-8")
     assert "audio" not in stored.lower()
-    codex_console.CODEX_TASKS.clear()
+    console_state.CODEX_TASKS.clear()
 
 
 def test_voice_d1_schema_never_stores_audio_or_transcript():
@@ -111,7 +119,7 @@ def test_admin_status_redacts_fingerprint_and_filters_other_users_calls(monkeypa
 
     fingerprint = "a" * 16
     monkeypatch.setattr(whatsapp_bridge, "_whisper_status", lambda: {"ready": True})
-    monkeypatch.setattr(codex_console, "_codex_status_payload", lambda: {"ready": True, "enabled": True})
+    monkeypatch.setattr(console_runtime, "_codex_status_payload", lambda: {"ready": True, "enabled": True})
     monkeypatch.setattr(whatsapp_bridge, "_load_state", lambda: {})
     monkeypatch.setattr(
         whatsapp_bridge.codex_whatsapp_agents.CONVERSATION_RUNTIME,
@@ -306,11 +314,9 @@ def test_voice_task_keeps_running_after_old_global_deadline(monkeypatch):
 
     monkeypatch.setattr(whatsapp_voice.time, "time", lambda: next(clock, 1_000.0))
     monkeypatch.setattr(whatsapp_voice.time, "sleep", lambda _seconds: None)
-    monkeypatch.setattr(codex_console, "_codex_load_task", lambda _task_id: next(loaded_tasks))
-    monkeypatch.setattr(codex_console, "_codex_update_task", lambda *_args, **_kwargs: completed)
-    monkeypatch.setattr(
-        codex_console,
-        "codex_cancelar_tarefa_para_sessao",
+    monkeypatch.setattr(console_tasks, "load", lambda _task_id: next(loaded_tasks))
+    monkeypatch.setattr(console_tasks, "update", lambda *_args, **_kwargs: completed)
+    monkeypatch.setattr(console_tasks, "cancel",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("voice must not cancel by elapsed time")),
     )
     monkeypatch.setattr(
@@ -418,13 +424,11 @@ def test_ended_call_releases_capacity_while_nonterminal_task_is_observed(monkeyp
         "_start_detached_task_observer",
         lambda *_args, **kwargs: detached.append(str(kwargs.get("task_id") or "")),
     )
-    monkeypatch.setattr(codex_console, "_codex_load_task", lambda _task_id: {
+    monkeypatch.setattr(console_tasks, "load", lambda _task_id: {
         "task_id": "voice-task-never", "status": "running", "channel_metadata": {},
     })
-    monkeypatch.setattr(codex_console, "_codex_update_task", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(
-        codex_console,
-        "codex_cancelar_tarefa_para_sessao",
+    monkeypatch.setattr(console_tasks, "update", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(console_tasks, "cancel",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("call end must not cancel task")),
     )
 
@@ -445,7 +449,7 @@ def test_detached_voice_observer_delivers_completed_task_by_message(monkeypatch)
         {"task_id": "voice-task", "status": "completed"},
     ))
 
-    monkeypatch.setattr(codex_console, "_codex_load_task", lambda _task_id: next(tasks))
+    monkeypatch.setattr(console_tasks, "load", lambda _task_id: next(tasks))
     monkeypatch.setattr(whatsapp_voice.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(runtime, "_complete_delegated_turn", lambda *_args, **_kwargs: "Resultado confirmado.")
 

@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from backend.services.codex_ai_telemetry import CodexAITelemetry
+from backend.services.codex.console import runtime_policy as console_runtime_policy
+from backend.services.codex.console import telemetry as console_telemetry
 
 
 def _rows(path, table):
@@ -324,7 +326,7 @@ def test_direct_provider_wrapper_records_only_content_free_dimensions(monkeypatc
 
             return capture
 
-    monkeypatch.setattr(codex_console, "_codex_ai_telemetry_instance", lambda: FakeTelemetry())
+    monkeypatch.setattr(console_telemetry, "instance", lambda: FakeTelemetry())
     wrapped = ia_providers._telemetried_ia_provider("provider-test", "path-test")(
         lambda _payload, _client_id: "resposta-secreta"
     )

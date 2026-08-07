@@ -50,15 +50,9 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services.codex.console import queueing as console_queueing
+from backend.services.codex.console import telemetry as console_telemetry
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -122,7 +116,7 @@ def _activate_completed_pairing(config: dict[str, Any]) -> tuple[dict[str, Any],
         and (worker.get("zero_cost") or {}).get("policy_valid")
         and (worker.get("meta") or {}).get("configured")
         and _whisper_status().get("ready")
-        and codex_console._codex_status_payload().get("ready")
+        and console_telemetry.status_payload().get("ready")
     )
     if not prerequisites_ready:
         return config, "pairing_waiting_health"
@@ -186,7 +180,7 @@ def whatsapp_bridge_poll_once() -> dict[str, Any]:
     _save_state(state)
     settings = _whatsapp_dual_agent_settings(config)
     _configure_phone_dispatcher(settings["conversation_worker_count"])
-    codex_console._codex_configure_dual_sol_limit(
+    console_queueing.configure_dual_limit(
         settings["max_active_task_agents_global"],
         settings["max_active_task_agents_per_conversation"],
     )
@@ -270,7 +264,7 @@ def whatsapp_bridge_iniciar_background() -> None:
     recovered_retries = _recover_dual_pending_after_restart(_load_state())
     RUNTIME_STATE["dual_agent_retries_recovered"] = recovered_retries
     _configure_phone_dispatcher(settings["conversation_worker_count"])
-    codex_console._codex_configure_dual_sol_limit(
+    console_queueing.configure_dual_limit(
         settings["max_active_task_agents_global"],
         settings["max_active_task_agents_per_conversation"],
     )

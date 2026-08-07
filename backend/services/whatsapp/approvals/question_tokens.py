@@ -50,15 +50,7 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -620,7 +612,7 @@ def _regenerate_question_approval_response(
     guidance: str = "",
 ) -> str:
     from backend.schemas.perguntas_pos_venda import PerguntasGerarRespostaRequest, PosVendaGerarRespostaRequest
-    from backend.services import perguntas_pos_venda_endpoints as ppv_endpoints
+    from backend.modules.perguntas_pos_venda.endpoints import api as ppv_endpoints
     from backend.services import perguntas_pos_venda_state as ppv_state
 
     approval_type = str(approval.get("tipo") or approval.get("approval_type") or "").strip().lower()

@@ -20,7 +20,9 @@ from typing import Any, Callable, Optional
 
 import requests
 
-from backend.services import codex_console, codex_whatsapp_agents, ia_providers
+from backend.services import codex_whatsapp_agents, ia_providers
+from backend.services.codex.console import conversations as console_conversations
+from backend.services.codex.console import tasks as console_tasks
 
 
 VOICE_MODEL_DEFAULT = "gpt-realtime-2.1"
@@ -256,12 +258,12 @@ class VoiceRuntime:
             duration = max(0, int(time.time() - float(state.get("started_epoch") or time.time())))
             for task_id in list(state.get("task_ids") or []):
                 try:
-                    task = codex_console._codex_load_task(str(task_id))
+                    task = console_tasks.load(str(task_id))
                     if not isinstance(task, dict):
                         continue
                     metadata = dict(task.get("channel_metadata") or {})
                     metadata["duration_seconds"] = duration
-                    codex_console._codex_update_task(str(task_id), channel_metadata=metadata)
+                    console_tasks.update(str(task_id), channel_metadata=metadata)
                 except Exception:
                     pass
             try:
@@ -473,7 +475,7 @@ class VoiceRuntime:
         action = str(decision.get("action") or "")
         if action in {"reply", "request_information"}:
             answer = _safe_spoken_text(decision.get("reply_text"))
-            task = codex_console.codex_registrar_interacao_whatsapp_externa(
+            task = console_tasks.register_external_exchange(
                 client_id=str(session.get("client_id") or "default"),
                 username=str(session.get("username") or ""),
                 phone=phone,
@@ -531,7 +533,7 @@ class VoiceRuntime:
                     session=session,
                 )
                 return ""
-            loaded = codex_console._codex_load_task(task_id)
+            loaded = console_tasks.load(task_id)
             if isinstance(loaded, dict):
                 latest = loaded
             if str(latest.get("status") or "") in VOICE_TERMINAL_TASK_STATES:
@@ -585,7 +587,7 @@ class VoiceRuntime:
             try:
                 current = dict(latest)
                 while str(current.get("status") or "") not in VOICE_TERMINAL_TASK_STATES:
-                    loaded = codex_console._codex_load_task(task_id)
+                    loaded = console_tasks.load(task_id)
                     if isinstance(loaded, dict):
                         current = loaded
                     if str(current.get("status") or "") not in VOICE_TERMINAL_TASK_STATES:
@@ -638,7 +640,7 @@ class VoiceRuntime:
             ai_behavior=ai_behavior,
         )
         answer = _safe_spoken_text(final_decision.get("reply_text") or worker_result.get("summary") or "Não consegui concluir a consulta.")
-        existing = codex_console._codex_load_task(task_id) or latest
+        existing = console_tasks.load(task_id) or latest
         delivery = self._deliver_requested_listing(config, bridge, call, existing, transcript, answer)
         if delivery.get("text_sent") is True:
             state["result_message_sent"] = True
@@ -662,11 +664,11 @@ class VoiceRuntime:
             "safe_read_only": True,
         })
         if str(existing.get("status") or "") == "completed":
-            codex_console._codex_update_task(
+            console_tasks.update(
                 task_id,
                 prompt=transcript,
                 final_response=answer,
-                completed_at=str(existing.get("completed_at") or codex_console._codex_now()),
+                completed_at=str(existing.get("completed_at") or console_tasks.now()),
                 channel_metadata=metadata,
                 access_mode="query_only",
                 whatsapp_query_only=True,
@@ -675,14 +677,14 @@ class VoiceRuntime:
                 approved=True,
             )
             try:
-                codex_console._codex_update_conversation_memory(task_id)
+                console_conversations.update_memory(task_id)
             except Exception:
                 pass
         else:
             # A explicação entregue ao usuário é um par concluído, mas a tarefa
             # técnica conserva seu estado falho/cancelado para auditoria e não
             # pode ser reclassificada como sucesso.
-            delivered = codex_console.codex_registrar_interacao_whatsapp_externa(
+            delivered = console_tasks.register_external_exchange(
                 client_id=str(session.get("client_id") or "default"),
                 username=str(session.get("username") or ""),
                 phone=phone,

@@ -7,6 +7,7 @@ from starlette.requests import Request
 
 from backend.schemas.ia import IAChatRequest
 from backend.services import ia_endpoints
+from backend.services.marketplace_tools import images as marketplace_images
 
 
 class BlackJhonFallbackTest(unittest.TestCase):
@@ -37,14 +38,15 @@ class BlackJhonFallbackTest(unittest.TestCase):
             "_ia_modelo_chat_configurado": lambda: "gpt-5.5",
             "_usuario_pode_escolher_modelo_chat": lambda *_args: True,
             "_normalizar_ia_modelo_padrao": lambda value: value,
-            "_ia_gerar_imagem_sku_resposta": image,
             "_modelo_eh_vertex_ai": lambda _value: False,
             "_modelo_eh_gemini_api": lambda _value: False,
+            "_modelo_eh_codex": lambda _value: False,
             "_chamar_openai_responses": provider,
         }
         with ExitStack() as stack:
             for name, value in replacements.items():
                 stack.enter_context(patch.object(ia_endpoints, name, value, create=True))
+            stack.enter_context(patch.object(marketplace_images, "generate_response", image))
             result = ia_endpoints.ia_chat(payload, request, client_id="000002")
 
         tools.assert_not_called()

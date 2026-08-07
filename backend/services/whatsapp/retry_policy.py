@@ -102,18 +102,18 @@ def worker_disposition(task: dict[str, Any], result: dict[str, Any]) -> str:
     verification = task.get("verification") if isinstance(task.get("verification"), dict) else {}
     if verification.get("confirmed") is False or str(verification.get("status") or "") == "partial":
         return "waiting_retry"
-    validations = [
-        item.get("tool_validation")
+    evidences = [
+        item.get("evidence")
         for item in list(task.get("tool_results_summary") or [])
-        if isinstance(item, dict) and isinstance(item.get("tool_validation"), dict)
+        if isinstance(item, dict) and isinstance(item.get("evidence"), dict)
     ]
     consolidated_sufficient = bool(
         verification.get("confirmed") is True
-        or any(item.get("dados_suficientes") is True for item in validations)
+        or any(str(item.get("status") or "") in {"complete", "confirmed_zero"} for item in evidences)
     )
-    if validations and not consolidated_sufficient:
+    if evidences and not consolidated_sufficient:
         return "waiting_retry"
-    if result_status == "completed":
+    if result_status in {"complete", "completed"}:
         facts = [str(item or "").strip() for item in list(result.get("verified_facts") or []) if str(item or "").strip()]
         sources = [str(item or "").strip() for item in list(result.get("sources") or []) if str(item or "").strip()]
         confidence = str(result.get("confidence") or "unknown")

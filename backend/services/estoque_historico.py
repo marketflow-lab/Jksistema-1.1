@@ -44,6 +44,31 @@ configure_estoque_historico_runtime()
 def _estoque_historico_db_path(client_id: str) -> str:
     return os.path.join(get_tenant_path(client_id), "estoque_historico.db")
 
+
+def _lojas_estoque_ativas(client_id: str) -> list[str]:
+    """Le o cadastro atual de lojas sem acionar migracoes ou gravacoes."""
+    caminho = os.path.join(get_tenant_path(client_id), "lojas_config.json")
+    try:
+        with open(caminho, "r", encoding="utf-8-sig") as arquivo:
+            payload = json.load(arquivo)
+    except (OSError, ValueError, TypeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+
+    nomes: list[str] = []
+    vistos: set[str] = set()
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        nome = str(item.get("nome") or "").strip()
+        chave = nome.casefold()
+        if not nome or chave in vistos:
+            continue
+        vistos.add(chave)
+        nomes.append(nome)
+    return nomes
+
 def _garantir_tabela_historico_estoque(
     client_id: str,
     *,
@@ -865,7 +890,9 @@ def _vendas_series_estoque_eventos(
     chaves_periodo: list[str],
     incluir_geral: bool,
     incluir_sku: bool,
+    incluir_skus_com_estoque: bool,
     sku_norm: str,
+    pareto_skus_norm: set[str],
 ) -> dict | None:
     db_path = _estoque_historico_db_path(client_id)
     if not os.path.exists(db_path):
@@ -882,6 +909,8 @@ def _vendas_series_estoque_eventos(
 
         loja_txt = str(loja or "").strip()
         loja_especifica = bool(loja_txt and loja_txt != "__todas")
+        lojas_ativas = [] if loja_especifica else _lojas_estoque_ativas(client_id)
+        lojas_ativas_por_ref = {nome.casefold(): nome for nome in lojas_ativas}
         query = """
             SELECT event_id, recorded_at, data_ref, loja_sync, saldo_loja_total
             FROM estoque_sync_eventos
@@ -922,8 +951,12 @@ def _vendas_series_estoque_eventos(
             }
 
         eventos_por_loja: dict[str, list[tuple[str, sqlite3.Row]]] = {}
+        lojas_historicas_ignoradas: set[str] = set()
         for evento in eventos:
             loja_ref = str(evento["loja_sync"] or "").strip().casefold()
+            if lojas_ativas_por_ref and loja_ref not in lojas_ativas_por_ref:
+                lojas_historicas_ignoradas.add(loja_ref)
+                continue
             data_evento = datetime.fromisoformat(str(evento["data_ref"]))
             chave, _label = _chave_intervalo_estoque(data_evento, intervalo)
             eventos_por_loja.setdefault(loja_ref, []).append((chave, evento))
@@ -934,10 +967,12 @@ def _vendas_series_estoque_eventos(
 
         bucket_geral: dict[str, float] = {}
         bucket_sku: dict[str, float] = {}
+        eventos_contagem_por_chave: dict[str, list[str]] = {}
+        lojas_cobertas_por_chave: dict[str, int] = {}
         for chave in (chaves_periodo or []):
             valores_geral: list[float] = []
             valores_sku: list[float] = []
-            geral_completo = True
+            eventos_contagem: list[str] = []
             sku_completo = True
             for eventos_loja in eventos_por_loja.values():
                 evento_atual = None
@@ -947,19 +982,84 @@ def _vendas_series_estoque_eventos(
                     else:
                         break
                 if evento_atual is None:
-                    geral_completo = False
                     sku_completo = False
                     continue
                 valores_geral.append(float(evento_atual["saldo_loja_total"]))
                 event_id = str(evento_atual["event_id"])
+                eventos_contagem.append(event_id)
                 if event_id in saldo_sku_por_evento:
                     valores_sku.append(saldo_sku_por_evento[event_id])
                 else:
                     sku_completo = False
-            if incluir_geral and geral_completo and valores_geral:
+            lojas_cobertas_por_chave[chave] = len(eventos_contagem)
+            if incluir_geral and valores_geral:
                 bucket_geral[chave] = sum(valores_geral)
             if incluir_sku and sku_completo and valores_sku:
                 bucket_sku[chave] = sum(valores_sku)
+            if incluir_skus_com_estoque and eventos_contagem:
+                eventos_contagem_por_chave[chave] = eventos_contagem
+
+        bucket_skus_com_estoque: dict[str, int] = {}
+        bucket_skus_pareto_com_estoque: dict[str, int] = {}
+        if incluir_skus_com_estoque and eventos_contagem_por_chave:
+            event_ids = sorted({
+                event_id
+                for ids_chave in eventos_contagem_por_chave.values()
+                for event_id in ids_chave
+            })
+            saldos_por_evento: dict[str, dict[str, float]] = {
+                event_id: {} for event_id in event_ids
+            }
+            for inicio in range(0, len(event_ids), 900):
+                lote = event_ids[inicio:inicio + 900]
+                placeholders = ",".join("?" for _item in lote)
+                query_itens = (
+                    "SELECT event_id, sku, saldo_loja "
+                    "FROM estoque_sync_evento_itens "
+                    f"WHERE event_id IN ({placeholders}) "
+                    "AND saldo_loja != 0"
+                )
+                for item in conn.execute(query_itens, lote).fetchall():
+                    event_id = str(item["event_id"])
+                    sku_item = _normalizar_sku_estoque(item["sku"])
+                    if not sku_item:
+                        continue
+                    saldos_por_evento[event_id][sku_item] = (
+                        float(saldos_por_evento[event_id].get(sku_item, 0) or 0)
+                        + float(item["saldo_loja"] or 0)
+                    )
+
+            for chave, ids_chave in eventos_contagem_por_chave.items():
+                saldos_agregados: dict[str, float] = {}
+                for event_id in ids_chave:
+                    for sku_item, saldo in saldos_por_evento.get(event_id, {}).items():
+                        saldos_agregados[sku_item] = (
+                            float(saldos_agregados.get(sku_item, 0) or 0)
+                            + float(saldo or 0)
+                        )
+                bucket_skus_com_estoque[chave] = sum(
+                    1 for saldo in saldos_agregados.values() if float(saldo or 0) > 0
+                )
+                if pareto_skus_norm:
+                    bucket_skus_pareto_com_estoque[chave] = sum(
+                        1
+                        for sku_item, saldo in saldos_agregados.items()
+                        if sku_item in pareto_skus_norm and float(saldo or 0) > 0
+                    )
+
+        total_lojas = len(lojas_ativas_por_ref) if lojas_ativas_por_ref else len(eventos_por_loja)
+        lojas_sem_historico = [
+            nome
+            for chave, nome in lojas_ativas_por_ref.items()
+            if chave not in eventos_por_loja
+        ]
+        lojas_com_historico = len(eventos_por_loja)
+        detail = ""
+        if lojas_sem_historico:
+            detail = (
+                f"Cobertura parcial: {lojas_com_historico} de {total_lojas} lojas com "
+                "historico de estoque. Sem historico: " + ", ".join(lojas_sem_historico) + "."
+            )
 
         return {
             "estoque_geral": [
@@ -970,7 +1070,24 @@ def _vendas_series_estoque_eventos(
                 round(bucket_sku[chave], 2) if chave in bucket_sku else None
                 for chave in (chaves_periodo or [])
             ] if incluir_sku else [],
-            "lojas": len(eventos_por_loja),
+            "estoque_skus_com_saldo": [
+                int(bucket_skus_com_estoque[chave]) if chave in bucket_skus_com_estoque else None
+                for chave in (chaves_periodo or [])
+            ] if incluir_skus_com_estoque else [],
+            "estoque_skus_pareto_com_saldo": [
+                int(bucket_skus_pareto_com_estoque[chave])
+                if chave in bucket_skus_pareto_com_estoque else None
+                for chave in (chaves_periodo or [])
+            ] if pareto_skus_norm else [],
+            "lojas": total_lojas,
+            "lojas_com_historico": lojas_com_historico,
+            "lojas_sem_historico": lojas_sem_historico,
+            "lojas_historicas_ignoradas": len(lojas_historicas_ignoradas),
+            "lojas_cobertas_por_periodo": [
+                int(lojas_cobertas_por_chave.get(chave, 0))
+                for chave in (chaves_periodo or [])
+            ],
+            "detail": detail,
         }
     finally:
         conn.close()
@@ -985,14 +1102,27 @@ def _vendas_series_estoque_historico(
     mostrar_estoque_geral: bool,
     mostrar_estoque_sku: bool,
     sku: str | None,
+    pareto_skus: list[str] | None = None,
 ) -> dict:
     total_pontos = len(chaves_periodo or [])
     incluir_geral = bool(mostrar_estoque_geral)
     sku_norm = _normalizar_sku_estoque(sku) if sku else ""
     incluir_sku = bool(mostrar_estoque_sku and sku_norm)
+    incluir_skus_com_estoque = bool(incluir_geral or incluir_sku)
+    pareto_skus_norm = {
+        sku_item
+        for sku_item in (_normalizar_sku_estoque(item) for item in (pareto_skus or []))
+        if sku_item
+    }
     resultado = {
         "estoque_geral": [None] * total_pontos if incluir_geral else [],
         "estoque_sku": [None] * total_pontos if incluir_sku else [],
+        "estoque_skus_com_saldo": (
+            [None] * total_pontos if incluir_skus_com_estoque else []
+        ),
+        "estoque_skus_pareto_com_saldo": (
+            [None] * total_pontos if pareto_skus_norm else []
+        ),
         "estoque_meta": {
             "success": True,
             "requested": bool(mostrar_estoque_geral or mostrar_estoque_sku),
@@ -1022,7 +1152,9 @@ def _vendas_series_estoque_historico(
             chaves_periodo,
             incluir_geral,
             incluir_sku,
+            incluir_skus_com_estoque,
             sku_norm,
+            pareto_skus_norm,
         )
     except sqlite3.OperationalError as exc:
         logger.warning(f"Falha ao consultar eventos de estoque; usando fallback legado: {exc}")
@@ -1030,9 +1162,15 @@ def _vendas_series_estoque_historico(
     if serie_eventos is not None:
         resultado["estoque_geral"] = serie_eventos["estoque_geral"]
         resultado["estoque_sku"] = serie_eventos["estoque_sku"]
+        resultado["estoque_skus_com_saldo"] = serie_eventos["estoque_skus_com_saldo"]
+        resultado["estoque_skus_pareto_com_saldo"] = serie_eventos["estoque_skus_pareto_com_saldo"]
         resultado["estoque_meta"].update({
             "lojas": int(serie_eventos["lojas"] or 0),
-            "detail": "",
+            "lojas_com_historico": int(serie_eventos.get("lojas_com_historico") or 0),
+            "lojas_sem_historico": list(serie_eventos.get("lojas_sem_historico") or []),
+            "lojas_historicas_ignoradas": int(serie_eventos.get("lojas_historicas_ignoradas") or 0),
+            "lojas_cobertas_por_periodo": list(serie_eventos.get("lojas_cobertas_por_periodo") or []),
+            "detail": str(serie_eventos.get("detail") or ""),
             "fonte": "eventos",
         })
         return resultado
@@ -1071,6 +1209,10 @@ def _vendas_series_estoque_historico(
             for row in cur_hist.fetchall()
             if str(row[0] or "").strip() and str(row[1] or "").strip()
         ]
+        if not loja_especifica:
+            lojas_ativas_ref = {nome.casefold() for nome in _lojas_estoque_ativas(client_id)}
+            if lojas_ativas_ref:
+                lojas_base = [item for item in lojas_base if item[0].casefold() in lojas_ativas_ref]
 
         if not lojas_base:
             resultado["estoque_meta"]["detail"] = "Sem snapshot de estoque no período solicitado."
@@ -1079,6 +1221,7 @@ def _vendas_series_estoque_historico(
         _garantir_tabela_lancamentos_estoque(client_id)
         bucket_geral: dict[str, float] = {}
         bucket_sku: dict[str, float] = {}
+        bucket_saldos_por_sku: dict[str, dict[str, float]] = {}
         inicio_periodo_date = data_inicio_ref.date()
         fim_periodo_date = data_fim_ref.date()
 
@@ -1130,6 +1273,56 @@ def _vendas_series_estoque_historico(
                 saidas[data_ref_str] = float(saidas_raw or 0)
             return entradas, saidas
 
+        def carregar_snapshot_por_sku(loja_ref: str, data_base: str) -> dict[str, float]:
+            cur_hist.execute(
+                """
+                SELECT upper(trim(sku)) AS sku_ref, SUM(coalesce(saldo_loja, 0))
+                FROM estoque_historico
+                WHERE lower(trim(loja_sync)) = ?
+                  AND date(data_ref) = date(?)
+                  AND trim(coalesce(sku, '')) != ''
+                GROUP BY upper(trim(sku))
+                """,
+                (loja_ref, data_base),
+            )
+            return {
+                str(sku_ref or "").strip(): float(saldo or 0)
+                for sku_ref, saldo in cur_hist.fetchall()
+                if str(sku_ref or "").strip()
+            }
+
+        def carregar_movimentos_por_sku(
+            loja_ref: str,
+            data_inicio_calc: str,
+            data_base: str,
+        ) -> dict[str, dict[str, tuple[float, float]]]:
+            cur_hist.execute(
+                """
+                SELECT date(data_ref) AS data_ref,
+                       upper(trim(sku)) AS sku_ref,
+                       SUM(coalesce(entrada, 0)) AS entradas,
+                       SUM(coalesce(saida, 0)) AS saidas
+                FROM estoque_lancamentos
+                WHERE lower(trim(loja_sync)) = ?
+                  AND date(data_ref) >= date(?)
+                  AND date(data_ref) <= date(?)
+                  AND trim(coalesce(sku, '')) != ''
+                GROUP BY date(data_ref), upper(trim(sku))
+                """,
+                (loja_ref, data_inicio_calc, data_base),
+            )
+            movimentos: dict[str, dict[str, tuple[float, float]]] = {}
+            for data_ref, sku_ref, entradas_raw, saidas_raw in cur_hist.fetchall():
+                data_ref_str = str(data_ref or "").strip()
+                sku_ref_str = str(sku_ref or "").strip()
+                if not data_ref_str or not sku_ref_str:
+                    continue
+                movimentos.setdefault(data_ref_str, {})[sku_ref_str] = (
+                    float(entradas_raw or 0),
+                    float(saidas_raw or 0),
+                )
+            return movimentos
+
         def acumular_buckets(
             destino: dict[str, float],
             loja_ref: str,
@@ -1169,6 +1362,44 @@ def _vendas_series_estoque_historico(
             for chave_bucket, valor_bucket in buckets_loja.items():
                 destino[chave_bucket] = float(destino.get(chave_bucket, 0) or 0) + float(valor_bucket or 0)
 
+        def acumular_buckets_skus(loja_ref: str, data_base: str) -> None:
+            data_base_dt = datetime.fromisoformat(data_base)
+            data_inicio_calc = min(data_inicio_ref, data_base_dt).strftime("%Y-%m-%d")
+            saldos_atual = carregar_snapshot_por_sku(loja_ref, data_base)
+            movimentos = carregar_movimentos_por_sku(loja_ref, data_inicio_calc, data_base)
+            for movimentos_dia in movimentos.values():
+                for sku_item in movimentos_dia:
+                    saldos_atual.setdefault(sku_item, 0.0)
+
+            data_cursor = data_base_dt.date()
+            limite_calc = datetime.fromisoformat(data_inicio_calc).date()
+            buckets_loja: dict[str, dict[str, float]] = {}
+            while data_cursor >= limite_calc:
+                data_cursor_str = data_cursor.strftime("%Y-%m-%d")
+                if inicio_periodo_date <= data_cursor <= fim_periodo_date:
+                    chave_bucket, _label_bucket = _chave_intervalo_estoque(
+                        datetime.combine(data_cursor, datetime.min.time()),
+                        intervalo,
+                    )
+                    if chave_bucket not in buckets_loja:
+                        buckets_loja[chave_bucket] = dict(saldos_atual)
+
+                for sku_item, (entradas_dia, saidas_dia) in movimentos.get(data_cursor_str, {}).items():
+                    saldos_atual[sku_item] = (
+                        float(saldos_atual.get(sku_item, 0) or 0)
+                        - float(entradas_dia or 0)
+                        + float(saidas_dia or 0)
+                    )
+                data_cursor -= timedelta(days=1)
+
+            for chave_bucket, saldos_bucket in buckets_loja.items():
+                destino = bucket_saldos_por_sku.setdefault(chave_bucket, {})
+                for sku_item, saldo in saldos_bucket.items():
+                    destino[sku_item] = (
+                        float(destino.get(sku_item, 0) or 0)
+                        + float(saldo or 0)
+                    )
+
         for loja_ref_atual, data_base in lojas_base:
             if incluir_geral:
                 total_base = somar_snapshot(loja_ref_atual, data_base)
@@ -1176,12 +1407,26 @@ def _vendas_series_estoque_historico(
             if incluir_sku:
                 total_sku_base = somar_snapshot(loja_ref_atual, data_base, sku_norm)
                 acumular_buckets(bucket_sku, loja_ref_atual, total_sku_base, data_base, sku_norm)
+            if incluir_skus_com_estoque:
+                acumular_buckets_skus(loja_ref_atual, data_base)
 
         for idx, chave in enumerate(chaves_periodo or []):
             if incluir_geral and chave in bucket_geral:
                 resultado["estoque_geral"][idx] = round(float(bucket_geral[chave] or 0), 2)
             if incluir_sku and chave in bucket_sku:
                 resultado["estoque_sku"][idx] = round(float(bucket_sku[chave] or 0), 2)
+            if incluir_skus_com_estoque and chave in bucket_saldos_por_sku:
+                resultado["estoque_skus_com_saldo"][idx] = sum(
+                    1
+                    for saldo in bucket_saldos_por_sku[chave].values()
+                    if float(saldo or 0) > 0
+                )
+                if pareto_skus_norm:
+                    resultado["estoque_skus_pareto_com_saldo"][idx] = sum(
+                        1
+                        for sku_item, saldo in bucket_saldos_por_sku[chave].items()
+                        if sku_item in pareto_skus_norm and float(saldo or 0) > 0
+                    )
 
         resultado["estoque_meta"].update({
             "lojas": len(lojas_base),

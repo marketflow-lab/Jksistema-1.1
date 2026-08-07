@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from backend.services.codex_data_selection_agent import compact_evidence
+from backend.services.codex.assistant import evidence as assistant_evidence
 from backend.services.whatsapp import formatting, marketplace_listing_delivery, retry_policy
 
 
@@ -35,11 +36,11 @@ _DLP_BLOCKED = object()
 def _dlp_safe_payload(value: Any) -> tuple[Any, int]:
     """Remove complete snippet rows blocked by DLP, returning only a count."""
 
-    from backend.services import context_hub
+    from backend.modules.context_hub import dlp as context_hub_dlp
 
     if isinstance(value, dict):
         snippet = str(value.get("snippet") or "") if "snippet" in value else ""
-        if snippet and context_hub.scan_dlp(snippet, source_ref="whatsapp_compaction"):
+        if snippet and context_hub_dlp.scan_dlp(snippet, source_ref="whatsapp_compaction"):
             return _DLP_BLOCKED, 1
         output: dict[str, Any] = {}
         blocked = 0
@@ -187,8 +188,12 @@ def stock_balance_contract(result: Any) -> dict[str, Any]:
         and quantity_reliable
     )
     stores = [str(item or "").strip() for item in list(chart.get("stores") or []) if str(item or "").strip()]
-    validation = source.get("tool_validation") if isinstance(source.get("tool_validation"), dict) else {}
-    warnings = [str(item or "").strip() for item in list(validation.get("warnings") or []) if str(item or "").strip()]
+    evidence = source.get("evidence") if isinstance(source.get("evidence"), dict) else {}
+    warnings = [
+        str(item or "").strip()
+        for item in [*list(source.get("warnings") or []), evidence.get("reason")]
+        if str(item or "").strip()
+    ]
     warning_key = " ".join(formatting._whatsapp_text_key(item) for item in warnings)
     auth_failed = bool(
         re.search(r"\b(token.*expir\w*|http 401|nao autoriz\w*|autentic\w*|credencial\w*)\b", warning_key)
@@ -199,6 +204,7 @@ def stock_balance_contract(result: Any) -> dict[str, Any]:
         and item.get("summary", {}).get("found") is True
         for item in candidates
     )
+    confirmed = bool(confirmed and str(evidence.get("status") or "") in assistant_evidence.CONCLUSIVE_EVIDENCE_STATUSES)
     if confirmed:
         reason = "Saldo numerico por loja confirmado diretamente na Bling."
         error_class = ""
@@ -264,14 +270,15 @@ def positive_stock_sku_count_contract(result: Any) -> dict[str, Any]:
     confirmed = bool(candidate.get("coverage_complete") is True and numeric_count and float(count) >= 0)
     total = candidate.get("store_available")
     numeric_total = isinstance(total, (int, float)) and not isinstance(total, bool)
-    validation = source.get("tool_validation") if isinstance(source.get("tool_validation"), dict) else {}
+    evidence = source.get("evidence") if isinstance(source.get("evidence"), dict) else {}
     warning_values = [
         *list(source.get("warnings") or []),
-        *list(validation.get("warnings") or []),
+        evidence.get("reason"),
     ]
     warning_key = " ".join(formatting._whatsapp_text_key(item) for item in warning_values)
     auth_failed = bool(re.search(r"\b(token.*expir\w*|http 401|nao autoriz\w*|autentic\w*|credencial\w*)\b", warning_key))
     partial_reason = str(candidate.get("partial_reason") or source.get("empty_reason") or "").strip()
+    confirmed = bool(confirmed and str(evidence.get("status") or "") in assistant_evidence.CONCLUSIVE_EVIDENCE_STATUSES)
     if confirmed:
         reason = "Contagem distinta de SKUs com saldo positivo confirmada em todo o catalogo da loja Bling."
         error_class = ""
@@ -304,7 +311,9 @@ def positive_stock_sku_count_contract(result: Any) -> dict[str, Any]:
 
 def normalize_tool_result_contract(result: Any) -> dict[str, Any]:
     source = result if isinstance(result, dict) else {"success": False, "error": "resultado_invalido"}
-    validation = source.get("tool_validation") if isinstance(source.get("tool_validation"), dict) else {}
+    evidence = source.get("evidence") if isinstance(source.get("evidence"), dict) else {}
+    if not evidence:
+        evidence = assistant_evidence.failed_evidence("Resultado sem envelope de evidencia.")
     error = str(source.get("error") or source.get("failure") or source.get("empty_reason") or "").strip()
     error_class, retryable = retry_policy.retry_classification(error) if error else ("", False)
     data = source.get("data")
@@ -322,26 +331,6 @@ def normalize_tool_result_contract(result: Any) -> dict[str, Any]:
             record_count = len(rows) if isinstance(rows, list) else (1 if data else 0)
         else:
             record_count = 0
-    explicit_sufficient = validation.get("dados_suficientes")
-    if explicit_sufficient is None:
-        explicit_sufficient = source.get("dados_suficientes")
-    dados_suficientes = bool(
-        explicit_sufficient is True
-        or (
-            explicit_sufficient is None
-            and source.get("success") is True
-            and int(record_count or 0) > 0
-            and not error
-        )
-    )
-    paging = source.get("paging") if isinstance(source.get("paging"), dict) else {}
-    coverage_complete = bool(
-        dados_suficientes
-        and source.get("coverage_complete") is not False
-        and source.get("partial_response") is not True
-        and source.get("truncated") is not True
-        and paging.get("has_more") is not True
-    )
     raw_sources = source.get("sources") if isinstance(source.get("sources"), list) else []
     raw_human_sources = source.get("sources_human") if isinstance(source.get("sources_human"), list) else []
     sources: list[str] = []
@@ -353,10 +342,9 @@ def normalize_tool_result_contract(result: Any) -> dict[str, Any]:
         "success": bool(source.get("success") is True and not error),
         "data": data,
         "sources": sources,
-        "dados_suficientes": dados_suficientes,
-        "coverage_complete": coverage_complete,
-        "error_class": error_class or ("insufficient_evidence" if not dados_suficientes else ""),
-        "retryable": bool(retryable),
+        "evidence": evidence,
+        "error_class": error_class or ("" if str(evidence.get("status") or "") in {"complete", "confirmed_zero"} else "insufficient_evidence"),
+        "retryable": bool(evidence.get("retryable") or retryable),
         "records": int(record_count or 0),
     }
 
@@ -387,8 +375,7 @@ def function_manager_compact_result(result: Any) -> dict[str, Any]:
         "sources_human",
         "warnings",
         "empty_reason",
-        "tool_validation",
-        "confidence",
+        "evidence",
         "paging",
         "generated_at",
         "error",
@@ -411,6 +398,11 @@ def function_manager_compact_result(result: Any) -> dict[str, Any]:
     if dlp_blocked_count:
         compact["dlp_blocked_count"] = dlp_blocked_count
     compact.update(normalize_tool_result_contract(source))
+    if dlp_blocked_count:
+        compact["evidence"] = assistant_evidence.mark_dlp_partial(
+            compact.get("evidence"),
+            dlp_blocked_count,
+        )
     if str(source.get("tool_id") or "") == "context_hub_search":
         generation = _context_hub_generation(source, context_hub_rows)
         compact.update({
@@ -422,8 +414,6 @@ def function_manager_compact_result(result: Any) -> dict[str, Any]:
                 **generation,
             },
             "context_hub_generation": generation,
-            "dados_suficientes": bool(source.get("success") is True and context_hub_rows),
-            "coverage_complete": bool(source.get("success") is True and context_hub_rows),
             "error_class": "" if source.get("success") is True and context_hub_rows else "insufficient_evidence",
             "retryable": False,
         })
@@ -439,15 +429,11 @@ def function_manager_compact_result(result: Any) -> dict[str, Any]:
     if str(source.get("tool_id") or "") == "bling_stock_balances":
         stock_balance = stock_balance_contract(source)
         compact["stock_balance"] = stock_balance
-        compact["dados_suficientes"] = stock_balance.get("confirmed") is True
-        compact["coverage_complete"] = stock_balance.get("confirmed") is True
         compact["error_class"] = str(stock_balance.get("error_class") or "")
         compact["retryable"] = stock_balance.get("retryable") is True
     if str(source.get("tool_id") or "") == "bling_positive_stock_sku_count":
         count_contract = positive_stock_sku_count_contract(source)
         compact["positive_stock_sku_count"] = count_contract
-        compact["dados_suficientes"] = count_contract.get("confirmed") is True
-        compact["coverage_complete"] = count_contract.get("confirmed") is True
         compact["error_class"] = str(count_contract.get("error_class") or "")
         compact["retryable"] = count_contract.get("retryable") is True
     return compact
@@ -471,11 +457,8 @@ def marketplace_listing_stock_contract(result: Any) -> dict[str, Any]:
                 "available_quantity": float(quantity),
             }
         )
-    confirmed = bool(
-        source.get("dados_suficientes") is True
-        and source.get("coverage_complete") is True
-        and confirmed_rows
-    )
+    evidence = source.get("evidence") if isinstance(source.get("evidence"), dict) else {}
+    confirmed = bool(str(evidence.get("status") or "") == "complete" and confirmed_rows)
     return {
         "confirmed": confirmed,
         "rows": confirmed_rows[:10],
@@ -508,7 +491,8 @@ def local_stock_contract(result: Any) -> dict[str, Any]:
             for key in ("saldo_loja_total", "saldo_full_total", "saldo_total")
         )
     )
-    confirmed = bool(source.get("dados_suficientes") is True and has_numeric_contract)
+    evidence = source.get("evidence") if isinstance(source.get("evidence"), dict) else {}
+    confirmed = bool(str(evidence.get("status") or "") == "complete" and has_numeric_contract)
     return {
         "confirmed": confirmed,
         "sku": str(payload.get("sku") or "").strip(),
@@ -537,37 +521,51 @@ def stock_tool_result_confirmed(result: dict[str, Any]) -> bool:
     return False
 
 
+def _aggregate_evidence_status(sufficient: bool, observed_count: int, validations: list[dict[str, Any]]) -> str:
+    if sufficient:
+        return "complete"
+    if observed_count:
+        return "partial"
+    for status in ("unavailable", "denied", "failed"):
+        if any(item.get("status") == status for item in validations):
+            return status
+    return "insufficient"
+
+
 def function_manager_evidence(plan: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, Any]:
     facts: list[str] = []
     sources: list[str] = []
     validations: list[dict[str, Any]] = []
     failures: list[str] = []
     required_ok = True
-    sufficient_count = 0
+    conclusive_count = 0
+    observed_count = 0
     for result in results:
-        validation = result.get("tool_validation") if isinstance(result.get("tool_validation"), dict) else {}
-        sufficient = (
-            result.get("dados_suficientes") is True
-            if "dados_suficientes" in result
-            else validation.get("dados_suficientes") is True
-        )
-        if sufficient:
-            sufficient_count += 1
-        if result.get("manager_required") is True and not sufficient:
+        evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
+        status = str(evidence.get("status") or "failed")
+        conclusive = status in assistant_evidence.CONCLUSIVE_EVIDENCE_STATUSES
+        observed = conclusive or (status == "partial" and int(result.get("records") or 0) > 0)
+        if conclusive:
+            conclusive_count += 1
+        if observed:
+            observed_count += 1
+        if result.get("manager_required") is True and not conclusive:
             required_ok = False
         stock_balance = result.get("stock_balance") if isinstance(result.get("stock_balance"), dict) else {}
         validations.append(
             {
                 "tool_id": str(result.get("tool_id") or ""),
                 "required": result.get("manager_required") is True,
-                "dados_suficientes": sufficient,
-                "coverage_complete": result.get("coverage_complete") is True,
+                "evidence": evidence,
+                "status": status,
+                "claim_scope": str(evidence.get("claim_scope") or "none"),
+                "coverage_complete": evidence.get("coverage_complete") is True,
                 "error_class": str(result.get("error_class") or "")[:100],
-                "retryable": result.get("retryable") is True,
+                "retryable": evidence.get("retryable") is True,
                 "store": str(result.get("manager_store") or "")[:160],
-                "motivo": str(
+                "reason": str(
                     stock_balance.get("reason")
-                    or validation.get("motivo")
+                    or evidence.get("reason")
                     or result.get("empty_reason")
                     or result.get("error")
                     or ""
@@ -577,7 +575,7 @@ def function_manager_evidence(plan: dict[str, Any], results: list[dict[str, Any]
         source_values = [
             result.get("source_label"),
             result.get("source"),
-            str(result.get("tool_id") or "") if sufficient else "",
+            str(result.get("tool_id") or "") if observed else "",
             *(result.get("sources_human") or [] if isinstance(result.get("sources_human"), list) else []),
         ]
         for value in source_values:
@@ -595,25 +593,33 @@ def function_manager_evidence(plan: dict[str, Any], results: list[dict[str, Any]
             bounded_payload = compact_evidence(payload, report=False)
             facts.append(json.dumps(bounded_payload, ensure_ascii=False, separators=(",", ":"), default=str))
     has_required = any(item.get("required") is True for item in validations)
-    sufficient = bool(results and required_ok and (has_required or sufficient_count > 0))
+    sufficient = bool(results and required_ok and (has_required or conclusive_count > 0))
+    aggregate_status = _aggregate_evidence_status(sufficient, observed_count, validations)
     evidence = {
-        "status": "completed" if sufficient else "partial",
+        "schema": assistant_evidence.EVIDENCE_SCHEMA,
+        "status": aggregate_status,
+        "claim_scope": "full" if sufficient else "observed_only" if observed_count else "none",
         "summary": (
             "Dados internos coletados pelo Luna Gerenciador."
             if results
             else "Nenhuma funcao interna aplicavel retornou dados."
         ),
-        "confidence": "high" if sufficient else ("medium" if sufficient_count else "low"),
+        "confidence": "high" if sufficient else ("medium" if observed_count else "low"),
         "evidence_sufficient": sufficient,
-        "answerable": sufficient_count > 0,
+        "answerable": observed_count > 0,
         "coverage_complete": sufficient,
+        "freshness": "live",
+        "retryable": any(item.get("retryable") is True for item in validations),
+        "reason": "Todas as fontes obrigatorias sao conclusivas." if sufficient else "A cobertura nao permite uma conclusao geral.",
         "tool_results": results,
         "verified_facts": facts[:30],
         "sources": sources[:30],
-        "missing": [
-            item["motivo"]
+        "missing_fields": [
+            item["reason"]
             for item in validations
-            if item.get("required") and not item.get("dados_suficientes") and item.get("motivo")
+            if item.get("required")
+            and item.get("status") not in assistant_evidence.CONCLUSIVE_EVIDENCE_STATUSES
+            and item.get("reason")
         ][:20],
         "questions": [],
         "data_requests": [],
@@ -627,14 +633,16 @@ def function_manager_evidence(plan: dict[str, Any], results: list[dict[str, Any]
     )
     bounded = compact_evidence(evidence, report=report)
     return bounded if isinstance(bounded, dict) else {
-        "status": "partial",
+        "schema": assistant_evidence.EVIDENCE_SCHEMA,
+        "status": "failed",
+        "claim_scope": "none",
         "summary": "A evidencia excedeu o limite seguro.",
         "verified_facts": [],
         "sources": [],
         "confidence": "low",
         "evidence_sufficient": False,
         "coverage_complete": False,
-        "missing": ["evidence_budget_exceeded"],
+        "missing_fields": ["evidence_budget_exceeded"],
         "questions": [],
         "data_requests": [],
         "validations": [],
@@ -650,7 +658,7 @@ def function_manager_merge_evidence(previous: Any, current: dict[str, Any]) -> d
     for target, limit, item_limit in (
         ("verified_facts", 30, 6000),
         ("sources", 30, 1000),
-        ("missing", 20, 1000),
+        ("missing_fields", 20, 1000),
         ("failures", 20, 1000),
     ):
         merged[target] = retry_policy.append_unique(
@@ -670,14 +678,19 @@ def function_manager_merge_evidence(previous: Any, current: dict[str, Any]) -> d
             default=str,
         )
         prior = by_signature.get(signature)
-        if prior and prior.get("dados_suficientes") is True and item.get("dados_suficientes") is not True:
+        if (
+            prior
+            and prior.get("status") in assistant_evidence.CONCLUSIVE_EVIDENCE_STATUSES
+            and item.get("status") not in assistant_evidence.CONCLUSIVE_EVIDENCE_STATUSES
+        ):
             continue
         by_signature[signature] = dict(item)
     merged["validations"] = list(by_signature.values())[:30]
     if old.get("evidence_sufficient") is True:
         merged["evidence_sufficient"] = True
         merged["coverage_complete"] = bool(old.get("coverage_complete") or merged.get("coverage_complete"))
-        merged["status"] = "completed"
+        merged["status"] = "complete"
+        merged["claim_scope"] = "full"
         if str(merged.get("confidence") or "") not in {"high", "medium"}:
             merged["confidence"] = str(old.get("confidence") or "high")
     merged["tool_results"] = [

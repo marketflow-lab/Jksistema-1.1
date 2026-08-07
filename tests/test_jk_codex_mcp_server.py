@@ -5,7 +5,9 @@ import json
 import os
 import subprocess
 
-from backend.services import codex_console, codex_mcp_rollout, integracoes, jk_codex_mcp_server
+from backend.services import codex_mcp_rollout, integracoes, jk_codex_mcp_server
+from backend.services.codex.console import agent_prompt as console_agent_prompt
+from backend.services.codex.console import runtime as console_runtime
 
 
 def _start_server(monkeypatch):
@@ -32,7 +34,7 @@ def _start_server(monkeypatch):
         "client_id": "cliente",
         "created_by": "admin",
         "permissions": {"full": True},
-        "data_selection_trust_marker": codex_console._CODEX_AGENT_DATA_SELECTION_TRUST_MARKER,
+        "data_selection_trust_marker": console_agent_prompt._CODEX_AGENT_DATA_SELECTION_TRUST_MARKER,
         "data_selection": {
             "schema_version": "1.0",
             "action": "collect",
@@ -44,7 +46,7 @@ def _start_server(monkeypatch):
             }],
             "context_hub": {"mode": "not_applicable"},
         },
-        "deadline_at": codex_console._codex_deadline_at(180),
+        "deadline_at": console_runtime._codex_deadline_at(180),
         "channel_metadata": {
             "wa_id": "5511999999999",
             "query_policy": {
@@ -53,7 +55,7 @@ def _start_server(monkeypatch):
             },
         },
     }
-    config = codex_console._codex_native_mcp_thread_config(task, screen_context)
+    config = console_runtime._codex_native_mcp_thread_config(task, screen_context)
     definition = config["mcp_servers"]["jk_system"]
     env = os.environ.copy()
     env.update(definition["env"])
@@ -129,7 +131,7 @@ def test_unbounded_whatsapp_mcp_context_has_independent_reissuable_security_ttl(
         }],
     )
     issued_times = iter((1_000, 1_200))
-    monkeypatch.setattr(codex_console.time, "time", lambda: next(issued_times))
+    monkeypatch.setattr(console_runtime.time, "time", lambda: next(issued_times))
     task = {
         "task_id": "task-mcp-unbounded",
         "conversation_id": "conversation-mcp-unbounded",
@@ -140,7 +142,7 @@ def test_unbounded_whatsapp_mcp_context_has_independent_reissuable_security_ttl(
         "deadline_enabled": False,
         "deadline_seconds": 0,
         "deadline_at": "",
-        "data_selection_trust_marker": codex_console._CODEX_AGENT_DATA_SELECTION_TRUST_MARKER,
+        "data_selection_trust_marker": console_agent_prompt._CODEX_AGENT_DATA_SELECTION_TRUST_MARKER,
         "data_selection": {
             "schema_version": "1.0",
             "action": "collect",
@@ -155,8 +157,8 @@ def test_unbounded_whatsapp_mcp_context_has_independent_reissuable_security_ttl(
         "channel_metadata": {"wa_id": "redacted"},
     }
 
-    first = _decode_signed_context(codex_console._codex_native_mcp_thread_config(task, {}))
-    second = _decode_signed_context(codex_console._codex_native_mcp_thread_config(task, {}))
+    first = _decode_signed_context(console_runtime._codex_native_mcp_thread_config(task, {}))
+    second = _decode_signed_context(console_runtime._codex_native_mcp_thread_config(task, {}))
 
     assert first["deadline_at_epoch"] == 0
     assert first["tool_timeout_seconds"] == 60
@@ -170,13 +172,31 @@ def test_mcp_tool_timeout_is_per_call_and_not_the_expired_global_task_deadline(m
 
     class Assistant:
         @staticmethod
-        def codex_assistant_execute_tool_call(**kwargs):
+        def execute_tool_call(**kwargs):
             captured.update(kwargs)
-            return {"success": True, "tool_id": kwargs["tool_id"], "records": 1}
+            return {
+                "success": True,
+                "tool_id": kwargs["tool_id"],
+                "records": 1,
+                "evidence": {
+                    "schema": "jk.codex.evidence.v1",
+                    "status": "complete",
+                    "claim_scope": "full",
+                    "coverage_complete": True,
+                    "confidence": "high",
+                    "freshness": "live",
+                    "retryable": False,
+                    "reason": "registro confirmado",
+                    "missing_fields": [],
+                    "sources": [],
+                    "attempted_fallbacks": [],
+                    "next_sources": [],
+                },
+            }
 
     class Console:
         @staticmethod
-        def _codex_agent_source_policy_error(*_args, **_kwargs):
+        def source_policy_error(*_args, **_kwargs):
             return ""
 
     server = object.__new__(jk_codex_mcp_server.JKCodexMCP)
@@ -195,8 +215,8 @@ def test_mcp_tool_timeout_is_per_call_and_not_the_expired_global_task_deadline(m
     server.previous_results = []
     server.call_cache = {}
     server.result_path = None
-    server.codex_assistant = Assistant()
-    server.codex_console = Console()
+    server.assistant_execution = Assistant()
+    server.console_execution = Console()
     server.codex_mcp_rollout = codex_mcp_rollout
     plan_context = {
         "client_id": "cliente",

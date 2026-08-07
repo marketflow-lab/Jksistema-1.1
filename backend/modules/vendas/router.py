@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import io
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 
 from backend.schemas import VendasSyncRequest
 
@@ -102,6 +105,108 @@ def create_vendas_router(
         client_id: str = Depends(tenant_dependency),
     ):
         return _transport(service.limites_vendas, loja=loja, unidade_negocio=unidade_negocio, client_id=client_id)
+
+    @router.get(
+        "/api/vendas/relatorios/pareto-80",
+        name="relatorio_pareto_80",
+        description="Analisa os SKUs responsáveis por 80% do faturamento da conta selecionada.",
+    )
+    def relatorio_pareto_80(
+        loja: str,
+        periodo: str = "12m",
+        data_inicio: str = None,
+        data_fim: str = None,
+        client_id: str = Depends(tenant_dependency),
+    ):
+        return _transport(
+            service.relatorio_pareto,
+            client_id=client_id,
+            loja=loja,
+            periodo=periodo,
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+        )
+
+    @router.get(
+        "/api/vendas/relatorios/pareto-80/exportar",
+        name="exportar_relatorio_pareto_80",
+        description="Exporta o Pareto 80% em XLSX ou PDF sem persistir arquivos no servidor.",
+    )
+    def exportar_relatorio_pareto_80(
+        loja: str,
+        formato: str,
+        periodo: str = "12m",
+        data_inicio: str = None,
+        data_fim: str = None,
+        client_id: str = Depends(tenant_dependency),
+    ):
+        content, filename, media_type = _transport(
+            service.exportar_relatorio_pareto,
+            client_id=client_id,
+            loja=loja,
+            formato=formato,
+            periodo=periodo,
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+        )
+        return StreamingResponse(
+            io.BytesIO(content),
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @router.get(
+        "/api/vendas/relatorios/vendas-estoque-devolucoes",
+        name="relatorio_geral_skus",
+        description=(
+            "Analisa vendas, estoque local e devoluções de todos os SKUs da conta selecionada."
+        ),
+    )
+    def relatorio_geral_skus(
+        loja: str,
+        periodo: str = "12m",
+        data_inicio: str = None,
+        data_fim: str = None,
+        client_id: str = Depends(tenant_dependency),
+    ):
+        return _transport(
+            service.relatorio_geral_skus,
+            client_id=client_id,
+            loja=loja,
+            periodo=periodo,
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+        )
+
+    @router.get(
+        "/api/vendas/relatorios/vendas-estoque-devolucoes/exportar",
+        name="exportar_relatorio_geral_skus",
+        description=(
+            "Exporta vendas, estoque local e devoluções de todos os SKUs em XLSX ou PDF."
+        ),
+    )
+    def exportar_relatorio_geral_skus(
+        loja: str,
+        formato: str,
+        periodo: str = "12m",
+        data_inicio: str = None,
+        data_fim: str = None,
+        client_id: str = Depends(tenant_dependency),
+    ):
+        content, filename, media_type = _transport(
+            service.exportar_relatorio_geral_skus,
+            client_id=client_id,
+            loja=loja,
+            formato=formato,
+            periodo=periodo,
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+        )
+        return StreamingResponse(
+            io.BytesIO(content),
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @router.post("/api/vendas/sync/cancel", name="cancelar_sincronizacao_vendas")
     def cancelar_sincronizacao_vendas(client_id: str = Depends(tenant_dependency)):

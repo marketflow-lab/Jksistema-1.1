@@ -69,11 +69,23 @@ function normalizeRelative(rawValue) {
 
 function assertAllowedRelative(relative) {
   const normalized = normalizeRelative(relative);
-  const segments = normalized.toLowerCase().split('/');
-  if (segments.some(segment => FORBIDDEN_SEGMENTS.has(segment) || segment.startsWith('.env'))) {
+  if (hasForbiddenSegment(normalized)) {
     throw new Error(`Dado persistente ou sensivel encontrado no pacote local_app: ${normalized}`);
   }
   return normalized;
+}
+
+function hasForbiddenSegment(relative) {
+  const normalized = String(relative || '').toLowerCase();
+  const allowContextHubSource = normalized === 'backend/modules/context_hub'
+    || normalized.startsWith('backend/modules/context_hub/');
+  const allowFavoritosSkuSource = normalized === 'static/favoritos/v2/sku'
+    || normalized.startsWith('static/favoritos/v2/sku/');
+  return normalized.split('/').some(segment => (
+    (FORBIDDEN_SEGMENTS.has(segment) && !(segment === 'context_hub' && allowContextHubSource))
+    && !(segment === 'sku' && allowFavoritosSkuSource)
+    || segment.startsWith('.env')
+  ));
 }
 
 function assertRealDirectoryRoot(candidate, label) {
@@ -129,12 +141,11 @@ function sanitizeLocalAppStaging(localAppDir) {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       const fullPath = path.join(directory, entry.name);
       const relative = path.relative(root, fullPath).replace(/\\/g, '/');
-      const segments = relative.toLowerCase().split('/');
       const stat = fs.lstatSync(fullPath);
       if (stat.isSymbolicLink()) {
         throw new Error(`Link ou junction proibido no staging local_app: ${relative}`);
       }
-      if (segments.some(segment => FORBIDDEN_SEGMENTS.has(segment) || segment.startsWith('.env'))) {
+      if (hasForbiddenSegment(relative)) {
         // Persistent/private paths must remain visible so manifest generation
         // rejects the package instead of silently deleting evidence.
         continue;

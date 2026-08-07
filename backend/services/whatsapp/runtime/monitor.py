@@ -49,15 +49,10 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services.codex.console import paths as console_paths
+from backend.services.codex.console import queueing as console_queueing
+from backend.services.codex.console import tasks as console_tasks
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -239,12 +234,12 @@ def _expire_dual_pending_if_due(
 def _retry_dual_pending_interrupts(pending: dict[str, Any]) -> int:
     interrupted = 0
     for task_id in _pending_task_ids(pending):
-        task = codex_console._codex_load_task(task_id) or {}
+        task = console_tasks.load(task_id) or {}
         if str(task.get("status") or "") != "cancel_requested":
             continue
-        if codex_console._codex_interrupt_active_turn(task_id):
+        if console_queueing.interrupt_active_turn(task_id):
             interrupted += 1
-            codex_console._codex_update_task(
+            console_tasks.update(
                 task_id,
                 interrupt_requested=True,
                 interrupt_requested_at=_now(),
@@ -321,7 +316,7 @@ def _monitor_dual_worker(
     config: dict[str, Any], state: dict[str, Any], message_id: str, item: dict[str, Any],
 ) -> None:
     task_id = str(item.get("task_id") or "")
-    task = codex_console._codex_load_task(task_id) if task_id else None
+    task = console_tasks.load(task_id) if task_id else None
     if not isinstance(task, dict):
         return
     status = str(task.get("status") or "")
@@ -378,7 +373,7 @@ def _forward_task_transitions(config: dict[str, Any], state: dict[str, Any]) -> 
     """
     statuses = state.get("task_statuses") if isinstance(state.get("task_statuses"), dict) else {}
     try:
-        paths = sorted(Path(codex_console._codex_info_dir()).glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)[:100]
+        paths = sorted(Path(console_paths.info_dir()).glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)[:100]
     except Exception:
         paths = []
     for path in paths:

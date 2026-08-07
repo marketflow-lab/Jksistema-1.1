@@ -127,16 +127,21 @@ def _coverage_is_partial(value: Any, depth: int = 0) -> bool:
     if not isinstance(value, dict):
         return False
     if (
+        (
+            value.get("schema") == "jk.codex.evidence.v1"
+            and str(value.get("status") or "") not in {"complete", "confirmed_zero"}
+        )
+        or
         value.get("coverage_complete") is False
         or value.get("partial_response") is True
         or value.get("truncated") is True
         or value.get("has_more") is True
     ):
         return True
-    missing_fields = value.get("campos_faltantes") if isinstance(value.get("campos_faltantes"), list) else []
+    missing_fields = value.get("missing_fields") if isinstance(value.get("missing_fields"), list) else []
     if any("cobertura" in formatting._whatsapp_text_key(item) for item in missing_fields):
         return True
-    for key in ("result", "summary", "paging", "chart_data", "exact_coverage", "coverage", "tool_validation"):
+    for key in ("result", "summary", "paging", "chart_data", "exact_coverage", "coverage", "evidence"):
         if _coverage_is_partial(value.get(key), depth + 1):
             return True
     return False

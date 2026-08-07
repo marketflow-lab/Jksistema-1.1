@@ -48,9 +48,9 @@ def sanitize_turn_text(value: Any) -> tuple[str, list[str]]:
         return "", []
     categories: set[str] = set()
     try:
-        from backend.services import context_hub
+        from backend.modules.context_hub import dlp as context_hub_dlp
 
-        for finding in context_hub.scan_dlp(text, source_ref="whatsapp_turn_memory"):
+        for finding in context_hub_dlp.scan_dlp(text, source_ref="whatsapp_turn_memory"):
             if isinstance(finding, dict) and str(finding.get("category") or "").strip():
                 categories.add(str(finding.get("category") or "").strip()[:40])
     except Exception:

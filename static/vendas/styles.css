@@ -65,6 +65,9 @@
             background:linear-gradient(145deg, rgba(9, 40, 67, 0.98), rgba(13, 86, 100, 0.9));
             box-shadow:0 12px 24px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255,255,255,0.14);
             transition:transform 0.18s ease, border-color 0.18s ease, filter 0.18s ease;
+            font-family:inherit;
+            text-align:left;
+            cursor:pointer;
         }
         .vendas-shortcut-card:hover {
             transform:translateY(-2px);
@@ -92,6 +95,18 @@
             border-color:rgba(255, 197, 121, 0.5);
         }
         .vendas-shortcut-importacao span { color:#ffd38e; }
+        .vendas-shortcut-pareto {
+            min-width:158px;
+            background:linear-gradient(145deg, rgba(24, 52, 32, 0.98), rgba(17, 105, 69, 0.9));
+            border-color:rgba(111, 230, 176, 0.52);
+        }
+        .vendas-shortcut-pareto span { color:#9af3c9; }
+        .vendas-shortcut-geral {
+            min-width:210px;
+            background:linear-gradient(145deg, rgba(49, 35, 19, 0.98), rgba(143, 83, 22, 0.9));
+            border-color:rgba(255, 193, 112, 0.55);
+        }
+        .vendas-shortcut-geral span { color:#ffd399; }
         .nav-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
         body.sidebar-observacoes-aberto .nav-actions { 
             display: none !important;
@@ -114,6 +129,207 @@
         }
         .back-btn:hover { transform: translateY(-2px); border-color: var(--accent); }
         .back-btn:disabled { opacity:0.5; cursor:not-allowed; transform: none; }
+
+        .pareto-report-overlay {
+            position:fixed;
+            inset:0;
+            z-index:2200;
+            display:none;
+            align-items:center;
+            justify-content:center;
+            padding:20px;
+            background:rgba(2, 7, 15, 0.78);
+            backdrop-filter:blur(7px);
+        }
+        .pareto-report-overlay.ativo { display:flex; }
+        .pareto-report-modal {
+            width:min(760px, 100%);
+            max-height:min(90vh, 820px);
+            overflow:auto;
+            border:1px solid rgba(99, 187, 255, 0.46);
+            border-radius:18px;
+            background:linear-gradient(155deg, rgba(12, 27, 48, 0.99), rgba(5, 15, 29, 0.995));
+            box-shadow:0 28px 80px rgba(0, 0, 0, 0.58), inset 0 1px 0 rgba(255,255,255,0.08);
+        }
+        .pareto-report-header {
+            display:flex;
+            align-items:flex-start;
+            justify-content:space-between;
+            gap:18px;
+            padding:20px 22px 16px;
+            border-bottom:1px solid rgba(104, 168, 255, 0.22);
+        }
+        .pareto-report-header h2 {
+            margin:0;
+            color:#f3f9ff;
+            font-size:1.35rem;
+            line-height:1.1;
+        }
+        .pareto-report-header p {
+            margin:7px 0 0;
+            color:var(--muted);
+            font-size:0.84rem;
+        }
+        .pareto-report-close {
+            width:36px;
+            height:36px;
+            border:1px solid rgba(148, 181, 222, 0.32);
+            border-radius:10px;
+            background:rgba(10, 26, 47, 0.88);
+            color:#ddecff;
+            cursor:pointer;
+            font-size:1.1rem;
+        }
+        .pareto-report-close:hover { border-color:var(--accent); color:#fff; }
+        .pareto-report-body { padding:20px 22px 22px; }
+        .pareto-report-store {
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:12px;
+            padding:12px 14px;
+            margin-bottom:18px;
+            border:1px solid rgba(111, 230, 176, 0.3);
+            border-radius:12px;
+            background:rgba(12, 62, 45, 0.34);
+        }
+        .pareto-report-store span {
+            color:#a9c2dc;
+            font-size:0.78rem;
+            font-weight:700;
+            text-transform:uppercase;
+        }
+        .pareto-report-store strong { color:#a6f3ce; font-size:1rem; text-align:right; }
+        .pareto-report-section { margin-top:17px; }
+        .pareto-report-section-title {
+            display:block;
+            margin-bottom:9px;
+            color:#cfe5ff;
+            font-size:0.84rem;
+            font-weight:800;
+        }
+        .pareto-period-options {
+            display:grid;
+            grid-template-columns:repeat(3, minmax(0, 1fr));
+            gap:9px;
+        }
+        .pareto-period-option,
+        .pareto-format-option {
+            position:relative;
+            display:flex;
+            align-items:center;
+            gap:9px;
+            min-height:48px;
+            padding:10px 12px;
+            border:1px solid rgba(104, 168, 255, 0.25);
+            border-radius:11px;
+            background:rgba(12, 31, 54, 0.72);
+            color:#dcecff;
+            cursor:pointer;
+        }
+        .pareto-period-option:has(input:checked),
+        .pareto-format-option:has(input:checked) {
+            border-color:rgba(99, 187, 255, 0.78);
+            background:rgba(26, 91, 139, 0.44);
+            box-shadow:inset 0 0 0 1px rgba(99, 187, 255, 0.15);
+        }
+        .pareto-period-option input,
+        .pareto-format-option input { accent-color:#39aefb; }
+        .pareto-period-option strong,
+        .pareto-format-option strong { font-size:0.9rem; }
+        .pareto-custom-dates {
+            display:none;
+            grid-template-columns:repeat(2, minmax(0, 1fr));
+            gap:12px;
+            margin-top:11px;
+            padding:13px;
+            border-radius:11px;
+            background:rgba(4, 15, 29, 0.52);
+        }
+        .pareto-custom-dates.ativo { display:grid; }
+        .pareto-custom-dates label { color:#a9c2dc; font-size:0.76rem; font-weight:700; }
+        .pareto-custom-dates input {
+            width:100%;
+            margin-top:5px;
+            padding:9px 10px;
+            border:1px solid rgba(104, 168, 255, 0.3);
+            border-radius:9px;
+            background:#071426;
+            color:#edf6ff;
+            font:inherit;
+        }
+        .pareto-format-options { display:flex; gap:9px; flex-wrap:wrap; }
+        .pareto-format-option { flex:1 1 190px; }
+        .pareto-report-help {
+            margin:13px 0 0;
+            color:#8faac8;
+            font-size:0.76rem;
+            line-height:1.45;
+        }
+        .pareto-report-actions {
+            display:flex;
+            justify-content:flex-end;
+            gap:10px;
+            margin-top:20px;
+            padding-top:16px;
+            border-top:1px solid rgba(104, 168, 255, 0.18);
+        }
+        .pareto-report-actions button {
+            min-height:42px;
+            padding:9px 17px;
+            border-radius:10px;
+            border:1px solid rgba(104, 168, 255, 0.32);
+            font:inherit;
+            font-weight:800;
+            cursor:pointer;
+        }
+        .pareto-report-cancel { background:rgba(20, 35, 57, 0.9); color:#cce1f8; }
+        .pareto-report-generate {
+            background:linear-gradient(145deg, #127a59, #16966d);
+            color:#fff;
+            border-color:rgba(111, 230, 176, 0.62) !important;
+        }
+        .pareto-report-actions button:disabled { opacity:0.55; cursor:wait; }
+        .pareto-report-message {
+            display:none;
+            margin-top:14px;
+            padding:10px 12px;
+            border-radius:10px;
+            font-size:0.8rem;
+            line-height:1.4;
+        }
+        .pareto-report-message.ativo { display:block; }
+        .pareto-report-message.loading { color:#cfe8ff; background:rgba(26, 91, 139, 0.35); border:1px solid rgba(99,187,255,.3); }
+        .pareto-report-message.success { color:#b9f7da; background:rgba(13, 92, 60, 0.32); border:1px solid rgba(111,230,176,.3); }
+        .pareto-report-message.error { color:#ffd0d0; background:rgba(110, 25, 35, 0.34); border:1px solid rgba(255,139,139,.32); }
+        .pareto-report-preview {
+            display:none;
+            grid-template-columns:repeat(4, minmax(0, 1fr));
+            gap:9px;
+            margin-top:14px;
+        }
+        .pareto-report-preview.ativo { display:grid; }
+        .pareto-preview-card {
+            min-height:73px;
+            padding:10px;
+            border:1px solid rgba(104, 168, 255, 0.22);
+            border-radius:10px;
+            background:rgba(8, 24, 43, 0.78);
+        }
+        .pareto-preview-card span { display:block; color:#8faac8; font-size:0.69rem; font-weight:700; }
+        .pareto-preview-card strong { display:block; margin-top:6px; color:#f0f8ff; font-size:0.95rem; }
+        .pareto-preview-insights { grid-column:1 / -1; margin-top:4px; padding:12px 14px; border:1px solid rgba(96,165,250,0.28); border-radius:12px; background:rgba(15,42,70,0.66); color:#d8e7f5; }
+        .pareto-preview-insights strong { display:block; margin-bottom:6px; color:#f5fbff; }
+        .pareto-preview-insights ul { margin:0; padding-left:18px; }
+        .pareto-preview-insights li + li { margin-top:5px; }
+
+        @media (max-width: 680px) {
+            .pareto-period-options { grid-template-columns:1fr; }
+            .pareto-report-preview { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+            .pareto-custom-dates { grid-template-columns:1fr; }
+            .pareto-report-actions { flex-direction:column-reverse; }
+            .pareto-report-actions button { width:100%; }
+        }
 
         .back-main-btn {
             display: inline-flex;
@@ -827,6 +1043,26 @@
         .grafico-estoque-wrapper[hidden] {
             display: none !important;
         }
+        .grafico-skus-estoque-wrapper {
+            border-color: rgba(91, 214, 160, 0.42);
+            background: linear-gradient(180deg, rgba(17, 34, 32, 0.94), rgba(12, 24, 31, 0.98));
+        }
+        .grafico-skus-estoque-wrapper[hidden] {
+            display: none !important;
+        }
+        .grafico-skus-estoque-wrapper .grafico-estoque-kicker {
+            color: #5bd6a0;
+        }
+        .grafico-skus-estoque-wrapper .grafico-estoque-title strong {
+            color: #e8fff4;
+        }
+        .grafico-skus-estoque-resumo {
+            color: #bdf5d7;
+        }
+        .grafico-skus-estoque-estado {
+            border-color: rgba(91, 214, 160, 0.35);
+            color: #c9f7df;
+        }
         .grafico-estoque-header {
             display: flex;
             align-items: center;
@@ -879,7 +1115,13 @@
         .grafico-estoque-wrapper canvas {
             max-height: 230px;
         }
+        .grafico-skus-estoque-wrapper canvas {
+            max-height: 200px;
+        }
         .grafico-estoque-wrapper.is-empty canvas {
+            display: none !important;
+        }
+        .grafico-skus-estoque-wrapper.is-empty canvas {
             display: none !important;
         }
         @media (max-width: 640px) {

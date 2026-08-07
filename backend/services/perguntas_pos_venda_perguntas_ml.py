@@ -39,6 +39,8 @@ from fastapi import Depends, File, Form, Header, HTTPException, Request, UploadF
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from backend.services.codex_turn_context import EVIDENCE_ENVELOPE_V2, normalize_evidence_envelope
+from backend.modules.perguntas_pos_venda.ai import api as perguntas_agent_api
+from backend.modules.perguntas_pos_venda.ai.validation import ML_PERGUNTAS_IA_V2_MODO
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.vendas_sync_progress import _corrigir_texto_mojibake
 
@@ -639,7 +641,7 @@ def _ml_pos_venda_executar_pipeline_ia(
     contexto, cfg = _ml_pos_venda_montar_contexto_pipeline(client_id, loja, cfg, conversa, max_chars)
     resposta, model_usado = _ml_pos_venda_gerar_resposta_ia(client_id, loja, conversa, max_chars, contexto_pipeline=contexto)
     _ml_pos_venda_pipeline_marcar(contexto, 12, "ok", model_usado)
-    validacao = _ml_pos_venda_validar_resposta(resposta, contexto, max_chars)
+    validacao = perguntas_agent_api.validate_post_sale_response(resposta, contexto, max_chars)
     contexto["validacao"] = validacao
     _ml_pos_venda_pipeline_marcar(contexto, 13, "ok" if validacao.get("ok") else "humano", "; ".join(validacao.get("issues") or []) or "validada")
     pode_auto = bool(validacao.get("ok") and not validacao.get("requires_human_review") and (contexto.get("decisao_automacao") or {}).get("pode_responder_automaticamente"))
@@ -1006,8 +1008,8 @@ def _perguntas_ia_gerar_resposta(
             "Gere um rascunho via IA de pos-venda para uma mensagem recebida no Mercado Livre. "
             "Use as orientacoes salvas no treinamento de pos-venda. "
             "Nao responda como venda, compatibilidade ou aplicacao do produto. "
-            "Se o comprador relata defeito, mau funcionamento, troca ou garantia, reconheca o problema e peça o proximo dado necessario. "
-            "Quando houver mau funcionamento, peça foto do item/problema e oriente o atendimento pelo detalhe da compra quando adequado. "
+            "Se o comprador relata defeito, mau funcionamento, troca ou garantia, reconheca o problema e responda primeiro com o que ja estiver confirmado. "
+            "Evite solicitar dados; somente quando indispensavel, peça a evidencia minima pelo detalhe da compra. "
             "Nao invente causa tecnica, prazo, garantia, estoque ou procedimento. "
             "Nao mencione SKU, codigo interno, quantidade em estoque, preco ou nome da loja. "
             "A resposta sera enviada ao comprador, portanto seja cordial, objetiva e comercial. "
@@ -1072,9 +1074,11 @@ def _perguntas_ia_gerar_resposta(
     )
     model_req = _normalizar_ia_modelo_padrao(_ia_modelo_perguntas_configurado())
     payload.model = model_req
-    agent_input = _perguntas_ia_agent_input(client_id, loja, pergunta, item, contexto, prompt)
-    resposta, model_usado, diagnostico_ia = _perguntas_ia_v2_gerar_resposta(client_id, agent_input)
-    resposta_limpa = _perguntas_ia_resposta_final_loja(resposta, loja)
+    agent_input = perguntas_agent_api.build_agent_input(client_id, loja, pergunta, item, contexto, prompt)
+    agent_result = perguntas_agent_api.generate_response(client_id, agent_input)
+    resposta_limpa = _perguntas_ia_resposta_final_loja(agent_result.answer, loja)
+    model_usado = agent_result.model
+    diagnostico_ia = agent_result.diagnostics
     diagnostico_v2 = {}
     if diagnostico_ia and isinstance(diagnostico_ia[0], dict) and isinstance(diagnostico_ia[0].get("result"), dict):
         diagnostico_v2 = diagnostico_ia[0].get("result") or {}

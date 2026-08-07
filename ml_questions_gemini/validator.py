@@ -23,16 +23,16 @@ class AnswerValidator:
         issues: list[str] = []
         text = str(answer or "").strip()
         norm = normalize(text)
+        content_text = _without_store_signature(text)
         if not text:
             issues.append("empty_answer")
         if len(text) > rules.max_chars:
             issues.append("too_long")
-        if int(rules.max_sentences or 0) > 0 and count_sentences(text) > int(rules.max_sentences):
+        if int(rules.max_sentences or 0) > 0 and count_sentences(content_text) > int(rules.max_sentences):
             issues.append("too_many_sentences")
-        if confidence < rules.min_confidence:
-            issues.append("low_confidence")
-        if category == QuestionCategory.POST_SALE:
-            issues.append("post_sale_requires_review")
+        # Confidence and routing affect how the draft is presented, not whether
+        # a useful suggestion can be produced from the available information.
+        # Factual and safety violations below remain strict validation issues.
         if category == QuestionCategory.REGULATED_PRODUCT:
             issues.append("regulated_product")
         if _has_external_contact(text):
@@ -41,6 +41,10 @@ class AnswerValidator:
             issues.append("internal_ai_leak")
         if _has_forbidden_identity(norm):
             issues.append("forbidden_identity")
+        if category != QuestionCategory.POST_SALE and _has_internal_process_language(normalize(content_text)):
+            issues.append("seller_process_language")
+        if category != QuestionCategory.POST_SALE and _has_greeting_only_opening(content_text):
+            issues.append("seller_non_direct_opening")
         if category != QuestionCategory.POST_SALE:
             if _asks_for_photo(norm):
                 issues.append("public_question_asks_for_photo")
@@ -69,8 +73,39 @@ class AnswerValidator:
 
 def count_sentences(text: str) -> int:
     cleaned = re.sub(r"\b(sr|sra|dr|dra)\.", r"\1", text.lower())
+    cleaned = re.sub(r"(?<=\d)\.(?=\d)", "", cleaned)
     parts = [part.strip() for part in re.split(r"[.!?]+", cleaned) if part.strip()]
     return len(parts) if parts else (1 if text.strip() else 0)
+
+
+def _without_store_signature(text: str) -> str:
+    return re.sub(
+        r"(?is)\s*Equipe\s+.+?\s+agradece\s+(?:o\s+)?seu\s+contato\.?\s*$",
+        "",
+        str(text or ""),
+    ).strip()
+
+
+def _has_internal_process_language(norm: str) -> bool:
+    return any(term in norm for term in (
+        "evidencia tecnica",
+        "evidencia insuficiente",
+        "analise de compatibilidade",
+        "validacao humana",
+        "revisao humana",
+        "interface alvo",
+        "target type",
+        "compatibility analysis",
+        "decision insufficient",
+        "schema de resposta",
+    ))
+
+
+def _has_greeting_only_opening(text: str) -> bool:
+    first = re.split(r"[.!?]+", str(text or "").strip(), maxsplit=1)[0]
+    return normalize(first) in {
+        "ola", "oi", "bom dia", "boa tarde", "boa noite", "tudo bem", "agradecemos o contato",
+    }
 
 
 def _has_external_contact(text: str) -> bool:
@@ -220,8 +255,6 @@ def _validate_compatibility(
     if analysis is None:
         if answer_decision in {"yes", "no", "conditional"} and not _has_compatibility_evidence(question, listing):
             issues.append("compatibility_without_evidence")
-        if answer_decision == "insufficient" and not _asks_for_approved_compatibility_detail(norm):
-            issues.append("compatibility_missing_detail_request")
         return
 
     if not isinstance(analysis, dict):
@@ -270,14 +303,12 @@ def _validate_compatibility(
     missing_fields = analysis.get("missing_fields")
     if not _has_meaningful_value(missing_fields):
         issues.append("compatibility_missing_fields_absent")
-    if not _asks_for_approved_compatibility_detail(norm):
-        issues.append("compatibility_missing_detail_request")
 
 
 def _answer_compatibility_decision(norm: str) -> str:
     negative_patterns = (
         "nao serve", "nao e compativel", "nao encaixa", "nao funciona",
-        "nao se aplica", "incompativel",
+        "nao se aplica", "incompativel", "nao da certo",
     )
     if any(pattern in norm for pattern in negative_patterns):
         return "no"
@@ -307,7 +338,7 @@ def _answer_compatibility_decision(norm: str) -> str:
 
     positive_patterns = (
         "serve", "e compativel", "compativel com", "encaixa", "funciona no",
-        "funciona na", "funciona com", "aplica no", "aplica na",
+        "funciona na", "funciona com", "aplica no", "aplica na", "da certo", "pode usar",
     )
     if not any(pattern in norm for pattern in positive_patterns):
         return ""
@@ -353,6 +384,8 @@ def _normalize_compatibility_decision(value: Any) -> str:
 
 
 def _has_structured_compatibility_evidence(analysis: dict[str, Any], decision: str) -> bool:
+    if _has_canonical_coverage_evidence(analysis, decision):
+        return True
     product, target, comparison = _compatibility_evidence_groups(analysis)
     if not _has_usable_evidence(product):
         return False
@@ -361,6 +394,49 @@ def _has_structured_compatibility_evidence(analysis: dict[str, Any], decision: s
         return False
     # Alem dos dois lados, exija a prova explicita de equivalencia ou diferenca.
     return _comparison_evidence_supports_decision(comparison, decision)
+
+
+def _has_canonical_coverage_evidence(analysis: dict[str, Any], decision: str) -> bool:
+    if decision not in {"yes", "conditional"}:
+        return False
+    if str(analysis.get("_coverage_contract_version") or "") != "compatibility-coverage-v1":
+        return False
+    rule = analysis.get("_coverage_rule") if isinstance(analysis.get("_coverage_rule"), dict) else {}
+    binding = rule.get("source_binding") if isinstance(rule.get("source_binding"), dict) else {}
+    if str(binding.get("truth_class") or "").strip().lower() != "canonical":
+        return False
+    if not re.fullmatch(r"[a-f0-9]{64}", str(binding.get("source_hash") or "").strip().lower()):
+        return False
+    if not str(binding.get("generation_id") or "").strip() or not str(binding.get("doc_id") or "").startswith("jk:sku:"):
+        return False
+    comparisons = normalize_comparison_attributes(analysis.get("comparison_attributes"))
+    if not any(
+        item.get("attribute") == "coverage_scope"
+        and item.get("result") == "match"
+        and item.get("decisive")
+        for item in comparisons
+    ):
+        return False
+    product, target, comparison = _compatibility_evidence_groups(analysis)
+    product_items = _evidence_items(product)
+    target_items = _evidence_items(target)
+    comparison_items = _evidence_items(comparison)
+    return bool(
+        any(
+            normalize(item.get("authority")) == "canonical"
+            and normalize(item.get("source_type")).replace("_", " ") == "context hub canonical coverage"
+            for item in product_items
+        )
+        and any(
+            normalize(item.get("source_type")).replace("_", " ") == "buyer question target"
+            for item in target_items
+        )
+        and any(
+            normalize(item.get("authority")).replace("_", " ") == "canonical scope match"
+            and normalize(item.get("source_type")).replace("_", " ") == "deterministic coverage match"
+            for item in comparison_items
+        )
+    )
 
 
 def _compatibility_evidence_groups(analysis: dict[str, Any]) -> tuple[Any, Any, Any]:
@@ -538,6 +614,11 @@ def _compatibility_condition_matches_answer(condition: str, answer_norm: str) ->
 
 
 def _compatibility_condition_supported_by_analysis(condition: str, analysis: dict[str, Any]) -> bool:
+    if _has_canonical_coverage_evidence(analysis, "conditional"):
+        rule = analysis.get("_coverage_rule") if isinstance(analysis.get("_coverage_rule"), dict) else {}
+        canonical_conditions = " ".join(str(item or "") for item in (rule.get("conditions") or []))
+        if _compatibility_condition_matches_text(condition, canonical_conditions):
+            return True
     product, target, comparison = _compatibility_evidence_groups(analysis)
     evidence_text = " ".join(
         _evidence_factual_text(item)

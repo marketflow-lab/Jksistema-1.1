@@ -49,15 +49,8 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services.codex.console import security as console_security
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -85,9 +78,9 @@ def _whatsapp_query_only_domains(value: Any) -> list[str]:
 
 def _whatsapp_source_policy(value: Any) -> dict[str, Any]:
     try:
-        from backend.services import codex_assistant
+        from backend.services.codex.assistant import routing as assistant_routing
 
-        policy = codex_assistant._assistant_source_routing_policy(str(value or ""))
+        policy = assistant_routing.source_policy(str(value or ""))
     except Exception:
         policy = {}
     return dict(policy) if isinstance(policy, dict) else {}
@@ -171,7 +164,7 @@ def _whatsapp_general_answer_request(value: Any, session: Optional[dict[str, Any
 def _whatsapp_mutation_intent(value: Any) -> bool:
     return whatsapp_intent.mutation_intent(
         value,
-        mutation_detector=codex_console._codex_prompt_pede_alteracao,
+        mutation_detector=console_security.prompt_requests_mutation,
     )
 
 def _whatsapp_post_sale_action(value: Any) -> bool:
@@ -180,7 +173,7 @@ def _whatsapp_post_sale_action(value: Any) -> bool:
 def _whatsapp_protected_mutation_domains(value: Any) -> list[str]:
     return whatsapp_intent.protected_mutation_domains(
         value,
-        mutation_detector=codex_console._codex_prompt_pede_alteracao,
+        mutation_detector=console_security.prompt_requests_mutation,
     )
 
 def _whatsapp_action_spec_query_only_domains(spec: Any) -> list[str]:

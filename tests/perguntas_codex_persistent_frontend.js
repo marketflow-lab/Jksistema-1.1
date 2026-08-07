@@ -15,7 +15,9 @@ assert.match(source, /next_retry_at_epoch|next_retry_in_seconds|Nova tentativa/)
 assert.match(source, /\/api\/mercadolivre\/assistant\/jobs\/\$\{encodeURIComponent\(jobId\)\}\/cancel/);
 assert.match(source, /question-ai-cancel-btn[\s\S]*Cancelar pesquisa/);
 assert.match(source, /cancelarPesquisaAtendimentoCodex\(questionKey\)/);
-assert.match(html, /perguntas\.js\?v=20260723-codex-persistent-v2/);
+assert.match(html, /perguntas\.js\?v=20260730-available-draft-v3/);
+assert.doesNotMatch(source, /A pesquisa terminou sem rascunho/);
+assert.match(source, /Rascunho gerado com as informacoes disponiveis/);
 
 class FakeClassList {
     constructor() { this.values = new Set(['hidden']); }

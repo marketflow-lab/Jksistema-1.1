@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.services import codex_assistant, codex_readonly_sources, perguntas_pos_venda_endpoints
+from backend.modules.perguntas_pos_venda.endpoints import api as perguntas_pos_venda_endpoints
+from backend.services import codex_readonly_sources
+from backend.services.codex.assistant import catalog as assistant_catalog
+from backend.services.codex.assistant import execution as assistant_execution
+from backend.services.codex.assistant import normalization as assistant_normalization
+from backend.services.codex.assistant import routing as assistant_routing
 
 
 def _store(name: str, *, connected: bool = True) -> dict[str, Any]:
@@ -57,14 +62,14 @@ def _patch_live_api(monkeypatch, stores: list[dict[str, Any]], responses: dict[s
 
 
 def _disable_assistant_cache_and_audit(monkeypatch) -> None:
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_get", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_cache_set", lambda *_args: None)
-    monkeypatch.setattr(codex_assistant, "_assistant_api_query_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_get", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_cache_set", lambda *_args: None)
+    monkeypatch.setattr(assistant_execution, "_assistant_api_query_audit", lambda *_args, **_kwargs: None)
 
 
 def test_questions_tool_contract_is_live_store_scoped_and_authoritative() -> None:
-    meta = codex_assistant._assistant_tool_meta("questions_post_sale_query")
-    schema = codex_assistant._assistant_tool_input_schema("questions_post_sale_query")
+    meta = assistant_catalog._assistant_tool_meta("questions_post_sale_query")
+    schema = assistant_catalog._assistant_tool_input_schema("questions_post_sale_query")
 
     assert meta["external"] is True
     assert meta["read_only"] is True
@@ -145,7 +150,7 @@ def test_complete_live_zero_is_sufficient_but_partial_zero_is_not(monkeypatch) -
         {"JK Peças": [], "Uai Mineirinho": []},
     )
 
-    complete = codex_assistant.codex_assistant_execute_tool_call(
+    complete = assistant_execution.execute_tool_call(
         "tenant-complete",
         "questions_post_sale_query",
         {"mensagem": "Consulte a fila atual", "todas_lojas": True, "force_refresh": True},
@@ -153,17 +158,17 @@ def test_complete_live_zero_is_sufficient_but_partial_zero_is_not(monkeypatch) -
     )
 
     assert complete["records"] == 0
-    assert complete["dados_suficientes"] is True
+    assert complete["evidence"]["status"] == "confirmed_zero"
     assert complete["empty_reason"] == ""
-    assert complete["tool_validation"]["confidence"] == "alta"
-    assert "todas as lojas" in complete["tool_validation"]["motivo"].lower()
+    assert complete["evidence"]["confidence"] == "high"
+    assert complete["evidence"]["coverage_complete"] is True
 
     _patch_live_api(
         monkeypatch,
         [_store("JK Peças"), _store("Deckas")],
         {"JK Peças": [], "Deckas": RuntimeError("API indisponível")},
     )
-    partial = codex_assistant.codex_assistant_execute_tool_call(
+    partial = assistant_execution.execute_tool_call(
         "tenant-partial",
         "questions_post_sale_query",
         {"mensagem": "Consulte a fila atual", "todas_lojas": True, "force_refresh": True},
@@ -171,8 +176,8 @@ def test_complete_live_zero_is_sufficient_but_partial_zero_is_not(monkeypatch) -
     )
 
     assert partial["records"] == 0
-    assert partial["dados_suficientes"] is False
-    assert partial["tool_validation"]["confidence"] == "baixa"
+    assert partial["evidence"]["status"] == "unavailable"
+    assert partial["evidence"]["confidence"] == "low"
     assert "Deckas" in partial["empty_reason"]
 
 
@@ -190,9 +195,9 @@ def test_string_false_does_not_expand_question_scope_or_keep_stale_product(monke
         captured_plan.update(plan)
         return "questions-scope-test"
 
-    monkeypatch.setattr(codex_assistant, "_assistant_external_cache_key", capture_cache_key)
+    monkeypatch.setattr(assistant_execution, "_assistant_external_cache_key", capture_cache_key)
 
-    result = codex_assistant.codex_assistant_execute_tool_call(
+    result = assistant_execution.execute_tool_call(
         "tenant-scope",
         "questions_post_sale_query",
         {
@@ -208,7 +213,7 @@ def test_string_false_does_not_expand_question_scope_or_keep_stale_product(monke
 
     assert calls == [("Loja A", "UNANSWERED")]
     assert result["records"] == 0
-    assert result["dados_suficientes"] is True
+    assert result["evidence"]["status"] == "confirmed_zero"
     assert captured_plan["separar_por_loja"] is False
     assert captured_plan["sku"] == ""
     assert captured_plan["item_id"] == ""
@@ -250,7 +255,7 @@ def test_broad_open_questions_plan_uses_only_the_authoritative_live_queue() -> N
         "mlb": "MLB123456789",
     }
 
-    plan = codex_assistant._assistant_registry_plan(
+    plan = assistant_routing._assistant_registry_plan(
         "tenant",
         message,
         stale_screen_context,
@@ -264,10 +269,10 @@ def test_broad_open_questions_plan_uses_only_the_authoritative_live_queue() -> N
 
 
 def test_short_queue_question_is_not_confused_with_a_question_to_the_assistant() -> None:
-    assert codex_assistant._assistant_is_broad_open_questions_query("Tem perguntas?") is True
-    assert codex_assistant._assistant_is_broad_open_questions_query("Voce tem perguntas?") is False
-    assert codex_assistant._assistant_is_broad_open_questions_query("Black Jhon tem perguntas?") is False
-    assert "questions_post_sale_query" not in codex_assistant._assistant_select_tool_ids(
+    assert assistant_normalization._assistant_is_broad_open_questions_query("Tem perguntas?") is True
+    assert assistant_normalization._assistant_is_broad_open_questions_query("Voce tem perguntas?") is False
+    assert assistant_normalization._assistant_is_broad_open_questions_query("Black Jhon tem perguntas?") is False
+    assert "questions_post_sale_query" not in assistant_routing._assistant_select_tool_ids(
         "Black Jhon tem perguntas?",
         "chat",
         {},

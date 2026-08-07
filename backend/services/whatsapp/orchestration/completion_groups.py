@@ -50,15 +50,8 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services.codex.console import tasks as console_tasks
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -387,7 +380,7 @@ def _collect_dual_group_tasks(
     manager_holders: list[dict[str, Any]] = []
     for item in subtasks:
         task_id = str(item.get("task_id") or "")
-        task = codex_console._codex_load_task(task_id) if task_id else None
+        task = console_tasks.load(task_id) if task_id else None
         if not isinstance(task, dict):
             continue
         tasks[task_id] = task
@@ -422,7 +415,7 @@ def _collect_dual_group_tasks(
             )
         handoff = "group_result_ready" if disposition == "completed" else "manager_data_requested" if disposition == "manager_request" else str(item.get("state") or "waiting_retry")
         delivery = "group_aggregating" if disposition == "completed" else "manager_recollecting" if disposition == "manager_request" else str(item.get("state") or "waiting_retry")
-        codex_console._codex_update_task(task_id, worker_result=worker_result, handoff_status=handoff, delivery_state=delivery)
+        console_tasks.update(task_id, worker_result=worker_result, handoff_status=handoff, delivery_state=delivery)
     return tasks, results, collected, changed, manager_requests, manager_holders
 
 def _update_dual_group_job_state(pending: dict[str, Any], subtasks: list[dict[str, Any]]) -> bool:
@@ -531,7 +524,7 @@ def _dual_group_report_response(
     if artifacts and not all(item.get("success") for item in artifact_results):
         final_text += "\n\nUm ou mais arquivos nao puderam ser anexados; o resumo em texto foi preservado."
     for task_id in tasks:
-        codex_console._codex_update_task(task_id, whatsapp_artifacts=[])
+        console_tasks.update(task_id, whatsapp_artifacts=[])
     return final_text
 
 def _deliver_dual_group_final(

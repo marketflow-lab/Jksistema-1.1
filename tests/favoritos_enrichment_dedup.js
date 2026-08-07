@@ -4,12 +4,18 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { browserSource } = require('./helpers/favoritos_browser_sources');
+const { executionSource: readExecutionSource } = require('./helpers/favoritos_execution_sources');
+const { searchRankingSource } = require('./helpers/favoritos_search_ranking_sources');
 
 const root = path.resolve(__dirname, '..');
-const source = fs.readFileSync(path.join(root, 'static/favoritos/tabelas-layout/04-promocoes-busca-ranking.js'), 'utf8');
-const mlBrowserSource = fs.readFileSync(path.join(root, 'static/favoritos/ml-browser.js'), 'utf8');
+const source = searchRankingSource(root, { includeRuntime: false, includePublicApi: false });
+const mlBrowserSource = browserSource(root);
 const mlApiSource = fs.readFileSync(path.join(root, 'static/favoritos/tabelas-layout/01-ml-base-busca.js'), 'utf8');
-const executionSource = fs.readFileSync(path.join(root, 'static/favoritos/tabelas-layout/07-execucao-render-layout.js'), 'utf8');
+const executionSource = readExecutionSource(root).replace(
+    /window\.FavoritosV2\.searchRanking\.publicApi\.[A-Za-z0-9_$]+\./g,
+    ''
+);
 const historySource = fs.readFileSync(path.join(root, 'static/favoritos/tabelas-layout/05-resultados-historico.js'), 'utf8');
 const backendSource = fs.readFileSync(path.join(root, 'backend/services/favoritos_endpoints.py'), 'utf8');
 
@@ -185,6 +191,30 @@ function createHarness() {
             };
         }
     };
+    context.window = {
+        FavoritosV2: {
+            promotionEffectuation: {
+                publicApi: {
+                    listings: {
+                        obterTipoAnuncioFavoritos: (...args) => context.obterTipoAnuncioFavoritos(...args),
+                        obterParcelamentoSemJurosFavoritos: (...args) => context.obterParcelamentoSemJurosFavoritos(...args),
+                        obterFullAnuncioFavoritos: (...args) => context.obterFullAnuncioFavoritos(...args),
+                        fullAnuncioDesconhecidoFavoritos: (...args) => context.fullAnuncioDesconhecidoFavoritos(...args),
+                        preencherTipoAnuncioFavoritos: (...args) => context.preencherTipoAnuncioFavoritos(...args),
+                        temIndicadorFullFavoritos: item => !!(item && (
+                            item._fullAnuncioVerificado === true
+                            || typeof item.full === 'boolean'
+                            || typeof item.is_full === 'boolean'
+                        ))
+                    },
+                    merge: {
+                        deveAtualizarVendedor: (...args) => context.deveAtualizarVendedor(...args),
+                        deveAtualizarVendas: (...args) => context.deveAtualizarVendas(...args)
+                    }
+                }
+            }
+        }
+    };
     context.executarComTimeoutFavoritos = extractFunction('executarComTimeoutFavoritos', context);
     context.deduplicarAnunciosFavoritos = extractFunction('deduplicarAnunciosFavoritos', context);
     for (const name of [
@@ -193,6 +223,19 @@ function createHarness() {
         'aplicarInfoEnriquecimentoFavoritos',
         'aplicarCacheEnriquecimentoFavoritos',
         'registrarCacheEnriquecimentoFavoritos',
+        'normalizarPreloadEnriquecimentoFavoritos',
+        'payloadEnriquecimentoFavoritos',
+        'criarEstadoEnriquecimentoFavoritos',
+        'prepararPendentesBackendFavoritos',
+        'criarFilaBackendFavoritos',
+        'finalizarEntradaBackendFavoritos',
+        'executarLoteBackendFavoritos',
+        'executarBackendEnriquecimentoFavoritos',
+        'aplicarResultadosBackendFavoritos',
+        'precisaDadosAvantFavoritos',
+        'complementarEnriquecimentoAvantFavoritos',
+        'precisaComplementoApiFavoritos',
+        'complementarEnriquecimentoApiFavoritos',
         'enriquecerAnunciosFavoritosRanking'
     ]) {
         context[name] = extractFunction(name, context);
@@ -202,6 +245,19 @@ function createHarness() {
 
 function createHistoryHarness(deduplicarAnunciosFavoritos) {
     const context = {
+        window: {
+            FavoritosV2: {
+                searchRanking: {
+                    publicApi: {
+                        listings: {
+                            deduplicarAnunciosFavoritos,
+                            tituloAnuncioFavoritosPrecisaComplemento: value => !String(value || '').trim(),
+                            extrairTituloAnuncioFavoritosPorLink: () => ''
+                        }
+                    }
+                }
+            }
+        },
         Array,
         Number,
         String,
@@ -487,13 +543,13 @@ async function run() {
     assert.strictEqual(alturaVarredura(20000, 11800, 800), 12080, 'rodape nao deve ampliar a varredura alem dos resultados');
     assert.strictEqual(alturaVarredura(20000, 0, 800), 20000, 'sem marcador confiavel deve preservar a altura integral como contingencia');
     assert.match(mlBrowserSource, /tempoLimiteMs[\s\S]*180000[\s\S]*maxPassadas[\s\S]*3/, 'contingencia de 180 segundos e tres passadas deve permanecer');
-    assert.match(mlBrowserSource, /passadaCompleta[\s\S]*pendentesAvantPassada[\s\S]*stable_plateau/, 'plateau deve exigir pagina completa e nenhum Avant pendente');
+    assert.match(mlBrowserSource, /passadaCompleta[\s\S]*pendentes\.size[\s\S]*stable_plateau/, 'plateau deve exigir pagina completa e nenhum Avant pendente');
     assert.match(mlBrowserSource, /MutationObserver[\s\S]*__JK_FAVORITOS_INCREMENTAL_COLLECTOR_V1/, 'coletor deve observar apenas mutacoes incrementais da pagina');
-    assert.match(mlBrowserSource, /deepScan:\s*usarBuscaProfunda[\s\S]*checkLogin:\s*verificarLoginNestaPosicao/, 'busca profunda e login devem ser controlados por posicao');
+    assert.match(mlBrowserSource, /deepScan:\s*buscaProfunda[\s\S]*checkLogin:\s*verificarLogin/, 'busca profunda e login devem ser controlados por posicao');
     assert.match(mlApiSource, /consultarItemApiMercadoLivre\.inflight[\s\S]*consultarItemApiMercadoLivreSemDedupe/, 'API direta deve compartilhar chamadas simultaneas do mesmo MLB');
     assert.match(executionSource, /tempoLimiteMs:\s*90000[\s\S]*maxPassadas:\s*2/, 'execucao visual deve limitar cada pesquisa a 90 segundos e duas passadas');
     assert.match(executionSource, /const normalizadosPesquisa[\s\S]*tempo_enriquecimento_ms:\s*0[\s\S]*enriquecerAnunciosFavoritosRanking\(unicos/, 'enriquecimento deve ocorrer uma vez depois da uniao das pesquisas');
-    const consolidacoesPosEnriquecimento = executionSource.match(/await enriquecerAnunciosFavoritosRanking\(unicos[^;]*;[\s\S]{0,1200}?unicos = deduplicarAnunciosFavoritos\(unicos\)/g) || [];
+    const consolidacoesPosEnriquecimento = executionSource.match(/await enriquecerAnunciosFavoritosRanking\(unicos[^;]*;[\s\S]{0,1500}?(?:unicos =|return) deduplicarAnunciosFavoritos\(unicos\)/g) || [];
     assert.strictEqual(consolidacoesPosEnriquecimento.length, 4, 'todos os quatro fluxos devem consolidar identidades depois do enriquecimento');
     assert.match(historySource, /normalizarListaAnunciosHistoricoFavoritosFrontend\(grupo && grupo\.anuncios\)[\s\S]*\.slice\(0, ML_FAVORITOS_RANKING_ANUNCIOS_MAX\)/, 'payload historico deve deduplicar antes de aplicar o limite');
     assert.match(backendSource, /ThreadPoolExecutor\(max_workers=36[\s\S]*BoundedSemaphore\(16\)[\s\S]*run_in_executor[\s\S]*asyncio\.wait\(/, 'backend deve usar executor compartilhado, limite por cliente e prazo parcial fora do event loop');

@@ -6,6 +6,24 @@ from backend.services import whatsapp_bridge
 from backend.services.whatsapp import tool_results
 
 
+def _evidence(status: str, reason: str = "", retryable: bool = False) -> dict:
+    conclusive = status in {"complete", "confirmed_zero"}
+    return {
+        "schema": "jk.codex.evidence.v1",
+        "status": status,
+        "claim_scope": "full" if conclusive else "observed_only" if status == "partial" else "none",
+        "coverage_complete": conclusive,
+        "confidence": "high" if conclusive else "medium" if status == "partial" else "low",
+        "freshness": "live",
+        "retryable": retryable,
+        "reason": reason or status,
+        "missing_fields": [] if conclusive else ["decisive_evidence"],
+        "sources": [],
+        "attempted_fallbacks": [],
+        "next_sources": [],
+    }
+
+
 def _bling_result(quantity, *, coverage: bool = True, warnings: list[str] | None = None) -> dict:
     return {
         "success": True,
@@ -34,10 +52,8 @@ def _bling_result(quantity, *, coverage: bool = True, warnings: list[str] | None
                 },
             }
         ],
-        "tool_validation": {
-            "dados_suficientes": coverage,
-            "warnings": warnings or [],
-        },
+        "warnings": warnings or [],
+        "evidence": _evidence("complete" if coverage else "unavailable" if warnings else "partial"),
     }
 
 
@@ -68,17 +84,17 @@ def test_expired_auth_and_partial_coverage_are_not_confirmed() -> None:
 @pytest.mark.parametrize(
     ("source", "expected_class", "retryable", "coverage"),
     [
-        ({"success": False, "error": "HTTP 401 token expirado"}, "authentication", False, False),
-        ({"success": False, "error": "HTTP 504 timeout"}, "transient_dependency", True, False),
+        ({"success": False, "error": "HTTP 401 token expirado", "evidence": _evidence("unavailable")}, "authentication", False, False),
+        ({"success": False, "error": "HTTP 504 timeout", "evidence": _evidence("unavailable", retryable=True)}, "transient_dependency", True, False),
         (
-            {"success": True, "data": [{"id": 1}], "source": "Bling", "coverage_complete": True},
-            "",
+            {"success": True, "data": [{"id": 1}], "source": "Bling", "evidence": _evidence("complete")},
+                "",
             False,
             True,
         ),
         (
-            {"success": True, "data": [{"id": 1}], "paging": {"has_more": True}},
-            "",
+            {"success": True, "data": [{"id": 1}], "paging": {"has_more": True}, "evidence": _evidence("partial")},
+            "insufficient_evidence",
             False,
             False,
         ),
@@ -89,7 +105,7 @@ def test_generic_tool_contract_classifies_errors_and_coverage(source, expected_c
     assert component == whatsapp_bridge._normalize_tool_result_contract(source)
     assert component["error_class"] == expected_class
     assert component["retryable"] is retryable
-    assert component["coverage_complete"] is coverage
+    assert component["evidence"]["coverage_complete"] is coverage
 
 
 def test_compaction_preserves_contract_and_limits_large_payloads() -> None:
@@ -107,14 +123,13 @@ def test_compaction_preserves_contract_and_limits_large_payloads() -> None:
 
     bling = tool_results.function_manager_compact_result(_bling_result(0))
     assert bling["stock_balance"]["confirmed"] is True
-    assert bling["dados_suficientes"] is True
+    assert bling["evidence"]["status"] == "complete"
 
 
 def test_marketplace_and_local_stock_require_numeric_complete_contracts() -> None:
     listing = {
         "tool_id": "mercado_livre_listing",
-        "dados_suficientes": True,
-        "coverage_complete": True,
+        "evidence": _evidence("complete"),
         "top_rows": [{"id": "MLB1", "seller_sku": "001", "title": "Produto", "available_quantity": 0}],
     }
     listing_contract = tool_results.marketplace_listing_stock_contract(listing)
@@ -124,7 +139,7 @@ def test_marketplace_and_local_stock_require_numeric_complete_contracts() -> Non
 
     local = {
         "tool_id": "stock_data",
-        "dados_suficientes": True,
+        "evidence": _evidence("complete"),
         "summary": [
             {
                 "tool_id": "stock_data",
@@ -152,26 +167,25 @@ def test_evidence_marks_required_partial_result_and_preserves_prior_confirmation
             "tool_id": "bling_stock_balances",
             "success": False,
             "manager_required": True,
-            "dados_suficientes": False,
-            "coverage_complete": False,
+            "evidence": _evidence("unavailable", "token expirado"),
             "error": "token expirado",
             "error_class": "authentication",
         }
     ]
     component = tool_results.function_manager_evidence(plan, results)
     assert component == whatsapp_bridge._function_manager_evidence(plan, results)
-    assert component["status"] == "partial"
+    assert component["status"] == "unavailable"
     assert component["evidence_sufficient"] is False
     assert component["failures"] == ["token expirado"]
 
     previous = {
-        "status": "completed",
+        "status": "complete",
         "evidence_sufficient": True,
         "coverage_complete": True,
         "confidence": "high",
         "verified_facts": ["Saldo 10"],
         "sources": ["Bling"],
-        "validations": [{"tool_id": "stock", "required": True, "dados_suficientes": True}],
+        "validations": [{"tool_id": "stock", "required": True, "status": "complete", "claim_scope": "full"}],
         "tool_results": [{"tool_id": "stock", "success": True}],
     }
     current = {
@@ -181,14 +195,14 @@ def test_evidence_marks_required_partial_result_and_preserves_prior_confirmation
         "confidence": "low",
         "verified_facts": [],
         "sources": [],
-        "validations": [{"tool_id": "stock", "required": True, "dados_suficientes": False}],
+        "validations": [{"tool_id": "stock", "required": True, "status": "partial", "claim_scope": "observed_only"}],
         "tool_results": [{"tool_id": "stock", "success": False}],
     }
     merged = tool_results.function_manager_merge_evidence(previous, current)
     assert merged == whatsapp_bridge._function_manager_merge_evidence(previous, current)
-    assert merged["status"] == "completed"
+    assert merged["status"] == "complete"
     assert merged["evidence_sufficient"] is True
-    assert merged["validations"][0]["dados_suficientes"] is True
+    assert merged["validations"][0]["status"] == "complete"
 
 
 @pytest.mark.parametrize(

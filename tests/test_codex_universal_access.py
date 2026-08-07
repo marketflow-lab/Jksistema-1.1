@@ -10,6 +10,13 @@ from starlette.requests import Request
 
 from backend.routers.codex_console import create_codex_console_router
 from backend.services import codex_console
+from backend.services.codex.console import attachments as console_attachments
+from backend.services.codex.console import api_create as console_api_create
+from backend.services.codex.console import bindings as console_bindings
+from backend.services.codex.console import runtime as console_runtime
+from backend.services.codex.console import scope as console_scope
+from backend.services.codex.console import state as console_state
+from backend.services.codex.console import task_creation as console_task_creation
 
 
 def _request(path: str = "/api/codex/tasks") -> Request:
@@ -26,21 +33,21 @@ def _request(path: str = "/api/codex/tasks") -> Request:
 
 class CodexUniversalAccessTest(unittest.TestCase):
     def setUp(self):
-        codex_console.CODEX_TASKS.clear()
-        self.addCleanup(codex_console.CODEX_TASKS.clear)
+        console_state.CODEX_TASKS.clear()
+        self.addCleanup(console_state.CODEX_TASKS.clear)
         self.addCleanup(self._close_telemetry)
 
     @staticmethod
     def _close_telemetry():
-        telemetry = codex_console.CODEX_AI_TELEMETRY
+        telemetry = console_state.CONSOLE_STATE.telemetry
         if telemetry is not None:
             telemetry.close()
-            codex_console.CODEX_AI_TELEMETRY = None
+            console_state.CONSOLE_STATE.telemetry = None
 
     def test_authenticated_session_fails_closed_without_identity(self):
-        with patch.object(codex_console, "_codex_payload_sessao", return_value={"client_id": "000002"}):
+        with patch.object(console_runtime, "_codex_payload_sessao", return_value={"client_id": "000002"}):
             with self.assertRaises(HTTPException) as ctx:
-                codex_console._codex_require_authenticated(_request(), "Bearer token")
+                console_runtime._codex_require_authenticated(_request(), "Bearer token")
         self.assertEqual(ctx.exception.status_code, 401)
 
     def test_nonfull_task_is_forced_to_server_readonly_profile(self):
@@ -69,13 +76,24 @@ class CodexUniversalAccessTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             info_dir = Path(temp_dir) / "info"
             local_app_data = Path(temp_dir) / "local"
+            current_runtime = console_bindings.current()
             with (
-                patch.object(codex_console, "_codex_require_authenticated", return_value=sessao),
-                patch.object(codex_console, "_codex_enabled", return_value=True),
-                patch.object(codex_console, "_codex_sdk_installed", return_value=True),
-                patch.object(codex_console, "_codex_cleanup_old_attachments", return_value=None),
-                patch.object(codex_console, "_codex_start_thread") as start_thread,
-                patch.object(codex_console, "PASTA_INFO", str(info_dir), create=True),
+                patch.object(console_api_create, "_codex_require_authenticated", return_value=sessao),
+                patch.object(console_task_creation, "_codex_enabled", return_value=True),
+                patch.object(console_task_creation, "_codex_sdk_installed", return_value=True),
+                patch.object(console_task_creation, "_codex_cleanup_old_attachments", return_value=None),
+                patch.object(console_task_creation, "_codex_start_thread") as start_thread,
+                patch.object(
+                    console_bindings,
+                    "_RUNTIME",
+                    console_bindings.ConsoleRuntime(
+                        temp_dir,
+                        str(info_dir),
+                        current_runtime.session_loader,
+                        current_runtime.permissions_loader,
+                        current_runtime.source_module,
+                    ),
+                ),
                 patch.dict(
                     os.environ,
                     {
@@ -91,7 +109,7 @@ class CodexUniversalAccessTest(unittest.TestCase):
                 self._close_telemetry()
 
         task_id = result["task"]["task_id"]
-        task = codex_console.CODEX_TASKS[task_id]
+        task = console_state.CODEX_TASKS[task_id]
         start_thread.assert_called_once_with(task_id)
         self.assertEqual(task["sandbox"], "read_only")
         self.assertEqual(task["approval_mode"], "read_only")
@@ -116,13 +134,13 @@ class CodexUniversalAccessTest(unittest.TestCase):
             "is_full": False,
         }
         with self.assertRaises(HTTPException) as paths_ctx:
-            codex_console._codex_resolver_paths_for_session(
+            console_scope._codex_resolver_paths_for_session(
                 ["backend_api.py"], sessao, "conversa-operador"
             )
         self.assertEqual(paths_ctx.exception.status_code, 403)
 
         with patch.object(
-            codex_console,
+            console_api_create,
             "_codex_require_full_admin",
             side_effect=HTTPException(status_code=403, detail="full required"),
         ):
@@ -143,15 +161,15 @@ class CodexUniversalAccessTest(unittest.TestCase):
             "created_by": "operador",
             "status": "completed",
         }
-        codex_console.CODEX_TASKS["task-owner"] = task
+        console_state.CODEX_TASKS["task-owner"] = task
         owner = {"client_id": "000002", "username": "operador"}
         other_user = {"client_id": "000002", "username": "outro"}
         other_client = {"client_id": "000003", "username": "operador"}
 
-        self.assertIs(codex_console._codex_require_owned_task("task-owner", owner), task)
+        self.assertIs(console_attachments._codex_require_owned_task("task-owner", owner), task)
         for sessao in (other_user, other_client):
             with self.assertRaises(HTTPException) as ctx:
-                codex_console._codex_require_owned_task("task-owner", sessao)
+                console_attachments._codex_require_owned_task("task-owner", sessao)
             self.assertEqual(ctx.exception.status_code, 404)
 
     def test_nonfull_status_hides_internal_paths(self):
@@ -163,8 +181,8 @@ class CodexUniversalAccessTest(unittest.TestCase):
             "cwd": "C:/repo",
             "defaults": {"sandbox": "workspace_write", "approval_mode": "request"},
         }
-        with patch.object(codex_console, "_codex_status_payload", return_value=sensitive):
-            result = codex_console._codex_status_for_session({"is_full": False})
+        with patch.object(console_runtime, "_codex_status_payload", return_value=sensitive):
+            result = console_runtime._codex_status_for_session({"is_full": False})
 
         self.assertNotIn("cli_path", result)
         self.assertNotIn("auth_file_path", result)
@@ -175,7 +193,7 @@ class CodexUniversalAccessTest(unittest.TestCase):
         self.assertEqual(result["defaults"]["approval_mode"], "read_only")
 
     def test_restricted_codex_profile_disables_external_capabilities(self):
-        overrides = set(codex_console._codex_nonfull_config_overrides())
+        overrides = set(console_scope._codex_nonfull_config_overrides())
         expected = {
             'default_permissions="jk_black_jhon_readonly"',
             "features.shell_tool=false",
@@ -202,7 +220,7 @@ class CodexUniversalAccessTest(unittest.TestCase):
         self.assertTrue(any(item.startswith("mcp_servers.") and item.endswith(".enabled=false") for item in overrides))
 
     def test_restricted_codex_profile_can_enable_fast_mode_without_opening_capabilities(self):
-        overrides = set(codex_console._codex_nonfull_config_overrides(fast_mode=True))
+        overrides = set(console_scope._codex_nonfull_config_overrides(fast_mode=True))
 
         self.assertIn("features.fast_mode=true", overrides)
         self.assertNotIn("features.fast_mode=false", overrides)

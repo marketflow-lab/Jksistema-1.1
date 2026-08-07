@@ -51,15 +51,8 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import (
-    admin_usuarios_common,
-    codex_actions,
-    codex_console,
-    codex_whatsapp_agents,
-    whatsapp_report_files,
-    whatsapp_report_visuals,
-    whatsapp_voice,
-)
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services.codex.console import attachments_api as console_attachments
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -95,7 +88,7 @@ def _whatsapp_path_within(path: Path, roots: list[Path]) -> bool:
     return whatsapp_media.path_within(path, roots)
 
 def _whatsapp_image_roots(client_id: Any) -> list[Path]:
-    safe_client = codex_console._codex_safe_id(str(client_id or ""), "default")
+    safe_client = console_attachments.safe_id(str(client_id or ""), "default")
     # Outbound WhatsApp images are deliberately restricted to the product-photo
     # directory of the authenticated tenant. A model-produced path must never
     # become a generic local-file exfiltration primitive.

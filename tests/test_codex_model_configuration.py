@@ -73,7 +73,12 @@ def test_configuration_page_lists_and_accepts_codex_in_both_copies():
 
 
 def test_questions_v2_uses_codex_and_preserves_configured_provider_as_optional_fallback():
-    source = (ROOT / "backend" / "services" / "perguntas_pos_venda_agent.py").read_text(encoding="utf-8")
+    execution_source = (
+        ROOT / "backend" / "modules" / "perguntas_pos_venda" / "ai" / "execution.py"
+    ).read_text(encoding="utf-8")
+    clients_source = (
+        ROOT / "backend" / "modules" / "perguntas_pos_venda" / "ai" / "clients.py"
+    ).read_text(encoding="utf-8")
 
     for model in (
         "codex:gpt-5.5",
@@ -83,11 +88,11 @@ def test_questions_v2_uses_codex_and_preserves_configured_provider_as_optional_f
         "gpt-5.4-nano",
     ):
         assert ia_providers._normalizar_ia_modelo_padrao(model) == model
-    assert "provider_selection = _perguntas_codex_provider_selection(" in source
-    assert 'model_req = str(provider_selection.get("model") or "codex:gpt-5.5")' in source
-    assert '"response_provider_policy": provider_selection.get("policy")' in source
-    assert '"configured_fallback": provider_selection.get("configured_fallback")' in source
-    assert '"fallback_used": bool(provider_selection.get("fallback_used"))' in source
-    assert '"codex": _modelo_eh_codex(model_req)' in source
-    assert '"reasoning_effort": reasoning_effort' in source
-    assert '"_codex_reasoning_effort": self.reasoning_effort' in source
+    assert "selection = _perguntas_codex_provider_selection(" in execution_source
+    assert 'model_req = str(selection.get("model") or "codex:gpt-5.5")' in execution_source
+    assert '"response_provider_policy": selection.get("policy")' in execution_source
+    assert '"configured_fallback": selection.get("configured_fallback")' in execution_source
+    assert '"fallback_used": bool(selection.get("fallback_used"))' in execution_source
+    assert '"codex": _modelo_eh_codex(model_req)' in execution_source
+    assert '"reasoning_effort": reasoning' in execution_source
+    assert '"_codex_reasoning_effort": self.reasoning_effort' in clients_source

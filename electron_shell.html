@@ -758,6 +758,7 @@
         let screenSearchMatches = 0;
         let screenSearchActiveOrdinal = 0;
         let screenSearchActiveForward = true;
+        let screenSearchSubmittedQuery = '';
         let screenSearchFallbackTarget = null;
         let screenSearchFallbackListener = null;
         let screenSearchFallbackRequestId = 0;
@@ -944,6 +945,7 @@
 
         function stopScreenSearchHighlight(options = {}) {
             screenSearchActiveToken = nextScreenSearchToken();
+            screenSearchSubmittedQuery = '';
             stopScreenSearchFallback();
             const api = window.electronAPI || null;
             if (api && typeof api.stopFindInActiveScreen === 'function') {
@@ -952,7 +954,7 @@
             screenSearchMatches = 0;
             screenSearchActiveOrdinal = 0;
             if (options.resetStatus !== false) {
-                setScreenSearchStatus(String(screenSearchInput?.value || '').trim() ? 'Buscando...' : 'Digite');
+                setScreenSearchStatus(String(screenSearchInput?.value || '').trim() ? 'Enter' : 'Digite');
             }
             updateScreenSearchControls();
         }
@@ -967,7 +969,8 @@
             }
 
             const forward = options.forward !== false;
-            const newSession = options.newSession !== false;
+            const newSession = options.newSession !== false || query !== screenSearchSubmittedQuery;
+            screenSearchSubmittedQuery = query;
             screenSearchActiveForward = forward;
             const token = nextScreenSearchToken();
             screenSearchActiveToken = token;
@@ -1003,6 +1006,7 @@
                         matchCase: false
                     });
                 } catch (_err) {
+                    screenSearchSubmittedQuery = '';
                     stopScreenSearchFallback();
                     if (screenSearchActiveToken === token) setScreenSearchStatus('Indisponivel');
                 }
@@ -1012,21 +1016,27 @@
             stopScreenSearchFallback();
             const api = window.electronAPI || null;
             if (!api || typeof api.findInActiveScreen !== 'function') {
+                screenSearchSubmittedQuery = '';
                 if (screenSearchActiveToken === token) setScreenSearchStatus('Indisponivel');
                 return;
             }
             try {
                 const result = await api.findInActiveScreen(query, { token, forward, newSession });
                 if (screenSearchActiveToken === token && result && result.success === false) {
+                    screenSearchSubmittedQuery = '';
                     setScreenSearchStatus('Indisponivel');
                 }
             } catch (_err) {
-                if (screenSearchActiveToken === token) setScreenSearchStatus('Indisponivel');
+                if (screenSearchActiveToken === token) {
+                    screenSearchSubmittedQuery = '';
+                    setScreenSearchStatus('Indisponivel');
+                }
             }
         }
 
         function refreshScreenSearchAfterContextChange(delay = 80) {
-            if (!screenSearchIsOpen || !String(screenSearchInput?.value || '').trim()) return;
+            const query = String(screenSearchInput?.value || '').slice(0, 256);
+            if (!screenSearchIsOpen || !query.trim() || query !== screenSearchSubmittedQuery) return;
             window.clearTimeout(screenSearchDebounceTimer);
             stopScreenSearchHighlight({ resetStatus: false });
             setScreenSearchStatus('Buscando...');
@@ -1048,8 +1058,9 @@
                 screenSearchInput.focus();
                 if (options.select !== false) screenSearchInput.select();
             });
-            if (!wasOpen && String(screenSearchInput?.value || '').trim()) {
-                runScreenSearch({ newSession: true });
+            if (!wasOpen) {
+                setScreenSearchStatus(String(screenSearchInput?.value || '').trim() ? 'Enter' : 'Digite');
+                updateScreenSearchControls();
             }
         }
 
@@ -1164,6 +1175,7 @@
                     'dashboard.html': 'Inicio',
                     'favoritos.html': 'Favoritos ML',
                     'avant.html': 'Avant',
+                    'pesquisa_mercado.html': 'Pesquisa de Mercado',
                     'perguntas_pos_venda.html': 'Perguntas e pos venda',
                     'cadastro.html': 'Cadastro de Produtos',
                     'configuracoes.html': 'Configuracoes',
@@ -1239,6 +1251,7 @@
                 { label: 'ML', accent: '#29c7e8', terms: ['anuncios', 'mercado livre', 'anunciosml'] },
                 { label: 'FV', accent: '#f4d03f', terms: ['favoritos'] },
                 { label: 'AV', accent: '#2563eb', terms: ['avant'] },
+                { label: 'PM', accent: '#22d3ee', terms: ['pesquisa de mercado', 'pesquisa_mercado'] },
                 { label: '?', accent: '#38d4f0', terms: ['perguntas', 'pos venda'] },
                 { label: 'CX', accent: '#4facfe', terms: ['estoque', 'full'] },
                 { label: 'ET', accent: '#33d17a', terms: ['etiquetas'] },
@@ -3282,15 +3295,8 @@
         screenSearchNextBtn.addEventListener('click', () => runScreenSearch({ newSession: false, forward: true }));
         screenSearchInput.addEventListener('input', () => {
             window.clearTimeout(screenSearchDebounceTimer);
-            screenSearchMatches = 0;
-            screenSearchActiveOrdinal = 0;
-            updateScreenSearchControls();
-            if (!String(screenSearchInput.value || '').trim()) {
-                stopScreenSearchHighlight();
-                return;
-            }
-            setScreenSearchStatus('Buscando...');
-            screenSearchDebounceTimer = window.setTimeout(() => runScreenSearch({ newSession: true }), 150);
+            stopScreenSearchHighlight({ resetStatus: false });
+            setScreenSearchStatus(String(screenSearchInput.value || '').trim() ? 'Enter' : 'Digite');
         });
         screenSearchInput.addEventListener('keydown', (event) => {
             if (event.isComposing) return;

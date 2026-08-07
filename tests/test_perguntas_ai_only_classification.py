@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from backend.modules.perguntas_pos_venda.ai import provider_transport
 from backend.services import perguntas_pos_venda_state as state
 from ml_questions_gemini.adapters import context_from_agent_input
 from ml_questions_gemini.classifier import QuestionClassifier
@@ -49,6 +50,34 @@ def _classification_payload(
     }
 
 
+def _compatibility_payload(
+    *,
+    target_item: str = "Honda Civic 2008",
+    target_type: str = "vehicle",
+    compatibility_profile: str = "vehicle_fitment",
+) -> dict:
+    payload = _classification_payload(
+        intencao="compatibilidade",
+        categoria="compatibility",
+        question=f"Serve no {target_item}?" if target_item else "Serve neste modelo?",
+    )
+    payload["subperguntas"] = [{
+        "intent": "compatibility",
+        "question": f"Serve no {target_item}?" if target_item else "Serve neste modelo?",
+        "required_evidence": "codigo e interface decisiva dos dois lados",
+    }]
+    payload["compatibilidade"] = {
+        "aplicavel": True,
+        "target_item": target_item,
+        "target_type": target_type,
+        "compatibility_profile": compatibility_profile,
+        "technical_focus": "codigo e encaixe",
+        "missing_fields": ["codigo OEM"],
+        "decisive_fields": ["codigo OEM", "conector"],
+    }
+    return payload
+
+
 def _stub_classifier_runtime(monkeypatch: pytest.MonkeyPatch, answer: object) -> None:
     monkeypatch.setattr(state, "_ia_modelo_perguntas_configurado", lambda: "model-test", raising=False)
     monkeypatch.setattr(state, "_normalizar_ia_modelo_padrao", lambda value: value, raising=False)
@@ -59,14 +88,35 @@ def _stub_classifier_runtime(monkeypatch: pytest.MonkeyPatch, answer: object) ->
         def _raise_model(*_args, **_kwargs):
             raise answer
 
-        monkeypatch.setattr(state, "_ia_agent_perguntas_chamar_modelo", _raise_model, raising=False)
+        monkeypatch.setattr(provider_transport, "invoke_model", _raise_model)
     else:
         monkeypatch.setattr(
-            state,
-            "_ia_agent_perguntas_chamar_modelo",
+            provider_transport,
+            "invoke_model",
             lambda *_args, **_kwargs: (answer, "model-test"),
             raising=False,
         )
+
+
+def _stub_classifier_answers(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> list[SimpleNamespace]:
+    requests: list[SimpleNamespace] = []
+    iterator = iter(answers)
+    monkeypatch.setattr(state, "_ia_modelo_perguntas_configurado", lambda: "model-test", raising=False)
+    monkeypatch.setattr(state, "_normalizar_ia_modelo_padrao", lambda value: value, raising=False)
+    monkeypatch.setattr(state, "_ml_extrair_sku", lambda _item: "", raising=False)
+    monkeypatch.setattr(state, "_ia_agent_perguntas_log_perf", lambda *_args, **_kwargs: None, raising=False)
+
+    def _request(**kwargs):
+        request = SimpleNamespace(**kwargs)
+        requests.append(request)
+        return request
+
+    def _answer(*_args, **_kwargs):
+        return next(iterator), "model-test"
+
+    monkeypatch.setattr(state, "IAChatRequest", _request, raising=False)
+    monkeypatch.setattr(provider_transport, "invoke_model", _answer)
+    return requests
 
 
 def _classify_with_ai(monkeypatch: pytest.MonkeyPatch, *, text: str, payload: dict) -> tuple[dict, QuestionCategory]:
@@ -173,6 +223,184 @@ def test_normalizacao_rejeita_alias_e_tipo_de_compatibilidade_fora_do_schema():
     }
     with pytest.raises(state.PerguntasIARespostaIndisponivel):
         state._perguntas_ia_intencao_normalizar(payload)
+
+
+@pytest.mark.parametrize(
+    ("target_type", "compatibility_profile"),
+    list(state.ML_PERGUNTAS_IA_COMPATIBILITY_PROFILE_BY_TARGET_TYPE.items()),
+)
+def test_contrato_v2_aceita_somente_pares_canonicos_de_tipo_e_perfil(
+    target_type,
+    compatibility_profile,
+):
+    normalizada = state._perguntas_ia_intencao_normalizar(
+        _compatibility_payload(
+            target_item="",
+            target_type=target_type,
+            compatibility_profile=compatibility_profile,
+        )
+    )
+
+    assert normalizada["compatibilidade"]["target_item"] == ""
+    assert normalizada["compatibilidade"]["target_type"] == target_type
+    assert normalizada["compatibilidade"]["compatibility_profile"] == compatibility_profile
+
+
+def test_contrato_v2_rejeita_par_tipo_perfil_sem_corrigir_localmente():
+    payload = _compatibility_payload(
+        target_type="machine_tool",
+        compatibility_profile="vehicle_fitment",
+    )
+
+    with pytest.raises(
+        state.PerguntasIARespostaIndisponivel,
+        match="par tipo e perfil da compatibilidade",
+    ) as captured:
+        state._perguntas_ia_intencao_normalizar(payload)
+
+    assert captured.value.violation_code == "compatibility_target_profile_pair"
+    assert payload["compatibilidade"]["compatibility_profile"] == "vehicle_fitment"
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_code"),
+    [
+        (
+            {
+                **_classification_payload(),
+                "compatibilidade": {
+                    "aplicavel": True,
+                    "target_item": "",
+                    "target_type": "generic",
+                    "compatibility_profile": "generic_interface",
+                    "technical_focus": "",
+                    "missing_fields": [],
+                    "decisive_fields": [],
+                },
+            },
+            "compatibility_applicable_iff_category",
+        ),
+        (
+            {
+                **_compatibility_payload(),
+                "compatibilidade": {
+                    **_compatibility_payload()["compatibilidade"],
+                    "aplicavel": False,
+                },
+            },
+            "compatibility_applicable_iff_category",
+        ),
+    ],
+)
+def test_contrato_v2_exige_aplicavel_iff_categoria_compatibility(payload, expected_code):
+    with pytest.raises(state.PerguntasIARespostaIndisponivel) as captured:
+        state._perguntas_ia_intencao_normalizar(payload)
+
+    assert captured.value.violation_code == expected_code
+
+
+def test_prompt_v2_expoe_hash_regra_iff_mapa_e_exemplos_validos():
+    prompt = state._perguntas_ia_classification_prompt({"pergunta_atual": "Serve no Civic?"})
+
+    assert state.ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_VERSION in prompt
+    assert state.ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_HASH in prompt
+    assert len(state.ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_HASH) == 64
+    assert "se, e somente se, categorias contiver compatibility" in prompt
+    assert "vehicle=vehicle_fitment" in prompt
+    assert '"aplicavel":true' in prompt
+    assert '"aplicavel":false' in prompt
+
+
+def test_contrato_v2_usa_mapa_canonico_da_biblioteca_de_compatibilidade():
+    from ml_questions_gemini.compatibility import PROFILE_BY_TARGET_TYPE, TARGET_TYPES
+
+    assert state.ML_PERGUNTAS_IA_COMPATIBILITY_PROFILE_BY_TARGET_TYPE == PROFILE_BY_TARGET_TYPE
+    assert state.ML_PERGUNTAS_IA_COMPATIBILITY_TARGET_TYPES == {"", *TARGET_TYPES}
+    assert state.ML_PERGUNTAS_IA_COMPATIBILITY_PROFILES == {"", *PROFILE_BY_TARGET_TYPE.values()}
+
+
+def test_classificador_regenera_uma_vez_json_parseavel_incoerente_sem_reusar_bruto(monkeypatch):
+    invalida = _compatibility_payload()
+    invalida["compatibilidade"]["aplicavel"] = False
+    invalida["motivo"] = "MARCADOR_BRUTO_NAO_REUTILIZAR"
+    valida = _compatibility_payload()
+    requests = _stub_classifier_answers(
+        monkeypatch,
+        [json.dumps(invalida), json.dumps(valida)],
+    )
+
+    classificada = state._perguntas_ia_classificar_intencao(
+        "tenant-test",
+        "Loja Teste",
+        {"id": "Q1", "item_id": "MLB1", "text": "Serve no Civic 2008?"},
+        {"id": "MLB1", "title": "Produto"},
+    )
+
+    assert classificada["categoria"] == "compatibility"
+    assert len(requests) == 2
+    assert requests[0].context["classification_contract_version"] == state.ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_VERSION
+    assert requests[0].context["classification_contract_hash"] == state.ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_HASH
+    assert requests[1].context["contract_violation_code"] == "compatibility_applicable_iff_category"
+    assert requests[1].context["classification_contract_version"] == state.ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_VERSION
+    assert "MARCADOR_BRUTO_NAO_REUTILIZAR" not in requests[1].message
+
+
+def test_classificador_duas_respostas_parseaveis_invalidas_falha_apos_um_reparo(monkeypatch):
+    invalida = _compatibility_payload()
+    invalida["compatibilidade"]["aplicavel"] = False
+    requests = _stub_classifier_answers(
+        monkeypatch,
+        [json.dumps(invalida), json.dumps(invalida)],
+    )
+
+    with pytest.raises(state.PerguntasIARespostaIndisponivel):
+        state._perguntas_ia_classificar_intencao(
+            "tenant-test",
+            "Loja Teste",
+            {"id": "Q1", "item_id": "MLB1", "text": "Serve no Civic 2008?"},
+            {"id": "MLB1", "title": "Produto"},
+        )
+
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize("primeira_resposta", ["[]", "null", "0", '"texto JSON"'])
+def test_json_valido_nao_objeto_consume_unica_regeneracao_com_codigo_estavel(
+    monkeypatch,
+    primeira_resposta,
+):
+    requests = _stub_classifier_answers(
+        monkeypatch,
+        [primeira_resposta, json.dumps(_compatibility_payload())],
+    )
+
+    classificada = state._perguntas_ia_classificar_intencao(
+        "tenant-test",
+        "Loja Teste",
+        {"id": "Q1", "item_id": "MLB1", "text": "Serve no Civic 2008?"},
+        {"id": "MLB1", "title": "Produto"},
+    )
+
+    assert classificada["categoria"] == "compatibility"
+    assert len(requests) == 2
+    assert requests[1].context["contract_violation_code"] == "classification_object_required"
+    assert requests[0].page == state.ML_PERGUNTAS_IA_CLASSIFICATION_PAGE
+    assert requests[1].page == state.ML_PERGUNTAS_IA_CLASSIFICATION_PAGE
+    assert requests[0].page == "Perguntas e pós venda"
+
+
+def test_classificador_nao_regenera_quando_resposta_nao_e_json(monkeypatch):
+    requests = _stub_classifier_answers(monkeypatch, ["texto sem JSON"])
+
+    with pytest.raises(state.PerguntasIARespostaIndisponivel, match="sem objeto JSON parseavel"):
+        state._perguntas_ia_classificar_intencao(
+            "tenant-test",
+            "Loja Teste",
+            {"id": "Q1", "item_id": "MLB1", "text": "Serve?"},
+            {"id": "MLB1", "title": "Produto"},
+        )
+
+    assert len(requests) == 1
 
 
 @pytest.mark.parametrize(

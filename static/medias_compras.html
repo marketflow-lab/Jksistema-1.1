@@ -12,6 +12,27 @@
             background: #0e1117;
             color: #e5e5e5;
         }
+        * {
+            scrollbar-width: thin;
+            scrollbar-color: rgba(100, 116, 139, 0.42) transparent;
+        }
+        *::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        *::-webkit-scrollbar-track,
+        *::-webkit-scrollbar-corner {
+            background: transparent;
+        }
+        *::-webkit-scrollbar-thumb {
+            background-color: rgba(100, 116, 139, 0.42);
+            border: 1px solid transparent;
+            border-radius: 999px;
+            background-clip: content-box;
+        }
+        *::-webkit-scrollbar-thumb:hover {
+            background-color: rgba(96, 165, 250, 0.58);
+        }
         .container {
             max-width: 1400px;
             margin: 0 auto;
@@ -558,7 +579,7 @@
             background: linear-gradient(180deg, #1d2a3f 0%, #162033 100%);
             color: #b9e1ff;
             position: sticky;
-            top: 82px;
+            top: 0;
             z-index: 5;
             box-shadow: 0 2px 0 rgba(79, 172, 254, 0.14);
             white-space: normal;
@@ -629,6 +650,152 @@
         }
         #tblResultado tbody tr:hover td {
             background: #274766 !important;
+        }
+        #tblResultado td.compra-sugerida-cell {
+            padding: 4px 6px;
+        }
+        .compra-sugerida-editavel {
+            width: 100%;
+            min-width: 48px;
+            padding: 5px 6px;
+            border: 1px dashed transparent;
+            border-radius: 6px;
+            background: transparent;
+            color: #9bb3d1;
+            font: inherit;
+            font-weight: 800;
+            text-align: center;
+            cursor: text;
+        }
+        .compra-sugerida-editavel.positiva {
+            color: #9de2bf;
+        }
+        .compra-sugerida-editavel:hover,
+        .compra-sugerida-editavel:focus-visible {
+            border-color: #60a5fa;
+            background: rgba(15, 23, 42, 0.5);
+            outline: none;
+        }
+        .compra-sugerida-input {
+            width: 100%;
+            min-width: 48px;
+            box-sizing: border-box;
+            padding: 5px 4px;
+            border: 1px solid #60a5fa;
+            border-radius: 6px;
+            background: #0f172a;
+            color: #e0f2fe;
+            font: inherit;
+            font-weight: 800;
+            text-align: center;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.22);
+        }
+        #tblResultado thead th.col-venda-mes {
+            color: #eff6ff;
+        }
+        #tblResultado th,
+        #tblResultado td {
+            border-right: 1px solid rgba(148, 163, 184, 0.28);
+            border-bottom: 1px solid rgba(148, 163, 184, 0.30);
+        }
+        #tblResultado th:first-child,
+        #tblResultado td:first-child {
+            border-left: 1px solid rgba(148, 163, 184, 0.28);
+        }
+        #tblResultado thead th.col-venda-mes,
+        #tblResultado tbody td.col-venda-mes {
+            border-right: 1px solid #60a5fa;
+        }
+        #tblResultado thead th.col-venda-mes-primeira,
+        #tblResultado tbody td.col-venda-mes-primeira {
+            border-left: 1px solid #60a5fa;
+        }
+        #tblResultado tbody td.col-venda-mes.col-venda-mes-a,
+        #tblResultado tbody td.col-venda-mes.col-venda-mes-b {
+            background-image: linear-gradient(rgba(125, 211, 252, 0.06), rgba(125, 211, 252, 0.06)) !important;
+        }
+        #tblResultado tbody tr td.col-total-periodo {
+            background-image: linear-gradient(rgba(96, 165, 250, 0.15), rgba(96, 165, 250, 0.15)) !important;
+        }
+        #tblResultado thead th.col-venda-mes-a {
+            background: linear-gradient(180deg, #1d4ed8 0%, #1e3a8a 100%);
+            box-shadow: inset 0 2px #60a5fa, 0 2px 0 rgba(96, 165, 250, 0.28);
+        }
+        #tblResultado thead th.col-venda-mes-b {
+            background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%);
+            box-shadow: inset 0 2px #93c5fd, 0 2px 0 rgba(147, 197, 253, 0.28);
+        }
+        #tblResultado thead th.col-estoque-fisico {
+            background: linear-gradient(180deg, #166534 0%, #14532d 100%);
+            color: #f0fdf4;
+            box-shadow: inset 2px 0 #4ade80, inset -2px 0 #4ade80, 0 2px 0 rgba(74, 222, 128, 0.25);
+        }
+        #tblResultado tbody tr:nth-child(odd) td.col-estoque-fisico {
+            background: #173c2d !important;
+        }
+        #tblResultado tbody tr:nth-child(even) td.col-estoque-fisico {
+            background: #1c4936 !important;
+        }
+        #tblResultado tbody tr:hover td.col-estoque-fisico {
+            background: #256044 !important;
+        }
+        #tblResultado tbody tr.risco-critico td.col-estoque-fisico {
+            background: #463335 !important;
+        }
+        #tblResultado tbody tr.risco-atencao td.col-estoque-fisico {
+            background: #3f4927 !important;
+        }
+        #tblResultado tbody td.col-estoque-fisico {
+            color: #dcfce7;
+            box-shadow: inset 2px 0 rgba(74, 222, 128, 0.42), inset -2px 0 rgba(74, 222, 128, 0.42);
+        }
+        #tblResultado tbody td.col-estoque-fisico strong {
+            color: #86efac;
+            font-weight: 800;
+        }
+        #tblResultado thead th.col-posicao-estoque {
+            background: linear-gradient(180deg, #0f766e 0%, #164e63 100%);
+            color: #ecfeff;
+            box-shadow: inset 2px 0 #2dd4bf, inset -2px 0 #2dd4bf, 0 2px 0 rgba(45, 212, 191, 0.25);
+        }
+        #tblResultado tbody tr:nth-child(odd) td.col-posicao-estoque {
+            background: #103645 !important;
+        }
+        #tblResultado tbody tr:nth-child(even) td.col-posicao-estoque {
+            background: #124252 !important;
+        }
+        #tblResultado tbody tr:hover td.col-posicao-estoque {
+            background: #1a5b6e !important;
+        }
+        #tblResultado tbody tr.risco-critico td.col-posicao-estoque {
+            background: #42313c !important;
+        }
+        #tblResultado tbody tr.risco-atencao td.col-posicao-estoque {
+            background: #38452d !important;
+        }
+        #tblResultado tbody td.col-posicao-estoque {
+            color: #ccfbf1;
+            box-shadow: inset 2px 0 rgba(45, 212, 191, 0.42), inset -2px 0 rgba(45, 212, 191, 0.42);
+        }
+        #tblResultado tbody td.col-posicao-estoque strong {
+            color: #99f6e4;
+            font-weight: 800;
+        }
+        #tblResultado thead th.col-cobertura-estoque {
+            background: linear-gradient(180deg, #334155 0%, #1e3a5f 100%);
+            color: #e0f2fe;
+            box-shadow: inset 2px 0 #38bdf8, inset -2px 0 #38bdf8, 0 2px 0 rgba(56, 189, 248, 0.22);
+        }
+        #tblResultado tbody td.col-cobertura-estoque strong {
+            color: #bae6fd;
+            font-weight: 800;
+        }
+        #tblResultado tbody td.col-cobertura-estoque .cobertura-sem-venda {
+            color: #94a3b8;
+            font-size: 11px;
+            font-weight: 700;
+            white-space: nowrap;
         }
         #tblListaPedidoItens tbody tr:nth-child(odd) td {
             background: #101826 !important;
@@ -1483,6 +1650,7 @@
     let lojasDisponiveis = [];
     let skusOcultosSet = new Set();
     let itensVisaoAtual = [];
+    let comprasSugeridasEditadas = new Map();
     let colunasMesesAtuais = [];
     let abaAtual = 'lista';
     let filtroSkuAtual = '';
@@ -1509,6 +1677,21 @@
 
     function numero(v) {
         return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    }
+
+    function calcularCoberturaMeses(posicaoEstoque, mediaMensal) {
+        const media = Number(mediaMensal || 0);
+        if (!Number.isFinite(media) || media <= 0) return null;
+
+        const posicao = Number(posicaoEstoque || 0);
+        if (!Number.isFinite(posicao) || posicao <= 0) return 0;
+        return posicao / media;
+    }
+
+    function formatarCoberturaMeses(posicaoEstoque, mediaMensal) {
+        const meses = calcularCoberturaMeses(posicaoEstoque, mediaMensal);
+        if (meses === null) return '<span class="cobertura-sem-venda">Sem venda</span>';
+        return '<strong>' + numero(meses) + '</strong>';
     }
 
     function formatarMoedaUSD(valor) {
@@ -1803,6 +1986,74 @@
 
     function normalizarSku(valor) {
         return String(valor || '').trim().toUpperCase();
+    }
+
+    function normalizarQuantidadeCompraSugerida(valor) {
+        const texto = String(valor ?? '').trim();
+        if (!/^\d+$/.test(texto)) return null;
+        const quantidade = Number(texto);
+        return Number.isSafeInteger(quantidade) && quantidade >= 0 ? quantidade : null;
+    }
+
+    function obterQuantidadesSugeridasEditadas() {
+        const quantidades = {};
+        Array.from(comprasSugeridasEditadas.entries())
+            .sort(([skuA], [skuB]) => skuA.localeCompare(skuB, 'pt-BR', { numeric: true }))
+            .forEach(([sku, quantidade]) => {
+                quantidades[sku] = quantidade;
+            });
+        return quantidades;
+    }
+
+    function iniciarEdicaoCompraSugerida(botao, skuCodificado) {
+        const celula = botao && botao.closest ? botao.closest('td') : null;
+        const sku = normalizarSku(decodeURIComponent(String(skuCodificado || '')));
+        const item = (itensVisaoAtual || []).find(i => normalizarSku(i && i.sku) === sku);
+        if (!celula || !item || celula.querySelector('.compra-sugerida-input')) return;
+
+        const valorAnterior = normalizarQuantidadeCompraSugerida(item.compra_sugerida) ?? 0;
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.min = '0';
+        input.step = '1';
+        input.inputMode = 'numeric';
+        input.className = 'compra-sugerida-input';
+        input.value = String(valorAnterior);
+        input.setAttribute('aria-label', 'Sugestão de compra do SKU ' + sku);
+
+        let finalizado = false;
+        const finalizar = (confirmar) => {
+            if (finalizado) return;
+            if (confirmar) {
+                const quantidade = normalizarQuantidadeCompraSugerida(input.value);
+                if (quantidade === null) {
+                    input.setCustomValidity('Informe um número inteiro maior ou igual a zero.');
+                    input.reportValidity();
+                    setTimeout(() => input.focus(), 0);
+                    return;
+                }
+                item.compra_sugerida = quantidade;
+                comprasSugeridasEditadas.set(sku, quantidade);
+            }
+            finalizado = true;
+            renderAbaAtual();
+        };
+
+        input.addEventListener('input', () => input.setCustomValidity(''));
+        input.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                finalizar(true);
+            } else if (event.key === 'Escape') {
+                event.preventDefault();
+                finalizar(false);
+            }
+        });
+        input.addEventListener('blur', () => finalizar(true));
+
+        celula.replaceChildren(input);
+        input.focus();
+        input.select();
     }
 
     function obterPesquisaSkuNormalizada() {
@@ -3455,6 +3706,7 @@
             payload.hidden_skus = Array.from(skusOcultosSet);
             payload.loja = lojaSelecionada || '__todas';
             payload.periodo_meses = Number(periodoAtual || 12);
+            payload.quantidades_sugeridas = obterQuantidadesSugeridasEditadas();
             let resp = await fetch('/api/medias-compras/gerar-lista-compra', {
                 method: 'POST',
                 headers: {
@@ -3476,6 +3728,9 @@
                 params.set('nome_lista', payload.nome_lista);
                 params.set('loja', String(payload.loja || '__todas'));
                 params.set('periodo_meses', String(Number(payload.periodo_meses || 12)));
+                if (Object.keys(payload.quantidades_sugeridas || {}).length) {
+                    params.set('quantidades_sugeridas', JSON.stringify(payload.quantidades_sugeridas));
+                }
                 resp = await fetch('/api/medias-compras/gerar-lista-compra?' + params.toString(), {
                     method: 'GET',
                     headers: {
@@ -3525,6 +3780,10 @@
             const params = new URLSearchParams();
             params.set('meses', String(Number(periodoAtual || 12)));
             params.set('loja', String(lojaSelecionada || '__todas'));
+            const quantidadesSugeridas = obterQuantidadesSugeridasEditadas();
+            if (Object.keys(quantidadesSugeridas).length) {
+                params.set('quantidades_sugeridas', JSON.stringify(quantidadesSugeridas));
+            }
 
             const resp = await fetch('/api/medias-compras/gerar-lista-sugestao?' + params.toString(), {
                 method: 'GET',
@@ -3761,6 +4020,7 @@
             const data = await resp.json();
             colunasMesesAtuais = data.colunas_meses || [];
             itensVisaoAtual = data.itens || [];
+            comprasSugeridasEditadas.clear();
             try {
                 renderAbaAtual();
             } catch (renderErr) {
@@ -3788,13 +4048,21 @@
         head.innerHTML = '';
         const headers = ['SKU', 'Foto', 'Título anúncio']
             .concat(colunasMeses.map(c => c.key))
-            .concat(['Total período', 'VMM', 'Estoque físico', 'Em trânsito', 'Posição estoque', 'Sugestão compra', 'Ocultar']);
+            .concat(['Total período', 'VMM', 'Estoque físico', 'Em trânsito', 'Posição estoque', 'Cobertura (meses)', 'Sugestão compra', 'Ocultar']);
         chavesColunasAtuais = ['sku', 'foto', 'titulo_anuncio']
             .concat(colunasMeses.map(c => 'mes_' + c.key))
-            .concat(['total_periodo', 'media_mensal', 'saldo_estoque', 'estoque_transito', 'posicao_estoque', 'compra_sugerida', 'acao']);
+            .concat(['total_periodo', 'media_mensal', 'saldo_estoque', 'estoque_transito', 'posicao_estoque', 'cobertura_meses', 'compra_sugerida', 'acao']);
 
-        chavesColunasAtuais.forEach((colKey) => {
+        chavesColunasAtuais.forEach((colKey, idx) => {
             const col = document.createElement('col');
+            if (colKey.startsWith('mes_')) {
+                col.classList.add('col-venda-mes', (idx - 3) % 2 === 0 ? 'col-venda-mes-a' : 'col-venda-mes-b');
+                if (idx === 3) col.classList.add('col-venda-mes-primeira');
+            }
+            if (colKey === 'total_periodo') col.classList.add('col-total-periodo');
+            if (colKey === 'saldo_estoque') col.classList.add('col-estoque-fisico');
+            if (colKey === 'posicao_estoque') col.classList.add('col-posicao-estoque');
+            if (colKey === 'cobertura_meses') col.classList.add('col-cobertura-estoque');
             const largura = Number(largurasColunas[colKey] || 0);
             if (largura > 0) {
                 col.style.width = largura + 'px';
@@ -3824,6 +4092,14 @@
             }
 
             th.dataset.colKey = chavesColunasAtuais[idx] || ('col_' + idx);
+            if (th.dataset.colKey.startsWith('mes_')) {
+                th.classList.add('col-venda-mes', (idx - inicioMeses) % 2 === 0 ? 'col-venda-mes-a' : 'col-venda-mes-b');
+                if (idx === inicioMeses) th.classList.add('col-venda-mes-primeira');
+            }
+            if (th.dataset.colKey === 'total_periodo') th.classList.add('col-total-periodo');
+            if (th.dataset.colKey === 'saldo_estoque') th.classList.add('col-estoque-fisico');
+            if (th.dataset.colKey === 'posicao_estoque') th.classList.add('col-posicao-estoque');
+            if (th.dataset.colKey === 'cobertura_meses') th.classList.add('col-cobertura-estoque');
             th.dataset.colIndex = String(idx);
             aplicarLarguraColuna(th, th.dataset.colKey);
             head.appendChild(th);
@@ -3853,7 +4129,7 @@
             const mediaMensalNivel = Number(i.media_mensal || 0);
             const saldoFisicoNivel = Number(i.saldo_atual_estoque || 0);
             const posicaoEstoqueNivel = Number(i.posicao_estoque || 0);
-            const mesesRestantesNivel = mediaMensalNivel > 0 ? (posicaoEstoqueNivel / mediaMensalNivel) : 999;
+            const mesesRestantesNivel = calcularCoberturaMeses(posicaoEstoqueNivel, mediaMensalNivel) ?? 999;
 
             if (modo !== 'ocultados' && compraSugeridaNivel > 0) {
                 if (saldoFisicoNivel <= 0 || mesesRestantesNivel <= 1.5) {
@@ -3878,19 +4154,24 @@
             const alertaHtml = alertaSemVenda ? '<div class="produto-alerta-sem-venda">' + escaparHtml(alertaSemVenda) + '</div>' : '';
             tds.push('<td class="titulo-anuncio" title="' + tituloAnuncio + '">' + tituloAnuncio + alertaHtml + '</td>');
 
-            colunasMeses.forEach(c => {
+            colunasMeses.forEach((c, idxMes) => {
                 const v = i.vendas_mensais ? i.vendas_mensais[c.key] : 0;
-                tds.push('<td class="num">' + numero(v) + '</td>');
+                const classeMes = idxMes % 2 === 0 ? 'col-venda-mes-a' : 'col-venda-mes-b';
+                const classePrimeiroMes = idxMes === 0 ? ' col-venda-mes-primeira' : '';
+                tds.push('<td class="num col-venda-mes ' + classeMes + classePrimeiroMes + '">' + numero(v) + '</td>');
             });
 
             const compraSugerida = Number(i.compra_sugerida || 0);
 
-            tds.push('<td class="num"><strong>' + numero(i.total_vendas_periodo || 0) + '</strong></td>');
+            tds.push('<td class="num col-total-periodo"><strong>' + numero(i.total_vendas_periodo || 0) + '</strong></td>');
             tds.push('<td class="num">' + numero(i.media_mensal || 0) + '</td>');
-            tds.push('<td class="num"><strong>' + numero(i.saldo_atual_estoque || 0) + '</strong></td>');
+            tds.push('<td class="num col-estoque-fisico"><strong>' + numero(i.saldo_atual_estoque || 0) + '</strong></td>');
             tds.push('<td class="num">' + numero(i.estoque_em_transito || 0) + '</td>');
-            tds.push('<td class="num"><strong>' + numero(i.posicao_estoque || 0) + '</strong></td>');
-            tds.push('<td class="num"><strong style="color:' + (compraSugerida > 0 ? '#9de2bf' : '#9bb3d1') + '">' + numero(compraSugerida) + '</strong></td>');
+            tds.push('<td class="num col-posicao-estoque"><strong>' + numero(i.posicao_estoque || 0) + '</strong></td>');
+            tds.push('<td class="num col-cobertura-estoque" title="Posição de estoque dividida pela VMM">' + formatarCoberturaMeses(i.posicao_estoque, i.media_mensal) + '</td>');
+            const classeCompraPositiva = compraSugerida > 0 ? ' positiva' : '';
+            const skuCompraCodificado = encodeURIComponent(String(i.sku || ''));
+            tds.push('<td class="num compra-sugerida-cell"><button type="button" class="compra-sugerida-editavel' + classeCompraPositiva + '" data-sku="' + skuCompraCodificado + '" title="Clique para editar a sugestão de compra" aria-label="Editar sugestão de compra do SKU ' + escaparHtml(i.sku || '') + '">' + numero(compraSugerida) + '</button></td>');
 
             const skuCodificado = encodeURIComponent(String(i.sku || ''));
             if (modo === 'ocultados') {
@@ -3900,6 +4181,12 @@
             }
 
             tr.innerHTML = tds.join('');
+            const botaoCompraSugerida = tr.querySelector('.compra-sugerida-editavel');
+            if (botaoCompraSugerida) {
+                botaoCompraSugerida.addEventListener('click', () => {
+                    iniciarEdicaoCompraSugerida(botaoCompraSugerida, botaoCompraSugerida.dataset.sku || '');
+                });
+            }
             tbody.appendChild(tr);
         });
     }

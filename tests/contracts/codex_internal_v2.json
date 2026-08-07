@@ -167,6 +167,181 @@
         "title": "CodexActionRevisionRequest",
         "type": "object"
       },
+      "CodexAgentGuidanceRequest": {
+        "properties": {
+          "active": {
+            "default": true,
+            "title": "Active",
+            "type": "boolean"
+          },
+          "guidance_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Guidance Id"
+          },
+          "scope_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scope Key"
+          },
+          "scope_type": {
+            "default": "global",
+            "title": "Scope Type",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "title": "CodexAgentGuidanceRequest",
+        "type": "object"
+      },
+      "CodexAgentGuidanceSimulationRequest": {
+        "properties": {
+          "module": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Module"
+          },
+          "sku": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sku"
+          },
+          "store": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Store"
+          },
+          "supplier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Supplier"
+          }
+        },
+        "title": "CodexAgentGuidanceSimulationRequest",
+        "type": "object"
+      },
+      "CodexCapabilityResolveRequest": {
+        "properties": {
+          "capability_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Capability Id"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Category"
+          },
+          "limit": {
+            "default": 8,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "message": {
+            "default": "",
+            "title": "Message",
+            "type": "string"
+          },
+          "module": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Module"
+          },
+          "params": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Params"
+          }
+        },
+        "title": "CodexCapabilityResolveRequest",
+        "type": "object"
+      },
+      "CodexConversationResetRequest": {
+        "properties": {
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
+          }
+        },
+        "title": "CodexConversationResetRequest",
+        "type": "object"
+      },
       "CodexEvaluationRunAPIRequest": {
         "properties": {
           "case_ids": {
@@ -1117,14 +1292,14 @@
     },
     "source_contract_hashes": {
       "development_classifier": "fcf2dc8c2ba0d7cf3c330367a5ccca1c49735b515058e5b9ba96d4673e00eb54",
-      "initial_prompt": "c0740aee6cbd6717ae17519bf32f4b418d782484a3c7f1c57456961b984b68df",
+      "initial_prompt": "7cfeb92fc3e1343c22a52f6728135c79e626fe7807c111fb813a3cfc72ebcf4b",
       "mcp_plan_builder": "ab89b5058d3a5edac2bb2a2da8d1c36ac196216b72f6ce9ec9ef42bd2e86c578",
       "mcp_plan_validator": "d334cdc41993cee5510b1fe15f291ab482cfa6a59b840e34dd31269102db9e69",
-      "public_task": "47116ba5ba9d883974bf3b77ee2eeb8d00aa29cceae830952612b5a2e28e5433",
+      "public_task": "418db8ce1ef5d0369c7fba126add5acb4e0097983943f00856a7133299aa20e6",
       "sandbox_policy": "ef3832b8e52b28a5bd83f41f0842ee69cbbe6ae083bbc655e639e4a87b63663c",
-      "tool_catalog": "cd1b0809fbb555f86f22104833786bac836ce8fbddad4dce129d6a030fccd321"
+      "tool_catalog": "379fd5635d2620b6f1d17a4b1224a05f08f46a379e990388575cd85203c92f47"
     }
   },
-  "contracts_sha256": "7ed358f644072c63b81bc9d79a82be025b7b2b88e1d506f15e3b102683a38c1a",
+  "contracts_sha256": "2d664d0c1e4b1352ac5bc0882b9f639bc52fd048c0da92b6f84302f5b445d93a",
   "snapshot_schema_version": "1.0"
 }

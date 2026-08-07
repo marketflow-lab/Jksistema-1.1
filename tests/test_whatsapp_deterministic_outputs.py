@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from backend.services import codex_console
+from backend.services.codex.console import agent_prompt as console_agent_prompt
+from backend.services.codex.console import exact_reports as console_exact_reports
 
 
 def _whatsapp_task(prompt: str, query_policy: dict | None = None) -> dict:
@@ -34,7 +36,7 @@ def test_stock_response_names_included_and_excluded_deposits_without_ellipsis():
         }],
     }
 
-    response = codex_console._codex_whatsapp_bling_stock_response(task, [result])
+    response = console_agent_prompt._codex_whatsapp_bling_stock_response(task, [result])
 
     assert "**Estoque disponível de loja na Bling:** 61 unidades" in response
     assert "**Saldo bruto retornado pela Bling:** 186 unidades" in response
@@ -67,7 +69,7 @@ def test_stock_response_marks_unknown_deposit_and_incomplete_coverage():
         }],
     }
 
-    response = codex_console._codex_whatsapp_bling_stock_response(
+    response = console_agent_prompt._codex_whatsapp_bling_stock_response(
         _whatsapp_task("estoque SKU 001"),
         [result],
     )
@@ -94,7 +96,7 @@ def test_stock_response_deduplicates_identical_fallback_rows():
         "top_rows": [dict(row) for _ in range(5)],
     }
 
-    response = codex_console._codex_whatsapp_bling_stock_response(
+    response = console_agent_prompt._codex_whatsapp_bling_stock_response(
         _whatsapp_task("estoque SKU 200"),
         [result],
     )
@@ -106,7 +108,7 @@ def test_stock_response_deduplicates_identical_fallback_rows():
 def test_report_continuation_forces_full_ml_contract_without_query_policy():
     task = _whatsapp_task("faça a análise desse mês na mesma loja")
 
-    args, is_report = codex_console._codex_whatsapp_prepare_agent_tool_call(
+    args, is_report = console_agent_prompt._codex_whatsapp_prepare_agent_tool_call(
         task,
         "mercado_livre_orders",
         {"loja": "Uai Mineirinho", "limite": 50, "max_paginas": 2},
@@ -132,7 +134,7 @@ def test_whatsapp_simple_ml_order_query_is_not_promoted_to_report_by_style_promp
         ),
     }
 
-    args, is_report = codex_console._codex_whatsapp_prepare_agent_tool_call(
+    args, is_report = console_agent_prompt._codex_whatsapp_prepare_agent_tool_call(
         task,
         "mercado_livre_orders",
         {"loja": "JK Pecas", "limite": 20},
@@ -183,7 +185,7 @@ def test_complete_ml_report_uses_every_sku_and_falls_back_to_mlb_identifier():
         }],
     }
 
-    response = codex_console._codex_whatsapp_complete_ml_report(
+    response = console_exact_reports._codex_whatsapp_complete_ml_report(
         _whatsapp_task("continue na mesma loja"),
         [result],
     )
@@ -279,13 +281,13 @@ def test_exact_order_response_preserves_server_transcript_and_hides_it_from_mode
         "top_rows": [],
     }
 
-    response = codex_console._codex_exact_ml_order_response(
+    response = console_exact_reports._codex_exact_ml_order_response(
         _whatsapp_task("verifique a venda 2000013990113115"),
         [result],
     )
-    safe_prompt = codex_console._codex_agent_results_prompt(2, [result])
+    safe_prompt = console_agent_prompt._codex_agent_results_prompt(2, [result])
 
-    assert response.startswith(codex_console.CODEX_EXACT_ORDER_HISTORY_MARKER)
+    assert response.startswith(console_exact_reports.CODEX_EXACT_ORDER_HISTORY_MARKER)
     assert "**Full:** Sim" in response
     assert "Esta é a pergunta literal do comprador." in response
     assert "Fala exata da reclamação, sem reescrever." in response
@@ -351,7 +353,7 @@ def test_exact_order_whatsapp_uses_one_compact_card_without_repeating_ai_summary
     }
     repeated_ai_summary = "Resumo da IA que repetiria status, comprador, produto, valores, envio e pós-venda."
 
-    response = codex_console._codex_exact_ml_order_response(
+    response = console_exact_reports._codex_exact_ml_order_response(
         _whatsapp_task(f"detalhes da venda {order_id}"),
         [result],
         repeated_ai_summary,
@@ -379,7 +381,7 @@ def test_exact_order_whatsapp_uses_one_compact_card_without_repeating_ai_summary
 
 
 def test_exact_order_whatsapp_never_reports_unavailable_post_sale_as_zero():
-    response = codex_console._codex_exact_ml_order_whatsapp_response(
+    response = console_exact_reports._codex_exact_ml_order_whatsapp_response(
         {
             "requested_id": "1234567890",
             "matched_stores": ["JK Peças"],

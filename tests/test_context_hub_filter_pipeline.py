@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from backend.services import codex_assistant, codex_console, context_hub
+from backend.modules.context_hub import retrieval as context_hub_retrieval
+from backend.services import codex_assistant, codex_console
 from backend.services.codex_data_selection_agent import (
     LEGACY_SCHEMA_VERSION,
     normalize_data_selection_plan,
 )
 from backend.services.context_hub_endpoints import ContextHubSearchFilters, ContextHubSearchRequest
 from backend.services.whatsapp import data_selection_enforcement
+from backend.services.codex.console import agent_prompt as console_agent_prompt
 
 
 FILTERS = {
@@ -58,7 +60,7 @@ def _assert_filter_contract(arguments: dict) -> None:
 
 
 def test_materialized_desktop_decision_keeps_all_context_hub_filters() -> None:
-    calls = codex_console._codex_agent_planned_calls(_normalized_plan())
+    calls = console_agent_prompt._codex_agent_planned_calls(_normalized_plan())
 
     assert len(calls) == 1
     assert calls[0]["tool_id"] == "context_hub_search"
@@ -101,7 +103,7 @@ def test_whatsapp_canary_applies_materialized_filters_in_context_hub(monkeypatch
             "count": 0,
         }
 
-    monkeypatch.setattr(context_hub, "search_context", fake_search_context)
+    monkeypatch.setattr(context_hub_retrieval, "search_context", fake_search_context)
     args = dict(call["arguments"])
     args["request_surface"] = "black_jhon_whatsapp"
     codex_assistant.codex_assistant_execute_tool_call(
