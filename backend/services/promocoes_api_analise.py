@@ -966,6 +966,46 @@ def _promo_margens_aprovadas(
     return float(margem_b_pct) + tolerancia + 1e-9 >= float(margem_a_pct)
 
 
+PROMO_MARGEM_MINIMA_PROGRAMADA = 15.0
+PROMO_MARGEM_TOLERANCIA_PROGRAMADA = 3.0
+
+
+def _promo_margens_aprovadas_por_status(
+    margem_a: Any,
+    margem_b: Any,
+    status_promo_a: Any,
+    margem_minima: Any = 15.0,
+    margem_tolerancia: Any = 0.0,
+) -> bool:
+    status_normalizado = str(status_promo_a or "").strip().lower()
+    if status_normalizado not in {"programado", "programada"}:
+        return _promo_margens_aprovadas(
+            margem_a,
+            margem_b,
+            margem_minima,
+            margem_tolerancia,
+        )
+
+    margem_a_pct = _parse_float_flex(margem_a)
+    margem_b_pct = _parse_float_flex(margem_b)
+    margem_minima_pct = _parse_float_flex(margem_minima)
+    if margem_a_pct is None or margem_b_pct is None:
+        return False
+
+    minimo = max(
+        PROMO_MARGEM_MINIMA_PROGRAMADA,
+        float(margem_minima_pct or 0.0),
+    )
+    if float(margem_b_pct) < minimo:
+        return False
+    return (
+        float(margem_b_pct)
+        + PROMO_MARGEM_TOLERANCIA_PROGRAMADA
+        + 1e-9
+        >= float(margem_a_pct)
+    )
+
+
 def _promo_obter_fretes_por_preco(
     client_id: str,
     loja: str,
@@ -1542,9 +1582,10 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             promotion_type_esperado=promo_b_type,
         )
         presente_b = item_id in ids_b
-        if not financeiro_acao["exato"] or not _promo_margens_aprovadas(
+        if not financeiro_acao["exato"] or not _promo_margens_aprovadas_por_status(
             margem_a,
             financeiro_acao["margem"],
+            status_promo_a,
             req.margem_minima,
             req.margem_tolerancia,
         ):
@@ -2144,9 +2185,10 @@ async def analisar_promo_via_api_sem_arquivos(
             imposto_rate,
             promotion_type_esperado=promo_meta.get("promo_b_type") or "",
         )
-        if not financeiro_acao["exato"] or not _promo_margens_aprovadas(
+        if not financeiro_acao["exato"] or not _promo_margens_aprovadas_por_status(
             margem_a,
             financeiro_acao["margem"],
+            status_promo_a,
             margem_minima,
             margem_tolerancia,
         ):
@@ -2953,9 +2995,10 @@ async def analisar_promo_via_api_com_arquivos(
         )
         if not tem_valores_comparacao:
             decisao = "NÃ£o participar"
-        elif not _promo_margens_aprovadas(
+        elif not _promo_margens_aprovadas_por_status(
             margem_a,
             financeiro_acao["margem"],
+            status_promo_a,
             margem_minima,
             margem_tolerancia,
         ):

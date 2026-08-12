@@ -37,3 +37,58 @@ def test_tolerancia_e_preservada_na_configuracao_automatica():
     config = jobs._promo_automacao_sanitizar(payload)
 
     assert config["margem_tolerancia"] == 1.25
+
+
+def test_programada_reprova_caso_real_com_margem_ml_muito_menor():
+    with patch.object(analise, "_parse_float_flex", side_effect=_parse_float, create=True):
+        assert analise._promo_margens_aprovadas_por_status(
+            31.56,
+            11.79,
+            "Programado",
+            15.0,
+            0.0,
+        ) is False
+
+
+def test_programada_reprova_margem_ml_abaixo_de_quinze():
+    with patch.object(analise, "_parse_float_flex", side_effect=_parse_float, create=True):
+        assert analise._promo_margens_aprovadas_por_status(
+            17.0,
+            14.99,
+            "Programada",
+            15.0,
+            100.0,
+        ) is False
+
+
+def test_programada_aceita_diferenca_exata_de_tres_pontos():
+    with patch.object(analise, "_parse_float_flex", side_effect=_parse_float, create=True):
+        assert analise._promo_margens_aprovadas_por_status(
+            20.0,
+            17.0,
+            "Programada",
+            15.0,
+            0.0,
+        ) is True
+
+
+def test_programada_reprova_quando_diferenca_supera_tres_pontos():
+    with patch.object(analise, "_parse_float_flex", side_effect=_parse_float, create=True):
+        assert analise._promo_margens_aprovadas_por_status(
+            20.0,
+            16.99,
+            "Programada",
+            15.0,
+            100.0,
+        ) is False
+
+
+def test_status_ativo_preserva_tolerancia_configurada():
+    with patch.object(analise, "_parse_float_flex", side_effect=_parse_float, create=True):
+        assert analise._promo_margens_aprovadas_por_status(
+            20.0,
+            19.0,
+            "Ativo",
+            15.0,
+            1.0,
+        ) is True

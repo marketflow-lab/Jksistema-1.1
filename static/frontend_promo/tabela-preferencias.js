@@ -4,6 +4,9 @@ function formatPercentValueBr(num) {
     return `${String(rounded).replace('.', ',')}%`;
 }
 
+const MARGEM_MINIMA_PROGRAMADA_PCT = 15;
+const MARGEM_TOLERANCIA_PROGRAMADA_PCT = 3;
+
 function temValorApi(row, aliases) {
     const valor = getFirstRowValueByAliases(row, aliases);
     if (!valor) return false;
@@ -47,7 +50,16 @@ function normalizeApiRowPercentAndAction(row) {
     if (semPromoFixa || (!ativoPromo1 && !programadoPromo1)) {
         decisao = 'Não participar';
     } else if (programadoPromo1) {
-        decisao = temValoresEssenciaisProgramado(row) ? 'Participar' : 'Não participar';
+        const margemMinimaProgramada = Math.max(minPct, MARGEM_MINIMA_PROGRAMADA_PCT);
+        const margensProgramadaAprovadas = (
+            margem1 !== null &&
+            margem2 !== null &&
+            margem2 >= margemMinimaProgramada &&
+            margem2 + MARGEM_TOLERANCIA_PROGRAMADA_PCT >= margem1
+        );
+        decisao = temValoresEssenciaisProgramado(row) && margensProgramadaAprovadas
+            ? 'Participar'
+            : 'Não participar';
     } else if (margem1 === null || margem1 < minPct) {
         decisao = 'Não participar';
     } else if (margem2 === null || margem2 < minPct) {
