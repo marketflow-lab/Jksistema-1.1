@@ -364,13 +364,21 @@ def _promo_automacao_montar_participacoes(resultado: dict, loja: str) -> dict:
             )
             if decisao != "Participar":
                 continue
+            if "action_financeiro_exato" in row:
+                contexto_exato = row.get("action_financeiro_exato")
+                if not (
+                    contexto_exato is True
+                    or str(contexto_exato or "").strip().lower() in {"1", "true", "sim", "yes"}
+                ):
+                    continue
             item_id = _promo_normalizar_mlb(_promo_automacao_linha_valor(row, ["MLB", "mlb", "Item ID", "item_id", "AnÃºncio", "Anuncio"]))
             if not item_id:
                 continue
             items.append({
                 "item_id": item_id,
-                "deal_price": _parse_float_flex(_promo_automacao_linha_valor(row, ["deal_price", "preco_promocional_ml", "PreÃ§o Promocional ML", "Preco Promocional ML", "PreÃ§o Final ML", "Preco Final ML", "PreÃ§o Final PromoÃ§Ã£o 2", "Preco Final Promocao 2"])),
-                "discount_percentage": _parse_float_flex(_promo_automacao_linha_valor(row, ["ML % Campanha", "% Fixa", "Desconto ML %", "discount_percentage", "percentual"])),
+                "offer_id": str(_promo_automacao_linha_valor(row, ["action_offer_id", "offer_id", "offerId", "ref_id", "refId"]) or "").strip(),
+                "deal_price": _parse_float_flex(_promo_automacao_linha_valor(row, ["action_deal_price", "deal_price", "preco_promocional_ml", "PreÃ§o Promocional ML", "Preco Promocional ML", "PreÃ§o Final ML", "Preco Final ML", "PreÃ§o Final PromoÃ§Ã£o 2", "Preco Final Promocao 2"])),
+                "discount_percentage": _parse_float_flex(_promo_automacao_linha_valor(row, ["action_discount_percentage", "ML % Campanha", "% Fixa", "Desconto ML %", "discount_percentage", "percentual"])),
                 "sku": str(_promo_automacao_linha_valor(row, ["SKU", "sku"]) or "").strip(),
                 "titulo": str(_promo_automacao_linha_valor(row, ["TÃ­tulo", "Titulo", "title"]) or "").strip(),
             })

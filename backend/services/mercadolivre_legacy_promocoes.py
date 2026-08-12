@@ -65,15 +65,33 @@ def _ml_obter_promocoes_item(
     request_fn=None,
     *,
     strict: bool = False,
+    force_refresh: bool = False,
 ):
     request_fn = request_fn or _ml_api_request
     cache_key = f"v3-strict:{client_id}:{loja}:{item_id}" if strict else f"v2:{client_id}:{loja}:{item_id}"
-    cached = _cache_get(ML_ITEM_PROMOTIONS_CACHE, cache_key, ML_ITEM_PROMOTIONS_CACHE_TTL)
-    if cached is not None:
-        return cached, cfg
+    # O endpoint por item e a fonte que associa uma oferta ativa a campanha
+    # correspondente. Fluxos financeiros podem exigir uma fotografia atual
+    # dessa associacao, pois o cache normal dura varios minutos. A atualizacao
+    # forcada ignora somente a leitura: o resultado continua sendo gravado na
+    # mesma chave para que as demais leituras do mesmo item no lote o reutilizem.
+    if not force_refresh:
+        cached = _cache_get(ML_ITEM_PROMOTIONS_CACHE, cache_key, ML_ITEM_PROMOTIONS_CACHE_TTL)
+        if cached is not None:
+            cached = [
+                _promo_remover_contexto_consultado(entry)
+                if isinstance(entry, dict)
+                else entry
+                for entry in cached
+            ] if isinstance(cached, list) else cached
+            return cached, cfg
 
     url = f"https://api.mercadolibre.com/seller-promotions/items/{item_id}"
-    resp, cfg = request_fn(client_id, loja, cfg, "GET", url, params={"app_version": "v2"}, timeout=12)
+    try:
+        resp, cfg = request_fn(client_id, loja, cfg, "GET", url, params={"app_version": "v2"}, timeout=12)
+    except Exception:
+        if force_refresh:
+            _cache_set(ML_ITEM_PROMOTIONS_CACHE, cache_key, [])
+        raise
     if resp.status_code == 200:
         try:
             data = resp.json()
@@ -81,6 +99,8 @@ def _ml_obter_promocoes_item(
                 data = data.get("results")
             if not isinstance(data, list):
                 if strict:
+                    if force_refresh:
+                        _cache_set(ML_ITEM_PROMOTIONS_CACHE, cache_key, [])
                     raise ValueError("payload de promocoes sem lista results")
                 data = []
         except Exception as exc:
@@ -90,6 +110,16 @@ def _ml_obter_promocoes_item(
                     detail=f"Mercado Livre retornou uma lista de promocoes invalida para {item_id}: {exc}",
                 ) from exc
             data = []
+        # O payload externo nunca pode fornecer os marcadores internos usados
+        # para autorizar um contexto financeiro. Esses marcadores so sao
+        # materializados pelo adapter do endpoint de campanha, depois das
+        # validacoes de campanha/tipo/item/status/offer.
+        data = [
+            _promo_remover_contexto_consultado(entry)
+            if isinstance(entry, dict)
+            else entry
+            for entry in data
+        ]
         _cache_set(ML_ITEM_PROMOTIONS_CACHE, cache_key, data)
         return data, cfg
 
@@ -115,6 +145,8 @@ def _ml_obter_promocoes_item(
         if resp.status_code == 404 and "no offers found" in detalhe_norm:
             _cache_set(ML_ITEM_PROMOTIONS_CACHE, cache_key, [])
             return [], cfg
+        if force_refresh:
+            _cache_set(ML_ITEM_PROMOTIONS_CACHE, cache_key, [])
         raise HTTPException(
             status_code=resp.status_code or 502,
             detail=(
@@ -127,6 +159,8 @@ def _ml_obter_promocoes_item(
         _cache_set(ML_ITEM_PROMOTIONS_CACHE, cache_key, [])
         return [], cfg
 
+    if force_refresh:
+        _cache_set(ML_ITEM_PROMOTIONS_CACHE, cache_key, [])
     logger.warning(f"[ML API] Falha ao consultar promocoes do item {item_id}: {resp.status_code} - {resp.text[:300]}")
     return [], cfg
 
@@ -289,12 +323,21 @@ def _promo_prioridade_status_item(entry: Any) -> int:
     }.get(status, 0)
 
 
+def _promo_normalizar_mlb_contexto(valor: Any) -> str:
+    normalizar = globals().get("_promo_normalizar_mlb")
+    if callable(normalizar):
+        return str(normalizar(valor) or "").strip().upper()
+    texto = str(valor or "").strip().upper()
+    match = re.search(r"MLB\s*([0-9]+)", texto)
+    return f"MLB{match.group(1)}" if match else ""
+
+
 def _promo_entry_item_id(entry: Any) -> str:
     if not isinstance(entry, dict):
-        return _promo_normalizar_mlb(entry)
+        return _promo_normalizar_mlb_contexto(entry)
     raw_item = entry.get("item")
     raw_item_id = raw_item.get("id") if isinstance(raw_item, dict) else raw_item
-    return _promo_normalizar_mlb(
+    return _promo_normalizar_mlb_contexto(
         entry.get("item_id")
         or entry.get("itemId")
         or entry.get("item_id_to")
@@ -302,6 +345,238 @@ def _promo_entry_item_id(entry: Any) -> str:
         or entry.get("id")
         or ""
     )
+
+
+def _promo_remover_contexto_consultado(entry: Any) -> dict:
+    """Remove marcadores internos que nunca podem ser aceitos da API externa."""
+    if not isinstance(entry, dict):
+        return {}
+    sanitizado = copy.deepcopy(entry)
+    pendentes = [sanitizado]
+    while pendentes:
+        atual = pendentes.pop()
+        if isinstance(atual, dict):
+            for chave in list(atual):
+                valor = atual.get(chave)
+                if str(chave or "").startswith("_jk_"):
+                    atual.pop(chave, None)
+                    continue
+                if isinstance(valor, (dict, list)):
+                    pendentes.append(valor)
+        elif isinstance(atual, list):
+            pendentes.extend(valor for valor in atual if isinstance(valor, (dict, list)))
+    return sanitizado
+
+
+def _promo_status_contexto_compativel(status_entry: str, status_consultado: str) -> bool:
+    status_entry = str(status_entry or "").strip().lower()
+    status_consultado = str(status_consultado or "").strip().lower()
+    if not status_consultado or not status_entry:
+        return True
+    grupos = (
+        {"candidate", "eligible"},
+        {"pending", "programmed", "programada", "scheduled"},
+        {"started", "active", "approved"},
+        {"paused"},
+    )
+    for grupo in grupos:
+        if status_entry in grupo or status_consultado in grupo:
+            return status_entry in grupo and status_consultado in grupo
+    return status_entry == status_consultado
+
+
+def _promo_valores_texto_contexto(entry: dict, chaves: tuple[str, ...]) -> set[str]:
+    if not isinstance(entry, dict):
+        return set()
+    containers = [
+        entry,
+        entry.get("promotion") if isinstance(entry.get("promotion"), dict) else {},
+        entry.get("campaign") if isinstance(entry.get("campaign"), dict) else {},
+        entry.get("deal") if isinstance(entry.get("deal"), dict) else {},
+        entry.get("offer") if isinstance(entry.get("offer"), dict) else {},
+    ]
+    valores = set()
+    for container in containers:
+        for chave in chaves:
+            valor = container.get(chave)
+            if isinstance(valor, dict):
+                valor = valor.get("id") or valor.get("name") or valor.get("status")
+            texto = str(valor or "").strip()
+            if texto and texto.lower() not in {"-", "none", "null"}:
+                valores.add(texto)
+    return valores
+
+
+def _promo_contextualizar_entry_campanha(
+    entry: Any,
+    *,
+    campaign_id: str,
+    promotion_type_consultado: str,
+    item_id: str,
+    status_consultado: str = "",
+    status_param_consultado: str = "",
+) -> dict:
+    """Carimba a origem da consulta somente apos validar o registro retornado."""
+    sanitizado = _promo_remover_contexto_consultado(entry)
+    if not sanitizado:
+        return {}
+
+    campaign_id = str(campaign_id or "").strip()
+    promotion_type_consultado = str(promotion_type_consultado or "").strip()
+    item_id = _promo_normalizar_mlb_contexto(item_id)
+    if not campaign_id or not item_id:
+        return {}
+
+    campaigns_explicitas = _promo_valores_texto_contexto(
+        sanitizado,
+        ("promotion_id", "promotionId", "campaign_id", "campaignId", "deal_id", "dealId"),
+    )
+    for container_key in ("promotion", "campaign", "deal"):
+        container = sanitizado.get(container_key)
+        if isinstance(container, dict):
+            valor_id = str(container.get("id") or "").strip()
+            if valor_id:
+                campaigns_explicitas.add(valor_id)
+    raw_id = str(sanitizado.get("id") or "").strip()
+    if raw_id.upper().startswith(("P-", "DEAL-")):
+        campaigns_explicitas.add(raw_id)
+    if any(valor.lower() != campaign_id.lower() for valor in campaigns_explicitas):
+        return {}
+
+    tipos_explicitos = _promo_valores_texto_contexto(
+        sanitizado,
+        ("promotion_type", "promotionType", "campaign_type", "campaignType", "type"),
+    )
+    if (
+        promotion_type_consultado
+        and any(valor.upper() != promotion_type_consultado.upper() for valor in tipos_explicitos)
+    ):
+        return {}
+
+    item_entry = _promo_entry_item_id(sanitizado)
+    if not item_entry or item_entry.upper() != item_id.upper():
+        return {}
+    itens_explicitos = _promo_valores_texto_contexto(
+        sanitizado,
+        ("item_id", "itemId", "item_id_to"),
+    )
+    raw_item = sanitizado.get("item")
+    if isinstance(raw_item, dict) and raw_item.get("id"):
+        itens_explicitos.add(str(raw_item.get("id") or "").strip())
+    elif isinstance(raw_item, str):
+        itens_explicitos.add(raw_item.strip())
+    if raw_id.upper().startswith("MLB"):
+        itens_explicitos.add(raw_id)
+    if any(_promo_normalizar_mlb_contexto(valor) != item_id for valor in itens_explicitos):
+        return {}
+
+    status_entry = _promo_status_item_promocao(sanitizado)
+    status_explicitos = set()
+    for chave in ("status", "state", "status_item", "statusItem"):
+        valor = sanitizado.get(chave)
+        if isinstance(valor, dict):
+            valor = valor.get("id") or valor.get("name") or valor.get("status")
+        texto = str(valor or "").strip().lower()
+        if texto and texto not in {"-", "none", "null"}:
+            status_explicitos.add(texto)
+    if any(
+        not _promo_status_contexto_compativel(status_entry, valor)
+        for valor in status_explicitos
+    ):
+        return {}
+    if not _promo_status_contexto_compativel(status_entry, status_consultado):
+        return {}
+    status_resolvido = str(status_entry or status_consultado or "").strip().lower()
+    offers_explicitas = _promo_valores_texto_contexto(
+        sanitizado,
+        ("offer_id", "offerId", "ref_id", "refId", "candidate_offer_id", "candidateOfferId"),
+    )
+    offers_normalizadas = {valor.strip().upper() for valor in offers_explicitas if valor.strip()}
+    if len(offers_normalizadas) > 1:
+        return {}
+    offer_id = next(iter(offers_normalizadas), "") or _ml_promocao_raw_offer_id(sanitizado).strip().upper()
+    if not status_resolvido:
+        return sanitizado
+    if offer_id and status_resolvido in {"candidate", "eligible"}:
+        offer_coerente = offer_id.startswith("CANDIDATE-")
+    elif offer_id and status_resolvido in {"started", "active", "approved", "paused"}:
+        offer_coerente = offer_id.startswith("OFFER-")
+    elif offer_id and status_resolvido in {"pending", "programmed", "programada", "scheduled"}:
+        offer_coerente = offer_id.startswith(("CANDIDATE-", "OFFER-"))
+    elif not offer_id and status_resolvido in {"candidate", "eligible"}:
+        # A API SMART pode omitir offer_id no candidate. A proveniencia da
+        # precificacao continua valida; o gate da acao exige CANDIDATE-{MLB}-.
+        offer_coerente = True
+    else:
+        offer_coerente = False
+    if not offer_coerente:
+        return {}
+
+    if offer_id:
+        match_item_offer = re.match(r"^(?:CANDIDATE|OFFER)-(MLB\d+)-", offer_id, flags=re.IGNORECASE)
+        if not match_item_offer or match_item_offer.group(1).upper() != item_id.upper():
+            return {}
+
+    contextualizado = dict(sanitizado)
+    if not status_entry and status_resolvido:
+        contextualizado["_jk_status_item_consultado"] = status_resolvido
+        contextualizado["_jk_status_param_consultado"] = str(status_param_consultado or "").strip()
+
+    # O ID vem do path e o tipo vem exclusivamente do query param efetivamente
+    # enviado. Sem os dois, preservamos o raw, mas ele nao autoriza financas.
+    if promotion_type_consultado:
+        contextualizado["_jk_campaign_id_consultado"] = campaign_id
+        contextualizado["_jk_promotion_type_consultado"] = promotion_type_consultado
+        contextualizado["_jk_item_id_consultado"] = item_id
+        contextualizado["_jk_contexto_promocao_confirmado"] = True
+    return contextualizado
+
+
+def _promo_mesclar_raw_multistatus(raw_atual: Any, raw_novo: Any) -> dict:
+    if not isinstance(raw_novo, dict):
+        return dict(raw_atual) if isinstance(raw_atual, dict) else {}
+    if not isinstance(raw_atual, dict) or not raw_atual:
+        return dict(raw_novo)
+    prioridade_atual = _promo_prioridade_status_item(raw_atual)
+    prioridade_nova = _promo_prioridade_status_item(raw_novo)
+    if prioridade_nova > prioridade_atual:
+        return dict(raw_novo)
+    if prioridade_nova < prioridade_atual:
+        return dict(raw_atual)
+
+    offer_atual = _ml_promocao_raw_offer_id(raw_atual).strip().lower()
+    offer_novo = _ml_promocao_raw_offer_id(raw_novo).strip().lower()
+    status_atual = _promo_status_item_promocao(raw_atual)
+    status_novo = _promo_status_item_promocao(raw_novo)
+    ambiguo = bool(
+        (offer_atual and offer_novo and offer_atual != offer_novo)
+        or (
+            status_atual
+            and status_novo
+            and not _promo_status_contexto_compativel(status_atual, status_novo)
+        )
+    )
+    if ambiguo:
+        return _promo_remover_contexto_consultado(raw_atual)
+
+    atual_confirmado = raw_atual.get("_jk_contexto_promocao_confirmado") is True
+    novo_confirmado = raw_novo.get("_jk_contexto_promocao_confirmado") is True
+    if atual_confirmado and novo_confirmado:
+        identidade_atual = (
+            str(raw_atual.get("_jk_campaign_id_consultado") or "").strip().lower(),
+            str(raw_atual.get("_jk_promotion_type_consultado") or "").strip().upper(),
+            str(raw_atual.get("_jk_item_id_consultado") or "").strip().upper(),
+        )
+        identidade_nova = (
+            str(raw_novo.get("_jk_campaign_id_consultado") or "").strip().lower(),
+            str(raw_novo.get("_jk_promotion_type_consultado") or "").strip().upper(),
+            str(raw_novo.get("_jk_item_id_consultado") or "").strip().upper(),
+        )
+        if identidade_atual != identidade_nova:
+            return _promo_remover_contexto_consultado(raw_atual)
+    if novo_confirmado and not atual_confirmado:
+        return dict(raw_novo)
+    return dict(raw_atual)
 
 
 def _promo_erro_candidate_not_found(texto: str) -> bool:
@@ -323,7 +598,7 @@ def _promo_consultar_item_na_campanha(
 ) -> tuple[dict, dict]:
     promotion_id = str(promotion_id or "").strip()
     promotion_type = str(promotion_type or "").strip()
-    item_id = _promo_normalizar_mlb(item_id)
+    item_id = _promo_normalizar_mlb_contexto(item_id)
     if not promotion_id or not item_id:
         return {"success": False, "found": False, "detail": "Promocao ou MLB ausente."}, cfg
 
@@ -362,19 +637,38 @@ def _promo_consultar_item_na_campanha(
         entries = data.get("results") if isinstance(data, dict) else []
         if not isinstance(entries, list):
             entries = []
+        status_param = "status" if params.get("status") else ("status_item" if params.get("status_item") else "")
+        status_consultado = str(params.get(status_param) or "").strip().lower() if status_param else ""
+        encontrados = []
         for entry in entries:
-            entry_item_id = _promo_entry_item_id(entry)
-            if entry_item_id and entry_item_id.upper() == item_id.upper():
-                status = _promo_status_item_promocao(entry)
-                status = status or str(params.get("status") or params.get("status_item") or "").strip().lower()
-                return {
-                    "success": True,
-                    "found": True,
-                    "status": status,
-                    "entry": entry,
-                    "can_participate": status in {"candidate", "eligible"},
-                    "already_participating": status in {"started", "active", "pending", "programmed"},
-                }, cfg
+            entry_contextualizado = _promo_contextualizar_entry_campanha(
+                entry,
+                campaign_id=promotion_id,
+                promotion_type_consultado=str(params.get("promotion_type") or ""),
+                item_id=item_id,
+                status_consultado=status_consultado,
+                status_param_consultado=status_param,
+            )
+            if entry_contextualizado:
+                encontrados.append(entry_contextualizado)
+        assinaturas = {
+            (
+                _promo_status_item_promocao(entry),
+                _ml_promocao_raw_offer_id(entry).strip().lower(),
+            )
+            for entry in encontrados
+        }
+        if len(assinaturas) == 1 and encontrados:
+            entry = encontrados[0]
+            status = _promo_status_item_promocao(entry) or status_consultado
+            return {
+                "success": True,
+                "found": True,
+                "status": status,
+                "entry": entry,
+                "can_participate": status in {"candidate", "eligible"},
+                "already_participating": status in {"started", "active", "pending", "programmed"},
+            }, cfg
 
     return {
         "success": not bool(ultimo_erro),
@@ -878,37 +1172,31 @@ def _ml_obter_item_promocao_raw(client_id: str, loja: str, cfg: dict, campaign_i
                 except Exception:
                     data = {}
                 entries = data.get("results") or data.get("items") or []
+                entry_selecionado = {}
                 for entry in entries:
                     if not isinstance(entry, dict):
                         continue
-                    raw_item = entry.get("item")
-                    item_obj_id = raw_item.get("id") if isinstance(raw_item, dict) else raw_item
-                    entry_id = str(entry.get("item_id") or entry.get("itemId") or item_obj_id or entry.get("id") or "").strip()
-                    if entry_id == item_id:
-                        status_entry = _promo_status_item_promocao(entry)
-                        if status_item and status_entry and status_entry != status_item:
+                    entry_id = _promo_entry_item_id(entry)
+                    if entry_id == _promo_normalizar_mlb_contexto(item_id):
+                        entry_contextualizado = _promo_contextualizar_entry_campanha(
+                            entry,
+                            campaign_id=campaign_id,
+                            promotion_type_consultado=str(params_chamada.get("promotion_type") or ""),
+                            item_id=item_id,
+                            status_consultado=status_item,
+                            status_param_consultado=status_param,
+                        )
+                        if not entry_contextualizado:
                             continue
-                        offer_id_entry = _ml_promocao_raw_offer_id(entry).strip().lower()
+                        offer_id_entry = _ml_promocao_raw_offer_id(entry_contextualizado).strip().lower()
                         if offer_id_esperado and offer_id_entry != offer_id_esperado:
                             continue
-                        campaign_id_entry = _ml_promocao_raw_texto(
-                            entry,
-                            (
-                                "promotion_id",
-                                "promotionId",
-                                "campaign_id",
-                                "campaignId",
-                                "deal_id",
-                                "dealId",
-                            ),
-                        ).strip().lower()
-                        if campaign_id_entry and campaign_id_entry != campaign_id.lower():
-                            continue
-                        entry = dict(entry)
-                        if status_item and not _promo_status_item_promocao(entry):
-                            entry["_jk_status_item_consultado"] = status_item
-                            entry["_jk_status_param_consultado"] = status_param
-                        return entry, cfg
+                        entry_selecionado = _promo_mesclar_raw_multistatus(
+                            entry_selecionado,
+                            entry_contextualizado,
+                        )
+                if entry_selecionado:
+                    return entry_selecionado, cfg
                 paging = data.get("paging") or {}
                 total = int(paging.get("total") or 0)
                 offset += limit
@@ -939,7 +1227,7 @@ def _ml_promocao_raw_texto(entry: dict, chaves: tuple[str, ...]) -> str:
 
 
 def _ml_promocao_raw_id(entry: dict) -> str:
-    return _ml_promocao_raw_texto(
+    campaign_id = _ml_promocao_raw_texto(
         entry,
         (
             "promotion_id",
@@ -948,18 +1236,27 @@ def _ml_promocao_raw_id(entry: dict) -> str:
             "campaignId",
             "deal_id",
             "dealId",
-            "offer_id",
-            "offerId",
-            "id",
         ),
     )
+    if campaign_id:
+        return campaign_id
+    if isinstance(entry, dict) and entry.get("_jk_contexto_promocao_confirmado") is True:
+        campaign_id = str(entry.get("_jk_campaign_id_consultado") or "").strip()
+        if campaign_id:
+            return campaign_id
+    return _ml_promocao_raw_texto(entry, ("offer_id", "offerId", "id"))
 
 
 def _ml_promocao_raw_tipo(entry: dict) -> str:
-    return _ml_promocao_raw_texto(
+    promotion_type = _ml_promocao_raw_texto(
         entry,
         ("promotion_type", "promotionType", "type", "campaign_type", "campaignType"),
     )
+    if promotion_type:
+        return promotion_type
+    if isinstance(entry, dict) and entry.get("_jk_contexto_promocao_confirmado") is True:
+        return str(entry.get("_jk_promotion_type_consultado") or "").strip()
+    return ""
 
 
 def _ml_promocao_raw_nome(entry: dict) -> str:
@@ -1217,6 +1514,9 @@ def _ml_listar_itens_promocao_com_raw(
 
     for promo_url_tpl in promo_url_tpls:
         params_url_tpl = parse_qs(urlparse(promo_url_tpl).query)
+        promotion_type_consultado = str(
+            (params_url_tpl.get("promotion_type") or [""])[0] or ""
+        ).strip()
         status_consultado = ""
         status_param_consultado = ""
         if params_url_tpl.get("status_item"):
@@ -1296,11 +1596,21 @@ def _ml_listar_itens_promocao_com_raw(
                         or ""
                     ).strip()
                     if item_id:
-                        if status_consultado and not _promo_status_item_promocao(entry):
-                            entry = dict(entry)
-                            entry["_jk_status_item_consultado"] = status_consultado
-                            entry["_jk_status_param_consultado"] = status_param_consultado
-                        raw_por_item[item_id] = entry
+                        entry_contextualizado = _promo_contextualizar_entry_campanha(
+                            entry,
+                            campaign_id=campaign_id,
+                            promotion_type_consultado=promotion_type_consultado,
+                            item_id=item_id,
+                            status_consultado=status_consultado,
+                            status_param_consultado=status_param_consultado,
+                        )
+                        if not entry_contextualizado:
+                            item_id = ""
+                        else:
+                            raw_por_item[item_id] = _promo_mesclar_raw_multistatus(
+                                raw_por_item.get(item_id),
+                                entry_contextualizado,
+                            )
                 else:
                     item_id = str(entry or "").strip()
                 if item_id:
@@ -1448,8 +1758,7 @@ def _ml_listar_itens_promocao_multistatus_com_raw(
             item_key = str(item_id or "").strip()
             if item_key:
                 raw_atual = raw_total.get(item_key)
-                if not raw_atual or _promo_prioridade_status_item(raw) > _promo_prioridade_status_item(raw_atual):
-                    raw_total[item_key] = raw
+                raw_total[item_key] = _promo_mesclar_raw_multistatus(raw_atual, raw)
         if len(ids) >= max_items:
             break
 
@@ -1489,8 +1798,7 @@ def _ml_listar_itens_promocao_multistatus_com_raw(
             item_key = str(item_id or "").strip()
             if item_key:
                 raw_atual = raw_total.get(item_key)
-                if not raw_atual or _promo_prioridade_status_item(raw) > _promo_prioridade_status_item(raw_atual):
-                    raw_total[item_key] = raw
+                raw_total[item_key] = _promo_mesclar_raw_multistatus(raw_atual, raw)
 
     if not ids:
         return _ml_listar_itens_promocao_com_raw(

@@ -305,12 +305,19 @@ function montarPayloadParticipacoesPromocoes(indiceCampanha = null) {
         const items = rows.map((row) => {
             const decisao = getValorLinhaPromoAuto(row, ['Ação', 'Acao', 'Participar ou não', 'Participar ou nao']);
             if (!isDecisaoParticipar(decisao)) return null;
+            if (Object.prototype.hasOwnProperty.call(row || {}, 'action_financeiro_exato')) {
+                const contextoExato = row?.action_financeiro_exato;
+                const contextoExatoTexto = String(contextoExato ?? '').trim().toLowerCase();
+                if (!(contextoExato === true || ['1', 'true', 'sim', 'yes'].includes(contextoExatoTexto))) return null;
+            }
             const itemId = getValorLinhaPromoAuto(row, ['MLB', 'mlb', 'Item ID', 'item_id', 'Anúncio', 'Anuncio']);
             if (!itemId) return null;
-            const dealPrice = parseNumeroPromoAuto(getValorLinhaPromoAuto(row, ['deal_price', 'preco_promocional_ml', 'Preço Promocional ML', 'Preco Promocional ML', 'Preço Final ML', 'Preco Final ML', 'Preco final ML', 'Preço Final Promoção 2', 'Preco Final Promocao 2']));
-            const discountPct = parseNumeroPromoAuto(getValorLinhaPromoAuto(row, ['ML % Campanha', '% Fixa', 'Desconto ML %', 'discount_percentage', 'percentual']));
+            const actionOfferId = String(getValorLinhaPromoAuto(row, ['action_offer_id', 'offer_id', 'offerId', 'ref_id', 'refId']) || '').trim();
+            const dealPrice = parseNumeroPromoAuto(getValorLinhaPromoAuto(row, ['action_deal_price', 'deal_price', 'preco_promocional_ml', 'Preço Promocional ML', 'Preco Promocional ML', 'Preço Final ML', 'Preco Final ML', 'Preco final ML', 'Preço Final Promoção 2', 'Preco Final Promocao 2']));
+            const discountPct = parseNumeroPromoAuto(getValorLinhaPromoAuto(row, ['action_discount_percentage', 'ML % Campanha', '% Fixa', 'Desconto ML %', 'discount_percentage', 'percentual']));
             return {
                 item_id: itemId,
+                offer_id: actionOfferId,
                 deal_price: dealPrice,
                 discount_percentage: discountPct,
                 sku: getValorLinhaPromoAuto(row, ['SKU', 'sku']),

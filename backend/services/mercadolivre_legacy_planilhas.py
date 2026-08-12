@@ -59,6 +59,8 @@ configure_mercadolivre_legacy_planilhas_runtime()
 PROMO_DESCONTO_ML_NAO_INFORMADO = "Não informado pela API"
 PROMO_DESCONTO_ML_CONFIAVEL_KEY = "_jk_desconto_ml_confiavel"
 PROMO_DESCONTO_ML_FONTE_KEY = "_jk_desconto_ml_fonte"
+PROMO_TARIFA_ML_EXATA_KEY = "_jk_tarifa_ml_exata"
+PROMO_TARIFA_ML_LIQUIDA_KEY = "_jk_tarifa_ml_liquida"
 
 
 def _normalizar_sku_saida(v):
@@ -118,6 +120,7 @@ def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_ex
 
         frete_val = _to_float_safe(frete_base)
         frete_ml_val = _to_float_safe(frete_ml)
+        frete_ml_flag_presente = "frete_ml_exato" in item
         frete_ml_exato = str(item.get("frete_ml_exato") or "").strip().lower() in {"1", "true", "sim", "yes"}
         tipo_txt = str(item.get("Tipo") or "").strip().lower()
         listing_type_hint = "free" if "grat" in tipo_txt else ""
@@ -133,7 +136,7 @@ def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_ex
         # Para frete grÃ¡tis, prioriza o recÃƒÂ¡lculo por faixa oficial do ML
         # com base no preÃ§o final da planilha. Se nÃ£o der para reconhecer a
         # faixa do frete-base, mantÃƒÂ©m o ajuste proporcional como fallback.
-        if not frete_ml_exato and frete_gratis_ml_bool and frete_val is not None and preco_final is not None and preco_final_ml is not None:
+        if not frete_ml_flag_presente and not frete_ml_exato and frete_gratis_ml_bool and frete_val is not None and preco_final is not None and preco_final_ml is not None:
             frete_ml_ajustado = _recalcular_frete_por_faixa_ml(
                 frete_val,
                 preco_final,
@@ -152,9 +155,12 @@ def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_ex
 
         tarifa = _to_float_safe(item.get('Tarifa'))
         tarifa_ml = _to_float_safe(item.get('Tarifa ML'))
+        tarifa_ml_flag_presente = PROMO_TARIFA_ML_EXATA_KEY in item
+        tarifa_ml_exata = str(item.get(PROMO_TARIFA_ML_EXATA_KEY) or "").strip().lower() in {"1", "true", "sim", "yes"}
+        tarifa_ml_liquida = str(item.get(PROMO_TARIFA_ML_LIQUIDA_KEY) or "").strip().lower() in {"1", "true", "sim", "yes"}
         if tarifa is None:
             tarifa = (preco_final * taxa_pct) if (preco_final is not None and taxa_pct is not None) else None
-        if tarifa_ml is None:
+        if tarifa_ml is None and not tarifa_ml_flag_presente:
             tarifa_ml = (preco_final_ml * taxa_pct) if (preco_final_ml is not None and taxa_pct is not None) else None
         desconto_ml_val = _calcular_desconto_ml_valor(
             desconto_atual=desconto_ml_val,
@@ -176,12 +182,18 @@ def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_ex
         valor_liquido_ml = None
         if preco_final is not None and custo is not None:
             valor_liquido = preco_final - custo - (frete_val or 0.0) - (imposto_valor or 0.0) - (tarifa or 0.0)
-        if preco_final_ml is not None and custo is not None and desconto_ml_val is not None:
+        contexto_ml_confiavel = (
+            (not frete_ml_flag_presente or frete_ml_exato)
+            and (not tarifa_ml_flag_presente or tarifa_ml_exata)
+        )
+        beneficio_disponivel = tarifa_ml_liquida or desconto_ml_val is not None
+        if preco_final_ml is not None and custo is not None and beneficio_disponivel and contexto_ml_confiavel and tarifa_ml is not None:
             valor_liquido_ml = preco_final_ml - custo - (frete_ml_val or 0.0) - (imposto_ml_valor or 0.0) - (tarifa_ml or 0.0)
-            valor_liquido_ml += desconto_ml_val
-        elif desconto_ml_val is None:
+            if not tarifa_ml_liquida and desconto_ml_val is not None:
+                valor_liquido_ml += desconto_ml_val
+        elif not beneficio_disponivel or not contexto_ml_confiavel or tarifa_ml is None:
             # Nao reutiliza liquido/margem calculados anteriormente assumindo
-            # implicitamente que um desconto desconhecido seria zero.
+            # implicitamente que um desconto/contexto desconhecido seria zero.
             for chave in tuple(item):
                 if "quido ML" in str(chave):
                     item[chave] = ""

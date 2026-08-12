@@ -124,7 +124,7 @@ class PromocoesDescontoMlTests(unittest.TestCase):
 
         self.assertIsNone(desconto)
 
-    def test_explicitly_non_boosted_offer_is_rendered_as_zero(self):
+    def test_explicitly_non_boosted_offer_ignores_residual_boost_fields(self):
         payload = {
             "boosted_offer": False,
             "discount_meli_boost_amount": 6.64,
@@ -134,7 +134,27 @@ class PromocoesDescontoMlTests(unittest.TestCase):
 
         desconto = pricing._ml_extrair_desconto_tarifa_promocao_raw(payload)
 
-        self.assertEqual(desconto, 0.0)
+        self.assertIsNone(desconto)
+
+    def test_non_boosted_offer_does_not_mask_explicit_sale_fee_discount(self):
+        payload = {
+            "boosted_offer": False,
+            "sale_fee_discount_amount": 3.53,
+            "price": 114.22,
+            "original_price": 149.24,
+        }
+
+        extraido = pricing._ml_extrair_desconto_tarifa_promocao_raw(payload)
+        ajustado = pricing._ml_ajustar_desconto_tarifa_recebivel_promocao(
+            payload,
+            desconto_tarifa_ml=extraido,
+            preco_promocional=114.22,
+            tarifa_ml=19.42,
+            frete_ml=16.45,
+        )
+
+        self.assertEqual(extraido, 3.53)
+        self.assertEqual(ajustado, 3.53)
 
     def test_meli_percentage_without_boost_is_unknown_not_fee_discount(self):
         payload = {
@@ -353,7 +373,10 @@ class PromocoesDescontoMlTests(unittest.TestCase):
             "shipping": {"logistic_type": "cross_docking", "mode": "me2"},
         }
 
+        requisicao = {}
+
         def request_fn(*_args, **_kwargs):
+            requisicao.update(_kwargs.get("params") or {})
             return _FakeResponse(200, {
                 "sale_fee_amount": 18.83,
                 "listing_fee_amount": 0,
@@ -383,8 +406,65 @@ class PromocoesDescontoMlTests(unittest.TestCase):
 
         self.assertEqual(info["ad_cost"], 18.83)
         self.assertTrue(info["ad_cost_exact_for_price"])
+        self.assertTrue(info["ad_cost_context_complete"])
         self.assertEqual(info["ad_cost_price_context"], 110.79)
         self.assertEqual(info["ad_cost_source"], "sites/MLB/listing_prices")
+        self.assertEqual(requisicao["currency_id"], "BRL")
+        self.assertEqual(requisicao["quantity"], 1)
+        self.assertEqual(requisicao["logistic_type"], "cross_docking")
+        self.assertEqual(requisicao["shipping_mode"], "me2")
+
+    def test_listing_prices_sem_contexto_logistico_nao_autoriza_margem(self):
+        item = {
+            "id": "MLB999000111",
+            "price": 110.79,
+            "category_id": "MLB123",
+            "listing_type_id": "gold_special",
+            "shipping": {"mode": "me2"},
+        }
+
+        def request_fn(*_args, **_kwargs):
+            return _FakeResponse(200, {"sale_fee_amount": 18.83}), {}
+
+        with (
+            patch.object(pricing, "_ml_nome_tipo_anuncio", return_value="Classico", create=True),
+            patch.object(pricing, "_cache_get", return_value=None, create=True),
+            patch.object(pricing, "_cache_set", create=True),
+            patch.object(pricing, "ML_LISTING_FEE_CACHE", {}, create=True),
+            patch.object(pricing, "ML_LISTING_FEE_CACHE_TTL", 60, create=True),
+        ):
+            info, _ = pricing._ml_obter_taxas_anuncio(
+                "000002",
+                "Loja",
+                {},
+                item,
+                request_fn=request_fn,
+            )
+
+        self.assertEqual(info["ad_cost"], 18.83)
+        self.assertFalse(info["ad_cost_context_complete"])
+        self.assertFalse(info["ad_cost_exact_for_price"])
+
+    def test_sale_fee_total_wins_over_fixed_fee_component(self):
+        payload = {
+            "fixed_fee_amount": 6.75,
+            "sale_fee_amount": 25.22,
+            "sale_fee_details": {"fixed_fee_amount": 6.75},
+        }
+
+        tarifa = pricing._ml_extrair_tarifa_cobrada_promocao_raw(payload)
+
+        self.assertEqual(tarifa, 25.22)
+
+    def test_fixed_fee_component_alone_is_not_total_charged_fee(self):
+        payload = {
+            "fixed_fee_amount": 6.75,
+            "sale_fee_details": {"fixed_fee_amount": 6.75},
+        }
+
+        tarifa = pricing._ml_extrair_tarifa_cobrada_promocao_raw(payload)
+
+        self.assertIsNone(tarifa)
 
     def test_receivable_adjustment_rejects_mismatched_promotion_price(self):
         payload = {
