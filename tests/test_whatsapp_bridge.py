@@ -447,7 +447,7 @@ def test_daily_report_endpoint_is_disabled_even_when_forced(monkeypatch):
         None,
     )
 
-    assert result["status"] == "disabled_weekly_only"
+    assert result["status"] == "disabled"
     assert result["report"] is None
     assert result["due"] is False
 
@@ -879,6 +879,7 @@ def test_pending_question_approval_is_notified_once_to_authorized_binding(monkey
         "agent_state": "aguardando_aprovacao",
         "result": {"resposta": "Sim, possui garantia.", "requires_approval": True},
     })
+    monkeypatch.setattr(perguntas_pos_venda_codex, "approval_job_current", lambda _client, _job: True)
     monkeypatch.setattr(whatsapp_bridge, "_post_interactive_approval", lambda _cfg, **kwargs: sent.append(kwargs) or {"success": True, "status": "sent"})
     monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
 
@@ -950,6 +951,7 @@ def test_whatsapp_forwards_only_one_question_until_active_is_answered(monkeypatc
             "requires_approval": True,
         },
     })
+    monkeypatch.setattr(perguntas_pos_venda_codex, "approval_job_current", lambda _client, _job: True)
     monkeypatch.setattr(whatsapp_bridge, "_post_interactive_approval", lambda _cfg, **kwargs: sent.append(kwargs) or {"status": "sent"})
     monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
     state = {}

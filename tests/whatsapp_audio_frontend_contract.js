@@ -10,7 +10,7 @@ const script = fs.readFileSync(path.join(root, 'static', 'configuracoes-whatsapp
 
 assert(html.includes('id="waAudioPreflight"'));
 assert(html.includes('Áudios recebidos no WhatsApp'));
-assert(html.includes('separado das ligações OpenAI/SIP'));
+assert(html.includes('O Whisper roda somente nesta máquina e não usa API paga de transcrição.'));
 assert(script.includes("payload.audio_messages || {}"));
 assert(script.includes("audioMessages.preflight || {}"));
 assert(script.includes("audioMessages.queue || {}"));
