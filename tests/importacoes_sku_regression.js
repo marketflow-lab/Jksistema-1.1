@@ -14,10 +14,19 @@ for (const source of inlineScripts) {
 
 const requiredSnippets = [
     'id="btnAprovarCompra"',
-    'compra_aprovada: true',
-    'compra_aprovada_em: aprovadoEm',
+    'Desfazer aprovação',
+    'const aprovar = !itemComCompraAprovada(item);',
+    "'/skus/' + encodeURIComponent(sku) + '/aprovacao'",
+    "method: 'PATCH'",
+    'body: JSON.stringify({ aprovada: aprovar })',
     'getNumber(cardValor && cardValor.textContent)',
-    '((precoVenda - custoUnitario) / precoVenda) * 100',
+    'dados.financeiro_exato === true',
+    'dados.imposto_valor',
+    'dados.tarifa_ml',
+    'dados.frete_ml',
+    'dados.valor_liquido',
+    'Custo do cadastro:',
+    'anuncios_loja: { ...ultimosAnunciosLojaConcorrentes }',
     '.analysis-comparison-card {',
     '.analysis-price-original {',
     '.analysis-promo-badge {',
@@ -34,10 +43,15 @@ const requiredSnippets = [
     '.analysis-offer.is-clickable {',
     "card.setAttribute('role', 'link');",
     "card.setAttribute('tabindex', '0');",
-    "const ancora = lbl.querySelector('a.label-link');",
+    "window.open(url, '_blank', 'noopener,noreferrer');",
+    "typeof event.preventDefault === 'function'",
+    "typeof event.stopPropagation === 'function'",
     'const abrirChrome = window.electronAPI && window.electronAPI.openExternalChrome;',
     'configurarCardOfertaClicavel(lbl, labelTexto, v);',
-    'await enriquecerPrecosAnalise(linksConc);',
+    'enriquecerPrecosAnalise(linksConc),',
+    'await salvarAnaliseConcorrentes(listaId, skuNorm);',
+    "const erro = await resp.json().catch(() => ({}));",
+    'Não foi possível carregar os anúncios e preços dos concorrentes.',
 ];
 
 for (const snippet of requiredSnippets) {
@@ -55,6 +69,9 @@ const forbiddenSnippets = [
     'venda_aprovada',
     'vMargemMlb',
     'escolherValorCardMlb',
+    'if (!resp.ok) return vazio;',
+    '((precoVenda - custoUnitario) / precoVenda) * 100',
+    'custo_unitario: custoValido ? custoUnitario : null',
 ];
 
 for (const snippet of forbiddenSnippets) {
@@ -127,6 +144,7 @@ const configurarCardOfertaClicavel = new Function(
 const activeClasses = new Set();
 const attributes = new Map();
 const anchor = { clicks: 0, click() { this.clicks += 1; } };
+const fallbackUrls = [];
 const card = {
     onclick: null,
     onkeydown: null,
@@ -151,16 +169,38 @@ global.window = {
             return Promise.resolve({ success: true, browser: 'chrome' });
         },
     },
+    open(url) {
+        fallbackUrls.push(url);
+        return { opener: {} };
+    },
 };
 const urlAnuncio = 'https://produto.mercadolivre.com.br/MLB-1234567890';
 configurarCardOfertaClicavel(label, 'MLB1234567890', urlAnuncio);
 if (!activeClasses.has('is-clickable') || attributes.get('role') !== 'link' || attributes.get('tabindex') !== '0') {
     throw new Error('Card com anuncio nao recebeu comportamento clicavel e acessivel');
 }
-card.onclick({ target: { closest() { return null; } } });
-card.onkeydown({ key: 'Enter', target: { closest() { return null; } }, preventDefault() {} });
-if (chromeUrls.length !== 2 || chromeUrls.some((url) => url !== urlAnuncio) || anchor.clicks !== 0) {
+let prevencoes = 0;
+let propagacoesInterrompidas = 0;
+const criarEvento = (adicionais = {}) => ({
+    target: { closest() { return null; } },
+    preventDefault() { prevencoes += 1; },
+    stopPropagation() { propagacoesInterrompidas += 1; },
+    ...adicionais,
+});
+card.onclick(criarEvento());
+card.onclick(criarEvento({ target: { closest(seletor) { return seletor === 'a[href]' ? anchor : null; } } }));
+card.onkeydown(criarEvento({ key: 'Enter' }));
+card.onkeydown(criarEvento({ key: ' ' }));
+if (chromeUrls.length !== 4 || chromeUrls.some((url) => url !== urlAnuncio) || anchor.clicks !== 0) {
     throw new Error('Clique ou teclado no card nao abriu diretamente o anuncio no Chrome');
+}
+if (prevencoes !== 4 || propagacoesInterrompidas !== 4 || fallbackUrls.length !== 0) {
+    throw new Error('Clique no link interno nao foi tratado exclusivamente pelo card');
+}
+window.electronAPI.openExternalChrome = () => { throw new Error('Chrome indisponivel'); };
+card.onclick(criarEvento());
+if (fallbackUrls.length !== 1 || fallbackUrls[0] !== urlAnuncio || anchor.clicks !== 0) {
+    throw new Error('Fallback do card nao abriu o anuncio com seguranca');
 }
 configurarCardOfertaClicavel(label, 'Sem anuncio', '');
 if (activeClasses.has('is-clickable') || attributes.has('role') || card.onclick !== null) {

@@ -62,6 +62,7 @@
 
     function atualizarMenuLateral() {
       document.getElementById('jk-ia-fab')?.classList.toggle('ativo', panelAberto || codexPanelAberto);
+      document.getElementById('jk-questions-fab')?.classList.toggle('ativo', perguntasPanelAberto);
       document.getElementById('jk-msg-fab')?.classList.toggle('ativo', msgPanelAberto);
       document.getElementById('jk-right-sidebar-hotspot')?.classList.remove('menu-aberto');
       _sidebarAtualizarAlertas();
@@ -69,7 +70,6 @@
 
     function setIAPanelAberto(aberto) {
       panelAberto = !!aberto;
-      if (panelAberto) blackJhonUsandoIaSecundaria = true;
       if (panelAberto) iaTemMensagemNaoVista = false;
       document.getElementById('jk-ia-panel')?.classList.toggle('aberto', panelAberto);
       atualizarMenuLateral();
@@ -99,9 +99,7 @@
 
     function setCodexPanelAberto(aberto) {
       codexPanelAberto = !!aberto;
-      if (codexPanelAberto) blackJhonUsandoIaSecundaria = false;
       if (codexPanelAberto) codexTemMensagemNaoVista = false;
-      if (codexPanelAberto) codexAprovacaoNaoVista = false;
       document.getElementById('jk-codex-panel')?.classList.toggle('aberto', codexPanelAberto);
       _codexSalvarEstadoPainel();
       atualizarMenuLateral();
@@ -123,11 +121,26 @@
       }
     }
 
+    function setQuestionsPanelAberto(aberto) {
+      perguntasPanelAberto = !!aberto && _usuarioLocalEhFull();
+      const panel = document.getElementById('jk-questions-panel');
+      if (panel) {
+        panel.hidden = !_usuarioLocalEhFull();
+        panel.classList.toggle('aberto', perguntasPanelAberto);
+      }
+      atualizarMenuLateral();
+      if (perguntasPanelAberto) {
+        _questionsMarcarComoVistas(_questionsItensOrdenados());
+        void _questionsCarregarPendentes({ marcarVistas: true });
+      }
+    }
+
     function togglePanel(forcar) {
       const abrir = forcar !== undefined ? !!forcar : !panelAberto;
       if (abrir) {
         setMsgPanelAberto(false);
         setCodexPanelAberto(false);
+        setQuestionsPanelAberto(false);
       }
       setIAPanelAberto(abrir);
     }
@@ -137,6 +150,7 @@
       if (abrir) {
         setIAPanelAberto(false);
         setCodexPanelAberto(false);
+        setQuestionsPanelAberto(false);
       }
       setMsgPanelAberto(abrir);
     }
@@ -146,8 +160,19 @@
       if (abrir) {
         setIAPanelAberto(false);
         setMsgPanelAberto(false);
+        setQuestionsPanelAberto(false);
       }
       setCodexPanelAberto(abrir);
+    }
+
+    function toggleQuestionsPanel(forcar) {
+      const abrir = forcar !== undefined ? !!forcar : !perguntasPanelAberto;
+      if (abrir) {
+        setIAPanelAberto(false);
+        setCodexPanelAberto(false);
+        setMsgPanelAberto(false);
+      }
+      setQuestionsPanelAberto(abrir);
     }
 
     function toggleBlackJhonPanel(forcar) {
@@ -195,7 +220,7 @@
       let explicitStore = '';
       document.querySelectorAll('select, input[type="text"], input[type="date"], input[type="search"], input[type="number"], input[type="month"], input[type="week"]')
         .forEach(el => {
-          if (filters.length >= 12 || el.closest('#jk-ia-panel,#jk-codex-panel,#jk-msg-panel') || el.offsetParent === null) return;
+          if (filters.length >= 12 || el.closest('#jk-ia-panel,#jk-codex-panel,#jk-questions-panel,#jk-msg-panel') || el.offsetParent === null) return;
           const rawValue = (el.value || '').trim();
           const value = rawValue || (el.selectedOptions && el.selectedOptions[0]?.textContent?.trim()) || '';
           if (!value) return;
@@ -226,7 +251,7 @@
 
       const metrics = [];
       document.querySelectorAll('.card, .kpi-card, .resumo-card').forEach(c => {
-        if (metrics.length >= 8 || c.closest('#jk-ia-panel,#jk-codex-panel,#jk-msg-panel') || c.offsetParent === null) return;
+        if (metrics.length >= 8 || c.closest('#jk-ia-panel,#jk-codex-panel,#jk-questions-panel,#jk-msg-panel') || c.offsetParent === null) return;
         const t = c.querySelector('h3,h4,.card-title,.kpi-label')?.textContent?.trim();
         const v = c.querySelector('.val,.value,.kpi-val,.card-value')?.textContent?.trim();
         if (t && v) metrics.push({
@@ -236,7 +261,7 @@
       });
 
       const dateValues = Array.from(document.querySelectorAll('input[type="date"], input[type="month"], input[type="week"]'))
-        .filter(el => !el.closest('#jk-ia-panel,#jk-codex-panel,#jk-msg-panel') && el.offsetParent !== null)
+        .filter(el => !el.closest('#jk-ia-panel,#jk-codex-panel,#jk-questions-panel,#jk-msg-panel') && el.offsetParent !== null)
         .map(el => (el.value || '').trim())
         .filter(Boolean);
       let selectedText = '';
@@ -376,7 +401,7 @@
       const aguardando = addMsg('assistant', 'Pensando...', false);
       aguardando.classList.add('loading');
 
-      const historico = mensagensAtuais.slice(-10).map(_approvalHistoricoChat);
+      const historico = mensagensAtuais.slice(-10).map(_approvalHistoricoChat).filter(Boolean);
       const contextoTela = _obterContextoTela();
 
       try {
@@ -439,15 +464,15 @@
 
       const approvalResposta = _approvalParseMensagem(resposta);
       if (approvalResposta) {
-        aguardando.className = 'jk-ia-msg assistant';
-        _approvalMontarCard(aguardando, approvalResposta);
-      } else {
-        _definirTextoMsg(aguardando, resposta);
+        aguardando.remove();
+        _adicionarNotificacaoAprovacao(approvalResposta, { abrirPainel: true });
+        return;
       }
+      _definirTextoMsg(aguardando, resposta);
       aguardando.classList.remove('loading');
       mensagensAtuais.push({
         role: 'assistant',
-        text: approvalResposta ? _approvalSerializarMensagem(approvalResposta) : resposta,
+        text: resposta,
       });
       await salvarMensagensAtuais();
       if (convsVisible) await renderConvsList();
@@ -457,7 +482,12 @@
 
     /* ── Eventos ── */
     document.getElementById('jk-ia-fab').addEventListener('click', () => toggleBlackJhonPanel());
+    document.getElementById('jk-questions-fab')?.addEventListener('click', () => toggleQuestionsPanel());
     document.getElementById('jk-msg-fab').addEventListener('click', () => toggleMsgPanel());
+    document.getElementById('jk-questions-close')?.addEventListener('click', () => toggleQuestionsPanel(false));
+    document.getElementById('jk-questions-refresh')?.addEventListener('click', () => {
+      void _questionsCarregarPendentes({ marcarVistas: true });
+    });
     document.getElementById('jk-ia-btn-fechar').addEventListener('click', () => togglePanel(false));
     document.getElementById('jk-codex-new').addEventListener('click', () => { void _codexReiniciarMemoria(); });
     document.getElementById('jk-codex-history-toggle')?.addEventListener('click', () => _codexToggleHistorico());
@@ -643,6 +673,9 @@
     _msgAtualizarSelecao();
     setTimeout(() => { void _msgBuscarUsuariosOnline().catch(() => {}); }, 10 * 60 * 1000);
     if (_usuarioLocalEhFull()) setTimeout(() => { _perguntasIniciarMonitorGlobal(); }, 2 * 60 * 1000);
+    _codexRemoverPerguntasMlDoHistoricoLocal();
+    _codexRemoverAlertasAutomaticosDoHistoricoLocal();
+    _questionsRenderLista();
     _codexAtualizarVisibilidade();
     const codexEstadoInicial = _codexLerEstadoPainel();
     codexInitialTaskId = String(codexEstadoInicial.task_id || '').trim();
@@ -650,13 +683,11 @@
     _codexSetThreadId('');
     codexHistoryVisible = false;
     document.getElementById('jk-codex-history-panel')?.classList.remove('ativo');
-    if (_usuarioLocalEhFull()) _codexIniciarAssistenteProativo();
     document.getElementById('jk-codex-messages')?.addEventListener('scroll', () => {
       if (window.__JK_CODEX_SCROLL_SAVE_TIMER__) clearTimeout(window.__JK_CODEX_SCROLL_SAVE_TIMER__);
       window.__JK_CODEX_SCROLL_SAVE_TIMER__ = setTimeout(() => _codexSalvarEstadoPainel(), 180);
     });
     window.addEventListener('beforeunload', () => {
-      _codexPararAssistenteProativo();
       if (codexPollTimer) clearTimeout(codexPollTimer);
       if (codexActionPollTimer) clearTimeout(codexActionPollTimer);
       codexFullTextCache.clear();
@@ -671,9 +702,11 @@
       if (callModal) return;
       const iaPanel = document.getElementById('jk-ia-panel');
       const codexPanel = document.getElementById('jk-codex-panel');
+      const questionsPanel = document.getElementById('jk-questions-panel');
       const msgPanel = document.getElementById('jk-msg-panel');
       if (panelAberto && iaPanel && !iaPanel.contains(alvo) && !menu) togglePanel(false);
       if (codexPanelAberto && codexPanel && !codexPanel.contains(alvo) && !menu) toggleCodexPanel(false);
+      if (perguntasPanelAberto && questionsPanel && !questionsPanel.contains(alvo) && !menu) toggleQuestionsPanel(false);
       if (msgPanelAberto && msgPanel && !msgPanel.contains(alvo) && !menu) toggleMsgPanel(false);
     }, true);
   }

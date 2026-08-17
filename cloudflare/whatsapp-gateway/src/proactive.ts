@@ -27,8 +27,7 @@ export async function proactive(request: Request, env: Env): Promise<Response> {
     return json({ success: false, error: "binding_machine_mismatch" }, 403);
   }
   const isTask = ["task_completed", "task_failed", "task_partial", "task_awaiting_approval", "task_conversation"].includes(eventType);
-  const isScheduledReport = ["weekly_report", "monthly_report"].includes(eventType);
-  if (!isTask && !isScheduledReport && !["high", "critical"].includes(severity)) return json({ success: true, status: "ignored_low_severity" });
+  if (!isTask) return json({ success: false, error: "feature_removed_question_only_mode" }, 410);
   const existing = await env.DB.prepare("SELECT fingerprint FROM proactive_events WHERE fingerprint=?").bind(fingerprint).first();
   if (existing) {
     await flushOutbox(env, subjectId, 12);
@@ -38,16 +37,9 @@ export async function proactive(request: Request, env: Env): Promise<Response> {
     }
     return json({ success: true, status: "duplicate", delivery_receipt: deliveryReceipt });
   }
-  if (!isTask && !isScheduledReport) {
-    const sinceDay = nowSeconds() - 86400;
-    const sinceCooldown = nowSeconds() - 7200;
-    const counts = await env.DB.prepare("SELECT SUM(CASE WHEN created_at>=? THEN 1 ELSE 0 END) AS daily,SUM(CASE WHEN created_at>=? THEN 1 ELSE 0 END) AS cooldown FROM proactive_events WHERE subject_id=? AND event_type='operational_alert'")
-      .bind(sinceDay, sinceCooldown, subjectId).first<{ daily: number; cooldown: number }>();
-    if (Number(counts?.daily || 0) >= 3 || Number(counts?.cooldown || 0) >= 1) return json({ success: true, status: "rate_limited" });
-  }
   const eligibility = await zeroCostEligibility(env, subjectId);
   await env.DB.prepare("INSERT INTO proactive_events(fingerprint,subject_id,event_type,severity,text_body,status,created_at) VALUES(?,?,?,?,?,?,?)")
-    .bind(fingerprint, subjectId, (isTask || isScheduledReport) ? eventType : "operational_alert", severity, textBody, eligibility.allowed ? "queued" : eligibility.reason, nowSeconds()).run();
+    .bind(fingerprint, subjectId, eventType, severity, textBody, eligibility.allowed ? "queued" : eligibility.reason, nowSeconds()).run();
   const templateName = String(body.template_name || "");
   const params = Array.isArray(body.template_params) ? body.template_params.map(String) : [];
   for (const [index, part] of textParts.entries()) {

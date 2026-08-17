@@ -1,8 +1,8 @@
-import { normalizeRegisteredPhone, zeroCostEligibility } from "./bindings";
+import { zeroCostEligibility } from "./bindings";
 import { compactReply, outboundRecipient, safeTemplate } from "./core";
 import { inboundMediaSchemaMissing } from "./inbound-media";
 import { QUESTION_SUGGESTION_OPEN_PAYLOAD, QUESTION_SUGGESTION_TEMPLATE_NAME } from "./question-templates";
-import { audit, Env, graphRequest, json, JsonRecord, nowSeconds, randomId, requestJson, retryDelaySeconds } from "./shared";
+import { audit, Env, graphRequest, JsonRecord, nowSeconds, randomId, retryDelaySeconds } from "./shared";
 
 export async function queueOutbound(env: Env, subjectId: string, recipient: string, textBody: string, reason: string, templateName = "", templateParams: string[] = []): Promise<string> {
   const id = randomId("out");
@@ -13,7 +13,6 @@ export async function queueOutbound(env: Env, subjectId: string, recipient: stri
   await audit(env, "outbox_queued", subjectId, { outbox_id: id, reason, template_name: templateName || "" });
   return id;
 }
-
 export async function queueInboundResultPart(
   env: Env,
   messageId: string,
@@ -164,7 +163,7 @@ export async function sendOutboxItem(env: Env, item: JsonRecord): Promise<void> 
       return;
     }
   }
-  let eligibility = await zeroCostEligibility(env, subjectId, String(item.message_type || "") === "adhoc_text");
+  let eligibility = await zeroCostEligibility(env, subjectId);
   if (!eligibility.allowed && eligibility.reason === "waiting_free_window" && template) {
     eligibility = { allowed: true, reason: "approved_utility_template", binding: eligibility.binding };
   }
@@ -232,40 +231,9 @@ export async function flushOutbox(env: Env, subjectId = "", limit = 10): Promise
   for (const item of rows.results || []) await sendOutboxItem(env, item);
 }
 
-export async function flushAdhocOutbox(env: Env, subjectId: string, limit = 10): Promise<void> {
-  const rows = await env.DB.prepare(
-    "SELECT * FROM outbox WHERE subject_id=? AND message_type='adhoc_text' AND status IN ('queued','retry','waiting_free_window') AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY created_at LIMIT ?",
-  ).bind(subjectId, nowSeconds(), limit).all<JsonRecord>();
-  for (const item of rows.results || []) await sendOutboxItem(env, item);
-}
-
-export async function notifyUnauthorizedAccess(env: Env, subjectId: string, waId: string, reason: string): Promise<string> {
-  const phoneSubject = normalizeRegisteredPhone(waId || subjectId);
-  if (!phoneSubject) return "invalid_phone";
-  await audit(env, "unpaired_phone_message", phoneSubject, { source_subject_id: subjectId, reason });
-  const since = nowSeconds() - 3600;
-  const recent = await env.DB.prepare(
-    "SELECT COUNT(*) AS total FROM audit_events WHERE event_type='unauthorized_access_notice' AND subject_id=? AND created_at>=?",
-  ).bind(phoneSubject, since).first<{ total: number }>();
-  if (Number(recent?.total || 0) >= 1) {
-    await audit(env, "unauthorized_access_notice_throttled", phoneSubject, { reason });
-    return "rate_limited";
-  }
-  const text = "Olá! Este número não possui permissão para acessar o Black Jhon. Solicite a um administrador do JK Sistema que cadastre e autorize este número.";
-  const outboxId = await queueOutbound(env, phoneSubject, phoneSubject, text, "unauthorized_access_notice");
-  await env.DB.prepare("UPDATE outbox SET message_type='adhoc_text' WHERE id=?").bind(outboxId).run();
-  const queued = await env.DB.prepare("SELECT * FROM outbox WHERE id=?").bind(outboxId).first<JsonRecord>();
-  if (queued) await sendOutboxItem(env, queued);
-  const delivery = await env.DB.prepare("SELECT status,error,meta_message_id FROM outbox WHERE id=?")
-    .bind(outboxId).first<JsonRecord>();
-  const status = String(delivery?.status || "queued");
-  await audit(env, "unauthorized_access_notice", phoneSubject, { outbox_id: outboxId, status, reason });
-  return status;
-}
-
 export async function releaseWaitingSummary(env: Env, subjectId: string): Promise<void> {
   const waiting = await env.DB.prepare(
-    "SELECT * FROM outbox WHERE subject_id=? AND status='waiting_free_window' AND message_type!='adhoc_text' ORDER BY created_at LIMIT 30",
+    "SELECT * FROM outbox WHERE subject_id=? AND status='waiting_free_window' ORDER BY created_at LIMIT 30",
   ).bind(subjectId).all<JsonRecord>();
   const rows = waiting.results || [];
   if (!rows.length) return;
@@ -286,61 +254,4 @@ export async function releaseWaitingSummary(env: Env, subjectId: string): Promis
   const summaryId = await queueOutbound(env, subjectId, subjectId, summary, "pending_free_window_summary");
   const summaryItem = await env.DB.prepare("SELECT * FROM outbox WHERE id=?").bind(summaryId).first<JsonRecord>();
   if (summaryItem) await sendOutboxItem(env, summaryItem);
-}
-
-export async function welcomeMessage(request: Request, env: Env): Promise<Response> {
-  const body = await requestJson(request);
-  const subjectId = String(body.subject_id || "").trim();
-  const machineId = String(body.machine_id || "").trim();
-  const rawText = String(body.text || "").replace(/\r\n/g, "\n").trim();
-  if (!subjectId || !machineId || !rawText || rawText.length > 1000) {
-    return json({ success: false, error: "invalid_welcome_payload" }, 400);
-  }
-  const binding = await env.DB.prepare("SELECT * FROM bindings WHERE subject_id=? AND active=1")
-    .bind(subjectId).first<JsonRecord>();
-  if (!binding) return json({ success: false, error: "binding_missing" }, 404);
-  if (String(binding.machine_id || "") !== machineId) {
-    return json({ success: false, error: "binding_machine_mismatch" }, 403);
-  }
-
-  const outboxId = await queueOutbound(env, subjectId, subjectId, rawText, "welcome_message");
-  const queued = await env.DB.prepare("SELECT * FROM outbox WHERE id=?").bind(outboxId).first<JsonRecord>();
-  if (queued) await sendOutboxItem(env, queued);
-  const delivery = await env.DB.prepare("SELECT status,error,meta_message_id FROM outbox WHERE id=?")
-    .bind(outboxId).first<JsonRecord>();
-  const status = String(delivery?.status || "queued");
-  await audit(env, "welcome_message_requested", subjectId, { outbox_id: outboxId, status });
-  return json({
-    success: status !== "failed",
-    status,
-    outbox_id: outboxId,
-    meta_message_id: String(delivery?.meta_message_id || ""),
-    error: String(delivery?.error || ""),
-  });
-}
-
-export async function adhocMessage(request: Request, env: Env): Promise<Response> {
-  const body = await requestJson(request);
-  const phoneNumber = normalizeRegisteredPhone(body.phone_number);
-  const machineId = String(body.machine_id || "").trim();
-  const rawText = String(body.text || "").replace(/\r\n/g, "\n").trim();
-  if (!phoneNumber || !machineId || !rawText || rawText.length > 3500) {
-    return json({ success: false, error: "invalid_adhoc_message_payload" }, 400);
-  }
-
-  const outboxId = await queueOutbound(env, phoneNumber, phoneNumber, rawText, "adhoc_message");
-  await env.DB.prepare("UPDATE outbox SET message_type='adhoc_text' WHERE id=?").bind(outboxId).run();
-  const queued = await env.DB.prepare("SELECT * FROM outbox WHERE id=?").bind(outboxId).first<JsonRecord>();
-  if (queued) await sendOutboxItem(env, queued);
-  const delivery = await env.DB.prepare("SELECT status,error,meta_message_id FROM outbox WHERE id=?")
-    .bind(outboxId).first<JsonRecord>();
-  const status = String(delivery?.status || "queued");
-  await audit(env, "adhoc_message_requested", phoneNumber, { outbox_id: outboxId, status, machine_id: machineId });
-  return json({
-    success: status !== "failed",
-    status,
-    outbox_id: outboxId,
-    meta_message_id: String(delivery?.meta_message_id || ""),
-    error: String(delivery?.error || ""),
-  });
 }

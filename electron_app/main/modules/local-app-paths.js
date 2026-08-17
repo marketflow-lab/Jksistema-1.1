@@ -78,6 +78,7 @@ const JK_LOCAL_BACKEND_PORT = (
     ? Number(JK_CONTEXT_HUB_ELECTRON_TEST_PORT)
     : 8001;
 const JK_PROMO_WORKER_PORT = 8011;
+const JK_LEGACY_WHATSAPP_VOICE_PORT = 8012;
 const JK_DEFAULT_APP_URL = `http://127.0.0.1:${JK_LOCAL_BACKEND_PORT}/frontend_index.html`;
 const JK_LOCAL_BACKEND_DIR_NAME = 'local_app';
 const JK_FIREBASE_PRESENCE_ENV_FILE_NAME = 'firebase-presence.env';

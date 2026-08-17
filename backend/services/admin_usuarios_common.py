@@ -229,12 +229,41 @@ def _require_online_presence_access(authorization: Optional[str], client_id: str
         "permissions": permissoes,
     }
 
+def _resolver_credencial_google_sheets() -> str:
+    candidatos = [str(CREDENTIALS_FILE or "").strip()]
+    appdata = str(os.environ.get("APPDATA") or "").strip()
+    if appdata:
+        candidatos.append(
+            os.path.join(
+                appdata,
+                "JK Sistema Cliente",
+                "local_app",
+                "info",
+                "credentials.json",
+            )
+        )
+
+    vistos: set[str] = set()
+    for candidato in candidatos:
+        if not candidato:
+            continue
+        caminho = os.path.abspath(os.path.expanduser(candidato))
+        chave = os.path.normcase(caminho)
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        if os.path.isfile(caminho):
+            return caminho
+    return ""
+
+
 def autenticar_google_sheets():
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    if not os.path.exists(CREDENTIALS_FILE):
+    credentials_file = _resolver_credencial_google_sheets()
+    if not credentials_file:
         return None
     try:
-        creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
+        creds = Credentials.from_service_account_file(credentials_file, scopes=scopes)
         return gspread.authorize(creds)
     except Exception as e:
         print(f"Erro Auth Google: {e}")

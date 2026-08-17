@@ -269,6 +269,7 @@ set "IA_PROVIDER=auto"
 set "GROQ_MODEL=llama-3.3-70b-versatile"
 set "OPENAI_MODEL=gpt-5.4-nano"
 set "ELECTRON_RUN_AS_NODE="
+set "JK_LOCAL_SERVERS_PREPARED_BY_LAUNCHER=1"
 
 REM Detecta NPM para iniciar o app Electron
 set "HAS_NPM="

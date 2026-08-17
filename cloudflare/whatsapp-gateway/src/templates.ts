@@ -15,12 +15,6 @@ export const TEMPLATE_DEFINITIONS = [
     components: [{ type: "BODY", text: "Joao Pretinho recebeu um pedido que exige aprovacao: {{1}}. Abra o JK Sistema para revisar.", example: { body_text: [["ajuste solicitado"]] } }],
   },
   {
-    name: "jk_joao_alerta_operacional",
-    category: "UTILITY",
-    language: "pt_BR",
-    components: [{ type: "BODY", text: "Alerta {{1}} do Joao Pretinho: {{2}}. Consulte o JK Sistema para detalhes.", example: { body_text: [["critico", "risco operacional detectado"]] } }],
-  },
-  {
     name: "jk_black_jhon_nova_pergunta",
     category: "UTILITY",
     language: "pt_BR",

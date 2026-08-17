@@ -518,7 +518,7 @@ def test_v2_keeps_fail_closed_when_safe_partial_repair_is_still_unsafe(monkeypat
         initial_answer="Sim, serve perfeitamente. Envie uma foto para confirmar.",
     )
 
-    with pytest.raises(agent.PerguntasIARespostaIndisponivel):
+    with pytest.raises(agent.PerguntasIARespostaPoliticaInvalida) as exc_info:
         agent._perguntas_ia_v2_gerar_resposta(
             "tenant-test",
             {
@@ -530,3 +530,4 @@ def test_v2_keeps_fail_closed_when_safe_partial_repair_is_still_unsafe(monkeypat
         )
 
     assert captured["repair_calls"] == 1
+    assert "evidence_insufficient_safe_draft_required" in exc_info.value.violations

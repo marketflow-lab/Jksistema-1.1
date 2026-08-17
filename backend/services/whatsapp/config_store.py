@@ -34,7 +34,6 @@ from backend.services.whatsapp import gateway as whatsapp_gateway
 from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import message as whatsapp_message
-from backend.services.whatsapp import report_scheduling as whatsapp_report_scheduling
 from backend.services.whatsapp import retry_policy as whatsapp_retry_policy
 from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp import tool_results as whatsapp_tool_results
@@ -49,7 +48,7 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents
 from backend.services.codex.console import paths as console_paths
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
@@ -201,24 +200,11 @@ def _whatsapp_dual_agent_settings(config: Optional[dict[str, Any]] = None) -> di
     source = config if isinstance(config, dict) else _load_config()
     return whatsapp_settings.dual_agent_settings(
         source,
-        report_deadline_seconds=WHATSAPP_REPORT_DEADLINE_SECONDS,
         max_retry_attempts=WHATSAPP_MAX_RETRY_ATTEMPTS,
     )
 
 def _normalize_progress_interval(value: Any) -> int:
     return whatsapp_settings.normalize_progress_interval(value)
-
-def _normalize_voice_model(value: Any, fallback: str) -> str:
-    return whatsapp_settings.normalize_voice_model(value, fallback)
-
-def _normalize_voice_name(value: Any) -> str:
-    return whatsapp_settings.normalize_voice_name(value)
-
-def _normalize_voice_int(value: Any, fallback: int, minimum: int, maximum: int) -> int:
-    return whatsapp_settings.normalize_voice_int(value, fallback, minimum, maximum)
-
-def _normalize_voice_config(config: dict[str, Any]) -> dict[str, Any]:
-    return whatsapp_settings.normalize_voice_config(config)
 
 def _whatsapp_ai_settings(config: Optional[dict[str, Any]] = None) -> dict[str, str]:
     source = config if isinstance(config, dict) else _load_config()
@@ -249,7 +235,7 @@ def _phone_notification_settings(
 
 def _default_config() -> dict[str, Any]:
     return {
-        "version": 12,
+        "version": 13,
         "worker_url": "",
         "bridge_token": "",
         "business_phone": "",
@@ -293,19 +279,6 @@ def _default_config() -> dict[str, Any]:
         "context_hub_enabled_by_client": {},
         "function_manager_worker_count": WHATSAPP_FUNCTION_MANAGER_WORKER_COUNT_DEFAULT,
         "function_manager_runtime_pool_size": WHATSAPP_FUNCTION_MANAGER_RUNTIME_POOL_SIZE_DEFAULT,
-        "voice_enabled": False,
-        "voice_model": whatsapp_voice.VOICE_MODEL_DEFAULT,
-        "voice_transcription_model": whatsapp_voice.VOICE_TRANSCRIPTION_MODEL_DEFAULT,
-        "voice_name": whatsapp_voice.VOICE_NAME_DEFAULT,
-        "voice_language": "pt-BR",
-        "voice_max_call_minutes": 30,
-        "voice_silence_timeout_seconds": 90,
-        "voice_long_task_offer_seconds": 90,
-        "voice_max_concurrent_calls": 3,
-        "voice_progress_interval_seconds": 8,
-        "voice_transcript_retention": "transcript_only",
-        "voice_store_audio": False,
-        "voice_read_only": True,
         "enabled": False,
         "pairing_pending": False,
         "pairing_expires_at": 0,
@@ -377,7 +350,7 @@ def _load_config() -> dict[str, Any]:
                     }
                 )
         result["enabled"] = bool(result.get("enabled"))
-        result["version"] = 12
+        result["version"] = 13
         result["job_deadline_seconds"] = 0
         result["deadline_enabled"] = False
         result["pairing_pending"] = bool(result.get("pairing_pending"))
@@ -410,7 +383,9 @@ def _load_config() -> dict[str, Any]:
             result["progress_explain_wait"] = False
         if not isinstance(result.get("phone_notification_settings"), dict):
             result["phone_notification_settings"] = {}
-        result.update(_normalize_voice_config(result))
+        for key in tuple(result):
+            if str(key).startswith("voice_"):
+                result.pop(key, None)
         return result
 
 def _save_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -441,7 +416,7 @@ def _save_config(config: dict[str, Any]) -> dict[str, Any]:
                 context_hub_overrides[override_client_id] = override["enabled"]
         value = _default_config()
         value.update(source)
-        value["version"] = 12
+        value["version"] = 13
         value["context_hub_enabled_default"] = context_hub_default
         value["context_hub_enabled_by_client"] = context_hub_overrides
         value["client_id"] = str(value.get("client_id") or "").strip()
@@ -465,7 +440,9 @@ def _save_config(config: dict[str, Any]) -> dict[str, Any]:
             value["progress_explain_wait"] = False
         if not isinstance(value.get("phone_notification_settings"), dict):
             value["phone_notification_settings"] = {}
-        value.update(_normalize_voice_config(value))
+        for key in tuple(value):
+            if str(key).startswith("voice_"):
+                value.pop(key, None)
         value["updated_at"] = _now()
         persisted_value = {
             key: item
@@ -529,10 +506,6 @@ _COMPONENT_FUNCTIONS = frozenset((
     '_normalize_capacity',
     '_whatsapp_dual_agent_settings',
     '_normalize_progress_interval',
-    '_normalize_voice_model',
-    '_normalize_voice_name',
-    '_normalize_voice_int',
-    '_normalize_voice_config',
     '_whatsapp_ai_settings',
     '_default_phone_notification_settings',
     '_normalize_phone_ai_behavior',
@@ -569,10 +542,6 @@ _IMPLEMENTATIONS = {
     '_normalize_capacity': _normalize_capacity,
     '_whatsapp_dual_agent_settings': _whatsapp_dual_agent_settings,
     '_normalize_progress_interval': _normalize_progress_interval,
-    '_normalize_voice_model': _normalize_voice_model,
-    '_normalize_voice_name': _normalize_voice_name,
-    '_normalize_voice_int': _normalize_voice_int,
-    '_normalize_voice_config': _normalize_voice_config,
     '_whatsapp_ai_settings': _whatsapp_ai_settings,
     '_default_phone_notification_settings': _default_phone_notification_settings,
     '_normalize_phone_ai_behavior': _normalize_phone_ai_behavior,

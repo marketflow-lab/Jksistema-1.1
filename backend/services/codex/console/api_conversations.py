@@ -457,13 +457,8 @@ def codex_reset_current_conversation(
         raise HTTPException(status_code=400, detail="Confirme o reinicio da memoria do Black Jhon.")
     client_id = str(sessao.get("client_id") or "default")
     username = str(sessao.get("username") or "").strip().lower()
-    shared_continuity = _codex_shared_continuity_for_session(sessao)
     with CODEX_CONVERSATION_LOCK:
-        state = (
-            _codex_load_or_create_shared_conversation_state(client_id, username)
-            if shared_continuity
-            else _codex_load_or_create_conversation_state(client_id, username, channel="app")
-        )
+        state = _codex_load_or_create_conversation_state(client_id, username, channel="app")
         conversation_id = str(state.get("conversation_id") or "")
         generation = int(state.get("generation") or 1)
         active_statuses = {"queued", "running", "awaiting_approval", "cancel_requested"}
@@ -508,44 +503,11 @@ def codex_reset_current_conversation(
             }
         )
         _codex_save_conversation_summary(client_id, username, conversation_id, state)
-        if shared_continuity:
-            app_state = _codex_load_or_create_conversation_state(
-                client_id,
-                username,
-                channel="app",
-            )
-            app_state.update(
-                {
-                    "generation": int(state.get("generation") or generation + 1),
-                    "summary": "",
-                    "recent_messages": [],
-                    "latest_thread_id": "",
-                    "thread_prompt_fingerprint": "",
-                    "thread_schema_fingerprint": "",
-                    "thread_scope_fingerprint": "",
-                    "thread_conversation_key": "",
-                    "thread_restart_reason": "manual_reset",
-                    "updated_at": _codex_now(),
-                }
-            )
-            _codex_save_conversation_summary(
-                client_id,
-                username,
-                str(app_state.get("conversation_id") or ""),
-                app_state,
-            )
-    if shared_continuity:
-        try:
-            from backend.services import whatsapp_bridge
-
-            whatsapp_bridge._reset_shared_conversation_for_session(sessao)
-        except Exception:
-            pass
     return {
         "success": True,
         "conversation": {
             "conversation_id": conversation_id,
-            "channel": "shared" if shared_continuity else "app",
+            "channel": "app",
             "generation": int(state.get("generation") or generation + 1),
             "state": "active",
             "can_reset": True,

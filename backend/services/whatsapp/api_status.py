@@ -34,7 +34,6 @@ from backend.services.whatsapp import gateway as whatsapp_gateway
 from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import message as whatsapp_message
-from backend.services.whatsapp import report_scheduling as whatsapp_report_scheduling
 from backend.services.whatsapp import retry_policy as whatsapp_retry_policy
 from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp import tool_results as whatsapp_tool_results
@@ -50,7 +49,7 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents
 from backend.services.codex.console import queueing as console_queueing
 from backend.services.codex.console import telemetry as console_telemetry
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
@@ -101,54 +100,12 @@ def _phone_dispatch_diagnostics() -> dict[str, Any]:
 
 
 def _voice_public_status(config: dict[str, Any]) -> dict[str, Any]:
-    voice_local = whatsapp_voice.VOICE_RUNTIME.diagnostics()
-    if config.get("worker_url") and config.get("bridge_token"):
-        try:
-            voice_gateway = _gateway_json(config, "GET", "/bridge/voice/status", timeout=12)
-        except Exception as exc:
-            voice_gateway = {"success": False, "configured": False, "error": str(exc)[:500]}
-    else:
-        voice_gateway = {"success": False, "configured": False, "error": "nao_configurado"}
-    gateway_openai = voice_gateway.get("openai") if isinstance(voice_gateway.get("openai"), dict) else {}
-    gateway_fingerprint = str(gateway_openai.get("key_fingerprint") or "")
-    local_fingerprint = str(voice_local.get("api_key_fingerprint") or "")
-    voice_gateway_public = {key: value for key, value in voice_gateway.items() if key not in {"calls", "heartbeats"}}
-    if isinstance(voice_gateway_public.get("openai"), dict):
-        voice_gateway_public["openai"] = {
-            key: value for key, value in voice_gateway_public["openai"].items() if key != "key_fingerprint"
-        }
-    current_client_id = str(config.get("client_id") or "")
-    current_username = str(config.get("username") or "").strip().lower()
-    recent_calls = [
-        item for item in list(voice_gateway.get("calls") or [])
-        if isinstance(item, dict)
-        and str(item.get("client_id") or "") == current_client_id
-        and str(item.get("username") or "").strip().lower() == current_username
-    ][:20]
+    del config
     return {
-        "enabled": config.get("voice_enabled") is True,
-        "ready": bool(
-            config.get("voice_enabled") is True
-            and voice_local.get("ready")
-            and voice_gateway.get("configured")
-            and gateway_fingerprint == local_fingerprint
-        ),
-        "read_only": True,
-        "transcript_retention": "transcript_only",
-        "model": str(config.get("voice_model") or whatsapp_voice.VOICE_MODEL_DEFAULT),
-        "transcription_model": str(config.get("voice_transcription_model") or whatsapp_voice.VOICE_TRANSCRIPTION_MODEL_DEFAULT),
-        "name": str(config.get("voice_name") or whatsapp_voice.VOICE_NAME_DEFAULT),
-        "language": "pt-BR",
-        "max_call_minutes": int(config.get("voice_max_call_minutes") or 30),
-        "silence_timeout_seconds": int(config.get("voice_silence_timeout_seconds") or 90),
-        "long_task_offer_seconds": int(config.get("voice_long_task_offer_seconds") or 90),
-        "max_concurrent_calls": int(config.get("voice_max_concurrent_calls") or 3),
-        "progress_interval_seconds": int(config.get("voice_progress_interval_seconds") or 8),
-        "api_key_configured": bool(voice_local.get("api_key_configured")),
-        "key_match": bool(gateway_fingerprint and gateway_fingerprint == local_fingerprint),
-        "local": {key: value for key, value in voice_local.items() if key != "api_key_fingerprint"},
-        "gateway": voice_gateway_public,
-        "recent_calls": recent_calls,
+        "enabled": False,
+        "ready": False,
+        "policy_blocked": True,
+        "removed": True,
     }
 
 
@@ -170,7 +127,6 @@ def _personal_number_status(config: dict[str, Any], worker: dict[str, Any]) -> t
         notification_settings = _phone_notification_settings(
             config, subject_id, client_id=client_id, username=username,
         )
-        notification_settings["is_primary"] = item.get("is_primary") is True
         personal_numbers.append({
             "subject_id": subject_id,
             "phone_number": phone_number,
@@ -178,7 +134,7 @@ def _personal_number_status(config: dict[str, Any], worker: dict[str, Any]) -> t
             "client_id": client_id,
             "username": username,
             "full_access": full_access,
-            "access_label": "Acesso total com confirmação pelo WhatsApp" if full_access else "Somente consultas autorizadas",
+            "access_label": "Perguntas e respostas do Mercado Livre",
             "last_inbound_at": int(item.get("last_inbound_at") or 0),
             "created_at": int(item.get("created_at") or 0),
             "this_machine": str(item.get("machine_id") or "") == str(config.get("machine_id") or ""),
@@ -384,6 +340,9 @@ def _public_status(config: dict[str, Any], worker: Optional[dict[str, Any]] = No
     conversation_context_status = _conversation_context_status(state)
     return {
         "success": True,
+        "channel_mode": whatsapp_settings.WHATSAPP_CHANNEL_MODE,
+        "conversation_scope": whatsapp_settings.WHATSAPP_CONVERSATION_SCOPE,
+        "allowed_workflows": list(whatsapp_settings.WHATSAPP_ALLOWED_WORKFLOWS),
         "config_version": int(config.get("version") or 10),
         "enabled": bool(config.get("enabled")),
         "configured": bool(config.get("worker_url") and config.get("bridge_token")),

@@ -219,7 +219,7 @@ def _listing_link(listing: ListingSnapshot) -> str:
 
 
 def _store_signature(store_name: str) -> str:
-    name = str(store_name or "").strip()
+    name = " ".join(str(store_name or "").split())
     if name:
-        return f"Equipe {name} agradece o seu contato."
-    return "Equipe da loja agradece o seu contato."
+        return f"Equipe {name} agradece pelo contato, Precisando estamos a disposição!"
+    return "Equipe da loja agradece pelo contato, Precisando estamos a disposição!"

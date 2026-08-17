@@ -30,6 +30,7 @@ ASSISTANT_JOB_STATES = {
     "canceled",
 }
 TERMINAL_JOB_STATES = {"partial", "completed", "failed", "canceled"}
+REMOVED_STATE_BUCKETS = {"scheduled_report_deliveries", "report_chart_cleanup_at"}
 SCHEMA_VERSION = 2
 
 _AUDIT_REDACTED = "[REDACTED]"
@@ -190,6 +191,7 @@ def _state_snapshot_for_persistence(state: Any) -> dict[str, Any]:
     return {
         str(bucket): _state_persistence_value(value)
         for bucket, value in snapshot.items()
+        if str(bucket) not in REMOVED_STATE_BUCKETS
     }
 
 
@@ -399,6 +401,8 @@ class WhatsappBridgeStore:
                 result[str(row["bucket"])] = json.loads(str(row["payload_json"] or "null"))
             except Exception:
                 continue
+        for bucket in REMOVED_STATE_BUCKETS:
+            result.pop(bucket, None)
         return _sanitize_loaded_conversation_memory(result)
 
     def save_state(self, state: dict[str, Any], *, migration: bool = False) -> None:

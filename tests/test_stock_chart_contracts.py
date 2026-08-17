@@ -5,7 +5,6 @@ import json
 from backend.services import (
     codex_bling_tools,
     ia_tools_vendas,
-    report_charts,
     whatsapp_report_visuals,
 )
 from backend.services.codex.assistant import evidence as assistant_evidence
@@ -298,22 +297,3 @@ def test_codex_package_preserves_only_the_requested_provider_chart_contract():
     assert package["chart_data"]["schema"] == "jk.stock.stale_inventory.v1"
     assert [item["sku"] for item in package["chart_data"]["ranking"]] == ["A-1", "B-2"]
     assert package["chart_data"]["pii_included"] is False
-
-
-def test_weekly_visual_consolidates_severity_and_category_in_one_image(tmp_path):
-    chart = whatsapp_report_visuals.build_weekly_chart_data(
-        [
-            {"severity": "critical", "category": "Estoque"},
-            {"severity": "high", "category": "Vendas"},
-        ],
-        "2026-W29",
-    )
-
-    labels = [item["label"] for item in chart["categories"]]
-    assert "Severidade — crítico" in labels
-    assert "Severidade — atenção" in labels
-    assert "Categoria — Estoque" in labels
-    assert "Categoria — Vendas" in labels
-    artifacts = report_charts.generate_report_charts(chart, tmp_path, max_images=2)
-    assert len(artifacts) == 1
-    assert artifacts[0]["kind"] == "weekly_categories"

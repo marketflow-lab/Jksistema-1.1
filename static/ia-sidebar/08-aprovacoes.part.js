@@ -1,30 +1,3 @@
-    function _approvalCompactarPayload(valor, depth = 0) {
-      if (valor == null) return valor;
-      if (typeof valor === 'string') return valor.slice(0, 5000);
-      if (typeof valor === 'number' || typeof valor === 'boolean') return valor;
-      if (depth > 4) return '';
-      if (Array.isArray(valor)) {
-        return valor.slice(0, 40).map(item => _approvalCompactarPayload(item, depth + 1));
-      }
-      if (typeof valor === 'object') {
-        const saida = {};
-        Object.keys(valor).slice(0, 80).forEach((key) => {
-          if (['mercadolivre', 'raw', 'debug'].includes(key)) return;
-          saida[key] = _approvalCompactarPayload(valor[key], depth + 1);
-        });
-        return saida;
-      }
-      return '';
-    }
-
-    function _approvalSerializarMensagem(payload) {
-      try {
-        return APPROVAL_MSG_PREFIX + JSON.stringify(_approvalCompactarPayload(payload || {}));
-      } catch (_) {
-        return '';
-      }
-    }
-
     function _approvalParseMensagem(texto) {
       const raw = String(texto || '').trimStart();
       if (!raw.startsWith(APPROVAL_MSG_PREFIX)) return null;
@@ -45,56 +18,22 @@
         });
     }
 
-    function _approvalIndexNoHistorico(approvalId) {
-      const id = String(approvalId || '').trim();
-      if (!id) return -1;
-      return mensagensAtuais.findIndex((msg) => {
-        if (!msg) return false;
-        const payload = _approvalParseMensagem(msg.text);
-        return String((payload && payload.id) || '').trim() === id;
-      });
-    }
-
-    function _approvalGarantirConversaHistorico() {
-      if (!convAtualId) convAtualId = _novoId();
-    }
-
-    function _approvalSalvarNoHistorico(payload) {
-      if (_approvalEhPosVenda(payload)) return;
-      const id = String((payload && payload.id) || '').trim();
-      const texto = _approvalSerializarMensagem(payload);
-      if (!id || !texto) return;
-      _approvalGarantirConversaHistorico();
-      const idx = _approvalIndexNoHistorico(id);
-      if (idx >= 0) {
-        mensagensAtuais[idx] = { role: 'assistant', text: texto };
-      } else {
-        mensagensAtuais.push({ role: 'assistant', text: texto });
-      }
-      try {
-        void salvarMensagensAtuais();
-        if (convsVisible) renderConvsList();
-      } catch (_) {}
-    }
-
     function renderMsgs() {
       const msgsEl = document.getElementById('jk-ia-msgs');
       msgsEl.innerHTML = '';
+      const limpas = mensagensAtuais.filter(m => !_approvalParseMensagem(m && m.text));
+      if (limpas.length !== mensagensAtuais.length) {
+        mensagensAtuais = limpas;
+        try { void salvarMensagensAtuais(); } catch (_) {}
+      }
       if (mensagensAtuais.length === 0) {
         addMsg('assistant', 'Olá! Posso analisar dados desta tela, responder dúvidas ou ajudar com próximos passos.', false);
         return;
       }
       mensagensAtuais.forEach(m => {
-        const approvalPayload = _approvalParseMensagem(m && m.text);
-        if (_approvalEhPosVenda(approvalPayload)) return;
         const div = document.createElement('div');
-        div.className = 'jk-ia-msg ' + (approvalPayload ? 'assistant' : (m.role || 'assistant'));
-        if (approvalPayload) {
-          div.innerHTML = '';
-          _approvalMontarCard(div, approvalPayload);
-        } else {
-          _definirTextoMsg(div, m && m.text);
-        }
+        div.className = 'jk-ia-msg ' + (m.role || 'assistant');
+        _definirTextoMsg(div, m && m.text);
         msgsEl.appendChild(div);
       });
       msgsEl.scrollTop = msgsEl.scrollHeight;
@@ -103,20 +42,19 @@
     function addMsg(role, texto, salvar = true) {
       const msgsEl = document.getElementById('jk-ia-msgs');
       const approvalPayload = _approvalParseMensagem(texto);
-      if (_approvalEhPosVenda(approvalPayload)) return null;
-      const div = document.createElement('div');
-      div.className = 'jk-ia-msg ' + (approvalPayload ? 'assistant' : role);
       if (approvalPayload) {
-        _approvalMontarCard(div, approvalPayload);
-      } else {
-        _definirTextoMsg(div, texto);
+        _adicionarNotificacaoAprovacao(approvalPayload, { abrirPainel: false });
+        return null;
       }
+      const div = document.createElement('div');
+      div.className = 'jk-ia-msg ' + role;
+      _definirTextoMsg(div, texto);
       msgsEl.appendChild(div);
       msgsEl.scrollTop = msgsEl.scrollHeight;
       if (salvar) {
         mensagensAtuais.push({
-          role: approvalPayload ? 'assistant' : role,
-          text: approvalPayload ? _approvalSerializarMensagem(approvalPayload) : texto,
+          role,
+          text: texto,
         });
         try {
           void salvarMensagensAtuais();
@@ -124,22 +62,6 @@
         } catch (_) {}
       }
       return div;
-    }
-
-    function _approvalTexto(payload) {
-      const isPosVenda = String(payload.tipo || payload.approval_type || '').toLowerCase() === 'pos_venda';
-      return [
-        isPosVenda
-          ? 'Aprovação necessária para responder conversa pós-venda do Mercado Livre.'
-          : 'Aprovação necessária para responder pergunta do Mercado Livre.',
-        `Loja: ${payload.loja || '-'}`,
-        `${isPosVenda ? 'Venda/Produto' : 'Anúncio'}: ${payload.titulo || payload.item_id || payload.order_id || '-'}`,
-        `SKU: ${payload.sku || '-'}`,
-        '',
-        `${isPosVenda ? 'Mensagem do comprador' : 'Pergunta'}: ${payload.pergunta || '-'}`,
-        '',
-        `Resposta sugerida: ${payload.resposta_sugerida || '-'}`
-      ].join('\n');
     }
 
     function _approvalMensagens(payload) {
@@ -280,17 +202,8 @@
 
     function _approvalHistoricoChat(msg) {
       const payload = _approvalParseMensagem(msg && msg.text);
-      if (!payload) {
-        return { role: (msg && msg.role) || 'assistant', content: String((msg && msg.text) || '').slice(0, 1200) };
-      }
-      const origem = _approvalOrigemTexto(payload);
-      const modelo = String(payload.model || '').trim();
-      const texto = [
-        `Card de aprovacao do Mercado Livre gerado pela ${origem}.`,
-        modelo ? `Modelo usado na sugestao: ${modelo}.` : '',
-        _approvalTexto(payload),
-      ].filter(Boolean).join('\n');
-      return { role: 'assistant', content: texto.slice(0, 1200) };
+      if (payload) return null;
+      return { role: (msg && msg.role) || 'assistant', content: String((msg && msg.text) || '').slice(0, 1200) };
     }
 
     function _approvalPerguntaParaTreinamento(payload) {
@@ -592,9 +505,9 @@
               : 'Rejeitado. Nada foi enviado ao Mercado Livre',
             resolved_at: new Date().toISOString(),
           };
-          _approvalSalvarNoHistorico(atualizado);
-          _approvalPersistirNoHistoricoBlackJhon(atualizado);
+          _questionsUpsert(atualizado, { render: false });
           _approvalMontarCard(container, atualizado);
+          _questionsAtualizarResumo();
         } catch (error) {
           approve.disabled = false;
           reject.disabled = false;
@@ -613,101 +526,147 @@
       return card;
     }
 
-    function _approvalPersistirNoHistoricoBlackJhon(payload) {
-      if (!_usuarioLocalEhFull()) return;
-      if (_approvalEhPosVenda(payload)) return;
-      const approvalId = String(payload && payload.id || '').trim();
-      if (!approvalId) return;
-      if (!codexMessagesAtuais.length) codexMessagesAtuais = _codexLerHistoricoLocal();
-      const idx = codexMessagesAtuais.findIndex(item => item && item.kind === 'approval'
-        && String(item.approval_payload && item.approval_payload.id || '').trim() === approvalId);
-      const anterior = idx >= 0 ? codexMessagesAtuais[idx] : null;
-      const textoCompacto = _approvalSerializarMensagem(payload);
-      const payloadCompacto = _approvalParseMensagem(textoCompacto) || { id: approvalId };
-      const item = {
-        role: 'assistant',
-        text: textoCompacto,
-        classExtra: 'black-jhon-approval',
-        kind: 'approval',
-        approval_payload: payloadCompacto,
-        task_id: '',
-        report_formats: [],
-        at: String(anterior && anterior.at || new Date().toISOString()),
-      };
-      if (idx >= 0) codexMessagesAtuais[idx] = item;
-      else codexMessagesAtuais.push(item);
-      codexMessagesAtuais = codexMessagesAtuais.slice(-CODEX_HISTORY_LIMIT);
-      _codexSalvarHistoricoLocal();
+    function _questionsSetStatus(texto, erro = false) {
+      const status = document.getElementById('jk-questions-status');
+      if (!status) return;
+      status.textContent = String(texto || '');
+      status.style.color = erro ? '#ffbcbc' : '#a9d7e5';
     }
 
-    function _approvalRenderNoPainelBlackJhon(payload, options = {}) {
-      if (!_usuarioLocalEhFull() || blackJhonUsandoIaSecundaria) return false;
-      if (_approvalEhPosVenda(payload)) return false;
-      const approvalId = String(payload && payload.id || '').trim();
-      const lista = document.getElementById('jk-codex-messages');
-      if (!approvalId || !lista) return false;
-      let card = Array.from(lista.querySelectorAll('.jk-ia-approval-card'))
-        .find(item => String(item && item.dataset && item.dataset.approvalId || '').trim() === approvalId);
-      let container = card && card.closest ? card.closest('.jk-codex-msg') : null;
-      if (!container) {
-        container = document.createElement('div');
-        container.className = 'jk-codex-msg assistant black-jhon-approval';
-        lista.appendChild(container);
-      }
-      _approvalPersistirNoHistoricoBlackJhon(payload);
-      _approvalMontarCard(container, payload);
-      if (options.abrirPainel !== false) {
-        toggleBlackJhonPanel(true);
-      } else if (!codexPanelAberto) {
-        codexAprovacaoNaoVista = true;
-      }
+    function _questionsSetBadge(total) {
+      perguntasPendentesCount = Math.max(0, Number(total || 0));
+      const badge = document.getElementById('jk-questions-badge');
+      if (badge) badge.textContent = perguntasPendentesCount
+        ? (perguntasPendentesCount > 99 ? '99+' : String(perguntasPendentesCount))
+        : '';
       _sidebarAtualizarAlertas();
-      lista.scrollTop = lista.scrollHeight + 9999;
+    }
+
+    function _questionsStatusPendente(payload) {
+      const status = String(payload && payload.status || 'pending').toLowerCase();
+      return !['approved', 'sent', 'rejected', 'answered_elsewhere'].includes(status);
+    }
+
+    function _questionsItensOrdenados() {
+      return Array.from(perguntasPainelItens.values()).sort((a, b) => {
+        const dataA = Date.parse(String(a && (a.created_at || a.updated_at || a.resolved_at) || '')) || 0;
+        const dataB = Date.parse(String(b && (b.created_at || b.updated_at || b.resolved_at) || '')) || 0;
+        return dataB - dataA;
+      });
+    }
+
+    function _questionsAtualizarResumo() {
+      const itens = _questionsItensOrdenados();
+      const pendentes = itens.filter(_questionsStatusPendente).length;
+      _questionsSetBadge(pendentes);
+      if (!perguntasPainelCarregando) {
+        _questionsSetStatus(pendentes
+          ? `${pendentes} sugestão${pendentes === 1 ? '' : 'ões'} aguardando revisão.`
+          : 'Nenhuma sugestão pendente no momento.');
+      }
+    }
+
+    function _questionsRenderLista() {
+      const lista = document.getElementById('jk-questions-list');
+      if (!lista) return;
+      const itens = _questionsItensOrdenados();
+      lista.replaceChildren();
+      if (!itens.length) {
+        const vazio = document.createElement('div');
+        vazio.className = 'jk-questions-empty';
+        vazio.textContent = 'Nenhuma sugestão pendente.';
+        lista.appendChild(vazio);
+        _questionsAtualizarResumo();
+        return;
+      }
+      itens.forEach((payload) => {
+        const container = document.createElement('div');
+        container.className = 'jk-questions-item';
+        _approvalMontarCard(container, payload);
+        lista.appendChild(container);
+      });
+      _questionsAtualizarResumo();
+    }
+
+    function _questionsUpsert(payload, options = {}) {
+      if (!_usuarioLocalEhFull() || !payload || _approvalEhPosVenda(payload)) return false;
+      const approvalId = String(payload.id || payload.approval_id || '').trim();
+      if (!approvalId) return false;
+      perguntasPainelItens.set(approvalId, { ...payload, id: approvalId });
+      if (options.render !== false) _questionsRenderLista();
       return true;
+    }
+
+    function _questionsSubstituirPendentes(pendentes) {
+      perguntasPainelItens.clear();
+      (Array.isArray(pendentes) ? pendentes : []).forEach((payload) => {
+        if (!payload || _approvalEhPosVenda(payload)) return;
+        const approvalId = String(payload.id || payload.approval_id || '').trim();
+        if (approvalId) perguntasPainelItens.set(approvalId, { ...payload, id: approvalId });
+      });
+      _questionsRenderLista();
+    }
+
+    function _questionsMarcarComoVistas(pendentes) {
+      const conhecidos = _perguntasAprovacoesNotificadasSet();
+      (Array.isArray(pendentes) ? pendentes : []).forEach((payload) => {
+        const approvalId = _perguntasApprovalId(payload);
+        if (approvalId) conhecidos.add(approvalId);
+      });
+      _perguntasSalvarAprovacoesNotificadasSet();
+    }
+
+    async function _questionsCarregarPendentes(options = {}) {
+      if (!_usuarioLocalEhFull() || perguntasPainelCarregando || !_token()) return [];
+      perguntasPainelCarregando = true;
+      let falhou = false;
+      if (perguntasPanelAberto || options.silencioso !== true) _questionsSetStatus('Atualizando sugestões...');
+      try {
+        const response = await window.__JK_IA_SIDEBAR_FETCH__('/api/mercadolivre/perguntas/aprovacoes', {
+          headers: _authHeaders(),
+          cache: 'no-store',
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.success === false) {
+          throw new Error(data.detail || 'Não foi possível consultar as sugestões.');
+        }
+        const pendentes = _perguntasMonitorOrdenarPendentes(
+          (Array.isArray(data.pendentes) ? data.pendentes : []).filter(payload => !_approvalEhPosVenda(payload))
+        );
+        const conhecidos = _perguntasAprovacoesNotificadasSet();
+        const novas = pendentes.filter(payload => {
+          const approvalId = _perguntasApprovalId(payload);
+          return approvalId && !conhecidos.has(approvalId);
+        });
+        _questionsSubstituirPendentes(pendentes);
+        if (options.marcarVistas === true) _questionsMarcarComoVistas(pendentes);
+        if (options.notificarNovas === true) {
+          for (const payload of novas.slice(0, Math.max(1, _perguntasMonitorLimitePorCiclo()))) {
+            await _perguntasNotificarWindowsAprovacaoUmaVez(payload);
+          }
+        }
+        return pendentes;
+      } catch (error) {
+        falhou = true;
+        if (perguntasPanelAberto || options.silencioso !== true) {
+          _questionsSetStatus(error && error.message ? error.message : 'Não foi possível atualizar as sugestões.', true);
+        }
+        return [];
+      } finally {
+        perguntasPainelCarregando = false;
+        if (!falhou) _questionsAtualizarResumo();
+      }
     }
 
     function _adicionarNotificacaoAprovacao(payload, options = {}) {
       if (!_usuarioLocalEhFull()) return;
       payload = payload || {};
       if (_approvalEhPosVenda(payload)) return;
-      const approvalId = String(payload.id || '').trim();
+      const approvalId = String(payload.id || payload.approval_id || '').trim();
       if (!approvalId) return;
       const abrirPainel = options.abrirPainel !== false;
-      window.__JK_IA_APPROVAL_NOTIFIED__ = window.__JK_IA_APPROVAL_NOTIFIED__ || {};
-      const idxExistente = _approvalIndexNoHistorico(approvalId);
-      const jaNotificada = !!window.__JK_IA_APPROVAL_NOTIFIED__[approvalId];
-      if (jaNotificada && idxExistente >= 0) {
-        if (_approvalRenderNoPainelBlackJhon(payload, { abrirPainel })) return;
-        if (abrirPainel) {
-          mostrarChat();
-          togglePanel(true);
-          renderMsgs();
-        } else {
-          _iaAvisarMensagemRecebida();
-        }
-        return;
-      }
-      window.__JK_IA_APPROVAL_NOTIFIED__[approvalId] = true;
-
-      if (idxExistente < 0) {
-        _approvalSalvarNoHistorico(payload);
-      }
-
-      if (_approvalRenderNoPainelBlackJhon(payload, { abrirPainel })) {
-        void _perguntasNotificarWindowsAprovacaoUmaVez(payload);
-        return;
-      }
-
-      const deveRenderizarAgora = abrirPainel || panelAberto === true;
-      if (deveRenderizarAgora) {
-        mostrarChat();
-        if (abrirPainel) togglePanel(true);
-        renderMsgs();
-        const msgsEl = document.getElementById('jk-ia-msgs');
-        if (msgsEl) msgsEl.scrollTop = 99999;
-      } else {
-        _iaAvisarMensagemRecebida();
-      }
+      _questionsUpsert({ ...payload, id: approvalId });
+      if (abrirPainel) toggleQuestionsPanel(true);
       void _perguntasNotificarWindowsAprovacaoUmaVez(payload);
     }
 
@@ -718,38 +677,17 @@
       if (Array.isArray(window.__JK_PENDING_IA_APPROVALS__)) {
         window.__JK_PENDING_IA_APPROVALS__ = window.__JK_PENDING_IA_APPROVALS__.filter((item) => String((item && item.id) || '').trim() !== id);
       }
-      const idx = _approvalIndexNoHistorico(id);
-      let payloadHistorico = idx >= 0 ? _approvalParseMensagem(mensagensAtuais[idx].text) : null;
-      const statusAtual = String((payloadHistorico && payloadHistorico.status) || '').toLowerCase();
+      const payloadAtual = perguntasPainelItens.get(id) || null;
+      const statusAtual = String((payloadAtual && payloadAtual.status) || '').toLowerCase();
       if (['approved', 'sent', 'rejected'].includes(statusAtual)) return;
-      if (payloadHistorico) {
-        payloadHistorico = {
-          ...payloadHistorico,
+      if (payloadAtual) {
+        _questionsUpsert({
+          ...payloadAtual,
           status: 'answered_elsewhere',
           status_message: mensagem || 'Respondida fora da aprova\u00e7\u00e3o.',
           resolved_at: new Date().toISOString(),
-        };
-        _approvalSalvarNoHistorico(payloadHistorico);
-        _approvalPersistirNoHistoricoBlackJhon(payloadHistorico);
-      }
-      document.querySelectorAll('.jk-ia-approval-card').forEach((card) => {
-        if (String((card.dataset && card.dataset.approvalId) || '').trim() !== id) return;
-        if (payloadHistorico) {
-          _approvalMontarCard(card.closest('.jk-ia-msg') || card.parentElement, payloadHistorico);
-          return;
-        }
-        card.dataset.resolved = '1';
-        const actions = card.querySelector('.jk-ia-approval-actions');
-        if (actions) actions.remove();
-        const edit = card.querySelector('.jk-ia-approval-edit');
-        if (edit) edit.disabled = true;
-        const antigo = card.querySelector('.jk-ia-approval-status-btn');
-        if (antigo) antigo.remove();
-        _approvalMontarStatus(card, {
-          status: 'answered_elsewhere',
-          status_message: mensagem || 'Respondida fora da aprova\u00e7\u00e3o.',
         });
-      });
+      }
     }
 
     window.JKIASidebarNotifyApproval = (payload, options) => _adicionarNotificacaoAprovacao(payload, options || {});

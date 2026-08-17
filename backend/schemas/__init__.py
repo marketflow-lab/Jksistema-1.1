@@ -142,6 +142,8 @@ from .medias_compras import (
     ListaPedidoUpdateRequest,
     ListaPedidoStatusRequest,
     ListaPedidoAddSkuRequest,
+    ListaPedidoSkuAprovacaoRequest,
+    ListaPedidoSkuAnaliseConcorrentesRequest,
     ListaPedidoPreferenciasColunasRequest,
     MediasComprasSkusOcultosRequest,
 )
@@ -245,6 +247,8 @@ __all__ = [
     "ListaPedidoUpdateRequest",
     "ListaPedidoStatusRequest",
     "ListaPedidoAddSkuRequest",
+    "ListaPedidoSkuAprovacaoRequest",
+    "ListaPedidoSkuAnaliseConcorrentesRequest",
     "ListaPedidoPreferenciasColunasRequest",
     "MediasComprasSkusOcultosRequest",
     "EstoquePreferenciasColunasRequest",

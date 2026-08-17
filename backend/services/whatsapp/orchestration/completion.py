@@ -36,7 +36,6 @@ from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import marketplace_listing_delivery as whatsapp_marketplace_listing
 from backend.services.whatsapp import message as whatsapp_message
-from backend.services.whatsapp import report_scheduling as whatsapp_report_scheduling
 from backend.services.whatsapp import retry_policy as whatsapp_retry_policy
 from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp import tool_results as whatsapp_tool_results
@@ -51,7 +50,7 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents
 from backend.services.codex.console import tasks as console_tasks
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
@@ -207,41 +206,6 @@ def _dual_worker_final_response(
         RUNTIME_STATE["conversation_fallback_last_error"] = str(exc)[:500]
         return {}, _worker_result_fallback_text(worker_result, pending)
 
-def _dual_worker_report_response(
-    config: dict[str, Any],
-    message_id: str,
-    pending: dict[str, Any],
-    task_id: str,
-    task: dict[str, Any],
-    final_text: str,
-) -> str:
-    report_request = pending.get("request_text") or task.get("prompt") or ""
-    if not whatsapp_report_files.report_requested(report_request):
-        return final_text
-    artifact_results = _whatsapp_deliver_report_artifacts(
-        config,
-        message_id,
-        task.get("whatsapp_artifacts"),
-        pending.get("client_id") or task.get("client_id") or "default",
-        max_images=4,
-    )
-    final_text = "\n\n".join(
-        item for item in (
-            final_text,
-            _whatsapp_report_metadata_text(
-                report_request,
-                pending.get("query_policy") or task.get("query_policy"),
-                task.get("tool_results_summary") or [],
-            ),
-            whatsapp_report_files.report_offer_text(report_request),
-        ) if item
-    ).strip()
-    if task.get("whatsapp_artifacts") and not all(item.get("success") for item in artifact_results):
-        final_text += "\n\nUm ou mais arquivos nao puderam ser anexados; o resumo em texto foi preservado."
-    if task.get("whatsapp_artifacts"):
-        console_tasks.update(task_id, whatsapp_artifacts=[])
-    return final_text
-
 def _deliver_dual_worker_final(
     config: dict[str, Any],
     state: dict[str, Any],
@@ -298,19 +262,6 @@ def _deliver_dual_worker_final(
     _record_message_timing(message_id, sent_at=_now())
     if completed_epoch:
         _record_latency("completed_to_sent", sent_epoch - completed_epoch)
-    if delivery_confirmed:
-        try:
-            _record_shared_delivered_exchange(
-                client_id=str(pending.get("client_id") or task.get("client_id") or ""),
-                username=str(pending.get("username") or task.get("created_by") or ""),
-                phone=str(pending.get("wa_id") or ""),
-                subject_id=str(pending.get("subject_id") or ""),
-                prompt=str(pending.get("request_text") or task.get("prompt") or ""),
-                response=final_text,
-                event_id=f"{message_id}:final",
-            )
-        except Exception:
-            pass
     _whatsapp_update_query_context_from_task(state, pending, task)
     status = "completed" if str(worker_result.get("status") or "") == "completed" else "partial"
     reason = "" if status == "completed" else "resultado_parcial"
@@ -324,14 +275,10 @@ def _complete_standard_task_artifacts(
     task: dict[str, Any],
     response: str,
 ) -> str:
-    task_id = str(pending.get("task_id") or "")
     client_id = pending.get("client_id") or task.get("client_id") or config.get("client_id")
-    chart_results = _whatsapp_deliver_report_artifacts(config, message_id, task.get("whatsapp_artifacts"), client_id, max_images=4)
-    charts_sent = sum(1 for item in chart_results if item.get("success") and item.get("artifact_type") == "report_chart")
-    report_files_sent = sum(1 for item in chart_results if item.get("success"))
-    image_results = list(chart_results)
+    image_results: list[dict[str, Any]] = []
     request_text = pending.get("request_text") or task.get("prompt")
-    remaining_images = max(0, WHATSAPP_MAX_OUTBOUND_IMAGES - charts_sent)
+    remaining_images = WHATSAPP_MAX_OUTBOUND_IMAGES
     if remaining_images > 0:
         listing_bundle = task.get("whatsapp_listing_bundle") if isinstance(task.get("whatsapp_listing_bundle"), dict) else {}
         listing_results = _whatsapp_deliver_marketplace_listing_images(
@@ -353,31 +300,8 @@ def _complete_standard_task_artifacts(
             image_results.extend(product_results)
     elif _whatsapp_image_requested(request_text):
         response = _whatsapp_strip_image_references(response)
-    if task.get("whatsapp_chart_expected") is True and charts_sent == 0:
-        response = (response.rstrip() + "\n\n_O relatório em texto está completo. O gráfico visual ficou indisponível nesta execução; "
-                    "a proteção de custo zero não permitiu usar uma alternativa paga._").strip()
-    if task.get("whatsapp_artifacts"):
-        console_tasks.update(
-            task_id,
-            whatsapp_artifacts=[],
-            whatsapp_chart_status="sent" if report_files_sent else "send_failed",
-            whatsapp_chart_error="" if report_files_sent else str(task.get("whatsapp_chart_error") or "report_artifact_not_sent")[:500],
-        )
     if image_results:
         RUNTIME_STATE["last_outbound_images"] = image_results[-WHATSAPP_MAX_OUTBOUND_IMAGES:]
-    report_request = pending.get("request_text") or task.get("prompt") or ""
-    if whatsapp_report_files.report_requested(report_request):
-        response = "\n\n".join(
-            item for item in (
-                response,
-                _whatsapp_report_metadata_text(
-                    report_request,
-                    pending.get("query_policy") or task.get("query_policy"),
-                    task.get("tool_results_summary") or [],
-                ),
-                whatsapp_report_files.report_offer_text(report_request),
-            ) if item
-        ).strip()
     return response
 
 def _deliver_standard_task_result(
@@ -442,7 +366,6 @@ def _complete_dual_worker_pending(
         delivery_state="conversation_agent_finalizing",
     )
     decision, final_text = _dual_worker_final_response(config, state, pending, task, worker_result)
-    final_text = _dual_worker_report_response(config, message_id, pending, task_id, task, final_text)
     return _deliver_dual_worker_final(
         config, state, message_id, pending, task_id, task, worker_result,
         decision, final_text, completed_epoch,
@@ -451,7 +374,8 @@ def _complete_dual_worker_pending(
 def _complete_pending(config: dict[str, Any], state: dict[str, Any], message_id: str, pending: dict[str, Any]) -> bool:
     kind = str(pending.get("kind") or "task")
     if kind == "action_proposal":
-        return _complete_action_pending(config, state, message_id, pending)
+        _remove_pending(state, message_id, status="canceled", reason="whatsapp_question_only_mode")
+        return True
     if kind == "dual_job_group":
         return _complete_dual_job_group_pending(config, state, message_id, pending)
     if kind == "dual_worker":

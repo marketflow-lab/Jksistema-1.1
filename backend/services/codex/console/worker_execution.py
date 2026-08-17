@@ -395,19 +395,6 @@ def _persist_result(ctx: dict[str, Any], task_id: str) -> None:
     terminal, verification = _verification(ctx)
     final_response = ctx["final_response"]
     trace = ctx["agent_trace"]
-    if task.get("shared_responder") is True and str(task.get("origin") or "") == "app":
-        try:
-            from backend.services import whatsapp_bridge
-
-            shared = whatsapp_bridge._shared_sidebar_worker_result(
-                task,
-                final_response or "",
-                trace if isinstance(trace, dict) else {},
-            )
-            if str(shared.get("reply_text") or "").strip():
-                final_response = str(shared.get("reply_text") or "").strip()
-        except Exception:
-            pass
     state = ctx["state"]
     _codex_update_task(
         task_id,

@@ -1,6 +1,6 @@
 import { MAX_BINDINGS_PER_USER, normalizeRegisteredPhone, pairingAttemptsAllowed, registeredPhoneAliases } from "./bindings";
 import { compactReply, pairingCodeFromText, sha256Hex, timingSafeEqualText, verifyMetaSignature } from "./core";
-import { flushAdhocOutbox, flushOutbox, maybeNotifyLocalUnavailable, notifyUnauthorizedAccess, queueOutbound, releaseWaitingSummary } from "./delivery";
+import { maybeNotifyLocalUnavailable, releaseWaitingSummary } from "./delivery";
 import { initializeInboundMedia } from "./inbound-media";
 import { QUESTION_SUGGESTION_OPEN_PAYLOAD } from "./question-templates";
 import { audit, Env, JsonRecord, nowSeconds } from "./shared";
@@ -46,7 +46,6 @@ export async function tryPair(env: Env, subjectId: string, waId: string, phone: 
   if (!code) return false;
   if (!(await pairingAttemptsAllowed(env, subjectId))) {
     await audit(env, "pairing_rate_limited", subjectId);
-    await notifyUnauthorizedAccess(env, subjectId, waId, "pairing_rate_limited");
     return true;
   }
   const codeHash = await sha256Hex(code);
@@ -56,7 +55,6 @@ export async function tryPair(env: Env, subjectId: string, waId: string, phone: 
   ).bind(codeHash).first<{ code_hash: string; client_id: string; username: string; machine_id: string; expires_at: number; used_at: number | null }>();
   if (!item || item.used_at || Number(item.expires_at || 0) < now) {
     await audit(env, "pairing_failed", subjectId, { reason: "invalid_or_expired" });
-    await notifyUnauthorizedAccess(env, subjectId, waId, "pairing_invalid_or_expired");
     return true;
   }
   const results = await env.DB.batch([
@@ -77,15 +75,12 @@ export async function tryPair(env: Env, subjectId: string, waId: string, phone: 
   ]);
   if (!Number(results[0]?.meta?.changes || 0)) {
     await audit(env, "pairing_limit_reached", subjectId, { client_id: item.client_id, username: item.username, limit: MAX_BINDINGS_PER_USER });
-    await notifyUnauthorizedAccess(env, subjectId, waId, "pairing_limit_reached");
     return true;
   }
   const active = await env.DB.prepare("SELECT COUNT(*) AS total FROM bindings WHERE client_id=? AND username=? AND active=1")
     .bind(item.client_id, item.username).first<{ total: number }>();
   const total = Number(active?.total || 0);
   await audit(env, "pairing_completed", subjectId, { client_id: item.client_id, username: item.username, machine_id: item.machine_id, active_bindings: total });
-  await queueOutbound(env, subjectId, subjectId, `Vinculo concluido (${total}/${MAX_BINDINGS_PER_USER}). O Joao Pretinho ja pode receber suas mensagens.`, "pairing");
-  await flushOutbox(env, subjectId, 1);
   return true;
 }
 
@@ -125,11 +120,6 @@ export async function handleIncomingMessage(env: Env, ctx: ExecutionContext, val
   }
   if (!binding) {
     await audit(env, "unpaired_message", incomingSubjectId, { message_id: messageId, type: messageType });
-    const unpairedPhone = phoneSubject || normalizeRegisteredPhone(incomingSubjectId);
-    if (unpairedPhone) {
-      await notifyUnauthorizedAccess(env, incomingSubjectId, unpairedPhone, "unpaired_message");
-      ctx.waitUntil(flushAdhocOutbox(env, unpairedPhone, 10));
-    }
     return;
   }
   const subjectId = String(binding.subject_id || incomingSubjectId);
@@ -188,8 +178,6 @@ export async function handleIncomingMessage(env: Env, ctx: ExecutionContext, val
   // O cadastro pode usar a variante brasileira com o nono digito enquanto a
   // Meta entrega o wa_id sem ele. Libera as mensagens tanto pela identidade
   // canonica do vinculo quanto pela forma recebida, sem cruzar outros numeros.
-  ctx.waitUntil(flushAdhocOutbox(env, subjectId, 10));
-  if (phoneSubject && phoneSubject !== subjectId) ctx.waitUntil(flushAdhocOutbox(env, phoneSubject, 10));
 }
 
 export async function handleStatuses(env: Env, statuses: unknown): Promise<void> {

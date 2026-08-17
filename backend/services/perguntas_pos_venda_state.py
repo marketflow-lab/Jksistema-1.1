@@ -41,6 +41,7 @@ from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.vendas_sync_progress import _corrigir_texto_mojibake
 from backend.services.transport_security import requests_tls_verify
+from ml_questions_gemini.classifier import QuestionClassifier, normalize as _ml_question_normalize
 from ml_questions_gemini.compatibility import PROFILE_BY_TARGET_TYPE, TARGET_TYPES
 from ml_questions_gemini.schemas import QuestionCategory
 from backend.modules.perguntas_pos_venda.ai import provider_transport as perguntas_agent_provider_transport
@@ -411,8 +412,8 @@ def _perguntas_ia_limpar_resposta(texto: str) -> str:
 def _perguntas_ia_assinatura_loja(loja: str) -> str:
     nome_loja = re.sub(r"\s+", " ", str(loja or "").strip())
     if nome_loja:
-        return f"Equipe {nome_loja} agradece o seu contato."
-    return "Equipe da loja agradece o seu contato."
+        return f"Equipe {nome_loja} agradece pelo contato, Precisando estamos a disposição!"
+    return "Equipe da loja agradece pelo contato, Precisando estamos a disposição!"
 
 
 def _perguntas_ia_remover_apresentacao_sistema(texto: str) -> str:
@@ -444,7 +445,7 @@ def _perguntas_ia_resposta_final_loja(resposta: str, loja: str) -> str:
     assinatura = _perguntas_ia_assinatura_loja(loja)
     corpo = _perguntas_ia_limpar_resposta(_perguntas_ia_remover_apresentacao_sistema(resposta))
     corpo = re.sub(
-        r"(?is)\s*Equipe\s+.+?\s+agradece\s+(?:o\s+)?seu\s+contato\.?\s*$",
+        r"(?is)\s*Equipe\s+.+?\s+agradece\s+(?:(?:o\s+)?seu\s+contato\.?|pelo\s+contato,\s*Precisando\s+estamos\s+[àa]\s+disposi[cç][ãa]o!)\s*$",
         "",
         corpo,
     ).strip()
@@ -461,6 +462,33 @@ def _perguntas_ia_resposta_final_loja(resposta: str, loja: str) -> str:
 
 class PerguntasIARespostaIndisponivel(RuntimeError):
     pass
+
+
+class PerguntasIAClassificacaoInconclusiva(PerguntasIARespostaIndisponivel):
+    """A classificacao terminou em revisao sem uma resposta geravel."""
+
+    def __init__(
+        self,
+        message: str,
+        classificacao: Optional[dict] = None,
+        *,
+        allow_contextual: bool = True,
+    ):
+        super().__init__(message)
+        self.classificacao = dict(classificacao) if isinstance(classificacao, dict) else {}
+        self.allow_contextual = bool(allow_contextual)
+
+
+class PerguntasIAProviderIndisponivel(PerguntasIARespostaIndisponivel):
+    """Falha tecnica transitória do provedor que pode consumir retry operacional."""
+
+    def __init__(self, message: str, *, reason: str = "provider_unavailable"):
+        super().__init__(message)
+        self.reason = str(reason or "provider_unavailable")
+
+
+class PerguntasIASegurancaBloqueada(PerguntasIARespostaIndisponivel):
+    """A mensagem foi bloqueada por seguranca e nao pode herdar contexto."""
 
 
 def _perguntas_ia_resposta_fallback_invalida(texto: str) -> bool:
@@ -542,7 +570,13 @@ ML_PERGUNTAS_IA_INTENCAO_CATEGORIAS = {
 }
 ML_PERGUNTAS_IA_COMPATIBILITY_TARGET_TYPES = {"", *TARGET_TYPES}
 ML_PERGUNTAS_IA_COMPATIBILITY_PROFILES = {"", *PROFILE_BY_TARGET_TYPE.values()}
-ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_VERSION = "jk_ml_question_classification_v2"
+ML_PERGUNTAS_IA_CONTINUIDADE_TIPOS = {
+    "independente",
+    "continuacao",
+    "novo_assunto",
+    "inconclusiva",
+}
+ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_VERSION = "jk_ml_question_classification_v3"
 ML_PERGUNTAS_IA_COMPATIBILITY_PROFILE_BY_TARGET_TYPE = dict(PROFILE_BY_TARGET_TYPE)
 ML_PERGUNTAS_IA_CLASSIFICATION_PAGE = "Perguntas e pós venda"
 ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_HASH = hashlib.sha256(
@@ -558,8 +592,11 @@ ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_HASH = hashlib.sha256(
             "compatibility_target_types": sorted(ML_PERGUNTAS_IA_COMPATIBILITY_TARGET_TYPES),
             "compatibility_profiles": sorted(ML_PERGUNTAS_IA_COMPATIBILITY_PROFILES),
             "compatibility_profile_by_target_type": ML_PERGUNTAS_IA_COMPATIBILITY_PROFILE_BY_TARGET_TYPE,
+            "continuity_types": sorted(ML_PERGUNTAS_IA_CONTINUIDADE_TIPOS),
+            "continuity_inherited_iff_continuation": True,
             "no_local_inference_or_reclassification": True,
-            "repair_attempts": 1,
+            "contract_repair_attempts": 1,
+            "semantic_continuity_repair_attempts": 1,
         },
         ensure_ascii=True,
         sort_keys=True,
@@ -608,6 +645,10 @@ def _perguntas_ia_schema_invalido(campo: str) -> None:
         "compatibilidade nao aplicavel nao pode definir alvo ou perfil": "compatibility_not_applicable_fields",
         "compatibilidade.target_type": "compatibility_target_type",
         "compatibilidade.compatibility_profile": "compatibility_profile",
+        "continuidade": "continuity_object_required",
+        "continuidade.tipo": "continuity_type",
+        "continuidade.herdou_historico": "continuity_inherited_flag",
+        "coerencia da continuidade": "continuity_inherited_iff_continuation",
         "objeto JSON obrigatorio": "classification_object_required",
     }
     raise _PerguntasIAContratoClassificacaoInvalido(
@@ -616,7 +657,11 @@ def _perguntas_ia_schema_invalido(campo: str) -> None:
     )
 
 
-def _perguntas_ia_intencao_normalizar(data: object) -> dict:
+def _perguntas_ia_intencao_normalizar(
+    data: object,
+    *,
+    exigir_continuidade: bool = False,
+) -> dict:
     """Valida o contrato canonico da IA sem inferir ou reclassificar assunto."""
     if not isinstance(data, dict):
         _perguntas_ia_schema_invalido("objeto JSON ausente")
@@ -662,6 +707,27 @@ def _perguntas_ia_intencao_normalizar(data: object) -> dict:
         or categorias_pos_venda != intencao_pos_venda
     ):
         _perguntas_ia_schema_invalido("coerencia entre intencao, categoria e fluxo")
+
+    continuidade_bruta = data.get("continuidade")
+    if continuidade_bruta is None and not exigir_continuidade:
+        continuidade_bruta = {
+            "tipo": "inconclusiva" if categoria == QuestionCategory.UNKNOWN.value else "independente",
+            "herdou_historico": False,
+        }
+    if not isinstance(continuidade_bruta, dict):
+        _perguntas_ia_schema_invalido("continuidade")
+    continuidade_tipo = continuidade_bruta.get("tipo")
+    herdou_historico = continuidade_bruta.get("herdou_historico")
+    if (
+        not isinstance(continuidade_tipo, str)
+        or continuidade_tipo.strip() not in ML_PERGUNTAS_IA_CONTINUIDADE_TIPOS
+    ):
+        _perguntas_ia_schema_invalido("continuidade.tipo")
+    continuidade_tipo = continuidade_tipo.strip()
+    if not isinstance(herdou_historico, bool):
+        _perguntas_ia_schema_invalido("continuidade.herdou_historico")
+    if herdou_historico != (continuidade_tipo == "continuacao"):
+        _perguntas_ia_schema_invalido("coerencia da continuidade")
 
     confianca = data.get("confianca")
     if isinstance(confianca, bool) or not isinstance(confianca, (int, float)):
@@ -764,6 +830,10 @@ def _perguntas_ia_intencao_normalizar(data: object) -> dict:
         "categorias": categorias,
         "fluxo": fluxo,
         "confianca": confianca,
+        "continuidade": {
+            "tipo": continuidade_tipo,
+            "herdou_historico": herdou_historico,
+        },
         "flags": flags,
         "subperguntas": subperguntas,
         "compatibilidade": {
@@ -786,7 +856,12 @@ def _perguntas_ia_intencao_normalizar(data: object) -> dict:
     return normalizada
 
 
-def _perguntas_ia_classification_prompt(entrada: dict, *, violation_code: str = "") -> str:
+def _perguntas_ia_classification_prompt(
+    entrada: dict,
+    *,
+    violation_code: str = "",
+    continuity_repair: bool = False,
+) -> str:
     mapa_perfis = ", ".join(
         f"{target_type}={profile}"
         for target_type, profile in ML_PERGUNTAS_IA_COMPATIBILITY_PROFILE_BY_TARGET_TYPE.items()
@@ -798,12 +873,25 @@ def _perguntas_ia_classification_prompt(entrada: dict, *, violation_code: str = 
             f"no codigo {violation_code}. Gere uma classificacao nova a partir dos Dados; "
             "nao tente reproduzir nem completar a resposta anterior. "
         )
+    reparo_continuidade = ""
+    if continuity_repair:
+        reparo_continuidade = (
+            "A classificacao semantica anterior terminou como nao_entendi. "
+            "Reanalise uma unica vez se a mensagem atual e continuacao do assunto ativo no historico. "
+            "Nao copie nem presuma a classificacao anterior. Se o historico nao resolver o assunto, "
+            "mantenha nao_entendi e continuidade.tipo=inconclusiva. "
+        )
     return (
         f"Contrato interno: {ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_VERSION}; "
         f"hash={ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_HASH}. "
         + reparo
-        + "Classifique pela IA a ultima mensagem do comprador do Mercado Livre. "
-        "Use o historico apenas para entender continuidade, mas classifique a ultima mensagem. "
+        + reparo_continuidade
+        + "Classifique pela IA o turno atual do comprador do Mercado Livre no contexto da conversa. "
+        "A mensagem atual continua sendo o turno classificado, mas o historico deve resolver referencias, "
+        "respostas curtas e continuacoes que nao repetem o assunto. "
+        "Se o comprador apenas explica que ainda nao conferiu, desmontou ou obteve um dado solicitado pela loja, "
+        "herde o assunto ativo da pergunta anterior e reformule subperguntas com os dados ja presentes no historico. "
+        "Nao invente fatos e nao herde assunto quando a mensagem atual iniciar tema novo. "
         "Se o comprador diz que ja comprou, recebeu, quer trocar, relata defeito, problema, item apagando, quebrado, nao funciona, entrega ou garantia, classifique como pos-venda. "
         "Nao confunda relato de defeito pos-compra com compatibilidade do produto. Classifique lateralidade, lado esquerdo/direito ou lado especifico como product_feature, salvo quando a pergunta realmente comparar aplicacao em outro alvo. "
         "Retorne somente JSON valido, sem markdown e exatamente com o contrato pedido. "
@@ -814,6 +902,10 @@ def _perguntas_ia_classification_prompt(entrada: dict, *, violation_code: str = 
         "compatibilidade aceita somente compatibility; outra_peca aceita somente other_product; preco_estoque aceita somente price e/ou stock; "
         "pos_venda_defeito, troca_garantia, entrega, cancelamento e reclamacao aceitam somente post_sale; nao_entendi aceita somente unknown. "
         "fluxo deve ser perguntas_anuncio ou pos_venda. confianca deve ser numero entre 0 e 1. "
+        "continuidade deve conter somente tipo e herdou_historico. tipo deve ser independente, continuacao, novo_assunto ou inconclusiva. "
+        "herdou_historico deve ser true se, e somente se, tipo for continuacao. "
+        "Use continuacao quando a mensagem atual depende semanticamente do historico; use novo_assunto quando ela troca o tema; "
+        "use independente quando ela se sustenta sozinha; use inconclusiva quando nem o historico permite identificar o assunto. "
         "flags deve conter os booleanos usar_busca_web, usar_mercado_livre_anuncio e usar_bling. Em pos_venda todos devem ser false. "
         "subperguntas deve ser uma lista nao vazia de objetos somente com intent, question e required_evidence. "
         "intent deve ser um de: compatibility, shipping, stock, price, invoice, warranty_originality, product_feature, other_product, general, post_sale. "
@@ -826,8 +918,11 @@ def _perguntas_ia_classification_prompt(entrada: dict, *, violation_code: str = 
         f"{mapa_perfis}. "
         "Nao invente target_item ausente e nao use generic como correcao automatica de um alvo desconhecido; descreva os dados decisivos ausentes em missing_fields. "
         "Quando compatibilidade.aplicavel for false, target_item, target_type, compatibility_profile e missing_fields devem estar vazios; technical_focus e decisive_fields podem descrever a caracteristica tecnica pedida. "
-        "Exemplo valido de compatibilidade, sem copiar os valores: {\"intencao\":\"compatibilidade\",\"categoria\":\"compatibility\",\"categorias\":[\"compatibility\"],\"fluxo\":\"perguntas_anuncio\",\"confianca\":0.95,\"flags\":{\"usar_busca_web\":true,\"usar_mercado_livre_anuncio\":true,\"usar_bling\":true},\"subperguntas\":[{\"intent\":\"compatibility\",\"question\":\"Serve no Honda Civic 2008?\",\"required_evidence\":\"codigo e interface decisiva\"}],\"compatibilidade\":{\"aplicavel\":true,\"target_item\":\"Honda Civic 2008\",\"target_type\":\"vehicle\",\"compatibility_profile\":\"vehicle_fitment\",\"technical_focus\":\"codigo e encaixe\",\"missing_fields\":[\"codigo OEM\"],\"decisive_fields\":[\"codigo OEM\",\"conector\"]}}. "
-        "Exemplo valido sem compatibilidade, sem copiar os valores: {\"intencao\":\"duvida_produto\",\"categoria\":\"product_feature\",\"categorias\":[\"product_feature\"],\"fluxo\":\"perguntas_anuncio\",\"confianca\":0.95,\"flags\":{\"usar_busca_web\":false,\"usar_mercado_livre_anuncio\":true,\"usar_bling\":true},\"subperguntas\":[{\"intent\":\"product_feature\",\"question\":\"pergunta objetiva\",\"required_evidence\":\"atributo do anuncio ou fonte tecnica\"}],\"compatibilidade\":{\"aplicavel\":false,\"target_item\":\"\",\"target_type\":\"\",\"compatibility_profile\":\"\",\"technical_focus\":\"\",\"missing_fields\":[],\"decisive_fields\":[]}}.\n\n"
+        "Exemplo valido de compatibilidade independente, sem copiar os valores: {\"intencao\":\"compatibilidade\",\"categoria\":\"compatibility\",\"categorias\":[\"compatibility\"],\"fluxo\":\"perguntas_anuncio\",\"confianca\":0.95,\"continuidade\":{\"tipo\":\"independente\",\"herdou_historico\":false},\"flags\":{\"usar_busca_web\":true,\"usar_mercado_livre_anuncio\":true,\"usar_bling\":true},\"subperguntas\":[{\"intent\":\"compatibility\",\"question\":\"Serve no Honda Civic 2008?\",\"required_evidence\":\"codigo e interface decisiva\"}],\"compatibilidade\":{\"aplicavel\":true,\"target_item\":\"Honda Civic 2008\",\"target_type\":\"vehicle\",\"compatibility_profile\":\"vehicle_fitment\",\"technical_focus\":\"codigo e encaixe\",\"missing_fields\":[\"codigo OEM\"],\"decisive_fields\":[\"codigo OEM\",\"conector\"]}}. "
+        "Exemplo de continuidade: se a pergunta anterior era sobre servir em um veiculo e a loja pediu o codigo da peca, "
+        "a resposta atual 'ainda nao desmontei para ver o codigo' continua sendo compatibilidade; use continuidade.tipo=continuacao, "
+        "herdou_historico=true e escreva a subpergunta completa com o veiculo ja informado. "
+        "Exemplo valido sem compatibilidade, sem copiar os valores: {\"intencao\":\"duvida_produto\",\"categoria\":\"product_feature\",\"categorias\":[\"product_feature\"],\"fluxo\":\"perguntas_anuncio\",\"confianca\":0.95,\"continuidade\":{\"tipo\":\"independente\",\"herdou_historico\":false},\"flags\":{\"usar_busca_web\":false,\"usar_mercado_livre_anuncio\":true,\"usar_bling\":true},\"subperguntas\":[{\"intent\":\"product_feature\",\"question\":\"pergunta objetiva\",\"required_evidence\":\"atributo do anuncio ou fonte tecnica\"}],\"compatibilidade\":{\"aplicavel\":false,\"target_item\":\"\",\"target_type\":\"\",\"compatibility_profile\":\"\",\"technical_focus\":\"\",\"missing_fields\":[],\"decisive_fields\":[]}}.\n\n"
         f"Dados:\n{json.dumps(entrada, ensure_ascii=False, default=str)[:6000]}"
     )
 
@@ -839,19 +934,923 @@ def _perguntas_ia_classificacao_parsear(texto: str) -> dict:
         try:
             candidato = json.loads(bruto)
         except (TypeError, ValueError):
-            raise PerguntasIARespostaIndisponivel(
-                "Classificacao de intencao da IA sem objeto JSON parseavel."
+            raise _PerguntasIAContratoClassificacaoInvalido(
+                "Classificacao de intencao da IA sem objeto JSON parseavel.",
+                violation_code="classification_json_parseable",
             )
         if not isinstance(candidato, dict):
             _perguntas_ia_schema_invalido("objeto JSON obrigatorio")
         data = candidato
-    return _perguntas_ia_intencao_normalizar(data)
+    return _perguntas_ia_intencao_normalizar(data, exigir_continuidade=True)
+
+
+def _perguntas_ia_provider_failure_code(exc: BaseException) -> str:
+    """Return only allowlisted transient-provider failures, without message matching."""
+
+    current: Optional[BaseException] = exc
+    visited: set[int] = set()
+    while isinstance(current, BaseException) and id(current) not in visited:
+        visited.add(id(current))
+        if isinstance(current, (TimeoutError, requests.exceptions.Timeout)):
+            return "provider_timeout"
+        if isinstance(
+            current,
+            (ConnectionError, BrokenPipeError, requests.exceptions.ConnectionError),
+        ):
+            return "provider_connection"
+        status_code = getattr(current, "status_code", None)
+        if status_code is None:
+            response = getattr(current, "response", None)
+            status_code = getattr(response, "status_code", None)
+        try:
+            normalized_status = int(status_code or 0)
+        except (TypeError, ValueError):
+            normalized_status = 0
+        if normalized_status == 429:
+            return "provider_http_429"
+        if 500 <= normalized_status <= 599:
+            return "provider_http_5xx"
+        current = current.__cause__ or current.__context__
+    return ""
+
+
+def _perguntas_ia_mensagem_pos_venda_evidente(texto: object) -> bool:
+    normalizado = _ml_question_normalize(texto)
+    if re.search(
+        r"\b(?:ja\s+comprei|comprei|fiz\s+a\s+compra|realizei\s+a\s+compra|"
+        r"efetuei\s+a\s+compra|recebi|devolv\w*|defeito\w*|quebrad\w*|"
+        r"nao\s+funciona|parou\s+de\s+funcionar|reembolso|cancelar\s+(?:a\s+)?compra)\b",
+        normalizado,
+    ):
+        return True
+    if re.search(
+        r"\b(?:meu|minha)\s+(?:peca|produto|item|pedido)\s+"
+        r"(?:ja\s+)?(?:chegou|foi\s+entregue)\b",
+        normalizado,
+    ) or re.search(
+        r"\b(?:a\s+|o\s+)?(?:peca|produto|item|pedido)\s+"
+        r"(?:ja\s+)?(?:chegou|foi\s+entregue)\b.{0,80}\b(?:e|mas)\s+"
+        r"(?:eu\s+)?(?:ainda\s+)?nao\s+(?:conferi|testei|instalei|abri)\b",
+        normalizado,
+    ):
+        return True
+    if re.search(
+        r"\b(?:pedido|compra|produto|peca|item)\b.{0,50}\b(?:chegou|veio|recebi)\b"
+        r".{0,50}\b(?:errad\w*|danific\w*|defeito\w*|quebrad\w*|faltando)\b",
+        normalizado,
+    ):
+        return True
+    if re.search(
+        r"\b(?:ja\s+)?(?:instalei|montei|coloquei)\b.{0,70}"
+        r"\b(?:nao\s+(?:encaix\w*|serv\w*|funcion\w*)|ficou\s+(?:folgad\w*|apertad\w*))\b",
+        normalizado,
+    ):
+        return True
+    if re.search(
+        r"\b(?:produto|peca|item)\b.{0,45}\b(?:veio|mandaram|enviaram|recebi)\b"
+        r".{0,70}\b(?:diferente|divergente|errad\w*|nao\s+(?:serv\w*|encaix\w*)|"
+        r"nao\s+corresponde\w*)\b",
+        normalizado,
+    ) or re.search(
+        r"\b(?:mandaram|enviaram)\b.{0,45}\b(?:produto|peca|item)\b"
+        r".{0,70}\b(?:diferente|divergente|errad\w*|nao\s+(?:serv\w*|encaix\w*))\b",
+        normalizado,
+    ):
+        return True
+    if re.search(
+        r"\b(?:meu\s+pedido|minha\s+compra|minha\s+entrega|a\s+entrega)\b"
+        r".{0,70}\b(?:nao\s+cheg\w*|atrasad\w*|rastre\w*)\b",
+        normalizado,
+    ):
+        return True
+    if re.search(
+        r"\b(?:chegou|recebi|esta\s+comigo|ja\s+esta\s+comigo)\b.{0,70}"
+        r"\b(?:nao\s+(?:serv\w*|encaix\w*|funcion\w*|deu\s+certo)|"
+        r"veio\s+(?:errad\w*|diferente)|deu\s+errad\w*|"
+        r"ficou\s+(?:grand\w*|pequen\w*|folgad\w*|apertad\w*)|"
+        r"incomplet\w*|faltando|avariad\w*)\b",
+        normalizado,
+    ):
+        return True
+    if re.search(
+        r"\b(?:produto|peca|item|pedido|bomba)\b.{0,35}\b(?:esta|ficou)\s+(?:aqui|comigo)\b"
+        r".{0,55}\b(?:nao\s+(?:serv\w*|encaix\w*|funcion\w*)|"
+        r"incomplet\w*|faltando|avariad\w*)\b|"
+        r"^\s*(?:veio|chegou)\b.{0,60}\b(?:faltando|incomplet\w*|avariad\w*)\b",
+        normalizado,
+    ):
+        return True
+    if re.search(
+        r"\b(?:acionar|usar|solicitar)\s+(?:a\s+)?garantia\b|\b(?:pela|em)\s+garantia\b",
+        normalizado,
+    ):
+        return True
+    return bool(
+        re.search(
+            r"\b(?:quero|preciso|posso|como)\s+trocar\b.{0,60}"
+            r"\b(?:produto|item|pedido|que\s+recebi)\b|\btroca\s+ou\s+devolucao\b",
+            normalizado,
+        )
+    )
+
+
+def _perguntas_ia_prompt_injection_evidente(texto: object) -> bool:
+    normalizado = _ml_question_normalize(texto)
+    if QuestionClassifier._has_prompt_injection(normalizado):
+        return True
+    return bool(
+        re.search(
+            r"\b(?:desconsidere|ignore|esqueca|esqueça|anule|substitua)\b.{0,80}"
+            r"\b(?:instrucoes|instruções|regras|orientacoes|orientações|prompt|sistema|"
+            r"descricao|descrição|anuncio|anúncio|historico|histórico|evidencia|evidência|"
+            r"resposta|tudo|acima)\b",
+            normalizado,
+        )
+        or re.search(
+            r"\bsiga\s+(?:as\s+)?minhas\s+instrucoes\b.{0,100}"
+            r"\b(?:diga|responda|confirme)\b",
+            normalizado,
+        )
+        or re.search(
+            r"\b(?:diga|responda)\b.{0,45}\b(?:que\s+serve|sim\s*,?\s*serve)\b|"
+            r"\bconfirme\s+que\s+serve\b|"
+            r"\bsubstitua\s+(?:a\s+)?resposta\b.{0,45}\bsim\b|"
+            r"\bresponda\s+apenas\s+sim\b|\bdiga\s+sim\b|"
+            r"\b(?:sua\s+)?resposta\s+deve\s+ser\s+sim\b",
+            normalizado,
+        )
+    )
+
+
+_PERGUNTAS_IA_CONTINUATION_NON_TARGET_TOKENS = frozenset({
+    "a", "as", "o", "os", "um", "uma", "de", "da", "do", "das", "dos", "e",
+    "em", "na", "no", "nas", "nos", "ao", "aos", "para", "por", "com", "sem",
+    "serve", "servir", "servem", "compativel", "compatibilidade", "aplica", "aplicacao",
+    "modelo", "carro", "veiculo", "meu", "minha", "seu", "sua", "este", "esta", "esse",
+    "essa", "peca", "produto", "anuncio", "anunciada", "anunciado", "bomba", "filtro",
+    "combustivel", "original", "codigo", "codigos", "oem", "interface", "encaixe", "conector",
+    "voltagem", "tensao", "medida", "medidas", "dimensao", "dimensoes", "rosca", "pino", "pinos", "vias",
+    "lado", "conexao", "ligacao",
+    "npt", "material", "composicao", "cor", "marca", "fabricante", "whatsapp", "telefone",
+    "alvo", "informado", "informada", "pergunta", "bom", "boa", "dia", "tarde", "noite",
+    "ola", "amigo", "amiga", "quero", "gostaria", "preciso", "saber", "qual", "quais",
+    "pode", "posso", "antes", "ainda", "conferi", "conferir", "desmontei", "desmontar",
+    "agora", "verdade", "corrigindo", "correcao", "mudando", "assunto", "mas", "eh",
+    "nao", "ja", "pois", "vai", "oficina", "comprar", "compra", "faz", "fazer", "possivel",
+    "responda", "diga", "apenas", "sim", "acompanha", "inclui", "vem", "potencia", "peso",
+    "confirmar", "confirma", "entao", "isso", "exato", "certo", "entendi",
+    "quis", "dizer", "realidade", "correto", "corrijo", "enganei", "era", "troque",
+    "chassi", "chassis", "vin", "final", "ano", "anos", "dynamic", "black", "se", "hse",
+    "gasolina", "diesel", "flex", "etanol", "alcool", "gnv", "hibrido", "eletrico",
+    "automatico", "automatica", "manual", "automatizado", "cvt", "direito", "direita",
+    "esquerdo", "esquerda", "dianteiro", "dianteira", "traseiro", "traseira", "motor",
+    "audi", "bmw", "chevrolet", "citroen", "fiat", "ford", "honda", "hyundai", "jeep",
+    "kia", "land", "range", "rover", "mercedes", "mitsubishi", "nissan", "peugeot",
+    "renault", "subaru", "suzuki", "toyota", "volkswagen", "volvo",
+})
+
+
+def _perguntas_ia_continuation_negated_identity(texto: object) -> set[str]:
+    normalizado = _ml_question_normalize(texto)
+    captures = []
+    subject = (
+        r"(?:(?:o|esse|este)\s+modelo|(?:meu|esse|este)\s+(?:carro|veiculo)|"
+        r"(?:a|essa|esta)\s+peca|(?:o|esse|este)\s+produto)"
+    )
+    for pattern in (
+        rf"^\s*(?:{subject}\s+)?nao\s+(?:e|eh)\s+(?:para\s+)?([^;,.?]+)",
+        rf"^\s*(?:{subject}\s+)?nao\s+serve\s+(?:no|na|para|em)\s+([^;,.?]+)",
+        rf"^\s*(?:{subject}\s+)?nao\s+corresponde\s+(?:a|ao|para)\s+([^;,.?]+)",
+        rf"^\s*(?:{subject}\s+)?nao\s+(?:e|eh)\s+compativel\s+com\s+([^;,.?]+)",
+        r"^\s*nao\s+([^,;]+),",
+        r",\s*(?:e\s+)?nao\s+([^,;.!?]+)",
+    ):
+        match = re.search(pattern, normalizado)
+        if match:
+            captures.append(str(match.group(1) or ""))
+    return {
+        token
+        for capture in captures
+        for token in re.findall(r"\b[a-z0-9]{2,}\b", capture)
+        if token not in _PERGUNTAS_IA_CONTINUATION_NON_TARGET_TOKENS
+        and not re.fullmatch(r"(?:19|20)\d{2}", token)
+        and not re.fullmatch(r"\d+(?:[.,]\d+)?", token)
+    }
+
+
+def _perguntas_ia_texto_autoritativo_atual(texto: object) -> str:
+    """Isolate the positive side of an explicit buyer correction when possible."""
+
+    normalizado = _ml_question_normalize(texto)
+    for pattern in (
+        r"\bna\s+verdade\b\s*(?:e|eh)?\s*(.+)$",
+        r"\b(?:corrigindo|correcao)\b\s*[:,-]?\s*(?:e|eh)?\s*(.+)$",
+        r"\b(?:eu\s+)?quis\s+dizer\b\s*[:,-]?\s*(?:e|eh)?\s*(.+)$",
+        r"\bna\s+realidade\b\s*[:,-]?\s*(?:e|eh)?\s*(.+)$",
+        r"\bo\s+correto\s+(?:e|eh)\b\s*(.+)$",
+        r"\bcorrijo\b\s*[:,-]?\s*(?:e|eh)?\s*(.+)$",
+        r"\bme\s+enganei\b\s*[:,-]?\s*(?:e|eh)?\s*(.+)$",
+        r"\bo\s+meu\s+(?:e|eh)\b\s*(.+)$",
+        r"\bera\b\s*(.+?)(?:,\s*(?:e\s+)?nao\b|$)",
+        r"\btroque\s+para\b\s*(.+)$",
+        r"\bmudando\s+de\s+assunto\b\s*[:,-]?\s*(.+)$",
+        r"\bagora\s+(?:e|eh)\s+para\b\s*(.+)$",
+        r"\bnao\s+(?:e|eh)\b[^;,]*(?:;|,\s*(?:mas\s+)?)(?:e|eh)?\s*(.+)$",
+    ):
+        match = re.search(pattern, normalizado)
+        if match and str(match.group(1) or "").strip():
+            return str(match.group(1)).strip()
+    if not _perguntas_ia_continuation_has_negated_qualifier(normalizado):
+        for pattern in (
+            r"^\s*(.+?),\s*(?:e\s+)?nao\s+[a-z0-9].*$",
+            r"^\s*nao\s+[a-z0-9][^,]*,\s*(.+)$",
+        ):
+            match = re.search(pattern, normalizado)
+            if match and str(match.group(1) or "").strip():
+                return str(match.group(1)).strip()
+    return normalizado
+
+
+def _perguntas_ia_mudanca_explicita(texto: object) -> bool:
+    normalizado = _ml_question_normalize(texto)
+    technical_negation = _perguntas_ia_continuation_has_negated_qualifier(normalizado)
+    return bool(
+        re.search(
+            r"\b(?:na\s+verdade|corrigindo|correcao|mudando\s+de\s+assunto|"
+            r"outro\s+assunto|agora\s+(?:e|eh)\s+para|(?:eu\s+)?quis\s+dizer|"
+            r"na\s+realidade|o\s+correto\s+(?:e|eh)|corrijo|me\s+enganei|"
+            r"o\s+meu\s+(?:e|eh)|troque\s+para)\b",
+            normalizado,
+        )
+        or (not technical_negation and re.search(
+            r"\bera\b.{0,60},\s*(?:e\s+)?nao\b|"
+            r"^\s*[^,]+,\s*(?:e\s+)?nao\s+[^,]+$|"
+            r"^\s*nao\s+[^,]+,\s*[^,]+$",
+            normalizado,
+        ))
+        or re.search(
+            r"\bnao\s+(?:e|eh)\b[^;,]{1,80}"
+            r"(?:;|,\s*(?:mas\s+)?|\s+mas\s+)(?:e|eh)?\s*[a-z0-9]",
+            normalizado,
+        )
+    )
+
+
+def _perguntas_ia_assunto_atual_autossuficiente(texto: object) -> bool:
+    """Detect explicit new public-question subjects without guessing vague turns."""
+
+    bruto = str(texto or "")
+    normalizado = _ml_question_normalize(texto)
+    request_like = bool(
+        "?" in bruto
+        or re.search(
+            r"^\s*(?:qual|quais|quanto|quantos|quanta|quantas|tem|possui|emite|"
+            r"acompanha|inclui|vem|informe|pode\s+informar)\b|"
+            r"\b(?:quero|gostaria|preciso)\s+saber\b",
+            normalizado,
+        )
+    )
+    if not request_like:
+        return False
+    return bool(
+        re.search(
+            r"\b(?:prazo|tempo)\b.{0,30}\b(?:entrega|envio|chegar|demora)\b|"
+            r"\b(?:frete|rastreio|rastreamento)\b|"
+            r"\b(?:tem|possui|qual|quanto\s+tempo\s+de)\s+garantia\b|"
+            r"\bgarantia\s+(?:de|e|eh)\b|"
+            r"\bquantas?\s+(?:unidades?|pecas?|itens?)\b|"
+            r"\b(?:kit|jogo|par)\b.{0,24}\b(?:vem|inclui|acompanha)\b|"
+            r"\b(?:qual|informe|tem|possui|e|eh)\s+(?:a\s+)?(?:voltagem|tensao)\b|"
+            r"\btem\s+(?:110|127|220|12|24)\s*v(?:olts?)?\b|"
+            r"\b(?:qual|quanto|tem)\s+(?:o\s+)?(?:preco|valor|estoque)\b|"
+            r"\b(?:preco|valor|estoque)\s+(?:do|da|desse|dessa|disponivel)\b|"
+            r"\b(?:material|composicao|cor|medida|medidas|dimensao|dimensoes|tamanho)\b|"
+            r"\b(?:qual\s+)?(?:lado|marca|fabricante)\b|"
+            r"^\s*(?:e|eh)\s+(?:original|genuino|genuina|paralelo|paralela)\b|"
+            r"\b(?:produto|peca|item)\b.{0,18}\b(?:original|genuino|genuina|paralelo|paralela)\b|"
+            r"\b(?:emite|emitem|tem|possui|acompanha)\b.{0,24}\bnota\s+fiscal\b|"
+            r"\b(?:nota\s+fiscal|nf-e|nfe|cnpj)\b",
+            normalizado,
+        )
+    )
+
+
+def _perguntas_ia_continuation_negated_qualifiers(texto: object) -> dict[str, set[str]]:
+    normalizado = _ml_question_normalize(texto).replace(",", ".")
+    patterns = {
+        "fuel": {
+            "gasolina": r"gasolina",
+            "diesel": r"diesel",
+            "flex": r"flex",
+            "etanol": r"etanol",
+            "alcool": r"alcool",
+            "gnv": r"gnv",
+            "hibrido": r"hibrido",
+            "eletrico": r"eletrico",
+        },
+        "displacement": {
+            re.sub(r"\s+", "", value): re.escape(value)
+            for value in re.findall(r"\b\d\s*\.\s*\d\b", normalizado)
+        },
+        "transmission": {
+            "automatico": r"automatic[oa]s?",
+            "manual": r"manual(?:is)?",
+            "automatizado": r"automatizad[oa]s?",
+            "cvt": r"cvt",
+        },
+        "side": {
+            "direito": r"direit[oa]s?",
+            "esquerdo": r"esquerd[oa]s?",
+            "dianteiro": r"dianteir[oa]s?",
+            "traseiro": r"traseir[oa]s?",
+        },
+        "engine": {
+            value: re.escape(value)
+            for value in re.findall(r"\b(?:v[468]|\d{1,2}v)\b", normalizado)
+        },
+    }
+    result: dict[str, set[str]] = {category: set() for category in patterns}
+    prefix = r"(?:nao|sem|exceto)\s+(?:(?:e|eh|usa|serve|tem|para)\s+)?(?:motor\s+)?"
+    suffix = r"\s+(?:nao|excluido|excluida)"
+    for category, values in patterns.items():
+        for canonical, pattern in values.items():
+            if re.search(rf"\b{prefix}{pattern}\b", normalizado) or re.search(
+                rf"\b{pattern}{suffix}\b",
+                normalizado,
+            ):
+                result[category].add(canonical)
+    return result
+
+
+def _perguntas_ia_continuation_has_negated_qualifier(texto: object) -> bool:
+    return any(
+        values
+        for values in _perguntas_ia_continuation_negated_qualifiers(texto).values()
+    )
+
+
+def _perguntas_ia_continuation_decisive_values(texto: object) -> set[str]:
+    normalizado = _ml_question_normalize(texto).replace(",", ".")
+    values = {
+        re.sub(r"\s+", "", value)
+        for value in re.findall(
+            r"\b(?:\d{2,3}\s*v|m\d{1,3}|[1-9]\s*/\s*[1-9](?:\s*npt)?|"
+            r"\d+(?:\.\d+)?\s*x\s*\d+(?:\.\d+)?\s*(?:mm|cm)|"
+            r"\d+(?:\.\d+)?\s*(?:mm|cm|bar|psi|pinos?|vias?))\b",
+            normalizado,
+        )
+    }
+    values.update(
+        re.findall(
+            r"\b(?:[a-z]{1,5}\d[a-z0-9]*(?:-[a-z0-9]+)+|[a-z]{1,5}\d{4,}[a-z0-9]*)\b",
+            normalizado,
+        )
+    )
+    values.update(
+        re.sub(r"\s+", "", value)
+        for value in re.findall(r"\b(?:\d{1,3}\s+){3,}\d{2,3}\b", normalizado)
+    )
+    for match in re.finditer(
+        r"\b(?:codigo|oem|referencia|ref)\b(?:\s+original)?\s*(?::|e|eh)?\s*"
+        r"([a-z0-9][a-z0-9-]{3,})\b",
+        normalizado,
+    ):
+        values.add(str(match.group(1) or "").strip())
+    return {value for value in values if value}
+
+
+def _perguntas_ia_continuation_facts(texto: object) -> dict:
+    normalizado = _ml_question_normalize(texto)
+    normalizado = re.sub(
+        r"\b(?:chassi|chassis|vin)\b(?:\s+final)?\s*[:#-]?\s*[a-z0-9-]{4,25}\b",
+        " ",
+        normalizado,
+    )
+    decisive = _perguntas_ia_continuation_decisive_values(normalizado)
+    decisive_components = {
+        component
+        for value in decisive
+        for component in re.findall(r"[a-z0-9]{2,}", value)
+    }
+    identity = {
+        token
+        for token in re.findall(r"\b[a-z0-9]{2,}\b", normalizado)
+        if token not in _PERGUNTAS_IA_CONTINUATION_NON_TARGET_TOKENS
+        and not re.fullmatch(r"(?:19|20)\d{2}", token)
+        and not re.fullmatch(r"\d+(?:[.,]\d+)?", token)
+        and not re.fullmatch(r"(?:v[468]|\d{1,2}v)", token)
+        and not re.fullmatch(r"[a-hj-npr-z0-9]{17}", token)
+        and token not in decisive_components
+    }
+    negated_identity = _perguntas_ia_continuation_negated_identity(normalizado)
+    identity.difference_update(negated_identity)
+    years = {int(value) for value in re.findall(r"\b(?:19|20)\d{2}\b", normalizado)}
+    for first, second in re.findall(r"\b(\d{2})\s*/\s*(\d{2})\b", normalizado):
+        for value in (first, second):
+            numeric = int(value)
+            years.add(2000 + numeric if numeric <= 49 else 1900 + numeric)
+    normalized_decimal = normalizado.replace(",", ".")
+    qualifiers = {
+        "fuel": {
+            value
+            for value in (
+                "gasolina", "diesel", "flex", "etanol", "alcool", "gnv", "hibrido", "eletrico",
+            )
+            if re.search(rf"\b{re.escape(value)}\b", normalizado)
+        },
+        "displacement": {
+            re.sub(r"\s+", "", value)
+            for value in re.findall(r"\b\d\s*\.\s*\d\b", normalized_decimal)
+        },
+        "transmission": {
+            canonical
+            for pattern, canonical in (
+                (r"\bautomatic[oa]s?\b", "automatico"),
+                (r"\bmanual(?:is)?\b", "manual"),
+                (r"\bautomatizad[oa]s?\b", "automatizado"),
+                (r"\bcvt\b", "cvt"),
+            )
+            if re.search(pattern, normalizado)
+        },
+        "side": {
+            canonical
+            for pattern, canonical in (
+                (r"\bdireit[oa]s?\b", "direito"),
+                (r"\besquerd[oa]s?\b", "esquerdo"),
+                (r"\bdianteir[oa]s?\b", "dianteiro"),
+                (r"\btraseir[oa]s?\b", "traseiro"),
+            )
+            if re.search(pattern, normalizado)
+        },
+        "engine": set(re.findall(r"\b(?:v[468]|\d{1,2}v)\b", normalizado)),
+    }
+    negated_qualifiers = _perguntas_ia_continuation_negated_qualifiers(normalizado)
+    for category, values in negated_qualifiers.items():
+        qualifiers[category].difference_update(values)
+    return {
+        "identity": identity,
+        "years": years,
+        "qualifiers": qualifiers,
+        "negated_qualifiers": negated_qualifiers,
+        "negated_identity": negated_identity,
+        "decisive": decisive,
+    }
+
+
+def _perguntas_ia_current_facts_explicit(texto: object, facts: dict) -> bool:
+    normalizado = _ml_question_normalize(texto)
+    if (
+        facts.get("years")
+        or any((facts.get("qualifiers") or {}).values())
+        or any((facts.get("negated_qualifiers") or {}).values())
+        or facts.get("negated_identity")
+        or facts.get("decisive")
+        or _perguntas_ia_mudanca_explicita(texto)
+    ):
+        return True
+    if re.search(
+        r"\b(?:serve|servir|compativel|compatibilidade|modelo|carro|veiculo)\b|"
+        r"^\s*e\s+(?:o|a|um|uma)?\s*[a-z0-9]",
+        normalizado,
+    ):
+        return True
+    identity = set(facts.get("identity") or set())
+    if not identity or "?" in str(texto or ""):
+        return False
+    if re.search(r"\b(?:responda|diga|informe|explique|mostre|envie|mande)\b", normalizado):
+        return False
+    return len(re.findall(r"\b[a-z0-9]+\b", normalizado)) <= 8
+
+
+def _perguntas_ia_turno_continuacao_positiva(texto: object) -> bool:
+    """Allow history inheritance only for evidenced or explicitly elliptical turns."""
+
+    if (
+        _perguntas_ia_prompt_injection_evidente(texto)
+        or _perguntas_ia_mensagem_pos_venda_evidente(texto)
+        or _perguntas_ia_assunto_atual_autossuficiente(texto)
+    ):
+        return False
+    authoritative = _perguntas_ia_texto_autoritativo_atual(texto)
+    facts = _perguntas_ia_continuation_facts(authoritative)
+    if facts.get("negated_identity") and not facts.get("identity"):
+        return False
+    qualifiers = facts.get("qualifiers") if isinstance(facts.get("qualifiers"), dict) else {}
+    negated = (
+        facts.get("negated_qualifiers")
+        if isinstance(facts.get("negated_qualifiers"), dict)
+        else {}
+    )
+    if any(values and not set(qualifiers.get(category) or set()) for category, values in negated.items()):
+        return False
+    if _perguntas_ia_current_facts_explicit(texto, facts):
+        return True
+    normalizado = _ml_question_normalize(texto)
+    return bool(
+        re.search(
+            r"\b(?:ainda\s+)?nao\s+(?:conferi|desmontei|verifiquei|comparei|olhei|sei|"
+            r"consigo\s+(?:conferir|desmontar|verificar|comparar))\b|"
+            r"\bnao\s+(?:e|eh)\s+possivel\s+(?:conferir|desmontar|verificar|comparar)\b|"
+            r"\b(?:vai|vou)\s+para\s+(?:a\s+)?oficina\b|"
+            r"\b(?:pode|consegue)\s+confirmar(?:\s+(?:entao|agora|isso))?\b|"
+            r"^\s*(?:confirma|isso|exato|certo|entendi|e\s+esse|e\s+essa)\s*[?.!]*$",
+            normalizado,
+        )
+    )
+
+
+def _perguntas_ia_continuation_resolved_facts(
+    pergunta_atual: object,
+    historico: list[dict],
+) -> tuple[dict, dict]:
+    """Resolve the latest buyer target, with the current turn overriding older facts."""
+
+    raw_current = _perguntas_ia_continuation_facts(pergunta_atual)
+    current = _perguntas_ia_continuation_facts(
+        _perguntas_ia_texto_autoritativo_atual(pergunta_atual)
+    )
+    current["negated_identity"] = set(current.get("negated_identity") or set()).union(
+        set(raw_current.get("negated_identity") or set())
+    )
+    current_negated_qualifiers = (
+        current.get("negated_qualifiers")
+        if isinstance(current.get("negated_qualifiers"), dict)
+        else {}
+    )
+    raw_negated_qualifiers = (
+        raw_current.get("negated_qualifiers")
+        if isinstance(raw_current.get("negated_qualifiers"), dict)
+        else {}
+    )
+    current["negated_qualifiers"] = {
+        category: set(current_negated_qualifiers.get(category) or set()).union(
+            set(raw_negated_qualifiers.get(category) or set())
+        )
+        for category in ("fuel", "displacement", "transmission", "side", "engine")
+    }
+    current_has_explicit_target = _perguntas_ia_current_facts_explicit(
+        pergunta_atual,
+        current,
+    )
+    if not current_has_explicit_target:
+        current = {
+            "identity": set(),
+            "years": set(),
+            "qualifiers": {
+                category: set()
+                for category in ("fuel", "displacement", "transmission", "side", "engine")
+            },
+            "negated_qualifiers": {},
+            "negated_identity": set(),
+            "decisive": set(),
+        }
+    historical = [
+        _perguntas_ia_continuation_facts(
+            _perguntas_ia_texto_autoritativo_atual(event.get("text"))
+        )
+        for event in historico
+        if isinstance(event, dict)
+        and _ml_question_normalize(event.get("role") or event.get("from_role"))
+        not in {"seller", "loja", "store"}
+        and str(event.get("text") or "").strip()
+    ]
+    current_identity = set(current.get("identity") or set())
+    current_negated_identity = set(current.get("negated_identity") or set())
+    reference: dict = {}
+    reference_index = -1
+    if not current_identity and not current_negated_identity:
+        for index in range(len(historical) - 1, -1, -1):
+            if historical[index].get("identity"):
+                reference_index = index
+                reference = historical[index]
+                break
+    elif current_identity:
+        for index in range(len(historical) - 1, -1, -1):
+            facts = historical[index]
+            historical_identity = set(facts.get("identity") or set())
+            if not historical_identity:
+                continue
+            if historical_identity == current_identity:
+                reference_index = index
+                reference = facts
+            break
+    reference_tail = historical[reference_index:] if reference_index >= 0 else []
+
+    def latest_values(key: str) -> set:
+        for facts in reversed(reference_tail):
+            values = set(facts.get(key) or set())
+            if values:
+                return values
+        return set()
+
+    def latest_qualifier(category: str) -> set:
+        for facts in reversed(reference_tail):
+            qualifiers = facts.get("qualifiers") if isinstance(facts.get("qualifiers"), dict) else {}
+            negated = (
+                facts.get("negated_qualifiers")
+                if isinstance(facts.get("negated_qualifiers"), dict)
+                else {}
+            )
+            values = set(qualifiers.get(category) or set())
+            denied = set(negated.get(category) or set())
+            if values or denied:
+                return values - denied
+        return set()
+    reference_identity = set(reference.get("identity") or set())
+    resolved_identity = current_identity or reference_identity
+    current_years = set(current.get("years") or set())
+    reference_years = latest_values("years")
+    current_decisive = set(current.get("decisive") or set())
+    reference_decisive = latest_values("decisive")
+    current_qualifiers = (
+        current.get("qualifiers") if isinstance(current.get("qualifiers"), dict) else {}
+    )
+    current_negated = (
+        current.get("negated_qualifiers")
+        if isinstance(current.get("negated_qualifiers"), dict)
+        else {}
+    )
+    resolved_qualifiers = {}
+    for category in ("fuel", "displacement", "transmission", "side", "engine"):
+        explicit = set(current_qualifiers.get(category) or set())
+        negated = set(current_negated.get(category) or set())
+        inherited = latest_qualifier(category) - negated
+        resolved_qualifiers[category] = explicit or inherited
+    return (
+        {
+            "identity": resolved_identity,
+            "years": current_years or reference_years,
+            "qualifiers": resolved_qualifiers,
+            "negated_qualifiers": {
+                category: set(current_negated.get(category) or set())
+                for category in ("fuel", "displacement", "transmission", "side", "engine")
+            },
+            "negated_identity": current_negated_identity,
+            "decisive": current_decisive or reference_decisive,
+        },
+        current,
+    )
+
+
+def _perguntas_ia_continuation_facts_within(facts: dict, resolved: dict) -> bool:
+    identity = set(facts.get("identity") or set())
+    if not identity or identity != set(resolved.get("identity") or set()):
+        return False
+    if identity.intersection(set(resolved.get("negated_identity") or set())):
+        return False
+    if not set(facts.get("years") or set()).issubset(set(resolved.get("years") or set())):
+        return False
+    if not set(facts.get("decisive") or set()).issubset(set(resolved.get("decisive") or set())):
+        return False
+    qualifiers = facts.get("qualifiers") if isinstance(facts.get("qualifiers"), dict) else {}
+    resolved_qualifiers = (
+        resolved.get("qualifiers")
+        if isinstance(resolved.get("qualifiers"), dict)
+        else {}
+    )
+    resolved_negated = (
+        resolved.get("negated_qualifiers")
+        if isinstance(resolved.get("negated_qualifiers"), dict)
+        else {}
+    )
+    return all(
+        set(values or set()).issubset(set(resolved_qualifiers.get(category) or set()))
+        and not set(values or set()).intersection(
+            set(resolved_negated.get(category) or set())
+        )
+        for category, values in qualifiers.items()
+    )
+
+
+def _perguntas_ia_continuation_facts_cover(facts: dict, required: dict) -> bool:
+    if not set(required.get("identity") or set()).issubset(set(facts.get("identity") or set())):
+        return False
+    if not set(required.get("years") or set()).issubset(set(facts.get("years") or set())):
+        return False
+    if not set(required.get("decisive") or set()).issubset(set(facts.get("decisive") or set())):
+        return False
+    qualifiers = facts.get("qualifiers") if isinstance(facts.get("qualifiers"), dict) else {}
+    required_qualifiers = (
+        required.get("qualifiers")
+        if isinstance(required.get("qualifiers"), dict)
+        else {}
+    )
+    return all(
+        set(values or set()).issubset(set(qualifiers.get(category) or set()))
+        for category, values in required_qualifiers.items()
+    )
+
+
+def _perguntas_ia_continuacao_compatibilidade_ancorada(
+    classificada: dict,
+    *,
+    pergunta_atual: object,
+    historico: list[dict],
+) -> bool:
+    continuidade = (
+        classificada.get("continuidade")
+        if isinstance(classificada.get("continuidade"), dict)
+        else {}
+    )
+    if str(continuidade.get("tipo") or "") != "continuacao":
+        return True
+    categorias = classificada.get("categorias") if isinstance(classificada.get("categorias"), list) else []
+    if str(classificada.get("categoria") or "") != "compatibility" and "compatibility" not in categorias:
+        return True
+    compatibility = (
+        classificada.get("compatibilidade")
+        if isinstance(classificada.get("compatibilidade"), dict)
+        else {}
+    )
+    target_text = str(compatibility.get("target_item") or "")
+    if _perguntas_ia_continuation_has_negated_qualifier(target_text):
+        return False
+    resolved_facts, current_facts = _perguntas_ia_continuation_resolved_facts(
+        pergunta_atual,
+        historico,
+    )
+    current_qualifiers = (
+        current_facts.get("qualifiers")
+        if isinstance(current_facts.get("qualifiers"), dict)
+        else {}
+    )
+    current_negated = (
+        current_facts.get("negated_qualifiers")
+        if isinstance(current_facts.get("negated_qualifiers"), dict)
+        else {}
+    )
+    if any(
+        values and not set(current_qualifiers.get(category) or set())
+        for category, values in current_negated.items()
+    ):
+        return False
+    target_facts = _perguntas_ia_continuation_facts(target_text)
+    if not _perguntas_ia_continuation_facts_within(target_facts, resolved_facts):
+        return False
+    target_identity = target_facts.get("identity") or set()
+    output_facts = [target_facts]
+    for subquestion in classificada.get("subperguntas") or []:
+        if not isinstance(subquestion, dict) or str(subquestion.get("intent") or "") != "compatibility":
+            continue
+        subquestion_text = str(subquestion.get("question") or "")
+        if _perguntas_ia_continuation_has_negated_qualifier(subquestion_text):
+            return False
+        sub_facts = _perguntas_ia_continuation_facts(subquestion_text)
+        if (sub_facts.get("identity") or set()) != target_identity:
+            return False
+        if not _perguntas_ia_continuation_facts_within(sub_facts, resolved_facts):
+            return False
+        output_facts.append(sub_facts)
+    combined = {
+        "identity": set().union(*(facts.get("identity") or set() for facts in output_facts)),
+        "years": set().union(*(facts.get("years") or set() for facts in output_facts)),
+        "decisive": set().union(*(facts.get("decisive") or set() for facts in output_facts)),
+        "qualifiers": {
+            category: set().union(*(
+                (
+                    facts.get("qualifiers", {}).get(category) or set()
+                    if isinstance(facts.get("qualifiers"), dict)
+                    else set()
+                )
+                for facts in output_facts
+            ))
+            for category in ("fuel", "displacement", "transmission", "side", "engine")
+        },
+    }
+    return _perguntas_ia_continuation_facts_cover(combined, current_facts)
+
+
+def _perguntas_ia_deve_reparar_continuidade(
+    classificada: dict,
+    *,
+    pergunta_atual: object,
+    historico: list[dict],
+    contract_repair_attempted: bool,
+) -> bool:
+    """Allow one semantic repair only when history can safely resolve an unknown turn."""
+
+    if contract_repair_attempted or not historico:
+        return False
+    if str(classificada.get("categoria") or "") != QuestionCategory.UNKNOWN.value:
+        return False
+    if str(classificada.get("intencao") or "") != "nao_entendi":
+        return False
+    continuidade = (
+        classificada.get("continuidade")
+        if isinstance(classificada.get("continuidade"), dict)
+        else {}
+    )
+    if str(continuidade.get("tipo") or "") == "novo_assunto":
+        return False
+    texto_normalizado = _ml_question_normalize(pergunta_atual)
+    if _perguntas_ia_mudanca_explicita(texto_normalizado):
+        return False
+    if _perguntas_ia_assunto_atual_autossuficiente(texto_normalizado):
+        return False
+    if _perguntas_ia_prompt_injection_evidente(texto_normalizado):
+        return False
+    for event in historico:
+        if not isinstance(event, dict) or _ml_question_normalize(event.get("role")) in {
+            "seller",
+            "loja",
+            "store",
+        }:
+            continue
+        if _perguntas_ia_prompt_injection_evidente(event.get("text")):
+            return False
+    return _perguntas_ia_turno_continuacao_positiva(pergunta_atual)
+
+
+def _perguntas_ia_validar_continuidade_segura(
+    classificada: dict,
+    *,
+    pergunta_atual: object,
+    historico: list[dict],
+) -> None:
+    """Fail closed when model output conflicts with injection or post-sale evidence."""
+
+    continuidade = (
+        classificada.get("continuidade")
+        if isinstance(classificada.get("continuidade"), dict)
+        else {}
+    )
+    continuidade_tipo = str(continuidade.get("tipo") or "")
+    buyer_history_texts = [
+        event.get("text")
+        for event in historico
+        if isinstance(event, dict)
+        and _ml_question_normalize(event.get("role")) not in {"seller", "loja", "store"}
+    ]
+    current_injection = _perguntas_ia_prompt_injection_evidente(pergunta_atual)
+    inherited_injection = bool(
+        continuidade_tipo in {"continuacao", "inconclusiva"}
+        and any(
+            _perguntas_ia_prompt_injection_evidente(text)
+            for text in buyer_history_texts
+        )
+    )
+    if current_injection or inherited_injection:
+        raise PerguntasIASegurancaBloqueada(
+            "A classificacao foi bloqueada pela politica de seguranca."
+        )
+
+    post_sale_classification = bool(
+        str(classificada.get("categoria") or "") == QuestionCategory.POST_SALE.value
+        or str(classificada.get("fluxo") or "") == "pos_venda"
+    )
+    current_post_sale = _perguntas_ia_mensagem_pos_venda_evidente(pergunta_atual)
+    inherited_post_sale = bool(
+        continuidade_tipo in {"continuacao", "inconclusiva"}
+        and any(_perguntas_ia_mensagem_pos_venda_evidente(text) for text in buyer_history_texts)
+    )
+    if (current_post_sale or inherited_post_sale) and not post_sale_classification:
+        raise PerguntasIAClassificacaoInconclusiva(
+            "A classificacao conflitou com sinais evidentes de pos-venda.",
+            classificacao=classificada,
+            allow_contextual=False,
+        )
+    if continuidade_tipo == "continuacao" and not _perguntas_ia_turno_continuacao_positiva(
+        pergunta_atual
+    ):
+        raise PerguntasIAClassificacaoInconclusiva(
+            "A classificacao tentou herdar um assunto diferente da pergunta atual.",
+            classificacao=classificada,
+            allow_contextual=False,
+        )
+    if not _perguntas_ia_continuacao_compatibilidade_ancorada(
+        classificada,
+        pergunta_atual=pergunta_atual,
+        historico=historico,
+    ):
+        raise PerguntasIAClassificacaoInconclusiva(
+            "A continuacao introduziu um alvo ou qualificadores ausentes na conversa.",
+            classificacao=classificada,
+            allow_contextual=True,
+        )
 
 
 def _perguntas_ia_classificar_intencao(client_id: str, loja: str, pergunta: dict, item: dict) -> dict:
     historico = pergunta.get("buyer_question_chat") if isinstance(pergunta.get("buyer_question_chat"), list) else []
+    question_id = str(pergunta.get("id") or "").strip()
+    current_text_normalized = _ml_question_normalize(pergunta.get("text"))
+    previous_events = []
+    for event in historico:
+        if not isinstance(event, dict):
+            continue
+        event_question_id = str(event.get("question_id") or "").strip()
+        if question_id and event_question_id == question_id:
+            continue
+        previous_events.append(event)
+    if current_text_normalized:
+        previous_events = [
+            event
+            for event in previous_events
+            if _ml_question_normalize(event.get("role") or event.get("from_role"))
+            in {"seller", "loja", "store"}
+            or _ml_question_normalize(event.get("text")) != current_text_normalized
+        ]
     mensagens = []
-    for evento in historico[-8:]:
+    for evento in previous_events[-8:]:
         if not isinstance(evento, dict):
             continue
         texto = str(evento.get("text") or "").strip()
@@ -891,12 +1890,13 @@ def _perguntas_ia_classificar_intencao(client_id: str, loja: str, pergunta: dict
     perf_t0 = time.perf_counter()
     try:
         resposta, model_usado = perguntas_agent_provider_transport.invoke_model(client_id, payload, model_req)
-        repair_attempted = False
+        contract_repair_attempted = False
+        semantic_repair_attempted = False
         repair_violation_code = ""
         try:
             classificada = _perguntas_ia_classificacao_parsear(resposta)
         except _PerguntasIAContratoClassificacaoInvalido as exc:
-            repair_attempted = True
+            contract_repair_attempted = True
             repair_violation_code = exc.violation_code
             repair_payload = IAChatRequest(
                 message=_perguntas_ia_classification_prompt(
@@ -923,6 +1923,47 @@ def _perguntas_ia_classificar_intencao(client_id: str, loja: str, pergunta: dict
                 model_req,
             )
             classificada = _perguntas_ia_classificacao_parsear(resposta_reparada)
+        _perguntas_ia_validar_continuidade_segura(
+            classificada,
+            pergunta_atual=pergunta.get("text") or "",
+            historico=mensagens,
+        )
+        if _perguntas_ia_deve_reparar_continuidade(
+            classificada,
+            pergunta_atual=pergunta.get("text") or "",
+            historico=mensagens,
+            contract_repair_attempted=contract_repair_attempted,
+        ):
+            semantic_repair_attempted = True
+            semantic_payload = IAChatRequest(
+                message=_perguntas_ia_classification_prompt(
+                    entrada,
+                    continuity_repair=True,
+                ),
+                page=ML_PERGUNTAS_IA_CLASSIFICATION_PAGE,
+                context={
+                    "modulo": "perguntas_pos_venda",
+                    "tipo": "classificacao_intencao_perguntas_ml_reparo_continuidade",
+                    "classification_contract_version": ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_VERSION,
+                    "classification_contract_hash": ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_HASH,
+                    "desativar_recursos_chat": True,
+                    "desativar_busca_web_chat": True,
+                    "modo_rapido_sidebar": True,
+                    "loja": loja,
+                },
+                model=model_req,
+            )
+            resposta_semantica, model_usado = perguntas_agent_provider_transport.invoke_model(
+                client_id,
+                semantic_payload,
+                model_req,
+            )
+            classificada = _perguntas_ia_classificacao_parsear(resposta_semantica)
+            _perguntas_ia_validar_continuidade_segura(
+                classificada,
+                pergunta_atual=pergunta.get("text") or "",
+                historico=mensagens,
+            )
         classificada["model"] = model_usado
         classificada["source"] = "ia"
         perguntas_agent_telemetry.record(
@@ -942,7 +1983,9 @@ def _perguntas_ia_classificar_intencao(client_id: str, loja: str, pergunta: dict
             modelo=classificada.get("model"),
             classification_contract_version=ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_VERSION,
             classification_contract_hash=ML_PERGUNTAS_IA_CLASSIFICATION_CONTRACT_HASH,
-            contract_repair_attempted=repair_attempted,
+            continuity_type=(classificada.get("continuidade") or {}).get("tipo"),
+            contract_repair_attempted=contract_repair_attempted,
+            semantic_repair_attempted=semantic_repair_attempted,
             contract_violation_code=repair_violation_code,
         )
         return classificada
@@ -962,6 +2005,12 @@ def _perguntas_ia_classificar_intencao(client_id: str, loja: str, pergunta: dict
         )
         if isinstance(exc, PerguntasIARespostaIndisponivel):
             raise
+        provider_failure_code = _perguntas_ia_provider_failure_code(exc)
+        if provider_failure_code:
+            raise PerguntasIAProviderIndisponivel(
+                "Classificacao de intencao temporariamente indisponivel no provedor.",
+                reason=provider_failure_code,
+            ) from exc
         raise PerguntasIARespostaIndisponivel(
             f"Classificacao de intencao pela IA indisponivel: {type(exc).__name__}."
         ) from exc
@@ -1848,6 +2897,11 @@ def _ml_pos_venda_classificar_motivo(conversa: dict, reclamacao: dict) -> dict:
     return {"motivo": "outro", "confianca": 0.55, "evidencia": "sem gatilho claro"}
 
 PEER_EXPORTS = ['ML_RESPOSTA_PERGUNTA_MAX_CHARS', 'ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO', 'ML_PERGUNTAS_IA_PROMPT_MAX_CHARS', 'ML_PERGUNTAS_IA_DESCRICAO_PROMPT_MAX_CHARS', 'ML_PERGUNTAS_IA_DESCRICAO_AGENT_MAX_CHARS', 'ML_PERGUNTAS_IA_CONTEXTO_EXTRA_PROMPT_MAX_CHARS', 'ML_PERGUNTAS_IA_MEMORIA_SKU_MIN_BYTES', 'ML_PERGUNTAS_IA_MEMORIA_SKU_MAX_EVENTOS', 'ML_PERGUNTAS_IA_MEMORIA_SKU_PROMPT_MAX_CHARS', 'IA_CHAT_MESSAGE_MAX_CHARS', 'IA_CHAT_MESSAGE_COMPACT_TARGET_CHARS', 'ML_POS_VENDA_DEFAULT_MAX_CHARS', 'ML_POS_VENDA_LIMITE_SEGURO', 'PERGUNTAS_AUTOMACAO_INTERVALO_PADRAO_MIN', 'PERGUNTAS_AUTOMACAO_INTERVALO_MIN', 'PERGUNTAS_AUTOMACAO_INTERVALO_MAX', 'PERGUNTAS_AUTOMACAO_BG_LOCK', 'PERGUNTAS_AUTOMACAO_BG_THREAD_STARTED', 'PERGUNTAS_AUTOMACAO_BG_NEXT_CHECKS', 'PERGUNTAS_AUTOMACAO_BG_RUNNING', 'PERGUNTAS_AUTOMACAO_BG_LAST_RESULTS', 'PERGUNTAS_IA_MEMORIA_SKU_LOCK', '_perguntas_loja_config_path', '_perguntas_loja_configs_carregar', '_perguntas_loja_config_normalizar', '_perguntas_loja_config_obter', '_perguntas_loja_config_salvar', '_perguntas_ia_state_path', '_perguntas_ia_aprovacoes_path', '_ml_questions_v2_webhook_events_path', '_perguntas_ia_ler_json', '_perguntas_ia_salvar_json', '_perguntas_ia_state_carregar', '_perguntas_ia_state_salvar', '_perguntas_ia_aprovacoes_carregar', '_perguntas_ia_aprovacoes_salvar', '_perguntas_ia_aprovacao_id', '_pos_venda_ia_aprovacao_id', '_perguntas_ia_marcar_processada', '_perguntas_ia_ja_processada', '_perguntas_ia_aprovacao_pendente', '_perguntas_ia_resolver_aprovacao', '_perguntas_ia_resolver_aprovacoes_pendentes', '_perguntas_ia_pergunta_respondida_ml', '_ml_pos_venda_conversa_respondida_pela_loja', '_perguntas_ia_limpar_resposta', '_perguntas_ia_assinatura_loja', '_perguntas_ia_remover_apresentacao_sistema', '_perguntas_ia_resposta_final_loja', 'PerguntasIARespostaIndisponivel', '_perguntas_ia_resposta_fallback_invalida', 'ML_PERGUNTAS_IA_INTENCOES', 'ML_PERGUNTAS_IA_INTENCOES_POS_VENDA', '_perguntas_ia_intencao_fluxo', '_perguntas_ia_intencao_heuristica', '_perguntas_ia_json_obj', '_perguntas_ia_intencao_normalizar', '_perguntas_ia_classificar_intencao', '_perguntas_ia_intencao_agent', '_perguntas_ia_fluxo_pos_venda', '_perguntas_ia_compactar_contexto', '_perguntas_ia_limitar_prompt', '_perguntas_ia_memoria_sku_limite_bytes', '_perguntas_ia_memoria_sku_normalizar', '_perguntas_ia_memoria_sku_de_fontes', '_perguntas_ia_memoria_sku_dir', '_perguntas_ia_memoria_sku_path', '_perguntas_ia_memoria_payload_vazio', '_perguntas_ia_memoria_normalizar', '_perguntas_ia_memoria_carregar', '_perguntas_ia_memoria_bytes', '_perguntas_ia_memoria_salvar', '_perguntas_ia_memoria_resumir_matches', '_perguntas_ia_memoria_resumir_tool_results', '_perguntas_ia_memoria_evento_base', '_perguntas_ia_memoria_compactar_local', '_perguntas_ia_memoria_compactar_com_ia', '_perguntas_ia_memoria_garantir_limite', '_perguntas_ia_memoria_registrar_evento', '_perguntas_ia_memoria_registrar_pesquisa', '_perguntas_ia_memoria_registrar_resposta_aprovada', '_perguntas_ia_memoria_bloco_prompt', '_ml_pos_venda_memoria_items', '_ml_pos_venda_memoria_ultima_mensagem', '_ml_pos_venda_memoria_historico', '_ml_pos_venda_perguntas_anuncio_chat', '_ml_pos_venda_memoria_question_id', '_ml_pos_venda_memoria_bloco_prompt', '_ml_pos_venda_memoria_registrar_evento', '_ml_pos_venda_memoria_registrar_geracao', '_ml_pos_venda_memoria_registrar_resposta_enviada', '_ia_agent_extrair_texto', '_ia_agent_engine_query_url', '_ia_agent_endpoint_query_url', '_ia_agent_endpoint_headers', '_ia_agent_http_post', '_perguntas_ia_item_para_agente', '_perguntas_ia_pergunta_para_agente', '_ia_agent_endpoint_api_key_configurada', '_ml_pos_venda_classificar_motivo']
+PEER_EXPORTS.extend([
+    "PerguntasIAClassificacaoInconclusiva",
+    "PerguntasIAProviderIndisponivel",
+    "PerguntasIASegurancaBloqueada",
+])
 PEER_EXPORTS = [
     name for name in PEER_EXPORTS
     if name not in {"_perguntas_ia_intencao_heuristica", "_perguntas_ia_intencao_fluxo"}

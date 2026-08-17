@@ -46,6 +46,9 @@ ML_PERGUNTAS_IA_PREFIXOS_CODIGO_IGNORADOS = {
 
 _PERGUNTAS_IA_SAFE_INSUFFICIENT_VIOLATION = "evidence_insufficient_safe_draft_required"
 _PERGUNTAS_IA_SELLER_STYLE_PREFIX = "seller_style_"
+_PERGUNTAS_IA_SAUDACOES_CURTAS = {
+    "ola", "oi", "bom dia", "boa tarde", "boa noite", "tudo bem", "agradecemos o contato",
+}
 
 def _ia_agent_perguntas_termos_contexto(texto: str, termos: tuple[str, ...] = ML_PERGUNTAS_IA_TERMOS_VEICULO) -> set[str]:
     texto_norm = _favoritos_normalizar_sem_acentos(texto or "")
@@ -276,7 +279,17 @@ def _ia_agent_perguntas_violacoes_politica(contexto: dict) -> list[str]:
         violacoes.append("incluiu link do proprio anuncio")
     if "produto.mercadolivre.com" in texto.lower() or "mercadolivre.com.br" in texto.lower():
         violacoes.append("incluiu link de Mercado Livre sem necessidade")
-    if re.search(r"\b\d+\s+unidades?\b", texto, flags=re.IGNORECASE) or "UNIDADES DISPONIVEIS" in texto_norm:
+    menciona_unidades = bool(re.search(r"\b\d+\s+unidades?\b", texto, flags=re.IGNORECASE))
+    menciona_estoque = bool(
+        re.search(
+            r"\b(?:estoque|saldo|disponiveis?|temos|restam|pronta entrega)\b",
+            texto_sem_acentos,
+        )
+    )
+    if (
+        (menciona_unidades and (menciona_estoque or not _ia_agent_perguntas_pede_quantidade_kit(contexto)))
+        or "UNIDADES DISPONIVEIS" in texto_norm
+    ):
         violacoes.append("mencionou quantidade em estoque")
     if "ESTOQUE NA LOJA" in texto_norm or "DISPONIVEIS EM ESTOQUE" in texto_norm:
         violacoes.append("mencionou estoque interno")
@@ -284,7 +297,10 @@ def _ia_agent_perguntas_violacoes_politica(contexto: dict) -> list[str]:
     if not pergunta_pede_preco and (re.search(r"\bR\$\s*\d", texto) or "O VALOR E" in texto_norm or "O PRECO E" in texto_norm):
         violacoes.append("respondeu preco sem o comprador perguntar")
     texto_norm_sem_assinatura = re.sub(
-        r"EQUIPE\s+.+?\s+AGRADECE\s+(?:O\s+)?SEU\s+CONTATO\.?\s*$", "", texto_norm, flags=re.IGNORECASE,
+        r"EQUIPE\s+.+?\s+AGRADECE\s+(?:(?:O\s+)?SEU\s+CONTATO\.?|PELO\s+CONTATO,\s*PRECISANDO\s+ESTAMOS\s+A\s+DISPOSICAO!)\s*$",
+        "",
+        texto_norm,
+        flags=re.IGNORECASE,
     ).strip()
     if intent.get("fluxo") != "pos_venda":
         violacoes.extend(_perguntas_ia_seller_style_violations(texto))
@@ -328,7 +344,10 @@ def _ia_agent_perguntas_violacoes_aderencia(contexto: dict) -> list[str]:
     pergunta_compatibilidade = categoria == QuestionCategory.COMPATIBILITY.value
     resposta_compatibilidade = any(
         termo in texto_sem_acentos
-        for termo in ("serve", "compat", "pode ser compat", "provavelmente", "mecanico", "confirmar", "da certo", "pode usar", "encaixa", "nao encaixa")
+        for termo in (
+            "serve", "compat", "aplicacao", "pode ser compat", "provavelmente", "mecanico",
+            "confirmar", "garantir", "da certo", "pode usar", "encaixa", "encaixe", "nao encaixa",
+        )
     )
     violacoes: list[str] = []
     if resposta_compatibilidade and not pergunta_compatibilidade and categoria != QuestionCategory.OTHER_PRODUCT.value:
@@ -355,10 +374,7 @@ def _ia_agent_perguntas_violacoes_aderencia(contexto: dict) -> list[str]:
         termo in texto_sem_acentos for termo in ("conector", "entrada", "plug", "cabo", "usb", "tipo c", "type c", "lightning", "iphone", "micro usb")
     ):
         violacoes.append("nao respondeu a pergunta sobre conector")
-    pergunta_quantidade = any(
-        termo in contexto["pergunta_norm"]
-        for termo in ("PAR", "UNIDADE", "LADO DIREITO", "LADO ESQUERDO", "PECA LADO", "PE??A LADO", "DUAS PECAS", "DUAS PE??AS", "2 PECAS", "2 PE??AS", "QUANTIDADE")
-    )
+    pergunta_quantidade = _ia_agent_perguntas_pede_quantidade_kit(contexto)
     if pergunta_quantidade and not any(
         termo in texto_norm
         for termo in ("PAR", "UNIDADE", "DIREITO", "ESQUERDO", "LADO", "PECA", "PE??A", "DUAS", "2", "VARIACAO", "VARIA????O", "DESCRICAO", "DESCRI????O", "ANUNCIO", "AN??NCIO")
@@ -460,7 +476,7 @@ def _ia_agent_perguntas_exige_rascunho_insuficiente_seguro(
 
 def _perguntas_ia_seller_body(resposta: Any) -> str:
     return re.sub(
-        r"(?is)\s*Equipe\s+.+?\s+agradece\s+(?:o\s+)?seu\s+contato\.?\s*$",
+        r"(?is)\s*Equipe\s+.+?\s+agradece\s+(?:(?:o\s+)?seu\s+contato\.?|pelo\s+contato,\s*Precisando\s+estamos\s+[àa]\s+disposi[cç][ãa]o!)\s*$",
         "",
         str(resposta or ""),
     ).strip()
@@ -469,12 +485,37 @@ def _perguntas_ia_seller_sentences(resposta: Any) -> list[str]:
     protected = re.sub(r"(?<=\d)\.(?=\d)", "\x00", str(resposta or ""))
     return [part.replace("\x00", ".").strip() for part in re.split(r"[.!?]+", protected) if part.strip()]
 
+def _perguntas_ia_seller_greeting_only(sentence: Any) -> bool:
+    normalized = _favoritos_normalizar_sem_acentos(str(sentence or "")).strip(" ,;:-")
+    if normalized in _PERGUNTAS_IA_SAUDACOES_CURTAS:
+        return True
+    for greeting in ("ola", "oi", "bom dia", "boa tarde", "boa noite"):
+        if not normalized.startswith(greeting + " "):
+            continue
+        remainder = normalized[len(greeting):].strip(" ,;:-")
+        decision_terms = (
+            "sim", "nao", "serve", "compativel", "aplicacao", "inclui", "acompanha", "tem", "possui",
+        )
+        return bool(remainder and len(remainder.split()) <= 3 and not any(term in remainder for term in decision_terms))
+    return False
+
+
+def _ia_agent_perguntas_pede_quantidade_kit(contexto: dict) -> bool:
+    pergunta = str(contexto.get("pergunta_sem_acentos") or contexto.get("pergunta_norm") or "").lower()
+    return bool(
+        re.search(r"\b(?:par|unidades?|quantidade)\b", pergunta)
+        or re.search(r"\b(?:duas|2)\s+pecas?\b", pergunta)
+        or re.search(r"\blado\s+(?:direito|esquerdo)\b", pergunta)
+    )
+
+
 def _perguntas_ia_seller_style_violations(resposta: Any) -> list[str]:
     body = _perguntas_ia_seller_body(resposta)
     normalized = _favoritos_normalizar_sem_acentos(body)
     violations: list[str] = []
     sentences = _perguntas_ia_seller_sentences(body)
-    if len(sentences) > 3:
+    content_sentences = sentences[1:] if sentences and _perguntas_ia_seller_greeting_only(sentences[0]) else sentences
+    if len(content_sentences) > 3:
         violations.append("seller_style_too_many_sentences")
     process_terms = (
         "evidencia tecnica",
@@ -490,20 +531,14 @@ def _perguntas_ia_seller_style_violations(resposta: Any) -> list[str]:
     )
     if any(term in normalized for term in process_terms):
         violations.append("seller_style_internal_process_language")
-    first = sentences[0] if sentences else ""
-    if _favoritos_normalizar_sem_acentos(first) in {
-        "ola", "oi", "bom dia", "boa tarde", "boa noite", "tudo bem", "agradecemos o contato",
-    }:
-        violations.append("seller_style_non_direct_opening")
     return violations
 
 def _perguntas_ia_compactar_estilo_vendedor(resposta: Any, loja: str) -> str:
     body = _perguntas_ia_seller_body(resposta)
     sentences = _perguntas_ia_seller_sentences(body)
-    greeting_only = {
-        "ola", "oi", "bom dia", "boa tarde", "boa noite", "tudo bem", "agradecemos o contato",
-    }
-    if sentences and _favoritos_normalizar_sem_acentos(sentences[0]) in greeting_only:
+    greeting: list[str] = []
+    if sentences and _perguntas_ia_seller_greeting_only(sentences[0]):
+        greeting = sentences[:1]
         sentences = sentences[1:]
     process_terms = (
         "evidencia tecnica",
@@ -517,11 +552,12 @@ def _perguntas_ia_compactar_estilo_vendedor(resposta: Any, loja: str) -> str:
         "decision insufficient",
         "schema de resposta",
     )
-    safe_sentences = [
+    content_sentences = [
         sentence
         for sentence in sentences
         if not any(term in _favoritos_normalizar_sem_acentos(sentence) for term in process_terms)
     ][:3]
+    safe_sentences = [*greeting, *content_sentences]
     if not safe_sentences:
         return ""
     compacted = ". ".join(safe_sentences).strip()

@@ -3,7 +3,6 @@ export const MAX_REPLY_CHARS = 3500;
 export const TEMPLATE_NAMES = new Set([
   "jk_joao_tarefa_concluida",
   "jk_joao_aprovacao_pendente",
-  "jk_joao_alerta_operacional",
   "jk_black_jhon_nova_pergunta",
   "jk_black_jhon_nova_pergunta_v2",
 ]);
@@ -36,58 +35,6 @@ export async function verifyMetaSignature(raw: ArrayBuffer, signature: string, a
   return timingSafeEqualText(expected, signature);
 }
 
-function standardWebhookSecretBytes(secret: string): Uint8Array | null {
-  const value = String(secret || "").trim().replace(/^whsec_/, "");
-  if (!value) return null;
-  try {
-    const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
-    const decoded = atob(padded);
-    return Uint8Array.from(decoded, (char) => char.charCodeAt(0));
-  } catch {
-    return null;
-  }
-}
-
-export async function verifyOpenAIWebhook(
-  rawText: string,
-  headers: Headers,
-  secret: string,
-  now = Math.floor(Date.now() / 1000),
-  toleranceSeconds = 300,
-): Promise<boolean> {
-  const webhookId = String(headers.get("webhook-id") || "").trim();
-  const timestampText = String(headers.get("webhook-timestamp") || "").trim();
-  const signatureHeader = String(headers.get("webhook-signature") || "").trim();
-  const timestamp = Number.parseInt(timestampText, 10);
-  const keyBytes = standardWebhookSecretBytes(secret);
-  if (!webhookId || !Number.isFinite(timestamp) || !signatureHeader || !keyBytes) return false;
-  if (Math.abs(now - timestamp) > Math.max(30, toleranceSeconds)) return false;
-  const keyData = new Uint8Array(keyBytes.byteLength);
-  keyData.set(keyBytes);
-  const key = await crypto.subtle.importKey(
-    "raw",
-    keyData,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const signed = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(`${webhookId}.${timestampText}.${rawText}`),
-  );
-  const expected = btoa(String.fromCharCode(...new Uint8Array(signed)));
-  return signatureHeader
-    .split(/\s+/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .some((item) => {
-      const [version, signature] = item.split(",", 2);
-      return version === "v1" && Boolean(signature) && timingSafeEqualText(expected, signature);
-    });
-}
-
 export function normalizeInternationalPhone(value: unknown): string {
   let digits = String(value || "").replace(/\D/g, "");
   if (digits.startsWith("00")) digits = digits.slice(2);
@@ -106,21 +53,6 @@ export function phoneAliases(value: unknown): string[] {
     aliases.add(`${phone.slice(0, 4)}9${phone.slice(4)}`);
   }
   return [...aliases];
-}
-
-export function phoneFromSipHeaders(value: unknown): string {
-  const headers = Array.isArray(value) ? value : [];
-  const preferred = ["x-meta-wa-id", "p-asserted-identity", "p-preferred-identity", "remote-party-id", "from"];
-  for (const name of preferred) {
-    const header = headers.find((item) => {
-      return item && typeof item === "object" && String((item as Record<string, unknown>).name || "").toLowerCase() === name;
-    }) as Record<string, unknown> | undefined;
-    const raw = String(header?.value || "");
-    const match = raw.match(/(?:sip:|tel:)?(\+?[0-9][0-9().\s-]{7,20})(?:@|;|>|$)/i);
-    const phone = normalizeInternationalPhone(match?.[1] || "");
-    if (phone) return phone;
-  }
-  return "";
 }
 
 export function isPolicyValid(validUntil: string, nowMs = Date.now()): boolean {

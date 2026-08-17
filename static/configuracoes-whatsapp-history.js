@@ -48,13 +48,6 @@
     }).format(parsed);
   }
 
-  function formatDuration(value) {
-    const seconds = Math.max(0, Number(value || 0));
-    const minutes = Math.floor(seconds / 60);
-    const remainder = Math.floor(seconds % 60);
-    return minutes ? `${minutes} min ${String(remainder).padStart(2, '0')} s` : `${remainder} s`;
-  }
-
   async function fetchJson(url) {
     const response = await fetch(url, {
       headers: authHeaders(),
@@ -131,20 +124,19 @@
     }
 
     [...messages].reverse().forEach((message) => {
-      const isCall = message.interaction_type === 'call';
       const exchange = document.createElement('article');
       exchange.className = 'wa-history-exchange';
       const meta = document.createElement('div');
       meta.className = 'wa-history-meta';
       const kind = document.createElement('span');
       kind.className = 'wa-history-kind';
-      kind.textContent = isCall ? 'Ligação' : 'Mensagem';
+      kind.textContent = 'Mensagem';
       const details = document.createElement('span');
-      details.textContent = `${formatDate(message.completed_at || message.created_at)}${isCall && message.duration_seconds ? ` · ${formatDuration(message.duration_seconds)}` : ''}`;
+      details.textContent = formatDate(message.completed_at || message.created_at);
       meta.append(kind, details);
       exchange.append(
         meta,
-        createBubble('user', isCall ? 'Você pela ligação' : 'Você pelo WhatsApp', message.prompt, message.prompt_truncated, message.task_id),
+        createBubble('user', 'Você pelo WhatsApp', message.prompt, message.prompt_truncated, message.task_id),
         createBubble('assistant', 'Black Jhon', message.response, message.response_truncated, message.task_id)
       );
       timeline.appendChild(exchange);

@@ -16,7 +16,10 @@ from .runtime import (
     ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO,
     ML_RESPOSTA_PERGUNTA_MAX_CHARS,
     Optional,
+    PerguntasIAClassificacaoInconclusiva,
+    PerguntasIAProviderIndisponivel,
     PerguntasIARespostaIndisponivel,
+    PerguntasIASegurancaBloqueada,
     QuestionAnswerOrchestrator,
     QuestionCategory,
     _PERGUNTAS_IA_RESPONSE_POLICY_VERSION,
@@ -43,6 +46,7 @@ from .runtime import (
 from .context import (
     _ia_agent_perguntas_log_perf,
 )
+from .contracts import PerguntasIARespostaPoliticaInvalida
 from .inputs import (
     _perguntas_codex_compact_json,
     _perguntas_codex_provider_selection,
@@ -147,7 +151,7 @@ def _perguntas_ia_v2_prompt(
         "Use somente os dados deste prompt e das referencias read-only fornecidas pelo aplicativo: pergunta, historico, anuncio, Context Hub, memoria do SKU e contexto interno.",
         "Nao use web, nao use Bling ao vivo e nao invente dados ausentes.",
         "Responda em portugues do Brasil, sem markdown, sem tabela, sem emoji e sem aspas externas.",
-        "Para pergunta publica, responda como vendedor cordial, com a informacao principal na primeira frase e no maximo tres frases de conteudo antes da assinatura.",
+        "Para pergunta publica, responda como vendedor cordial. Uma saudacao curta e opcional; depois dela, coloque a decisao principal imediatamente e use no maximo tres frases de conteudo antes da assinatura.",
         f"Limite maximo: {ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO} caracteres.",
     ]
     if fluxo_pos_venda:
@@ -161,9 +165,10 @@ def _perguntas_ia_v2_prompt(
     else:
         partes.extend([
             "A intencao foi classificada como PERGUNTA DE ANUNCIO.",
-            "Responda diretamente a ultima pergunta do comprador; nao reinicie o atendimento.",
-            "Nao mencione SKU, codigo interno, quantidade em estoque, status do anuncio, nome da loja ou link do proprio anuncio.",
+            "Responda diretamente a todos os assuntos explicitos da ultima pergunta do comprador; nao omita uma segunda duvida e nao reinicie o atendimento.",
+            "Nao mencione SKU, codigo interno, quantidade em estoque, status do anuncio, nome da loja ou link do proprio anuncio. Quantidade comprovada do kit, como par ou duas unidades, nao e estoque e deve ser respondida quando perguntada.",
             "Em compatibilidade, compare interface, encaixe, base, conector, medida ou codigo; nao decida apenas pela lista de modelos do anuncio.",
+            "Quando a aplicacao documentada trouxer uma faixa de anos que nao inclui o alvo perguntado, informe a faixa comprovada e diga que nao pode garantir o encaixe fora dela; ainda responda separadamente os demais assuntos confirmados.",
             "Deixe a conclusao clara nas primeiras frases com redacao natural, sem palavra ou prefixo obrigatorio.",
             "Se faltar dado tecnico, responda primeiro com os fatos disponiveis. Somente quando nenhum rascunho util for possivel, identifique o perfil do alvo e solicite no maximo dois dados textuais decisivos de interface, medida, conexao, modelo ou aplicacao.",
             "Nunca mencione evidencia, analise, validacao, schema, decisao, ferramenta, sistema, interface alvo ou revisao humana ao comprador.",
@@ -314,6 +319,30 @@ def _perguntas_ia_execucao_orquestrar(contexto: dict) -> tuple:
     )
     resposta = resolve_runtime_adapter("state", "clean_response", _perguntas_ia_limpar_resposta)(resultado.answer)
     if not resposta:
+        if (
+            resultado.category == QuestionCategory.UNKNOWN
+            and str(resultado.reason or "") == "prompt_injection"
+        ):
+            raise PerguntasIASegurancaBloqueada(
+                "A pergunta foi bloqueada pela politica de seguranca."
+            )
+        if resultado.category == QuestionCategory.UNKNOWN:
+            raise PerguntasIAClassificacaoInconclusiva(
+                "A classificacao semantica permaneceu inconclusiva.",
+                classificacao=_perguntas_ia_intencao_agent(agent_input),
+            )
+        if str(resultado.source or "") == "gemini_error":
+            provider_reason = str(resultado.reason or "")
+            if provider_reason in {
+                "provider_timeout",
+                "provider_connection",
+                "provider_http_429",
+                "provider_http_5xx",
+            }:
+                raise PerguntasIAProviderIndisponivel(
+                    "O provedor de resposta esta temporariamente indisponivel.",
+                    reason=provider_reason,
+                )
         raise PerguntasIARespostaIndisponivel("Nova IA de perguntas nao gerou resposta.")
     resposta = resolve_runtime_adapter("state", "final_response", _perguntas_ia_resposta_final_loja)(resposta, contexto["loja"])
     return resultado, resposta, client.model_usado or contexto["model_req"], client, started
@@ -375,7 +404,7 @@ def _perguntas_ia_atualizar_diagnostico(
         "context_collection_pipeline": list(client.context_pipeline),
         "compatibility_analysis": copy.deepcopy(analysis),
         "response_policy_version": _PERGUNTAS_IA_RESPONSE_POLICY_VERSION,
-        "seller_render_policy": "seller-voice-v1",
+        "seller_render_policy": "seller-voice-v2",
         "decision_origin": (
             "canonical_coverage" if str(analysis.get("_coverage_contract_version") or "") == COMPATIBILITY_COVERAGE_VERSION
             else "technical_analysis"
@@ -467,11 +496,17 @@ def _perguntas_ia_validar_resposta(contexto: dict, resultado, client, resposta: 
             contexto["diagnostics"][0]["result"].update({
                 "seller_style_fallback_used": True, "seller_style_violation_codes": violacoes[:8],
             })
+        elif compactada:
+            pendentes = compactadas or pendentes
+            contexto["diagnostics"][0]["result"]["seller_style_violation_codes"] = pendentes[:8]
     if pendentes:
         mensagem = "Nova IA de perguntas gerou resposta fora das orientacoes"
         if resultado.source == "gemini":
             mensagem += " do app"
-        raise PerguntasIARespostaIndisponivel(mensagem + ": " + ", ".join(pendentes[:6]))
+        raise PerguntasIARespostaPoliticaInvalida(
+            mensagem + ": " + ", ".join(pendentes[:6]),
+            pendentes,
+        )
     return resposta, model_usado
 
 

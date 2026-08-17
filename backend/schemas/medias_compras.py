@@ -2,7 +2,7 @@
 
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class MediasComprasItem(BaseModel):
@@ -60,6 +60,16 @@ class ListaPedidoAddSkuRequest(BaseModel):
     valor_unitario: float
 
 
+class ListaPedidoSkuAprovacaoRequest(BaseModel):
+    aprovada: bool
+
+
+class ListaPedidoSkuAnaliseConcorrentesRequest(BaseModel):
+    custo_unitario: float | None = None
+    precos_concorrentes: dict[str, float] = Field(default_factory=dict)
+    anuncios_loja: dict[str, str] = Field(default_factory=dict)
+
+
 class ListaPedidoPreferenciasColunasRequest(BaseModel):
     ordem_colunas: list[str] | None = None
     larguras_colunas: dict[str, int] | None = None
@@ -76,6 +86,8 @@ __all__ = [
     "ListaPedidoUpdateRequest",
     "ListaPedidoStatusRequest",
     "ListaPedidoAddSkuRequest",
+    "ListaPedidoSkuAprovacaoRequest",
+    "ListaPedidoSkuAnaliseConcorrentesRequest",
     "ListaPedidoPreferenciasColunasRequest",
     "MediasComprasSkusOcultosRequest",
 ]

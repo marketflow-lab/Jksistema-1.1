@@ -366,7 +366,7 @@ class _PerguntasVertexGeminiV2Client:
             "step": 8,
             "name": "seller_response_render",
             "status": "completed",
-            "render_policy": "seller-voice-v1",
+            "render_policy": "seller-voice-v2",
         })
         return rendered
 

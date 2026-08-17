@@ -9,6 +9,7 @@ from backend.schemas.perguntas_pos_venda import PerguntasGerarRespostaRequest
 from backend.services import codex_assistant_storage
 from backend.services import perguntas_pos_venda_codex as orchestrator
 from backend.services import perguntas_pos_venda_endpoints as endpoints
+from backend.services import perguntas_pos_venda_state as perguntas_state
 
 
 def _runtime(tmp_path):
@@ -467,7 +468,7 @@ def test_unsafe_insufficient_draft_is_replaced_by_neutral_available_draft(tmp_pa
     assert completed["status"] == "completed"
     assert completed["blocked_without_draft"] is False
     assert completed["result"]["resposta"]
-    assert "ainda nao esta confirmado" in completed["result"]["resposta"]
+    assert "nao esta confirmada" in orchestrator._normal(completed["result"]["resposta"])
     assert completed["result"]["requires_approval"] is True
     assert completed["review_required"] is False
     assert completed["completion_reason"] == "available_information_fallback"
@@ -494,8 +495,12 @@ def test_operational_failures_stop_on_third_and_success_resets_consecutive_count
         )
 
     exhausted = create("Q-OPS-3")
+    provider_failure = perguntas_state.PerguntasIAProviderIndisponivel(
+        "Provedor temporariamente indisponivel.",
+        reason="provider_http_429",
+    )
     with patch.object(
-        orchestrator, "_load_question_context", side_effect=RuntimeError("HTTP 429")
+        orchestrator, "_load_question_context", side_effect=provider_failure
     ):
         for attempt in range(3):
             orchestrator._run_job("tenant", exhausted["job_id"])
@@ -515,7 +520,7 @@ def test_operational_failures_stop_on_third_and_success_resets_consecutive_count
 
     reset = create("Q-OPS-RESET")
     with patch.object(
-        orchestrator, "_load_question_context", side_effect=RuntimeError("HTTP 429")
+        orchestrator, "_load_question_context", side_effect=provider_failure
     ):
         orchestrator._run_job("tenant", reset["job_id"])
     _queue_retry_now(str(tmp_path), "tenant", reset["job_id"])

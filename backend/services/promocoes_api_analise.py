@@ -1562,9 +1562,17 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             if preco_a:
                 margem_a = (valor_liquido_a * 100.0) / preco_a
         if custo is not None and frete_b_exato and tarifa_b_exata and tarifa_b_cobrada is not None and imposto_b is not None:
-            valor_liquido_b = preco_b - float(custo) - frete_b_val - (imposto_b or 0.0) - float(tarifa_b_cobrada)
-            if preco_b:
-                margem_b = (valor_liquido_b * 100.0) / preco_b
+            financeiro_b = _calcular_margem_liquida_ml(
+                preco_b,
+                custo,
+                imposto_rate,
+                tarifa_b_cobrada,
+                frete_b_val,
+            )
+            if financeiro_b:
+                imposto_b = financeiro_b["imposto"]
+                valor_liquido_b = financeiro_b["valor_liquido"]
+                margem_b = financeiro_b["margem_percentual"]
 
         financeiro_acao, cfg_local = _promo_obter_contexto_financeiro_acao(
             client_id,
@@ -2166,9 +2174,17 @@ async def analisar_promo_via_api_sem_arquivos(
             if preco_a:
                 margem_a = (valor_liquido_a * 100.0) / preco_a
         if custo is not None and frete_b_exato and tarifa_b_exata and tarifa_b_cobrada is not None and imposto_b is not None:
-            valor_liquido_b = preco_b - float(custo) - (frete_b_val or 0.0) - (imposto_b or 0.0) - float(tarifa_b_cobrada)
-            if preco_b:
-                margem_b = (valor_liquido_b * 100.0) / preco_b
+            financeiro_b = _calcular_margem_liquida_ml(
+                preco_b,
+                custo,
+                imposto_rate,
+                tarifa_b_cobrada,
+                frete_b_val or 0.0,
+            )
+            if financeiro_b:
+                imposto_b = financeiro_b["imposto"]
+                valor_liquido_b = financeiro_b["valor_liquido"]
+                margem_b = financeiro_b["margem_percentual"]
 
         financeiro_acao, cfg_local = _promo_obter_contexto_financeiro_acao(
             client_id,
@@ -2954,9 +2970,17 @@ async def analisar_promo_via_api_com_arquivos(
             if preco_a:
                 margem_a = (valor_liquido_a * 100.0) / preco_a
         if custo is not None and frete_b_exato and tarifa_b_exata and tarifa_b_cobrada is not None and imposto_b is not None:
-            valor_liquido_b = preco_b - float(custo) - (frete_b_val or 0.0) - (imposto_b or 0.0) - float(tarifa_b_cobrada)
-            if preco_b:
-                margem_b = (valor_liquido_b * 100.0) / preco_b
+            financeiro_b = _calcular_margem_liquida_ml(
+                preco_b,
+                custo,
+                imposto_rate,
+                tarifa_b_cobrada,
+                frete_b_val or 0.0,
+            )
+            if financeiro_b:
+                imposto_b = financeiro_b["imposto"]
+                valor_liquido_b = financeiro_b["valor_liquido"]
+                margem_b = financeiro_b["margem_percentual"]
 
         financeiro_acao, cfg_local = _promo_obter_contexto_financeiro_acao(
             client_id,

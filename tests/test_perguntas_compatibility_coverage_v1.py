@@ -279,7 +279,7 @@ def test_canonical_coverage_maps_to_existing_schema_and_validator() -> None:
     }
     analysis = agent_context._perguntas_ia_v2_coverage_analysis(agent_input, match)
     validation = AnswerValidator().validate(
-        "Sim, da certo no Samsung S25 para o encaixe do suporte.\n\nEquipe JK Pecas agradece o seu contato.",
+        "Sim, da certo no Samsung S25 para o encaixe do suporte.\n\nEquipe JK Pecas agradece pelo contato, Precisando estamos a disposição!",
         question=QuestionContext(id="Q1", text=agent_input["question"]["text"]),
         listing=ListingSnapshot(id="MLB1", title="Suporte para celular"),
         category=QuestionCategory.COMPATIBILITY,
@@ -421,19 +421,20 @@ def test_public_seller_style_is_objective_and_signature_is_not_counted() -> None
         "confidence": 0.90,
     }
     valid = validator.validate(
-        "Ele mede 12.5 mm. E simples de usar. Esta pronto para instalacao.\n\nEquipe JK Pecas agradece o seu contato.",
+        "Boa tarde! Ele mede 12.5 mm. E simples de usar. Esta pronto para instalacao.\n\nEquipe JK Pecas agradece pelo contato, Precisando estamos a disposição!",
         **common,
     )
     technical = validator.validate(
-        "A analise de compatibilidade indica evidencia insuficiente.\n\nEquipe JK Pecas agradece o seu contato.",
+        "A analise de compatibilidade indica evidencia insuficiente.\n\nEquipe JK Pecas agradece pelo contato, Precisando estamos a disposição!",
         **common,
     )
     verbose = validator.validate(
-        "Primeira. Segunda. Terceira. Quarta.\n\nEquipe JK Pecas agradece o seu contato.",
+        "Primeira. Segunda. Terceira. Quarta.\n\nEquipe JK Pecas agradece pelo contato, Precisando estamos a disposição!",
         **common,
     )
 
     assert "too_many_sentences" not in valid.issues
+    assert "seller_non_direct_opening" not in valid.issues
     assert "seller_process_language" in technical.issues
     assert "too_many_sentences" in verbose.issues
 
@@ -450,11 +451,89 @@ def test_style_failure_codes_and_deterministic_compaction_are_stable() -> None:
     assert codes == [
         "seller_style_too_many_sentences",
         "seller_style_internal_process_language",
-        "seller_style_non_direct_opening",
     ]
     assert agent_validation._perguntas_ia_seller_style_violations(compacted) == []
-    assert compacted.startswith("Primeira informacao util.")
-    assert compacted.endswith("Equipe JK Pecas agradece o seu contato.")
+    assert compacted.startswith("Ola. Primeira informacao util.")
+    assert compacted.endswith("Equipe JK Pecas agradece pelo contato, Precisando estamos a disposição!")
+
+
+def _validation_classification(question: str, *, category: str) -> dict:
+    compatibility = category == "compatibility"
+    return {
+        "intencao": "compatibilidade" if compatibility else "duvida_produto",
+        "categoria": category,
+        "categorias": [category],
+        "fluxo": "perguntas_anuncio",
+        "confianca": 0.97,
+        "flags": {
+            "usar_busca_web": compatibility,
+            "usar_mercado_livre_anuncio": True,
+            "usar_bling": True,
+        },
+        "subperguntas": [{
+            "intent": category,
+            "question": question,
+            "required_evidence": "anuncio e cadastro canonico do produto",
+        }],
+        "compatibilidade": {
+            "aplicavel": compatibility,
+            "target_item": "Ford Ranger Black 2026" if compatibility else "",
+            "target_type": "vehicle" if compatibility else "",
+            "compatibility_profile": "vehicle_fitment" if compatibility else "",
+            "technical_focus": "aplicacao, encaixe e quantidade do kit" if compatibility else "quantidade do kit",
+            "missing_fields": [],
+            "decisive_fields": ["aplicacao documentada"] if compatibility else [],
+        },
+    }
+
+
+def test_seller_reply_can_answer_compatibility_and_confirmed_kit_quantity() -> None:
+    import backend_api  # noqa: F401
+
+    agent_input = {
+        "store": "Uai Mineirinho",
+        "question": {
+            "text": "Boa tarde, serve na Ranger Black 2026? Na compra vem o par, duas unidades?",
+        },
+        "item": {
+            "title": "Par de amortecedores para tampa da Ranger",
+            "description": "Aplicacao Ford Ranger 2013 a 2019. Kit com um par.",
+        },
+        "intent": _validation_classification(
+            "Serve na Ranger Black 2026? Na compra vem o par, duas unidades?",
+            category="compatibility",
+        ),
+    }
+    answer = (
+        "Boa tarde! A aplicacao confirmada e para Ranger de 2013 a 2019, por isso nao podemos "
+        "garantir o encaixe na Ranger Black 2026. A compra inclui 1 par (duas unidades).\n\n"
+        "Equipe Uai Mineirinho agradece pelo contato, Precisando estamos a disposição!"
+    )
+
+    issues = agent_validation._ia_agent_perguntas_violacoes_resposta(agent_input, answer)
+
+    assert issues == []
+
+
+def test_numeric_stock_claim_remains_blocked_even_when_buyer_asks_kit_quantity() -> None:
+    import backend_api  # noqa: F401
+
+    agent_input = {
+        "store": "Uai Mineirinho",
+        "question": {"text": "Na compra vem o par, duas unidades?"},
+        "item": {"title": "Par de amortecedores", "description": "Kit com um par."},
+        "intent": _validation_classification(
+            "Na compra vem o par, duas unidades?",
+            category="product_feature",
+        ),
+    }
+
+    issues = agent_validation._ia_agent_perguntas_violacoes_resposta(
+        agent_input,
+        "Boa tarde! Temos 10 unidades disponiveis em estoque.",
+    )
+
+    assert "mencionou quantidade em estoque" in issues
 
 
 @pytest.mark.parametrize(
@@ -463,7 +542,7 @@ def test_style_failure_codes_and_deterministic_compaction_are_stable() -> None:
 )
 def test_every_public_category_uses_the_same_three_sentence_style_gate(category: QuestionCategory) -> None:
     validation = AnswerValidator().validate(
-        "Primeira. Segunda. Terceira. Quarta.\n\nEquipe JK Pecas agradece o seu contato.",
+        "Primeira. Segunda. Terceira. Quarta.\n\nEquipe JK Pecas agradece pelo contato, Precisando estamos a disposição!",
         question=QuestionContext(id="Q1", text="Pergunta publica"),
         listing=ListingSnapshot(id="MLB1", title="Produto"),
         category=category,

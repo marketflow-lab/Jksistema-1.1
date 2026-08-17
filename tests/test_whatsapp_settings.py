@@ -36,7 +36,6 @@ def test_ai_and_dual_settings_components_match_facade() -> None:
     assert settings.ai_settings(config) == whatsapp_bridge._whatsapp_ai_settings(config)
     dual = settings.dual_agent_settings(
         config,
-        report_deadline_seconds=whatsapp_bridge.WHATSAPP_REPORT_DEADLINE_SECONDS,
         max_retry_attempts=whatsapp_bridge.WHATSAPP_MAX_RETRY_ATTEMPTS,
     )
     assert dual == whatsapp_bridge._whatsapp_dual_agent_settings(config)
@@ -53,35 +52,12 @@ def test_ai_and_dual_settings_components_match_facade() -> None:
         (settings.normalize_codex_agent_model, ("modelo invalido!", "gpt-5.6-sol")),
         (settings.normalize_agent_architecture, ("triple",)),
         (settings.normalize_response_provider_policy, ("por_complexidade",)),
-        (settings.normalize_voice_model, ("voz invalida!", "gpt-4o-mini-tts")),
-        (settings.normalize_voice_name, ("unknown",)),
     ],
 )
 def test_invalid_settings_are_rejected(normalizer, arguments) -> None:
     with pytest.raises(HTTPException) as exc_info:
         normalizer(*arguments)
     assert exc_info.value.status_code == 400
-
-
-def test_voice_settings_apply_bounds_and_readonly_contract() -> None:
-    config = {
-        "voice_enabled": True,
-        "voice_max_call_minutes": 999,
-        "voice_silence_timeout_seconds": 1,
-        "voice_max_concurrent_calls": 0,
-        "voice_progress_interval_seconds": 60,
-        "voice_store_audio": True,
-        "voice_read_only": False,
-    }
-
-    component = settings.normalize_voice_config(config)
-    assert component == whatsapp_bridge._normalize_voice_config(config)
-    assert component["voice_max_call_minutes"] == 60
-    assert component["voice_silence_timeout_seconds"] == 30
-    assert component["voice_max_concurrent_calls"] == 3
-    assert component["voice_progress_interval_seconds"] == 30
-    assert component["voice_store_audio"] is False
-    assert component["voice_read_only"] is True
 
 
 def test_phone_preferences_are_normalized_per_subject() -> None:
@@ -104,12 +80,8 @@ def test_phone_preferences_are_normalized_per_subject() -> None:
     assert component == whatsapp_bridge._phone_notification_settings(config, "subject-1")
     assert component == {
         "label": "Telefone principal",
-        "is_primary": False,
         "send_ml_question_suggestions": False,
-        "send_weekly_report": True,
-        "send_monthly_report": True,
         "ai_behavior": "Seja curto\nSem rodeios",
-        "allow_voice_calls": True,
         "subject_id": "subject-1",
         "client_id": "000001",
         "username": "usuario@example.com",
@@ -146,9 +118,10 @@ def test_legacy_function_manager_fields_are_not_written_again(monkeypatch) -> No
     })
 
     assert runtime_value["function_manager_legacy_fields_ignored"] is True
-    assert captured["version"] == 12
+    assert captured["version"] == 13
     assert captured["deadline_enabled"] is False
     assert captured["job_deadline_seconds"] == 0
     assert captured["response_provider_policy"] == "codex_only"
     assert captured["data_selection_worker_count"] == 3
     assert not any(key.startswith("function_manager_") for key in captured)
+    assert not any(key.startswith("voice_") for key in captured)

@@ -94,6 +94,34 @@ def _parse_float_flex(valor):
     return _parse_float_str_cached(str(valor).strip())
 
 
+def _calcular_margem_liquida_ml(
+    preco_venda,
+    custo_produto,
+    imposto_rate,
+    tarifa_ml,
+    frete_ml,
+):
+    """Calcula a margem liquida usada nas comparacoes financeiras do ML."""
+    preco = _parse_float_flex(preco_venda)
+    custo = _parse_float_flex(custo_produto)
+    aliquota = _parse_float_flex(imposto_rate)
+    tarifa = _parse_float_flex(tarifa_ml)
+    frete = _parse_float_flex(frete_ml)
+    valores = (preco, custo, aliquota, tarifa, frete)
+    if any(valor is None or not math.isfinite(float(valor)) for valor in valores):
+        return None
+    if preco <= 0 or custo < 0 or aliquota < 0 or tarifa < 0 or frete < 0:
+        return None
+
+    imposto = float(preco) * float(aliquota)
+    valor_liquido = float(preco) - float(custo) - imposto - float(tarifa) - float(frete)
+    return {
+        "imposto": imposto,
+        "valor_liquido": valor_liquido,
+        "margem_percentual": (valor_liquido * 100.0) / float(preco),
+    }
+
+
 def _format_money_safe_cached(s: str) -> str:
     """Fase 3 - Cache de formataÃƒÂ§ÃƒÂ£o monetÃƒÂ¡ria. Evita recomputar para valores repetidos."""
     v = _parse_float_str_cached(s)
@@ -1539,7 +1567,7 @@ def _ler_df_cadastro_custos_arquivo(arquivo: str) -> pd.DataFrame:
     logger.warning("[PROMO CADASTRO] Falha ao ler custos/impostos do cadastro %s: %s", arquivo, ultimo_erro)
     return pd.DataFrame()
 
-PEER_EXPORTS = ['_parse_float_str_cached', '_parse_float_flex', '_format_money_safe_cached', '_format_money_safe', '_format_pct_br_cached', '_format_pct_br', '_normalizar_decisao_local', '_build_col_index', '_pick_first_col', '_extract_monetary_from_df_row', '_build_col_index_optimized', '_preprocessar_todos_indices_otimizado', '_processar_row_consolidado', 'montar_analise_promo_local', '_sku_lookup_variantes', '_cadastro_norm_col_custo', '_CADASTRO_COL_ALIASES_CUSTOS', '_cadastro_colunas_alias', '_cadastro_canonizar_colunas_custos', '_carregar_df_cadastro_custos', '_ler_df_cadastro_custos_arquivo']
+PEER_EXPORTS = ['_parse_float_str_cached', '_parse_float_flex', '_calcular_margem_liquida_ml', '_format_money_safe_cached', '_format_money_safe', '_format_pct_br_cached', '_format_pct_br', '_normalizar_decisao_local', '_build_col_index', '_pick_first_col', '_extract_monetary_from_df_row', '_build_col_index_optimized', '_preprocessar_todos_indices_otimizado', '_processar_row_consolidado', 'montar_analise_promo_local', '_sku_lookup_variantes', '_cadastro_norm_col_custo', '_CADASTRO_COL_ALIASES_CUSTOS', '_cadastro_colunas_alias', '_cadastro_canonizar_colunas_custos', '_carregar_df_cadastro_custos', '_ler_df_cadastro_custos_arquivo']
 __all__ = PEER_EXPORTS + ["configure_promocoes_core_analise_runtime"]
 
 configure_promocoes_core_analise_runtime()

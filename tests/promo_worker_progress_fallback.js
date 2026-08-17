@@ -48,14 +48,15 @@ assert(
     && workerCommon.includes('_stop_stale_promo_worker(host, port)'),
   'backend must reject and restart a stale promo worker'
 );
-const staleBackendBranch = electronBackend.slice(
-  electronBackend.indexOf("local-backend-already-running-with-stale-metadata"),
+const cleanBackendStartup = electronBackend.slice(
+  electronBackend.indexOf('function ensureLocalBackendStarted()'),
   electronBackend.indexOf("logElectronLifecycle('local-backend-starting'")
 );
 assert(
-  staleBackendBranch.includes('stopProcessListeningOnPort(JK_LOCAL_BACKEND_PORT)')
-    && !staleBackendBranch.includes('staleMetadata: true'),
-  'Electron must restart a stale local backend after an app update'
+  cleanBackendStartup.includes("stopManagedLocalServers('before-start')")
+    && cleanBackendStartup.indexOf("stopManagedLocalServers('before-start')")
+      < cleanBackendStartup.indexOf('syncBundledLocalBackend(inspection)'),
+  'Electron must stop stale backend and promo worker listeners before preparing a fresh local runtime'
 );
 
 console.log('promo worker progress fallback checks passed');

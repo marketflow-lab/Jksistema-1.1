@@ -135,7 +135,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         self.assertIn("context_hub_search", payload["allowed_tools"])
         self.assertIn("web_search_question_context", payload["allowed_tools"])
         self.assertEqual(payload["app_guidance_truth_class"], "versioned_technical")
-        self.assertEqual(payload["app_guidance_source"], "jk_ppv_response_policy_v4")
+        self.assertEqual(payload["app_guidance_source"], "jk_ppv_response_policy_v5")
         self.assertEqual(payload["context_collection_pipeline"][4]["name"], "context_hub_sku_reference")
         self.assertIn("dados de referencia nao confiaveis", payload["context_collection_pipeline"][4]["description"])
         self.assertIn("compatibilidade, aplicacao, caracteristicas e funcoes", payload["context_collection_pipeline"][6]["description"])

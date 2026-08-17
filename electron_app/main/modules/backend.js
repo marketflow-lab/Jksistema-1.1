@@ -811,6 +811,45 @@ function stopProcessListeningOnPort(port) {
     });
 }
 
+function consumeCanonicalLauncherPreparedServers() {
+    const prepared = /^(1|true|yes)$/i.test(
+        String(process.env.JK_LOCAL_SERVERS_PREPARED_BY_LAUNCHER || '')
+    );
+    delete process.env.JK_LOCAL_SERVERS_PREPARED_BY_LAUNCHER;
+    return prepared;
+}
+
+function managedLocalServerPorts() {
+    return Array.from(new Set([
+        JK_LOCAL_BACKEND_PORT,
+        JK_PROMO_WORKER_PORT,
+        JK_LEGACY_WHATSAPP_VOICE_PORT
+    ].map(Number).filter(port => Number.isInteger(port) && port > 0 && port <= 65535)));
+}
+
+async function stopManagedLocalServers(reason = 'unspecified') {
+    const ports = managedLocalServerPorts();
+    const listeningBefore = await Promise.all(ports.map(port => isTcpPortOpen(port)));
+    const killRequested = await Promise.all(ports.map(port => stopProcessListeningOnPort(port)));
+    const closed = await Promise.all(ports.map(port => waitForTcpPortClosed(port)));
+    const servers = ports.map((port, index) => ({
+        port,
+        listeningBefore: listeningBefore[index],
+        killRequested: killRequested[index],
+        closed: closed[index]
+    }));
+    const result = {
+        success: servers.every(server => server.closed),
+        reason: String(reason || 'unspecified'),
+        servers
+    };
+    logElectronLifecycle(
+        result.success ? 'local-managed-servers-stopped' : 'local-managed-servers-stop-incomplete',
+        result
+    );
+    return result;
+}
+
 function cmdValue(value) {
     return String(value || '').replace(/"/g, '');
 }
@@ -1136,37 +1175,30 @@ function ensureLocalBackendStarted() {
         const bundledSourceDir = inspection.bundledDir;
         const firebaseEnv = getLocalBackendFirebaseEnv(localAppDir);
 
-        if (await isTcpPortOpen(JK_LOCAL_BACKEND_PORT)) {
+        const launcherPrepared = consumeCanonicalLauncherPreparedServers();
+        if (launcherPrepared && await isTcpPortOpen(JK_LOCAL_BACKEND_PORT)) {
             const health = await fetchLocalBackendJson('/health');
             if (localBackendHealthCompatible(health, firebaseEnv) && !inspection.required) {
-                logElectronLifecycle('local-backend-already-running', { port: JK_LOCAL_BACKEND_PORT, health });
-                return { success: true, alreadyRunning: true, port: JK_LOCAL_BACKEND_PORT };
-            }
-            if (localBackendHealthCompatible(health, firebaseEnv) && inspection.required) {
-                logElectronLifecycle('local-backend-restart-for-materialization', {
+                logElectronLifecycle('local-backend-prestarted-by-canonical-launcher', {
                     port: JK_LOCAL_BACKEND_PORT,
-                    currentVersion: app.getVersion(),
-                    recoveryRequired: !!inspection.recoveryRequired
-                });
-            }
-            if (localBackendHealthUsable(health)) {
-                logElectronLifecycle('local-backend-already-running-with-stale-metadata', {
-                    port: JK_LOCAL_BACKEND_PORT,
-                    currentVersion: app.getVersion(),
                     health
                 });
-            } else {
-                logElectronLifecycle('local-backend-stale-restart', {
-                    port: JK_LOCAL_BACKEND_PORT,
-                    currentVersion: app.getVersion(),
-                    health
-                });
+                return {
+                    success: true,
+                    alreadyRunning: true,
+                    preparedByCanonicalLauncher: true,
+                    port: JK_LOCAL_BACKEND_PORT
+                };
             }
-            await stopProcessListeningOnPort(JK_LOCAL_BACKEND_PORT);
-            const backendStopped = await waitForTcpPortClosed(JK_LOCAL_BACKEND_PORT);
-            if (!backendStopped) {
-                throw new Error(`Nao foi possivel reiniciar o servidor local antigo na porta ${JK_LOCAL_BACKEND_PORT}.`);
-            }
+        }
+
+        const cleanup = await stopManagedLocalServers('before-start');
+        if (!cleanup.success) {
+            const blockedPorts = cleanup.servers
+                .filter(server => !server.closed)
+                .map(server => server.port)
+                .join(', ');
+            throw new Error(`Nao foi possivel encerrar os servidores antigos nas portas ${blockedPorts}.`);
         }
 
         const synchronized = syncBundledLocalBackend(inspection);
@@ -1332,26 +1364,16 @@ async function stopLocalBackend() {
             ? await stopTrackedProcessTree(trackedPid)
             : false;
 
-        // O .cmd de inicializacao pode terminar antes do Uvicorn. Por isso as
-        // portas sao sempre encerradas, mesmo quando nao ha mais PID rastreado.
-        const [promoKillRequested, backendKillRequested] = await Promise.all([
-            stopProcessListeningOnPort(JK_PROMO_WORKER_PORT),
-            stopProcessListeningOnPort(JK_LOCAL_BACKEND_PORT)
-        ]);
-        const [promoClosed, backendClosed] = await Promise.all([
-            waitForTcpPortClosed(JK_PROMO_WORKER_PORT),
-            waitForTcpPortClosed(JK_LOCAL_BACKEND_PORT)
-        ]);
+        // O .cmd de inicializacao pode terminar antes do Uvicorn. Por isso
+        // todas as portas gerenciadas sao encerradas mesmo sem PID rastreado.
+        const managedStop = await stopManagedLocalServers('quit');
 
         localBackendStartupPromise = null;
         const result = {
-            success: promoClosed && backendClosed,
+            success: managedStop.success,
             trackedPid,
             trackedTreeStopped,
-            promoKillRequested,
-            backendKillRequested,
-            promoClosed,
-            backendClosed
+            managedServers: managedStop.servers
         };
         logElectronLifecycle(
             result.success ? 'local-backend-stopped' : 'local-backend-stop-incomplete',

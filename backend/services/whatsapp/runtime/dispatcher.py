@@ -34,7 +34,6 @@ from backend.services.whatsapp import gateway as whatsapp_gateway
 from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import message as whatsapp_message
-from backend.services.whatsapp import report_scheduling as whatsapp_report_scheduling
 from backend.services.whatsapp import retry_policy as whatsapp_retry_policy
 from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp import tool_results as whatsapp_tool_results
@@ -49,7 +48,7 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -183,8 +182,6 @@ def _enqueue_phone_event(
             _whatsapp_text_key(inbound_text),
         ):
             priority = -2
-        elif whatsapp_report_files.report_requested(inbound_text):
-            priority = 1
     key = _dispatch_phone_key(config, message=message, pending=pending)
     dedupe_id = f"{kind}:{event_id}"
     tick_id = f"tick:{str((pending or {}).get('task_id') or event_id)}" if kind == "waiting_tick" else ""

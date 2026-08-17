@@ -124,7 +124,7 @@ def test_version_five_dual_config_is_migrated_to_parallel_capacity(monkeypatch):
         },
     )
     config = whatsapp_bridge._load_config()
-    assert config["version"] == 12
+    assert config["version"] == 13
     assert config["response_provider_policy"] == "codex_only"
     assert config["task_agent_reasoning"] == "low"
     assert config["deadline_enabled"] is False

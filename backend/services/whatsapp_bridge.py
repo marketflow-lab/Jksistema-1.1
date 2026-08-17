@@ -41,7 +41,6 @@ from backend.services.whatsapp import gateway as whatsapp_gateway
 from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import message as whatsapp_message
-from backend.services.whatsapp import report_scheduling as whatsapp_report_scheduling
 from backend.services.whatsapp import retry_policy as whatsapp_retry_policy
 from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp import tool_results as whatsapp_tool_results
@@ -57,7 +56,7 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents
 from backend.services.whatsapp.runtime import BridgeRuntimeState
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
@@ -74,9 +73,7 @@ WHATSAPP_GATEWAY_PROTOCOL_VERSION = 1
 SUPPORTED_IMAGE_MIMES = whatsapp_media.SUPPORTED_IMAGE_MIMES
 SUPPORTED_AUDIO_MIMES = whatsapp_media.SUPPORTED_AUDIO_MIMES
 PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-APPROVAL_CODE_TTL_SECONDS = 10 * 60
 WHATSAPP_PART_BODY_CHARS = whatsapp_formatting.WHATSAPP_PART_BODY_CHARS
-WHATSAPP_ADHOC_MESSAGE_CHARS = 3500
 WHATSAPP_MAX_PARTS = whatsapp_formatting.WHATSAPP_MAX_PARTS
 WHATSAPP_EXACT_ORDER_HISTORY_MARKER = whatsapp_formatting.WHATSAPP_EXACT_ORDER_HISTORY_MARKER
 WHATSAPP_REPORT_MAX_PARTS = whatsapp_formatting.WHATSAPP_REPORT_MAX_PARTS
@@ -86,9 +83,7 @@ WHATSAPP_QUERY_CONTEXT_TTL_SECONDS = 24 * 3600
 WHATSAPP_IMPLICIT_STORE_RECENT_SECONDS = whatsapp_intent.WHATSAPP_IMPLICIT_STORE_RECENT_SECONDS
 WHATSAPP_MAX_OUTBOUND_IMAGES = whatsapp_media.WHATSAPP_MAX_OUTBOUND_IMAGES
 WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES = whatsapp_media.WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES
-WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES = whatsapp_media.WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES
 WHATSAPP_OUTBOUND_IMAGE_MAX_PIXELS = whatsapp_media.WHATSAPP_OUTBOUND_IMAGE_MAX_PIXELS
-WHATSAPP_WEEKLY_REPORT_START_HOUR = whatsapp_report_scheduling.WHATSAPP_WEEKLY_REPORT_START_HOUR
 WHATSAPP_IMAGE_MARKDOWN_RE = whatsapp_media.WHATSAPP_IMAGE_MARKDOWN_RE
 APPROVAL_COMMAND_RE = re.compile(
     r"^(APROVAR|CONFIRMAR|NEGAR|REJEITAR|CANCELAR)\s+([A-Z2-9]{8})$",
@@ -122,7 +117,6 @@ WHATSAPP_WAIT_MESSAGE_STEADY_DEFAULT = whatsapp_settings.WHATSAPP_WAIT_MESSAGE_S
 WHATSAPP_PARTIAL_DEBOUNCE_DEFAULT = whatsapp_settings.WHATSAPP_PARTIAL_DEBOUNCE_DEFAULT
 WHATSAPP_JOB_DEADLINE_DEFAULT = whatsapp_settings.WHATSAPP_JOB_DEADLINE_DEFAULT
 WHATSAPP_ML_RESEARCH_DEADLINE_SECONDS = 0
-WHATSAPP_REPORT_DEADLINE_SECONDS = 0
 WHATSAPP_MAX_SUBTASKS_DEFAULT = whatsapp_settings.WHATSAPP_MAX_SUBTASKS_DEFAULT
 WHATSAPP_MAX_ACTIVE_TASK_AGENTS_DEFAULT = whatsapp_settings.WHATSAPP_MAX_ACTIVE_TASK_AGENTS_DEFAULT
 WHATSAPP_CONVERSATION_WORKER_COUNT_DEFAULT = whatsapp_settings.WHATSAPP_CONVERSATION_WORKER_COUNT_DEFAULT
@@ -145,7 +139,6 @@ CONFIG_LOCK = BRIDGE_RUNTIME.config_lock
 BRIDGE_STOP_EVENT = BRIDGE_RUNTIME.stop_event
 BRIDGE_THREAD: Optional[threading.Thread] = BRIDGE_RUNTIME.bridge_thread
 DOWNLOAD_THREAD: Optional[threading.Thread] = BRIDGE_RUNTIME.download_thread
-ALERT_THREAD: Optional[threading.Thread] = BRIDGE_RUNTIME.alert_thread
 TYPING_PULSES_LOCK = BRIDGE_RUNTIME.typing_pulses_lock
 TYPING_PULSES = BRIDGE_RUNTIME.typing_pulses
 PROGRESS_PULSES_LOCK = BRIDGE_RUNTIME.progress_pulses_lock
@@ -194,7 +187,6 @@ import backend.services.whatsapp.approvals.actions as whatsapp_component_actions
 import backend.services.whatsapp.orchestration.processor as whatsapp_component_processor
 import backend.services.whatsapp.runtime.dispatcher as whatsapp_component_dispatcher
 import backend.services.whatsapp.runtime.monitor as whatsapp_component_monitor
-import backend.services.whatsapp.runtime.scheduler as whatsapp_component_scheduler
 import backend.services.whatsapp.runtime.lifecycle as whatsapp_component_lifecycle
 import backend.services.whatsapp.api_status as whatsapp_component_api_status
 import backend.services.whatsapp.api_endpoints as whatsapp_component_api_endpoints
@@ -223,13 +215,11 @@ _COMPONENTS = {
     'processor': whatsapp_component_processor,
     'dispatcher': whatsapp_component_dispatcher,
     'monitor': whatsapp_component_monitor,
-    'scheduler': whatsapp_component_scheduler,
     'lifecycle': whatsapp_component_lifecycle,
     'api_status': whatsapp_component_api_status,
     'api_endpoints': whatsapp_component_api_endpoints,
 }
 _MIRRORED_SCALAR_GLOBALS = {
-    "ALERT_THREAD",
     "BRIDGE_SHARED_STATE",
     "BRIDGE_STORE",
     "BRIDGE_THREAD",
@@ -242,7 +232,6 @@ _MIRRORED_SCALAR_GLOBALS = {
     "PHONE_DISPATCH_INFLIGHT",
 }
 _RUNTIME_SCALAR_ATTRIBUTES = {
-    "ALERT_THREAD": "alert_thread",
     "BRIDGE_SHARED_STATE": "bridge_shared_state",
     "BRIDGE_STORE": "bridge_store",
     "BRIDGE_THREAD": "bridge_thread",
@@ -339,14 +328,6 @@ _whatsapp_dual_agent_settings = _make_delegator('config_store', '_whatsapp_dual_
 
 _normalize_progress_interval = _make_delegator('config_store', '_normalize_progress_interval')
 
-_normalize_voice_model = _make_delegator('config_store', '_normalize_voice_model')
-
-_normalize_voice_name = _make_delegator('config_store', '_normalize_voice_name')
-
-_normalize_voice_int = _make_delegator('config_store', '_normalize_voice_int')
-
-_normalize_voice_config = _make_delegator('config_store', '_normalize_voice_config')
-
 _whatsapp_ai_settings = _make_delegator('config_store', '_whatsapp_ai_settings')
 
 _default_phone_notification_settings = _make_delegator('config_store', '_default_phone_notification_settings')
@@ -408,12 +389,6 @@ _whatsapp_marketplace_image_url_allowed = _make_delegator('artifacts', '_whatsap
 _whatsapp_download_marketplace_image = _make_delegator('artifacts', '_whatsapp_download_marketplace_image')
 
 _whatsapp_deliver_marketplace_listing_images = _make_delegator('artifacts', '_whatsapp_deliver_marketplace_listing_images')
-
-_whatsapp_report_chart_path = _make_delegator('artifacts', '_whatsapp_report_chart_path')
-
-_whatsapp_report_document_path = _make_delegator('artifacts', '_whatsapp_report_document_path')
-
-_whatsapp_deliver_report_artifacts = _make_delegator('artifacts', '_whatsapp_deliver_report_artifacts')
 
 _whatsapp_text_key = _make_delegator('intent_runtime', '_whatsapp_text_key')
 
@@ -589,11 +564,7 @@ _post_message_result = _make_delegator('delivery', '_post_message_result')
 
 _post_outbound_image = _make_delegator('delivery', '_post_outbound_image')
 
-_post_outbound_document = _make_delegator('delivery', '_post_outbound_document')
-
 _post_proactive_image = _make_delegator('delivery', '_post_proactive_image')
-
-_post_proactive_document = _make_delegator('delivery', '_post_proactive_document')
 
 _post_proactive = _make_delegator('delivery', '_post_proactive')
 
@@ -738,8 +709,6 @@ _deterministic_stock_result_text = _make_delegator('manager_results', '_determin
 
 _deterministic_tool_result_text = _make_delegator('manager_results', '_deterministic_tool_result_text')
 
-_whatsapp_report_metadata_text = _make_delegator('manager_results', '_whatsapp_report_metadata_text')
-
 _function_manager_retry = _make_delegator('function_manager', '_function_manager_retry')
 
 _function_manager_job = _make_delegator('function_manager', '_function_manager_job')
@@ -770,15 +739,7 @@ _worker_result_fallback_text = _make_delegator('pending', '_worker_result_fallba
 
 _terminate_pending_partial = _make_delegator('pending', '_terminate_pending_partial')
 
-_ensure_pending_approval = _make_delegator('pending', '_ensure_pending_approval')
-
-_approval_notice = _make_delegator('pending', '_approval_notice')
-
 _notify_pending_approval = _make_delegator('pending', '_notify_pending_approval')
-
-_action_result_text = _make_delegator('pending', '_action_result_text')
-
-_complete_action_pending = _make_delegator('pending', '_complete_action_pending')
 
 _dual_task_snapshot = _make_delegator('completion_groups', '_dual_task_snapshot')
 
@@ -804,9 +765,13 @@ _message_request_text = _make_delegator('actions', '_message_request_text')
 
 _mobile_screen_context = _make_delegator('actions', '_mobile_screen_context')
 
-_try_create_action_pending = _make_delegator('actions', '_try_create_action_pending')
+def _try_create_action_pending(*_args: Any, **_kwargs: Any) -> bool:
+    """Compatibility shim: generic WhatsApp action proposals were removed."""
+    return False
 
-_find_pending_approval = _make_delegator('actions', '_find_pending_approval')
+def _find_pending_approval(*_args: Any, **_kwargs: Any) -> tuple[str, None]:
+    """Compatibility shim: generic WhatsApp approval codes were removed."""
+    return "", None
 
 _post_command_reply = _make_delegator('actions', '_post_command_reply')
 
@@ -875,38 +840,6 @@ _retry_dual_pending_interrupts = _make_delegator('monitor', '_retry_dual_pending
 _monitor_pending = _make_delegator('monitor', '_monitor_pending')
 
 _forward_task_transitions = _make_delegator('monitor', '_forward_task_transitions')
-
-_whatsapp_week_key = _make_delegator('scheduler', '_whatsapp_week_key')
-
-_whatsapp_month_key = _make_delegator('scheduler', '_whatsapp_month_key')
-
-_send_weekly_visual = _make_delegator('scheduler', '_send_weekly_visual')
-
-_remember_pending_weekly_visual = _make_delegator('scheduler', '_remember_pending_weekly_visual')
-
-_flush_pending_weekly_visuals = _make_delegator('scheduler', '_flush_pending_weekly_visuals')
-
-_whatsapp_compact_alert_detail = _make_delegator('scheduler', '_whatsapp_compact_alert_detail')
-
-_whatsapp_weekly_operational_parts = _make_delegator('scheduler', '_whatsapp_weekly_operational_parts')
-
-_forward_operational_alerts = _make_delegator('scheduler', '_forward_operational_alerts')
-
-_start_operational_alert_scan = _make_delegator('scheduler', '_start_operational_alert_scan')
-
-_scheduled_report_period = _make_delegator('scheduler', '_scheduled_report_period')
-
-_scheduled_report_parts = _make_delegator('scheduler', '_scheduled_report_parts')
-
-_send_scheduled_report_visuals = _make_delegator('scheduler', '_send_scheduled_report_visuals')
-
-_scheduled_report_targets = _make_delegator('scheduler', '_scheduled_report_targets')
-
-_scheduled_report_result_accepted = _make_delegator('scheduler', '_scheduled_report_result_accepted')
-
-_forward_scheduled_reports = _make_delegator('scheduler', '_forward_scheduled_reports')
-
-_start_phone_notification_report_scan = _make_delegator('scheduler', '_start_phone_notification_report_scan')
 
 _activate_completed_pairing = _make_delegator('lifecycle', '_activate_completed_pairing')
 

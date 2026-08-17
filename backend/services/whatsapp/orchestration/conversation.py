@@ -224,15 +224,6 @@ def _handle_dual_control_action(
         delivery = _post_message_result(config, message_id, {"status": "completed", "response": reply_text})
         if whatsapp_delivery.delivery_receipt_confirmed(delivery):
             _replace_provisional_assistant_reply(state, conversation_id, provisional_reply, reply_text)
-            _record_shared_delivered_exchange(
-                client_id=str(session.get("client_id") or ""),
-                username=str(session.get("username") or ""),
-                phone=phone,
-                subject_id=subject,
-                prompt=request_text,
-                response=reply_text,
-                event_id=message_id,
-            )
         else:
             _discard_unconfirmed_assistant_reply(state, conversation_id, provisional_reply)
         return True, action
@@ -242,17 +233,7 @@ def _handle_dual_control_action(
             active_task, request_text, message_id, subject, phone, reply_text,
         )
         if accepted:
-            if whatsapp_delivery.delivery_receipt_confirmed(delivery):
-                _record_shared_delivered_exchange(
-                    client_id=str(session.get("client_id") or ""),
-                    username=str(session.get("username") or ""),
-                    phone=phone,
-                    subject_id=subject,
-                    prompt=request_text,
-                    response=reply_text,
-                    event_id=message_id,
-                )
-            else:
+            if not whatsapp_delivery.delivery_receipt_confirmed(delivery):
                 _discard_unconfirmed_assistant_reply(state, conversation_id, reply_text)
             return True, action
         return False, "queue"
@@ -260,20 +241,7 @@ def _handle_dual_control_action(
         return False, "delegate"
     if action in {"reply", "request_information"}:
         delivery = _post_message_result(config, message_id, {"status": "completed", "response": reply_text})
-        if whatsapp_delivery.delivery_receipt_confirmed(delivery):
-            try:
-                _record_shared_delivered_exchange(
-                    client_id=str(session.get("client_id") or ""),
-                    username=str(session.get("username") or ""),
-                    phone=phone,
-                    subject_id=subject,
-                    prompt=request_text,
-                    response=reply_text,
-                    event_id=message_id,
-                )
-            except Exception:
-                pass
-        else:
+        if not whatsapp_delivery.delivery_receipt_confirmed(delivery):
             _discard_unconfirmed_assistant_reply(state, conversation_id, reply_text)
         return True, action
     if action not in {"delegate", "queue"}:
@@ -563,14 +531,6 @@ def _process_dual_codex_message_unlocked(
     phone_ai_behavior: str,
     quoted_context: Optional[dict[str, Any]] = None,
 ) -> bool:
-    _ensure_shared_conversation_record(
-        config,
-        state,
-        session,
-        phone=phone,
-        subject_id=subject,
-        conversation_id=conversation_id,
-    )
     active_message_id, active_pending, active_task, active_snapshot = _dual_active_job_snapshot(
         state,
         conversation_id,

@@ -656,12 +656,7 @@ def _codex_status_for_session(sessao: dict[str, Any]) -> dict[str, Any]:
     client_id = str(sessao.get("client_id") or "").strip()
     username = str(sessao.get("username") or "").strip().lower()
     if client_id and username:
-        shared = _codex_shared_continuity_for_session(sessao)
-        state = (
-            _codex_load_or_create_shared_conversation_state(client_id, username)
-            if shared
-            else _codex_load_or_create_conversation_state(client_id, username, channel="app")
-        )
+        state = _codex_load_or_create_conversation_state(client_id, username, channel="app")
         conversation_id = str(state.get("conversation_id") or "")
         generation = int(state.get("generation") or 1)
         active_statuses = {"queued", "running", "awaiting_approval", "cancel_requested"}
@@ -674,7 +669,7 @@ def _codex_status_for_session(sessao: dict[str, Any]) -> dict[str, Any]:
         ]
         payload["conversation"] = {
             "conversation_id": conversation_id,
-            "channel": "shared" if shared else "app",
+            "channel": "app",
             "generation": generation,
             "state": "active",
             "queue": {

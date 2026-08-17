@@ -154,7 +154,7 @@ assert.match(backend, /mercadolibre\.com/, 'cookies de dominios Mercado Libre ta
 assert.match(backend, /cookies\.on\('changed',[\s\S]*schedulePersistentSessionsFlush/, 'mudanca de cookie de auth deve agendar flush');
 assert.match(backend, /async function persistAuthenticationState[\s\S]*saveAvantProExtensionStorageSnapshot/, 'persistencia deve incluir snapshot AvantPro');
 assert.match(ipc, /before-quit[\s\S]*event\.preventDefault\(\)[\s\S]*persistAuthenticationState\('before-quit-authentication'\)/, 'quit deve aguardar persistencia');
-assert.match(backend, /async function stopLocalBackend\(\)[\s\S]*stopProcessListeningOnPort\(JK_PROMO_WORKER_PORT\)[\s\S]*stopProcessListeningOnPort\(JK_LOCAL_BACKEND_PORT\)[\s\S]*waitForTcpPortClosed\(JK_PROMO_WORKER_PORT\)[\s\S]*waitForTcpPortClosed\(JK_LOCAL_BACKEND_PORT\)/, 'quit deve encerrar e confirmar as duas portas mesmo sem PID rastreado');
+assert.match(backend, /async function stopLocalBackend\(\)[\s\S]*stopManagedLocalServers\('quit'\)[\s\S]*managedServers:\s*managedStop\.servers/, 'quit deve encerrar e confirmar todas as portas gerenciadas mesmo sem PID rastreado');
 assert.match(ipc, /\.finally\(async \(\) => \{[\s\S]*await stopLocalBackend\(\)[\s\S]*authenticationQuitPersistenceReady = true[\s\S]*app\.quit\(\)/, 'quit deve aguardar o encerramento do backend antes de liberar a saida');
 assert.match(ipc, /if \(!JK_PRIMARY_INSTANCE_LOCK_ACQUIRED\) \{[\s\S]*before-quit-secondary-instance[\s\S]*return;[\s\S]*if \(authenticationQuitPersistenceReady\)/, 'segunda instancia nao deve tocar backend nem marcador do processo principal');
 assert.match(ipc, /mercado-livre-auth-flow-completed[\s\S]*saveAvantPro:\s*false/, 'fim do login ML deve descarregar cookies imediatamente');

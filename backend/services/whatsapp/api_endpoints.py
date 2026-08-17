@@ -34,7 +34,6 @@ from backend.services.whatsapp import gateway as whatsapp_gateway
 from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import message as whatsapp_message
-from backend.services.whatsapp import report_scheduling as whatsapp_report_scheduling
 from backend.services.whatsapp import retry_policy as whatsapp_retry_policy
 from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp import tool_results as whatsapp_tool_results
@@ -49,7 +48,7 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents
 from backend.services.codex.console import queueing as console_queueing
 from backend.services.codex.console import telemetry as console_telemetry
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
@@ -172,27 +171,7 @@ def _apply_bridge_capacity_config(config: dict[str, Any], payload: WhatsappBridg
         config.setdefault("data_selection_enabled", True)
 
 
-def _apply_bridge_voice_config(config: dict[str, Any], payload: WhatsappBridgeConfigRequest) -> None:
-    if payload.voice_model is not None:
-        config["voice_model"] = _normalize_voice_model(payload.voice_model, whatsapp_voice.VOICE_MODEL_DEFAULT)
-    if payload.voice_transcription_model is not None:
-        config["voice_transcription_model"] = _normalize_voice_model(
-            payload.voice_transcription_model, whatsapp_voice.VOICE_TRANSCRIPTION_MODEL_DEFAULT,
-        )
-    if payload.voice_name is not None:
-        config["voice_name"] = _normalize_voice_name(payload.voice_name)
-    if payload.voice_language is not None and str(payload.voice_language or "").strip().lower() not in {"pt-br", "pt_br", "pt"}:
-        raise HTTPException(status_code=400, detail="A primeira versao das ligacoes usa portugues brasileiro.")
-    fields = (
-        ("voice_max_call_minutes", payload.voice_max_call_minutes, 30, 5, 60),
-        ("voice_silence_timeout_seconds", payload.voice_silence_timeout_seconds, 90, 30, 300),
-        ("voice_long_task_offer_seconds", payload.voice_long_task_offer_seconds, 90, 30, 300),
-        ("voice_max_concurrent_calls", payload.voice_max_concurrent_calls, 3, 1, 10),
-        ("voice_progress_interval_seconds", payload.voice_progress_interval_seconds, 8, 8, 30),
-    )
-    for key, value, fallback, minimum, maximum in fields:
-        if value is not None:
-            config[key] = _normalize_voice_int(value, fallback, minimum, maximum)
+def _apply_bridge_policy_config(config: dict[str, Any], payload: WhatsappBridgeConfigRequest) -> None:
     if payload.orchestration_mode is not None and str(payload.orchestration_mode or "") != WHATSAPP_ORCHESTRATION_MODE_DEFAULT:
         raise HTTPException(status_code=400, detail="Modo de orquestracao do WhatsApp invalido.")
     if payload.active_task_policy is not None and str(payload.active_task_policy or "") != "steer_or_queue":
@@ -270,55 +249,11 @@ def whatsapp_bridge_update_config(
     _apply_bridge_model_config(config, payload)
     _apply_bridge_timing_config(config, payload)
     _apply_bridge_capacity_config(config, payload)
-    _apply_bridge_voice_config(config, payload)
+    _apply_bridge_policy_config(config, payload)
     _apply_bridge_enabled(config, payload)
     config = _save_config(config)
     _warm_bridge_runtimes(config)
     return _public_status(config)
-
-def _remember_report_delivery_preferences(
-    subject_id: str,
-    previous: dict[str, Any],
-    updated: dict[str, Any],
-) -> None:
-    state = _load_state()
-    deliveries = state.get("scheduled_report_deliveries")
-    if not isinstance(deliveries, dict):
-        deliveries = {}
-    subject_deliveries = deliveries.get(subject_id)
-    if not isinstance(subject_deliveries, dict):
-        subject_deliveries = {}
-    current = datetime.now()
-    if updated["send_weekly_report"] and not previous["send_weekly_report"]:
-        subject_deliveries["weekly"] = _whatsapp_week_key(current)
-    if updated["send_monthly_report"] and not previous["send_monthly_report"]:
-        subject_deliveries["monthly"] = _whatsapp_month_key(current)
-    deliveries[subject_id] = subject_deliveries
-    state["scheduled_report_deliveries"] = deliveries
-    _save_state(state)
-
-
-def _send_registered_phone_welcome(
-    config: dict[str, Any],
-    payload: WhatsappPhoneRegistrationRequest,
-    subject_id: str,
-    machine_id: str,
-    welcome_message: str,
-) -> dict[str, Any]:
-    if not payload.send_welcome_message:
-        return {"requested": False, "success": True, "status": "not_requested"}
-    try:
-        sent = _gateway_json(
-            config,
-            "POST",
-            "/bridge/welcome",
-            {"subject_id": subject_id, "machine_id": machine_id, "text": welcome_message},
-            timeout=20,
-        )
-        return {"requested": True, **sent}
-    except Exception as exc:
-        return {"requested": True, "success": False, "status": "failed", "error": str(exc)[:500]}
-
 
 def _require_registered_phone_binding(
     worker: dict[str, Any], *, subject_id: str, username: str,
@@ -344,7 +279,7 @@ def _require_registered_phone_binding(
 
 def _register_phone_binding_with_gateway(
     config: dict[str, Any], *, phone_number: str, client_id: str,
-    username: str, machine_id: str, is_primary: Optional[bool],
+    username: str, machine_id: str,
 ) -> dict[str, Any]:
     registration_payload: dict[str, Any] = {
         "phone_number": phone_number,
@@ -352,8 +287,6 @@ def _register_phone_binding_with_gateway(
         "username": username,
         "machine_id": machine_id,
     }
-    if is_primary is not None:
-        registration_payload["is_primary"] = is_primary
     try:
         return _gateway_json(
             config,
@@ -394,29 +327,6 @@ def whatsapp_bridge_update_phone_settings(
         machine_id=str(config.get("machine_id") or ""),
     )
 
-    authoritative_primary = payload.is_primary
-    if payload.is_primary is not None:
-        try:
-            primary_result = _gateway_json(
-                config,
-                "POST",
-                "/bridge/bindings/primary",
-                {
-                    "subject_id": subject_id,
-                    "client_id": client_id,
-                    "username": username,
-                    "machine_id": str(config.get("machine_id") or ""),
-                    "is_primary": payload.is_primary,
-                },
-                timeout=15,
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=409,
-                detail="O gateway nao confirmou a selecao do numero principal.",
-            ) from exc
-        authoritative_primary = primary_result.get("is_primary") is True
-
     previous = _phone_notification_settings(
         config,
         subject_id,
@@ -426,16 +336,8 @@ def whatsapp_bridge_update_phone_settings(
     updated = _normalize_phone_notification_settings(
         {
             "label": payload.label,
-            "is_primary": (
-                previous.get("is_primary") is True
-                if payload.is_primary is None
-                else authoritative_primary
-            ),
             "send_ml_question_suggestions": payload.send_ml_question_suggestions,
-            "send_weekly_report": payload.send_weekly_report,
-            "send_monthly_report": payload.send_monthly_report,
             "ai_behavior": previous.get("ai_behavior") if payload.ai_behavior is None else payload.ai_behavior,
-            "allow_voice_calls": payload.allow_voice_calls,
         }
     )
     updated.update(
@@ -447,47 +349,12 @@ def whatsapp_bridge_update_phone_settings(
             "updated_at": _now(),
         }
     )
-    try:
-        _gateway_json(
-            config,
-            "POST",
-            "/bridge/voice/phones/settings",
-            {
-                "subject_id": subject_id,
-                "machine_id": str(config.get("machine_id") or ""),
-                "allow_voice_calls": updated["allow_voice_calls"],
-            },
-            timeout=15,
-        )
-    except Exception as exc:
-        # Instalações antigas ainda não possuem a rota de voz. O salvamento
-        # continua compatível apenas quando voz nunca esteve autorizada.
-        if updated["allow_voice_calls"] or previous.get("allow_voice_calls") is True:
-            raise HTTPException(status_code=409, detail="O gateway de ligações não confirmou a permissão deste telefone.") from exc
-        RUNTIME_STATE["voice_last_error"] = str(exc)[:1000]
     settings_by_phone = config.get("phone_notification_settings")
     if not isinstance(settings_by_phone, dict):
         settings_by_phone = {}
     settings_by_phone[subject_id] = updated
-    settings_by_phone = whatsapp_settings.select_primary_phone_setting(
-        settings_by_phone,
-        subject_id=subject_id,
-        client_id=client_id,
-        username=username,
-        enabled=updated.get("is_primary") is True,
-    )
     config["phone_notification_settings"] = settings_by_phone
     config = _save_config(config)
-
-    if previous.get("is_primary") is not updated.get("is_primary"):
-        _rotate_shared_conversation(
-            config,
-            client_id=client_id,
-            username=username,
-            reason="primary_binding_changed",
-        )
-
-    _remember_report_delivery_preferences(subject_id, previous, updated)
     return _public_status(config, worker)
 
 def whatsapp_bridge_register_phone(
@@ -501,11 +368,6 @@ def whatsapp_bridge_register_phone(
     if not label:
         raise HTTPException(status_code=400, detail="Informe um nome para identificar o telefone.")
     phone_number = _normalize_registered_phone(payload.phone_number)
-    welcome_message = str(payload.welcome_message or "").replace("\r\n", "\n").strip()
-    if len(welcome_message) > 1000:
-        raise HTTPException(status_code=400, detail="A mensagem de boas-vindas deve ter no maximo 1000 caracteres.")
-    if payload.send_welcome_message and not welcome_message:
-        raise HTTPException(status_code=400, detail="Escreva a mensagem de boas-vindas antes de solicitar o envio.")
     config = _load_config()
     machine_id = str(session.get("machine_id") or config.get("machine_id") or _host_machine_id())
     config["machine_id"] = machine_id
@@ -515,29 +377,14 @@ def whatsapp_bridge_register_phone(
         client_id=target_client_id,
         username=target_username,
         machine_id=machine_id,
-        is_primary=payload.is_primary,
     )
 
     binding = result.get("binding") if isinstance(result.get("binding"), dict) else {}
     subject_id = str(result.get("subject_id") or binding.get("subject_id") or phone_number).strip()
-    previous = _phone_notification_settings(
-        config,
-        subject_id,
-        client_id=target_client_id,
-        username=target_username,
-    )
     updated = _normalize_phone_notification_settings(
         {
             "label": label,
-            "is_primary": (
-                binding.get("is_primary") is True
-                if "is_primary" in binding
-                else previous.get("is_primary") is True
-            ),
             "send_ml_question_suggestions": payload.send_ml_question_suggestions,
-            "send_weekly_report": payload.send_weekly_report,
-            "send_monthly_report": payload.send_monthly_report,
-            "allow_voice_calls": payload.allow_voice_calls,
         }
     )
     updated.update(
@@ -553,44 +400,8 @@ def whatsapp_bridge_register_phone(
     if not isinstance(settings_by_phone, dict):
         settings_by_phone = {}
     settings_by_phone[subject_id] = updated
-    settings_by_phone = whatsapp_settings.select_primary_phone_setting(
-        settings_by_phone,
-        subject_id=subject_id,
-        client_id=target_client_id,
-        username=target_username,
-        enabled=updated.get("is_primary") is True,
-    )
-    try:
-        _gateway_json(
-            config,
-            "POST",
-            "/bridge/voice/phones/settings",
-            {
-                "subject_id": subject_id,
-                "machine_id": machine_id,
-                "allow_voice_calls": updated["allow_voice_calls"],
-            },
-            timeout=15,
-        )
-    except Exception as exc:
-        if updated["allow_voice_calls"]:
-            raise HTTPException(status_code=409, detail="O gateway de ligações não confirmou a permissão deste telefone.") from exc
-        RUNTIME_STATE["voice_last_error"] = str(exc)[:1000]
     config["phone_notification_settings"] = settings_by_phone
     config = _save_config(config)
-
-    if previous.get("is_primary") is not updated.get("is_primary"):
-        _rotate_shared_conversation(
-            config,
-            client_id=target_client_id,
-            username=target_username,
-            reason="primary_binding_changed",
-        )
-
-    _remember_report_delivery_preferences(subject_id, previous, updated)
-    welcome_result = _send_registered_phone_welcome(
-        config, payload, subject_id, machine_id, welcome_message,
-    )
 
     worker = _worker_health(config)
     return {
@@ -598,7 +409,6 @@ def whatsapp_bridge_register_phone(
         "created": result.get("created") is not False,
         "subject_id": subject_id,
         "phone_number": phone_number,
-        "welcome_message": welcome_result,
         "status": _public_status(config, worker),
     }
 
@@ -607,31 +417,11 @@ def whatsapp_bridge_send_adhoc_message(
     request: Request,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    session = _require_full(request, authorization)
-    phone_number = _normalize_registered_phone(payload.phone_number)
-    message = str(payload.message or "").replace("\r\n", "\n").strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="Escreva a mensagem que deseja enviar.")
-    if len(message) > WHATSAPP_ADHOC_MESSAGE_CHARS:
-        raise HTTPException(status_code=400, detail=f"A mensagem deve ter no maximo {WHATSAPP_ADHOC_MESSAGE_CHARS} caracteres.")
-    config = _load_config()
-    machine_id = str(session.get("machine_id") or config.get("machine_id") or _host_machine_id())
-    delivery = _gateway_json(
-        config,
-        "POST",
-        "/bridge/messages/send",
-        {
-            "phone_number": phone_number,
-            "machine_id": machine_id,
-            "text": message,
-        },
-        timeout=20,
+    _require_full(request, authorization)
+    raise HTTPException(
+        status_code=409,
+        detail="Mensagens avulsas estao desativadas. O WhatsApp e exclusivo para perguntas e respostas do Mercado Livre.",
     )
-    return {
-        "success": True,
-        "phone_number": phone_number,
-        "delivery": delivery,
-    }
 
 def whatsapp_bridge_test(request: Request, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_full(request, authorization)
@@ -653,9 +443,10 @@ def whatsapp_bridge_voice_preflight(
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     _require_full(request, authorization)
-    config = _load_config()
-    result = whatsapp_voice.VOICE_RUNTIME.preflight(config, sys.modules[__name__], check_openai=True)
-    return {"success": True, "ready": result.pop("success", False), **result}
+    raise HTTPException(
+        status_code=409,
+        detail="Ligacoes foram removidas do modo exclusivo de perguntas do WhatsApp.",
+    )
 
 def whatsapp_bridge_voice_enable(
     payload: WhatsappVoiceToggleRequest,
@@ -663,19 +454,10 @@ def whatsapp_bridge_voice_enable(
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     _require_full(request, authorization)
-    if payload.confirmed is not True:
-        raise HTTPException(status_code=400, detail="Confirme explicitamente a habilitacao das ligacoes.")
-    config = _load_config()
-    preflight = whatsapp_voice.VOICE_RUNTIME.preflight(config, sys.modules[__name__], check_openai=True)
-    if preflight.get("success") is not True:
-        raise HTTPException(
-            status_code=409,
-            detail="Ligacoes ainda nao estao prontas. Verifique chave OpenAI, webhook, projeto, SIP, migracao D1 e gateway.",
-        )
-    config["voice_enabled"] = True
-    config = _save_config(config)
-    whatsapp_voice.VOICE_RUNTIME.tick(config, sys.modules[__name__])
-    return {"success": True, "voice": _public_status(config).get("voice"), "preflight": preflight}
+    raise HTTPException(
+        status_code=409,
+        detail="Ligacoes estao desativadas no modo exclusivo de perguntas do WhatsApp.",
+    )
 
 def whatsapp_bridge_voice_disable(
     payload: WhatsappVoiceToggleRequest,
@@ -683,31 +465,20 @@ def whatsapp_bridge_voice_disable(
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     _require_full(request, authorization)
-    if payload.confirmed is not True:
-        raise HTTPException(status_code=400, detail="Confirme explicitamente a desativacao das ligacoes.")
-    config = _load_config()
-    config["voice_enabled"] = False
-    config = _save_config(config)
-    whatsapp_voice.VOICE_RUNTIME.tick(config, sys.modules[__name__])
-    return {"success": True, "voice": _public_status(config).get("voice")}
+    raise HTTPException(
+        status_code=409,
+        detail="Ligacoes foram removidas do modo exclusivo de perguntas do WhatsApp.",
+    )
 
 def whatsapp_bridge_voice_calls(
     request: Request,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    session = _require_full(request, authorization)
-    config = _load_config()
-    result = _gateway_json(config, "GET", "/bridge/voice/status", timeout=15)
-    client_id = str(session.get("client_id") or "")
-    username = str(session.get("username") or "").strip().lower()
-    calls = [
-        item
-        for item in list(result.get("calls") or [])
-        if isinstance(item, dict)
-        and str(item.get("client_id") or "") == client_id
-        and str(item.get("username") or "").strip().lower() == username
-    ]
-    return {"success": True, "calls": calls, "counts": result.get("counts") or {}}
+    _require_full(request, authorization)
+    raise HTTPException(
+        status_code=409,
+        detail="Ligacoes foram removidas do modo exclusivo de perguntas do WhatsApp.",
+    )
 
 def whatsapp_bridge_pairing_code(
     payload: WhatsappPairingCodeRequest,
@@ -758,12 +529,6 @@ def whatsapp_bridge_revoke(
     target_username, target_client_id = _binding_target(session, payload.username, payload.client_id)
     config["machine_id"] = str(session.get("machine_id") or config.get("machine_id") or _host_machine_id())
     subject_id = str(payload.subject_id or "").strip()
-    primary_before = whatsapp_settings.primary_phone_setting(
-        config,
-        client_id=target_client_id,
-        username=target_username,
-        subject_id=subject_id if subject_id else "",
-    )
     result = _gateway_json(
         config,
         "POST",
@@ -803,25 +568,6 @@ def whatsapp_bridge_revoke(
     if not machine_bindings:
         config.update({"subject_id": "", "personal_phone": "", "enabled": False})
     config = _save_config(config)
-    if primary_before and (subject_id or payload.revoke_all):
-        _rotate_shared_conversation(
-            config,
-            client_id=target_client_id,
-            username=target_username,
-            reason="primary_binding_revoked",
-        )
-    state = _load_state()
-    deliveries = state.get("scheduled_report_deliveries")
-    if isinstance(deliveries, dict):
-        active_subjects = {
-            str(item.get("subject_id") or "").strip()
-            for item in (worker.get("bindings") or [])
-            if isinstance(item, dict) and str(item.get("subject_id") or "").strip()
-        }
-        state["scheduled_report_deliveries"] = {
-            key: value for key, value in deliveries.items() if key in active_subjects
-        }
-        _save_state(state)
     return {
         "success": True,
         "revoked": int(result.get("revoked") or 0),

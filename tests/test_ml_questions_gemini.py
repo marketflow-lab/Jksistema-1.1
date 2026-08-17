@@ -680,7 +680,7 @@ class MlQuestionsGeminiTests(unittest.TestCase):
     def test_post_sale_defect_keeps_draft_available(self):
         result = process(
             "Radiador seus nao valem nada. 5 meses e ja deu ruim, vou acionar o Procon.",
-            ai="Sentimos pelo ocorrido. Por favor, envie fotos do item e do problema pelo detalhe da compra para verificarmos o atendimento. Equipe Minha Loja agradece o seu contato.",
+            ai="Sentimos pelo ocorrido. Por favor, envie fotos do item e do problema pelo detalhe da compra para verificarmos o atendimento. Equipe Minha Loja agradece pelo contato, Precisando estamos a disposição!",
             requires_human=True,
             category=QuestionCategory.POST_SALE,
         )
@@ -725,7 +725,22 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         orchestrator = QuestionAnswerOrchestrator(settings=GeminiQuestionsSettings(), gemini_client=BrokenClient())
         result = orchestrator.process(question=_question("Qual material?"), listing=listing())
         self.assertEqual(result.source, "gemini_error")
+        self.assertEqual(result.reason, "provider_error")
         self.assertIn("gemini_error", result.validation.issues)
+
+    def test_provider_timeout_reason_is_sanitized(self):
+        class TimeoutClient:
+            def generate(self, prompt, metadata=None):
+                raise TimeoutError("CANARY_PROVIDER_SECRET")
+
+        orchestrator = QuestionAnswerOrchestrator(
+            settings=GeminiQuestionsSettings(),
+            gemini_client=TimeoutClient(),
+        )
+        result = orchestrator.process(question=_question("Qual material?"), listing=listing())
+        self.assertEqual(result.source, "gemini_error")
+        self.assertEqual(result.reason, "provider_timeout")
+        self.assertNotIn("CANARY_PROVIDER_SECRET", result.reason)
 
     def test_missing_listing_context_does_not_publish_compatibility(self):
         result = process(
@@ -809,7 +824,7 @@ class MlQuestionsGeminiTests(unittest.TestCase):
             rules=SellerRules(store_name="Minha Loja"),
             search_results=[],
         )
-        self.assertIn("Equipe Minha Loja agradece o seu contato.", prompt)
+        self.assertIn("Equipe Minha Loja agradece pelo contato, Precisando estamos a disposição!", prompt)
         self.assertIn("Nunca se apresente como IA", prompt)
         self.assertIn("PERGUNTA_DO_COMPRADOR", prompt)
         self.assertIn("PRODUTO_DO_ANUNCIO", prompt)

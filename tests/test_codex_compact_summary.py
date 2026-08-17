@@ -71,7 +71,7 @@ class CodexAssistantCompactResponseTest(unittest.TestCase):
             result = codex_assistant.codex_assistant_daily_analysis_run(payload, _request("/daily"), "Bearer test")
 
         self.assertTrue(result["compact"])
-        self.assertEqual(result["status"], "disabled_weekly_only")
+        self.assertEqual(result["status"], "disabled")
         self.assertNotIn("report", result)
         self.assertNotIn("last_daily_report", result["scheduler"])
         self.assertEqual(result["scheduler"]["last_daily_report_id"], "report-1")
@@ -90,7 +90,7 @@ class CodexAssistantCompactResponseTest(unittest.TestCase):
             result = codex_assistant.codex_assistant_daily_analysis_run(payload, _request("/daily"), "Bearer test")
 
         self.assertNotIn("compact", result)
-        self.assertEqual(result["status"], "disabled_weekly_only")
+        self.assertEqual(result["status"], "disabled")
         self.assertIsNone(result["report"])
 
     def test_proactive_compact_also_compacts_nested_scheduler_report(self):

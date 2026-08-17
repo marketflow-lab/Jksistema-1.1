@@ -306,6 +306,46 @@
             color: #c7ddf7;
             line-height: 1.1;
         }
+        .competitor-margins {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(64px, 1fr));
+            gap: 4px;
+            min-width: 145px;
+            white-space: normal;
+        }
+        .competitor-margin {
+            display: inline-flex;
+            justify-content: center;
+            gap: 4px;
+            padding: 3px 5px;
+            border: 1px solid #31506f;
+            border-radius: 6px;
+            background: #10233a;
+            font-size: 0.72rem;
+            font-weight: 800;
+            line-height: 1.1;
+            white-space: nowrap;
+        }
+        .competitor-margin.positive {
+            border-color: #287b55;
+            color: #8ff0b7;
+        }
+        .competitor-margin.negative {
+            border-color: #8e4148;
+            color: #ff9da5;
+        }
+        .competitor-margins-empty {
+            color: #91a8c2;
+            font-size: 0.75rem;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+        .competitor-margins-empty.is-loading {
+            color: #ffd166;
+        }
+        .competitor-margins-empty.is-error {
+            color: #ff9da5;
+        }
         .totais-row td {
             background: #17273e;
             border-top: 1px solid #3b5578;
@@ -388,13 +428,47 @@
             cursor: pointer;
             white-space: nowrap;
         }
-        .btn-excluir-sku:hover {
+        .btn-excluir-sku:hover:not(:disabled) {
             border-color: #d16a6a;
             filter: brightness(1.06);
         }
         .btn-excluir-sku:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+        .btn-excluir-sku.is-busy:disabled {
             opacity: 0.65;
             cursor: wait;
+        }
+        .sku-actions {
+            display: inline-flex;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 5px;
+        }
+        .btn-aprovar-sku {
+            border: 1px solid #2f9b63;
+            border-radius: 7px;
+            background: linear-gradient(180deg, #1d7047, #155436);
+            color: #d9ffea;
+            font-size: 0.76rem;
+            font-weight: 800;
+            padding: 6px 8px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .btn-aprovar-sku:hover:not(:disabled) {
+            border-color: #58c98c;
+            filter: brightness(1.08);
+        }
+        .btn-aprovar-sku:disabled {
+            cursor: default;
+            opacity: 0.82;
+        }
+        .btn-aprovar-sku.is-approved {
+            border-color: #74dca1;
+            background: linear-gradient(180deg, #216c46, #174d33);
+            color: #e5fff0;
         }
         .sku-context-menu {
             position: fixed;
@@ -630,7 +704,7 @@
                     <colgroup id="tCols"></colgroup>
                     <thead id="tHead"></thead>
                     <tbody id="tbodyLista">
-                        <tr><td colspan="12" class="empty">Carregando itens...</td></tr>
+                        <tr><td colspan="15" class="empty">Carregando itens...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -840,6 +914,8 @@
         let ultimaListaCarregada = null;
         let ultimosItensCarregados = [];
         let ultimaAnaliseCustoPosto = null;
+        let cicloAnaliseMargensAutomaticas = 0;
+        const estadosAnaliseMargensAutomaticas = new Map();
         let skuArrastadoIndex = -1;
         let skuArrasteSalvando = false;
         let faturamentoVendas12m = null;
@@ -1033,6 +1109,229 @@
             };
             sku = sku.replace(/-([A-Z]{3})\b/g, (_m, mes) => '-' + (meses[mes] || mes));
             return sku;
+        }
+
+        function itemComCompraAprovada(item) {
+            const valor = item && (item.compra_aprovada ?? item['Compra aprovada']);
+            if (valor === true || valor === 1) return true;
+            return ['1', 'true', 'sim', 'aprovada', 'aprovado'].includes(String(valor || '').trim().toLowerCase());
+        }
+
+        function formatarMargensConcorrentes(item) {
+            const sku = normalizarSkuComparacao(obterCampo(item || {}, ['SKU', 'Sku', 'sku'], ''));
+            const estadoAutomatico = sku ? estadosAnaliseMargensAutomaticas.get(sku) : null;
+            if (estadoAutomatico && estadoAutomatico.status === 'fila') {
+                return '<span class="competitor-margins-empty is-loading">Na fila</span>';
+            }
+            if (estadoAutomatico && estadoAutomatico.status === 'analisando') {
+                return '<span class="competitor-margins-empty is-loading">Analisando...</span>';
+            }
+            if (estadoAutomatico && estadoAutomatico.status === 'erro') {
+                const mensagem = String(estadoAutomatico.mensagem || 'Não foi possível analisar este SKU.').trim();
+                return '<span class="competitor-margins-empty is-error" title="'
+                    + escaparHtml(mensagem) + '">Falha na análise</span>';
+            }
+
+            const analise = item && item.analise_concorrentes;
+            if (!analise || typeof analise !== 'object') {
+                return '<span class="competitor-margins-empty">Não analisado</span>';
+            }
+
+            const margens = analise.margens && typeof analise.margens === 'object'
+                ? analise.margens
+                : {};
+            const disponiveis = [];
+            const detalhes = [];
+            const indisponiveis = [];
+            [1, 2, 3, 4, 5].forEach((numero) => {
+                const dados = margens['concorrente_' + numero];
+                const bruto = dados && dados.margem_percentual;
+                if (bruto === null || bruto === undefined || bruto === '') {
+                    const motivo = String(dados && dados.motivo_indisponivel || '').trim();
+                    if (motivo) indisponiveis.push('C' + numero + ': ' + motivo);
+                    return;
+                }
+                const margem = Number(bruto);
+                if (!Number.isFinite(margem)) return;
+                disponiveis.push(
+                    '<span class="competitor-margin ' + (margem < 0 ? 'negative' : 'positive') + '">'
+                    + '<span>C' + numero + '</span><span>' + formatarPct(margem) + '</span>'
+                    + '</span>'
+                );
+                detalhes.push(
+                    'C' + numero
+                    + ': preço ' + formatarBRL(Number(dados.preco_venda))
+                    + ', custo cadastrado ' + formatarBRL(Number(dados.custo_unitario))
+                    + ', imposto ' + formatarBRL(Number(dados.imposto_valor))
+                    + ', tarifa ML ' + formatarBRL(Number(dados.tarifa_ml))
+                    + ', frete ML ' + formatarBRL(Number(dados.frete_ml))
+                    + ', líquido ' + formatarBRL(Number(dados.valor_liquido))
+                );
+            });
+
+            if (!disponiveis.length) {
+                return '<span class="competitor-margins-empty"'
+                    + (indisponiveis.length ? ' title="' + escaparHtml(indisponiveis.join(' | ')) + '"' : '')
+                    + '>Sem margem</span>';
+            }
+
+            const custoBruto = analise.custo_unitario;
+            const custo = (custoBruto === null || custoBruto === undefined || custoBruto === '')
+                ? NaN
+                : Number(custoBruto);
+            const titulo = detalhes.slice();
+            if (Number.isFinite(custo) && custo >= 0) {
+                titulo.push('Custo do cadastro: ' + formatarBRL(custo));
+            }
+            titulo.push(...indisponiveis);
+            if (analise.atualizado_em) {
+                titulo.push('Análise atualizada em ' + String(analise.atualizado_em));
+            }
+            return '<div class="competitor-margins"'
+                + (titulo.length ? ' title="' + escaparHtml(titulo.join(' | ')) + '"' : '')
+                + '>' + disponiveis.join('') + '</div>';
+        }
+
+        function extrairCodigoMlbMargensAutomaticas(...candidatos) {
+            for (const candidato of candidatos) {
+                let texto = String(candidato || '').trim();
+                if (!texto) continue;
+                try { texto = decodeURIComponent(texto); } catch (_e) {}
+                const direcionado = texto.match(/(?:item_id\s*[:=]|wid\s*=)\s*MLB-?(\d{8,})/i);
+                if (direcionado && direcionado[1]) return 'MLB' + direcionado[1];
+                const generico = texto.match(/\bMLB-?(\d{8,})\b/i);
+                if (generico && generico[1]) return 'MLB' + generico[1];
+            }
+            return '';
+        }
+
+        function obterSkuItemMargensAutomaticas(item) {
+            return normalizarSkuComparacao(obterCampo(item || {}, ['SKU', 'Sku', 'sku'], ''));
+        }
+
+        function atualizarCelulaMargensAutomaticas(item) {
+            const sku = obterSkuItemMargensAutomaticas(item);
+            if (!sku) return;
+            const linhas = document.querySelectorAll('#tbodyLista tr[data-sku]');
+            for (const linha of linhas) {
+                if (normalizarSkuComparacao(linha.dataset.sku) !== sku) continue;
+                const celula = linha.querySelector('[data-coluna="margens_concorrentes"]');
+                if (celula) celula.innerHTML = formatarMargensConcorrentes(item);
+                break;
+            }
+        }
+
+        function definirEstadoMargensAutomaticas(item, status, mensagem = '') {
+            const sku = obterSkuItemMargensAutomaticas(item);
+            if (!sku) return;
+            if (status) estadosAnaliseMargensAutomaticas.set(sku, { status, mensagem });
+            else estadosAnaliseMargensAutomaticas.delete(sku);
+            atualizarCelulaMargensAutomaticas(item);
+        }
+
+        function montarPayloadMargensAutomaticas(fonte) {
+            const valores = fonte && fonte.concorrentes_valores && typeof fonte.concorrentes_valores === 'object'
+                ? fonte.concorrentes_valores
+                : {};
+            const anuncios = fonte && fonte.concorrentes_mlb && typeof fonte.concorrentes_mlb === 'object'
+                ? fonte.concorrentes_mlb
+                : {};
+            const precosConcorrentes = {};
+            const anunciosLoja = {};
+
+            [1, 2, 3, 4, 5].forEach((numero) => {
+                const chave = 'concorrente_' + numero;
+                const preco = valorNumerico(valores[chave]);
+                const itemIdLoja = extrairCodigoMlbMargensAutomaticas(anuncios[chave]);
+                if (preco > 0) precosConcorrentes[chave] = preco;
+                if (itemIdLoja) anunciosLoja[chave] = itemIdLoja;
+            });
+
+            return {
+                precos_concorrentes: precosConcorrentes,
+                anuncios_loja: anunciosLoja,
+            };
+        }
+
+        async function carregarFontesMargensAutomaticas(listaId) {
+            const resp = await fetch(
+                '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/concorrentes-links',
+                {
+                    method: 'GET',
+                    headers: { ...obterAuthHeaders() },
+                    cache: 'no-store',
+                }
+            );
+            if (!resp.ok) {
+                const erro = await resp.json().catch(() => ({}));
+                throw new Error(erro.detail || 'Não foi possível carregar os concorrentes da lista.');
+            }
+            const dados = await resp.json().catch(() => ({}));
+            return dados && dados.resultados && typeof dados.resultados === 'object'
+                ? dados.resultados
+                : {};
+        }
+
+        async function salvarMargensAutomaticasSku(listaId, sku, payload) {
+            const resp = await fetch(
+                '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId)
+                    + '/skus/' + encodeURIComponent(sku) + '/analise-concorrentes',
+                {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
+                    body: JSON.stringify(payload),
+                }
+            );
+            if (!resp.ok) {
+                const erro = await resp.json().catch(() => ({}));
+                throw new Error(erro.detail || 'Não foi possível calcular as margens deste SKU.');
+            }
+            return resp.json();
+        }
+
+        async function analisarMargensConcorrentesAutomaticamente(listaId, itens) {
+            const cicloAtual = ++cicloAnaliseMargensAutomaticas;
+            const pendentes = (Array.isArray(itens) ? itens : []).filter((item) => (
+                obterSkuItemMargensAutomaticas(item)
+                && (!item.analise_concorrentes || typeof item.analise_concorrentes !== 'object')
+            ));
+            if (!pendentes.length) return;
+
+            pendentes.forEach((item) => definirEstadoMargensAutomaticas(item, 'fila'));
+
+            let fontes;
+            try {
+                fontes = await carregarFontesMargensAutomaticas(listaId);
+            } catch (erro) {
+                if (cicloAtual !== cicloAnaliseMargensAutomaticas) return;
+                const mensagem = erro.message || 'Não foi possível iniciar a análise automática.';
+                pendentes.forEach((item) => definirEstadoMargensAutomaticas(item, 'erro', mensagem));
+                return;
+            }
+
+            for (const item of pendentes) {
+                if (cicloAtual !== cicloAnaliseMargensAutomaticas) return;
+                const sku = obterSkuItemMargensAutomaticas(item);
+                definirEstadoMargensAutomaticas(item, 'analisando');
+                try {
+                    const fonte = fontes[sku] || {};
+                    const resultado = await salvarMargensAutomaticasSku(
+                        listaId,
+                        sku,
+                        montarPayloadMargensAutomaticas(fonte)
+                    );
+                    item.analise_concorrentes = resultado && resultado.analise_concorrentes
+                        ? resultado.analise_concorrentes
+                        : { margens: {} };
+                    definirEstadoMargensAutomaticas(item, '');
+                } catch (erro) {
+                    definirEstadoMargensAutomaticas(
+                        item,
+                        'erro',
+                        erro.message || 'Não foi possível calcular as margens deste SKU.'
+                    );
+                }
+            }
         }
 
         const mapaM3IndividualSku = new Map();
@@ -1918,9 +2217,23 @@
             { key: 'frete_internacional', label: 'Frete Internacional', width: 170 },
             { key: 'valor_unit_brl', label: 'Valor Unitário R$', width: 155 },
             { key: 'valor_total_usd', label: 'Total em Dólar', width: 170 },
+            { key: 'margens_concorrentes', label: 'Margem concorrentes', width: 185 },
             { key: 'acao', label: 'Ação', width: 130 }
         ];
         let colunaArrastadaKey = '';
+
+        function adicionarColunasNovasNaOrdem(ordenadas, mapa) {
+            mapa.forEach((coluna) => {
+                if (coluna.key === 'margens_concorrentes') {
+                    const indiceAcao = ordenadas.findIndex((item) => item.key === 'acao');
+                    if (indiceAcao >= 0) {
+                        ordenadas.splice(indiceAcao, 0, coluna);
+                        return;
+                    }
+                }
+                ordenadas.push(coluna);
+            });
+        }
 
         function carregarOrdemColunasSalva() {
             try {
@@ -1952,7 +2265,7 @@
                     mapa.delete(k);
                 }
             });
-            mapa.forEach((col) => ordenadas.push(col));
+            adicionarColunasNovasNaOrdem(ordenadas, mapa);
             colunasTabela.splice(0, colunasTabela.length, ...ordenadas);
         }
 
@@ -1991,7 +2304,7 @@
                         mapa.delete(k);
                     }
                 });
-                mapa.forEach((col) => ordenadas.push(col));
+                adicionarColunasNovasNaOrdem(ordenadas, mapa);
                 colunasTabela.splice(0, colunasTabela.length, ...ordenadas);
                 try {
                     localStorage.setItem(LS_ORDEM_COLUNAS_KEY, JSON.stringify(colunasTabela.map((c) => c.key)));
@@ -2385,6 +2698,14 @@
                 return;
             }
 
+            const skuRef = normalizarSkuComparacao(skuTxt);
+            const itemAtual = (Array.isArray(ultimosItensCarregados) ? ultimosItensCarregados : [])
+                .find((item) => normalizarSkuComparacao(item && item.SKU) === skuRef);
+            if (itemComCompraAprovada(itemAtual)) {
+                setErro('O SKU ' + skuTxt + ' está aprovado e não pode ser excluído. Desfaça a aprovação dentro do SKU.');
+                return;
+            }
+
             const confirmar = window.confirm('Deseja excluir o SKU ' + skuTxt + ' deste pedido?');
             if (!confirmar) return;
 
@@ -2392,10 +2713,10 @@
             try {
                 if (btn) {
                     btn.disabled = true;
+                    btn.classList.add('is-busy');
                     btn.textContent = 'Excluindo...';
                 }
 
-                const skuRef = normalizarSkuComparacao(skuTxt);
                 const itensAtuais = Array.isArray(ultimosItensCarregados) ? ultimosItensCarregados : [];
                 const itensRestantes = itensAtuais.filter((it) => normalizarSkuComparacao(it && it.SKU) !== skuRef);
 
@@ -2420,11 +2741,64 @@
                 setErro('');
                 await carregarDetalheLista();
             } catch (e) {
-                setErro(e.message || 'Erro ao excluir SKU do pedido.');
+                const mensagem = e.message || 'Erro ao excluir SKU do pedido.';
+                if (String(mensagem).toLowerCase().includes('aprovad')) {
+                    await carregarDetalheLista();
+                }
+                setErro(mensagem);
             } finally {
                 if (btn) {
+                    btn.classList.remove('is-busy');
                     btn.disabled = false;
                     btn.textContent = txtOriginal || 'Excluir SKU';
+                }
+            }
+        }
+
+        async function aprovarSkuDaLista(sku, btn) {
+            const listaId = getListaIdDaUrl();
+            const skuTxt = String(sku || '').trim();
+            if (!listaId || !skuTxt) {
+                setErro('Não foi possível localizar o SKU para registrar a aprovação.');
+                return;
+            }
+
+            const skuRef = normalizarSkuComparacao(skuTxt);
+            const itemAtual = (Array.isArray(ultimosItensCarregados) ? ultimosItensCarregados : [])
+                .find((item) => normalizarSkuComparacao(item && item.SKU) === skuRef);
+            if (!itemAtual) {
+                setErro('SKU não encontrado na lista atual.');
+                return;
+            }
+            if (itemComCompraAprovada(itemAtual)) return;
+
+            const txtOriginal = btn ? btn.textContent : '';
+            try {
+                if (btn) {
+                    btn.disabled = true;
+                    btn.textContent = 'Aprovando...';
+                }
+                const resp = await fetch(
+                    '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) +
+                    '/skus/' + encodeURIComponent(skuTxt) + '/aprovacao',
+                    {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
+                        body: JSON.stringify({ aprovada: true })
+                    }
+                );
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    throw new Error(data.detail || 'Não foi possível aprovar a compra deste SKU.');
+                }
+
+                setErro('');
+                await carregarDetalheLista();
+            } catch (e) {
+                setErro(e.message || 'Erro ao aprovar a compra deste SKU.');
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = txtOriginal || 'Aprovar';
                 }
             }
         }
@@ -2543,6 +2917,7 @@
                     : 0;
                 const valorUnitRs = Number(obterCampo(item, ['Valor Unitário R$', 'Valor Unitario R$', 'Valor unitário R$', 'Valor unitario r$', 'Valor unitário em real', 'Valor unitario em real'], 0) || 0);
                 const valorTotal = Number(item['Valor total'] || (qtd * valorUnit));
+                const compraAprovada = itemComCompraAprovada(item);
                 const valorProdutoBrl = (valorTotal > 0 && dolarBase > 0) ? (valorTotal * dolarBase) : 0;
                 const baseTributosBrl = (valorTotal > 0 && freteInternacionalItemUsd >= 0 && dolarBase > 0)
                     ? ((valorTotal + freteInternacionalItemUsd) * dolarBase)
@@ -2607,8 +2982,16 @@
                     frete_internacional: formatarBRL(freteInternacionalItemBrl),
                     valor_unit_brl: formatarBRL(valorUnitRs),
                     valor_total_usd: formatarUSD(valorTotal),
+                    margens_concorrentes: formatarMargensConcorrentes(item),
                     acao: sku
-                        ? '<button type="button" class="btn-excluir-sku" data-excluir-sku="' + escaparHtml(sku) + '">Excluir SKU</button>'
+                        ? '<div class="sku-actions">' +
+                            '<button type="button" class="btn-excluir-sku" data-excluir-sku="' + escaparHtml(sku) + '"' +
+                                (compraAprovada ? ' disabled aria-disabled="true" title="Desfaça a aprovação dentro do SKU para permitir a exclusão"' : '') +
+                                '>Excluir SKU</button>' +
+                            '<button type="button" class="btn-aprovar-sku' + (compraAprovada ? ' is-approved' : '') + '" data-aprovar-sku="' + escaparHtml(sku) + '"' +
+                                (compraAprovada ? ' disabled aria-disabled="true"' : '') +
+                                '>' + (compraAprovada ? 'Aprovado' : 'Aprovar') + '</button>' +
+                          '</div>'
                         : '-',
                 };
 
@@ -2625,14 +3008,18 @@
                     frete_internacional: 'num',
                     valor_unit_brl: 'num',
                     valor_total_usd: 'num',
+                    margens_concorrentes: 'num-center',
                     acao: 'num-center',
                 };
 
                 tr.innerHTML = colunasTabela.map((col) => {
                     const klass = classes[col.key] ? (' class="' + classes[col.key] + '"') : '';
                     const title = col.key === 'm3' && m3SemMetragem ? ' title="Sem metragem M3 ou valor igual a zero"' : '';
+                    const dataColuna = col.key === 'margens_concorrentes'
+                        ? ' data-coluna="margens_concorrentes"'
+                        : '';
                     const conteudo = Object.prototype.hasOwnProperty.call(celulas, col.key) ? celulas[col.key] : '';
-                    return '<td' + klass + title + '>' + conteudo + '</td>';
+                    return '<td' + klass + title + dataColuna + '>' + conteudo + '</td>';
                 }).join('');
 
                 const btnExcluir = tr.querySelector('[data-excluir-sku]');
@@ -2642,6 +3029,16 @@
                         ev.stopPropagation();
                         const skuExcluir = btnExcluir.getAttribute('data-excluir-sku') || '';
                         excluirSkuDaLista(skuExcluir, btnExcluir);
+                    });
+                }
+
+                const btnAprovar = tr.querySelector('[data-aprovar-sku]');
+                if (btnAprovar) {
+                    btnAprovar.addEventListener('click', (ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        const skuAprovar = btnAprovar.getAttribute('data-aprovar-sku') || '';
+                        aprovarSkuDaLista(skuAprovar, btnAprovar);
                     });
                 }
 
@@ -2784,6 +3181,7 @@
                 renderResumoTopo(lista, itens);
                 renderItens(itens, lista);
                 void carregarCustoPostoBackend(listaId);
+                void analisarMargensConcorrentesAutomaticamente(listaId, ultimosItensCarregados);
             } catch (e) {
                 setErro(e.message || 'Erro ao carregar lista de importação.');
                 renderResumoTopo({}, []);

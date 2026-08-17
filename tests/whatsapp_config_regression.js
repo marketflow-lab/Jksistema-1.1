@@ -27,16 +27,17 @@ const bridgeMessage = fs.readFileSync(path.join(root, 'backend', 'services', 'wh
 const bridgeIntent = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'intent.py'), 'utf8');
 const bridgeRetryPolicy = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'retry_policy.py'), 'utf8');
 const bridgeToolResults = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'tool_results.py'), 'utf8');
-const bridgeReportScheduling = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'report_scheduling.py'), 'utf8');
-const voiceService = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp_voice.py'), 'utf8');
 const codexConsole = fs.readFileSync(path.join(root, 'backend', 'services', 'codex_console.py'), 'utf8');
 const codexWorkerSetup = fs.readFileSync(path.join(root, 'backend', 'services', 'codex', 'console', 'worker_setup.py'), 'utf8');
 const bridgeStore = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp_bridge_store.py'), 'utf8');
 const reportFiles = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp_report_files.py'), 'utf8');
 const setup = fs.readFileSync(path.join(root, 'scripts', 'setup-whatsapp-zero-cost.ps1'), 'utf8');
 const wranglerExample = fs.readFileSync(path.join(root, 'cloudflare', 'whatsapp-gateway', 'wrangler.example.toml'), 'utf8');
-const gateway = fs.readFileSync(path.join(root, 'cloudflare', 'whatsapp-gateway', 'src', 'index.ts'), 'utf8');
-const voiceGateway = fs.readFileSync(path.join(root, 'cloudflare', 'whatsapp-gateway', 'src', 'voice.ts'), 'utf8');
+const gatewaySourceDir = path.join(root, 'cloudflare', 'whatsapp-gateway', 'src');
+const gateway = fs.readdirSync(gatewaySourceDir)
+  .filter((name) => name.endsWith('.ts'))
+  .map((name) => fs.readFileSync(path.join(gatewaySourceDir, name), 'utf8'))
+  .join('\n');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'electron_app', 'installer-required-resources.json'), 'utf8'));
 
 function assert(condition, message) {
@@ -56,19 +57,19 @@ assert(canonical.includes('id="waConversationInterval"'), 'conversation interval
 assert(canonical.includes('id="userWhatsappSettings"'), 'per-user WhatsApp phone settings are missing');
 assert(canonical.includes('id="userWaNewPhoneName"'), 'direct phone name field is missing');
 assert(canonical.includes('id="userWaNewPhoneNumber"'), 'direct phone number field is missing');
-assert(canonical.includes('id="userWaNewPrimary"'), 'primary phone selector is missing');
+assert(!canonical.includes('id="userWaNewPrimary"'), 'removed primary phone selector is still present');
 assert(canonical.includes('id="userWaSavePhone"'), 'direct phone save action is missing');
-assert(canonical.includes('id="userWaWelcomeMessage"'), 'welcome message field is missing');
-assert(canonical.includes('id="userWaSendWelcome"'), 'welcome send option is missing');
-assert(canonical.includes('id="userWaSendWelcome" type="checkbox" checked'), 'welcome should be prepared by default');
-assert(canonical.includes('Por regra da Meta'), 'the Meta service-window explanation is missing');
-assert(canonical.includes('id="userWaAdhocPhone"'), 'ad hoc recipient field is missing');
-assert(canonical.includes('id="userWaAdhocMessage"'), 'ad hoc message field is missing');
-assert(canonical.includes('id="userWaSendAdhoc"'), 'ad hoc message send action is missing');
-assert(canonical.includes('id="waVoicePreflight"'), 'voice preflight action is missing');
-assert(canonical.includes('id="waVoiceEnable"'), 'voice enable action is missing');
-assert(canonical.includes('id="userWaNewVoice"'), 'per-phone voice permission is missing');
+assert(!canonical.includes('id="userWaWelcomeMessage"'), 'removed welcome message field is still present');
+assert(!canonical.includes('id="userWaSendWelcome"'), 'removed welcome option is still present');
+assert(canonical.includes('Canal exclusivo para perguntas, separado da conversa da Sidebar'), 'question-only channel guidance is missing');
+assert(!canonical.includes('id="userWaAdhocPhone"'), 'removed ad hoc recipient field is still present');
+assert(!canonical.includes('id="userWaAdhocMessage"'), 'removed ad hoc message field is still present');
+assert(!canonical.includes('id="userWaSendAdhoc"'), 'removed ad hoc send action is still present');
+assert(!canonical.includes('id="waVoicePreflight"'), 'removed voice preflight action is still present');
+assert(!canonical.includes('id="waVoiceEnable"'), 'removed voice enable action is still present');
+assert(!canonical.includes('id="userWaNewVoice"'), 'removed per-phone voice permission is still present');
 assert(canonical.includes('O nome e o número são salvos diretamente'), 'direct registration guidance is missing');
+assert(!canonical.includes('setting-card wa-voice-card'), 'removed voice card is still present');
 assert(canonical.includes('id="userWaPhones"'), 'user phone settings list is missing');
 assert(ui.includes("permissions.full !== true"), 'UI is not restricted to full administrators');
 assert(ui.includes('/api/admin/whatsapp/status'), 'status endpoint missing from UI');
@@ -80,20 +81,19 @@ assert(ui.includes('JSON.stringify({ revoke_all: true, ...target })'), 'per-user
 assert(ui.includes("request('/api/admin/users')"), 'JK user list is not loaded');
 assert(ui.includes("request('/api/admin/whatsapp/phone-settings'"), 'per-phone notification settings endpoint is not used');
 assert(ui.includes("request('/api/admin/whatsapp/phones'"), 'direct phone registration endpoint is not used');
-assert(ui.includes('send_welcome_message: sendWelcomeMessage'), 'welcome message option is not sent by the UI');
-assert(ui.includes("request('/api/admin/whatsapp/messages'"), 'ad hoc message endpoint is not used');
+assert(!ui.includes('send_welcome_message'), 'removed welcome setting is still written by the UI');
 assert(ui.includes('Enviar sugestão de pergunta do Mercado Livre'), 'Mercado Livre question preference is missing');
-assert(ui.includes('Enviar relatório semanal'), 'weekly report preference is missing');
-assert(ui.includes('Enviar relatório mensal'), 'monthly report preference is missing');
+assert(!ui.includes("phoneOption('Enviar relatório semanal'"), 'weekly report preference must not be displayed');
+assert(!ui.includes("phoneOption('Enviar relatório mensal'"), 'monthly report preference must not be displayed');
 assert(ui.includes('Como a IA deve se comportar com este usuário'), 'per-phone AI behavior field is missing');
 assert(ui.includes('ai_behavior: behaviorInput.value.trim()'), 'per-phone AI behavior is not saved by the UI');
-assert(ui.includes('is_primary: primary.input.checked'), 'existing primary phone selection is not saved');
-assert(ui.includes("is_primary: byId('userWaNewPrimary').checked"), 'new primary phone selection is not saved');
-assert(ui.includes('allow_voice_calls: voiceCalls.input.checked'), 'existing phone voice permission is not saved');
-assert(ui.includes("request('/api/admin/whatsapp/voice/preflight'"), 'voice preflight endpoint is not used');
-assert(ui.includes("request('/api/admin/whatsapp/voice/enable'"), 'voice enable endpoint is not used');
-assert(historyUi.includes("message.interaction_type === 'call'"), 'history does not distinguish calls from messages');
-assert(historyUi.includes("'Você pela ligação'"), 'call transcript label is missing');
+assert(!ui.includes('is_primary:'), 'removed primary setting is still written by the UI');
+assert(!ui.includes('send_weekly_report:'), 'removed weekly report setting is still written by the UI');
+assert(!ui.includes('send_monthly_report:'), 'removed monthly report setting is still written by the UI');
+assert(!ui.includes('allow_voice_calls:'), 'removed voice setting is still written by the UI');
+assert(!ui.includes("request('/api/admin/whatsapp/voice/"), 'removed voice endpoints are still used by the UI');
+assert(!historyUi.includes("interaction_type === 'call'"), 'removed call history branch is still present');
+assert(!historyUi.includes('pela ligação'), 'removed call transcript label is still present');
 assert(ui.includes('window.jkWhatsappSelecionarUsuario'), 'selected JK user is not connected to phone settings');
 assert(ui.includes("request('/api/ia/modelos')"), 'AI catalog is not loaded for WhatsApp');
 assert(ui.includes("agent_architecture: 'dual_codex'"), 'dual Codex architecture is not saved');
@@ -123,7 +123,6 @@ assert(bridgeRetryPolicy.includes('WHATSAPP_RETRY_DELAYS_SECONDS = (2, 5, 15)'),
 assert(bridgeRetryPolicy.includes('WHATSAPP_MAX_RETRY_ATTEMPTS = 3'), 'bounded retry limit changed');
 assert(bridgeSettings.includes('WHATSAPP_JOB_DEADLINE_DEFAULT = 0'), 'Black Jhon total deadline must stay disabled');
 assert(service.includes('WHATSAPP_ML_RESEARCH_DEADLINE_SECONDS = 0'), 'Mercado Livre total deadline must stay disabled');
-assert(service.includes('WHATSAPP_REPORT_DEADLINE_SECONDS = 0'), 'report total deadline must stay disabled');
 assert(service.includes('def _normalize_tool_result_contract('), 'tool result contract normalization is missing');
 assert(!service.includes('def _deterministic_direct_query_plan('), 'obsolete deterministic direct router is still present');
 assert(bridgeSettings.includes('WHATSAPP_RESPONSE_PROVIDER_POLICY_DEFAULT = "codex_only"'), 'Codex-only response policy is not the default');
@@ -150,23 +149,24 @@ assert(bridgeMessage.includes('def message_prompt('), 'WhatsApp message componen
 assert(bridgeIntent.includes('def mutation_intent('), 'WhatsApp intent component is missing');
 assert(bridgeRetryPolicy.includes('def worker_disposition('), 'WhatsApp retry component is missing');
 assert(bridgeToolResults.includes('def stock_balance_contract('), 'WhatsApp tool-result component is missing');
-assert(bridgeReportScheduling.includes('def scheduled_report_period('), 'WhatsApp report scheduling component is missing');
 assert(service.includes('def whatsapp_bridge_update_phone_settings('), 'phone settings endpoint is missing');
 assert(service.includes('def _normalize_phone_ai_behavior('), 'per-phone AI behavior normalization is missing');
 assert(service.includes('"phone_ai_behavior": phone_ai_behavior'), 'per-phone AI behavior is not attached to WhatsApp tasks');
 assert(bridgeMessage.includes('Instrucoes administrativas especificas para atender este numero'), 'per-phone AI behavior is not applied to provider prompts');
 assert(codexWorkerSetup.includes('Instrucao administrativa especifica para este numero de WhatsApp'), 'per-phone AI behavior is not applied as a Codex developer instruction');
 assert(service.includes('def whatsapp_bridge_register_phone('), 'direct phone registration endpoint is missing');
-assert(service.includes('"/bridge/welcome"'), 'welcome message is not sent by the local bridge');
 assert(service.includes('def whatsapp_bridge_send_adhoc_message('), 'ad hoc message endpoint is missing');
 assert(service.includes('def whatsapp_bridge_voice_preflight('), 'voice preflight service is missing');
 assert(service.includes('def whatsapp_bridge_voice_enable('), 'voice enable service is missing');
-assert(voiceService.includes('ia_providers._obter_openai_api_key()'), 'voice does not reuse the existing OpenAI key');
-assert(voiceService.includes('console_tasks.register_external_exchange'), 'voice transcript is not connected to canonical WhatsApp history');
-assert(!voiceService.includes('open("audio'), 'voice service must not persist raw audio');
-assert(service.includes('"/bridge/messages/send"'), 'ad hoc message is not routed to the gateway');
+assert(service.includes('Mensagens avulsas estao desativadas'), 'ad hoc messages are not blocked by the question-only policy');
+assert(service.includes('Ligacoes foram removidas'), 'legacy voice routes do not explain that calls were removed');
 assert(service.includes('settings["send_ml_question_suggestions"]'), 'question suggestions do not honor the selected phone preference');
-assert(service.includes('def _start_phone_notification_report_scan('), 'per-phone scheduled reports are missing');
+assert(!service.includes('def _start_phone_notification_report_scan('), 'removed scheduled report scanner is still present');
+assert(!service.includes('def scheduled_report_period('), 'removed scheduled report implementation is still present');
+assert(bridgeSettings.includes('WHATSAPP_CHANNEL_MODE = "question_replies_only_v1"'), 'question-only channel mode is missing');
+assert(bridgeSettings.includes('WHATSAPP_CONVERSATION_SCOPE = "whatsapp_phone_isolated"'), 'WhatsApp and Sidebar are not declared isolated');
+assert(bridgeIntent.includes('def question_only_block_reason('), 'question-only inbound guard is missing');
+assert(!service.includes('codex_actions.create_proposal('), 'removed generic WhatsApp action proposal flow is still present');
 const taskTransitionStart = service.indexOf('def _forward_task_transitions(');
 const taskTransitionEnd = service.indexOf('\ndef ', taskTransitionStart + 4);
 const taskTransitionForwarder = service.slice(taskTransitionStart, taskTransitionEnd);
@@ -177,14 +177,15 @@ assert(setup.includes('database_id = "REPLACE_WITH_D1_DATABASE_ID"'), 'setup no 
 assert(wranglerExample.includes('META_GRAPH_API_VERSION = "REPLACE_WITH_CURRENT_META_GRAPH_VERSION"'), 'Graph API placeholder changed');
 assert(wranglerExample.includes('TYPING_PULSES_DAY_LIMIT = "10000"'), 'typing daily limit missing from Wrangler example');
 assert(setup.includes('REPLACE_WITH_CURRENT_META_GRAPH_VERSION'), 'setup no longer replaces the Graph API placeholder');
-assert(gateway.includes('const MAX_BINDINGS_PER_USER = 3'), 'gateway per-user binding limit changed');
+assert(gateway.includes('MAX_BINDINGS_PER_USER = 3'), 'gateway per-user binding limit changed');
 assert(gateway.includes('binding_limit_reached'), 'gateway no longer blocks a fourth number');
 assert(gateway.includes('async function registerBinding('), 'gateway direct binding registration is missing');
 assert(gateway.includes('/bridge/bindings/register'), 'gateway direct binding route is missing');
-assert(gateway.includes('async function welcomeMessage('), 'gateway welcome sender is missing');
 assert(gateway.includes('/bridge/welcome'), 'gateway welcome route is missing');
-assert(gateway.includes('async function adhocMessage('), 'gateway ad hoc sender is missing');
 assert(gateway.includes('/bridge/messages/send'), 'gateway ad hoc message route is missing');
+assert(gateway.includes('feature_removed_question_only_mode'), 'removed gateway routes do not return the compatibility error');
+assert(!gateway.includes('async function welcomeMessage('), 'removed welcome sender is still present');
+assert(!gateway.includes('async function adhocMessage('), 'removed ad hoc sender is still present');
 assert(gateway.includes('/bridge/heartbeat'), 'local heartbeat route is missing');
 assert(gateway.includes('const documentMatch = url.pathname.match(') && gateway.includes('/document$/);'), 'authenticated message document route is missing');
 assert(gateway.includes('/bridge/proactive/document'), 'authenticated proactive document route is missing');
@@ -195,14 +196,12 @@ assert(gateway.includes('jk_black_jhon_nova_pergunta'), 'new-question utility te
 assert(gateway.includes('jk_black_jhon_nova_pergunta_v2'), 'versioned question-suggestion template definition is missing');
 assert(gateway.includes('ppv_view_pending'), 'question-suggestion quick-reply payload is missing');
 assert(gateway.includes('type: "QUICK_REPLY", text: "Ver sugestao"'), 'question-suggestion quick-reply button is missing');
-assert(gateway.includes('/webhooks/openai/realtime'), 'OpenAI Realtime webhook route is missing');
-assert(gateway.includes('/bridge/voice/calls/claim'), 'voice claim route is missing');
-assert(voiceGateway.includes('verifyOpenAIWebhook'), 'OpenAI webhook signature is not validated');
-assert(voiceGateway.includes('mark_as_read') === false, 'voice gateway unexpectedly contains message mutation logic');
-assert(gateway.includes("message_type='adhoc_text'"), 'ad hoc messages are not kept separate from automated replies');
-assert(gateway.includes('Este número não possui permissão para acessar o Black Jhon'), 'unauthorized WhatsApp numbers do not receive an access notice');
-assert(gateway.includes("event_type='unauthorized_access_notice'"), 'unauthorized access notices are not throttled');
-assert(gateway.includes('["weekly_report", "monthly_report"].includes(eventType)'), 'scheduled report event types are not supported');
+assert(gateway.includes('/webhooks/openai/realtime'), 'legacy OpenAI Realtime route is missing');
+assert(!gateway.includes('verifyOpenAIWebhook'), 'removed OpenAI Realtime implementation is still present');
+assert(!gateway.includes("message_type='adhoc_text'"), 'removed ad hoc outbox implementation is still present');
+assert(!gateway.includes('Este número não possui permissão para acessar o Black Jhon'), 'removed unauthorized access sender is still present');
+assert(!gateway.includes("event_type='unauthorized_access_notice'"), 'removed unauthorized access outbox flow is still present');
+assert(!gateway.includes('["weekly_report", "monthly_report"].includes(eventType)'), 'removed scheduled report event types are still supported');
 assert(gateway.includes('typing_indicator: { type: "text" }'), 'Meta typing payload missing');
 assert(gateway.includes('TYPING_PULSES_DAY_LIMIT'), 'typing daily free-tier guard missing');
 assert(gateway.includes('O erro tecnico ficou registrado no JK Sistema'), 'gateway exposes raw local errors to WhatsApp');
@@ -218,7 +217,6 @@ const whatsappComponentFiles = [
   'backend/services/whatsapp/intent.py',
   'backend/services/whatsapp/retry_policy.py',
   'backend/services/whatsapp/tool_results.py',
-  'backend/services/whatsapp/report_scheduling.py',
 ];
 for (const relativeFile of whatsappComponentFiles) {
   assert(manifest.requiredSourceFiles.includes(relativeFile), `${relativeFile} missing from source verification`);
@@ -235,7 +233,9 @@ assert(
 );
 assert(manifest.requiredSourceFiles.includes('backend/services/whatsapp_bridge_store.py'), 'SQLite bridge store missing from installer verification');
 assert(manifest.requiredSourceFiles.includes('backend/services/whatsapp_report_files.py'), 'report document runtime missing from installer verification');
-assert(manifest.requiredSourceFiles.includes('backend/services/whatsapp_voice.py'), 'voice runtime missing from installer verification');
+assert(!manifest.requiredSourceFiles.includes('backend/services/whatsapp_voice.py'), 'removed voice runtime is still packaged');
+assert(!manifest.requiredSourceFiles.includes('backend/services/whatsapp/report_scheduling.py'), 'removed report scheduler is still packaged');
+assert(!manifest.requiredSourceFiles.includes('backend/services/whatsapp/runtime/scheduler.py'), 'removed runtime scheduler is still packaged');
 assert(manifest.requiredSourceFiles.includes('backend/services/codex_whatsapp_agents.py'), 'dual Codex runtime missing from installer verification');
 assert(manifest.requiredSourceFiles.includes('static/configuracoes-whatsapp.js'), 'WhatsApp UI missing from installer verification');
 assert(manifest.forbiddenLocalAppFilters.includes('info/**'), 'local secrets/model directory must remain unpackaged');

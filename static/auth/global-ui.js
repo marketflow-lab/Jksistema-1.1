@@ -794,7 +794,7 @@
             });
             if (!jaExisteScript) {
                 const script = document.createElement('script');
-                script.src = '/ia-sidebar.js?v=20260722-black-jhon-unified-pos-venda-manual-v1';
+                script.src = '/ia-sidebar.js?v=20260817-black-jhon-manual-only-v1';
                 script.async = true;
                 script.setAttribute('data-jk-ia-loader', '1');
                 document.body.appendChild(script);

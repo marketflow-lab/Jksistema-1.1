@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from requests import exceptions as requests_exceptions
+
 from .audit import AuditLogger
 from .classifier import QuestionClassifier
 from .config import GeminiQuestionsSettings
@@ -22,6 +24,36 @@ from .schemas import (
 from .search import SearchDecisionService, SearchService
 from .gemini_client import MockGeminiClient
 from .validator import AnswerValidator
+
+
+def _provider_failure_reason(exc: BaseException) -> str:
+    """Classify provider errors without persisting exception text or request data."""
+
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    while isinstance(current, BaseException) and id(current) not in visited:
+        visited.add(id(current))
+        if isinstance(current, (TimeoutError, requests_exceptions.Timeout)):
+            return "provider_timeout"
+        if isinstance(
+            current,
+            (ConnectionError, BrokenPipeError, requests_exceptions.ConnectionError),
+        ):
+            return "provider_connection"
+        status_code = getattr(current, "status_code", None)
+        if status_code is None:
+            response = getattr(current, "response", None)
+            status_code = getattr(response, "status_code", None)
+        try:
+            normalized_status = int(status_code or 0)
+        except (TypeError, ValueError):
+            normalized_status = 0
+        if normalized_status == 429:
+            return "provider_http_429"
+        if 500 <= normalized_status <= 599:
+            return "provider_http_5xx"
+        current = current.__cause__ or current.__context__
+    return "provider_error"
 
 
 class QuestionAnswerOrchestrator:
@@ -134,7 +166,7 @@ class QuestionAnswerOrchestrator:
                 validation=validation,
                 prompt=prompt,
                 needs_human=True,
-                reason=type(exc).__name__,
+                reason=_provider_failure_reason(exc),
                 source="gemini_error",
             )
             self.review_queue.enqueue(result)

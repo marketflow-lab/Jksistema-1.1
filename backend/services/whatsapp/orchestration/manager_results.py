@@ -35,7 +35,6 @@ from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import marketplace_listing_delivery as whatsapp_marketplace_listing
 from backend.services.whatsapp import message as whatsapp_message
-from backend.services.whatsapp import report_scheduling as whatsapp_report_scheduling
 from backend.services.whatsapp import retry_policy as whatsapp_retry_policy
 from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp import tool_results as whatsapp_tool_results
@@ -50,7 +49,7 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
 from backend.services.whatsapp.composition import (
@@ -359,36 +358,19 @@ def _deterministic_tool_result_text(evidence: dict[str, Any], pending: dict[str,
         return _worker_result_fallback_text(evidence, pending)
     return "\n".join(lines).strip()[:3500]
 
-def _whatsapp_report_metadata_text(request_text: Any, query_policy: Any, tool_results: Any) -> str:
-    if not whatsapp_report_files.report_requested(request_text):
-        return ""
-    dataset = whatsapp_report_files.build_report_dataset(query_policy, tool_results)
-    limitations = "; ".join(dataset.get("limitations") or []) or "nenhuma informada"
-    return (
-        f"Periodo: {dataset.get('period_start')} a {dataset.get('period_end')}\n"
-        f"Lojas: {', '.join(dataset.get('stores') or []) or 'nao informadas'}\n"
-        f"Fontes: {'; '.join(dataset.get('sources') or []) or 'nao informadas'}\n"
-        f"Registros: {int(dataset.get('record_count') or 0)}\n"
-        f"Cobertura: {'completa' if dataset.get('coverage_complete') else 'incompleta'}\n"
-        f"Limitacoes: {limitations}"
-    )[:1800]
-
-
 _COMPONENT_FUNCTIONS = frozenset((
     '_format_stock_quantity',
     '_positive_stock_sku_count_contract',
     '_deterministic_positive_stock_sku_count_text',
     '_deterministic_stock_result_text',
-    '_deterministic_tool_result_text',
-    '_whatsapp_report_metadata_text'
+    '_deterministic_tool_result_text'
 ))
 _IMPLEMENTATIONS = {
     '_format_stock_quantity': _format_stock_quantity,
     '_positive_stock_sku_count_contract': _positive_stock_sku_count_contract,
     '_deterministic_positive_stock_sku_count_text': _deterministic_positive_stock_sku_count_text,
     '_deterministic_stock_result_text': _deterministic_stock_result_text,
-    '_deterministic_tool_result_text': _deterministic_tool_result_text,
-    '_whatsapp_report_metadata_text': _whatsapp_report_metadata_text
+    '_deterministic_tool_result_text': _deterministic_tool_result_text
 }
 
 

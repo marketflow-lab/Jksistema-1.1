@@ -1056,3 +1056,4 @@ def test_server_launchers_pin_electron_and_backend_to_checkout():
         assert 'set "JK_FIREBASE_LIVE_FEATURES=true"' in content
         assert 'set "FIREBASE_LIVE_FEATURES=true"' in content
         assert 'set "JK_FIREBASE_CHAT_PRESENCE_ENABLED=true"' in content
+        assert 'set "JK_LOCAL_SERVERS_PREPARED_BY_LAUNCHER=1"' in content

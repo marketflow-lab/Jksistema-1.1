@@ -34,7 +34,6 @@ from backend.services.whatsapp import gateway as whatsapp_gateway
 from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import message as whatsapp_message
-from backend.services.whatsapp import report_scheduling as whatsapp_report_scheduling
 from backend.services.whatsapp import retry_policy as whatsapp_retry_policy
 from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp import tool_results as whatsapp_tool_results
@@ -49,7 +48,7 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents
 from backend.services.codex.console import tasks as console_tasks
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
@@ -323,7 +322,7 @@ def _post_outbound_image(
     if not path.is_file():
         raise RuntimeError("outbound_image_missing")
     artifact_type = str(artifact_type or "").strip().lower()
-    if artifact_type not in {"product_photo", "report_chart"}:
+    if artifact_type != "product_photo":
         raise RuntimeError("outbound_image_artifact_not_allowed")
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -352,52 +351,6 @@ def _post_outbound_image(
         raise RuntimeError("gateway_invalid_json")
     return value
 
-def _post_outbound_document(
-    config: dict[str, Any],
-    message_id: str,
-    path: Path,
-    mime_type: str,
-    caption: str,
-    filename: str,
-    artifact_type: str,
-) -> dict[str, Any]:
-    worker_url = _normalize_worker_url(config.get("worker_url"))
-    token = str(config.get("bridge_token") or "").strip()
-    machine_id = str(config.get("machine_id") or "").strip()
-    if not worker_url or not token or not machine_id:
-        raise RuntimeError("worker_url_bridge_token_or_machine_missing")
-    if not path.is_file() or path.stat().st_size > WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES:
-        raise RuntimeError("outbound_document_missing_or_too_large")
-    expected = {
-        "report_pdf": "application/pdf",
-        "report_xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    }
-    if expected.get(artifact_type) != str(mime_type or "").strip().lower():
-        raise RuntimeError("outbound_document_artifact_or_mime_not_allowed")
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    with path.open("rb") as source:
-        response = requests.post(
-            worker_url + f"/bridge/messages/{quote(str(message_id), safe='')}/document",
-            headers=_gateway_headers(config),
-            data={
-                "machine_id": machine_id,
-                "caption": str(caption or "")[:1024],
-                "artifact_type": artifact_type,
-                "sha256": digest,
-            },
-            files={"file": (_safe_filename(filename, path.name), source, mime_type)},
-            timeout=120,
-        )
-    try:
-        value = response.json()
-    except Exception:
-        value = {"message": response.text[:500]}
-    if response.status_code >= 400:
-        raise RuntimeError(f"gateway_http_{response.status_code}: {value}")
-    if not isinstance(value, dict):
-        raise RuntimeError("gateway_invalid_json")
-    return value
-
 def _post_proactive_image(
     config: dict[str, Any],
     *,
@@ -406,9 +359,9 @@ def _post_proactive_image(
     path: Path,
     caption: str,
     filename: str,
-    event_type: str = "weekly_report",
-    artifact_type: str = "report_chart",
-    mime_type: str = "image/png",
+    event_type: str = "task_completed",
+    artifact_type: str = "product_photo",
+    mime_type: str = "image/jpeg",
 ) -> dict[str, Any]:
     worker_url = _normalize_worker_url(config.get("worker_url"))
     token = str(config.get("bridge_token") or "").strip()
@@ -421,16 +374,14 @@ def _post_proactive_image(
         raise RuntimeError("invalid_proactive_image_fingerprint")
     if not path.is_file():
         raise RuntimeError("outbound_image_missing")
-    safe_event_type = str(event_type or "weekly_report").strip().lower()
-    safe_artifact_type = str(artifact_type or "report_chart").strip().lower()
-    safe_mime_type = str(mime_type or "image/png").split(";", 1)[0].strip().lower()
-    if safe_event_type not in {"weekly_report", "monthly_report", "task_completed"}:
+    safe_event_type = str(event_type or "task_completed").strip().lower()
+    safe_artifact_type = str(artifact_type or "product_photo").strip().lower()
+    safe_mime_type = str(mime_type or "image/jpeg").split(";", 1)[0].strip().lower()
+    if safe_event_type != "task_completed":
         raise RuntimeError("invalid_proactive_image_event_type")
-    if safe_artifact_type not in {"report_chart", "product_photo"}:
+    if safe_artifact_type != "product_photo":
         raise RuntimeError("invalid_proactive_image_artifact_type")
-    if safe_artifact_type == "report_chart" and safe_mime_type != "image/png":
-        raise RuntimeError("report_chart_png_required")
-    if safe_artifact_type == "product_photo" and safe_mime_type not in {"image/jpeg", "image/png"}:
+    if safe_mime_type not in {"image/jpeg", "image/png"}:
         raise RuntimeError("product_photo_mime_not_allowed")
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -463,52 +414,6 @@ def _post_proactive_image(
     if not isinstance(value, dict):
         raise RuntimeError("gateway_invalid_json")
     return value
-
-def _post_proactive_document(
-    config: dict[str, Any],
-    *,
-    subject_id: str,
-    fingerprint: str,
-    path: Path,
-    caption: str,
-    filename: str,
-    artifact_type: str,
-    mime_type: str,
-    event_type: str = "weekly_report",
-) -> dict[str, Any]:
-    worker_url = _normalize_worker_url(config.get("worker_url"))
-    machine_id = str(config.get("machine_id") or "").strip()
-    subject_id = str(subject_id or config.get("subject_id") or "").strip()
-    if not worker_url or not config.get("bridge_token") or not machine_id or not subject_id:
-        raise RuntimeError("worker_url_bridge_token_machine_or_subject_missing")
-    if not path.is_file() or path.stat().st_size > WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES:
-        raise RuntimeError("outbound_document_missing_or_too_large")
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    with path.open("rb") as source:
-        response = requests.post(
-            worker_url + "/bridge/proactive/document",
-            headers=_gateway_headers(config),
-            data={
-                "subject_id": subject_id,
-                "machine_id": machine_id,
-                "fingerprint": str(fingerprint or "")[:160],
-                "event_type": str(event_type or "weekly_report")[:80],
-                "artifact_type": artifact_type,
-                "caption": str(caption or "")[:1024],
-                "sha256": digest,
-            },
-            files={"file": (_safe_filename(filename, path.name), source, mime_type)},
-            timeout=120,
-        )
-    try:
-        value = response.json()
-    except Exception:
-        value = {"message": response.text[:500]}
-    if response.status_code == 409 and isinstance(value, dict):
-        return {"success": False, **value}
-    if response.status_code >= 400:
-        raise RuntimeError(f"gateway_http_{response.status_code}: {value}")
-    return value if isinstance(value, dict) else {"success": False, "status": "invalid_gateway_json"}
 
 def _post_proactive(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     body = dict(payload or {})
@@ -672,9 +577,7 @@ _COMPONENT_FUNCTIONS = frozenset((
     '_stop_typing_pulse',
     '_post_message_result',
     '_post_outbound_image',
-    '_post_outbound_document',
     '_post_proactive_image',
-    '_post_proactive_document',
     '_post_proactive',
     '_post_interactive_approval',
     '_post_interactive_store_selection'
@@ -693,9 +596,7 @@ _IMPLEMENTATIONS = {
     '_stop_typing_pulse': _stop_typing_pulse,
     '_post_message_result': _post_message_result,
     '_post_outbound_image': _post_outbound_image,
-    '_post_outbound_document': _post_outbound_document,
     '_post_proactive_image': _post_proactive_image,
-    '_post_proactive_document': _post_proactive_document,
     '_post_proactive': _post_proactive,
     '_post_interactive_approval': _post_interactive_approval,
     '_post_interactive_store_selection': _post_interactive_store_selection

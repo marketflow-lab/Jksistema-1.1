@@ -299,14 +299,6 @@
         .wa-health-item { padding: 8px; border: 1px solid var(--line-soft); border-radius: 8px; background: #101315; font-size: 0.8rem; }
         .wa-health-item.ok { color: #b8efc7; border-color: rgba(119, 201, 141, 0.35); }
         .wa-health-item.fail { color: #ffd0cc; border-color: rgba(220, 106, 95, 0.35); }
-        .wa-voice-card { grid-column: 1 / -1; }
-        .wa-voice-card__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-        .wa-voice-state { border-radius: 999px; padding: 5px 10px; font-size: 0.78rem; font-weight: 900; background: var(--amber-soft); color: #f4d291; border: 1px solid rgba(217, 164, 65, 0.28); }
-        .wa-voice-state.ready { background: var(--green-soft); color: #b8efc7; border-color: rgba(119, 201, 141, 0.28); }
-        .wa-voice-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-        .wa-voice-calls { display: grid; gap: 7px; margin-top: 8px; }
-        .wa-voice-call { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--line-soft); border-radius: 8px; background: #101315; }
-        .wa-voice-call small { color: var(--muted); }
         .wa-binding-list { display: grid; gap: 8px; margin-top: 8px; }
         .wa-binding-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 10px; border: 1px solid var(--line-soft); border-radius: 8px; background: #101315; }
         .wa-binding-item span { color: var(--text); font-weight: 800; }
@@ -364,7 +356,7 @@
         }
         @media (max-width: 900px) {
             .container { width: min(100% - 20px, 760px); padding-top: 8px; }
-            .header, .tabs, .row, .grid-2, .ia-grid, .api-key-grid, .checkbox-grid, .users-layout, .wa-config-grid, .wa-health-grid, .wa-history-layout, .wa-voice-fields, .context-hub-grid, .context-hub-layout { grid-template-columns: 1fr; }
+            .header, .tabs, .row, .grid-2, .ia-grid, .api-key-grid, .checkbox-grid, .users-layout, .wa-config-grid, .wa-health-grid, .wa-history-layout, .context-hub-grid, .context-hub-layout { grid-template-columns: 1fr; }
             .tabs { position: static; }
             .header > div:last-child { justify-content: stretch; }
             .header > div:last-child .back-btn { flex: 1 1 calc(50% - 8px); }
@@ -690,8 +682,8 @@
 
             <div id="tab-whatsapp" class="tab-panel">
                 <div id="cardWhatsappJoao" class="card hidden">
-                    <h2>WhatsApp — Black John</h2>
-                    <div class="hint">Ponte local com Cloudflare Free, mídia privada e bloqueio automático antes de qualquer risco de cobrança.</div>
+                    <h2>WhatsApp — Black Jhon</h2>
+                    <div class="hint">Canal exclusivo para perguntas, separado da conversa da Sidebar. O Black Jhon também envia sugestões de respostas do Mercado Livre; o usuário pode pedir alterações e aprovar o envio pelo próprio WhatsApp.</div>
                     <div class="wa-config-grid">
                         <div class="setting-card">
                             <h3>Gateway gratuito</h3>
@@ -744,35 +736,11 @@
                             <div class="small">Política de custo zero: <strong id="waPolicyUntil">verificando</strong></div>
                             <div class="small">Último processamento: <strong id="waLastProcessing">—</strong></div>
                         </div>
-                        <div class="setting-card wa-voice-card">
-                            <div class="wa-voice-card__head">
-                                <div>
-                                    <h3>Ligações com Black Jhon</h3>
-                                    <div class="small">Usa a chave OpenAI já cadastrada. Áudio não é salvo e todas as funções de voz são somente leitura.</div>
-                                </div>
-                                <span id="waVoiceState" class="wa-voice-state">Desabilitada</span>
-                            </div>
-                            <div id="waVoiceHealthGrid" class="wa-health-grid"></div>
-                            <div class="wa-voice-fields">
-                                <div><label class="label" for="waVoiceModel">Modelo de voz</label><select id="waVoiceModel"><option value="gpt-realtime-2.1">GPT Realtime 2.1</option></select></div>
-                                <div><label class="label" for="waVoiceName">Voz</label><select id="waVoiceName"><option value="cedar">Cedar</option></select></div>
-                                <div><label class="label" for="waVoiceMaxMinutes">Limite por ligação</label><select id="waVoiceMaxMinutes"><option value="15">15 minutos</option><option value="30">30 minutos</option><option value="45">45 minutos</option></select></div>
-                                <div><label class="label" for="waVoiceMaxConcurrent">Chamadas simultâneas</label><select id="waVoiceMaxConcurrent"><option value="1">1 chamada</option><option value="2">2 chamadas</option><option value="3">3 chamadas</option></select></div>
-                            </div>
-                            <div id="waVoiceSummary" class="small">Execute a validação para conferir Meta, SIP, OpenAI, gateway e backend.</div>
-                            <div id="waVoiceCalls" class="wa-voice-calls"></div>
-                            <div class="actions">
-                                <button id="waVoicePreflight" type="button" class="btn-refresh">Validar ligações</button>
-                                <button id="waVoiceEnable" type="button" class="btn-save">Habilitar ligações</button>
-                                <button id="waVoiceDisable" type="button" class="btn-danger">Desabilitar ligações</button>
-                            </div>
-                            <div id="waVoiceActionStatus" class="status"></div>
-                        </div>
                         <div class="setting-card">
                             <h3>Áudios recebidos no WhatsApp</h3>
                             <div id="waWhisperText" class="small">Verificando modelo...</div>
                             <progress id="waWhisperProgress" max="100" value="0"></progress>
-                            <div class="small">O Whisper roda somente nesta máquina. Isso é separado das ligações OpenAI/SIP e não usa API paga de transcrição.</div>
+                            <div class="small">O Whisper roda somente nesta máquina e não usa API paga de transcrição.</div>
                             <div class="actions" style="margin:10px 0 0;"><button id="waAudioPreflight" class="btn-refresh" type="button">Validar áudio local</button></div>
                             <div class="small">Áudio permanece nesta máquina; nenhuma API de transcrição é usada.</div>
                         </div>
@@ -783,10 +751,9 @@
                             <div id="waTemplates" class="wa-template-list"></div>
                         </div>
                         <div class="setting-card">
-                            <h3>Modo móvel completo</h3>
-                            <div class="small">Usuários com permissão <strong>full</strong> podem consultar Bling, anúncios do Mercado Livre, histórico de vendas e gerar relatórios pelo celular.</div>
-                            <div class="small">Consultas são executadas imediatamente. Ações que alteram o sistema recebem um código único no mesmo número.</div>
-                            <div class="small">Confirme com <strong>APROVAR CÓDIGO</strong> ou rejeite com <strong>NEGAR CÓDIGO</strong>. O código vale 10 minutos e não funciona em outro número.</div>
+                            <h3>Perguntas e respostas</h3>
+                            <div class="small">O canal responde perguntas e envia sugestões de resposta do Mercado Livre.</div>
+                            <div class="small">O usuário pode pedir uma alteração e aprovar o envio pelo próprio WhatsApp. Outros tipos de operação não são aceitos.</div>
                         </div>
                     </div>
                     <div class="actions">
@@ -922,7 +889,7 @@
                                 <label class="label">Permissões</label><div id="permissionsGrid" class="checkbox-grid"></div>
                                 <div id="userWhatsappSettings" class="user-whatsapp-settings">
                                     <div class="user-whatsapp-settings__head">
-                                        <div><h3>Telefones e envios pelo WhatsApp</h3><div class="small">Cadastre o telefone deste usuário e escolha separadamente o que cada número deve receber.</div></div>
+                                        <div><h3>Telefones do Black Jhon</h3><div class="small">Cada telefone tem uma conversa própria, separada da Sidebar. Por aqui o usuário pode fazer perguntas e revisar ou aprovar sugestões de respostas do Mercado Livre.</div></div>
                                         <strong id="userWaPhoneCount" class="api-key-status empty">0/3</strong>
                                     </div>
                                     <div class="user-phone-register">
@@ -931,35 +898,13 @@
                                             <div><label class="label" for="userWaNewPhoneNumber">Número do WhatsApp</label><input id="userWaNewPhoneNumber" type="tel" inputmode="tel" maxlength="24" placeholder="Ex.: (37) 99999-3818"></div>
                                         </div>
                                         <div class="user-phone-options">
-                                            <label class="check-item"><input id="userWaNewPrimary" type="checkbox"><span>Número principal: compartilhar a conversa com a Sidebar</span></label>
                                             <label class="check-item"><input id="userWaNewQuestions" type="checkbox" checked><span>Enviar sugestão de pergunta do Mercado Livre</span></label>
-                                            <label class="check-item"><input id="userWaNewWeekly" type="checkbox"><span>Enviar relatório semanal</span></label>
-                                            <label class="check-item"><input id="userWaNewMonthly" type="checkbox"><span>Enviar relatório mensal</span></label>
-                                            <label class="check-item"><input id="userWaNewVoice" type="checkbox"><span>Permitir ligações com o Black Jhon</span></label>
-                                        </div>
-                                        <div>
-                                            <label class="label" for="userWaWelcomeMessage">Mensagem de boas-vindas</label>
-                                            <textarea id="userWaWelcomeMessage" maxlength="1000" rows="3">Olá! Seu número foi cadastrado no WhatsApp do JK Sistema. Seja bem-vindo(a)! Você já pode conversar com o Black Jhon por aqui.</textarea>
-                                            <label class="check-item" style="margin-top:8px;"><input id="userWaSendWelcome" type="checkbox" checked><span>Preparar a mensagem de boas-vindas ao salvar o telefone</span></label>
                                         </div>
                                         <div class="actions">
                                             <button id="userWaSavePhone" type="button" class="btn-save">Salvar telefone</button>
                                             <button id="userWaRefresh" type="button" class="btn-refresh">Atualizar telefones</button>
                                         </div>
-                                        <div class="small">O nome e o número são salvos diretamente. Por regra da Meta, texto livre só pode ser enviado depois que esse telefone iniciar a conversa. Se ainda não houver uma janela de atendimento aberta, a boas-vindas ficará aguardando e será enviada automaticamente após a primeira mensagem do telefone. Relatório semanal: segunda-feira após 08h. Relatório mensal: primeiro dia do mês após 08h.</div>
-                                    </div>
-                                    <div class="user-phone-register">
-                                        <div><h3>Mensagem avulsa</h3><div class="small">Envie uma mensagem independente para qualquer número de WhatsApp.</div></div>
-                                        <div>
-                                            <label class="label" for="userWaAdhocPhone">Número do WhatsApp</label>
-                                            <input id="userWaAdhocPhone" type="tel" inputmode="tel" maxlength="24" placeholder="Ex.: (37) 99999-3818">
-                                        </div>
-                                        <div>
-                                            <label class="label" for="userWaAdhocMessage">Mensagem</label>
-                                            <textarea id="userWaAdhocMessage" maxlength="3500" rows="4" placeholder="Escreva a mensagem que deseja enviar..."></textarea>
-                                        </div>
-                                        <div class="actions"><button id="userWaSendAdhoc" type="button" class="btn-save">Enviar mensagem</button></div>
-                                        <div class="small">O WhatsApp permite texto livre apenas durante a janela de atendimento. Se o número ainda não tiver falado com a empresa, a mensagem ficará aguardando automaticamente a primeira interação.</div>
+                                        <div class="small">O nome e o número são salvos diretamente. As sugestões de resposta do Mercado Livre podem ser alteradas e aprovadas no WhatsApp. Relatórios, mensagens avulsas, operações e ligações permanecem desativados.</div>
                                     </div>
                                     <div id="userWaPhones" class="wa-binding-list"><div class="small">Selecione um usuário para carregar os telefones.</div></div>
                                     <div id="userWaStatus" class="status"></div>
@@ -2288,9 +2233,9 @@
     if (canManageUsers) carregarAgentGuidance();
 </script>
 <script src="/configuracoes-context-hub-curation.js?v=20260718-governance-v1"></script>
-<script src="/configuracoes-whatsapp.js?v=20260722-primary-shared-history-v1"></script>
-<script src="/configuracoes-whatsapp-history.js?v=20260715-voice-calls-v1"></script>
+<script src="/configuracoes-whatsapp.js?v=20260815-question-replies-only-v2"></script>
+<script src="/configuracoes-whatsapp-history.js?v=20260815-question-replies-only-v1"></script>
 <script src="/configuracoes-codex-observability.js?v=20260720-observability-v1"></script>
-<script src="/ia-sidebar.js?v=20260722-black-jhon-unified-pos-venda-manual-v1"></script>
+<script src="/ia-sidebar.js?v=20260817-black-jhon-manual-only-v1"></script>
 </body>
 </html>

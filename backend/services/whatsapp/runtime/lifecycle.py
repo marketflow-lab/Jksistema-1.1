@@ -35,7 +35,6 @@ from backend.services.whatsapp import gateway as whatsapp_gateway
 from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import message as whatsapp_message
-from backend.services.whatsapp import report_scheduling as whatsapp_report_scheduling
 from backend.services.whatsapp import retry_policy as whatsapp_retry_policy
 from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp import tool_results as whatsapp_tool_results
@@ -50,7 +49,7 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents
 from backend.services.codex.console import queueing as console_queueing
 from backend.services.codex.console import telemetry as console_telemetry
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
@@ -126,20 +125,11 @@ def _activate_completed_pairing(config: dict[str, Any]) -> tuple[dict[str, Any],
 def whatsapp_bridge_poll_once() -> dict[str, Any]:
     config = _load_config()
     _run_audio_cleanup_janitor()
-    try:
-        whatsapp_voice.VOICE_RUNTIME.tick(config, sys.modules[__name__])
-    except Exception as exc:
-        RUNTIME_STATE["voice_last_error"] = str(exc)[:1000]
     if not config.get("enabled"):
         config, activation_status = _activate_completed_pairing(config)
         if not config.get("enabled"):
             return {"success": True, "status": activation_status, "claimed": 0}
     state = _load_state()
-    if time.time() - float(state.get("report_chart_cleanup_at") or 0) >= 3600:
-        state["report_chart_cleanup_removed"] = whatsapp_report_visuals.cleanup_stale_chart_files(_info_dir())
-        state["report_file_cleanup_removed"] = whatsapp_report_files.cleanup_stale_files(_info_dir())
-        state["report_chart_cleanup_at"] = time.time()
-        _save_state(state)
     lease_renewal_now = time.time()
     lease_renewal_due = (
         lease_renewal_now - float(state.get("gateway_lease_renewed_at_epoch") or 0)
@@ -223,8 +213,6 @@ def whatsapp_bridge_poll_once() -> dict[str, Any]:
     _monitor_pending(config, state)
     _forward_task_transitions(config, state)
     _forward_question_approvals(config, state)
-    _start_operational_alert_scan(config)
-    _start_phone_notification_report_scan(config)
     RUNTIME_STATE["last_processing_at"] = _now()
     return {"success": True, "status": "processed", "claimed": len(messages), "processed": processed}
 

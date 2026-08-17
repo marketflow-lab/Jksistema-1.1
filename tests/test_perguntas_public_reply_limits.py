@@ -37,7 +37,34 @@ def test_public_question_signature_stays_inside_2000_characters(monkeypatch):
     answer = state._perguntas_ia_resposta_final_loja("x" * 2000, "JK Pecas")
 
     assert len(answer) == 2000
-    assert answer.endswith("Equipe JK Pecas agradece o seu contato.")
+    assert answer.endswith("Equipe JK Pecas agradece pelo contato, Precisando estamos a disposição!")
+
+
+def test_public_question_signature_uses_store_name_and_is_not_duplicated(monkeypatch):
+    monkeypatch.setattr(
+        state_module,
+        "_favoritos_normalizar_sem_acentos",
+        _favoritos_normalizar_sem_acentos,
+        raising=False,
+    )
+    signature = "Equipe JK Peças agradece pelo contato, Precisando estamos a disposição!"
+
+    assert state._perguntas_ia_assinatura_loja("  JK   Peças ") == signature
+    assert state._perguntas_ia_assinatura_loja("") == (
+        "Equipe da loja agradece pelo contato, Precisando estamos a disposição!"
+    )
+    answer = state._perguntas_ia_resposta_final_loja(
+        f"Serve para a aplicação informada.\n\n{signature}",
+        "JK Peças",
+    )
+    legacy_answer = state._perguntas_ia_resposta_final_loja(
+        "Serve para a aplicação informada.\n\nEquipe JK Peças agradece o seu contato.",
+        "JK Peças",
+    )
+
+    assert answer == f"Serve para a aplicação informada.\n\n{signature}"
+    assert answer.count(signature) == 1
+    assert legacy_answer == answer
 
 
 def test_public_question_draft_preserves_2000_characters_for_revision():

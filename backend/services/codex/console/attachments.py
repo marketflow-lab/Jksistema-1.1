@@ -214,23 +214,9 @@ def _codex_resolve_new_conversation_id(
     )
 
 def _codex_shared_continuity_for_session(sessao: dict[str, Any]) -> dict[str, Any]:
-    """Ask the WhatsApp authority whether this user has an active primary binding."""
+    """WhatsApp and Sidebar always use independent conversation identities."""
 
-    try:
-        from backend.services import whatsapp_bridge
-
-        continuity = whatsapp_bridge._shared_continuity_for_session(sessao)
-    except Exception:
-        return {}
-    if not isinstance(continuity, dict):
-        return {}
-    expected = _codex_shared_conversation_id(
-        str(sessao.get("client_id") or "default"),
-        str(sessao.get("username") or "user"),
-    )
-    if str(continuity.get("conversation_id") or "") != expected:
-        return {}
-    return continuity
+    return {}
 
 
 

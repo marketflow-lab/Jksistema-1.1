@@ -136,7 +136,6 @@ def test_new_components_are_explicit_and_do_not_import_the_facade() -> None:
         "intent.py",
         "retry_policy.py",
         "tool_results.py",
-        "report_scheduling.py",
     }
     package_dir = Path(whatsapp_package.__file__).resolve().parent
     for name in component_names:

@@ -139,13 +139,6 @@
       } catch (_) {}
     }
 
-    async function _perguntasNotificarAprovacaoPendente(approval) {
-      if (_perguntasIsPosVenda(approval)) return;
-      const approvalId = _perguntasApprovalId(approval);
-      if (!approvalId) return;
-      _adicionarNotificacaoAprovacao(approval, { abrirPainel: false });
-    }
-
     function _perguntasMonitorOrdenarPendentes(pendentes) {
       return [...(Array.isArray(pendentes) ? pendentes : [])].sort((a, b) => {
         const dataA = Date.parse(String(a && a.created_at || a && a.updated_at || '')) || 0;
@@ -155,13 +148,9 @@
     }
 
     function _perguntasMonitorLimitePorCiclo() {
-      return panelAberto === true || codexPanelAberto === true
+      return perguntasPanelAberto === true
         ? PERGUNTAS_MONITOR_MAX_NOTIFICACOES_ABERTO
         : PERGUNTAS_MONITOR_MAX_NOTIFICACOES_FECHADO;
-    }
-
-    function _perguntasMonitorPausaCurta() {
-      return new Promise(resolve => setTimeout(resolve, PERGUNTAS_MONITOR_YIELD_MS));
     }
 
     async function _perguntasMonitorBuscarAprovacoes() {
@@ -169,29 +158,7 @@
       if (!_perguntasMonitorAssumirLideranca()) return;
       perguntasMonitorRodando = true;
       try {
-        const response = await window.__JK_IA_SIDEBAR_FETCH__('/api/mercadolivre/perguntas/aprovacoes', {
-          headers: _authHeaders(),
-          cache: 'no-store',
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok || data.success === false) return;
-        const pendentes = _perguntasMonitorOrdenarPendentes(
-          (Array.isArray(data.pendentes) ? data.pendentes : []).filter(approval => !_perguntasIsPosVenda(approval))
-        );
-        const conhecidos = _perguntasAprovacoesNotificadasSet();
-        const novas = pendentes.filter((approval) => {
-          const id = _perguntasApprovalId(approval);
-          return id && !conhecidos.has(id);
-        });
-        const base = novas.length ? novas : ((panelAberto === true || codexPanelAberto === true) ? pendentes : []);
-        if (!base.length) return;
-        const limite = Math.max(1, _perguntasMonitorLimitePorCiclo());
-        const processar = base.slice(0, limite);
-        for (let i = 0; i < processar.length; i += 1) {
-          const approval = processar[i];
-          await _perguntasNotificarAprovacaoPendente(approval);
-          if (i + 1 < processar.length) await _perguntasMonitorPausaCurta();
-        }
+        await _questionsCarregarPendentes({ silencioso: true, notificarNovas: true });
       } catch (_) {
       } finally {
         perguntasMonitorRodando = false;

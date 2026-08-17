@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import copy
 import io
 import json
+import math
 import os
 import re
 import unicodedata
@@ -17,6 +20,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from backend.schemas import (
     ListaPedidoAddSkuRequest,
     ListaPedidoPreferenciasColunasRequest,
+    ListaPedidoSkuAnaliseConcorrentesRequest,
+    ListaPedidoSkuAprovacaoRequest,
     ListaPedidoStatusRequest,
     ListaPedidoUpdateRequest,
     MediasComprasSkusOcultosRequest,
@@ -50,6 +55,329 @@ def _configure_runtime_globals(runtime_module=None):
     bind_runtime_globals(globals(), runtime)
     _sync_common_names()
     return runtime
+
+
+_CHAVES_CONCORRENTES = {f"concorrente_{numero}" for numero in range(1, 6)}
+
+
+def _normalizar_item_id_mlb(valor: Any) -> str:
+    texto = re.sub(r"[^A-Z0-9]", "", str(valor or "").strip().upper())
+    return texto if re.fullmatch(r"MLB\d+", texto) else ""
+
+
+def _numero_finito_margem(valor: Any) -> float | None:
+    try:
+        numero = float(valor)
+    except (TypeError, ValueError):
+        return None
+    return numero if math.isfinite(numero) else None
+
+
+def _loja_lista_definida(valor: Any) -> bool:
+    texto = unicodedata.normalize("NFKD", str(valor or "").strip())
+    texto = "".join(char for char in texto if not unicodedata.combining(char)).lower()
+    return texto not in {"", "__todas", "nao definida", "todas", "todas as lojas"}
+
+
+def _dependencias_margens_concorrentes() -> dict[str, Any]:
+    from backend.services import mercadolivre_legacy_core, promocoes_core
+    from backend.services.integracoes import carregar_lojas
+
+    return {
+        "carregar_lojas": carregar_lojas,
+        "obter_cfg_ml": mercadolivre_legacy_core._obter_cfg_ml,
+        "ml_api_request": mercadolivre_legacy_core._ml_api_request,
+        "ml_contexto_frete_item": mercadolivre_legacy_core._ml_contexto_frete_item,
+        "ml_obter_frete_detalhado": mercadolivre_legacy_core._ml_obter_frete_detalhado,
+        "ml_obter_taxas_anuncio": mercadolivre_legacy_core._ml_obter_taxas_anuncio,
+        "carregar_custos_impostos": promocoes_core._carregar_custos_impostos_cadastro_por_sku_loja,
+        "resolver_custo": promocoes_core._resolver_custo_medio_por_skus,
+        "resolver_imposto": promocoes_core._resolver_imposto_rate_por_sku,
+        "calcular_margem": promocoes_core._calcular_margem_liquida_ml,
+    }
+
+
+def _margem_concorrente_indisponivel(
+    preco_venda: float,
+    item_id_loja: str,
+    motivo: str,
+    *,
+    loja: str = "",
+) -> dict[str, Any]:
+    return {
+        "preco_venda": round(float(preco_venda), 2),
+        "item_id_loja": item_id_loja or None,
+        "loja": loja or None,
+        "margem_percentual": None,
+        "financeiro_exato": False,
+        "motivo_indisponivel": str(motivo or "Dados financeiros insuficientes."),
+    }
+
+
+def _carregar_contexto_anuncio_loja(
+    client_id: str,
+    loja_lista: str,
+    item_id: str,
+    deps: dict[str, Any],
+    cache_contextos: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any] | None, str]:
+    if item_id in cache_contextos:
+        contexto = cache_contextos[item_id]
+        return (contexto, "") if contexto.get("ok") else (None, contexto.get("motivo") or "")
+
+    candidatos: list[dict[str, Any]] = []
+    if _loja_lista_definida(loja_lista):
+        nomes_lojas = [str(loja_lista).strip()]
+    else:
+        try:
+            nomes_lojas = [
+                str(loja.get("nome") or "").strip()
+                for loja in (deps["carregar_lojas"](client_id) or [])
+                if isinstance(loja, dict)
+                and str(loja.get("nome") or "").strip()
+                and isinstance(loja.get("integracoes"), dict)
+                and isinstance((loja.get("integracoes") or {}).get("mercadolivre"), dict)
+                and str(((loja.get("integracoes") or {}).get("mercadolivre") or {}).get("access_token") or "").strip()
+            ]
+        except Exception:
+            nomes_lojas = []
+
+    for nome_loja in dict.fromkeys(nomes_lojas):
+        try:
+            cfg = dict(deps["obter_cfg_ml"](client_id, nome_loja) or {})
+        except Exception:
+            continue
+        candidatos.append(
+            {
+                "nome": nome_loja,
+                "cfg": cfg,
+                "seller_id": str(cfg.get("user_id") or "").strip(),
+            }
+        )
+
+    if not candidatos:
+        motivo = (
+            "A loja da lista não possui integração ativa com o Mercado Livre."
+            if _loja_lista_definida(loja_lista)
+            else "Defina a loja da lista para calcular tarifa, frete e imposto."
+        )
+        cache_contextos[item_id] = {"ok": False, "motivo": motivo}
+        return None, motivo
+
+    item = None
+    candidato_consulta = None
+    for candidato in candidatos:
+        try:
+            resposta, cfg_atualizada = deps["ml_api_request"](
+                client_id,
+                candidato["nome"],
+                candidato["cfg"],
+                "GET",
+                f"https://api.mercadolibre.com/items/{item_id}",
+                timeout=12,
+            )
+            candidato["cfg"] = dict(cfg_atualizada or candidato["cfg"])
+            candidato["seller_id"] = str(candidato["cfg"].get("user_id") or candidato["seller_id"] or "").strip()
+            if getattr(resposta, "status_code", None) == 200:
+                payload = resposta.json() or {}
+                if isinstance(payload, dict):
+                    item = payload
+                    candidato_consulta = candidato
+                    break
+        except Exception:
+            continue
+
+    if not isinstance(item, dict):
+        motivo = "Não foi possível consultar o anúncio da loja no Mercado Livre."
+        cache_contextos[item_id] = {"ok": False, "motivo": motivo}
+        return None, motivo
+
+    seller_id = str(item.get("seller_id") or ((item.get("seller") or {}).get("id") if isinstance(item.get("seller"), dict) else "") or "").strip()
+    if _loja_lista_definida(loja_lista):
+        escolhido = candidatos[0]
+        if not seller_id or seller_id != escolhido["seller_id"]:
+            motivo = "O anúncio informado não pertence à loja selecionada nesta lista."
+            cache_contextos[item_id] = {"ok": False, "motivo": motivo}
+            return None, motivo
+    else:
+        correspondentes = [candidato for candidato in candidatos if seller_id and candidato["seller_id"] == seller_id]
+        if len(correspondentes) != 1:
+            motivo = (
+                "Há mais de uma loja compatível; defina a loja desta lista."
+                if len(correspondentes) > 1
+                else "Não foi possível identificar de forma segura a loja deste anúncio."
+            )
+            cache_contextos[item_id] = {"ok": False, "motivo": motivo}
+            return None, motivo
+        escolhido = correspondentes[0]
+        if candidato_consulta is escolhido:
+            escolhido["cfg"] = candidato_consulta["cfg"]
+
+    contexto = {
+        "ok": True,
+        "loja": escolhido["nome"],
+        "cfg": escolhido["cfg"],
+        "item": item,
+    }
+    cache_contextos[item_id] = contexto
+    return contexto, ""
+
+
+def _calcular_margens_concorrentes_promocoes(
+    client_id: str,
+    loja_lista: str,
+    sku: str,
+    precos_concorrentes: dict[str, float],
+    anuncios_loja: dict[str, str],
+) -> dict[str, dict[str, Any]]:
+    deps = _dependencias_margens_concorrentes()
+    margens: dict[str, dict[str, Any]] = {}
+    cache_contextos: dict[str, dict[str, Any]] = {}
+    cache_cadastro: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+
+    for chave in sorted(precos_concorrentes):
+        preco_venda = float(precos_concorrentes[chave])
+        item_id = _normalizar_item_id_mlb(anuncios_loja.get(chave))
+        if not item_id:
+            margens[chave] = _margem_concorrente_indisponivel(
+                preco_venda,
+                "",
+                "Informe o anúncio da loja correspondente a este concorrente.",
+            )
+            continue
+
+        contexto, motivo = _carregar_contexto_anuncio_loja(
+            client_id,
+            loja_lista,
+            item_id,
+            deps,
+            cache_contextos,
+        )
+        if not contexto:
+            margens[chave] = _margem_concorrente_indisponivel(preco_venda, item_id, motivo)
+            continue
+
+        loja = str(contexto.get("loja") or "").strip()
+        item = dict(contexto.get("item") or {})
+        cfg = dict(contexto.get("cfg") or {})
+        if loja not in cache_cadastro:
+            try:
+                custos, impostos = deps["carregar_custos_impostos"](client_id, loja)
+                cache_cadastro[loja] = (dict(custos or {}), dict(impostos or {}))
+            except Exception:
+                cache_cadastro[loja] = ({}, {})
+        custos_cadastro, impostos_cadastro = cache_cadastro[loja]
+        custo_unitario = deps["resolver_custo"](custos_cadastro, sku)
+        custo_unitario = _numero_finito_margem(custo_unitario)
+        if custo_unitario is None or custo_unitario < 0:
+            margens[chave] = _margem_concorrente_indisponivel(
+                preco_venda,
+                item_id,
+                "Custo do SKU não encontrado no cadastro desta loja.",
+                loja=loja,
+            )
+            continue
+
+        imposto_rate = deps["resolver_imposto"](impostos_cadastro, sku)
+        imposto_rate = _numero_finito_margem(imposto_rate)
+        if imposto_rate is None or imposto_rate < 0:
+            margens[chave] = _margem_concorrente_indisponivel(
+                preco_venda,
+                item_id,
+                "Imposto do SKU não encontrado para esta loja.",
+                loja=loja,
+            )
+            continue
+
+        item_preco = dict(item)
+        item_preco["price"] = preco_venda
+        try:
+            tarifa_dados, cfg = deps["ml_obter_taxas_anuncio"](
+                client_id,
+                loja,
+                cfg,
+                item_preco,
+            )
+            tarifa_dados = dict(tarifa_dados or {})
+        except Exception:
+            tarifa_dados = {}
+        tarifa_ml = _numero_finito_margem(tarifa_dados.get("ad_cost"))
+        contexto_tarifa = _numero_finito_margem(tarifa_dados.get("ad_cost_price_context"))
+        tarifa_exata = bool(tarifa_dados.get("ad_cost_exact_for_price"))
+        tarifa_exata = tarifa_exata and contexto_tarifa is not None and abs(contexto_tarifa - preco_venda) <= 0.02
+        if tarifa_ml is None or tarifa_ml < 0 or not tarifa_exata:
+            margens[chave] = _margem_concorrente_indisponivel(
+                preco_venda,
+                item_id,
+                "Tarifa exata do Mercado Livre não disponível para este preço.",
+                loja=loja,
+            )
+            continue
+
+        try:
+            frete_dados, cfg = deps["ml_obter_frete_detalhado"](
+                client_id,
+                loja,
+                cfg,
+                item_id,
+                item.get("shipping") or {},
+                reconsultar_zero=True,
+                contexto_frete=deps["ml_contexto_frete_item"](item, preco_venda),
+            )
+            frete_dados = dict(frete_dados or {})
+        except Exception:
+            frete_dados = {}
+        contexto["cfg"] = cfg
+        frete_ml = _numero_finito_margem(frete_dados.get("shipping_cost"))
+        contexto_frete = _numero_finito_margem(frete_dados.get("shipping_price_context"))
+        frete_exato = bool(frete_dados.get("shipping_exact_for_price"))
+        frete_exato = frete_exato and contexto_frete is not None and abs(contexto_frete - preco_venda) <= 0.02
+        if frete_ml is None or frete_ml < 0 or not frete_exato:
+            margens[chave] = _margem_concorrente_indisponivel(
+                preco_venda,
+                item_id,
+                "Frete exato do Mercado Livre não disponível para este preço.",
+                loja=loja,
+            )
+            continue
+
+        financeiro = deps["calcular_margem"](
+            preco_venda,
+            custo_unitario,
+            imposto_rate,
+            tarifa_ml,
+            frete_ml,
+        )
+        if not financeiro:
+            margens[chave] = _margem_concorrente_indisponivel(
+                preco_venda,
+                item_id,
+                "Não foi possível calcular a margem financeira.",
+                loja=loja,
+            )
+            continue
+
+        margens[chave] = {
+            "preco_venda": round(preco_venda, 2),
+            "item_id_loja": item_id,
+            "loja": loja,
+            "custo_unitario": round(float(custo_unitario), 2),
+            "imposto_percentual": round(float(imposto_rate) * 100.0, 4),
+            "imposto_valor": round(float(financeiro["imposto"]), 2),
+            "tarifa_ml": round(float(tarifa_ml), 2),
+            "frete_ml": round(float(frete_ml), 2),
+            "valor_liquido": round(float(financeiro["valor_liquido"]), 2),
+            "margem_percentual": round(float(financeiro["margem_percentual"]), 2),
+            "financeiro_exato": True,
+            "tarifa_fonte": str(tarifa_dados.get("ad_cost_source") or "")[:120],
+            "frete_fonte": str(
+                frete_dados.get("shipping_cost_retry_source")
+                or frete_dados.get("shipping_cost_source_path")
+                or ""
+            )[:120],
+        }
+
+    return margens
 
 
 async def api_medias_compras_listas_pedidos(
@@ -131,161 +459,129 @@ async def api_medias_compras_concorrentes_links(
         raise HTTPException(status_code=400, detail="SKU ÃƒÂ© obrigatÃƒÂ³rio")
 
     try:
-        gc = autenticar_google_sheets()
-        if not gc:
-            raise HTTPException(status_code=500, detail="NÃƒÂ£o foi possÃƒÂ­vel autenticar no Google Sheets")
-
-        sh = gc.open_by_key(SPREADSHEET_ID_CONCORRENTES)
-        ws = sh.get_worksheet(0)
-        if ws is None:
-            raise HTTPException(status_code=404, detail="Aba da planilha nÃ£o encontrada")
-
-        rows = ws.get_all_values()
-        if not rows:
-            return {
-                "success": True,
-                "sku": sku_in,
-                "concorrentes": {
-                    "concorrente_1": "",
-                    "concorrente_2": "",
-                    "concorrente_3": "",
-                    "concorrente_4": "",
-                    "concorrente_5": "",
-                },
-                "concorrentes_valores": {
-                    "concorrente_1": "",
-                    "concorrente_2": "",
-                    "concorrente_3": "",
-                    "concorrente_4": "",
-                    "concorrente_5": "",
-                },
-                "concorrentes_mlb": {
-                    "concorrente_1": "",
-                    "concorrente_2": "",
-                    "concorrente_3": "",
-                    "concorrente_4": "",
-                    "concorrente_5": "",
-                },
-                "concorrentes_preco": {
-                    "concorrente_1": "",
-                    "concorrente_2": "",
-                    "concorrente_3": "",
-                    "concorrente_4": "",
-                    "concorrente_5": "",
-                },
-            }
-
-        header = rows[0] if rows else []
-
-        def _norm(v: str) -> str:
-            txt = str(v or "").strip().upper().replace(" ", "")
-            txt = re.sub(r"\.0+$", "", txt)
-            return txt
-
-        sku_col_idx = 0
-        for i, h in enumerate(header):
-            h_norm = str(h or "").strip().lower()
-            if h_norm in {"sku", "cÃƒÂ³digo", "codigo", "codigo sku", "sku code"}:
-                sku_col_idx = i
-                break
-
-        sku_target = _norm(sku_in)
-        row_match = None
-        for row in rows[1:]:
-            if sku_col_idx >= len(row):
-                continue
-            if _norm(row[sku_col_idx]) == sku_target:
-                row_match = row
-                break
-
-        if row_match is None:
-            return {
-                "success": True,
-                "sku": sku_in,
-                "concorrentes": {
-                    "concorrente_1": "",
-                    "concorrente_2": "",
-                    "concorrente_3": "",
-                    "concorrente_4": "",
-                    "concorrente_5": "",
-                },
-                "concorrentes_valores": {
-                    "concorrente_1": "",
-                    "concorrente_2": "",
-                    "concorrente_3": "",
-                    "concorrente_4": "",
-                    "concorrente_5": "",
-                },
-                "concorrentes_mlb": {
-                    "concorrente_1": "",
-                    "concorrente_2": "",
-                    "concorrente_3": "",
-                    "concorrente_4": "",
-                    "concorrente_5": "",
-                },
-                "concorrentes_preco": {
-                    "concorrente_1": "",
-                    "concorrente_2": "",
-                    "concorrente_3": "",
-                    "concorrente_4": "",
-                    "concorrente_5": "",
-                },
-            }
-
-        def _get_col(row: list[str], idx: int) -> str:
-            if idx < 0 or idx >= len(row):
-                return ""
-            return str(row[idx] or "").strip()
-
-        # Colunas E, I, M, Q, U (0-based: 4, 8, 12, 16, 20)
-        links = {
-            "concorrente_1": _get_col(row_match, 4),
-            "concorrente_2": _get_col(row_match, 8),
-            "concorrente_3": _get_col(row_match, 12),
-            "concorrente_4": _get_col(row_match, 16),
-            "concorrente_5": _get_col(row_match, 20),
-        }
-
-        # Colunas F, J, N, R, V (0-based: 5, 9, 13, 17, 21)
-        valores = {
-            "concorrente_1": _get_col(row_match, 5),
-            "concorrente_2": _get_col(row_match, 9),
-            "concorrente_3": _get_col(row_match, 13),
-            "concorrente_4": _get_col(row_match, 17),
-            "concorrente_5": _get_col(row_match, 21),
-        }
-
-        # Colunas C, G, K, O, S: anuncio da loja usado como referencia em cada comparacao.
-        links_mlb = {
-            "concorrente_1": _get_col(row_match, 2),
-            "concorrente_2": _get_col(row_match, 6),
-            "concorrente_3": _get_col(row_match, 10),
-            "concorrente_4": _get_col(row_match, 14),
-            "concorrente_5": _get_col(row_match, 18),
-        }
-
-        # Colunas D, H, L, P, T: preco do anuncio da loja em cada comparacao.
-        precos_mlb = {
-            "concorrente_1": _get_col(row_match, 3),
-            "concorrente_2": _get_col(row_match, 7),
-            "concorrente_3": _get_col(row_match, 11),
-            "concorrente_4": _get_col(row_match, 15),
-            "concorrente_5": _get_col(row_match, 19),
-        }
-
-        return {
-            "success": True,
-            "sku": sku_in,
-            "concorrentes": links,
-            "concorrentes_valores": valores,
-            "concorrentes_mlb": links_mlb,
-            "concorrentes_preco": precos_mlb,
-        }
+        rows = await asyncio.to_thread(_carregar_linhas_planilha_concorrentes)
+        indice = _indexar_linhas_planilha_concorrentes(rows)
+        return _payload_concorrentes_planilha(sku_in, indice.get(_normalizar_sku_planilha_concorrentes(sku_in)))
     except HTTPException:
         raise
     except Exception as e:
         logger.exception(f"Erro ao buscar links de concorrentes para SKU '{sku_in}': {e}")
         raise HTTPException(status_code=500, detail="Erro ao buscar links de concorrentes")
+
+
+def _normalizar_sku_planilha_concorrentes(valor: Any) -> str:
+    texto = str(valor or "").strip().upper().replace(" ", "")
+    return re.sub(r"\.0+$", "", texto)
+
+
+def _carregar_linhas_planilha_concorrentes() -> list[list[str]]:
+    gc = autenticar_google_sheets()
+    if not gc:
+        raise HTTPException(status_code=500, detail="Não foi possível autenticar no Google Sheets")
+
+    sh = gc.open_by_key(SPREADSHEET_ID_CONCORRENTES)
+    ws = sh.get_worksheet(0)
+    if ws is None:
+        raise HTTPException(status_code=404, detail="Aba da planilha não encontrada")
+    return list(ws.get_all_values() or [])
+
+
+def _indexar_linhas_planilha_concorrentes(rows: list[list[str]]) -> dict[str, list[str]]:
+    if not rows:
+        return {}
+
+    header = rows[0]
+    sku_col_idx = 0
+    for indice, cabecalho in enumerate(header):
+        cabecalho_norm = str(cabecalho or "").strip().lower()
+        if cabecalho_norm in {
+            "sku",
+            "código",
+            "codigo",
+            "cã³digo",
+            "cãƒâ³digo",
+            "codigo sku",
+            "sku code",
+        }:
+            sku_col_idx = indice
+            break
+
+    resultado: dict[str, list[str]] = {}
+    for row in rows[1:]:
+        if sku_col_idx >= len(row):
+            continue
+        sku_norm = _normalizar_sku_planilha_concorrentes(row[sku_col_idx])
+        if sku_norm and sku_norm not in resultado:
+            resultado[sku_norm] = row
+    return resultado
+
+
+def _payload_concorrentes_planilha(sku: str, row: list[str] | None) -> dict[str, Any]:
+    linha = row or []
+
+    def _get_col(indice: int) -> str:
+        if indice < 0 or indice >= len(linha):
+            return ""
+        return str(linha[indice] or "").strip()
+
+    return {
+        "success": True,
+        "sku": str(sku or "").strip(),
+        "concorrentes": {
+            f"concorrente_{numero}": _get_col(indice)
+            for numero, indice in enumerate((4, 8, 12, 16, 20), start=1)
+        },
+        "concorrentes_valores": {
+            f"concorrente_{numero}": _get_col(indice)
+            for numero, indice in enumerate((5, 9, 13, 17, 21), start=1)
+        },
+        "concorrentes_mlb": {
+            f"concorrente_{numero}": _get_col(indice)
+            for numero, indice in enumerate((2, 6, 10, 14, 18), start=1)
+        },
+        "concorrentes_preco": {
+            f"concorrente_{numero}": _get_col(indice)
+            for numero, indice in enumerate((3, 7, 11, 15, 19), start=1)
+        },
+    }
+
+
+async def api_medias_compras_lista_pedido_concorrentes_links_lote(
+    lista_id: str,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
+    listas = _carregar_listas_pedidos(client_id)
+    lista = next((item for item in listas if str(item.get("id", "")) == str(lista_id)), None)
+    if not lista:
+        raise HTTPException(status_code=404, detail="Lista de pedidos nao encontrada")
+
+    skus: list[str] = []
+    for item in (lista.get("itens") or []):
+        sku = _sku_item_lista_pedido(item)
+        if sku and sku not in skus:
+            skus.append(sku)
+
+    try:
+        rows = await asyncio.to_thread(_carregar_linhas_planilha_concorrentes)
+        indice = _indexar_linhas_planilha_concorrentes(rows)
+        resultados = {
+            sku: _payload_concorrentes_planilha(
+                sku,
+                indice.get(_normalizar_sku_planilha_concorrentes(sku)),
+            )
+            for sku in skus
+        }
+        return {
+            "success": True,
+            "lista_id": str(lista_id),
+            "total": len(resultados),
+            "resultados": resultados,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Erro ao buscar links de concorrentes da lista '{lista_id}': {e}")
+        raise HTTPException(status_code=500, detail="Erro ao buscar links de concorrentes da lista")
 
 
 async def api_medias_compras_lista_pedido_detalhe(lista_id: str, client_id: str = Depends(medias_common.get_tenant_id)):
@@ -339,6 +635,63 @@ async def api_medias_compras_lista_pedido_custo_posto(
     }
 
 
+def _item_lista_pedido_compra_aprovada(item: dict[str, Any] | None) -> bool:
+    item = item if isinstance(item, dict) else {}
+    valor = item.get("compra_aprovada", item.get("Compra aprovada"))
+    if valor is True or valor == 1:
+        return True
+    return str(valor or "").strip().lower() in {"1", "true", "sim", "aprovada", "aprovado"}
+
+
+def _sku_item_lista_pedido(item: dict[str, Any] | None) -> str:
+    item = item if isinstance(item, dict) else {}
+    return _normalizar_sku_mes(str(item.get("SKU") or item.get("sku") or "").strip())
+
+
+def _proteger_itens_aprovados_lista(
+    itens_atuais: list[dict] | None,
+    itens_novos: list[dict] | None,
+) -> list[dict]:
+    novos = [dict(item) for item in (itens_novos or []) if isinstance(item, dict)]
+    novos_por_sku = {
+        _sku_item_lista_pedido(item): item
+        for item in novos
+        if _sku_item_lista_pedido(item)
+    }
+
+    for item_atual in itens_atuais or []:
+        sku = _sku_item_lista_pedido(item_atual)
+        item_novo = novos_por_sku.get(sku)
+        if item_novo and "analise_concorrentes" in item_atual:
+            item_novo["analise_concorrentes"] = copy.deepcopy(item_atual["analise_concorrentes"])
+
+        if not _item_lista_pedido_compra_aprovada(item_atual):
+            continue
+        if not item_novo:
+            raise HTTPException(
+                status_code=409,
+                detail=f"O SKU {sku} esta aprovado e nao pode ser excluido. Desfaca a aprovacao dentro do SKU.",
+            )
+        if not _item_lista_pedido_compra_aprovada(item_novo):
+            raise HTTPException(
+                status_code=409,
+                detail=f"A aprovacao do SKU {sku} so pode ser desfeita dentro do SKU.",
+            )
+
+        item_novo.pop("Compra aprovada", None)
+        item_novo.pop("Compra aprovada em", None)
+        item_novo["compra_aprovada"] = True
+        aprovado_em = str(
+            item_atual.get("compra_aprovada_em")
+            or item_atual.get("Compra aprovada em")
+            or ""
+        ).strip()
+        if aprovado_em:
+            item_novo["compra_aprovada_em"] = aprovado_em
+
+    return novos
+
+
 async def api_medias_compras_lista_pedido_editar(
     lista_id: str,
     req: ListaPedidoUpdateRequest,
@@ -389,7 +742,8 @@ async def api_medias_compras_lista_pedido_editar(
         alterou = True
 
     if "itens" in campos_informados:
-        itens_norm = _recalcular_frete_internacional_itens_lista(client_id, req.itens or [])
+        itens_protegidos = _proteger_itens_aprovados_lista(lista.get("itens") or [], req.itens or [])
+        itens_norm = _recalcular_frete_internacional_itens_lista(client_id, itens_protegidos)
         lista["itens"] = itens_norm
         alterou = True
 
@@ -406,6 +760,196 @@ async def api_medias_compras_lista_pedido_editar(
             **_resumo_lista_pedido(lista),
             "itens": lista.get("itens") or [],
         }
+    }
+
+
+async def api_medias_compras_lista_pedido_atualizar_aprovacao_sku(
+    lista_id: str,
+    sku: str,
+    req: ListaPedidoSkuAprovacaoRequest,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
+    listas = _carregar_listas_pedidos(client_id)
+    idx_lista = next((i for i, l in enumerate(listas) if str(l.get("id", "")) == str(lista_id)), -1)
+    if idx_lista < 0:
+        raise HTTPException(status_code=404, detail="Lista de pedidos nao encontrada")
+
+    lista = listas[idx_lista]
+    sku_ref = _normalizar_sku_mes(str(sku or "").strip())
+    if not sku_ref:
+        raise HTTPException(status_code=400, detail="SKU invalido para aprovacao")
+    itens = [dict(item) for item in (lista.get("itens") or []) if isinstance(item, dict)]
+    idx_item = next((i for i, item in enumerate(itens) if _sku_item_lista_pedido(item) == sku_ref), -1)
+    if idx_item < 0:
+        raise HTTPException(status_code=404, detail="SKU nao encontrado na lista de pedidos")
+
+    item = itens[idx_item]
+    ja_aprovada = _item_lista_pedido_compra_aprovada(item)
+    item.pop("Compra aprovada", None)
+    item.pop("Compra aprovada em", None)
+    item["compra_aprovada"] = bool(req.aprovada)
+    if req.aprovada:
+        aprovado_em = str(item.get("compra_aprovada_em") or "").strip() if ja_aprovada else ""
+        item["compra_aprovada_em"] = aprovado_em or datetime.now().isoformat(timespec="seconds")
+    else:
+        item.pop("compra_aprovada_em", None)
+
+    itens[idx_item] = item
+    lista["itens"] = itens
+    lista["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    listas[idx_lista] = lista
+    _salvar_listas_pedidos(client_id, listas)
+    _limpar_cache_lista_pedido(client_id, str(lista.get("id", "") or ""), manter_versao=lista.get("updated_at"))
+
+    return {
+        "success": True,
+        "sku": str(item.get("SKU") or sku),
+        "compra_aprovada": bool(req.aprovada),
+        "item": item,
+        "lista": {
+            **_resumo_lista_pedido(lista),
+            "itens": itens,
+        },
+    }
+
+
+async def api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku(
+    lista_id: str,
+    sku: str,
+    req: ListaPedidoSkuAnaliseConcorrentesRequest,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
+    listas = _carregar_listas_pedidos(client_id)
+    idx_lista = next((i for i, l in enumerate(listas) if str(l.get("id", "")) == str(lista_id)), -1)
+    if idx_lista < 0:
+        raise HTTPException(status_code=404, detail="Lista de pedidos nao encontrada")
+
+    lista = listas[idx_lista]
+    sku_ref = _normalizar_sku_mes(str(sku or "").strip())
+    if not sku_ref:
+        raise HTTPException(status_code=400, detail="SKU invalido para analise de concorrentes")
+
+    itens = [dict(item) for item in (lista.get("itens") or []) if isinstance(item, dict)]
+    idx_item = next((i for i, item in enumerate(itens) if _sku_item_lista_pedido(item) == sku_ref), -1)
+    if idx_item < 0:
+        raise HTTPException(status_code=404, detail="SKU nao encontrado na lista de pedidos")
+    item = itens[idx_item]
+
+    custo_unitario_informado = req.custo_unitario
+    if custo_unitario_informado is not None:
+        custo_unitario_informado = float(custo_unitario_informado)
+        if not math.isfinite(custo_unitario_informado) or custo_unitario_informado < 0:
+            raise HTTPException(status_code=400, detail="Custo unitario invalido para analise de concorrentes")
+
+    precos_recebidos = dict(req.precos_concorrentes or {})
+    anuncios_recebidos = dict(req.anuncios_loja or {})
+    chaves_invalidas = sorted((set(precos_recebidos) | set(anuncios_recebidos)) - _CHAVES_CONCORRENTES)
+    if chaves_invalidas:
+        raise HTTPException(status_code=400, detail="Concorrente invalido para analise")
+
+    precos_normalizados: dict[str, float] = {}
+    for chave in sorted(precos_recebidos):
+        preco_venda = float(precos_recebidos[chave])
+        if not math.isfinite(preco_venda) or preco_venda <= 0:
+            raise HTTPException(status_code=400, detail="Preco de concorrente invalido para analise")
+        precos_normalizados[chave] = preco_venda
+
+    anuncios_normalizados: dict[str, str] = {}
+    for chave, item_id_raw in anuncios_recebidos.items():
+        item_id_texto = str(item_id_raw or "").strip()
+        if not item_id_texto:
+            continue
+        item_id = _normalizar_item_id_mlb(item_id_texto)
+        if not item_id:
+            raise HTTPException(status_code=400, detail="Anuncio da loja invalido para analise")
+        anuncios_normalizados[chave] = item_id
+
+    margens: dict[str, dict[str, Any]] = {}
+    if precos_normalizados:
+        try:
+            margens = await asyncio.to_thread(
+                _calcular_margens_concorrentes_promocoes,
+                client_id,
+                str(lista.get("loja") or ""),
+                str(item.get("SKU") or sku),
+                precos_normalizados,
+                anuncios_normalizados,
+            )
+        except Exception:
+            logger.warning("[IMPORTACOES] Calculo financeiro exato das margens concorrentes indisponivel")
+            margens = {
+                chave: _margem_concorrente_indisponivel(
+                    preco_venda,
+                    anuncios_normalizados.get(chave, ""),
+                    "Cálculo financeiro temporariamente indisponível.",
+                )
+                for chave, preco_venda in precos_normalizados.items()
+            }
+
+    custos_cadastro = {
+        float(dados["custo_unitario"])
+        for dados in margens.values()
+        if _numero_finito_margem(dados.get("custo_unitario")) is not None
+    }
+    custo_unitario_cadastro = next(iter(custos_cadastro)) if len(custos_cadastro) == 1 else None
+
+    atualizado_em = datetime.now().isoformat(timespec="seconds")
+    analise_concorrentes = {
+        "custo_unitario": round(custo_unitario_cadastro, 2) if custo_unitario_cadastro is not None else None,
+        "fonte_custo": "cadastro_sku_loja",
+        "metodo": "analise_promocoes_ml_liquida",
+        "margens": margens,
+        "atualizado_em": atualizado_em,
+    }
+
+    # O cálculo consulta serviços externos e pode levar alguns segundos. Recarregue
+    # a lista antes de persistir para não desfazer uma aprovação, exclusão ou edição
+    # que tenha ocorrido enquanto a margem era calculada.
+    listas_atuais = _carregar_listas_pedidos(client_id)
+    idx_lista_atual = next(
+        (i for i, atual in enumerate(listas_atuais) if str(atual.get("id", "")) == str(lista_id)),
+        -1,
+    )
+    if idx_lista_atual < 0:
+        raise HTTPException(status_code=404, detail="Lista de pedidos nao encontrada")
+
+    lista_atual = listas_atuais[idx_lista_atual]
+    if str(lista_atual.get("loja") or "").strip() != str(lista.get("loja") or "").strip():
+        raise HTTPException(
+            status_code=409,
+            detail="A loja da lista mudou durante a análise. Recarregue para calcular novamente.",
+        )
+
+    itens_atuais = [dict(atual) for atual in (lista_atual.get("itens") or []) if isinstance(atual, dict)]
+    idx_item_atual = next(
+        (i for i, atual in enumerate(itens_atuais) if _sku_item_lista_pedido(atual) == sku_ref),
+        -1,
+    )
+    if idx_item_atual < 0:
+        raise HTTPException(status_code=404, detail="SKU nao encontrado na lista de pedidos")
+
+    item_atual = itens_atuais[idx_item_atual]
+    item_atual["analise_concorrentes"] = analise_concorrentes
+    itens_atuais[idx_item_atual] = item_atual
+    lista_atual["itens"] = itens_atuais
+    lista_atual["updated_at"] = atualizado_em
+    listas_atuais[idx_lista_atual] = lista_atual
+    _salvar_listas_pedidos(client_id, listas_atuais)
+    _limpar_cache_lista_pedido(
+        client_id,
+        str(lista_atual.get("id", "") or ""),
+        manter_versao=lista_atual.get("updated_at"),
+    )
+
+    return {
+        "success": True,
+        "sku": str(item_atual.get("SKU") or sku),
+        "analise_concorrentes": analise_concorrentes,
+        "item": item_atual,
+        "lista": {
+            **_resumo_lista_pedido(lista_atual),
+            "itens": itens_atuais,
+        },
     }
 
 
@@ -741,9 +1285,12 @@ __all__ = [
     "api_medias_compras_preferencias_colunas_get",
     "api_medias_compras_preferencias_colunas_put",
     "api_medias_compras_concorrentes_links",
+    "api_medias_compras_lista_pedido_concorrentes_links_lote",
     "api_medias_compras_lista_pedido_detalhe",
     "api_medias_compras_lista_pedido_custo_posto",
     "api_medias_compras_lista_pedido_editar",
+    "api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku",
+    "api_medias_compras_lista_pedido_atualizar_aprovacao_sku",
     "api_medias_compras_lista_pedido_adicionar_sku",
     "api_medias_compras_lista_pedido_atualizar_status",
     "api_medias_compras_lista_pedido_excluir",

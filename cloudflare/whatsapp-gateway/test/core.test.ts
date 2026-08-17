@@ -9,14 +9,12 @@ import {
   normalizeSeverity,
   normalizeInternationalPhone,
   phoneAliases,
-  phoneFromSipHeaders,
   outboundRecipient,
   outboundImagePolicy,
   pairingCodeFromText,
   profileImagePolicy,
   safeTemplate,
   verifyMetaSignature,
-  verifyOpenAIWebhook,
 } from "../src/core";
 
 describe("zero cost policy", () => {
@@ -40,40 +38,12 @@ describe("webhook security", () => {
     expect(await verifyMetaSignature(raw.buffer, `${signature}00`, secret)).toBe(false);
   });
 
-  it("validates signed OpenAI webhooks and rejects stale events", async () => {
-    const raw = '{"type":"realtime.call.incoming"}';
-    const secretBytes = Buffer.from("voice-webhook-secret");
-    const secret = `whsec_${secretBytes.toString("base64")}`;
-    const webhookId = "wh_voice_1";
-    const timestamp = 1_752_000_000;
-    const signature = createHmac("sha256", secretBytes)
-      .update(`${webhookId}.${timestamp}.${raw}`)
-      .digest("base64");
-    const headers = new Headers({
-      "webhook-id": webhookId,
-      "webhook-timestamp": String(timestamp),
-      "webhook-signature": `v1,${signature}`,
-    });
-    expect(await verifyOpenAIWebhook(raw, headers, secret, timestamp)).toBe(true);
-    expect(await verifyOpenAIWebhook(raw, headers, secret, timestamp + 301)).toBe(false);
-    headers.set("webhook-signature", "v1,invalid");
-    expect(await verifyOpenAIWebhook(raw, headers, secret, timestamp)).toBe(false);
-  });
 });
 
 describe("input policies", () => {
-  it("normalizes SIP callers and Brazilian phone aliases", () => {
+  it("normalizes Brazilian phone aliases", () => {
     expect(normalizeInternationalPhone("+55 (37) 99999-3818")).toBe("5537999993818");
     expect(phoneAliases("+55 (37) 99999-3818")).toEqual(["5537999993818", "553799993818"]);
-    expect(phoneFromSipHeaders([
-      { name: "From", value: "sip:+5537999993818@sip.example.com" },
-      { name: "To", value: "sip:+553700000000@sip.example.com" },
-    ])).toBe("5537999993818");
-    expect(phoneFromSipHeaders([
-      { name: "From", value: "sip:+5511999990000@sip.example.com" },
-      { name: "P-Asserted-Identity", value: "tel:+553788883818" },
-    ])).toBe("553788883818");
-    expect(phoneFromSipHeaders([{ name: "From", value: "anonymous" }])).toBe("");
   });
 
   it("accepts only eight-character pairing codes", () => {

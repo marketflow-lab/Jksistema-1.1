@@ -19,22 +19,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup-whatsapp-zero-cost.ps1 
 
 A inscricao do callback no campo `messages` continua sendo confirmada no painel Meta. A integracao local permanece desativada ate o Whisper Small ser baixado e todos os indicadores ficarem prontos.
 
-## Ligações Realtime SIP
+## Escopo do canal
 
-A migração `0006_voice_calls.sql` adiciona somente estado, auditoria e consumo técnico das chamadas. Ela não grava áudio nem transcrição. A transcrição concluída é persistida apenas pelo backend local no Histórico do WhatsApp.
-
-Para ativar voz em uma instalação existente:
-
-1. implante o VPS descrito em `infra/whatsapp-voice` e configure `VOICE_SIP_HOST`;
-2. crie o webhook OpenAI apontando para `https://<worker>/webhooks/openai/realtime` e assine eventos Realtime;
-3. execute `scripts/deploy-whatsapp-voice.ps1 -VoiceSipHost voice.seudominio.com`;
-4. abra Configurações, valide todos os componentes e autorize ligações somente nos telefones desejados;
-5. habilite a voz somente depois que o preflight estiver integralmente pronto.
-
-O script reutiliza `_obter_openai_api_key()` e envia a chave diretamente ao Wrangler. O valor não é gravado no TOML, no D1 ou em arquivos do projeto. `OPENAI_WEBHOOK_SECRET` e `OPENAI_PROJECT_ID` são solicitados como valores protegidos.
+O WhatsApp recebe perguntas, envia sugestões de resposta do Mercado Livre, aceita pedidos de alteração e confirma a aprovação tokenizada. Ligações, relatórios agendados, mensagens avulsas e mensagens de boas-vindas não fazem parte do gateway. Áudios recebidos continuam disponíveis para transcrição local pelo backend.
 
 ## Regra inegociavel
 
 O gateway nunca envia fora da janela gratuita de 23h30 nem depois de `ZERO_COST_POLICY_VALID_UNTIL`. Templates de marketing/autenticacao nao sao aceitos.
 
-Essa regra de mensagens não elimina a cobrança própria de WhatsApp Calling, SIP/VPS ou OpenAI Realtime. A tela de voz mostra duração e tokens, mas não inventa um custo monetário local.
+As conversas do WhatsApp são separadas da conversa da Sidebar.

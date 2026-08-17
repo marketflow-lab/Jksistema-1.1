@@ -16,7 +16,7 @@ export async function claimMessages(request: Request, env: Env): Promise<Respons
     env.DB.prepare("UPDATE inbox SET status='queued',lease_owner=NULL,lease_until=NULL WHERE status='leased' AND lease_until<? AND attempts<4").bind(now),
   ]);
   const rows = await env.DB.prepare(
-    "SELECT i.*,COALESCE(NULLIF(i.wa_id,''),b.wa_id) AS wa_id,b.client_id,b.username,b.machine_id,b.is_primary AS binding_is_primary FROM inbox i JOIN bindings b ON b.subject_id=i.subject_id AND b.active=1 WHERE i.status='queued' AND b.machine_id=? ORDER BY i.received_at LIMIT ?",
+    "SELECT i.*,COALESCE(NULLIF(i.wa_id,''),b.wa_id) AS wa_id,b.client_id,b.username,b.machine_id FROM inbox i JOIN bindings b ON b.subject_id=i.subject_id AND b.active=1 WHERE i.status='queued' AND b.machine_id=? ORDER BY i.received_at LIMIT ?",
   ).bind(machineId, limit).all<JsonRecord>();
   const claimed: JsonRecord[] = [];
   for (const row of rows.results || []) {

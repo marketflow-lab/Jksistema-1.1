@@ -37,7 +37,7 @@ from .reports_artifacts import _assistant_compact_chat_text_response, _assistant
 from .reports_html import _assistant_report_dir
 from .routing import _assistant_registry_plan
 from .runtime import ASSISTANT_LOCK, configure_codex_assistant_runtime, _assistant_info_base, _assistant_now, _assistant_path, _assistant_read_json, _assistant_require_full_admin, _assistant_safe_id, _assistant_write_json
-from .settings import CODEX_DATA_TOOLS_VERSION, PROACTIVE_INTERVAL_SECONDS, REPORT_FORMATS
+from .settings import CODEX_DATA_TOOLS_VERSION, REPORT_FORMATS
 
 def _assistant_save_suggestions(client_id: str, suggestions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     path = _assistant_path(client_id, "suggestions.json")
@@ -147,11 +147,15 @@ def codex_assistant_suggestions(
 ):
     sessao = _assistant_require_full_admin(request, authorization)
     client_id = str(sessao.get("client_id") or "default")
-    suggestions = _assistant_read_json(_assistant_path(client_id, "suggestions.json"), [])
     state = _assistant_scheduler_state(client_id)
-    if not isinstance(suggestions, list):
-        suggestions = []
-    return {"success": True, "suggestions": suggestions[:30], "scheduler": state}
+    return {
+        "success": True,
+        "status": "disabled",
+        "due": False,
+        "suggestions": [],
+        "scheduler": state,
+        "message": "Relatorios automaticos do Black Jhon estao desativados.",
+    }
 
 
 def codex_assistant_tools(
@@ -372,30 +376,14 @@ def codex_assistant_proactive_run(
     client_id = str(sessao.get("client_id") or "default")
     with ASSISTANT_LOCK:
         state = _assistant_scheduler_state(client_id)
-        last_ts = float(state.get("last_proactive_ts") or 0)
-        due = bool(payload.force) or (time.time() - last_ts >= PROACTIVE_INTERVAL_SECONDS)
-        if not due:
-            suggestions = _assistant_read_json(_assistant_path(client_id, "suggestions.json"), [])
-            response = {"success": True, "status": "skipped", "due": False, "suggestions": suggestions[:30], "scheduler": state}
-            return _assistant_compact_chat_text_response(response) if payload.compact else response
-        context = _assistant_collect_data(
-            client_id,
-            "verificacao proativa de 30 minutos",
-            payload.screen_context,
-            mode="proactive",
-            force_refresh=bool(payload.force),
-        )
-        suggestions = _assistant_save_suggestions(client_id, context.get("suggestions") or [])
-        state.update(
-            {
-                "last_proactive_ts": time.time(),
-                "last_proactive_at": _assistant_now(),
-                "last_proactive_sources": context.get("sources") or [],
-                "last_proactive_tool_results_count": context.get("tool_results_count") or 0,
-            }
-        )
-        _assistant_save_scheduler_state(client_id, state)
-        response = {"success": True, "status": "completed", "due": True, "suggestions": suggestions[:30], "scheduler": state}
+        response = {
+            "success": True,
+            "status": "disabled",
+            "due": False,
+            "suggestions": [],
+            "scheduler": state,
+            "message": "Alertas e relatorios proativos do Black Jhon estao desativados.",
+        }
         return _assistant_compact_chat_text_response(response) if payload.compact else response
 
 
@@ -426,12 +414,12 @@ def codex_assistant_daily_analysis_run(
         state = _assistant_scheduler_state(client_id)
         response = {
             "success": True,
-            "status": "disabled_weekly_only",
+            "status": "disabled",
             "due": False,
             "suggestions": [],
             "report": None,
             "scheduler": state,
-            "message": "Relatorios diarios desativados. O Black Jhon gera somente o relatorio semanal.",
+            "message": "Relatorios automaticos do Black Jhon estao desativados.",
         }
         return _assistant_compact_chat_text_response(response) if payload.compact else response
 
@@ -445,50 +433,15 @@ def codex_assistant_weekly_analysis_run(
     client_id = str(sessao.get("client_id") or "default")
     with ASSISTANT_LOCK:
         state = _assistant_scheduler_state(client_id)
-        if not _assistant_weekly_due(state, bool(payload.force)):
-            report = state.get("last_weekly_report") if isinstance(state.get("last_weekly_report"), dict) else None
-            response = {"success": True, "status": "skipped", "due": False, "scheduler": state, "report": report}
-            return _assistant_compact_chat_text_response(response) if payload.compact else response
-        context = _assistant_collect_data(
-            client_id,
-            "relatorio semanal completo de vendas, estoque, compras e oportunidades",
-            payload.screen_context,
-            mode="report",
-            force_refresh=True,
-        )
-        context = _assistant_apply_advanced_profile(
-            client_id,
-            context,
-            "weekly_sales_stock",
-            force_refresh=True,
-            prompt="relatorio semanal completo de vendas, estoque, compras, margem e oportunidades",
-        )
-        title = "Black Jhon - Semanal completo de vendas e estoque"
-        report = _assistant_create_report(client_id, title, context, "weekly")
-        try:
-            from backend.services.codex.console import tasks as console_tasks
-
-            console_tasks.register_report_history(
-                client_id=client_id,
-                username=str(sessao.get("username") or ""),
-                prompt=title,
-                report=report,
-                thread_id="",
-                screen_context=payload.screen_context if isinstance(payload.screen_context, dict) else {},
-            )
-        except Exception as exc:
-            report.setdefault("warnings", []).append(f"Falha ao persistir relatorio semanal no historico: {exc}")
-        now = datetime.now()
-        week_key = f"{now.isocalendar().year}-W{now.isocalendar().week:02d}"
-        state.update(
-            {
-                "last_weekly_key": week_key,
-                "last_weekly_at": _assistant_now(),
-                "last_weekly_report": report,
-            }
-        )
-        _assistant_save_scheduler_state(client_id, state)
-        response = {"success": True, "status": "completed", "due": True, "report": report, "scheduler": state}
+        response = {
+            "success": True,
+            "status": "disabled",
+            "due": False,
+            "suggestions": [],
+            "report": None,
+            "scheduler": state,
+            "message": "Relatorios automaticos do Black Jhon estao desativados.",
+        }
         return _assistant_compact_chat_text_response(response) if payload.compact else response
 
 

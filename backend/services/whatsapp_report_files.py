@@ -56,16 +56,6 @@ def requested_report_formats(prompt: Any) -> set[str]:
     return formats
 
 
-def report_requested(prompt: Any) -> bool:
-    return bool(re.search(r"\b(relatorio|resumo|analise|balanco|planilha|dashboard)\b", _key(prompt)))
-
-
-def report_offer_text(prompt: Any) -> str:
-    if not report_requested(prompt) or requested_report_formats(prompt):
-        return ""
-    return "Posso enviar este relatorio tambem em Imagem, PDF ou Excel. Diga um ou mais formatos."
-
-
 def output_dir(base_info_dir: str | Path, client_id: Any) -> Path:
     root = Path(base_info_dir).resolve()
     output = (root / _safe_client_id(client_id) / REPORT_FILE_DIRNAME).resolve()
@@ -349,7 +339,5 @@ __all__ = [
     "cleanup_stale_files",
     "generate_report_documents",
     "output_dir",
-    "report_offer_text",
-    "report_requested",
     "requested_report_formats",
 ]

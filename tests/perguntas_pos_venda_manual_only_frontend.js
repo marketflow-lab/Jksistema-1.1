@@ -42,23 +42,25 @@ assert.match(perguntas, /preencherRespostaPerguntaSugerida/);
 assert.match(perguntas, /question-ai-answer-btn/);
 
 assert.match(monitor, /_perguntasMostrarNotificacaoWindows[\s\S]*?_perguntasIsPosVenda\(approval\)\) return;/);
-assert.match(monitor, /data\.pendentes[\s\S]*?filter\(approval => !_perguntasIsPosVenda\(approval\)\)/);
-for (const name of ['_approvalSalvarNoHistorico', '_approvalMontarCard', '_approvalPersistirNoHistoricoBlackJhon', '_approvalRenderNoPainelBlackJhon', '_adicionarNotificacaoAprovacao']) {
+assert.match(approvals, /data\.pendentes[\s\S]*?filter\(payload => !_approvalEhPosVenda\(payload\)\)/);
+for (const name of ['_approvalMontarCard', '_questionsUpsert', '_adicionarNotificacaoAprovacao']) {
   assert.match(approvals, new RegExp(`function ${name}[\\s\\S]*?_approvalEhPosVenda\\(payload\\)\\) return`), `${name} deve bloquear pos-venda`);
 }
+assert.doesNotMatch(approvals, /_approvalSalvarNoHistorico|_approvalPersistirNoHistoricoBlackJhon|_approvalRenderNoPainelBlackJhon/);
 assert.match(approvals, /_approvalUsarRespostaNaTela[\s\S]*?blocked: true/);
 assert.match(codex, /ehPosVenda\) return null/);
 assert.match(codex, /ml\.pos_venda_responder'\) return null/);
 
 const htmlFiles = [
-  'configuracoes.html', 'favoritos.html', 'vendas.html', 'perguntas_pos_venda.html',
+  'configuracoes.html', 'favoritos.html', 'vendas.html', 'perguntas_pos_venda.html', 'pesquisa_mercado.html',
   path.join('static', 'configuracoes.html'), path.join('static', 'favoritos.html'),
   path.join('static', 'vendas.html'), path.join('static', 'perguntas_pos_venda.html'),
+  path.join('static', 'pesquisa_mercado.html'),
 ];
 for (const file of htmlFiles) {
-  assert.match(read(file), /\/ia-sidebar\.js\?v=20260722-black-jhon-unified-pos-venda-manual-v1/, `${file} precisa do cache-buster novo`);
+  assert.match(read(file), /\/ia-sidebar\.js\?v=20260817-black-jhon-manual-only-v1/, `${file} precisa do cache-buster novo`);
 }
-assert.match(loader, /const VERSION = '20260722-black-jhon-unified-pos-venda-manual-v1'/);
+assert.match(loader, /const VERSION = '20260817-black-jhon-manual-only-v1'/);
 
 const start = lojas.indexOf('function aprovacaoEhPosVenda');
 const end = lojas.indexOf('async function carregarAprovacoesPendentes', start);

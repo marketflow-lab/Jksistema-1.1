@@ -21,14 +21,6 @@ export interface Env {
   MEDIA_OUTBOUND_BYTES_MONTH_LIMIT?: string;
   MEDIA_OUTBOUND_UPLOADS_MONTH_LIMIT?: string;
   TYPING_PULSES_DAY_LIMIT?: string;
-  OPENAI_REALTIME_API_KEY?: string;
-  OPENAI_WEBHOOK_SECRET?: string;
-  OPENAI_PROJECT_ID?: string;
-  VOICE_SIP_HOST?: string;
-  VOICE_REALTIME_MODEL?: string;
-  VOICE_TRANSCRIPTION_MODEL?: string;
-  VOICE_DEFAULT_NAME?: string;
-  VOICE_MAX_CONCURRENT_CALLS?: string;
 }
 
 export type JsonRecord = Record<string, unknown>;

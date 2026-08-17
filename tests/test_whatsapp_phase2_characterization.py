@@ -1,4 +1,3 @@
-from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -75,21 +74,14 @@ def test_phase2_settings_contracts_are_bounded_and_sanitized() -> None:
     )
     assert settings == {
         "label": "Telefone principal",
-        "is_primary": False,
         "send_ml_question_suggestions": False,
-        "send_weekly_report": True,
-        "send_monthly_report": False,
         "ai_behavior": "Responda curto",
-        "allow_voice_calls": True,
     }
 
 
 def test_phase2_settings_reject_invalid_models_and_keep_dual_defaults() -> None:
     with pytest.raises(HTTPException):
         whatsapp_bridge._normalize_codex_agent_model("modelo invalido!", "gpt-5.6-sol")
-    with pytest.raises(HTTPException):
-        whatsapp_bridge._normalize_voice_name("unknown")
-
     settings = whatsapp_bridge._whatsapp_dual_agent_settings({})
     assert settings["agent_architecture"] == "dual_codex"
     assert settings["conversation_agent_model"] == "gpt-5.6-luna"
@@ -248,34 +240,3 @@ def test_phase2_tool_contracts_cover_marketplace_local_and_timeout() -> None:
     assert local["total_available"] == 7
     assert timeout["evidence"]["status"] == "unavailable"
     assert timeout["retryable"] is True
-
-
-def test_phase2_report_scheduling_contracts_are_deterministic() -> None:
-    current = datetime(2026, 7, 16, 10, 30)
-    assert whatsapp_bridge._whatsapp_week_key(current) == "2026-W29"
-    assert whatsapp_bridge._whatsapp_month_key(current) == "2026-07"
-    assert whatsapp_bridge._scheduled_report_period("weekly", current) == {
-        "key": "2026-W29",
-        "title": "Relatório semanal",
-        "event_type": "weekly_report",
-        "start": "2026-07-09",
-        "end": "2026-07-15",
-    }
-    assert whatsapp_bridge._scheduled_report_period("monthly", current) == {
-        "key": "2026-07",
-        "title": "Relatório mensal",
-        "event_type": "monthly_report",
-        "start": "2026-06-01",
-        "end": "2026-06-30",
-    }
-    assert whatsapp_bridge._scheduled_report_result_accepted({"success": True, "status": "sent"}) is True
-    assert whatsapp_bridge._scheduled_report_result_accepted(
-        {"success": True, "status": "binding_missing"}
-    ) is False
-    parts = whatsapp_bridge._whatsapp_weekly_operational_parts(
-        [{"severity": "critical", "title": "Token expirado", "detail": "Reconecte a loja."}],
-        "2026-W29",
-    )
-    assert len(parts) == 1
-    assert "Token expirado" in parts[0]
-    assert "Reconecte a loja" in parts[0]

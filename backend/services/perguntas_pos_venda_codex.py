@@ -21,14 +21,29 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
+from requests import exceptions as requests_exceptions
+
 from backend.services import codex_agent_runtime, codex_assistant_storage
 from backend.services.codex_turn_context import (
     EVIDENCE_ENVELOPE_V2,
     conversation_key,
     normalize_evidence_envelope,
 )
-
-
+from backend.modules.perguntas_pos_venda.ai.contracts import PerguntasIARespostaPoliticaInvalida
+from backend.services.perguntas_pos_venda_state import (
+    PerguntasIAClassificacaoInconclusiva,
+    PerguntasIAProviderIndisponivel,
+    PerguntasIASegurancaBloqueada,
+    _perguntas_ia_assunto_atual_autossuficiente,
+    _perguntas_ia_continuation_facts,
+    _perguntas_ia_continuation_has_negated_qualifier,
+    _perguntas_ia_continuation_negated_identity,
+    _perguntas_ia_current_facts_explicit,
+    _perguntas_ia_mensagem_pos_venda_evidente,
+    _perguntas_ia_prompt_injection_evidente,
+    _perguntas_ia_texto_autoritativo_atual,
+    _perguntas_ia_turno_continuacao_positiva,
+)
 PROFILE = "mercado_livre_customer_reply"
 TASK_TYPE_PUBLIC_QUESTION = "public_question"
 TASK_TYPE_POST_SALE = "post_sale"
@@ -47,16 +62,17 @@ PUBLIC_SUBQUESTION_INTENTS = frozenset({
     "general",
     "post_sale",
 })
-PROMPT_VERSION = "jk_ml_customer_reply_codex_v8"
-SCHEMA_VERSION = "5.0"
+PROMPT_VERSION = "jk_ml_customer_reply_codex_v11"
+SCHEMA_VERSION = "5.1"
 QUEUE_POLICY_VERSION = "jk_ppv_queue_v3"
 PROMPT_HASH = hashlib.sha256(
     (
         "codex-native|public-question-by-item-buyer|post-sale-by-pack|"
         "evidence-envelope-v3|bounded-public-research|ai-only-subquestions|"
-        "classification-contract-v2|response-policy-v4|compatibility-coverage-v1|"
-        "compatibility-interface-evidence|seller-voice-v1|priority-queue-v3|"
-        "available-draft-always|no-direct-publish"
+        "classification-contract-v3|continuity-repair-v1|typed-provider-failures|"
+        "contextual-fallback-v1|response-policy-v5|compatibility-coverage-v1|"
+        "compatibility-interface-evidence|seller-voice-v3|priority-queue-v3|"
+        "best-validated-draft-wins|subject-aware-safe-fallback|no-direct-publish"
     ).encode("utf-8")
 ).hexdigest()
 THREAD_IDLE_TTL_SECONDS = 30 * 24 * 60 * 60
@@ -71,6 +87,12 @@ RETRY_DELAYS_SECONDS = (5, 15, 30)
 MAX_EVIDENCE_ATTEMPTS = 2
 MAX_OPERATIONAL_FAILURES = 3
 MAX_TOTAL_ATTEMPTS = 5
+PROVIDER_RETRY_REASONS = frozenset({
+    "provider_timeout",
+    "provider_connection",
+    "provider_http_429",
+    "provider_http_5xx",
+})
 AUTOMATION_QUEUE_PER_STORE_LIMIT = 3
 AUTOMATION_QUEUE_TOTAL_LIMIT = 12
 QUEUE_ORIGIN_MANUAL = "manual"
@@ -444,8 +466,675 @@ def _public_classification_missing(job: dict[str, Any]) -> bool:
     )
 
 
+def _job_question_text(job: dict[str, Any]) -> str:
+    request = job.get("request") if isinstance(job.get("request"), dict) else {}
+    question = request.get("pergunta") if isinstance(request.get("pergunta"), dict) else {}
+    parts = [
+        str(question.get("text") or ""),
+        str(request.get("question_text") or ""),
+    ]
+    parts.extend(
+        str(item.get("question") or "")
+        for item in (job.get("subquestions") or [])
+        if isinstance(item, dict)
+    )
+    return " ".join(part.strip() for part in parts if part.strip())
+
+
+def _fallback_signature(job: dict[str, Any]) -> str:
+    store = str(job.get("store") or "da loja").strip()
+    return f"Equipe {store} agradece pelo contato, Precisando estamos a disposição!"
+
+
+def _fallback_sanitize_text(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "[dado removido]", text, flags=re.I)
+    text = re.sub(r"\b[A-HJ-NPR-Z0-9]{17}\b", "[identificador removido]", text, flags=re.I)
+    text = re.sub(r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b", "[dado removido]", text)
+    text = re.sub(r"\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b", "[dado removido]", text)
+    text = re.sub(
+        r"(?<!\d)(?:\+?55\s*)?\(?\d{2}\)?\s*9?\d{4}[-\s]?\d{4}(?!\d)",
+        "[dado removido]",
+        text,
+    )
+    return re.sub(r"\s+", " ", text).strip()[: max(1, int(limit or 1))]
+
+
+def _fallback_sanitize_classification(value: Any) -> dict[str, Any]:
+    data = value if isinstance(value, dict) else {}
+    continuity = data.get("continuidade") if isinstance(data.get("continuidade"), dict) else {}
+    compatibility = (
+        data.get("compatibilidade")
+        if isinstance(data.get("compatibilidade"), dict)
+        else {}
+    )
+    raw_categories = data.get("categorias") if isinstance(data.get("categorias"), list) else []
+    return {
+        "categoria": str(data.get("categoria") or "")[:40],
+        "categorias": [str(item or "")[:40] for item in raw_categories[:8]],
+        "continuidade": {
+            "tipo": str(continuity.get("tipo") or "")[:40],
+            "herdou_historico": continuity.get("herdou_historico") is True,
+        },
+        "compatibilidade": {
+            "aplicavel": compatibility.get("aplicavel") is True,
+            "target_item": _fallback_sanitize_text(compatibility.get("target_item"), 300),
+            "target_type": str(compatibility.get("target_type") or "")[:40],
+        },
+    }
+
+
+def _fallback_context(
+    job: dict[str, Any],
+    supplied: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Build an in-memory view; callers must never add it to the persisted job."""
+
+    transient = supplied if isinstance(supplied, dict) else {}
+    request = job.get("request") if isinstance(job.get("request"), dict) else {}
+    question = request.get("pergunta") if isinstance(request.get("pergunta"), dict) else {}
+    item = transient.get("item") if isinstance(transient.get("item"), dict) else {}
+    if not item and isinstance(request.get("item"), dict):
+        item = request.get("item") or {}
+    history = transient.get("history") if isinstance(transient.get("history"), list) else []
+    if not history and isinstance(question.get("buyer_question_chat"), list):
+        history = question.get("buyer_question_chat") or []
+    raw_classification = (
+        transient.get("classification")
+        if isinstance(transient.get("classification"), dict)
+        else {}
+    )
+    classification = _fallback_sanitize_classification(raw_classification)
+    return {
+        "question_text": _fallback_sanitize_text(
+            ((transient.get("question") or {}).get("text") if isinstance(transient.get("question"), dict) else "")
+            or question.get("text")
+            or request.get("question_text")
+            or "",
+            1200,
+        ),
+        "item": {
+            "title": _fallback_sanitize_text(item.get("title"), 500),
+            "description": _fallback_sanitize_text(
+                item.get("description") or item.get("descricao"),
+                3500,
+            ),
+        },
+        "history": [
+            {
+                "role": str(event.get("role") or event.get("from_role") or "")[:20],
+                "text": _fallback_sanitize_text(event.get("text"), 500),
+            }
+            for event in history[-10:]
+            if isinstance(event, dict) and str(event.get("text") or "").strip()
+        ],
+        "classification": classification,
+    }
+
+
+def _fallback_buyer_context_text(context: dict[str, Any]) -> str:
+    texts = [str(context.get("question_text") or "")]
+    classification = (
+        context.get("classification")
+        if isinstance(context.get("classification"), dict)
+        else {}
+    )
+    continuity = (
+        classification.get("continuidade")
+        if isinstance(classification.get("continuidade"), dict)
+        else {}
+    )
+    if str(continuity.get("tipo") or "") in {"novo_assunto", "independente"}:
+        return " ".join(text.strip() for text in texts if text.strip())
+    for event in context.get("history") or []:
+        if not isinstance(event, dict):
+            continue
+        role = _normal(event.get("role"))
+        if role not in {"seller", "loja", "store"}:
+            texts.append(str(event.get("text") or ""))
+    return " ".join(text.strip() for text in texts if text.strip())
+
+
+def _fallback_announced_codes(description: str) -> list[str]:
+    match = re.search(
+        r"c[oó]digos?\s+da\s+pe[cç]a\s*:\s*(.+?)(?:\s+(?:descri[cç][aã]o|aplica[cç][oõ]es?)\s*:|$)",
+        str(description or ""),
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return []
+    candidates = re.findall(
+        r"\b(?:[A-Z]{1,5}\d[A-Z0-9]*(?:-[A-Z0-9]+)+|[A-Z]{1,5}\d{5,}[A-Z0-9]*)\b",
+        match.group(1).upper(),
+    )
+    return list(dict.fromkeys(candidates))[:8]
+
+
+def _fallback_buyer_years(text: str) -> list[int]:
+    years = [int(value) for value in re.findall(r"\b(?:19|20)\d{2}\b", str(text or ""))]
+    for first, second in re.findall(r"\b(\d{2})\s*/\s*(\d{2})\b", str(text or "")):
+        for value in (first, second):
+            numeric = int(value)
+            years.append(2000 + numeric if numeric <= 49 else 1900 + numeric)
+    return list(dict.fromkeys(years))[:4]
+
+
+def _fallback_application_ranges(description: str) -> list[tuple[int, int]]:
+    return [
+        (int(first), int(second))
+        for first, second in re.findall(
+            r"\b((?:19|20)\d{2})\s*[-–]\s*((?:19|20)\d{2})\b",
+            str(description or ""),
+        )
+        if int(first) <= int(second)
+    ]
+
+
+def _fallback_application_text(description: str) -> str:
+    match = re.search(
+        r"aplica[cç][oõ]es?\s*:\s*(.+)$",
+        str(description or ""),
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return str(match.group(1) if match else "").strip()
+
+
+_FALLBACK_NON_IDENTITY_TOKENS = frozenset({
+    "a", "as", "o", "os", "um", "uma", "de", "da", "do", "das", "dos", "e",
+    "em", "na", "no", "nas", "nos", "ao", "aos", "para", "por", "com", "sem",
+    "serve", "servir", "servem", "compativel", "compatibilidade", "aplica", "aplicacao",
+    "aplicacoes", "modelo", "carro", "veiculo", "meu", "minha", "seu", "sua", "este",
+    "esta", "esse", "essa", "peca", "produto", "original", "codigo", "codigos", "nao",
+    "chassi", "chassis", "vin", "final", "ano", "anos", "identificador", "removido", "dado",
+    "sim", "bom", "boa", "dia", "tarde", "noite", "ola", "amigo", "amiga", "quero",
+    "gostaria", "preciso", "saber", "qual", "quais", "pode", "posso", "antes", "ainda",
+    "conferi", "conferir", "desmontei", "desmontar", "monta", "montam", "encaixa", "usar",
+    "uso", "tenho", "tem", "compra", "comprar", "fiz", "verdade", "corrigindo", "correcao",
+    "quis", "dizer", "realidade", "correto", "corrijo", "enganei",
+    "bomba", "combustivel", "filtro", "sensor", "amortecedor", "mola", "gas", "pressao",
+    "tampa", "cacamba", "porta", "torneira", "registro", "kit", "par", "unidade",
+    "unidades", "lado", "motor", "cambio", "caixa", "automatico", "automatica", "manual",
+    "automatizado", "cvt", "gasolina", "diesel", "flex", "etanol", "alcool", "gnv",
+    "hibrido", "eletrico", "dianteiro", "dianteira", "traseiro", "traseira", "direito",
+    "direita", "esquerdo", "esquerda", "dynamic", "black", "novo", "nova",
+    "audi", "bmw", "chevrolet", "citroen", "fiat", "ford", "honda", "hyundai", "jeep",
+    "kia", "land", "range", "rover", "mercedes", "mitsubishi", "nissan", "peugeot",
+    "renault", "subaru", "suzuki", "toyota", "volkswagen", "volvo",
+})
+
+_FALLBACK_NEGATIVE_APPLICATION_MARKERS = (
+    "nao aplica",
+    "nao se aplica",
+    "nao aplicavel",
+    "sem aplicacao",
+    "aplicacao nao confirmada",
+    "sem compatibilidade",
+    "nao compativel",
+    "nao serve",
+    "exceto",
+)
+
+
+def _fallback_application_segments(application_text: str) -> list[str]:
+    """Split application clauses without breaking engine sizes such as 2.0."""
+
+    return [
+        segment.strip()
+        for segment in re.split(
+            r"(?:[;|\r\n\u2022]+|\.(?!\d))",
+            str(application_text or ""),
+        )
+        if segment.strip()
+    ]
+
+
+def _fallback_identity_tokens(text: Any) -> list[str]:
+    normalized = re.sub(
+        r"\b(?:chassi|chassis|vin)\b(?:\s+final)?\s*[:#-]?\s*[a-z0-9-]{4,25}\b",
+        " ",
+        _normal(text),
+    )
+    tokens = re.findall(r"\b[a-z0-9]{2,}\b", normalized)
+    return [
+        token
+        for token in tokens
+        if token not in _FALLBACK_NON_IDENTITY_TOKENS
+        and not re.fullmatch(r"(?:19|20)\d{2}", token)
+        and not re.fullmatch(r"\d+(?:[.,]\d+)?", token)
+        and not re.fullmatch(r"(?:v[468]|\d{1,2}v)", token)
+        and not re.fullmatch(r"[a-hj-npr-z0-9]{17}", token)
+    ]
+
+
+def _fallback_model_label(tokens: list[str]) -> str:
+    return " ".join(
+        token.upper() if any(char.isdigit() for char in token) else token.capitalize()
+        for token in tokens
+    )
+
+
+def _fallback_target_label(model: str, target_text: str) -> str:
+    qualifiers = _fallback_qualifiers(target_text)
+    parts = [model]
+    for category in ("displacement", "fuel", "engine", "transmission"):
+        values = qualifiers.get(category) or set()
+        if len(values) != 1:
+            continue
+        value = next(iter(values))
+        if category == "fuel":
+            value = value.capitalize()
+        elif category == "transmission":
+            value = {
+                "automatico": "Automático",
+                "manual": "Manual",
+                "automatizado": "Automatizado",
+                "cvt": "CVT",
+            }.get(value, value)
+        elif category == "engine":
+            value = value.upper()
+        parts.append(value)
+    return " ".join(parts)
+
+
+def _fallback_qualifiers(text: Any) -> dict[str, set[str]]:
+    normalized = _normal(text).replace(",", ".")
+    fuels = {
+        value
+        for value in (
+            "gasolina", "diesel", "flex", "etanol", "alcool", "gnv", "hibrido", "eletrico",
+        )
+        if re.search(rf"\b{re.escape(value)}\b", normalized)
+    }
+    displacements = {
+        re.sub(r"\s+", "", value)
+        for value in re.findall(r"\b\d\s*\.\s*\d\b", normalized)
+    }
+    transmissions = {
+        canonical
+        for pattern, canonical in (
+            (r"\bautomatic[oa]s?\b", "automatico"),
+            (r"\bmanual(?:is)?\b", "manual"),
+            (r"\bautomatizad[oa]s?\b", "automatizado"),
+            (r"\bcvt\b", "cvt"),
+        )
+        if re.search(pattern, normalized)
+    }
+    sides = {
+        canonical
+        for pattern, canonical in (
+            (r"\bdireit[oa]s?\b", "direito"),
+            (r"\besquerd[oa]s?\b", "esquerdo"),
+            (r"\bdianteir[oa]s?\b", "dianteiro"),
+            (r"\btraseir[oa]s?\b", "traseiro"),
+        )
+        if re.search(pattern, normalized)
+    }
+    engines = set(re.findall(r"\b(?:v[468]|\d{1,2}v)\b", normalized))
+    return {
+        "fuel": fuels,
+        "displacement": displacements,
+        "transmission": transmissions,
+        "side": sides,
+        "engine": engines,
+    }
+
+
+def _fallback_has_negated_qualifier(text: Any) -> bool:
+    normalized = _normal(text).replace(",", ".")
+    qualifier = (
+        r"(?:gasolina|diesel|flex|etanol|alcool|gnv|hibrido|eletrico|"
+        r"automatic[oa]|manual|automatizad[oa]|cvt|direit[oa]|esquerd[oa]|"
+        r"dianteir[oa]|traseir[oa]|v[468]|\d{1,2}v|\d\s*\.\s*\d)"
+    )
+    return bool(
+        re.search(rf"\b(?:nao|sem|exceto)\s+(?:motor\s+)?{qualifier}\b", normalized)
+        or re.search(rf"\b{qualifier}\s+(?:nao|excluido|excluida)\b", normalized)
+    )
+
+
+def _fallback_target_qualifiers_supported(
+    target_text: str,
+    application_segment: str,
+    listing_text: str,
+) -> bool:
+    if any(
+        _fallback_has_negated_qualifier(value)
+        for value in (target_text, application_segment, listing_text)
+    ):
+        return False
+    target = _fallback_qualifiers(target_text)
+    segment = _fallback_qualifiers(application_segment)
+    listing = _fallback_qualifiers(listing_text)
+    for category, target_values in target.items():
+        if not target_values:
+            continue
+        segment_values = segment.get(category) or set()
+        if segment_values:
+            if not target_values.issubset(segment_values):
+                return False
+            continue
+        listing_values = listing.get(category) or set()
+        if listing_values != target_values:
+            return False
+    return True
+
+
+def _fallback_current_target_override(text: Any) -> bool:
+    normalized = _normal(text)
+    facts = _perguntas_ia_continuation_facts(
+        _perguntas_ia_texto_autoritativo_atual(text)
+    )
+    return bool(
+        _perguntas_ia_current_facts_explicit(text, facts)
+        or re.search(
+            r"\b(?:na\s+verdade|corrigindo|correcao|modelo\s+correto|"
+            r"meu\s+carro|meu\s+veiculo|e\s+um|e\s+uma|"
+            r"(?:eu\s+)?quis\s+dizer|na\s+realidade|o\s+correto\s+(?:e|eh)|"
+            r"corrijo|me\s+enganei)\b",
+            normalized,
+        )
+        or re.search(r"^\s*e\s+[a-z0-9]", normalized)
+    )
+
+
+def _fallback_application_match(
+    item: dict[str, Any],
+    description: str,
+    target_text: str,
+) -> Optional[tuple[str, tuple[int, int]]]:
+    application_text = _fallback_application_text(description)
+    title = str(item.get("title") or "")
+    title_tokens = set(_fallback_identity_tokens(title))
+    target_tokens = list(dict.fromkeys(_fallback_identity_tokens(target_text)))
+    normalized_target = _normal(target_text)
+    if (
+        not application_text
+        or not target_tokens
+        or not all(token in title_tokens for token in target_tokens)
+        or re.search(
+            r"\bnao\s+(?:e|eh|serve|se\s+trata|corresponde|encaixa|aplica)\b",
+            normalized_target,
+        )
+    ):
+        return None
+
+    matched: list[tuple[str, tuple[int, int]]] = []
+    for segment in _fallback_application_segments(application_text):
+        normalized_segment = _normal(segment)
+        segment_tokens = set(_fallback_identity_tokens(segment))
+        if not all(token in segment_tokens for token in target_tokens):
+            continue
+        if any(marker in normalized_segment for marker in _FALLBACK_NEGATIVE_APPLICATION_MARKERS):
+            return None
+        ranges = _fallback_application_ranges(segment)
+        if len(ranges) != 1:
+            return None
+        if not _fallback_target_qualifiers_supported(
+            target_text,
+            segment,
+            " ".join((title, segment)),
+        ):
+            return None
+        matched.append((_fallback_model_label(target_tokens), ranges[0]))
+    if len(matched) != 1:
+        return None
+    return matched[0]
+
+
+def _fallback_application_details(
+    item: dict[str, Any],
+    description: str,
+    target_text: str,
+) -> Optional[tuple[str, list[int], list[str]]]:
+    match = _fallback_application_match(item, description, target_text)
+    years = _fallback_buyer_years(target_text)
+    codes = _fallback_announced_codes(description)
+    if not match or not years or not codes:
+        return None
+    model, application_range = match
+    if not all(application_range[0] <= year <= application_range[1] for year in years):
+        return None
+    return model, years, codes
+
+
+def _contextual_compatibility_fallback(job: dict[str, Any], context: dict[str, Any]) -> str:
+    item = context.get("item") if isinstance(context.get("item"), dict) else {}
+    description = str(item.get("description") or "")
+    current_text = str(context.get("question_text") or "")
+    classification = (
+        context.get("classification")
+        if isinstance(context.get("classification"), dict)
+        else {}
+    )
+    continuity = (
+        classification.get("continuidade")
+        if isinstance(classification.get("continuidade"), dict)
+        else {}
+    )
+    inherit_history = str(continuity.get("tipo") or "") not in {"novo_assunto", "independente"}
+    buyer_texts = [current_text]
+    if inherit_history:
+        buyer_texts.extend(
+            str(event.get("text") or "")
+            for event in reversed(context.get("history") or [])
+            if isinstance(event, dict)
+            and _normal(event.get("role")) not in {"seller", "loja", "store"}
+        )
+    if _fallback_current_target_override(current_text):
+        buyer_texts = [current_text]
+
+    compatibility = (
+        classification.get("compatibilidade")
+        if isinstance(classification.get("compatibilidade"), dict)
+        else {}
+    )
+    classified_target = str(compatibility.get("target_item") or "").strip()
+    if compatibility.get("aplicavel") is True and str(compatibility.get("target_type") or "") == "vehicle":
+        classified_details = _fallback_application_details(item, description, classified_target)
+        if classified_details and any(
+            _fallback_buyer_supports_target(
+                item,
+                description,
+                classified_target,
+                buyer_text,
+            )
+            for buyer_text in buyer_texts
+        ):
+            buyer_texts.insert(0, classified_target)
+
+    matches: list[tuple[tuple[str, list[int], list[str]], str]] = []
+    for target_text in buyer_texts:
+        details = _fallback_application_details(item, description, target_text)
+        if details and details not in [match[0] for match in matches]:
+            matches.append((details, target_text))
+    if len(matches) != 1:
+        return ""
+    details, matched_target = matches[0]
+    model, years, codes = details
+    target_label = _fallback_target_label(model, matched_target)
+    year_label = "/".join(str(year) for year in years)
+    return (
+        f"Boa tarde! O modelo {target_label} {year_label} está dentro da aplicação anunciada para este produto. "
+        "Porém, a confirmação final depende da correspondência do código da peça original com um dos códigos "
+        f"anunciados: {' / '.join(codes)}.\n\n{_fallback_signature(job)}"
+    )
+
+
+def _fallback_buyer_supports_target(
+    item: dict[str, Any],
+    description: str,
+    target_text: str,
+    buyer_text: str,
+) -> bool:
+    target_details = _fallback_application_details(item, description, target_text)
+    buyer_details = _fallback_application_details(item, description, buyer_text)
+    if not target_details or not buyer_details:
+        return False
+    target_model, target_years, _target_codes = target_details
+    buyer_model, buyer_years, _buyer_codes = buyer_details
+    if _normal(target_model) != _normal(buyer_model) or target_years != buyer_years:
+        return False
+    target_qualifiers = _fallback_qualifiers(target_text)
+    buyer_qualifiers = _fallback_qualifiers(buyer_text)
+    return all(
+        not values or values.issubset(buyer_qualifiers.get(category) or set())
+        for category, values in target_qualifiers.items()
+    )
+
+
+def _fallback_context_blocked_by_safety(context: dict[str, Any]) -> bool:
+    classification = (
+        context.get("classification")
+        if isinstance(context.get("classification"), dict)
+        else {}
+    )
+    continuity = (
+        classification.get("continuidade")
+        if isinstance(classification.get("continuidade"), dict)
+        else {}
+    )
+    continuity_type = str(continuity.get("tipo") or "")
+    current_text = str(context.get("question_text") or "")
+    if _perguntas_ia_prompt_injection_evidente(current_text):
+        return True
+    if _perguntas_ia_mensagem_pos_venda_evidente(current_text):
+        return True
+    if _perguntas_ia_continuation_negated_identity(current_text):
+        return True
+    if _perguntas_ia_continuation_has_negated_qualifier(current_text):
+        return True
+    if _perguntas_ia_assunto_atual_autossuficiente(current_text):
+        return True
+    if continuity_type in {"continuacao", "inconclusiva"} and not (
+        _perguntas_ia_turno_continuacao_positiva(current_text)
+    ):
+        return True
+    if continuity_type in {"novo_assunto", "independente"}:
+        return False
+    for event in context.get("history") or []:
+        if not isinstance(event, dict):
+            continue
+        if _normal(event.get("role") or event.get("from_role")) in {"seller", "loja", "store"}:
+            continue
+        buyer_text = str(event.get("text") or "")
+        if _perguntas_ia_prompt_injection_evidente(buyer_text):
+            return True
+        if _perguntas_ia_mensagem_pos_venda_evidente(buyer_text):
+            return True
+    return False
+
+
+def _neutral_fallback_with_source(job: dict[str, Any]) -> tuple[str, str]:
+    return (
+        "Boa tarde! Essa informação não está confirmada nos dados disponíveis do produto; "
+        "antes da compra, considere somente a especificação descrita no anúncio."
+        f"\n\n{_fallback_signature(job)}",
+        "neutral_fallback",
+    )
+
+
+def _safe_fallback_with_source(
+    job: dict[str, Any],
+    *,
+    fallback_context: Optional[dict[str, Any]] = None,
+    allow_contextual: bool = False,
+) -> tuple[str, str]:
+    if not allow_contextual:
+        return _neutral_fallback_with_source(job)
+    context = _fallback_context(job, fallback_context)
+    if _fallback_context_blocked_by_safety(context):
+        return _neutral_fallback_with_source(job)
+    classification = (
+        context.get("classification")
+        if isinstance(context.get("classification"), dict)
+        else {}
+    )
+    continuity = (
+        classification.get("continuidade")
+        if isinstance(classification.get("continuidade"), dict)
+        else {}
+    )
+    current_text = str(context.get("question_text") or "")
+    current_target_override = _fallback_current_target_override(current_text)
+    inherit_previous_subject = not current_target_override and str(continuity.get("tipo") or "") not in {
+        "novo_assunto",
+        "independente",
+    }
+    question_parts = [current_text if current_target_override else _fallback_buyer_context_text(context)]
+    if inherit_previous_subject:
+        question_parts.insert(0, _job_question_text(job))
+    normalized = _normal(" ".join(part for part in question_parts if part))
+    raw_categories = (
+        classification.get("categorias")
+        if isinstance(classification.get("categorias"), list)
+        else []
+    )
+    categories = {
+        _normal(value)
+        for value in [classification.get("categoria"), *raw_categories]
+        if _normal(value)
+    }
+    if inherit_previous_subject:
+        categories.update({
+            _normal(item.get("intent"))
+            for item in (job.get("subquestions") or [])
+            if isinstance(item, dict) and _normal(item.get("intent"))
+        })
+    asks_compatibility = bool(
+        "compatibility" in categories
+        or any(marker in normalized for marker in ("serve", "compativ", "aplicacao", "encaix"))
+    )
+    if asks_compatibility:
+        contextual = _contextual_compatibility_fallback(job, context)
+        if contextual:
+            return contextual, "contextual_fallback"
+    asks_kit_quantity = bool(
+        re.search(r"\b(?:par|unidades?|quantidade)\b", normalized)
+        or re.search(r"\b(?:duas|2)\s+pecas?\b", normalized)
+    )
+    content: list[str] = []
+    if asks_compatibility:
+        content.append(
+            "Para o modelo informado, a confirmação final depende da correspondência entre a aplicação "
+            "e o código da peça original com os dados descritos no anúncio."
+        )
+    if asks_kit_quantity:
+        content.append("A quantidade do kit deve ser considerada exatamente como descrita no anúncio.")
+    if content and fallback_context:
+        return (
+            "Boa tarde! " + " ".join(content[:3]) + f"\n\n{_fallback_signature(job)}",
+            "contextual_fallback",
+        )
+    return _neutral_fallback_with_source(job)
+
+
+def _subject_aware_safe_fallback(
+    job: dict[str, Any],
+    fallback_context: Optional[dict[str, Any]] = None,
+) -> str:
+    """Compatibility facade for callers that only consume the editable draft."""
+
+    explicit_context = (
+        fallback_context
+        if isinstance(fallback_context, dict)
+        else _fallback_context(job)
+    )
+    answer, _source = _safe_fallback_with_source(
+        job,
+        fallback_context=explicit_context,
+        allow_contextual=True,
+    )
+    return answer
+
+
 def _complete_without_draft(
-    job: dict[str, Any], *, warning: str, completion_reason: str
+    job: dict[str, Any],
+    *,
+    warning: str,
+    completion_reason: str,
+    fallback_context: Optional[dict[str, Any]] = None,
+    allow_contextual: bool = False,
+    deadline_reached: bool = True,
 ) -> dict[str, Any]:
     """Compatibility entrypoint that now always returns an editable safe draft."""
 
@@ -453,9 +1142,10 @@ def _complete_without_draft(
     client_id = str(job.get("client_id") or "default")
     job_id = str(job.get("job_id") or "")
     version = max(1, int(job.get("proposal_version") or 1))
-    fallback_answer = (
-        "Ola! Pelas informacoes disponiveis, esse ponto ainda nao esta confirmado com seguranca. "
-        "Considere somente as especificacoes ja informadas no anuncio."
+    fallback_answer, draft_source = _safe_fallback_with_source(
+        job,
+        fallback_context=fallback_context,
+        allow_contextual=allow_contextual,
     )
     proposal_hash = _hash(
         {
@@ -482,6 +1172,7 @@ def _complete_without_draft(
         "blocked_without_draft": False,
         "completion_reason": completion_reason,
         "review_required": False,
+        "draft_source": draft_source,
     }
     job.update(
         {
@@ -490,11 +1181,12 @@ def _complete_without_draft(
             "current_step": "aprovar",
             "result": result,
             "warnings": list(result["warnings"]),
-            "deadline_reached": True,
+            "deadline_reached": bool(deadline_reached),
             "completed_with_partial": True,
             "blocked_without_draft": False,
             "completion_reason": completion_reason,
             "review_required": False,
+            "draft_source": draft_source,
             "proposal_id": job_id,
             "proposal_version": version,
             "proposal_hash": proposal_hash,
@@ -726,8 +1418,11 @@ def _safe_insufficient_draft(answer: Any, context: Any) -> bool:
     unsupported_assertions = (
         "sim, serve", "sim serve", "serve perfeitamente", "e compativel",
         "nao serve", "nao e compativel", "pode usar", "nao pode usar", "garantimos",
+        "confirma que serve", "confirma compatibilidade", "compatibilidade confirmada",
     )
     if any(marker in conditional for marker in unsupported_assertions):
+        return False
+    if re.search(r"\bserve\s+(?:no|na|para|em|o|a|seu|sua|esse|essa|neste|nesta)\b", conditional):
         return False
     request_markers = (
         "informe", "informar", "confirme", "confirmar", "qual ", "quais ",
@@ -749,6 +1444,121 @@ def _safe_insufficient_draft(answer: Any, context: Any) -> bool:
     return requested_fields <= 2
 
 
+def _continuation_safe_partial_draft(job: dict[str, Any], context: Any) -> str:
+    """Build a deterministic conditional draft from one positive application segment."""
+
+    data = context if isinstance(context, dict) else {}
+    intent = (
+        data.get("intencao_atendimento")
+        if isinstance(data.get("intencao_atendimento"), dict)
+        else {}
+    )
+    continuity = intent.get("continuidade") if isinstance(intent.get("continuidade"), dict) else {}
+    categories = intent.get("categorias") if isinstance(intent.get("categorias"), list) else []
+    if (
+        str(continuity.get("tipo") or "") != "continuacao"
+        or continuity.get("herdou_historico") is not True
+    ):
+        return ""
+    if str(intent.get("categoria") or "") != "compatibility" and "compatibility" not in categories:
+        return ""
+    question_value = data.get("pergunta") or data.get("question") or ""
+    current_text = str(
+        question_value.get("text") if isinstance(question_value, dict) else question_value
+        or ""
+    )
+    canonical_history = (
+        data.get("buyer_question_chat")
+        if isinstance(data.get("buyer_question_chat"), list)
+        else data.get("history") if isinstance(data.get("history"), list) else []
+    )
+    if _fallback_context_blocked_by_safety({
+        "question_text": current_text,
+        "history": canonical_history,
+        "classification": intent,
+    }):
+        return ""
+    diagnostic = _diagnostic_result(data)
+    analysis = (
+        diagnostic.get("compatibility_analysis")
+        if isinstance(diagnostic.get("compatibility_analysis"), dict)
+        else {}
+    )
+    if _normal(analysis.get("decision")) != "insufficient":
+        return ""
+    description = str(data.get("descricao") or "")
+    listing = data.get("item") or data.get("anuncio")
+    listing = listing if isinstance(listing, dict) else {}
+    compatibility = (
+        intent.get("compatibilidade")
+        if isinstance(intent.get("compatibilidade"), dict)
+        else {}
+    )
+    target_text = str(compatibility.get("target_item") or "").strip()
+    listing_item = {
+        "title": listing.get("title") or data.get("titulo") or "",
+        "description": description,
+    }
+    details = _fallback_application_details(
+        listing_item,
+        description,
+        target_text,
+    )
+    if not details:
+        return ""
+    model, target_years, _codes = details
+    buyer_texts = [current_text]
+    buyer_texts.extend(
+        str(event.get("text") or "")
+        for event in canonical_history
+        if isinstance(event, dict)
+        and _normal(event.get("role") or event.get("from_role")) not in {"seller", "loja", "store"}
+    )
+    if not any(
+        _fallback_buyer_supports_target(
+            listing_item,
+            description,
+            target_text,
+            buyer_text,
+        )
+        for buyer_text in buyer_texts
+    ):
+        return ""
+    if _fallback_current_target_override(current_text):
+        current_details = _fallback_application_details(
+            listing_item,
+            description,
+            current_text,
+        )
+        if not current_details:
+            return ""
+        current_model, current_years, _current_codes = current_details
+        if _normal(current_model) != _normal(model) or current_years != target_years:
+            return ""
+        current_qualifiers = _fallback_qualifiers(current_text)
+        target_qualifiers = _fallback_qualifiers(target_text)
+        if any(
+            values and set(target_qualifiers.get(category) or set()) != set(values)
+            for category, values in current_qualifiers.items()
+        ):
+            return ""
+
+    safe_context = {
+        "question_text": target_text,
+        "history": [],
+        "item": listing_item,
+        "classification": {
+            "categoria": "compatibility",
+            "categorias": ["compatibility"],
+            "continuidade": {"tipo": "independente", "herdou_historico": False},
+        },
+    }
+    draft = _contextual_compatibility_fallback(job, safe_context)
+    if not draft or not _safe_insufficient_draft(draft, data):
+        return ""
+    return draft
+
+
 def _complete_with_best_available(
     job: dict[str, Any],
     *,
@@ -756,7 +1566,11 @@ def _complete_with_best_available(
     context: Optional[dict[str, Any]] = None,
     matrix: Optional[list[dict[str, Any]]] = None,
     warnings: Optional[list[str]] = None,
+    draft_source: str = "",
     completion_reason: str = "evidence_insufficient_after_retry_limit",
+    deadline_reached: bool = True,
+    empty_completion_reason: str = "ai_response_unavailable",
+    empty_warning: str = "A IA nao concluiu a resposta; foi gerado um rascunho seguro editavel.",
 ) -> dict[str, Any]:
     """Finish a bounded research job with the safest partial draft available."""
 
@@ -773,6 +1587,11 @@ def _complete_with_best_available(
         and _lease_generation(current) != _lease_generation(job)
     ):
         return current
+    for counter in ("attempt_count", "evidence_attempt_count", "operational_failure_count"):
+        current[counter] = max(
+            int(current.get(counter) or 0),
+            int(job.get(counter) or 0),
+        )
     if _canonical_task_type(current.get("task_type")) == TASK_TYPE_POST_SALE:
         return _cancel_post_sale_job(current)
     if current.get("cancel_requested"):
@@ -799,10 +1618,8 @@ def _complete_with_best_available(
     if not final_answer:
         return _complete_without_draft(
             current,
-            warning=(
-                "A IA nao concluiu a resposta no prazo; foi gerado um rascunho neutro editavel."
-            ),
-            completion_reason="ai_response_unavailable",
+            warning=empty_warning,
+            completion_reason=empty_completion_reason,
         )
 
     final_context = context if isinstance(context, dict) and context else partial.get("contexto")
@@ -824,7 +1641,7 @@ def _complete_with_best_available(
         warnings,
         partial.get("warnings"),
         current.get("warnings"),
-        RESEARCH_DEADLINE_WARNING,
+        [RESEARCH_DEADLINE_WARNING] if deadline_reached else [],
     )
     version = max(1, int(current.get("proposal_version") or 1))
     proposal_hash = _hash(
@@ -865,6 +1682,12 @@ def _complete_with_best_available(
         "completed_with_partial": True,
         "completion_reason": completion_reason,
         "review_required": False,
+        "draft_source": str(
+            draft_source
+            or partial.get("draft_source")
+            or current.get("draft_source")
+            or "ai"
+        ),
     }
     current.update(
         {
@@ -878,10 +1701,11 @@ def _complete_with_best_available(
             "retry_policy": _task_retry_policy(current.get("task_type")),
             "deadline_seconds": _task_deadline_seconds(current.get("task_type")),
             "deadline_at_epoch": _job_deadline_epoch(current),
-            "deadline_reached": True,
+            "deadline_reached": bool(deadline_reached),
             "completed_with_partial": True,
             "completion_reason": completion_reason,
             "review_required": False,
+            "draft_source": result["draft_source"],
             "lease_owner": "",
             "lease_expires_ts": 0.0,
             "completed_at": _now(),
@@ -894,7 +1718,11 @@ def _complete_with_best_available(
             "state": "aguardando_aprovacao",
             "step": "aprovar",
             "at": _now(),
-            "message": "Evidencia insuficiente apos duas pesquisas; rascunho gerado com os fatos disponiveis.",
+            "message": (
+                "Evidencia insuficiente apos as pesquisas; rascunho gerado com os fatos disponiveis."
+                if deadline_reached
+                else "A tentativa mais recente foi rejeitada; o ultimo rascunho validado foi preservado."
+            ),
         }
     )
     current["agent_steps"] = history[-60:]
@@ -1049,6 +1877,7 @@ def _persist_retry(
         "data_sufficient": False,
         "warnings": _unique_warnings(previous_partial.get("warnings"), warnings),
         "publish_attempted": False,
+        "draft_source": str(previous_partial.get("draft_source") or ("ai" if answer else "")),
     }
     current.update(
         {
@@ -1138,6 +1967,13 @@ def _job_contract_current(job: Any) -> bool:
         and str(job.get("schema_version") or "") == SCHEMA_VERSION
         and str(job.get("prompt_hash") or "") == PROMPT_HASH
         and str(job.get("queue_policy_version") or "") == QUEUE_POLICY_VERSION
+    )
+
+
+def _job_terminal(job: Any) -> bool:
+    return bool(
+        isinstance(job, dict)
+        and str(job.get("status") or "") in TERMINAL_STATUSES
     )
 
 
@@ -1392,7 +2228,7 @@ def _evidence_envelope(
         for field, value in (
             ("pergunta", context.get("pergunta") or context.get("question")),
             ("anuncio", listing),
-            ("historico_comprador", context.get("historico_comprador")),
+            ("buyer_question_chat", context.get("buyer_question_chat")),
             ("context_hub", context.get("context_hub")),
         ):
             add(
@@ -1647,7 +2483,12 @@ def _status_message(job: dict[str, Any], *, queue_position: int = 0) -> str:
 
 
 def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, Any]:
-    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    result = dict(job.get("result")) if isinstance(job.get("result"), dict) else {}
+    draft_source = str(result.get("draft_source") or job.get("draft_source") or "").strip()
+    if not draft_source and str(result.get("resposta") or "").strip():
+        draft_source = "ai"
+    if draft_source:
+        result["draft_source"] = draft_source
     blocked_without_draft = bool(
         result.get("blocked_without_draft")
         or job.get("blocked_without_draft")
@@ -1664,6 +2505,8 @@ def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, An
     except Exception:
         queue_metrics = {"queued": 0, "running": 0, "waiting_retry": 0, "active": 0}
     completion_reason = str(result.get("completion_reason") or job.get("completion_reason") or "")
+    if completion_reason:
+        result["completion_reason"] = completion_reason
     return {
         "success": str(job.get("status") or "") == "completed" and not blocked_without_draft,
         "queued": str(job.get("status") or "") in ACTIVE_STATUSES,
@@ -1712,6 +2555,7 @@ def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, An
         "blocked_without_draft": blocked_without_draft,
         "contract_quarantined": bool(job.get("contract_quarantined")),
         "completion_reason": completion_reason,
+        "draft_source": draft_source,
         "review_required": bool(result.get("review_required") or job.get("review_required")),
         "research_history": list(job.get("research_history") or [])[-RETRY_HISTORY_LIMIT:],
         "queue_position": max(0, int(queue_position or 0)),
@@ -2148,6 +2992,8 @@ def get_job(client_id: str, job_id: str) -> Optional[dict[str, Any]]:
     if _canonical_task_type(job.get("task_type")) == TASK_TYPE_POST_SALE:
         return _public_job(_cancel_post_sale_job(job))
     if not _job_contract_current(job):
+        if _job_terminal(job):
+            return _public_job(job)
         job = _quarantine_outdated_job(job, client_id=client_id)
         return _public_job(job)
     if (
@@ -2180,6 +3026,10 @@ def approval_job_current(client_id: str, job_id: str) -> bool:
     result = job.get("result") if isinstance(job, dict) and isinstance(job.get("result"), dict) else {}
     return bool(
         isinstance(job, dict)
+        and str(job.get("prompt_version") or "") == PROMPT_VERSION
+        and str(job.get("prompt_hash") or "") == PROMPT_HASH
+        and str(job.get("schema_version") or "") == SCHEMA_VERSION
+        and str(job.get("queue_policy_version") or "") == QUEUE_POLICY_VERSION
         and str(job.get("status") or "") == "completed"
         and str(job.get("agent_state") or "") == "aguardando_aprovacao"
         and not job.get("contract_quarantined")
@@ -2196,7 +3046,7 @@ def job_contract_current(client_id: str, job_id: str) -> bool:
         job = get_job(client_id, job_id)
     except Exception:
         return False
-    return bool(isinstance(job, dict) and not job.get("contract_quarantined"))
+    return _job_contract_current(job)
 
 
 def latest_job_for_request(
@@ -2247,7 +3097,8 @@ def latest_job_for_request(
     if not isinstance(latest, dict):
         return None
     if not _job_contract_current(latest):
-        _quarantine_outdated_job(latest, client_id=client_id)
+        if not _job_terminal(latest):
+            _quarantine_outdated_job(latest, client_id=client_id)
         return None
     persisted_event_key = str(
         latest.get("event_subject_key") or latest.get("subject_key") or ""
@@ -2270,6 +3121,8 @@ def resume_incomplete_job(client_id: str, job_id: str, reason: str = "evidencia_
     if _canonical_task_type(job.get("task_type")) == TASK_TYPE_POST_SALE:
         return _public_job(_cancel_post_sale_job(job))
     if not _job_contract_current(job):
+        if _job_terminal(job):
+            return _public_job(job)
         return _public_job(_quarantine_outdated_job(job, client_id=client_id))
     if job.get("cancel_requested") or str(job.get("status") or "") == "cancelled":
         return _public_job(job)
@@ -2446,37 +3299,49 @@ def _is_operational_failure(exc: BaseException) -> bool:
     retried by the job, but they must never count as a Codex outage.
     """
 
-    if isinstance(exc, (TimeoutError, ConnectionError, BrokenPipeError)):
-        return True
-    status_code = getattr(exc, "status_code", None)
-    if status_code is None:
-        response = getattr(exc, "response", None)
-        status_code = getattr(response, "status_code", None)
-    try:
-        if int(status_code or 0) == 429 or int(status_code or 0) >= 500:
+    if isinstance(exc, (PerguntasIAClassificacaoInconclusiva, PerguntasIASegurancaBloqueada)):
+        return False
+    if isinstance(exc, PerguntasIAProviderIndisponivel):
+        return str(getattr(exc, "reason", "") or "") in PROVIDER_RETRY_REASONS
+    current: Optional[BaseException] = exc
+    visited: set[int] = set()
+    while isinstance(current, BaseException) and id(current) not in visited:
+        visited.add(id(current))
+        if isinstance(
+            current,
+            (
+                TimeoutError,
+                ConnectionError,
+                BrokenPipeError,
+                requests_exceptions.Timeout,
+                requests_exceptions.ConnectionError,
+            ),
+        ):
             return True
-    except (TypeError, ValueError):
-        pass
-    class_name = exc.__class__.__name__.lower()
-    message = str(exc or "").strip().lower()
-    operational_markers = (
-        "timeout",
-        "timed out",
-        "connection",
-        "broken pipe",
-        "rate limit",
-        "429",
-        "too many requests",
-        "service unavailable",
-        "temporarily unavailable",
-        "provider unavailable",
-        "codex indispon",
-        "respostaindisponivel",
-    )
-    return any(marker in class_name or marker in message for marker in operational_markers)
+        status_code = getattr(current, "status_code", None)
+        if status_code is None:
+            response = getattr(current, "response", None)
+            status_code = getattr(response, "status_code", None)
+        try:
+            normalized_status = int(status_code or 0)
+        except (TypeError, ValueError):
+            normalized_status = 0
+        if normalized_status == 429 or 500 <= normalized_status <= 599:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _is_classification_contract_failure(exc: BaseException) -> bool:
+    if isinstance(
+        exc,
+        (
+            PerguntasIAClassificacaoInconclusiva,
+            PerguntasIAProviderIndisponivel,
+            PerguntasIASegurancaBloqueada,
+        ),
+    ):
+        return False
     code = str(getattr(exc, "violation_code", "") or "").strip()
     message = _normal(exc)
     return bool(
@@ -2484,6 +3349,10 @@ def _is_classification_contract_failure(exc: BaseException) -> bool:
         or "classificacao de intencao da ia" in message
         or "classificacao estruturada da ia" in message
     )
+
+
+def _is_response_policy_failure(exc: BaseException) -> bool:
+    return isinstance(exc, PerguntasIARespostaPoliticaInvalida)
 
 
 def _persist_thread_ready(job: dict[str, Any], thread_id: str) -> dict[str, Any]:
@@ -2620,8 +3489,13 @@ def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         "text": question.get("text") or "",
     })
     context.setdefault("item", item or {})
-    history = question.get("history") if isinstance(question.get("history"), list) else []
+    history = (
+        question.get("buyer_question_chat")
+        if isinstance(question.get("buyer_question_chat"), list)
+        else question.get("history") if isinstance(question.get("history"), list) else []
+    )
     if history:
+        context.setdefault("buyer_question_chat", history[-10:])
         context.setdefault("historico_comprador", history[-10:])
     return str(answer or "").strip(), context
 
@@ -2834,6 +3708,8 @@ def _run_job(client_id: str, job_id: str) -> None:
             "proposal_hash": proposal_hash,
             "requires_approval": True,
             "publish_attempted": False,
+            "completion_reason": "evidence_confirmed",
+            "draft_source": "ai",
         }
         latest = codex_assistant_storage.codex_assistant_customer_reply_job_get(info_base, client_id, job_id)
         if isinstance(latest, dict) and (
@@ -2863,7 +3739,19 @@ def _run_job(client_id: str, job_id: str) -> None:
             )
             return
         if not sufficient:
-            if (
+            conditional_draft = _continuation_safe_partial_draft(job, context)
+            if conditional_draft:
+                _complete_with_best_available(
+                    job,
+                    answer=conditional_draft,
+                    context=context,
+                    matrix=matrix,
+                    warnings=warnings,
+                    draft_source="contextual_fallback",
+                    completion_reason="conditional_listing_evidence",
+                    deadline_reached=False,
+                )
+            elif (
                 int(job.get("evidence_attempt_count") or 0) >= MAX_EVIDENCE_ATTEMPTS
                 or _job_deadline_expired(job)
                 or int(job.get("attempt_count") or 0) >= MAX_TOTAL_ATTEMPTS
@@ -2896,6 +3784,8 @@ def _run_job(client_id: str, job_id: str) -> None:
                 "evidence_status": matrix,
                 "warnings": warnings,
                 "result": result,
+                "completion_reason": "evidence_confirmed",
+                "draft_source": "ai",
                 "lease_owner": "",
                 "lease_expires_ts": 0.0,
                 "completed_at": _now(),
@@ -2960,7 +3850,54 @@ def _run_job(client_id: str, job_id: str) -> None:
             expected_lease_generation=_lease_generation(job),
         )
     except Exception as exc:
-        logger.exception("[PPV CODEX] Falha no job %s", job_id)
+        fallback_context = getattr(exc, "ppv_fallback_context", None)
+        if isinstance(exc, PerguntasIAClassificacaoInconclusiva):
+            logger.info("[PPV CODEX] Classificacao inconclusiva no job %s.", job_id)
+            job["operational_failure_count"] = 0
+            _complete_without_draft(
+                job,
+                warning=(
+                    "A classificacao permaneceu inconclusiva; foi gerado um rascunho seguro "
+                    "editavel para revisao."
+                ),
+                completion_reason="classification_inconclusive",
+                fallback_context=(fallback_context if isinstance(fallback_context, dict) else None),
+                allow_contextual=bool(getattr(exc, "allow_contextual", True)),
+                deadline_reached=False,
+            )
+            return
+        if isinstance(exc, PerguntasIASegurancaBloqueada):
+            logger.warning("[PPV CODEX] Pergunta bloqueada por seguranca no job %s.", job_id)
+            job["operational_failure_count"] = 0
+            _complete_without_draft(
+                job,
+                warning="A pergunta foi bloqueada pela politica de seguranca; revise antes de responder.",
+                completion_reason="security_blocked",
+                allow_contextual=False,
+                deadline_reached=False,
+            )
+            return
+        logger.warning(
+            "[PPV CODEX] Falha no job %s (%s).",
+            job_id,
+            type(exc).__name__,
+        )
+        if _is_response_policy_failure(exc):
+            _complete_with_best_available(
+                job,
+                warnings=[
+                    "A tentativa mais recente nao passou pelas regras de seguranca; "
+                    "o ultimo rascunho validado foi preservado para revisao."
+                ],
+                completion_reason="response_policy_violation_best_available",
+                deadline_reached=False,
+                empty_completion_reason="response_policy_violation",
+                empty_warning=(
+                    "Nenhuma tentativa passou integralmente pelas regras de seguranca; "
+                    "foi gerado um rascunho conservador para revisao."
+                ),
+            )
+            return
         if _is_classification_contract_failure(exc):
             _complete_without_draft(
                 job,
@@ -2969,6 +3906,8 @@ def _run_job(client_id: str, job_id: str) -> None:
                     "foi gerado um rascunho neutro editavel."
                 ),
                 completion_reason="classification_contract_violation",
+                fallback_context=(fallback_context if isinstance(fallback_context, dict) else None),
+                deadline_reached=False,
             )
             return
         if not _is_operational_failure(exc):
@@ -2976,6 +3915,8 @@ def _run_job(client_id: str, job_id: str) -> None:
                 job,
                 warning="A pesquisa encontrou uma violacao de contrato interno; foi gerado um rascunho neutro editavel.",
                 completion_reason="non_operational_failure",
+                fallback_context=(fallback_context if isinstance(fallback_context, dict) else None),
+                deadline_reached=False,
             )
             return
         job["operational_failure_count"] = (
@@ -2994,7 +3935,7 @@ def _run_job(client_id: str, job_id: str) -> None:
             return
         retry_job = _persist_retry(
             job,
-            error=str(exc)[:1200],
+            error=str(getattr(exc, "reason", "") or "provider_unavailable")[:120],
             warnings=["Falha operacional temporaria; uma nova tentativa sera executada."],
             retry_kind="operational",
         )
@@ -3055,10 +3996,9 @@ def recover_pending_jobs() -> None:
                 continue
             if job.get("cancel_requested"):
                 continue
-            if not _job_contract_current(job):
-                _quarantine_outdated_job(job, client_id=client_id)
-                continue
             if str(job.get("status") or "") == "completed":
+                if not _job_contract_current(job):
+                    continue
                 if (
                     str(job.get("agent_state") or "") == "aguardando_aprovacao"
                     and not codex_assistant_storage.codex_assistant_customer_reply_job_has_transient(
@@ -3084,6 +4024,9 @@ def recover_pending_jobs() -> None:
                         job,
                         expected_lease_generation=_lease_generation(job),
                     )
+                continue
+            if not _job_contract_current(job):
+                _quarantine_outdated_job(job, client_id=client_id)
                 continue
             if str(job.get("status") or "") == "failed":
                 _complete_without_draft(
@@ -3130,7 +4073,8 @@ def approve_or_refresh_proposal(
         _cancel_post_sale_job(job)
         raise PermissionError("Sugestoes do Black Jhon estao desativadas no pos-venda.")
     if not _job_contract_current(job):
-        _quarantine_outdated_job(job, client_id=client_id)
+        if not _job_terminal(job):
+            _quarantine_outdated_job(job, client_id=client_id)
         raise ValueError("A proposta usa um contrato de IA anterior. Gere uma nova resposta antes de aprovar.")
     event_subject_key = str(job.get("event_subject_key") or job.get("subject_key") or "")
     if str(job.get("store") or "") != str(store or "") or event_subject_key != str(subject_key or ""):

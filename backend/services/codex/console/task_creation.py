@@ -68,17 +68,12 @@ def _base_context(
         reasoning_effort = _codex_normalizar_reasoning_effort(None)
         speed = _codex_normalizar_speed(None)
         service_tier = _codex_normalizar_service_tier(None, speed)
-    shared = _codex_shared_continuity_for_session(sessao) if origin == "app" else {}
-    conversation_id = str(shared.get("conversation_id") or "")
-    if not conversation_id:
-        conversation_id = _codex_resolve_new_conversation_id(
-            sessao,
-            payload.conversation_id,
-            origin=origin,
-            channel_metadata=metadata,
-        )
-    if shared:
-        metadata["shared_continuity"] = True
+    conversation_id = _codex_resolve_new_conversation_id(
+        sessao,
+        payload.conversation_id,
+        origin=origin,
+        channel_metadata=metadata,
+    )
     conversation_state = _codex_load_or_create_conversation_state(
         str(sessao.get("client_id") or "default"),
         str(sessao.get("username") or "user"),
@@ -86,15 +81,7 @@ def _base_context(
         phone=metadata.get("wa_id") if origin == "whatsapp" else "",
         lane=metadata.get("agent_lane") or metadata.get("agent_role"),
     )
-    visible_state = (
-        _codex_load_or_create_shared_conversation_state(
-            str(sessao.get("client_id") or "default"),
-            str(sessao.get("username") or "user"),
-        )
-        if shared
-        else conversation_state
-    )
-    generation = int(visible_state.get("generation") or 1)
+    generation = int(conversation_state.get("generation") or 1)
     decision = _codex_decide_model(
         prompt=prompt,
         requested_model=model,
@@ -138,7 +125,7 @@ def _base_context(
         "speed": speed,
         "service_tier": service_tier,
         "approval_profile": "read_only",
-        "shared_continuity": shared,
+        "shared_continuity": {},
         "conversation_id": conversation_id,
         "conversation_state": conversation_state,
         "conversation_generation": generation,
@@ -314,21 +301,6 @@ def _plan_context(
 def _resolve_initial_state(ctx: dict[str, Any], sessao: dict[str, Any]) -> None:
     shared_intake: dict[str, Any] = {}
     shared_decision: dict[str, Any] = {}
-    if ctx["shared_continuity"] and not ctx["approval_required"]:
-        try:
-            from backend.services import whatsapp_bridge
-
-            shared_intake = whatsapp_bridge._shared_sidebar_conversation_turn(
-                sessao, ctx["prompt"], ctx["screen_context"]
-            )
-            shared_decision = (
-                shared_intake.get("decision")
-                if isinstance(shared_intake.get("decision"), dict)
-                else {}
-            )
-        except Exception:
-            shared_intake = {}
-            shared_decision = {}
     task_status = "awaiting_approval" if ctx["approval_required"] else "queued"
     required_input: list[Any] = []
     proposal: dict[str, Any] = {}
@@ -352,16 +324,7 @@ def _resolve_initial_state(ctx: dict[str, Any], sessao: dict[str, Any]) -> None:
             initial_response = str(
                 proposal.get("summary") or "Revise e confirme a acao proposta."
             )
-    shared_action = str(shared_decision.get("action") or "").strip().lower()
-    shared_reply = str(shared_decision.get("reply_text") or "").strip()
-    if (
-        shared_action in {"reply", "request_information"}
-        and shared_reply
-        and not required_input
-        and not proposal
-    ):
-        task_status = "completed"
-        initial_response = shared_reply
+    shared_action = ""
     if required_input:
         ctx["plan"] = codex_agent_runtime.transition_plan(
             _codex_base_info_dir(),
@@ -436,10 +399,10 @@ def _task_record(
     metadata = ctx["channel_metadata"]
     trace_id = uuid.uuid4().hex
     task = {
-        "task_id": ctx["task_id"], "trace_id": trace_id, "status": ctx["task_status"], "sandbox": ctx["sandbox"], "cwd": ctx["cwd"], "thread_id": ctx["task_thread_id"], "thread_reused": bool(decision and decision.reuse_thread), "thread_restart_reasons": list(decision.restart_reasons) if decision else [], "thread_prompt_fingerprint": decision.prompt_fingerprint if decision else "", "thread_schema_fingerprint": decision.schema_fingerprint if decision else "", "thread_scope_fingerprint": decision.scope_fingerprint if decision else "", "thread_conversation_key": decision.conversation_key if decision else "", "thread_prompt_version": CODEX_SIDEBAR_TASK_PROMPT_VERSION if ctx["is_full"] else "", "thread_schema_version": CODEX_SIDEBAR_TASK_SCHEMA_VERSION if ctx["is_full"] else "", "conversation_id": ctx["conversation_id"], "conversation_generation": ctx["conversation_generation"], "shared_responder": bool(ctx["shared_continuity"]), "shared_responder_action": ctx["shared_action"][:40], "shared_authorization_fingerprint": str(ctx["shared_intake"].get("authorization_fingerprint") or "")[:64],
+        "task_id": ctx["task_id"], "trace_id": trace_id, "status": ctx["task_status"], "sandbox": ctx["sandbox"], "cwd": ctx["cwd"], "thread_id": ctx["task_thread_id"], "thread_reused": bool(decision and decision.reuse_thread), "thread_restart_reasons": list(decision.restart_reasons) if decision else [], "thread_prompt_fingerprint": decision.prompt_fingerprint if decision else "", "thread_schema_fingerprint": decision.schema_fingerprint if decision else "", "thread_scope_fingerprint": decision.scope_fingerprint if decision else "", "thread_conversation_key": decision.conversation_key if decision else "", "thread_prompt_version": CODEX_SIDEBAR_TASK_PROMPT_VERSION if ctx["is_full"] else "", "thread_schema_version": CODEX_SIDEBAR_TASK_SCHEMA_VERSION if ctx["is_full"] else "", "conversation_id": ctx["conversation_id"], "conversation_generation": ctx["conversation_generation"], "shared_responder": False, "shared_responder_action": "", "shared_authorization_fingerprint": "",
         "prompt": ctx["prompt"], "model": ctx["model"], "requested_model": ctx["requested_model"], "effective_model": ctx["model"], "model_category": ctx["model_decision"].category, "model_policy_version": ctx["model_decision"].policy_version, "model_reason_code": ctx["model_decision"].reason_code, "model_rerouted": ctx["model_decision"].rerouted, "approval_mode": ctx["approval_profile"], "reasoning_effort": ctx["reasoning_effort"], "reasoning_level": str(metadata.get("reasoning_level") or ctx["reasoning_effort"]), "reasoning_policy": str(metadata.get("reasoning_policy") or "fixed")[:40], "reasoning_max": str(metadata.get("reasoning_max") or ctx["reasoning_effort"])[:20], "orchestration_profile": str(metadata.get("orchestration_profile") or "default")[:80], "agent_role": str(metadata.get("agent_role") or "")[:40], "agent_lane": str(metadata.get("agent_lane") or metadata.get("agent_role") or "")[:40], "parent_job_id": str(metadata.get("parent_job_id") or "")[:100], "job_group_id": str(metadata.get("job_group_id") or "")[:100], "subtask_id": str(metadata.get("subtask_id") or "")[:100], "logical_subtask_id": str(metadata.get("logical_subtask_id") or metadata.get("subtask_id") or "")[:100], "current_attempt": max(1, int(metadata.get("attempt") or 1)), "attempt_task_ids": [], "retry_count": 0, "retry_reason": "", "next_retry_at_epoch": 0, "handoff_status": str(metadata.get("handoff_status") or "")[:60], "last_conversation_tick_at": str(metadata.get("last_conversation_tick_at") or "")[:40], "delivery_state": str(metadata.get("delivery_state") or "pending")[:40],
         "tool_protocol": "typed_catalog_text_v1", "mcp_migration": {"target": "jk_system_mcp", "native_enabled": False, "native_active": False, "legacy_parser_fallback": True, "disabled_reason": "data_selection_cutover"}, "speed": ctx["speed"], "service_tier": ctx["service_tier"] or "", "goal": ctx["goal"], "planning_mode": bool(payload.planning_mode) if ctx["is_full"] else False, "attachments": ctx["attachment_ids"], "reference_paths": ctx["reference_paths"], "paths": ctx["paths"], "scope": ctx["scope"], "scope_violations": [], "screen_context": ctx["screen_context"], "history": ctx["history"], "context_stats": ctx["context_stats"], "conversation_summary": {}, "conversation_compaction": {}, "agent_mode": _codex_agent_mode_enabled(), "plan_id": str(plan.get("plan_id") or ""), "agent_state": str(plan.get("agent_state") or ("aguardando_dados" if ctx["required_input"] else "aguardando_aprovacao" if ctx["proposal"] else "entendendo")), "steps": list(plan.get("steps") or []), "current_step": str(plan.get("current_step") or ("aprovar" if ctx["proposal"] else "preparar" if ctx["required_input"] else "entender")), "required_input": ctx["required_input"], "proposal": ctx["proposal"], "guidance_applied": ctx["guidance_applied"], "verification": {}, "idempotency_key": ctx["idempotency_key"],
-        "agent_steps": [], "tool_calls": [], "tool_results_summary": [], "sources": [], "warnings": [], "live_status": "Codex concluiu." if ctx["task_status"] == "completed" else "Tarefa criada.", "live_answer": "", "reasoning_summary": "", "live_plan": "", "token_usage": {}, "turn_id": "", "active_turn_id": "", "can_steer": False, "wait_reason": "queue" if ctx["task_status"] == "queued" else "" if ctx["task_status"] == "completed" else ctx["task_status"], "progress_events": [], "last_progress_at": "", "deadline_enabled": ctx["deadline_enabled"], "deadline_seconds": ctx["deadline_seconds"], "deadline_at": _codex_deadline_at(ctx["deadline_seconds"]) if ctx["deadline_enabled"] else "", "steer_events": [], "mutable_intent": ctx["mutable_intent"], "final_response": ctx["initial_response"], "error": "", "message_kind": "conversation" if ctx["shared_continuity"] else "", "memory_excluded": False, "logs": [], "created_at": _codex_now(), "started_at": _codex_now() if ctx["task_status"] == "completed" else "", "completed_at": _codex_now() if ctx["task_status"] == "completed" else "",
+        "agent_steps": [], "tool_calls": [], "tool_results_summary": [], "sources": [], "warnings": [], "live_status": "Codex concluiu." if ctx["task_status"] == "completed" else "Tarefa criada.", "live_answer": "", "reasoning_summary": "", "live_plan": "", "token_usage": {}, "turn_id": "", "active_turn_id": "", "can_steer": False, "wait_reason": "queue" if ctx["task_status"] == "queued" else "" if ctx["task_status"] == "completed" else ctx["task_status"], "progress_events": [], "last_progress_at": "", "deadline_enabled": ctx["deadline_enabled"], "deadline_seconds": ctx["deadline_seconds"], "deadline_at": _codex_deadline_at(ctx["deadline_seconds"]) if ctx["deadline_enabled"] else "", "steer_events": [], "mutable_intent": ctx["mutable_intent"], "final_response": ctx["initial_response"], "error": "", "message_kind": "", "memory_excluded": False, "logs": [], "created_at": _codex_now(), "started_at": _codex_now() if ctx["task_status"] == "completed" else "", "completed_at": _codex_now() if ctx["task_status"] == "completed" else "",
         "created_by": sessao["username"], "client_id": sessao["client_id"], "origin": ctx["origin"], "channel_message_id": str(metadata.get("message_id") or "")[:200], "channel_metadata": metadata, "external_safe_mode": ctx["external_safe_mode"], "whatsapp_full_access": ctx["whatsapp_full_access"], "whatsapp_query_only": ctx["whatsapp_query_only"], "query_policy": ctx["query_policy"], "trusted_model_config": ctx["trusted_model_config"], "access_mode": "query_only" if ctx["whatsapp_query_only"] else "read_only", "permissions": {str(key): value is True for key, value in (sessao.get("permissions") or {}).items() if str(key or "").strip()}, "approval_required": ctx["approval_required"], "approved": not bool(ctx["approval_required"] or ctx["required_input"] or ctx["proposal"]),
     }
     ctx["trace_id"] = trace_id

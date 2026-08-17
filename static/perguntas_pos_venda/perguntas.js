@@ -936,7 +936,23 @@ function aplicarResultadoJobAtendimentoCodex(questionKey, data, tenantScope = te
         textarea.dataset.codexProposalVersion = String(result.proposal_version || data.proposal_version || 1);
         textarea.dataset.codexProposalHash = String(result.proposal_hash || data.proposal_hash || '');
         textarea.dispatchEvent(new Event('input', { bubbles: true }));
-        const parcial = data?.data_sufficient === false && Boolean(data?.completed_with_partial);
+        const draftSource = String(result.draft_source || data?.draft_source || '').trim().toLowerCase();
+        const parcial = (result.data_sufficient ?? data?.data_sufficient) === false
+            && Boolean(result.completed_with_partial ?? data?.completed_with_partial);
+        if (draftSource === 'contextual_fallback') {
+            setStatusRespostaPergunta(
+                status,
+                'Rascunho de contingencia baseado no contexto. Revise antes de enviar.'
+            );
+            return;
+        }
+        if (draftSource === 'neutral_fallback') {
+            setStatusRespostaPergunta(
+                status,
+                'Rascunho neutro de contingencia. Revise antes de enviar.'
+            );
+            return;
+        }
         const mensagem = parcial
             ? 'Rascunho gerado com as informacoes disponiveis.'
             : 'Sugestao gerada pelo Black Jhon.';

@@ -28,8 +28,6 @@ const TEST_PNG = new Uint8Array([
   0x00, 0x00, 0x00, 0x0d,
 ]);
 const TEST_JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
-const TEST_PDF = new TextEncoder().encode("%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF");
-const TEST_XLSX = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x06, 0x00]);
 
 function copiedArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   const buffer = new ArrayBuffer(bytes.byteLength);
@@ -238,52 +236,9 @@ function registrationEnvironment(existing: Record<string, unknown> | null = null
   return { env: { DB: db, BRIDGE_TOKEN: "bridge-secret" } as any, sqlCalls };
 }
 
-function primaryBindingEnvironment(machineId = "machine-1", initialPrimary = false) {
-  const sqlCalls: Array<{ sql: string; values: unknown[]; operation: "first" | "run" }> = [];
-  let primary = initialPrimary;
-  const db = {
-    async batch(statements: Array<{ run: () => Promise<unknown> }>) {
-      return Promise.all(statements.map((statement) => statement.run()));
-    },
-    prepare(sql: string) {
-      return {
-        bind(...values: unknown[]) {
-          return {
-            async first() {
-              sqlCalls.push({ sql, values, operation: "first" });
-              if (sql.includes("SELECT subject_id,machine_id,is_primary FROM bindings")) {
-                return { subject_id: "subject-1", machine_id: machineId, is_primary: primary ? 1 : 0 };
-              }
-              if (sql.includes("SELECT is_primary FROM bindings")) return { is_primary: primary ? 1 : 0 };
-              if (sql.includes("SELECT 1 AS present FROM bindings")) return primary ? { present: 1 } : null;
-              return null;
-            },
-            async run() {
-              sqlCalls.push({ sql, values, operation: "run" });
-              if (sql.includes("SET is_primary=1")) primary = true;
-              if (sql.includes("SET is_primary=0") && sql.includes("subject_id=?")) primary = false;
-              return { meta: { changes: 1 } };
-            },
-          };
-        },
-      };
-    },
-  };
-  return { env: { DB: db, BRIDGE_TOKEN: "bridge-secret" } as any, sqlCalls };
-}
-
-function welcomeEnvironment(lastInboundAt = Math.floor(Date.now() / 1000), bindingAvailable = true, unpairedInboundAt = 0) {
+function unregisteredEnvironment() {
   const sqlCalls: Array<{ sql: string; values: unknown[]; operation: "first" | "run" }> = [];
   const graphRequests: Array<{ url: string; body: any }> = [];
-  let outbox: Record<string, unknown> | null = null;
-  const binding = {
-    subject_id: "5537999993818",
-    wa_id: "5537999993818",
-    phone_number: "5537999993818",
-    machine_id: "machine-1",
-    active: 1,
-    last_inbound_at: lastInboundAt,
-  };
   const db = {
     prepare(sql: string) {
       return {
@@ -291,106 +246,11 @@ function welcomeEnvironment(lastInboundAt = Math.floor(Date.now() / 1000), bindi
           return {
             async first() {
               sqlCalls.push({ sql, values, operation: "first" });
-              if (sql.includes("SELECT * FROM bindings WHERE")) return bindingAvailable ? binding : null;
-              if (sql.includes("event_type='unpaired_phone_message'")) return unpairedInboundAt ? { created_at: unpairedInboundAt } : null;
-              if (sql.includes("SELECT * FROM outbox WHERE id=?")) return outbox;
-              if (sql.includes("SELECT status,error,meta_message_id FROM outbox")) return outbox;
               return null;
             },
             async run() {
               sqlCalls.push({ sql, values, operation: "run" });
-              if (sql.includes("INSERT INTO outbox")) {
-                outbox = {
-                  id: values[0],
-                  subject_id: values[1],
-                  recipient: values[2],
-                  message_type: values[3],
-                  text_body: values[4],
-                  template_name: values[5],
-                  template_params_json: values[6],
-                  status: values[7],
-                  attempts: 0,
-                };
-              } else if (outbox && sql.includes("UPDATE outbox SET message_type='adhoc_text'")) {
-                outbox.message_type = "adhoc_text";
-              } else if (outbox && sql.includes("UPDATE outbox SET status='sent'")) {
-                outbox.status = "sent";
-                outbox.meta_message_id = values[2];
-                outbox.error = null;
-              } else if (outbox && sql.includes("UPDATE outbox SET status=?")) {
-                outbox.status = values[0];
-                outbox.error = values[2];
-              }
               return { meta: { changes: 1 } };
-            },
-          };
-        },
-      };
-    },
-  };
-  const env = {
-    DB: db,
-    BRIDGE_TOKEN: "bridge-secret",
-    ZERO_COST_POLICY_VALID_UNTIL: "2026-09-30T23:59:59Z",
-    FREE_WINDOW_SECONDS: "84600",
-    META_GRAPH_API_VERSION: "v25.0",
-    META_SYSTEM_USER_TOKEN: "meta-token",
-    META_PHONE_NUMBER_ID: "phone-id",
-  } as any;
-  vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
-    graphRequests.push({ url: String(input), body: JSON.parse(String(init?.body || "{}")) });
-    return new Response(JSON.stringify({ messages: [{ id: "wamid.welcome" }] }), { status: 200 });
-  });
-  return { env, sqlCalls, graphRequests };
-}
-
-function unauthorizedEnvironment() {
-  const sqlCalls: Array<{ sql: string; values: unknown[]; operation: "first" | "run" | "all" }> = [];
-  const graphRequests: Array<{ url: string; body: any }> = [];
-  const auditTimes = new Map<string, number>();
-  let outbox: Record<string, unknown> | null = null;
-  const db = {
-    prepare(sql: string) {
-      return {
-        bind(...values: unknown[]) {
-          return {
-            async first() {
-              sqlCalls.push({ sql, values, operation: "first" });
-              if (sql.includes("SELECT message_id FROM inbox")) return null;
-              if (sql.includes("SELECT subject_id FROM bindings")) return null;
-              if (sql.includes("event_type='unauthorized_access_notice'")) return { total: 0 };
-              if (sql.includes("SELECT * FROM bindings WHERE")) return null;
-              if (sql.includes("event_type='unpaired_phone_message'")) {
-                return { created_at: auditTimes.get("unpaired_phone_message") || Math.floor(Date.now() / 1000) };
-              }
-              if (sql.includes("SELECT * FROM outbox WHERE id=?")) return outbox;
-              if (sql.includes("SELECT status,error,meta_message_id FROM outbox")) return outbox;
-              return null;
-            },
-            async run() {
-              sqlCalls.push({ sql, values, operation: "run" });
-              if (sql.includes("INSERT INTO audit_events")) {
-                auditTimes.set(String(values[1] || ""), Number(values[4] || 0));
-              } else if (sql.includes("INSERT INTO outbox")) {
-                outbox = {
-                  id: values[0], subject_id: values[1], recipient: values[2], message_type: values[3],
-                  text_body: values[4], template_name: values[5], template_params_json: values[6], status: values[7], attempts: 0,
-                };
-              } else if (outbox && sql.includes("UPDATE outbox SET message_type='adhoc_text'")) {
-                outbox.message_type = "adhoc_text";
-              } else if (outbox && sql.includes("UPDATE outbox SET status='sent'")) {
-                outbox.status = "sent";
-                outbox.meta_message_id = values[2];
-                outbox.error = null;
-              } else if (outbox && sql.includes("UPDATE outbox SET status=?")) {
-                outbox.status = values[0];
-                outbox.error = values[2];
-              }
-              return { meta: { changes: 1 } };
-            },
-            async all() {
-              sqlCalls.push({ sql, values, operation: "all" });
-              return { results: [] };
             },
           };
         },
@@ -409,7 +269,7 @@ function unauthorizedEnvironment() {
   } as any;
   vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
     graphRequests.push({ url: String(input), body: JSON.parse(String(init?.body || "{}")) });
-    return new Response(JSON.stringify({ messages: [{ id: "wamid.unauthorized" }] }), { status: 200 });
+    return new Response(JSON.stringify({ messages: [{ id: "wamid.unexpected" }] }), { status: 200 });
   });
   return { env, sqlCalls, graphRequests };
 }
@@ -1472,8 +1332,8 @@ describe("public gateway routes", () => {
     expect([...target.outboxByKey.keys()]).toEqual(["inbound_result:wamid.result.idempotent:1"]);
   });
 
-  it("informs an unregistered WhatsApp number that it has no Black Jhon permission", async () => {
-    const unauthorized = unauthorizedEnvironment();
+  it("silently ignores an unregistered WhatsApp number in question-only mode", async () => {
+    const unregistered = unregisteredEnvironment();
     const phone = "5537999993818";
     const body = JSON.stringify({
       entry: [{
@@ -1498,21 +1358,15 @@ describe("public gateway routes", () => {
         body,
         headers: { "x-hub-signature-256": await signature("app-secret", body) },
       }),
-      unauthorized.env,
+      unregistered.env,
       ctx,
     );
     for (let index = 0; index < pending.length; index += 1) await pending[index];
 
     expect(response.status).toBe(200);
-    expect(unauthorized.graphRequests).toHaveLength(1);
-    expect(unauthorized.graphRequests[0].body).toMatchObject({
-      to: phone,
-      type: "text",
-      text: {
-        body: "Olá! Este número não possui permissão para acessar o Black Jhon. Solicite a um administrador do JK Sistema que cadastre e autorize este número.",
-      },
-    });
-    expect(unauthorized.sqlCalls.some((item) => item.values.includes("unauthorized_access_notice"))).toBe(true);
+    expect(unregistered.graphRequests).toHaveLength(0);
+    expect(unregistered.sqlCalls.some((item) => item.values.includes("unpaired_message"))).toBe(true);
+    expect(unregistered.sqlCalls.some((item) => item.sql.includes("INSERT INTO outbox"))).toBe(false);
   });
 
   it("protects every bridge route with BRIDGE_TOKEN", async () => {
@@ -1875,101 +1729,20 @@ describe("public gateway routes", () => {
     });
   });
 
-  it("sends a written welcome message when the WhatsApp service window is open", async () => {
-    const welcome = welcomeEnvironment();
-    const response = await worker.fetch(
-      new Request("https://example.test/bridge/welcome", {
-        method: "POST",
-        body: JSON.stringify({
-          subject_id: "5537999993818",
-          machine_id: "machine-1",
-          text: "Olá! Seja bem-vindo ao JK Sistema.",
+  it("keeps removed welcome and ad hoc routes as explicit compatibility stubs", async () => {
+    for (const route of ["/bridge/welcome", "/bridge/messages/send"]) {
+      const response = await worker.fetch(
+        new Request(`https://example.test${route}`, {
+          method: "POST",
+          body: "{}",
+          headers: { authorization: "Bearer bridge-secret", "content-type": "application/json" },
         }),
-        headers: { authorization: "Bearer bridge-secret", "content-type": "application/json" },
-      }),
-      welcome.env,
-      context(),
-    );
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ success: true, status: "sent", meta_message_id: "wamid.welcome" });
-    expect(welcome.graphRequests).toHaveLength(1);
-    expect(welcome.graphRequests[0]).toMatchObject({
-      url: "https://graph.facebook.com/v25.0/phone-id/messages",
-      body: {
-        messaging_product: "whatsapp",
-        recipient_type: "individual",
-        to: "5537999993818",
-        type: "text",
-        text: { preview_url: false, body: "Olá! Seja bem-vindo ao JK Sistema." },
-      },
-    });
-  });
-
-  it("keeps the welcome message waiting when the WhatsApp service window is closed", async () => {
-    const welcome = welcomeEnvironment(0);
-    const response = await worker.fetch(
-      new Request("https://example.test/bridge/welcome", {
-        method: "POST",
-        body: JSON.stringify({
-          subject_id: "5537999993818",
-          machine_id: "machine-1",
-          text: "Mensagem aguardando janela.",
-        }),
-        headers: { authorization: "Bearer bridge-secret", "content-type": "application/json" },
-      }),
-      welcome.env,
-      context(),
-    );
-
-    expect(await response.json()).toMatchObject({ success: true, status: "waiting_free_window" });
-    expect(welcome.graphRequests).toHaveLength(0);
-  });
-
-  it("sends an ad hoc message to any normalized number with an open service window", async () => {
-    const adhoc = welcomeEnvironment();
-    const response = await worker.fetch(
-      new Request("https://example.test/bridge/messages/send", {
-        method: "POST",
-        body: JSON.stringify({
-          phone_number: "(37) 99999-3818",
-          machine_id: "machine-1",
-          text: "Mensagem avulsa para o cliente.",
-        }),
-        headers: { authorization: "Bearer bridge-secret", "content-type": "application/json" },
-      }),
-      adhoc.env,
-      context(),
-    );
-
-    expect(await response.json()).toMatchObject({ success: true, status: "sent", meta_message_id: "wamid.welcome" });
-    expect(adhoc.graphRequests[0].body).toMatchObject({
-      to: "5537999993818",
-      type: "text",
-      text: { body: "Mensagem avulsa para o cliente." },
-    });
-    expect(adhoc.sqlCalls.some((item) => item.sql.includes("message_type='adhoc_text'"))).toBe(true);
-  });
-
-  it("keeps an ad hoc message waiting for a number that has not opened the service window", async () => {
-    const adhoc = welcomeEnvironment(0, false, 0);
-    const response = await worker.fetch(
-      new Request("https://example.test/bridge/messages/send", {
-        method: "POST",
-        body: JSON.stringify({
-          phone_number: "5537999993818",
-          machine_id: "machine-1",
-          text: "Mensagem aguardando a primeira interação.",
-        }),
-        headers: { authorization: "Bearer bridge-secret", "content-type": "application/json" },
-      }),
-      adhoc.env,
-      context(),
-    );
-
-    expect(await response.json()).toMatchObject({ success: true, status: "waiting_free_window" });
-    expect(adhoc.graphRequests).toHaveLength(0);
-    expect(adhoc.sqlCalls.some((item) => item.sql.includes("unpaired_phone_message"))).toBe(true);
+        env,
+        context(),
+      );
+      expect(response.status).toBe(410);
+      expect(await response.json()).toMatchObject({ success: false, error: "feature_removed_question_only_mode" });
+    }
   });
 
   it("rejects an oversized outbound image before parsing multipart or touching D1", async () => {
@@ -2006,12 +1779,12 @@ describe("public gateway routes", () => {
     expect(await response.json()).toMatchObject({ success: false, error: "image_payload_required" });
   });
 
-  it("accepts a report chart on the inbound-message image route", async () => {
+  it("accepts a product photo on the inbound-message image route", async () => {
     const { env: imageEnv, sqlCalls, graphRequests } = outboundImageEnvironment();
     const form = await imageForm({
       machine_id: "machine",
-      artifact_type: "report_chart",
-      caption: "Evolucao das vendas da semana",
+      artifact_type: "product_photo",
+      caption: "Foto do produto consultado",
     });
     const response = await worker.fetch(
       new Request("https://example.test/bridge/messages/wamid.report/image", {
@@ -2029,7 +1802,7 @@ describe("public gateway routes", () => {
       "https://graph.facebook.com/v25.0/phone-id/messages",
     ]);
     const reservation = sqlCalls.find((item) => item.operation === "run" && item.sql.includes("INSERT OR IGNORE INTO outbound_media"));
-    expect(reservation?.values).toContain("report_chart");
+    expect(reservation?.values).toContain("product_photo");
   });
 
   it("keeps the inbound-message image artifact allowlist closed", async () => {
@@ -2049,30 +1822,9 @@ describe("public gateway routes", () => {
     expect(graphRequests).toHaveLength(0);
   });
 
-  it("requires PNG specifically for report-chart artifacts", async () => {
-    const { env: imageEnv, sqlCalls, graphRequests } = outboundImageEnvironment();
-    const form = await imageForm(
-      { machine_id: "machine", artifact_type: "report_chart" },
-      { bytes: TEST_JPEG, mime: "image/jpeg", name: "chart.jpg" },
-    );
-    const response = await worker.fetch(
-      new Request("https://example.test/bridge/messages/wamid.jpeg-chart/image", {
-        method: "POST",
-        body: form,
-        headers: { authorization: "Bearer bridge-secret" },
-      }),
-      imageEnv,
-      context(),
-    );
-    expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ success: false, error: "report_chart_png_required" });
-    expect(sqlCalls.some((item) => item.sql.includes("INSERT OR IGNORE INTO outbound_media"))).toBe(false);
-    expect(graphRequests).toHaveLength(0);
-  });
-
   it("enforces at most five artifacts for one inbound response", async () => {
     const limited = outboundImageEnvironment({ reserve: false, existing: null, messageImageCount: 5 });
-    const form = await imageForm({ machine_id: "machine", artifact_type: "report_chart" });
+    const form = await imageForm({ machine_id: "machine", artifact_type: "product_photo" });
     const response = await worker.fetch(
       new Request("https://example.test/bridge/messages/wamid.three-images/image", {
         method: "POST",
@@ -2087,52 +1839,12 @@ describe("public gateway routes", () => {
     expect(limited.graphRequests).toHaveLength(0);
   });
 
-  it("sends a weekly report chart through the proactive image route", async () => {
+  it("sends an idempotent product photo for a completed WhatsApp question", async () => {
     const { env: imageEnv, sqlCalls, graphRequests } = outboundImageEnvironment();
     const form = await imageForm({
       subject_id: "subject",
       machine_id: "machine",
-      fingerprint: "weekly:2026-07-13",
-      event_type: "weekly_report",
-      artifact_type: "report_chart",
-      caption: "Resumo semanal da JK Pecas",
-    });
-    const response = await worker.fetch(
-      new Request("https://example.test/bridge/proactive/image", {
-        method: "POST",
-        body: form,
-        headers: { authorization: "Bearer bridge-secret" },
-      }),
-      imageEnv,
-      context(),
-    );
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ success: true, status: "sent", mime: "image/png" });
-    expect(graphRequests.map((item) => item.url)).toEqual([
-      "https://graph.facebook.com/v25.0/phone-id/media",
-      "https://graph.facebook.com/v25.0/phone-id/messages",
-    ]);
-    const send = graphRequests[1];
-    expect(JSON.parse(String(send.body))).toMatchObject({
-      messaging_product: "whatsapp",
-      recipient_type: "individual",
-      to: "553798379212",
-      type: "image",
-      image: { id: "media-id", caption: "Resumo semanal da JK Pecas" },
-    });
-    const reservation = sqlCalls.find((item) => item.operation === "run" && item.sql.includes("INSERT OR IGNORE INTO outbound_media"));
-    expect(reservation?.values).toContain("proactive:weekly_report:weekly:2026-07-13");
-    expect(reservation?.values).toContain("report_chart");
-    expect(reservation?.sql).toContain("SUM(byte_size)");
-    expect(reservation?.sql).toContain("COUNT(*)");
-  });
-
-  it("sends an idempotent product photo for a completed voice task", async () => {
-    const { env: imageEnv, sqlCalls, graphRequests } = outboundImageEnvironment();
-    const form = await imageForm({
-      subject_id: "subject",
-      machine_id: "machine",
-      fingerprint: "voice-product:0123456789abcdef",
+      fingerprint: "whatsapp-product:0123456789abcdef",
       event_type: "task_completed",
       artifact_type: "product_photo",
       caption: "Loja Principal - MLB123456 - Foto 1/1",
@@ -2155,7 +1867,7 @@ describe("public gateway routes", () => {
       image: { id: "media-id", caption: "Loja Principal - MLB123456 - Foto 1/1" },
     });
     const reservation = sqlCalls.find((item) => item.operation === "run" && item.sql.includes("INSERT OR IGNORE INTO outbound_media"));
-    expect(reservation?.values).toContain("proactive:task_completed:voice-product:0123456789abcdef");
+    expect(reservation?.values).toContain("proactive:task_completed:whatsapp-product:0123456789abcdef");
     expect(reservation?.values).toContain("product_photo");
   });
 
@@ -2183,14 +1895,14 @@ describe("public gateway routes", () => {
     expect(graphRequests).toHaveLength(0);
   });
 
-  it("rejects paths and URLs even when a valid binary chart is attached", async () => {
+  it("rejects paths and URLs even when a valid product photo is attached", async () => {
     const { env: imageEnv, sqlCalls, graphRequests } = outboundImageEnvironment();
     const form = await imageForm({
       subject_id: "subject",
       machine_id: "machine",
-      fingerprint: "weekly:2026-07-13",
-      event_type: "weekly_report",
-      artifact_type: "report_chart",
+      fingerprint: "whatsapp-product:2026-07-13",
+      event_type: "task_completed",
+      artifact_type: "product_photo",
       url: "https://example.test/chart.png",
       file_path: "C:\\private\\chart.png",
     });
@@ -2215,9 +1927,9 @@ describe("public gateway routes", () => {
     const form = await imageForm({
       subject_id: "subject",
       machine_id: "machine",
-      fingerprint: "weekly:2026-07-13",
-      event_type: "weekly_report",
-      artifact_type: "report_chart",
+      fingerprint: "whatsapp-product:2026-07-13",
+      event_type: "task_completed",
+      artifact_type: "product_photo",
     }, { bytes: fakePng, mime: "image/png" });
     const response = await worker.fetch(
       new Request("https://example.test/bridge/proactive/image", {
@@ -2234,14 +1946,14 @@ describe("public gateway routes", () => {
     expect(graphRequests).toHaveLength(0);
   });
 
-  it("blocks proactive charts for the wrong machine or a closed zero-cost window", async () => {
+  it("blocks proactive product photos for the wrong machine or a closed zero-cost window", async () => {
     const wrongMachine = outboundImageEnvironment({ machineId: "other-machine" });
     const wrongMachineForm = await imageForm({
       subject_id: "subject",
       machine_id: "machine",
-      fingerprint: "weekly:2026-07-13",
-      event_type: "weekly_report",
-      artifact_type: "report_chart",
+      fingerprint: "whatsapp-product:2026-07-13",
+      event_type: "task_completed",
+      artifact_type: "product_photo",
     });
     const denied = await worker.fetch(
       new Request("https://example.test/bridge/proactive/image", {
@@ -2260,9 +1972,9 @@ describe("public gateway routes", () => {
     const closedWindowForm = await imageForm({
       subject_id: "subject",
       machine_id: "machine",
-      fingerprint: "weekly:2026-07-20",
-      event_type: "weekly_report",
-      artifact_type: "report_chart",
+      fingerprint: "whatsapp-product:2026-07-20",
+      event_type: "task_completed",
+      artifact_type: "product_photo",
     });
     const blocked = await worker.fetch(
       new Request("https://example.test/bridge/proactive/image", {
@@ -2278,14 +1990,14 @@ describe("public gateway routes", () => {
     expect(closedWindow.graphRequests).toHaveLength(0);
   });
 
-  it("blocks proactive charts when the zero-cost policy has expired", async () => {
+  it("blocks proactive product photos when the zero-cost policy has expired", async () => {
     const expired = outboundImageEnvironment({ policyUntil: "2026-01-01T00:00:00Z" });
     const form = await imageForm({
       subject_id: "subject",
       machine_id: "machine",
-      fingerprint: "weekly:2026-07-13",
-      event_type: "weekly_report",
-      artifact_type: "report_chart",
+      fingerprint: "whatsapp-product:2026-07-13",
+      event_type: "task_completed",
+      artifact_type: "product_photo",
     });
     const response = await worker.fetch(
       new Request("https://example.test/bridge/proactive/image", {
@@ -2301,7 +2013,7 @@ describe("public gateway routes", () => {
     expect(expired.graphRequests).toHaveLength(0);
   });
 
-  it("deduplicates proactive charts and shares the outbound monthly quota", async () => {
+  it("deduplicates proactive product photos and shares the outbound monthly quota", async () => {
     const duplicate = outboundImageEnvironment({
       reserve: false,
       existing: { status: "sent", meta_message_id: "existing-message", byte_size: TEST_PNG.byteLength, mime_type: "image/png" },
@@ -2309,9 +2021,9 @@ describe("public gateway routes", () => {
     const duplicateForm = await imageForm({
       subject_id: "subject",
       machine_id: "machine",
-      fingerprint: "weekly:2026-07-13",
-      event_type: "weekly_report",
-      artifact_type: "report_chart",
+      fingerprint: "whatsapp-product:2026-07-13",
+      event_type: "task_completed",
+      artifact_type: "product_photo",
     });
     const duplicateResponse = await worker.fetch(
       new Request("https://example.test/bridge/proactive/image", {
@@ -2329,9 +2041,9 @@ describe("public gateway routes", () => {
     const exhaustedForm = await imageForm({
       subject_id: "subject",
       machine_id: "machine",
-      fingerprint: "weekly:2026-07-20",
-      event_type: "weekly_report",
-      artifact_type: "report_chart",
+      fingerprint: "whatsapp-product:2026-07-20",
+      event_type: "task_completed",
+      artifact_type: "product_photo",
     });
     const exhaustedResponse = await worker.fetch(
       new Request("https://example.test/bridge/proactive/image", {
@@ -2362,9 +2074,9 @@ describe("public gateway routes", () => {
     const form = await imageForm({
       subject_id: "subject",
       machine_id: "machine",
-      fingerprint: "weekly:lease-active:2026-07-18",
-      event_type: "weekly_report",
-      artifact_type: "report_chart",
+      fingerprint: "whatsapp-product:lease-active:2026-07-18",
+      event_type: "task_completed",
+      artifact_type: "product_photo",
     });
     const response = await worker.fetch(
       new Request("https://example.test/bridge/proactive/image", {
@@ -2400,9 +2112,9 @@ describe("public gateway routes", () => {
     const form = await imageForm({
       subject_id: "subject",
       machine_id: "machine",
-      fingerprint: "weekly:lease-expired:2026-07-18",
-      event_type: "weekly_report",
-      artifact_type: "report_chart",
+      fingerprint: "whatsapp-product:lease-expired:2026-07-18",
+      event_type: "task_completed",
+      artifact_type: "product_photo",
     });
     const response = await worker.fetch(
       new Request("https://example.test/bridge/proactive/image", {
@@ -2446,52 +2158,21 @@ describe("public gateway routes", () => {
     expect(migration).toContain("on outbound_quote_context(meta_message_id, subject_id, client_id, username)");
   });
 
-  it("selects one gateway-authoritative primary binding for the exact owner and machine", async () => {
-    const target = primaryBindingEnvironment();
+  it("keeps the removed primary-binding route as a compatibility stub", async () => {
     const response = await worker.fetch(
       new Request("https://example.test/bridge/bindings/primary", {
         method: "POST",
-        body: JSON.stringify({
-          subject_id: "subject-1",
-          client_id: "cliente",
-          username: "operador",
-          machine_id: "machine-1",
-          is_primary: true,
-        }),
+        body: "{}",
         headers: { authorization: "Bearer bridge-secret", "content-type": "application/json" },
       }),
-      target.env,
+      env,
       context(),
     );
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ success: true, applied: true, is_primary: true, owner_has_primary: true });
-    expect(target.sqlCalls.some((item) => item.operation === "run" && item.sql.includes("subject_id<>?"))).toBe(true);
-    expect(target.sqlCalls.some((item) => item.operation === "run" && item.sql.includes("SET is_primary=1"))).toBe(true);
+    expect(response.status).toBe(410);
+    expect(await response.json()).toMatchObject({ success: false, error: "feature_removed_question_only_mode" });
   });
 
-  it("does not change a primary binding owned by another machine", async () => {
-    const target = primaryBindingEnvironment("machine-2", true);
-    const response = await worker.fetch(
-      new Request("https://example.test/bridge/bindings/primary", {
-        method: "POST",
-        body: JSON.stringify({
-          subject_id: "subject-1",
-          client_id: "cliente",
-          username: "operador",
-          machine_id: "machine-1",
-          is_primary: false,
-        }),
-        headers: { authorization: "Bearer bridge-secret", "content-type": "application/json" },
-      }),
-      target.env,
-      context(),
-    );
-    expect(response.status).toBe(403);
-    expect(await response.json()).toMatchObject({ success: false, error: "binding_machine_mismatch" });
-    expect(target.sqlCalls.some((item) => item.operation === "run" && item.sql.includes("UPDATE bindings SET is_primary"))).toBe(false);
-  });
-
-  it("ships one active primary binding per tenant and user", () => {
+  it("retains the historical primary-binding migration for deployed D1 databases", () => {
     const migration = String.raw`${readFileSync(
       new URL("../migrations/0011_primary_binding.sql", import.meta.url),
       "utf8",
@@ -2502,14 +2183,14 @@ describe("public gateway routes", () => {
     expect(migration).toContain("on bindings(client_id, username collate nocase)");
   });
 
-  it("rejects an altered proactive chart before reserving outbound quota", async () => {
+  it("rejects an altered proactive product photo before reserving outbound quota", async () => {
     const { env: imageEnv, sqlCalls, graphRequests } = outboundImageEnvironment();
     const form = await imageForm({
       subject_id: "subject",
       machine_id: "machine",
-      fingerprint: "weekly:2026-07-13",
-      event_type: "weekly_report",
-      artifact_type: "report_chart",
+      fingerprint: "whatsapp-product:2026-07-13",
+      event_type: "task_completed",
+      artifact_type: "product_photo",
       sha256: "0".repeat(64),
     });
     const response = await worker.fetch(
@@ -2586,75 +2267,20 @@ describe("public gateway routes", () => {
     expect(Number(calls[1].values[0] || 0)).toBeGreaterThan(Math.floor(Date.now() / 1000) + 590);
   });
 
-  it("sends authenticated PDF and XLSX documents with hash binding and filenames", async () => {
-    const pdfEnv = outboundImageEnvironment();
-    const pdfForm = await imageForm(
-      { machine_id: "machine", artifact_type: "report_pdf", caption: "Relatorio confirmado" },
-      { bytes: TEST_PDF, mime: "application/pdf", name: "vendas.pdf" },
-    );
-    const pdfResponse = await worker.fetch(
-      new Request("https://example.test/bridge/messages/wamid.document/document", {
-        method: "POST",
-        body: pdfForm,
-        headers: { authorization: "Bearer bridge-secret" },
-      }),
-      pdfEnv.env,
-      context(),
-    );
-    expect(pdfResponse.status).toBe(200);
-    expect(await pdfResponse.json()).toMatchObject({ success: true, status: "sent", mime: "application/pdf" });
-    expect(JSON.parse(String(pdfEnv.graphRequests[1].body))).toMatchObject({
-      type: "document",
-      document: { id: "media-id", caption: "Relatorio confirmado", filename: "vendas.pdf" },
-    });
-
-    const xlsxEnv = outboundImageEnvironment();
-    const xlsxForm = await imageForm(
-      {
-        subject_id: "subject",
-        machine_id: "machine",
-        fingerprint: "monthly:2026-07-xlsx",
-        event_type: "monthly_report",
-        artifact_type: "report_xlsx",
-      },
-      { bytes: TEST_XLSX, mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", name: "vendas.xlsx" },
-    );
-    const xlsxResponse = await worker.fetch(
-      new Request("https://example.test/bridge/proactive/document", {
-        method: "POST",
-        body: xlsxForm,
-        headers: { authorization: "Bearer bridge-secret" },
-      }),
-      xlsxEnv.env,
-      context(),
-    );
-    expect(xlsxResponse.status).toBe(200);
-    expect(await xlsxResponse.json()).toMatchObject({ success: true, status: "sent" });
-    expect(JSON.parse(String(xlsxEnv.graphRequests[1].body))).toMatchObject({
-      type: "document",
-      document: { id: "media-id", filename: "vendas.xlsx" },
-    });
-  });
-
-  it("rejects document MIME or magic mismatches before quota reservation", async () => {
-    const invalid = outboundImageEnvironment();
-    const form = await imageForm(
-      { machine_id: "machine", artifact_type: "report_pdf" },
-      { bytes: TEST_XLSX, mime: "application/pdf", name: "tampered.pdf" },
-    );
-    const response = await worker.fetch(
-      new Request("https://example.test/bridge/messages/wamid.document/document", {
-        method: "POST",
-        body: form,
-        headers: { authorization: "Bearer bridge-secret" },
-      }),
-      invalid.env,
-      context(),
-    );
-    expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ success: false, error: "outbound_document_pdf_signature_invalid" });
-    expect(invalid.sqlCalls.some((item) => item.sql.includes("INSERT OR IGNORE INTO outbound_media"))).toBe(false);
-    expect(invalid.graphRequests).toHaveLength(0);
+  it("keeps removed document routes as explicit compatibility stubs", async () => {
+    for (const route of ["/bridge/messages/wamid.document/document", "/bridge/proactive/document"]) {
+      const response = await worker.fetch(
+        new Request(`https://example.test${route}`, {
+          method: "POST",
+          body: "{}",
+          headers: { authorization: "Bearer bridge-secret", "content-type": "application/json" },
+        }),
+        env,
+        context(),
+      );
+      expect(response.status).toBe(410);
+      expect(await response.json()).toMatchObject({ success: false, error: "feature_removed_question_only_mode" });
+    }
   });
 
   it("renders Mercado Livre approval as the exact four-option tokenized list", async () => {

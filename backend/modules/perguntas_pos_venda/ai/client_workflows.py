@@ -119,7 +119,7 @@ def _canonical_coverage_response(client, metadata: dict, hub: dict) -> AIAnswer 
         "decision": client.compatibility_analysis.get("decision"),
         "confidence": client.compatibility_analysis.get("confidence"),
         "reason": client.compatibility_analysis.get("reason"),
-        "render_policy": "seller-voice-v1", "research_skipped": "canonical_coverage_sufficient",
+        "render_policy": "seller-voice-v2", "research_skipped": "canonical_coverage_sufficient",
     })
     return response
 
@@ -251,7 +251,7 @@ def run_compatibility(client, prompt: str, metadata: dict, bindings: Compatibili
     client.context_pipeline.append({
         "step": 8, "name": "seller_response_render", "status": "completed" if getattr(response, "answer", "") else "unavailable",
         "decision": client.compatibility_analysis.get("decision"), "confidence": client.compatibility_analysis.get("confidence"),
-        "reason": client.compatibility_analysis.get("reason"), "render_policy": "seller-voice-v1",
+        "reason": client.compatibility_analysis.get("reason"), "render_policy": "seller-voice-v2",
     })
     return response
 

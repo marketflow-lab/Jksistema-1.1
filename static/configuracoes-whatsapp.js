@@ -24,10 +24,6 @@
   const conversationRuntimePool = byId('waConversationRuntimePool');
   const globalTaskAgents = byId('waGlobalTaskAgents');
   const enabled = byId('waEnabled');
-  const voiceModel = byId('waVoiceModel');
-  const voiceName = byId('waVoiceName');
-  const voiceMaxMinutes = byId('waVoiceMaxMinutes');
-  const voiceMaxConcurrent = byId('waVoiceMaxConcurrent');
   const statusBox = byId('waStatus');
   const errorBox = byId('waLastError');
   let firstRender = true;
@@ -35,7 +31,6 @@
   let latestPayload = null;
   let aiModelsLoaded = false;
   let userPanelTarget = null;
-  const DEFAULT_WELCOME_MESSAGE = 'Olá! Seu número foi cadastrado no WhatsApp do JK Sistema. Seja bem-vindo(a)! Você já pode conversar com o Black Jhon por aqui.';
 
   function authHeaders() {
     if (typeof obterAuthHeaders === 'function') return obterAuthHeaders();
@@ -171,79 +166,12 @@
     return item;
   }
 
-  function formatDuration(value) {
-    const seconds = Math.max(0, Number(value || 0));
-    if (!Number.isFinite(seconds)) return 'duração indisponível';
-    const minutes = Math.floor(seconds / 60);
-    const remainder = Math.floor(seconds % 60);
-    return minutes ? `${minutes} min ${String(remainder).padStart(2, '0')} s` : `${remainder} s`;
-  }
-
-  function renderVoice(payload) {
-    const voice = payload.voice || {};
-    const gateway = voice.gateway || {};
-    const gatewayOpenAi = gateway.openai || {};
-    const sip = gateway.sip || {};
-    const local = voice.local || {};
-    const state = byId('waVoiceState');
-    const ready = voice.ready === true;
-    const enabledVoice = voice.enabled === true;
-    state.className = 'wa-voice-state' + (ready ? ' ready' : '');
-    state.textContent = ready ? 'Pronta' : (enabledVoice ? 'Habilitada, aguardando validação' : 'Desabilitada');
-
-    byId('waVoiceHealthGrid').replaceChildren(
-      healthItem('Chave OpenAI existente', voice.api_key_configured === true),
-      healthItem('Chaves sincronizadas', voice.key_match === true),
-      healthItem('Realtime disponível no backend', local.dependency_installed === true),
-      healthItem('Webhook OpenAI', gatewayOpenAi.webhook_secret_configured === true),
-      healthItem('Projeto OpenAI', gatewayOpenAi.project_configured === true),
-      healthItem('VPS SIP', sip.configured === true),
-    );
-    if (voiceModel) voiceModel.value = voice.model || 'gpt-realtime-2.1';
-    if (voiceName) voiceName.value = voice.name || 'cedar';
-    if (voiceMaxMinutes) voiceMaxMinutes.value = String(voice.max_call_minutes || 30);
-    if (voiceMaxConcurrent) voiceMaxConcurrent.value = String(voice.max_concurrent_calls || 3);
-
-    const counts = gateway.counts || {};
-    const active = Number(local.active_call_count || counts.active_calls || 0);
-    const callsToday = Number(counts.calls_today || 0);
-    byId('waVoiceSummary').textContent = `${active} ligação(ões) ativa(s) · ${callsToday} hoje · limite de ${voice.max_concurrent_calls || 3} simultânea(s) · ${voice.max_call_minutes || 30} min por ligação. Consumo é mostrado por duração e tokens, sem estimar cobrança fora do faturamento da OpenAI.`;
-
-    const callsBox = byId('waVoiceCalls');
-    callsBox.replaceChildren();
-    const calls = Array.isArray(voice.recent_calls) ? voice.recent_calls.slice(0, 5) : [];
-    if (!calls.length) {
-      const empty = document.createElement('div');
-      empty.className = 'small';
-      empty.textContent = 'Nenhuma ligação registrada para este usuário.';
-      callsBox.appendChild(empty);
-    } else {
-      calls.forEach(call => {
-        const row = document.createElement('div');
-        row.className = 'wa-voice-call';
-        const detail = document.createElement('div');
-        const name = document.createElement('strong');
-        name.textContent = `Telefone final ${call.phone_suffix || '—'} · ${call.status || 'indisponível'}`;
-        const usage = call.usage || {};
-        const totalTokens = Number(usage.total_tokens || 0);
-        const meta = document.createElement('small');
-        meta.textContent = `${formatDuration(call.duration_seconds)}${totalTokens ? ` · ${totalTokens.toLocaleString('pt-BR')} tokens` : ''}`;
-        detail.append(name, meta);
-        row.appendChild(detail);
-        callsBox.appendChild(row);
-      });
-    }
-    byId('waVoiceEnable').disabled = ready;
-    byId('waVoiceDisable').disabled = !enabledVoice;
-  }
-
   function renderTemplates(templates) {
     const box = byId('waTemplates');
     box.replaceChildren();
     const expected = [
       'jk_joao_tarefa_concluida',
       'jk_joao_aprovacao_pendente',
-      'jk_joao_alerta_operacional',
       'jk_black_jhon_nova_pergunta',
       'jk_black_jhon_nova_pergunta_v2',
     ];
@@ -372,13 +300,7 @@
     const nameInput = byId('userWaNewPhoneName');
     const numberInput = byId('userWaNewPhoneNumber');
     const questionsInput = byId('userWaNewQuestions');
-    const weeklyInput = byId('userWaNewWeekly');
-    const monthlyInput = byId('userWaNewMonthly');
-    const voiceInput = byId('userWaNewVoice');
-    const primaryInput = byId('userWaNewPrimary');
-    const welcomeInput = byId('userWaWelcomeMessage');
-    const sendWelcomeInput = byId('userWaSendWelcome');
-    if (!box || !counter || !saveButton || !nameInput || !numberInput || !questionsInput || !weeklyInput || !monthlyInput || !voiceInput || !primaryInput || !welcomeInput || !sendWelcomeInput) return;
+    if (!box || !counter || !saveButton || !nameInput || !numberInput || !questionsInput) return;
     const target = userPanelTarget;
     const allNumbers = Array.isArray(payload.personal_numbers) ? payload.personal_numbers : [];
     const list = target
@@ -393,12 +315,6 @@
     nameInput.disabled = registrationDisabled;
     numberInput.disabled = registrationDisabled;
     questionsInput.disabled = registrationDisabled;
-    weeklyInput.disabled = registrationDisabled;
-    monthlyInput.disabled = registrationDisabled;
-    voiceInput.disabled = registrationDisabled;
-    primaryInput.disabled = registrationDisabled;
-    welcomeInput.disabled = registrationDisabled;
-    sendWelcomeInput.disabled = registrationDisabled;
     saveButton.title = !target
       ? 'Selecione um usuário.'
       : (list.length >= limit ? `Limite de ${limit} números atingido.` : 'Salvar nome, número e configurações.');
@@ -450,12 +366,8 @@
 
       const options = document.createElement('div');
       options.className = 'user-phone-options';
-      const primary = phoneOption('Número principal: compartilhar a conversa com a Sidebar', settings.is_primary === true, remoteMachine);
       const questions = phoneOption('Enviar sugestão de pergunta do Mercado Livre', settings.send_ml_question_suggestions !== false, remoteMachine);
-      const weekly = phoneOption('Enviar relatório semanal', settings.send_weekly_report === true, remoteMachine);
-      const monthly = phoneOption('Enviar relatório mensal', settings.send_monthly_report === true, remoteMachine);
-      const voiceCalls = phoneOption('Permitir ligações com o Black Jhon', settings.allow_voice_calls === true, remoteMachine);
-      options.append(primary.wrapper, questions.wrapper, weekly.wrapper, monthly.wrapper, voiceCalls.wrapper);
+      options.append(questions.wrapper);
       card.appendChild(options);
 
       const behaviorCaption = document.createElement('label');
@@ -486,11 +398,7 @@
           username: item.username,
           client_id: item.client_id,
           label: labelInput.value.trim(),
-          is_primary: primary.input.checked,
           send_ml_question_suggestions: questions.input.checked,
-          send_weekly_report: weekly.input.checked,
-          send_monthly_report: monthly.input.checked,
-          allow_voice_calls: voiceCalls.input.checked,
           ai_behavior: behaviorInput.value.trim(),
         }),
       })));
@@ -589,7 +497,7 @@
     byId('waPendingText').textContent = [
       `entrada pendente: ${Number(counts.inbox_pending || 0)}`,
       `mídias aguardando retry: ${Number(inboundMediaCounts.waiting_retry || counts.media_retry_pending || 0)}`,
-      `saída/alertas retidos: ${Number(counts.outbox_pending || 0)}`,
+      `respostas pendentes: ${Number(counts.outbox_pending || 0)}`,
       `dead letters: ${Number(counts.dead_letters || 0)}`,
       `bloqueadas por template: ${Number(counts.template_blocked_outbox || 0)}`,
       `tarefas locais: ${Number(runtime.pending_local_tasks || 0)}`,
@@ -599,7 +507,6 @@
       if (!templates.some(existing => existing.name === item.name)) templates.push(item);
     });
     renderTemplates(templates);
-    renderVoice(payload);
     errorBox.textContent = runtime.last_error
       || audioMessages.last_error_code
       || whisper.download_error
@@ -676,15 +583,6 @@
       progress_interval_seconds: 8,
       progress_explain_wait: false,
       active_task_policy: 'steer_or_queue',
-      voice_model: String(voiceModel && voiceModel.value || 'gpt-realtime-2.1'),
-      voice_transcription_model: 'gpt-4o-transcribe',
-      voice_name: String(voiceName && voiceName.value || 'cedar'),
-      voice_language: 'pt-BR',
-      voice_max_call_minutes: Number(voiceMaxMinutes && voiceMaxMinutes.value || 30),
-      voice_silence_timeout_seconds: 90,
-      voice_long_task_offer_seconds: 90,
-      voice_max_concurrent_calls: Number(voiceMaxConcurrent && voiceMaxConcurrent.value || 3),
-      voice_progress_interval_seconds: 8,
       enabled: enabled.checked,
     };
     const data = await request('/api/admin/whatsapp/config', { method: 'PUT', body: JSON.stringify(payload) });
@@ -704,60 +602,6 @@
     request('/api/admin/whatsapp/test', { method: 'POST' })
   ));
 
-  async function voiceAction(buttonId, pendingLabel, task) {
-    if (busy) return;
-    busy = true;
-    const button = byId(buttonId);
-    const box = byId('waVoiceActionStatus');
-    const original = button.textContent;
-    button.disabled = true;
-    button.textContent = pendingLabel;
-    box.className = 'status loading';
-    box.textContent = pendingLabel;
-    try {
-      const result = await task();
-      if (buttonId === 'waVoicePreflight') {
-        box.className = 'status ' + (result.ready === true ? 'success' : 'error');
-        box.textContent = result.ready === true
-          ? 'Ligações prontas: chave, Realtime, webhook, projeto, SIP, gateway e backend foram validados.'
-          : 'A validação encontrou pendências. Confira os itens bloqueados acima antes de habilitar.';
-      } else {
-        box.className = 'status success';
-        box.textContent = buttonId === 'waVoiceEnable' ? 'Ligações habilitadas.' : 'Ligações desabilitadas.';
-      }
-      await loadStatus(true);
-      return result;
-    } catch (error) {
-      box.className = 'status error';
-      box.textContent = error.message || 'Falha na configuração das ligações.';
-      button.disabled = false;
-      return null;
-    } finally {
-      busy = false;
-      button.textContent = original;
-    }
-  }
-
-  byId('waVoicePreflight').addEventListener('click', () => voiceAction(
-    'waVoicePreflight',
-    'Validando...',
-    () => request('/api/admin/whatsapp/voice/preflight', { method: 'POST' }),
-  ));
-  byId('waVoiceEnable').addEventListener('click', () => {
-    if (!confirm('Habilitar ligações somente leitura nos telefones autorizados?')) return;
-    voiceAction('waVoiceEnable', 'Habilitando...', () => request('/api/admin/whatsapp/voice/enable', {
-      method: 'POST',
-      body: JSON.stringify({ confirmed: true }),
-    }));
-  });
-  byId('waVoiceDisable').addEventListener('click', () => {
-    if (!confirm('Desabilitar novas ligações com o Black Jhon?')) return;
-    voiceAction('waVoiceDisable', 'Desabilitando...', () => request('/api/admin/whatsapp/voice/disable', {
-      method: 'POST',
-      body: JSON.stringify({ confirmed: true }),
-    }));
-  });
-
   byId('waPair').addEventListener('click', () => action('waPair', 'Gerando...', async () => {
     const target = selectedTarget();
     if (!target) throw new Error('Selecione o usuário que utilizará este número.');
@@ -775,12 +619,9 @@
     const target = userPanelTarget;
     const name = byId('userWaNewPhoneName').value.trim();
     const phoneNumber = byId('userWaNewPhoneNumber').value.trim();
-    const welcomeMessage = byId('userWaWelcomeMessage').value.trim();
-    const sendWelcomeMessage = byId('userWaSendWelcome').checked;
     if (!target) return setUserPhoneStatus('Selecione um usuário antes de salvar o telefone.', 'error');
     if (!name) return setUserPhoneStatus('Informe um nome para identificar o telefone.', 'error');
     if (!phoneNumber) return setUserPhoneStatus('Informe o número do WhatsApp.', 'error');
-    if (sendWelcomeMessage && !welcomeMessage) return setUserPhoneStatus('Escreva a mensagem de boas-vindas antes de marcar o envio.', 'error');
     const button = byId('userWaSavePhone');
     const data = await runUserPhoneAction(button, 'Salvando...', () => request('/api/admin/whatsapp/phones', {
       method: 'POST',
@@ -788,63 +629,13 @@
         ...target,
         name,
         phone_number: phoneNumber,
-        is_primary: byId('userWaNewPrimary').checked,
         send_ml_question_suggestions: byId('userWaNewQuestions').checked,
-        send_weekly_report: byId('userWaNewWeekly').checked,
-        send_monthly_report: byId('userWaNewMonthly').checked,
-        allow_voice_calls: byId('userWaNewVoice').checked,
-        welcome_message: welcomeMessage,
-        send_welcome_message: sendWelcomeMessage,
       }),
     }), 'Telefone cadastrado e salvo.');
     if (!data) return;
-    const welcome = data.welcome_message || {};
-    if (welcome.requested === true) {
-      if (welcome.status === 'sent') {
-        setUserPhoneStatus('Telefone cadastrado e mensagem de boas-vindas enviada.', 'success');
-      } else if (welcome.status === 'waiting_free_window') {
-        setUserPhoneStatus('Telefone cadastrado. Pela regra da Meta, a boas-vindas será enviada automaticamente depois que esse telefone mandar a primeira mensagem.', 'success');
-      } else if (['queued', 'retry'].includes(welcome.status)) {
-        setUserPhoneStatus('Telefone cadastrado. A mensagem de boas-vindas foi encaminhada para envio.', 'success');
-      } else {
-        setUserPhoneStatus(`Telefone cadastrado, mas a mensagem de boas-vindas não foi enviada: ${welcome.error || welcome.status || 'erro desconhecido'}.`, 'error');
-      }
-    }
     byId('userWaNewPhoneName').value = '';
     byId('userWaNewPhoneNumber').value = '';
     byId('userWaNewQuestions').checked = true;
-    byId('userWaNewWeekly').checked = false;
-    byId('userWaNewMonthly').checked = false;
-    byId('userWaNewVoice').checked = false;
-    byId('userWaNewPrimary').checked = false;
-    byId('userWaWelcomeMessage').value = DEFAULT_WELCOME_MESSAGE;
-    byId('userWaSendWelcome').checked = true;
-  });
-
-  byId('userWaSendAdhoc').addEventListener('click', async () => {
-    const phoneNumber = byId('userWaAdhocPhone').value.trim();
-    const message = byId('userWaAdhocMessage').value.trim();
-    if (!phoneNumber) return setUserPhoneStatus('Informe o número que receberá a mensagem.', 'error');
-    if (!message) return setUserPhoneStatus('Escreva a mensagem que deseja enviar.', 'error');
-    const button = byId('userWaSendAdhoc');
-    const data = await runUserPhoneAction(button, 'Enviando...', () => request('/api/admin/whatsapp/messages', {
-      method: 'POST',
-      body: JSON.stringify({ phone_number: phoneNumber, message }),
-    }), 'Mensagem encaminhada para envio.');
-    if (!data) return;
-    const delivery = data.delivery || {};
-    if (delivery.status === 'sent') {
-      setUserPhoneStatus('Mensagem avulsa enviada pelo WhatsApp.', 'success');
-    } else if (delivery.status === 'waiting_free_window') {
-      setUserPhoneStatus('Mensagem salva. Ela será enviada quando este número abrir a janela de atendimento no WhatsApp.', 'success');
-    } else if (['queued', 'retry'].includes(delivery.status)) {
-      setUserPhoneStatus('Mensagem avulsa encaminhada para envio.', 'success');
-    } else {
-      setUserPhoneStatus(`A mensagem não foi enviada: ${delivery.error || delivery.status || 'erro desconhecido'}.`, 'error');
-      return;
-    }
-    byId('userWaAdhocPhone').value = '';
-    byId('userWaAdhocMessage').value = '';
   });
 
   byId('userWaRefresh').addEventListener('click', async () => {

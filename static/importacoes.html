@@ -658,6 +658,7 @@
         .secao-header {
             display: flex;
             align-items: center;
+            flex-wrap: wrap;
             gap: 10px;
             margin: 20px 0 10px;
             padding-bottom: 7px;
@@ -704,20 +705,23 @@
         }
         .btn-embarque-org {
             border: 1px solid rgba(255, 193, 100, 0.55);
-            border-radius: 11px;
+            border-radius: 8px;
             background: linear-gradient(180deg, rgba(72, 47, 12, 0.95), rgba(50, 33, 9, 0.98));
             color: #ffe8b8;
-            padding: 10px 14px;
+            padding: 6px 9px;
             cursor: pointer;
-            font-size: 1.05rem;
+            font-size: 0.82rem;
             font-weight: 700;
-            letter-spacing: 0.15px;
+            line-height: 1.1;
             transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
         }
         .btn-embarque-org:hover {
             transform: translateY(-2px);
             border-color: #ffc064;
             box-shadow: 0 10px 22px rgba(227, 146, 74, 0.28);
+        }
+        .secao-header .btn-embarque-org {
+            flex: 0 0 auto;
         }
         .btn-embarque-editar {
             border: 1px solid rgba(255, 193, 100, 0.46);
@@ -1027,7 +1031,6 @@
                 <button class="btn" id="btnAtualizar" type="button">Atualizar listas</button>
                 <button class="btn" id="btnImportarPedidoMenu" type="button">Importar pedido por arquivo</button>
                 <a class="btn" href="medias_compras.html">Abrir Médias e Pedidos</a>
-                <button class="btn-embarque-org" id="btnOrganizarEmbarque" type="button">&#128230; Organizar Embarque</button>
                 <span class="badge">Status monitorado: Analisando orçamento</span>
             </div>
             <div class="loja-filtro-area" aria-label="Filtrar listas por loja">
@@ -1052,6 +1055,7 @@
             <div id="vistaMain">
                 <div class="secao-header">
                     <span class="secao-titulo">Embarques</span>
+                    <button class="btn-embarque-org" id="btnOrganizarEmbarque" type="button">&#128230; Organizar Embarque</button>
                     <span id="badgeEmbarques" class="badge" style="font-size:0.82rem;padding:4px 10px;">0</span>
                 </div>
                 <div id="embarquesWrap" class="lista-wrap">

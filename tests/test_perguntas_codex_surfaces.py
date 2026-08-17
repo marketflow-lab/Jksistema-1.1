@@ -8,8 +8,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from backend.modules.perguntas_pos_venda.ai import inputs as agent_inputs
+from backend.modules.perguntas_pos_venda.ai.contracts import PerguntasIARespostaPoliticaInvalida
 from backend.services import codex_assistant_storage
 from backend.services import perguntas_pos_venda_codex as codex_surface
+from backend.services import perguntas_pos_venda_state as perguntas_state
 
 
 def _structured_intent(
@@ -159,10 +161,38 @@ def test_provider_policy_is_codex_only_until_two_operational_failures(monkeypatc
 
 
 def test_only_operational_errors_unlock_provider_fallback():
+    class HttpStatusError(RuntimeError):
+        status_code = 503
+
+    class NonHttpStatusError(RuntimeError):
+        status_code = 600
+
     assert codex_surface._is_operational_failure(TimeoutError("Codex timed out")) is True
-    assert codex_surface._is_operational_failure(RuntimeError("provider unavailable")) is True
+    assert codex_surface._is_operational_failure(ConnectionError("connection lost")) is True
+    assert codex_surface._is_operational_failure(
+        perguntas_state.PerguntasIAProviderIndisponivel(
+            "Provedor indisponivel.",
+            reason="provider_http_429",
+        )
+    ) is True
+    assert codex_surface._is_operational_failure(
+        perguntas_state.PerguntasIAProviderIndisponivel("Motivo generico.")
+    ) is False
+    assert codex_surface._is_operational_failure(RuntimeError("provider unavailable")) is False
+    assert codex_surface._is_operational_failure(RuntimeError("HTTP 429")) is False
+    assert codex_surface._is_operational_failure(HttpStatusError("sem texto confiavel")) is True
+    assert codex_surface._is_operational_failure(NonHttpStatusError("fora da faixa HTTP")) is False
     assert codex_surface._is_operational_failure(ValueError("invalid response contract")) is False
     assert codex_surface._is_operational_failure(OSError("local context file is invalid")) is False
+    assert codex_surface._is_operational_failure(
+        perguntas_state.PerguntasIAClassificacaoInconclusiva("nao_entendi")
+    ) is False
+    policy_failure = PerguntasIARespostaPoliticaInvalida(
+        "Nova IA de perguntas gerou resposta fora das orientacoes",
+        ["seller_style_non_direct_opening"],
+    )
+    assert codex_surface._is_response_policy_failure(policy_failure) is True
+    assert codex_surface._is_operational_failure(policy_failure) is False
 
 
 def test_retry_persists_operational_failure_count(tmp_path, monkeypatch):

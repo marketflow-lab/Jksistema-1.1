@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import time
-
 from backend.services.whatsapp import delivery
 from backend.services.whatsapp.orchestration import pending as pending_component
 from backend.services.whatsapp.runtime import lifecycle
@@ -148,7 +146,6 @@ def test_partial_terminal_closes_after_compatibility_delivery(monkeypatch) -> No
 
 def test_bridge_heartbeat_renews_only_active_pending_message_leases_when_due(monkeypatch) -> None:
     state = {
-        "report_chart_cleanup_at": time.time(),
         "gateway_lease_renewed_at_epoch": 0,
         "pending_messages": {
             "wamid.long-running": {"kind": "dual_worker", "task_id": "task-long"},
@@ -169,7 +166,6 @@ def test_bridge_heartbeat_renews_only_active_pending_message_leases_when_due(mon
     monkeypatch.setattr(lifecycle, "_save_state", lambda _state: None, raising=False)
     monkeypatch.setattr(lifecycle, "_gateway_json", gateway_json, raising=False)
     monkeypatch.setattr(lifecycle, "_now", lambda: "2026-07-21T00:00:00Z", raising=False)
-    monkeypatch.setattr(lifecycle.whatsapp_voice.VOICE_RUNTIME, "tick", lambda *_args: None)
     monkeypatch.setattr(
         lifecycle,
         "_whatsapp_dual_agent_settings",
@@ -188,9 +184,6 @@ def test_bridge_heartbeat_renews_only_active_pending_message_leases_when_due(mon
     monkeypatch.setattr(lifecycle, "_monitor_pending", lambda *_args: None, raising=False)
     monkeypatch.setattr(lifecycle, "_forward_task_transitions", lambda *_args: None, raising=False)
     monkeypatch.setattr(lifecycle, "_forward_question_approvals", lambda *_args: None, raising=False)
-    monkeypatch.setattr(lifecycle, "_start_operational_alert_scan", lambda *_args: None, raising=False)
-    monkeypatch.setattr(lifecycle, "_start_phone_notification_report_scan", lambda *_args: None, raising=False)
-
     result = lifecycle._IMPLEMENTATIONS["whatsapp_bridge_poll_once"]()
 
     heartbeat_payload = next(payload for path, payload in gateway_calls if path == "/bridge/heartbeat")

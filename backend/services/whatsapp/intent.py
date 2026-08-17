@@ -13,6 +13,48 @@ from backend.services.whatsapp import formatting
 WHATSAPP_IMPLICIT_STORE_RECENT_SECONDS = 30 * 60
 
 
+def question_only_block_reason(
+    value: Any,
+    *,
+    mutation_detector: Callable[[str], bool],
+) -> str:
+    """Classify free-form traffic forbidden by the WhatsApp channel policy.
+
+    Mercado Livre reply revisions and approvals are consumed before this
+    guard, so that authorized workflow remains available.
+    """
+
+    text = formatting._whatsapp_text_key(value)
+    if not text:
+        return "not_a_question"
+    if re.search(
+        r"\b(relatorio|relatorios|planilha|planilhas|dashboard|dashboards|balanco|balancos|"
+        r"arquivo|arquivos|pdf|xlsx|excel|grafico|graficos)\b",
+        text,
+    ):
+        return "report_or_file"
+    if mutation_intent(value, mutation_detector=mutation_detector):
+        return "operation"
+    if re.search(
+        r"\b(crie|criar|gere|gerar|faca|fazer|escreva|escrever|monte|montar|prepare|preparar|"
+        r"produza|produzir)\b",
+        text,
+    ):
+        return "content_creation"
+    question_marker = bool(
+        "?" in str(value or "")
+        or re.search(
+            r"\b(o que|qual|quais|quanto|quantos|quantas|como|onde|quando|quem|por que|porque|"
+            r"tem|ha|existe|existem|pode|consegue|me diga|mostre|consulte|verifique|liste|informe|"
+            r"explique|quero saber|preciso saber|atualize|proximo|proxima|proximos|proximas|continue|continuar)\b",
+            text,
+        )
+        or readonly_inquiry(value)
+        or bool(query_only_domains(value))
+    )
+    return "" if question_marker else "not_a_question"
+
+
 def query_only_domains(value: Any) -> list[str]:
     """Classify domains that must never be mutated through WhatsApp."""
     text = formatting._whatsapp_text_key(value)

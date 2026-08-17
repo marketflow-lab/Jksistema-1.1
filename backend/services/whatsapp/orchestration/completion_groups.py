@@ -35,7 +35,6 @@ from backend.services.whatsapp import gateway as whatsapp_gateway
 from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import message as whatsapp_message
-from backend.services.whatsapp import report_scheduling as whatsapp_report_scheduling
 from backend.services.whatsapp import retry_policy as whatsapp_retry_policy
 from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp import tool_results as whatsapp_tool_results
@@ -50,7 +49,7 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents
 from backend.services.codex.console import tasks as console_tasks
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
@@ -493,40 +492,6 @@ def _dual_group_final_response(
         RUNTIME_STATE["conversation_fallback_last_error"] = str(exc)[:500]
         return {}, _worker_result_fallback_text(final_result, pending)
 
-def _dual_group_report_response(
-    config: dict[str, Any],
-    message_id: str,
-    pending: dict[str, Any],
-    tasks: dict[str, dict[str, Any]],
-    final_text: str,
-) -> str:
-    report_request = str(pending.get("request_text") or "")
-    if not whatsapp_report_files.report_requested(report_request):
-        return final_text
-    artifacts = [
-        artifact for task in tasks.values() for artifact in list(task.get("whatsapp_artifacts") or [])
-        if isinstance(artifact, dict)
-    ][:4]
-    artifact_results = _whatsapp_deliver_report_artifacts(
-        config, message_id, artifacts, pending.get("client_id") or "default", max_images=4,
-    ) if artifacts else []
-    summaries = [
-        summary for task in tasks.values() for summary in list(task.get("tool_results_summary") or [])
-        if isinstance(summary, dict)
-    ]
-    final_text = "\n\n".join(
-        item for item in (
-            final_text,
-            _whatsapp_report_metadata_text(report_request, pending.get("query_policy"), summaries),
-            whatsapp_report_files.report_offer_text(report_request),
-        ) if item
-    ).strip()
-    if artifacts and not all(item.get("success") for item in artifact_results):
-        final_text += "\n\nUm ou mais arquivos nao puderam ser anexados; o resumo em texto foi preservado."
-    for task_id in tasks:
-        console_tasks.update(task_id, whatsapp_artifacts=[])
-    return final_text
-
 def _deliver_dual_group_final(
     config: dict[str, Any],
     state: dict[str, Any],
@@ -576,20 +541,6 @@ def _deliver_dual_group_final(
         conversation_agent_thread_id=str(decision.get("thread_id") or "")[:200],
         user_facing_response=final_text[:12000],
     )
-    if delivery_confirmed:
-        try:
-            first_task = next(iter(tasks.values()), {})
-            _record_shared_delivered_exchange(
-                client_id=str(pending.get("client_id") or first_task.get("client_id") or ""),
-                username=str(pending.get("username") or first_task.get("created_by") or ""),
-                phone=str(pending.get("wa_id") or ""),
-                subject_id=str(pending.get("subject_id") or ""),
-                prompt=str(pending.get("request_text") or ""),
-                response=final_text,
-                event_id=f"{message_id}:group-final",
-            )
-        except Exception:
-            pass
     _whatsapp_update_query_context_from_task(state, pending, next(iter(tasks.values()), {}))
     _record_message_timing(message_id, completed_at=_now(), sent_at=_now())
     status = "completed" if str(final_result.get("status") or "") == "completed" else "partial"
@@ -632,7 +583,6 @@ def _complete_dual_job_group_pending(
         return False
     final_result = _aggregate_dual_group_results(pending)
     decision, final_text = _dual_group_final_response(config, state, pending, message_id, final_result)
-    final_text = _dual_group_report_response(config, message_id, pending, tasks, final_text)
     return _deliver_dual_group_final(
         config, state, message_id, pending, tasks, final_result, decision, final_text,
     )

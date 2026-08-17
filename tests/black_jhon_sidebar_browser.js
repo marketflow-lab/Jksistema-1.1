@@ -89,7 +89,7 @@ async function newScenario(browser, baseUrl, options = {}) {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(String(error && error.message || error)));
 
-  await page.addInitScript(({ full, seedLegacy, seedActiveTask, testMode }) => {
+  await page.addInitScript(({ full, seedLegacy, seedAutomaticAlert, seedActiveTask, testMode }) => {
     Object.defineProperty(window, 'Worker', { configurable: true, value: undefined });
     window.__JK_CODEX_TEST_MODE__ = testMode === true;
     localStorage.setItem('permissions', JSON.stringify(full ? { full: true } : {}));
@@ -108,6 +108,13 @@ async function newScenario(browser, baseUrl, options = {}) {
         { role: 'assistant', text: 'SEGREDO DO HISTORICO ADMIN' },
       ]));
     }
+    if (seedAutomaticAlert) {
+      localStorage.setItem('jk_codex_history_v2_legacy_automatic_test', JSON.stringify([
+        { role: 'assistant', text: 'MENSAGEM AUTOMATICA LEGADA', classExtra: 'codex-alert', task_id: 'codex_assistant|legacy' },
+        { role: 'assistant', text: 'MENSAGEM MANUAL PRESERVADA', classExtra: '', task_id: 'manual-legacy' },
+      ]));
+      localStorage.setItem('jk_codex_assistant_seen_v1', JSON.stringify({ legacy: '2026-07-10T12:00:00Z' }));
+    }
     if (seedActiveTask) {
       const username = full ? 'admin' : 'operador';
       localStorage.setItem(`jk_codex_panel_state_v2_000002_${username}`, JSON.stringify({
@@ -120,6 +127,7 @@ async function newScenario(browser, baseUrl, options = {}) {
   }, {
     full: options.full === true,
     seedLegacy: options.seedLegacy === true,
+    seedAutomaticAlert: options.seedAutomaticAlert === true,
     seedActiveTask: options.seedActiveTask || '',
     testMode: options.fakeClock === true,
   });
@@ -372,6 +380,13 @@ async function newScenario(browser, baseUrl, options = {}) {
         report: { report_id: 'report-browser-large', chat_text: options.largeDailyReport || '' },
       });
     }
+    if (pathname === '/api/admin/codex/assistant/reports/report-browser-manual' && method === 'GET') {
+      calls.reportGets += 1;
+      return json(200, {
+        success: true,
+        report: { report_id: 'report-browser-manual', chat_text: options.largeManualReport || '' },
+      });
+    }
     if (pathname === '/api/admin/codex/assistant/reports' && method === 'POST') {
       calls.advancedAdmin.push(pathname);
       calls.advancedPayloads.push({ path: pathname, payload: request.postDataJSON() });
@@ -401,7 +416,9 @@ async function newScenario(browser, baseUrl, options = {}) {
     if (pathname === '/api/ia/conversas/listar') return json(200, { success: true, conversas: [] });
     if (pathname === '/api/ia/conversas/salvar') return json(200, { success: true });
     if (pathname.startsWith('/api/ia/conversas/')) return json(200, { success: true, mensagens: [] });
-    if (pathname === '/api/mercadolivre/perguntas/aprovacoes') return json(200, { success: true, pendentes: [] });
+    if (pathname === '/api/mercadolivre/perguntas/aprovacoes') {
+      return json(200, { success: true, pendentes: Array.isArray(options.pendingApprovals) ? options.pendingApprovals : [] });
+    }
     return json(200, { success: true, suggestions: [], tasks: [] });
   });
 
@@ -420,6 +437,16 @@ async function run() {
         full: true,
         statusReady: true,
         pageQuery: '?token=segredo-nao-enviar&code=oauth-nao-enviar#hash-secreto',
+        pendingApprovals: [{
+          id: 'approval-browser-1',
+          tipo: 'pergunta',
+          loja: 'Loja teste',
+          sku: 'SKU-1',
+          titulo: 'Produto teste',
+          pergunta: 'Pergunta teste?',
+          resposta_sugerida: 'Resposta teste.',
+          status: 'pending',
+        }],
       });
       const { context, page, calls, pageErrors } = scenario;
       await page.locator('#jk-codex-panel.aberto').waitFor();
@@ -442,6 +469,8 @@ async function run() {
       assert.strictEqual(await page.locator('#jk-codex-fab').count(), 0);
       assert.strictEqual(await page.locator('#jk-global-ai-sidebar').count(), 0);
       assert.strictEqual(await page.locator('#jk-ia-fab').getAttribute('data-primary-ai'), 'codex');
+      assert.strictEqual(await page.locator('#jk-questions-fab .jk-questions-ml-symbol').getAttribute('href'), '/assets/mercado-livre-symbol.svg?v=20260815-official-v1');
+      assert.strictEqual(await page.locator('.jk-questions-header-logo img').evaluate(img => img.complete && img.naturalWidth > 0), true);
       assert.strictEqual(await page.locator('#jk-codex-header h3').textContent(), 'Black Jhon');
       assert.strictEqual(await page.locator('#jk-codex-header span').textContent(), 'Codex principal · IA integrada do sistema');
       assert.strictEqual(calls.codexTaskGets, 0, 'abrir painel nao consulta historico do servidor');
@@ -496,12 +525,24 @@ async function run() {
         resposta_sugerida: 'Resposta teste.',
         status: 'pending',
       }, { abrirPainel: false }));
-      await page.locator('#jk-codex-messages .black-jhon-approval').waitFor();
+      await page.locator('#jk-questions-list .jk-ia-approval-card').waitFor();
+      assert.strictEqual(await page.locator('#jk-codex-messages .jk-ia-approval-card').count(), 0);
       assert.strictEqual(await page.locator('#jk-ia-msgs .jk-ia-approval-card').count(), 0);
+      assert.strictEqual(await page.locator('#jk-questions-badge').textContent(), '1');
+      await page.locator('#jk-questions-fab').evaluate(button => button.click());
+      await page.locator('#jk-questions-panel.aberto').waitFor();
+      await page.locator('#jk-questions-list .jk-ia-approval-card').waitFor();
+      assert.strictEqual(await page.locator('#jk-codex-panel.aberto').count(), 0);
       await page.reload({ waitUntil: 'domcontentloaded' });
       await page.locator('#jk-ia-light-fab').click();
       await page.locator('#jk-codex-panel.aberto').waitFor();
-      await page.locator('#jk-codex-messages .black-jhon-approval').waitFor();
+      assert.strictEqual(await page.locator('#jk-codex-messages .jk-ia-approval-card').count(), 0, 'perguntas nao voltam ao historico do Black Jhon');
+      await page.locator('#jk-questions-fab').evaluate(button => button.click());
+      await page.locator('#jk-questions-panel.aberto').waitFor();
+      await page.locator('#jk-questions-list .jk-ia-approval-card').waitFor();
+      await page.locator('#jk-questions-close').click();
+      await page.locator('#jk-ia-fab').click();
+      await page.locator('#jk-codex-panel.aberto').waitFor();
       await page.evaluate(() => {
         window.__favoritosLocalCalls = 0;
         window.JKFavoritosPreencherPesquisasIA = async () => {
@@ -533,6 +574,7 @@ async function run() {
       assert.strictEqual(await page.locator('#jk-codex-attachment-chips').isHidden(), true);
       assert.strictEqual(await page.locator('#jk-codex-approval').isHidden(), true);
       assert.strictEqual(await page.locator('#jk-codex-report-settings').isHidden(), true);
+      assert.strictEqual(await page.locator('#jk-questions-fab').isHidden(), true);
       assert.strictEqual(await page.locator('#jk-codex-header span').textContent(), 'Codex principal · somente leitura');
       assert.strictEqual(calls.iaModels, 0);
       assert.doesNotMatch(await page.locator('#jk-codex-messages').textContent(), /SEGREDO DO HISTORICO ADMIN/);
@@ -578,7 +620,9 @@ async function run() {
         status: 'pending',
       }, { abrirPainel: true }));
       await page.waitForTimeout(80);
-      assert.strictEqual(await page.locator('#jk-codex-messages .black-jhon-approval').count(), 0);
+      assert.strictEqual(await page.locator('#jk-codex-messages .jk-ia-approval-card').count(), 0);
+      assert.strictEqual(await page.locator('#jk-questions-list .jk-ia-approval-card').count(), 0);
+      assert.strictEqual(await page.locator('#jk-questions-panel.aberto').count(), 0);
       assert.strictEqual(await page.locator('#jk-ia-panel.aberto').count(), 0);
       assert.deepStrictEqual(pageErrors, []);
       await context.close();
@@ -754,93 +798,50 @@ async function run() {
     }
 
     {
-      const largeDailyReport = 'R'.repeat(200000);
+      const largeManualReport = 'R'.repeat(200000);
       const scenario = await newScenario(browser, baseUrl, {
         full: true,
         statusReady: true,
         fakeClock: true,
-        largeDailyReport,
-        coordinatorSuggestions: [{
-          id: 'suggestion-coordinator-scroll',
-          title: 'Sugestao de fila',
-          detail: 'Validar que o scroll interno nao interrompe a propria fila.',
-          recommendation: 'Continuar sequencialmente.',
-          source: 'browser-test',
-        }],
+        seedAutomaticAlert: true,
+        largeManualReport,
       });
       const { context, page, calls, pageErrors } = scenario;
       await page.locator('#jk-codex-panel.aberto').waitFor();
-      assert.deepStrictEqual(calls.advancedAdmin, [], 'coordenador nao deve rodar antes do relogio avancar');
-      await page.clock.runFor(1);
-      if (await page.locator('#jk-codex-panel.aberto').count()) {
-        await page.locator('#jk-codex-close').click();
-      }
-      assert.strictEqual(await page.locator('#jk-codex-panel.aberto').count(), 0);
-      await page.clock.runFor(49999);
-      await page.keyboard.press('Shift');
-      await page.clock.runFor(10000);
-      await new Promise(resolve => setTimeout(resolve, 30));
-      assert.deepStrictEqual(calls.advancedAdmin, [], 'atividade nos 15 segundos anteriores adia o primeiro ciclo');
 
-      await page.clock.runFor(30001);
-      try {
-        await waitForCondition(() => calls.advancedAdmin.length === 3, 'coordenador nao concluiu a fila inicial');
-      } catch (error) {
-        const coordinatorState = await page.evaluate(() => window.__JK_CODEX_COORDINATOR_TEST__?.state());
-        error.message += ` Estado: ${JSON.stringify({ calls: calls.advancedAdmin, coordinatorState })}`;
-        throw error;
-      }
-      assert.deepStrictEqual(calls.advancedAdmin, [
-        '/api/admin/codex/assistant/suggestions',
-        '/api/admin/codex/assistant/proactive/run',
-        '/api/admin/codex/assistant/weekly-analysis/run',
-      ]);
-      assert.strictEqual(calls.maxActiveAdvancedAdmin, 1, 'rotinas administrativas nao podem executar em paralelo');
-      const proactivePayload = calls.advancedPayloads.find(item => item.path.endsWith('/proactive/run')).payload;
-      const weeklyPayload = calls.advancedPayloads.find(item => item.path.endsWith('/weekly-analysis/run')).payload;
-      [proactivePayload, weeklyPayload].forEach(payload => {
-        assert.strictEqual(payload.compact, true);
-        assert.strictEqual(payload.screen_context.context_mode, 'background');
-        assert.strictEqual(Object.prototype.hasOwnProperty.call(payload.screen_context, 'visible_text'), false);
-        assert.strictEqual(Object.prototype.hasOwnProperty.call(payload.screen_context, 'controls'), false);
-      });
+      await page.clock.fastForward((31 * 60 * 1000) + 10);
+      await new Promise(resolve => setTimeout(resolve, 20));
+      assert.deepStrictEqual(calls.advancedAdmin, [], 'Black Jhon nao deve disparar consultas ou relatorios automaticos');
+      assert.strictEqual(await page.evaluate(() => Object.prototype.hasOwnProperty.call(window, '__JK_CODEX_COORDINATOR_TEST__')), false);
+      const legacyHistory = await page.evaluate(() => ({
+        history: JSON.parse(localStorage.getItem('jk_codex_history_v2_legacy_automatic_test') || '[]'),
+        seen: localStorage.getItem('jk_codex_assistant_seen_v1'),
+      }));
+      assert.deepStrictEqual(legacyHistory.history.map(item => item.text), ['MENSAGEM MANUAL PRESERVADA']);
+      assert.strictEqual(legacyHistory.seen, null);
+      assert.doesNotMatch(await page.locator('#jk-codex-messages').textContent(), /MENSAGEM AUTOMATICA LEGADA/);
 
+      await page.locator('#jk-codex-report').evaluate(button => button.click());
       await page.locator('#jk-codex-messages .codex-report').waitFor();
+      assert.deepStrictEqual(calls.advancedAdmin, ['/api/admin/codex/assistant/reports']);
       const reportCardLength = await page.locator('#jk-codex-messages .codex-report').evaluate(el => el.textContent.length);
-      assert.ok(reportCardLength < 3000, 'relatorio de 200k deve virar cartao compacto');
+      assert.ok(reportCardLength < 3000, 'relatorio manual de 200k deve virar cartao compacto');
       const persistedReport = await page.evaluate(() => Object.entries(localStorage)
         .filter(([key]) => key.startsWith('jk_codex_history_v2_'))
         .map(([, value]) => value)
         .join('\n'));
       assert.ok(persistedReport.length < 20000);
-      assert.match(persistedReport, /report-browser-large/);
+      assert.match(persistedReport, /report-browser-manual/);
       assert.match(persistedReport, /"full_length":200000/);
       assert.doesNotMatch(persistedReport, /R{1000}/);
 
-      await page.evaluate(() => document.getElementById('jk-ia-fab')?.click());
-      await page.locator('#jk-codex-panel.aberto').waitFor();
       const popupPromise = page.waitForEvent('popup');
       await page.locator('#jk-codex-messages .codex-report .jk-codex-open-fulltext').click();
       const popup = await popupPromise;
       await popup.locator('pre').waitFor();
-      assert.strictEqual((await popup.locator('pre').textContent()).length, largeDailyReport.length);
+      assert.strictEqual((await popup.locator('pre').textContent()).length, largeManualReport.length);
       assert.strictEqual(calls.reportGets, 1);
-      assert.deepStrictEqual(await page.evaluate(() => {
-        const state = window.__JK_CODEX_COORDINATOR_TEST__.state();
-        return [state.full_text_cache_size, state.full_text_cache_max];
-      }), [1, 4]);
       await popup.close();
-
-      await page.evaluate(() => document.getElementById('jk-codex-new')?.click());
-      await waitForCondition(() => calls.memoryResets === 1, 'reinicio de memoria nao foi chamado');
-      assert.strictEqual(await page.evaluate(() => window.__JK_CODEX_COORDINATOR_TEST__.state().full_text_cache_size), 0);
-      await page.locator('#jk-codex-close').click();
-
-      await page.clock.fastForward(29 * 60 * 1000);
-      await new Promise(resolve => setTimeout(resolve, 20));
-      assert.strictEqual(calls.advancedAdmin.length, 3);
-      await page.clock.fastForward((60 * 1000) + 10);
-      await waitForCondition(() => calls.advancedAdmin.length === 6, 'recorrencia de 30 minutos nao executou');
       assert.deepStrictEqual(pageErrors, []);
       await context.close();
     }
@@ -878,8 +879,7 @@ async function run() {
       await page.locator('#jk-codex-close').click();
       await page.clock.fastForward(5 * 60 * 1000);
       assert.deepStrictEqual(calls.advancedAdmin, [], 'usuario comum nunca inicia coordenador administrativo');
-      const state = await page.evaluate(() => window.__JK_CODEX_COORDINATOR_TEST__.state());
-      assert.strictEqual(state.started, false);
+      assert.strictEqual(await page.evaluate(() => Object.prototype.hasOwnProperty.call(window, '__JK_CODEX_COORDINATOR_TEST__')), false);
       assert.deepStrictEqual(pageErrors, []);
       await context.close();
     }

@@ -34,6 +34,42 @@ assert(
 );
 
 assert(
+  localPathsSource.includes('const JK_LEGACY_WHATSAPP_VOICE_PORT = 8012;'),
+  'Electron must retain the retired voice port in the managed-server cleanup set'
+);
+assert(
+  backendSource.includes('function stopManagedLocalServers(reason = \'unspecified\')')
+    && backendSource.includes('JK_LOCAL_BACKEND_PORT,')
+    && backendSource.includes('JK_PROMO_WORKER_PORT,')
+    && backendSource.includes('JK_LEGACY_WHATSAPP_VOICE_PORT'),
+  'Electron must close backend, promo worker and legacy voice listeners as one managed set'
+);
+const backendStartupSource = backendSource.slice(
+  backendSource.indexOf('function ensureLocalBackendStarted()'),
+  backendSource.indexOf('function stopTrackedProcessTree(')
+);
+const trustedLauncherCheck = backendStartupSource.indexOf('consumeCanonicalLauncherPreparedServers()');
+const mandatoryCleanup = backendStartupSource.indexOf("stopManagedLocalServers('before-start')");
+const backendSync = backendStartupSource.indexOf('syncBundledLocalBackend(inspection)');
+assert(
+  trustedLauncherCheck >= 0
+    && mandatoryCleanup > trustedLauncherCheck
+    && backendSync > mandatoryCleanup,
+  'direct Electron startup must close and confirm old managed servers before syncing or starting the backend'
+);
+assert(
+  backendStartupSource.includes('preparedByCanonicalLauncher: true')
+    && backendStartupSource.includes('if (!cleanup.success)')
+    && backendStartupSource.includes('filter(server => !server.closed)'),
+  'only the canonical pre-cleaned launcher may reuse its fresh backend and cleanup failures must block startup'
+);
+assert(
+  backendSource.includes('function consumeCanonicalLauncherPreparedServers()')
+    && backendSource.includes('delete process.env.JK_LOCAL_SERVERS_PREPARED_BY_LAUNCHER;'),
+  'canonical launcher trust must be consumed once and never authorize a later stale-server reuse'
+);
+
+assert(
   localPathsSource.includes('path.join(process.resourcesPath, JK_LOCAL_BACKEND_DIR_NAME)'),
   'packaged Electron root must consider resources/local_app'
 );

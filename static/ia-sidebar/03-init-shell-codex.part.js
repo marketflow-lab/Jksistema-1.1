@@ -19,6 +19,10 @@
     let codexResizeState = null;
     let msgPanelAberto = false;
     let codexPanelAberto = false;
+    let perguntasPanelAberto = false;
+    let perguntasPainelCarregando = false;
+    let perguntasPendentesCount = 0;
+    const perguntasPainelItens = new Map();
     let codexTaskAtual = null;
     let codexInitialTaskId = '';
     let codexThreadId = '';
@@ -50,18 +54,12 @@
     let codexVoiceMaxTimer = null;
     let codexVoiceGeneration = 0;
     let codexMessagesAtuais = [];
-    let codexAssistantTimer = null;
-    let codexAssistantLastReportId = '';
-    let codexAssistantCoordinatorStarted = false;
-    let codexAssistantCoordinatorRunning = false;
-    let codexAssistantLastActivityAt = Date.now();
     let codexReportSettingsCache = null;
     let codexReportSettingsScroll = null;
     let codexManualContextCache = { at: 0, value: null };
     let codexManualContextSequence = 0;
     const codexFullTextCache = new Map();
     let codexLazyStarted = false;
-    let blackJhonUsandoIaSecundaria = false;
     let msgChatAberto = false;
     let msgUsuarioSelecionado = null;
     let msgRefreshTimer = null;
@@ -69,7 +67,6 @@
     let iaTemMensagemNaoVista = false;
     let iaModelosLazyStarted = false;
     let codexTemMensagemNaoVista = false;
-    let codexAprovacaoNaoVista = false;
     let msgTemMensagemNaoVista = false;
     let msgNotificacoesConhecidas = null;
     let msgNaoLidasPorUsuario = new Map();
@@ -104,12 +101,7 @@
     const CODEX_ACTIVE_CONVERSATION_KEY = 'jk_codex_active_conversation_id_v2';
     const CODEX_HISTORY_PREFIX = 'jk_codex_history_v2';
     const CODEX_PANEL_STATE_PREFIX = 'jk_codex_panel_state_v2';
-    const CODEX_ASSISTANT_SEEN_KEY = 'jk_codex_assistant_seen_v1';
     const CODEX_HISTORY_LIMIT = 120;
-    const CODEX_PROACTIVE_INTERVAL_MS = 30 * 60 * 1000;
-    const CODEX_COORDINATOR_FIRST_DELAY_MS = 60 * 1000;
-    const CODEX_COORDINATOR_RETRY_MS = 30 * 1000;
-    const CODEX_COORDINATOR_IDLE_MS = 15 * 1000;
     const CODEX_MANUAL_CONTEXT_CACHE_MS = 5 * 1000;
     const CODEX_MANUAL_DOM_MAX_ELEMENTS = 300;
     const CODEX_LONG_RESPONSE_THRESHOLD = 12 * 1000;
@@ -141,7 +133,6 @@
     const PERGUNTAS_MONITOR_STALE_MS = 90000;
     const PERGUNTAS_MONITOR_MAX_NOTIFICACOES_FECHADO = 4;
     const PERGUNTAS_MONITOR_MAX_NOTIFICACOES_ABERTO = 12;
-    const PERGUNTAS_MONITOR_YIELD_MS = 40;
     const perguntasMonitorId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     let perguntasMonitorStartTimer = null;
     let perguntasMonitorTimer = null;
@@ -533,12 +524,14 @@
 
     function _sidebarAtualizarAlertas() {
       const iaAlerta = iaTemMensagemNaoVista && !panelAberto;
-      const codexAlerta = (codexTemMensagemNaoVista || codexAprovacaoNaoVista) && !codexPanelAberto;
+      const codexAlerta = codexTemMensagemNaoVista && !codexPanelAberto;
       const blackJhonAlerta = iaAlerta || codexAlerta;
       const msgAlerta = msgTemMensagemNaoVista && !msgPanelAberto;
+      const perguntasAlerta = perguntasPendentesCount > 0 && !perguntasPanelAberto;
       document.getElementById('jk-ia-fab')?.classList.toggle('piscando', blackJhonAlerta);
+      document.getElementById('jk-questions-fab')?.classList.toggle('piscando', perguntasAlerta);
       document.getElementById('jk-msg-fab')?.classList.toggle('piscando', msgAlerta);
-      document.getElementById('jk-right-sidebar-hotspot')?.classList.toggle('tem-alerta', blackJhonAlerta || msgAlerta);
+      document.getElementById('jk-right-sidebar-hotspot')?.classList.toggle('tem-alerta', blackJhonAlerta || perguntasAlerta || msgAlerta);
     }
 
     function _iaAvisarMensagemRecebida() {
@@ -1375,6 +1368,42 @@
         || normalizado === 'tarefa criada para acesso mutavel. confirme para executar';
     }
 
+    function _codexEhAlertaAutomatico(item) {
+      if (!item || typeof item !== 'object') return false;
+      const classe = String(item.classExtra || item.class_name || '').toLowerCase();
+      if (classe.split(/\s+/).includes('codex-alert')) return true;
+      const marcadores = [
+        item.kind,
+        item.content_kind,
+        item.message_kind,
+        item.source,
+        item.origin,
+      ].map(value => String(value || '').trim().toLowerCase());
+      if (marcadores.some(value => ['alert', 'automatic_alert', 'proactive', 'suggestion'].includes(value))) return true;
+      const taskId = String(item.task_id || item.id || '').trim().toLowerCase();
+      if (taskId.startsWith('codex_assistant|')) return true;
+      const background = item.screen_context && typeof item.screen_context === 'object'
+        && (item.screen_context.background === true || String(item.screen_context.context_mode || '').toLowerCase() === 'background');
+      return background && String(item.message_kind || '').toLowerCase() === 'report';
+    }
+
+    function _codexRemoverAlertasAutomaticosDoHistoricoLocal() {
+      try {
+        const keys = [];
+        for (let i = 0; i < localStorage.length; i += 1) {
+          const key = String(localStorage.key(i) || '');
+          if (key === CODEX_HISTORY_KEY || key.startsWith(`${CODEX_HISTORY_PREFIX}_`)) keys.push(key);
+        }
+        keys.forEach((key) => {
+          const raw = JSON.parse(localStorage.getItem(key) || '[]');
+          if (!Array.isArray(raw)) return;
+          const limpo = raw.filter(item => !_codexEhAlertaAutomatico(item));
+          if (limpo.length !== raw.length) localStorage.setItem(key, JSON.stringify(limpo));
+        });
+        localStorage.removeItem('jk_codex_assistant_seen_v1');
+      } catch (_) {}
+    }
+
     function _codexSafeStorageId(value, fallback = 'default') {
       let text = String(value || '').trim();
       try {
@@ -1617,6 +1646,28 @@
       } catch (_) {}
     }
 
+    function _codexEhRegistroPerguntaMl(item) {
+      if (!item || typeof item !== 'object') return false;
+      if (String(item.kind || '').toLowerCase() === 'approval') return true;
+      return String(item.text || '').trimStart().startsWith('__JK_APPROVAL_CARD_V1__:');
+    }
+
+    function _codexRemoverPerguntasMlDoHistoricoLocal() {
+      try {
+        const keys = [];
+        for (let i = 0; i < localStorage.length; i += 1) {
+          const key = String(localStorage.key(i) || '');
+          if (key === CODEX_HISTORY_KEY || key.startsWith(`${CODEX_HISTORY_PREFIX}_`)) keys.push(key);
+        }
+        keys.forEach((key) => {
+          const raw = JSON.parse(localStorage.getItem(key) || '[]');
+          if (!Array.isArray(raw)) return;
+          const limpo = raw.filter(item => !_codexEhRegistroPerguntaMl(item));
+          if (limpo.length !== raw.length) localStorage.setItem(key, JSON.stringify(limpo));
+        });
+      } catch (_) {}
+    }
+
     function _codexLerHistoricoLocal() {
       try {
         const key = _codexHistoricoStorageKey();
@@ -1629,7 +1680,7 @@
         }
         const raw = JSON.parse(rawText || '[]') || [];
         if (!Array.isArray(raw)) return [];
-        return raw.map(item => {
+        return raw.filter(item => !_codexEhRegistroPerguntaMl(item) && !_codexEhAlertaAutomatico(item)).map(item => {
           const role = String(item?.role || 'assistant');
           const taskId = String(item?.task_id || '');
           const prepared = _codexPrepararConteudoMensagem(role, String(item?.text || ''), {
@@ -1645,7 +1696,6 @@
             ...prepared,
             classExtra: String(item?.classExtra || ''),
             kind: String(item?.kind || ''),
-            approval_payload: item?.approval_payload && typeof item.approval_payload === 'object' ? item.approval_payload : null,
             task_id: taskId,
             report_formats: Array.isArray(item?.report_formats) ? item.report_formats.map(fmt => String(fmt || '').trim()).filter(Boolean) : [],
             at: String(item?.at || ''),
@@ -1659,7 +1709,7 @@
     function _codexSalvarHistoricoLocal() {
       try {
         const limpo = codexMessagesAtuais
-          .filter(item => item && item.text && !_codexEhStatusEnvioObsoleto(item.role, item.text))
+          .filter(item => item && item.text && !_codexEhRegistroPerguntaMl(item) && !_codexEhAlertaAutomatico(item) && !_codexEhStatusEnvioObsoleto(item.role, item.text))
           .slice(-CODEX_HISTORY_LIMIT);
         localStorage.setItem(_codexHistoricoStorageKey(), JSON.stringify(limpo));
         _codexSalvarEstadoPainel();
@@ -1670,7 +1720,8 @@
       const lista = document.getElementById('jk-codex-messages');
       if (!lista) return;
       lista.innerHTML = '';
-      codexMessagesAtuais = Array.isArray(entriesOverride) ? entriesOverride : _codexLerHistoricoLocal();
+      codexMessagesAtuais = (Array.isArray(entriesOverride) ? entriesOverride : _codexLerHistoricoLocal())
+        .filter(item => !_codexEhAlertaAutomatico(item));
       if (!codexMessagesAtuais.length) {
         _codexAddMsg('status', 'Codex interno pronto para verificar o ambiente local.', '', { persist: false });
         return;
@@ -1685,10 +1736,6 @@
           truncated: item.truncated,
           full_length: item.full_length,
         });
-        if (msg && item.kind === 'approval' && item.approval_payload) {
-          msg.innerHTML = '';
-          _approvalMontarCard(msg, item.approval_payload);
-        }
         if (msg && String(item.classExtra || '').includes('codex-report')) {
           _codexAppendReportActions(msg, item.task_id, item.report_formats);
         }
@@ -1745,7 +1792,7 @@
 
     function _codexHistoricoFromTasks(tasks) {
       const lista = Array.isArray(tasks)
-        ? tasks.slice().sort((a, b) => _codexTaskTimeMs(a, 'created_at') - _codexTaskTimeMs(b, 'created_at'))
+        ? tasks.filter(task => !_codexEhAlertaAutomatico(task)).slice().sort((a, b) => _codexTaskTimeMs(a, 'created_at') - _codexTaskTimeMs(b, 'created_at'))
         : [];
       const entries = [];
       lista.forEach(task => {
@@ -1785,7 +1832,7 @@
     function _codexMesclarHistoricoComEspeciais(historico, especiaisFonte = null) {
       const base = Array.isArray(historico) ? historico.slice() : [];
       const fonte = Array.isArray(especiaisFonte) ? especiaisFonte : _codexLerHistoricoLocal();
-      const especiais = fonte.filter(item => ['approval', 'fallback', 'fallback_user'].includes(String(item?.kind || '')));
+      const especiais = fonte.filter(item => ['fallback', 'fallback_user'].includes(String(item?.kind || '')));
       const chaves = new Set(base.map(item => `${item.role}|${item.task_id}|${item.text}`));
       especiais.forEach(item => {
         const chave = `${item.role}|${item.task_id}|${item.text}`;
@@ -1940,8 +1987,10 @@
 
     async function _codexCarregarListaHistorico() {
       try {
-        const data = await _codexFetchJson('/api/codex/tasks?limit=100&summary=true&channel=unified');
-        codexHistoryTasks = Array.isArray(data && data.tasks) ? data.tasks.map(_codexCompactTaskForMemory) : [];
+        const data = await _codexFetchJson('/api/codex/tasks?limit=100&summary=true&channel=app');
+        codexHistoryTasks = Array.isArray(data && data.tasks)
+          ? data.tasks.filter(task => !_codexEhAlertaAutomatico(task)).map(_codexCompactTaskForMemory)
+          : [];
         _codexRenderHistoricoTasks(codexHistoryTasks);
         return codexHistoryTasks;
       } catch (err) {
@@ -2187,7 +2236,6 @@
           text,
           classExtra: String(classExtra || ''),
           kind: String(options.kind || ''),
-          approval_payload: options.approval_payload && typeof options.approval_payload === 'object' ? options.approval_payload : null,
           task_id: String(options.task_id || ''),
           report_formats: Array.isArray(options.report_formats) ? options.report_formats.map(fmt => String(fmt || '').trim()).filter(Boolean) : [],
           content_id: prepared.content_id,
@@ -2240,140 +2288,6 @@
       if (ultimoHttpErro) throw ultimoHttpErro;
       if (msg && !/failed to fetch|load failed|networkerror/i.test(msg)) throw ultimoErro;
       throw new Error('Nao consegui acessar o backend do Codex. Verifique se o app local esta aberto na porta 8001. URLs testadas: ' + urls.join(', '));
-    }
-
-    function _codexAssistantSeen() {
-      try {
-        const data = JSON.parse(localStorage.getItem(CODEX_ASSISTANT_SEEN_KEY) || '{}') || {};
-        return data && typeof data === 'object' ? data : {};
-      } catch (_) {
-        return {};
-      }
-    }
-
-    function _codexAssistantSaveSeen(data) {
-      try { localStorage.setItem(CODEX_ASSISTANT_SEEN_KEY, JSON.stringify(data || {})); } catch (_) {}
-    }
-
-    function _codexSuggestionId(item) {
-      const direct = String(item && item.id || '').trim();
-      if (direct) return direct;
-      return [
-        item && item.source || 'codex_assistant',
-        item && item.title || '',
-        item && item.detail || '',
-        item && item.created_at || '',
-      ].map(value => String(value || '').trim()).filter(Boolean).join('|');
-    }
-
-    function _codexAssistantMarkSeen(suggestions) {
-      const seen = _codexAssistantSeen();
-      (Array.isArray(suggestions) ? suggestions : []).forEach(item => {
-        const id = _codexSuggestionId(item);
-        if (id) seen[id] = new Date().toISOString();
-      });
-      _codexAssistantSaveSeen(seen);
-    }
-
-    function _codexAssistantHasUnseen(suggestions) {
-      const seen = _codexAssistantSeen();
-      return (Array.isArray(suggestions) ? suggestions : []).some(item => {
-        const id = _codexSuggestionId(item);
-        return id && !seen[id] && String(item.severity || '') !== 'ok';
-      });
-    }
-
-    function _codexAddSuggestionMsg(item, seen) {
-      const id = _codexSuggestionId(item);
-      if (!id || seen[id] || String(item && item.severity || '') === 'ok') return false;
-      const title = String(item && item.title || 'Alerta Codex').trim();
-      const detail = String(item && item.detail || '').trim();
-      const recommendation = String(item && item.recommendation || '').trim();
-      const meta = [item && item.source || 'codex_assistant', item && item.created_at || ''].filter(Boolean).join(' | ');
-      const text = [
-        `## ${title}`,
-        detail,
-        recommendation ? `**Acao sugerida:** ${recommendation}` : '',
-        meta ? `Fonte: \`${meta}\`` : '',
-      ].filter(Boolean).join('\n\n');
-      const msg = _codexAddMsg('assistant', text, 'codex-alert', { task_id: id });
-      if (msg) {
-        const actions = document.createElement('div');
-        actions.className = 'jk-codex-msg-actions';
-        const report = document.createElement('button');
-        report.type = 'button';
-        report.className = 'jk-codex-tool';
-        report.textContent = 'Ver relatório detalhado';
-        report.title = 'Gerar relatório detalhado com todos os itens deste alerta';
-        report.addEventListener('click', () => {
-          const reportPrompt = String(item && item.report_prompt || '').trim();
-          const prompt = [
-            reportPrompt || 'Gere um relatorio operacional completo deste alerta e mostre o relatorio integral no chat.',
-            reportPrompt ? '' : 'Liste todos os SKUs envolvidos em tabela, sem resumir somente os primeiros.',
-            reportPrompt ? '' : 'Explique o motivo do risco, impacto comercial, dados usados e acao recomendada por SKU.',
-            reportPrompt ? '' : 'Quando falar de ruptura ou reposicao, considere apenas saldo de loja; nao use estoque Full no calculo.',
-            `Alerta: ${title}`,
-            `Detalhe: ${detail}`,
-            recommendation ? `Acao sugerida: ${recommendation}` : '',
-            item && item.source ? `Fonte: ${item.source}` : '',
-          ].filter(Boolean).join('\n');
-          void _codexGerarRelatorioAssistente(prompt);
-        });
-        actions.appendChild(report);
-        msg.appendChild(actions);
-      }
-      seen[id] = new Date().toISOString();
-      return true;
-    }
-
-    function _codexRenderSugestoes(suggestions) {
-      const box = document.getElementById('jk-codex-suggestions');
-      if (!box) return;
-      const items = (Array.isArray(suggestions) ? suggestions : []).slice(0, 4);
-      box.replaceChildren();
-      box.hidden = true;
-      const unseen = _codexAssistantHasUnseen(items) && !codexPanelAberto;
-      const seen = _codexAssistantSeen();
-      let added = false;
-      items.forEach(item => {
-        if (_codexAddSuggestionMsg(item, seen)) added = true;
-      });
-      if (added) _codexAssistantSaveSeen(seen);
-      codexTemMensagemNaoVista = unseen;
-      _sidebarAtualizarAlertas();
-    }
-
-    async function _codexCarregarSugestoes() {
-      if (!_usuarioLocalEhFull()) return [];
-      try {
-        const data = await _codexFetchJson('/api/admin/codex/assistant/suggestions');
-        const suggestions = Array.isArray(data && data.suggestions) ? data.suggestions : [];
-        _codexRenderSugestoes(suggestions);
-        return suggestions;
-      } catch (err) {
-        throw err;
-      }
-    }
-
-    async function _codexRodarProativo(force = false) {
-      if (!_usuarioLocalEhFull()) return;
-      try {
-        _codexSetStatus(force ? 'Codex verificando dados proativamente...' : 'Codex verificando alertas de 30 minutos...');
-        const data = await _codexFetchJson('/api/admin/codex/assistant/proactive/run', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ force: !!force, compact: true, screen_context: _codexObterContextoTelaAtual({ background: true }) }),
-        });
-        const suggestions = Array.isArray(data && data.suggestions) ? data.suggestions : [];
-        _codexRenderSugestoes(suggestions);
-        if (data && data.status === 'completed') {
-          _codexSetStatus('Codex verificou alertas proativos.');
-        }
-        return data;
-      } catch (err) {
-        _codexSetStatus(_codexErroCurto(err, 'Falha ao verificar alertas proativos.'), true);
-        throw err;
-      }
     }
 
     function _codexRelatorioId(report) {
@@ -2813,145 +2727,16 @@
       }
     }
 
-    async function _codexRodarAnaliseDiaria(force = false) {
-      if (!_usuarioLocalEhFull()) return;
-      try {
-        const data = await _codexFetchJson('/api/admin/codex/assistant/daily-analysis/run', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ force: !!force, compact: true, screen_context: _codexObterContextoTelaAtual({ background: true }) }),
-        });
-        if (data && data.suggestions) _codexRenderSugestoes(data.suggestions);
-        const report = data && data.report;
-        const reportId = _codexRelatorioId(report);
-        if (data && data.status === 'completed' && reportId && reportId !== codexAssistantLastReportId) {
-          codexAssistantLastReportId = reportId;
-          _codexAddReportCard(report, 'Analise diaria de vendas e estoque concluida.');
-          const steps = Array.isArray(report.status_steps) ? report.status_steps : [];
-          const lastStep = steps.length ? String(steps[steps.length - 1] || '').trim() : '';
-          if (lastStep) _codexSetStatus(`Analise diaria pronta: ${lastStep}`);
-        }
-        return data;
-      } catch (err) {
-        throw err;
-      }
-    }
-
-    async function _codexRodarAnaliseSemanal(force = false) {
-      if (!_usuarioLocalEhFull()) return;
-      const data = await _codexFetchJson('/api/admin/codex/assistant/weekly-analysis/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ force: !!force, compact: true, screen_context: _codexObterContextoTelaAtual({ background: true }) }),
-      });
-      if (data && data.suggestions) _codexRenderSugestoes(data.suggestions);
-      const report = data && data.report;
-      const reportId = _codexRelatorioId(report);
-      if (data && data.status === 'completed' && reportId && reportId !== codexAssistantLastReportId) {
-        codexAssistantLastReportId = reportId;
-        _codexAddReportCard(report, 'Relatorio semanal completo concluido.');
-      }
-      return data;
-    }
-
-    function _codexRegistrarAtividadeCoordenador(event) {
-      if (event && event.isTrusted === false) return;
-      if (event && event.type === 'scroll') {
-        const panel = document.getElementById('jk-codex-panel');
-        const target = event.target;
-        const scrollDoPainelFechado = panel
-          && target
-          && (target === panel || panel.contains(target))
-          && !panel.classList.contains('aberto');
-        if (scrollDoPainelFechado) return;
-      }
-      codexAssistantLastActivityAt = Date.now();
-    }
-
-    function _codexCoordenadorElegivel() {
-      const panelVisivel = codexPanelAberto
-        || document.getElementById('jk-codex-panel')?.classList.contains('aberto') === true;
-      return _usuarioLocalEhFull()
-        && !panelVisivel
-        && !document.hidden
-        && String(document.visibilityState || 'visible') === 'visible'
-        && Date.now() - codexAssistantLastActivityAt >= CODEX_COORDINATOR_IDLE_MS;
-    }
-
-    function _codexAgendarCoordenador(delayMs) {
-      if (!_usuarioLocalEhFull()) return;
-      if (codexAssistantTimer) clearTimeout(codexAssistantTimer);
-      codexAssistantTimer = setTimeout(() => {
-        codexAssistantTimer = null;
-        void _codexExecutarCoordenador();
-      }, Math.max(0, Number(delayMs || 0)));
-    }
-
-    async function _codexExecutarCoordenador() {
-      if (!_usuarioLocalEhFull()) return false;
-      if (codexAssistantCoordinatorRunning) {
-        _codexAgendarCoordenador(CODEX_COORDINATOR_RETRY_MS);
-        return false;
-      }
-      if (!_codexCoordenadorElegivel()) {
-        _codexAgendarCoordenador(CODEX_COORDINATOR_RETRY_MS);
-        return false;
-      }
-      codexAssistantCoordinatorRunning = true;
-      try {
-        await _codexCarregarSugestoes();
-        if (!_codexCoordenadorElegivel()) throw new Error('Coordenador pausado por atividade do usuario.');
-        await _codexRodarProativo(false);
-        if (!_codexCoordenadorElegivel()) throw new Error('Coordenador pausado por atividade do usuario.');
-        await _codexRodarAnaliseSemanal(false);
-        _codexAgendarCoordenador(CODEX_PROACTIVE_INTERVAL_MS);
-        return true;
-      } catch (_) {
-        _codexAgendarCoordenador(CODEX_COORDINATOR_RETRY_MS);
-        return false;
-      } finally {
-        codexAssistantCoordinatorRunning = false;
-      }
-    }
-
-    function _codexIniciarAssistenteProativo() {
-      if (!_usuarioLocalEhFull() || codexAssistantCoordinatorStarted) return;
-      codexAssistantCoordinatorStarted = true;
-      codexAssistantLastActivityAt = Date.now();
-      document.addEventListener('keydown', _codexRegistrarAtividadeCoordenador, { capture: true });
-      document.addEventListener('mousemove', _codexRegistrarAtividadeCoordenador, { capture: true, passive: true });
-      document.addEventListener('scroll', _codexRegistrarAtividadeCoordenador, { capture: true, passive: true });
-      _codexAgendarCoordenador(CODEX_COORDINATOR_FIRST_DELAY_MS);
-    }
-
-    function _codexPararAssistenteProativo() {
-      if (codexAssistantTimer) clearTimeout(codexAssistantTimer);
-      codexAssistantTimer = null;
-      codexAssistantCoordinatorStarted = false;
-      document.removeEventListener('keydown', _codexRegistrarAtividadeCoordenador, { capture: true });
-      document.removeEventListener('mousemove', _codexRegistrarAtividadeCoordenador, { capture: true });
-      document.removeEventListener('scroll', _codexRegistrarAtividadeCoordenador, { capture: true });
-    }
-
-    if (window.__JK_CODEX_TEST_MODE__ === true) {
-      window.__JK_CODEX_COORDINATOR_TEST__ = {
-        runNow: () => _codexExecutarCoordenador(),
-        state: () => ({
-          started: codexAssistantCoordinatorStarted,
-          running: codexAssistantCoordinatorRunning,
-          timer_active: !!codexAssistantTimer,
-          last_activity_at: codexAssistantLastActivityAt,
-          now: Date.now(),
-          eligible: _codexCoordenadorElegivel(),
-          panel_open: codexPanelAberto || document.getElementById('jk-codex-panel')?.classList.contains('aberto') === true,
-          full_text_cache_size: codexFullTextCache.size,
-          full_text_cache_max: CODEX_FULL_TEXT_CACHE_MAX,
-        }),
-      };
-    }
-
     function _codexAtualizarVisibilidade() {
       const full = _usuarioLocalEhFull();
+      const perguntasFab = document.getElementById('jk-questions-fab');
+      const perguntasPanel = document.getElementById('jk-questions-panel');
+      if (perguntasFab) perguntasFab.hidden = !full;
+      if (perguntasPanel) perguntasPanel.hidden = !full;
+      if (!full && perguntasPanelAberto) {
+        perguntasPanelAberto = false;
+        perguntasPanel?.classList.remove('aberto');
+      }
       const panel = document.getElementById('jk-codex-panel');
       if (panel) {
         panel.dataset.accessProfile = full ? 'full' : 'read_only';
@@ -2989,7 +2774,7 @@
         ? 'Codex principal · IA integrada do sistema'
         : 'Codex principal · somente leitura';
       if (!full) {
-        ['jk-codex-add-menu', 'jk-codex-path-row', 'jk-codex-goal-row', 'jk-codex-suggestions'].forEach(id => {
+        ['jk-codex-add-menu', 'jk-codex-path-row', 'jk-codex-goal-row'].forEach(id => {
           const el = document.getElementById(id);
           if (el) el.hidden = true;
         });

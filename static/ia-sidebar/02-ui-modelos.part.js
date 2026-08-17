@@ -77,6 +77,15 @@
     50%{filter:brightness(1.3);box-shadow:0 0 0 5px rgba(239,68,68,.18),0 0 28px rgba(239,68,68,.72);}
   }
   #jk-msg-fab{background:linear-gradient(145deg,#5b8cff,#21b8a3);}
+  #jk-questions-fab{background:linear-gradient(145deg,#173b74,#2874b8);padding:5px;overflow:visible;}
+  #jk-questions-fab[hidden]{display:none!important;}
+  #jk-questions-fab .jk-questions-icon{width:40px;height:40px;overflow:visible;filter:drop-shadow(0 2px 3px rgba(0,0,0,.28));}
+  #jk-questions-fab .jk-questions-bubble{fill:#fff;stroke:#dbeafe;stroke-width:1.4;}
+  #jk-questions-fab .jk-questions-ml-symbol{pointer-events:none;}
+  #jk-questions-fab .jk-questions-mark{fill:#173b74;font:900 15px Arial,sans-serif;}
+  #jk-questions-badge{position:absolute;top:-5px;right:-5px;min-width:19px;height:19px;padding:0 5px;border-radius:999px;
+    background:#ef4444;color:#fff;border:2px solid #062a22;font-size:.62rem;font-weight:900;line-height:15px;text-align:center;display:none;}
+  #jk-questions-badge:not(:empty){display:block;}
   #jk-ia-fab{background:#101c37;font-size:0;font-weight:900;padding:0;overflow:hidden;border-radius:999px;}
   .jk-codex-avatar{display:block;width:100%;height:100%;object-fit:cover;}
   #jk-ia-fab .jk-codex-avatar,.jk-codex-icon .jk-codex-avatar{transform:scale(1.12);transform-origin:center;}
@@ -96,6 +105,27 @@
     -webkit-font-smoothing:antialiased;text-rendering:geometricPrecision;isolation:isolate;}
   #jk-msg-panel *,#jk-msg-panel *::before,#jk-msg-panel *::after{box-sizing:border-box;text-shadow:none;-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision;}
   #jk-msg-panel.aberto{transform:translateX(0);}
+  #jk-questions-panel{--jk-questions-panel-width:440px;position:fixed;top:0;right:0;bottom:0;z-index:9999;width:var(--jk-questions-panel-width);min-width:330px;max-width:96vw;
+    background:linear-gradient(165deg,#081b2e,#082c3d);border-left:1px solid rgba(255,230,0,.42);
+    display:flex;flex-direction:column;box-shadow:-6px 0 32px rgba(0,0,0,.55);
+    transform:translateX(110%);transition:transform .25s cubic-bezier(.4,0,.2,1);overflow:hidden;}
+  #jk-questions-panel[hidden]{display:none!important;}
+  #jk-questions-panel.aberto{transform:translateX(0);}
+  #jk-questions-panel *,#jk-questions-panel *::before,#jk-questions-panel *::after{box-sizing:border-box;}
+  #jk-questions-header{display:flex;align-items:center;gap:10px;padding:14px 13px;border-bottom:1px solid rgba(255,230,0,.28);background:rgba(4,30,48,.92);}
+  .jk-questions-header-logo{flex:0 0 42px;width:42px;height:34px;display:grid;place-items:center;border-radius:999px;background:#fff;box-shadow:0 0 0 2px rgba(255,255,255,.12);overflow:hidden;}
+  .jk-questions-header-logo img{display:block;width:38px;height:32px;object-fit:contain;}
+  .jk-questions-title{flex:1 1 auto;min-width:0;}
+  .jk-questions-title h3{margin:0;color:#fff;font-size:1rem;font-weight:900;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .jk-questions-title span{display:block;margin-top:3px;color:#acd9e7;font-size:.64rem;font-weight:800;line-height:1.25;}
+  .jk-questions-hbtn{flex:0 0 30px;width:30px;height:30px;border:1px solid rgba(255,230,0,.28);border-radius:9px;background:rgba(20,68,88,.78);color:#fff7ad;cursor:pointer;font-size:.9rem;font-weight:900;display:grid;place-items:center;}
+  .jk-questions-hbtn:hover{background:rgba(35,104,127,.86);border-color:rgba(255,230,0,.58);}
+  #jk-questions-status{min-height:34px;padding:9px 12px;border-bottom:1px solid rgba(120,227,212,.14);color:#a9d7e5;font-size:.69rem;font-weight:800;line-height:1.35;background:rgba(5,25,39,.72);}
+  #jk-questions-list{flex:1 1 auto;min-height:0;overflow:auto;display:grid;align-content:start;gap:10px;padding:12px;scrollbar-width:thin;scrollbar-color:rgba(120,227,212,.26) transparent;}
+  #jk-questions-list::-webkit-scrollbar{width:6px;}
+  #jk-questions-list::-webkit-scrollbar-thumb{background:rgba(120,227,212,.24);border-radius:999px;}
+  .jk-questions-empty{border:1px dashed rgba(255,230,0,.28);border-radius:12px;background:rgba(255,230,0,.05);padding:18px 14px;color:#c7e4ec;font-size:.76rem;font-weight:800;line-height:1.45;text-align:center;}
+  .jk-questions-item{min-width:0;}
   #jk-msg-panel::before{content:"";position:absolute;inset:0 0 auto 0;height:132px;pointer-events:none;opacity:.06;
     background:
       radial-gradient(circle at 28px 24px,transparent 0 9px,rgba(169,206,213,.75) 10px 11px,transparent 12px),
@@ -266,7 +296,7 @@
   .jk-codex-msg.user{align-self:flex-end;background:linear-gradient(145deg,#2563eb,#7c3aed);color:#fff;border-bottom-right-radius:4px;}
   .jk-codex-msg.assistant{align-self:flex-start;background:rgba(30,41,59,.78);border-color:rgba(167,139,250,.28);color:#eef2ff;border-bottom-left-radius:4px;}
   .jk-codex-msg.status{align-self:center;max-width:100%;background:rgba(20,184,166,.11);border-color:rgba(20,184,166,.24);color:#bffef6;font-size:.72rem;text-align:center;}
-  .jk-codex-msg.codex-alert{align-self:stretch;max-width:100%;width:100%;border-left:4px solid #f59e0b;background:linear-gradient(135deg,rgba(30,41,59,.9),rgba(41,28,12,.78));box-shadow:0 14px 34px rgba(2,6,23,.24);}
+  .jk-codex-msg.codex-alert{display:none!important;align-self:stretch;max-width:100%;width:100%;border-left:4px solid #f59e0b;background:linear-gradient(135deg,rgba(30,41,59,.9),rgba(41,28,12,.78));box-shadow:0 14px 34px rgba(2,6,23,.24);}
   .jk-codex-msg.codex-alert h2{font-size:.82rem;line-height:1.25;margin:0 0 6px;color:#fde68a;}
   .jk-codex-msg.codex-alert strong{color:#fff7d6;}
   .jk-codex-msg.codex-report{align-self:stretch;max-width:100%;width:100%;display:block;}
@@ -332,9 +362,6 @@
   .jk-codex-action-detail{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;color:#d8f7ff;font-size:.7rem;font-weight:800;line-height:1.35;}
   .jk-codex-action-logs{max-height:76px;overflow:auto;white-space:pre-wrap;border:1px solid rgba(167,139,250,.2);border-radius:8px;background:rgba(2,6,23,.44);padding:6px;color:#c7d2fe;font-size:.64rem;font-weight:800;line-height:1.35;}
   .jk-codex-action-error{white-space:pre-wrap;overflow-wrap:anywhere;color:#ffd1d1;font-size:.68rem;font-weight:900;line-height:1.35;}
-  #jk-codex-suggestions{display:grid;gap:6px;max-height:112px;overflow:auto;padding:8px 10px;border-top:1px solid rgba(20,184,166,.16);background:#07131f;scrollbar-width:none;-ms-overflow-style:none;}
-  #jk-codex-suggestions[hidden]{display:none!important;}
-  #jk-codex-suggestions::-webkit-scrollbar{width:0;height:0;display:none;}
   .jk-codex-suggestion{display:grid;gap:2px;border:1px solid rgba(20,184,166,.22);border-radius:9px;background:rgba(20,184,166,.08);padding:7px 8px;color:#dffefa;font-size:.68rem;line-height:1.28;}
   .jk-codex-suggestion.warning{border-color:rgba(251,191,36,.36);background:rgba(120,65,15,.18);color:#fff2c4;}
   .jk-codex-suggestion.ok{border-color:rgba(74,222,128,.28);background:rgba(22,101,52,.16);}
@@ -534,6 +561,7 @@
   <div id="jk-right-sidebar-hotspot" aria-label="Menu lateral direito" tabindex="0">
     <div id="jk-right-sidebar-menu" role="toolbar" aria-label="Atalhos laterais">
       <button id="jk-ia-fab" class="jk-right-sidebar-icon" title="Black Jhon" aria-label="Abrir Black Jhon" data-primary-ai="codex"><img class="jk-codex-avatar" src="/assets/joao-pretinho-icon.png?v=20260710-black-jhon" alt=""></button>
+      <button id="jk-questions-fab" class="jk-right-sidebar-icon" title="Perguntas Mercado Livre" aria-label="Abrir perguntas do Mercado Livre" hidden><svg class="jk-questions-icon" viewBox="0 0 52 52" aria-hidden="true"><path class="jk-questions-bubble" d="M5.5 7.5h41v30h-22l-10.5 8v-8H5.5z"/><image class="jk-questions-ml-symbol" href="/assets/mercado-livre-symbol.svg?v=20260815-official-v1" x="10" y="8" width="31" height="31" preserveAspectRatio="xMidYMid meet"/><text class="jk-questions-mark" x="39" y="17">?</text></svg><span id="jk-questions-badge" aria-label="Perguntas pendentes"></span></button>
       <button id="jk-msg-fab" class="jk-right-sidebar-icon" title="Mensagens" aria-label="Abrir mensagens">&#128172;<span id="jk-msg-badge" aria-label="Mensagens nao lidas"></span></button>
     </div>
   </div>
@@ -607,7 +635,6 @@
       <div class="jk-codex-history-list" id="jk-codex-history-list"></div>
     </div>
     <div id="jk-codex-messages" aria-live="polite"></div>
-    <div id="jk-codex-suggestions" hidden></div>
     <div id="jk-codex-approval">
       <div id="jk-codex-approval-text">Esta tarefa precisa de confirmacao para executar com permissao mutavel.</div>
       <div id="jk-codex-approval-actions">
@@ -703,6 +730,16 @@
       </div>
       <input type="file" id="jk-codex-file-input" multiple style="display:none">
     </div>
+  </aside>
+  <aside id="jk-questions-panel" role="complementary" aria-label="Perguntas Mercado Livre" hidden>
+    <div id="jk-questions-header">
+      <span class="jk-questions-header-logo" aria-hidden="true"><img src="/assets/mercado-livre-symbol.svg?v=20260815-official-v1" alt=""></span>
+      <div class="jk-questions-title"><h3>Perguntas Mercado Livre</h3><span>Sugestões separadas do Black Jhon</span></div>
+      <button class="jk-questions-hbtn" id="jk-questions-refresh" type="button" title="Atualizar perguntas" aria-label="Atualizar perguntas">&#8635;</button>
+      <button class="jk-questions-hbtn" id="jk-questions-close" type="button" title="Fechar" aria-label="Fechar perguntas">&times;</button>
+    </div>
+    <div id="jk-questions-status">Abra o painel para consultar as sugestões pendentes.</div>
+    <div id="jk-questions-list" aria-live="polite"><div class="jk-questions-empty">Nenhuma sugestão pendente.</div></div>
   </aside>
   <div id="jk-codex-report-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="jk-codex-report-settings-title" hidden>
     <div class="jk-codex-report-settings-card">

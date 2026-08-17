@@ -15,7 +15,7 @@ assert.match(source, /next_retry_at_epoch|next_retry_in_seconds|Nova tentativa/)
 assert.match(source, /\/api\/mercadolivre\/assistant\/jobs\/\$\{encodeURIComponent\(jobId\)\}\/cancel/);
 assert.match(source, /question-ai-cancel-btn[\s\S]*Cancelar pesquisa/);
 assert.match(source, /cancelarPesquisaAtendimentoCodex\(questionKey\)/);
-assert.match(html, /perguntas\.js\?v=20260730-available-draft-v3/);
+assert.match(html, /perguntas\.js\?v=20260817-draft-source-v1/);
 assert.doesNotMatch(source, /A pesquisa terminou sem rascunho/);
 assert.match(source, /Rascunho gerado com as informacoes disponiveis/);
 
@@ -64,7 +64,12 @@ const context = {
         setItem: (key, value) => storage.set(key, value),
         removeItem: (key) => storage.delete(key)
     },
-    setStatusRespostaPergunta: (element, message) => { if (element) element.textContent = message; },
+    setStatusRespostaPergunta: (element, message, kind = '') => {
+        if (element) {
+            element.textContent = message;
+            element.className = kind;
+        }
+    },
     mensagemErroApi: (_data, fallback) => fallback,
     mensagemErro: (error) => String(error && error.message || error || ''),
     fetch: (...args) => fetchImpl(...args),
@@ -80,6 +85,55 @@ assert(stateStart >= 0 && stateEnd > stateStart, 'helpers persistentes do job na
 vm.runInContext(source.slice(stateStart, stateEnd), context);
 
 (async () => {
+    currentCard = makeCard('Loja A::Q-CONTEXTUAL');
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-CONTEXTUAL', {
+        result: {
+            resposta: 'Resposta contextual.',
+            draft_source: 'contextual_fallback',
+            data_sufficient: false,
+            completed_with_partial: true
+        }
+    });
+    assert.strictEqual(currentCard.elements.textarea.value, 'Resposta contextual.');
+    assert.strictEqual(
+        currentCard.elements.status.textContent,
+        'Rascunho de contingencia baseado no contexto. Revise antes de enviar.'
+    );
+    assert.strictEqual(currentCard.elements.status.className, '');
+    assert.doesNotMatch(currentCard.elements.status.textContent, /Black Jhon/);
+
+    currentCard = makeCard('Loja A::Q-NEUTRAL');
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-NEUTRAL', {
+        result: { resposta: 'Resposta neutra.', draft_source: 'neutral_fallback' }
+    });
+    assert.strictEqual(
+        currentCard.elements.status.textContent,
+        'Rascunho neutro de contingencia. Revise antes de enviar.'
+    );
+    assert.strictEqual(currentCard.elements.status.className, '');
+    assert.doesNotMatch(currentCard.elements.status.textContent, /Black Jhon/);
+
+    currentCard = makeCard('Loja A::Q-AI');
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-AI', {
+        result: { resposta: 'Resposta da IA.' }
+    });
+    assert.strictEqual(currentCard.elements.status.textContent, 'Sugestao gerada pelo Black Jhon.');
+    assert.strictEqual(currentCard.elements.status.className, 'ok');
+
+    currentCard = makeCard('Loja A::Q-PARTIAL');
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-PARTIAL', {
+        result: {
+            resposta: 'Resposta parcial.',
+            data_sufficient: false,
+            completed_with_partial: true
+        }
+    });
+    assert.strictEqual(
+        currentCard.elements.status.textContent,
+        'Rascunho gerado com as informacoes disponiveis.'
+    );
+
+    currentCard = makeCard('Loja A::Q1');
     context.salvarEstadoJobAtendimentoCodex('Loja A::Q1', {
         job_id: 'job-123', status_message: 'Tentativa 2. Nova tentativa em 15s.', can_cancel: true, polling_active: true
     });

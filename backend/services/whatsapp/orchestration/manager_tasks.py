@@ -36,7 +36,6 @@ from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import marketplace_listing_delivery as whatsapp_marketplace_listing
 from backend.services.whatsapp import message as whatsapp_message
-from backend.services.whatsapp import report_scheduling as whatsapp_report_scheduling
 from backend.services.whatsapp import retry_policy as whatsapp_retry_policy
 from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp import tool_results as whatsapp_tool_results
@@ -51,7 +50,7 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents
 from backend.services.codex.console import tasks as console_tasks
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
@@ -426,50 +425,6 @@ def _function_manager_deliver_direct(
         decision = {}
         final_text = _worker_result_fallback_text(evidence, pending)
         RUNTIME_STATE["conversation_fallback_last_error"] = str(exc)[:500]
-    request_text = str(pending.get("request_text") or "")
-    report_results: list[dict[str, Any]] = []
-    if whatsapp_report_files.report_requested(request_text):
-        tool_results = [item for item in list(evidence.get("tool_results") or []) if isinstance(item, dict)]
-        formats = whatsapp_report_files.requested_report_formats(request_text)
-        artifacts: list[dict[str, Any]] = []
-        if "png" in formats:
-            chart_outcome = whatsapp_report_visuals.generate_task_chart_artifacts(
-                base_info_dir=_info_dir(),
-                client_id=pending.get("client_id") or "default",
-                task_id=pending.get("job_group_id") or message_id,
-                prompt=request_text,
-                tool_results=tool_results,
-                query_policy=pending.get("query_policy") if isinstance(pending.get("query_policy"), dict) else {},
-                max_images=2,
-            )
-            artifacts.extend(list(chart_outcome.get("artifacts") or []))
-        documents = whatsapp_report_files.generate_report_documents(
-            base_info_dir=_info_dir(),
-            client_id=pending.get("client_id") or "default",
-            task_id=pending.get("job_group_id") or message_id,
-            prompt=request_text,
-            tool_results=tool_results,
-            query_policy=pending.get("query_policy") if isinstance(pending.get("query_policy"), dict) else {},
-            formats=formats,
-        )
-        artifacts.extend(list(documents.get("artifacts") or []))
-        if artifacts:
-            report_results = _whatsapp_deliver_report_artifacts(
-                config,
-                message_id,
-                artifacts,
-                pending.get("client_id") or "default",
-                max_images=4,
-            )
-        metadata_text = _whatsapp_report_metadata_text(
-            request_text,
-            pending.get("query_policy"),
-            tool_results,
-        )
-        offer = whatsapp_report_files.report_offer_text(request_text)
-        final_text = "\n\n".join(item for item in (final_text, metadata_text, offer) if item).strip()
-        if artifacts and not all(item.get("success") for item in report_results):
-            final_text += "\n\nUm ou mais arquivos nao puderam ser anexados nesta tentativa; o resumo em texto foi preservado."
     final_text = _function_manager_attach_listing_images(config, message_id, pending, evidence, final_text)
     delivery = _post_proactive(
         config,
@@ -495,19 +450,6 @@ def _function_manager_deliver_direct(
             final_text,
         )
         return False
-    if delivery_confirmed:
-        try:
-            _record_shared_delivered_exchange(
-                client_id=str(pending.get("client_id") or ""),
-                username=str(pending.get("username") or ""),
-                phone=str(pending.get("wa_id") or ""),
-                subject_id=str(pending.get("subject_id") or ""),
-                prompt=request_text,
-                response=final_text,
-                event_id=f"{message_id}:manager-final",
-            )
-        except Exception:
-            pass
     _record_message_timing(message_id, completed_at=_now(), sent_at=_now())
     coverage_complete = evidence.get("coverage_complete") is True
     _remove_pending(

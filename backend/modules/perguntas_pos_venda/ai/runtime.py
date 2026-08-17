@@ -102,7 +102,10 @@ from backend.services.perguntas_pos_venda_state import (
     ML_POS_VENDA_LIMITE_SEGURO,
     ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO,
     ML_RESPOSTA_PERGUNTA_MAX_CHARS,
+    PerguntasIAClassificacaoInconclusiva,
+    PerguntasIAProviderIndisponivel,
     PerguntasIARespostaIndisponivel,
+    PerguntasIASegurancaBloqueada,
     _ia_agent_endpoint_api_key_configurada,
     _ia_agent_endpoint_headers,
     _ia_agent_endpoint_query_url,
@@ -144,7 +147,7 @@ from ml_questions_gemini.schemas import QuestionCategory
 logger = logging.getLogger("jk_sistema")
 
 
-_PERGUNTAS_IA_RESPONSE_POLICY_VERSION = "jk_ppv_response_policy_v4"
+_PERGUNTAS_IA_RESPONSE_POLICY_VERSION = "jk_ppv_response_policy_v5"
 _PERGUNTAS_IA_RESPONSE_POLICY = {
     "perguntas_anuncio": (
         "Politica versionada de resposta a perguntas de anuncio: responda como um vendedor cordial da loja, "

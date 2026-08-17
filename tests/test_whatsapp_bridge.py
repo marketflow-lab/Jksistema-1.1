@@ -14,9 +14,7 @@ from backend.schemas.perguntas_pos_venda import PerguntasAprovacaoRequest
 from backend.modules.perguntas_pos_venda.endpoints import api as perguntas_pos_venda_endpoints
 from backend.modules.perguntas_pos_venda.endpoints import approvals as ppv_approvals
 from backend.services import admin_usuarios_common, codex_actions, codex_assistant, codex_capabilities, codex_console, perguntas_pos_venda_codex, perguntas_pos_venda_state, whatsapp_bridge, whatsapp_transcribe
-from backend.services.codex.assistant import answers as assistant_answers
 from backend.services.codex.assistant import api as assistant_api
-from backend.services.codex.assistant import collection as assistant_collection
 from backend.services.codex.assistant import execution as assistant_execution
 from backend.services.codex.assistant import routing as assistant_routing
 from backend.services.whatsapp import transcription as transcription_component
@@ -245,24 +243,20 @@ def test_codex_running_task_steers_only_the_same_phone(codex_runtime):
             console_state.CODEX_ACTIVE_TURNS.pop(task_id, None)
 
 
-def test_phone_notification_defaults_preserve_questions_and_opt_in_reports():
+def test_phone_notification_defaults_preserve_only_question_reply_settings():
     defaults = whatsapp_bridge._default_config()
-    assert defaults["version"] == 12
+    assert defaults["version"] == 13
     assert defaults["deadline_enabled"] is False
     assert defaults["job_deadline_seconds"] == 0
     assert defaults["phone_notification_settings"] == {}
     assert whatsapp_bridge._phone_notification_settings({}, "subject-1") == {
         "subject_id": "subject-1",
         "client_id": "",
-            "username": "",
-            "label": "",
-            "is_primary": False,
-            "send_ml_question_suggestions": True,
-        "send_weekly_report": False,
-        "send_monthly_report": False,
+        "username": "",
+        "label": "",
+        "send_ml_question_suggestions": True,
         "ai_behavior": "",
-        "allow_voice_calls": False,
-        }
+    }
 
 
 def test_selected_codex_ai_passes_admin_model_and_reasoning(monkeypatch):
@@ -870,6 +864,7 @@ def test_pending_question_approval_is_notified_once_to_authorized_binding(monkey
         "resposta_sugerida": "Sim, possui garantia.",
         "codex_job_id": "job-approval-1",
     }
+    state = {}
     sent = []
     monkeypatch.setattr(whatsapp_bridge, "_worker_health", lambda _cfg: {"bindings": [{
         "machine_id": "machine-1", "client_id": "cliente", "username": "operador", "subject_id": "subject-1"
@@ -886,7 +881,6 @@ def test_pending_question_approval_is_notified_once_to_authorized_binding(monkey
     })
     monkeypatch.setattr(whatsapp_bridge, "_post_interactive_approval", lambda _cfg, **kwargs: sent.append(kwargs) or {"success": True, "status": "sent"})
     monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
-    state = {}
 
     whatsapp_bridge._forward_question_approvals({"machine_id": "machine-1"}, state)
     whatsapp_bridge._forward_question_approvals({"machine_id": "machine-1"}, state)
@@ -2006,7 +2000,7 @@ def test_natural_edit_instruction_never_falls_into_generic_chat_and_reopens_butt
         "loja": "Uai Mineirinho",
         "titulo": "Produto",
         "pergunta": "Serve no veículo informado?",
-        "resposta_sugerida": "Serve. Confirme com seu mecânico.\n\nEquipe Uai Mineirinho agradece o seu contato.",
+        "resposta_sugerida": "Serve. Confirme com seu mecânico.\n\nEquipe Uai Mineirinho agradece pelo contato, Precisando estamos a disposição!",
     }
     state = {
         "question_approval_tokens": {
@@ -2046,7 +2040,7 @@ def test_natural_edit_instruction_never_falls_into_generic_chat_and_reopens_butt
 
     def record_regenerate(item, _approvals, _client, *, guidance=""):
         guidance_capture.append(guidance)
-        item["resposta_sugerida"] = "Serve.\n\nEquipe Uai Mineirinho agradece o seu contato."
+        item["resposta_sugerida"] = "Serve.\n\nEquipe Uai Mineirinho agradece pelo contato, Precisando estamos a disposição!"
         return item["resposta_sugerida"]
 
     guidance_capture = []
@@ -3143,23 +3137,12 @@ def test_whatsapp_agent_prompt_requests_compact_mobile_report_format(monkeypatch
     assert "nao assine ao final" in prompt.lower()
 
 
-def test_whatsapp_approval_code_is_one_time_and_bound_to_subject(codex_runtime, monkeypatch):
-    monkeypatch.setattr(codex_actions.threading, "Thread", lambda *args, **kwargs: type("NoStart", (), {"start": lambda self: None})())
-    task = console_tasks.create(
-        codex_console.CodexTaskRequest(
-            prompt="Responda a pergunta do Mercado Livre da loja JK Pecas question_id:123. Resposta: Sim, serve.",
-            sandbox="read_only",
-            approval_mode="read_only",
-        ),
-        _full_session(),
-        origin="whatsapp",
-        channel_metadata={"message_id": "origin", "subject_id": "subject-1", "wa_id": "5511999999999", "mobile_full_access": True},
-    )["task"]
+def test_generic_whatsapp_approval_code_is_blocked(monkeypatch):
     state = {
         "pending_messages": {
             "origin": {
                 "kind": "task",
-                "task_id": task["task_id"],
+                "task_id": "legacy-task",
                 "subject_id": "subject-1",
                 "username": "admin",
                 "client_id": "cliente",
@@ -3181,80 +3164,8 @@ def test_whatsapp_approval_code_is_one_time_and_bound_to_subject(codex_runtime, 
         {"message_id": "approval", "subject_id": "subject-1", "text_body": "APROVAR ABCD2345"},
         _full_session(),
     ) is True
-    approved = console_task_store._codex_load_task(task["task_id"])
-    assert approved["status"] == "awaiting_approval"
     assert state["pending_messages"]["origin"]["approval_used"] is False
     assert sent[-1][0] == "approval"
-    assert "aplicativo" in sent[-1][1]["response"].lower()
-
-
-def test_sales_mobile_action_requires_one_time_approval_code(monkeypatch):
-    proposal = {
-        "proposal_id": "proposal-1",
-        "summary": "Sincronizar vendas da JK Pecas entre 2026-07-01 e 2026-07-10",
-        "risk": "external_write",
-        "can_execute": True,
-        "channels_allowed": ["app", "whatsapp"],
-        "action": {"label": "Sincronizar vendas"},
-    }
-    proposal_calls = []
-    monkeypatch.setattr(
-        codex_actions,
-        "create_proposal",
-        lambda **_kwargs: proposal_calls.append(True) or {"success": True, "matched": True, "proposal": proposal},
-    )
-    sent = []
-    monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
-    monkeypatch.setattr(whatsapp_bridge, "_post_message_result", lambda _config, message_id, payload: sent.append((message_id, payload)) or {"success": True})
-    state = {}
-    handled = whatsapp_bridge._try_create_action_pending(
-        {},
-        state,
-        {"message_id": "wamid.action", "subject_id": "subject-1", "wa_id": "5511999999999"},
-        _full_session(),
-        "wa-cliente-admin-subject",
-        "Sincronize vendas da JK Pecas de 2026-07-01 a 2026-07-10",
-        {"title": "WhatsApp"},
-    )
-    assert handled is True
-    assert proposal_calls == [True]
-    assert not state.get("pending_messages")
-    assert "aplicativo" in sent[-1][1]["response"].lower()
-
-
-def test_stock_sync_from_whatsapp_requires_one_time_approval_code(monkeypatch):
-    proposal = {
-        "proposal_id": "proposal-stock-1",
-        "summary": "Atualizar estoque da JK Pecas pela Bling",
-        "risk": "external_write",
-        "can_execute": True,
-        "channels_allowed": ["app", "whatsapp"],
-        "action": {"id": "estoque.sync_bling_to_jk", "module": "estoque", "label": "Atualizar estoque"},
-    }
-    monkeypatch.setattr(codex_actions, "create_proposal", lambda **_kwargs: {"success": True, "matched": True, "proposal": proposal})
-    monkeypatch.setattr(
-        codex_actions,
-        "approve_proposal",
-        lambda *_args, **_kwargs: {"success": True, "run": {"run_id": "run-stock-1", "status": "queued"}},
-    )
-    sent = []
-    monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
-    monkeypatch.setattr(whatsapp_bridge, "_post_message_result", lambda _config, message_id, payload: sent.append((message_id, payload)) or {"success": True})
-    state = {}
-
-    handled = whatsapp_bridge._try_create_action_pending(
-        {},
-        state,
-        {"message_id": "wamid.stock", "subject_id": "subject-1", "wa_id": "5511999999999"},
-        _full_session(),
-        "wa-cliente-admin-subject",
-        "Atualize o estoque da loja JK Pecas",
-        {"title": "WhatsApp"},
-    )
-
-    assert handled is True
-    assert not state.get("pending_messages")
-    assert sent[-1][1]["status"] == "completed"
     assert "aplicativo" in sent[-1][1]["response"].lower()
 
 
@@ -3295,7 +3206,7 @@ def test_general_answer_classifier_separates_conversation_from_system_operations
     assert whatsapp_bridge._whatsapp_general_answer_request("Consulte a loja JK Pecas", _full_session()) is False
 
 
-def test_general_question_routes_through_dual_conversation_without_progress_confirmation(monkeypatch):
+def test_content_creation_request_is_blocked_before_dual_conversation(monkeypatch):
     monkeypatch.setattr(whatsapp_bridge, "_reload_bound_session", lambda *_args: _full_session())
     monkeypatch.setattr(whatsapp_bridge, "_save_config", lambda *_args: None)
     monkeypatch.setattr(whatsapp_bridge, "_whatsapp_session_stores", lambda _session: ["JK Pecas"])
@@ -3340,13 +3251,13 @@ def test_general_question_routes_through_dual_conversation_without_progress_conf
         },
     )
 
-    assert delegated["request_text"] == "Corrija esta frase: nos vai amanha."
-    assert delegated["session"]["client_id"] == "cliente"
-    assert delegated["conversation_id"]
-    assert sent == []
+    assert delegated == {}
+    assert len(sent) == 1
+    assert sent[0][0] == "wamid.general-answer"
+    assert "responde somente perguntas" in sent[0][1]["response"]
 
 
-def test_post_sale_mercado_livre_action_enters_dual_flow_without_auto_approval(monkeypatch):
+def test_post_sale_action_without_active_suggestion_is_blocked(monkeypatch):
     monkeypatch.setattr(whatsapp_bridge, "_reload_bound_session", lambda *_args: _full_session())
     monkeypatch.setattr(whatsapp_bridge, "_save_config", lambda *_args: None)
     monkeypatch.setattr(whatsapp_bridge, "_whatsapp_load_store_configs", lambda *_args: [{"nome": "JK Pecas"}])
@@ -3364,6 +3275,13 @@ def test_post_sale_mercado_livre_action_enters_dual_flow_without_auto_approval(m
     monkeypatch.setattr(console_tasks, "create",
         lambda *_args, **_kwargs: pytest.fail("the selector must classify the mutation before any proposal task"),
     )
+    state = {}
+    sent = []
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_post_message_result",
+        lambda _cfg, message_id, payload: sent.append((message_id, payload)) or {"success": True},
+    )
 
     whatsapp_bridge._process_message(
         {"machine_id": "machine-1", "subject_id": "subject-1"},
@@ -3376,8 +3294,9 @@ def test_post_sale_mercado_livre_action_enters_dual_flow_without_auto_approval(m
         },
     )
 
-    assert delegated["request_text"] == "Envie esta resposta para a pergunta do Mercado Livre da loja JK Pecas"
-    assert delegated["session"]["client_id"] == "cliente"
+    assert delegated == {}
+    assert len(sent) == 1
+    assert "A excecao e a resposta de pergunta do Mercado Livre" in sent[0][1]["response"]
 
 
 def test_question_queue_inquiry_from_bound_number_is_read_only_without_confirmation(monkeypatch):
@@ -3449,8 +3368,9 @@ def test_bound_full_number_never_auto_approves_before_dual_selection(monkeypatch
     )
 
     assert approvals == []
-    assert delegated["request_text"] == "Execute a funcao interna solicitada"
-    assert sent == []
+    assert delegated == {}
+    assert len(sent) == 1
+    assert "responde somente perguntas" in sent[0][1]["response"]
 
 
 def test_exact_store_match_prefers_longest_specific_name():
@@ -4573,7 +4493,7 @@ def test_isolated_next_without_context_is_delegated_for_clarification(monkeypatc
         "Pause o anuncio MLB1234567890 da loja JK Pecas",
     ],
 )
-def test_full_whatsapp_mutation_reaches_dual_selection_without_auto_execution(monkeypatch, message_text):
+def test_full_whatsapp_mutation_is_blocked_before_dual_selection(monkeypatch, message_text):
     _configure_whatsapp_process_test(monkeypatch, ["JK Pecas"])
     sent = []
     monkeypatch.setattr(whatsapp_bridge, "_post_command_reply", lambda _config, _message_id, text, title: sent.append((title, text)))
@@ -4599,8 +4519,9 @@ def test_full_whatsapp_mutation_reaches_dual_selection_without_auto_execution(mo
         },
     )
 
-    assert delegated["request_text"] == message_text
-    assert sent == []
+    assert delegated == {}
+    assert len(sent) == 1
+    assert sent[0][0] == "BLACK JHON - SOMENTE PERGUNTAS"
 
 
 def test_status_lists_numbers_grouped_by_user_with_three_number_limit(monkeypatch):
@@ -4648,13 +4569,14 @@ def test_status_lists_numbers_grouped_by_user_with_three_number_limit(monkeypatc
     assert status["personal_numbers"][1]["this_machine"] is False
     assert status["personal_numbers"][0]["notification_settings"]["label"] == "Gerência"
     assert status["personal_numbers"][0]["notification_settings"]["send_ml_question_suggestions"] is False
-    assert status["personal_numbers"][0]["notification_settings"]["send_weekly_report"] is True
     assert status["personal_numbers"][0]["notification_settings"]["ai_behavior"] == "Seja direto e use linguagem simples."
-    assert status["personal_numbers"][1]["notification_settings"]["send_weekly_report"] is False
+    assert "send_weekly_report" not in status["personal_numbers"][0]["notification_settings"]
     assert status["ai_model"] == "codex:gpt-5.6-sol"
     assert status["ai_provider"] == "codex"
     assert status["codex_reasoning_effort"] == "high"
     assert status["codex_reasoning_options"] == ["low", "medium", "high", "xhigh"]
+    assert status["channel_mode"] == "question_replies_only_v1"
+    assert status["conversation_scope"] == "whatsapp_phone_isolated"
 
 
 def test_binding_target_allows_admin_to_select_an_existing_user_in_same_tenant(monkeypatch):
@@ -4692,8 +4614,6 @@ def test_admin_saves_independent_settings_for_a_linked_phone(monkeypatch):
         "machine_id": "machine-1",
     }]})
     monkeypatch.setattr(whatsapp_bridge, "_save_config", lambda value: stored.update(value) or value)
-    monkeypatch.setattr(whatsapp_bridge, "_load_state", lambda: state)
-    monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda value: state.update(value))
     monkeypatch.setattr(whatsapp_bridge, "_public_status", lambda value, _worker=None: {"success": True, "config": value})
 
     result = whatsapp_bridge.whatsapp_bridge_update_phone_settings(
@@ -4714,18 +4634,15 @@ def test_admin_saves_independent_settings_for_a_linked_phone(monkeypatch):
     phone = stored["phone_notification_settings"]["subject-1"]
     assert phone["label"] == "Gerência comercial"
     assert phone["send_ml_question_suggestions"] is False
-    assert phone["send_weekly_report"] is True
-    assert phone["send_monthly_report"] is True
+    assert "send_weekly_report" not in phone
+    assert "send_monthly_report" not in phone
     assert phone["ai_behavior"] == "Seja direto.\nSempre informe a loja consultada."
-    assert state["scheduled_report_deliveries"]["subject-1"]["weekly"]
-    assert state["scheduled_report_deliveries"]["subject-1"]["monthly"]
     assert result["success"] is True
 
 
-def test_admin_selects_gateway_authoritative_primary_and_demotes_previous(monkeypatch):
+def test_admin_cannot_join_whatsapp_phone_to_sidebar_conversation(monkeypatch):
     stored = {}
     gateway_calls = []
-    rotations = []
     config = {
         "machine_id": "machine-1",
         "worker_url": "https://example.workers.dev",
@@ -4747,12 +4664,6 @@ def test_admin_selects_gateway_authoritative_primary_and_demotes_previous(monkey
             },
         },
     }
-
-    def fake_gateway(_config, method, path, payload, timeout):
-        gateway_calls.append({"method": method, "path": path, "payload": payload, "timeout": timeout})
-        if path == "/bridge/bindings/primary":
-            return {"success": True, "is_primary": True, "owner_has_primary": True}
-        return {"success": True}
 
     monkeypatch.setattr(
         whatsapp_bridge,
@@ -4782,16 +4693,8 @@ def test_admin_selects_gateway_authoritative_primary_and_demotes_previous(monkey
             }],
         },
     )
-    monkeypatch.setattr(whatsapp_bridge, "_gateway_json", fake_gateway)
     monkeypatch.setattr(whatsapp_bridge, "_save_config", lambda value: stored.update(value) or value)
-    monkeypatch.setattr(whatsapp_bridge, "_load_state", lambda: {})
-    monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _value: None)
     monkeypatch.setattr(whatsapp_bridge, "_public_status", lambda value, _worker=None: {"success": True, "config": value})
-    monkeypatch.setattr(
-        whatsapp_bridge,
-        "_rotate_shared_conversation",
-        lambda _config, **kwargs: rotations.append(kwargs),
-    )
 
     result = whatsapp_bridge.whatsapp_bridge_update_phone_settings(
         whatsapp_bridge.WhatsappPhoneSettingsRequest(
@@ -4806,31 +4709,13 @@ def test_admin_selects_gateway_authoritative_primary_and_demotes_previous(monkey
     )
 
     assert result["success"] is True
-    assert gateway_calls[0] == {
-        "method": "POST",
-        "path": "/bridge/bindings/primary",
-        "payload": {
-            "subject_id": "subject-3818",
-            "client_id": "000002",
-            "username": "caio",
-            "machine_id": "machine-1",
-            "is_primary": True,
-        },
-        "timeout": 15,
-    }
+    assert gateway_calls == []
     phone_settings = stored["phone_notification_settings"]
-    assert phone_settings["subject-3818"]["is_primary"] is True
-    assert phone_settings["subject-old"]["is_primary"] is False
-    assert rotations == [{
-        "client_id": "000002",
-        "username": "caio",
-        "reason": "primary_binding_changed",
-    }]
+    assert "is_primary" not in phone_settings["subject-3818"]
 
 
 def test_admin_registers_phone_directly_without_confirmation_message(monkeypatch):
     stored = {}
-    state = {}
     gateway_calls = []
     config = {
         "machine_id": "machine-1",
@@ -4841,8 +4726,6 @@ def test_admin_registers_phone_directly_without_confirmation_message(monkeypatch
 
     def fake_gateway(_config, method, path, payload, timeout):
         gateway_calls.append({"method": method, "path": path, "payload": payload, "timeout": timeout})
-        if path == "/bridge/welcome":
-            return {"success": True, "status": "sent", "meta_message_id": "wamid.welcome"}
         return {
             "success": True,
             "created": True,
@@ -4855,8 +4738,6 @@ def test_admin_registers_phone_directly_without_confirmation_message(monkeypatch
     monkeypatch.setattr(whatsapp_bridge, "_load_config", lambda: config)
     monkeypatch.setattr(whatsapp_bridge, "_gateway_json", fake_gateway)
     monkeypatch.setattr(whatsapp_bridge, "_save_config", lambda value: stored.update(value) or value)
-    monkeypatch.setattr(whatsapp_bridge, "_load_state", lambda: state)
-    monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda value: state.update(value))
     monkeypatch.setattr(
         whatsapp_bridge,
         "_worker_health",
@@ -4893,37 +4774,16 @@ def test_admin_registers_phone_directly_without_confirmation_message(monkeypatch
     }
     assert "message" not in gateway_calls[0]["payload"]
     assert "confirmation" not in gateway_calls[0]["payload"]
-    assert gateway_calls[1] == {
-        "method": "POST",
-        "path": "/bridge/voice/phones/settings",
-        "payload": {
-            "subject_id": "5537999993818",
-            "machine_id": "machine-1",
-            "allow_voice_calls": False,
-        },
-        "timeout": 15,
-    }
-    assert gateway_calls[2] == {
-        "method": "POST",
-        "path": "/bridge/welcome",
-        "payload": {
-            "subject_id": "5537999993818",
-            "machine_id": "machine-1",
-            "text": "Olá! Seja bem-vindo ao JK Sistema.",
-        },
-        "timeout": 20,
-    }
+    assert len(gateway_calls) == 1
     saved = stored["phone_notification_settings"]["5537999993818"]
     assert saved["label"] == "Paraiba"
     assert saved["phone_number"] == "5537999993818"
-    assert saved["send_weekly_report"] is True
-    assert state["scheduled_report_deliveries"]["5537999993818"]["weekly"]
+    assert "send_weekly_report" not in saved
     assert result["success"] is True
     assert result["phone_number"] == "5537999993818"
-    assert result["welcome_message"]["status"] == "sent"
 
 
-def test_admin_sends_adhoc_message_to_any_normalized_phone(monkeypatch):
+def test_admin_cannot_send_adhoc_message_in_question_only_mode(monkeypatch):
     captured = {}
     monkeypatch.setattr(whatsapp_bridge, "_require_full", lambda *_args, **_kwargs: {**_full_session(), "machine_id": "machine-1"})
     monkeypatch.setattr(
@@ -4937,28 +4797,35 @@ def test_admin_sends_adhoc_message_to_any_normalized_phone(monkeypatch):
         return {"success": True, "status": "waiting_free_window", "outbox_id": "out-1"}
 
     monkeypatch.setattr(whatsapp_bridge, "_gateway_json", fake_gateway)
-    result = whatsapp_bridge.whatsapp_bridge_send_adhoc_message(
-        whatsapp_bridge.WhatsappAdhocMessageRequest(
-            phone_number="(37) 99999-3818",
-            message="  Olá! Esta é uma mensagem avulsa.  ",
-        ),
-        _request(),
-        None,
+    with pytest.raises(HTTPException) as exc_info:
+        whatsapp_bridge.whatsapp_bridge_send_adhoc_message(
+            whatsapp_bridge.WhatsappAdhocMessageRequest(
+                phone_number="(37) 99999-3818",
+                message="  Olá! Esta é uma mensagem avulsa.  ",
+            ),
+            _request(),
+            None,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert captured == {}
+
+
+def test_admin_cannot_enable_voice_calls_in_question_only_mode(monkeypatch):
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_require_full",
+        lambda *_args, **_kwargs: {**_full_session(), "machine_id": "machine-1"},
     )
 
-    assert captured == {
-        "method": "POST",
-        "path": "/bridge/messages/send",
-        "payload": {
-            "phone_number": "5537999993818",
-            "machine_id": "machine-1",
-            "text": "Olá! Esta é uma mensagem avulsa.",
-        },
-        "timeout": 20,
-    }
-    assert result["success"] is True
-    assert result["phone_number"] == "5537999993818"
-    assert result["delivery"]["status"] == "waiting_free_window"
+    with pytest.raises(HTTPException) as exc_info:
+        whatsapp_bridge.whatsapp_bridge_voice_enable(
+            whatsapp_bridge.WhatsappVoiceToggleRequest(confirmed=True),
+            _request(),
+            None,
+        )
+
+    assert exc_info.value.status_code == 409
 
 
 def test_completed_pairing_activates_bridge_when_health_is_ready(monkeypatch):
@@ -5056,147 +4923,6 @@ def test_proactive_can_target_the_originating_number(monkeypatch):
     assert captured["payload"]["subject_id"] == "origin"
     assert captured["payload"]["machine_id"] == "machine-1"
     assert captured["payload"]["fingerprint"] == "task:1"
-
-
-def test_weekly_whatsapp_report_is_compact_and_has_no_old_raw_alert_dump():
-    suggestions = [
-        {
-            "title": "Risco de ruptura",
-            "severity": "critical",
-            "detail": "17 SKUs com risco alto ou critico. Principais: 441, 151, 412-8, 507. Fonte: estoque parado do JK Sistema. 2026-07-12T10:57:43",
-        },
-        {
-            "title": "Estoque parado com saldo",
-            "severity": "high",
-            "detail": "230 SKUs e 8640 unidades paradas. Capital estimado: R$ 340.076,59. Mais urgentes: " + ("SKU 001, " * 200),
-        },
-    ]
-
-    parts = whatsapp_bridge._whatsapp_weekly_operational_parts(suggestions, "2026-W29")
-    joined = "\n\n".join(parts)
-
-    assert 1 <= len(parts) <= 4
-    assert sum("📅 *Resumo semanal*" in part for part in parts) == 1
-    assert "*Panorama*" in joined
-    assert "*Próximo passo*" in joined
-    assert "Resumo de alertas operacionais do Joao Pretinho" not in joined
-    assert "2026-07-12T10:57:43" not in joined
-    assert all(len(part) <= whatsapp_bridge.WHATSAPP_REPORT_BODY_CHARS for part in parts)
-
-
-def test_scheduled_phone_reports_are_selected_independently(monkeypatch):
-    monkeypatch.setattr(
-        whatsapp_bridge,
-        "_load_state",
-        lambda: {"scheduled_report_deliveries": {"subject-1": {"weekly": "2026-W30", "monthly": "2026-07"}}},
-    )
-    config = {
-        "machine_id": "machine-1",
-        "phone_notification_settings": {
-            "subject-1": {"send_weekly_report": True, "send_monthly_report": True},
-            "subject-2": {"send_weekly_report": False, "send_monthly_report": True},
-        },
-    }
-    worker = {"bindings": [
-        {"machine_id": "machine-1", "client_id": "cliente", "username": "um", "subject_id": "subject-1"},
-        {"machine_id": "machine-1", "client_id": "cliente", "username": "dois", "subject_id": "subject-2"},
-        {"machine_id": "outra", "client_id": "cliente", "username": "tres", "subject_id": "subject-3"},
-    ]}
-
-    current = whatsapp_bridge.datetime(2026, 8, 3, 9, 0, 0)
-    targets = whatsapp_bridge._scheduled_report_targets(config, worker, current)
-
-    assert {(item["subject_id"], item["kind"]) for item in targets} == {
-        ("subject-1", "weekly"),
-        ("subject-1", "monthly"),
-        ("subject-2", "monthly"),
-    }
-    monthly = whatsapp_bridge._scheduled_report_period("monthly", current)
-    assert monthly["start"] == "2026-07-01"
-    assert monthly["end"] == "2026-07-31"
-
-
-def test_scheduled_report_is_formatted_as_mobile_cards_and_returns_chart_data(monkeypatch):
-    context = {
-        "suggestions": [{"title": "Revisar estoque", "severity": "warning", "category": "Estoque"}],
-        "tool_results": [],
-        "tool_plan": {},
-        "sources": [],
-        "management_analysis": {},
-    }
-    monkeypatch.setattr(assistant_collection, "collect_data", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(
-        assistant_answers,
-        "render_chat",
-        lambda *_args, **_kwargs: (
-            "# Relatório semanal\n\n"
-            "## Resumo executivo\n- Vendas estáveis no período.\n\n"
-            "## Indicadores\n- Pedidos: 42\n- Ticket médio: R$ 135,00\n\n"
-            "## Recomendações\n- Revisar os SKUs com menor cobertura.\n\n"
-            "## Fontes e cobertura\n- JK Sistema: cobertura completa."
-        ),
-    )
-
-    period, parts, chart_data = whatsapp_bridge._scheduled_report_parts(
-        "cliente", "weekly", whatsapp_bridge.datetime(2026, 7, 13, 9, 0, 0)
-    )
-    joined = "\n\n".join(parts)
-
-    assert period["start"] == "2026-07-06"
-    assert period["end"] == "2026-07-12"
-    assert joined.count("*📊 Relatório*") == 1
-    assert "06/07/2026 a 12/07/2026" in joined
-    assert "*📌 INDICADORES*" in joined
-    assert "*🔎 ANÁLISE*" in joined
-    assert "*🧾 FONTES E COBERTURA*" in joined
-    assert chart_data["period_start"] == period["start"]
-    assert chart_data["period_end"] == period["end"]
-    assert all(len(part) <= whatsapp_bridge.WHATSAPP_REPORT_BODY_CHARS for part in parts)
-
-
-def test_scheduled_monthly_charts_are_sent_without_whatsapp_footer(tmp_path, monkeypatch):
-    monkeypatch.setattr(whatsapp_bridge, "_info_dir", lambda: tmp_path)
-    calls = []
-
-    def fake_post(*_args, **kwargs):
-        calls.append(kwargs)
-        return {"success": True, "status": "sent"}
-
-    monkeypatch.setattr(whatsapp_bridge, "_post_proactive_image", fake_post)
-    period = {
-        "key": "2026-07",
-        "title": "Relatório mensal",
-        "event_type": "monthly_report",
-        "start": "2026-07-01",
-        "end": "2026-07-31",
-    }
-    chart_data = {
-        "analysis_type": "sales_report",
-        "title": "Relatório mensal — vendas e operações",
-        "source": "JK Sistema",
-        "period_start": period["start"],
-        "period_end": period["end"],
-        "coverage_complete": True,
-        "kpis": {"Pedidos": 12, "Faturamento": 1800},
-        "series": [
-            {"date": "2026-07-01", "orders": 5, "gross": 700},
-            {"date": "2026-07-31", "orders": 7, "gross": 1100},
-        ],
-    }
-
-    result = whatsapp_bridge._send_scheduled_report_visuals(
-        {"machine_id": "machine"},
-        client_id="cliente",
-        subject_id="5537999993818",
-        kind="monthly",
-        period=period,
-        chart_data=chart_data,
-    )
-
-    assert result["success"] is True
-    assert calls
-    assert all(item["caption"] == "" for item in calls)
-    assert all(item["event_type"] == "monthly_report" for item in calls)
 
 
 def test_typing_pulse_renews_and_stops_when_worker_marks_message_inactive(monkeypatch):

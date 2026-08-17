@@ -64,7 +64,7 @@ export async function bridgeStatus(request: Request, env: Env): Promise<Response
     "SELECT name,language,category,status,last_verified_at FROM template_registry ORDER BY name",
   ).all<JsonRecord>();
   const bindingRows = await env.DB.prepare(
-    "SELECT subject_id,wa_id,phone_number,client_id,username,machine_id,is_primary,last_inbound_at,created_at FROM bindings WHERE active=1 AND machine_id=? ORDER BY created_at DESC LIMIT 100",
+    "SELECT subject_id,wa_id,phone_number,client_id,username,machine_id,last_inbound_at,created_at FROM bindings WHERE active=1 AND machine_id=? ORDER BY created_at DESC LIMIT 100",
   ).bind(machineId).all<JsonRecord>();
   const outboundUsage = await env.DB.prepare(
     "SELECT COUNT(*) AS uploads,COALESCE(SUM(om.byte_size),0) AS bytes FROM outbound_media om "
@@ -121,14 +121,14 @@ export async function bridgeStatus(request: Request, env: Env): Promise<Response
     machine_id: String(item.machine_id || ""),
     last_inbound_at: Number(item.last_inbound_at || 0),
     created_at: Number(item.created_at || 0),
-    is_primary: Number(item.is_primary || 0) === 1,
+    is_primary: false,
   }));
   const binding = bindings[0];
   return json({
     success: true,
     worker: true,
     gateway_protocol_version: GATEWAY_PROTOCOL_VERSION,
-    gateway_capabilities: ["primary_binding_v1", "delivery_receipt_v1"],
+    gateway_capabilities: ["question_replies_only_v1", "delivery_receipt_v1"],
     build_version: GATEWAY_BUILD_VERSION,
     d1: true,
     r2: false,

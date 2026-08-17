@@ -3,16 +3,9 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from backend.services import codex_console, codex_whatsapp_agents, whatsapp_bridge
+from backend.services import codex_whatsapp_agents, whatsapp_bridge
 from backend.services.whatsapp import settings
-from backend.services.codex.console import bindings as console_bindings
 from backend.services.codex.console import attachments as console_attachments
-from backend.services.codex.console import state as console_state
-from backend.services.codex.console import tasks as console_tasks
-from backend.services.codex.console import task_creation as console_task_creation
-from backend.services.codex.console import queue_worker as console_queue_worker
-from backend.services.codex.console import runtime as console_runtime
-from backend.services.codex.console import scope as console_scope
 
 
 def _phone_setting(subject: str, *, client: str, user: str, primary: bool, label: str = ""):
@@ -26,95 +19,30 @@ def _phone_setting(subject: str, *, client: str, user: str, primary: bool, label
     }
 
 
-def test_primary_selection_is_exclusive_and_owner_scoped():
-    configured = {
-        "caio-a": _phone_setting("caio-a", client="000002", user="caio", primary=False),
-        "caio-b": _phone_setting("caio-b", client="000002", user="caio", primary=True),
-        "other": _phone_setting("other", client="000003", user="caio", primary=True),
-    }
-
-    selected = settings.select_primary_phone_setting(
-        configured,
-        subject_id="caio-a",
-        client_id="000002",
-        username="CAIO",
-        enabled=True,
-    )
-
-    assert selected["caio-a"]["is_primary"] is True
-    assert selected["caio-b"]["is_primary"] is False
-    assert selected["other"]["is_primary"] is True
-    primary = settings.primary_phone_setting(
-        {"phone_notification_settings": selected},
-        client_id="000002",
-        username="caio",
-    )
-    assert primary["subject_id"] == "caio-a"
-
-
-def test_primary_resolution_fails_closed_on_duplicates_or_binding_mismatch():
-    config = {
-        "phone_notification_settings": {
-            "one": _phone_setting("one", client="000002", user="caio", primary=True),
-            "two": _phone_setting("two", client="000002", user="caio", primary=True),
-        }
-    }
-    assert settings.primary_phone_setting(config, client_id="000002", username="caio") == {}
-
-    config["phone_notification_settings"]["two"]["is_primary"] = False
-    bindings = [
-        {
-            "subject_id": "one",
-            "client_id": "000002",
-            "username": "outro",
-            "machine_id": "machine-a",
-            "phone_number": "5537999993818",
-        }
-    ]
-    assert settings.primary_phone_binding(
-        config,
-        bindings,
-        client_id="000002",
-        username="caio",
-        machine_id="machine-a",
-    ) == {}
-
-
-def test_legacy_primary_labels_never_infer_cross_channel_consent():
+def test_legacy_phone_features_are_removed_during_config_migration():
     migrated = settings.migrate_legacy_primary_phone_labels(
         {
-            "target": _phone_setting(
-                "target", client="000002", user="caio", primary=False, label="  Telefone   principal "
-            ),
-            "other": _phone_setting(
-                "other", client="000002", user="caio", primary=False, label="Financeiro"
-            ),
+            "target": {
+                **_phone_setting(
+                    "target", client="000002", user="caio", primary=True, label="Comercial"
+                ),
+                "send_weekly_report": True,
+                "send_monthly_report": True,
+                "allow_voice_calls": True,
+                "welcome_message": "Bem-vindo",
+                "send_welcome_message": True,
+            },
         }
     )
-    assert migrated["target"]["is_primary"] is False
-    assert migrated["other"]["is_primary"] is False
-
-    personal = settings.migrate_legacy_primary_phone_labels(
-        {
-            "target": _phone_setting(
-                "target", client="000002", user="caio", primary=False, label="Caio"
-            ),
-            "other": _phone_setting(
-                "other", client="000002", user="caio", primary=False, label="Paraiba"
-            ),
-        }
-    )
-    assert personal["target"]["is_primary"] is False
-    assert personal["other"]["is_primary"] is False
-
-    ambiguous = settings.migrate_legacy_primary_phone_labels(
-        {
-            "a": _phone_setting("a", client="000002", user="caio", primary=False, label="Telefone principal"),
-            "b": _phone_setting("b", client="000002", user="caio", primary=False, label="telefone principal"),
-        }
-    )
-    assert ambiguous["a"]["is_primary"] is False
-    assert ambiguous["b"]["is_primary"] is False
+    assert migrated["target"]["label"] == "Comercial"
+    assert not {
+        "is_primary",
+        "send_weekly_report",
+        "send_monthly_report",
+        "allow_voice_calls",
+        "welcome_message",
+        "send_welcome_message",
+    } & migrated["target"].keys()
 
 
 def test_rewritten_control_reply_rotates_thread_and_keeps_only_delivered_text(monkeypatch):
@@ -149,7 +77,7 @@ def test_rewritten_control_reply_rotates_thread_and_keeps_only_delivered_text(mo
     ]
 
 
-def test_primary_whatsapp_and_sidebar_share_pii_free_identity(monkeypatch):
+def test_whatsapp_and_sidebar_use_independent_pii_free_identities(monkeypatch):
     config = {
         "client_id": "000002",
         "username": "caio",
@@ -166,19 +94,27 @@ def test_primary_whatsapp_and_sidebar_share_pii_free_identity(monkeypatch):
         "wa_id": "5537999993818",
         "binding_is_primary": 1,
     }
-    shared = whatsapp_bridge._conversation_id(config, message)
+    whatsapp_id = whatsapp_bridge._conversation_id(config, message)
+    sidebar_id = console_attachments._codex_canonical_conversation_id(
+        "000002", "caio", channel="app"
+    )
 
-    assert shared == console_attachments._codex_shared_conversation_id("000002", "caio")
-    assert shared.startswith("bj_")
-    assert "3818" not in shared
-    assert shared != console_attachments._codex_shared_conversation_id("000002", "outro")
-    assert shared != console_attachments._codex_shared_conversation_id("000003", "caio")
+    assert whatsapp_id.startswith("wa_")
+    assert sidebar_id.startswith("app_")
+    assert "3818" not in whatsapp_id
+    assert whatsapp_id != sidebar_id
+    assert console_attachments._codex_shared_continuity_for_session(
+        {"client_id": "000002", "username": "caio"}
+    ) == {}
+    assert whatsapp_bridge._shared_continuity_for_session(
+        {"client_id": "000002", "username": "caio"}
+    ) == {}
 
     message["subject_id"] = "subject-secondary"
     message["binding_is_primary"] = 0
     isolated = whatsapp_bridge._conversation_id(config, message)
     assert isolated.startswith("wa_")
-    assert isolated != shared
+    assert isolated == whatsapp_id
 
 
 def test_authorization_fingerprint_rotates_on_permissions_or_store_scope():
@@ -305,86 +241,3 @@ def test_warm_runtime_bootstraps_start_and_sends_delta_on_resume(monkeypatch):
     assert "CONTEXTO_INICIAL" in prompts[0]
     assert "CONTEXTO_INICIAL" not in prompts[1]
     assert "Turno incremental" in prompts[1]
-
-
-def test_sidebar_direct_reply_uses_shared_history_without_starting_worker(tmp_path, monkeypatch):
-    session = {
-        "client_id": "000002",
-        "username": "caio",
-        "permissions": {"full": True, "vendas": True},
-        "is_full": True,
-    }
-    shared_id = console_attachments._codex_shared_conversation_id("000002", "caio")
-    started: list[str] = []
-    current_runtime = console_bindings.current()
-    monkeypatch.setattr(console_bindings, "_RUNTIME", console_bindings.ConsoleRuntime(
-        str(tmp_path), str(tmp_path / "info"), current_runtime.session_loader,
-        current_runtime.permissions_loader, current_runtime.source_module,
-    ))
-    monkeypatch.setattr(console_task_creation, "_codex_enabled", lambda: True)
-    monkeypatch.setattr(console_task_creation, "_codex_sdk_installed", lambda: True)
-    monkeypatch.setattr(console_task_creation, "_codex_start_thread", started.append)
-    monkeypatch.setattr(console_task_creation, "_codex_readonly_cwd_for_session", lambda *_args: str(tmp_path))
-    monkeypatch.setattr(console_task_creation, "_codex_shared_continuity_for_session",
-        lambda _session: {"conversation_id": shared_id, "subject_id": "primary"},
-    )
-    monkeypatch.setattr(
-        whatsapp_bridge,
-        "_shared_sidebar_conversation_turn",
-        lambda *_args, **_kwargs: {
-            "conversation_id": shared_id,
-            "decision": {"action": "reply", "reply_text": "Olá, Caio."},
-        },
-    )
-    console_state.CODEX_TASKS.clear()
-
-    task = console_tasks.create(
-        codex_console.CodexTaskRequest(prompt="Oi"),
-        session,
-    )["task"]
-
-    assert task["conversation_id"] == shared_id
-    assert task["conversation_state"] == "active"
-    assert task["status"] == "completed"
-    assert task["final_response"] == "Olá, Caio."
-    assert started == []
-    console_state.CODEX_TASKS.clear()
-
-
-def test_sidebar_shared_responder_failure_falls_back_to_readonly_worker(tmp_path, monkeypatch):
-    session = {
-        "client_id": "000002",
-        "username": "caio",
-        "permissions": {"full": True, "vendas": True},
-        "is_full": True,
-    }
-    shared_id = console_attachments._codex_shared_conversation_id("000002", "caio")
-    started: list[str] = []
-    current_runtime = console_bindings.current()
-    monkeypatch.setattr(console_bindings, "_RUNTIME", console_bindings.ConsoleRuntime(
-        str(tmp_path), str(tmp_path / "info"), current_runtime.session_loader,
-        current_runtime.permissions_loader, current_runtime.source_module,
-    ))
-    monkeypatch.setattr(console_task_creation, "_codex_enabled", lambda: True)
-    monkeypatch.setattr(console_task_creation, "_codex_sdk_installed", lambda: True)
-    monkeypatch.setattr(console_task_creation, "_codex_start_thread", started.append)
-    monkeypatch.setattr(console_task_creation, "_codex_readonly_cwd_for_session", lambda *_args: str(tmp_path))
-    monkeypatch.setattr(console_task_creation, "_codex_shared_continuity_for_session",
-        lambda _session: {"conversation_id": shared_id, "subject_id": "primary"},
-    )
-
-    def fail_responder(*_args, **_kwargs):
-        raise TimeoutError("conversation responder timed out")
-
-    monkeypatch.setattr(whatsapp_bridge, "_shared_sidebar_conversation_turn", fail_responder)
-    console_state.CODEX_TASKS.clear()
-
-    task = console_tasks.create(
-        codex_console.CodexTaskRequest(prompt="Consulte o estoque"),
-        session,
-    )["task"]
-
-    assert task["conversation_id"] == shared_id
-    assert task["status"] == "queued"
-    assert started == [task["task_id"]]
-    console_state.CODEX_TASKS.clear()

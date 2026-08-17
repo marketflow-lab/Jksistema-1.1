@@ -6,12 +6,7 @@ export const OUTBOUND_MEDIA_LEASE_SECONDS = 3 * 60;
 
 export const OUTBOUND_MEDIA_MAX_ATTEMPTS = 5;
 
-export const OUTBOUND_IMAGE_ARTIFACT_TYPES = new Set(["product_photo", "report_chart"]);
-
-export const OUTBOUND_DOCUMENT_MIMES: Record<string, string> = {
-  report_pdf: "application/pdf",
-  report_xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-};
+export const OUTBOUND_IMAGE_ARTIFACT_TYPES = new Set(["product_photo"]);
 
 export const PROACTIVE_IMAGE_FORM_FIELDS = new Set([
   "subject_id",
@@ -23,19 +18,6 @@ export const PROACTIVE_IMAGE_FORM_FIELDS = new Set([
   "sha256",
   "file",
 ]);
-
-export function outboundDocumentError(artifactType: string, mime: string, bytes: Uint8Array): string {
-  const expected = OUTBOUND_DOCUMENT_MIMES[artifactType] || "";
-  if (!expected || mime !== expected) return "outbound_document_artifact_or_mime_not_allowed";
-  if (artifactType === "report_pdf") {
-    const header = new TextDecoder().decode(bytes.slice(0, 5));
-    if (header !== "%PDF-") return "outbound_document_pdf_signature_invalid";
-  }
-  if (artifactType === "report_xlsx" && !(bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04)) {
-    return "outbound_document_xlsx_signature_invalid";
-  }
-  return "";
-}
 
 export interface OutboundMediaLeaseInput {
   fingerprint: string;
@@ -213,10 +195,9 @@ export async function confirmOutboundMediaSent(env: Env, fingerprint: string, le
   return Number(result.meta.changes || 0) > 0;
 }
 
-export async function messageImage(request: Request, env: Env, messageId: string, mediaKind: "image" | "document" = "image"): Promise<Response> {
-  const isDocument = mediaKind === "document";
-  const sizeLimit = isDocument ? 10 * 1024 * 1024 : 5 * 1024 * 1024;
-  const errorPrefix = isDocument ? "outbound_document" : "outbound_image";
+export async function messageImage(request: Request, env: Env, messageId: string): Promise<Response> {
+  const sizeLimit = 5 * 1024 * 1024;
+  const errorPrefix = "outbound_image";
   const contentLength = Number.parseInt(String(request.headers.get("content-length") || "0"), 10);
   if (Number.isFinite(contentLength) && contentLength > sizeLimit + 256 * 1024) {
     return json({ success: false, error: `${errorPrefix}_size_limit` }, 413);
@@ -232,8 +213,8 @@ export async function messageImage(request: Request, env: Env, messageId: string
   const artifactType = String(form.get("artifact_type") || "").trim().toLowerCase();
   const expectedSha256 = String(form.get("sha256") || "").trim().toLowerCase();
   const rawFile = form.get("file");
-  if (!machineId || !(rawFile instanceof File)) return json({ success: false, error: `${mediaKind}_payload_required` }, 400);
-  if (isDocument ? !OUTBOUND_DOCUMENT_MIMES[artifactType] : !OUTBOUND_IMAGE_ARTIFACT_TYPES.has(artifactType)) {
+  if (!machineId || !(rawFile instanceof File)) return json({ success: false, error: "image_payload_required" }, 400);
+  if (!OUTBOUND_IMAGE_ARTIFACT_TYPES.has(artifactType)) {
     return json({ success: false, error: `${errorPrefix}_artifact_not_allowed` }, 400);
   }
   if (!/^[a-f0-9]{64}$/.test(expectedSha256)) return json({ success: false, error: `${errorPrefix}_sha256_required` }, 400);
@@ -253,21 +234,14 @@ export async function messageImage(request: Request, env: Env, messageId: string
 
   const mime = String(rawFile.type || "").split(";", 1)[0].trim().toLowerCase();
   const fileBuffer = await rawFile.arrayBuffer();
-  if (isDocument) {
-    const documentError = outboundDocumentError(artifactType, mime, new Uint8Array(fileBuffer.slice(0, 12)));
-    if (documentError) return json({ success: false, error: documentError }, 400);
-  } else {
-    const policy = outboundImagePolicy(mime, fileBuffer.byteLength, new Uint8Array(fileBuffer.slice(0, 12)));
-    if (!policy.allowed) return json({ success: false, error: policy.error }, 400);
-    if (artifactType === "report_chart" && mime !== "image/png") {
-      return json({ success: false, error: "report_chart_png_required" }, 400);
-    }
-  }
+  const policy = outboundImagePolicy(mime, fileBuffer.byteLength, new Uint8Array(fileBuffer.slice(0, 12)));
+  if (!policy.allowed) return json({ success: false, error: policy.error }, 400);
+  if (!["image/jpeg", "image/png"].includes(mime)) return json({ success: false, error: "product_photo_mime_not_allowed" }, 400);
   const digest = await crypto.subtle.digest("SHA-256", fileBuffer);
   const sha256 = [...new Uint8Array(digest)].map((item) => item.toString(16).padStart(2, "0")).join("");
   if (!timingSafeEqualText(expectedSha256, sha256)) return json({ success: false, error: `${errorPrefix}_sha256_mismatch` }, 400);
   const fingerprint = await sha256Hex(`${messageId}\n${subjectId}\n${artifactType}\n${sha256}`);
-  const defaultFileName = isDocument ? (artifactType === "report_pdf" ? "black-jhon-report.pdf" : "black-jhon-report.xlsx") : "black-jhon-image.jpg";
+  const defaultFileName = "black-jhon-image.jpg";
   const fileName = String(rawFile.name || defaultFileName).replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 120) || defaultFileName;
   const lease = await reserveOutboundMedia(env, {
     fingerprint,
@@ -308,11 +282,10 @@ export async function messageImage(request: Request, env: Env, messageId: string
   }
   const mediaPayload: JsonRecord = { id: mediaId };
   if (caption) mediaPayload.caption = caption;
-  if (isDocument) mediaPayload.filename = fileName;
   const sendResponse = await graphRequest(env, `${env.META_PHONE_NUMBER_ID}/messages`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ messaging_product: "whatsapp", recipient_type: "individual", to: recipient, type: mediaKind, [mediaKind]: mediaPayload }),
+    body: JSON.stringify({ messaging_product: "whatsapp", recipient_type: "individual", to: recipient, type: "image", image: mediaPayload }),
   });
   const sendPayload = await responsePayload(sendResponse);
   if (!sendResponse.ok) {
@@ -335,10 +308,9 @@ export async function messageImage(request: Request, env: Env, messageId: string
   return json({ success: true, status: "sent", fingerprint, meta_message_id: metaMessageId, bytes: fileBuffer.byteLength, mime });
 }
 
-export async function proactiveImage(request: Request, env: Env, mediaKind: "image" | "document" = "image"): Promise<Response> {
-  const isDocument = mediaKind === "document";
-  const sizeLimit = isDocument ? 10 * 1024 * 1024 : 5 * 1024 * 1024;
-  const errorPrefix = isDocument ? "proactive_document" : "proactive_image";
+export async function proactiveImage(request: Request, env: Env): Promise<Response> {
+  const sizeLimit = 5 * 1024 * 1024;
+  const errorPrefix = "proactive_image";
   const contentLength = Number.parseInt(String(request.headers.get("content-length") || "0"), 10);
   if (Number.isFinite(contentLength) && contentLength > sizeLimit + 256 * 1024) {
     return json({ success: false, error: `${errorPrefix}_size_limit` }, 413);
@@ -368,8 +340,8 @@ export async function proactiveImage(request: Request, env: Env, mediaKind: "ima
     !subjectId
     || !machineId
     || !/^[A-Za-z0-9:_-]{16,160}$/.test(callerFingerprint)
-    || !["weekly_report", "monthly_report", "task_completed"].includes(eventType)
-    || (isDocument ? !OUTBOUND_DOCUMENT_MIMES[artifactType] : !OUTBOUND_IMAGE_ARTIFACT_TYPES.has(artifactType))
+    || eventType !== "task_completed"
+    || !OUTBOUND_IMAGE_ARTIFACT_TYPES.has(artifactType)
     || !(rawFile instanceof File)
   ) {
     return json({ success: false, error: `invalid_${errorPrefix}_payload` }, 400);
@@ -391,32 +363,17 @@ export async function proactiveImage(request: Request, env: Env, mediaKind: "ima
 
   const mime = String(rawFile.type || "").split(";", 1)[0].trim().toLowerCase();
   const fileBuffer = await rawFile.arrayBuffer();
-  if (isDocument) {
-    const documentError = outboundDocumentError(artifactType, mime, new Uint8Array(fileBuffer.slice(0, 12)));
-    if (documentError) return json({ success: false, error: documentError }, 400);
-  } else {
-    const policy = outboundImagePolicy(mime, fileBuffer.byteLength, new Uint8Array(fileBuffer.slice(0, 12)));
-    if (!policy.allowed) return json({ success: false, error: policy.error }, 400);
-    if (artifactType === "report_chart" && mime !== "image/png") {
-      return json({ success: false, error: "report_chart_png_required" }, 400);
-    }
-    if (artifactType === "product_photo" && !["image/jpeg", "image/png"].includes(mime)) {
-      return json({ success: false, error: "product_photo_mime_not_allowed" }, 400);
-    }
-  }
+  const policy = outboundImagePolicy(mime, fileBuffer.byteLength, new Uint8Array(fileBuffer.slice(0, 12)));
+  if (!policy.allowed) return json({ success: false, error: policy.error }, 400);
+  if (!["image/jpeg", "image/png"].includes(mime)) return json({ success: false, error: "product_photo_mime_not_allowed" }, 400);
   const digest = await crypto.subtle.digest("SHA-256", fileBuffer);
   const sha256 = [...new Uint8Array(digest)].map((item) => item.toString(16).padStart(2, "0")).join("");
   if (!timingSafeEqualText(expectedSha256, sha256)) return json({ success: false, error: `${errorPrefix}_sha256_mismatch` }, 400);
 
-  // The caller fingerprint represents the weekly event. Keep deduplication
-  // stable even if a later render produces different PNG metadata.
+  // Keep deduplication stable even if the same product photo is re-encoded.
   const fingerprint = await sha256Hex(`${errorPrefix}\n${subjectId}\n${eventType}\n${callerFingerprint}`);
   const inboundMessageId = `proactive:${eventType}:${callerFingerprint}`;
-  const defaultFileName = isDocument
-    ? (artifactType === "report_pdf" ? "black-jhon-report.pdf" : "black-jhon-report.xlsx")
-    : artifactType === "product_photo"
-      ? "black-jhon-product-photo.jpg"
-      : "black-jhon-weekly-report.png";
+  const defaultFileName = "black-jhon-product-photo.jpg";
   const fileName = String(rawFile.name || defaultFileName).replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 120) || defaultFileName;
   const lease = await reserveOutboundMedia(env, {
     fingerprint,
@@ -452,11 +409,10 @@ export async function proactiveImage(request: Request, env: Env, mediaKind: "ima
 
   const mediaPayload: JsonRecord = { id: mediaId };
   if (caption) mediaPayload.caption = caption;
-  if (isDocument) mediaPayload.filename = fileName;
   const sendResponse = await graphRequest(env, `${env.META_PHONE_NUMBER_ID}/messages`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ messaging_product: "whatsapp", recipient_type: "individual", to: recipient, type: mediaKind, [mediaKind]: mediaPayload }),
+    body: JSON.stringify({ messaging_product: "whatsapp", recipient_type: "individual", to: recipient, type: "image", image: mediaPayload }),
   });
   const sendPayload = await responsePayload(sendResponse);
   if (!sendResponse.ok) {

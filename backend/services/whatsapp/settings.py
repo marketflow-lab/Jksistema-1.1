@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from backend.services import ia_providers, whatsapp_voice
+from backend.services import ia_providers
 
 
 WHATSAPP_AI_DEFAULT_MODEL = "codex:gpt-5.5"
@@ -53,6 +53,14 @@ WHATSAPP_FUNCTION_MANAGER_REQUIRED_DEFAULT = True
 WHATSAPP_FUNCTION_MANAGER_WORKER_COUNT_DEFAULT = WHATSAPP_DATA_SELECTION_WORKER_COUNT_DEFAULT
 WHATSAPP_FUNCTION_MANAGER_RUNTIME_POOL_SIZE_DEFAULT = WHATSAPP_DATA_SELECTION_RUNTIME_POOL_SIZE_DEFAULT
 WHATSAPP_MAX_ACTIVE_TASK_AGENTS_GLOBAL_DEFAULT = 12
+WHATSAPP_CHANNEL_MODE = "question_replies_only_v1"
+WHATSAPP_CONVERSATION_SCOPE = "whatsapp_phone_isolated"
+WHATSAPP_ALLOWED_WORKFLOWS = (
+    "direct_questions",
+    "mercado_livre_question_suggestions",
+    "mercado_livre_question_reply_revision",
+    "mercado_livre_question_reply_approval",
+)
 _CONTEXT_HUB_CLIENT_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,80}")
 
 
@@ -174,7 +182,6 @@ def set_context_hub_enabled_for_client(config: dict[str, Any], client_id: Any, e
 def dual_agent_settings(
     config: dict[str, Any],
     *,
-    report_deadline_seconds: int = 10 * 60,
     max_retry_attempts: int = 3,
     client_id: Any = None,
 ) -> dict[str, Any]:
@@ -290,55 +297,6 @@ def normalize_progress_interval(value: Any) -> int:
     return max(8, min(interval, 60))
 
 
-def normalize_voice_model(value: Any, fallback: str) -> str:
-    model = str(value or fallback).strip()
-    if len(model) > 100 or not re.fullmatch(r"[A-Za-z0-9_.-]+", model):
-        raise HTTPException(status_code=400, detail="Modelo de voz OpenAI invalido.")
-    return model
-
-
-def normalize_voice_name(value: Any) -> str:
-    voice = str(value or whatsapp_voice.VOICE_NAME_DEFAULT).strip().lower()
-    allowed = {"alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse"}
-    if voice not in allowed:
-        raise HTTPException(status_code=400, detail="Voz Realtime invalida.")
-    return voice
-
-
-def normalize_voice_int(value: Any, fallback: int, minimum: int, maximum: int) -> int:
-    try:
-        number = int(value or fallback)
-    except (TypeError, ValueError):
-        number = fallback
-    return max(minimum, min(maximum, number))
-
-
-def normalize_voice_config(config: dict[str, Any]) -> dict[str, Any]:
-    value = dict(config or {})
-    value["voice_enabled"] = value.get("voice_enabled") is True
-    value["voice_model"] = normalize_voice_model(value.get("voice_model"), whatsapp_voice.VOICE_MODEL_DEFAULT)
-    value["voice_transcription_model"] = normalize_voice_model(
-        value.get("voice_transcription_model"), whatsapp_voice.VOICE_TRANSCRIPTION_MODEL_DEFAULT
-    )
-    value["voice_name"] = normalize_voice_name(value.get("voice_name"))
-    value["voice_language"] = "pt-BR"
-    value["voice_max_call_minutes"] = normalize_voice_int(value.get("voice_max_call_minutes"), 30, 5, 60)
-    value["voice_silence_timeout_seconds"] = normalize_voice_int(
-        value.get("voice_silence_timeout_seconds"), 90, 30, 300
-    )
-    value["voice_long_task_offer_seconds"] = normalize_voice_int(
-        value.get("voice_long_task_offer_seconds"), 90, 30, 300
-    )
-    value["voice_max_concurrent_calls"] = normalize_voice_int(value.get("voice_max_concurrent_calls"), 3, 1, 10)
-    value["voice_progress_interval_seconds"] = normalize_voice_int(
-        value.get("voice_progress_interval_seconds"), 8, 8, 30
-    )
-    value["voice_transcript_retention"] = "transcript_only"
-    value["voice_store_audio"] = False
-    value["voice_read_only"] = True
-    return value
-
-
 def ai_settings(config: dict[str, Any]) -> dict[str, str]:
     source = config if isinstance(config, dict) else {}
     model = normalize_ai_model(source.get("ai_model"))
@@ -372,12 +330,8 @@ def ai_settings(config: dict[str, Any]) -> dict[str, str]:
 def default_phone_notification_settings() -> dict[str, Any]:
     return {
         "label": "",
-        "is_primary": False,
         "send_ml_question_suggestions": True,
-        "send_weekly_report": False,
-        "send_monthly_report": False,
         "ai_behavior": "",
-        "allow_voice_calls": False,
     }
 
 
@@ -393,137 +347,32 @@ def normalize_phone_notification_settings(value: Any) -> dict[str, Any]:
     result.update(
         {
             "label": re.sub(r"\s+", " ", str(source.get("label") or "")).strip()[:60],
-            "is_primary": source.get("is_primary") is True,
             "send_ml_question_suggestions": source.get("send_ml_question_suggestions") is not False,
-            "send_weekly_report": source.get("send_weekly_report") is True,
-            "send_monthly_report": source.get("send_monthly_report") is True,
             "ai_behavior": normalize_phone_ai_behavior(source.get("ai_behavior")),
-            "allow_voice_calls": source.get("allow_voice_calls") is True,
         }
     )
     return result
 
 
-def primary_phone_setting(
-    config: Any,
-    *,
-    client_id: Any,
-    username: Any,
-    subject_id: Any = "",
-) -> dict[str, Any]:
-    """Return the one explicitly primary setting owned by this tenant/user."""
-
-    source = config if isinstance(config, dict) else {}
-    settings_by_phone = source.get("phone_notification_settings")
-    if not isinstance(settings_by_phone, dict):
-        return {}
-    client = str(client_id or "").strip()
-    user = str(username or "").strip().lower()
-    subject = str(subject_id or "").strip()
-    if not client or not user:
-        return {}
-    matches: list[dict[str, Any]] = []
-    for key, raw in settings_by_phone.items():
-        if not isinstance(raw, dict) or raw.get("is_primary") is not True:
-            continue
-        candidate_subject = str(raw.get("subject_id") or key or "").strip()
-        if subject and candidate_subject != subject:
-            continue
-        if str(raw.get("client_id") or "").strip() != client:
-            continue
-        if str(raw.get("username") or "").strip().lower() != user:
-            continue
-        normalized = normalize_phone_notification_settings(raw)
-        normalized.update(
-            {
-                "subject_id": candidate_subject,
-                "client_id": client,
-                "username": user,
-            }
-        )
-        matches.append(normalized)
-    return matches[0] if len(matches) == 1 else {}
-
-
-def primary_phone_binding(
-    config: Any,
-    bindings: Any,
-    *,
-    client_id: Any,
-    username: Any,
-    machine_id: Any = "",
-) -> dict[str, Any]:
-    """Resolve the gateway-authoritative active primary binding."""
-
-    client = str(client_id or "").strip()
-    user = str(username or "").strip().lower()
-    machine = str(machine_id or "").strip()
-    for raw in list(bindings or []):
-        if not isinstance(raw, dict):
-            continue
-        if raw.get("is_primary") is not True:
-            continue
-        if str(raw.get("client_id") or "").strip() != client:
-            continue
-        if str(raw.get("username") or "").strip().lower() != user:
-            continue
-        if machine and str(raw.get("machine_id") or "").strip() != machine:
-            continue
-        subject = str(raw.get("subject_id") or "").strip()
-        if not subject:
-            continue
-        setting = phone_notification_settings(
-            config,
-            subject,
-            client_id=client,
-            username=user,
-        )
-        setting["is_primary"] = True
-        return {**raw, "notification_settings": setting}
-    return {}
-
-
-def select_primary_phone_setting(
-    settings_by_phone: Any,
-    *,
-    subject_id: Any,
-    client_id: Any,
-    username: Any,
-    enabled: bool,
-) -> dict[str, Any]:
-    """Atomically select at most one primary subject for an owner."""
-
-    source = dict(settings_by_phone) if isinstance(settings_by_phone, dict) else {}
-    subject = str(subject_id or "").strip()
-    client = str(client_id or "").strip()
-    user = str(username or "").strip().lower()
-    output: dict[str, Any] = {}
-    for key, raw in source.items():
-        item = dict(raw) if isinstance(raw, dict) else {}
-        same_owner = (
-            str(item.get("client_id") or "").strip() == client
-            and str(item.get("username") or "").strip().lower() == user
-        )
-        if same_owner:
-            candidate_subject = str(item.get("subject_id") or key or "").strip()
-            if enabled:
-                item["is_primary"] = candidate_subject == subject
-            elif candidate_subject == subject:
-                item["is_primary"] = False
-        output[str(key)] = item
-    return output
-
-
 def migrate_legacy_primary_phone_labels(settings_by_phone: Any) -> dict[str, Any]:
-    """Normalize legacy entries without inferring consent from labels."""
+    """Remove settings from WhatsApp features that no longer exist."""
 
     source = dict(settings_by_phone) if isinstance(settings_by_phone, dict) else {}
     output = {
         str(key): (dict(raw) if isinstance(raw, dict) else {})
         for key, raw in source.items()
     }
+    removed = {
+        "is_primary",
+        "send_weekly_report",
+        "send_monthly_report",
+        "allow_voice_calls",
+        "welcome_message",
+        "send_welcome_message",
+    }
     for item in output.values():
-        item["is_primary"] = item.get("is_primary") is True
+        for key in removed:
+            item.pop(key, None)
     return output
 
 

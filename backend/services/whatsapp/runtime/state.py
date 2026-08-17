@@ -50,7 +50,6 @@ class BridgeRuntimeState:
     stop_event: threading.Event = field(default_factory=threading.Event)
     bridge_thread: Optional[threading.Thread] = None
     download_thread: Optional[threading.Thread] = None
-    alert_thread: Optional[threading.Thread] = None
     typing_pulses_lock: threading.RLock = field(default_factory=threading.RLock)
     typing_pulses: dict[str, threading.Event] = field(default_factory=dict)
     progress_pulses_lock: threading.RLock = field(default_factory=threading.RLock)

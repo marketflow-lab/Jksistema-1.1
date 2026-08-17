@@ -95,7 +95,7 @@ def _pos_venda_ia_resposta_final_loja(texto: str, loja: str, limite: int | None 
     separador = "\n\n"
     corpo = _perguntas_ia_remover_apresentacao_sistema(texto)
     corpo = re.sub(
-        r"(?is)\s*Equipe\s+.+?\s+agradece\s+(?:o\s+)?seu\s+contato\.?\s*$",
+        r"(?is)\s*Equipe\s+.+?\s+agradece\s+(?:(?:o\s+)?seu\s+contato\.?|pelo\s+contato,\s*Precisando\s+estamos\s+[àa]\s+disposi[cç][ãa]o!)\s*$",
         "",
         corpo,
     ).strip()
@@ -916,6 +916,77 @@ def _perguntas_ia_contexto_outra_peca(
     return "\n".join(linhas), cfg, contexto
 
 
+def _perguntas_ia_contexto_fallback_sanitizar_texto(value: object, limit: int) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "[dado removido]", text, flags=re.I)
+    text = re.sub(r"\b[A-HJ-NPR-Z0-9]{17}\b", "[identificador removido]", text, flags=re.I)
+    text = re.sub(r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b", "[dado removido]", text)
+    text = re.sub(r"\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b", "[dado removido]", text)
+    text = re.sub(r"(?<!\d)(?:\+?55\s*)?\(?\d{2}\)?\s*9?\d{4}[-\s]?\d{4}(?!\d)", "[dado removido]", text)
+    return re.sub(r"\s+", " ", text).strip()[: max(1, int(limit or 1))]
+
+
+def _perguntas_ia_historico_anterior(pergunta: dict) -> list[dict]:
+    historico = list(
+        pergunta.get("buyer_question_chat")
+        if isinstance(pergunta.get("buyer_question_chat"), list)
+        else []
+    )
+    question_id = str(pergunta.get("id") or "").strip()
+    texto_atual = unicodedata.normalize("NFKD", str(pergunta.get("text") or ""))
+    texto_atual = "".join(char for char in texto_atual if not unicodedata.combining(char))
+    texto_atual = re.sub(r"\s+", " ", texto_atual).strip().casefold()
+    anteriores = []
+    for evento in historico:
+        if not isinstance(evento, dict):
+            continue
+        if question_id and str(evento.get("question_id") or "").strip() == question_id:
+            continue
+        anteriores.append(evento)
+    if not texto_atual:
+        return anteriores
+    filtrados = []
+    for evento in anteriores:
+        role = str(evento.get("role") or evento.get("from_role") or "").strip().lower()
+        if role in {"seller", "loja", "store"}:
+            filtrados.append(evento)
+            continue
+        texto_evento = unicodedata.normalize("NFKD", str(evento.get("text") or ""))
+        texto_evento = "".join(
+            char for char in texto_evento if not unicodedata.combining(char)
+        )
+        texto_evento = re.sub(r"\s+", " ", texto_evento).strip().casefold()
+        if texto_evento != texto_atual:
+            filtrados.append(evento)
+    return filtrados
+
+
+def _perguntas_ia_contexto_fallback_classificacao(value: object) -> dict:
+    data = value if isinstance(value, dict) else {}
+    continuity = data.get("continuidade") if isinstance(data.get("continuidade"), dict) else {}
+    compatibility = (
+        data.get("compatibilidade")
+        if isinstance(data.get("compatibilidade"), dict)
+        else {}
+    )
+    return {
+        "categoria": str(data.get("categoria") or "")[:40],
+        "categorias": [str(item or "")[:40] for item in (data.get("categorias") or [])[:8]],
+        "continuidade": {
+            "tipo": str(continuity.get("tipo") or "")[:40],
+            "herdou_historico": continuity.get("herdou_historico") is True,
+        },
+        "compatibilidade": {
+            "aplicavel": compatibility.get("aplicavel") is True,
+            "target_item": _perguntas_ia_contexto_fallback_sanitizar_texto(
+                compatibility.get("target_item"),
+                300,
+            ),
+            "target_type": str(compatibility.get("target_type") or "")[:40],
+        },
+    }
+
+
 def _perguntas_ia_gerar_resposta(
     client_id: str,
     loja: str,
@@ -942,8 +1013,57 @@ def _perguntas_ia_gerar_resposta(
         "pergunta": texto_pergunta,
         "assinatura_obrigatoria": _perguntas_ia_assinatura_loja(loja),
     }
-    intencao_atendimento = _perguntas_ia_classificar_intencao(client_id, loja, pergunta, item)
+    historico_transitorio = []
+    for evento in _perguntas_ia_historico_anterior(pergunta)[-10:]:
+        if not isinstance(evento, dict):
+            continue
+        if question_id and str(evento.get("question_id") or "").strip() == question_id:
+            continue
+        texto_evento = _perguntas_ia_contexto_fallback_sanitizar_texto(
+            evento.get("text"),
+            500,
+        )
+        if not texto_evento:
+            continue
+        role = str(evento.get("role") or evento.get("from_role") or "").strip().lower()
+        historico_transitorio.append({
+            "role": "seller" if role in {"seller", "loja", "store"} else "buyer",
+            "text": texto_evento[:500],
+        })
+    fallback_context = {
+        "question": {
+            "text": _perguntas_ia_contexto_fallback_sanitizar_texto(texto_pergunta, 1200)
+        },
+        "item": {
+            "title": _perguntas_ia_contexto_fallback_sanitizar_texto(titulo, 500),
+            "description": _perguntas_ia_contexto_fallback_sanitizar_texto(
+                descricao,
+                3500,
+            ),
+        },
+        "history": historico_transitorio,
+    }
+    try:
+        intencao_atendimento = _perguntas_ia_classificar_intencao(
+            client_id,
+            loja,
+            pergunta,
+            item,
+        )
+    except Exception as exc:
+        if exc.__class__.__name__ == "PerguntasIAClassificacaoInconclusiva":
+            fallback_context["classification"] = _perguntas_ia_contexto_fallback_classificacao(
+                getattr(exc, "classificacao", {})
+            )
+            try:
+                setattr(exc, "ppv_fallback_context", fallback_context)
+            except Exception:
+                pass
+        raise
     contexto["intencao_atendimento"] = intencao_atendimento
+    fallback_context["classification"] = _perguntas_ia_contexto_fallback_classificacao(
+        intencao_atendimento
+    )
     if intencao_atendimento.get("intencao") == "outra_peca":
         contexto_outra_peca_txt, cfg, contexto_outra_peca = _perguntas_ia_contexto_outra_peca(
             client_id,
@@ -963,9 +1083,9 @@ def _perguntas_ia_gerar_resposta(
         contexto_outra_peca_txt,
         ML_PERGUNTAS_IA_CONTEXTO_EXTRA_PROMPT_MAX_CHARS,
     )
-    historico_chat = pergunta.get("buyer_question_chat") if isinstance(pergunta.get("buyer_question_chat"), list) else []
+    historico_anterior = _perguntas_ia_historico_anterior(pergunta)
     linhas_historico = []
-    for evento in historico_chat[-10:]:
+    for evento in historico_anterior[-10:]:
         if not isinstance(evento, dict):
             continue
         texto_evento = str(evento.get("text") or "").strip()
@@ -1039,7 +1159,8 @@ def _perguntas_ia_gerar_resposta(
             "Nunca invente link; use somente links retornados na lista de anuncios ativos quando o link for realmente necessario. "
             "Nao mencione SKU, codigo interno, quantidade em estoque, preco ou nome da loja na resposta ao comprador, salvo se o comprador perguntar isso diretamente. "
             "Se a pergunta depender de dado ausente, responda pedindo a informacao necessaria de forma educada, exceto chassi em compatibilidade automotiva. "
-            "Em perguntas de compatibilidade automotiva sem confirmacao objetiva, nao peça chassi; recomende confirmar com mecanico de confianca e nao use a frase 'nao conseguimos confirmar a compatibilidade'. "
+            "Em perguntas de compatibilidade automotiva sem confirmacao objetiva, nao peça chassi, foto, anexo ou confirmacao generica de mecanico. "
+            "Informe de forma condicional apenas a aplicacao e os codigos efetivamente confirmados no anuncio. "
             "Quando houver historico da conversa, responda considerando a ultima pergunta no contexto das mensagens anteriores, sem reiniciar o atendimento. "
             "A resposta sera enviada ao comprador, portanto seja cordial, objetiva e comercial. "
             "Nunca se apresente como IA, assistente ou JK Sistema. "
@@ -1075,7 +1196,15 @@ def _perguntas_ia_gerar_resposta(
     model_req = _normalizar_ia_modelo_padrao(_ia_modelo_perguntas_configurado())
     payload.model = model_req
     agent_input = perguntas_agent_api.build_agent_input(client_id, loja, pergunta, item, contexto, prompt)
-    agent_result = perguntas_agent_api.generate_response(client_id, agent_input)
+    try:
+        agent_result = perguntas_agent_api.generate_response(client_id, agent_input)
+    except Exception as exc:
+        if exc.__class__.__name__ == "PerguntasIAClassificacaoInconclusiva":
+            try:
+                setattr(exc, "ppv_fallback_context", fallback_context)
+            except Exception:
+                pass
+        raise
     resposta_limpa = _perguntas_ia_resposta_final_loja(agent_result.answer, loja)
     model_usado = agent_result.model
     diagnostico_ia = agent_result.diagnostics

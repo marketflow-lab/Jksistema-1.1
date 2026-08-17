@@ -10,6 +10,14 @@ from typing import Any, Callable, Mapping
 Adapter = Callable[..., Any]
 
 
+class PerguntasIARespostaPoliticaInvalida(RuntimeError):
+    """Response rejected by local reply policy after the controlled repair."""
+
+    def __init__(self, message: str, violations: list[str] | tuple[str, ...]) -> None:
+        super().__init__(message)
+        self.violations = tuple(str(item or "").strip() for item in violations if str(item or "").strip())
+
+
 @dataclass(frozen=True, slots=True)
 class ModelAdapters:
     public_model: Adapter
@@ -86,6 +94,7 @@ class QuestionAgentResult:
 
 __all__ = [
     "ModelAdapters",
+    "PerguntasIARespostaPoliticaInvalida",
     "PolicyAdapters",
     "PerguntasAgentRuntime",
     "QuestionAgentResult",

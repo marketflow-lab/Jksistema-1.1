@@ -28,7 +28,8 @@ class AnswerValidator:
             issues.append("empty_answer")
         if len(text) > rules.max_chars:
             issues.append("too_long")
-        if int(rules.max_sentences or 0) > 0 and count_sentences(content_text) > int(rules.max_sentences):
+        seller_content_text = _without_greeting_only_opening(content_text)
+        if int(rules.max_sentences or 0) > 0 and count_sentences(seller_content_text) > int(rules.max_sentences):
             issues.append("too_many_sentences")
         # Confidence and routing affect how the draft is presented, not whether
         # a useful suggestion can be produced from the available information.
@@ -43,8 +44,6 @@ class AnswerValidator:
             issues.append("forbidden_identity")
         if category != QuestionCategory.POST_SALE and _has_internal_process_language(normalize(content_text)):
             issues.append("seller_process_language")
-        if category != QuestionCategory.POST_SALE and _has_greeting_only_opening(content_text):
-            issues.append("seller_non_direct_opening")
         if category != QuestionCategory.POST_SALE:
             if _asks_for_photo(norm):
                 issues.append("public_question_asks_for_photo")
@@ -80,7 +79,7 @@ def count_sentences(text: str) -> int:
 
 def _without_store_signature(text: str) -> str:
     return re.sub(
-        r"(?is)\s*Equipe\s+.+?\s+agradece\s+(?:o\s+)?seu\s+contato\.?\s*$",
+        r"(?is)\s*Equipe\s+.+?\s+agradece\s+(?:(?:o\s+)?seu\s+contato\.?|pelo\s+contato,\s*Precisando\s+estamos\s+[àa]\s+disposi[cç][ãa]o!)\s*$",
         "",
         str(text or ""),
     ).strip()
@@ -103,9 +102,28 @@ def _has_internal_process_language(norm: str) -> bool:
 
 def _has_greeting_only_opening(text: str) -> bool:
     first = re.split(r"[.!?]+", str(text or "").strip(), maxsplit=1)[0]
-    return normalize(first) in {
+    normalized = normalize(first).strip(" ,;:-")
+    if normalized in {
         "ola", "oi", "bom dia", "boa tarde", "boa noite", "tudo bem", "agradecemos o contato",
-    }
+    }:
+        return True
+    for greeting in ("ola", "oi", "bom dia", "boa tarde", "boa noite"):
+        if not normalized.startswith(greeting + " "):
+            continue
+        remainder = normalized[len(greeting):].strip(" ,;:-")
+        decision_terms = (
+            "sim", "nao", "serve", "compativel", "aplicacao", "inclui", "acompanha", "tem", "possui",
+        )
+        return bool(remainder and len(remainder.split()) <= 3 and not any(term in remainder for term in decision_terms))
+    return False
+
+
+def _without_greeting_only_opening(text: str) -> str:
+    value = str(text or "").strip()
+    if not _has_greeting_only_opening(value):
+        return value
+    parts = re.split(r"[.!?]+", value, maxsplit=1)
+    return parts[1].strip() if len(parts) > 1 else ""
 
 
 def _has_external_contact(text: str) -> bool:

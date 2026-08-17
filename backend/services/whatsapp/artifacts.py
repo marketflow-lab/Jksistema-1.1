@@ -9,7 +9,6 @@ import ipaddress
 import importlib.util
 import itertools
 import json
-import mimetypes
 import os
 import re
 import secrets
@@ -36,7 +35,6 @@ from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import marketplace_listing_delivery as whatsapp_marketplace_listing
 from backend.services.whatsapp import message as whatsapp_message
-from backend.services.whatsapp import report_scheduling as whatsapp_report_scheduling
 from backend.services.whatsapp import retry_policy as whatsapp_retry_policy
 from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp import tool_results as whatsapp_tool_results
@@ -51,7 +49,7 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, whatsapp_report_files, whatsapp_report_visuals, whatsapp_voice
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents
 from backend.services.codex.console import attachments_api as console_attachments
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
 
@@ -467,7 +465,7 @@ def _whatsapp_deliver_marketplace_listing_images_proactive(
         item_id = str(candidate.get("item_id") or "MLB").strip()
         sequence = int(candidate.get("sequence") or len(results) + 1)
         sequence_total = int(candidate.get("sequence_total") or len(candidates))
-        fingerprint = "voice-product:" + hashlib.sha256(
+        fingerprint = "whatsapp-product:" + hashlib.sha256(
             f"{seed}\n{subject_id}\n{item_id}\n{sequence}\n{source_url}".encode("utf-8")
         ).hexdigest()[:64]
         if path is None:
@@ -525,143 +523,6 @@ def _whatsapp_deliver_marketplace_listing_images_proactive(
                 pass
     return results
 
-def _whatsapp_report_chart_path(artifact: dict[str, Any], client_id: Any) -> Optional[Path]:
-    try:
-        root = whatsapp_report_visuals.chart_output_dir(_info_dir(), client_id).resolve()
-        path = Path(str(artifact.get("path") or "")).resolve()
-        path.relative_to(root)
-        if not path.is_file() or path.suffix.lower() != ".png":
-            return None
-        expires_at = int(artifact.get("expires_at") or 0)
-        if expires_at and expires_at < int(time.time()):
-            path.unlink(missing_ok=True)
-            return None
-        size = path.stat().st_size
-        if size <= 0 or size > WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES:
-            return None
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        if str(artifact.get("sha256") or "").strip().lower() != digest:
-            return None
-        if _whatsapp_image_mime(path) != "image/png":
-            return None
-        return path
-    except (OSError, ValueError, TypeError):
-        return None
-
-def _whatsapp_report_document_path(artifact: dict[str, Any], client_id: Any) -> Optional[Path]:
-    try:
-        root = whatsapp_report_files.output_dir(_info_dir(), client_id).resolve()
-        path = Path(str(artifact.get("path") or "")).resolve()
-        path.relative_to(root)
-        kind = str(artifact.get("kind") or "").strip().lower()
-        expected_suffix = ".pdf" if kind == "pdf" else ".xlsx" if kind == "xlsx" else ""
-        expected_mime = whatsapp_report_files.FORMAT_MIMES.get(kind, "")
-        if not expected_suffix or not path.is_file() or path.suffix.lower() != expected_suffix:
-            return None
-        expires_at = int(artifact.get("expires_at") or 0)
-        if expires_at and expires_at < int(time.time()):
-            path.unlink(missing_ok=True)
-            return None
-        size = path.stat().st_size
-        if size <= 0 or size > WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES:
-            return None
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        if str(artifact.get("sha256") or "").strip().lower() != digest:
-            return None
-        if str(artifact.get("mime_type") or "").strip().lower() != expected_mime:
-            return None
-        return path
-    except (OSError, ValueError, TypeError):
-        return None
-
-def _whatsapp_deliver_report_artifacts(
-    config: dict[str, Any],
-    message_id: str,
-    artifacts: Any,
-    client_id: Any,
-    max_images: int = 4,
-) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
-    limit = max(0, min(int(max_images or 0), 4))
-    for artifact in [item for item in (artifacts or []) if isinstance(item, dict)][:limit]:
-        artifact_type = str(artifact.get("artifact_type") or "report_chart").strip().lower()
-        is_document = artifact_type in {"report_pdf", "report_xlsx"}
-        path = (
-            _whatsapp_report_document_path(artifact, client_id)
-            if is_document
-            else _whatsapp_report_chart_path(artifact, client_id)
-        )
-        if not path:
-            results.append({"success": False, "artifact_type": artifact_type, "error": "report_artifact_invalid_or_expired"})
-            continue
-        if is_document:
-            try:
-                result = _post_outbound_document(
-                    config,
-                    message_id,
-                    path,
-                    str(artifact.get("mime_type") or ""),
-                    "",
-                    str(artifact.get("filename") or path.name),
-                    artifact_type=artifact_type,
-                )
-                results.append(
-                    {
-                        "success": bool(result.get("success")),
-                        "status": result.get("status"),
-                        "artifact_type": artifact_type,
-                        "kind": artifact.get("kind"),
-                        "filename": path.name,
-                        "error": result.get("error"),
-                    }
-                )
-            except Exception as exc:
-                results.append({"success": False, "artifact_type": artifact_type, "filename": path.name, "error": str(exc)[:500]})
-            continue
-        prepared = _whatsapp_prepare_outbound_image(path)
-        if not prepared:
-            results.append({"success": False, "error": "report_chart_prepare_failed", "filename": path.name})
-            path.unlink(missing_ok=True)
-            continue
-        try:
-            result = _post_outbound_image(
-                config,
-                message_id,
-                Path(prepared["path"]),
-                str(prepared["mime_type"]),
-                "",
-                str(prepared.get("filename") or path.name),
-                artifact_type=artifact_type,
-            )
-            results.append(
-                {
-                    "success": bool(result.get("success")),
-                    "status": result.get("status"),
-                    "artifact_type": artifact_type,
-                    "kind": artifact.get("kind"),
-                    "filename": path.name,
-                    "error": result.get("error"),
-                }
-            )
-        except Exception as exc:
-            results.append(
-                {
-                    "success": False,
-                    "artifact_type": artifact_type,
-                    "kind": artifact.get("kind"),
-                    "filename": path.name,
-                    "error": str(exc)[:500],
-                }
-            )
-        finally:
-            if prepared.get("cleanup"):
-                try:
-                    Path(prepared["path"]).unlink(missing_ok=True)
-                except OSError:
-                    pass
-    return results
-
-
 _COMPONENT_FUNCTIONS = frozenset((
     '_mask_phone',
     '_normalize_registered_phone',
@@ -684,10 +545,7 @@ _COMPONENT_FUNCTIONS = frozenset((
     '_whatsapp_marketplace_image_url_allowed',
     '_whatsapp_download_marketplace_image',
     '_whatsapp_deliver_marketplace_listing_images',
-    '_whatsapp_deliver_marketplace_listing_images_proactive',
-    '_whatsapp_report_chart_path',
-    '_whatsapp_report_document_path',
-    '_whatsapp_deliver_report_artifacts'
+    '_whatsapp_deliver_marketplace_listing_images_proactive'
 ))
 _IMPLEMENTATIONS = {
     '_mask_phone': _mask_phone,
@@ -711,10 +569,7 @@ _IMPLEMENTATIONS = {
     '_whatsapp_marketplace_image_url_allowed': _whatsapp_marketplace_image_url_allowed,
     '_whatsapp_download_marketplace_image': _whatsapp_download_marketplace_image,
     '_whatsapp_deliver_marketplace_listing_images': _whatsapp_deliver_marketplace_listing_images,
-    '_whatsapp_deliver_marketplace_listing_images_proactive': _whatsapp_deliver_marketplace_listing_images_proactive,
-    '_whatsapp_report_chart_path': _whatsapp_report_chart_path,
-    '_whatsapp_report_document_path': _whatsapp_report_document_path,
-    '_whatsapp_deliver_report_artifacts': _whatsapp_deliver_report_artifacts
+    '_whatsapp_deliver_marketplace_listing_images_proactive': _whatsapp_deliver_marketplace_listing_images_proactive
 }
 
 

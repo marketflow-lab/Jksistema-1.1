@@ -951,6 +951,8 @@
         let ultimoQtdSku = 1;
         let ultimaCotacaoBase = 0;
         let ultimoValorUnitarioProduto = null;
+        let ultimaAnaliseConcorrentes = null;
+        let ultimosAnunciosLojaConcorrentes = {};
         let cacheImpostosProdutos = null;
         let promessaImpostosProdutos = null;
         let cardArrastado = null;
@@ -1035,6 +1037,14 @@
                         valFinal,
                         ultimoQtdSku
                     );
+                    void salvarAnaliseConcorrentes(listaId, normSku(sku))
+                        .then((resultado) => aplicarAnaliseConcorrentes(resultado && resultado.analise_concorrentes))
+                        .catch((erroPersistencia) => {
+                            setErro(
+                                erroPersistencia.message
+                                || 'As margens foram recalculadas, mas não foi possível atualizar a lista.'
+                            );
+                        });
                 };
 
                 input.addEventListener('keydown', (e) => {
@@ -1430,12 +1440,12 @@
             const status = document.getElementById('aprovacaoCompraStatus');
             if (!botao || !status) return;
             const aprovado = itemComCompraAprovada(item);
-            botao.disabled = aprovado;
+            botao.disabled = false;
             botao.classList.toggle('is-approved', aprovado);
-            botao.textContent = aprovado ? 'Compra aprovada' : 'Aprovar compra';
+            botao.textContent = aprovado ? 'Desfazer aprovação' : 'Aprovar compra';
             const dataAprovacao = formatarDataHoraAprovacao(item && (item.compra_aprovada_em || item['Compra aprovada em']));
             status.textContent = aprovado
-                ? ('Aprovação de compra registrada' + (dataAprovacao ? ' em ' + dataAprovacao : '') + '.')
+                ? ('Aprovação de compra registrada' + (dataAprovacao ? ' em ' + dataAprovacao : '') + '. Desfaça aqui para liberar a exclusão do SKU na lista.')
                 : 'Registra a decisão de compra deste SKU; não cria pedido nem altera o estoque.';
         }
 
@@ -1444,46 +1454,51 @@
             if (!botao) return;
             atualizarEstadoAprovacaoCompra(item);
             botao.onclick = async function() {
-                if (itemComCompraAprovada(item)) return;
                 const { listaId, sku } = getParams();
-                const itens = Array.isArray(lista && lista.itens) ? lista.itens : [];
-                const indice = itens.indexOf(item) >= 0
-                    ? itens.indexOf(item)
-                    : itens.findIndex((registro) => normSku(registro && registro.SKU) === normSku(sku));
-                if (!listaId || indice < 0) {
+                if (!listaId || !sku) {
                     setErro('Não foi possível localizar o SKU para registrar a aprovação.');
                     return;
                 }
 
-                const aprovadoEm = new Date().toISOString();
-                const itensAtualizados = itens.map((registro, posicao) => posicao === indice
-                    ? { ...registro, compra_aprovada: true, compra_aprovada_em: aprovadoEm }
-                    : registro);
+                const aprovar = !itemComCompraAprovada(item);
+                if (!aprovar && !window.confirm('Deseja desfazer a aprovação de compra deste SKU?')) return;
                 botao.disabled = true;
-                botao.textContent = 'Aprovando...';
+                botao.textContent = aprovar ? 'Aprovando...' : 'Desfazendo...';
                 setErro('');
 
                 try {
-                    const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
-                        body: JSON.stringify({ itens: itensAtualizados })
-                    });
+                    const resp = await fetch(
+                        '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) +
+                        '/skus/' + encodeURIComponent(sku) + '/aprovacao',
+                        {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
+                            body: JSON.stringify({ aprovada: aprovar })
+                        }
+                    );
                     const data = await resp.json().catch(() => ({}));
                     if (!resp.ok) {
-                        throw new Error(data.detail || 'Não foi possível aprovar a compra deste SKU.');
+                        throw new Error(data.detail || (aprovar
+                            ? 'Não foi possível aprovar a compra deste SKU.'
+                            : 'Não foi possível desfazer a aprovação deste SKU.'));
                     }
 
-                    const itensSalvos = data && data.lista && Array.isArray(data.lista.itens) ? data.lista.itens : itensAtualizados;
-                    const itemSalvo = itensSalvos.find((registro) => normSku(registro && registro.SKU) === normSku(sku)) || itensAtualizados[indice];
+                    const itemSalvo = data && data.item ? data.item : {
+                        ...item,
+                        compra_aprovada: aprovar,
+                        compra_aprovada_em: aprovar ? item.compra_aprovada_em : undefined
+                    };
+                    Object.keys(item).forEach((chave) => delete item[chave]);
                     Object.assign(item, itemSalvo);
-                    lista.itens = itensSalvos;
+                    if (data && data.lista && Array.isArray(data.lista.itens)) {
+                        lista.itens = data.lista.itens;
+                    }
                     atualizarEstadoAprovacaoCompra(item);
                 } catch (e) {
-                    botao.disabled = false;
-                    botao.classList.remove('is-approved');
-                    botao.textContent = 'Aprovar compra';
-                    setErro(e.message || 'Erro ao aprovar a compra deste SKU.');
+                    atualizarEstadoAprovacaoCompra(item);
+                    setErro(e.message || (aprovar
+                        ? 'Erro ao aprovar a compra deste SKU.'
+                        : 'Erro ao desfazer a aprovação deste SKU.'));
                 }
             };
         }
@@ -1715,27 +1730,77 @@
             if (!el) return;
 
             const precoVenda = getNumber(cardValor && cardValor.textContent);
-            const custoUnitario = getNumber(ultimoValorUnitarioProduto);
+            const margens = ultimaAnaliseConcorrentes && ultimaAnaliseConcorrentes.margens;
+            const dados = margens && margens['concorrente_' + numero];
+            const precoAnalisado = getNumber(dados && dados.preco_venda);
+            const margem = getNumber(dados && dados.margem_percentual);
             const dadosValidos = precoVenda !== null && precoVenda > 0
-                && custoUnitario !== null && custoUnitario >= 0;
+                && precoAnalisado !== null && Math.abs(precoVenda - precoAnalisado) <= 0.02
+                && margem !== null && dados && dados.financeiro_exato === true;
 
             el.classList.remove('negative', 'unavailable');
             if (!dadosValidos) {
                 el.textContent = 'Margem: -';
                 el.classList.add('unavailable');
-                el.removeAttribute('title');
+                const motivo = String(dados && dados.motivo_indisponivel || '').trim();
+                if (motivo) el.title = motivo;
+                else el.removeAttribute('title');
                 return;
             }
 
-            const margem = ((precoVenda - custoUnitario) / precoVenda) * 100;
             el.textContent = 'Margem: ' + fmtPct(margem);
             el.classList.toggle('negative', margem < 0);
-            el.title = 'Valor do card Concorrente ' + numero + ': ' + fmtBRL(precoVenda)
-                + ' | Custo unitário: ' + fmtBRL(custoUnitario);
+            el.title = [
+                'Preço do concorrente: ' + fmtBRL(precoVenda),
+                'Custo do cadastro: ' + fmtBRL(dados.custo_unitario),
+                'Imposto: ' + fmtBRL(dados.imposto_valor),
+                'Tarifa ML: ' + fmtBRL(dados.tarifa_ml),
+                'Frete ML: ' + fmtBRL(dados.frete_ml),
+                'Valor líquido: ' + fmtBRL(dados.valor_liquido),
+            ].join(' | ');
         }
 
         function atualizarTodasMargensConcorrentes() {
             [1, 2, 3, 4, 5].forEach(atualizarMargemConcorrente);
+        }
+
+        function aplicarAnaliseConcorrentes(analise) {
+            ultimaAnaliseConcorrentes = analise && typeof analise === 'object' ? analise : null;
+            atualizarTodasMargensConcorrentes();
+        }
+
+        function coletarAnaliseConcorrentes() {
+            const precosConcorrentes = {};
+
+            [1, 2, 3, 4, 5].forEach((numero) => {
+                const cardValor = document.getElementById('vConcorrente' + numero);
+                const precoVenda = getNumber(cardValor && cardValor.textContent);
+                if (precoVenda !== null && precoVenda > 0) {
+                    precosConcorrentes['concorrente_' + numero] = precoVenda;
+                }
+            });
+
+            return {
+                precos_concorrentes: precosConcorrentes,
+                anuncios_loja: { ...ultimosAnunciosLojaConcorrentes },
+            };
+        }
+
+        async function salvarAnaliseConcorrentes(listaId, sku) {
+            const resp = await fetch(
+                '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId)
+                    + '/skus/' + encodeURIComponent(sku) + '/analise-concorrentes',
+                {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
+                    body: JSON.stringify(coletarAnaliseConcorrentes()),
+                }
+            );
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Não foi possível salvar as margens dos concorrentes.');
+            }
+            return resp.json();
         }
 
         function atualizarCustoTotalProduto(icmsValor) {
@@ -2204,8 +2269,8 @@
             card.setAttribute('tabindex', '0');
             card.setAttribute('aria-label', 'Abrir anúncio ' + String(labelTexto || '').trim());
             const abrirLinkFallback = () => {
-                const ancora = lbl.querySelector('a.label-link');
-                if (ancora) ancora.click();
+                const novaJanela = window.open(url, '_blank', 'noopener,noreferrer');
+                if (novaJanela) novaJanela.opener = null;
             };
             const abrirLink = () => {
                 const abrirChrome = window.electronAPI && window.electronAPI.openExternalChrome;
@@ -2221,13 +2286,14 @@
                 abrirLinkFallback();
             };
             card.onclick = (event) => {
-                if (event && event.target && event.target.closest && event.target.closest('a[href]')) return;
+                if (event && typeof event.preventDefault === 'function') event.preventDefault();
+                if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
                 abrirLink();
             };
             card.onkeydown = (event) => {
                 if (!event || (event.key !== 'Enter' && event.key !== ' ')) return;
-                if (event.target && event.target.closest && event.target.closest('a[href]')) return;
-                event.preventDefault();
+                if (typeof event.preventDefault === 'function') event.preventDefault();
+                if (typeof event.stopPropagation === 'function') event.stopPropagation();
                 abrirLink();
             };
         }
@@ -2532,8 +2598,19 @@
             setText('vConcorrente5', concorrente5);
             setLink('vLink', link);
             renderFoto(obterUrlFoto(foto), sku);
-            aplicarDadosImpostoNosCards(sku, baseIcms, stMinas, stParaiba, mvaMinas, ipiPct, freteImpFederaisBrlCalc, baseCstMg, baseCstPb);
+            const promessaDadosImposto = aplicarDadosImpostoNosCards(
+                sku,
+                baseIcms,
+                stMinas,
+                stParaiba,
+                mvaMinas,
+                ipiPct,
+                freteImpFederaisBrlCalc,
+                baseCstMg,
+                baseCstPb
+            );
             inicializarEdicaoProporcao(listaIdParam, sku);
+            return promessaDadosImposto;
         }
 
         function possuiRespostaSim(valor) {
@@ -2829,7 +2906,13 @@
                     headers: { ...obterAuthHeaders() },
                     cache: 'no-store'
                 });
-                if (!resp.ok) return vazio;
+                if (!resp.ok) {
+                    const erro = await resp.json().catch(() => ({}));
+                    throw new Error(
+                        String(erro.detail || '').trim()
+                        || 'Não foi possível carregar os anúncios e preços dos concorrentes.'
+                    );
+                }
                 const data = await resp.json();
                 const c = data && data.concorrentes ? data.concorrentes : {};
                 const v = data && data.concorrentes_valores ? data.concorrentes_valores : {};
@@ -2865,8 +2948,11 @@
                         concorrente_5: String(p.concorrente_5 || '').trim(),
                     }
                 };
-            } catch (_e) {
-                return vazio;
+            } catch (erro) {
+                const mensagem = String(erro && erro.message || '').trim();
+                throw new Error(
+                    mensagem || 'Não foi possível carregar os anúncios e preços dos concorrentes.'
+                );
             }
         }
 
@@ -2912,22 +2998,37 @@
                 if (cad && Number(cad.m3Individual || 0) > 0) {
                     registrarM3CadastroPorSku(mapaM3Cadastro, skuNorm, cad.m3Individual);
                 }
-                preencherCampos(item, lista, cad, itens, mapaM3Cadastro);
+                const promessaDadosImposto = preencherCampos(item, lista, cad, itens, mapaM3Cadastro);
                 configurarAprovacaoCompra(lista, item);
 
                 const linksConc = await buscarLinksConcorrentes(skuNorm);
+                ultimosAnunciosLojaConcorrentes = {};
                 [1, 2, 3, 4, 5].forEach(function(n) {
                     const chave = 'concorrente_' + n;
                     const linkMlb = linksConc.mlb[chave] || '';
                     const linkConcorrente = linksConc.links[chave] || '';
                     const codigoMlb = extrairCodigoMlbOferta(linkMlb);
                     const codigoConcorrente = extrairCodigoMlbOferta(linkConcorrente);
+                    if (codigoMlb) ultimosAnunciosLojaConcorrentes[chave] = codigoMlb;
                     setLinkConcorrente('lblMlb' + n, codigoMlb || 'Anúncio da loja', linkMlb);
                     setLinkConcorrente('lblConcorrente' + n, codigoConcorrente || ('Concorrente ' + n), linkConcorrente);
                     aplicarDetalhePrecoOferta('mlb', n, normalizarDetalhePrecoOferta(linksConc.preco[chave], {}));
                     aplicarDetalhePrecoOferta('concorrente', n, normalizarDetalhePrecoOferta(linksConc.valores[chave], {}));
                 });
-                await enriquecerPrecosAnalise(linksConc);
+                aplicarAnaliseConcorrentes(item.analise_concorrentes);
+                await Promise.all([
+                    promessaDadosImposto,
+                    enriquecerPrecosAnalise(linksConc),
+                ]);
+                try {
+                    const resultadoAnalise = await salvarAnaliseConcorrentes(listaId, skuNorm);
+                    aplicarAnaliseConcorrentes(resultadoAnalise && resultadoAnalise.analise_concorrentes);
+                } catch (erroPersistencia) {
+                    setErro(
+                        erroPersistencia.message
+                        || 'A análise foi exibida, mas não foi possível salvar as margens dos concorrentes.'
+                    );
+                }
             } catch (e) {
                 setErro(e.message || 'Erro ao carregar detalhe do SKU.');
             }

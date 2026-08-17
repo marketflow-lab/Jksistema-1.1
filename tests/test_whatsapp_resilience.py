@@ -64,7 +64,7 @@ def test_sqlite_store_migrates_legacy_state_once_and_uses_wal(tmp_path: Path):
     second = WhatsappBridgeStore(database, legacy).load_state()
 
     assert first == second
-    assert first["scheduled_report_deliveries"]["subject-1"]["weekly"] == "2026-W29"
+    assert "scheduled_report_deliveries" not in first
     assert legacy.with_suffix(".json.sqlite-migration.bak").exists()
     diagnostics = store.diagnostics()
     assert diagnostics["backend"] == "sqlite"

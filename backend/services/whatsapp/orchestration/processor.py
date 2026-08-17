@@ -14,10 +14,10 @@ from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import marketplace_listing_delivery as whatsapp_marketplace_listing
 from backend.services.whatsapp import message as whatsapp_message
 from backend.services.whatsapp import provider_processing as whatsapp_provider_processing
-from backend.services import whatsapp_report_files, whatsapp_report_visuals
+from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.codex.console import contracts as console_contracts
 from backend.services.codex.console import execution as console_execution
-from backend.services.codex.console import paths as console_paths
+from backend.services.codex.console import security as console_security
 from backend.services.codex.console import tasks as console_tasks
 
 from backend.services.whatsapp.composition import (
@@ -168,33 +168,6 @@ def _whatsapp_provider_task_worker(task_id: str) -> None:
         response = str(response or "").strip()
         if not response:
             raise RuntimeError("A IA selecionada concluiu sem resposta.")
-        requested_formats = whatsapp_report_files.requested_report_formats(task.get("prompt") or "")
-        chart_outcome = (
-            whatsapp_report_visuals.generate_task_chart_artifacts(
-                base_info_dir=console_paths.base_info_dir(),
-                client_id=task.get("client_id") or "default",
-                task_id=task_id,
-                prompt=task.get("prompt") or "",
-                tool_results=list(payload.tool_results or []),
-                query_policy=query_policy,
-                max_images=2,
-            )
-            if "png" in requested_formats
-            else {"expected": False, "status": "not_requested", "artifacts": []}
-        )
-        document_outcome = whatsapp_report_files.generate_report_documents(
-            base_info_dir=console_paths.base_info_dir(),
-            client_id=task.get("client_id") or "default",
-            task_id=task_id,
-            prompt=task.get("prompt") or "",
-            tool_results=list(payload.tool_results or []),
-            query_policy=query_policy,
-            formats=requested_formats,
-        )
-        report_artifacts = [
-            *list(chart_outcome.get("artifacts") or []),
-            *list(document_outcome.get("artifacts") or []),
-        ][:4]
         summaries = _provider_tool_summary(list(payload.tool_results or []))
         console_tasks.update(
             task_id,
@@ -205,11 +178,7 @@ def _whatsapp_provider_task_worker(task_id: str) -> None:
             live_status="IA do WhatsApp concluiu.",
             tool_results_summary=summaries,
             sources=list(dict.fromkeys(str(item.get("source") or "") for item in summaries if item.get("source"))),
-            whatsapp_artifacts=report_artifacts,
             whatsapp_listing_bundle=listing_bundle if listing_bundle.get("listings") else {},
-            whatsapp_chart_expected=bool(chart_outcome.get("expected")),
-            whatsapp_chart_status=str(chart_outcome.get("status") or "")[:80],
-            whatsapp_chart_error=str(chart_outcome.get("error") or "")[:500],
             error="",
         )
     except Exception as exc:
@@ -482,6 +451,30 @@ def _handle_inbound_commands(
         or _handle_approval_command(config, state, message, session)
     )
 
+
+def _question_only_policy_reply(request_text: str) -> str:
+    reason = whatsapp_intent.question_only_block_reason(
+        request_text,
+        mutation_detector=console_security.prompt_requests_mutation,
+    )
+    if not reason:
+        return ""
+    if reason == "report_or_file":
+        return (
+            "No WhatsApp, o Black Jhon responde somente perguntas e nao gera relatorios, "
+            "planilhas, graficos ou arquivos. Faca uma pergunta objetiva sobre o dado que deseja consultar."
+        )
+    if reason in {"operation", "content_creation"}:
+        return (
+            "No WhatsApp, o Black Jhon responde somente perguntas. Operacoes e criacao de conteudo "
+            "devem ser feitas no JK Sistema. A excecao e a resposta de pergunta do Mercado Livre: "
+            "voce pode pedir uma alteracao na sugestao recebida e aprovar o envio por aqui."
+        )
+    return (
+        "No WhatsApp, o Black Jhon responde somente perguntas. Envie uma pergunta objetiva. "
+        "As sugestoes de resposta das perguntas do Mercado Livre tambem podem ser revisadas e aprovadas por aqui."
+    )
+
 def _apply_store_selection(
     config: dict[str, Any],
     state: dict[str, Any],
@@ -570,6 +563,15 @@ def _process_message(config: dict[str, Any], state: dict[str, Any], message: dic
         request_text, message_id, subject,
     )
     if selection_handled:
+        return
+    policy_reply = _question_only_policy_reply(request_text)
+    if policy_reply:
+        _post_command_reply(
+            config,
+            message_id,
+            policy_reply,
+            "BLACK JHON - SOMENTE PERGUNTAS",
+        )
         return
     # Direct cutover: every free-form message goes through the Codex
     # conversation agent and the Codex data-selection agent.
