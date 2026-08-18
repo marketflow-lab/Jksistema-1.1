@@ -1382,6 +1382,71 @@
             return simples ? simples[1] : fallback;
         }
 
+        function itemAprovadoCommercialInvoice(item) {
+            const valor = item && (item.compra_aprovada ?? item['Compra aprovada']);
+            if (valor === true || valor === 1) return true;
+            return ['1', 'true', 'sim', 'aprovada', 'aprovado'].includes(String(valor || '').trim().toLowerCase());
+        }
+
+        function pendenciasCommercialInvoice(lista, listaId) {
+            const pendencias = [];
+            if (!obterInvoiceLista(lista, listaId)) {
+                pendencias.push('Informe o N° de Invoice no detalhe da lista.');
+            }
+            if (!String(lista && (lista.supplier || lista.fornecedor) || '').trim()) {
+                pendencias.push('Informe o Fornecedor no detalhe da lista.');
+            }
+
+            const itens = Array.isArray(lista && lista.itens) ? lista.itens : [];
+            const totalPendentes = itens.filter((item) => !itemAprovadoCommercialInvoice(item)).length;
+            if (!itens.length) {
+                pendencias.push('A lista não possui SKUs para aprovação.');
+            } else if (totalPendentes) {
+                const rotulo = totalPendentes === 1 ? 'SKU pendente' : 'SKUs pendentes';
+                pendencias.push('Aprove todos os SKUs: faltam ' + totalPendentes + ' ' + rotulo + ' de ' + itens.length + '.');
+            } else {
+                const possuiDataAprovacao = itens.some((item) => String(
+                    item && (item.compra_aprovada_em || item['Compra aprovada em']) || ''
+                ).trim());
+                if (!possuiDataAprovacao) {
+                    pendencias.push('A lista aprovada não possui data de aprovação registrada.');
+                }
+            }
+            return pendencias;
+        }
+
+        async function carregarListaCommercialInvoice(listaId) {
+            const resp = await fetch(
+                '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId),
+                { method: 'GET', headers: { ...obterAuthHeaders() } }
+            );
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Não foi possível verificar os dados da lista.');
+            }
+            const data = await resp.json();
+            return data && data.lista ? data.lista : {};
+        }
+
+        function avisarPendenciasCommercialInvoice(lista, listaId) {
+            const pendencias = pendenciasCommercialInvoice(lista, listaId);
+            if (!pendencias.length) return false;
+
+            const mensagemStatus = 'Commercial Invoice indisponível: ' + pendencias.join(' ');
+            setStatus(mensagemStatus);
+            const mensagemDialogo = [
+                'A Commercial Invoice ainda não pode ser gerada.',
+                '',
+                ...pendencias.map((texto) => '• ' + texto),
+                '',
+                'Deseja abrir o detalhe da lista agora?'
+            ].join('\n');
+            if (window.confirm(mensagemDialogo)) {
+                window.location.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId);
+            }
+            return true;
+        }
+
         async function persistirInvoiceLegadoSeNecessario(lista, listaId) {
             const invoiceBackend = String(lista && (lista.numero_invoice || lista.invoice) || '').trim();
             const invoiceLocal = carregarInvoiceLocal(listaId);
@@ -1403,27 +1468,27 @@
         async function baixarCommercialInvoice(lista, btn) {
             const listaId = String(lista && lista.id || '').trim();
             if (!listaId) {
-                setStatus('Não foi possível identificar a lista para gerar o Commercial Invoice.');
-                return;
-            }
-
-            const invoice = obterInvoiceLista(lista, listaId);
-            if (!invoice) {
-                setStatus('Informe o N° de Invoice no detalhe da lista antes de gerar o Commercial Invoice.');
-                return;
-            }
-            if (!String(lista && (lista.supplier || lista.fornecedor) || '').trim()) {
-                setStatus('Informe o Fornecedor no detalhe da lista antes de gerar o Commercial Invoice.');
+                const mensagem = 'Não foi possível identificar a lista para gerar o Commercial Invoice.';
+                setStatus(mensagem);
+                window.alert(mensagem);
                 return;
             }
 
             const textoOriginal = btn ? btn.textContent : '';
             if (btn) {
                 btn.disabled = true;
-                btn.textContent = 'Gerando...';
+                btn.textContent = 'Verificando...';
             }
             try {
-                await persistirInvoiceLegadoSeNecessario(lista, listaId);
+                const listaAtualizada = {
+                    ...(lista || {}),
+                    ...(await carregarListaCommercialInvoice(listaId))
+                };
+                if (avisarPendenciasCommercialInvoice(listaAtualizada, listaId)) return;
+
+                const invoice = obterInvoiceLista(listaAtualizada, listaId);
+                await persistirInvoiceLegadoSeNecessario(listaAtualizada, listaId);
+                if (btn) btn.textContent = 'Gerando...';
                 setStatus('Gerando Commercial Invoice da lista ' + String(lista.nome_lista || '') + '...');
                 const resp = await fetch(
                     '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/commercial-invoice',
@@ -1447,7 +1512,9 @@
                 setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
                 setStatus('Commercial Invoice gerado com sucesso.');
             } catch (e) {
-                setStatus(e.message || 'Erro ao gerar o Commercial Invoice.');
+                const mensagem = e.message || 'Erro ao gerar o Commercial Invoice.';
+                setStatus(mensagem);
+                window.alert(mensagem);
             } finally {
                 if (btn) {
                     btn.disabled = false;
