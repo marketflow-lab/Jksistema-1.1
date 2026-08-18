@@ -34,6 +34,7 @@ class ListaPedidoUpdateRequest(BaseModel):
     loja: str | None = None
     status: str | None = None
     itens: list[dict] | None = None
+    numero_invoice: str | None = None
     supplier: str | None = None
     currency: str | None = None
     incoterm: str | None = None

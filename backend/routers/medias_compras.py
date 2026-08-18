@@ -158,6 +158,12 @@ def create_medias_compras_router() -> APIRouter:
         name="api_medias_compras_lista_pedido_download",
     )
     medias_router.add_api_route(
+        "/api/medias-compras/listas-pedidos/{lista_id}/commercial-invoice",
+        medias_compras.api_medias_compras_lista_pedido_commercial_invoice,
+        methods=["GET"],
+        name="api_medias_compras_lista_pedido_commercial_invoice",
+    )
+    medias_router.add_api_route(
         "/api/medias-compras/listas-pedidos/{lista_id}/gerar-download",
         medias_compras.api_medias_compras_lista_pedido_gerar_download,
         methods=["POST"],

@@ -427,6 +427,26 @@
             text-align: center;
             user-select: none;
             cursor: default;
+            font-family: inherit;
+        }
+
+        button.documento-lista-card {
+            cursor: pointer;
+        }
+
+        button.documento-lista-card:hover:not(:disabled) {
+            filter: brightness(1.12);
+            transform: translateY(-1px);
+        }
+
+        button.documento-lista-card:focus-visible {
+            outline: 2px solid #9fd9ff;
+            outline-offset: 2px;
+        }
+
+        button.documento-lista-card:disabled {
+            cursor: wait;
+            opacity: 0.72;
         }
 
         .documento-lista-card--commercial {
@@ -1343,6 +1363,97 @@
             }
         }
 
+        function obterInvoiceLista(lista, listaId) {
+            const invoiceBackend = String(lista && (lista.numero_invoice || lista.invoice) || '').trim();
+            if (invoiceBackend) return invoiceBackend;
+            const id = String(listaId || (lista && lista.id) || '').trim();
+            return carregarInvoiceLocal(id);
+        }
+
+        function nomeArquivoCommercialInvoice(resp, fallback) {
+            const disposition = String(resp && resp.headers && resp.headers.get('Content-Disposition') || '');
+            const utf8 = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+            if (utf8) {
+                try { return decodeURIComponent(utf8[1]); } catch (_e) { return utf8[1]; }
+            }
+            const simples = disposition.match(/filename="?([^";]+)"?/i);
+            return simples ? simples[1] : fallback;
+        }
+
+        async function persistirInvoiceLegadoSeNecessario(lista, listaId) {
+            const invoiceBackend = String(lista && (lista.numero_invoice || lista.invoice) || '').trim();
+            const invoiceLocal = carregarInvoiceLocal(listaId);
+            if (invoiceBackend || !invoiceLocal) return invoiceBackend || invoiceLocal;
+
+            const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
+                body: JSON.stringify({ numero_invoice: invoiceLocal })
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Não foi possível salvar o número da Invoice antes da geração.');
+            }
+            if (lista) lista.numero_invoice = invoiceLocal;
+            return invoiceLocal;
+        }
+
+        async function baixarCommercialInvoice(lista, btn) {
+            const listaId = String(lista && lista.id || '').trim();
+            if (!listaId) {
+                setStatus('Não foi possível identificar a lista para gerar o Commercial Invoice.');
+                return;
+            }
+
+            const invoice = obterInvoiceLista(lista, listaId);
+            if (!invoice) {
+                setStatus('Informe o N° de Invoice no detalhe da lista antes de gerar o Commercial Invoice.');
+                return;
+            }
+            if (!String(lista && (lista.supplier || lista.fornecedor) || '').trim()) {
+                setStatus('Informe o Fornecedor no detalhe da lista antes de gerar o Commercial Invoice.');
+                return;
+            }
+
+            const textoOriginal = btn ? btn.textContent : '';
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Gerando...';
+            }
+            try {
+                await persistirInvoiceLegadoSeNecessario(lista, listaId);
+                setStatus('Gerando Commercial Invoice da lista ' + String(lista.nome_lista || '') + '...');
+                const resp = await fetch(
+                    '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/commercial-invoice',
+                    { method: 'GET', headers: { ...obterAuthHeaders() } }
+                );
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.detail || 'Não foi possível gerar o Commercial Invoice.');
+                }
+                const blob = await resp.blob();
+                if (!blob || !blob.size) throw new Error('O Commercial Invoice foi gerado vazio.');
+
+                const fallback = 'commercial_invoice_' + String(invoice).replace(/[^A-Za-z0-9_-]+/g, '_') + '.xlsx';
+                const objectUrl = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = objectUrl;
+                link.download = nomeArquivoCommercialInvoice(resp, fallback);
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+                setStatus('Commercial Invoice gerado com sucesso.');
+            } catch (e) {
+                setStatus(e.message || 'Erro ao gerar o Commercial Invoice.');
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = textoOriginal || 'Commercial Invoice';
+                }
+            }
+        }
+
         function setFx(valorTexto, horaTexto) {
             const elValor = document.getElementById('fxValue');
             const elHora = document.getElementById('fxTime');
@@ -1828,7 +1939,7 @@
                             '<div class="acoes-lista-coluna">' +
                                 '<button type="button" class="btn-cancelar">Excluir lista</button>' +
                                 '<div class="documentos-lista-cards" aria-label="Documentos da lista">' +
-                                    '<span class="documento-lista-card documento-lista-card--commercial">Commercial Invoice</span>' +
+                                    '<button type="button" class="documento-lista-card documento-lista-card--commercial" data-commercial-invoice>Commercial Invoice</button>' +
                                     '<span class="documento-lista-card documento-lista-card--packing">Packing List</span>' +
                                 '</div>' +
                             '</div>' +
@@ -1836,7 +1947,7 @@
                     '</div>' +
                     '<div class="meta">Itens: ' + numero(l.total_itens || 0) + '&nbsp;&nbsp;|&nbsp;&nbsp;Quantidade total: ' + numero(l.total_quantidade || 0) + '</div>' +
                     '<div class="meta-resumo">' +
-                        '<span class="meta-pill meta-invoice">N° Invoice: <strong>' + (carregarInvoiceLocal(listaId) || (l.numero_invoice ? String(l.numero_invoice) : '-')) + '</strong></span>' +
+                        '<span class="meta-pill meta-invoice">N° Invoice: <strong>' + (obterInvoiceLista(l, listaId) || '-') + '</strong></span>' +
                         lojaPill +
                         '<span class="meta-pill meta-m3">Total M³: <strong>' + formatarM3(l.total_m3 || 0) + '</strong></span>' +
                         '<span class="meta-pill meta-usd">Total $: <strong>' + (l.total_usd > 0 ? formatarUSD(l.total_usd) : '-') + '</strong></span>' +
@@ -1849,6 +1960,14 @@
                         ev.preventDefault();
                         ev.stopPropagation();
                         excluirListaDefinitiva(listaId, nomeLista, btnCancelar);
+                    });
+                }
+                const btnCommercialInvoice = el.querySelector('[data-commercial-invoice]');
+                if (btnCommercialInvoice) {
+                    btnCommercialInvoice.addEventListener('click', (ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        baixarCommercialInvoice(l, btnCommercialInvoice);
                     });
                 }
                 if (listaId) {
@@ -2274,7 +2393,7 @@
                     '<div class="meta">' + totais.qtdListas + ' lista(s)&nbsp;&nbsp;|&nbsp;&nbsp;Qtd total: ' + numero(totais.totalQtd) + '</div>' +
                     (function() {
                             var pills = totais.listas.map(function(l) {
-                                var inv = (carregarInvoiceLocal(String(l.id || '')) || String(l.numero_invoice || '')).trim();
+                                var inv = obterInvoiceLista(l, String(l.id || '')).trim();
                                 var label = inv || String(l.nome_lista || 'Sem nome');
                                 return '<span class="meta-pill meta-invoice"><strong>' + escaparHtml(label) + '</strong><span class="lista-loja-sufixo">' + escaparHtml(obterLojaLista(l)) + '</span></span>';
                             });
@@ -2338,7 +2457,7 @@
             // Monta lista de identificadores: Invoice ou nome da lista como fallback
             var identificadores = totais.listas.map(function(l) {
                 var listaId = String(l.id || '');
-                var invoice = (carregarInvoiceLocal(listaId) || String(l.numero_invoice || '')).trim();
+                var invoice = obterInvoiceLista(l, listaId).trim();
                 return rotuloListaComLoja(l, invoice || String(l.nome_lista || 'Sem nome'));
             });
 
@@ -2401,7 +2520,7 @@
                         '<div class="acoes-direita"><span class="status">Analisando orçamento</span></div></div>' +
                         '<div class="meta">Itens: ' + numero(l.total_itens || 0) + '&nbsp;&nbsp;|&nbsp;&nbsp;Quantidade total: ' + numero(l.total_quantidade || 0) + '</div>' +
                         '<div class="meta-resumo">' +
-                            '<span class="meta-pill meta-invoice">N° Invoice: <strong>' + (carregarInvoiceLocal(listaId) || (l.numero_invoice ? String(l.numero_invoice) : '-')) + '</strong></span>' +
+                            '<span class="meta-pill meta-invoice">N° Invoice: <strong>' + (obterInvoiceLista(l, listaId) || '-') + '</strong></span>' +
                             lojaPill +
                             '<span class="meta-pill meta-m3">Total M³: <strong>' + formatarM3(l.total_m3 || 0) + '</strong></span>' +
                             '<span class="meta-pill meta-usd">Total $: <strong>' + (l.total_usd > 0 ? formatarUSD(l.total_usd) : '-') + '</strong></span>' +

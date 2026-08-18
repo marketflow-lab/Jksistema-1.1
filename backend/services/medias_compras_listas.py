@@ -723,6 +723,7 @@ async def api_medias_compras_lista_pedido_editar(
         alterou = True
 
     campos_logisticos = (
+        "numero_invoice",
         "supplier", "currency", "incoterm", "exchange_rate", "lead_time_days",
         "moq_default", "package_multiple_default", "order_date", "promised_ship_date",
         "actual_ship_date", "eta_date", "customs_clearance_date", "received_at",
@@ -1205,6 +1206,74 @@ async def api_medias_compras_lista_pedido_download(lista_id: str, client_id: str
     )
 
 
+def _data_aprovacao_commercial_invoice(lista: dict[str, Any]) -> str:
+    itens = [item for item in (lista.get("itens") or []) if isinstance(item, dict)]
+    if not itens:
+        raise HTTPException(status_code=409, detail="A lista nao possui SKUs para gerar o Commercial Invoice.")
+
+    pendentes = [
+        _sku_item_lista_pedido(item) or "SKU sem identificacao"
+        for item in itens
+        if not _item_lista_pedido_compra_aprovada(item)
+    ]
+    if pendentes:
+        total = len(pendentes)
+        sufixo = "SKU pendente" if total == 1 else "SKUs pendentes"
+        raise HTTPException(
+            status_code=409,
+            detail=f"Commercial Invoice indisponivel: aprove todos os SKUs. Faltam {total} {sufixo}.",
+        )
+
+    datas = [
+        str(item.get("compra_aprovada_em") or item.get("Compra aprovada em") or "").strip()
+        for item in itens
+    ]
+    datas = [data for data in datas if data]
+    if not datas:
+        raise HTTPException(
+            status_code=409,
+            detail="Commercial Invoice indisponivel: a lista aprovada nao possui data de aprovacao registrada.",
+        )
+    return max(datas)
+
+
+async def api_medias_compras_lista_pedido_commercial_invoice(
+    lista_id: str,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
+    listas = _carregar_listas_pedidos(client_id)
+    lista = next((item for item in listas if str(item.get("id", "")) == str(lista_id)), None)
+    if not lista:
+        raise HTTPException(status_code=404, detail="Lista de pedidos nao encontrada")
+
+    numero_invoice = str(lista.get("numero_invoice") or lista.get("invoice") or "").strip()
+    if not numero_invoice:
+        raise HTTPException(
+            status_code=409,
+            detail="Informe o N de Invoice no detalhe da lista antes de gerar o Commercial Invoice.",
+        )
+    fornecedor = str(lista.get("supplier") or lista.get("fornecedor") or "").strip()
+    if not fornecedor:
+        raise HTTPException(
+            status_code=409,
+            detail="Informe o Fornecedor no detalhe da lista antes de gerar o Commercial Invoice.",
+        )
+
+    data_aprovacao = _data_aprovacao_commercial_invoice(lista)
+    file_bytes = _gerar_commercial_invoice_bytes(
+        lista,
+        client_id=client_id,
+        data_aprovacao=data_aprovacao,
+    )
+    nome_seguro = re.sub(r"[^A-Za-z0-9_-]+", "_", numero_invoice).strip("_") or str(lista_id)
+    nome_arquivo = f"commercial_invoice_{nome_seguro}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(file_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{nome_arquivo}"'},
+    )
+
+
 async def api_medias_compras_lista_pedido_gerar_download(lista_id: str, client_id: str = Depends(medias_common.get_tenant_id)):
     listas = _carregar_listas_pedidos(client_id)
     lista = next((l for l in listas if str(l.get("id", "")) == str(lista_id)), None)
@@ -1295,6 +1364,7 @@ __all__ = [
     "api_medias_compras_lista_pedido_atualizar_status",
     "api_medias_compras_lista_pedido_excluir",
     "api_medias_compras_lista_pedido_download",
+    "api_medias_compras_lista_pedido_commercial_invoice",
     "api_medias_compras_lista_pedido_gerar_download",
     "api_medias_compras_download",
 ]

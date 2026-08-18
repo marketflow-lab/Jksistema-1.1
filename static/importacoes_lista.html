@@ -1587,7 +1587,7 @@
         };
 
         const RESUMO_CARDS_BACKEND = new Set([
-            'supplier', 'currency', 'incoterm', 'exchange_rate', 'lead_time_days',
+            'numero_invoice', 'supplier', 'currency', 'incoterm', 'exchange_rate', 'lead_time_days',
             'order_date', 'promised_ship_date',
             'actual_ship_date', 'eta_date', 'customs_clearance_date', 'received_at'
         ]);
@@ -1796,6 +1796,7 @@
                     throw new Error(err.detail || 'Nao foi possivel salvar o dado logistico.');
                 }
                 if (ultimaListaCarregada) ultimaListaCarregada[campo] = bodyValue;
+                if (campo === 'numero_invoice') salvarResumoEditavel(listaId, campo, '');
                 ultimaAnaliseCustoPosto = null;
                 void carregarCustoPostoBackend(listaId);
             } catch (e) {
@@ -2136,7 +2137,11 @@
                 const editKey = RESUMO_CARDS_EDITAVEIS[c.label] || '';
                 const formatoEditavel = obterFormatoCardEditavel(editKey);
                 const valorSalvo = editKey ? String(resumoEditavel[editKey] || '').trim() : '';
-                const valorBase = (valorSalvo || String(c.value || ''));
+                const invoiceBackendAusente = editKey === 'numero_invoice'
+                    && !String(lista && (lista.numero_invoice || lista.invoice) || '').trim();
+                const podeUsarValorLocal = editKey
+                    && (!RESUMO_CARDS_BACKEND.has(editKey) || invoiceBackendAusente);
+                const valorBase = ((podeUsarValorLocal ? valorSalvo : '') || String(c.value || ''));
                 const valorHtml = c.label === 'Modalidade'
                     ? (
                         '<select id="resumoModalidadeSelect" class="resumo-select">' +
