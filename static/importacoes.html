@@ -386,9 +386,59 @@
 
         .acoes-direita {
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             gap: 8px;
             margin-left: auto;
+        }
+
+        .acoes-lista-coluna {
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 6px;
+            min-width: 250px;
+        }
+
+        .acoes-lista-coluna .btn-cancelar {
+            width: 100%;
+        }
+
+        .documentos-lista-cards {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 6px;
+            width: 100%;
+        }
+
+        .documento-lista-card {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 30px;
+            padding: 6px 9px;
+            border: 1px solid rgba(126, 203, 255, 0.46);
+            border-radius: 9px;
+            background: linear-gradient(180deg, rgba(19, 47, 79, 0.96), rgba(11, 29, 52, 0.98));
+            color: #dff2ff;
+            box-shadow: inset 0 1px 0 rgba(210, 237, 255, 0.08);
+            font-size: 0.76rem;
+            font-weight: 800;
+            line-height: 1.1;
+            text-align: center;
+            user-select: none;
+            cursor: default;
+        }
+
+        .documento-lista-card--commercial {
+            border-color: rgba(255, 204, 119, 0.5);
+            background: linear-gradient(180deg, rgba(69, 48, 17, 0.96), rgba(43, 29, 10, 0.98));
+            color: #ffe0a6;
+        }
+
+        .documento-lista-card--packing {
+            border-color: rgba(111, 221, 210, 0.5);
+            background: linear-gradient(180deg, rgba(13, 61, 63, 0.96), rgba(8, 39, 43, 0.98));
+            color: #bffbf3;
         }
 
         .nome-lista {
@@ -651,6 +701,26 @@
 
             .nome-lista {
                 font-size: 1.35rem;
+            }
+
+            .linha-topo {
+                align-items: flex-start;
+            }
+
+            .acoes-direita {
+                width: 100%;
+                margin-left: 0;
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .acoes-direita .status {
+                align-self: flex-start;
+            }
+
+            .acoes-lista-coluna {
+                width: 100%;
+                min-width: 0;
             }
         }
 
@@ -1755,7 +1825,13 @@
                         '<div class="nome-lista">' + nomeLista + '</div>' +
                         '<div class="acoes-direita">' +
                             '<span class="status">Analisando orçamento</span>' +
-                            '<button type="button" class="btn-cancelar">Excluir lista</button>' +
+                            '<div class="acoes-lista-coluna">' +
+                                '<button type="button" class="btn-cancelar">Excluir lista</button>' +
+                                '<div class="documentos-lista-cards" aria-label="Documentos da lista">' +
+                                    '<span class="documento-lista-card documento-lista-card--commercial">Commercial Invoice</span>' +
+                                    '<span class="documento-lista-card documento-lista-card--packing">Packing List</span>' +
+                                '</div>' +
+                            '</div>' +
                         '</div>' +
                     '</div>' +
                     '<div class="meta">Itens: ' + numero(l.total_itens || 0) + '&nbsp;&nbsp;|&nbsp;&nbsp;Quantidade total: ' + numero(l.total_quantidade || 0) + '</div>' +
@@ -1778,7 +1854,7 @@
                 if (listaId) {
                     const abrirDetalhe = (ev) => {
                         if (el.dataset.editandoNome === '1') return;
-                        if (ev && ev.target && ev.target.closest && ev.target.closest('.nome-lista, .nome-lista-input, [data-loja-pill], .meta-loja-input')) {
+                        if (ev && ev.target && ev.target.closest && ev.target.closest('.nome-lista, .nome-lista-input, [data-loja-pill], .meta-loja-input, .documentos-lista-cards')) {
                             return;
                         }
                         window.location.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId);
