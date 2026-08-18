@@ -6,35 +6,79 @@ const path = require('path');
 const htmlPath = path.join(__dirname, '..', 'static', 'importacoes.html');
 const html = fs.readFileSync(htmlPath, 'utf8');
 
-const actionColumnStart = html.indexOf('<div class="acoes-lista-coluna">');
-const actionColumnEnd = html.indexOf('</div>', html.indexOf('</div>', actionColumnStart) + 1);
-if (actionColumnStart < 0 || actionColumnEnd < 0) {
-    throw new Error('Coluna de acoes e documentos da lista nao foi encontrada');
+const renderStart = html.indexOf('function renderListas(listas)');
+const markupStart = html.indexOf('el.innerHTML =', renderStart);
+const markupEnd = html.indexOf('const btnCancelar', markupStart);
+if (renderStart < 0 || markupStart < 0 || markupEnd < 0) {
+    throw new Error('Markup dos cards de listas nao foi encontrado');
 }
 
-const actionColumnHtml = html.slice(actionColumnStart, actionColumnEnd);
-const deletePosition = actionColumnHtml.indexOf('class="btn-cancelar"');
-const documentsPosition = actionColumnHtml.indexOf('class="documentos-lista-cards"');
-const commercialPosition = actionColumnHtml.indexOf('Commercial Invoice');
-const packingPosition = actionColumnHtml.indexOf('Packing List');
-
-if (!(deletePosition >= 0 && documentsPosition > deletePosition)) {
-    throw new Error('Os cards de documentos devem ficar logo abaixo de Excluir lista');
+const markup = html.slice(markupStart, markupEnd);
+const topStart = markup.indexOf('<div class="lista-card-topo">');
+const baseStart = markup.indexOf('<div class="lista-card-base">');
+if (!(topStart >= 0 && baseStart > topStart)) {
+    throw new Error('O card deve ter uma linha superior e outra linha inferior');
 }
-if (!(commercialPosition > documentsPosition && packingPosition > commercialPosition)) {
-    throw new Error('Commercial Invoice e Packing List devem aparecer lado a lado nessa ordem');
+
+const topHtml = markup.slice(topStart, baseStart);
+const baseHtml = markup.slice(baseStart);
+const topOrder = [
+    'class="nome-lista"',
+    'class="meta-pill meta-invoice"',
+    'lojaPill',
+    'class="documentos-lista-cards"',
+    'Commercial Invoice',
+    'Packing List',
+    'class="btn-cancelar lista-card-excluir">Excluir',
+];
+let lastPosition = -1;
+for (const marker of topOrder) {
+    const position = topHtml.indexOf(marker);
+    if (position <= lastPosition) {
+        throw new Error(`Ordem invalida na linha superior: ${marker}`);
+    }
+    lastPosition = position;
+}
+
+const baseOrder = [
+    'class="status"',
+    'lista-card-quantidade',
+    'meta-m3',
+    'meta-usd',
+    'meta-brl',
+    'lista-card-atualizacao',
+];
+lastPosition = -1;
+for (const marker of baseOrder) {
+    const position = baseHtml.indexOf(marker);
+    if (position <= lastPosition) {
+        throw new Error(`Ordem invalida na linha inferior: ${marker}`);
+    }
+    lastPosition = position;
+}
+
+for (const forbidden of ['meta-invoice', 'lojaPill', 'Commercial Invoice', 'Packing List', 'lista-card-excluir']) {
+    if (baseHtml.includes(forbidden)) {
+        throw new Error(`Elemento da linha superior apareceu na linha inferior: ${forbidden}`);
+    }
 }
 
 const requiredSnippets = [
-    '.acoes-lista-coluna {',
+    '.lista-item--compacta {',
+    '.lista-card-topo {',
+    '.lista-card-acoes {',
+    '.lista-card-base {',
+    '.lista-card-excluir {',
+    '.lista-card-atualizacao {',
+    'flex-wrap: nowrap;',
     '.documentos-lista-cards {',
     'grid-template-columns: repeat(2, max-content);',
     'justify-content: end;',
-    'align-self: flex-end;',
     'width: auto;',
     'min-height: 22px;',
     'padding: 3px 6px;',
     'font-size: 0.62rem;',
+    'function formatarDataHoraCompacta(isoTexto)',
     '.documento-lista-card--commercial {',
     '.documento-lista-card--packing {',
     'aria-label="Documentos da lista"',
@@ -47,8 +91,8 @@ for (const snippet of requiredSnippets) {
     }
 }
 
-if (!/@media \(max-width: 760px\)[\s\S]*\.acoes-direita\s*\{[\s\S]*flex-direction:\s*column;[\s\S]*\.acoes-lista-coluna\s*\{[\s\S]*width:\s*100%;/.test(html)) {
-    throw new Error('A coluna de acoes deve se reorganizar na largura total em telas pequenas');
+if (!/@media \(max-width: 760px\)[\s\S]*\.lista-card-topo,[\s\S]*\.lista-card-base\s*\{[\s\S]*flex-wrap:\s*wrap;[\s\S]*\.lista-card-acoes\s*\{[\s\S]*width:\s*100%;/.test(html)) {
+    throw new Error('As duas linhas do card devem se reorganizar em telas pequenas');
 }
 
 const inlineScripts = [...html.matchAll(/<script(?: [^>]*)?>([\s\S]*?)<\/script>/gi)]
@@ -58,4 +102,4 @@ for (const source of inlineScripts) {
     new Function(source);
 }
 
-console.log('OK: Commercial Invoice e Packing List abaixo de Excluir lista.');
+console.log('OK: nome, Invoice, loja e acoes no topo; demais dados na linha inferior.');

@@ -391,25 +391,113 @@
             margin-left: auto;
         }
 
-        .acoes-lista-coluna {
-            display: flex;
-            flex-direction: column;
-            align-items: stretch;
-            gap: 6px;
-            min-width: 250px;
+        .lista-item--compacta {
+            padding: 12px 14px;
         }
 
-        .acoes-lista-coluna .btn-cancelar {
-            width: 100%;
+        .lista-card-topo,
+        .lista-card-base {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        .lista-card-topo {
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(87, 154, 230, 0.28);
+        }
+
+        .lista-card-topo .nome-lista {
+            flex: 0 0 auto;
+            font-size: 1.45rem;
+            line-height: 1.1;
+            white-space: nowrap;
+        }
+
+        .lista-card-topo .nome-lista-input {
+            width: 180px;
+            flex: 0 1 180px;
+        }
+
+        .lista-card-topo .meta-pill {
+            flex: 0 0 auto;
+            padding: 4px 9px;
+            font-size: 0.8rem;
+            line-height: 1;
+            white-space: nowrap;
+        }
+
+        .lista-card-acoes {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 4px;
+            margin-left: auto;
+            flex: 0 0 auto;
         }
 
         .documentos-lista-cards {
             display: grid;
             grid-template-columns: repeat(2, max-content);
             justify-content: end;
-            align-self: flex-end;
             gap: 4px;
             width: auto;
+        }
+
+        .lista-card-excluir {
+            min-height: 22px;
+            padding: 3px 7px;
+            border-radius: 6px;
+            font-size: 0.62rem;
+            line-height: 1;
+            white-space: nowrap;
+        }
+
+        .lista-card-base {
+            padding-top: 10px;
+            gap: 6px;
+            flex-wrap: nowrap;
+        }
+
+        .lista-card-base .status {
+            flex: 0 0 auto;
+            padding: 3px 7px;
+            font-size: 0.7rem;
+            line-height: 1;
+            white-space: nowrap;
+        }
+
+        .lista-card-quantidade {
+            flex: 0 0 auto;
+            font-size: 0.72rem;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .lista-card-quantidade strong {
+            color: #f0f7ff;
+            font-weight: 800;
+        }
+
+        .lista-card-separador {
+            margin: 0 5px;
+            color: #8fb2d8;
+        }
+
+        .lista-card-base .meta-pill {
+            flex: 0 0 auto;
+            padding: 3px 7px;
+            font-size: 0.72rem;
+            line-height: 1;
+            white-space: nowrap;
+        }
+
+        .lista-card-atualizacao {
+            margin-left: auto;
+            flex: 0 0 auto;
+            font-size: 0.68rem;
+            white-space: nowrap;
         }
 
         .documento-lista-card {
@@ -729,6 +817,23 @@
                 align-items: flex-start;
             }
 
+            .lista-card-topo,
+            .lista-card-base {
+                align-items: flex-start;
+                flex-wrap: wrap;
+            }
+
+            .lista-card-acoes {
+                width: 100%;
+                margin-left: 0;
+                justify-content: flex-start;
+            }
+
+            .lista-card-atualizacao {
+                width: 100%;
+                margin-left: 0;
+            }
+
             .acoes-direita {
                 width: 100%;
                 margin-left: 0;
@@ -740,10 +845,6 @@
                 align-self: flex-start;
             }
 
-            .acoes-lista-coluna {
-                width: 100%;
-                min-width: 0;
-            }
         }
 
         /* ─── Embarques ─────────────────────────────────────── */
@@ -1198,6 +1299,18 @@
             const d = new Date(isoTexto || '');
             if (Number.isNaN(d.getTime())) return String(isoTexto || '');
             return d.toLocaleString('pt-BR');
+        }
+
+        function formatarDataHoraCompacta(isoTexto) {
+            const d = new Date(isoTexto || '');
+            if (Number.isNaN(d.getTime())) return String(isoTexto || '');
+            return d.toLocaleString('pt-BR', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            }).replace(',', '');
         }
 
         function numero(v) {
@@ -1994,35 +2107,33 @@
 
             listas.forEach((l) => {
                 const el = document.createElement('div');
-                el.className = 'lista-item';
+                el.className = 'lista-item lista-item--compacta';
                 const listaId = String(l.id || '').trim();
                 const nomeLista = String(l.nome_lista || 'Sem nome');
                 const lojaPill = metaLojaListaHtml(l);
                 el.setAttribute('role', 'button');
                 el.setAttribute('tabindex', '0');
                 el.innerHTML =
-                    '<div class="linha-topo">' +
+                    '<div class="lista-card-topo">' +
                         '<div class="nome-lista">' + nomeLista + '</div>' +
-                        '<div class="acoes-direita">' +
-                            '<span class="status">Analisando orçamento</span>' +
-                            '<div class="acoes-lista-coluna">' +
-                                '<button type="button" class="btn-cancelar">Excluir lista</button>' +
-                                '<div class="documentos-lista-cards" aria-label="Documentos da lista">' +
-                                    '<button type="button" class="documento-lista-card documento-lista-card--commercial" data-commercial-invoice>Commercial Invoice</button>' +
-                                    '<span class="documento-lista-card documento-lista-card--packing">Packing List</span>' +
-                                '</div>' +
-                            '</div>' +
-                        '</div>' +
-                    '</div>' +
-                    '<div class="meta">Itens: ' + numero(l.total_itens || 0) + '&nbsp;&nbsp;|&nbsp;&nbsp;Quantidade total: ' + numero(l.total_quantidade || 0) + '</div>' +
-                    '<div class="meta-resumo">' +
                         '<span class="meta-pill meta-invoice">N° Invoice: <strong>' + (obterInvoiceLista(l, listaId) || '-') + '</strong></span>' +
                         lojaPill +
-                        '<span class="meta-pill meta-m3">Total M³: <strong>' + formatarM3(l.total_m3 || 0) + '</strong></span>' +
-                        '<span class="meta-pill meta-usd">Total $: <strong>' + (l.total_usd > 0 ? formatarUSD(l.total_usd) : '-') + '</strong></span>' +
-                        '<span class="meta-pill meta-brl">Total R$: <strong>' + (l.total_usd > 0 && cotacaoDolarAtual > 0 ? formatarMoedaBRL(l.total_usd * cotacaoDolarAtual) : '-') + '</strong></span>' +
+                        '<div class="lista-card-acoes">' +
+                            '<div class="documentos-lista-cards" aria-label="Documentos da lista">' +
+                                '<button type="button" class="documento-lista-card documento-lista-card--commercial" data-commercial-invoice>Commercial Invoice</button>' +
+                                '<span class="documento-lista-card documento-lista-card--packing">Packing List</span>' +
+                            '</div>' +
+                            '<button type="button" class="btn-cancelar lista-card-excluir">Excluir</button>' +
+                        '</div>' +
                     '</div>' +
-                    '<div class="meta">Atualizada em: ' + formatarDataHoraLocal(l.updated_at || l.created_at || '') + '</div>';
+                    '<div class="lista-card-base">' +
+                        '<span class="status">Analisando orçamento</span>' +
+                        '<div class="meta lista-card-quantidade"><strong>' + numero(l.total_itens || 0) + '</strong> itens<span class="lista-card-separador">•</span><strong>' + numero(l.total_quantidade || 0) + '</strong> unidades</div>' +
+                        '<span class="meta-pill meta-m3"><strong>' + formatarM3(l.total_m3 || 0) + '</strong></span>' +
+                        '<span class="meta-pill meta-usd"><strong>' + (l.total_usd > 0 ? formatarUSD(l.total_usd) : '-') + '</strong></span>' +
+                        '<span class="meta-pill meta-brl"><strong>' + (l.total_usd > 0 && cotacaoDolarAtual > 0 ? formatarMoedaBRL(l.total_usd * cotacaoDolarAtual) : '-') + '</strong></span>' +
+                        '<div class="meta lista-card-atualizacao">Atualizada: ' + formatarDataHoraCompacta(l.updated_at || l.created_at || '') + '</div>' +
+                    '</div>';
                 const btnCancelar = el.querySelector('.btn-cancelar');
                 if (btnCancelar) {
                     btnCancelar.addEventListener('click', (ev) => {
