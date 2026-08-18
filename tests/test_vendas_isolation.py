@@ -97,8 +97,8 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result == {
-        "routes": 430,
-        "pairs": 428,
+        "routes": 431,
+        "pairs": 429,
         "duplicates": [],
         "openapi": "5a653c9f14bab6b1b8aaebeb41c934f2ec1c657a1b82668b10e4f2c20df236bc",
     }
