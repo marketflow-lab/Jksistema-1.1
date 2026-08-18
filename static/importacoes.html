@@ -1495,39 +1495,6 @@
             return simples ? simples[1] : fallback;
         }
 
-        function itemAprovadoCommercialInvoice(item) {
-            const valor = item && (item.compra_aprovada ?? item['Compra aprovada']);
-            if (valor === true || valor === 1) return true;
-            return ['1', 'true', 'sim', 'aprovada', 'aprovado'].includes(String(valor || '').trim().toLowerCase());
-        }
-
-        function pendenciasCommercialInvoice(lista, listaId) {
-            const pendencias = [];
-            if (!obterInvoiceLista(lista, listaId)) {
-                pendencias.push('Informe o N° de Invoice no detalhe da lista.');
-            }
-            if (!String(lista && (lista.supplier || lista.fornecedor) || '').trim()) {
-                pendencias.push('Informe o Fornecedor no detalhe da lista.');
-            }
-
-            const itens = Array.isArray(lista && lista.itens) ? lista.itens : [];
-            const totalPendentes = itens.filter((item) => !itemAprovadoCommercialInvoice(item)).length;
-            if (!itens.length) {
-                pendencias.push('A lista não possui SKUs para aprovação.');
-            } else if (totalPendentes) {
-                const rotulo = totalPendentes === 1 ? 'SKU pendente' : 'SKUs pendentes';
-                pendencias.push('Aprove todos os SKUs: faltam ' + totalPendentes + ' ' + rotulo + ' de ' + itens.length + '.');
-            } else {
-                const possuiDataAprovacao = itens.some((item) => String(
-                    item && (item.compra_aprovada_em || item['Compra aprovada em']) || ''
-                ).trim());
-                if (!possuiDataAprovacao) {
-                    pendencias.push('A lista aprovada não possui data de aprovação registrada.');
-                }
-            }
-            return pendencias;
-        }
-
         async function carregarListaCommercialInvoice(listaId) {
             const resp = await fetch(
                 '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId),
@@ -1539,25 +1506,6 @@
             }
             const data = await resp.json();
             return data && data.lista ? data.lista : {};
-        }
-
-        function avisarPendenciasCommercialInvoice(lista, listaId) {
-            const pendencias = pendenciasCommercialInvoice(lista, listaId);
-            if (!pendencias.length) return false;
-
-            const mensagemStatus = 'Commercial Invoice indisponível: ' + pendencias.join(' ');
-            setStatus(mensagemStatus);
-            const mensagemDialogo = [
-                'A Commercial Invoice ainda não pode ser gerada.',
-                '',
-                ...pendencias.map((texto) => '• ' + texto),
-                '',
-                'Deseja abrir o detalhe da lista agora?'
-            ].join('\n');
-            if (window.confirm(mensagemDialogo)) {
-                window.location.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId);
-            }
-            return true;
         }
 
         async function persistirInvoiceLegadoSeNecessario(lista, listaId) {
@@ -1597,8 +1545,6 @@
                     ...(lista || {}),
                     ...(await carregarListaCommercialInvoice(listaId))
                 };
-                if (avisarPendenciasCommercialInvoice(listaAtualizada, listaId)) return;
-
                 const invoice = obterInvoiceLista(listaAtualizada, listaId);
                 await persistirInvoiceLegadoSeNecessario(listaAtualizada, listaId);
                 if (btn) btn.textContent = 'Gerando...';
@@ -1614,7 +1560,9 @@
                 const blob = await resp.blob();
                 if (!blob || !blob.size) throw new Error('O Commercial Invoice foi gerado vazio.');
 
-                const fallback = 'commercial_invoice_' + String(invoice).replace(/[^A-Za-z0-9_-]+/g, '_') + '.xlsx';
+                const nomeBaseArquivo = String(invoice || listaAtualizada.nome_lista || listaId).trim();
+                const nomeSeguroArquivo = nomeBaseArquivo.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'lista';
+                const fallback = 'commercial_invoice_' + nomeSeguroArquivo + '.xlsx';
                 const objectUrl = URL.createObjectURL(blob);
                 const link = document.createElement('a');
                 link.href = objectUrl;

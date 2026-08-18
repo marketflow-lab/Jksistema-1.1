@@ -108,7 +108,21 @@ def _formatar_data_commercial_invoice(valor) -> str:
         return ""
     try:
         data = datetime.fromisoformat(texto.replace("Z", "+00:00"))
-        return data.strftime("%d/%m/%Y")
+        meses = (
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        )
+        return f"{meses[data.month - 1]} {data.day}, {data.year}"
     except ValueError:
         return texto
 
@@ -157,18 +171,21 @@ def _gerar_commercial_invoice_bytes(
     data_aprovacao: str = "",
 ) -> bytes:
     lista = lista if isinstance(lista, dict) else {}
-    itens = [_normalizar_item_lista_pedido(item) for item in (lista.get("itens") or []) if isinstance(item, dict)]
+    itens = [
+        (item, _normalizar_item_lista_pedido(item))
+        for item in (lista.get("itens") or [])
+        if isinstance(item, dict)
+    ]
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "Commercial Invoice"
-    ws.sheet_view.zoomScale = 90
-    ws.sheet_view.showGridLines = False
-    ws.freeze_panes = "A7"
-    ws.page_setup.orientation = "landscape"
+    ws.title = "Commercial"
+    ws.sheet_view.zoomScale = 100
+    ws.sheet_view.showGridLines = True
+    ws.freeze_panes = None
+    ws.page_setup.orientation = "portrait"
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
-    ws.print_title_rows = "1:6"
     ws.sheet_properties.pageSetUpPr.fitToPage = True
 
     borda = Border(
@@ -181,72 +198,94 @@ def _gerar_commercial_invoice_bytes(
     fonte_negrito = Font(name="Times New Roman", size=9, bold=True, color="000000")
     alinhamento_centro = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-    ws.merge_cells("A1:I1")
-    _atribuir_texto_excel(ws["A1"], f"SUPPLIER: {lista.get('supplier') or lista.get('fornecedor') or ''}")
-    ws["A1"].font = Font(name="Times New Roman", size=12, bold=True)
-    ws["A1"].alignment = alinhamento_centro
-    ws.row_dimensions[1].height = 32
+    for intervalo in (
+        "A1:I1",
+        "A2:I2",
+        "A3:B3",
+        "F3:G3",
+        "H3:I3",
+        "A4:E6",
+        "F4:I6",
+        "A7:H7",
+        "D8:E8",
+    ):
+        ws.merge_cells(intervalo)
 
-    ws.merge_cells("A2:I2")
-    _atribuir_texto_excel(ws["A2"], "COMMERCIAL INVOICE")
-    ws["A2"].font = Font(name="Times New Roman", size=11, bold=True)
-    ws["A2"].alignment = alinhamento_centro
-    ws.row_dimensions[2].height = 21
-
-    ws.merge_cells("A3:B3")
-    ws.merge_cells("C3:E3")
-    ws.merge_cells("F3:G3")
-    ws.merge_cells("H3:I3")
-    _atribuir_texto_excel(ws["A3"], "INV. No.:")
-    _atribuir_texto_excel(ws["C3"], lista.get("numero_invoice") or lista.get("invoice") or "")
-    _atribuir_texto_excel(ws["F3"], "APPROVAL DATE:")
-    _atribuir_texto_excel(ws["H3"], _formatar_data_commercial_invoice(data_aprovacao))
-
-    ws.merge_cells("A4:E4")
-    ws.merge_cells("F4:I4")
-    _atribuir_texto_excel(ws["A4"], f"LIST: {lista.get('nome_lista') or ''}")
+    fornecedor = str(lista.get("supplier") or lista.get("fornecedor") or "").strip()
+    numero_invoice = str(lista.get("numero_invoice") or lista.get("invoice") or "").strip()
+    nome_lista = str(lista.get("nome_lista") or "").strip()
     loja = str(lista.get("loja") or "").strip()
-    _atribuir_texto_excel(ws["F4"], f"STORE: {'' if loja == '__todas' else loja}")
+    if loja == "__todas":
+        loja = ""
 
-    ws.merge_cells("A5:I5")
-    _atribuir_texto_excel(ws["A5"], "Descriptions")
-    ws["A5"].font = fonte_negrito
-    ws["A5"].alignment = alinhamento_centro
+    _atribuir_texto_excel(ws["A1"], fornecedor)
+    _atribuir_texto_excel(ws["A2"], "COMMERCIAL INVOICE")
+    _atribuir_texto_excel(ws["A3"], "INV. No.:")
+    _atribuir_texto_excel(ws["C3"], numero_invoice)
+    _atribuir_texto_excel(ws["D3"], "DATE:")
+    _atribuir_texto_excel(ws["E3"], _formatar_data_commercial_invoice(data_aprovacao))
+    _atribuir_texto_excel(ws["F3"], "FROM:")
+    _atribuir_texto_excel(ws["H3"], "")
+    _atribuir_texto_excel(ws["A4"], f"LIST: {nome_lista}" if nome_lista else "")
+    _atribuir_texto_excel(ws["F4"], f"STORE: {loja}" if loja else "")
+    _atribuir_texto_excel(ws["A7"], "Descriptions")
 
-    ws.merge_cells("D6:E6")
     cabecalhos = {
-        "A6": "NO",
-        "B6": "OE NO",
-        "C6": "HSCODE / NCM",
-        "D6": "PRODUCT DESCRIPTION",
-        "F6": "PIC",
-        "G6": "Quantity",
-        "H6": "Price Unit",
-        "I6": "Amount",
+        "A8": "NO",
+        "B8": "OE NO",
+        "C8": "HSCODE",
+        "D8": "PRODUCT DESCRIPTION",
+        "F8": "PIC",
+        "G8": "Quantity",
+        "H8": "Price Unit",
+        "I8": "Amount",
     }
     for endereco, texto in cabecalhos.items():
         _atribuir_texto_excel(ws[endereco], texto)
-        ws[endereco].font = fonte_negrito
-        ws[endereco].alignment = alinhamento_centro
-    ws.row_dimensions[6].height = 26
 
-    for linha in range(1, 7):
-        for coluna in range(1, 10):
-            celula = ws.cell(linha, coluna)
-            celula.border = borda
-            if linha in (3, 4):
-                celula.font = fonte_negrito
-                celula.alignment = alinhamento_centro
+    ws.row_dimensions[1].height = 93
+    ws.row_dimensions[2].height = 12
+    ws.row_dimensions[3].height = 17.25
+    ws.row_dimensions[4].height = 12.75
+    ws.row_dimensions[5].height = 11.25
+    ws.row_dimensions[6].height = 147
+    ws.row_dimensions[7].height = 11.25
+    ws.row_dimensions[8].height = 21.75
 
-    primeira_linha_item = 7
-    for indice, item in enumerate(itens, start=1):
+    primeira_linha_item = 9
+    total_unidades = 0
+    subtotal = 0.0
+    for indice, (item_original, item) in enumerate(itens, start=1):
         linha = primeira_linha_item + indice - 1
         ws.merge_cells(start_row=linha, start_column=4, end_row=linha, end_column=5)
-        quantidade = int(max(0.0, _to_float(item.get("Quantidade"), 0.0)))
-        preco = max(0.0, _to_float(item.get("Valor unidade"), 0.0))
-        valor_total = max(0.0, _to_float(item.get("Valor total"), 0.0))
-        if preco <= 0 and quantidade > 0 and valor_total > 0:
+
+        def _valor_numerico_presente(chaves: list[str]) -> float | None:
+            for chave in chaves:
+                if chave not in item_original:
+                    continue
+                bruto = item_original.get(chave)
+                if bruto is None or (isinstance(bruto, str) and not bruto.strip()):
+                    continue
+                numero = _to_float_excel(bruto)
+                return max(0.0, numero) if numero is not None else None
+            return None
+
+        quantidade_numero = _valor_numerico_presente(["Quantidade", "quantity", "Qtd", "Qtde", "Qty"])
+        preco = _valor_numerico_presente(
+            ["Valor unidade", "Valor unitario", "Valor unitário", "Cost", "Custo", "Preco", "Preço"]
+        )
+        valor_total = _valor_numerico_presente(
+            ["Valor total", "Sub-total(USD)", "Subtotal USD", "Sub total", "Subtotal"]
+        )
+        quantidade = int(quantidade_numero) if quantidade_numero is not None else None
+        if (preco is None or preco <= 0) and quantidade and valor_total is not None and valor_total > 0:
             preco = valor_total / quantidade
+        montante = None
+        if quantidade is not None and preco is not None:
+            montante = quantidade * preco
+        elif valor_total is not None:
+            montante = valor_total
+
         descricao = str(item.get(TITULO_PRODUTO_INGLES_KEY) or "").strip() or _primeiro_texto_item(
             item,
             [
@@ -260,25 +299,26 @@ def _gerar_commercial_invoice_bytes(
             ],
         )
         ncm = _primeiro_texto_item(item, ["NCM", "Código NCM", "Codigo NCM", "HS Code", "HSCODE"])
+        sku = str(item.get("SKU") or "").strip()
+        oe_no = sku if re.match(r"(?i)^sku(?:\s|$)", sku) else (f"SKU {sku}" if sku else "")
 
         _atribuir_texto_excel(ws.cell(linha, 1), indice)
-        _atribuir_texto_excel(ws.cell(linha, 2), item.get("SKU", ""))
+        _atribuir_texto_excel(ws.cell(linha, 2), oe_no)
         _atribuir_texto_excel(ws.cell(linha, 3), _formatar_ncm_commercial_invoice(ncm))
         _atribuir_texto_excel(ws.cell(linha, 4), descricao)
-        ws.cell(linha, 7).value = quantidade
-        ws.cell(linha, 8).value = preco
-        ws.cell(linha, 9).value = f"=G{linha}*H{linha}"
+        if quantidade is not None:
+            ws.cell(linha, 7).value = quantidade
+            total_unidades += quantidade
+        if preco is not None:
+            ws.cell(linha, 8).value = preco
+        if montante is not None:
+            ws.cell(linha, 9).value = montante
+            subtotal += montante
 
-        for coluna in range(1, 10):
-            celula = ws.cell(linha, coluna)
-            celula.border = borda
-            celula.font = fonte_negrito
-            celula.alignment = alinhamento_centro
-        ws.cell(linha, 4).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         ws.cell(linha, 7).number_format = "#,##0"
-        ws.cell(linha, 8).number_format = '"US$"#,##0.00'
+        ws.cell(linha, 8).number_format = "0.00"
         ws.cell(linha, 9).number_format = '"US$"#,##0.00'
-        ws.row_dimensions[linha].height = 72
+        ws.row_dimensions[linha].height = 60
 
         caminho_foto = _resolver_caminho_foto_commercial_invoice(
             client_id,
@@ -290,59 +330,103 @@ def _gerar_commercial_invoice_bytes(
                 imagem = XLImage(caminho_foto)
                 largura = float(getattr(imagem, "width", 0) or 0)
                 altura = float(getattr(imagem, "height", 0) or 0)
-                altura_alvo = 66
+                altura_alvo = 74
                 if largura > 0 and altura > 0:
                     imagem.height = altura_alvo
-                    imagem.width = max(38, min(120, int(altura_alvo * (largura / altura))))
+                    imagem.width = max(38, min(138, int(altura_alvo * (largura / altura))))
                 else:
                     imagem.height = altura_alvo
-                    imagem.width = 66
+                    imagem.width = 74
                 ws.add_image(imagem, f"F{linha}")
             except Exception:
                 pass
 
-    ultima_linha_item = primeira_linha_item + len(itens) - 1
-    linha_subtotal = ultima_linha_item + 1
-    linha_total = linha_subtotal + 1
-    ws.merge_cells(start_row=linha_subtotal, start_column=1, end_row=linha_subtotal, end_column=5)
-    _atribuir_texto_excel(ws.cell(linha_subtotal, 1), "TOTALS")
-    _atribuir_texto_excel(ws.cell(linha_subtotal, 6), "Units Total")
-    ws.cell(linha_subtotal, 7).value = f"=SUM(G{primeira_linha_item}:G{ultima_linha_item})"
-    _atribuir_texto_excel(ws.cell(linha_subtotal, 8), "Subtotal")
-    ws.cell(linha_subtotal, 9).value = f"=SUM(I{primeira_linha_item}:I{ultima_linha_item})"
+    primeira_linha_resumo = primeira_linha_item + len(itens)
+    linha_peso_liquido = primeira_linha_resumo
+    linha_peso_bruto = primeira_linha_resumo + 1
+    linha_cbm = primeira_linha_resumo + 2
+    linha_ctns = primeira_linha_resumo + 3
+    linha_rodape = primeira_linha_resumo + 4
 
-    ws.merge_cells(start_row=linha_total, start_column=1, end_row=linha_total, end_column=7)
-    _atribuir_texto_excel(ws.cell(linha_total, 8), "TOTAL:")
-    ws.cell(linha_total, 9).value = f"=I{linha_subtotal}"
+    for linha in (linha_peso_liquido, linha_peso_bruto, linha_cbm, linha_ctns):
+        ws.merge_cells(start_row=linha, start_column=3, end_row=linha, end_column=4)
+        ws.row_dimensions[linha].height = 15.75
+    ws.merge_cells(start_row=linha_peso_bruto, start_column=6, end_row=linha_peso_bruto, end_column=8)
+    ws.merge_cells(start_row=linha_cbm, start_column=6, end_row=linha_cbm, end_column=8)
 
-    for linha in (linha_subtotal, linha_total):
-        for coluna in range(1, 10):
-            celula = ws.cell(linha, coluna)
-            celula.border = borda
-            celula.font = fonte_negrito
-            celula.alignment = alinhamento_centro
-        ws.cell(linha, 9).number_format = '"US$"#,##0.00'
-    ws.cell(linha_subtotal, 7).number_format = "#,##0"
-    ws.row_dimensions[linha_subtotal].height = 24
-    ws.row_dimensions[linha_total].height = 24
+    _atribuir_texto_excel(ws.cell(linha_peso_liquido, 3), "TOTAL NET WEIGHT")
+    _atribuir_texto_excel(ws.cell(linha_peso_liquido, 6), "Units Total")
+    ws.cell(linha_peso_liquido, 7).value = total_unidades
+    _atribuir_texto_excel(ws.cell(linha_peso_liquido, 8), "Subtotal")
+    ws.cell(linha_peso_liquido, 9).value = subtotal
+
+    _atribuir_texto_excel(ws.cell(linha_peso_bruto, 3), "TOTAL GROSS WEIGHT")
+    _atribuir_texto_excel(ws.cell(linha_peso_bruto, 6), "Freight USD")
+    _atribuir_texto_excel(ws.cell(linha_peso_bruto, 9), "")
+
+    _atribuir_texto_excel(ws.cell(linha_cbm, 3), "CBM:")
+    _atribuir_texto_excel(ws.cell(linha_cbm, 6), "Insurance USD")
+    _atribuir_texto_excel(ws.cell(linha_cbm, 9), "")
+
+    _atribuir_texto_excel(ws.cell(linha_ctns, 3), "CTNS TOTAL")
+    _atribuir_texto_excel(ws.cell(linha_ctns, 6), "Shipping:")
+    _atribuir_texto_excel(ws.cell(linha_ctns, 7), "")
+    _atribuir_texto_excel(ws.cell(linha_ctns, 8), "TOTAL:")
+    ws.cell(linha_ctns, 9).value = subtotal
+
+    ws.merge_cells(start_row=linha_rodape, start_column=1, end_row=linha_rodape, end_column=4)
+    ws.merge_cells(start_row=linha_rodape, start_column=5, end_row=linha_rodape, end_column=8)
+    moeda = str(lista.get("currency") or "").strip()
+    incoterm = str(lista.get("incoterm") or "").strip()
+    rodape_condicoes = "\n".join(
+        texto
+        for texto in (
+            f"Incoterms: {incoterm}" if incoterm else "",
+            f"Payment Currency: {moeda}" if moeda else "",
+        )
+        if texto
+    )
+    _atribuir_texto_excel(ws.cell(linha_rodape, 1), rodape_condicoes)
+    _atribuir_texto_excel(ws.cell(linha_rodape, 5), "")
+    _atribuir_texto_excel(ws.cell(linha_rodape, 9), "Company stamp and signature")
+    ws.row_dimensions[linha_rodape].height = 101.25
 
     for coluna, largura in {
-        "A": 7,
-        "B": 17,
-        "C": 17,
-        "D": 24,
-        "E": 24,
-        "F": 20,
-        "G": 14,
-        "H": 15,
-        "I": 17,
+        "A": 6,
+        "B": 15.63,
+        "C": 15.88,
+        "D": 14.38,
+        "E": 27.75,
+        "F": 18.25,
+        "G": 13,
+        "H": 13.13,
+        "I": 12.38,
     }.items():
         ws.column_dimensions[coluna].width = largura
 
-    if getattr(wb, "calculation", None) is not None:
-        wb.calculation.fullCalcOnLoad = True
-        wb.calculation.forceFullCalc = True
-        wb.calculation.calcMode = "auto"
+    for linha in range(1, linha_rodape + 1):
+        for coluna in range(1, 10):
+            celula = ws.cell(linha, coluna)
+            celula.border = borda
+            celula.font = fonte_base
+            celula.alignment = alinhamento_centro
+
+    ws["A1"].font = Font(name="Arial", size=11, bold=True, color="000000")
+    ws["A2"].font = fonte_negrito
+    for endereco in ("C3", "E3", "A4", "F4", "A7"):
+        ws[endereco].font = fonte_negrito
+    for coluna in range(1, 10):
+        ws.cell(8, coluna).font = fonte_negrito
+    for linha in range(primeira_linha_item, primeira_linha_resumo):
+        for coluna in range(1, 10):
+            ws.cell(linha, coluna).font = fonte_negrito
+    for linha in range(primeira_linha_resumo, linha_rodape + 1):
+        for coluna in range(1, 10):
+            ws.cell(linha, coluna).font = fonte_negrito
+    ws.cell(linha_peso_liquido, 7).number_format = "#,##0"
+    ws.cell(linha_peso_liquido, 9).number_format = '"US$"#,##0.00'
+    ws.cell(linha_ctns, 9).number_format = '"US$"#,##0.00'
+    ws.print_area = f"A1:I{linha_rodape}"
 
     buffer = io.BytesIO()
     wb.save(buffer)
