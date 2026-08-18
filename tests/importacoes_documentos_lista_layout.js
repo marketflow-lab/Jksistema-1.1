@@ -28,7 +28,13 @@ if (!(commercialPosition > documentsPosition && packingPosition > commercialPosi
 const requiredSnippets = [
     '.acoes-lista-coluna {',
     '.documentos-lista-cards {',
-    'grid-template-columns: repeat(2, minmax(0, 1fr));',
+    'grid-template-columns: repeat(2, max-content);',
+    'justify-content: end;',
+    'align-self: flex-end;',
+    'width: auto;',
+    'min-height: 22px;',
+    'padding: 3px 6px;',
+    'font-size: 0.62rem;',
     '.documento-lista-card--commercial {',
     '.documento-lista-card--packing {',
     'aria-label="Documentos da lista"',
@@ -42,7 +48,7 @@ for (const snippet of requiredSnippets) {
 }
 
 if (!/@media \(max-width: 760px\)[\s\S]*\.acoes-direita\s*\{[\s\S]*flex-direction:\s*column;[\s\S]*\.acoes-lista-coluna\s*\{[\s\S]*width:\s*100%;/.test(html)) {
-    throw new Error('Os cards de documentos devem se reorganizar na largura total em telas pequenas');
+    throw new Error('A coluna de acoes deve se reorganizar na largura total em telas pequenas');
 }
 
 const inlineScripts = [...html.matchAll(/<script(?: [^>]*)?>([\s\S]*?)<\/script>/gi)]
