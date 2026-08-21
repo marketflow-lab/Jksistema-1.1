@@ -178,6 +178,9 @@
         const fragment = document.createDocumentFragment();
         lista.forEach(item => {
             const row = document.createElement('tr');
+            row.className = 'produto-row-editavel';
+            row.dataset.sku = String(item.sku || '').trim();
+            row.title = row.dataset.sku ? `Editar SKU ${core.formatarSkuExibicao(row.dataset.sku)}` : '';
             row.innerHTML = state.colunasTabela.map(coluna =>
                 `<td class="${coluna === 'foto' ? 'foto-td' : ''}">${core.renderConteudoCelula(coluna, item)}</td>`
             ).join('');
@@ -188,6 +191,32 @@
         renderPaginacao(listaCompleta.length);
     }
 
-    cadastro.produtosTabela = Object.freeze({ compararSku, renderTabela });
+    function produtoPorLinha(row) {
+        const sku = String(row && row.dataset && row.dataset.sku || '');
+        return state.produtos.find(item => String(item && item.sku || '') === sku) || null;
+    }
+
+    function tratarCliqueTabela(event) {
+        const link = event.target.closest && event.target.closest('.sku-edit-link');
+        if (link) {
+            const row = link.closest('tr[data-sku]');
+            const item = produtoPorLinha(row);
+            if (item) core.salvarProdutoParaEdicao(item);
+            return;
+        }
+        if (event.target.closest && event.target.closest('a, button, input, select, textarea, [role="button"]')) return;
+        const row = event.target.closest && event.target.closest('tr[data-sku]');
+        if (!row || !elements.tBody.contains(row)) return;
+        const item = produtoPorLinha(row);
+        if (item) core.abrirProdutoParaEdicao(item);
+    }
+
+    function vincularNavegacaoLinhas() {
+        if (elements.tBody.dataset.editNavigationBound === 'true') return;
+        elements.tBody.dataset.editNavigationBound = 'true';
+        elements.tBody.addEventListener('click', tratarCliqueTabela);
+    }
+
+    cadastro.produtosTabela = Object.freeze({ compararSku, renderTabela, tratarCliqueTabela, vincularNavegacaoLinhas });
     cadastro.components.add('produtos');
 })(window);

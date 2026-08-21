@@ -14,6 +14,7 @@
     const actions = cadastro.actions;
 
     cadastro.__mainInitialized = true;
+    tabela.vincularNavegacaoLinhas();
     elements.filtro.addEventListener('input', () => tabela.renderTabela());
     elements.filtroCustos.addEventListener('input', () => secondary.renderCustos(true));
     elements.lojaCustosSelect.addEventListener('change', () => secondary.renderCustos(true));

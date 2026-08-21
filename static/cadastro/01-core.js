@@ -99,9 +99,33 @@
         return nomeArquivo ? `/api/cadastro/foto-arquivo/${encodeURIComponent(nomeArquivo)}` : '';
     }
 
+    function urlEdicaoSku(sku) {
+        return `/cadastro_editar_item.html?sku=${encodeURIComponent(String(sku || '').trim())}`;
+    }
+
+    function salvarProdutoParaEdicao(item) {
+        const sku = String(item && item.sku || '').trim();
+        if (!sku) return false;
+        try {
+            global.localStorage.setItem('cadastro_editar_sku', sku);
+            global.localStorage.setItem('cadastro_editar_item', JSON.stringify(item || {}));
+        } catch (_error) {}
+        return true;
+    }
+
+    function abrirProdutoParaEdicao(item) {
+        if (!salvarProdutoParaEdicao(item)) return false;
+        global.location.href = urlEdicaoSku(item.sku);
+        return true;
+    }
+
     function renderConteudoCelula(coluna, item) {
         if (coluna === 'custo' || coluna === 'preco') return escaparHtml(formatarNumero(item[coluna]));
-        if (coluna === 'sku') return escaparHtml(formatarSkuExibicao(item[coluna]));
+        if (coluna === 'sku') {
+            const sku = String(item[coluna] || '').trim();
+            const href = urlEdicaoSku(sku);
+            return `<a class="sku-edit-link" href="${escaparHtml(href)}" data-sku="${escaparHtml(sku)}">${escaparHtml(formatarSkuExibicao(sku))}</a>`;
+        }
         if (coluna === 'foto') {
             const fotoUrl = obterUrlFoto(item[coluna]);
             if (!fotoUrl) return '<span class="foto-empty">Sem foto</span>';
@@ -140,9 +164,10 @@
     }
 
     cadastro.core = Object.freeze({
-        construirColunas, escaparHtml, formatarNumero, formatarSkuExibicao,
+        abrirProdutoParaEdicao, construirColunas, escaparHtml, formatarNumero, formatarSkuExibicao,
         normalizarBuscaSku, normalizarBuscaTexto, normalizarLegendaColuna, obterClientId,
-        obterNomeProdutoCadastro, renderConteudoCelula, salvarLarguras, setStatus, splitLista,
+        obterNomeProdutoCadastro, renderConteudoCelula, salvarLarguras, salvarProdutoParaEdicao,
+        setStatus, splitLista, urlEdicaoSku,
     });
     cadastro.components.add('core');
 })(window);
