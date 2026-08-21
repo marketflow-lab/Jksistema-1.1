@@ -275,21 +275,31 @@ def verificar_trava_seguranca(ws, row_index, headers, username, client_id=None):
         return False, f"Erro seguranÃƒÆ’Ã‚Â§a: {e}"
 
 def carregar_usuarios_sheets():
-    firebase_primeiro = _env_config_bool(
-        ("JK_FIREBASE_USERS_FIRST", "FIREBASE_USERS_FIRST"),
-        default=False,
+    firebase_ativo = _firebase_deve_usar()
+    firebase_obrigatorio = _firebase_access_obrigatorio()
+    firebase_primeiro = firebase_ativo and (
+        firebase_obrigatorio
+        or _env_config_bool(
+            ("JK_FIREBASE_USERS_FIRST", "FIREBASE_USERS_FIRST"),
+            default=True,
+        )
     )
     if firebase_primeiro:
-        usuarios_firebase = _firebase_listar_usuarios(seed_if_empty=True) if _firebase_deve_usar() else None
+        usuarios_firebase = _firebase_listar_usuarios(seed_if_empty=not firebase_obrigatorio)
         if isinstance(usuarios_firebase, dict):
             return usuarios_firebase, None, []
+        if firebase_obrigatorio:
+            raise HTTPException(
+                status_code=503,
+                detail="Firebase indisponivel para autenticar usuarios.",
+            )
 
     usuarios_sql, headers_sql = _carregar_usuarios_sql()
     if usuarios_sql is not None:
         return usuarios_sql, None, headers_sql
 
-    if not firebase_primeiro:
-        usuarios_firebase = _firebase_listar_usuarios(seed_if_empty=True) if _firebase_deve_usar() else None
+    if firebase_ativo and not firebase_primeiro:
+        usuarios_firebase = _firebase_listar_usuarios(seed_if_empty=True)
         if isinstance(usuarios_firebase, dict):
             return usuarios_firebase, None, []
 
