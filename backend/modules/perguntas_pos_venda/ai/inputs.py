@@ -33,7 +33,6 @@ from .runtime import (
     _normalizar_ia_modelo_padrao,
     _perguntas_ia_intencao_agent,
     _perguntas_ia_limpar_resposta,
-    _perguntas_ia_resposta_fallback_invalida,
     resolve_runtime_adapter,
     _vertex_ai_headers_e_project,
     compact_json_structural,
@@ -625,8 +624,6 @@ def _perguntas_ia_chamar_agente_cloud(
     resposta_limpa = resolve_runtime_adapter("state", "clean_response", _perguntas_ia_limpar_resposta)(texto)
     if not resposta_limpa:
         raise PerguntasIARespostaIndisponivel("Agente Cloud nao retornou uma resposta para enviar ao comprador.")
-    if resolve_runtime_adapter("state", "invalid_fallback", _perguntas_ia_resposta_fallback_invalida)(resposta_limpa):
-        raise PerguntasIARespostaIndisponivel("Resposta de fallback da IA de perguntas bloqueada.")
     return resposta_limpa, origem
 
 def _ia_agent_endpoint_autorizar(request: Request) -> None:

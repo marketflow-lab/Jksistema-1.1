@@ -62,7 +62,7 @@ PUBLIC_SUBQUESTION_INTENTS = frozenset({
     "general",
     "post_sale",
 })
-PROMPT_VERSION = "jk_ml_customer_reply_codex_v11"
+PROMPT_VERSION = "jk_ml_customer_reply_codex_v12"
 SCHEMA_VERSION = "5.1"
 QUEUE_POLICY_VERSION = "jk_ppv_queue_v3"
 PROMPT_HASH = hashlib.sha256(
@@ -72,7 +72,7 @@ PROMPT_HASH = hashlib.sha256(
         "classification-contract-v3|continuity-repair-v1|typed-provider-failures|"
         "contextual-fallback-v1|response-policy-v5|compatibility-coverage-v1|"
         "compatibility-interface-evidence|seller-voice-v3|priority-queue-v3|"
-        "best-validated-draft-wins|subject-aware-safe-fallback|no-direct-publish"
+        "nonempty-ai-draft-preserved|human-approval-required|no-direct-publish"
     ).encode("utf-8")
 ).hexdigest()
 THREAD_IDLE_TTL_SECONDS = 30 * 24 * 60 * 60
@@ -1572,7 +1572,7 @@ def _complete_with_best_available(
     empty_completion_reason: str = "ai_response_unavailable",
     empty_warning: str = "A IA nao concluiu a resposta; foi gerado um rascunho seguro editavel.",
 ) -> dict[str, Any]:
-    """Finish a bounded research job with the safest partial draft available."""
+    """Finish a bounded research job while preserving any nonempty AI draft."""
 
     info_base = _runtime_info_base()
     client_id = str(job.get("client_id") or "default")
@@ -1599,15 +1599,6 @@ def _complete_with_best_available(
         return codex_assistant_storage.codex_assistant_customer_reply_job_save(info_base, client_id, current)
     if str(current.get("status") or "") == "completed" and isinstance(current.get("result"), dict):
         return current
-    if _public_classification_missing(current):
-        return _complete_without_draft(
-            current,
-            warning=(
-                "A classificacao estruturada ficou indisponivel; foi gerado um rascunho neutro com as informacoes disponiveis."
-            ),
-            completion_reason="ai_classification_unavailable",
-        )
-
     partial = current.get("last_partial_result") if isinstance(current.get("last_partial_result"), dict) else {}
     final_answer = str(answer or partial.get("resposta") or "").strip()
     if not final_answer:
@@ -1616,26 +1607,25 @@ def _complete_with_best_available(
                 final_answer = str(entry.get("answer") or "").strip()
                 break
     if not final_answer:
+        if _public_classification_missing(current):
+            return _complete_without_draft(
+                current,
+                warning=(
+                    "A classificacao estruturada ficou indisponivel; foi gerado um rascunho neutro com as informacoes disponiveis."
+                ),
+                completion_reason="ai_classification_unavailable",
+            )
         return _complete_without_draft(
             current,
             warning=empty_warning,
             completion_reason=empty_completion_reason,
         )
+    if completion_reason == "ai_response_preserved_unvalidated":
+        current["operational_failure_count"] = 0
 
     final_context = context if isinstance(context, dict) and context else partial.get("contexto")
     if not isinstance(final_context, dict):
         final_context = {}
-    if completion_reason == "evidence_insufficient_after_retry_limit" and not _safe_insufficient_draft(
-        final_answer,
-        final_context,
-    ):
-        return _complete_without_draft(
-            current,
-            warning=(
-                "A resposta original nao passou pela politica segura; foi gerado um rascunho neutro editavel."
-            ),
-            completion_reason="available_information_fallback",
-        )
     final_matrix = list(matrix or partial.get("evidence_status") or current.get("evidence_status") or [])
     final_warnings = _unique_warnings(
         warnings,
@@ -3739,41 +3729,16 @@ def _run_job(client_id: str, job_id: str) -> None:
             )
             return
         if not sufficient:
-            conditional_draft = _continuation_safe_partial_draft(job, context)
-            if conditional_draft:
-                _complete_with_best_available(
-                    job,
-                    answer=conditional_draft,
-                    context=context,
-                    matrix=matrix,
-                    warnings=warnings,
-                    draft_source="contextual_fallback",
-                    completion_reason="conditional_listing_evidence",
-                    deadline_reached=False,
-                )
-            elif (
-                int(job.get("evidence_attempt_count") or 0) >= MAX_EVIDENCE_ATTEMPTS
-                or _job_deadline_expired(job)
-                or int(job.get("attempt_count") or 0) >= MAX_TOTAL_ATTEMPTS
-            ):
-                _complete_with_best_available(
-                    job,
-                    answer=answer,
-                    context=context,
-                    matrix=matrix,
-                    warnings=warnings,
-                    completion_reason="evidence_insufficient_after_retry_limit",
-                )
-            else:
-                _persist_retry(
-                    job,
-                    answer=answer,
-                    context=context,
-                    matrix=matrix,
-                    warnings=warnings,
-                    error="evidencia_tecnica_insuficiente",
-                    retry_kind="evidence",
-                )
+            _complete_with_best_available(
+                job,
+                answer=answer,
+                context=context,
+                matrix=matrix,
+                warnings=warnings,
+                draft_source="ai",
+                completion_reason="ai_response_preserved_unvalidated",
+                deadline_reached=False,
+            )
             return
         job.update(
             {

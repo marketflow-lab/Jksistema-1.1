@@ -511,23 +511,27 @@ def test_v2_accepts_safe_available_information_draft_without_requesting_data(mon
     assert "app_validation_repaired" not in diagnostics[0]["result"]
 
 
-def test_v2_keeps_fail_closed_when_safe_partial_repair_is_still_unsafe(monkeypatch):
+def test_v2_preserves_ai_draft_without_validation_or_repair(monkeypatch):
+    original_answer = (
+        "O uso desta coroa em uma relação 2x9 com outra coroa não está confirmado. "
+        "Ela é uma coroa única Narrow Wide, com BCD 104 mm e 52 dentes."
+    )
     captured = _configure_v2_insufficient_draft_case(
         monkeypatch,
         "Sim, serve perfeitamente. Envie uma foto para confirmar.",
-        initial_answer="Sim, serve perfeitamente. Envie uma foto para confirmar.",
+        initial_answer=original_answer,
     )
 
-    with pytest.raises(agent.PerguntasIARespostaPoliticaInvalida) as exc_info:
-        agent._perguntas_ia_v2_gerar_resposta(
-            "tenant-test",
-            {
-                "store": "JK Pecas",
-                "question": {"text": "Essa coroa serve no pe de vela BCD 96?"},
-                "item": {},
-                "intent": {"categoria": "compatibility"},
-            },
-        )
+    answer, _model, diagnostics = agent._perguntas_ia_v2_gerar_resposta(
+        "tenant-test",
+        {
+            "store": "JK Pecas",
+            "question": {"text": "Essa coroa serve em uma relação 2x9?"},
+            "item": {},
+            "intent": {"categoria": "compatibility"},
+        },
+    )
 
-    assert captured["repair_calls"] == 1
-    assert "evidence_insufficient_safe_draft_required" in exc_info.value.violations
+    assert answer == original_answer
+    assert captured["repair_calls"] == 0
+    assert "app_validation_repaired" not in diagnostics[0]["result"]

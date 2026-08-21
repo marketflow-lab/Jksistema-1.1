@@ -515,9 +515,6 @@ def _perguntas_ia_v2_gerar_resposta(client_id: str, agent_input: dict) -> tuple[
     try:
         resultado, resposta, model_usado, client, perf_orq_t0 = _perguntas_ia_execucao_orquestrar(contexto)
         _perguntas_ia_atualizar_diagnostico(contexto, resultado, resposta, model_usado, client, perf_orq_t0)
-        if resolve_runtime_adapter("state", "invalid_fallback", _perguntas_ia_resposta_fallback_invalida)(resposta):
-            raise PerguntasIARespostaIndisponivel("Resposta de fallback da nova IA de perguntas bloqueada.")
-        resposta, model_usado = _perguntas_ia_validar_resposta(contexto, resultado, client, resposta, model_usado)
         _ia_agent_perguntas_log_perf(
             client_id, contexto["loja"], agent_input, "total", time.perf_counter() - contexto["started"],
             status="ok", modelo=model_usado, modo=ML_PERGUNTAS_IA_V2_MODO,

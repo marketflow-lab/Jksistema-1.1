@@ -1237,11 +1237,6 @@ def _perguntas_ia_enviar_resposta_ml(
         raise HTTPException(status_code=400, detail="ID da pergunta nao informado.")
     if not texto:
         raise HTTPException(status_code=400, detail="Resposta vazia.")
-    if _perguntas_ia_resposta_fallback_invalida(texto):
-        raise HTTPException(
-            status_code=400,
-            detail="Resposta de fallback da IA bloqueada. Gere uma nova resposta antes de enviar ao comprador.",
-        )
     resp, cfg = _ml_api_request(
         client_id,
         loja,

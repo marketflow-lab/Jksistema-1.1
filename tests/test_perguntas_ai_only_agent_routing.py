@@ -124,10 +124,10 @@ def test_response_policy_v5_answers_first_and_requests_only_when_necessary() -> 
     assert "Evite solicitar dados" in policy
 
 
-def test_codex_prompt_v11_changes_hash_with_compatible_result_fields() -> None:
+def test_codex_prompt_v12_changes_hash_with_compatible_result_fields() -> None:
     from backend.services import perguntas_pos_venda_codex as codex
 
-    assert codex.PROMPT_VERSION == "jk_ml_customer_reply_codex_v11"
+    assert codex.PROMPT_VERSION == "jk_ml_customer_reply_codex_v12"
     assert codex.QUEUE_POLICY_VERSION == "jk_ppv_queue_v3"
     assert codex.SCHEMA_VERSION == "5.1"
     assert len(codex.PROMPT_HASH) == 64

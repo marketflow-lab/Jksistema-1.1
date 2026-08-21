@@ -261,7 +261,7 @@ def test_job_runs_to_versioned_approval_and_reuses_subject_thread(tmp_path, monk
     assert persisted_revision["subquestions"] == []
 
 
-def test_missing_ai_subquestions_fails_safe_without_assuming_general(tmp_path, monkeypatch):
+def test_missing_ai_subquestions_does_not_replace_explicit_ai_answer(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
     monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
     monkeypatch.setattr(orchestrator, "_schedule_retry_timer", lambda job: None)
@@ -288,31 +288,21 @@ def test_missing_ai_subquestions_fails_safe_without_assuming_general(tmp_path, m
     ):
         orchestrator._run_job("cliente", created["job_id"])
 
-    waiting = orchestrator.get_job("cliente", created["job_id"])
+    completed = orchestrator.get_job("cliente", created["job_id"])
     stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
         str(tmp_path), "cliente", created["job_id"]
     )
-    partial = stored["last_partial_result"]
-    assert waiting["status"] == "waiting_retry"
-    assert waiting["subquestions"] == []
-    assert waiting["data_sufficient"] is False
-    assert partial["evidence_status"] == []
-    assert partial["data_sufficient"] is False
-    assert partial["publish_attempted"] is False
-    assert not any("revisão humana" in warning for warning in partial["warnings"])
-
-    stored["deadline_at_epoch"] = time.time() - 1
-    codex_assistant_storage.codex_assistant_customer_reply_job_save(
-        str(tmp_path), "cliente", stored
-    )
-    completed = orchestrator.get_job("cliente", created["job_id"])
     assert completed["status"] == "completed"
     assert completed["success"] is True
+    assert completed["subquestions"] == []
+    assert completed["data_sufficient"] is False
     assert completed["blocked_without_draft"] is False
-    assert completed["result"]["resposta"]
+    assert completed["result"]["resposta"] == "Há estoque e o prazo está no anúncio."
     assert completed["result"]["requires_approval"] is True
     assert completed["review_required"] is False
-    assert completed["completion_reason"] == "ai_classification_unavailable"
+    assert completed["completion_reason"] == "ai_response_preserved_unvalidated"
+    assert completed["draft_source"] == "ai"
+    assert "last_partial_result" not in stored
     assert completed["deadline_seconds"] == orchestrator.PUBLIC_RESEARCH_DEADLINE_SECONDS
     assert completed["can_cancel"] is False
     assert completed["proposal_hash"]
@@ -359,7 +349,7 @@ def test_frontend_uses_async_job_polling():
     assert "req.async_mode" in post_sale_js
 
 
-def test_insufficient_question_research_retries_once_then_can_be_sufficient(tmp_path, monkeypatch):
+def test_insufficient_question_research_preserves_first_ai_answer(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
     monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
     monkeypatch.setattr(orchestrator, "_schedule_retry_timer", lambda job: None)
@@ -404,40 +394,15 @@ def test_insufficient_question_research_retries_once_then_can_be_sufficient(tmp_
     ):
         orchestrator._run_job("cliente", created["job_id"])
 
-    waiting = orchestrator.get_job("cliente", created["job_id"])
-    assert waiting["status"] == "waiting_retry"
-    assert waiting["queued"] is True
-    assert waiting["data_sufficient"] is False
-    assert waiting["retry_policy"] == "bounded"
-    assert waiting["deadline_seconds"] == orchestrator.PUBLIC_RESEARCH_DEADLINE_SECONDS
-    assert waiting["deadline_at_epoch"] > time.time()
-    assert waiting["attempt_count"] == 1
-    assert waiting["evidence_attempt_count"] == 1
-    assert waiting["can_cancel"] is True
-    assert waiting["status_message"]
-    assert waiting["retry_count"] == 1
-    assert waiting["research_history"][0]["missing_fields"] == [
-        "authoritative_technical_evidence",
-        "pressure",
-    ]
-    assert waiting["result"] == {}
-
-    stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
-        str(tmp_path), "cliente", created["job_id"]
-    )
-    stored.update({"status": "queued", "next_retry_at_epoch": 0.0})
-    codex_assistant_storage.codex_assistant_customer_reply_job_save(str(tmp_path), "cliente", stored)
-    with patch.object(
-        orchestrator,
-        "_load_question_context",
-        return_value=("Essa bomba e compativel com a Evoque SE 2.0 gasolina 2017 e trabalha a 3 bar.", _official_context()),
-    ):
-        orchestrator._run_job("cliente", created["job_id"])
-
     completed = orchestrator.get_job("cliente", created["job_id"])
     assert completed["status"] == "completed"
-    assert completed["data_sufficient"] is True
-    assert "3 bar" in completed["result"]["resposta"]
+    assert completed["data_sufficient"] is False
+    assert completed["attempt_count"] == 1
+    assert completed["evidence_attempt_count"] == 1
+    assert completed["result"]["resposta"] == "Para confirmar, informe o tipo de rosca."
+    assert completed["completion_reason"] == "ai_response_preserved_unvalidated"
+    assert completed["draft_source"] == "ai"
+    assert completed["result"]["requires_approval"] is True
     assert completed["result"]["publish_attempted"] is False
 
 
@@ -694,18 +659,18 @@ def test_evoque_continuation_reaches_evidence_and_finishes_safe_partial_in_one_c
     assert completed["attempt_count"] == 1
     assert completed["evidence_attempt_count"] == 1
     assert completed["operational_failure_count"] == 0
-    assert completed["completion_reason"] == "conditional_listing_evidence"
+    assert completed["completion_reason"] == "ai_response_preserved_unvalidated"
     assert completed["data_sufficient"] is False
     assert completed["completed_with_partial"] is True
-    assert completed["draft_source"] == "contextual_fallback"
-    deterministic_answer = completed["result"]["resposta"]
-    assert deterministic_answer != answer
-    assert "Evoque 2015/2016" in deterministic_answer
+    assert completed["draft_source"] == "ai"
+    preserved_answer = completed["result"]["resposta"]
+    assert preserved_answer == answer
+    assert "Evoque 2015/2016" in preserved_answer
     for code in ("AH22-9H307-AB", "LR057235", "LR044427", "LR026192"):
-        assert code in deterministic_answer
+        assert code in preserved_answer
 
 
-def test_continuation_replaces_free_model_claims_with_deterministic_listing_draft(
+def test_continuation_preserves_free_model_claims_without_deterministic_replacement(
     tmp_path,
     monkeypatch,
 ):
@@ -773,12 +738,11 @@ def test_continuation_replaces_free_model_claims_with_deterministic_listing_draf
     final_answer = completed["result"]["resposta"]
     assert completed["status"] == "completed"
     assert completed["evidence_attempt_count"] == 1
-    assert completed["completion_reason"] == "conditional_listing_evidence"
-    assert completed["draft_source"] == "contextual_fallback"
-    assert "Evoque 2015/2016" in final_answer
-    assert "Hilux" not in final_answer
-    assert "2020" not in final_answer
-    assert "FAKE999999" not in final_answer
+    assert completed["completion_reason"] == "ai_response_preserved_unvalidated"
+    assert completed["draft_source"] == "ai"
+    assert final_answer == unsafe_answer
+    assert "Hilux 2020" in final_answer
+    assert "FAKE999999" in final_answer
     assert scheduled_retries == []
 
 
@@ -1722,7 +1686,7 @@ def test_legacy_completed_job_without_new_fields_remains_readable_but_not_approv
     assert orchestrator.job_contract_current("cliente", "job-legacy-incomplete") is False
 
 
-def test_active_v10_job_is_quarantined_after_v11_contract_change(tmp_path, monkeypatch):
+def test_active_v10_job_is_quarantined_after_v12_contract_change(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
     legacy_active = {
         "job_id": "job-v10-active",
@@ -1753,7 +1717,7 @@ def test_active_v10_job_is_quarantined_after_v11_contract_change(tmp_path, monke
     assert quarantined["blocked_without_draft"] is True
 
 
-def test_elapsed_public_research_keeps_same_job_and_partial_for_next_retry(tmp_path, monkeypatch):
+def test_elapsed_public_research_preserves_same_job_and_ai_answer(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
     monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
     monkeypatch.setattr(orchestrator, "_schedule_retry_timer", lambda job: None)
@@ -1803,18 +1767,19 @@ def test_elapsed_public_research_keeps_same_job_and_partial_for_next_retry(tmp_p
     ):
         orchestrator._run_job("cliente", created["job_id"])
 
-    waiting = orchestrator.get_job("cliente", created["job_id"])
+    completed = orchestrator.get_job("cliente", created["job_id"])
     stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
         str(tmp_path), "cliente", created["job_id"]
     )
-    assert waiting["job_id"] == created["job_id"]
-    assert waiting["status"] == "waiting_retry"
-    assert waiting["queued"] is True
-    assert waiting["data_sufficient"] is False
-    assert waiting["deadline_reached"] is False
-    assert waiting["deadline_at_epoch"] > time.time()
-    assert stored["last_partial_result"]["resposta"] == partial_answer
-    assert stored["last_partial_result"]["publish_attempted"] is False
+    assert completed["job_id"] == created["job_id"]
+    assert completed["status"] == "completed"
+    assert completed["data_sufficient"] is False
+    assert completed["deadline_reached"] is False
+    assert completed["result"]["resposta"] == partial_answer
+    assert completed["completion_reason"] == "ai_response_preserved_unvalidated"
+    assert completed["draft_source"] == "ai"
+    assert stored["result"]["resposta"] == partial_answer
+    assert stored["result"]["publish_attempted"] is False
 
 
 def test_elapsed_current_job_completes_with_safe_partial_draft(tmp_path, monkeypatch):
@@ -1995,6 +1960,53 @@ def test_public_answer_limit_accepts_up_to_2000_characters(length, expected_leng
 
     assert len(answer) == expected_length
     assert answer.endswith("...") is truncated
+
+
+def test_manual_public_question_send_forwards_legacy_invalid_fallback_text(monkeypatch):
+    answer = "Nao consegui gerar a resposta completa agora; preserve este rascunho da IA."
+    cfg = {"marker": "cfg"}
+    captured = {}
+
+    monkeypatch.setattr(
+        perguntas_ml,
+        "_perguntas_ia_limpar_resposta",
+        lambda value: str(value or "").strip(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        perguntas_ml,
+        "_perguntas_ia_resposta_fallback_invalida",
+        lambda value: value == answer,
+        raising=False,
+    )
+
+    def request(client_id, store, current_cfg, method, url, **kwargs):
+        captured.update({
+            "client_id": client_id,
+            "store": store,
+            "method": method,
+            "url": url,
+            "json": kwargs.get("json"),
+            "timeout": kwargs.get("timeout"),
+        })
+        return SimpleNamespace(status_code=201, text="", json=lambda: {"id": "Q1"}), current_cfg
+
+    monkeypatch.setattr(perguntas_ml, "_ml_api_request", request, raising=False)
+
+    data, returned_cfg = perguntas_ml._perguntas_ia_enviar_resposta_ml(
+        "cliente", "Loja", cfg, "Q1", answer
+    )
+
+    assert captured == {
+        "client_id": "cliente",
+        "store": "Loja",
+        "method": "POST",
+        "url": "https://api.mercadolibre.com/answers",
+        "json": {"question_id": "Q1", "text": answer},
+        "timeout": 20,
+    }
+    assert data == {"id": "Q1"}
+    assert returned_cfg is cfg
 
 
 def test_post_sale_draft_remains_bounded_to_340_chars_and_three_sentences(monkeypatch):
