@@ -388,6 +388,7 @@
 </head>
 <body>
 
+<script src="/vendas/periodos-completos.js?v=20260819-vendas-meses-completos-v1"></script>
 <script>
     if (typeof verificarSessao === 'function' && !verificarSessao()) {
         // verificarSessao já redireciona quando necessário.
@@ -524,6 +525,7 @@
     const dataFim_param = params.get('data_fim') || '';
     const lojaAlvo = params.get('loja') || '';
     const unidadeNegocioAlvo = params.get('unidade_negocio') || '';
+    const periodoGraficoParam = params.get('periodo_grafico') || '';
     const veioDeVendas = document.referrer && document.referrer.includes('/vendas.html');
 
     const tHead = document.getElementById('tHead');
@@ -657,6 +659,7 @@
         const fim = `${ano}-${mes}-${String(ultimoDia).padStart(2,'0')}`;
         setDataRangeISO(ini, fim);
         atualizarPeriodoTexto();
+        marcarPeriodoGraficoManualSku();
         // setTimeout(0) garante que o flatpickr atualizou .value antes de ler getDataIniISO()
         setTimeout(() => {
             carregarUnidadesNegocioSku();
@@ -676,7 +679,12 @@
             onValueUpdate: () => atualizarPeriodoTexto(),
             onClose: () => {
                 limitarDataFinalAoHoje();
-                if (getDataIniISO() && getDataFimISO()) { atualizarPeriodoTexto(); carregarUnidadesNegocioSku(); carregarVendasSku(); }
+                if (getDataIniISO() && getDataFimISO()) {
+                    atualizarPeriodoTexto();
+                    marcarPeriodoGraficoManualSku();
+                    carregarUnidadesNegocioSku();
+                    carregarVendasSku();
+                }
             }
         });
         dateFimPicker = flatpickr(dataFimEl, {
@@ -686,7 +694,12 @@
             onValueUpdate: () => { limitarDataFinalAoHoje(); garantirOrdemPeriodo(); atualizarPeriodoTexto(); },
             onClose: () => {
                 limitarDataFinalAoHoje(); garantirOrdemPeriodo();
-                if (getDataIniISO() && getDataFimISO()) { atualizarPeriodoTexto(); carregarUnidadesNegocioSku(); carregarVendasSku(); }
+                if (getDataIniISO() && getDataFimISO()) {
+                    atualizarPeriodoTexto();
+                    marcarPeriodoGraficoManualSku();
+                    carregarUnidadesNegocioSku();
+                    carregarVendasSku();
+                }
             }
         });
     }
@@ -1156,6 +1169,30 @@
     let tipoGrafico = 'linha';
     let metricaGrafico = 'valor';
     let intervaloGrafico = 'dia';
+    let periodoGraficoSelecaoToken = 0;
+    let periodoGraficoAtalhoPendente = null;
+
+    function invalidarPeriodoGraficoPendenteSku() {
+        periodoGraficoSelecaoToken += 1;
+        periodoGraficoAtalhoPendente = null;
+    }
+
+    function marcarPeriodoGraficoManualSku() {
+        invalidarPeriodoGraficoPendenteSku();
+        periodoGrafico = 'manual';
+        salvarPreferenciaGraficoSku();
+        aplicarPreferenciaGraficoUI();
+        atualizarUrlPeriodoGraficoSku('');
+    }
+
+    function obterAssinaturaContextoPeriodoGraficoSku() {
+        return JSON.stringify([
+            String(lojaAlvo || ''),
+            String(unidadeNegocioSelect?.value || ''),
+            getDataIniISO(),
+            getDataFimISO()
+        ]);
+    }
 
     function chavePreferenciaGraficoSku() {
         const cid = clientId || obterClientId() || 'anon';
@@ -1178,14 +1215,20 @@
     function carregarPreferenciaGraficoSku() {
         try {
             const raw = localStorage.getItem(chavePreferenciaGraficoSku());
-            if (!raw) return;
-            const pref = JSON.parse(raw);
-            if (pref?.periodo) periodoGrafico = pref.periodo;
-            if (pref?.tipo) tipoGrafico = pref.tipo;
-            if (pref?.metrica) metricaGrafico = pref.metrica;
-            if (pref?.intervalo) intervaloGrafico = pref.intervalo;
+            if (raw) {
+                const pref = JSON.parse(raw);
+                if (pref?.periodo) periodoGrafico = pref.periodo;
+                if (pref?.tipo) tipoGrafico = pref.tipo;
+                if (pref?.metrica) metricaGrafico = pref.metrica;
+                if (pref?.intervalo) intervaloGrafico = pref.intervalo;
+            }
         } catch (_e) {
             // Ignora preferência inválida.
+        }
+        if (['3m', '6m', '1a', '2a', 'max'].includes(periodoGraficoParam)) {
+            periodoGrafico = periodoGraficoParam;
+        } else if (dataInicio && dataFim_param) {
+            periodoGrafico = 'manual';
         }
     }
 
@@ -1217,6 +1260,104 @@
                 btn.style.cursor = 'pointer';
             });
         }
+    }
+
+    async function obterLimitesComVendasServidorSku() {
+        try {
+            const qs = new URLSearchParams();
+            if (lojaAlvo) qs.set('loja', lojaAlvo);
+            if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
+                qs.set('unidade_negocio', unidadeNegocioSelect.value);
+            }
+            const sufixo = qs.toString() ? `?${qs.toString()}` : '';
+            const resposta = await fetchCancelable(`/api/vendas/limites${sufixo}`, {
+                headers: obterHeadersProtegidos()
+            });
+            if (!resposta.ok) return null;
+            const limites = await resposta.json();
+            if (
+                !/^\d{4}-\d{2}-\d{2}$/.test(String(limites?.inicio || ''))
+                || !/^\d{4}-\d{2}-\d{2}$/.test(String(limites?.fim || ''))
+            ) {
+                return null;
+            }
+            return limites;
+        } catch (_e) {
+            return null;
+        }
+    }
+
+    function atualizarUrlPeriodoGraficoSku(periodo) {
+        const qs = new URLSearchParams(window.location.search);
+        qs.set('data_inicio', getDataIniISO());
+        qs.set('data_fim', getDataFimISO());
+        if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
+            qs.set('unidade_negocio', unidadeNegocioSelect.value);
+        } else {
+            qs.delete('unidade_negocio');
+        }
+        if (['3m', '6m', '1a', '2a', 'max'].includes(periodo)) {
+            qs.set('periodo_grafico', periodo);
+        } else {
+            qs.delete('periodo_grafico');
+        }
+        const consulta = qs.toString();
+        const destino = `${window.location.pathname}${consulta ? `?${consulta}` : ''}${window.location.hash}`;
+        window.history.replaceState(null, '', destino);
+    }
+
+    async function aplicarPeriodoGraficoMesesCompletosSku(periodo, opcoes = {}) {
+        const tokenAtual = ++periodoGraficoSelecaoToken;
+        const assinaturaContexto = obterAssinaturaContextoPeriodoGraficoSku();
+        const hoje = opcoes.hoje instanceof Date ? opcoes.hoje : new Date();
+        const periodosCompletos = window.JKVendasPeriodosCompletos;
+        const periodoFallback = periodosCompletos.calcularPeriodoMesesCompletos('3m', hoje);
+        let periodoCompleto = periodosCompletos.calcularPeriodoMesesCompletos(periodo, hoje);
+
+        if (periodo === 'max') {
+            const limites = Object.prototype.hasOwnProperty.call(opcoes, 'limites')
+                ? opcoes.limites
+                : await obterLimitesComVendasServidorSku();
+            periodoCompleto = periodosCompletos.calcularPeriodoMaximoMesesCompletos(limites, hoje);
+        }
+        if (
+            tokenAtual !== periodoGraficoSelecaoToken
+            || periodoGrafico !== periodo
+            || assinaturaContexto !== obterAssinaturaContextoPeriodoGraficoSku()
+        ) {
+            return false;
+        }
+
+        if (!periodoCompleto) {
+            if (periodo === 'max') return null;
+            periodoCompleto = periodoFallback;
+        }
+        setDataRangeISO(periodoCompleto.inicio, periodoCompleto.fim);
+        atualizarPeriodoTexto();
+        atualizarUrlPeriodoGraficoSku(periodo);
+        aplicarPreferenciaGraficoUI();
+        salvarPreferenciaGraficoSku();
+        return true;
+    }
+
+    async function aplicarFallbackPeriodoGraficoCompletoSku() {
+        periodoGrafico = '3m';
+        return aplicarPeriodoGraficoMesesCompletosSku('3m');
+    }
+
+    async function reaplicarPeriodoGraficoAposMudancaFiltroSku() {
+        periodoGraficoAtalhoPendente = null;
+        const periodoAtual = periodoGrafico;
+        if (!['3m', '6m', '1a', '2a', 'max'].includes(periodoAtual)) {
+            invalidarPeriodoGraficoPendenteSku();
+            return true;
+        }
+
+        const resultado = await aplicarPeriodoGraficoMesesCompletosSku(periodoAtual);
+        if (resultado === null && periodoGrafico === periodoAtual && periodoAtual === 'max') {
+            return aplicarFallbackPeriodoGraficoCompletoSku();
+        }
+        return resultado;
     }
 
     function formatarLabelDataGrafico(label) {
@@ -1499,40 +1640,30 @@
 
     // Event listeners para controles de gráfico
     document.querySelectorAll('.grafico-btn[data-periodo]').forEach(btn => {
-        btn.addEventListener('click', function() {
-            document.querySelectorAll('.grafico-btn[data-periodo]').forEach(b => b.classList.remove('active'));
-            this.classList.add('active');
-            periodoGrafico = this.dataset.periodo;
-            salvarPreferenciaGraficoSku();
+        btn.addEventListener('click', async function() {
+            const periodoSelecionado = this.dataset.periodo;
+            if (periodoGraficoAtalhoPendente === periodoSelecionado) return;
+            const periodoAnterior = periodoGrafico;
+            periodoGrafico = periodoSelecionado;
 
-            // Calcular e aplicar datas correspondentes
-            const hoje = new Date();
-            let dataInicial;
-
-            if (periodoGrafico === '3m') {
-                dataInicial = new Date(hoje);
-                dataInicial.setDate(hoje.getDate() - 90);
-            } else if (periodoGrafico === '6m') {
-                dataInicial = new Date(hoje);
-                dataInicial.setDate(hoje.getDate() - 180);
-            } else if (periodoGrafico === '1a') {
-                dataInicial = new Date(hoje);
-                dataInicial.setDate(hoje.getDate() - 365);
-            } else if (periodoGrafico === '2a') {
-                dataInicial = new Date(hoje);
-                dataInicial.setDate(hoje.getDate() - 730);
-            } else if (periodoGrafico === 'max') {
-                dataInicial = new Date(hoje);
-                dataInicial.setFullYear(hoje.getFullYear() - 10);
-            } else {
-                dataInicial = new Date(hoje);
-                dataInicial.setDate(hoje.getDate() - 90);
+            periodoGraficoAtalhoPendente = periodoSelecionado;
+            let resultado;
+            try {
+                resultado = await aplicarPeriodoGraficoMesesCompletosSku(periodoSelecionado);
+            } finally {
+                if (periodoGraficoAtalhoPendente === periodoSelecionado) {
+                    periodoGraficoAtalhoPendente = null;
+                }
             }
-
-            // Atualizar inputs de data
-            dataIni.value = dataInicial.toISOString().split('T')[0];
-            dataFimEl.value = hoje.toISOString().split('T')[0];
-            atualizarPeriodoTexto();
+            if (resultado === null && periodoGrafico === periodoSelecionado) {
+                periodoGrafico = periodoAnterior || '3m';
+                salvarPreferenciaGraficoSku();
+                aplicarPreferenciaGraficoUI();
+                statusEl.className = 'status-bar';
+                statusEl.textContent = 'Não há meses completos disponíveis para o período Máximo.';
+                return;
+            }
+            if (resultado !== true) return;
 
             // Recarregar dados do SKU; o gráfico é carregado dentro do próprio fluxo.
             carregarVendasSku();
@@ -1628,12 +1759,21 @@
         });
     }
 
-    btnReload.addEventListener('click', () => { carregarUnidadesNegocioSku(); carregarVendasSku(); });
+    btnReload.addEventListener('click', async () => {
+        await carregarUnidadesNegocioSku();
+        const periodoAtualizado = await reaplicarPeriodoGraficoAposMudancaFiltroSku();
+        if (periodoAtualizado === false) return;
+        carregarVendasSku();
+    });
     btnTransferenciaFull.addEventListener('click', () => {
         if (!vendasTransferenciaFull.length) return;
         panelTransferenciaFull.classList.toggle('active');
     });
-    unidadeNegocioSelect.addEventListener('change', () => { carregarVendasSku(); });
+    unidadeNegocioSelect.addEventListener('change', async () => {
+        const periodoAtualizado = await reaplicarPeriodoGraficoAposMudancaFiltroSku();
+        if (periodoAtualizado === false) return;
+        carregarVendasSku();
+    });
 
     const btnVoltarVendas = document.getElementById('btnVoltarVendas');
     if (btnVoltarVendas) {
@@ -1667,7 +1807,11 @@
     carregarPreferenciaGraficoSku();
     aplicarPreferenciaGraficoUI();
     carregarLojasBotoes();
-    carregarUnidadesNegocioSku().finally(() => {
+    carregarUnidadesNegocioSku().finally(async () => {
+        if (['3m', '6m', '1a', '2a', 'max'].includes(periodoGraficoParam)) {
+            const periodoAtualizado = await reaplicarPeriodoGraficoAposMudancaFiltroSku();
+            if (periodoAtualizado === false) return;
+        }
         // Carregar automaticamente se houver período selecionado e SKU
         if (skuAlvo && (getDataIniISO() || dataInicio)) {
             carregarVendasSku();
@@ -1693,9 +1837,11 @@
     }
 
     function trocarLojaSku(novaLoja) {
+        invalidarPeriodoGraficoPendenteSku();
         const qs = new URLSearchParams(window.location.search);
         if (novaLoja && novaLoja !== '__todas') qs.set('loja', novaLoja);
         else qs.delete('loja');
+        qs.delete('unidade_negocio');
         const iniIso = getDataIniISO(), fimIso = getDataFimISO();
         if (iniIso) qs.set('data_inicio', iniIso);
         if (fimIso) qs.set('data_fim', fimIso);

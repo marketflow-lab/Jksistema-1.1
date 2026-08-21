@@ -412,8 +412,16 @@ async function carregarVendas(opcoes = {}) {
 
 filtroTexto.addEventListener('input', filtrar);
 unidadeNegocioSelect.addEventListener('change', () => {
+    let periodoAtualizadoPromise = Promise.resolve(true);
+    if (typeof reaplicarPeriodoGraficoAposMudancaFiltro === 'function') {
+        periodoAtualizadoPromise = reaplicarPeriodoGraficoAposMudancaFiltro();
+    } else if (typeof invalidarPeriodoGraficoPendente === 'function') {
+        invalidarPeriodoGraficoPendente();
+    }
     if (periodoApplyTimer) clearTimeout(periodoApplyTimer);
     periodoApplyTimer = setTimeout(async () => {
+        const periodoAtualizado = await periodoAtualizadoPromise;
+        if (periodoAtualizado === false) return;
         await carregarVendas({ retornoRapido: true });
         agendarSegundoPlano(() => carregarGrafico(), 120);
     }, 250);

@@ -13,6 +13,8 @@ let carregarGraficoToken = 0;
 let carregarGraficoController = null;
 let carregarGraficoPromise = null;
 let carregarGraficoRequestKey = '';
+let periodoGraficoSelecaoToken = 0;
+let periodoGraficoAtalhoPendente = null;
 let rankingSidebarModo = 'vendidos';
 let compararAnoPassado = false;
 const GRAFICO_ESTOQUE_LAYOUT_VERSION = 2;
@@ -1251,25 +1253,6 @@ function renderizarGraficoSkusComEstoque(
     });
 }
 
-function obterLimitesComVendas() {
-    let lista = Array.isArray(dados) ? dados : [];
-
-    if (lojaSelecionada && lojaSelecionada !== '__todas') {
-        lista = lista.filter(row => mesmaLoja(row.loja_conta, lojaSelecionada));
-    }
-    if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
-        lista = lista.filter(row => mesmaUnidade(row.unidade_negocio, unidadeNegocioSelect.value));
-    }
-
-    const datas = lista
-        .map(row => String(row.data || '').slice(0, 10))
-        .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d))
-        .sort();
-
-    if (!datas.length) return null;
-    return { inicio: datas[0], fim: datas[datas.length - 1] };
-}
-
 async function obterLimitesComVendasServidor() {
     try {
         const params = new URLSearchParams();
@@ -1294,48 +1277,177 @@ async function obterLimitesComVendasServidor() {
     }
 }
 
+function invalidarPeriodoGraficoPendente() {
+    periodoGraficoSelecaoToken += 1;
+    periodoGraficoAtalhoPendente = null;
+}
+
+function marcarPeriodoGraficoManual() {
+    invalidarPeriodoGraficoPendente();
+    periodoGrafico = 'manual';
+    salvarPreferenciaGrafico();
+    aplicarPreferenciaGraficoUI();
+}
+
+function obterAssinaturaContextoPeriodoGrafico() {
+    return JSON.stringify([
+        String(lojaSelecionada || ''),
+        String(unidadeNegocioSelect?.value || ''),
+        getDataIniISO(),
+        getDataFimISO()
+    ]);
+}
+
+function removerDatasExplicitasUrlAposAtalho() {
+    try {
+        const params = new URLSearchParams(window.location.search);
+        if (!params.has('data_inicio') && !params.has('data_fim')) return;
+        params.delete('data_inicio');
+        params.delete('data_fim');
+        const consulta = params.toString();
+        const destino = `${window.location.pathname}${consulta ? `?${consulta}` : ''}${window.location.hash}`;
+        window.history.replaceState(null, '', destino);
+    } catch (_e) {
+        // A persistência local ainda preserva o atalho se a URL não puder ser atualizada.
+    }
+}
+
+async function aplicarPeriodoGraficoMesesCompletos(periodo, opcoes = {}) {
+    const tokenAtual = ++periodoGraficoSelecaoToken;
+    const assinaturaContexto = obterAssinaturaContextoPeriodoGrafico();
+    const hoje = opcoes.hoje instanceof Date ? opcoes.hoje : new Date();
+    const periodosCompletos = window.JKVendasPeriodosCompletos;
+    const periodoFallback = periodosCompletos.calcularPeriodoMesesCompletos('3m', hoje);
+    let periodoCompleto = periodosCompletos.calcularPeriodoMesesCompletos(periodo, hoje);
+
+    if (periodo === 'max') {
+        const limites = Object.prototype.hasOwnProperty.call(opcoes, 'limites')
+            ? opcoes.limites
+            : await obterLimitesComVendasServidor();
+        periodoCompleto = periodosCompletos.calcularPeriodoMaximoMesesCompletos(limites, hoje);
+    }
+
+    if (
+        tokenAtual !== periodoGraficoSelecaoToken
+        || periodoGrafico !== periodo
+        || assinaturaContexto !== obterAssinaturaContextoPeriodoGrafico()
+    ) {
+        return false;
+    }
+
+    if (!periodoCompleto) {
+        if (periodo === 'max') return null;
+        periodoCompleto = periodoFallback;
+    }
+    sincronizarPeriodoTopo(periodoCompleto.inicio, periodoCompleto.fim);
+    periodoSelecionadoPeloUsuario = true;
+    const preferencia = { origem: 'atalho', periodo };
+    if (opcoes.recarregar === false) {
+        atualizarPeriodoTexto();
+        salvarPreferenciaPeriodoData(preferencia);
+    } else {
+        atualizarPeriodoComRecarregamento(true, preferencia);
+    }
+    aplicarPreferenciaGraficoUI();
+    salvarPreferenciaGrafico();
+    removerDatasExplicitasUrlAposAtalho();
+    return true;
+}
+
+async function aplicarFallbackPeriodoGraficoCompleto() {
+    periodoGrafico = '3m';
+    return aplicarPeriodoGraficoMesesCompletos('3m', { recarregar: false });
+}
+
+async function reaplicarPeriodoGraficoAposMudancaFiltro() {
+    periodoGraficoAtalhoPendente = null;
+    const periodoAtual = periodoGrafico;
+    if (!['3m', '6m', '1a', '2a', 'max'].includes(periodoAtual)) {
+        invalidarPeriodoGraficoPendente();
+        return true;
+    }
+
+    const resultado = await aplicarPeriodoGraficoMesesCompletos(periodoAtual, { recarregar: false });
+    if (resultado === null && periodoGrafico === periodoAtual && periodoAtual === 'max') {
+        return aplicarFallbackPeriodoGraficoCompleto();
+    }
+    return resultado;
+}
+
+async function normalizarPeriodoGraficoRestaurado() {
+    if (data_inicio_param && data_fim_param) return false;
+    if (periodoGraficoAtalhoPendente) return false;
+    const preferenciaRestaurada = carregarPreferenciaPeriodoData();
+    if (!preferenciaRestaurada?.inicio || !preferenciaRestaurada?.fim) return false;
+    if (
+        getDataIniISO() !== preferenciaRestaurada.inicio
+        || getDataFimISO() !== preferenciaRestaurada.fim
+    ) {
+        marcarPeriodoGraficoManual();
+        return false;
+    }
+
+    if (preferenciaRestaurada.origem === 'manual') {
+        if (periodoGrafico !== 'manual') marcarPeriodoGraficoManual();
+        return false;
+    }
+    if (
+        preferenciaRestaurada.origem === 'atalho'
+        && ['3m', '6m', '1a', '2a', 'max'].includes(preferenciaRestaurada.periodo)
+        && preferenciaRestaurada.periodo !== periodoGrafico
+    ) {
+        periodoGrafico = preferenciaRestaurada.periodo;
+        salvarPreferenciaGrafico();
+        aplicarPreferenciaGraficoUI();
+    }
+
+    const deveNormalizar = window.JKVendasPeriodosCompletos.deveNormalizarPreferenciaAtalho(
+        preferenciaRestaurada,
+        periodoGrafico
+    );
+    if (!deveNormalizar) {
+        const periodoFixoLegado = ['3m', '6m', '1a', '2a'].includes(periodoGrafico);
+        if (!preferenciaRestaurada.origem && periodoFixoLegado) {
+            marcarPeriodoGraficoManual();
+            salvarPreferenciaPeriodoData();
+        }
+        return false;
+    }
+
+    const periodoNormalizado = periodoGrafico;
+    const resultado = await aplicarPeriodoGraficoMesesCompletos(periodoNormalizado, {
+        recarregar: false
+    });
+    if (resultado === null && periodoGrafico === periodoNormalizado && periodoNormalizado === 'max') {
+        return aplicarFallbackPeriodoGraficoCompleto();
+    }
+    return resultado;
+}
+
 // Event listeners para controles de gráfico
 document.querySelectorAll('.grafico-btn[data-periodo]').forEach(btn => {
     btn.addEventListener('click', async function() {
-        document.querySelectorAll('.grafico-btn[data-periodo]').forEach(b => b.classList.remove('active'));
-        this.classList.add('active');
-        periodoGrafico = this.dataset.periodo;
-        salvarPreferenciaGrafico();
-        
-        // Calcular e aplicar datas correspondentes
-        const hoje = new Date();
-        let dataInicial;
-        
-        if (periodoGrafico === '3m') {
-            dataInicial = new Date(hoje);
-            dataInicial.setDate(hoje.getDate() - 90);
-        } else if (periodoGrafico === '6m') {
-            dataInicial = new Date(hoje);
-            dataInicial.setDate(hoje.getDate() - 180);
-        } else if (periodoGrafico === '1a') {
-            dataInicial = new Date(hoje);
-            dataInicial.setDate(hoje.getDate() - 365);
-        } else if (periodoGrafico === '2a') {
-            dataInicial = new Date(hoje);
-            dataInicial.setDate(hoje.getDate() - 730);
-        } else if (periodoGrafico === 'max') {
-            const limites = await obterLimitesComVendasServidor() || obterLimitesComVendas();
-            if (limites) {
-                sincronizarPeriodoTopo(limites.inicio, limites.fim);
-                atualizarPeriodoComRecarregamento(true);
-                return;
+        const periodoSelecionado = this.dataset.periodo;
+        if (periodoGraficoAtalhoPendente === periodoSelecionado) return;
+        const periodoAnterior = periodoGrafico;
+        periodoGrafico = periodoSelecionado;
+        periodoGraficoAtalhoPendente = periodoSelecionado;
+        let resultado;
+        try {
+            resultado = await aplicarPeriodoGraficoMesesCompletos(periodoSelecionado);
+        } finally {
+            if (periodoGraficoAtalhoPendente === periodoSelecionado) {
+                periodoGraficoAtalhoPendente = null;
             }
-            dataInicial = new Date(hoje);
-            dataInicial.setDate(hoje.getDate() - 90);
-        } else {
-            // Padrão: 3 meses
-            dataInicial = new Date(hoje);
-            dataInicial.setDate(hoje.getDate() - 90);
         }
-        
-        // Atualizar inputs de data
-        sincronizarPeriodoTopo(dataInicial.toISOString().split('T')[0], hoje.toISOString().split('T')[0]);
-        atualizarPeriodoComRecarregamento(true);
+        if (resultado === null && periodoGrafico === periodoSelecionado) {
+            periodoGrafico = periodoAnterior || '3m';
+            salvarPreferenciaGrafico();
+            aplicarPreferenciaGraficoUI();
+            statusEl.className = 'status-bar';
+            statusEl.textContent = 'Não há meses completos disponíveis para o período Máximo.';
+            return;
+        }
     });
 });
 

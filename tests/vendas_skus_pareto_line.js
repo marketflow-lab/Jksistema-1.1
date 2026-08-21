@@ -15,12 +15,12 @@ assert.match(source, /Pareto 80%: \$\{Math\.round\(paretoAtual\)\}\/\$\{paretoTo
 assert.match(source, /context\.dataset\.label/);
 const estoqueStart = source.indexOf('function renderizarGraficoEstoque(');
 const paretoStart = source.indexOf('function renderizarGraficoSkusComEstoque(');
-const nextFunction = source.indexOf('function obterLimitesComVendas(', paretoStart);
+const nextFunction = source.indexOf('async function obterLimitesComVendasServidor(', paretoStart);
 assert.ok(estoqueStart >= 0 && paretoStart > estoqueStart && nextFunction > paretoStart);
 assert.doesNotMatch(source.slice(estoqueStart, paretoStart), /paretoTotal/);
 assert.match(source.slice(paretoStart, nextFunction), /paretoTotal/);
 assert.match(htmlStatic, /SKUs com estoque e Pareto 80%/);
-assert.match(htmlStatic, /20260731-vendas-skus-pareto-v1/);
+assert.match(htmlStatic, /20260819-vendas-meses-completos-v1/);
 assert.strictEqual(htmlRoot, htmlStatic);
 
 console.log('vendas_skus_pareto_line: ok');
