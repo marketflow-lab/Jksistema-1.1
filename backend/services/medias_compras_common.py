@@ -331,6 +331,15 @@ LISTA_PEDIDO_STATUS_VALIDOS = {
     "Pedido cancelado",
 }
 
+LISTA_PEDIDO_STATUS_CONTABILIZADOS_TRANSITO = {
+    "Analisando orçamento",
+    "Pedido Aprovado",
+    "Pedido emitido",
+    "Em produção",
+    "Em trânsito",
+    "Em desembaraço",
+}
+
 
 def _corrigir_mojibake_texto(valor: str) -> str:
     texto = str(valor or "")
@@ -386,32 +395,57 @@ def _carregar_listas_pedidos(client_id: str) -> list[dict]:
         return []
 
 
-def _mapa_estoque_em_transito_por_sku(client_id: str, loja: str = "__todas") -> dict[str, float]:
+def _mapa_estoque_em_transito_detalhado_por_sku(
+    client_id: str,
+    loja: str = "__todas",
+) -> dict[str, dict[str, Any]]:
     listas = _carregar_listas_pedidos(client_id)
     loja_sel = str(loja or "").strip().lower() or "__todas"
-    mapa: dict[str, float] = {}
+    mapa: dict[str, dict[str, Any]] = {}
 
     for lista in listas:
-        if _normalizar_status_lista_pedido((lista or {}).get("status")) not in {
-            "Pedido Aprovado", "Pedido emitido", "Em produção", "Em trânsito", "Em desembaraço"
-        }:
+        lista = lista if isinstance(lista, dict) else {}
+        if _normalizar_status_lista_pedido(lista.get("status")) not in LISTA_PEDIDO_STATUS_CONTABILIZADOS_TRANSITO:
             continue
 
-        loja_lista = str((lista or {}).get("loja") or "").strip().lower() or "__todas"
+        loja_lista = str(lista.get("loja") or "").strip().lower() or "__todas"
         if loja_sel != "__todas" and loja_lista not in {loja_sel, "__todas"}:
             continue
 
-        for item in ((lista or {}).get("itens") or []):
+        quantidades_lista: dict[str, float] = {}
+        for item in (lista.get("itens") or []):
+            item = item if isinstance(item, dict) else {}
             sku = _normalizar_sku_mes(str((item or {}).get("SKU") or "").strip())
             if not sku:
                 continue
             try:
-                qtd = max(0.0, float((item or {}).get("Quantidade", 0) or 0))
+                qtd = max(0.0, float(item.get("Quantidade", 0) or 0))
             except Exception:
                 qtd = 0.0
-            mapa[sku] = mapa.get(sku, 0.0) + qtd
+            if qtd <= 0:
+                continue
+            quantidades_lista[sku] = quantidades_lista.get(sku, 0.0) + qtd
+
+        lista_id = str(lista.get("id") or "").strip()
+        nome_lista = str(lista.get("nome_lista") or "").strip() or "Sem nome"
+        for sku, quantidade in quantidades_lista.items():
+            detalhe = mapa.setdefault(sku, {"total": 0.0, "listas": []})
+            detalhe["total"] = float(detalhe.get("total", 0) or 0) + quantidade
+            detalhe["listas"].append({
+                "lista_id": lista_id,
+                "nome_lista": nome_lista,
+                "quantidade": quantidade,
+            })
 
     return mapa
+
+
+def _mapa_estoque_em_transito_por_sku(client_id: str, loja: str = "__todas") -> dict[str, float]:
+    detalhes = _mapa_estoque_em_transito_detalhado_por_sku(client_id, loja)
+    return {
+        sku: float((detalhe or {}).get("total", 0) or 0)
+        for sku, detalhe in detalhes.items()
+    }
 
 
 def _meses_sem_vender_desde(data_iso: str | None) -> int:
@@ -706,6 +740,7 @@ COMMON_EXPORTS = [
     "EMBALAGEM_LISTA_PEDIDO_KEY",
     "C54_HEADERS_LISTA_PEDIDO",
     "LISTA_PEDIDO_STATUS_VALIDOS",
+    "LISTA_PEDIDO_STATUS_CONTABILIZADOS_TRANSITO",
     "_to_float",
     "_normalizar_sku_mes",
     "_sku_lookup_keys_sync_ncm",
@@ -725,6 +760,7 @@ COMMON_EXPORTS = [
     "_salvar_bytes_cache_lista_pedido",
     "_normalizar_status_lista_pedido",
     "_carregar_listas_pedidos",
+    "_mapa_estoque_em_transito_detalhado_por_sku",
     "_mapa_estoque_em_transito_por_sku",
     "_meses_sem_vender_desde",
     "_mensagem_sem_venda",

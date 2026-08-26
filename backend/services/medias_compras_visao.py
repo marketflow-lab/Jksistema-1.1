@@ -276,8 +276,12 @@ async def api_medias_compras_visao(
                 # Se o estoque estiver invalido, nÃ£o quebra a tela; retorna com saldo zero.
                 saldo_por_sku = saldo_por_sku or {}
 
-        # Estoque jÃƒÂ¡ comprado e em trÃƒÂ¢nsito, vindo das listas com status aprovado.
-        transito_por_sku = _mapa_estoque_em_transito_por_sku(client_id, loja_sel)
+        # Estoque presente no fluxo de Importacoes, com detalhamento por lista.
+        transito_detalhado_por_sku = _mapa_estoque_em_transito_detalhado_por_sku(client_id, loja_sel)
+        transito_por_sku = {
+            sku: float((detalhe or {}).get("total", 0) or 0)
+            for sku, detalhe in transito_detalhado_por_sku.items()
+        }
         ultima_venda_por_sku = _mapa_ultima_venda_por_sku(client_id, loja_sel)
 
         # Dados do cadastro por SKU (foto e tÃƒÂ­tulo do anuncio).
@@ -350,6 +354,15 @@ async def api_medias_compras_visao(
             total_periodo = sum(float(vendas_mensais.get(m, 0) or 0) for m in meses_ref)
             saldo_atual = float(saldo_por_sku.get(sku, 0) or 0)
             estoque_em_transito = float(transito_por_sku.get(sku, 0) or 0)
+            listas_estoque_em_transito = [
+                {
+                    "lista_id": str((origem or {}).get("lista_id", "") or ""),
+                    "nome_lista": str((origem or {}).get("nome_lista", "") or "").strip() or "Sem nome",
+                    "quantidade": round(float((origem or {}).get("quantidade", 0) or 0), 2),
+                }
+                for origem in ((transito_detalhado_por_sku.get(sku, {}) or {}).get("listas") or [])
+                if float((origem or {}).get("quantidade", 0) or 0) > 0
+            ]
             ultima_venda = str(ultima_venda_por_sku.get(sku, "") or "")
             meses_sem_vender = _meses_sem_vender_desde(ultima_venda)
             aviso_sem_venda = _mensagem_sem_venda(meses_sem_vender)
@@ -387,6 +400,7 @@ async def api_medias_compras_visao(
                 "total_vendas_periodo": round(total_periodo, 2),
                 "saldo_atual_estoque": round(saldo_atual, 2),
                 "estoque_em_transito": round(estoque_em_transito, 2),
+                "estoque_em_transito_listas": listas_estoque_em_transito,
                 "posicao_estoque": float(reposicao.get("posicao_estoque", 0) or 0),
                 "media_mensal": float(reposicao.get("media_mensal", 0) or 0),
                 "lead_time_meses": float(reposicao.get("lead_time_meses", 6) or 6),

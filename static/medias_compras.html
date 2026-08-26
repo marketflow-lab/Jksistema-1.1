@@ -575,6 +575,83 @@
             overflow: hidden;
             text-overflow: ellipsis;
         }
+        .transito-quantidade {
+            display: inline-block;
+            color: inherit;
+            font: inherit;
+            font-weight: 700;
+        }
+        .transito-quantidade--soma {
+            cursor: help;
+            color: #a7f3d0;
+            border-bottom: 1px dotted currentColor;
+        }
+        .transito-quantidade--soma:focus-visible {
+            outline: 2px solid #4facfe;
+            outline-offset: 3px;
+            border-radius: 3px;
+        }
+        .transito-balao {
+            position: fixed;
+            left: 0;
+            top: 0;
+            z-index: 4000;
+            width: max-content;
+            min-width: 220px;
+            max-width: min(360px, calc(100vw - 24px));
+            padding: 10px 12px;
+            border: 1px solid #4facfe;
+            border-radius: 9px;
+            background: #101826;
+            color: #f8fafc;
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.42);
+            font-size: 0.78rem;
+            line-height: 1.3;
+            text-align: left;
+            white-space: normal;
+            pointer-events: none;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-4px);
+            transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s ease;
+        }
+        .transito-balao.visivel {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0);
+        }
+        .transito-balao-cabecalho {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            margin-bottom: 7px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid rgba(79, 172, 254, 0.28);
+            color: #9bd1ff;
+            font-weight: 800;
+        }
+        .transito-balao-lista {
+            display: grid;
+            gap: 5px;
+            margin: 0;
+            padding: 0;
+            list-style: none;
+        }
+        .transito-balao-item {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 12px;
+            align-items: start;
+        }
+        .transito-balao-nome {
+            overflow-wrap: anywhere;
+        }
+        .transito-balao-quantidade {
+            color: #a7f3d0;
+            font-weight: 800;
+            white-space: nowrap;
+        }
         th {
             background: linear-gradient(180deg, #1d2a3f 0%, #162033 100%);
             color: #b9e1ff;
@@ -1677,6 +1754,93 @@
 
     function numero(v) {
         return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    }
+
+    function normalizarDetalhesEstoqueEmTransito(item) {
+        const detalhes = Array.isArray(item && item.estoque_em_transito_listas)
+            ? item.estoque_em_transito_listas
+            : [];
+        return detalhes
+            .map((detalhe) => ({
+                nome_lista: String((detalhe && detalhe.nome_lista) || '').trim() || 'Sem nome',
+                quantidade: Number((detalhe && detalhe.quantidade) || 0)
+            }))
+            .filter((detalhe) => Number.isFinite(detalhe.quantidade) && detalhe.quantidade > 0);
+    }
+
+    function obterBalaoEstoqueEmTransito() {
+        let balao = document.getElementById('balaoEstoqueEmTransito');
+        if (balao) return balao;
+        balao = document.createElement('div');
+        balao.id = 'balaoEstoqueEmTransito';
+        balao.className = 'transito-balao';
+        balao.setAttribute('role', 'tooltip');
+        balao.setAttribute('aria-hidden', 'true');
+        document.body.appendChild(balao);
+        return balao;
+    }
+
+    function posicionarBalaoEstoqueEmTransito(alvo, balao) {
+        if (!alvo || !balao) return;
+        const margem = 12;
+        const espaco = 8;
+        const alvoRect = alvo.getBoundingClientRect();
+        const balaoRect = balao.getBoundingClientRect();
+        let left = alvoRect.left + (alvoRect.width / 2) - (balaoRect.width / 2);
+        left = Math.max(margem, Math.min(left, window.innerWidth - balaoRect.width - margem));
+        let top = alvoRect.bottom + espaco;
+        if (top + balaoRect.height > window.innerHeight - margem) {
+            top = Math.max(margem, alvoRect.top - balaoRect.height - espaco);
+        }
+        balao.style.left = Math.round(left) + 'px';
+        balao.style.top = Math.round(top) + 'px';
+    }
+
+    function mostrarBalaoEstoqueEmTransito(alvo, total, detalhes) {
+        if (!alvo || !Array.isArray(detalhes) || detalhes.length < 2) return;
+        const balao = obterBalaoEstoqueEmTransito();
+        const itensHtml = detalhes.map((detalhe) => (
+            '<li class="transito-balao-item">' +
+                '<span class="transito-balao-nome">' + escaparHtml(detalhe.nome_lista) + '</span>' +
+                '<strong class="transito-balao-quantidade">' + numero(detalhe.quantidade) + '</strong>' +
+            '</li>'
+        )).join('');
+        balao.innerHTML =
+            '<div class="transito-balao-cabecalho"><span>Em trânsito</span><strong>Total ' + numero(total) + '</strong></div>' +
+            '<ul class="transito-balao-lista">' + itensHtml + '</ul>';
+        balao.classList.add('visivel');
+        balao.setAttribute('aria-hidden', 'false');
+        window.requestAnimationFrame(() => posicionarBalaoEstoqueEmTransito(alvo, balao));
+    }
+
+    function ocultarBalaoEstoqueEmTransito() {
+        const balao = document.getElementById('balaoEstoqueEmTransito');
+        if (!balao) return;
+        balao.classList.remove('visivel');
+        balao.setAttribute('aria-hidden', 'true');
+    }
+
+    function renderizarCelulaEstoqueEmTransito(item) {
+        const total = Number((item && item.estoque_em_transito) || 0);
+        const detalhes = normalizarDetalhesEstoqueEmTransito(item);
+        const ehSoma = detalhes.length > 1;
+        const resumo = detalhes.map((detalhe) => detalhe.nome_lista + ': ' + numero(detalhe.quantidade)).join('; ');
+        const ariaLabel = 'Em trânsito: ' + numero(total) + (resumo ? '. ' + resumo : '');
+        const classeSoma = ehSoma ? ' transito-quantidade--soma' : '';
+        const foco = ehSoma ? ' tabindex="0"' : '';
+        return '<td class="num transito-cell"><span class="transito-quantidade' + classeSoma + '" aria-label="' + escaparHtml(ariaLabel) + '"' + foco + '>' + numero(total) + '</span></td>';
+    }
+
+    function configurarBalaoEstoqueEmTransito(alvo, total, detalhes) {
+        if (!alvo || !Array.isArray(detalhes) || detalhes.length < 2) return;
+        const mostrar = () => mostrarBalaoEstoqueEmTransito(alvo, total, detalhes);
+        alvo.addEventListener('mouseenter', mostrar);
+        alvo.addEventListener('mouseleave', ocultarBalaoEstoqueEmTransito);
+        alvo.addEventListener('focus', mostrar);
+        alvo.addEventListener('blur', ocultarBalaoEstoqueEmTransito);
+        alvo.addEventListener('keydown', (evento) => {
+            if (evento.key === 'Escape') ocultarBalaoEstoqueEmTransito();
+        });
     }
 
     function calcularCoberturaMeses(posicaoEstoque, mediaMensal) {
@@ -4166,7 +4330,7 @@
             tds.push('<td class="num col-total-periodo"><strong>' + numero(i.total_vendas_periodo || 0) + '</strong></td>');
             tds.push('<td class="num">' + numero(i.media_mensal || 0) + '</td>');
             tds.push('<td class="num col-estoque-fisico"><strong>' + numero(i.saldo_atual_estoque || 0) + '</strong></td>');
-            tds.push('<td class="num">' + numero(i.estoque_em_transito || 0) + '</td>');
+            tds.push(renderizarCelulaEstoqueEmTransito(i));
             tds.push('<td class="num col-posicao-estoque"><strong>' + numero(i.posicao_estoque || 0) + '</strong></td>');
             tds.push('<td class="num col-cobertura-estoque" title="Posição de estoque dividida pela VMM">' + formatarCoberturaMeses(i.posicao_estoque, i.media_mensal) + '</td>');
             const classeCompraPositiva = compraSugerida > 0 ? ' positiva' : '';
@@ -4181,6 +4345,12 @@
             }
 
             tr.innerHTML = tds.join('');
+            const detalhesTransito = normalizarDetalhesEstoqueEmTransito(i);
+            configurarBalaoEstoqueEmTransito(
+                tr.querySelector('.transito-quantidade--soma'),
+                Number(i.estoque_em_transito || 0),
+                detalhesTransito
+            );
             const botaoCompraSugerida = tr.querySelector('.compra-sugerida-editavel');
             if (botaoCompraSugerida) {
                 botaoCompraSugerida.addEventListener('click', () => {
