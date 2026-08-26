@@ -581,12 +581,12 @@
             font: inherit;
             font-weight: 700;
         }
-        .transito-quantidade--soma {
+        .transito-quantidade--detalhes {
             cursor: help;
             color: #a7f3d0;
             border-bottom: 1px dotted currentColor;
         }
-        .transito-quantidade--soma:focus-visible {
+        .transito-quantidade--detalhes:focus-visible {
             outline: 2px solid #4facfe;
             outline-offset: 3px;
             border-radius: 3px;
@@ -1801,7 +1801,7 @@
     }
 
     function mostrarBalaoEstoqueEmTransito(alvo, total, detalhes) {
-        if (!alvo || !alvo.isConnected || !Array.isArray(detalhes) || detalhes.length < 2) return;
+        if (!alvo || !alvo.isConnected || !Array.isArray(detalhes) || detalhes.length < 1) return;
         configurarEventosGlobaisBalaoEstoqueEmTransito();
         const balao = obterBalaoEstoqueEmTransito();
         const itensHtml = detalhes.map((detalhe) => (
@@ -1856,16 +1856,16 @@
     function renderizarCelulaEstoqueEmTransito(item) {
         const total = Number((item && item.estoque_em_transito) || 0);
         const detalhes = normalizarDetalhesEstoqueEmTransito(item);
-        const ehSoma = detalhes.length > 1;
+        const temDetalhes = detalhes.length > 0;
         const resumo = detalhes.map((detalhe) => detalhe.nome_lista + ': ' + numero(detalhe.quantidade)).join('; ');
         const ariaLabel = 'Em trânsito: ' + numero(total) + (resumo ? '. ' + resumo : '');
-        const classeSoma = ehSoma ? ' transito-quantidade--soma' : '';
-        const foco = ehSoma ? ' tabindex="0"' : '';
-        return '<td class="num transito-cell"><span class="transito-quantidade' + classeSoma + '" aria-label="' + escaparHtml(ariaLabel) + '"' + foco + '>' + numero(total) + '</span></td>';
+        const classeDetalhes = temDetalhes ? ' transito-quantidade--detalhes' : '';
+        const foco = temDetalhes ? ' tabindex="0"' : '';
+        return '<td class="num transito-cell"><span class="transito-quantidade' + classeDetalhes + '" aria-label="' + escaparHtml(ariaLabel) + '"' + foco + '>' + numero(total) + '</span></td>';
     }
 
     function configurarBalaoEstoqueEmTransito(alvo, total, detalhes) {
-        if (!alvo || !Array.isArray(detalhes) || detalhes.length < 2) return;
+        if (!alvo || !Array.isArray(detalhes) || detalhes.length < 1) return;
         const mostrar = () => mostrarBalaoEstoqueEmTransito(alvo, total, detalhes);
         alvo.addEventListener('mouseenter', mostrar);
         alvo.addEventListener('mouseleave', ocultarBalaoEstoqueEmTransito);
@@ -4389,7 +4389,7 @@
             tr.innerHTML = tds.join('');
             const detalhesTransito = normalizarDetalhesEstoqueEmTransito(i);
             configurarBalaoEstoqueEmTransito(
-                tr.querySelector('.transito-quantidade--soma'),
+                tr.querySelector('.transito-quantidade--detalhes'),
                 Number(i.estoque_em_transito || 0),
                 detalhesTransito
             );
