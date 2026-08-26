@@ -1733,6 +1733,10 @@
     let filtroSkuAtual = '';
     let listasPedidosResumo = [];
     let listaPedidoAtual = null;
+    let geracaoCarregamentoVisao = 0;
+    let alvoBalaoEstoqueEmTransitoAtual = null;
+    let frameBalaoEstoqueEmTransito = null;
+    let eventosGlobaisBalaoEstoqueEmTransitoConfigurados = false;
     try {
         largurasColunas = JSON.parse(localStorage.getItem(LS_COL_WIDTHS_KEY) || '{}');
     } catch (_e) {
@@ -1797,7 +1801,8 @@
     }
 
     function mostrarBalaoEstoqueEmTransito(alvo, total, detalhes) {
-        if (!alvo || !Array.isArray(detalhes) || detalhes.length < 2) return;
+        if (!alvo || !alvo.isConnected || !Array.isArray(detalhes) || detalhes.length < 2) return;
+        configurarEventosGlobaisBalaoEstoqueEmTransito();
         const balao = obterBalaoEstoqueEmTransito();
         const itensHtml = detalhes.map((detalhe) => (
             '<li class="transito-balao-item">' +
@@ -1810,14 +1815,42 @@
             '<ul class="transito-balao-lista">' + itensHtml + '</ul>';
         balao.classList.add('visivel');
         balao.setAttribute('aria-hidden', 'false');
-        window.requestAnimationFrame(() => posicionarBalaoEstoqueEmTransito(alvo, balao));
+        alvoBalaoEstoqueEmTransitoAtual = alvo;
+        if (frameBalaoEstoqueEmTransito !== null) {
+            window.cancelAnimationFrame(frameBalaoEstoqueEmTransito);
+        }
+        frameBalaoEstoqueEmTransito = window.requestAnimationFrame(() => {
+            frameBalaoEstoqueEmTransito = null;
+            if (
+                alvoBalaoEstoqueEmTransitoAtual !== alvo ||
+                !alvo.isConnected ||
+                !balao.classList.contains('visivel')
+            ) return;
+            posicionarBalaoEstoqueEmTransito(alvo, balao);
+        });
     }
 
     function ocultarBalaoEstoqueEmTransito() {
+        alvoBalaoEstoqueEmTransitoAtual = null;
+        if (frameBalaoEstoqueEmTransito !== null) {
+            window.cancelAnimationFrame(frameBalaoEstoqueEmTransito);
+            frameBalaoEstoqueEmTransito = null;
+        }
         const balao = document.getElementById('balaoEstoqueEmTransito');
         if (!balao) return;
         balao.classList.remove('visivel');
         balao.setAttribute('aria-hidden', 'true');
+    }
+
+    function configurarEventosGlobaisBalaoEstoqueEmTransito() {
+        if (eventosGlobaisBalaoEstoqueEmTransitoConfigurados) return;
+        eventosGlobaisBalaoEstoqueEmTransitoConfigurados = true;
+        window.addEventListener('scroll', ocultarBalaoEstoqueEmTransito, true);
+        window.addEventListener('resize', ocultarBalaoEstoqueEmTransito);
+        window.addEventListener('blur', ocultarBalaoEstoqueEmTransito);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState !== 'visible') ocultarBalaoEstoqueEmTransito();
+        });
     }
 
     function renderizarCelulaEstoqueEmTransito(item) {
@@ -3745,6 +3778,7 @@
     }
 
     function renderAbaAtual() {
+        ocultarBalaoEstoqueEmTransito();
         const titulo = document.getElementById('tituloTabela');
         const statusOcultados = document.getElementById('statusOcultados');
         const btnAbaOcultados = document.getElementById('btnAbaOcultados');
@@ -4156,18 +4190,22 @@
     }
 
     async function carregarVisao(meses) {
+        const geracaoAtual = ++geracaoCarregamentoVisao;
+        ocultarBalaoEstoqueEmTransito();
         if ([3, 6, 12].includes(Number(meses))) {
             periodoAtual = Number(meses);
         }
         atualizarBotoesPeriodo();
-        const lojaTexto = (lojaSelecionada && lojaSelecionada !== '__todas') ? (' da loja ' + lojaSelecionada) : ' de todas as lojas';
+        const periodoSolicitado = periodoAtual;
+        const lojaSolicitada = lojaSelecionada;
+        const lojaTexto = (lojaSolicitada && lojaSolicitada !== '__todas') ? (' da loja ' + lojaSolicitada) : ' de todas as lojas';
         setStatus('Carregando dados de vendas e estoque' + lojaTexto + '...');
 
         try {
             const params = new URLSearchParams();
-            params.set('meses', String(periodoAtual));
-            if (lojaSelecionada && lojaSelecionada !== '__todas') {
-                params.set('loja', lojaSelecionada);
+            params.set('meses', String(periodoSolicitado));
+            if (lojaSolicitada && lojaSolicitada !== '__todas') {
+                params.set('loja', lojaSolicitada);
             }
             const resp = await fetch('/api/medias-compras/visao?' + params.toString(), {
                 method: 'GET',
@@ -4176,12 +4214,14 @@
                 }
             });
 
+            if (geracaoAtual !== geracaoCarregamentoVisao) return;
             if (!resp.ok) {
                 const err = await resp.json().catch(() => ({}));
                 throw new Error(err.detail || 'Erro ao consultar visão de médias e compras.');
             }
 
             const data = await resp.json();
+            if (geracaoAtual !== geracaoCarregamentoVisao) return;
             colunasMesesAtuais = data.colunas_meses || [];
             itensVisaoAtual = data.itens || [];
             comprasSugeridasEditadas.clear();
@@ -4194,12 +4234,14 @@
             }
             setStatus('');
         } catch (e) {
+            if (geracaoAtual !== geracaoCarregamentoVisao) return;
             console.error('[Medias] Erro ao carregar:', e);
             setStatus('Falha ao carregar dados: ' + (e.message || e));
         }
     }
 
     function renderTabela(colunasMeses, itens, modo) {
+        ocultarBalaoEstoqueEmTransito();
         const tabela = document.getElementById('tblResultado');
         const head = document.getElementById('headRow');
 

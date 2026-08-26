@@ -69,10 +69,25 @@ def test_transito_respeita_loja_e_descarta_status_fora_do_fluxo(monkeypatch):
 
     detalhes = common._mapa_estoque_em_transito_detalhado_por_sku("tenant-a", "JK Pecas")
 
-    assert detalhes["10"]["total"] == pytest.approx(5)
+    assert detalhes["10"]["total"] == pytest.approx(2)
+    assert [item["nome_lista"] for item in detalhes["10"]["listas"]] == ["Loja selecionada"]
+
+
+def test_transito_todas_as_lojas_agrega_listas_de_todas_as_lojas(monkeypatch):
+    listas = [
+        _lista("jk", "Lista JK", "Analisando orçamento", "JK Pecas", [{"SKU": "10", "Quantidade": 2}]),
+        _lista("geral", "Lista geral", "Em produção", "__todas", [{"SKU": "10", "Quantidade": 3}]),
+        _lista("deckas", "Lista Deckas", "Em trânsito", "Deckas", [{"SKU": "10", "Quantidade": 4}]),
+    ]
+    monkeypatch.setattr(common, "_carregar_listas_pedidos", lambda _client_id: listas)
+
+    detalhes = common._mapa_estoque_em_transito_detalhado_por_sku("tenant-a", "__todas")
+
+    assert detalhes["10"]["total"] == pytest.approx(9)
     assert [item["nome_lista"] for item in detalhes["10"]["listas"]] == [
-        "Loja selecionada",
-        "Todas as lojas",
+        "Lista JK",
+        "Lista geral",
+        "Lista Deckas",
     ]
 
 

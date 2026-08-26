@@ -409,7 +409,7 @@ def _mapa_estoque_em_transito_detalhado_por_sku(
             continue
 
         loja_lista = str(lista.get("loja") or "").strip().lower() or "__todas"
-        if loja_sel != "__todas" and loja_lista not in {loja_sel, "__todas"}:
+        if loja_sel != "__todas" and loja_lista != loja_sel:
             continue
 
         quantidades_lista: dict[str, float] = {}
