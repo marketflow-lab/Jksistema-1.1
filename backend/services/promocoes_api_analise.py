@@ -93,6 +93,7 @@ PROMO_DESCONTO_ML_FONTE_KEY = "_jk_desconto_ml_fonte"
 PROMO_TARIFA_ML_EXATA_KEY = "_jk_tarifa_ml_exata"
 PROMO_TARIFA_ML_FONTE_KEY = "_jk_tarifa_ml_fonte"
 PROMO_TARIFA_ML_LIQUIDA_KEY = "_jk_tarifa_ml_liquida"
+PROMO_FINANCIAL_QUOTE_SHADOW_ENV = "JK_ML_FINANCIAL_QUOTE_SHADOW"
 PROMO_DESCONTO_ML_TARIFA_FIELDS = (
     "sale_fee_discount",
     "sale_fee_discount_amount",
@@ -821,6 +822,80 @@ def _promo_resolver_tarifa_ml_cobrada(
     return _parse_float_flex((fee_data or {}).get("ad_cost")), False, ""
 
 
+def _promo_cotacao_financeira_shadow_habilitada() -> bool:
+    valor = str(os.getenv(PROMO_FINANCIAL_QUOTE_SHADOW_ENV, "") or "").strip().lower()
+    return valor in {"1", "true", "yes", "sim", "on"}
+
+
+def _promo_contexto_preco_tarifa_shadow(
+    raw_promocao: dict,
+    fee_data: dict,
+    tarifa_fonte: Any,
+) -> Any:
+    fonte = str(tarifa_fonte or "").strip()
+    if fonte.startswith("seller_promotions."):
+        return _promo_preco_efetivo_raw(raw_promocao)
+    return (fee_data or {}).get("ad_cost_price_context")
+
+
+def _promo_observar_cotacao_financeira_shadow(
+    *,
+    raw_promocao: dict,
+    preco: Any,
+    custo: Any,
+    imposto_rate: Any,
+    tarifa: Any,
+    tarifa_exata: bool,
+    tarifa_fonte: Any,
+    fee_data: dict,
+    frete: Any,
+    frete_exato: bool,
+    shipping_data: dict,
+    resultado_legado: dict,
+    client_id: Any = None,
+    loja: Any = None,
+) -> None:
+    """Executa o comparador opcional sem conceder autoridade ao resultado shadow."""
+    if not _promo_cotacao_financeira_shadow_habilitada():
+        return
+
+    try:
+        from backend.services.promocoes_cotacao_shadow import observar_cotacao_promocao
+
+        observar_cotacao_promocao(
+            preco_efetivo=preco,
+            custo_produto=custo,
+            aliquota_imposto=imposto_rate,
+            tarifa_total=tarifa,
+            tarifa_exata=tarifa_exata,
+            tarifa_fonte=tarifa_fonte,
+            tarifa_contexto_preco=_promo_contexto_preco_tarifa_shadow(
+                raw_promocao,
+                fee_data,
+                tarifa_fonte,
+            ),
+            frete_vendedor=frete,
+            frete_exato=frete_exato,
+            frete_fonte=(
+                (shipping_data or {}).get("shipping_cost_retry_source")
+                or (shipping_data or {}).get("shipping_cost_source_path")
+                or ""
+            ),
+            frete_contexto_preco=(shipping_data or {}).get("shipping_price_context"),
+            promocao=copy.deepcopy(raw_promocao),
+            resultado_legado=copy.deepcopy(resultado_legado),
+            client_id=client_id,
+            loja=loja,
+        )
+    except Exception:
+        try:
+            from backend.services.promocoes_cotacao_shadow import registrar_erro_shadow
+
+            registrar_erro_shadow()
+        except Exception:
+            pass
+
+
 def _promo_calcular_contexto_financeiro_acao(
     raw_promocao: dict,
     preco_base: Any,
@@ -830,6 +905,8 @@ def _promo_calcular_contexto_financeiro_acao(
     shipping_data: dict,
     custo: Any,
     imposto_rate: Any,
+    client_id: Any = None,
+    loja: Any = None,
 ) -> dict:
     """Calcula o cenario que sera efetivamente enviado na participacao.
 
@@ -907,18 +984,33 @@ def _promo_calcular_contexto_financeiro_acao(
         "shipping_price_context",
     )
     frete = _parse_float_flex((shipping_data or {}).get("shipping_cost"))
-    if not tarifa_exata or tarifa is None or not frete_exato or frete is None:
-        return resultado
+    if tarifa_exata and tarifa is not None and frete_exato and frete is not None:
+        imposto = float(preco) * float(imposto_num)
+        liquido = float(preco) - float(custo_num) - float(frete) - imposto - float(tarifa)
+        resultado.update({
+            "tarifa": round(float(tarifa), 2),
+            "valor_liquido": round(liquido, 2),
+            "margem": (liquido * 100.0) / float(preco),
+            "exato": True,
+            "fonte": tarifa_fonte,
+        })
 
-    imposto = float(preco) * float(imposto_num)
-    liquido = float(preco) - float(custo_num) - float(frete) - imposto - float(tarifa)
-    resultado.update({
-        "tarifa": round(float(tarifa), 2),
-        "valor_liquido": round(liquido, 2),
-        "margem": (liquido * 100.0) / float(preco),
-        "exato": True,
-        "fonte": tarifa_fonte,
-    })
+    _promo_observar_cotacao_financeira_shadow(
+        raw_promocao=raw_promocao,
+        preco=preco,
+        custo=custo_num,
+        imposto_rate=imposto_num,
+        tarifa=tarifa,
+        tarifa_exata=tarifa_exata,
+        tarifa_fonte=tarifa_fonte,
+        fee_data=fee_data,
+        frete=frete,
+        frete_exato=bool(frete_exato),
+        shipping_data=shipping_data,
+        resultado_legado=resultado,
+        client_id=client_id,
+        loja=loja,
+    )
     return resultado
 
 
@@ -1132,6 +1224,8 @@ def _promo_obter_contexto_financeiro_acao(
         shipping_acao,
         custo,
         imposto_rate,
+        client_id=client_id,
+        loja=loja,
     ), cfg
 
 

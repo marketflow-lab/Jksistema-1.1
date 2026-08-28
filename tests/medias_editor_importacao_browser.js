@@ -206,6 +206,9 @@ const json = (route, body, status = 200) => route.fulfill({
     await page.locator('#addSkuValorInput').fill('5');
     await page.locator('#btnConfirmarAdicionarSku').click();
     await page.locator('#statusListaPedido', { hasText: 'Salvo com sucesso.' }).waitFor();
+    await page.waitForFunction(() => (
+      document.querySelector('#tblListaPedidoItens input[data-kind="sku"]')?.value === '002'
+    ));
     assert.strictEqual(await page.locator('#tblListaPedidoItens input[data-kind="sku"]').inputValue(), '002');
     assert.deepStrictEqual(errosPagina, []);
 

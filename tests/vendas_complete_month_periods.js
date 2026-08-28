@@ -225,8 +225,9 @@ assert.match(source, /function invalidarPeriodoGraficoPendente\(\) \{[\s\S]*peri
 assert.match(source, /periodoGraficoIncluiMesAtual\(\)\) params\.set\('incluir_previsao_mes_atual', 'true'\)/);
 assert.match(source, /previsaoMesAtual && intervaloGrafico === 'mes' && !usandoQuantidade/);
 assert.match(source, /isForecast: true/);
-assert.match(source, /Previsão linear de faturamento bruto/);
-assert.match(source, /subtitle:\s*\{\s*display: Boolean\(previsaoMesAtual\)/);
+assert.doesNotMatch(source, /Mês atual realizado até/);
+assert.doesNotMatch(source, /const resumoPrevisaoMesAtual/);
+assert.doesNotMatch(source, /subtitle:\s*\{\s*display: Boolean\(previsaoMesAtual\)/);
 assert.match(source, /indicesCompactos\[indicesCompactos\.length - 1\] = ultimoIndice/);
 assert.match(source, /estimativa, não valor realizado/);
 assert.match(aplicarPeriodoSource, /removerDatasExplicitasUrlAposAtalho\(\)/);
@@ -262,7 +263,7 @@ assert.match(htmlStatic, /periodos-completos\.js\?v=20260827-vendas-previsao-mes
 assert.match(htmlStatic, /periodo-cache\.js\?v=20260819-vendas-meses-completos-v1/);
 assert.match(htmlStatic, /sync\.js\?v=20260819-vendas-meses-completos-v1/);
 assert.match(htmlStatic, /dados-render\.js\?v=20260819-vendas-meses-completos-v1/);
-assert.match(htmlStatic, /grafico\.js\?v=20260827-vendas-previsao-mes-atual-v1/);
+assert.match(htmlStatic, /grafico\.js\?v=20260828-vendas-sem-resumo-previsao-v1/);
 assert.match(htmlStatic, /init\.js\?v=20260819-vendas-meses-completos-v1/);
 assert.match(htmlStatic, /data-periodo="3m" title="3 meses completos \+ mês atual" aria-label="3 meses completos \+ mês atual"/);
 assert.match(htmlStatic, /data-periodo="6m" title="6 meses completos \+ mês atual" aria-label="6 meses completos \+ mês atual"/);
@@ -284,7 +285,9 @@ assert.match(skuHtmlStatic, /previsaoMesAtual[\s\S]*intervaloGrafico === 'mes'[\
 assert.match(skuHtmlStatic, /isForecast: true/);
 assert.match(skuHtmlStatic, /const valorBruto = \(dataset\.data \|\| \[\]\)\[index\];\s*if \(valorBruto === null \|\| valorBruto === undefined \|\| valorBruto === ''\) return/);
 assert.match(skuHtmlStatic, /Previsão linear de faturamento bruto/);
-assert.match(skuHtmlStatic, /subtitle:\s*\{\s*display: Boolean\(previsaoMesAtual\)/);
+assert.doesNotMatch(skuHtmlStatic, /Mês atual realizado até/);
+assert.doesNotMatch(skuHtmlStatic, /const resumoPrevisaoMesAtual/);
+assert.doesNotMatch(skuHtmlStatic, /subtitle:\s*\{\s*display: Boolean\(previsaoMesAtual\)/);
 assert.match(skuHtmlStatic, /tokenAtual !== carregarGraficoSkuToken/);
 assert.match(skuHtmlStatic, /simulação linear:[^<]*dias corridos/);
 assert.match(skuHtmlStatic, /tokenAtual !== periodoGraficoSelecaoToken/);

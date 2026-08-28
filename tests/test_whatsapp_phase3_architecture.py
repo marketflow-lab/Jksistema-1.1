@@ -62,17 +62,24 @@ def test_component_dependencies_are_resolved_after_monkeypatch(monkeypatch) -> N
     persisted: list[tuple[str, dict]] = []
     state: dict = {}
 
+    def record_target_state(label: str):
+        def record(value: dict) -> None:
+            if value is state:
+                persisted.append((label, dict(value)))
+
+        return record
+
     monkeypatch.setattr(
         whatsapp_bridge,
         "_save_state",
-        lambda value: persisted.append(("first", dict(value))),
+        record_target_state("first"),
     )
     whatsapp_bridge._save_pending(state, "message-1", {"status": "queued"})
 
     monkeypatch.setattr(
         whatsapp_bridge,
         "_save_state",
-        lambda value: persisted.append(("second", dict(value))),
+        record_target_state("second"),
     )
     whatsapp_bridge._save_pending(state, "message-2", {"status": "queued"})
 

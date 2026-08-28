@@ -118,6 +118,7 @@ from selenium.webdriver.chrome.service import Service
 
 from backend.routers import (
     ConfiguracoesRouterConfig,
+    FinancialComparisonRouterConfig,
     FrontendRouterConfig,
     create_admin_usuarios_router,
     create_cadastro_router,
@@ -128,6 +129,7 @@ from backend.routers import (
     EtiquetasRouterConfig,
     create_etiquetas_router,
     create_favoritos_router,
+    create_financial_comparison_router,
     create_frontend_router,
     FullRouterConfig,
     create_full_router,
@@ -2283,6 +2285,92 @@ def _enriquecer_link_html(url: str, max_retries: int = 1, delay: int = 1):
 
 favoritos_endpoint_service.configure_favoritos_endpoints_runtime(sys.modules[__name__])
 app.include_router(create_favoritos_router())
+
+
+def _financial_comparison_load_ml_stores(client_id: str) -> list[dict]:
+    tenant = str(client_id or "").strip()
+    if (
+        not tenant
+        or len(tenant) > 180
+        or tenant in {".", ".."}
+        or any(
+            ord(char) < 32 or ord(char) == 127 or char in {"/", "\\", ":"}
+            for char in tenant
+        )
+    ):
+        return []
+    info_root = Path(PASTA_INFO).resolve()
+    snapshot_path = (info_root / tenant / "lojas_config.json").resolve()
+    if snapshot_path.parent.parent != info_root or not snapshot_path.is_file():
+        return []
+    try:
+        with snapshot_path.open("r", encoding="utf-8-sig") as handle:
+            snapshot = json.load(handle)
+    except Exception:
+        return []
+    if not isinstance(snapshot, list):
+        return []
+    stores = []
+    for store in snapshot:
+        if not isinstance(store, dict):
+            continue
+        integrations = store.get("integracoes")
+        ml_config = (
+            integrations.get("mercadolivre")
+            if isinstance(integrations, dict)
+            else None
+        )
+        if isinstance(ml_config, dict) and str(
+            ml_config.get("access_token") or ""
+        ).strip():
+            stores.append(store)
+    return stores
+
+
+def _financial_comparison_ml_readonly_request(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    method: str,
+    url: str,
+    *,
+    params=None,
+    timeout: int = 12,
+):
+    if str(method or "").strip().upper() != "GET":
+        raise ValueError("financial comparison allows GET requests only")
+    target = str(url or "").strip()
+    if not target.startswith("https://api.mercadolibre.com/"):
+        raise ValueError("financial comparison target is not allowlisted")
+    token = str((cfg or {}).get("access_token") or "").strip()
+    if not token:
+        raise ValueError("Mercado Livre token unavailable")
+    safe_timeout = min(max(int(timeout or 12), 1), 12)
+    response = _ml_http_request(
+        client_id,
+        loja,
+        token,
+        "GET",
+        target,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        },
+        params=params,
+        timeout=safe_timeout,
+        verify_ssl=True,
+    )
+    return response, dict(cfg or {})
+
+
+_financial_comparison_router_config = FinancialComparisonRouterConfig(
+    load_ml_stores=_financial_comparison_load_ml_stores,
+    ml_api_request=_financial_comparison_ml_readonly_request,
+    build_shipping_context=_ml_contexto_frete_item,
+)
+app.include_router(
+    create_financial_comparison_router(_financial_comparison_router_config)
+)
 
 # --- ENDPOINTS ETIQUETAS ---
 

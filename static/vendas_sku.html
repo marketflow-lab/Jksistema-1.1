@@ -1588,11 +1588,6 @@
         const labelMesPrevisao = anoPrevisao && Number(mesPrevisao) >= 1 && Number(mesPrevisao) <= 12
             ? `${mesesAbreviados[Number(mesPrevisao) - 1]}/${anoPrevisao}`
             : '';
-        const resumoPrevisaoMesAtual = previsaoMesAtual ? [
-            `Mês atual realizado até ${formatarDataCurtaPrevisao(previsaoMesAtual.data_referencia)}: ${formatCurrency(previsaoMesAtual.valor_realizado)}`,
-            `Previsão linear de faturamento bruto: ${formatCurrency(previsaoMesAtual.valor_projetado)}`
-        ] : [];
-
         const datasets = [
             {
                 label: usandoQuantidade ? `Vendas - SKU ${skuAlvo} (Qtd)` : `Vendas realizadas - SKU ${skuAlvo} (R$)`,
@@ -1697,13 +1692,6 @@
                 responsive: true,
                 maintainAspectRatio: true,
                 plugins: {
-                    subtitle: {
-                        display: Boolean(previsaoMesAtual),
-                        text: resumoPrevisaoMesAtual,
-                        color: '#fbbf24',
-                        padding: { bottom: 10 },
-                        font: { size: 12, weight: '700' }
-                    },
                     legend: {
                         display: true,
                         labels: {

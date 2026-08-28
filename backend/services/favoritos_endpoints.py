@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -35,6 +36,8 @@ FAVORITOS_ENRIQUECIMENTO_LOCK = threading.RLock()
 FAVORITOS_ENRIQUECIMENTO_SEMAPHORES: dict[str, threading.BoundedSemaphore] = {}
 FAVORITOS_ENRIQUECIMENTO_TIMEOUT_S = 40.0
 FAVORITOS_ENRIQUECIMENTO_PRELOAD_TIMEOUT_S = 15.0
+FAVORITOS_FINANCIAL_QUOTE_SHADOW_ENV = "JK_ML_FINANCIAL_QUOTE_SHADOW"
+FAVORITOS_FINANCIAL_QUOTE_SIDECAR = "_jk_financial_quote_shadow"
 _PROTECTED_GLOBALS = {
     "_TENANT_DEPENDENCY",
     "_PROTECTED_GLOBALS",
@@ -44,9 +47,100 @@ _PROTECTED_GLOBALS = {
     "FAVORITOS_ENRIQUECIMENTO_SEMAPHORES",
     "FAVORITOS_ENRIQUECIMENTO_TIMEOUT_S",
     "FAVORITOS_ENRIQUECIMENTO_PRELOAD_TIMEOUT_S",
+    "FAVORITOS_FINANCIAL_QUOTE_SHADOW_ENV",
+    "FAVORITOS_FINANCIAL_QUOTE_SIDECAR",
+    "_favoritos_anexar_contexto_cotacao_shadow",
+    "_favoritos_cotacao_shadow_habilitada",
+    "_favoritos_contexto_cotacao_shadow",
     "configure_favoritos_endpoints_runtime",
     "get_tenant_id",
 }
+
+
+def _favoritos_cotacao_shadow_habilitada() -> bool:
+    value = str(
+        os.getenv(FAVORITOS_FINANCIAL_QUOTE_SHADOW_ENV, "") or ""
+    ).strip().lower()
+    return value in {"1", "true", "yes", "sim", "on"}
+
+
+def _favoritos_contexto_cotacao_shadow(
+    item: dict,
+    price_info: dict,
+    fee_data: dict,
+    shipping_data: dict,
+) -> dict:
+    """Build an ephemeral allowlisted sidecar without item or seller identity."""
+
+    item = item if isinstance(item, dict) else {}
+    price_info = price_info if isinstance(price_info, dict) else {}
+    fee_data = fee_data if isinstance(fee_data, dict) else {}
+    shipping_data = shipping_data if isinstance(shipping_data, dict) else {}
+    shipping_info = item.get("shipping") if isinstance(item.get("shipping"), dict) else {}
+    promotion_fee_applied = fee_data.get("promotion_fee_discount_applied") is True
+    return {
+        "currency_id": (
+            price_info.get("currency_id")
+            or item.get("currency_id")
+            or "BRL"
+        ),
+        "tarifa_total": fee_data.get("ad_cost"),
+        "tarifa_exata": fee_data.get("ad_cost_exact_for_price") is True,
+        "tarifa_fonte": (
+            fee_data.get("promotion_fee_discount_source")
+            if promotion_fee_applied
+            else fee_data.get("ad_cost_source")
+        ) or "",
+        "tarifa_contexto_preco": fee_data.get("ad_cost_price_context"),
+        "frete_vendedor": (
+            shipping_data.get("shipping_seller_cost")
+            if shipping_data.get("shipping_seller_cost") not in (None, "")
+            else shipping_data.get("shipping_cost")
+        ),
+        "frete_exato": shipping_data.get("shipping_exact_for_price") is True,
+        "frete_fonte": (
+            shipping_data.get("shipping_cost_retry_source")
+            or shipping_data.get("shipping_cost_source_path")
+            or ""
+        ),
+        "frete_contexto_preco": shipping_data.get("shipping_price_context"),
+        "contexto_financeiro": {
+            "category_id": item.get("category_id") or "",
+            "condition": item.get("condition") or "",
+            "listing_type_id": item.get("listing_type_id") or "",
+            "logistic_type": (
+                shipping_data.get("logistic_type")
+                or shipping_info.get("logistic_type")
+                or ""
+            ),
+            "shipping_mode": (
+                shipping_data.get("shipping_mode")
+                or shipping_info.get("mode")
+                or ""
+            ),
+        },
+    }
+
+
+def _favoritos_anexar_contexto_cotacao_shadow(
+    anuncio: dict,
+    item: dict,
+    price_info: dict,
+    fee_data: dict,
+    shipping_data: dict,
+) -> dict:
+    """Attach the ephemeral sidecar only in the explicitly enabled pilot."""
+
+    if _favoritos_cotacao_shadow_habilitada():
+        anuncio[FAVORITOS_FINANCIAL_QUOTE_SIDECAR] = (
+            _favoritos_contexto_cotacao_shadow(
+                item,
+                price_info,
+                fee_data,
+                shipping_data,
+            )
+        )
+    return anuncio
 
 
 async def get_tenant_id(request: Request, authorization: Optional[str] = Header(default=None)):
@@ -1910,6 +2004,13 @@ def favoritos_ml_listar_anuncios_sku(
                 except Exception as exc:
                     logger.warning("[Favoritos ML] Falha ao buscar tarifa do item %s: %s", item_id, exc)
             anuncio = _resumir_item_ml(item, price_info=price_info, shipping_data=shipping_data, fee_data=fee_data)
+            _favoritos_anexar_contexto_cotacao_shadow(
+                anuncio,
+                item,
+                price_info,
+                fee_data,
+                shipping_data,
+            )
             anuncio["loja"] = nome_loja_consulta
             anuncio["loja_sync"] = nome_loja_consulta
             anuncio["loja_conta"] = nome_loja_consulta
@@ -1939,7 +2040,14 @@ def favoritos_ml_listar_anuncios_sku(
 
         _favoritos_completar_frete_pausados_por_sku(anuncios, sku_norm)
         for anuncio in anuncios:
-            _favoritos_aplicar_margem_anuncio_ml(anuncio, sku_norm, custos_por_sku, impostos_por_sku)
+            _favoritos_aplicar_margem_anuncio_ml(
+                anuncio,
+                sku_norm,
+                custos_por_sku,
+                impostos_por_sku,
+                client_id=client_id,
+                loja=nome_loja_consulta,
+            )
         return {
             "loja": nome_loja_consulta,
             "anuncios": anuncios,

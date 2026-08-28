@@ -758,10 +758,6 @@ function renderizarGrafico(data, dataComparativo = null) {
     const mostrarPrevisaoNoGrafico = dadosPrevisaoMesAtual.some(valor => (
         valor !== null && valor !== undefined && valor !== '' && Number.isFinite(Number(valor))
     ));
-    const resumoPrevisaoMesAtual = previsaoMesAtual ? [
-        `Mês atual realizado até ${formatarDataIsoCurta(previsaoMesAtual.dataReferencia)}: ${formatarMoeda(previsaoMesAtual.valorRealizado)}`,
-        `Previsão linear de faturamento bruto: ${formatarMoeda(previsaoMesAtual.valorProjetado)}`
-    ] : [];
     const vendasCompAlinhadas = alinharSerieComparativa(labelsOriginais, labelsCompOrig, usandoQuantidade ? qtdVendasCompOrig : valoresVendasCompOrig);
     const devolCompAlinhadas = alinharSerieComparativa(labelsOriginais, labelsCompOrig, usandoQuantidade ? qtdDevCompOrig : valoresDevCompOrig);
     const qtdVendasCompAlinhadas = alinharSerieComparativa(labelsOriginais, labelsCompOrig, qtdVendasCompOrig);
@@ -957,13 +953,6 @@ function renderizarGrafico(data, dataComparativo = null) {
                 aplicarFiltroTempoDoGrafico(labelOriginal);
             },
             plugins: {
-                subtitle: {
-                    display: Boolean(previsaoMesAtual),
-                    text: resumoPrevisaoMesAtual,
-                    color: '#fbbf24',
-                    padding: { bottom: 10 },
-                    font: { size: 12, weight: '700' }
-                },
                 legend: {
                     display: true,
                     labels: {

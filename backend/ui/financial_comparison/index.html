@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Comparação financeira Mercado Livre</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #152238;
+      --muted: #657289;
+      --line: #dce3ec;
+      --panel: #ffffff;
+      --canvas: #f4f7fb;
+      --brand: #075985;
+      --brand-soft: #e0f2fe;
+      --ok: #166534;
+      --warn: #9a3412;
+      --bad: #991b1b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--canvas);
+      color: var(--ink);
+      font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { width: min(1240px, calc(100% - 32px)); margin: 32px auto 56px; }
+    header { display: flex; gap: 20px; align-items: flex-start; justify-content: space-between; margin-bottom: 22px; }
+    h1 { margin: 0 0 6px; font-size: clamp(24px, 3vw, 36px); letter-spacing: -0.035em; }
+    h2 { margin: 0; font-size: 17px; }
+    p { margin: 0; }
+    .muted { color: var(--muted); }
+    .badge { padding: 7px 10px; border-radius: 999px; background: var(--brand-soft); color: var(--brand); font-weight: 700; white-space: nowrap; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; box-shadow: 0 8px 24px rgb(15 23 42 / 5%); }
+    form { display: grid; grid-template-columns: minmax(220px, 1fr) auto; gap: 12px; align-items: end; }
+    label { display: grid; gap: 6px; font-weight: 700; }
+    input { width: 100%; border: 1px solid #b8c4d4; border-radius: 9px; padding: 11px 12px; font: inherit; }
+    input:focus { outline: 3px solid #bae6fd; border-color: var(--brand); }
+    button { border: 0; border-radius: 9px; padding: 11px 18px; background: var(--brand); color: white; font: inherit; font-weight: 800; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: wait; }
+    #status { min-height: 24px; margin-top: 12px; color: var(--muted); }
+    #status.error { color: var(--bad); }
+    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+    .metric { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+    .metric strong { display: block; margin-top: 4px; font-size: 25px; }
+    .table-wrap { overflow: auto; margin-top: 14px; }
+    table { width: 100%; border-collapse: collapse; min-width: 1040px; }
+    th, td { padding: 10px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; white-space: nowrap; }
+    th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .055em; }
+    tbody tr:hover { background: #f8fafc; }
+    .classification { font-weight: 800; }
+    .classification.match { color: var(--ok); }
+    .classification.rounding_difference, .classification.shadow_incomplete { color: var(--warn); }
+    .classification.exactness_difference, .classification.value_difference, .classification.shadow_error { color: var(--bad); }
+    .empty { padding: 34px 12px; text-align: center; color: var(--muted); }
+    .notes { margin-top: 18px; display: grid; gap: 6px; }
+    .quote-panel { margin-bottom: 18px; }
+    .quote-form { margin-top: 14px; grid-template-columns: repeat(5, minmax(130px, 1fr)) auto; }
+    .quote-results { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
+    .quote-value { background: #f8fafc; border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+    .quote-value strong { display: block; margin-top: 3px; font-size: 18px; }
+    @media (max-width: 760px) {
+      header { display: grid; }
+      form { grid-template-columns: 1fr; }
+      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .quote-form { grid-template-columns: 1fr; }
+      .quote-results { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Comparação financeira Mercado Livre</h1>
+        <p class="muted">Leitura paralela do cálculo atual e do novo núcleo. Esta tela não altera preços, promoções ou decisões.</p>
+      </div>
+      <span class="badge">Piloto interno · somente leitura</span>
+    </header>
+
+    <section class="panel" aria-labelledby="filter-title">
+      <h2 id="filter-title">Selecionar escopo</h2>
+      <form id="comparison-form">
+        <label>
+          Nome exato da loja
+          <input id="store" name="loja" maxlength="180" autocomplete="off" required placeholder="Ex.: Loja Mercado Livre">
+        </label>
+        <button id="load" type="submit">Carregar comparações</button>
+      </form>
+      <p id="status" role="status" aria-live="polite">Informe a loja usada em Promoções ou Favoritos.</p>
+    </section>
+
+    <section class="metrics" aria-label="Resumo das observações">
+      <div class="metric"><span class="muted">Observações</span><strong id="total">—</strong></div>
+      <div class="metric"><span class="muted">Iguais</span><strong id="matches">—</strong></div>
+      <div class="metric"><span class="muted">Divergências</span><strong id="differences">—</strong></div>
+      <div class="metric"><span class="muted">Incompletas</span><strong id="incomplete">—</strong></div>
+    </section>
+
+    <section class="panel quote-panel" aria-labelledby="quote-title">
+      <h2 id="quote-title">Recotação read-only do preço candidato</h2>
+      <p class="muted">Consulta tarifa total e frete contextual no backend, sem alterar o anúncio e sem aplicar benefício promocional presumido.</p>
+      <form id="quote-form" class="quote-form">
+        <label>Loja<input id="quote-store" maxlength="180" autocomplete="off" required></label>
+        <label>Anúncio MLB<input id="quote-item" maxlength="32" autocomplete="off" required placeholder="MLB1234567890"></label>
+        <label>Preço candidato<input id="quote-price" type="number" min="0.01" step="0.01" required></label>
+        <label>Custo do produto<input id="quote-cost" type="number" min="0" step="0.01" required></label>
+        <label>Imposto (%)<input id="quote-tax" type="number" min="0" max="100" step="0.0001" required></label>
+        <button id="quote-load" type="submit">Recotar</button>
+      </form>
+      <p id="quote-status" role="status" aria-live="polite">A consulta é feita somente quando você pressionar “Recotar”.</p>
+      <div class="quote-results" aria-label="Resultado da recotação">
+        <div class="quote-value"><span class="muted">Estado</span><strong id="quote-state">—</strong></div>
+        <div class="quote-value"><span class="muted">Tarifa total</span><strong id="quote-fee">—</strong></div>
+        <div class="quote-value"><span class="muted">Frete vendedor</span><strong id="quote-shipping">—</strong></div>
+        <div class="quote-value"><span class="muted">Valor líquido</span><strong id="quote-net">—</strong></div>
+        <div class="quote-value"><span class="muted">Margem</span><strong id="quote-margin">—</strong></div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="samples-title">
+      <h2 id="samples-title">Amostras recentes</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Horário</th>
+              <th>Origem</th>
+              <th>Classificação</th>
+              <th>Preço</th>
+              <th>Tarifa</th>
+              <th>Frete</th>
+              <th>Líquido atual</th>
+              <th>Líquido novo</th>
+              <th>Δ líquido</th>
+              <th>Margem atual</th>
+              <th>Margem nova</th>
+              <th>Δ margem</th>
+            </tr>
+          </thead>
+          <tbody id="samples">
+            <tr><td class="empty" colspan="12">Nenhuma loja consultada.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="notes muted">
+        <p>Os dados ficam somente na memória do processo por até 24 horas e somem ao reiniciar o backend.</p>
+        <p>Não são guardados item, SKU, anúncio, campanha, usuário ou credencial.</p>
+      </div>
+    </section>
+  </main>
+  <script src="/internal/financial-comparison/app.js" defer></script>
+</body>
+</html>

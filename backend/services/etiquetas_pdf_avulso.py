@@ -7,6 +7,7 @@ import re
 
 from bs4 import BeautifulSoup
 from reportlab.lib.units import mm
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
 
 from backend.services.etiquetas_pdf_common import (
