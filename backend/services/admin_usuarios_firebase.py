@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -15,7 +16,7 @@ import threading
 import time
 import traceback
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import urlencode, urlparse
 
@@ -35,6 +36,114 @@ def configure_admin_usuarios_firebase_runtime(runtime_module=None):
 
 
 configure_admin_usuarios_firebase_runtime()
+
+
+FIREBASE_NONCRITICAL_WRITE_LOCK = threading.RLock()
+FIREBASE_NONCRITICAL_WRITE_COOLDOWN_UNTIL = 0.0
+FIREBASE_USER_READ_CACHE_LOCK = threading.RLock()
+FIREBASE_USER_READ_CACHE: dict[str, tuple[float, dict]] = {}
+
+
+def _firebase_call_timeout_seconds() -> float:
+    try:
+        value = float(os.getenv("JK_FIREBASE_CALL_TIMEOUT_SECONDS", "5") or 5)
+    except Exception:
+        value = 5.0
+    return max(1.0, min(value, 15.0))
+
+
+def _firebase_quota_cooldown_seconds() -> float:
+    try:
+        value = float(os.getenv("JK_FIREBASE_QUOTA_COOLDOWN_SECONDS", "900") or 900)
+    except Exception:
+        value = 900.0
+    return max(60.0, min(value, 3600.0))
+
+
+def _firebase_user_cache_seconds() -> float:
+    try:
+        value = float(os.getenv("JK_FIREBASE_USER_CACHE_SECONDS", "10800") or 10800)
+    except Exception:
+        value = 10800.0
+    return max(1.0, min(value, 10800.0))
+
+
+def _firebase_quota_excedida(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    code = getattr(exc, "code", None)
+    if callable(code):
+        try:
+            code = code()
+        except Exception:
+            code = None
+    code_name = str(getattr(code, "name", code) or "").strip().lower()
+    message = str(exc or "").strip().lower()
+    return (
+        status_code == 429
+        or code == 429
+        or code_name in {"429", "resource_exhausted"}
+        or "quota exceeded" in message
+        or "resource_exhausted" in message
+    )
+
+
+def _firebase_noncritical_write_available() -> bool:
+    with FIREBASE_NONCRITICAL_WRITE_LOCK:
+        return time.monotonic() >= FIREBASE_NONCRITICAL_WRITE_COOLDOWN_UNTIL
+
+
+def _firebase_noncritical_write(operation, *args, **kwargs) -> bool:
+    global FIREBASE_NONCRITICAL_WRITE_COOLDOWN_UNTIL
+    if not _firebase_noncritical_write_available():
+        return False
+    kwargs.setdefault("retry", None)
+    kwargs.setdefault("timeout", _firebase_call_timeout_seconds())
+    try:
+        operation(*args, **kwargs)
+        return True
+    except Exception as exc:
+        if _firebase_quota_excedida(exc):
+            with FIREBASE_NONCRITICAL_WRITE_LOCK:
+                FIREBASE_NONCRITICAL_WRITE_COOLDOWN_UNTIL = max(
+                    FIREBASE_NONCRITICAL_WRITE_COOLDOWN_UNTIL,
+                    time.monotonic() + _firebase_quota_cooldown_seconds(),
+                )
+        raise
+
+
+def _firebase_user_cache_get(username: str) -> Optional[dict]:
+    username_norm = str(username or "").strip().lower()
+    if not username_norm:
+        return None
+    with FIREBASE_USER_READ_CACHE_LOCK:
+        cached = FIREBASE_USER_READ_CACHE.get(username_norm)
+        if not cached:
+            return None
+        expires_at, usuario = cached
+        if time.monotonic() >= float(expires_at or 0):
+            FIREBASE_USER_READ_CACHE.pop(username_norm, None)
+            return None
+        return copy.deepcopy(usuario)
+
+
+def _firebase_user_cache_set(username: str, usuario: dict) -> None:
+    username_norm = str(username or "").strip().lower()
+    if not username_norm or not isinstance(usuario, dict):
+        return
+    with FIREBASE_USER_READ_CACHE_LOCK:
+        FIREBASE_USER_READ_CACHE[username_norm] = (
+            time.monotonic() + _firebase_user_cache_seconds(),
+            copy.deepcopy(usuario),
+        )
+
+
+def _firebase_user_cache_invalidate(username: str = "") -> None:
+    username_norm = str(username or "").strip().lower()
+    with FIREBASE_USER_READ_CACHE_LOCK:
+        if username_norm:
+            FIREBASE_USER_READ_CACHE.pop(username_norm, None)
+        else:
+            FIREBASE_USER_READ_CACHE.clear()
 
 def _firebase_access_mode() -> str:
     return str(os.getenv("JK_ACCESS_BACKEND", "auto") or "auto").strip().lower()
@@ -332,7 +441,7 @@ def _firebase_doc_id(username: str) -> str:
     return username_norm
 
 def _firebase_now_iso() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 def _firebase_bool(valor, padrao: bool = True) -> bool:
     if valor is None:
@@ -466,21 +575,22 @@ def _firebase_users_index_payload(client_id: str, usuarios: dict) -> dict:
         "updated_ts": int(time.time()),
     }
 
-def _firebase_users_index_save(client_id: str, usuarios: dict) -> None:
+def _firebase_users_index_save(client_id: str, usuarios: dict) -> bool:
     ref = _firebase_users_index_ref(client_id)
     if ref is None:
-        return
+        return False
     payload = _firebase_users_index_payload(client_id, usuarios)
-    ref.set(payload, merge=False)
+    saved = _firebase_noncritical_write(ref.set, payload, merge=False)
     _backend_cache_invalidate_user_views(payload.get("client_id") or client_id)
+    return saved
 
-def _firebase_users_index_get(client_id: str) -> Optional[dict]:
+def _firebase_users_index_get(client_id: str, *, raise_on_error: bool = False) -> Optional[dict]:
     client_norm = str(client_id or "default").strip() or "default"
     ref = _firebase_users_index_ref(client_norm)
     if ref is None:
         return None
     try:
-        snap = ref.get()
+        snap = ref.get(retry=None, timeout=_firebase_call_timeout_seconds())
         if not snap.exists:
             return None
         data = snap.to_dict() or {}
@@ -500,6 +610,8 @@ def _firebase_users_index_get(client_id: str) -> Optional[dict]:
         raise
     except Exception as exc:
         logger.warning("[FIREBASE-AUTH] Falha ao ler users_index do cliente %s: %s", client_norm, exc)
+        if raise_on_error:
+            raise
         return None
 
 def _firebase_users_index_all() -> Optional[dict]:
@@ -508,7 +620,10 @@ def _firebase_users_index_all() -> Optional[dict]:
         return None
     try:
         usuarios: dict[str, dict] = {}
-        for snap in db.collection(_firebase_users_index_collection_name()).stream():
+        for snap in db.collection(_firebase_users_index_collection_name()).stream(
+            retry=None,
+            timeout=_firebase_call_timeout_seconds(),
+        ):
             data = snap.to_dict() or {}
             users_raw = data.get("users") if isinstance(data.get("users"), list) else []
             for idx, raw in enumerate(users_raw, start=1):
@@ -530,6 +645,8 @@ def _firebase_users_index_all() -> Optional[dict]:
 def _firebase_users_index_rebuild(usuarios: dict, client_id: Optional[str] = None) -> None:
     if not isinstance(usuarios, dict) or not usuarios:
         return
+    if not _firebase_noncritical_write_available():
+        return
     clientes = {str(client_id or "").strip()} if client_id else set()
     if not clientes:
         clientes = {
@@ -548,13 +665,15 @@ def _firebase_users_index_update_user(username: str, usuario: dict, old_client_i
     username_norm = str(username or "").strip().lower()
     if not username_norm:
         return
+    if not _firebase_noncritical_write_available():
+        return
     new_client = str((usuario or {}).get("client_id") or "default").strip() or "default"
     old_client = str(old_client_id or "").strip()
     clientes = {new_client}
     if old_client and old_client != new_client:
         clientes.add(old_client)
     for client in clientes:
-        usuarios = _firebase_users_index_get(client) or {}
+        usuarios = _firebase_users_index_get(client, raise_on_error=True) or {}
         if client == new_client:
             usuarios[username_norm] = _firebase_user_index_summary(username_norm, usuario)
         else:
@@ -564,6 +683,8 @@ def _firebase_users_index_update_user(username: str, usuario: dict, old_client_i
 def _firebase_users_index_remove_user(username: str, client_id: str = "") -> None:
     username_norm = str(username or "").strip().lower()
     if not username_norm:
+        return
+    if not _firebase_noncritical_write_available():
         return
     client_norm = str(client_id or "").strip()
     clientes = [client_norm] if client_norm else []
@@ -575,7 +696,7 @@ def _firebase_users_index_remove_user(username: str, client_id: str = "") -> Non
             if str(key or "").strip().lower() == username_norm
         })
     for client in clientes:
-        usuarios = _firebase_users_index_get(client) or {}
+        usuarios = _firebase_users_index_get(client, raise_on_error=True) or {}
         if username_norm in usuarios:
             usuarios.pop(username_norm, None)
             _firebase_users_index_save(client, usuarios)
@@ -594,13 +715,13 @@ def _firebase_listar_usuarios(
     if coll is None:
         return None
     try:
-        docs = list(coll.stream())
+        docs = list(coll.stream(retry=None, timeout=_firebase_call_timeout_seconds()))
         if not docs and seed_if_empty and str(os.getenv("FIREBASE_SEED_LOCAL_USERS", "true") or "").strip().lower() in {"1", "true", "sim", "yes", "on"}:
             usuarios_seed, _headers_seed = _carregar_usuarios_sql(seed_if_empty=True)
             if isinstance(usuarios_seed, dict) and usuarios_seed:
                 for username, usuario in usuarios_seed.items():
                     _firebase_salvar_usuario(username, usuario, source="bootstrap-local")
-                docs = list(coll.stream())
+                docs = list(coll.stream(retry=None, timeout=_firebase_call_timeout_seconds()))
 
         usuarios = {}
         for idx, doc in enumerate(docs, start=1):
@@ -611,7 +732,6 @@ def _firebase_listar_usuarios(
             usuarios[username] = _firebase_user_from_data(username, data, idx)
         if usuarios:
             _salvar_usuarios_sql(usuarios, source="firebase-cache")
-            _firebase_users_index_rebuild(usuarios, client_id)
             if client_id:
                 client_norm = str(client_id or "default").strip() or "default"
                 usuarios = {
@@ -633,11 +753,19 @@ def _firebase_obter_usuario(username: str) -> Optional[dict]:
     username_norm = str(username or "").strip().lower()
     if coll is None or not username_norm:
         return None
+    cached = _firebase_user_cache_get(username_norm)
+    if isinstance(cached, dict):
+        return cached
     try:
-        snap = coll.document(_firebase_doc_id(username_norm)).get()
+        snap = coll.document(_firebase_doc_id(username_norm)).get(
+            retry=None,
+            timeout=_firebase_call_timeout_seconds(),
+        )
         if not snap.exists:
             return None
-        return _firebase_user_from_data(username_norm, snap.to_dict() or {})
+        usuario = _firebase_user_from_data(username_norm, snap.to_dict() or {})
+        _firebase_user_cache_set(username_norm, usuario)
+        return usuario
     except HTTPException:
         raise
     except Exception as exc:
@@ -651,11 +779,15 @@ def _firebase_salvar_usuario(username: str, usuario: dict, *, source: str = "adm
     username_norm = str(username or usuario.get("username") or "").strip().lower()
     if coll is None or not username_norm:
         return None
+    _firebase_user_cache_invalidate(username_norm)
     data = _firebase_user_to_data(username_norm, usuario, source=source)
     existing_data = {}
     old_client_id = ""
     if merge:
-        snap = coll.document(_firebase_doc_id(username_norm)).get()
+        snap = coll.document(_firebase_doc_id(username_norm)).get(
+            retry=None,
+            timeout=_firebase_call_timeout_seconds(),
+        )
         if snap.exists:
             existing_data = snap.to_dict() or {}
             old_client_id = str(existing_data.get("client_id") or "").strip()
@@ -663,7 +795,12 @@ def _firebase_salvar_usuario(username: str, usuario: dict, *, source: str = "adm
             data["created_at"] = _firebase_now_iso()
     else:
         data["created_at"] = usuario.get("created_at") or _firebase_now_iso()
-    coll.document(_firebase_doc_id(username_norm)).set(data, merge=merge)
+    coll.document(_firebase_doc_id(username_norm)).set(
+        data,
+        merge=merge,
+        retry=None,
+        timeout=_firebase_call_timeout_seconds(),
+    )
     merged_data = dict(existing_data or {})
     if merge:
         merged_data.update(data)
@@ -671,6 +808,7 @@ def _firebase_salvar_usuario(username: str, usuario: dict, *, source: str = "adm
         merged_data = dict(data)
     salvo = _firebase_user_from_data(username_norm, merged_data)
     if salvo:
+        _firebase_user_cache_set(username_norm, salvo)
         _salvar_usuarios_sql({username_norm: salvo}, source="firebase-cache")
         try:
             _firebase_users_index_update_user(username_norm, salvo, old_client_id=old_client_id)
@@ -683,14 +821,21 @@ def _firebase_excluir_usuario(username: str) -> bool:
     username_norm = str(username or "").strip().lower()
     if coll is None or not username_norm:
         return False
+    _firebase_user_cache_invalidate(username_norm)
     client_id = ""
     try:
-        snap = coll.document(_firebase_doc_id(username_norm)).get()
+        snap = coll.document(_firebase_doc_id(username_norm)).get(
+            retry=None,
+            timeout=_firebase_call_timeout_seconds(),
+        )
         if snap.exists:
             client_id = str((snap.to_dict() or {}).get("client_id") or "").strip()
     except Exception:
         client_id = ""
-    coll.document(_firebase_doc_id(username_norm)).delete()
+    coll.document(_firebase_doc_id(username_norm)).delete(
+        retry=None,
+        timeout=_firebase_call_timeout_seconds(),
+    )
     try:
         _firebase_users_index_remove_user(username_norm, client_id)
     except Exception as exc:
@@ -704,14 +849,15 @@ def _firebase_registrar_login(username: str, client_id: str, machine_id: str, re
         return
     try:
         meta = meta or {}
-        db.collection(_firebase_audit_collection_name()).add({
+        payload = {
             "username": str(username or "").strip().lower(),
             "client_id": str(client_id or "default").strip() or "default",
             "machine_id": str(machine_id or "").strip(),
             "ip_address": meta.get("ip_address") or _extrair_ip_request(request),
             "user_agent": meta.get("user_agent") or str((request.headers.get("user-agent") if request else "") or "")[:500],
             "created_at": _firebase_now_iso(),
-        })
+        }
+        _firebase_noncritical_write(db.collection(_firebase_audit_collection_name()).add, payload)
     except Exception as exc:
         logger.warning("[FIREBASE-AUTH] Nao foi possivel registrar auditoria no Firebase: %s", exc)
 
@@ -721,6 +867,15 @@ __all__ = [
     "_firebase_access_mode",
     "_firebase_access_obrigatorio",
     "_firebase_access_desativado",
+    "_firebase_call_timeout_seconds",
+    "_firebase_quota_cooldown_seconds",
+    "_firebase_user_cache_seconds",
+    "_firebase_quota_excedida",
+    "_firebase_noncritical_write_available",
+    "_firebase_noncritical_write",
+    "_firebase_user_cache_get",
+    "_firebase_user_cache_set",
+    "_firebase_user_cache_invalidate",
     "_firebase_users_collection_name",
     "_firebase_users_index_collection_name",
     "_firebase_audit_collection_name",

@@ -36,6 +36,17 @@ _PERGUNTAS_CONTEXT_HUB_TRUTH_CLASSES_FACTUAIS = {
     "versioned_technical",
 }
 
+_PERGUNTAS_CONTEXT_HUB_PRODUCT_EVIDENCE_IDENTITY_FIELDS = (
+    "store_ref",
+    "seller_id",
+    "site_id",
+    "sku",
+    "item_id",
+    "variation_id",
+)
+_PERGUNTAS_CONTEXT_HUB_PER_SOURCE_LIMIT = 6
+_PERGUNTAS_CONTEXT_HUB_GLOBAL_LIMIT = 6
+
 def _perguntas_ia_context_hub_sku(agent_input: Optional[dict[str, Any]]) -> str:
     entrada = agent_input if isinstance(agent_input, dict) else {}
     item = entrada.get("item") if isinstance(entrada.get("item"), dict) else {}
@@ -58,6 +69,26 @@ def _perguntas_ia_context_hub_sku_id(agent_input: Optional[dict[str, Any]]) -> s
     texto = re.sub(r"[^a-z0-9._-]+", "-", texto)
     texto = re.sub(r"[-_.]{2,}", "-", texto).strip("-._")
     return f"jk:sku:{texto}" if texto else ""
+
+def _perguntas_ia_context_hub_product_evidence_identity(
+    agent_input: Optional[dict[str, Any]],
+) -> dict[str, str]:
+    entrada = agent_input if isinstance(agent_input, dict) else {}
+    raw = (
+        entrada.get("product_evidence_identity")
+        if isinstance(entrada.get("product_evidence_identity"), dict)
+        else {}
+    )
+    identity = {
+        field: re.sub(r"\s+", " ", str(raw.get(field) or "").strip())[:180]
+        for field in _PERGUNTAS_CONTEXT_HUB_PRODUCT_EVIDENCE_IDENTITY_FIELDS
+    }
+    if not all(
+        identity[field]
+        for field in _PERGUNTAS_CONTEXT_HUB_PRODUCT_EVIDENCE_IDENTITY_FIELDS[:-1]
+    ):
+        return {}
+    return identity
 
 def _perguntas_ia_context_hub_deve_buscar(agent_input: Optional[dict[str, Any]]) -> bool:
     entrada = agent_input if isinstance(agent_input, dict) else {}
@@ -108,36 +139,71 @@ def _perguntas_ia_context_hub_referencia_segura(valor: object, doc_id: str) -> s
         return doc_id
     return referencia
 
-def _search_context_hub(client_id: str, entrada: dict, query: str, query_hash: str) -> dict:
-    try:
-        from backend.modules.context_hub import dlp as context_hub_dlp
-        from backend.modules.context_hub import retrieval as context_hub_retrieval
+def _perguntas_ia_context_hub_log_evidence_unavailable(tenant_id: str, exc: Exception) -> None:
+    logger.warning(
+        "[PERGUNTAS CONTEXT HUB] Evidencia de produto indisponivel tenant_hash=%s erro=%s",
+        hashlib.sha256(tenant_id.encode("utf-8", errors="ignore")).hexdigest()[:12],
+        type(exc).__name__,
+    )
 
-        sku_id = _perguntas_ia_context_hub_sku_id(entrada)
-        filters = {"source_type": "sku", "ids": [sku_id]} if sku_id else {"source_type": "sku"}
-        resposta = context_hub_retrieval.search_context(
-            str(client_id or "").strip(),
+def _perguntas_ia_context_hub_search_product_evidence(
+    retrieval: Any,
+    tenant_id: str,
+    query: str,
+    identity: dict[str, str],
+) -> tuple[dict[str, Any], bool]:
+    if not identity:
+        return {}, False
+    try:
+        response = retrieval.search_context(
+            tenant_id,
             query,
-            filters=filters,
-            limit=6,
+            filters={"source_type": "product_evidence_fact"},
+            limit=_PERGUNTAS_CONTEXT_HUB_PER_SOURCE_LIMIT,
+            _product_evidence_identity=identity,
         )
-        rows = resposta.get("results") if isinstance(resposta, dict) and isinstance(resposta.get("results"), list) else []
-        resultados: list[dict[str, Any]] = []
-        active_generation = str((resposta or {}).get("generation_id") or "").strip() if isinstance(resposta, dict) else ""
-        bloqueados = 0
-        fora_do_sku = 0
-        for row in rows[:6]:
-            if not isinstance(row, dict):
-                continue
-            doc_id = str(row.get("doc_id") or "").strip()[:240]
-            if (sku_id and doc_id != sku_id) or (not sku_id and not doc_id.startswith("jk:sku:")):
-                fora_do_sku += 1
-                continue
-            chunk_id = str(row.get("chunk_id") or "").strip()[:240]
-            snippet = re.sub(r"\s+", " ", str(row.get("snippet") or "").strip())[:1800]
-            truth_class = str(row.get("truth_class") or "legacy_unverified").strip().lower()[:80]
-            reference = _perguntas_ia_context_hub_referencia_segura(row.get("reference"), doc_id)
-            row_generation = str(row.get("generation_id") or row.get("generation") or "").strip()[:160]
+        return response if isinstance(response, dict) else {}, False
+    except Exception as exc:
+        _perguntas_ia_context_hub_log_evidence_unavailable(tenant_id, exc)
+        return {}, True
+
+def _perguntas_ia_context_hub_sanitize_rows(
+    response: object,
+    *,
+    source_type: str,
+    sku_id: str,
+    scan_dlp: Any,
+) -> tuple[list[dict[str, Any]], int, int]:
+    payload = response if isinstance(response, dict) else {}
+    rows = payload.get("results") if isinstance(payload.get("results"), list) else []
+    response_generation = str(payload.get("generation_id") or "").strip()
+    results: list[dict[str, Any]] = []
+    blocked = 0
+    out_of_scope = 0
+    for row in rows[:_PERGUNTAS_CONTEXT_HUB_PER_SOURCE_LIMIT]:
+        if not isinstance(row, dict):
+            continue
+        doc_id = str(row.get("doc_id") or "").strip()[:240]
+        row_type = str(row.get("type") or "").strip().lower()[:80]
+        if source_type == "sku":
+            in_scope = bool(
+                (sku_id and doc_id == sku_id)
+                or (not sku_id and doc_id.startswith("jk:sku:"))
+            )
+        else:
+            in_scope = row_type == "product_evidence_fact"
+        if not in_scope:
+            out_of_scope += 1
+            continue
+        chunk_id = str(row.get("chunk_id") or "").strip()[:240]
+        snippet = re.sub(r"\s+", " ", str(row.get("snippet") or "").strip())[:1800]
+        if not doc_id or not chunk_id or not snippet:
+            continue
+        truth_class = str(row.get("truth_class") or "legacy_unverified").strip().lower()[:80]
+        reference = _perguntas_ia_context_hub_referencia_segura(row.get("reference"), doc_id)
+        row_generation = str(row.get("generation_id") or row.get("generation") or "").strip()[:160]
+        coverage: dict[str, Any] = {}
+        if source_type == "sku":
             coverage = bind_compatibility_coverage(
                 row.get("compatibility_coverage"),
                 source_hash=str(row.get("source_hash") or row.get("hash") or "").strip()[:128],
@@ -145,34 +211,118 @@ def _search_context_hub(client_id: str, entrada: dict, query: str, query_hash: s
                 truth_class=truth_class,
                 doc_id=doc_id,
             )
-            if coverage and active_generation and row_generation != active_generation:
+            if coverage and response_generation and row_generation != response_generation:
                 coverage = {}
-            dlp_payload = {"snippet": snippet, "reference": reference, "compatibility_coverage": coverage}
-            if context_hub_dlp.scan_dlp(dlp_payload, source_ref="context_hub_retrieval"):
-                bloqueados += 1
+        if scan_dlp(
+            {"snippet": snippet, "reference": reference, "compatibility_coverage": coverage},
+            source_ref="context_hub_retrieval",
+        ):
+            blocked += 1
+            continue
+        try:
+            score = float(row.get("score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        factual = truth_class in _PERGUNTAS_CONTEXT_HUB_TRUTH_CLASSES_FACTUAIS
+        sanitized = {
+            "doc_id": doc_id,
+            "chunk_id": chunk_id,
+            "snippet": snippet,
+            "reference": reference,
+            "truth_class": truth_class,
+            "source_version": str(row.get("source_version") or row.get("version") or "").strip()[:120],
+            "source_hash": str(row.get("source_hash") or row.get("hash") or "").strip()[:128],
+            "generation_id": row_generation,
+            "type": row_type,
+            "module": str(row.get("module") or "").strip()[:100],
+            "score": score,
+            "content_role": "untrusted_reference_data",
+            "eligible_as_factual_evidence": factual,
+            "eligible_as_solo_evidence": bool(factual and truth_class != "legacy_unverified"),
+        }
+        if coverage:
+            sanitized["compatibility_coverage"] = coverage
+        results.append(sanitized)
+    return results, blocked, out_of_scope
+
+def _perguntas_ia_context_hub_merge_rows(
+    sku_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    unique: dict[str, list[dict[str, Any]]] = {"sku": [], "product_evidence_fact": []}
+    seen: set[tuple[str, str]] = set()
+    for source_type, rows in (("sku", sku_rows), ("product_evidence_fact", evidence_rows)):
+        for row in rows:
+            key = (str(row.get("doc_id") or ""), str(row.get("chunk_id") or ""))
+            if key in seen:
                 continue
-            if not doc_id or not chunk_id or not snippet:
+            seen.add(key)
+            unique[source_type].append(row)
+    results: list[dict[str, Any]] = []
+    depth = 0
+    while len(results) < _PERGUNTAS_CONTEXT_HUB_GLOBAL_LIMIT:
+        added = False
+        for source_type in ("sku", "product_evidence_fact"):
+            rows = unique[source_type]
+            if depth >= len(rows):
                 continue
-            factual = truth_class in _PERGUNTAS_CONTEXT_HUB_TRUTH_CLASSES_FACTUAIS
-            sanitized_row = {
-                "doc_id": doc_id,
-                "chunk_id": chunk_id,
-                "snippet": snippet,
-                "reference": reference,
-                "truth_class": truth_class,
-                "source_version": str(row.get("source_version") or row.get("version") or "").strip()[:120],
-                "source_hash": str(row.get("source_hash") or row.get("hash") or "").strip()[:128],
-                "generation_id": row_generation,
-                "type": str(row.get("type") or "").strip()[:80],
-                "module": str(row.get("module") or "").strip()[:100],
-                "score": float(row.get("score") or 0.0),
-                "content_role": "untrusted_reference_data",
-                "eligible_as_factual_evidence": factual,
-                "eligible_as_solo_evidence": bool(factual and truth_class != "legacy_unverified"),
-            }
-            if coverage:
-                sanitized_row["compatibility_coverage"] = coverage
-            resultados.append(sanitized_row)
+            results.append(rows[depth])
+            added = True
+            if len(results) >= _PERGUNTAS_CONTEXT_HUB_GLOBAL_LIMIT:
+                break
+        if not added:
+            break
+        depth += 1
+    return results
+
+def _search_context_hub(client_id: str, entrada: dict, query: str, query_hash: str) -> dict:
+    try:
+        from backend.modules.context_hub import dlp as context_hub_dlp
+        from backend.modules.context_hub import retrieval as context_hub_retrieval
+
+        tenant_id = str(client_id or "").strip()
+        sku_id = _perguntas_ia_context_hub_sku_id(entrada)
+        filters = {"source_type": "sku", "ids": [sku_id]} if sku_id else {"source_type": "sku"}
+        resposta_sku = context_hub_retrieval.search_context(
+            tenant_id,
+            query,
+            filters=filters,
+            limit=_PERGUNTAS_CONTEXT_HUB_PER_SOURCE_LIMIT,
+        )
+        evidence_identity = _perguntas_ia_context_hub_product_evidence_identity(entrada)
+        resposta_evidencias, evidencias_indisponiveis = (
+            _perguntas_ia_context_hub_search_product_evidence(
+                context_hub_retrieval,
+                tenant_id,
+                query,
+                evidence_identity,
+            )
+        )
+        sku_rows, sku_blocked, sku_out_of_scope = _perguntas_ia_context_hub_sanitize_rows(
+            resposta_sku,
+            source_type="sku",
+            sku_id=sku_id,
+            scan_dlp=context_hub_dlp.scan_dlp,
+        )
+        try:
+            evidence_rows, evidence_blocked, evidence_out_of_scope = (
+                _perguntas_ia_context_hub_sanitize_rows(
+                    resposta_evidencias,
+                    source_type="product_evidence_fact",
+                    sku_id=sku_id,
+                    scan_dlp=context_hub_dlp.scan_dlp,
+                )
+            )
+        except Exception as exc:
+            _perguntas_ia_context_hub_log_evidence_unavailable(tenant_id, exc)
+            evidence_rows, evidence_blocked, evidence_out_of_scope = [], 0, 0
+            evidencias_indisponiveis = True
+        resultados = _perguntas_ia_context_hub_merge_rows(sku_rows, evidence_rows)
+        active_generation = (
+            str(resposta_sku.get("generation_id") or "").strip()
+            if isinstance(resposta_sku, dict)
+            else ""
+        )
         authoritative_count = sum(1 for row in resultados if row.get("eligible_as_factual_evidence"))
         legacy_count = sum(1 for row in resultados if row.get("truth_class") == "legacy_unverified")
         return {
@@ -180,7 +330,7 @@ def _search_context_hub(client_id: str, entrada: dict, query: str, query_hash: s
             "arguments": {
                 "query_hash": query_hash,
                 "source_type": "sku",
-                "limit": 6,
+                "limit": _PERGUNTAS_CONTEXT_HUB_GLOBAL_LIMIT,
             },
             "result": {
                 "found": bool(resultados),
@@ -188,8 +338,12 @@ def _search_context_hub(client_id: str, entrada: dict, query: str, query_hash: s
                 "count": len(resultados),
                 "authoritative_count": authoritative_count,
                 "legacy_unverified_count": legacy_count,
-                "blocked_by_dlp_count": bloqueados,
-                "filtered_out_of_scope_count": fora_do_sku,
+                "blocked_by_dlp_count": sku_blocked + evidence_blocked,
+                "filtered_out_of_scope_count": sku_out_of_scope + evidence_out_of_scope,
+                "product_evidence_count": sum(
+                    1 for row in resultados if row.get("type") == "product_evidence_fact"
+                ),
+                "product_evidence_unavailable": evidencias_indisponiveis,
                 "generation_id": active_generation[:160],
                 "read_only": True,
                 "tenant_binding": "server_client_id",

@@ -34,6 +34,10 @@ from backend.modules.context_hub.locking import (
     _tenant_thread_lock,
 )
 
+from backend.modules.context_hub.materialization import (
+    backfill_legacy_empty_evidence_attestations,
+)
+
 from backend.modules.context_hub.path_safety import (
     _assert_path_chain_safe,
 )
@@ -92,6 +96,17 @@ def bootstrap_context_hub(
         private_dir.mkdir(parents=True, exist_ok=True)
         _assert_path_chain_safe(private_dir, paths.info_root)
     _initialize_database(paths, config.surface)
+    tenant_lock = _tenant_thread_lock(paths)
+    if tenant_lock.acquire(blocking=False):
+        try:
+            try:
+                with _exclusive_file_lock(paths, timeout=0.0):
+                    backfill_legacy_empty_evidence_attestations(paths)
+            except ContextHubConflictError:
+                # A concurrent generation/publication retries the idempotent upgrade.
+                pass
+        finally:
+            tenant_lock.release()
     # Recovery mutates only swap artefacts.  Never race it with a live publish.
     if paths.journal_path.exists() and not paths.lock_path.exists():
         with _tenant_thread_lock(paths):

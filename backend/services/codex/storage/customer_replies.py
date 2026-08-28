@@ -7,6 +7,13 @@ import sqlite3
 import time
 from typing import Any, Optional
 
+from backend.services.vehicle_identity import (
+    VEHICLE_IDENTITY_POLICY,
+    VEHICLE_IDENTITY_SCHEMA,
+    VehicleIdentityFactsV1,
+)
+from backend.services.vin_transient import contains_vin_like_identifier, is_valid_vin
+
 from .common import (
     _connection,
     _json_dumps,
@@ -26,6 +33,85 @@ from .customer_reply_state import (
     _customer_reply_transient_put,
 )
 from .schema import _ensure_state_schema
+
+
+_REQUEST_GENERATION_CAS_APPLIED = "_request_generation_cas_applied"
+_VEHICLE_IDENTITY_FIELDS = (
+    "status",
+    "manufacturer",
+    "make",
+    "model",
+    "model_year",
+    "series",
+    "vehicle_type",
+    "body_class",
+    "engine_model",
+    "engine_displacement_l",
+    "fuel_type",
+    "plant_country",
+    "plant_company",
+    "source",
+    "reason",
+)
+_VEHICLE_IDENTITY_KEYS = frozenset(
+    {"schema", "policy", *_VEHICLE_IDENTITY_FIELDS}
+)
+_VIN_CAPTURE_STATUSES = frozenset({"absent", "captured", "ambiguous", "invalid"})
+
+
+def _safe_vehicle_identity(value: object) -> dict[str, str]:
+    """Return only the closed, VIN-free VehicleIdentityFactsV1 contract."""
+
+    if not isinstance(value, dict) or not value:
+        return {}
+    if set(value) - _VEHICLE_IDENTITY_KEYS:
+        return {}
+    if (
+        str(value.get("schema") or "") != VEHICLE_IDENTITY_SCHEMA
+        or str(value.get("policy") or "") != VEHICLE_IDENTITY_POLICY
+    ):
+        return {}
+    normalized: dict[str, str] = {}
+    for field_name in _VEHICLE_IDENTITY_FIELDS:
+        raw = value.get(field_name, "")
+        if not isinstance(raw, str) or len(raw) > 256:
+            return {}
+        if contains_vin_like_identifier(raw) or is_valid_vin(raw):
+            return {}
+        normalized[field_name] = raw
+    if normalized.get("source") != "nhtsa_vpic":
+        return {}
+    try:
+        return VehicleIdentityFactsV1(**normalized).as_dict()
+    except (TypeError, ValueError):
+        return {}
+
+
+def _persist_safe_vehicle_identity(
+    data: dict[str, Any],
+    durable: dict[str, Any],
+    transient: dict[str, Any],
+) -> None:
+    """Keep decoder facts durable while dropping every untrusted variant."""
+
+    if "vehicle_identity" in data:
+        safe_identity = _safe_vehicle_identity(data.get("vehicle_identity"))
+        durable.pop("vehicle_identity", None)
+        transient.pop("vehicle_identity", None)
+        if safe_identity:
+            data["vehicle_identity"] = safe_identity
+            durable["vehicle_identity"] = safe_identity
+        else:
+            data.pop("vehicle_identity", None)
+    if "vehicle_identity_capture_status" in data:
+        capture_status = str(data.get("vehicle_identity_capture_status") or "")
+        durable.pop("vehicle_identity_capture_status", None)
+        transient.pop("vehicle_identity_capture_status", None)
+        if capture_status in _VIN_CAPTURE_STATUSES:
+            data["vehicle_identity_capture_status"] = capture_status
+            durable["vehicle_identity_capture_status"] = capture_status
+        else:
+            data.pop("vehicle_identity_capture_status", None)
 
 
 def codex_assistant_customer_reply_job_has_transient(
@@ -125,6 +211,7 @@ def _customer_reply_existing_result(
     existing_row: Optional[sqlite3.Row],
     expected_lease_owner: str,
     expected_lease_generation: Optional[int],
+    expected_request_generation: Optional[int],
 ) -> Optional[dict[str, Any]]:
     if not existing_row:
         return None
@@ -139,6 +226,12 @@ def _customer_reply_existing_result(
     existing_generation = max(0, int(existing_row["lease_generation"] or 0))
     incoming_generation = max(0, int(data.get("lease_generation") or 0))
     if expected_lease_generation is not None and int(expected_lease_generation) != existing_generation:
+        return _customer_reply_transient_merge(db_path, existing)
+    existing_request_generation = max(1, int(existing.get("request_generation") or 1))
+    if (
+        expected_request_generation is not None
+        and int(expected_request_generation) != existing_request_generation
+    ):
         return _customer_reply_transient_merge(db_path, existing)
     if incoming_generation != existing_generation:
         return _customer_reply_transient_merge(db_path, existing)
@@ -156,6 +249,7 @@ def _customer_reply_upsert(
     conn: sqlite3.Connection, data: dict[str, Any], job_id: str, now: str
 ) -> dict[str, Any]:
     durable, transient = _customer_reply_durable_payload(data)
+    _persist_safe_vehicle_identity(data, durable, transient)
     raw = _json_dumps(durable)
     conn.execute(
         """
@@ -210,17 +304,18 @@ def _customer_reply_upsert(
     return transient
 
 
-def codex_assistant_customer_reply_job_save(
+def _codex_assistant_customer_reply_job_save_cas(
     info_base: str,
     client_id: str,
     payload: dict[str, Any],
     *,
     expected_lease_owner: str = "",
     expected_lease_generation: Optional[int] = None,
+    expected_request_generation: Optional[int] = None,
     max_origin_active: int = 0,
     max_origin_active_store: int = 0,
 ) -> dict[str, Any]:
-    """Persist a Mercado Livre customer-reply orchestration job."""
+    """Persist a job with an optional internal request-generation CAS."""
 
     data, job_id, now = _customer_reply_prepare_job(client_id, payload)
     db_path = codex_assistant_state_db_path(info_base, client_id)
@@ -236,6 +331,11 @@ def codex_assistant_customer_reply_job_save(
                 "FROM assistant_customer_reply_jobs WHERE job_id = ?",
                 (job_id,),
             ).fetchone()
+            if expected_request_generation is not None and existing_row is None:
+                return {
+                    "job_id": job_id,
+                    _REQUEST_GENERATION_CAS_APPLIED: False,
+                }
             admission = _customer_reply_queue_admission_result(
                 conn, data, job_id, existing_row, max_origin_active, max_origin_active_store
             )
@@ -247,15 +347,45 @@ def codex_assistant_customer_reply_job_save(
                 existing_row,
                 expected_lease_owner,
                 expected_lease_generation,
+                expected_request_generation,
             )
             if existing is not None:
-                return existing
+                result = dict(existing)
+                if expected_request_generation is not None:
+                    result[_REQUEST_GENERATION_CAS_APPLIED] = False
+                return result
             transient = _customer_reply_upsert(conn, data, job_id, now)
     with _CUSTOMER_REPLY_TRANSIENT_LOCK:
         for expired_job_id in expired_job_ids:
             _CUSTOMER_REPLY_TRANSIENT.pop(_customer_reply_cache_key(db_path, expired_job_id), None)
     _customer_reply_transient_put(db_path, data, transient)
-    return data
+    result = dict(data)
+    if expected_request_generation is not None:
+        result[_REQUEST_GENERATION_CAS_APPLIED] = True
+    return result
+
+
+def codex_assistant_customer_reply_job_save(
+    info_base: str,
+    client_id: str,
+    payload: dict[str, Any],
+    *,
+    expected_lease_owner: str = "",
+    expected_lease_generation: Optional[int] = None,
+    max_origin_active: int = 0,
+    max_origin_active_store: int = 0,
+) -> dict[str, Any]:
+    """Persist a Mercado Livre customer-reply orchestration job."""
+
+    return _codex_assistant_customer_reply_job_save_cas(
+        info_base,
+        client_id,
+        payload,
+        expected_lease_owner=expected_lease_owner,
+        expected_lease_generation=expected_lease_generation,
+        max_origin_active=max_origin_active,
+        max_origin_active_store=max_origin_active_store,
+    )
 
 
 def codex_assistant_customer_reply_job_get(

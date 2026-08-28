@@ -454,10 +454,11 @@ def _extrair_texto_generate_content(data: dict | None) -> str:
         parts = content.get("parts") if isinstance(content.get("parts"), list) else []
         for parte in parts:
             if isinstance(parte, dict):
-                texto = str(parte.get("text") or "").strip()
-                if texto:
+                texto = parte.get("text")
+                if isinstance(texto, str):
                     textos.append(texto)
-    return "\n".join(textos).strip()
+    texto_final = "".join(textos)
+    return texto_final if texto_final.strip() else ""
 
 
 def _chamar_gemini_api_direta(model_name: str, request_body: dict, api_key: str) -> str:
@@ -923,8 +924,8 @@ def _chamar_codex_chat_com_thread(
         erro = getattr(resultado, "error", None)
         detalhe = str(getattr(erro, "message", "") or "Codex falhou ao gerar a resposta.")
         raise HTTPException(status_code=503, detail=detalhe)
-    resposta = str(getattr(resultado, "final_response", "") or "").strip()
-    if not resposta:
+    resposta = getattr(resultado, "final_response", "")
+    if not isinstance(resposta, str) or not resposta.strip():
         raise HTTPException(status_code=502, detail="Codex concluiu sem resposta final.")
     return resposta, str(getattr(thread, "id", "") or resolved_thread_id or "")
 

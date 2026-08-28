@@ -12,10 +12,18 @@ const html = fs.readFileSync(path.join(root, 'medias_compras.html'), 'utf8');
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage();
+    page.on('pageerror', error => console.error('[pageerror]', error.message));
     await page.route('**/*', async (route) => {
       const url = new URL(route.request().url());
       if (url.pathname === '/medias_compras.html') {
         await route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: html });
+        return;
+      }
+      if (url.pathname.startsWith('/medias_compras/')) {
+        const relativePath = url.pathname.replace(/^\//, '');
+        const body = fs.readFileSync(path.join(root, 'static', relativePath));
+        const contentType = relativePath.endsWith('.css') ? 'text/css' : 'application/javascript';
+        await route.fulfill({ status: 200, contentType, body });
         return;
       }
       if (url.pathname === '/api/lojas') {

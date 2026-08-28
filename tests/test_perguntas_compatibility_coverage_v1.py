@@ -334,7 +334,7 @@ def test_active_generation_mismatch_cannot_resolve_compatibility() -> None:
     assert agent_context._perguntas_ia_v2_coverage_match(agent_input, hub_result) == {}
 
 
-def test_regression_skus_use_the_general_contract_without_web_research() -> None:
+def test_regression_skus_keep_canonical_coverage_after_mandatory_web_research() -> None:
     import backend_api  # noqa: F401
     dossier = _reviewed_dossier(items=["O encaixe serve em qualquer celular do mercado"])
     for sku in ("241", "241-1"):
@@ -387,13 +387,25 @@ def test_regression_skus_use_the_general_contract_without_web_research() -> None
             requires_human_review=False,
             reason="canonical_coverage_sufficient",
         )
+
+        def model_answer(_prompt, _metadata, *, stage, tool_results=None):
+            del tool_results
+            if stage == "compatibility_analysis":
+                client.compatibility_analysis.update({
+                    "decision": "insufficient",
+                    "reason": "untrusted_external_conflict",
+                    "confidence": 0.20,
+                    "evidence": {"product": [], "target_vehicle": [], "target": [], "equivalence": []},
+                })
+            return seller_answer
+
         with patch.object(agent_clients, "marketplace_listing_query", return_value={}), \
              patch.object(agent_clients, "_ia_tool_get_product_data", return_value={}), \
              patch.object(agent_clients, "_ia_tool_get_bling_product", return_value={}), \
              patch.object(agent_clients, "_perguntas_ia_context_hub_tool", return_value=hub_result), \
-             patch.object(agent_clients, "_ia_agent_perguntas_product_identity_web_tool", side_effect=AssertionError("web identity must be skipped")), \
-             patch.object(agent_clients, "_ia_agent_perguntas_web_tool", side_effect=AssertionError("web research must be skipped")), \
-             patch.object(client, "_call_model", return_value=seller_answer) as model_call:
+             patch.object(agent_clients, "_ia_agent_perguntas_product_identity_web_tool", return_value=None) as identity_call, \
+             patch.object(agent_clients, "_ia_agent_perguntas_web_tool", return_value=None) as web_call, \
+             patch.object(client, "_call_model", side_effect=model_answer) as model_call:
             result = client.generate(
                 "prompt",
                 {
@@ -404,11 +416,22 @@ def test_regression_skus_use_the_general_contract_without_web_research() -> None
             )
 
         assert result.answer.startswith("Sim")
-        assert model_call.call_count == 1
-        assert client.compatibility_analysis["research_skipped"] == "canonical_coverage_sufficient"
+        assert model_call.call_count == 2
+        identity_call.assert_called_once()
+        web_call.assert_called_once()
+        assert "research_skipped" not in client.compatibility_analysis
+        assert client.compatibility_analysis["research_status"] == "mandatory_external_attempted"
+        assert client.compatibility_analysis["decision"] == "yes"
+        assert client.compatibility_analysis["reason"] == "canonical_coverage_sufficient"
+        assert client.compatibility_analysis["evidence"]["product"]
+        assert client.compatibility_analysis["evidence"]["target_vehicle"]
+        assert client.compatibility_analysis["evidence"]["equivalence"]
         assert [step["status"] for step in client.context_pipeline if step["name"] in {
             "product_interface_research", "official_technical_research"
-        }] == ["skipped", "skipped"]
+        }] == ["unavailable", "unavailable"]
+        pipeline_steps = [int(step["step"]) for step in client.context_pipeline]
+        assert pipeline_steps == sorted(pipeline_steps)
+        assert len(pipeline_steps) == len(set(pipeline_steps))
 
 
 def test_public_seller_style_is_objective_and_signature_is_not_counted() -> None:

@@ -8,6 +8,13 @@ from backend.services.whatsapp.approvals.question_tokens import _question_card_c
 from backend.services.whatsapp.composition import BridgeDependencies, bind_component_namespace
 
 
+def _exact_nonempty_response(value: Any) -> str:
+    """Return a usable response without changing any of its characters."""
+
+    response = value if isinstance(value, str) else str(value or "")
+    return response if response.strip() else ""
+
+
 def _question_research_delivery_state(approval: dict[str, Any], job_id: str) -> str:
     delivery_state = str(approval.get("research_delivery_state") or "")
     if not delivery_state and approval.get("data_sufficient") is False and job_id:
@@ -35,7 +42,7 @@ def _load_research_job(client_id: str, job_id: str) -> tuple[Any, Any]:
 
 def _research_draft(job: dict[str, Any]) -> tuple[dict[str, Any], str, bool, bool]:
     result = job.get("result") if isinstance(job.get("result"), dict) else {}
-    response = str(result.get("resposta") or "").strip()[:1200]
+    response = _exact_nonempty_response(result.get("resposta"))
     safe_partial = bool(
         job.get("data_sufficient") is False
         and (job.get("completed_with_partial") or result.get("completed_with_partial"))

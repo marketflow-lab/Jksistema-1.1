@@ -1245,6 +1245,13 @@ def test_login_admin_full_persiste_machine_allowlist_sem_aplicar_limite(monkeypa
     monkeypatch.setattr(admin_usuarios_login_core, "_firebase_collection", lambda: users)
     monkeypatch.setattr(admin_usuarios_login_core, "_firebase_doc_id", lambda username: username)
     monkeypatch.setattr(
+        admin_usuarios_login_core,
+        "_firebase_obter_usuario",
+        lambda username: dict(users.data.get(username) or {}) or None,
+    )
+    monkeypatch.setattr(admin_usuarios_login_core, "_firebase_user_cache_invalidate", lambda _username: None)
+    monkeypatch.setattr(admin_usuarios_login_core, "_firebase_call_timeout_seconds", lambda: 5.0)
+    monkeypatch.setattr(
         admin_usuarios_login_core, "_usuario_pode_logar_em_qualquer_dispositivo", lambda *_args: True,
     )
     monkeypatch.setattr(admin_usuarios_login_core, "_firebase_user_from_data", lambda _username, data: dict(data))
@@ -1616,7 +1623,7 @@ def test_versoes_fonte_e_electron_estao_alinhadas_com_a_release():
     root_package = json.loads(open("package.json", "r", encoding="utf-8").read())
     electron_package = json.loads(open("electron_app/package.json", "r", encoding="utf-8").read())
     backend_source = open("backend_api.py", "r", encoding="utf-8-sig").read()
-    assert root_package["version"] == "1.0.122"
+    assert root_package["version"] == "1.0.126"
     assert electron_package["version"] == root_package["version"]
     # O minimo do backend pode permanecer anterior para nao derrubar clientes
     # durante o rollout em duas ondas.

@@ -292,11 +292,17 @@ function renderBotoesLojas(lojas) {
 }
 
 async function atualizarSelecao() {
+    unidadeNegocioSelect.value = '__todos';
     Array.from(lojaBotoes.children).forEach(btn => {
         btn.classList.toggle('active', btn.textContent === 'Todas as lojas' ? lojaSelecionada === '__todas' : btn.textContent === lojaSelecionada);
     });
+    if (typeof reaplicarPeriodoGraficoAposMudancaFiltro === 'function') {
+        const periodoAtualizado = await reaplicarPeriodoGraficoAposMudancaFiltro();
+        if (periodoAtualizado === false) return;
+    } else if (typeof invalidarPeriodoGraficoPendente === 'function') {
+        invalidarPeriodoGraficoPendente();
+    }
 
-    unidadeNegocioSelect.value = '__todos';
     autoSyncAoTrocarLoja = true;
     try {
         // Sempre recarrega os dados da loja selecionada para manter as lojas virtuais atualizadas.

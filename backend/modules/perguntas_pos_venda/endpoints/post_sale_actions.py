@@ -134,7 +134,9 @@ def ml_pos_venda_responder_conversa(req: PosVendaMensagemRequest, client_id: str
         )
     cfg = _obter_cfg_ml(client_id, nome_loja)
     max_chars = int(req.max_chars or ML_POS_VENDA_DEFAULT_MAX_CHARS)
-    resposta = _pos_venda_ia_limpar_resposta(req.texto, max_chars)
+    resposta = req.texto if isinstance(req.texto, str) else str(req.texto or "")
+    if not resposta.strip():
+        raise HTTPException(status_code=400, detail="Resposta vazia.")
     conversa_memoria = req.conversa if isinstance(req.conversa, dict) else {}
     if conversa_memoria:
         conversa_memoria.setdefault("pack_id", pack)

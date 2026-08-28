@@ -57,6 +57,15 @@ from backend.modules.context_hub.paths import (
     _tenant_paths,
 )
 
+from backend.modules.context_hub.materialization import (
+    assert_generation_materialization_current,
+)
+
+from backend.modules.context_hub.product_evidence_attestation import (
+    align_product_evidence_outbox_generation,
+    assert_product_evidence_attestation_current,
+)
+
 from backend.modules.context_hub.runtime import (
     _sha256_text,
     _utc_now,
@@ -223,6 +232,22 @@ def _publish_generation_locked(
             raise ContextHubNotFoundError("Geracao do Context Hub nao encontrada.")
         current = _active_generation_id(connection)
     if current == generation_id:
+        with _connect(paths) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            now = _utc_now()
+            assert_generation_materialization_current(connection, generation_id, paths.generated_dir)
+            assert_product_evidence_attestation_current(
+                connection,
+                generation_id,
+                client_id=paths.client_id,
+                as_of=now,
+            )
+            align_product_evidence_outbox_generation(
+                connection,
+                generation_id,
+                completed_at=now,
+            )
+            connection.commit()
         return _public_generation(target, include_details=True) | {"success": True, "idempotent": True}
     allowed = {"ready"} | ({"superseded"} if allow_superseded else set())
     if str(target["status"]) not in allowed:
@@ -230,15 +255,22 @@ def _publish_generation_locked(
     expected = current if allow_superseded else (str(target["base_active_generation_id"] or "") or None)
     if expected != current:
         raise ContextHubConflictError("A geracao ativa mudou; reconstrua antes de publicar.")
-    if str(target["status"]) == "ready":
-        with _connect(paths) as connection:
+    with _connect(paths) as connection:
+        assert_generation_materialization_current(
+            connection,
+            generation_id,
+            paths.generations_dir / generation_id / "70_Gerado",
+        )
+        assert_product_evidence_attestation_current(
+            connection,
+            generation_id,
+            client_id=paths.client_id,
+            as_of=_utc_now(),
+        )
+        if str(target["status"]) == "ready":
             _assert_ready_curation_attestation(paths, connection, generation_id)
 
-    temporary, backup = _swap_generated_directory(
-        paths,
-        generation_id,
-        previous_generation_id=current,
-    )
+    temporary, backup = _swap_generated_directory(paths, generation_id, previous_generation_id=current)
     now = _utc_now()
     try:
         with _connect(paths) as connection:
@@ -247,8 +279,22 @@ def _publish_generation_locked(
             if actual != current:
                 connection.rollback()
                 raise ContextHubConflictError("A geracao ativa mudou durante a publicacao.")
+            assert_generation_materialization_current(
+                connection, generation_id, paths.generated_dir
+            )
             if str(target["status"]) == "ready":
                 _assert_ready_curation_attestation(paths, connection, generation_id)
+            assert_product_evidence_attestation_current(
+                connection,
+                generation_id,
+                client_id=paths.client_id,
+                as_of=_utc_now(),
+            )
+            align_product_evidence_outbox_generation(
+                connection,
+                generation_id,
+                completed_at=now,
+            )
             if current:
                 connection.execute(
                     """

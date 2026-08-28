@@ -5,6 +5,12 @@ import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+from fastapi import HTTPException
+from starlette.requests import Request
 
 from backend.modules.perguntas_pos_venda.ai import runtime
 from backend.routers.ia import create_ia_router
@@ -12,6 +18,8 @@ from backend.routers.perguntas_pos_venda import create_perguntas_pos_venda_route
 from backend.schemas.ia import IAAgentQueryRequest
 from backend.services import perguntas_pos_venda_agent
 from backend.services import perguntas_pos_venda_core
+from backend.services import ia_endpoints
+from backend.services.perguntas_pos_venda_state import _ia_agent_endpoint_headers
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,15 +38,20 @@ CONTRACT_HASHES = {
     "routes": "dc6cb53458cb92d7a76a72b148a26e7d4b658cfdbb829e2841a2f3c59eb95a39",
     "aliases": "f149aa04a166eacd3f942889d2495dc5a23be9bb3317160d97e247ae834aa68e",
     "schema": "500b7ccbcedc02d3a254e8114e974355be5635d2f01bd7dc929b212643cb254a",
-    "policy": "2921dd4712f834dd0eae055e89030174fec8194f5530f3ce5e15e54da7e53173",
-    "prompts": "9a1e666a44c6606aed2f3b5a77a561b44036f512263ca746b6c4558d2d9eb5af",
+    "policy": "5cda037a74f48108c06cc2635fe82412629189e66757b3c36bf693fb132e5955",
+    "prompts": "8f95be994258f4ae120205d9a43ad915b1723aa3e6323d7f8c3716f4eed0f95f",
     "exports": "fbd5bf89bb3a7d13d32c55dda0a0b89996c3c6a4828f94a250c94c5f18b74550",
 }
 LAYERS = {
     "contracts": 0, "attachments": 0, "telemetry_core": 0,
-    "runtime": 1, "inputs": 2, "provider_transport": 2,
+    "deep_research_contracts": 0, "deep_research_scoping": 0,
+    "input_contracts": 0, "official_source_registry": 0,
+    "runtime": 1, "deep_research_analysis": 1, "research_url_security": 1,
+    "inputs": 2, "provider_transport": 2, "deep_research_fingerprints": 2,
+    "deep_research_documents": 3,
     "queries": 3, "context": 4, "sources": 4, "evidence": 5,
-    "compatibility": 6, "tools": 6, "client_workflows": 7, "validation": 7,
+    "deep_research": 4, "deep_research_crawler": 4,
+    "compatibility": 6, "tools": 6, "client_workflows": 7, "general_commercial": 7, "validation": 7,
     "approval": 8, "clients": 8, "post_sale": 8, "providers": 8, "telemetry": 8,
     "execution": 9, "api": 10, "__init__": 10,
 }
@@ -73,20 +86,39 @@ def _contract_snapshot() -> dict[str, object]:
     )
     policy = {
         "version": runtime._PERGUNTAS_IA_RESPONSE_POLICY_VERSION,
+        "method_version": runtime._PERGUNTAS_IA_SELLER_METHOD_VERSION,
+        "text": runtime._PERGUNTAS_IA_RESPONSE_POLICY,
+        "commercial_state_policy": runtime._PERGUNTAS_IA_COMMERCIAL_STATE_POLICY,
         "allowed_tools": sorted(runtime._PERGUNTAS_IA_ALLOWED_TOOLS),
         "decisions": ["yes", "no", "conditional", "insufficient"],
         "max_sentences": 3,
     }
     prompt_targets = {
-        "execution.py": ["_perguntas_ia_v2_prompt"],
-        "tools.py": ["_ia_agent_perguntas_montar_prompt"],
+        "execution.py": ["_perguntas_ia_v2_prompt_dados", "_perguntas_ia_v2_prompt"],
+        "tools.py": [
+            "_ia_agent_perguntas_blocos_prompt",
+            "_ia_agent_perguntas_prompt_pos_venda",
+            "_ia_agent_perguntas_prompt_regulado",
+            "_ia_agent_perguntas_prompt_pre_venda",
+            "_ia_agent_perguntas_categoria_regulada",
+            "_ia_agent_perguntas_montar_prompt",
+        ],
         "client_workflows.py": [
             "_compatibility_prompt", "_initial_general_response", "_context_hub_response", "_web_fallback",
         ],
+        "general_commercial.py": [
+            "_general_fit_evaluation_prompt", "_general_research_final_prompt",
+        ],
+        "clients.py": ["_generate_public_compatibility_answer"],
+        "ml_questions_gemini/prompt_builder.py": ["build"],
+        "backend/modules/perguntas_pos_venda/endpoints/training.py": ["ml_ia_treinamento_simular"],
+        "backend/services/ia_treinamento_ppv.py": ["_ia_treinamento_ppv_profile_v2_bloco_prompt"],
+        "backend/services/perguntas_pos_venda_perguntas_ml.py": ["_perguntas_ia_gerar_resposta"],
     }
     prompts: dict[str, str] = {}
     for filename, names in prompt_targets.items():
-        source = (PACKAGE / filename).read_text(encoding="utf-8")
+        source_path = ROOT / filename if "/" in filename else PACKAGE / filename
+        source = source_path.read_text(encoding="utf-8")
         tree = ast.parse(source)
         functions = {
             node.name: ast.get_source_segment(source, node)
@@ -111,6 +143,72 @@ def test_ppv_public_contract_snapshot() -> None:
     assert len(snapshot["policy"]["allowed_tools"]) == 7
     assert snapshot["exports"] == PUBLIC_EXPORTS
     assert {name: _digest(value) for name, value in snapshot.items()} == CONTRACT_HASHES
+
+
+def _agent_request(headers: dict[str, str]) -> Request:
+    return Request({
+        "type": "http",
+        "headers": [
+            (str(key).lower().encode("ascii"), str(value).encode("ascii"))
+            for key, value in headers.items()
+        ],
+    })
+
+
+def _bound_agent_headers(client_id: str, loja: str) -> dict[str, str]:
+    import backend_api  # noqa: F401 - injects the legacy runtime dependencies used by state.py
+
+    return _ia_agent_endpoint_headers(client_id, loja)
+
+
+def test_agent_endpoint_binds_tenant_and_store_outside_model_input() -> None:
+    headers = _bound_agent_headers("tenant-servidor", "Loja Servidor")
+    assert headers["X-JK-Agent-Binding"] == "tenant-store-v1"
+    request = _agent_request(headers)
+    payload = IAAgentQueryRequest(classMethod="query", input={})
+    generated = SimpleNamespace(answer="Resposta", model="codex:gpt-5.5", diagnostics=[])
+
+    with patch.object(ia_endpoints.perguntas_agent_api, "authorize_request"), patch.object(
+        ia_endpoints.perguntas_agent_api,
+        "parse_request_input",
+        return_value={"task": "mercado_livre_question_draft_v2"},
+    ), patch.object(
+        ia_endpoints.perguntas_agent_api,
+        "generate_response",
+        return_value=generated,
+    ) as generate:
+        result = ia_endpoints.ia_agent_perguntas_query(payload, request)
+
+    bound_input = generate.call_args.args[1]
+    assert generate.call_args.args[0] == "tenant-servidor"
+    assert bound_input["tenant_id"] == "tenant-servidor"
+    assert bound_input["store"] == "Loja Servidor"
+    assert result["output"]["answer"] == "Resposta"
+
+
+@pytest.mark.parametrize(
+    "agent_input",
+    [
+        {"tenant_id": "tenant-atacante", "store": "Loja Servidor"},
+        {"tenant_id": "tenant-servidor", "store": "Loja Atacante"},
+    ],
+)
+def test_agent_endpoint_rejects_payload_tenant_or_store_divergence(agent_input: dict) -> None:
+    headers = _bound_agent_headers("tenant-servidor", "Loja Servidor")
+    request = _agent_request(headers)
+    payload = IAAgentQueryRequest(classMethod="query", input={})
+    parsed = {"task": "mercado_livre_question_draft_v2", **agent_input}
+
+    with patch.object(ia_endpoints.perguntas_agent_api, "authorize_request"), patch.object(
+        ia_endpoints.perguntas_agent_api,
+        "parse_request_input",
+        return_value=parsed,
+    ), patch.object(ia_endpoints.perguntas_agent_api, "generate_response") as generate:
+        with pytest.raises(HTTPException) as exc_info:
+            ia_endpoints.ia_agent_perguntas_query(payload, request)
+
+    assert exc_info.value.status_code == 403
+    generate.assert_not_called()
 
 
 def test_ppv_facade_and_components_respect_budgets() -> None:

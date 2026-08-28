@@ -77,13 +77,75 @@ def _perguntas_ia_v2_fontes_web(tool_result: Optional[dict[str, Any]]) -> list[s
     result = tool_result.get("result") if isinstance(tool_result, dict) and isinstance(tool_result.get("result"), dict) else {}
     contexto = str(result.get("context") or "")
     fontes: list[str] = []
-    for url in re.findall(r"https?://[^\s<>'\"]+", contexto, flags=re.IGNORECASE):
+    for url in re.findall(
+        r"^\s*URL:\s*(https?://[^\s<>'\"]+)\s*$",
+        contexto,
+        flags=re.IGNORECASE | re.MULTILINE,
+    ):
         limpa = url.rstrip(".,;:)]}")[:600]
         if limpa and limpa not in fontes:
             fontes.append(limpa)
         if len(fontes) >= 16:
             break
     return fontes
+
+
+def _perguntas_ia_verified_research_view(result: dict) -> dict:
+    """Expose activated facts and safe research diagnostics, never page text."""
+
+    data = (
+        result.get("result")
+        if isinstance(result, dict) and isinstance(result.get("result"), dict)
+        else {}
+    )
+    verified = [
+        dict(value)
+        for value in (data.get("verified_product_evidence") or [])[:120]
+        if isinstance(value, dict)
+    ]
+    return {
+        "function": (
+            str(result.get("function") or "web_search_question_context")
+            if isinstance(result, dict)
+            else "web_search_question_context"
+        ),
+        "arguments": {},
+        "result": {
+            "found": bool(verified),
+            "verified_product_evidence": verified,
+            "research_metrics": dict(data.get("research_metrics") or {}),
+            "timeout": data.get("timeout") is True,
+            "unavailable": data.get("unavailable") is True,
+            "read_only": True,
+            "scope": "verified_product_evidence_only",
+            "instruction": (
+                "Somente estas afirmacoes verified podem sustentar fatos publicos. "
+                "Ausencia de fato verificado nao prova incompatibilidade."
+            ),
+        },
+    }
+
+
+def _perguntas_ia_general_research_contract(result: dict) -> tuple[dict, bool, bool, dict]:
+    """Build the general-flow research view and its aggregate pipeline record."""
+
+    data = result.get("result") if isinstance(result, dict) and isinstance(result.get("result"), dict) else {}
+    verified_result = _perguntas_ia_verified_research_view(result)
+    verified_data = verified_result["result"]
+    found = bool(verified_data.get("verified_product_evidence"))
+    tool_error = bool(str(data.get("error") or "").strip())
+    arguments = result.get("arguments") if isinstance(result, dict) and isinstance(result.get("arguments"), dict) else {}
+    step = {
+        "step": 4,
+        "name": "question_focused_web_research",
+        "status": "error" if tool_error else ("completed" if found else "unavailable"),
+        "reason": "mandatory_public_question_research",
+        "query_count": max(0, int(arguments.get("query_count") or len(list(arguments.get("queries") or [])[:8]))),
+        "source_count": len(_perguntas_ia_v2_fontes_web(result)),
+        "candidate_pages_found": bool(data.get("found") and str(data.get("context") or "").strip()),
+        "verified_fields": len(list(verified_data.get("verified_product_evidence") or [])),
+    }
+    return verified_result, found, tool_error, step
 
 def _perguntas_ia_v2_json_obj(payload: Any) -> dict[str, Any]:
     if isinstance(payload, dict):
@@ -132,11 +194,14 @@ def _perguntas_ia_v2_grounding_blocos_web(contexto: object) -> list[tuple[str, s
         if not atual:
             return
         bloco = "\n".join(atual).strip()
-        urls = re.findall(r"https?://[^\s<>'\"]+", bloco, flags=re.IGNORECASE)
-        for url in urls:
-            limpa = url.rstrip(".,;:)]}")
+        for linha in atual:
+            match = re.fullmatch(r"\s*URL:\s*(https?://[^\s<>'\"]+)\s*", linha, flags=re.IGNORECASE)
+            if not match:
+                continue
+            limpa = match.group(1).rstrip(".,;:)]}")
             if limpa:
                 blocos.append((limpa, bloco))
+            break
 
     for linha in linhas:
         inicio_resultado = bool(re.match(r"^\s*\d+\.\s+", linha))
@@ -146,10 +211,7 @@ def _perguntas_ia_v2_grounding_blocos_web(contexto: object) -> list[tuple[str, s
             atual = []
         atual.append(linha)
     concluir()
-    if blocos:
-        return blocos
-    urls = _perguntas_ia_v2_fontes_web({"result": {"context": str(contexto or "")}})
-    return [(url, str(contexto or "")) for url in urls]
+    return blocos
 
 def _grounding_add(grounding: dict[str, Any], groups: tuple[str, ...], text: object, source_type: str, authority: str, url: str = "", **metadata: Any) -> None:
     raw_text = str(text or "").strip()
@@ -200,23 +262,40 @@ def _grounding_web(grounding: dict[str, Any], function_name: str, context: str) 
     groups = ("product", "equivalence") if function_name == "web_search_product_identity" else ("target_vehicle", "equivalence")
     blocks = _perguntas_ia_v2_grounding_blocos_web(context)
     if not blocks:
-        _grounding_add(grounding, groups, context, function_name, "technical_web_source")
         return
-    public_authorities = {"official_document", "technical_catalog", "community_reference", "public_web_reference", "marketplace_hint"}
     for url, block in blocks:
         marketplace = _perguntas_ia_v2_grounding_marketplace(url)
-        normalized = _perguntas_ia_v2_grounding_texto(block)
-        try:
-            host = str(urlparse(url).hostname or "").lower()
-        except Exception:
-            host = ""
-        official = any(marker in normalized for marker in ("manual oficial", "fabricante", "catalogo oem", "documentacao oficial")) or any(
-            host.startswith(prefix) for prefix in ("manual.", "manuals.", "support.", "docs.", "service.")
-        )
-        match = re.search(r"^Autoridade:\s*([a-z_]+)\s*$", block, flags=re.IGNORECASE | re.MULTILINE)
-        collected = str(match.group(1) if match else "").strip().lower()
-        authority = "marketplace_hint" if marketplace else (collected if collected in public_authorities else ("official_document" if official else "technical_web_source"))
+        authority = "marketplace_hint" if marketplace else "technical_web_source"
         _grounding_add(grounding, groups, block, function_name, authority, url)
+
+
+def _grounding_verified_product_evidence(
+    grounding: dict[str, Any],
+    values: list,
+) -> None:
+    for value in values[:120]:
+        if not isinstance(value, dict):
+            continue
+        field_name = str(value.get("field_name") or "").strip().lower()
+        fact_value = str(value.get("value") or "").strip()
+        if not field_name or not fact_value:
+            continue
+        unit = str(value.get("unit") or "").strip()
+        text = f"{field_name}: {fact_value}{(' ' + unit) if unit else ''}"
+        groups = ("product",)
+        if field_name.startswith(("compatibility.", "application.")):
+            groups = ("target_vehicle", "equivalence")
+        _grounding_add(
+            grounding,
+            groups,
+            text,
+            "product_evidence_verified",
+            "generated_verified",
+            field_name=field_name,
+            scope=str(value.get("scope") or "")[:24],
+            activation_policy=str(value.get("activation_policy") or "")[:64],
+            eligible_as_solo_evidence=True,
+        )
 
 
 def _collect_tool_grounding(grounding: dict[str, Any], tool: dict) -> None:
@@ -244,6 +323,14 @@ def _collect_tool_grounding(grounding: dict[str, Any], tool: dict) -> None:
         _grounding_add(grounding, ("product",), json.dumps(result, ensure_ascii=False, default=str), source_type, authority)
         return
     if function_name in {"web_search_product_identity", "web_search_question_context"}:
+        verified = (
+            result.get("verified_product_evidence")
+            if isinstance(result.get("verified_product_evidence"), list)
+            else []
+        )
+        if verified:
+            _grounding_verified_product_evidence(grounding, verified)
+            return
         _grounding_web(grounding, function_name, context)
 
 

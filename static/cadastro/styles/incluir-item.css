@@ -1,0 +1,123 @@
+        :root {
+            --bg: #0b101b;
+            --panel: #1a2236;
+            --line: #26314b;
+            --text: #e7ecf7;
+            --muted: #9eb0d1;
+            --accent: #4facfe;
+            --success: #28a745;
+            --danger: #ff6b6b;
+        }
+        body {
+            margin:0;
+            padding:20px;
+            color: var(--text);
+            font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            background:
+                radial-gradient(900px 500px at 10% -10%, rgba(79, 172, 254, 0.15), transparent 60%),
+                radial-gradient(800px 450px at 95% -20%, rgba(40, 167, 69, 0.12), transparent 58%),
+                var(--bg);
+        }
+        .container { max-width:1180px; margin:0 auto; }
+        .header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
+        .header-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+        .back-btn {
+            padding:8px 14px;
+            background: linear-gradient(135deg, #5bb5ff, #3b95df);
+            color:#fff;
+            text-decoration:none;
+            border-radius:8px;
+            font-weight:700;
+            box-shadow: 0 6px 20px rgba(45, 126, 198, 0.35);
+        }
+        .back-btn:hover { filter: brightness(1.05); }
+        h1 { margin: 0; letter-spacing: 0.2px; }
+        .subtitle { margin: 0 0 14px; color: var(--muted); font-size: 0.95rem; }
+        .status {
+            margin:10px 0 16px;
+            padding:12px 14px;
+            border-radius:10px;
+            background: rgba(18, 26, 43, 0.85);
+            border:1px solid var(--line);
+            min-height:20px;
+        }
+        .loading { color:#9bd1ff; }
+        .error { color:#ff6b6b; }
+        .success { color:#80ed99; }
+        .card {
+            background: linear-gradient(180deg, rgba(28, 35, 55, 0.95), rgba(24, 32, 51, 0.92));
+            border:1px solid var(--line);
+            border-radius:12px;
+            padding:16px;
+            box-shadow: 0 12px 26px rgba(4, 8, 14, 0.35);
+        }
+        .section-title {
+            margin:0 0 10px;
+            font-size:0.95rem;
+            color:#b8c9e8;
+            letter-spacing:0.4px;
+            text-transform:uppercase;
+        }
+        .form-grid { display:grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap:12px; }
+        .field { display:flex; flex-direction:column; gap:6px; }
+        .field.full { grid-column: 1 / -1; }
+        .mlb-editor { border:1px solid #2f3f61; border-radius:8px; padding:10px; background:#0f1628; }
+        .mlb-head { display:grid; grid-template-columns: 180px 1fr 70px; gap:8px; margin-bottom:6px; color:#9fb7de; font-size:0.8rem; text-transform:uppercase; letter-spacing:0.4px; }
+        .mlb-rows { display:flex; flex-direction:column; gap:8px; }
+        .mlb-row { display:grid; grid-template-columns: 180px 1fr 70px; gap:8px; align-items:center; }
+        .mlb-row input { width:100%; box-sizing:border-box; }
+        .mlb-del { border:1px solid #4a2f3b; background:#2b1820; color:#ff9cae; border-radius:8px; height:38px; cursor:pointer; font-weight:700; }
+        .mlb-del:hover { background:#3a1f29; }
+        .mlb-add { margin-top:10px; border:1px solid #2d5a3d; background:#123024; color:#8ef0b0; border-radius:8px; padding:8px 12px; cursor:pointer; font-weight:700; }
+        .mlb-add:hover { background:#17402f; }
+        .field label { color:#c8d7ea; font-size:0.85rem; text-transform:uppercase; letter-spacing:0.4px; }
+        input, textarea {
+            padding:10px;
+            border-radius:8px;
+            border:1px solid #33415f;
+            background:#0f1525;
+            color:#e5e5e5;
+            transition: border-color .15s ease, box-shadow .15s ease;
+        }
+        input:focus, textarea:focus {
+            outline:none;
+            border-color:#5bb5ff;
+            box-shadow: 0 0 0 3px rgba(91, 181, 255, 0.16);
+        }
+        textarea { min-height:110px; resize:vertical; }
+        .foto-block {
+            background: linear-gradient(180deg, rgba(20, 25, 40, 0.9), rgba(15, 20, 35, 0.87));
+            border:1px solid #2a3a55;
+            border-radius:10px;
+            padding:14px;
+            margin-top:14px;
+        }
+        .foto-heading { margin:0 0 8px; color:#b8c9e8; font-size:0.9rem; text-transform:uppercase; letter-spacing:0.3px; }
+        .foto-tools { display:flex; gap:10px; margin-bottom:10px; }
+        .foto-input, .foto-paste { flex:1; padding:8px 10px; border-radius:8px; border:1px dashed #4a5a7a; background:#0f1525; cursor:pointer; text-align:center; color:#9eb0d1; transition:all .15s ease; }
+        .foto-input:hover, .foto-paste:hover { border-color:#5bb5ff; }
+        .foto-preview { border:1px solid #2f3f5a; border-radius:8px; padding:8px; background:#0b0f1a; min-height:80px; display:flex; align-items:center; justify-content:center; color:#7a8fb3; font-size:0.85rem; }
+        .foto-preview img { max-width:100%; max-height:200px; border-radius:6px; }
+        .foto-preview a { text-decoration:none; }
+        .foto-pending-note { margin-left:10px; color:#9bd1ff; font-size:0.8rem; }
+        .foto-muted { color:#7a8fb3; }
+        .foto-link img { max-width:100%; max-height:200px; border-radius:6px; }
+        #fotoInput { display:none; }
+        .actions {
+            display:flex;
+            gap:10px;
+            margin-top:16px;
+            flex-wrap:wrap;
+            padding-top:10px;
+            border-top:1px solid #2a3551;
+        }
+        .btn { padding:10px 14px; border-radius:8px; border:1px solid transparent; cursor:pointer; font-weight:700; }
+        .btn-primary { background:#28a745; color:#fff; }
+        .btn-primary:hover { background:#20913a; }
+        .btn-secondary { background:#2b3245; color:#e5e5e5; border-color:#3a435c; }
+        .btn-secondary:hover { background:#36415b; }
+        @media (max-width: 900px) {
+            body { padding:14px; }
+            .form-grid { grid-template-columns:1fr; }
+            .card { padding:12px; }
+        }

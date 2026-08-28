@@ -27,6 +27,18 @@ from backend.modules.context_hub.publication import (
     publish_generation,
     rollback_generation,
 )
+from backend.modules.context_hub.product_evidence import (
+    add_product_evidence_claim,
+    add_product_evidence_source,
+    complete_product_evidence_batch,
+    create_product_evidence_batch,
+    list_verified_product_evidence,
+    normalize_product_evidence_value,
+)
+from backend.modules.context_hub.product_evidence_sync import (
+    recover_pending_product_evidence_syncs,
+    stop_all_product_evidence_sync_workers,
+)
 from backend.modules.context_hub.retrieval import (
     search_context,
 )
@@ -50,19 +62,26 @@ from backend.modules.context_hub.watchers import (
 )
 
 __all__ = [
-    "bootstrap_context_hub",
+    "add_product_evidence_claim",
+    "add_product_evidence_source",
     "approve_curated_note",
+    "bootstrap_context_hub",
+    "complete_product_evidence_batch",
     "configure_context_hub",
     "create_curated_backup",
     "create_curated_note",
+    "create_product_evidence_batch",
     "get_generation",
     "get_settings",
     "get_status",
     "list_generations",
     "list_curated_backups",
     "list_curated_notes",
+    "list_verified_product_evidence",
+    "normalize_product_evidence_value",
     "publish_curated_context",
     "publish_generation",
+    "recover_pending_product_evidence_syncs",
     "rebuild_context",
     "rollback_generation",
     "reject_curated_note",
@@ -73,6 +92,7 @@ __all__ = [
     "search_context",
     "start_context_hub_watcher",
     "stop_all_context_hub_watchers",
+    "stop_all_product_evidence_sync_workers",
     "stop_context_hub_watcher",
     "update_settings",
     "validate_curated_note",

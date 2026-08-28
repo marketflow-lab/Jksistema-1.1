@@ -7,6 +7,8 @@ existing Perguntas/Pós-venda read-only adapters injected at application startup
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import hashlib
 import json
 import logging
@@ -18,18 +20,31 @@ import unicodedata
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 from urllib.parse import urlsplit
 
 from requests import exceptions as requests_exceptions
 
 from backend.services import codex_agent_runtime, codex_assistant_storage
+from backend.services.codex.storage import customer_replies as customer_reply_storage
 from backend.services.codex_turn_context import (
     EVIDENCE_ENVELOPE_V2,
     conversation_key,
     normalize_evidence_envelope,
 )
 from backend.modules.perguntas_pos_venda.ai.contracts import PerguntasIARespostaPoliticaInvalida
+from backend.modules.perguntas_pos_venda.ai.deep_research import (
+    evidence_identity,
+    load_verified_product_evidence,
+)
+from backend.services.vehicle_identity import empty_vehicle_identity
+from backend.services.vehicle_identity_vpic import VpicPublicVinDecoder
+from backend.services.vin_transient import (
+    DEFAULT_VIN_ENVELOPE_STORE,
+    VIN_MARKER,
+    capture_vin_payload,
+    contains_vin_like_identifier,
+)
 from backend.services.perguntas_pos_venda_state import (
     PerguntasIAClassificacaoInconclusiva,
     PerguntasIAProviderIndisponivel,
@@ -62,25 +77,31 @@ PUBLIC_SUBQUESTION_INTENTS = frozenset({
     "general",
     "post_sale",
 })
-PROMPT_VERSION = "jk_ml_customer_reply_codex_v11"
-SCHEMA_VERSION = "5.1"
+PROMPT_VERSION = "jk_ml_customer_reply_codex_v14"
+SCHEMA_VERSION = "5.2"
 QUEUE_POLICY_VERSION = "jk_ppv_queue_v3"
+VEHICLE_IDENTITY_POLICY = "jk_public_vin_decode_v1"
+PRODUCT_EVIDENCE_POLICY = "jk_product_evidence_v1"
 PROMPT_HASH = hashlib.sha256(
     (
         "codex-native|public-question-by-item-buyer|post-sale-by-pack|"
         "evidence-envelope-v3|bounded-public-research|ai-only-subquestions|"
         "classification-contract-v3|continuity-repair-v1|typed-provider-failures|"
-        "contextual-fallback-v1|response-policy-v5|compatibility-coverage-v1|"
-        "compatibility-interface-evidence|seller-voice-v3|priority-queue-v3|"
-        "best-validated-draft-wins|subject-aware-safe-fallback|no-direct-publish"
+        "contextual-fallback-v1|response-policy-v6|compatibility-coverage-v1|"
+        "compatibility-interface-evidence|seller-conversion-v1|seller-profile-v2|priority-queue-v3|"
+        f"vehicle-identity-policy:{VEHICLE_IDENTITY_POLICY}|"
+        f"product-evidence-policy:{PRODUCT_EVIDENCE_POLICY}|"
+        "nonempty-ai-draft-preserved|public-signature-append-only-v1|oversize-manual-edit-v1|"
+        "human-approval-required|no-direct-publish"
     ).encode("utf-8")
 ).hexdigest()
 THREAD_IDLE_TTL_SECONDS = 30 * 24 * 60 * 60
 TERMINAL_STATUSES = {"completed", "cancelled"}
 ACTIVE_STATUSES = {"queued", "running", "waiting_retry"}
 MAX_GLOBAL_JOBS = 2
-MAX_SECONDS = 180.0
+MAX_SECONDS = 330.0
 PUBLIC_RESEARCH_DEADLINE_SECONDS = 15 * 60.0
+PUBLIC_DEEP_RESEARCH_MAX_SECONDS = 5 * 60.0
 POST_SALE_DEADLINE_SECONDS = 180.0
 RESEARCH_DEADLINE_SECONDS = PUBLIC_RESEARCH_DEADLINE_SECONDS
 RETRY_DELAYS_SECONDS = (5, 15, 30)
@@ -110,6 +131,9 @@ _ACTIVE_STORES: set[str] = set()
 _RETRY_TIMERS: dict[str, threading.Timer] = {}
 _WORKER_ID = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
 _RECOVERY_STARTED = False
+_INITIAL_CREATION_GUARD = threading.RLock()
+_INITIAL_CREATION_LOCKS: dict[tuple[str, str, str, str], tuple[threading.Lock, int]] = {}
+_INITIAL_CREATION_PROCESS_STRIPES = 256
 
 
 class _LeaseLost(RuntimeError):
@@ -1138,6 +1162,23 @@ def _complete_without_draft(
 ) -> dict[str, Any]:
     """Compatibility entrypoint that now always returns an editable safe draft."""
 
+    partial = job.get("last_partial_result") if isinstance(job.get("last_partial_result"), dict) else {}
+    request = job.get("request") if isinstance(job.get("request"), dict) else {}
+    partial_answer = str(partial.get("resposta") or "")
+    request_answer = str(request.get("resposta_atual") or "")
+    preserved_answer = partial_answer if partial_answer.strip() else request_answer
+    if preserved_answer.strip():
+        return _complete_with_best_available(
+            job,
+            answer=preserved_answer,
+            context=(partial.get("contexto") if isinstance(partial.get("contexto"), dict) else {}),
+            matrix=list(partial.get("evidence_status") or []),
+            warnings=_unique_warnings(partial.get("warnings"), [warning]),
+            draft_source=str(partial.get("draft_source") or ("ai" if partial_answer.strip() else "existing_draft")),
+            completion_reason=completion_reason,
+            deadline_reached=deadline_reached,
+        )
+
     info_base = _runtime_info_base()
     client_id = str(job.get("client_id") or "default")
     job_id = str(job.get("job_id") or "")
@@ -1295,7 +1336,6 @@ def _research_history_entry(
         if isinstance(item, dict) and str(item.get("query") or "").strip()
     ]
     sources = _context_evidence_sources(context)
-    answer_limit = 2000 if _canonical_task_type(job.get("task_type")) == TASK_TYPE_PUBLIC_QUESTION else 1200
     return {
         "attempt": max(1, int(job.get("attempt_count") or 1)),
         "at": _now(),
@@ -1306,7 +1346,7 @@ def _research_history_entry(
         "sources": sources[:16],
         "evidence_status": list(matrix or [])[:8],
         "warnings": [str(item or "")[:300] for item in (warnings or [])[:12]],
-        "answer": str(answer or "").strip()[:answer_limit],
+        "answer": str(answer or ""),
         "error": str(error or "").strip()[:1000],
     }
 
@@ -1385,7 +1425,7 @@ def _cancel_post_sale_job(job: dict[str, Any]) -> dict[str, Any]:
                 details={"reason": "pos_venda_somente_manual"},
             )
         except Exception:
-            logger.exception("[PPV CODEX] Falha ao cancelar plano legado de pos-venda %s", plan_id)
+            logger.warning("[PPV CODEX] evento=cancelar_plano_legado status=erro")
     return saved
 
 
@@ -1572,7 +1612,7 @@ def _complete_with_best_available(
     empty_completion_reason: str = "ai_response_unavailable",
     empty_warning: str = "A IA nao concluiu a resposta; foi gerado um rascunho seguro editavel.",
 ) -> dict[str, Any]:
-    """Finish a bounded research job with the safest partial draft available."""
+    """Finish a bounded research job while preserving any nonempty AI draft."""
 
     info_base = _runtime_info_base()
     client_id = str(job.get("client_id") or "default")
@@ -1599,43 +1639,34 @@ def _complete_with_best_available(
         return codex_assistant_storage.codex_assistant_customer_reply_job_save(info_base, client_id, current)
     if str(current.get("status") or "") == "completed" and isinstance(current.get("result"), dict):
         return current
-    if _public_classification_missing(current):
-        return _complete_without_draft(
-            current,
-            warning=(
-                "A classificacao estruturada ficou indisponivel; foi gerado um rascunho neutro com as informacoes disponiveis."
-            ),
-            completion_reason="ai_classification_unavailable",
-        )
-
     partial = current.get("last_partial_result") if isinstance(current.get("last_partial_result"), dict) else {}
-    final_answer = str(answer or partial.get("resposta") or "").strip()
-    if not final_answer:
+    current_answer = str(answer or "")
+    final_answer = current_answer if current_answer.strip() else str(partial.get("resposta") or "")
+    if not final_answer.strip():
         for entry in reversed(list(current.get("research_history") or [])):
             if isinstance(entry, dict) and str(entry.get("answer") or "").strip():
-                final_answer = str(entry.get("answer") or "").strip()
+                final_answer = str(entry.get("answer") or "")
                 break
-    if not final_answer:
+    if not final_answer.strip():
+        if _public_classification_missing(current):
+            return _complete_without_draft(
+                current,
+                warning=(
+                    "A classificacao estruturada ficou indisponivel; foi gerado um rascunho neutro com as informacoes disponiveis."
+                ),
+                completion_reason="ai_classification_unavailable",
+            )
         return _complete_without_draft(
             current,
             warning=empty_warning,
             completion_reason=empty_completion_reason,
         )
+    if completion_reason == "ai_response_preserved_unvalidated":
+        current["operational_failure_count"] = 0
 
     final_context = context if isinstance(context, dict) and context else partial.get("contexto")
     if not isinstance(final_context, dict):
         final_context = {}
-    if completion_reason == "evidence_insufficient_after_retry_limit" and not _safe_insufficient_draft(
-        final_answer,
-        final_context,
-    ):
-        return _complete_without_draft(
-            current,
-            warning=(
-                "A resposta original nao passou pela politica segura; foi gerado um rascunho neutro editavel."
-            ),
-            completion_reason="available_information_fallback",
-        )
     final_matrix = list(matrix or partial.get("evidence_status") or current.get("evidence_status") or [])
     final_warnings = _unique_warnings(
         warnings,
@@ -1761,7 +1792,7 @@ def _complete_with_best_available(
                 },
             )
         except Exception:
-            logger.exception("[PPV CODEX] Falha ao concluir plano parcial %s", plan_id)
+            logger.warning("[PPV CODEX] evento=concluir_plano_parcial status=erro")
     return saved
 
 
@@ -1871,7 +1902,11 @@ def _persist_retry(
     )
     retry_count = max(0, int(current.get("retry_count") or 0)) + 1
     partial_result = {
-        "resposta": str(answer or previous_partial.get("resposta") or "").strip(),
+        "resposta": (
+            str(answer or "")
+            if str(answer or "").strip()
+            else str(previous_partial.get("resposta") or "")
+        ),
         "contexto": merged_context,
         "evidence_status": merged_matrix,
         "data_sufficient": False,
@@ -2025,6 +2060,7 @@ def _quarantine_outdated_job(
     )
     job.pop("last_partial_result", None)
     job.pop("error", None)
+    _discard_vin_envelope_family(str(job.get("job_id") or ""))
     _cancel_retry_timer(str(job.get("job_id") or ""))
     return codex_assistant_storage.codex_assistant_customer_reply_job_save(
         info_base, scoped_client_id, job
@@ -2055,7 +2091,7 @@ def _recover_after_startup() -> None:
     try:
         recover_pending_jobs()
     except Exception:
-        logger.exception("[PPV CODEX] Falha ao recuperar jobs pendentes.")
+        logger.warning("[PPV CODEX] evento=recuperar_jobs status=erro")
 
 
 def _subject_conversation_id(client_id: str, task_type: str, store: str, conversation_subject_key: str) -> str:
@@ -2654,7 +2690,257 @@ def automation_terminal_blocker(job: Any) -> str:
     return "terminal_review_required"
 
 
-def create_job(
+def _request_generation(job: Any) -> int:
+    try:
+        return max(1, int((job or {}).get("request_generation") or 1))
+    except (AttributeError, TypeError, ValueError):
+        return 1
+
+
+def _vin_envelope_key(job_id: object, request_generation: object) -> str:
+    safe_job_id = str(job_id or "").strip()
+    try:
+        generation = max(1, int(request_generation or 1))
+    except (TypeError, ValueError):
+        generation = 1
+    return f"{safe_job_id}:{generation}" if safe_job_id else ""
+
+
+def _discard_vin_envelope_family(job_id: object) -> None:
+    DEFAULT_VIN_ENVELOPE_STORE.discard_family(str(job_id or "").strip())
+
+
+def _vehicle_identity_from_capture(
+    job_id: str,
+    capture_status: str,
+    request_generation: int = 1,
+) -> dict[str, str]:
+    """Consume a VIN envelope once and expose only the allowlisted decoder contract."""
+
+    if capture_status == "captured":
+        transient_vin = DEFAULT_VIN_ENVELOPE_STORE.consume(
+            _vin_envelope_key(job_id, request_generation)
+        )
+        if transient_vin:
+            try:
+                return VpicPublicVinDecoder().decode(transient_vin).as_dict()
+            except Exception:
+                return empty_vehicle_identity(
+                    "unavailable",
+                    reason="decoder_unavailable",
+                ).as_dict()
+        return empty_vehicle_identity(
+            "unavailable",
+            reason="transient_envelope_unavailable",
+        ).as_dict()
+    if capture_status == "ambiguous":
+        return empty_vehicle_identity(
+            "ambiguous",
+            reason="multiple_vins",
+        ).as_dict()
+    if capture_status == "invalid":
+        return empty_vehicle_identity(
+            "invalid",
+            reason="vin_invalid",
+        ).as_dict()
+    return {}
+
+
+def _consume_vehicle_identity_for_worker(job: dict[str, Any]) -> dict[str, Any]:
+    """Use only pre-queue safe facts; a worker never consumes or decodes a VIN."""
+
+    current = dict(job or {})
+    _discard_vin_envelope_family(str(current.get("job_id") or ""))
+    if (
+        str(current.get("status") or "") == "running"
+        and str(current.get("client_id") or "").strip()
+        and str(current.get("job_id") or "").strip()
+    ):
+        latest = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+            _runtime_info_base(),
+            str(current.get("client_id") or "default"),
+            str(current.get("job_id") or ""),
+        )
+        if (
+            isinstance(latest, dict)
+            and _request_generation(latest) >= _request_generation(current)
+        ):
+            current = dict(latest)
+    for _attempt in range(8):
+        existing = current.get("vehicle_identity")
+        if isinstance(existing, dict) and existing:
+            return current
+        generation = _request_generation(current)
+        capture_status = str(
+            current.get("vehicle_identity_capture_status") or "absent"
+        )
+        if capture_status == "captured":
+            facts = empty_vehicle_identity(
+                "unavailable",
+                reason="transient_envelope_unavailable",
+            ).as_dict()
+        elif capture_status == "ambiguous":
+            facts = empty_vehicle_identity(
+                "ambiguous",
+                reason="multiple_vins",
+            ).as_dict()
+        elif capture_status == "invalid":
+            facts = empty_vehicle_identity(
+                "invalid",
+                reason="vin_invalid",
+            ).as_dict()
+        else:
+            facts = {}
+        if not facts:
+            return current
+        candidate = dict(current)
+        candidate["vehicle_identity"] = facts
+        if (
+            str(candidate.get("status") or "") != "running"
+            or not str(candidate.get("client_id") or "").strip()
+            or not str(candidate.get("lease_owner") or "").strip()
+        ):
+            return candidate
+        saved = customer_reply_storage._codex_assistant_customer_reply_job_save_cas(
+            _runtime_info_base(),
+            str(candidate.get("client_id") or "default"),
+            candidate,
+            expected_lease_owner=_WORKER_ID,
+            expected_lease_generation=_lease_generation(candidate),
+            expected_request_generation=generation,
+        )
+        cas_applied = saved.pop("_request_generation_cas_applied", None)
+        if not _saved_by_same_lease(saved, candidate, status="running"):
+            raise _LeaseLost("Lease transferida durante a resolucao do chassi.")
+        if cas_applied is not True or _request_generation(saved) != generation:
+            current = dict(saved)
+            continue
+        persisted = saved.get("vehicle_identity") if isinstance(saved.get("vehicle_identity"), dict) else {}
+        if persisted != facts:
+            raise _LeaseLost("Identidade do veiculo nao foi persistida pela geracao atual.")
+        return saved
+    raise _LeaseLost("A geracao da solicitacao mudou repetidamente durante a resolucao do chassi.")
+
+
+def _active_revision_candidate(
+    current: dict[str, Any],
+    *,
+    request: dict[str, Any],
+    task_type: str,
+    queue_origin: str,
+    queue_priority: int,
+    capture_status: str,
+    vehicle_identity: dict[str, str],
+) -> dict[str, Any]:
+    latest_request = (
+        dict(current.get("request") or {})
+        if isinstance(current.get("request"), dict)
+        else {}
+    )
+    latest_request.update(dict(request or {}))
+    candidate = dict(current)
+    candidate.update(
+        {
+            "request": latest_request,
+            "request_hash": _hash(latest_request),
+            "subquestions": _initial_subquestions(task_type),
+            "request_generation": _request_generation(current) + 1,
+            "proposal_version": max(
+                1, int(current.get("proposal_version") or 1)
+            ) + 1,
+            "restart_requested": True,
+            "next_retry_at_epoch": 0.0,
+            "retry_reason": "orientacao_do_operador_atualizada",
+            "retry_count": 0,
+            "retry_policy": _task_retry_policy(task_type),
+            "deadline_seconds": _task_deadline_seconds(task_type),
+            "deadline_at_epoch": (
+                time.time() + _task_deadline_seconds(task_type)
+                if _task_deadline_seconds(task_type) > 0
+                else 0.0
+            ),
+        }
+    )
+    if capture_status != "absent":
+        candidate["vehicle_identity_capture_status"] = capture_status
+        candidate["vehicle_identity"] = dict(vehicle_identity)
+    if (
+        queue_origin == QUEUE_ORIGIN_MANUAL
+        and str(current.get("queue_origin") or "") == QUEUE_ORIGIN_AUTOMATION
+    ):
+        candidate.update(
+            {
+                "queue_origin": QUEUE_ORIGIN_MANUAL,
+                "queue_priority": queue_priority,
+                "queue_policy_version": QUEUE_POLICY_VERSION,
+            }
+        )
+    if str(candidate.get("status") or "") == "waiting_retry":
+        candidate.update(
+            {
+                "status": "queued",
+                "agent_state": "pesquisando",
+                "current_step": "consultar",
+            }
+        )
+    return candidate
+
+
+def _persist_active_revision_with_cas(
+    latest: dict[str, Any],
+    *,
+    info_base: str,
+    client_id: str,
+    event_subject_key: str,
+    request: dict[str, Any],
+    task_type: str,
+    queue_origin: str,
+    queue_priority: int,
+    capture_status: str,
+    vehicle_identity: dict[str, str],
+) -> tuple[Optional[dict[str, Any]], dict[str, Any]]:
+    """Allocate one request generation atomically for every revision."""
+
+    current = dict(latest)
+    for _attempt in range(8):
+        same_event = str(
+            current.get("event_subject_key") or current.get("subject_key") or ""
+        ) == event_subject_key
+        if (
+            str(current.get("status") or "") not in ACTIVE_STATUSES
+            or not same_event
+            or not _job_contract_current(current)
+        ):
+            return None, current
+        expected_generation = _request_generation(current)
+        candidate = _active_revision_candidate(
+            current,
+            request=request,
+            task_type=task_type,
+            queue_origin=queue_origin,
+            queue_priority=queue_priority,
+            capture_status=capture_status,
+            vehicle_identity=vehicle_identity,
+        )
+        saved = customer_reply_storage._codex_assistant_customer_reply_job_save_cas(
+            info_base,
+            client_id,
+            candidate,
+            expected_lease_generation=_lease_generation(current),
+            expected_request_generation=expected_generation,
+        )
+        cas_applied = saved.pop("_request_generation_cas_applied", None)
+        if cas_applied is True:
+            if _request_generation(saved) != expected_generation + 1:
+                raise RuntimeError("Geracao VIN persistida fora da revisao reservada.")
+            if capture_status != "absent" and saved.get("vehicle_identity") != vehicle_identity:
+                raise RuntimeError("Identidade veicular persistida na geracao incorreta.")
+            return saved, saved
+        current = dict(saved)
+    raise RuntimeError("Concorrencia excessiva ao reservar a geracao da revisao VIN.")
+
+
+def _create_job_unserialized(
     *,
     client_id: str,
     task_type: str,
@@ -2681,34 +2967,74 @@ def create_job(
         raise PermissionError("Sugestoes do Black Jhon estao desativadas no pos-venda.")
     if not str(store or "").strip() or not str(subject_key or "").strip():
         raise ValueError("Loja e identificação da conversa são obrigatórias.")
-    event_subject_key = str(subject_key or "").strip()
-    conversation_subject_key, scope_verifiers = _conversation_subject_key(
-        task_type,
-        event_subject_key,
-        request,
+    for field_name, value in (
+        ("cliente", client_id),
+        ("loja", store),
+        ("conversa", subject_key),
+        ("canal", channel),
+        ("criador", created_by),
+    ):
+        if contains_vin_like_identifier(value):
+            raise ValueError(
+                f"O campo operacional {field_name} não pode conter chassi/VIN."
+            )
+    job_id = uuid.uuid4().hex
+    vin_capture = capture_vin_payload(
+        dict(request or {}),
+        envelope_key=_vin_envelope_key(job_id, 1),
     )
-    info_base = _runtime_info_base()
-    latest = codex_assistant_storage.codex_assistant_customer_reply_job_latest(
-        info_base,
-        client_id,
-        task_type=task_type,
-        store=str(store),
-        subject_key=conversation_subject_key,
+    request = (
+        dict(vin_capture.sanitized_payload)
+        if isinstance(vin_capture.sanitized_payload, dict)
+        else {}
     )
-    if not isinstance(latest, dict) and task_type == TASK_TYPE_PUBLIC_QUESTION:
-        # V1 compatibility reader: old jobs used task_type=question and the event id as subject.
+    vin_capture_status = str(vin_capture.status or "absent")
+    vehicle_identity = _vehicle_identity_from_capture(
+        job_id,
+        vin_capture_status,
+        1,
+    )
+    _discard_vin_envelope_family(job_id)
+    try:
+        request_hash = _hash(request)
+        event_subject_key = str(subject_key or "").strip()
+        conversation_subject_key, scope_verifiers = _conversation_subject_key(
+            task_type,
+            event_subject_key,
+            request,
+        )
+        info_base = _runtime_info_base()
         latest = codex_assistant_storage.codex_assistant_customer_reply_job_latest(
             info_base,
             client_id,
-            task_type="question",
+            task_type=task_type,
             store=str(store),
-            subject_key=event_subject_key,
+            subject_key=conversation_subject_key,
         )
+        if not isinstance(latest, dict) and task_type == TASK_TYPE_PUBLIC_QUESTION:
+            # V1 compatibility reader: old jobs used task_type=question and the event id as subject.
+            latest = codex_assistant_storage.codex_assistant_customer_reply_job_latest(
+                info_base,
+                client_id,
+                task_type="question",
+                store=str(store),
+                subject_key=event_subject_key,
+            )
+    except Exception:
+        _discard_vin_envelope_family(job_id)
+        raise
     latest_result = latest.get("result") if isinstance(latest, dict) and isinstance(latest.get("result"), dict) else {}
-    revision_requested = bool(
+    operator_revision_requested = bool(
         str(request.get("resposta_atual") or request.get("orientacao_usuario") or "").strip()
     )
-    request_hash = _hash(request)
+    same_event = bool(
+        isinstance(latest, dict)
+        and str(latest.get("event_subject_key") or latest.get("subject_key") or "") == event_subject_key
+    )
+    revision_requested = bool(
+        operator_revision_requested
+        or vin_capture_status != "absent"
+    )
     proposal_version = int(latest_result.get("proposal_version") or latest.get("proposal_version") or 0) + 1 if latest else 1
     if (
         not revision_requested
@@ -2717,12 +3043,9 @@ def create_job(
         and latest_result.get("data_sufficient") is True
         and str(latest.get("request_hash") or "") == request_hash
         and _job_contract_current(latest)
+        and vin_capture_status == "absent"
     ):
         return _public_job(latest)
-    same_event = bool(
-        isinstance(latest, dict)
-        and str(latest.get("event_subject_key") or latest.get("subject_key") or "") == event_subject_key
-    )
     if (
         isinstance(latest, dict)
         and same_event
@@ -2758,63 +3081,62 @@ def create_job(
         and same_event
         and _job_contract_current(latest)
     ):
-        if (
-            queue_origin == QUEUE_ORIGIN_MANUAL
-            and str(latest.get("queue_origin") or "") == QUEUE_ORIGIN_AUTOMATION
-        ):
-            latest.update(
-                {
-                    "queue_origin": QUEUE_ORIGIN_MANUAL,
-                    "queue_priority": QUEUE_PRIORITY_MANUAL,
-                    "queue_policy_version": QUEUE_POLICY_VERSION,
-                }
-            )
-            latest = codex_assistant_storage.codex_assistant_customer_reply_job_save(
-                info_base,
-                client_id,
-                latest,
-                expected_lease_generation=_lease_generation(latest),
-            )
-            if str(latest.get("status") or "") == "queued":
-                _schedule(latest)
-            elif str(latest.get("status") or "") == "waiting_retry":
-                _schedule_retry_timer(latest)
         if revision_requested:
-            latest_request = dict(latest.get("request") or {}) if isinstance(latest.get("request"), dict) else {}
-            latest_request.update(dict(request or {}))
-            latest.update(
-                {
-                    "request": latest_request,
-                    "request_hash": _hash(latest_request),
-                    "subquestions": _initial_subquestions(task_type),
-                    "request_generation": max(1, int(latest.get("request_generation") or 1)) + 1,
-                    "proposal_version": max(1, int(latest.get("proposal_version") or 1)) + 1,
-                    "restart_requested": True,
-                    "next_retry_at_epoch": 0.0,
-                    "retry_reason": "orientacao_do_operador_atualizada",
-                    "retry_count": 0,
-                    "retry_policy": _task_retry_policy(task_type),
-                    "deadline_seconds": _task_deadline_seconds(task_type),
-                    "deadline_at_epoch": (
-                        time.time() + _task_deadline_seconds(task_type)
-                        if _task_deadline_seconds(task_type) > 0
-                        else 0.0
+            revised, latest = _persist_active_revision_with_cas(
+                latest,
+                info_base=info_base,
+                client_id=client_id,
+                event_subject_key=event_subject_key,
+                request=request,
+                task_type=task_type,
+                queue_origin=queue_origin,
+                queue_priority=queue_priority,
+                capture_status=vin_capture_status,
+                vehicle_identity=vehicle_identity,
+            )
+            if revised is not None:
+                _cancel_retry_timer(str(revised.get("job_id") or ""))
+                _schedule(revised)
+                return _public_job(
+                    revised,
+                    queue_position=_queue_position(
+                        info_base,
+                        client_id,
+                        str(revised.get("job_id") or ""),
                     ),
-                }
+                )
+        else:
+            if (
+                queue_origin == QUEUE_ORIGIN_MANUAL
+                and str(latest.get("queue_origin") or "") == QUEUE_ORIGIN_AUTOMATION
+            ):
+                latest.update(
+                    {
+                        "queue_origin": QUEUE_ORIGIN_MANUAL,
+                        "queue_priority": queue_priority,
+                        "queue_policy_version": QUEUE_POLICY_VERSION,
+                    }
+                )
+                latest = codex_assistant_storage.codex_assistant_customer_reply_job_save(
+                    info_base,
+                    client_id,
+                    latest,
+                    expected_lease_generation=_lease_generation(latest),
+                )
+                if str(latest.get("status") or "") == "queued":
+                    _schedule(latest)
+                elif str(latest.get("status") or "") == "waiting_retry":
+                    _schedule_retry_timer(latest)
+            if _job_deadline_expired(latest):
+                latest = _complete_retry_limit(latest)
+            return _public_job(
+                latest,
+                queue_position=_queue_position(
+                    info_base,
+                    client_id,
+                    str(latest.get("job_id") or ""),
+                ),
             )
-            if str(latest.get("status") or "") == "waiting_retry":
-                latest.update({"status": "queued", "agent_state": "pesquisando", "current_step": "consultar"})
-                _cancel_retry_timer(str(latest.get("job_id") or ""))
-            latest = codex_assistant_storage.codex_assistant_customer_reply_job_save(
-                info_base, client_id, latest
-            )
-            _schedule(latest)
-        elif _job_deadline_expired(latest):
-            latest = _complete_retry_limit(latest)
-        return _public_job(
-            latest,
-            queue_position=_queue_position(info_base, client_id, str(latest.get("job_id") or "")),
-        )
     idempotency_key = _hash(
         {
             "client": client_id,
@@ -2826,14 +3148,17 @@ def create_job(
             "bucket": int(time.time() // 5),
         }
     )
-    existing = codex_assistant_storage.codex_assistant_customer_reply_job_get(
-        info_base, client_id, idempotency_key=idempotency_key
+    existing = (
+        codex_assistant_storage.codex_assistant_customer_reply_job_get(
+            info_base, client_id, idempotency_key=idempotency_key
+        )
+        if vin_capture_status == "absent"
+        else None
     )
     if isinstance(existing, dict):
         if _job_contract_current(existing):
             return _public_job(existing, queue_position=_queue_position(info_base, client_id, str(existing.get("job_id") or "")))
         _quarantine_outdated_job(existing, client_id=client_id)
-    job_id = uuid.uuid4().hex
     question = request.get("pergunta") if isinstance(request.get("pergunta"), dict) else {}
     question_id = str(question.get("id") or event_subject_key).strip()
     item = request.get("item") if isinstance(request.get("item"), dict) else {}
@@ -2890,6 +3215,8 @@ def create_job(
         "subquestions": subquestions,
         "request": dict(request or {}),
         "request_hash": request_hash,
+        "vehicle_identity_capture_status": vin_capture_status,
+        "vehicle_identity": dict(vehicle_identity),
         "thread_id": thread_id,
         "thread_reused": thread_reused,
         "thread_restart_reason": restart_reason,
@@ -2934,6 +3261,7 @@ def create_job(
         **save_limits,
     )
     if saved.get("queue_admission_blocked"):
+        _discard_vin_envelope_family(job_id)
         try:
             codex_agent_runtime.transition_plan(
                 info_base,
@@ -2945,7 +3273,7 @@ def create_job(
                 details={"reason": "queue_backpressure"},
             )
         except Exception:
-            logger.exception("[PPV CODEX] Falha ao encerrar plano recusado por backpressure.")
+            logger.warning("[PPV CODEX] evento=encerrar_plano_backpressure status=erro")
         admission = automation_queue_admission(client_id, str(store))
         return {
             "job_id": job_id,
@@ -2984,6 +3312,181 @@ def create_job(
     return _public_job(saved, queue_position=_queue_position(info_base, client_id, job_id))
 
 
+def _subject_has_persisted_job(
+    client_id: str,
+    task_type: str,
+    store: str,
+    subject_key: str,
+    request: dict[str, Any],
+) -> bool:
+    """Read the durable subject lane without retaining or decoding a VIN."""
+
+    sanitized = capture_vin_payload(
+        dict(request or {}),
+        retain_envelope=False,
+    ).sanitized_payload
+    safe_request = dict(sanitized) if isinstance(sanitized, dict) else {}
+    event_subject_key = str(subject_key or "").strip()
+    conversation_subject_key, _scope = _conversation_subject_key(
+        task_type,
+        event_subject_key,
+        safe_request,
+    )
+    info_base = _runtime_info_base()
+    latest = codex_assistant_storage.codex_assistant_customer_reply_job_latest(
+        info_base,
+        client_id,
+        task_type=task_type,
+        store=str(store),
+        subject_key=conversation_subject_key,
+    )
+    if not isinstance(latest, dict) and task_type == TASK_TYPE_PUBLIC_QUESTION:
+        latest = codex_assistant_storage.codex_assistant_customer_reply_job_latest(
+            info_base,
+            client_id,
+            task_type="question",
+            store=str(store),
+            subject_key=event_subject_key,
+        )
+    return isinstance(latest, dict)
+
+
+def _acquire_initial_creation_lock(
+    key: tuple[str, str, str, str],
+) -> threading.Lock:
+    with _INITIAL_CREATION_GUARD:
+        lock, users = _INITIAL_CREATION_LOCKS.get(key, (threading.Lock(), 0))
+        _INITIAL_CREATION_LOCKS[key] = (lock, users + 1)
+    lock.acquire()
+    return lock
+
+
+def _release_initial_creation_lock(
+    key: tuple[str, str, str, str],
+    lock: threading.Lock,
+) -> None:
+    lock.release()
+    with _INITIAL_CREATION_GUARD:
+        current_lock, users = _INITIAL_CREATION_LOCKS.get(key, (lock, 1))
+        if current_lock is lock and users <= 1:
+            _INITIAL_CREATION_LOCKS.pop(key, None)
+        elif current_lock is lock:
+            _INITIAL_CREATION_LOCKS[key] = (lock, users - 1)
+
+
+@contextlib.contextmanager
+def _initial_creation_process_lock(
+    key: tuple[str, str, str, str],
+    *,
+    timeout: float = 75.0,
+):
+    """Serialize first creation across local backend processes for one subject."""
+
+    lock_root = Path(_runtime_info_base()) / ".codex_runtime" / "ppv-initial-creation"
+    lock_root.mkdir(parents=True, exist_ok=True)
+    stripe = int(_hash(list(key))[:8], 16) % _INITIAL_CREATION_PROCESS_STRIPES
+    lock_path = lock_root / f"stripe-{stripe:03d}.lock"
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    with lock_path.open("a+b") as stream:
+        stream.seek(0, os.SEEK_END)
+        if stream.tell() == 0:
+            stream.write(b"\0")
+            stream.flush()
+        stream.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            def try_lock() -> bool:
+                stream.seek(0)
+                try:
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                except OSError as error:
+                    if error.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                        return False
+                    raise
+                return True
+
+            def unlock() -> None:
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            def try_lock() -> bool:
+                try:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError as error:
+                    if isinstance(error, BlockingIOError) or error.errno in {
+                        errno.EACCES,
+                        errno.EAGAIN,
+                    }:
+                        return False
+                    raise
+                return True
+
+            def unlock() -> None:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+        while not try_lock():
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Outra criacao inicial desta conversa ainda esta em andamento.")
+            time.sleep(0.025)
+        try:
+            yield
+        finally:
+            unlock()
+
+
+def create_job(
+    *,
+    client_id: str,
+    task_type: str,
+    store: str,
+    subject_key: str,
+    request: dict[str, Any],
+    channel: str = "app",
+    created_by: str = "module_user",
+) -> dict[str, Any]:
+    """Create or revise one subject; serialize only its first durable creation."""
+
+    canonical_task = _canonical_task_type(task_type)
+    call = {
+        "client_id": client_id,
+        "task_type": task_type,
+        "store": store,
+        "subject_key": subject_key,
+        "request": request,
+        "channel": channel,
+        "created_by": created_by,
+    }
+    operational_values = (client_id, store, subject_key, channel, created_by)
+    if (
+        canonical_task not in TASK_TYPES
+        or canonical_task == TASK_TYPE_POST_SALE
+        or any(contains_vin_like_identifier(value) for value in operational_values)
+        or _subject_has_persisted_job(
+            client_id,
+            canonical_task,
+            store,
+            subject_key,
+            request,
+        )
+    ):
+        return _create_job_unserialized(**call)
+    key = (
+        str(client_id or ""),
+        canonical_task,
+        str(store or ""),
+        str(subject_key or ""),
+    )
+    lock = _acquire_initial_creation_lock(key)
+    try:
+        with _initial_creation_process_lock(key):
+            return _create_job_unserialized(**call)
+    finally:
+        _release_initial_creation_lock(key, lock)
+
+
 def get_job(client_id: str, job_id: str) -> Optional[dict[str, Any]]:
     info_base = _runtime_info_base()
     job = codex_assistant_storage.codex_assistant_customer_reply_job_get(info_base, client_id, job_id)
@@ -3006,10 +3509,32 @@ def get_job(client_id: str, job_id: str) -> Optional[dict[str, Any]]:
             info_base, client_id, job_id
         )
     ):
-        job = _complete_without_draft(
+        job.update(
+            {
+                "status": "completed",
+                "agent_state": "concluido",
+                "current_step": "responder",
+                "draft_expired": True,
+                "blocked_without_draft": True,
+                "review_required": True,
+                "requires_approval": False,
+                "completion_reason": "draft_unavailable_after_restart",
+                "warnings": _unique_warnings(
+                    job.get("warnings"),
+                    [
+                        "O rascunho nao esta mais disponivel apos a reinicializacao; "
+                        "gere uma nova resposta. Nenhum texto substituto foi criado."
+                    ],
+                ),
+                "lease_owner": "",
+                "lease_expires_ts": 0.0,
+            }
+        )
+        job = codex_assistant_storage.codex_assistant_customer_reply_job_save(
+            info_base,
+            client_id,
             job,
-            warning="O rascunho anterior expirou; foi gerada uma resposta neutra com as informacoes disponiveis.",
-            completion_reason="draft_expired_available_fallback",
+            expected_lease_generation=_lease_generation(job),
         )
     if str(job.get("status") or "") == "waiting_retry" and _job_deadline_expired(job):
         job = _complete_retry_limit(job)
@@ -3155,13 +3680,14 @@ def cancel_job(client_id: str, job_id: str) -> Optional[dict[str, Any]]:
     job = codex_assistant_storage.codex_assistant_customer_reply_job_request_cancel(info_base, client_id, job_id)
     if not isinstance(job, dict):
         return None
+    _discard_vin_envelope_family(job_id)
     _cancel_retry_timer(job_id)
     try:
         from backend.services import ia_providers
 
         ia_providers.cancel_codex_persistent_turn(job_id)
     except Exception:
-        logger.exception("[PPV CODEX] Falha ao interromper turno ativo do job %s", job_id)
+        logger.warning("[PPV CODEX] evento=interromper_turno status=erro")
     plan_id = str(job.get("plan_id") or "")
     if plan_id and str(job.get("status") or "") == "cancelled":
         try:
@@ -3169,7 +3695,7 @@ def cancel_job(client_id: str, job_id: str) -> Optional[dict[str, Any]]:
                 info_base, client_id, plan_id, "cancelado", current_step="responder", step_status="canceled"
             )
         except Exception:
-            logger.exception("[PPV CODEX] Falha ao cancelar plano %s", plan_id)
+            logger.warning("[PPV CODEX] evento=cancelar_plano status=erro")
     return _public_job(job)
 
 
@@ -3226,6 +3752,8 @@ def _save_step(job: dict[str, Any], state: str, step: str, message: str) -> dict
             "subquestions",
             "proposal_version",
             "restart_requested",
+            "vehicle_identity_capture_status",
+            "vehicle_identity",
         ):
             job[key] = latest.get(key)
     job["agent_state"] = state
@@ -3259,7 +3787,7 @@ def _save_step(job: dict[str, Any], state: str, step: str, message: str) -> dict
                 details={"job_id": job.get("job_id"), "state": state, "step": step},
             )
         except Exception:
-            logger.exception("[PPV CODEX] Falha ao atualizar plano %s", plan_id)
+            logger.warning("[PPV CODEX] evento=atualizar_plano status=erro")
     return saved
 
 
@@ -3289,7 +3817,7 @@ def _heartbeat_loop(
             if not isinstance(renewed, dict):
                 return
         except Exception:
-            logger.exception("[PPV CODEX] Falha ao renovar lease do job %s", job_id)
+            logger.warning("[PPV CODEX] evento=renovar_lease status=erro")
 
 
 def _is_operational_failure(exc: BaseException) -> bool:
@@ -3398,6 +3926,172 @@ def _persist_thread_ready(job: dict[str, Any], thread_id: str) -> dict[str, Any]
     return saved
 
 
+def _sanitize_question_and_decode_vehicle(
+    job: dict[str, Any],
+    question: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Sanitize late input while using only facts decoded before queueing."""
+
+    current_capture = capture_vin_payload(
+        question,
+        retain_envelope=False,
+    )
+    sanitized = (
+        dict(current_capture.sanitized_payload)
+        if isinstance(current_capture.sanitized_payload, dict)
+        else {}
+    )
+
+    existing = job.get("vehicle_identity") if isinstance(job.get("vehicle_identity"), dict) else {}
+    if existing:
+        # The identity decoded from the current public question is authoritative.
+        # A VIN discovered later in enriched history may belong to an older
+        # vehicle and must be sanitized without replacing those safe facts.
+        return sanitized, dict(existing)
+
+    capture_status = str(current_capture.status or "absent")
+    if capture_status in {"ambiguous", "invalid"}:
+        status = "ambiguous" if capture_status == "ambiguous" else "invalid"
+        reason = "multiple_vins" if status == "ambiguous" else "vin_invalid"
+        facts = empty_vehicle_identity(status, reason=reason).as_dict()
+        job["vehicle_identity"] = facts
+        return sanitized, facts
+
+    contains_marker = VIN_MARKER in str(sanitized)
+    original_capture_status = str(job.get("vehicle_identity_capture_status") or "absent")
+    if capture_status == "captured" or original_capture_status == "captured" or contains_marker:
+        facts = empty_vehicle_identity(
+            "unavailable",
+            reason="transient_envelope_unavailable",
+        ).as_dict()
+        job["vehicle_identity"] = facts
+        return sanitized, facts
+    return sanitized, {}
+
+
+def _variation_id_from_payload(payload: Mapping[str, Any]) -> str:
+    nested = payload.get("variation") if isinstance(payload.get("variation"), Mapping) else {}
+    return str(
+        payload.get("variation_id")
+        or payload.get("item_variation_id")
+        or payload.get("selected_variation_id")
+        or nested.get("id")
+        or ""
+    ).strip()
+
+
+def _item_variations(item: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [
+        dict(value)
+        for value in (item.get("variations") or [])
+        if isinstance(value, Mapping) and str(value.get("id") or "").strip()
+    ]
+
+
+def _resolve_product_variation(
+    question: Mapping[str, Any],
+    item: Mapping[str, Any],
+    request: Mapping[str, Any],
+) -> tuple[str, dict[str, Any] | None, str]:
+    request_item = request.get("item") if isinstance(request.get("item"), Mapping) else {}
+    requested = (
+        _variation_id_from_payload(question)
+        or _variation_id_from_payload(request)
+        or _variation_id_from_payload(request_item)
+        or _variation_id_from_payload(item)
+    )
+    variations = _item_variations(item)
+    if requested and variations:
+        selected = next(
+            (value for value in variations if str(value.get("id") or "").strip() == requested),
+            None,
+        )
+        if selected is None:
+            return "", None, "invalid"
+        return requested, selected, "selected"
+    if requested:
+        return requested, None, "selected_unverified"
+    if len(variations) == 1:
+        return str(variations[0].get("id") or "").strip(), variations[0], "single"
+    if variations:
+        return "", None, "unresolved_multi"
+    return "", None, "global"
+
+
+def _product_sku_for_variation(
+    runtime: Any,
+    question: Mapping[str, Any],
+    item: Mapping[str, Any],
+    request: Mapping[str, Any],
+    selected: Mapping[str, Any] | None,
+    variation_state: str,
+) -> str:
+    if variation_state in {"invalid", "unresolved_multi"}:
+        return ""
+    parent = dict(item)
+    parent.pop("variations", None)
+    parent.pop("variations_data", None)
+    candidates = [
+        runtime._ml_extrair_sku(dict(selected or {})) if selected else "",
+        question.get("item_sku"),
+        request.get("sku"),
+        runtime._ml_extrair_sku(parent),
+    ]
+    return next((str(value).strip() for value in candidates if str(value or "").strip()), "")
+
+
+def _product_evidence_identity(
+    runtime: Any,
+    *,
+    store: str,
+    cfg: dict[str, Any],
+    question: dict[str, Any],
+    item: dict[str, Any],
+    request: dict[str, Any],
+) -> dict[str, str]:
+    seller = item.get("seller") if isinstance(item.get("seller"), dict) else {}
+    item_id = str(item.get("id") or question.get("item_id") or request.get("item_id") or "").strip()
+    site_id = str(item.get("site_id") or cfg.get("site_id") or "").strip()
+    if not site_id and re.match(r"^[A-Z]{3}", item_id, flags=re.IGNORECASE):
+        site_id = item_id[:3].upper()
+    variation_id, selected_variation, variation_state = _resolve_product_variation(
+        question,
+        item,
+        request,
+    )
+    question["_product_evidence_variation_state"] = variation_state
+    sku = _product_sku_for_variation(
+        runtime,
+        question,
+        item,
+        request,
+        selected_variation,
+        variation_state,
+    )
+    raw_identity = {
+        "store_ref": store,
+        "seller_id": str(
+            item.get("seller_id")
+            or seller.get("id")
+            or cfg.get("user_id")
+            or cfg.get("seller_id")
+            or ""
+        ).strip(),
+        "site_id": site_id,
+        "sku": sku,
+        "item_id": item_id,
+        "variation_id": variation_id,
+    }
+    return evidence_identity({
+        "store": store,
+        "item": {
+            "id": raw_identity["item_id"],
+            "seller_sku": raw_identity["sku"],
+        },
+        "product_evidence_identity": raw_identity,
+    })
+
+
 def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     runtime = _require_runtime()
     request = job.get("request") if isinstance(job.get("request"), dict) else {}
@@ -3420,7 +4114,7 @@ def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
                 payload = response.json() or {}
                 question = dict(payload.get("question") or payload) if isinstance(payload, dict) else {}
         except Exception as exc:
-            logger.warning("[PPV CODEX] Falha ao recarregar pergunta %s: %s", question_id, exc)
+            logger.warning("[PPV CODEX] evento=recarregar_pergunta status=erro tipo=%s", type(exc).__name__)
     if not question:
         raise RuntimeError("pergunta_canonica_indisponivel")
     question.setdefault("id", question_id)
@@ -3446,25 +4140,37 @@ def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         else ""
     )
     if str(request.get("resposta_atual") or "").strip():
-        question["_resposta_atual"] = str(request.get("resposta_atual") or "").strip()[:1200]
+        question["_resposta_atual"] = str(request.get("resposta_atual") or "")
     if str(request.get("orientacao_usuario") or "").strip():
         question["_orientacao_usuario"] = str(request.get("orientacao_usuario") or "").strip()[:1200]
     cfg = runtime._obter_cfg_ml(client_id, store)
-    item = dict(request.get("item") or {}) if isinstance(request.get("item"), dict) else {}
-    item_id = str(question.get("item_id") or job.get("item_id") or item.get("id") or "").strip()
-    if item_id and not item:
+    request_item = dict(request.get("item") or {}) if isinstance(request.get("item"), dict) else {}
+    item: dict[str, Any] = {}
+    official_current_listing = False
+    item_id = str(question.get("item_id") or job.get("item_id") or request_item.get("id") or "").strip()
+    if item_id:
         try:
             response, cfg = runtime._ml_api_request(
                 client_id, store, cfg, "GET", f"https://api.mercadolibre.com/items/{item_id}", timeout=12
             )
             if response.status_code == 200:
-                item = response.json() or {}
+                loaded_item = response.json() or {}
+                if isinstance(loaded_item, dict) and loaded_item:
+                    item = loaded_item
+                    official_current_listing = True
         except Exception as exc:
-            logger.warning("[PPV CODEX] Falha ao atualizar anúncio %s: %s", item_id, exc)
+            logger.warning("[PPV CODEX] evento=atualizar_anuncio status=erro tipo=%s", type(exc).__name__)
     if not item:
-        item = runtime._ml_api_item_com_oauth_tenant(client_id, item_id) or runtime._ml_api_item(item_id) or {}
+        loaded_item = runtime._ml_api_item_com_oauth_tenant(client_id, item_id) or runtime._ml_api_item(item_id) or {}
+        if isinstance(loaded_item, dict) and loaded_item:
+            item = loaded_item
+            official_current_listing = True
+    if not item:
+        item = request_item
     if isinstance(item, dict) and item and not runtime._ml_extrair_sku(item):
         item = runtime._ml_perguntas_completar_skus_itens(client_id, store, cfg, [item])[0]
+    if isinstance(item, dict):
+        item["_ppv_official_current_listing"] = official_current_listing
     codex_fields = {key: value for key, value in question.items() if str(key).startswith("_")}
     try:
         normalizer = getattr(runtime, "_ml_perguntas_normalizar", None)
@@ -3477,18 +4183,40 @@ def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             if enriched and isinstance(enriched[0], dict):
                 question = enriched[0]
     except Exception as exc:
-        logger.warning("[PPV CODEX] Falha ao recarregar historico canonico da pergunta %s: %s", question_id, exc)
+        logger.warning("[PPV CODEX] evento=recarregar_historico status=erro tipo=%s", type(exc).__name__)
     question.update(codex_fields)
+    question, vehicle_identity = _sanitize_question_and_decode_vehicle(job, question)
+    product_identity = _product_evidence_identity(
+        runtime,
+        store=store,
+        cfg=cfg if isinstance(cfg, dict) else {},
+        question=question,
+        item=item if isinstance(item, dict) else {},
+        request=request,
+    )
+    verified_product_evidence = load_verified_product_evidence(client_id, product_identity)
+    question["_vehicle_identity"] = dict(vehicle_identity) if vehicle_identity else {}
+    question["_product_evidence_identity"] = product_identity
+    question["_verified_product_evidence"] = verified_product_evidence
     answer, _cfg, context = runtime._perguntas_ia_gerar_resposta(client_id, store, cfg, question, item or {})
     context = context if isinstance(context, dict) else {}
     context.setdefault("loja", store)
+    if vehicle_identity:
+        context.setdefault("vehicle_identity", vehicle_identity)
+    context.setdefault("verified_product_evidence", verified_product_evidence)
+    context.setdefault("product_evidence_policy", PRODUCT_EVIDENCE_POLICY)
+    context.setdefault("vehicle_identity_policy", VEHICLE_IDENTITY_POLICY)
     context.setdefault("pergunta", {
         "id": question.get("id") or job.get("event_subject_key") or "",
         "item_id": question.get("item_id") or item_id,
         "buyer_id": question.get("buyer_id") or question.get("from_id") or "",
         "text": question.get("text") or "",
     })
-    context.setdefault("item", item or {})
+    public_item = {
+        key: value for key, value in (item or {}).items()
+        if key != "_ppv_official_current_listing"
+    }
+    context.setdefault("item", public_item)
     history = (
         question.get("buyer_question_chat")
         if isinstance(question.get("buyer_question_chat"), list)
@@ -3497,7 +4225,7 @@ def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     if history:
         context.setdefault("buyer_question_chat", history[-10:])
         context.setdefault("historico_comprador", history[-10:])
-    return str(answer or "").strip(), context
+    return str(answer or ""), context
 
 
 def _load_post_sale_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -3525,7 +4253,7 @@ def _load_post_sale_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     conversation["_research_history"] = list(job.get("research_history") or [])[-6:]
     conversation["_force_external_research"] = bool(job.get("retry_count") or job.get("research_history"))
     if str(request.get("resposta_atual") or "").strip():
-        conversation["_resposta_atual"] = str(request.get("resposta_atual") or "").strip()[:1200]
+        conversation["_resposta_atual"] = str(request.get("resposta_atual") or "")
     if str(request.get("orientacao_usuario") or "").strip():
         conversation["_orientacao_usuario"] = str(request.get("orientacao_usuario") or "").strip()[:1200]
     conversation, cfg = runtime._ml_pos_venda_preparar_conversa_ia(client_id, store, cfg, conversation)
@@ -3539,7 +4267,7 @@ def _load_post_sale_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         "decisao": result.get("decisao") or {},
         "codex_thread_id": conversation.get("_codex_thread_id_result") or conversation.get("_codex_thread_id") or "",
     }
-    return str(result.get("resposta") or "").strip(), context
+    return str(result.get("resposta") or ""), context
 
 
 def _refresh_thread_from_previous_job(job: dict[str, Any]) -> dict[str, Any]:
@@ -3583,7 +4311,8 @@ def _run_job(client_id: str, job_id: str) -> None:
     if not _job_contract_current(claimed):
         _quarantine_outdated_job(claimed, client_id=client_id)
         return
-    job = _refresh_thread_from_previous_job(claimed)
+    job = _consume_vehicle_identity_for_worker(claimed)
+    job = _refresh_thread_from_previous_job(job)
     now_epoch = time.time()
     if float(job.get("first_started_at_epoch") or 0.0) <= 0.0:
         job["first_started_at_epoch"] = now_epoch
@@ -3622,6 +4351,8 @@ def _run_job(client_id: str, job_id: str) -> None:
     )
     heartbeat_thread.start()
     started = time.monotonic()
+    answer = ""
+    context: dict[str, Any] = {}
     try:
         job = _save_step(job, "planejando", "entender", "Separando os assuntos da pergunta.")
         if _cancelled(job):
@@ -3633,7 +4364,7 @@ def _run_job(client_id: str, job_id: str) -> None:
             answer, context = _load_question_context(job)
             job["subquestions"] = _ai_subquestions(context)
         if time.monotonic() - started > MAX_SECONDS:
-            raise TimeoutError("O ciclo do agente excedeu 180 segundos.")
+            raise TimeoutError("O ciclo do agente excedeu o prazo operacional permitido.")
         if _cancelled(job):
             raise InterruptedError("Tarefa cancelada pelo usuário.")
         job = _save_step(job, "validando", "validar", "Validando suficiência e consistência das evidências.")
@@ -3739,41 +4470,16 @@ def _run_job(client_id: str, job_id: str) -> None:
             )
             return
         if not sufficient:
-            conditional_draft = _continuation_safe_partial_draft(job, context)
-            if conditional_draft:
-                _complete_with_best_available(
-                    job,
-                    answer=conditional_draft,
-                    context=context,
-                    matrix=matrix,
-                    warnings=warnings,
-                    draft_source="contextual_fallback",
-                    completion_reason="conditional_listing_evidence",
-                    deadline_reached=False,
-                )
-            elif (
-                int(job.get("evidence_attempt_count") or 0) >= MAX_EVIDENCE_ATTEMPTS
-                or _job_deadline_expired(job)
-                or int(job.get("attempt_count") or 0) >= MAX_TOTAL_ATTEMPTS
-            ):
-                _complete_with_best_available(
-                    job,
-                    answer=answer,
-                    context=context,
-                    matrix=matrix,
-                    warnings=warnings,
-                    completion_reason="evidence_insufficient_after_retry_limit",
-                )
-            else:
-                _persist_retry(
-                    job,
-                    answer=answer,
-                    context=context,
-                    matrix=matrix,
-                    warnings=warnings,
-                    error="evidencia_tecnica_insuficiente",
-                    retry_kind="evidence",
-                )
+            _complete_with_best_available(
+                job,
+                answer=answer,
+                context=context,
+                matrix=matrix,
+                warnings=warnings,
+                draft_source="ai",
+                completion_reason="ai_response_preserved_unvalidated",
+                deadline_reached=False,
+            )
             return
         job.update(
             {
@@ -3830,7 +4536,7 @@ def _run_job(client_id: str, job_id: str) -> None:
                 details={"data_sufficient": sufficient, "completion_reason": "evidence_confirmed"},
             )
     except _LeaseLost:
-        logger.info("[PPV CODEX] Worker perdeu a lease do job %s; resultado local descartado.", job_id)
+        logger.info("[PPV CODEX] evento=lease_perdida resultado=descartado")
     except InterruptedError as exc:
         job.update(
             {
@@ -3850,9 +4556,22 @@ def _run_job(client_id: str, job_id: str) -> None:
             expected_lease_generation=_lease_generation(job),
         )
     except Exception as exc:
+        if isinstance(answer, str) and answer.strip():
+            _complete_with_best_available(
+                job,
+                answer=answer,
+                context=context,
+                warnings=[
+                    "A resposta da IA foi preservada literalmente apos uma falha de pos-processamento."
+                ],
+                draft_source="ai",
+                completion_reason="ai_response_preserved_after_postprocessing_failure",
+                deadline_reached=False,
+            )
+            return
         fallback_context = getattr(exc, "ppv_fallback_context", None)
         if isinstance(exc, PerguntasIAClassificacaoInconclusiva):
-            logger.info("[PPV CODEX] Classificacao inconclusiva no job %s.", job_id)
+            logger.info("[PPV CODEX] evento=classificacao_inconclusiva")
             job["operational_failure_count"] = 0
             _complete_without_draft(
                 job,
@@ -3867,7 +4586,7 @@ def _run_job(client_id: str, job_id: str) -> None:
             )
             return
         if isinstance(exc, PerguntasIASegurancaBloqueada):
-            logger.warning("[PPV CODEX] Pergunta bloqueada por seguranca no job %s.", job_id)
+            logger.warning("[PPV CODEX] evento=seguranca_bloqueada")
             job["operational_failure_count"] = 0
             _complete_without_draft(
                 job,
@@ -3877,11 +4596,7 @@ def _run_job(client_id: str, job_id: str) -> None:
                 deadline_reached=False,
             )
             return
-        logger.warning(
-            "[PPV CODEX] Falha no job %s (%s).",
-            job_id,
-            type(exc).__name__,
-        )
+        logger.warning("[PPV CODEX] evento=executar_job status=erro tipo=%s", type(exc).__name__)
         if _is_response_policy_failure(exc):
             _complete_with_best_available(
                 job,
@@ -3954,7 +4669,7 @@ def _run_job(client_id: str, job_id: str) -> None:
                     verification={"status": "retry", "confirmed": False},
                 )
             except Exception:
-                logger.exception("[PPV CODEX] Falha ao registrar nova tentativa no plano.")
+                logger.warning("[PPV CODEX] evento=registrar_tentativa status=erro")
     finally:
         heartbeat_stop.set()
         heartbeat_thread.join(timeout=1.0)
@@ -4011,9 +4726,17 @@ def recover_pending_jobs() -> None:
                             "agent_state": "concluido",
                             "current_step": "responder",
                             "draft_expired": True,
-                            "blocked_without_draft": False,
-                            "review_required": False,
-                            "completion_reason": "draft_expired",
+                            "blocked_without_draft": True,
+                            "review_required": True,
+                            "requires_approval": False,
+                            "completion_reason": "draft_unavailable_after_restart",
+                            "warnings": _unique_warnings(
+                                job.get("warnings"),
+                                [
+                                    "O rascunho nao esta mais disponivel apos a reinicializacao; "
+                                    "gere uma nova resposta. Nenhum texto substituto foi criado."
+                                ],
+                            ),
                             "lease_owner": "",
                             "lease_expires_ts": 0.0,
                         }
@@ -4050,7 +4773,7 @@ def _dispatch_pending() -> None:
     try:
         recover_pending_jobs()
     except Exception:
-        logger.exception("[PPV CODEX] Falha ao despachar fila pendente.")
+        logger.warning("[PPV CODEX] evento=despachar_fila status=erro")
 
 
 def approve_or_refresh_proposal(
@@ -4080,12 +4803,12 @@ def approve_or_refresh_proposal(
     if str(job.get("store") or "") != str(store or "") or event_subject_key != str(subject_key or ""):
         raise PermissionError("A proposta não pertence a esta loja ou conversa.")
     result = job.get("result") if isinstance(job.get("result"), dict) else {}
-    requested_answer = str(answer or "").strip()
+    requested_answer = str(answer or "")
     if (
         str(job.get("status") or "") != "completed"
         or result.get("blocked_without_draft")
         or job.get("blocked_without_draft")
-        or not requested_answer
+        or not requested_answer.strip()
     ):
         raise ValueError("A tarefa nao possui proposta de resposta aprovavel. Gere uma nova resposta.")
     current_version = max(1, int(job.get("proposal_version") or result.get("proposal_version") or 1))
@@ -4180,7 +4903,7 @@ def mark_verified(
                 },
             )
         except Exception:
-            logger.exception("[PPV CODEX] Falha ao persistir verificação do job %s", job_id)
+            logger.warning("[PPV CODEX] evento=persistir_verificacao status=erro")
     return _public_job(saved)
 
 
@@ -4223,7 +4946,7 @@ def mark_rejected(*, client_id: str, job_id: str, reason: str = "rejeitada_pelo_
                 },
             )
         except Exception:
-            logger.exception("[PPV CODEX] Falha ao registrar rejeicao do job %s", job_id)
+            logger.warning("[PPV CODEX] evento=registrar_rejeicao status=erro")
     return _public_job(saved)
 
 

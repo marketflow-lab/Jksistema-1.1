@@ -97,6 +97,16 @@ def context_from_agent_input(agent_input: dict[str, Any], *, auto_publish_enable
     rules = SellerRules(
         store_name=str(data.get("store") or data.get("loja") or "").strip(),
         guidance=str(data.get("app_guidance") or "").strip(),
+        commercial_policy=(
+            dict(data.get("commercial_state_policy"))
+            if isinstance(data.get("commercial_state_policy"), dict)
+            else {}
+        ),
+        behavior_profile=(
+            dict(data.get("seller_behavior_profile"))
+            if isinstance(data.get("seller_behavior_profile"), dict)
+            else {}
+        ),
         auto_publish_enabled=auto_publish_enabled,
     )
     return question, listing, previous, rules

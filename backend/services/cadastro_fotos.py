@@ -279,7 +279,7 @@ async def upload_foto_cadastro(
         return {
             "success": True,
             "foto": caminho_relativo,
-            "url": f"/api/cadastro/foto-arquivo/{quote_plus(nome_arquivo)}"
+            "url": f"/api/cadastro/foto/{quote_plus(str(client_id))}/{quote_plus(nome_arquivo)}"
         }
     except HTTPException:
         raise
@@ -300,15 +300,6 @@ async def servir_foto_cadastro(client_id: str, filename: str):
     candidatos.append(os.path.join(get_tenant_path(client_id), "cadastro_fotos", nome_seguro))
     # 2) fallback para default
     candidatos.append(os.path.join(PASTA_INFO, "default", "cadastro_fotos", nome_seguro))
-    # 3) fallback em todos os tenants conhecidos
-    try:
-        for pasta in os.listdir(PASTA_INFO):
-            tenant_dir = os.path.join(PASTA_INFO, pasta)
-            if not os.path.isdir(tenant_dir):
-                continue
-            candidatos.append(os.path.join(tenant_dir, "cadastro_fotos", nome_seguro))
-    except Exception:
-        pass
 
     caminho_arquivo = next((p for p in candidatos if os.path.exists(p)), None)
     if not caminho_arquivo:

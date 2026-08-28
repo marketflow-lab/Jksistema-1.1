@@ -120,6 +120,7 @@ from .sala_reuniao import (
     SalaReuniaoEncerrarTodasRequest,
 )
 from .cadastro import (
+    CadastroFornecedorRequest,
     CadastroProdutoRequest,
 )
 from .impostos import (
@@ -234,6 +235,7 @@ __all__ = [
     "SalaReuniaoEncerrarTodasRequest",
     "SiscomexConfigRequest",
     "CadastroProdutoRequest",
+    "CadastroFornecedorRequest",
     "ImpostoRegraRequest",
     "ImpostosSimulacaoRequest",
     "SimuladorCalculoRequest",

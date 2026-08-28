@@ -139,9 +139,16 @@
                 <div class="section-head">
                     <div>
                         <h2>Treinar AI</h2>
-                        <p>Organize regras gerais, notas por SKU e modelos de pergunta e resposta para a IA usar nas próximas respostas.</p>
+                        <p>Personalize o vendedor sem alterar as regras de segurança, pesquisa e veracidade do Mercado Livre.</p>
                     </div>
                     <span id="ai-training-status" class="status-line">Carregando orientações...</span>
+                </div>
+
+                <div id="ai-training-profile-status" class="training-sku-info" data-method-version="seller-conversion-v1" data-profile-version="2">
+                    <div>
+                        <div class="training-sku-name">Método RVC v6 ativo · perfil de vendedor v2</div>
+                        <div class="training-sku-meta">A IA esclarece primeiro e conduz à compra somente quando a adequação estiver comprovada. O método global não pode ser desativado por instruções salvas.</div>
+                    </div>
                 </div>
 
                 <div class="training-type-tabs" role="tablist" aria-label="Tipo de treinamento da IA">
@@ -159,19 +166,21 @@
                             <select id="ai-training-scope" data-contract="lojaEscopoTreinamento" data-bulk-config-endpoint="/api/mercadolivre/perguntas/lojas/config-lote" data-all-accounts-label="Todas as contas conectadas">
                                 <option value="">Padrao para todas as contas</option>
                             </select>
-                            <small>Use o padrao geral para todas as contas. Escolha uma conta apenas quando ela precisar de uma instrucao propria.</small>
+                            <small>O escopo global só pode ser escolhido nesta tela. Escolha uma conta para criar políticas próprias sem afetar as demais lojas.</small>
                         </label>
                         <label class="training-field">
                             <span id="ai-training-orientacoes-label">Orientações para perguntas de anúncio</span>
                             <textarea id="ai-training-orientacoes" rows="5" placeholder="Ex.: responder sempre com tom cordial, não prometer prazo sem confirmação, pedir modelo/ano quando a aplicação do produto for incerta..."></textarea>
+                            <small>Altera tom, estrutura e abordagem comercial; não altera ferramentas, pesquisa, assinatura, fatos confirmados ou políticas superiores.</small>
                         </label>
                         <label class="training-field">
                             <span>Base de conhecimento da loja</span>
                             <textarea id="ai-training-contexto-loja" rows="4" placeholder="Ex.: política de garantia, prazo de postagem, como falar sobre compatibilidade, estoque, troca, emissão de nota e atendimento."></textarea>
+                            <small>Registre políticas editoriais e fatos estáveis da loja. Dados atuais do anúncio e das APIs sempre têm prioridade.</small>
                         </label>
                         <label class="training-field">
                             <span>Compatibilidade e autopeças</span>
-                            <textarea id="ai-training-compatibilidade" rows="4" placeholder="Ex.: sempre comparar peça, lado, dianteiro/traseiro, marca, modelo, motor e ano. Se faltar informação, pedir chassi, código ou foto."></textarea>
+                            <textarea id="ai-training-compatibilidade" rows="4" placeholder="Ex.: sempre comparar peça, lado, dianteiro/traseiro, marca, modelo, motor e ano. Se faltar informação, pedir código e versão ou motorização."></textarea>
                         </label>
                         <label class="training-field">
                             <span>O que a IA nunca deve afirmar</span>
@@ -195,6 +204,7 @@
                         <label class="training-field">
                             <span>Notas específicas deste SKU</span>
                             <textarea id="ai-training-notas-sku" rows="3" placeholder="Aplicações confirmadas, códigos, variações, exceções e cuidados para este SKU."></textarea>
+                            <small>Podem fornecer fatos apenas para este SKU, mas perdem para cadastro, anúncio e APIs oficiais atuais.</small>
                         </label>
                         <div class="training-examples">
                             <div class="training-examples-head">
@@ -215,6 +225,7 @@
                             <label class="training-field">
                                 <span>Resposta modelo</span>
                                 <textarea id="ai-training-exemplo-resposta" rows="3" placeholder="Resposta aprovada que a IA deve usar como referência"></textarea>
+                                <small>Modelos ensinam somente tom, estrutura e abordagem. Fatos de produto presentes no exemplo não serão reutilizados.</small>
                             </label>
                             <div id="ai-training-examples-list" class="training-examples-list"></div>
                         </div>
@@ -243,10 +254,10 @@
 
     <script src="/perguntas_pos_venda/runtime.js?v=20260720-pos-venda-manual"></script>
     <script src="/perguntas_pos_venda/lojas-automacao.js?v=20260720-pos-venda-manual"></script>
-    <script src="/perguntas_pos_venda/perguntas.js?v=20260817-draft-source-v1"></script>
+    <script src="/perguntas_pos_venda/perguntas.js?v=20260825-seller-profile-v2"></script>
     <script src="/perguntas_pos_venda/pos-venda.js?v=20260720-pos-venda-manual"></script>
     <script src="/perguntas_pos_venda/mediacao.js?v=20260720-pos-venda-manual"></script>
-    <script src="/perguntas_pos_venda/treinamento-ia.js?v=20260720-pos-venda-manual"></script>
+    <script src="/perguntas_pos_venda/treinamento-ia.js?v=20260825-seller-profile-v2"></script>
     <script src="/perguntas_pos_venda/init.js?v=20260720-pos-venda-manual"></script>
     <script src="/ia-sidebar.js?v=20260817-black-jhon-manual-only-v1"></script>
 </body>

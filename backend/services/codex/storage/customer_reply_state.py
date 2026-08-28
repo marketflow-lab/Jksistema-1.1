@@ -20,15 +20,15 @@ _CUSTOMER_REPLY_TRANSIENT: dict[tuple[str, str], tuple[float, dict[str, Any]]] =
 _CUSTOMER_REPLY_ACTIVE_TRANSIENT_TTL_SECONDS = 24 * 60 * 60
 
 
-_CUSTOMER_REPLY_COMPLETED_TRANSIENT_TTL_SECONDS = 15 * 60
+_CUSTOMER_REPLY_COMPLETED_TRANSIENT_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
 _CUSTOMER_REPLY_TERMINAL_ROW_TTL_DAYS = 7
 
 
 # Customer prompts, buyer history, generated answers, evidence, queries, sources,
-# tool output and operator guidance are intentionally absent. This table is a
-# durable scheduler/lease journal, not a conversation or proposal store.
+# tool output and operator guidance are intentionally absent. Only the closed,
+# VIN-free VehicleIdentityFactsV1 result joins the durable scheduler/lease journal.
 _CUSTOMER_REPLY_DURABLE_FIELDS = frozenset({
     "job_id", "profile", "task_type", "subject_key", "event_subject_key",
     "question_id", "item_id", "store", "client_id", "channel", "status",
@@ -37,6 +37,7 @@ _CUSTOMER_REPLY_DURABLE_FIELDS = frozenset({
     "prompt_hash", "schema_version", "conversation_id", "previous_job_id",
     "plan_id", "proposal_id", "proposal_version", "proposal_hash", "action_id",
     "cancel_requested", "request_generation", "attempt_count",
+    "vehicle_identity_capture_status", "vehicle_identity",
     "operational_failure_count", "retry_count", "retry_policy",
     "queue_origin", "queue_priority", "queue_policy_version",
     "evidence_attempt_count", "evidence_attempt_limit",
@@ -163,8 +164,12 @@ def _customer_reply_transient_put(db_path: str, payload: dict[str, Any], transie
             return
         previous = _CUSTOMER_REPLY_TRANSIENT.get(key)
         merged = dict(previous[1]) if previous and previous[0] > time.time() else {}
+        for durable_key in ("vehicle_identity", "vehicle_identity_capture_status"):
+            if durable_key in payload and durable_key not in transient:
+                merged.pop(durable_key, None)
         merged.update(transient)
         if not merged:
+            _CUSTOMER_REPLY_TRANSIENT.pop(key, None)
             return
         ttl = (
             _CUSTOMER_REPLY_COMPLETED_TRANSIENT_TTL_SECONDS

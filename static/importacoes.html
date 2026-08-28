@@ -691,6 +691,110 @@
 
         .meta-container strong { color: #d4aaff; }
 
+        .meta-booking {
+            border-color: rgba(255, 193, 100, 0.48);
+            background: rgba(62, 39, 10, 0.9);
+        }
+
+        .meta-booking strong { color: #ffd48a; }
+
+        .meta-rota {
+            border-color: rgba(96, 224, 184, 0.38);
+            background: rgba(9, 51, 43, 0.86);
+        }
+
+        .meta-rota strong { color: #9dffe0; }
+
+        .embarque-meta-rastreamento {
+            align-items: center;
+        }
+
+        .embarque-rastreamento-vazio {
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+
+        .embarque-rastreamento-acoes {
+            display: inline-flex;
+            flex-wrap: wrap;
+            gap: 7px;
+        }
+
+        .embarque-posicao-api {
+            margin: 8px 0 14px;
+            padding: 12px;
+            border: 1px solid rgba(96, 224, 184, 0.38);
+            border-radius: 12px;
+            background: linear-gradient(180deg, rgba(8, 42, 39, 0.88), rgba(8, 26, 35, 0.94));
+        }
+
+        .embarque-posicao-api.is-loading {
+            color: #a8dff2;
+        }
+
+        .embarque-posicao-api.is-error {
+            border-color: rgba(255, 141, 141, 0.55);
+            background: rgba(67, 22, 30, 0.82);
+            color: #ffd9d9;
+        }
+
+        .posicao-api-topo {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .posicao-api-titulo {
+            color: #a6ffdc;
+            font-size: 1rem;
+            font-weight: 800;
+        }
+
+        .posicao-api-fonte {
+            color: var(--muted);
+            font-size: 0.78rem;
+        }
+
+        .posicao-api-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+            gap: 7px;
+        }
+
+        .posicao-api-item {
+            padding: 7px 9px;
+            border-radius: 8px;
+            background: rgba(8, 20, 34, 0.72);
+            border: 1px solid rgba(126, 203, 255, 0.18);
+        }
+
+        .posicao-api-label {
+            display: block;
+            color: var(--muted);
+            font-size: 0.68rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .posicao-api-valor {
+            color: #efffff;
+            font-size: 0.9rem;
+            font-weight: 700;
+            overflow-wrap: anywhere;
+        }
+
+        .posicao-api-mapa {
+            display: inline-flex;
+            margin-top: 10px;
+            color: #9dffe0;
+            font-size: 0.86rem;
+            font-weight: 800;
+        }
+
         .meta-linha-invoice {
             margin-bottom: 2px;
         }
@@ -955,6 +1059,172 @@
             gap: 5px;
         }
         .btn-embarque-rastrear:hover { transform: translateY(-1px); filter: brightness(1.15); }
+        .rastreamento-carga-popover {
+            position: fixed;
+            z-index: 3600;
+            width: min(520px, calc(100vw - 24px));
+            max-height: min(690px, calc(100vh - 24px));
+            overflow-y: auto;
+            border: 1px solid rgba(99, 220, 255, 0.58);
+            border-radius: 15px;
+            background: linear-gradient(160deg, rgba(9, 25, 45, 0.99), rgba(5, 16, 31, 0.995));
+            box-shadow: 0 24px 62px rgba(0, 0, 0, 0.62), 0 0 0 1px rgba(99, 220, 255, 0.12);
+            color: #eaf5ff;
+            padding: 15px;
+            box-sizing: border-box;
+        }
+        .rastreamento-carga-popover[hidden] { display: none !important; }
+        .rastreamento-carga-topo {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+        .rastreamento-carga-titulo {
+            color: #bdefff;
+            font-size: 1.05rem;
+            font-weight: 850;
+        }
+        .rastreamento-carga-subtitulo {
+            color: #8fb3cf;
+            font-size: 0.76rem;
+            margin-top: 2px;
+        }
+        .rastreamento-carga-fechar {
+            flex: 0 0 auto;
+            width: 30px;
+            height: 30px;
+            border: 1px solid rgba(126, 203, 255, 0.32);
+            border-radius: 8px;
+            background: rgba(20, 39, 62, 0.92);
+            color: #eaf5ff;
+            cursor: pointer;
+            font-size: 1.1rem;
+            line-height: 1;
+        }
+        .rastreamento-carga-salvo {
+            border: 1px solid rgba(255, 193, 100, 0.28);
+            border-radius: 11px;
+            background: rgba(56, 38, 14, 0.46);
+            padding: 9px 10px;
+            margin-bottom: 10px;
+        }
+        .rastreamento-carga-secao-titulo {
+            color: #ffd89a;
+            font-size: 0.7rem;
+            font-weight: 800;
+            letter-spacing: 0.55px;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+        }
+        .rastreamento-carga-salvo-linha {
+            color: #dcecff;
+            font-size: 0.82rem;
+            line-height: 1.5;
+            overflow-wrap: anywhere;
+        }
+        .rastreamento-carga-salvo-linha strong { color: #fff0cf; }
+        .rastreamento-carga-aviso {
+            border: 1px solid rgba(99, 220, 255, 0.28);
+            border-radius: 10px;
+            background: rgba(10, 45, 70, 0.62);
+            color: #c9efff;
+            font-size: 0.84rem;
+            line-height: 1.4;
+            margin-bottom: 10px;
+            padding: 9px 10px;
+        }
+        .rastreamento-carga-aviso.is-loading::before {
+            content: "";
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            margin-right: 7px;
+            border: 2px solid rgba(159, 225, 255, 0.35);
+            border-top-color: #9fe1ff;
+            border-radius: 50%;
+            animation: rastreamento-carga-girar 0.8s linear infinite;
+            vertical-align: -1px;
+        }
+        .rastreamento-carga-aviso.is-error {
+            border-color: rgba(255, 141, 141, 0.48);
+            background: rgba(67, 22, 30, 0.76);
+            color: #ffd9d9;
+        }
+        @keyframes rastreamento-carga-girar { to { transform: rotate(360deg); } }
+        .rastreamento-carga-status {
+            display: inline-flex;
+            align-items: center;
+            border: 1px solid rgba(96, 224, 184, 0.42);
+            border-radius: 999px;
+            background: rgba(9, 51, 43, 0.74);
+            color: #a6ffdc;
+            font-size: 0.78rem;
+            font-weight: 800;
+            margin-bottom: 9px;
+            padding: 4px 9px;
+        }
+        .rastreamento-carga-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 7px;
+            margin-bottom: 9px;
+        }
+        .rastreamento-carga-item {
+            min-width: 0;
+            border: 1px solid rgba(126, 203, 255, 0.18);
+            border-radius: 9px;
+            background: rgba(8, 20, 34, 0.75);
+            padding: 7px 9px;
+        }
+        .rastreamento-carga-label {
+            display: block;
+            color: #86a8c3;
+            font-size: 0.66rem;
+            font-weight: 750;
+            letter-spacing: 0.45px;
+            margin-bottom: 2px;
+            text-transform: uppercase;
+        }
+        .rastreamento-carga-valor {
+            color: #edf8ff;
+            display: block;
+            font-size: 0.82rem;
+            font-weight: 750;
+            overflow-wrap: anywhere;
+        }
+        .rastreamento-carga-fonte {
+            color: #7f9eb6;
+            font-size: 0.7rem;
+            line-height: 1.35;
+            margin: 2px 0 10px;
+        }
+        .rastreamento-carga-acoes {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 7px;
+        }
+        .rastreamento-carga-acao {
+            border: 1px solid rgba(126, 203, 255, 0.34);
+            border-radius: 8px;
+            background: rgba(20, 39, 62, 0.94);
+            color: #eaf5ff;
+            cursor: pointer;
+            font-size: 0.78rem;
+            font-weight: 750;
+            padding: 7px 10px;
+        }
+        .rastreamento-carga-acao.is-primary {
+            border-color: rgba(99, 220, 255, 0.5);
+            background: rgba(10, 56, 86, 0.95);
+            color: #bdefff;
+        }
+        .rastreamento-carga-acao:disabled {
+            cursor: wait;
+            opacity: 0.56;
+        }
         .embarque-detalhe-bar {
             display: flex;
             align-items: center;
@@ -1081,7 +1351,7 @@
             border: 1px solid rgba(99, 187, 255, 0.38);
             border-radius: 18px;
             padding: 26px 28px 24px;
-            max-width: 560px;
+            max-width: 780px;
             width: 92%;
             max-height: 82vh;
             overflow-y: auto;
@@ -1119,6 +1389,20 @@
         .modal-input:focus {
             border-color: var(--accent);
             box-shadow: 0 0 0 2px rgba(28, 162, 255, 0.25);
+        }
+        .modal-campos-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0 14px;
+        }
+        .modal-campo-largo {
+            grid-column: 1 / -1;
+        }
+        .modal-ajuda {
+            color: var(--muted);
+            font-size: 0.82rem;
+            line-height: 1.35;
+            margin: -5px 0 14px;
         }
         .modal-lista-check {
             display: flex;
@@ -1191,6 +1475,32 @@
             transition: transform 0.15s, filter 0.15s;
         }
         .btn-modal-fechar:hover { transform: translateY(-1px); filter: brightness(1.06); }
+        @media (max-width: 760px) {
+            .modal-box {
+                padding: 20px 18px;
+                max-height: 90vh;
+            }
+            .modal-campos-grid {
+                grid-template-columns: 1fr;
+            }
+            .modal-campo-largo {
+                grid-column: auto;
+            }
+            .embarque-rastreamento-acoes,
+            .embarque-rastreamento-acoes .btn-embarque-rastrear {
+                width: 100%;
+            }
+            .embarque-rastreamento-acoes .btn-embarque-rastrear {
+                justify-content: center;
+            }
+            .rastreamento-carga-popover {
+                max-height: calc(100vh - 18px);
+                padding: 12px;
+            }
+            .rastreamento-carga-grid { grid-template-columns: 1fr; }
+            .rastreamento-carga-acoes { justify-content: stretch; }
+            .rastreamento-carga-acao { flex: 1 1 auto; }
+        }
     </style>
 </head>
 <body>
@@ -1240,6 +1550,7 @@
                 </div>
                 <div id="embarqueInvoiceLine" class="embarque-invoice-line"></div>
                 <div id="embarqueDetalheMeta" style="display:none;"></div>
+                <div id="embarquePosicaoApi" class="embarque-posicao-api" style="display:none;"></div>
                 <div id="embarqueDetalheCards" class="emb-resumo-topo" style="margin-bottom:14px;"></div>
                 <div id="embarqueDetalheListas" class="lista-wrap"></div>
             </div>
@@ -1264,12 +1575,65 @@
             <div class="modal-overlay" id="modalEmbarque" role="dialog" aria-modal="true" aria-labelledby="modalEmbarqueTitulo">
                 <div class="modal-box">
                     <h2 class="modal-titulo" id="modalEmbarqueTitulo">Organizar Embarque</h2>
-                    <label class="modal-label" for="inputNomeEmbarque">Nome do embarque</label>
-                    <input type="text" class="modal-input" id="inputNomeEmbarque" placeholder="Ex.: Embarque Abril 2026" maxlength="120" />
-                    <label class="modal-label" for="inputBlEmbarque">Número do BL</label>
-                    <input type="text" class="modal-input" id="inputBlEmbarque" placeholder="Ex.: COSU6123456789" maxlength="80" />
-                    <label class="modal-label" for="inputContainerEmbarque">Número do Container</label>
-                    <input type="text" class="modal-input" id="inputContainerEmbarque" placeholder="Ex.: TCKU3456789" maxlength="80" />
+                    <div class="modal-campos-grid">
+                        <div class="modal-campo modal-campo-largo">
+                            <label class="modal-label" for="inputNomeEmbarque">Nome do embarque</label>
+                            <input type="text" class="modal-input" id="inputNomeEmbarque" placeholder="Ex.: Embarque Abril 2026" maxlength="120" />
+                        </div>
+                        <div class="modal-campo">
+                            <label class="modal-label" for="inputBookingEmbarque">Booking</label>
+                            <input type="text" class="modal-input" id="inputBookingEmbarque" placeholder="Ex.: COSU6464481560" maxlength="80" autocomplete="off" />
+                        </div>
+                        <div class="modal-campo">
+                            <label class="modal-label" for="inputArmadorEmbarque">Armador</label>
+                            <input type="text" class="modal-input" id="inputArmadorEmbarque" list="armadoresEmbarque" placeholder="Ex.: COSCO Shipping" maxlength="100" autocomplete="off" />
+                            <datalist id="armadoresEmbarque">
+                                <option value="COSCO Shipping"></option>
+                                <option value="CMA CGM"></option>
+                            </datalist>
+                        </div>
+                        <div class="modal-campo">
+                            <label class="modal-label" for="inputBlEmbarque">Número do BL</label>
+                            <input type="text" class="modal-input" id="inputBlEmbarque" placeholder="Ex.: COSU6123456789" maxlength="80" autocomplete="off" />
+                        </div>
+                        <div class="modal-campo">
+                            <label class="modal-label" for="inputContainerEmbarque">Número do container</label>
+                            <input type="text" class="modal-input" id="inputContainerEmbarque" placeholder="Ex.: TCKU3456789" maxlength="80" autocomplete="off" />
+                        </div>
+                        <div class="modal-campo">
+                            <label class="modal-label" for="inputNavioEmbarque">Navio (VSL)</label>
+                            <input type="text" class="modal-input" id="inputNavioEmbarque" placeholder="Ex.: CMA CGM IRON" maxlength="120" autocomplete="off" />
+                        </div>
+                        <div class="modal-campo">
+                            <label class="modal-label" for="inputViagemEmbarque">Viagem (VOY)</label>
+                            <input type="text" class="modal-input" id="inputViagemEmbarque" placeholder="Ex.: 0BDPBW" maxlength="80" autocomplete="off" />
+                        </div>
+                        <div class="modal-campo">
+                            <label class="modal-label" for="inputImoEmbarque">IMO do navio</label>
+                            <input type="text" inputmode="numeric" class="modal-input" id="inputImoEmbarque" placeholder="Ex.: 9996678" maxlength="7" autocomplete="off" />
+                        </div>
+                        <div class="modal-campo">
+                            <label class="modal-label" for="inputMmsiEmbarque">MMSI do navio</label>
+                            <input type="text" inputmode="numeric" class="modal-input" id="inputMmsiEmbarque" placeholder="Ex.: 249369000" maxlength="9" autocomplete="off" />
+                        </div>
+                        <div class="modal-campo">
+                            <label class="modal-label" for="inputPolEmbarque">Porto de origem (POL)</label>
+                            <input type="text" class="modal-input" id="inputPolEmbarque" placeholder="Ex.: NINGBO" maxlength="120" autocomplete="off" />
+                        </div>
+                        <div class="modal-campo">
+                            <label class="modal-label" for="inputPodEmbarque">Porto de destino (POD)</label>
+                            <input type="text" class="modal-input" id="inputPodEmbarque" placeholder="Ex.: SANTOS" maxlength="120" autocomplete="off" />
+                        </div>
+                        <div class="modal-campo">
+                            <label class="modal-label" for="inputEtdEmbarque">Saída prevista (ETD)</label>
+                            <input type="text" class="modal-input" id="inputEtdEmbarque" placeholder="Ex.: 04-Sep ou 04/09/2026" maxlength="40" autocomplete="off" />
+                        </div>
+                        <div class="modal-campo">
+                            <label class="modal-label" for="inputEtaEmbarque">Chegada prevista (ETA)</label>
+                            <input type="text" class="modal-input" id="inputEtaEmbarque" placeholder="Ex.: 08-Oct ou 08/10/2026" maxlength="40" autocomplete="off" />
+                        </div>
+                    </div>
+                    <div class="modal-ajuda">O rastreamento da carga abre o portal do armador. A posição AIS é consultada pela API usando IMO ou MMSI; a chave fica protegida no servidor e a posição não é gravada como se fosse atual.</div>
                     <label class="modal-label">Listas a incluir no embarque</label>
                     <div class="modal-lista-check" id="modalListasCheck">
                         <div class="muted">Carregando listas...</div>
@@ -2492,6 +2856,508 @@
             };
         }
 
+        function textoRastreamentoEmbarque(valor) {
+            return String(valor == null ? '' : valor).trim();
+        }
+
+        function normalizarRastreamentoEmbarque(valor) {
+            var texto = textoRastreamentoEmbarque(valor).toUpperCase();
+            return typeof texto.normalize === 'function'
+                ? texto.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                : texto;
+        }
+
+        function rotuloTipoReferenciaRastreamento(valor) {
+            var tipo = normalizarRastreamentoEmbarque(valor);
+            if (tipo === 'BOOKING') return 'Booking';
+            if (tipo === 'BILLOFLADING') return 'BL';
+            if (tipo === 'CONTAINER') return 'Container';
+            return textoRastreamentoEmbarque(valor) || '-';
+        }
+
+        function identificarArmadorEmbarque(embarque) {
+            var emb = embarque || {};
+            var armador = normalizarRastreamentoEmbarque(emb.armador);
+            if (armador.indexOf('COSCO') >= 0) {
+                return { codigo: 'cosco', nome: 'COSCO Shipping' };
+            }
+            if (armador.indexOf('CMA CGM') >= 0 || armador === 'CMA') {
+                return { codigo: 'cma-cgm', nome: 'CMA CGM' };
+            }
+            if (armador) {
+                return { codigo: 'outro', nome: textoRastreamentoEmbarque(emb.armador) };
+            }
+
+            var referencia = normalizarRastreamentoEmbarque(emb.numero_booking || emb.numero_bl);
+            if (referencia.indexOf('COSU') === 0) {
+                return { codigo: 'cosco', nome: 'COSCO Shipping' };
+            }
+            if (referencia.indexOf('CMDU') === 0) {
+                return { codigo: 'cma-cgm', nome: 'CMA CGM' };
+            }
+            return null;
+        }
+
+        function obterReferenciaRastreamentoEmbarque(embarque) {
+            var emb = embarque || {};
+            var booking = textoRastreamentoEmbarque(emb.numero_booking);
+            if (booking) return { tipo: 'BOOKING', tipoCma: 'Booking', rotulo: 'Booking', valor: booking };
+            var bl = textoRastreamentoEmbarque(emb.numero_bl);
+            if (bl) return { tipo: 'BILLOFLADING', tipoCma: 'BL', rotulo: 'BL', valor: bl };
+            var container = textoRastreamentoEmbarque(emb.numero_container);
+            if (container) return { tipo: 'CONTAINER', tipoCma: 'Container', rotulo: 'Container', valor: container };
+            return null;
+        }
+
+        function criarUrlRastreamentoCarga(embarque) {
+            var referencia = obterReferenciaRastreamentoEmbarque(embarque);
+            if (!referencia) return '';
+            var armador = identificarArmadorEmbarque(embarque);
+            var valor = encodeURIComponent(referencia.valor);
+            if (armador && armador.codigo === 'cosco') {
+                return 'https://elines.coscoshipping.com/ebusiness/cargoTracking?trackingType=' + referencia.tipo + '&number=' + valor;
+            }
+            if (armador && armador.codigo === 'cma-cgm') {
+                return 'https://www.cma-cgm.com/ebusiness/tracking?SearchBy=' + referencia.tipoCma + '&Reference=' + valor;
+            }
+            var nomeArmador = textoRastreamentoEmbarque(embarque && embarque.armador);
+            var consulta = ['rastreamento oficial de carga', nomeArmador, referencia.valor].filter(Boolean).join(' ');
+            return 'https://www.google.com/search?q=' + encodeURIComponent(consulta);
+        }
+
+        function obterIdentificadorAisEmbarque(embarque) {
+            var emb = embarque || {};
+            var imo = textoRastreamentoEmbarque(emb.numero_imo);
+            if (imo) return { tipo: 'imo', valor: imo, rotulo: 'IMO' };
+            var mmsi = textoRastreamentoEmbarque(emb.numero_mmsi);
+            if (mmsi) return { tipo: 'mmsi', valor: mmsi, rotulo: 'MMSI' };
+            return null;
+        }
+
+        function erroIdentificadorAisEmbarque(embarque) {
+            var emb = embarque || {};
+            var imo = textoRastreamentoEmbarque(emb.numero_imo);
+            if (imo) {
+                if (!/^\d{7}$/.test(imo)) return 'O IMO deve conter exatamente 7 números.';
+                var soma = 0;
+                for (var indice = 0, peso = 7; indice < 6; indice += 1, peso -= 1) {
+                    soma += Number(imo.charAt(indice)) * peso;
+                }
+                if (soma % 10 !== Number(imo.charAt(6))) {
+                    return 'O IMO informado não passou na validação do dígito verificador.';
+                }
+            }
+            var mmsi = textoRastreamentoEmbarque(emb.numero_mmsi);
+            if (mmsi && !/^\d{9}$/.test(mmsi)) return 'O MMSI deve conter exatamente 9 números.';
+            return '';
+        }
+
+        function criarUrlRastreamentoNavioApi(embarque) {
+            var identificador = obterIdentificadorAisEmbarque(embarque);
+            if (!identificador) return '';
+            return '/api/importacoes/rastreamento/navio?' + identificador.tipo + '=' + encodeURIComponent(identificador.valor);
+        }
+
+        var rastreamentoCargaPopover = null;
+        var rastreamentoCargaAncora = null;
+        var rastreamentoCargaEstado = null;
+        var rastreamentoCargaConsultaId = 0;
+
+        function itemRastreamentoCargaHtml(rotulo, valor) {
+            return '<div class="rastreamento-carga-item">' +
+                '<span class="rastreamento-carga-label">' + escaparHtml(rotulo) + '</span>' +
+                '<span class="rastreamento-carga-valor">' + escaparHtml(textoRastreamentoEmbarque(valor) || '-') + '</span>' +
+            '</div>';
+        }
+
+        function formatarHorarioConsultaCarga(valor) {
+            var texto = textoRastreamentoEmbarque(valor);
+            if (!texto) return '';
+            var data = new Date(texto);
+            if (Number.isNaN(data.getTime())) return texto;
+            return data.toLocaleString('pt-BR', {
+                timeZone: 'America/Sao_Paulo',
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
+
+        function montarRastreamentoCargaPopoverHtml(estado) {
+            var emb = (estado && estado.embarque) || {};
+            var referencia = estado && estado.referencia;
+            var armador = estado && estado.armador;
+            var payload = estado && estado.payload;
+            var tracking = (payload && payload.tracking) || {};
+            var navioViagem = [textoRastreamentoEmbarque(emb.nome_navio), textoRastreamentoEmbarque(emb.numero_viagem)].filter(Boolean).join(' / ') || '-';
+            var rota = [textoRastreamentoEmbarque(emb.porto_origem), textoRastreamentoEmbarque(emb.porto_destino)].filter(Boolean).join(' → ') || '-';
+            var fonte = textoRastreamentoEmbarque(payload && payload.source) || 'Página pública oficial da COSCO Shipping';
+            var consultaEm = formatarHorarioConsultaCarga(payload && payload.retrievedAt);
+            var tipoResolvido = textoRastreamentoEmbarque(payload && payload.resolvedReferenceType);
+            var tipoConsultado = tipoResolvido ? rotuloTipoReferenciaRastreamento(tipoResolvido) : '';
+            var tipoInformado = rotuloTipoReferenciaRastreamento(payload && payload.requestedReferenceType);
+            var descricaoTipoConsultado = tipoConsultado && payload && payload.fallbackUsed
+                ? tipoConsultado + ' (tentativa automática após ' + tipoInformado + ')'
+                : tipoConsultado;
+            var podeAtualizar = !!(armador && armador.codigo === 'cosco' && window.electronAPI && typeof window.electronAPI.trackCoscoShipment === 'function');
+            var rotuloPortal = armador && (armador.codigo === 'cosco' || armador.codigo === 'cma-cgm')
+                ? 'Abrir portal oficial'
+                : 'Pesquisar portal oficial';
+            var retornoHtml = '';
+            if (estado && estado.loading) {
+                retornoHtml = '<div class="rastreamento-carga-aviso is-loading" role="status">Consultando a página pública da COSCO em segundo plano...</div>';
+            } else if (estado && estado.error) {
+                retornoHtml = '<div class="rastreamento-carga-aviso is-error" role="status">' + escaparHtml(estado.error) + '</div>';
+            } else if (payload && payload.success) {
+                retornoHtml =
+                    '<div class="rastreamento-carga-secao-titulo">Retorno público da COSCO</div>' +
+                    (textoRastreamentoEmbarque(tracking.latestStatus)
+                        ? '<div class="rastreamento-carga-status">' + escaparHtml(tracking.latestStatus) + '</div>'
+                        : '') +
+                    '<div class="rastreamento-carga-grid">' +
+                        (descricaoTipoConsultado ? itemRastreamentoCargaHtml('Tipo consultado', descricaoTipoConsultado) : '') +
+                        itemRastreamentoCargaHtml('Booking consultado', tracking.bookingNumber || referencia.valor) +
+                        itemRastreamentoCargaHtml('Situação do booking', tracking.bookingStatus) +
+                        itemRastreamentoCargaHtml('Situação do B/L', tracking.blStatus) +
+                        itemRastreamentoCargaHtml('Termo de tráfego', tracking.trafficTerm) +
+                        itemRastreamentoCargaHtml('Origem', tracking.origin) +
+                        itemRastreamentoCargaHtml('Destino', tracking.destination) +
+                        itemRastreamentoCargaHtml('Equipamento', tracking.equipment) +
+                        itemRastreamentoCargaHtml('ETD', tracking.etd) +
+                        itemRastreamentoCargaHtml('ETA', tracking.eta) +
+                        itemRastreamentoCargaHtml('Carga disponível no destino', tracking.cargoAvailableAt) +
+                    '</div>' +
+                    '<div class="rastreamento-carga-fonte">Fonte: ' + escaparHtml(fonte) + (consultaEm ? ' • consulta em ' + escaparHtml(consultaEm) : '') + '.</div>';
+            } else {
+                retornoHtml = '<div class="rastreamento-carga-aviso" role="status">Os dados cadastrados estão disponíveis abaixo. Use Atualizar para consultar o retorno público.</div>';
+            }
+            return '<div class="rastreamento-carga-topo">' +
+                    '<div><div class="rastreamento-carga-titulo">Rastreamento da carga</div>' +
+                    '<div class="rastreamento-carga-subtitulo">' + escaparHtml(armador ? armador.nome : 'Armador não identificado') + '</div></div>' +
+                    '<button type="button" class="rastreamento-carga-fechar" data-rastreamento-carga-acao="fechar" aria-label="Fechar rastreamento">×</button>' +
+                '</div>' +
+                '<div class="rastreamento-carga-salvo">' +
+                    '<div class="rastreamento-carga-secao-titulo">Dados cadastrados no embarque</div>' +
+                    '<div class="rastreamento-carga-salvo-linha"><strong>' + escaparHtml(referencia.rotulo) + ':</strong> ' + escaparHtml(referencia.valor) + '</div>' +
+                    '<div class="rastreamento-carga-salvo-linha"><strong>Navio / viagem:</strong> ' + escaparHtml(navioViagem) + '</div>' +
+                    '<div class="rastreamento-carga-salvo-linha"><strong>Rota:</strong> ' + escaparHtml(rota) + '</div>' +
+                    '<div class="rastreamento-carga-salvo-linha"><strong>ETD / ETA:</strong> ' + escaparHtml(textoRastreamentoEmbarque(emb.etd) || '-') + ' / ' + escaparHtml(textoRastreamentoEmbarque(emb.eta) || '-') + '</div>' +
+                '</div>' +
+                retornoHtml +
+                '<div class="rastreamento-carga-acoes">' +
+                    (podeAtualizar ? '<button type="button" class="rastreamento-carga-acao" data-rastreamento-carga-acao="atualizar"' + (estado && estado.loading ? ' disabled' : '') + '>Atualizar</button>' : '') +
+                    '<button type="button" class="rastreamento-carga-acao is-primary" data-rastreamento-carga-acao="portal">' + rotuloPortal + '</button>' +
+                    '<button type="button" class="rastreamento-carga-acao" data-rastreamento-carga-acao="fechar">Fechar</button>' +
+                '</div>';
+        }
+
+        function posicionarRastreamentoCargaPopover() {
+            if (!rastreamentoCargaPopover || rastreamentoCargaPopover.hidden) return;
+            var larguraTela = Number(window.innerWidth) || document.documentElement.clientWidth || 1280;
+            var alturaTela = Number(window.innerHeight) || document.documentElement.clientHeight || 800;
+            var margem = 12;
+            var largura = rastreamentoCargaPopover.offsetWidth || Math.min(520, larguraTela - (margem * 2));
+            var altura = rastreamentoCargaPopover.offsetHeight || 400;
+            var rect = rastreamentoCargaAncora && typeof rastreamentoCargaAncora.getBoundingClientRect === 'function'
+                ? rastreamentoCargaAncora.getBoundingClientRect()
+                : { left: (larguraTela - largura) / 2, bottom: margem, top: margem };
+            var left = Math.max(margem, Math.min(rect.left, larguraTela - largura - margem));
+            var top = rect.bottom + 9;
+            if (top + altura > alturaTela - margem) top = rect.top - altura - 9;
+            if (top < margem) top = margem;
+            rastreamentoCargaPopover.style.left = Math.round(left) + 'px';
+            rastreamentoCargaPopover.style.top = Math.round(top) + 'px';
+        }
+
+        function fecharRastreamentoCargaPopover() {
+            rastreamentoCargaConsultaId += 1;
+            if (rastreamentoCargaPopover) rastreamentoCargaPopover.hidden = true;
+            if (rastreamentoCargaAncora && typeof rastreamentoCargaAncora.setAttribute === 'function') {
+                rastreamentoCargaAncora.setAttribute('aria-expanded', 'false');
+            }
+            rastreamentoCargaAncora = null;
+            rastreamentoCargaEstado = null;
+        }
+
+        function renderizarRastreamentoCargaPopover() {
+            if (!rastreamentoCargaPopover || !rastreamentoCargaEstado) return;
+            rastreamentoCargaPopover.innerHTML = montarRastreamentoCargaPopoverHtml(rastreamentoCargaEstado);
+            rastreamentoCargaPopover.hidden = false;
+            posicionarRastreamentoCargaPopover();
+        }
+
+        function garantirRastreamentoCargaPopover() {
+            if (rastreamentoCargaPopover && rastreamentoCargaPopover.isConnected !== false) return rastreamentoCargaPopover;
+            rastreamentoCargaPopover = document.createElement('section');
+            rastreamentoCargaPopover.className = 'rastreamento-carga-popover';
+            rastreamentoCargaPopover.hidden = true;
+            rastreamentoCargaPopover.setAttribute('role', 'dialog');
+            rastreamentoCargaPopover.setAttribute('aria-label', 'Resultado do rastreamento da carga');
+            document.body.appendChild(rastreamentoCargaPopover);
+            rastreamentoCargaPopover.addEventListener('click', function(evento) {
+                var acao = evento.target && typeof evento.target.closest === 'function'
+                    ? evento.target.closest('[data-rastreamento-carga-acao]')
+                    : null;
+                if (!acao || !rastreamentoCargaEstado) return;
+                var tipo = acao.getAttribute('data-rastreamento-carga-acao');
+                if (tipo === 'fechar') {
+                    fecharRastreamentoCargaPopover();
+                } else if (tipo === 'portal') {
+                    window.open(rastreamentoCargaEstado.url, '_blank', 'noopener');
+                    setStatus(/^https:\/\/www\.google\.com\/search/i.test(rastreamentoCargaEstado.url)
+                        ? 'Pesquisa do portal oficial aberta por solicitação do usuário.'
+                        : 'Portal oficial de rastreamento aberto por solicitação do usuário.');
+                } else if (tipo === 'atualizar') {
+                    consultarRastreamentoCargaCosco();
+                }
+            });
+            document.addEventListener('pointerdown', function(evento) {
+                if (!rastreamentoCargaPopover || rastreamentoCargaPopover.hidden) return;
+                if (rastreamentoCargaPopover.contains(evento.target)) return;
+                if (rastreamentoCargaAncora && rastreamentoCargaAncora.contains(evento.target)) return;
+                fecharRastreamentoCargaPopover();
+            });
+            document.addEventListener('keydown', function(evento) {
+                if (evento.key === 'Escape' && rastreamentoCargaPopover && !rastreamentoCargaPopover.hidden) {
+                    fecharRastreamentoCargaPopover();
+                }
+            });
+            window.addEventListener('resize', posicionarRastreamentoCargaPopover);
+            window.addEventListener('scroll', posicionarRastreamentoCargaPopover, true);
+            return rastreamentoCargaPopover;
+        }
+
+        async function consultarRastreamentoCargaCosco() {
+            var estado = rastreamentoCargaEstado;
+            if (!estado || !estado.referencia) return null;
+            if (!window.electronAPI || typeof window.electronAPI.trackCoscoShipment !== 'function') {
+                estado.loading = false;
+                estado.error = 'A consulta automática está disponível no aplicativo JK Sistema. O portal oficial continua acessível pelo botão abaixo.';
+                renderizarRastreamentoCargaPopover();
+                return null;
+            }
+            var consultaId = ++rastreamentoCargaConsultaId;
+            estado.loading = true;
+            estado.error = '';
+            estado.payload = null;
+            renderizarRastreamentoCargaPopover();
+            try {
+                var payload = await window.electronAPI.trackCoscoShipment({
+                    type: estado.referencia.tipo,
+                    reference: estado.referencia.valor
+                });
+                if (consultaId !== rastreamentoCargaConsultaId || estado !== rastreamentoCargaEstado) return null;
+                estado.loading = false;
+                if (payload && payload.success) {
+                    estado.payload = payload;
+                    estado.error = '';
+                    if (textoRastreamentoEmbarque(payload.portalUrl)) estado.url = payload.portalUrl;
+                    setStatus(payload.fallbackUsed
+                        ? 'Rastreamento encontrado como Booking após tentativa automática pelo BL.'
+                        : 'Rastreamento público da COSCO atualizado no balão.');
+                } else {
+                    estado.payload = null;
+                    estado.error = textoRastreamentoEmbarque(payload && payload.message) || 'A COSCO não retornou dados públicos para esta referência.';
+                    setStatus('A consulta automática não retornou dados. O portal oficial permanece disponível.');
+                }
+            } catch (_err) {
+                if (consultaId !== rastreamentoCargaConsultaId || estado !== rastreamentoCargaEstado) return null;
+                estado.loading = false;
+                estado.payload = null;
+                estado.error = 'Não foi possível consultar a página pública da COSCO neste momento.';
+                setStatus('Falha na consulta automática. O portal oficial permanece disponível.');
+            }
+            renderizarRastreamentoCargaPopover();
+            return estado.payload;
+        }
+
+        function abrirRastreamentoCarga(embarque, botao) {
+            var referencia = obterReferenciaRastreamentoEmbarque(embarque);
+            if (!referencia) {
+                alert('Preencha o Booking, o Número do BL ou o Número do Container para rastrear a carga.');
+                return '';
+            }
+            var url = criarUrlRastreamentoCarga(embarque);
+            var armador = identificarArmadorEmbarque(embarque);
+            garantirRastreamentoCargaPopover();
+            if (rastreamentoCargaAncora && rastreamentoCargaAncora !== botao && typeof rastreamentoCargaAncora.setAttribute === 'function') {
+                rastreamentoCargaAncora.setAttribute('aria-expanded', 'false');
+            }
+            rastreamentoCargaAncora = botao || null;
+            if (rastreamentoCargaAncora && typeof rastreamentoCargaAncora.setAttribute === 'function') {
+                rastreamentoCargaAncora.setAttribute('aria-expanded', 'true');
+            }
+            rastreamentoCargaEstado = {
+                embarque: embarque || {},
+                referencia: referencia,
+                armador: armador,
+                url: url,
+                loading: false,
+                error: '',
+                payload: null
+            };
+            renderizarRastreamentoCargaPopover();
+            setStatus('Rastreamento exibido no balão. Os dados cadastrados aparecem imediatamente.');
+            if (armador && armador.codigo === 'cosco') {
+                consultarRastreamentoCargaCosco();
+            } else {
+                rastreamentoCargaEstado.error = armador && armador.codigo !== 'outro'
+                    ? 'A consulta automática no balão ainda não está disponível para ' + armador.nome + '. Use o portal oficial.'
+                    : 'Não foi possível identificar uma integração automática para este armador. Use o portal oficial.';
+                renderizarRastreamentoCargaPopover();
+            }
+            return url;
+        }
+
+        function formatarDataRastreamentoApi(valor) {
+            var texto = textoRastreamentoEmbarque(valor);
+            if (!texto) return '-';
+            var data = new Date(texto);
+            if (Number.isNaN(data.getTime())) return texto;
+            return data.toLocaleString('pt-BR', {
+                timeZone: 'America/Sao_Paulo',
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
+
+        function mensagemErroRastreamentoApi(payload, fallback) {
+            var detail = payload && payload.detail;
+            if (detail && typeof detail === 'object' && detail.mensagem) return String(detail.mensagem);
+            if (typeof detail === 'string' && detail.trim()) return detail.trim();
+            return fallback || 'Não foi possível consultar a posição AIS.';
+        }
+
+        function montarPosicaoNavioApiHtml(payload) {
+            var navio = (payload && payload.navio) || {};
+            var posicao = (payload && payload.posicao) || {};
+            var viagem = (payload && payload.viagem) || {};
+            var provider = (payload && payload.provider) || {};
+            var latitude = Number(posicao.latitude);
+            var longitude = Number(posicao.longitude);
+            var coordenadasValidas = Number.isFinite(latitude) && Number.isFinite(longitude);
+            var mapaUrl = coordenadasValidas
+                ? 'https://www.openstreetmap.org/?mlat=' + encodeURIComponent(latitude) + '&mlon=' + encodeURIComponent(longitude) + '#map=6/' + encodeURIComponent(latitude) + '/' + encodeURIComponent(longitude)
+                : '';
+            function item(rotulo, valor) {
+                var texto = textoRastreamentoEmbarque(valor) || '-';
+                return '<div class="posicao-api-item"><span class="posicao-api-label">' + escaparHtml(rotulo) + '</span><span class="posicao-api-valor">' + escaparHtml(texto) + '</span></div>';
+            }
+            var coordenadas = coordenadasValidas
+                ? latitude.toLocaleString('pt-BR', { maximumFractionDigits: 5 }) + ', ' + longitude.toLocaleString('pt-BR', { maximumFractionDigits: 5 })
+                : '-';
+            var velocidade = posicao.velocidade_nos == null ? '-' : numero(posicao.velocidade_nos) + ' nós';
+            var curso = posicao.curso_graus == null ? '-' : numero(posicao.curso_graus) + '°';
+            var identificadores = [
+                textoRastreamentoEmbarque(navio.imo) ? 'IMO ' + textoRastreamentoEmbarque(navio.imo) : '',
+                textoRastreamentoEmbarque(navio.mmsi) ? 'MMSI ' + textoRastreamentoEmbarque(navio.mmsi) : ''
+            ].filter(Boolean).join(' | ') || '-';
+            return '<div class="posicao-api-topo">' +
+                    '<span class="posicao-api-titulo">Posição AIS do navio</span>' +
+                    '<span class="posicao-api-fonte">Fonte: ' + escaparHtml(provider.nome || 'API AIS') + (payload && payload.cached ? ' • cache de até 5 min' : '') + '</span>' +
+                '</div>' +
+                '<div class="posicao-api-grid">' +
+                    item('Navio', navio.nome || '-') +
+                    item('IMO / MMSI', identificadores) +
+                    item('Coordenadas', coordenadas) +
+                    item('Última posição', formatarDataRastreamentoApi(posicao.atualizada_em_utc)) +
+                    item('Velocidade', velocidade) +
+                    item('Curso', curso) +
+                    item('Situação', posicao.status_navegacao || '-') +
+                    item('Destino AIS', viagem.destino || '-') +
+                    item('ETA AIS', formatarDataRastreamentoApi(viagem.eta_utc)) +
+                '</div>' +
+                (mapaUrl ? '<a class="posicao-api-mapa" href="' + mapaUrl + '" target="_blank" rel="noopener noreferrer">Abrir coordenadas no mapa</a>' : '');
+        }
+
+        async function atualizarPosicaoNavioApi(embarque, botao) {
+            var identificador = obterIdentificadorAisEmbarque(embarque);
+            if (!identificador) {
+                alert('Preencha o IMO (7 números) ou o MMSI (9 números) do navio para consultar a posição AIS.');
+                return null;
+            }
+            var erroIdentificador = erroIdentificadorAisEmbarque(embarque);
+            if (erroIdentificador) {
+                alert(erroIdentificador);
+                return null;
+            }
+            var painel = document.getElementById('embarquePosicaoApi');
+            if (painel) {
+                painel.className = 'embarque-posicao-api is-loading';
+                painel.style.display = '';
+                painel.textContent = 'Consultando a posição AIS pela API...';
+            }
+            if (botao) botao.disabled = true;
+            try {
+                var response = await fetch(criarUrlRastreamentoNavioApi(embarque), {
+                    method: 'GET',
+                    headers: Object.assign({}, obterAuthHeaders())
+                });
+                var payload = await response.json().catch(function() { return {}; });
+                if (!response.ok) {
+                    throw new Error(mensagemErroRastreamentoApi(payload, 'Falha HTTP ' + response.status + ' na API AIS.'));
+                }
+                if (painel) {
+                    painel.className = 'embarque-posicao-api';
+                    painel.innerHTML = montarPosicaoNavioApiHtml(payload);
+                }
+                var atualizadaEm = payload && payload.posicao ? formatarDataRastreamentoApi(payload.posicao.atualizada_em_utc) : '-';
+                setStatus('Posição AIS atualizada pela API. Último sinal: ' + atualizadaEm + '.');
+                return payload;
+            } catch (erro) {
+                var mensagem = erro && erro.message ? erro.message : 'Não foi possível consultar a posição AIS.';
+                if (painel) {
+                    painel.className = 'embarque-posicao-api is-error';
+                    painel.textContent = mensagem;
+                }
+                setStatus(mensagem);
+                return null;
+            } finally {
+                if (botao) botao.disabled = false;
+            }
+        }
+
+        function montarMetaRastreamentoEmbarqueHtml(embarque, incluirAcoes, mostrarVazio) {
+            var emb = embarque || {};
+            var pills = [];
+            function adicionar(classe, rotulo, valor) {
+                var texto = textoRastreamentoEmbarque(valor);
+                if (!texto) return;
+                pills.push('<span class="meta-pill ' + classe + '">' + rotulo + ': <strong>' + escaparHtml(texto) + '</strong></span>');
+            }
+            adicionar('meta-booking', 'Booking', emb.numero_booking);
+            adicionar('meta-bl', 'Armador', emb.armador);
+            adicionar('meta-bl', 'BL', emb.numero_bl);
+            adicionar('meta-container', 'Container', emb.numero_container);
+            adicionar('meta-rota', 'Navio', emb.nome_navio);
+            adicionar('meta-rota', 'Viagem', emb.numero_viagem);
+            adicionar('meta-rota', 'IMO', emb.numero_imo);
+            adicionar('meta-rota', 'MMSI', emb.numero_mmsi);
+            var pol = textoRastreamentoEmbarque(emb.porto_origem);
+            var pod = textoRastreamentoEmbarque(emb.porto_destino);
+            if (pol || pod) adicionar('meta-rota', 'Rota', (pol || '?') + ' → ' + (pod || '?'));
+            adicionar('meta-booking', 'ETD', emb.etd);
+            adicionar('meta-booking', 'ETA', emb.eta);
+
+            if (!pills.length && mostrarVazio) {
+                pills.push('<span class="embarque-rastreamento-vazio">Dados de rastreamento ainda não informados.</span>');
+            }
+            if (incluirAcoes) {
+                pills.push('<span class="embarque-rastreamento-acoes">' +
+                    '<button type="button" class="btn-embarque-rastrear" data-detalhe-acao="rastrear-carga">&#128506; Rastrear carga</button>' +
+                    '<button type="button" class="btn-embarque-rastrear" data-detalhe-acao="rastrear-navio">&#128674; Atualizar posição AIS</button>' +
+                    '</span>');
+            }
+            return pills.length
+                ? '<div class="meta-resumo embarque-meta-rastreamento">' + pills.join('') + '</div>'
+                : '';
+        }
+
         function renderEmbarques(todasListas) {
             var box = document.getElementById('embarquesWrap');
             var badge = document.getElementById('badgeEmbarques');
@@ -2511,9 +3377,10 @@
                 el.setAttribute('tabindex', '0');
                 el.innerHTML =
                     '<div class="linha-topo">' +
-                        '<div class="embarque-nome">' + (emb.nome || 'Embarque sem nome') + '</div>' +
+                        '<div class="embarque-nome">' + escaparHtml(emb.nome || 'Embarque sem nome') + '</div>' +
                         '<div class="acoes-direita">' +
-                            '<button type="button" class="btn-embarque-rastrear" data-acao="rastrear">&#128506; Rastrear</button>' +
+                            '<button type="button" class="btn-embarque-rastrear" data-acao="rastrear-carga">&#128506; Rastrear carga</button>' +
+                            '<button type="button" class="btn-embarque-rastrear" data-acao="rastrear-navio">&#128674; Atualizar posição AIS</button>' +
                             '<button type="button" class="btn-embarque-editar" data-acao="editar">Editar</button>' +
                             '<button type="button" class="btn-embarque-del" data-acao="excluir">Excluir</button>' +
                         '</div>' +
@@ -2527,9 +3394,8 @@
                             });
                             return pills.length ? '<div class="meta-resumo meta-linha-invoice"><span class="emb-inv-label">N\u00b0 Invoice:</span>' + pills.join('') + '</div>' : '';
                         })() +
+                    montarMetaRastreamentoEmbarqueHtml(emb, false, false) +
                     '<div class="meta-resumo">' +
-                        (emb.numero_bl ? '<span class="meta-pill meta-bl">BL: <strong>' + emb.numero_bl + '</strong></span>' : '') +
-                        (emb.numero_container ? '<span class="meta-pill meta-container">Container: <strong>' + emb.numero_container + '</strong></span>' : '') +
                         '<span class="meta-pill meta-m3">Total M³: <strong>' + formatarM3(totais.totalM3) + '</strong></span>' +
                         '<span class="meta-pill meta-usd">Total $: <strong>' + (totais.totalUsd > 0 ? formatarUSD(totais.totalUsd) : '-') + '</strong></span>' +
                         '<span class="meta-pill meta-brl">Total R$: <strong>' + (totais.totalUsd > 0 && cotacaoDolarAtual > 0 ? formatarMoedaBRL(totais.totalUsd * cotacaoDolarAtual) : '-') + '</strong></span>' +
@@ -2539,15 +3405,12 @@
                     if (acao) {
                         ev.stopPropagation();
                         var tipo = acao.dataset.acao;
-                        if (tipo === 'rastrear') {
-                            var bl = emb.numero_bl ? emb.numero_bl.trim() : '';
-                            var ct = emb.numero_container ? emb.numero_container.trim() : '';
-                            var termo = bl || ct;
-                            if (termo) {
-                                window.open('https://www.google.com/search?q=rastreamento+carga+' + encodeURIComponent(termo), '_blank', 'noopener');
-                            } else {
-                                alert('Preencha o N\u00famero do BL ou do Container no embarque para rastrear.');
-                            }
+                        if (tipo === 'rastrear-carga') {
+                            abrirRastreamentoCarga(emb, acao);
+                        } else if (tipo === 'rastrear-navio') {
+                            abrirDetalheEmbarque(emb, todasListas);
+                            var btnApiDetalhe = document.querySelector('[data-detalhe-acao="rastrear-navio"]');
+                            atualizarPosicaoNavioApi(emb, btnApiDetalhe);
                         } else if (tipo === 'editar') {
                             abrirModalEmbarque(emb.id, todasListas);
                         } else if (tipo === 'excluir') {
@@ -2602,7 +3465,30 @@
                 }
             }
 
-            if (metaDiv) metaDiv.innerHTML = '';
+            if (metaDiv) {
+                metaDiv.innerHTML = montarMetaRastreamentoEmbarqueHtml(embarque, true, true);
+                metaDiv.style.display = '';
+                var btnRastrearCarga = metaDiv.querySelector('[data-detalhe-acao="rastrear-carga"]');
+                var btnRastrearNavio = metaDiv.querySelector('[data-detalhe-acao="rastrear-navio"]');
+                if (btnRastrearCarga) {
+                    btnRastrearCarga.addEventListener('click', function() { abrirRastreamentoCarga(embarque, btnRastrearCarga); });
+                }
+                if (btnRastrearNavio) {
+                    btnRastrearNavio.addEventListener('click', function() { atualizarPosicaoNavioApi(embarque, btnRastrearNavio); });
+                }
+            }
+
+            var painelPosicao = document.getElementById('embarquePosicaoApi');
+            if (painelPosicao) {
+                painelPosicao.className = 'embarque-posicao-api';
+                if (obterIdentificadorAisEmbarque(embarque)) {
+                    painelPosicao.style.display = '';
+                    painelPosicao.textContent = 'Clique em “Atualizar posição AIS” para consultar o último sinal do navio.';
+                } else {
+                    painelPosicao.style.display = 'none';
+                    painelPosicao.textContent = '';
+                }
+            }
 
             // Mostra placeholder enquanto carrega
             if (cardsDiv) cardsDiv.innerHTML = '<span class="emb-cards-loading">Carregando resumo...</span>';
@@ -2680,9 +3566,35 @@
             var view = document.getElementById('embarqueDetalheView');
             var main = document.getElementById('vistaMain');
             var invLine = document.getElementById('embarqueInvoiceLine');
+            var metaDiv = document.getElementById('embarqueDetalheMeta');
+            var painelPosicao = document.getElementById('embarquePosicaoApi');
             if (view) view.style.display = 'none';
             if (main) main.style.display = '';
             if (invLine) invLine.innerHTML = '';
+            if (metaDiv) {
+                metaDiv.innerHTML = '';
+                metaDiv.style.display = 'none';
+            }
+            if (painelPosicao) {
+                painelPosicao.innerHTML = '';
+                painelPosicao.style.display = 'none';
+                painelPosicao.className = 'embarque-posicao-api';
+            }
+        }
+
+        function valorCampoEmbarque(id) {
+            var campo = document.getElementById(id);
+            return campo ? String(campo.value || '').trim() : '';
+        }
+
+        function preencherArmadorSugerido() {
+            var campoArmador = document.getElementById('inputArmadorEmbarque');
+            if (!campoArmador || textoRastreamentoEmbarque(campoArmador.value)) return;
+            var detectado = identificarArmadorEmbarque({
+                numero_booking: valorCampoEmbarque('inputBookingEmbarque'),
+                numero_bl: valorCampoEmbarque('inputBlEmbarque')
+            });
+            if (detectado) campoArmador.value = detectado.nome;
         }
 
         function abrirModalEmbarque(embarqueId, todasListas) {
@@ -2690,8 +3602,6 @@
             var modal = document.getElementById('modalEmbarque');
             var inputNome = document.getElementById('inputNomeEmbarque');
             var listaCheck = document.getElementById('modalListasCheck');
-            var inputBl = document.getElementById('inputBlEmbarque');
-            var inputContainer = document.getElementById('inputContainerEmbarque');
             var tituloEl = document.getElementById('modalEmbarqueTitulo');
             if (!modal || !inputNome || !listaCheck) return;
             var embarqueAtual = embarqueId
@@ -2700,8 +3610,25 @@
             var idsAtivos = new Set((embarqueAtual ? embarqueAtual.lista_ids : []).map(String));
             if (tituloEl) tituloEl.textContent = embarqueAtual ? 'Editar Embarque' : 'Organizar Embarque';
             inputNome.value = embarqueAtual ? (embarqueAtual.nome || '') : '';
-            if (inputBl) inputBl.value = embarqueAtual ? (embarqueAtual.numero_bl || '') : '';
-            if (inputContainer) inputContainer.value = embarqueAtual ? (embarqueAtual.numero_container || '') : '';
+            var camposRastreamento = [
+                ['inputBookingEmbarque', 'numero_booking'],
+                ['inputArmadorEmbarque', 'armador'],
+                ['inputBlEmbarque', 'numero_bl'],
+                ['inputContainerEmbarque', 'numero_container'],
+                ['inputNavioEmbarque', 'nome_navio'],
+                ['inputViagemEmbarque', 'numero_viagem'],
+                ['inputImoEmbarque', 'numero_imo'],
+                ['inputMmsiEmbarque', 'numero_mmsi'],
+                ['inputPolEmbarque', 'porto_origem'],
+                ['inputPodEmbarque', 'porto_destino'],
+                ['inputEtdEmbarque', 'etd'],
+                ['inputEtaEmbarque', 'eta']
+            ];
+            camposRastreamento.forEach(function(item) {
+                var campo = document.getElementById(item[0]);
+                if (campo) campo.value = embarqueAtual ? (embarqueAtual[item[1]] || '') : '';
+            });
+            preencherArmadorSugerido();
             listaCheck.innerHTML = '';
             if (!todasListas || !todasListas.length) {
                 listaCheck.innerHTML = '<div class="muted">Nenhuma lista disponível.</div>';
@@ -2732,13 +3659,36 @@
 
         function salvarModalEmbarque() {
             var inputNome = document.getElementById('inputNomeEmbarque');
-            var inputBl = document.getElementById('inputBlEmbarque');
-            var inputContainer = document.getElementById('inputContainerEmbarque');
             var listaCheck = document.getElementById('modalListasCheck');
             if (!inputNome || !listaCheck) return;
             var nome = String(inputNome.value || '').trim();
-            var bl = inputBl ? String(inputBl.value || '').trim() : '';
-            var container = inputContainer ? String(inputContainer.value || '').trim() : '';
+            var dadosRastreamento = {
+                numero_booking: valorCampoEmbarque('inputBookingEmbarque'),
+                armador: valorCampoEmbarque('inputArmadorEmbarque'),
+                numero_bl: valorCampoEmbarque('inputBlEmbarque'),
+                numero_container: valorCampoEmbarque('inputContainerEmbarque'),
+                nome_navio: valorCampoEmbarque('inputNavioEmbarque'),
+                numero_viagem: valorCampoEmbarque('inputViagemEmbarque'),
+                numero_imo: valorCampoEmbarque('inputImoEmbarque'),
+                numero_mmsi: valorCampoEmbarque('inputMmsiEmbarque'),
+                porto_origem: valorCampoEmbarque('inputPolEmbarque'),
+                porto_destino: valorCampoEmbarque('inputPodEmbarque'),
+                etd: valorCampoEmbarque('inputEtdEmbarque'),
+                eta: valorCampoEmbarque('inputEtaEmbarque')
+            };
+            if (!dadosRastreamento.armador) {
+                var armadorDetectado = identificarArmadorEmbarque(dadosRastreamento);
+                if (armadorDetectado) dadosRastreamento.armador = armadorDetectado.nome;
+            }
+            var erroIdentificadorAis = erroIdentificadorAisEmbarque(dadosRastreamento);
+            if (erroIdentificadorAis) {
+                setStatus(erroIdentificadorAis);
+                var campoIdentificador = dadosRastreamento.numero_imo
+                    ? document.getElementById('inputImoEmbarque')
+                    : document.getElementById('inputMmsiEmbarque');
+                if (campoIdentificador) campoIdentificador.focus();
+                return;
+            }
             if (!nome) {
                 setStatus('Informe o nome do embarque.');
                 inputNome.focus();
@@ -2755,20 +3705,19 @@
                 var idx = embarques.findIndex(function(e) { return e.id === _embarqueEditandoId; });
                 if (idx >= 0) {
                     embarques[idx].nome = nome;
-                    embarques[idx].numero_bl = bl;
-                    embarques[idx].numero_container = container;
+                    Object.keys(dadosRastreamento).forEach(function(chave) {
+                        embarques[idx][chave] = dadosRastreamento[chave];
+                    });
                     embarques[idx].lista_ids = ids;
                     embarques[idx].updated_at = new Date().toISOString();
                 }
             } else {
-                embarques.push({
+                embarques.push(Object.assign({
                     id: gerarIdEmbarque(),
                     nome: nome,
-                    numero_bl: bl,
-                    numero_container: container,
                     lista_ids: ids,
                     created_at: new Date().toISOString()
-                });
+                }, dadosRastreamento));
             }
             salvarEmbarquesStorage(embarques);
             fecharModalEmbarque();
@@ -2806,6 +3755,11 @@
         if (btnModalFechar) {
             btnModalFechar.addEventListener('click', fecharModalEmbarque);
         }
+
+        ['inputBookingEmbarque', 'inputBlEmbarque'].forEach(function(id) {
+            var campo = document.getElementById(id);
+            if (campo) campo.addEventListener('blur', preencherArmadorSugerido);
+        });
 
         const modalOverlay = document.getElementById('modalEmbarque');
         if (modalOverlay) {

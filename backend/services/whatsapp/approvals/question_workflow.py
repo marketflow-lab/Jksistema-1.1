@@ -59,6 +59,7 @@ from backend.services.whatsapp.approvals import question_natural_language as _qu
 from backend.services.whatsapp.approvals import question_delivery as _question_delivery
 from backend.services.whatsapp.approvals.question_tokens import (
     _question_card_context,
+    _question_exact_nonempty_response,
     _question_thread_key,
     _question_token_approval_matches,
     _question_token_scope_matches,
@@ -80,7 +81,7 @@ def _question_template_excerpt(value: Any, fallback: str, limit: int = 480) -> s
 
 def _question_notification_key(client_id: str, subject_id: str, approval: dict[str, Any]) -> str:
     approval_id = str(approval.get("id") or "").strip()
-    draft = str(approval.get("resposta_sugerida") or "").strip()
+    draft = _question_exact_nonempty_response(approval.get("resposta_sugerida"))
     draft_hash = hashlib.sha256(draft.encode("utf-8")).hexdigest()[:16]
     return hashlib.sha256(
         f"{client_id}|{subject_id}|{approval_id}|{draft_hash}".encode("utf-8")
@@ -440,7 +441,7 @@ def _send_question_approval_card(
 ) -> None:
     store = str(approval.get("loja") or "").strip()
     approval_id = str(approval.get("id") or "").strip()
-    draft = str(approval.get("resposta_sugerida") or "").strip()
+    draft = _question_exact_nonempty_response(approval.get("resposta_sugerida"))
     notification_key = _question_notification_key(client_id, subject_id, approval)
     token, token_item = _question_approval_token(
         state, approval=approval, subject_id=subject_id, client_id=client_id, username=username,

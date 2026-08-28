@@ -18,7 +18,7 @@ from backend.services.codex.assistant import api as assistant_api
 from backend.services.codex.assistant import execution as assistant_execution
 from backend.services.codex.assistant import routing as assistant_routing
 from backend.services.whatsapp import transcription as transcription_component
-from backend.services.whatsapp.approvals import question_delivery, question_tokens
+from backend.services.whatsapp.approvals import question_delivery, question_tokens, question_workflow
 from backend.services.codex.console import agent_loop as console_agent_loop
 from backend.services.codex.console import bindings as console_bindings
 from backend.services.codex.console import agent_prompt as console_agent_prompt
@@ -767,6 +767,62 @@ def test_question_approval_sends_the_exact_draft_bound_to_the_selected_card(monk
     assert calls[0][0].resposta == "Resposta escolhida no cartao antigo."
     assert state["question_approval_tokens"]["OLDTOKEN"]["used"] is True
     assert state["question_approval_tokens"]["NEWTOKEN"]["used"] is False
+
+
+def test_question_approval_preserves_long_ai_draft_spaces_and_line_breaks(monkeypatch):
+    exact_response = "  \n" + ("Linha factual preservada.\n" * 55) + "Assinatura literal.  \n"
+    assert len(exact_response) > 1200
+    approval = {
+        "id": "approval-long-exact",
+        "question_id": "question-long-exact",
+        "status": "pending",
+        "loja": "JK Pecas",
+        "resposta_sugerida": exact_response,
+    }
+    state = {"question_approval_tokens": {}}
+    token, token_item = whatsapp_bridge._question_approval_token(
+        state,
+        approval=approval,
+        subject_id="subject-1",
+        client_id="cliente",
+        username="operador",
+    )
+    card_context = question_tokens._question_card_context(approval, token_item)
+    calls = []
+    monkeypatch.setattr(
+        perguntas_pos_venda_state,
+        "_perguntas_ia_aprovacoes_carregar",
+        lambda _client: [approval],
+    )
+    monkeypatch.setattr(
+        perguntas_pos_venda_endpoints,
+        "ml_perguntas_aprovacoes_aprovar",
+        lambda req, client: calls.append((req, client))
+        or {"success": True, "approval": {**approval, "status": "sent"}},
+    )
+    monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
+    monkeypatch.setattr(whatsapp_bridge, "_post_command_reply", lambda *_args, **_kwargs: None)
+
+    handled = whatsapp_bridge._handle_question_approval_command(
+        {},
+        state,
+        {
+            "message_id": "wamid.long-exact",
+            "subject_id": "subject-1",
+            "text_body": f"ppv_approve:{token}",
+        },
+        {
+            "client_id": "cliente",
+            "username": "operador",
+            "permissions": {"perguntas_pos_venda": True},
+        },
+    )
+
+    assert handled is True
+    assert token_item["suggested_response"] == exact_response
+    assert card_context["draft"] == exact_response
+    assert calls[0][0].resposta == exact_response
+    assert calls[0][1] == "cliente"
 
 
 def test_question_suggestion_body_ends_with_sku_and_product_link():
@@ -2192,6 +2248,74 @@ def test_explicit_user_answer_is_kept_exactly_and_saved_without_calling_ai(monke
     assert response == "Olá! Sim, serve no modelo informado."
     assert approval["resposta_sugerida"] == response
     assert saved and saved[-1][0] == "cliente"
+
+
+def test_regenerated_and_researched_ai_answers_remain_literal_beyond_1200_chars(monkeypatch):
+    exact_response = " \n" + ("Beneficio comprovado sem reescrita.\n" * 40) + "  Fim. \n"
+    current_response = " \n  Resposta anterior literal.  \n"
+    assert len(exact_response) > 1200
+    approval = {
+        "id": "approval-regenerated-exact",
+        "status": "pending",
+        "loja": "JK Pecas",
+        "question_id": "question-regenerated-exact",
+        "pergunta": "Serve?",
+        "resposta_sugerida": current_response,
+    }
+    approvals = [approval]
+    saved = []
+    generation_requests = []
+    monkeypatch.setattr(
+        perguntas_pos_venda_endpoints,
+        "ml_perguntas_gerar_resposta_manual",
+        lambda request, *_args, **_kwargs: generation_requests.append(request) or {"resposta": exact_response},
+    )
+    monkeypatch.setattr(
+        perguntas_pos_venda_state,
+        "_perguntas_ia_aprovacoes_salvar",
+        lambda client_id, values: saved.append((client_id, values)),
+    )
+
+    regenerated = whatsapp_bridge._regenerate_question_approval_response(
+        approval,
+        approvals,
+        "cliente",
+    )
+    _result, researched, _safe_partial, unusable = question_delivery._research_draft(
+        {
+            "data_sufficient": True,
+            "result": {"resposta": exact_response},
+        }
+    )
+
+    assert regenerated == exact_response
+    assert approval["resposta_sugerida"] == exact_response
+    assert researched == exact_response
+    assert unusable is False
+    assert generation_requests[0].resposta_atual == current_response
+    assert saved and saved[-1][0] == "cliente"
+
+
+def test_question_notification_identity_uses_the_literal_ai_draft():
+    base = {"id": "approval-key", "resposta_sugerida": "Resposta."}
+    spaced = {"id": "approval-key", "resposta_sugerida": "  Resposta.  \n"}
+
+    assert question_workflow._question_notification_key("cliente", "subject", base) != (
+        question_workflow._question_notification_key("cliente", "subject", spaced)
+    )
+
+
+def test_resolved_question_approval_records_the_sent_answer_literally():
+    exact_response = "  Resposta enviada.  \n\nAssinatura literal.  "
+    approval = {"status": "pending"}
+
+    assert perguntas_pos_venda_state._perguntas_ia_resolver_aprovacao(
+        approval,
+        "sent_manual",
+        "pergunta_respondida_manualmente",
+        exact_response,
+    ) is True
+    assert approval["resposta_enviada"] == exact_response
 
 
 def test_research_revision_keeps_old_draft_pending_instead_of_saving_fallback(monkeypatch):

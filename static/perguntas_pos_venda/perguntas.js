@@ -494,13 +494,23 @@ function normalizarSugestaoResposta(valor) {
 }
 
 function respostaSugeridaPayload(payload) {
-    return normalizarSugestaoResposta(
-        payload?.resposta_sugerida
-        || payload?.resposta
-        || payload?.texto
-        || payload?.answer
+    const valor = payload?.resposta_sugerida
+        ?? payload?.resposta
+        ?? payload?.texto
+        ?? payload?.answer
+        ?? '';
+    return String(valor);
+}
+
+function skuRealPergunta(pergunta) {
+    return String(
+        pergunta?.item_sku
+        || pergunta?.seller_sku
+        || pergunta?.sku
+        || pergunta?.codigo
+        || pergunta?.codigo_produto
         || ''
-    );
+    ).trim();
 }
 
 function lojaPayloadAtendimento(payload) {
@@ -528,7 +538,7 @@ function perguntaCombinaSugestao(pergunta, payload) {
 
     const sku = normalizarSugestaoResposta(payload.sku || payload.item_sku || payload.seller_sku || '');
     const itemId = normalizarSugestaoResposta(payload.item_id || payload.anuncio || '');
-    if (sku && !valoresIguaisAtendimento(pergunta.item_sku, sku)) return false;
+    if (sku && !valoresIguaisAtendimento(skuRealPergunta(pergunta), sku)) return false;
     if (itemId && !valoresIguaisAtendimento(pergunta.item_id, itemId)) return false;
     return Boolean(sku || itemId);
 }
@@ -693,41 +703,43 @@ function configurarAcoesRespostaPerguntas() {
 function montarExemploRespostaPergunta(pergunta, resposta) {
     return {
         pergunta: String(pergunta && pergunta.text || '').trim(),
-        resposta: String(resposta || '').trim(),
-        sku: String(pergunta && pergunta.item_sku || '').trim(),
+        resposta: String(resposta || ''),
+        sku: skuRealPergunta(pergunta),
         observacao: 'Modelo salvo a partir da tela de perguntas',
         updated_at: new Date().toISOString()
     };
 }
 
 async function salvarTreinamentoAtendimentoPergunta(pergunta, opcoes = {}) {
-    await carregarTreinamentoAI().catch(() => {});
     const tipo = 'perguntas_anuncio';
-    const sku = String(pergunta && pergunta.item_sku || '').trim();
-    const exemplos = normalizarExemplosTreinamento((state.treinamentoDados[tipo] || {}).exemplos || []);
-    if (opcoes.exemplo) {
-        exemplos.unshift(opcoes.exemplo);
+    const lojaReal = String(lojaOrigemItem(pergunta) || '').trim();
+    if (!lojaReal) {
+        throw new Error('Não foi possível identificar a loja real desta pergunta para salvar o treinamento.');
     }
-    state.treinamentoDados[tipo] = {
-        ...(state.treinamentoDados[tipo] || {}),
-        exemplos: normalizarExemplosTreinamento(exemplos).slice(0, 60)
-    };
-    if (sku && Object.prototype.hasOwnProperty.call(opcoes, 'notasSku')) {
-        const textoNotas = String(opcoes.notasSku || '').trim();
-        if (textoNotas) {
-            state.treinamentoContexto.notas_sku[sku] = textoNotas;
-        } else {
-            delete state.treinamentoContexto.notas_sku[sku];
-        }
+    const sku = skuRealPergunta(pergunta);
+    if (!sku) {
+        throw new Error('Não foi possível identificar o SKU real desta pergunta para salvar o treinamento.');
+    }
+    const params = new URLSearchParams({ loja: lojaReal });
+    const responseAtual = await fetch(`/api/mercadolivre/ia-treinamento?${params.toString()}`, {
+        headers: obterAuthHeaders(),
+        cache: 'no-store'
+    });
+    const treinamentoAtual = await responseAtual.json().catch(() => ({}));
+    if (!responseAtual.ok) throw new Error(treinamentoAtual.detail || 'Erro ao carregar o treinamento da loja da pergunta.');
+
+    const exemplos = normalizarExemplosTreinamento(((treinamentoAtual.exemplos || {})[tipo]) || []);
+    if (opcoes.exemplo) {
+        exemplos.unshift({ ...opcoes.exemplo, sku });
     }
     const payload = {
         tipo,
-        loja: lojaEscopoTreinamento(),
-        orientacoes: (state.treinamentoDados[tipo] || {}).orientacoes || '',
-        contexto_loja: state.treinamentoContexto.contexto_loja || '',
-        compatibilidade_autopecas: state.treinamentoContexto.compatibilidade_autopecas || '',
-        proibicoes: state.treinamentoContexto.proibicoes || '',
-        exemplos: normalizarExemplosTreinamento((state.treinamentoDados[tipo] || {}).exemplos || [])
+        loja: lojaReal,
+        orientacoes: treinamentoAtual.orientacoes_perguntas || treinamentoAtual.orientacoes || '',
+        contexto_loja: treinamentoAtual.contexto_loja || '',
+        compatibilidade_autopecas: treinamentoAtual.compatibilidade_autopecas || '',
+        proibicoes: treinamentoAtual.proibicoes || '',
+        exemplos: normalizarExemplosTreinamento(exemplos).slice(0, 60)
     };
     if (sku && Object.prototype.hasOwnProperty.call(opcoes, 'notasSku')) {
         payload.sku = sku;
@@ -743,27 +755,30 @@ async function salvarTreinamentoAtendimentoPergunta(pergunta, opcoes = {}) {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || 'Erro ao salvar treinamento da IA.');
-    state.treinamentoCarregado = true;
-    state.treinamentoDados[tipo] = {
-        orientacoes: (state.treinamentoDados[tipo] || {}).orientacoes || '',
-        updated_at: data.updated_at || new Date().toISOString(),
-        exemplos: normalizarExemplosTreinamento(((data.exemplos || {})[tipo]) || (state.treinamentoDados[tipo] || {}).exemplos || [])
-    };
-    state.treinamentoContexto = {
-        contexto_loja: typeof data.contexto_loja === 'string' ? data.contexto_loja : (state.treinamentoContexto.contexto_loja || ''),
-        compatibilidade_autopecas: typeof data.compatibilidade_autopecas === 'string' ? data.compatibilidade_autopecas : (state.treinamentoContexto.compatibilidade_autopecas || ''),
-        proibicoes: typeof data.proibicoes === 'string' ? data.proibicoes : (state.treinamentoContexto.proibicoes || ''),
-        notas_sku: normalizarNotasTreinamento(data.notas_sku || state.treinamentoContexto.notas_sku)
-    };
-    renderizarNotasSkuTreinamento();
-    renderizarExemplosTreinamento();
-    atualizarStatusTreinamentoTipo();
+    if (String(lojaEscopoTreinamento() || '').trim() === lojaReal) {
+        state.treinamentoCarregado = true;
+        state.treinamentoDados[tipo] = {
+            orientacoes: payload.orientacoes,
+            updated_at: data.updated_at || new Date().toISOString(),
+            exemplos: normalizarExemplosTreinamento(((data.exemplos || {})[tipo]) || payload.exemplos)
+        };
+        state.treinamentoContexto = {
+            contexto_loja: typeof data.contexto_loja === 'string' ? data.contexto_loja : payload.contexto_loja,
+            compatibilidade_autopecas: typeof data.compatibilidade_autopecas === 'string' ? data.compatibilidade_autopecas : payload.compatibilidade_autopecas,
+            proibicoes: typeof data.proibicoes === 'string' ? data.proibicoes : payload.proibicoes,
+            notas_sku: normalizarNotasTreinamento(data.notas_sku || treinamentoAtual.notas_sku)
+        };
+        atualizarIndicadorPerfilTreinamento(data);
+        renderizarNotasSkuTreinamento();
+        renderizarExemplosTreinamento();
+        atualizarStatusTreinamentoTipo();
+    }
     return data;
 }
 
 async function salvarOrientacaoSkuPergunta(questionId, loja, textarea, botao, status) {
     const pergunta = obterPerguntaPorId(questionId, loja);
-    const sku = String(pergunta && pergunta.item_sku || '').trim();
+    const sku = skuRealPergunta(pergunta);
     if (!pergunta || !sku) return;
     botao.disabled = true;
     setStatusRespostaPergunta(status, 'Salvando orientacao do SKU...');
@@ -779,8 +794,8 @@ async function salvarOrientacaoSkuPergunta(questionId, loja, textarea, botao, st
 
 async function salvarExemploRespostaPergunta(questionId, loja, textarea, botao, status) {
     const pergunta = obterPerguntaPorId(questionId, loja);
-    const texto = String(textarea.value || '').trim();
-    if (!pergunta || !texto) return;
+    const texto = String(textarea.value || '');
+    if (!pergunta || !texto.trim()) return;
     botao.disabled = true;
     setStatusRespostaPergunta(status, 'Salvando resposta como exemplo da IA...');
     try {
@@ -914,8 +929,8 @@ function aplicarResultadoJobAtendimentoCodex(questionKey, data, tenantScope = te
         const textarea = card.querySelector('.question-answer-text');
         const status = card.querySelector('.question-answer-composer .question-answer-status');
         if (!textarea) return;
-        const resposta = String(result.resposta || data.resposta || '').trim();
-        if (!resposta) {
+        const resposta = String(result.resposta ?? data.resposta ?? '');
+        if (!resposta.trim()) {
             textarea.value = '';
             delete textarea.dataset.codexProposalId;
             delete textarea.dataset.codexProposalVersion;
@@ -1124,7 +1139,7 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
             body: JSON.stringify({
                 loja: lojaResposta,
                 pergunta,
-                resposta_atual: String(textarea.value || '').trim(),
+                resposta_atual: String(textarea.value || ''),
                 async: true
             })
         });
@@ -1162,10 +1177,10 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
 
 async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnviar, btnGerar, status, opcoes = {}) {
     const pergunta = obterPerguntaPorId(questionId, loja);
-    const texto = String(textarea.value || '').trim();
+    const texto = String(textarea.value || '');
     const lojaResposta = lojaOrigemItem(pergunta) || (todasAsLojasSelecionadas() ? '' : state.lojaSelecionada);
-    if (!pergunta || !lojaResposta || !texto) return;
-    const skuResposta = String((pergunta.item_sku || pergunta.sku || pergunta.seller_sku || '')).trim();
+    if (!pergunta || !lojaResposta || !texto.trim()) return;
+    const skuResposta = skuRealPergunta(pergunta);
     const itemIdResposta = String((pergunta.item_id || '')).trim();
     const botoesExtras = Array.isArray(opcoes.botoesExtras) ? opcoes.botoesExtras.filter(Boolean) : [];
     btnEnviar.disabled = true;
@@ -1194,7 +1209,7 @@ async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnvia
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(mensagemErroApi(data, 'Erro ao enviar resposta.'));
         pergunta.answer = {
-            text: data.resposta || texto,
+            text: data.resposta ?? texto,
             status: 'ANSWERED',
             date_created: new Date().toISOString()
         };

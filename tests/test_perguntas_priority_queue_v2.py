@@ -351,7 +351,7 @@ def test_manual_click_creates_new_flow_after_automatic_terminal_review(tmp_path,
     assert manual["queue_origin"] == orchestrator.QUEUE_ORIGIN_MANUAL
 
 
-def test_two_insufficient_cycles_finish_with_available_draft_without_review_gate(tmp_path, monkeypatch):
+def test_insufficient_ai_draft_is_preserved_on_first_cycle(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
     monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
     monkeypatch.setattr(orchestrator, "_schedule", lambda _job: True)
@@ -373,11 +373,6 @@ def test_two_insufficient_cycles_finish_with_available_draft_without_review_gate
         orchestrator, "_load_question_context", return_value=(answer, _insufficient_context())
     ):
         orchestrator._run_job("tenant", created["job_id"])
-        first = orchestrator.get_job("tenant", created["job_id"])
-        assert first["status"] == "waiting_retry"
-        assert first["evidence_attempt_count"] == 1
-        _queue_retry_now(str(tmp_path), "tenant", created["job_id"])
-        orchestrator._run_job("tenant", created["job_id"])
 
     completed = orchestrator.get_job("tenant", created["job_id"])
     assert completed["status"] == "completed"
@@ -385,7 +380,11 @@ def test_two_insufficient_cycles_finish_with_available_draft_without_review_gate
     assert completed["result"]["data_sufficient"] is False
     assert completed["result"]["requires_approval"] is True
     assert completed["review_required"] is False
-    assert completed["completion_reason"] == "evidence_insufficient_after_retry_limit"
+    assert completed["attempt_count"] == 1
+    assert completed["evidence_attempt_count"] == 1
+    assert completed["operational_failure_count"] == 0
+    assert completed["completion_reason"] == "ai_response_preserved_unvalidated"
+    assert completed["draft_source"] == "ai"
 
 
 def test_post_sale_classification_in_public_surface_keeps_draft(tmp_path, monkeypatch):
@@ -438,7 +437,7 @@ def test_post_sale_classification_in_public_surface_keeps_draft(tmp_path, monkey
     assert completed["review_required"] is False
 
 
-def test_unsafe_insufficient_draft_is_replaced_by_neutral_available_draft(tmp_path, monkeypatch):
+def test_unvalidated_insufficient_ai_draft_is_preserved_verbatim(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
     monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
     monkeypatch.setattr(orchestrator, "_schedule", lambda _job: True)
@@ -455,23 +454,22 @@ def test_unsafe_insufficient_draft_is_replaced_by_neutral_available_draft(tmp_pa
         subject_key="Q-UNSAFE",
         request={"pergunta": {"id": "Q-UNSAFE", "text": "Serve?"}, "question_text": "Serve?"},
     )
+    answer = "Sim, serve perfeitamente. Envie uma foto e confirme com o mecanico."
     with patch.object(
         orchestrator,
         "_load_question_context",
-        return_value=("Sim, serve perfeitamente. Envie uma foto e confirme com o mecanico.", _insufficient_context()),
+        return_value=(answer, _insufficient_context()),
     ):
-        orchestrator._run_job("tenant", created["job_id"])
-        _queue_retry_now(str(tmp_path), "tenant", created["job_id"])
         orchestrator._run_job("tenant", created["job_id"])
 
     completed = orchestrator.get_job("tenant", created["job_id"])
     assert completed["status"] == "completed"
     assert completed["blocked_without_draft"] is False
-    assert completed["result"]["resposta"]
-    assert "nao esta confirmada" in orchestrator._normal(completed["result"]["resposta"])
+    assert completed["result"]["resposta"] == answer
     assert completed["result"]["requires_approval"] is True
     assert completed["review_required"] is False
-    assert completed["completion_reason"] == "available_information_fallback"
+    assert completed["completion_reason"] == "ai_response_preserved_unvalidated"
+    assert completed["draft_source"] == "ai"
 
 
 def test_operational_failures_stop_on_third_and_success_resets_consecutive_counter(tmp_path, monkeypatch):
@@ -534,9 +532,10 @@ def test_operational_failures_stop_on_third_and_success_resets_consecutive_count
     ):
         orchestrator._run_job("tenant", reset["job_id"])
     after_success = orchestrator.get_job("tenant", reset["job_id"])
-    assert after_success["status"] == "waiting_retry"
+    assert after_success["status"] == "completed"
     assert after_success["operational_failure_count"] == 0
     assert after_success["evidence_attempt_count"] == 1
+    assert after_success["completion_reason"] == "ai_response_preserved_unvalidated"
 
 
 def test_recovery_paginates_and_quarantines_more_than_500_outdated_jobs(tmp_path, monkeypatch):

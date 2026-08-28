@@ -4,8 +4,11 @@ O cliente desktop usa `electron-updater` com GitHub Releases.
 
 ## Como publicar uma nova versao
 
-1. Aumente a versao em `electron_app/package.json`, por exemplo de `1.0.5` para `1.0.6`.
-2. Gere e publique a release:
+1. Se a versão inclui autenticação remota, confirme antes que
+   `https://jkjkjk-485920.web.app/api/auth/v1/health` retorna `ok: true` e siga
+   `cloud/auth_gateway/README.md`. Não publique primeiro o desktop.
+2. Aumente a versao em `electron_app/package.json`, por exemplo de `1.0.5` para `1.0.6`.
+3. Gere e publique a release:
 
 ```powershell
 cd electron_app
@@ -29,3 +32,5 @@ O `electron-builder` vai criar o instalador, o arquivo `latest.yml` e publicar t
 - Apenas mudar arquivos/commits no GitHub nao dispara atualizacao automatica.
 - Nao coloque tokens de API dentro do app para atualizacao. Use sempre o canal normal de GitHub Releases ou um servidor proprio.
 - Dados locais da pasta `info` nao sao sobrescritos pelo atualizador.
+- `electron_app/client-config.json` e os módulos `backend/services/remote_auth_*` são recursos obrigatórios
+  do pacote. O verificador do instalador falha se eles não entrarem na atualização.

@@ -239,6 +239,32 @@ function rotuloTipoTreinamento(tipo = state.treinamentoTipo) {
     return tipo === 'pos_venda' ? 'pós-venda' : 'perguntas de anúncio';
 }
 
+function atualizarIndicadorPerfilTreinamento(data = {}) {
+    const indicador = document.getElementById('ai-training-profile-status');
+    if (!indicador) return;
+    const methodVersion = String(data.method_version || indicador.dataset.methodVersion || 'seller-conversion-v1');
+    const profileVersion = Number(data.profile_version || indicador.dataset.profileVersion || 2);
+    const profileActive = data.profile_active !== false;
+    const profileScope = String(data.profile_scope || (lojaEscopoTreinamento() ? 'store' : 'global'));
+    state.treinamentoProfileMetadata = {
+        method_version: methodVersion,
+        profile_version: profileVersion,
+        profile_active: profileActive,
+        profile_scope: profileScope
+    };
+    indicador.dataset.methodVersion = methodVersion;
+    indicador.dataset.profileVersion = String(profileVersion);
+    indicador.dataset.profileScope = profileScope;
+    indicador.dataset.profileActive = profileActive ? 'true' : 'false';
+    const titulo = indicador.querySelector('.training-sku-name');
+    const detalhe = indicador.querySelector('.training-sku-meta');
+    if (titulo) titulo.textContent = `Método RVC v6 ${profileActive ? 'ativo' : 'indisponível'} · perfil de vendedor v${profileVersion}`;
+    if (detalhe) {
+        const escopo = profileScope === 'store' ? 'loja selecionada' : profileScope === 'sku' ? 'SKU selecionado' : 'todas as lojas';
+        detalhe.textContent = `Personalização aplicada ao escopo ${escopo}. A IA esclarece primeiro e só conduz à compra com adequação comprovada; instruções salvas não alteram políticas, pesquisa ou fatos atuais.`;
+    }
+}
+
 function sincronizarOrientacoesTreinamentoAtual() {
     const tipo = state.treinamentoTipo === 'pos_venda' ? 'pos_venda' : 'perguntas_anuncio';
     state.treinamentoDados[tipo] = {
@@ -341,6 +367,7 @@ async function carregarTreinamentoAI(forcar = false) {
         aiTrainingContextoLoja.value = state.treinamentoContexto.contexto_loja;
         aiTrainingCompatibilidade.value = state.treinamentoContexto.compatibilidade_autopecas;
         aiTrainingProibicoes.value = state.treinamentoContexto.proibicoes;
+        atualizarIndicadorPerfilTreinamento(data);
         state.treinamentoCarregado = true;
         renderizarNotasSkuTreinamento();
         renderizarTipoTreinamento(false);
@@ -390,6 +417,7 @@ async function salvarTreinamentoAI() {
             proibicoes: typeof data.proibicoes === 'string' ? data.proibicoes : (state.treinamentoContexto.proibicoes || ''),
             notas_sku: normalizarNotasTreinamento(data.notas_sku || state.treinamentoContexto.notas_sku)
         };
+        atualizarIndicadorPerfilTreinamento(data);
         renderizarNotasSkuTreinamento();
         renderizarExemplosTreinamento();
         atualizarStatusTreinamentoTipo();

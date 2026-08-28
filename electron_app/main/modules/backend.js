@@ -583,6 +583,39 @@ function getLocalBackendFirebaseEnv(localAppDir) {
     return { JK_ACCESS_BACKEND: 'auto' };
 }
 
+function normalizeRemoteAuthUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    try {
+        const parsed = new URL(raw);
+        if (parsed.protocol !== 'https:' || !parsed.hostname || parsed.username || parsed.password) return '';
+        if (parsed.search || parsed.hash) return '';
+        return parsed.toString().replace(/\/$/, '');
+    } catch (_err) {
+        return '';
+    }
+}
+
+function getLocalBackendRemoteAuthEnv() {
+    const paths = getConfigPaths();
+    const bundledConfig = readJsonFile(paths.bundledConfig) || readJsonFile(paths.devConfig) || {};
+    const remoteAuth = bundledConfig && typeof bundledConfig.remoteAuth === 'object'
+        ? bundledConfig.remoteAuth
+        : {};
+    const url = normalizeRemoteAuthUrl(process.env.JK_REMOTE_AUTH_URL || remoteAuth.url);
+    const projectId = String(
+        process.env.JK_REMOTE_AUTH_PROJECT_ID || remoteAuth.projectId || ''
+    ).trim();
+    const requestedMode = String(process.env.JK_REMOTE_AUTH_MODE || remoteAuth.mode || 'prefer').trim().toLowerCase();
+    const mode = ['prefer', 'required'].includes(requestedMode) ? requestedMode : 'prefer';
+    if (!url || !/^[a-z][a-z0-9-]{4,29}$/.test(projectId)) return {};
+    return {
+        JK_REMOTE_AUTH_URL: url,
+        JK_REMOTE_AUTH_PROJECT_ID: projectId,
+        JK_REMOTE_AUTH_MODE: mode
+    };
+}
+
 let backendRuntimeMaterializerModule = null;
 
 function getBackendRuntimeMaterializer() {
@@ -1096,6 +1129,7 @@ function ensurePythonRuntimeProvisioned(sourceRoot, targetRoot) {
 function writeLocalBackendLauncher(localAppDir) {
     const infoDir = path.join(localAppDir, 'info');
     const firebaseEnv = getLocalBackendFirebaseEnv(localAppDir);
+    const remoteAuthEnv = getLocalBackendRemoteAuthEnv();
     const launcherPath = path.join(JK_ELECTRON_USER_DATA_DIR, 'start-local-backend.cmd');
     const logPath = path.join(localAppDir, 'logs', `local_backend_start_${Date.now()}_${process.pid}.log`);
     const localCallback = process.env.JK_LOCAL_OAUTH_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/callback';
@@ -1120,6 +1154,11 @@ function writeLocalBackendLauncher(localAppDir) {
         'set "IA_RAG_TOP_K=5"',
         'set "IA_RAG_SEARCH_TIMEOUT_S=4"',
         `set "JK_ACCESS_BACKEND=${cmdValue(firebaseEnv.JK_ACCESS_BACKEND || 'auto')}"`,
+        ...(remoteAuthEnv.JK_REMOTE_AUTH_URL ? [
+            `set "JK_REMOTE_AUTH_URL=${cmdValue(remoteAuthEnv.JK_REMOTE_AUTH_URL)}"`,
+            `set "JK_REMOTE_AUTH_PROJECT_ID=${cmdValue(remoteAuthEnv.JK_REMOTE_AUTH_PROJECT_ID)}"`,
+            `set "JK_REMOTE_AUTH_MODE=${cmdValue(remoteAuthEnv.JK_REMOTE_AUTH_MODE || 'prefer')}"`
+        ] : []),
         ...(firebaseEnv.FIREBASE_SERVICE_ACCOUNT_FILE ? [
             `set "FIREBASE_SERVICE_ACCOUNT_FILE=${cmdValue(firebaseEnv.FIREBASE_SERVICE_ACCOUNT_FILE)}"`
         ] : []),
@@ -1174,6 +1213,7 @@ function ensureLocalBackendStarted() {
         const localAppDir = inspection.runtimeDir;
         const bundledSourceDir = inspection.bundledDir;
         const firebaseEnv = getLocalBackendFirebaseEnv(localAppDir);
+        const remoteAuthEnv = getLocalBackendRemoteAuthEnv();
 
         const launcherPrepared = consumeCanonicalLauncherPreparedServers();
         if (launcherPrepared && await isTcpPortOpen(JK_LOCAL_BACKEND_PORT)) {
@@ -1212,6 +1252,7 @@ function ensureLocalBackendStarted() {
             cwd: localAppDir,
             env: isolatedPythonChildEnv({
                 ...firebaseEnv,
+                ...remoteAuthEnv,
                 JK_INFO_DIR: path.join(localAppDir, 'info'),
                 JK_REDIRECT_URI: process.env.JK_LOCAL_OAUTH_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/callback',
                 JK_BLING_REDIRECT_URI: process.env.JK_LOCAL_OAUTH_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/callback',

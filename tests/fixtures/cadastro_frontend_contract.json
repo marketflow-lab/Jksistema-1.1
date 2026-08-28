@@ -1,0 +1,132 @@
+{
+  "schema": "jk.cadastro.frontend.contract.v1",
+  "legacy_sources": {
+    "static/cadastro.html": {
+      "lines": 1042,
+      "sha256": "fc2e1f3aa33ad0dd3c322258c1811e231ccb719148a46d7db941cc5c6889a633"
+    },
+    "static/cadastro_editar.html": {
+      "lines": 230,
+      "sha256": "da7e20b3155fc329d27ef1b680ecabcd8bbd9d8f2ffbd2121920eaa27fad5935"
+    },
+    "static/cadastro_editar_item.html": {
+      "lines": 708,
+      "sha256": "4be1316d8cdb126d957f682cf123a08f9a116f6545f84e2a9a0e221a4d6f7a83"
+    },
+    "static/cadastro_incluir.html": {
+      "lines": 517,
+      "sha256": "f54c72524e5040b2f0bf19e700ffc712fbc381e32d91baba6bcf19168de1ef3c"
+    }
+  },
+  "dom_ids": {
+    "static/cadastro.html": [
+      "btnAtualizar",
+      "btnAtualizarCustosImpostos",
+      "btnEditarCadastro",
+      "btnImportarColunas",
+      "btnIncluirCadastro",
+      "btnSyncNcm",
+      "filtro",
+      "filtroCustos",
+      "fornecedorBancoBeneficiario",
+      "fornecedorCodigoAgencia",
+      "fornecedorCodigoBanco",
+      "fornecedorContaBeneficiario",
+      "fornecedorEmail",
+      "fornecedorEnderecoBanco",
+      "fornecedorEnderecoBeneficiario",
+      "fornecedorEnderecoEmpresa",
+      "fornecedorForm",
+      "fornecedorFormTitulo",
+      "fornecedorId",
+      "fornecedorMoedaPagamento",
+      "fornecedorNomeBeneficiario",
+      "fornecedorNomeContato",
+      "fornecedorNomeEmpresa",
+      "fornecedorObservacaoPagamento",
+      "fornecedorPaisRegiao",
+      "fornecedorStatus",
+      "fornecedorSwift",
+      "fornecedorTelefone",
+      "inputAtualizarCustosImpostos",
+      "inputImportarColunas",
+      "lojaCustosSelect",
+      "listaFornecedores",
+      "paginacao",
+      "paginacaoCustos",
+      "painelCustos",
+      "painelFornecedores",
+      "painelImportadorLoja",
+      "painelProdutos",
+      "skuSelect",
+      "status",
+      "statusNcmGlobal",
+      "tabCustos",
+      "tabFornecedores",
+      "tabImportadorLoja",
+      "tabProdutos",
+      "btnAtualizarFornecedores",
+      "btnLimparFornecedor",
+      "btnSalvarFornecedor",
+      "tBody",
+      "tBodyCustos",
+      "tBodyMlb",
+      "tCols",
+      "tHead"
+    ],
+    "static/cadastro_editar.html": [
+      "buscaSku",
+      "listaPaginacao",
+      "listaSkus",
+      "status"
+    ],
+    "static/cadastro_editar_item.html": [
+      "btnEnviarFoto",
+      "formEditarItem",
+      "formGrid",
+      "fotoFile",
+      "fotoPaste",
+      "fotoPreview",
+      "status"
+    ],
+    "static/cadastro_incluir.html": [
+      "btnLimpar",
+      "btnPasteFoto",
+      "btnUploadFoto",
+      "formGrid",
+      "formIncluir",
+      "fotoInput",
+      "fotoPreview",
+      "status"
+    ]
+  },
+  "budgets": {
+    "html_lines": 300,
+    "runtime_lines": 200,
+    "component_lines": 400,
+    "function_lines": 120,
+    "css_lines": 300
+  },
+  "scripts_by_page": {
+    "static/cadastro.html": [
+      "static/cadastro/00-runtime.js",
+      "static/cadastro/01-core.js",
+      "static/cadastro/main/01-produtos.js",
+      "static/cadastro/main/02-custos-mlb.js",
+      "static/cadastro/main/03-actions.js",
+      "static/cadastro/main/05-fornecedores.js",
+      "static/cadastro/main/04-init.js"
+    ],
+    "static/cadastro_editar.html": [
+      "static/cadastro/seletor-edicao.js"
+    ],
+    "static/cadastro_editar_item.html": [
+      "static/cadastro/form/00-core.js",
+      "static/cadastro/editar-item.js"
+    ],
+    "static/cadastro_incluir.html": [
+      "static/cadastro/form/00-core.js",
+      "static/cadastro/incluir-item.js"
+    ]
+  }
+}

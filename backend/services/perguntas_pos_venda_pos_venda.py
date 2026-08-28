@@ -894,8 +894,8 @@ def _ml_pos_venda_enviar_resposta_ml(
         raise HTTPException(status_code=400, detail="Pack da conversa nÃ£o informado.")
     if not seller_id:
         raise HTTPException(status_code=400, detail="ID do vendedor nÃ£o encontrado.")
-    resposta = _pos_venda_ia_limpar_resposta(texto, max_chars)
-    if not resposta:
+    resposta = texto if isinstance(texto, str) else str(texto or "")
+    if not resposta.strip():
         raise HTTPException(status_code=400, detail="Resposta vazia.")
     candidatos, cfg, site_id = _ml_pos_venda_destinatarios_mensagem(client_id, loja, cfg, seller_id, buyer)
     ultimo_status = 400
@@ -1063,10 +1063,10 @@ def _ml_pos_venda_gerar_resposta_ia(
     resposta, model_usado = perguntas_agent_providers.invoke_model(client_id, payload, model_req)
     if isinstance(payload.context, dict) and payload.context.get("_codex_thread_id_result"):
         conversa["_codex_thread_id_result"] = str(payload.context.get("_codex_thread_id_result") or "")
-    resposta_limpa = _pos_venda_ia_resposta_final_loja(resposta, loja, limite)
-    if not resposta_limpa:
+    resposta_literal = resposta if isinstance(resposta, str) else str(resposta or "")
+    if not resposta_literal.strip():
         raise PerguntasIARespostaIndisponivel("IA de pos-venda nao gerou resposta.")
-    return resposta_limpa, model_usado
+    return resposta_literal, model_usado
 
 
 def _ml_pos_venda_buscar_pedido(client_id: str, loja: str, cfg: dict, order_id: str) -> tuple[dict, dict]:

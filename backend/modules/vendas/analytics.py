@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import copy
 import datetime as dt
 import functools
@@ -17,7 +18,7 @@ import time
 import traceback
 import unicodedata
 from datetime import datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Optional
 
 import pandas as pd
@@ -145,6 +146,39 @@ def _filtrar_vendas_lojas_ativas(rows: list[tuple], client_id: str, loja: str | 
     return [row for row in rows if len(row) > 6 and chave_loja(row[6]) in lojas_ativas]
 
 
+def _calcular_previsao_mes_atual(rows: list[tuple], hoje: datetime) -> dict[str, Any]:
+    mes_atual = hoje.strftime("%Y-%m")
+    data_referencia = hoje.strftime("%Y-%m-%d")
+    valor_realizado = Decimal("0")
+    for row in rows:
+        data_venda = str(row[1] or "")[:10] if len(row) > 1 else ""
+        if len(row) <= 5 or data_venda[:7] != mes_atual or data_venda > data_referencia:
+            continue
+        try:
+            valor = Decimal(str(row[5] if row[5] is not None else 0))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if valor.is_finite():
+            valor_realizado += valor
+
+    dias_decorridos = hoje.day
+    dias_no_mes = calendar.monthrange(hoje.year, hoje.month)[1]
+    ritmo_diario = valor_realizado / Decimal(dias_decorridos)
+    valor_projetado = ritmo_diario * Decimal(dias_no_mes)
+    centavos = Decimal("0.01")
+
+    return {
+        "mes": mes_atual,
+        "data_referencia": data_referencia,
+        "valor_realizado": float(valor_realizado.quantize(centavos, rounding=ROUND_HALF_UP)),
+        "valor_projetado": float(valor_projetado.quantize(centavos, rounding=ROUND_HALF_UP)),
+        "ritmo_diario": float(ritmo_diario.quantize(centavos, rounding=ROUND_HALF_UP)),
+        "dias_decorridos": dias_decorridos,
+        "dias_no_mes": dias_no_mes,
+        "metodo": "media_diaria_linear",
+    }
+
+
 @cache_vendas_response("grafico", _grafico_cache_paths)
 def grafico_vendas(
     periodo: str = "3m",
@@ -156,7 +190,8 @@ def grafico_vendas(
     unidade_negocio: str = None,
     mostrar_estoque_geral: bool = False,
     mostrar_estoque_sku: bool = False,
-    client_id: str = ""
+    client_id: str = "",
+    incluir_previsao_mes_atual: bool = False,
 ):
     """
     Endpoint para gerar dados de gráfico de vendas
@@ -464,6 +499,14 @@ def grafico_vendas(
         quantidades_devolucoes = []
 
         data_fim_dt = datetime.fromisoformat(data_fim_str) if data_fim_str else hoje
+        previsao_mes_atual = None
+        inicio_mes_atual = hoje.replace(day=1).date()
+        if (
+            incluir_previsao_mes_atual
+            and data_inicio_dt.date() <= inicio_mes_atual
+            and hoje.date() <= data_fim_dt.date()
+        ):
+            previsao_mes_atual = _calcular_previsao_mes_atual(rows_unicos, hoje)
         chaves_periodo = _chaves_periodo_completo(data_inicio_dt, data_fim_dt)
 
         for chave in chaves_periodo:
@@ -494,7 +537,7 @@ def grafico_vendas(
         )
         estoque_series.setdefault("estoque_meta", {}).update(pareto_meta)
 
-        return {
+        resultado = {
             "labels": labels,
             "valores_vendas": valores_vendas,
             "quantidades_vendas": quantidades_vendas,
@@ -502,6 +545,9 @@ def grafico_vendas(
             "quantidades_devolucoes": quantidades_devolucoes,
             **estoque_series,
         }
+        if previsao_mes_atual is not None:
+            resultado["previsao_mes_atual"] = previsao_mes_atual
+        return resultado
     except HTTPException:
         raise
     except Exception as e:

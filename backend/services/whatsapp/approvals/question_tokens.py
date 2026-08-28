@@ -63,6 +63,16 @@ WHATSAPP_PART_BODY_CHARS = whatsapp_formatting.WHATSAPP_PART_BODY_CHARS
 WHATSAPP_MAX_PARTS = whatsapp_formatting.WHATSAPP_MAX_PARTS
 
 
+def _question_exact_nonempty_response(*values: Any) -> str:
+    """Select the first usable response while preserving it byte-for-byte."""
+
+    for value in values:
+        response = value if isinstance(value, str) else str(value or "")
+        if response.strip():
+            return response
+    return ""
+
+
 def _question_approval_allowed(permissions: dict[str, Any]) -> bool:
     return bool(
         isinstance(permissions, dict)
@@ -131,7 +141,7 @@ def _question_approval_token(
     approval_id = str(approval.get("id") or "").strip()
     question_id = str(approval.get("question_id") or approval.get("pergunta_id") or approval_id).strip()
     store = str(approval.get("loja") or "").strip()
-    suggested_response = str(approval.get("resposta_sugerida") or "").strip()[:1200]
+    suggested_response = _question_exact_nonempty_response(approval.get("resposta_sugerida"))
     tokens = state.get("question_approval_tokens") if isinstance(state.get("question_approval_tokens"), dict) else {}
     now = time.time()
     for token, item in list(tokens.items()):
@@ -151,7 +161,7 @@ def _question_approval_token(
                 or str(item.get("question_id") or "").strip() == question_id
             )
         ):
-            if not str(item.get("suggested_response") or "").strip() and suggested_response:
+            if not _question_exact_nonempty_response(item.get("suggested_response")) and suggested_response:
                 item["suggested_response"] = suggested_response
                 item["draft_hash"] = hashlib.sha256(suggested_response.encode("utf-8")).hexdigest()
                 item["draft_created_at"] = _now()
@@ -232,10 +242,10 @@ def _question_card_context(approval: Any, token_item: Any = None) -> dict[str, A
 
     source = approval if isinstance(approval, dict) else {}
     token = token_item if isinstance(token_item, dict) else {}
-    draft = (
-        str(token.get("suggested_response") or "").strip()
-        or str(source.get("resposta_sugerida") or "").strip()
-    )[:1200]
+    draft = _question_exact_nonempty_response(
+        token.get("suggested_response"),
+        source.get("resposta_sugerida"),
+    )
     approval_id = str(source.get("id") or token.get("approval_id") or "").strip()[:120]
     question_id = str(source.get("question_id") or source.get("pergunta_id") or approval_id).strip()[:120]
     return {
@@ -559,11 +569,11 @@ def _question_approval_lookup(
     return item
 
 def _question_bind_token_draft(token_item: dict[str, Any], approval: dict[str, Any]) -> str:
-    response = (
-        str(token_item.get("suggested_response") or "").strip()
-        or str(approval.get("resposta_sugerida") or "").strip()
-    )[:1200]
-    if response and not str(token_item.get("suggested_response") or "").strip():
+    response = _question_exact_nonempty_response(
+        token_item.get("suggested_response"),
+        approval.get("resposta_sugerida"),
+    )
+    if response and not _question_exact_nonempty_response(token_item.get("suggested_response")):
         token_item["suggested_response"] = response
         token_item["draft_hash"] = hashlib.sha256(response.encode("utf-8")).hexdigest()
         token_item["draft_created_at"] = _now()
@@ -627,7 +637,7 @@ def _regenerate_question_approval_response(
                 order_id=approval.get("order_id") or "",
                 buyer_id=approval.get("buyer_id") or "",
                 max_chars=int(approval.get("max_chars") or 350),
-                resposta_atual=str(approval.get("resposta_sugerida") or "").strip(),
+                resposta_atual=_question_exact_nonempty_response(approval.get("resposta_sugerida")),
                 orientacao_usuario=str(guidance or "").strip()[:1200],
                 async_mode=True,
             ),
@@ -646,7 +656,7 @@ def _regenerate_question_approval_response(
             PerguntasGerarRespostaRequest(
                 loja=store,
                 pergunta=question,
-                resposta_atual=str(approval.get("resposta_sugerida") or "").strip(),
+                resposta_atual=_question_exact_nonempty_response(approval.get("resposta_sugerida")),
                 orientacao_usuario=str(guidance or "").strip()[:1200],
                 async_mode=True,
             ),
@@ -689,7 +699,11 @@ def _regenerate_question_approval_response(
         ppv_state._perguntas_ia_aprovacoes_salvar(client_id, approvals)
         raise _QuestionResearchPending(generated_job_id, generated_status)
 
-    response = str((generated or {}).get("resposta") or (generated or {}).get("answer") or generated_result.get("resposta") or "").strip()[:1200]
+    response = _question_exact_nonempty_response(
+        (generated or {}).get("resposta"),
+        (generated or {}).get("answer"),
+        generated_result.get("resposta"),
+    )
     if not response:
         raise RuntimeError("generated_answer_empty")
     approval["resposta_sugerida"] = response

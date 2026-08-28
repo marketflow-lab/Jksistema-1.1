@@ -125,6 +125,13 @@ var contextVaultSecurityModule = require(path.join(
     'modules',
     'context-vault-security.js'
 ));
+var importacoesTrackingBrowserModule = require(path.join(
+    __dirname,
+    'electron_app',
+    'main',
+    'modules',
+    'importacoes-tracking-browser.js'
+));
 
 function normalizeContextVaultFilePath(value) {
     const normalized = path.normalize(path.resolve(String(value || '')));
@@ -206,6 +213,56 @@ function assertTrustedContextVaultIpcSender(event) {
         senderMatchesMain: !!(sender && mainWebContents && sender === mainWebContents)
     });
     throw new Error('Origem IPC nao autorizada para abrir o Context Vault.');
+}
+
+function isAllowedImportacoesTrackingFrameUrl(frameUrl) {
+    const raw = String(frameUrl || '').trim();
+    if (!raw) return false;
+    try {
+        const parsed = new URL(raw);
+        if (parsed.protocol === 'http:') {
+            const hostAllowed = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost';
+            const portAllowed = String(parsed.port || '') === String(JK_LOCAL_BACKEND_PORT);
+            const pageAllowed = /\/(?:static\/)?importacoes\.html$/i.test(parsed.pathname || '');
+            return hostAllowed && portAllowed && pageAllowed;
+        }
+        if (parsed.protocol === 'file:') {
+            const { fileURLToPath } = require('url');
+            const requestedPath = normalizeContextVaultFilePath(fileURLToPath(parsed));
+            const allowedPaths = [
+                path.join(getAppRootDir(), 'importacoes.html'),
+                path.join(getAppRootDir(), 'static', 'importacoes.html')
+            ].map(normalizeContextVaultFilePath);
+            return allowedPaths.includes(requestedPath);
+        }
+    } catch (_err) {}
+    return false;
+}
+
+function assertTrustedImportacoesTrackingIpcSender(event) {
+    const sender = event && event.sender;
+    const senderFrame = event && event.senderFrame;
+    let frameUrl = '';
+    try { frameUrl = String(senderFrame && senderFrame.url || ''); } catch (_err) {}
+    const mainWebContents = mainWindow
+        && !mainWindow.isDestroyed()
+        && mainWindow.webContents
+        && !mainWindow.webContents.isDestroyed()
+        ? mainWindow.webContents
+        : null;
+    const trusted = !!(
+        sender
+        && mainWebContents
+        && sender === mainWebContents
+        && contextVaultFrameBelongsToSender(senderFrame, sender)
+        && isAllowedImportacoesTrackingFrameUrl(frameUrl)
+    );
+    if (trusted) return;
+    logElectronLifecycle('importacoes-tracking-ipc-sender-blocked', {
+        mainWebContents: !!mainWebContents,
+        senderMatchesMain: !!(sender && mainWebContents && sender === mainWebContents)
+    });
+    throw new Error('Origem IPC nao autorizada para rastrear importacoes.');
 }
 
 function getLocalBackendJson(pathname, authToken = '', timeoutMs = 18000) {
@@ -1018,6 +1075,13 @@ app.whenReady().then(async () => {
     });
     ipcMain.handle('context-vault-open', async (event, authToken = '') => {
         return await openContextVaultForAdmin(event, authToken);
+    });
+    ipcMain.handle('importacoes-cosco-tracking', async (event, payload = {}) => {
+        assertTrustedImportacoesTrackingIpcSender(event);
+        return await importacoesTrackingBrowserModule.trackCoscoShipment(payload || {}, {
+            BrowserWindow,
+            session
+        });
     });
     ipcMain.handle('check-for-updates', async () => {
         return await checkForUpdates(true);

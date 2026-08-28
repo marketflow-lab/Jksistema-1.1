@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import multiprocessing
 import sqlite3
 import threading
 import time
@@ -19,10 +20,75 @@ from backend.services import perguntas_pos_venda_codex as orchestrator
 from backend.services import perguntas_pos_venda_endpoints as endpoints
 from backend.services import perguntas_pos_venda_perguntas_ml as perguntas_ml
 from backend.services import perguntas_pos_venda_state as perguntas_state
+from backend.services.codex.storage import customer_replies as customer_reply_storage
+from backend.services.codex.storage import customer_reply_state
+from backend.services.vehicle_identity import VehicleIdentityFactsV1
+
+
+TEST_VIN = "1M8GDM9AXKP042788"
+SECOND_TEST_VIN = "1HGCM82633A004352"
+
+
+def _multiprocess_initial_vin_create(
+    info_root: str,
+    vin: str,
+    label: str,
+    barrier,
+    result_queue,
+) -> None:
+    orchestrator._RUNTIME = SimpleNamespace(PASTA_INFO=info_root)
+    orchestrator._RECOVERY_STARTED = True
+
+    def simultaneous_initial_read(*_args, **_kwargs) -> bool:
+        barrier.wait(timeout=10.0)
+        return False
+
+    facts = VehicleIdentityFactsV1(
+        status="confirmed",
+        make="PEUGEOT" if vin == TEST_VIN else "HONDA",
+    )
+    try:
+        with patch.object(
+            orchestrator,
+            "_subject_has_persisted_job",
+            simultaneous_initial_read,
+        ), patch.object(
+            orchestrator,
+            "VpicPublicVinDecoder",
+            return_value=SimpleNamespace(decode=lambda _value: facts),
+        ), patch.object(
+            orchestrator,
+            "_schedule",
+            return_value=True,
+        ), patch.object(
+            orchestrator.codex_agent_runtime,
+            "resolve_guidance",
+            return_value=[],
+        ):
+            result = orchestrator.create_job(
+                client_id="cliente",
+                task_type="question",
+                store="JK Pecas",
+                subject_key="Q-VIN-INITIAL-MULTIPROCESS",
+                request={
+                    "pergunta": {
+                        "id": "Q-VIN-INITIAL-MULTIPROCESS",
+                        "text": f"Serve? Chassi: {vin}",
+                    },
+                    "orientacao_usuario": label,
+                },
+            )
+        result_queue.put(("ok", str(result.get("job_id") or "")))
+    except BaseException as error:  # pragma: no cover - surfaced in parent
+        result_queue.put(("error", f"{type(error).__name__}:{error}"))
 
 
 def _runtime(tmp_path):
     return SimpleNamespace(PASTA_INFO=str(tmp_path))
+
+
+def _variation_sku(item: dict) -> str:
+    return str(item.get("seller_sku") or item.get("seller_custom_field") or "").strip()
 
 
 def _official_context() -> dict:
@@ -146,6 +212,793 @@ def test_job_storage_claim_cancel_and_payload_roundtrip(tmp_path):
     assert cancelled["cancel_requested"] is True
 
 
+def test_job_storage_drops_untrusted_vehicle_identity_before_disk(tmp_path):
+    payload = {
+        "job_id": "job-storage-vin-unsafe",
+        "profile": orchestrator.PROFILE,
+        "task_type": "question",
+        "subject_key": "Q-VIN-UNSAFE",
+        "store": "Loja",
+        "status": "queued",
+        "vehicle_identity_capture_status": "captured",
+        "vehicle_identity": {
+            **VehicleIdentityFactsV1(status="confirmed", make="PEUGEOT").as_dict(),
+            "vin": TEST_VIN,
+        },
+    }
+
+    saved = codex_assistant_storage.codex_assistant_customer_reply_job_save(
+        str(tmp_path), "cliente", payload
+    )
+    with customer_reply_state._CUSTOMER_REPLY_TRANSIENT_LOCK:
+        customer_reply_state._CUSTOMER_REPLY_TRANSIENT.clear()
+    restarted = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", saved["job_id"]
+    )
+
+    assert "vehicle_identity" not in saved
+    assert "vehicle_identity" not in restarted
+    assert restarted["vehicle_identity_capture_status"] == "captured"
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            assert TEST_VIN.encode("utf-8") not in path.read_bytes()
+
+
+def test_request_generation_cas_never_recreates_a_missing_job(tmp_path):
+    rejected = customer_reply_storage._codex_assistant_customer_reply_job_save_cas(
+        str(tmp_path),
+        "cliente",
+        {
+            "job_id": "missing-vin-cas-job",
+            "request_generation": 2,
+            "vehicle_identity_capture_status": "captured",
+            "vehicle_identity": VehicleIdentityFactsV1(
+                status="confirmed", make="PEUGEOT"
+            ).as_dict(),
+        },
+        expected_request_generation=1,
+    )
+
+    assert rejected["_request_generation_cas_applied"] is False
+    assert codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", "missing-vin-cas-job"
+    ) is None
+
+
+def test_durable_vehicle_identity_replaces_stale_legacy_transient_value(tmp_path):
+    job_id = "job-storage-vin-migration"
+    payload = {
+        "job_id": job_id,
+        "task_type": "question",
+        "subject_key": "Q-VIN-MIGRATION",
+        "store": "Loja",
+        "status": "queued",
+        "vehicle_identity_capture_status": "captured",
+        "vehicle_identity": VehicleIdentityFactsV1(
+            status="confirmed", make="PEUGEOT"
+        ).as_dict(),
+    }
+    db_path = codex_assistant_storage.codex_assistant_state_db_path(
+        str(tmp_path), "cliente"
+    )
+    cache_key = customer_reply_state._customer_reply_cache_key(db_path, job_id)
+    with customer_reply_state._CUSTOMER_REPLY_TRANSIENT_LOCK:
+        customer_reply_state._CUSTOMER_REPLY_TRANSIENT[cache_key] = (
+            time.time() + 60.0,
+            {
+                "vehicle_identity_capture_status": "captured",
+                "vehicle_identity": VehicleIdentityFactsV1(
+                    status="confirmed", make="HONDA"
+                ).as_dict(),
+            },
+        )
+
+    codex_assistant_storage.codex_assistant_customer_reply_job_save(
+        str(tmp_path), "cliente", payload
+    )
+    stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", job_id
+    )
+
+    assert stored["vehicle_identity"]["make"] == "PEUGEOT"
+
+
+def test_create_job_decodes_before_queue_and_every_vin_capture_is_a_revision(
+    tmp_path,
+    monkeypatch,
+):
+    vin = "1M8GDM9AXKP042788"
+    facts = VehicleIdentityFactsV1(
+        status="confirmed",
+        make="PEUGEOT",
+        model="206",
+        model_year="2012",
+    )
+    decoded_values: list[str] = []
+    decoder = SimpleNamespace(
+        decode=lambda value: decoded_values.append(value) or facts
+    )
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    request = {
+        "pergunta": {"id": "Q-VIN-1", "text": f"Serve? Chassi: {vin}"},
+        "question_text": f"Serve? Chassi: {vin}",
+        f"metadata_VIN_{vin}": "untrusted",
+    }
+
+
+    with patch.object(orchestrator, "VpicPublicVinDecoder", return_value=decoder), patch.object(
+        orchestrator,
+        "_schedule",
+        return_value=True,
+    ), patch.object(
+        orchestrator.codex_agent_runtime,
+        "resolve_guidance",
+        return_value=[],
+    ):
+        first = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Pecas",
+            subject_key="Q-VIN-1",
+            request=request,
+        )
+        second = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Pecas",
+            subject_key="Q-VIN-1",
+            request=request,
+        )
+
+        stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+            str(tmp_path),
+            "cliente",
+            first["job_id"],
+        )
+        assert decoded_values == [vin, vin]
+        assert stored["request_generation"] == 2
+        assert stored["vehicle_identity"]["make"] == "PEUGEOT"
+        with patch.object(
+            orchestrator,
+            "_load_question_context",
+            return_value=("Compatibilidade ainda depende do código OEM.", _official_context()),
+        ):
+            orchestrator._run_job("cliente", first["job_id"])
+
+    assert second["job_id"] == first["job_id"]
+    completed = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path),
+        "cliente",
+        first["job_id"],
+    )
+    assert completed["request_generation"] == 2
+    assert completed.get("restart_requested") is not True
+    assert completed["vehicle_identity"]["make"] == "PEUGEOT"
+    assert completed["vehicle_identity_capture_status"] == "captured"
+    assert vin not in json.dumps(completed, ensure_ascii=False)
+    assert decoded_values == [vin, vin]
+    assert orchestrator.DEFAULT_VIN_ENVELOPE_STORE.consume(
+        orchestrator._vin_envelope_key(first["job_id"], 1)
+    ) is None
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            assert vin.encode("utf-8") not in path.read_bytes()
+    with customer_reply_state._CUSTOMER_REPLY_TRANSIENT_LOCK:
+        customer_reply_state._CUSTOMER_REPLY_TRANSIENT.clear()
+    restarted = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", first["job_id"]
+    )
+    assert restarted["vehicle_identity"]["make"] == "PEUGEOT"
+
+
+def test_restart_before_worker_uses_durable_facts_without_vin_or_decoder(
+    tmp_path,
+    monkeypatch,
+):
+    decoder_calls: list[str] = []
+    facts = VehicleIdentityFactsV1(status="confirmed", make="PEUGEOT")
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    with patch.object(
+        orchestrator,
+        "VpicPublicVinDecoder",
+        return_value=SimpleNamespace(
+            decode=lambda value: decoder_calls.append(value) or facts
+        ),
+    ), patch.object(orchestrator, "_schedule", return_value=True), patch.object(
+        orchestrator.codex_agent_runtime,
+        "resolve_guidance",
+        return_value=[],
+    ):
+        created = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Pecas",
+            subject_key="Q-VIN-RESTART",
+            request={
+                "pergunta": {
+                    "id": "Q-VIN-RESTART",
+                    "text": f"Serve? Chassi: {TEST_VIN}",
+                }
+            },
+        )
+    with customer_reply_state._CUSTOMER_REPLY_TRANSIENT_LOCK:
+        customer_reply_state._CUSTOMER_REPLY_TRANSIENT.clear()
+    claimed = codex_assistant_storage.codex_assistant_customer_reply_job_claim(
+        str(tmp_path),
+        "cliente",
+        created["job_id"],
+        owner=orchestrator._WORKER_ID,
+        lease_seconds=60.0,
+    )
+
+    with patch.object(
+        orchestrator,
+        "VpicPublicVinDecoder",
+        side_effect=AssertionError("worker must not instantiate decoder"),
+    ):
+        worker_job = orchestrator._consume_vehicle_identity_for_worker(claimed)
+
+    assert decoder_calls == [TEST_VIN]
+    assert worker_job["vehicle_identity"]["make"] == "PEUGEOT"
+    assert orchestrator.DEFAULT_VIN_ENVELOPE_STORE.consume(
+        orchestrator._vin_envelope_key(created["job_id"], 1)
+    ) is None
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            assert TEST_VIN.encode("utf-8") not in path.read_bytes()
+
+
+def test_distinct_vins_with_same_sanitized_hash_never_reuse_old_identity(
+    tmp_path,
+    monkeypatch,
+):
+    decoded_values: list[str] = []
+
+    def _decode(value: str) -> VehicleIdentityFactsV1:
+        decoded_values.append(value)
+        return VehicleIdentityFactsV1(
+            status="confirmed",
+            make="PEUGEOT" if value == TEST_VIN else "HONDA",
+        )
+
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    with patch.object(
+        orchestrator,
+        "VpicPublicVinDecoder",
+        return_value=SimpleNamespace(decode=_decode),
+    ), patch.object(orchestrator, "_schedule", return_value=True), patch.object(
+        orchestrator.codex_agent_runtime,
+        "resolve_guidance",
+        return_value=[],
+    ):
+        first = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Pecas",
+            subject_key="Q-VIN-SAME-HASH",
+            request={
+                "pergunta": {
+                    "id": "Q-VIN-SAME-HASH",
+                    "text": f"Serve? Chassi: {TEST_VIN}",
+                }
+            },
+        )
+        first_stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+            str(tmp_path), "cliente", first["job_id"]
+        )
+        orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Pecas",
+            subject_key="Q-VIN-SAME-HASH",
+            request={
+                "pergunta": {
+                    "id": "Q-VIN-SAME-HASH",
+                    "text": f"Serve? Chassi: {SECOND_TEST_VIN}",
+                }
+            },
+        )
+
+    stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", first["job_id"]
+    )
+    assert stored["request_generation"] == 2
+    assert stored["request_hash"] == first_stored["request_hash"]
+    assert stored["vehicle_identity"]["make"] == "HONDA"
+    assert decoded_values == [TEST_VIN, SECOND_TEST_VIN]
+    serialized = json.dumps(stored, ensure_ascii=False)
+    assert TEST_VIN not in serialized
+    assert SECOND_TEST_VIN not in serialized
+
+
+def test_vin_revision_before_worker_consumption_isolated_by_request_generation(
+    tmp_path,
+    monkeypatch,
+):
+    decoded_values: list[str] = []
+
+    def _decode(value: str) -> VehicleIdentityFactsV1:
+        decoded_values.append(value)
+        if value == TEST_VIN:
+            return VehicleIdentityFactsV1(
+                status="confirmed",
+                make="PEUGEOT",
+                model="206",
+                model_year="2012",
+            )
+        return VehicleIdentityFactsV1(
+            status="confirmed",
+            make="HONDA",
+            model="ACCORD",
+            model_year="2003",
+        )
+
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    with patch.object(
+        orchestrator,
+        "VpicPublicVinDecoder",
+        return_value=SimpleNamespace(decode=_decode),
+    ), patch.object(orchestrator, "_schedule", return_value=True), patch.object(
+        orchestrator.codex_agent_runtime,
+        "resolve_guidance",
+        return_value=[],
+    ):
+        created = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Pecas",
+            subject_key="Q-VIN-INTERLEAVE-BEFORE",
+            request={
+                "pergunta": {
+                    "id": "Q-VIN-INTERLEAVE-BEFORE",
+                    "text": f"Serve? Chassi: {TEST_VIN}",
+                },
+            },
+        )
+        claimed_generation_one = codex_assistant_storage.codex_assistant_customer_reply_job_claim(
+            str(tmp_path),
+            "cliente",
+            created["job_id"],
+            owner=orchestrator._WORKER_ID,
+            lease_seconds=60.0,
+        )
+        revised = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Pecas",
+            subject_key="Q-VIN-INTERLEAVE-BEFORE",
+            request={
+                "pergunta": {
+                    "id": "Q-VIN-INTERLEAVE-BEFORE",
+                    "text": f"Considere este chassi: {SECOND_TEST_VIN}",
+                },
+                "orientacao_usuario": "Use o chassi corrigido.",
+            },
+        )
+
+        consumed = orchestrator._consume_vehicle_identity_for_worker(
+            claimed_generation_one
+    )
+
+    assert revised["job_id"] == created["job_id"]
+    assert decoded_values == [TEST_VIN, SECOND_TEST_VIN]
+    assert consumed["request_generation"] == 2
+    assert consumed["vehicle_identity"]["make"] == "HONDA"
+    persisted = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", created["job_id"]
+    )
+    assert persisted["request_generation"] == 2
+    assert persisted["vehicle_identity"] == consumed["vehicle_identity"]
+    assert orchestrator.DEFAULT_VIN_ENVELOPE_STORE.consume(
+        orchestrator._vin_envelope_key(created["job_id"], 1)
+    ) is None
+    assert orchestrator.DEFAULT_VIN_ENVELOPE_STORE.consume(
+        orchestrator._vin_envelope_key(created["job_id"], 2)
+    ) is None
+
+
+def test_vin_revision_after_generation_one_persistence_replaces_only_next_generation(
+    tmp_path,
+    monkeypatch,
+):
+    decoded_values: list[str] = []
+
+    def _decode(value: str) -> VehicleIdentityFactsV1:
+        decoded_values.append(value)
+        return VehicleIdentityFactsV1(
+            status="confirmed",
+            make="PEUGEOT" if value == TEST_VIN else "HONDA",
+            model="206" if value == TEST_VIN else "ACCORD",
+            model_year="2012" if value == TEST_VIN else "2003",
+        )
+
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    with patch.object(
+        orchestrator,
+        "VpicPublicVinDecoder",
+        return_value=SimpleNamespace(decode=_decode),
+    ), patch.object(orchestrator, "_schedule", return_value=True), patch.object(
+        orchestrator.codex_agent_runtime,
+        "resolve_guidance",
+        return_value=[],
+    ):
+        created = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Pecas",
+            subject_key="Q-VIN-INTERLEAVE-AFTER",
+            request={
+                "pergunta": {
+                    "id": "Q-VIN-INTERLEAVE-AFTER",
+                    "text": f"Serve? Chassi: {TEST_VIN}",
+                },
+            },
+        )
+        claimed_generation_one = codex_assistant_storage.codex_assistant_customer_reply_job_claim(
+            str(tmp_path),
+            "cliente",
+            created["job_id"],
+            owner=orchestrator._WORKER_ID,
+            lease_seconds=60.0,
+        )
+        persisted_generation_one = orchestrator._consume_vehicle_identity_for_worker(
+            claimed_generation_one
+        )
+        assert persisted_generation_one["vehicle_identity"]["make"] == "PEUGEOT"
+
+        revised = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Pecas",
+            subject_key="Q-VIN-INTERLEAVE-AFTER",
+            request={
+                "pergunta": {
+                    "id": "Q-VIN-INTERLEAVE-AFTER",
+                    "text": f"Use o chassi corrigido: {SECOND_TEST_VIN}",
+                },
+                "orientacao_usuario": "Refaça para o veículo correto.",
+            },
+        )
+        running_generation_two = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+            str(tmp_path), "cliente", created["job_id"]
+        )
+        consumed_generation_two = orchestrator._consume_vehicle_identity_for_worker(
+            running_generation_two
+        )
+
+    assert revised["job_id"] == created["job_id"]
+    assert running_generation_two["request_generation"] == 2
+    assert decoded_values == [TEST_VIN, SECOND_TEST_VIN]
+    assert consumed_generation_two["request_generation"] == 2
+    assert consumed_generation_two["vehicle_identity"]["make"] == "HONDA"
+    persisted = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", created["job_id"]
+    )
+    assert persisted["vehicle_identity"] == consumed_generation_two["vehicle_identity"]
+    assert orchestrator.DEFAULT_VIN_ENVELOPE_STORE.consume(
+        orchestrator._vin_envelope_key(created["job_id"], 1)
+    ) is None
+    assert orchestrator.DEFAULT_VIN_ENVELOPE_STORE.consume(
+        orchestrator._vin_envelope_key(created["job_id"], 2)
+    ) is None
+
+
+def test_concurrent_vin_revisions_allocate_distinct_generations_with_cas(
+    tmp_path,
+    monkeypatch,
+):
+    decoded_values: list[str] = []
+
+    def _decode(value: str) -> VehicleIdentityFactsV1:
+        decoded_values.append(value)
+        return VehicleIdentityFactsV1(
+            status="confirmed",
+            make="PEUGEOT" if value == TEST_VIN else "HONDA",
+        )
+
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    with patch.object(orchestrator, "_schedule", return_value=True), patch.object(
+        orchestrator.codex_agent_runtime,
+        "resolve_guidance",
+        return_value=[],
+    ):
+        created = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Pecas",
+            subject_key="Q-VIN-CAS",
+            request={"pergunta": {"id": "Q-VIN-CAS", "text": "Serve?"}},
+        )
+
+    real_save = customer_reply_storage._codex_assistant_customer_reply_job_save_cas
+    interleave = threading.Barrier(2)
+    attempts_lock = threading.Lock()
+    attempts: list[tuple[str, int, int, bool | None]] = []
+
+    def interleaved_save(info_base, client_id, payload, **kwargs):
+        expected = kwargs.get("expected_request_generation")
+        incoming = int(payload.get("request_generation") or 1)
+        label = str((payload.get("request") or {}).get("orientacao_usuario") or "")
+        if expected == 1 and incoming == 2:
+            interleave.wait(timeout=3.0)
+        saved = real_save(info_base, client_id, payload, **kwargs)
+        if expected is not None:
+            with attempts_lock:
+                attempts.append(
+                    (
+                        label,
+                        int(expected),
+                        incoming,
+                        saved.get("_request_generation_cas_applied"),
+                    )
+                )
+        return saved
+
+    monkeypatch.setattr(
+        customer_reply_storage,
+        "_codex_assistant_customer_reply_job_save_cas",
+        interleaved_save,
+    )
+    errors: list[BaseException] = []
+
+    def revise(label: str, vin: str) -> None:
+        try:
+            orchestrator.create_job(
+                client_id="cliente",
+                task_type="question",
+                store="JK Pecas",
+                subject_key="Q-VIN-CAS",
+                request={
+                    "pergunta": {"id": "Q-VIN-CAS", "text": f"Chassi: {vin}"},
+                    "orientacao_usuario": label,
+                },
+            )
+        except BaseException as error:  # pragma: no cover - surfaced below
+            errors.append(error)
+
+    with patch.object(
+        orchestrator,
+        "VpicPublicVinDecoder",
+        return_value=SimpleNamespace(decode=_decode),
+    ), patch.object(orchestrator, "_schedule", return_value=True):
+        threads = [
+            threading.Thread(target=revise, args=("revision-a", TEST_VIN)),
+            threading.Thread(target=revise, args=("revision-b", SECOND_TEST_VIN)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5.0)
+
+    assert errors == []
+    assert all(not thread.is_alive() for thread in threads)
+    generation_two = [item for item in attempts if item[1:3] == (1, 2)]
+    generation_three = [item for item in attempts if item[1:3] == (2, 3)]
+    assert sorted(item[3] for item in generation_two) == [False, True]
+    assert len(generation_three) == 1
+    assert generation_three[0][3] is True
+    stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", created["job_id"]
+    )
+    final_label = stored["request"]["orientacao_usuario"]
+    expected_make = "PEUGEOT" if final_label == "revision-a" else "HONDA"
+    assert stored["request_generation"] == 3
+    assert stored["vehicle_identity"]["make"] == expected_make
+    assert sorted(decoded_values) == sorted([TEST_VIN, SECOND_TEST_VIN])
+
+
+def test_concurrent_initial_vins_create_one_job_then_one_cas_revision(
+    tmp_path,
+    monkeypatch,
+):
+    initial_read_barrier = threading.Barrier(2)
+    decoded_values: list[str] = []
+    results: list[dict] = []
+    errors: list[BaseException] = []
+
+    def simultaneous_initial_read(*_args, **_kwargs) -> bool:
+        initial_read_barrier.wait(timeout=3.0)
+        return False
+
+    def decode(value: str) -> VehicleIdentityFactsV1:
+        decoded_values.append(value)
+        return VehicleIdentityFactsV1(
+            status="confirmed",
+            make="PEUGEOT" if value == TEST_VIN else "HONDA",
+        )
+
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    monkeypatch.setattr(orchestrator, "_subject_has_persisted_job", simultaneous_initial_read)
+    monkeypatch.setattr(orchestrator, "_schedule", lambda _job: True)
+    monkeypatch.setattr(
+        orchestrator.codex_agent_runtime,
+        "resolve_guidance",
+        lambda *_args, **_kwargs: [],
+    )
+
+    def create(label: str, vin: str) -> None:
+        try:
+            results.append(
+                orchestrator.create_job(
+                    client_id="cliente",
+                    task_type="question",
+                    store="JK Pecas",
+                    subject_key="Q-VIN-INITIAL-CAS",
+                    request={
+                        "pergunta": {
+                            "id": "Q-VIN-INITIAL-CAS",
+                            "text": f"Serve? Chassi: {vin}",
+                        },
+                        "orientacao_usuario": label,
+                    },
+                )
+            )
+        except BaseException as error:  # pragma: no cover - surfaced below
+            errors.append(error)
+
+    with patch.object(
+        orchestrator,
+        "VpicPublicVinDecoder",
+        return_value=SimpleNamespace(decode=decode),
+    ):
+        threads = [
+            threading.Thread(target=create, args=("primeira", TEST_VIN)),
+            threading.Thread(target=create, args=("segunda", SECOND_TEST_VIN)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5.0)
+
+    assert errors == []
+    assert all(not thread.is_alive() for thread in threads)
+    assert len({result["job_id"] for result in results}) == 1
+    job_id = results[0]["job_id"]
+    stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path),
+        "cliente",
+        job_id,
+    )
+    assert stored["request_generation"] == 2
+    assert sorted(decoded_values) == sorted([TEST_VIN, SECOND_TEST_VIN])
+    assert stored["vehicle_identity"]["make"] in {"PEUGEOT", "HONDA"}
+
+
+def test_multiprocess_initial_vins_create_one_job_then_one_cas_revision(tmp_path):
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(2)
+    result_queue = context.Queue()
+    processes = [
+        context.Process(
+            target=_multiprocess_initial_vin_create,
+            args=(str(tmp_path), TEST_VIN, "primeira", barrier, result_queue),
+        ),
+        context.Process(
+            target=_multiprocess_initial_vin_create,
+            args=(str(tmp_path), SECOND_TEST_VIN, "segunda", barrier, result_queue),
+        ),
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=20.0)
+
+    assert all(not process.is_alive() for process in processes)
+    assert [process.exitcode for process in processes] == [0, 0]
+    results = [result_queue.get(timeout=3.0) for _process in processes]
+    assert [status for status, _value in results] == ["ok", "ok"]
+    job_ids = {value for _status, value in results}
+    assert len(job_ids) == 1
+    stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path),
+        "cliente",
+        job_ids.pop(),
+    )
+    assert stored["request_generation"] == 2
+    assert stored["vehicle_identity"]["make"] in {"PEUGEOT", "HONDA"}
+
+
+def test_active_request_without_vin_preserves_consumed_vehicle_identity(tmp_path, monkeypatch):
+    facts = VehicleIdentityFactsV1(
+        status="confirmed",
+        make="PEUGEOT",
+        model="206",
+        model_year="2012",
+    )
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    with patch.object(
+        orchestrator,
+        "VpicPublicVinDecoder",
+        return_value=SimpleNamespace(decode=lambda _value: facts),
+    ), patch.object(orchestrator, "_schedule", return_value=True), patch.object(
+        orchestrator.codex_agent_runtime,
+        "resolve_guidance",
+        return_value=[],
+    ):
+        created = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Pecas",
+            subject_key="Q-VIN-PRESERVE",
+            request={
+                "pergunta": {"id": "Q-VIN-PRESERVE", "text": f"Serve? Chassi: {TEST_VIN}"},
+            },
+        )
+        claimed = codex_assistant_storage.codex_assistant_customer_reply_job_claim(
+            str(tmp_path),
+            "cliente",
+            created["job_id"],
+            owner=orchestrator._WORKER_ID,
+            lease_seconds=60.0,
+        )
+        consumed = orchestrator._consume_vehicle_identity_for_worker(claimed)
+        codex_assistant_storage.codex_assistant_customer_reply_job_save(
+            str(tmp_path),
+            "cliente",
+            consumed,
+            expected_lease_owner=orchestrator._WORKER_ID,
+            expected_lease_generation=consumed["lease_generation"],
+        )
+        duplicate = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Pecas",
+            subject_key="Q-VIN-PRESERVE",
+            request={"pergunta": {"id": "Q-VIN-PRESERVE", "text": "Serve?"}},
+        )
+
+    assert duplicate["job_id"] == created["job_id"]
+    stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path),
+        "cliente",
+        created["job_id"],
+    )
+    assert stored["vehicle_identity_capture_status"] == "captured"
+    assert stored["vehicle_identity"]["make"] == "PEUGEOT"
+
+
+@pytest.mark.parametrize(
+    ("field_name", "field_value"),
+    [
+        ("client_id", "tenant-VIN-1M8GDM9AXKP042788"),
+        ("store", "JK-VIN-1M8GDM9AXKP042788"),
+        ("subject_key", "Q-VIN-1M8GDM9AXKP042788"),
+        ("channel", "app-VIN-1M8GDM9AXKP042788"),
+        ("created_by", "user-VIN-1M8GDM9AXKP042788"),
+    ],
+)
+def test_create_job_rejects_vin_shaped_operational_fields_before_storage(
+    tmp_path,
+    monkeypatch,
+    field_name,
+    field_value,
+):
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    arguments = {
+        "client_id": "cliente",
+        "task_type": "question",
+        "store": "JK Pecas",
+        "subject_key": "Q1",
+        "request": {"pergunta": {"id": "Q1", "text": "Serve?"}},
+        "channel": "app",
+        "created_by": "module_user",
+    }
+    arguments[field_name] = field_value
+
+    with pytest.raises(ValueError, match="não pode conter chassi/VIN"):
+        orchestrator.create_job(**arguments)
+
+    assert not any(path.is_file() for path in tmp_path.rglob("*"))
+
+
 def test_job_heartbeat_renews_lease_without_resurrecting_completed_job(tmp_path):
     payload = {
         "job_id": "job-heartbeat-1",
@@ -261,7 +1114,7 @@ def test_job_runs_to_versioned_approval_and_reuses_subject_thread(tmp_path, monk
     assert persisted_revision["subquestions"] == []
 
 
-def test_missing_ai_subquestions_fails_safe_without_assuming_general(tmp_path, monkeypatch):
+def test_missing_ai_subquestions_does_not_replace_explicit_ai_answer(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
     monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
     monkeypatch.setattr(orchestrator, "_schedule_retry_timer", lambda job: None)
@@ -288,37 +1141,63 @@ def test_missing_ai_subquestions_fails_safe_without_assuming_general(tmp_path, m
     ):
         orchestrator._run_job("cliente", created["job_id"])
 
-    waiting = orchestrator.get_job("cliente", created["job_id"])
+    completed = orchestrator.get_job("cliente", created["job_id"])
     stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
         str(tmp_path), "cliente", created["job_id"]
     )
-    partial = stored["last_partial_result"]
-    assert waiting["status"] == "waiting_retry"
-    assert waiting["subquestions"] == []
-    assert waiting["data_sufficient"] is False
-    assert partial["evidence_status"] == []
-    assert partial["data_sufficient"] is False
-    assert partial["publish_attempted"] is False
-    assert not any("revisão humana" in warning for warning in partial["warnings"])
-
-    stored["deadline_at_epoch"] = time.time() - 1
-    codex_assistant_storage.codex_assistant_customer_reply_job_save(
-        str(tmp_path), "cliente", stored
-    )
-    completed = orchestrator.get_job("cliente", created["job_id"])
     assert completed["status"] == "completed"
     assert completed["success"] is True
+    assert completed["subquestions"] == []
+    assert completed["data_sufficient"] is False
     assert completed["blocked_without_draft"] is False
-    assert completed["result"]["resposta"]
+    assert completed["result"]["resposta"] == "Há estoque e o prazo está no anúncio."
     assert completed["result"]["requires_approval"] is True
     assert completed["review_required"] is False
-    assert completed["completion_reason"] == "ai_classification_unavailable"
+    assert completed["completion_reason"] == "ai_response_preserved_unvalidated"
+    assert completed["draft_source"] == "ai"
+    assert "last_partial_result" not in stored
     assert completed["deadline_seconds"] == orchestrator.PUBLIC_RESEARCH_DEADLINE_SECONDS
     assert completed["can_cancel"] is False
     assert completed["proposal_hash"]
     assert orchestrator.resume_incomplete_job(
         "cliente", created["job_id"]
     )["status"] == "completed"
+
+
+def test_postprocessing_failure_preserves_generated_ai_answer_exactly(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    with patch.object(orchestrator, "_schedule", return_value=True), patch.object(
+        orchestrator.codex_agent_runtime, "resolve_guidance", return_value=[]
+    ):
+        created = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Pecas",
+            subject_key="Q-POSTPROCESS-PRESERVE",
+            request={
+                "pergunta": {"id": "Q-POSTPROCESS-PRESERVE", "text": "Serve?"},
+                "question_text": "Serve?",
+            },
+        )
+
+    literal = "  Resposta da IA com espacos.\n\nLinha final preservada.  "
+    with patch.object(
+        orchestrator,
+        "_load_question_context",
+        return_value=(literal, _official_context()),
+    ), patch.object(
+        orchestrator,
+        "_evidence_envelope",
+        side_effect=RuntimeError("postprocessing failed"),
+    ):
+        orchestrator._run_job("cliente", created["job_id"])
+
+    completed = orchestrator.get_job("cliente", created["job_id"])
+    assert completed["status"] == "completed"
+    assert completed["result"]["resposta"] == literal
+    assert completed["completion_reason"] == "ai_response_preserved_after_postprocessing_failure"
+    assert completed["draft_source"] == "ai"
 
 
 def test_two_independent_sources_are_sufficient_without_official_authority():
@@ -359,7 +1238,7 @@ def test_frontend_uses_async_job_polling():
     assert "req.async_mode" in post_sale_js
 
 
-def test_insufficient_question_research_retries_once_then_can_be_sufficient(tmp_path, monkeypatch):
+def test_insufficient_question_research_preserves_first_ai_answer(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
     monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
     monkeypatch.setattr(orchestrator, "_schedule_retry_timer", lambda job: None)
@@ -404,40 +1283,15 @@ def test_insufficient_question_research_retries_once_then_can_be_sufficient(tmp_
     ):
         orchestrator._run_job("cliente", created["job_id"])
 
-    waiting = orchestrator.get_job("cliente", created["job_id"])
-    assert waiting["status"] == "waiting_retry"
-    assert waiting["queued"] is True
-    assert waiting["data_sufficient"] is False
-    assert waiting["retry_policy"] == "bounded"
-    assert waiting["deadline_seconds"] == orchestrator.PUBLIC_RESEARCH_DEADLINE_SECONDS
-    assert waiting["deadline_at_epoch"] > time.time()
-    assert waiting["attempt_count"] == 1
-    assert waiting["evidence_attempt_count"] == 1
-    assert waiting["can_cancel"] is True
-    assert waiting["status_message"]
-    assert waiting["retry_count"] == 1
-    assert waiting["research_history"][0]["missing_fields"] == [
-        "authoritative_technical_evidence",
-        "pressure",
-    ]
-    assert waiting["result"] == {}
-
-    stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
-        str(tmp_path), "cliente", created["job_id"]
-    )
-    stored.update({"status": "queued", "next_retry_at_epoch": 0.0})
-    codex_assistant_storage.codex_assistant_customer_reply_job_save(str(tmp_path), "cliente", stored)
-    with patch.object(
-        orchestrator,
-        "_load_question_context",
-        return_value=("Essa bomba e compativel com a Evoque SE 2.0 gasolina 2017 e trabalha a 3 bar.", _official_context()),
-    ):
-        orchestrator._run_job("cliente", created["job_id"])
-
     completed = orchestrator.get_job("cliente", created["job_id"])
     assert completed["status"] == "completed"
-    assert completed["data_sufficient"] is True
-    assert "3 bar" in completed["result"]["resposta"]
+    assert completed["data_sufficient"] is False
+    assert completed["attempt_count"] == 1
+    assert completed["evidence_attempt_count"] == 1
+    assert completed["result"]["resposta"] == "Para confirmar, informe o tipo de rosca."
+    assert completed["completion_reason"] == "ai_response_preserved_unvalidated"
+    assert completed["draft_source"] == "ai"
+    assert completed["result"]["requires_approval"] is True
     assert completed["result"]["publish_attempted"] is False
 
 
@@ -694,18 +1548,18 @@ def test_evoque_continuation_reaches_evidence_and_finishes_safe_partial_in_one_c
     assert completed["attempt_count"] == 1
     assert completed["evidence_attempt_count"] == 1
     assert completed["operational_failure_count"] == 0
-    assert completed["completion_reason"] == "conditional_listing_evidence"
+    assert completed["completion_reason"] == "ai_response_preserved_unvalidated"
     assert completed["data_sufficient"] is False
     assert completed["completed_with_partial"] is True
-    assert completed["draft_source"] == "contextual_fallback"
-    deterministic_answer = completed["result"]["resposta"]
-    assert deterministic_answer != answer
-    assert "Evoque 2015/2016" in deterministic_answer
+    assert completed["draft_source"] == "ai"
+    preserved_answer = completed["result"]["resposta"]
+    assert preserved_answer == answer
+    assert "Evoque 2015/2016" in preserved_answer
     for code in ("AH22-9H307-AB", "LR057235", "LR044427", "LR026192"):
-        assert code in deterministic_answer
+        assert code in preserved_answer
 
 
-def test_continuation_replaces_free_model_claims_with_deterministic_listing_draft(
+def test_continuation_preserves_free_model_claims_without_deterministic_replacement(
     tmp_path,
     monkeypatch,
 ):
@@ -773,12 +1627,11 @@ def test_continuation_replaces_free_model_claims_with_deterministic_listing_draf
     final_answer = completed["result"]["resposta"]
     assert completed["status"] == "completed"
     assert completed["evidence_attempt_count"] == 1
-    assert completed["completion_reason"] == "conditional_listing_evidence"
-    assert completed["draft_source"] == "contextual_fallback"
-    assert "Evoque 2015/2016" in final_answer
-    assert "Hilux" not in final_answer
-    assert "2020" not in final_answer
-    assert "FAKE999999" not in final_answer
+    assert completed["completion_reason"] == "ai_response_preserved_unvalidated"
+    assert completed["draft_source"] == "ai"
+    assert final_answer == unsafe_answer
+    assert "Hilux 2020" in final_answer
+    assert "FAKE999999" in final_answer
     assert scheduled_retries == []
 
 
@@ -1333,6 +2186,40 @@ def test_response_policy_failure_preserves_previous_validated_draft_without_retr
     assert scheduled_retries == []
 
 
+def test_operational_fallback_preserves_existing_draft_byte_for_byte(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    literal = "  Rascunho existente com espacos.  \n\nAssinatura literal.  "
+    with patch.object(orchestrator, "_schedule", return_value=True), patch.object(
+        orchestrator.codex_agent_runtime, "resolve_guidance", return_value=[]
+    ):
+        created = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Pecas",
+            subject_key="Q-DRAFT-LITERAL",
+            request={
+                "pergunta": {"id": "Q-DRAFT-LITERAL", "text": "Serve?"},
+                "question_text": "Serve?",
+                "resposta_atual": literal,
+            },
+        )
+    stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", created["job_id"]
+    )
+    stored.update({"status": "running", "lease_owner": orchestrator._WORKER_ID})
+    codex_assistant_storage.codex_assistant_customer_reply_job_save(str(tmp_path), "cliente", stored)
+
+    completed = orchestrator._complete_without_draft(
+        stored,
+        warning="timeout",
+        completion_reason="operational_retry_exhausted",
+    )
+
+    assert completed["result"]["resposta"] == literal
+    assert completed["result"]["draft_source"] == "existing_draft"
+
+
 def test_safe_fallback_addresses_compatibility_quantity_and_store_signature():
     draft = orchestrator._subject_aware_safe_fallback({
         "store": "Uai Mineirinho",
@@ -1722,21 +2609,21 @@ def test_legacy_completed_job_without_new_fields_remains_readable_but_not_approv
     assert orchestrator.job_contract_current("cliente", "job-legacy-incomplete") is False
 
 
-def test_active_v10_job_is_quarantined_after_v11_contract_change(tmp_path, monkeypatch):
+def test_active_v12_job_is_quarantined_after_v13_contract_change(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
     legacy_active = {
-        "job_id": "job-v10-active",
+        "job_id": "job-v12-active",
         "profile": orchestrator.PROFILE,
         "client_id": "cliente",
         "task_type": "question",
-        "subject_key": "Q-V10",
-        "event_subject_key": "Q-V10",
+        "subject_key": "Q-V12",
+        "event_subject_key": "Q-V12",
         "store": "JK Pecas",
         "status": "queued",
         "agent_state": "entendendo",
-        "prompt_version": "jk_ml_customer_reply_codex_v10",
-        "prompt_hash": "hash-v10",
-        "schema_version": "5.0",
+        "prompt_version": "jk_ml_customer_reply_codex_v12",
+        "prompt_hash": "7a428cbbd56eb76cd0672bff81d7a8c932195d5b0cc1a8c373b4809c3548a6d6",
+        "schema_version": "5.1",
         "queue_policy_version": orchestrator.QUEUE_POLICY_VERSION,
     }
     codex_assistant_storage.codex_assistant_customer_reply_job_save(
@@ -1745,7 +2632,7 @@ def test_active_v10_job_is_quarantined_after_v11_contract_change(tmp_path, monke
         legacy_active,
     )
 
-    quarantined = orchestrator.get_job("cliente", "job-v10-active")
+    quarantined = orchestrator.get_job("cliente", "job-v12-active")
 
     assert quarantined["status"] == "cancelled"
     assert quarantined["contract_quarantined"] is True
@@ -1753,7 +2640,7 @@ def test_active_v10_job_is_quarantined_after_v11_contract_change(tmp_path, monke
     assert quarantined["blocked_without_draft"] is True
 
 
-def test_elapsed_public_research_keeps_same_job_and_partial_for_next_retry(tmp_path, monkeypatch):
+def test_elapsed_public_research_preserves_same_job_and_ai_answer(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
     monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
     monkeypatch.setattr(orchestrator, "_schedule_retry_timer", lambda job: None)
@@ -1803,18 +2690,19 @@ def test_elapsed_public_research_keeps_same_job_and_partial_for_next_retry(tmp_p
     ):
         orchestrator._run_job("cliente", created["job_id"])
 
-    waiting = orchestrator.get_job("cliente", created["job_id"])
+    completed = orchestrator.get_job("cliente", created["job_id"])
     stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
         str(tmp_path), "cliente", created["job_id"]
     )
-    assert waiting["job_id"] == created["job_id"]
-    assert waiting["status"] == "waiting_retry"
-    assert waiting["queued"] is True
-    assert waiting["data_sufficient"] is False
-    assert waiting["deadline_reached"] is False
-    assert waiting["deadline_at_epoch"] > time.time()
-    assert stored["last_partial_result"]["resposta"] == partial_answer
-    assert stored["last_partial_result"]["publish_attempted"] is False
+    assert completed["job_id"] == created["job_id"]
+    assert completed["status"] == "completed"
+    assert completed["data_sufficient"] is False
+    assert completed["deadline_reached"] is False
+    assert completed["result"]["resposta"] == partial_answer
+    assert completed["completion_reason"] == "ai_response_preserved_unvalidated"
+    assert completed["draft_source"] == "ai"
+    assert stored["result"]["resposta"] == partial_answer
+    assert stored["result"]["publish_attempted"] is False
 
 
 def test_elapsed_current_job_completes_with_safe_partial_draft(tmp_path, monkeypatch):
@@ -1995,6 +2883,53 @@ def test_public_answer_limit_accepts_up_to_2000_characters(length, expected_leng
 
     assert len(answer) == expected_length
     assert answer.endswith("...") is truncated
+
+
+def test_manual_public_question_send_forwards_legacy_invalid_fallback_text(monkeypatch):
+    answer = "Nao consegui gerar a resposta completa agora; preserve este rascunho da IA."
+    cfg = {"marker": "cfg"}
+    captured = {}
+
+    monkeypatch.setattr(
+        perguntas_ml,
+        "_perguntas_ia_limpar_resposta",
+        lambda value: str(value or "").strip(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        perguntas_ml,
+        "_perguntas_ia_resposta_fallback_invalida",
+        lambda value: value == answer,
+        raising=False,
+    )
+
+    def request(client_id, store, current_cfg, method, url, **kwargs):
+        captured.update({
+            "client_id": client_id,
+            "store": store,
+            "method": method,
+            "url": url,
+            "json": kwargs.get("json"),
+            "timeout": kwargs.get("timeout"),
+        })
+        return SimpleNamespace(status_code=201, text="", json=lambda: {"id": "Q1"}), current_cfg
+
+    monkeypatch.setattr(perguntas_ml, "_ml_api_request", request, raising=False)
+
+    data, returned_cfg = perguntas_ml._perguntas_ia_enviar_resposta_ml(
+        "cliente", "Loja", cfg, "Q1", answer
+    )
+
+    assert captured == {
+        "client_id": "cliente",
+        "store": "Loja",
+        "method": "POST",
+        "url": "https://api.mercadolibre.com/answers",
+        "json": {"question_id": "Q1", "text": answer},
+        "timeout": 20,
+    }
+    assert data == {"id": "Q1"}
+    assert returned_cfg is cfg
 
 
 def test_post_sale_draft_remains_bounded_to_340_chars_and_three_sentences(monkeypatch):
@@ -3004,7 +3939,7 @@ def test_evoque_full_conversation_reclassifies_continuation_and_builds_condition
     assert context["ia_requer_revisao_humana"] is True
 
 
-def test_restart_keeps_completed_job_unblocked_and_rehydrates_available_fallback(tmp_path, monkeypatch):
+def test_restart_never_replaces_an_unavailable_ai_draft_with_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
     monkeypatch.setattr(orchestrator, "_known_clients", lambda _base: ["cliente"])
     scheduled = []
@@ -3031,20 +3966,41 @@ def test_restart_keeps_completed_job_unblocked_and_rehydrates_available_fallback
     )
     assert stored["status"] == "completed"
     assert stored["agent_state"] == "concluido"
-    assert stored["blocked_without_draft"] is False
-    assert stored["review_required"] is False
-    assert stored["completion_reason"] == "draft_expired"
+    assert stored["blocked_without_draft"] is True
+    assert stored["review_required"] is True
+    assert stored["requires_approval"] is False
+    assert stored["completion_reason"] == "draft_unavailable_after_restart"
 
     rehydrated = orchestrator.get_job("cliente", completed["job_id"])
     assert rehydrated["status"] == "completed"
-    assert rehydrated["success"] is True
-    assert rehydrated["result"]["resposta"]
-    assert rehydrated["blocked_without_draft"] is False
-    assert rehydrated["review_required"] is False
-    assert rehydrated["completion_reason"] == "draft_expired_available_fallback"
-    assert rehydrated["result"]["completion_reason"] == "draft_expired_available_fallback"
-    assert rehydrated["draft_source"] == "neutral_fallback"
-    assert rehydrated["result"]["draft_source"] == "neutral_fallback"
+    assert rehydrated["success"] is False
+    assert "resposta" not in rehydrated["result"]
+    assert rehydrated["result"]["completion_reason"] == "draft_unavailable_after_restart"
+    assert rehydrated["blocked_without_draft"] is True
+    assert rehydrated["review_required"] is True
+    assert rehydrated["completion_reason"] == "draft_unavailable_after_restart"
+    assert rehydrated["draft_source"] == ""
+    assert any("Nenhum texto substituto" in warning for warning in rehydrated["warnings"])
+
+
+def test_completed_ai_draft_remains_literal_for_the_terminal_job_lifetime(tmp_path, monkeypatch):
+    now = [1_000_000.0]
+    monkeypatch.setattr(customer_reply_state.time, "time", lambda: now[0])
+    draft = "  Linha 1.  \n\nAssinatura literal.  "
+    job = {
+        "job_id": "job-literal-terminal", "profile": orchestrator.PROFILE,
+        "client_id": "cliente", "task_type": "public_question", "subject_key": "Q-LITERAL",
+        "store": "Loja", "status": "completed", "agent_state": "aguardando_aprovacao",
+        "result": {"resposta": draft, "proposal_hash": "hash"},
+    }
+
+    codex_assistant_storage.codex_assistant_customer_reply_job_save(str(tmp_path), "cliente", job)
+    now[0] += (15 * 60) + 1
+
+    stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", job["job_id"]
+    )
+    assert stored["result"]["resposta"] == draft
 
 
 def test_canonical_question_item_and_history_are_reloaded_by_ids(tmp_path, monkeypatch):
@@ -3068,7 +4024,7 @@ def test_canonical_question_item_and_history_are_reloaded_by_ids(tmp_path, monke
         def _ml_api_request(_client, _store, cfg, _method, url, **_kwargs):
             if "/questions/" in url:
                 return Response({"id": "Q-CANON", "item_id": "MLB-CANON", "from": {"id": "BUYER-1"}, "text": "Texto canonico"}), cfg
-            return Response({"id": "MLB-CANON", "title": "Item canonico", "seller_custom_field": "SKU-1"}), cfg
+            return Response({"id": "MLB-CANON", "title": "Item canonico", "price": 99.9, "seller_custom_field": "SKU-1"}), cfg
 
         @staticmethod
         def _ml_api_item_com_oauth_tenant(*_args):
@@ -3099,6 +4055,8 @@ def test_canonical_question_item_and_history_are_reloaded_by_ids(tmp_path, monke
             assert question["text"] == "Texto canonico"
             assert question["buyer_question_chat"][0]["text"] == "Historico canonico"
             assert item["title"] == "Item canonico"
+            assert item["price"] == 99.9
+            assert item["_ppv_official_current_listing"] is True
             return "Resposta", cfg, {
                 "buyer_question_chat": question["buyer_question_chat"],
             }
@@ -3107,13 +4065,76 @@ def test_canonical_question_item_and_history_are_reloaded_by_ids(tmp_path, monke
     answer, context = orchestrator._load_question_context(
         {
             "job_id": "job-canon", "client_id": "cliente", "store": "Loja",
-            "question_id": "Q-CANON", "item_id": "MLB-CANON", "request": {},
+            "question_id": "Q-CANON", "item_id": "MLB-CANON",
+            "request": {"item": {"id": "MLB-CANON", "title": "Item antigo", "price": 1.0}},
             "task_type": "public_question", "lease_generation": 1,
         }
     )
     assert answer == "Resposta"
     assert context["pergunta"]["id"] == "Q-CANON"
     assert context["buyer_question_chat"][0]["text"] == "Historico canonico"
+    assert context["item"]["title"] == "Item canonico"
+    assert "_ppv_official_current_listing" not in context["item"]
+
+
+def test_stale_request_item_cannot_be_marked_as_current_when_official_reload_fails(tmp_path, monkeypatch):
+    class FailedResponse:
+        status_code = 503
+
+        @staticmethod
+        def json():
+            return {}
+
+    class Runtime:
+        PASTA_INFO = str(tmp_path)
+
+        @staticmethod
+        def _obter_cfg_ml(_client, _store):
+            return {}
+
+        @staticmethod
+        def _ml_api_request(_client, _store, cfg, _method, _url, **_kwargs):
+            return FailedResponse(), cfg
+
+        @staticmethod
+        def _ml_api_item_com_oauth_tenant(*_args):
+            return {}
+
+        @staticmethod
+        def _ml_api_item(*_args):
+            return {}
+
+        @staticmethod
+        def _ml_extrair_sku(_item):
+            return "SKU-STALE"
+
+        @staticmethod
+        def _perguntas_ia_gerar_resposta(_client, _store, cfg, _question, item):
+            assert item["title"] == "Item antigo"
+            assert item["price"] == 1.0
+            assert item["available_quantity"] == 99
+            assert item["_ppv_official_current_listing"] is False
+            return "Resposta preservada", cfg, {}
+
+    monkeypatch.setattr(orchestrator, "_RUNTIME", Runtime())
+    answer, context = orchestrator._load_question_context(
+        {
+            "job_id": "job-stale", "client_id": "cliente", "store": "Loja",
+            "question_id": "Q-STALE", "item_id": "MLB-STALE",
+            "request": {
+                "pergunta": {"id": "Q-STALE", "item_id": "MLB-STALE", "text": "Tem estoque?"},
+                "item": {
+                    "id": "MLB-STALE", "title": "Item antigo", "price": 1.0,
+                    "available_quantity": 99, "_ppv_official_current_listing": True,
+                },
+            },
+            "task_type": "public_question", "lease_generation": 1,
+        }
+    )
+
+    assert answer == "Resposta preservada"
+    assert context["item"]["price"] == 1.0
+    assert "_ppv_official_current_listing" not in context["item"]
 
 
 def test_rejected_final_cas_does_not_transition_plan_to_approval(tmp_path, monkeypatch):
@@ -3188,3 +4209,77 @@ def test_terminal_row_ttl_removes_row_and_ephemeral_payload(tmp_path):
     assert not codex_assistant_storage.codex_assistant_customer_reply_job_has_transient(
         str(tmp_path), "cliente", old["job_id"]
     )
+
+
+def test_question_normalization_preserves_selected_variation_and_specific_sku(monkeypatch):
+    monkeypatch.setattr(perguntas_ml, "_ml_extrair_sku", _variation_sku, raising=False)
+    item = {
+        "id": "MLB-VARIANTS",
+        "variations": [
+            {"id": "V12", "seller_sku": "SKU-12"},
+            {"id": "V24", "seller_sku": "SKU-24"},
+        ],
+    }
+
+    selected = perguntas_ml._ml_perguntas_normalizar(
+        {"id": "Q1", "item_id": item["id"], "variation_id": "V24"},
+        {item["id"]: item},
+        {},
+    )
+    unresolved = perguntas_ml._ml_perguntas_normalizar(
+        {"id": "Q2", "item_id": item["id"]},
+        {item["id"]: item},
+        {},
+    )
+
+    assert (selected["variation_id"], selected["item_sku"]) == ("V24", "SKU-24")
+    assert (unresolved["variation_id"], unresolved["item_sku"]) == ("", "")
+
+
+def test_product_evidence_identity_is_exact_or_fails_closed_for_variations():
+    runtime = SimpleNamespace(_ml_extrair_sku=_variation_sku)
+    item = {
+        "id": "MLB-VARIANTS",
+        "site_id": "MLB",
+        "seller_id": "SELLER-1",
+        "seller_sku": "PARENT",
+        "variations": [
+            {"id": "V12", "seller_sku": "SKU-12"},
+            {"id": "V24", "seller_sku": "SKU-24"},
+        ],
+    }
+    selected_question = {"item_id": item["id"], "variation_id": "V12"}
+    selected = orchestrator._product_evidence_identity(
+        runtime,
+        store="Loja",
+        cfg={},
+        question=selected_question,
+        item=item,
+        request={},
+    )
+    unresolved_question = {"item_id": item["id"]}
+    unresolved = orchestrator._product_evidence_identity(
+        runtime,
+        store="Loja",
+        cfg={},
+        question=unresolved_question,
+        item=item,
+        request={},
+    )
+    single_item = {**item, "variations": [item["variations"][0]]}
+    single_question = {"item_id": item["id"]}
+    single = orchestrator._product_evidence_identity(
+        runtime,
+        store="Loja",
+        cfg={},
+        question=single_question,
+        item=single_item,
+        request={},
+    )
+
+    assert (selected["variation_id"], selected["sku"]) == ("V12", "SKU-12")
+    assert selected_question["_product_evidence_variation_state"] == "selected"
+    assert (unresolved["variation_id"], unresolved["sku"]) == ("", "")
+    assert unresolved_question["_product_evidence_variation_state"] == "unresolved_multi"
+    assert (single["variation_id"], single["sku"]) == ("V12", "SKU-12")
+    assert single_question["_product_evidence_variation_state"] == "single"

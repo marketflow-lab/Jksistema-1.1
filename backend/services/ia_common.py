@@ -29,16 +29,17 @@ def _normalizar_texto(texto: str):
 def _extrair_texto_openai_response(payload: dict) -> str:
     texto = payload.get("output_text")
     if isinstance(texto, str) and texto.strip():
-        return texto.strip()
+        return texto
 
     partes = []
     for item in payload.get("output") or []:
         for content in item.get("content") or []:
             if isinstance(content, dict):
                 valor = content.get("text")
-                if isinstance(valor, str) and valor.strip():
-                    partes.append(valor.strip())
-    return "\n".join(partes).strip()
+                if isinstance(valor, str):
+                    partes.append(valor)
+    texto = "".join(partes)
+    return texto if texto.strip() else ""
 
 
 def _extrair_b64_openai_image_response(payload: dict) -> str:
