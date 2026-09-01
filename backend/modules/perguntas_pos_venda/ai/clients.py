@@ -58,6 +58,7 @@ from .sources import (
     _ia_agent_perguntas_web_tool,
 )
 from .tools import (
+    _ia_agent_perguntas_categoria_regulada,
     _ia_agent_perguntas_chamar_modelo,
 )
 from .validation import (
@@ -71,6 +72,16 @@ from .client_workflows import (
     run_compatibility,
     run_general,
 )
+
+
+_PUBLIC_TECHNICAL_RESEARCH_STAGES = frozenset({
+    "commercial_fit_evaluation",
+    "compatibility_analysis",
+    "compatibility_public_answer",
+    "external_research_final",
+})
+_PUBLIC_TECHNICAL_RESEARCH_MODEL = "codex:gpt-5.6-sol"
+_PUBLIC_TECHNICAL_RESEARCH_REASONING_EFFORT = "high"
 
 
 def _find_same_store_compatible_alternative(
@@ -118,6 +129,9 @@ class _PerguntasVertexGeminiV2Client:
         self.parser = AIResponseParser()
         self.agent_input = copy.deepcopy(agent_input) if isinstance(agent_input, dict) else {}
         fluxo_pos_venda = _perguntas_ia_fluxo_pos_venda(self.agent_input)
+        self._is_post_sale = bool(fluxo_pos_venda)
+        intent = self.agent_input.get("intent") if isinstance(self.agent_input.get("intent"), dict) else {}
+        self._is_regulated = _ia_agent_perguntas_categoria_regulada(self.agent_input, intent)
         effort_configurado = (
             _ia_raciocinio_pos_venda_configurado()
             if fluxo_pos_venda
@@ -142,7 +156,12 @@ class _PerguntasVertexGeminiV2Client:
         stage: str,
         tool_results: Optional[list[dict[str, Any]]] = None,
     ) -> Any:
-        fluxo_pos_venda = str(metadata.get("category") or "").strip() == "post_sale"
+        fluxo_pos_venda = self._is_post_sale or str(metadata.get("category") or "").strip() == "post_sale"
+        stage_model = self.model_req
+        stage_reasoning_effort = self.reasoning_effort
+        if not fluxo_pos_venda and not self._is_regulated and stage in _PUBLIC_TECHNICAL_RESEARCH_STAGES:
+            stage_model = _PUBLIC_TECHNICAL_RESEARCH_MODEL
+            stage_reasoning_effort = _PUBLIC_TECHNICAL_RESEARCH_REASONING_EFFORT
         subquestions = self.agent_input.get("subquestions") if isinstance(self.agent_input.get("subquestions"), list) else []
         if subquestions:
             prompt = (
@@ -195,12 +214,12 @@ class _PerguntasVertexGeminiV2Client:
                 ),
                 "_codex_on_thread_ready": self.agent_input.get("_codex_on_thread_ready"),
                 "research_attempt": research_attempt,
-                "_codex_reasoning_effort": self.reasoning_effort,
+                "_codex_reasoning_effort": stage_reasoning_effort,
             },
-            model=self.model_req,
+            model=stage_model,
             tool_results=list(tool_results or []),
         )
-        resposta, model_usado = _ia_agent_perguntas_chamar_modelo(self.client_id, payload, self.model_req)
+        resposta, model_usado = _ia_agent_perguntas_chamar_modelo(self.client_id, payload, stage_model)
         if isinstance(payload.context, dict) and payload.context.get("_codex_thread_id_result"):
             self.codex_thread_id = str(payload.context.get("_codex_thread_id_result") or "").strip()
         self.model_usado = model_usado

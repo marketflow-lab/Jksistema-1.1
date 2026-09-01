@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import unicodedata
 
 
 OFFICIAL_SOURCE_REGISTRY_VERSION = "jk_official_source_registry_v1"
@@ -38,6 +39,7 @@ _REGISTRY: dict[str, tuple[str, ...]] = {
     "renault": ("renault.com", "renault.com.br", "renault.fr"),
     "schneider": ("se.com", "schneider-electric.com"),
     "seaflo": ("seaflo.com",),
+    "shimano": ("shimano.com",),
     "toyota": ("toyota.com", "toyota.com.br"),
     "valeo": ("valeo.com",),
     "volkswagen": ("volkswagen.com", "volkswagen.com.br"),
@@ -45,7 +47,6 @@ _REGISTRY: dict[str, tuple[str, ...]] = {
     "vw": ("volkswagen.com", "volkswagen.com.br"),
     "weg": ("weg.net",),
 }
-
 
 def _validate_registry() -> None:
     for brand, roots in _REGISTRY.items():
@@ -71,4 +72,36 @@ def official_domains_for_brand(value: object) -> tuple[str, ...]:
     return _REGISTRY.get(key, ())
 
 
-__all__ = ["OFFICIAL_SOURCE_REGISTRY_VERSION", "official_domains_for_brand"]
+def official_domains_for_target_identity(value: object) -> tuple[str, ...]:
+    normalized = "".join(
+        character
+        for character in unicodedata.normalize("NFKD", str(value or "").casefold())
+        if not unicodedata.combining(character)
+    )
+    brand_matches = {
+        roots
+        for token in re.findall(r"[a-z0-9]{2,40}", normalized)
+        if (roots := official_domains_for_brand(token))
+    }
+    if len(brand_matches) == 1:
+        return next(iter(brand_matches))
+    if len(brand_matches) > 1:
+        return ()
+    return ()
+
+
+def is_reviewed_official_domain(value: object) -> bool:
+    host = str(value or "").strip(".").casefold()
+    return any(
+        host == root or host.endswith("." + root)
+        for roots in _REGISTRY.values()
+        for root in roots
+    )
+
+
+__all__ = [
+    "OFFICIAL_SOURCE_REGISTRY_VERSION",
+    "is_reviewed_official_domain",
+    "official_domains_for_brand",
+    "official_domains_for_target_identity",
+]

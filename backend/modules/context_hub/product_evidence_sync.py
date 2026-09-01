@@ -74,8 +74,10 @@ class _PendingSync:
 @dataclass(frozen=True)
 class _AttestedSnapshot:
     snapshot_hash: str
+    projection_hash: str
     policy_version: str
     next_transition_at: str
+    projection_next_transition_at: str
 
 
 def _as_utc(value: object) -> datetime:
@@ -294,8 +296,9 @@ def _validated_attestation(
 ) -> tuple[str, Optional[_AttestedSnapshot]]:
     row = connection.execute(
         """
-        SELECT a.evidence_revision, a.snapshot_hash, a.policy_version,
-               a.captured_at, a.next_transition_at, g.status
+        SELECT a.evidence_revision, a.snapshot_hash, a.projection_hash,
+               a.policy_version, a.captured_at, a.next_transition_at,
+               a.projection_next_transition_at, g.status
           FROM context_hub_generation_product_evidence a
           JOIN context_hub_generations g ON g.generation_id=a.generation_id
          WHERE a.generation_id=?
@@ -305,6 +308,7 @@ def _validated_attestation(
     if row is None:
         return "attestation_missing", None
     snapshot_hash = str(row["snapshot_hash"] or "").strip().lower()
+    projection_hash = str(row["projection_hash"] or "").strip().lower()
     policy_version = str(row["policy_version"] or "").strip()
     try:
         attested_revision = int(row["evidence_revision"])
@@ -313,6 +317,7 @@ def _validated_attestation(
     if (
         str(row["status"] or "") not in {"ready", "active"}
         or not _HASH_RE.fullmatch(snapshot_hash)
+        or bool(projection_hash and not _HASH_RE.fullmatch(projection_hash))
         or not _POLICY_RE.fullmatch(policy_version)
         or attested_revision < 0
         or attested_revision > requested_revision
@@ -321,8 +326,12 @@ def _validated_attestation(
         return "attestation_invalid", None
     return "", _AttestedSnapshot(
         snapshot_hash=snapshot_hash,
+        projection_hash=projection_hash,
         policy_version=policy_version,
         next_transition_at=_normalized_transition(row["next_transition_at"]),
+        projection_next_transition_at=_normalized_transition(
+            row["projection_next_transition_at"] or row["next_transition_at"]
+        ),
     )
 
 
@@ -343,13 +352,30 @@ def _operational_snapshot_matches(
         )
     except Exception:
         return None
+    operational_projection_hash = str(
+        operational.get("projection_hash")
+        or operational.get("snapshot_hash")
+        or ""
+    ).strip().lower()
+    projection_matches = (
+        operational_projection_hash == attestation.projection_hash
+        if attestation.projection_hash
+        else list(operational.get("editorial_identities") or [])
+        == list(operational.get("identities") or [])
+    )
     return (
         str(operational.get("snapshot_hash") or "").strip().lower()
         == attestation.snapshot_hash
+        and projection_matches
         and str(operational.get("policy_version") or "").strip()
         == attestation.policy_version
         and _normalized_transition(operational.get("next_transition_at"))
         == attestation.next_transition_at
+        and _normalized_transition(
+            operational.get("projection_next_transition_at")
+            or operational.get("next_transition_at")
+        )
+        == attestation.projection_next_transition_at
     )
 
 
@@ -424,7 +450,7 @@ def _ack_attested_generation(
                     requested_revision,
                     normalized_generation,
                     now,
-                    attestation.next_transition_at,
+                    attestation.projection_next_transition_at,
                     now,
                     requested_revision,
                     completed_revision,

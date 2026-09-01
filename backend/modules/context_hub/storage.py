@@ -253,9 +253,13 @@ CREATE TABLE IF NOT EXISTS context_hub_generation_product_evidence (
     generation_id TEXT PRIMARY KEY,
     evidence_revision INTEGER NOT NULL CHECK(evidence_revision >= 0),
     snapshot_hash TEXT NOT NULL CHECK(length(snapshot_hash) = 64),
+    projection_hash TEXT NOT NULL DEFAULT '' CHECK(
+        projection_hash = '' OR length(projection_hash) = 64
+    ),
     policy_version TEXT NOT NULL,
     captured_at TEXT NOT NULL,
     next_transition_at TEXT,
+    projection_next_transition_at TEXT,
     FOREIGN KEY (generation_id) REFERENCES context_hub_generations(generation_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_context_hub_generation_product_evidence_revision
@@ -295,7 +299,9 @@ def _migrate_product_evidence_sync_schema(connection: sqlite3.Connection) -> Non
     }
     additions = (
         ("policy_version", "TEXT NOT NULL DEFAULT ''"),
+        ("projection_hash", "TEXT NOT NULL DEFAULT ''"),
         ("next_transition_at", "TEXT"),
+        ("projection_next_transition_at", "TEXT"),
     )
     for column, definition in additions:
         if column not in columns:

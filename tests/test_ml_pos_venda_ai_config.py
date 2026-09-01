@@ -1557,7 +1557,10 @@ print("nested-deadlines-returned", flush=True)
         self.assertIn("Leitura tecnica da fonte", context)
         self.assertIn("Navigator IV and later", context)
         self.assertIn(official_url, context)
-        self.assertTrue(source_read.call_args.args[0].startswith("https://r.jina.ai/http://https://"))
+        self.assertEqual(
+            source_read.call_args.args[0],
+            "https://r.jina.ai/" + official_url,
+        )
 
     def test_product_feature_result_reads_technical_page_for_exact_part_code(self):
         import backend_api  # noqa: F401
@@ -1936,7 +1939,7 @@ print("nested-deadlines-returned", flush=True)
         self.assertEqual(analysis["evidence"]["product"][0]["reference"], "Produto usa base Navigator IV/V/VI")
         self.assertEqual(analysis["evidence"]["target_vehicle"][0]["reference"], "R1300GS aceita Navigator IV e posteriores")
 
-    def test_compatibility_requires_explicit_equivalence_or_incompatibility_evidence(self):
+    def test_compatibility_requires_explicit_equivalence_and_rejects_self_attested_incompatibility(self):
         import backend_api  # noqa: F401
         from backend.modules.perguntas_pos_venda.ai import compatibility as agent
 
@@ -1951,17 +1954,42 @@ print("nested-deadlines-returned", flush=True)
                 "equivalence": [],
             },
         }
-        positive = agent_compatibility._perguntas_ia_v2_compatibilidade_normalizar({**base, "decision": "yes"})
-        negative = agent_compatibility._perguntas_ia_v2_compatibilidade_normalizar({
-            **base,
+        positive = agent._perguntas_ia_v2_compatibilidade_normalizar({**base, "decision": "yes"})
+        negative = agent._perguntas_ia_v2_compatibilidade_normalizar({
+            "product_interface": "coroa com geometria simetrica",
+            "target_vehicle": "Shimano FC-MT510-1",
+            "target_interface": "fixacao com geometria assimetrica",
             "decision": "no",
-            "evidence": {**base["evidence"], "equivalence": [{"reference": "Navigator IV"}]},
+            "comparison_attributes": [{
+                "attribute": "fixation_geometry",
+                "product_value": "simetrica",
+                "target_value": "assimetrica",
+                "result": "conflict",
+                "decisive": True,
+            }],
+            "evidence": {
+                "product": [{
+                    "authority": "internal_listing",
+                    "reference": "geometria simetrica",
+                    "grounded": True,
+                }],
+                "target_vehicle": [{
+                    "authority": "official_document",
+                    "reference": "geometria assimetrica",
+                    "grounded": True,
+                }],
+                "equivalence": [],
+            },
         })
 
         self.assertEqual(positive["decision"], "insufficient")
         self.assertIn("explicit_equivalence_evidence", positive["missing_fields"])
         self.assertEqual(negative["decision"], "insufficient")
         self.assertIn("explicit_incompatibility_evidence", negative["missing_fields"])
+        self.assertFalse(any(
+            item.get("source_type") == "derived_incompatibility_from_grounded_evidence"
+            for item in negative["evidence"]["equivalence"]
+        ))
 
     def test_compatibility_can_derive_equivalence_only_from_shared_grounded_interface_terms(self):
         import backend_api  # noqa: F401

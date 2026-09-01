@@ -130,6 +130,58 @@ def _seed_verified_fact(
     )
 
 
+def _seed_candidate_fact(
+    info_root: Path,
+    *,
+    field_name: str,
+    value: str,
+    seed: str,
+    identity: dict[str, str] | None = None,
+) -> None:
+    selected = identity or EVIDENCE_IDENTITY
+    collected_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    batch = product_evidence.create_product_evidence_batch(
+        CLIENT_ID,
+        store_ref=selected["store_ref"],
+        seller_id=selected["seller_id"],
+        site_id=selected["site_id"],
+        sku=selected["sku"],
+        item_id=selected["item_id"],
+        variation_id=selected["variation_id"],
+        started_at=collected_at,
+        info_root=info_root,
+    )
+    source = product_evidence.add_product_evidence_source(
+        CLIENT_ID,
+        batch["batch_id"],
+        url=f"https://www.mercadolivre.com.br/anuncio/{seed}",
+        source_type="official_listing",
+        content_hash=_sha(seed),
+        origin_key="mercadolivre.com.br",
+        section_ref="atributos do anuncio",
+        collected_at=collected_at,
+        info_root=info_root,
+    )
+    product_evidence.add_product_evidence_claim(
+        CLIENT_ID,
+        batch["batch_id"],
+        field_name=field_name,
+        scope="product",
+        value=value,
+        source_ids=[source["source_id"]],
+        as_of=collected_at,
+        info_root=info_root,
+    )
+    product_evidence.complete_product_evidence_batch(
+        CLIENT_ID,
+        batch["batch_id"],
+        coverage_complete=False,
+        stop_reason="no_new_facts",
+        finished_at=collected_at + timedelta(seconds=1),
+        info_root=info_root,
+    )
+
+
 def test_verified_research_is_projected_and_searchable_after_manual_publish(
     generation_env: Path,
 ) -> None:
@@ -366,6 +418,13 @@ def test_legacy_generation_without_product_evidence_is_backfilled_for_rollback(
     assert rolled_back["success"] is True
     assert rolled_back["rollback"] is True
     assert rolled_back["status"] == "active"
+    with storage._connect(paths) as connection:
+        legacy_attestation = connection.execute(
+            "SELECT projection_hash FROM context_hub_generation_product_evidence "
+            "WHERE generation_id=?",
+            (first["generation_id"],),
+        ).fetchone()
+    assert legacy_attestation["projection_hash"] == ""
 
 
 def test_legacy_generation_backfill_rejects_tampered_snapshot(
@@ -482,6 +541,13 @@ def test_new_evidence_revision_suppresses_old_active_facts_until_publish(
         value="60 W",
         seed="power-pending",
     )
+    second = context_hub.rebuild_context(CLIENT_ID, info_root=generation_env)
+    paths = _tenant_paths(CLIENT_ID, info_root=generation_env)
+    assert product_evidence_sync._ack_attested_generation(
+        paths,
+        expected_revision=2,
+        generation_id=second["generation_id"],
+    ) == "acked"
     stale = context_hub.search_context(
         CLIENT_ID,
         "tensão 12 V",
@@ -497,9 +563,117 @@ def test_new_evidence_revision_suppresses_old_active_facts_until_publish(
         item["type"] == "product_evidence_fact" for item in stale["results"]
     )
     assert any(item["doc_id"] == "jk:domain:test" for item in ordinary["results"])
-    assert status["product_evidence_sync"]["pending"] is True
+    assert status["product_evidence_sync"]["pending"] is False
     assert status["product_evidence_sync"]["active_evidence_current"] is False
     assert status["product_evidence_sync"]["active_verified_facts"] == 1
+
+
+def test_candidate_only_sync_keeps_active_verified_facts_current_and_unindexed(
+    generation_env: Path,
+) -> None:
+    _seed_verified_fact(
+        generation_env,
+        field_name="electrical.voltage",
+        value="12 V",
+        seed="candidate-preserves-voltage",
+    )
+    first = context_hub.rebuild_context(CLIENT_ID, info_root=generation_env)
+    context_hub.publish_generation(CLIENT_ID, first["generation_id"], info_root=generation_env)
+    _seed_candidate_fact(
+        generation_env,
+        field_name="product.material",
+        value="Liga Zamak candidata rara",
+        seed="candidate-material",
+    )
+    ready = context_hub.rebuild_context(CLIENT_ID, info_root=generation_env)
+    paths = _tenant_paths(CLIENT_ID, info_root=generation_env)
+    assert ready["status"] == "ready"
+    assert product_evidence_sync._ack_attested_generation(
+        paths,
+        expected_revision=2,
+        generation_id=ready["generation_id"],
+    ) == "acked"
+
+    verified = context_hub.search_context(
+        CLIENT_ID,
+        "tensão 12 V",
+        info_root=generation_env,
+        _product_evidence_identity=EVIDENCE_IDENTITY,
+    )
+    candidate = context_hub.search_context(
+        CLIENT_ID,
+        "Liga Zamak candidata rara",
+        info_root=generation_env,
+        _product_evidence_identity=EVIDENCE_IDENTITY,
+    )
+    status = context_hub.get_status(CLIENT_ID, info_root=generation_env)
+    ready_root = paths.generations_dir / ready["generation_id"] / "70_Gerado"
+    candidate_notes = list(ready_root.rglob("Candidatas/*.md"))
+
+    assert any(item["type"] == "product_evidence_fact" for item in verified["results"])
+    assert not any(item["type"] == "product_evidence_fact" for item in candidate["results"])
+    assert status["product_evidence_sync"]["pending"] is False
+    assert status["product_evidence_sync"]["active_evidence_current"] is True
+    assert status["product_evidence_sync"]["active_verified_facts"] == 1
+    assert len(candidate_notes) == 1
+    candidate_text = candidate_notes[0].read_text(encoding="utf-8")
+    assert "ai_usage: denied" in candidate_text
+    assert "truth_class: generated_secondary" in candidate_text
+    assert "status: review_required" in candidate_text
+    assert not list(paths.generated_dir.rglob("Candidatas/*.md"))
+
+
+@pytest.mark.parametrize(
+    ("column", "replacement"),
+    (
+        ("policy_version", "jk_product_evidence_future"),
+        ("next_transition_at", "2099-01-01T00:00:00.000000+00:00"),
+    ),
+)
+def test_policy_or_ttl_attestation_mismatch_suppresses_active_verified_facts(
+    generation_env: Path,
+    column: str,
+    replacement: str,
+) -> None:
+    _seed_verified_fact(
+        generation_env,
+        field_name="electrical.voltage",
+        value="12 V",
+        seed=f"attestation-{column}",
+    )
+    first = context_hub.rebuild_context(CLIENT_ID, info_root=generation_env)
+    context_hub.publish_generation(CLIENT_ID, first["generation_id"], info_root=generation_env)
+    _seed_candidate_fact(
+        generation_env,
+        field_name="product.material",
+        value="Candidato de atestado",
+        seed=f"candidate-{column}",
+    )
+    ready = context_hub.rebuild_context(CLIENT_ID, info_root=generation_env)
+    paths = _tenant_paths(CLIENT_ID, info_root=generation_env)
+    assert product_evidence_sync._ack_attested_generation(
+        paths,
+        expected_revision=2,
+        generation_id=ready["generation_id"],
+    ) == "acked"
+    with storage._connect(paths) as connection:
+        connection.execute(
+            f"UPDATE context_hub_generation_product_evidence SET {column}=? "
+            "WHERE generation_id=?",
+            (replacement, ready["generation_id"]),
+        )
+        connection.commit()
+
+    result = context_hub.search_context(
+        CLIENT_ID,
+        "tensão 12 V",
+        info_root=generation_env,
+        _product_evidence_identity=EVIDENCE_IDENTITY,
+    )
+    status = context_hub.get_status(CLIENT_ID, info_root=generation_env)
+
+    assert not any(item["type"] == "product_evidence_fact" for item in result["results"])
+    assert status["product_evidence_sync"]["active_evidence_current"] is False
 
 
 def test_rollback_cannot_restore_obsolete_product_evidence(

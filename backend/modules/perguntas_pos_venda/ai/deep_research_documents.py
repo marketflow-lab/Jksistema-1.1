@@ -51,29 +51,37 @@ def make_research_document(
 ) -> ResearchDocumentV1 | None:
     canonical = canonical_research_url(url)
     body = _safe_page_text(text)
+    if not canonical or not body:
+        return None
     source_type = classify_research_source(item, canonical, agent_input, query_type=query_type)
+    if source_type not in PRODUCT_EVIDENCE_SOURCE_TYPES:
+        source_type = "blog"
     scoped_body = scope_research_text_to_product(
         body,
         agent_input,
         source_type=source_type,
     )
-    if not canonical or not scoped_body or not document_matches_product(
-        scoped_body, agent_input, source_type=source_type,
-    ):
-        return None
-    if source_type not in PRODUCT_EVIDENCE_SOURCE_TYPES:
-        source_type = "technical_independent"
-    content_hash = _technical_content_hash(scoped_body)
+    claim_eligible = bool(
+        scoped_body
+        and document_matches_product(
+            scoped_body,
+            agent_input,
+            source_type=source_type,
+        )
+    )
+    retained_body = scoped_body if claim_eligible else body
+    content_hash = _technical_content_hash(retained_body)
     return ResearchDocumentV1(
         url=canonical,
         title=_safe_text(sanitize_public_research_text(item.get("title"), 240), 240),
         query_type=_safe_text(query_type or "web", 80),
         query=_safe_text(query, 260),
-        text=scoped_body,
+        text=retained_body,
         content_hash=content_hash,
         source_type=source_type,
         origin_key=_registrable_domain(_domain(canonical)),
-        copy_fingerprint=_technical_copy_fingerprint(scoped_body),
+        copy_fingerprint=_technical_copy_fingerprint(retained_body),
+        claim_eligible=claim_eligible,
     )
 
 
@@ -287,6 +295,10 @@ def _aggregate_research_metrics(metrics: Mapping[str, Any]) -> dict[str, Any]:
         "policy": PUBLIC_RESEARCH_POLICY,
         "pages_discovered": max(0, int(metrics.get("pages_discovered") or 0)),
         "pages_read": max(0, int(metrics.get("pages_read") or 0)),
+        "pages_attempted": max(0, int(metrics.get("pages_attempted") or 0)),
+        "read_failures": max(0, int(metrics.get("read_failures") or 0)),
+        "read_timeouts": max(0, int(metrics.get("read_timeouts") or 0)),
+        "retry_successes": max(0, int(metrics.get("retry_successes") or 0)),
         "duration_ms": max(0, int(metrics.get("duration_ms") or 0)),
         "stop_reason": _safe_text(metrics.get("stop_reason") or "no_new_facts", 40),
         "coverage_complete": False,
@@ -342,19 +354,28 @@ def _persist_document_claims(
         tuple[str, str, str, str], tuple[TechnicalClaimV1, list[str]]
     ] = {}
     for document in documents:
-        scoped_text = scope_research_text_to_product(
-            document.text,
-            agent_input,
-            source_type=document.source_type,
+        claim_eligible = bool(getattr(document, "claim_eligible", True))
+        scoped_text = (
+            scope_research_text_to_product(
+                document.text,
+                agent_input,
+                source_type=document.source_type,
+            )
+            if claim_eligible
+            else ""
         )
-        if not scoped_text:
-            continue
-        scoped_document = replace(
-            document,
-            text=scoped_text,
-            content_hash=_technical_content_hash(scoped_text),
-            copy_fingerprint=_technical_copy_fingerprint(scoped_text),
-        )
+        if claim_eligible and scoped_text:
+            scoped_document = replace(
+                document,
+                text=scoped_text,
+                content_hash=_technical_content_hash(scoped_text),
+                copy_fingerprint=_technical_copy_fingerprint(scoped_text),
+                claim_eligible=True,
+            )
+        else:
+            # Keep only source coordinates and fingerprints.  The body remains
+            # process-local and no claim is attached to an uncorroborated lead.
+            scoped_document = replace(document, claim_eligible=False)
         source = add_product_evidence_source(
             client_id,
             batch_id,
@@ -367,6 +388,8 @@ def _persist_document_claims(
         )
         source_id = str(source.get("source_id") or "")
         if not source_id:
+            continue
+        if not scoped_document.claim_eligible:
             continue
         for claim in [
             *extract_technical_claims(scoped_text),
@@ -513,6 +536,8 @@ def apparent_coverage_complete(
     support: dict[tuple[str, str, str, str], set[tuple[str, str]]] = {}
     official: set[tuple[str, str, str, str]] = set()
     for document in _deduplicate_research_documents(documents):
+        if not bool(getattr(document, "claim_eligible", True)):
+            continue
         if document.source_type not in {
             "official_manufacturer",
             "official_oem",

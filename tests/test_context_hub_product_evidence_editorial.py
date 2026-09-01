@@ -201,7 +201,8 @@ def test_projection_indexes_only_verified_and_keeps_conflict_expired_visible() -
     ]
     assert snapshot["stats"] == {
         "identities": 1,
-        "facts": 4,
+        "facts": 5,
+        "candidate": 1,
         "verified": 1,
         "conflict": 2,
         "expired": 1,
@@ -212,19 +213,24 @@ def test_projection_indexes_only_verified_and_keeps_conflict_expired_visible() -
     assert documents[0]["metadata"]["ai_usage"] == "allowed"
     assert documents[0]["metadata"]["truth_class"] == "generated_verified"
     assert any("/Conflitos/" in path for path in managed_files)
+    assert any("/Candidatas/" in path for path in managed_files)
     assert any("/Expiradas/" in path for path in managed_files)
+    assert all("/Candidatas/" not in item["relative_path"] for item in documents)
     assert all("/Conflitos/" not in item["relative_path"] for item in documents)
     assert all("/Expiradas/" not in item["relative_path"] for item in documents)
     combined = "\n".join(managed_files.values())
-    assert "Aluminio" not in combined
+    assert "Aluminio" in combined
     assert "Marca X" not in combined
     assert connection.total_changes == before_changes
 
     for path, content in managed_files.items():
         metadata, _body = _parse_frontmatter(content)
-        if "/Conflitos/" in path or "/Expiradas/" in path:
+        if any(part in path for part in ("/Candidatas/", "/Conflitos/", "/Expiradas/")):
             assert metadata["ai_usage"] == "denied"
             assert metadata["truth_class"] == "generated_secondary"
+        if "/Candidatas/" in path:
+            assert metadata["status"] == "review_required"
+            assert metadata["type"] == "product_evidence_editorial"
 
 
 def test_snapshot_and_paths_ignore_row_ids_and_insertion_order() -> None:
@@ -383,7 +389,29 @@ def test_dlp_and_tenant_binding_fail_closed_without_persistence() -> None:
         )
 
 
-def test_candidate_only_snapshot_does_not_create_empty_vault_notes() -> None:
+def test_candidate_free_legacy_snapshot_without_projection_hash_is_supported() -> None:
+    snapshot = collect_product_evidence_editorial_snapshot(
+        _mixed_evidence_database(), client_id="tenant-a", as_of=NOW
+    )
+    legacy = dict(snapshot)
+    legacy.pop("projection_hash")
+    legacy.pop("projection_next_transition_at")
+    legacy.pop("editorial_identities")
+
+    documents, managed_files, findings = render_product_evidence_editorial(
+        legacy,
+        client_id="tenant-a",
+        surface="test",
+        source_version="1.0.126",
+        generated_at=NOW,
+    )
+
+    assert documents
+    assert managed_files
+    assert findings == []
+
+
+def test_candidate_only_snapshot_creates_review_notes_without_ai_indexing() -> None:
     connection = _database()
     batch_id = _batch(connection, "candidate")
     lead = _source(
@@ -404,9 +432,45 @@ def test_candidate_only_snapshot_does_not_create_empty_vault_notes() -> None:
     connection.commit()
 
     snapshot, (documents, managed_files, findings) = _render(connection)
+    empty = collect_product_evidence_editorial_snapshot(
+        _database(), client_id="tenant-a", as_of=NOW
+    )
 
     assert snapshot["identities"] == []
-    assert snapshot["stats"]["facts"] == 0
+    assert len(snapshot["editorial_identities"]) == 1
+    assert snapshot["stats"] == {
+        "identities": 1,
+        "facts": 1,
+        "candidate": 1,
+        "verified": 0,
+        "conflict": 0,
+        "expired": 0,
+    }
+    assert snapshot["snapshot_hash"] == empty["snapshot_hash"]
+    assert snapshot["projection_hash"] != empty["projection_hash"]
     assert documents == []
     assert findings == []
-    assert managed_files == {}
+    candidate_paths = [path for path in managed_files if "/Candidatas/" in path]
+    assert len(candidate_paths) == 1
+    metadata, body = _parse_frontmatter(managed_files[candidate_paths[0]])
+    assert metadata["ai_usage"] == "denied"
+    assert metadata["truth_class"] == "generated_secondary"
+    assert metadata["status"] == "review_required"
+    assert metadata["evidence_state"] == "candidate"
+    assert metadata["type"] == "product_evidence_editorial"
+    assert "Aço" in body
+    assert "Fontes candidatas registradas" in body
+    assert all(
+        forbidden not in managed_files[candidate_paths[0]].casefold()
+        for forbidden in ("pergunta do comprador", "resposta da ia", "vin:", "chassi:")
+    )
+    missing_projection_hash = dict(snapshot)
+    missing_projection_hash.pop("projection_hash")
+    with pytest.raises(ContextHubValidationError, match="adulterado"):
+        render_product_evidence_editorial(
+            missing_projection_hash,
+            client_id="tenant-a",
+            surface="test",
+            source_version="1.0.126",
+            generated_at=NOW,
+        )

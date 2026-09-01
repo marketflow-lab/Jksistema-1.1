@@ -95,4 +95,6 @@ def test_questions_v2_uses_codex_and_preserves_configured_provider_as_optional_f
     assert '"fallback_used": bool(selection.get("fallback_used"))' in execution_source
     assert '"codex": _modelo_eh_codex(model_req)' in execution_source
     assert '"reasoning_effort": reasoning' in execution_source
-    assert '"_codex_reasoning_effort": self.reasoning_effort' in clients_source
+    assert '"_codex_reasoning_effort": stage_reasoning_effort' in clients_source
+    assert '_PUBLIC_TECHNICAL_RESEARCH_MODEL = "codex:gpt-5.6-sol"' in clients_source
+    assert '_PUBLIC_TECHNICAL_RESEARCH_REASONING_EFFORT = "high"' in clients_source

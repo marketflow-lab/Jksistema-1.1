@@ -89,8 +89,10 @@ PROMPT_HASH = hashlib.sha256(
         "classification-contract-v3|continuity-repair-v1|typed-provider-failures|"
         "contextual-fallback-v1|response-policy-v6|compatibility-coverage-v1|"
         "compatibility-interface-evidence|seller-conversion-v1|seller-profile-v2|priority-queue-v3|"
+        "public-technical-research-sol-high-v1|public-research-resilience-v2|"
         f"vehicle-identity-policy:{VEHICLE_IDENTITY_POLICY}|"
         f"product-evidence-policy:{PRODUCT_EVIDENCE_POLICY}|"
+        "product-evidence-editorial-candidates-v1|"
         "nonempty-ai-draft-preserved|public-signature-append-only-v1|oversize-manual-edit-v1|"
         "human-approval-required|no-direct-publish"
     ).encode("utf-8")

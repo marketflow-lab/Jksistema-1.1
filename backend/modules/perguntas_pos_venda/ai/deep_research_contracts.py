@@ -7,6 +7,7 @@ import re
 import threading
 import time
 import unicodedata
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
@@ -38,6 +39,52 @@ _MARKETPLACE_HOSTS = (
 )
 _FORUM_HOST_PARTS = ("forum.", "forums.", "reddit.", "club.", "comunidade.")
 _BLOG_PATH_PARTS = ("/blog/", "/noticias/", "/news/")
+
+
+def bounded_research_request_timeouts(
+    deadline_monotonic: float | None, *, maximum: float = 40.0,
+) -> tuple[float, float] | None:
+    """Partition a request budget so connect plus read fits the phase deadline."""
+
+    budget = maximum
+    if deadline_monotonic is not None:
+        remaining = deadline_monotonic - time.monotonic()
+        if remaining <= 0.55:
+            return None
+        budget = min(maximum, remaining - 0.05)
+    connect = min(5.0, max(0.25, budget * 0.20))
+    return connect, max(0.25, budget - connect)
+
+
+@contextmanager
+def closing_research_response(
+    response: object, *, deadline_monotonic: float | None = None,
+):
+    """Close responses normally and force-close a blocked stream at its deadline."""
+
+    close = getattr(response, "close", None)
+
+    def safe_close() -> None:
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+
+    timer = None
+    if callable(close) and deadline_monotonic is not None:
+        delay = max(0.0, deadline_monotonic - time.monotonic())
+        timer = threading.Timer(delay, safe_close)
+        timer.daemon = True
+        timer.start()
+    try:
+        yield response
+    finally:
+        if timer is not None:
+            timer.cancel()
+        safe_close()
+
+
 _DISTRIBUTOR_HOST_PARTS = (
     "catalog",
     "distrib",
@@ -49,6 +96,8 @@ _DISTRIBUTOR_HOST_PARTS = (
 _CURATED_TECHNICAL_DISTRIBUTOR_DOMAINS = frozenset(
     {
         "autodoc.eu",
+        "bike-components.de",
+        "bike-discount.de",
         "digikey.com",
         "grainger.com",
         "mister-auto.com",
@@ -156,6 +205,55 @@ def _plain(value: object) -> str:
     return re.sub(r"\s+", " ", normalized).strip().casefold()
 
 
+_NEGATED_TECHNICAL_PREFIX = re.compile(
+    r"(?:"
+    r"\b(?:nunca|jamais|never|sem|without)\b(?:\s+[a-z0-9_./'-]+){0,8}|"
+    r"\bnao\s+(?:possui|tem|usa|utiliza|inclui|e|aceita|suporta|adota|emprega|"
+    r"oferece|dispoe|equipa|fornece|apresenta)\b(?:\s+[a-z0-9_./'-]+){0,8}|"
+    r"\b(?:nao|not)\s+compativel\s+com\b(?:\s+[a-z0-9_./'-]+){0,8}|"
+    r"\bnot\s+compatible\s+with\b(?:\s+[a-z0-9_./'-]+){0,8}|"
+    r"\b(?:does\s+not|doesn't|isn't|can't|cannot)\b(?:\s+[a-z0-9_./'-]+){0,8}|"
+    r"\b(?:incompativel\s+com|incompatible\s+with)\b(?:\s+[a-z0-9_./'-]+){0,8}|"
+    r"\b(?:nao|not)\b"
+    r")\s*$"
+)
+_NEGATED_TECHNICAL_INSIDE = re.compile(
+    r"(?:[:=\-]\s*|\b)(?:nao|sem|not|without|never|nunca|jamais)\b"
+)
+_NEGATED_TECHNICAL_SUFFIX = re.compile(
+    r"\s*[,:\-]?\s*(?:"
+    r"nao\s+(?:suportad[oa]s?|disponivel|compativel|incluid[oa]s?|utilizad[oa]s?|se\s+aplica)|"
+    r"nao\s+e\s+compativel|is\s+not\s+compatible|sem\s+suporte|lacks\s+support|"
+    r"nunca|jamais|incompativel|incompatible|unsupported|unavailable|"
+    r"not\s+(?:supported|available|compatible|included)|"
+    r"isn't\s+(?:supported|available|compatible)|can't\s+be\s+used"
+    r")\b"
+)
+
+
+def technical_assertion_occurrence_is_positive(text: str, start: int, end: int) -> bool:
+    """Return false when a technical value is denied in its own clause."""
+
+    source = str(text or "").casefold()
+    bounded_start = max(0, min(int(start), len(source)))
+    bounded_end = max(bounded_start, min(int(end), len(source)))
+    delimiters = ".;\n|"
+    clause_start = max(source.rfind(delimiter, 0, bounded_start) for delimiter in delimiters) + 1
+    following = [
+        position for delimiter in delimiters
+        if (position := source.find(delimiter, bounded_end)) >= 0
+    ]
+    clause_end = min(following) if following else len(source)
+    prefix = source[clause_start:bounded_start][-160:]
+    matched = source[bounded_start:bounded_end]
+    suffix = source[bounded_end:clause_end][:120]
+    return not bool(
+        _NEGATED_TECHNICAL_PREFIX.search(prefix)
+        or _NEGATED_TECHNICAL_INSIDE.search(matched)
+        or _NEGATED_TECHNICAL_SUFFIX.match(suffix)
+    )
+
+
 def _label_metadata_code(value: object) -> bool:
     normalized = re.sub(r"[^a-z0-9]", "", _plain(value))
     return normalized in _OEM_LABEL_METADATA or any(
@@ -240,8 +338,10 @@ def _safe_page_text(value: object, maximum: int = 600_000) -> str:
     return source.strip()[:maximum]
 
 
-def read_limited_decompressed_response(response: object) -> str:
-    """Read a requests response incrementally within the public byte budget."""
+def read_limited_decompressed_response(
+    response: object, *, deadline_monotonic: float | None = None,
+) -> str:
+    """Read incrementally within both the byte budget and total phase deadline."""
 
     iter_content = getattr(response, "iter_content", None)
     if callable(iter_content):
@@ -254,7 +354,11 @@ def read_limited_decompressed_response(response: object) -> str:
         # takes the streaming branch above.
         chunks = [str(getattr(response, "text", "") or "").encode("utf-8")]
     payload = bytearray()
+    if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+        return ""
     for chunk in chunks:
+        if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+            return ""
         if not chunk:
             continue
         raw = chunk.encode("utf-8") if isinstance(chunk, str) else bytes(chunk)
@@ -264,6 +368,8 @@ def read_limited_decompressed_response(response: object) -> str:
         payload.extend(raw[:remaining])
         if len(raw) >= remaining:
             break
+    if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+        return ""
     encoding = str(getattr(response, "encoding", "") or "utf-8")
     try:
         return bytes(payload).decode(encoding, errors="replace")
@@ -545,3 +651,7 @@ class ResearchDocumentV1:
     source_type: str
     origin_key: str
     copy_fingerprint: str = ""
+    # Safe pages may be retained as source-only leads even when the advertised
+    # product identity could not be proven.  Such leads must never contribute
+    # claims, coverage or public facts.
+    claim_eligible: bool = True

@@ -20,16 +20,12 @@ def _identity_terms(agent_input: Mapping[str, Any]) -> tuple[set[str], set[str]]
         for token in re.findall(r"[a-z0-9]{3,}", _plain(item.get("title")))
         if token not in _IDENTITY_STOPWORDS and not token.isdigit()
     }
-    identity = (
-        agent_input.get("product_evidence_identity")
-        if isinstance(agent_input.get("product_evidence_identity"), Mapping)
-        else {}
-    )
-    raw_codes: list[object] = [item.get("seller_sku"), identity.get("sku")]
+    # Tenant-scoped seller SKU is not an external product identity.
+    raw_codes: list[object] = []
     labels = {
-        "part number", "part_number", "mpn", "codigo oem", "código oem",
-        "codigo original", "código original", "modelo", "model", "sku",
-        "seller sku", "seller_sku",
+        "part number", "part_number", "mpn", "oem", "oem_code",
+        "codigo oem", "código oem",
+        "codigo original", "código original", "modelo", "model",
     }
     for attribute in item.get("attributes") or []:
         if not isinstance(attribute, Mapping):
@@ -37,14 +33,6 @@ def _identity_terms(agent_input: Mapping[str, Any]) -> tuple[set[str], set[str]]
         attribute_labels = {_plain(attribute.get("id")), _plain(attribute.get("name"))}
         if attribute_labels & labels:
             raw_codes.extend((attribute.get("value_name"), attribute.get("value_id")))
-    variation_id = str(identity.get("variation_id") or "").strip()
-    for variation in item.get("variations") or []:
-        if not isinstance(variation, Mapping) or str(variation.get("id") or "").strip() != variation_id:
-            continue
-        raw_codes.extend(
-            variation.get(field)
-            for field in ("seller_sku", "seller_custom_field", "sku")
-        )
     codes = {
         normalized
         for value in raw_codes
@@ -105,12 +93,9 @@ def _selected_variation_tokens(agent_input: Mapping[str, Any]) -> set[str]:
         }
         if selectors:
             return selectors
-        variation_codes = {
-            code
-            for field in ("seller_sku", "seller_custom_field", "sku")
-            if len(code := re.sub(r"[^a-z0-9]", "", _plain(variation.get(field)))) >= 4
-        }
-        return variation_codes or {"__variation_unresolved__"}
+        # A local variation SKU is meaningful inside the seller account only;
+        # it cannot prove the identity of an external technical page.
+        return {"__variation_unresolved__"}
     return {"__variation_unresolved__"}
 
 

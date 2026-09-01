@@ -236,9 +236,16 @@ def _insert_legacy_attestations(
         )
         connection.execute(
             "INSERT OR IGNORE INTO context_hub_generation_product_evidence("
-            "generation_id, evidence_revision, snapshot_hash, policy_version, "
-            "captured_at, next_transition_at) VALUES (?, 0, ?, ?, ?, NULL)",
-            (generation_id, str(snapshot["snapshot_hash"]), str(snapshot["policy_version"]), captured_at),
+            "generation_id, evidence_revision, snapshot_hash, projection_hash, "
+            "policy_version, captured_at, next_transition_at, projection_next_transition_at) "
+            "VALUES (?, 0, ?, ?, ?, ?, NULL, NULL)",
+            (
+                generation_id,
+                str(snapshot["snapshot_hash"]),
+                "",
+                str(snapshot["policy_version"]),
+                captured_at,
+            ),
         )
 
 

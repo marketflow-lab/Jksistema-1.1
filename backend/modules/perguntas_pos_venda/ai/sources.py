@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import socket
 import time
-from queue import Empty, Queue
-from threading import BoundedSemaphore, Lock, Thread
+from threading import BoundedSemaphore, Thread
 
 from .runtime import (
     Any,
@@ -35,7 +34,12 @@ from .queries import (
     _ia_agent_perguntas_relaxar_query_web,
 )
 from .deep_research import canonical_research_url
-from .deep_research_contracts import read_limited_decompressed_response, sanitize_public_research_item, sanitize_public_research_text
+from .deep_research_contracts import bounded_research_request_timeouts, closing_research_response, read_limited_decompressed_response, sanitize_public_research_item, sanitize_public_research_text
+from .provider_transport import fetch_research_response
+from .deep_research_prefetch import (
+    prefetch_web as _prefetch_web_lifecycle,
+    web_search_circuit_open as _ia_agent_perguntas_web_search_circuit_open,
+)
 from .deep_research_crawler import (
     DeepResearchCallbacks,
     collect_deep_research_context,
@@ -50,14 +54,16 @@ from .research_url_security import (
 )
 
 _IA_AGENT_PERGUNTAS_WEB_QUERY_SLOTS = BoundedSemaphore(12)
-
+_IA_AGENT_PERGUNTAS_WEB_READ_SLOTS = BoundedSemaphore(8)
+# Unlike query leases, worker permits remain held until the provider call really
+# exits. They cap detached, non-cooperative daemon threads across all callables.
+_IA_AGENT_PERGUNTAS_WEB_WORKER_SLOTS = BoundedSemaphore(12)
+_IA_AGENT_PERGUNTAS_WEB_PREFETCH_MAX_SECONDS = 30.0
 
 _perguntas_ia_v2_endereco_publico = _security_endereco_publico
 
-
 def _perguntas_ia_v2_host_resolve_somente_publico(host: str) -> bool:
     return _security_host_publico(host)
-
 
 def _perguntas_ia_v2_url_fonte_tecnica_segura(
     url: str,
@@ -69,7 +75,6 @@ def _perguntas_ia_v2_url_fonte_tecnica_segura(
         resolve_dns=resolve_dns,
         host_resolver=_perguntas_ia_v2_host_resolve_somente_publico,
     )
-
 
 def _perguntas_ia_v2_prioridade_fonte_web(item: dict, url: str) -> tuple[int, str]:
     try:
@@ -225,47 +230,95 @@ def _perguntas_ia_v2_ler_fonte_tecnica(
     query: str,
     *,
     deep: bool = False,
+    deadline_monotonic: Optional[float] = None,
+    diagnostics: Optional[dict[str, Any]] = None,
 ) -> str:
     """Use the fixed reader only after local URL/DNS gates; never follow redirects."""
     url_limpa = canonical_research_url(_ia_web_normalizar_result_url(url))
     if not _perguntas_ia_v2_url_fonte_tecnica_segura(url_limpa, resolve_dns=True):
         return ""
-    resposta = None
+    details = diagnostics if isinstance(diagnostics, dict) else {}
+    details.setdefault("read_timeout", False)
+    details.setdefault("retry_success", False)
+    details.setdefault("retry_attempted", False)
     try:
-        resposta = requests.get(
-            "https://r.jina.ai/http://" + url_limpa,
-            headers={
-                "User-Agent": "Mozilla/5.0 (compatible; JKSistema/1.0; +https://jksistema.local)",
-                "Accept": "text/plain",
-            },
-            timeout=15,
-            verify=requests_tls_verify(),
-            allow_redirects=False,
-            stream=True,
-        )
-        if 300 <= int(resposta.status_code or 0) < 400:
-            return ""
-        if resposta.status_code in {403, 404, 429}:
-            return ""
-        resposta.raise_for_status()
-        texto = read_limited_decompressed_response(resposta)
-        if deep:
-            return texto
-        return _perguntas_ia_v2_recortes_fonte_tecnica(texto, query)
-    except Exception as exc:
-        logger.warning(
-            "[IA AGENT PERGUNTAS] Falha ao ler fonte tecnica url_hash=%s erro=%s",
-            hashlib.sha256(url_limpa.encode("utf-8", errors="ignore")).hexdigest()[:16],
-            type(exc).__name__,
-        )
+        deadline = float(deadline_monotonic) if deadline_monotonic is not None else None
+    except (TypeError, ValueError):
+        deadline = None
+    acquire_timeout = 40.0
+    if deadline is not None:
+        acquire_timeout = max(0.0, deadline - time.monotonic())
+    if acquire_timeout <= 0 or not _IA_AGENT_PERGUNTAS_WEB_READ_SLOTS.acquire(timeout=acquire_timeout):
+        return ""
+    try:
+        retried = False
+        for attempt in range(2):
+            if deadline is not None and time.monotonic() >= deadline:
+                return ""
+            try:
+                timeouts = bounded_research_request_timeouts(deadline)
+                if timeouts is None:
+                    return ""
+                with closing_research_response(fetch_research_response(
+                    "https://r.jina.ai/" + url_limpa,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (compatible; JKSistema/1.0; +https://jksistema.local)",
+                        "Accept": "text/plain",
+                    },
+                    timeout=timeouts, verify=requests_tls_verify(),
+                    allow_redirects=False, stream=True, deadline_monotonic=deadline,
+                ), deadline_monotonic=deadline) as resposta:
+                    status_code = int(resposta.status_code or 0)
+                    if 300 <= status_code < 400 or status_code in {403, 404}:
+                        return ""
+                    if status_code in {429, 502, 503, 504}:
+                        if attempt == 0 and (
+                            deadline is None or time.monotonic() + 0.05 < deadline
+                        ):
+                            details["retry_attempted"] = True
+                            retried = True
+                            continue
+                        return ""
+                    resposta.raise_for_status()
+                    texto = read_limited_decompressed_response(resposta, deadline_monotonic=deadline)
+                    if deadline is not None and not texto and time.monotonic() >= deadline:
+                        details["read_timeout"] = True
+                    rendered = texto if deep else _perguntas_ia_v2_recortes_fonte_tecnica(texto, query)
+                    if retried and rendered:
+                        details["retry_success"] = True
+                    return rendered
+            except (
+                requests.exceptions.ConnectTimeout,
+                requests.exceptions.ReadTimeout,
+                requests.exceptions.ConnectionError,
+            ) as exc:
+                deadline_expired = deadline is not None and time.monotonic() >= deadline
+                if deadline_expired or isinstance(exc, requests.exceptions.ReadTimeout):
+                    details["read_timeout"] = True
+                if deadline_expired:
+                    return ""
+                if attempt == 0 and (
+                    deadline is None or time.monotonic() + 0.05 < deadline
+                ):
+                    details["retry_attempted"] = True
+                    retried = True
+                    continue
+                logger.warning(
+                    "[IA AGENT PERGUNTAS] Falha transitoria ao ler fonte tecnica url_hash=%s erro=%s",
+                    hashlib.sha256(url_limpa.encode("utf-8", errors="ignore")).hexdigest()[:16],
+                    type(exc).__name__,
+                )
+                return ""
+            except Exception as exc:
+                logger.warning(
+                    "[IA AGENT PERGUNTAS] Falha ao ler fonte tecnica url_hash=%s erro=%s",
+                    hashlib.sha256(url_limpa.encode("utf-8", errors="ignore")).hexdigest()[:16],
+                    type(exc).__name__,
+                )
+                return ""
         return ""
     finally:
-        close = getattr(resposta, "close", None)
-        if callable(close):
-            try:
-                close()
-            except Exception:
-                pass
+        _IA_AGENT_PERGUNTAS_WEB_READ_SLOTS.release()
 
 def _ia_agent_perguntas_buscar_web_publica(
     query: str,
@@ -305,7 +358,6 @@ def _ia_agent_perguntas_prefetch_queries(queries: list[dict]) -> list[str]:
             consultas.append(relaxada)
     return list(dict.fromkeys(consultas))[:12]
 
-
 def _ia_agent_perguntas_prefetch_web(
     client_id: str,
     consultas: list[str],
@@ -313,73 +365,17 @@ def _ia_agent_perguntas_prefetch_web(
     *,
     deadline_monotonic: Optional[float] = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    resultados: dict[str, list[dict[str, Any]]] = {}
-    if not consultas:
-        return resultados
-    fila: Queue = Queue()
-    lock = Lock()
-    for consulta in consultas:
-        fila.put_nowait(consulta)
-    max_workers = min(6, len(consultas))
-
-    def worker() -> None:
-        try:
-            while True:
-                if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
-                    return
-                try:
-                    consulta = fila.get_nowait()
-                except Empty:
-                    return
-                try:
-                    valor = search(consulta, client_id=client_id, max_results=8, fast=True)
-                except Exception as exc:
-                    logger.warning(
-                        "[IA AGENT PERGUNTAS] Falha na busca rapida query_hash=%s erro=%s",
-                        hashlib.sha256(consulta.encode("utf-8", errors="ignore")).hexdigest()[:16],
-                        type(exc).__name__,
-                    )
-                    valor = []
-                with lock:
-                    resultados[consulta] = valor if isinstance(valor, list) else []
-                fila.task_done()
-        finally:
-            _IA_AGENT_PERGUNTAS_WEB_QUERY_SLOTS.release()
-
-    workers = []
-    for idx in range(max_workers):
-        if not _IA_AGENT_PERGUNTAS_WEB_QUERY_SLOTS.acquire(blocking=False):
-            break
-        try:
-            thread = Thread(target=worker, name=f"ml-questions-web-{idx + 1}", daemon=True)
-        except Exception as exc:
-            _IA_AGENT_PERGUNTAS_WEB_QUERY_SLOTS.release()
-            logger.warning(
-                "[IA AGENT PERGUNTAS] Falha ao preparar busca rapida: %s",
-                type(exc).__name__,
-            )
-            continue
-        workers.append(thread)
-    started_workers = []
-    for thread in workers:
-        try:
-            thread.start()
-            started_workers.append(thread)
-        except Exception as exc:
-            _IA_AGENT_PERGUNTAS_WEB_QUERY_SLOTS.release()
-            logger.warning(
-                "[IA AGENT PERGUNTAS] Falha ao iniciar busca rapida: %s",
-                type(exc).__name__,
-            )
-    for thread in started_workers:
-        if deadline_monotonic is None:
-            thread.join()
-            continue
-        remaining = max(0.0, deadline_monotonic - time.monotonic())
-        if remaining <= 0:
-            break
-        thread.join(timeout=remaining)
-    return resultados
+    return _prefetch_web_lifecycle(
+        client_id,
+        consultas,
+        search,
+        query_slots=_IA_AGENT_PERGUNTAS_WEB_QUERY_SLOTS,
+        worker_slots=_IA_AGENT_PERGUNTAS_WEB_WORKER_SLOTS,
+        max_seconds=_IA_AGENT_PERGUNTAS_WEB_PREFETCH_MAX_SECONDS,
+        logger=logger,
+        thread_factory=Thread,
+        deadline_monotonic=deadline_monotonic,
+    )
 def _ia_agent_perguntas_links_tecnicos_mesmo_dominio(
     page_url: str,
     page_text: str,
@@ -389,7 +385,6 @@ def _ia_agent_perguntas_links_tecnicos_mesmo_dominio(
         page_text,
         sanitize_url=_ia_agent_perguntas_url_resultado_web,
     )
-
 
 def _ia_agent_perguntas_itens_web(consulta: dict, prefetch: dict, urls_vistas: set[str]) -> tuple[str, str, list]:
     query = str(consulta.get("query") or "").strip()
@@ -401,6 +396,8 @@ def _ia_agent_perguntas_itens_web(consulta: dict, prefetch: dict, urls_vistas: s
     itens = []
     query_usada = query
     for tentativa in tentativas:
+        candidatos = []
+        urls_candidatas: set[str] = set()
         for item in prefetch.get(tentativa) or []:
             if not isinstance(item, dict):
                 continue
@@ -409,25 +406,31 @@ def _ia_agent_perguntas_itens_web(consulta: dict, prefetch: dict, urls_vistas: s
             if parsed_url and "duckduckgo.com" in (parsed_url.netloc or "") and parsed_url.path.startswith("/y.js"):
                 continue
             chave_url = canonical_research_url(url) or url.lower()
-            if not url or chave_url in urls_vistas:
+            if not url or chave_url in urls_vistas or chave_url in urls_candidatas:
                 continue
-            urls_vistas.add(chave_url)
-            itens.append((sanitize_public_research_item(item), url))
-            if len(itens) >= 6:
+            urls_candidatas.add(chave_url)
+            candidatos.append((sanitize_public_research_item(item), url))
+            if len(candidatos) >= 8:
                 break
-        if itens:
+        if candidatos:
+            candidatos.sort(
+                key=lambda par: _perguntas_ia_v2_prioridade_fonte_web(par[0], par[1]),
+                reverse=True,
+            )
+            itens = candidatos[:6]
+            urls_vistas.update(
+                canonical_research_url(url) or str(url or "").lower()
+                for _item, url in itens
+            )
             query_usada = tentativa
             break
-    itens.sort(key=lambda par: _perguntas_ia_v2_prioridade_fonte_web(par[0], par[1]), reverse=True)
     return query_usada, tipo, itens
-
 
 def _ia_agent_perguntas_metadado_web_linha(valor: object, max_chars: int = 600) -> str:
     """Keep external result fields inside the collector-owned line protocol."""
 
     safe = sanitize_public_research_text(valor, max_chars)
     return re.sub(r"\s+", " ", safe).strip()[:max_chars]
-
 
 def _ia_agent_perguntas_renderizar_resultados_web(
     itens: list,
@@ -562,7 +565,7 @@ def _ia_agent_perguntas_ler_lote_profundo(
     entradas: list[tuple[dict, str, str, str]],
     *,
     deadline_monotonic: float,
-) -> tuple[dict[str, str], int, bool]:
+) -> tuple[dict[str, str], dict[str, int], bool]:
     return read_deep_batch(
         entradas,
         deadline_monotonic=deadline_monotonic,
@@ -639,6 +642,7 @@ def _ia_agent_perguntas_web_tool(client_id: str, agent_input: dict, tool_results
             "search_mode": "multi_provider_diverse_domains",
             "phase": "5_question_focused_web_research",
             "verified_product_evidence": list(pesquisa.get("verified_product_evidence") or []),
+            "verified_target_evidence": list(pesquisa.get("verified_target_evidence") or []),
             "research_metrics": dict(pesquisa.get("research_metrics") or {}),
             "instruction": (
                 "Pesquisa externa final, feita depois do contexto interno e das APIs. "

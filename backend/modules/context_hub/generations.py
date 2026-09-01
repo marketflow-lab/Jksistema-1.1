@@ -163,9 +163,12 @@ def _collect_rebuild_source(
             "schema_version": PRODUCT_EVIDENCE_EDITORIAL_SCHEMA,
             "policy_version": "",
             "snapshot_hash": "0" * 64,
+            "projection_hash": "0" * 64,
             "captured_at": captured_at,
             "next_transition_at": "",
+            "projection_next_transition_at": "",
             "identities": [],
+            "editorial_identities": [],
             "stats": {},
         }
         findings.append(
@@ -195,7 +198,11 @@ def _collect_rebuild_source(
             inventory,
             curated_hashes,
             bundle_hashes,
-            str(product_evidence_snapshot.get("snapshot_hash") or ""),
+            str(
+                product_evidence_snapshot.get("projection_hash")
+                or product_evidence_snapshot.get("snapshot_hash")
+                or ""
+            ),
         ),
         stats=stats,
     )
@@ -294,9 +301,13 @@ def _persist_generation(
             product_evidence_attestation={
                 "evidence_revision": source.product_evidence_revision,
                 "snapshot_hash": source.product_evidence_snapshot.get("snapshot_hash"),
+                "projection_hash": source.product_evidence_snapshot.get("projection_hash"),
                 "policy_version": source.product_evidence_snapshot.get("policy_version"),
                 "captured_at": source.product_evidence_snapshot.get("captured_at"),
                 "next_transition_at": source.product_evidence_snapshot.get("next_transition_at"),
+                "projection_next_transition_at": source.product_evidence_snapshot.get(
+                    "projection_next_transition_at"
+                ),
             },
             generation_materialization=materialization,
         )

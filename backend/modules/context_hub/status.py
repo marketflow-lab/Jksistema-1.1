@@ -28,6 +28,10 @@ from backend.modules.context_hub.paths import (
     _tenant_paths,
 )
 
+from backend.modules.context_hub.product_evidence_attestation import (
+    product_evidence_generation_matches_completed_projection,
+)
+
 from backend.modules.context_hub.runtime import (
     _runtime_config,
 )
@@ -109,7 +113,7 @@ def _generation_document_hashes(
 def _product_evidence_sync_snapshot(
     connection: sqlite3.Connection,
     active_id: Optional[str],
-) -> tuple[sqlite3.Row, int, Optional[sqlite3.Row]]:
+) -> tuple[sqlite3.Row, int, Optional[sqlite3.Row], bool]:
     row = connection.execute(
         "SELECT requested_revision, completed_revision, not_before, "
         "attempt_count, last_attempt_at, last_success_at, last_error_code, "
@@ -122,19 +126,24 @@ def _product_evidence_sync_snapshot(
         (active_id,),
     ).fetchone()[0]) if active_id else 0
     attestation = connection.execute(
-        "SELECT next_transition_at FROM context_hub_generation_product_evidence "
+        "SELECT next_transition_at, projection_next_transition_at "
+        "FROM context_hub_generation_product_evidence "
         "WHERE generation_id=?",
         (active_id,),
     ).fetchone() if active_id else None
-    return row, count, attestation
+    current = product_evidence_generation_matches_completed_projection(
+        connection,
+        active_id,
+    )
+    return row, count, attestation, current
 
 
 def _public_product_evidence_sync(
     paths: Any,
     active_id: Optional[str],
-    snapshot: tuple[sqlite3.Row, int, Optional[sqlite3.Row]],
+    snapshot: tuple[sqlite3.Row, int, Optional[sqlite3.Row], bool],
 ) -> dict[str, Any]:
-    row, active_count, attestation = snapshot
+    row, active_count, attestation, current = snapshot
     key = str(paths.internal_dir).casefold()
     with CONTEXT_HUB_STATE.product_evidence_sync_guard:
         worker = CONTEXT_HUB_STATE.product_evidence_sync_workers.get(key)
@@ -144,14 +153,6 @@ def _public_product_evidence_sync(
         scheduler_running = bool(scheduler and scheduler[0].is_alive())
     requested = int(row["requested_revision"] or 0)
     completed = int(row["completed_revision"] or 0)
-    completed_generation = str(row["completed_generation_id"] or "")
-    current = bool(
-        (requested == 0 and completed == 0 and not completed_generation and not active_count)
-        or (
-            requested == completed
-            and completed_generation == str(active_id or "")
-        )
-    )
     return {
         "pending": requested > completed,
         "requested_revision": requested,
@@ -167,7 +168,12 @@ def _public_product_evidence_sync(
         "scheduler_running": scheduler_running,
         "active_evidence_current": current,
         "active_verified_facts": active_count,
-        "next_transition_at": attestation["next_transition_at"] if attestation else None,
+        "next_transition_at": (
+            attestation["projection_next_transition_at"]
+            or attestation["next_transition_at"]
+            if attestation
+            else None
+        ),
     }
 
 

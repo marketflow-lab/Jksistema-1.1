@@ -326,7 +326,7 @@ def _compatibility_existing_draft(client) -> AIAnswer | None:
 def _compatibility_external_research_found(*results: dict) -> bool:
     for result in results:
         data = result.get("result") if isinstance(result, dict) and isinstance(result.get("result"), dict) else {}
-        if data.get("verified_product_evidence"):
+        if data.get("verified_product_evidence") or data.get("verified_target_evidence"):
             return True
     return False
 

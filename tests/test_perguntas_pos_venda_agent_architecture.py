@@ -44,7 +44,7 @@ CONTRACT_HASHES = {
 }
 LAYERS = {
     "contracts": 0, "attachments": 0, "telemetry_core": 0,
-    "deep_research_contracts": 0, "deep_research_scoping": 0,
+    "deep_research_contracts": 0, "deep_research_prefetch": 0, "deep_research_scoping": 0,
     "input_contracts": 0, "official_source_registry": 0,
     "runtime": 1, "deep_research_analysis": 1, "research_url_security": 1,
     "inputs": 2, "provider_transport": 2, "deep_research_fingerprints": 2,
@@ -222,6 +222,17 @@ def test_ppv_facade_and_components_respect_budgets() -> None:
                 assert node.end_lineno - node.lineno + 1 <= 120, f"{path.name}:{node.name}"
             if isinstance(node, ast.ImportFrom):
                 assert not any(alias.name == "*" for alias in node.names), path.name
+
+
+def test_ppv_prefetch_component_is_pinned_in_installer_manifest() -> None:
+    manifest = json.loads(
+        (ROOT / "electron_app" / "installer-required-resources.json").read_text(encoding="utf-8")
+    )
+    source = "backend/modules/perguntas_pos_venda/ai/deep_research_prefetch.py"
+
+    assert source in set(manifest.get("requiredSourceFiles") or [])
+    assert source in set(manifest.get("requiredPackagedSourceParity") or [])
+    assert f"local_app/{source}" in set(manifest.get("requiredPackagedFiles") or [])
 
 
 def test_ppv_dependency_direction_has_no_cycles_or_legacy_imports() -> None:

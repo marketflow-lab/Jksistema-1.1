@@ -36,6 +36,10 @@ from backend.modules.context_hub.paths import (
     _tenant_paths,
 )
 
+from backend.modules.context_hub.product_evidence_attestation import (
+    product_evidence_generation_matches_completed_projection,
+)
+
 from backend.modules.context_hub.retrieval_filters import (
     _closed_context_filters,
     _finalize_context_retrieval_v3,
@@ -265,21 +269,9 @@ def _product_evidence_generation_current(
     connection: sqlite3.Connection,
     active_id: str,
 ) -> bool:
-    has_evidence = connection.execute(
-        "SELECT 1 FROM context_hub_documents "
-        "WHERE generation_id=? AND kind='product_evidence_fact' LIMIT 1",
-        (active_id,),
-    ).fetchone()
-    if has_evidence is None:
-        return True
-    outbox = connection.execute(
-        "SELECT requested_revision, completed_revision, completed_generation_id "
-        "FROM context_hub_product_evidence_outbox WHERE singleton_id=1"
-    ).fetchone()
-    return bool(
-        outbox
-        and int(outbox["requested_revision"]) == int(outbox["completed_revision"])
-        and str(outbox["completed_generation_id"] or "") == active_id
+    return product_evidence_generation_matches_completed_projection(
+        connection,
+        active_id,
     )
 
 

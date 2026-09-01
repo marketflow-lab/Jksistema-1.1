@@ -618,6 +618,27 @@ def expected_fields_for_research(agent_input: Mapping[str, Any]) -> set[str]:
         else ""
     )
     expected = expected_fields_from_question(question)
+    intent = agent_input.get("intent") if isinstance(agent_input.get("intent"), Mapping) else {}
+    compatibility = (
+        intent.get("compatibilidade")
+        if isinstance(intent.get("compatibilidade"), Mapping)
+        else {}
+    )
+    categories = intent.get("categorias")
+    if isinstance(categories, (str, bytes)):
+        normalized_categories = {_plain(categories)}
+    elif isinstance(categories, Iterable):
+        normalized_categories = {_plain(value) for value in categories}
+    else:
+        normalized_categories = set()
+    classified_as_compatibility = (
+        _plain(intent.get("categoria")) == "compatibility"
+        or "compatibility" in normalized_categories
+        or compatibility.get("aplicavel") is True
+        or bool(compatibility.get("target_item") or compatibility.get("target_vehicle"))
+    )
+    if classified_as_compatibility:
+        expected.add("compatibility")
     item = agent_input.get("item") if isinstance(agent_input.get("item"), Mapping) else {}
     product_text = _plain(
         " ".join(

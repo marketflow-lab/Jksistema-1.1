@@ -85,6 +85,7 @@ def test_release_manifest_requires_context_hub_runtime_files() -> None:
         )
     )
     critical = {
+        "backend/modules/context_hub/product_evidence_rendering.py",
         "backend/routers/context_hub.py",
         "backend/services/context_hub.py",
         "backend/services/context_hub_endpoints.py",

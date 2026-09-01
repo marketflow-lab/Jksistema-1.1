@@ -279,6 +279,20 @@ def test_product_evidence_expiry_is_enforced_without_valid_at(
             "SET completed_generation_id=? WHERE singleton_id=1",
             (generation_id,),
         )
+        snapshot_hash = _sha("retrieval-evidence-snapshot")
+        connection.execute(
+            "INSERT INTO context_hub_generation_product_evidence("
+            "generation_id, evidence_revision, snapshot_hash, projection_hash, "
+            "policy_version, captured_at, next_transition_at, "
+            "projection_next_transition_at) VALUES (?, 0, ?, ?, ?, ?, NULL, NULL)",
+            (
+                generation_id,
+                snapshot_hash,
+                snapshot_hash,
+                "jk_product_evidence_v1",
+                "2026-07-01T00:00:00.000000+00:00",
+            ),
+        )
         connection.commit()
 
     current = context_hub.search_context(

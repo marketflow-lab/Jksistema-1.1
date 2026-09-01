@@ -188,7 +188,9 @@ def test_schema_seeds_tenant_outbox_and_attestation_contract(sync_env) -> None:
         "vin", "question", "answer", "buyer", "prompt", "content", "payload"
     }
     assert attestation["policy_version"][3] == 1
+    assert "projection_hash" in attestation
     assert "next_transition_at" in attestation
+    assert "projection_next_transition_at" in attestation
 
 
 def test_migrates_attestation_policy_and_transition_columns() -> None:
@@ -226,7 +228,8 @@ def test_migrates_attestation_policy_and_transition_columns() -> None:
             )
         }
         migrated = connection.execute(
-            "SELECT policy_version, next_transition_at "
+            "SELECT policy_version, projection_hash, next_transition_at, "
+            "projection_next_transition_at "
             "FROM context_hub_generation_product_evidence"
         ).fetchone()
         outbox_columns = {
@@ -236,9 +239,11 @@ def test_migrates_attestation_policy_and_transition_columns() -> None:
             )
         }
     assert columns["policy_version"][3] == 1
+    assert columns["projection_hash"][3] == 1
     assert "next_transition_at" in columns
+    assert "projection_next_transition_at" in columns
     assert "completed_generation_id" in outbox_columns
-    assert migrated == ("", None)
+    assert migrated == ("", "", None, None)
 
 
 def test_pending_revision_is_atomic_and_coalesced_in_one_tenant_row(sync_env) -> None:

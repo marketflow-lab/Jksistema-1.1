@@ -1,8 +1,15 @@
-"""Low-level model transport without dependencies on the PPV state graph."""
+"""Low-level network transports without dependencies on the PPV state graph."""
 
 from __future__ import annotations
 
+import asyncio
 import os
+import time
+from dataclasses import dataclass
+from typing import Mapping
+
+import httpx
+import requests
 
 from backend.schemas.ia import IAChatRequest
 from backend.services.ia_providers import (
@@ -20,6 +27,124 @@ from backend.services.ia_providers import (
     _vertex_ai_modelo_padrao,
     _vertex_modelo_nome_curto,
 )
+from .deep_research_contracts import PUBLIC_RESEARCH_MAX_DECOMPRESSED_BYTES
+
+
+@dataclass
+class _BufferedResearchResponse:
+    status_code: int
+    content: bytes
+    encoding: str = "utf-8"
+    closed: bool = False
+
+    def iter_content(self, *, chunk_size: int, decode_unicode: bool = False):
+        for start in range(0, len(self.content), max(1, int(chunk_size))):
+            chunk = self.content[start : start + chunk_size]
+            yield chunk.decode(self.encoding, errors="replace") if decode_unicode else chunk
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(f"HTTP {self.status_code}")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+async def _fetch_buffered_research_response(
+    url: str,
+    *,
+    headers: Mapping[str, str],
+    timeout: tuple[float, float],
+    verify: object,
+    allow_redirects: bool,
+    maximum_bytes: int,
+    transport: httpx.AsyncBaseTransport | None,
+) -> _BufferedResearchResponse:
+    request_timeout = httpx.Timeout(
+        connect=float(timeout[0]),
+        read=float(timeout[1]),
+        write=float(timeout[0]),
+        pool=float(timeout[0]),
+    )
+    async with httpx.AsyncClient(
+        verify=verify,
+        timeout=request_timeout,
+        follow_redirects=allow_redirects,
+        transport=transport,
+    ) as client:
+        async with client.stream("GET", url, headers=dict(headers)) as response:
+            if int(response.status_code) >= 300:
+                return _BufferedResearchResponse(
+                    status_code=int(response.status_code),
+                    content=b"",
+                    encoding=str(response.encoding or "utf-8"),
+                )
+            payload = bytearray()
+            async for chunk in response.aiter_bytes():
+                remaining = maximum_bytes - len(payload)
+                if remaining <= 0:
+                    break
+                payload.extend(chunk[:remaining])
+                if len(chunk) >= remaining:
+                    break
+            return _BufferedResearchResponse(
+                status_code=int(response.status_code),
+                content=bytes(payload),
+                encoding=str(response.encoding or "utf-8"),
+            )
+
+
+def fetch_research_response(
+    url: str,
+    *,
+    headers: Mapping[str, str],
+    timeout: tuple[float, float],
+    verify: object,
+    allow_redirects: bool,
+    stream: bool,
+    deadline_monotonic: float | None = None,
+    maximum_bytes: int = PUBLIC_RESEARCH_MAX_DECOMPRESSED_BYTES,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> object:
+    """Fetch a reader response with a hard deadline over headers and body."""
+
+    if deadline_monotonic is None:
+        return requests.get(
+            url,
+            headers=dict(headers),
+            timeout=timeout,
+            verify=verify,
+            allow_redirects=allow_redirects,
+            stream=stream,
+        )
+    loop_timeout = float(deadline_monotonic) - time.monotonic()
+    if loop_timeout <= 0:
+        raise requests.exceptions.ReadTimeout("research deadline exceeded")
+
+    async def run_with_deadline() -> _BufferedResearchResponse:
+        return await asyncio.wait_for(
+            _fetch_buffered_research_response(
+                url,
+                headers=headers,
+                timeout=timeout,
+                verify=verify,
+                allow_redirects=allow_redirects,
+                maximum_bytes=max(1, int(maximum_bytes)),
+                transport=transport,
+            ),
+            timeout=loop_timeout,
+        )
+
+    try:
+        return asyncio.run(run_with_deadline())
+    except TimeoutError as exc:
+        raise requests.exceptions.ReadTimeout("research deadline exceeded") from exc
+    except httpx.ConnectTimeout as exc:
+        raise requests.exceptions.ConnectTimeout(str(exc)) from exc
+    except httpx.TimeoutException as exc:
+        raise requests.exceptions.ReadTimeout(str(exc)) from exc
+    except httpx.TransportError as exc:
+        raise requests.exceptions.ConnectionError(str(exc)) from exc
 
 
 def _model_adapter(name: str, default):
@@ -60,4 +185,4 @@ def invoke_model(client_id: str, payload: IAChatRequest, model_req: str) -> tupl
     return response, model_req or (os.getenv("OPENAI_MODEL") or "gpt-5.4-nano").strip()
 
 
-__all__ = ["invoke_model"]
+__all__ = ["fetch_research_response", "invoke_model"]
