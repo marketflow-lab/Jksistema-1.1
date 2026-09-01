@@ -106,6 +106,153 @@ def _auth_db_tem_usuarios() -> bool:
     finally:
         conn.close()
 
+
+def _obter_perfil_autenticado_remoto_sql(username: str) -> dict:
+    """Read only the signed-remote-login profile cached in canonical SQLite.
+
+    This deliberately bypasses Firebase and all cache/local seeding paths.  It
+    exists only so a local administrator can repair a broken Firebase
+    credential without the repair authorization depending on that credential.
+    """
+    username_norm = str(username or "").strip().lower()
+    if not username_norm:
+        return {}
+    try:
+        _init_auth_db()
+        conn = _auth_db_conexao()
+        try:
+            row = conn.execute(
+                """
+                SELECT username, client_id, permissions_json, active, valid_until,
+                       machine_id, machine_ids_json, source
+                FROM usuarios_auth
+                WHERE username = ? AND source = 'remote-auth-profile'
+                LIMIT 1
+                """,
+                (username_norm,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return {}
+    if row is None:
+        return {}
+    try:
+        permissions_raw = json.loads(str(row["permissions_json"] or "{}"))
+    except Exception:
+        return {}
+    if not isinstance(permissions_raw, dict):
+        return {}
+    client_id = str(row["client_id"] or "").strip()
+    if not client_id:
+        return {}
+    machine_id = str(row["machine_id"] or "").strip()
+    machine_ids = _normalizar_lista_maquinas(row["machine_ids_json"], machine_id)
+    return {
+        "username": str(row["username"] or "").strip().lower(),
+        "client_id": client_id,
+        "permissions": _normalizar_permissoes(permissions_raw),
+        "active": bool(int(row["active"] or 0)),
+        "valid_until": _normalizar_data_sistema(row["valid_until"]),
+        "machine_id": machine_id,
+        "machine_ids": machine_ids,
+        "source": str(row["source"] or "").strip(),
+    }
+
+
+def _require_admin_firebase_recovery(
+    authorization: Optional[str],
+    *,
+    full_only: bool,
+) -> dict:
+    """Authorize Firebase status/recovery from the trusted remote login cache."""
+    session = _payload_sessao_por_authorization(authorization)
+    username = str(session.get("username") or "").strip().lower()
+    client_id = str(session.get("client_id") or "").strip()
+    machine_id = str(session.get("machine_id") or "").strip()
+    profile = _obter_perfil_autenticado_remoto_sql(username)
+    if (
+        not profile
+        or profile.get("source") != "remote-auth-profile"
+        or profile.get("username") != username
+        or str(profile.get("client_id") or "").strip() != client_id
+    ):
+        raise HTTPException(status_code=403, detail="Sessao sem perfil remoto confiavel para recuperacao.")
+    if not _login_usuario_ativo(profile):
+        raise HTTPException(status_code=403, detail="Sessao sem permissao para recuperacao.")
+    validity_ok, _validity_message = _login_validade_ok(profile)
+    if not validity_ok:
+        raise HTTPException(status_code=403, detail="Sessao sem permissao para recuperacao.")
+    allowed_machines = _normalizar_lista_maquinas(
+        profile.get("machine_ids"),
+        profile.get("machine_id"),
+    )
+    if not machine_id or not allowed_machines or machine_id not in allowed_machines:
+        raise HTTPException(status_code=403, detail="Sessao invalida para esta maquina.")
+    permissions = _normalizar_permissoes(profile.get("permissions") or {})
+    allowed = permissions.get("full") is True or (
+        not full_only and permissions.get("admin_usuarios") is True
+    )
+    if not allowed:
+        raise HTTPException(status_code=403, detail="Apenas administradores podem consultar ou recuperar o Firebase.")
+    return {
+        "username": username,
+        "client_id": client_id,
+        "permissions": permissions,
+    }
+
+
+def _require_full_admin_firebase_recovery(authorization: Optional[str]) -> dict:
+    """Authorize only credential-changing recovery routes without Firebase."""
+    return _require_admin_firebase_recovery(authorization, full_only=True)
+
+
+def _require_admin_firebase_status(authorization: Optional[str]) -> dict:
+    """Authorize the sanitized readiness route without depending on Firebase."""
+    return _require_admin_firebase_recovery(authorization, full_only=False)
+
+
+def _authorize_full_admin_firebase_provisioning(authorization: Optional[str]) -> dict:
+    """Use recovery cache first, then the normal healthy admin authority."""
+    recovery_denial: Optional[HTTPException] = None
+    try:
+        return _require_full_admin_firebase_recovery(authorization)
+    except HTTPException as recovery_error:
+        if int(recovery_error.status_code or 0) == 401:
+            raise
+        recovery_denial = recovery_error
+
+    # A legacy/healthy installation may predate remote-auth-profile caching.
+    # Preserve that normal authorization path, but only after the token was
+    # decoded locally and only for this provisioning entrypoint.
+    session = _payload_sessao_por_authorization(authorization)
+    client_id = str(session.get("client_id") or "").strip()
+    try:
+        return _require_full_admin_user_management(authorization, client_id)
+    except HTTPException:
+        # Do not let an unavailable Firebase authority turn a non-authoritative
+        # local cache into authorization.  The original recovery denial is the
+        # safe final result when neither authority succeeds.
+        raise recovery_denial
+
+
+def _authorize_admin_firebase_provisioning_status(authorization: Optional[str]) -> dict:
+    """Allow full/admin_usuarios to read only the sanitized Firebase status."""
+    recovery_denial: Optional[HTTPException] = None
+    try:
+        return _require_admin_firebase_status(authorization)
+    except HTTPException as recovery_error:
+        if int(recovery_error.status_code or 0) == 401:
+            raise
+        recovery_denial = recovery_error
+
+    session = _payload_sessao_por_authorization(authorization)
+    client_id = str(session.get("client_id") or "").strip()
+    try:
+        return _require_admin_usuarios_access(authorization, client_id)
+    except HTTPException:
+        raise recovery_denial
+
 def _salvar_usuarios_sql(usuarios: dict, source: str = "importado"):
     if not isinstance(usuarios, dict) or not usuarios:
         return
@@ -662,6 +809,12 @@ __all__ = [
     "_auth_db_conexao",
     "_init_auth_db",
     "_auth_db_tem_usuarios",
+    "_obter_perfil_autenticado_remoto_sql",
+    "_require_admin_firebase_recovery",
+    "_require_admin_firebase_status",
+    "_require_full_admin_firebase_recovery",
+    "_authorize_admin_firebase_provisioning_status",
+    "_authorize_full_admin_firebase_provisioning",
     "_salvar_usuarios_sql",
     "_carregar_usuarios_sql",
     "_listar_usuarios_admin_sql",

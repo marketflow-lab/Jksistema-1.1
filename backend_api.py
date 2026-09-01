@@ -119,6 +119,7 @@ from selenium.webdriver.chrome.service import Service
 from backend.routers import (
     ConfiguracoesRouterConfig,
     FinancialComparisonRouterConfig,
+    FirebaseProvisioningRouterConfig,
     FrontendRouterConfig,
     create_admin_usuarios_router,
     create_cadastro_router,
@@ -130,6 +131,7 @@ from backend.routers import (
     create_etiquetas_router,
     create_favoritos_router,
     create_financial_comparison_router,
+    create_firebase_provisioning_router,
     create_frontend_router,
     FullRouterConfig,
     create_full_router,
@@ -1917,6 +1919,12 @@ USER_CHAT_REMOTE_HISTORY_CHECK_CACHE: dict[str, int] = {}
 
 _admin_usuarios_module.configure_admin_usuarios_runtime(sys.modules[__name__])
 app.include_router(create_admin_usuarios_router())
+app.include_router(create_firebase_provisioning_router(FirebaseProvisioningRouterConfig(
+    base_dir=BASE_DIR,
+    info_dir=PASTA_INFO,
+    authorize_recovery=_authorize_full_admin_firebase_provisioning,
+    authorize_status=_authorize_admin_firebase_provisioning_status,
+)))
 
 # WhatsApp Cloud API bridge: the public gateway stays at Cloudflare, while all
 # Joao Pretinho processing remains on this authenticated local runtime.
