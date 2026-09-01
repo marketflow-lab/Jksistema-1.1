@@ -60,8 +60,8 @@ assert(
 assert(
   backendStartupSource.includes('preparedByCanonicalLauncher: true')
     && backendStartupSource.includes('if (!cleanup.success)')
-    && backendStartupSource.includes('filter(server => !server.closed)'),
-  'only the canonical pre-cleaned launcher may reuse its fresh backend and cleanup failures must block startup'
+    && backendStartupSource.includes('filter(server => server.blocking)'),
+  'only the canonical pre-cleaned launcher may reuse its fresh backend and blocking managed cleanup failures must stop startup'
 );
 assert(
   backendSource.includes('function consumeCanonicalLauncherPreparedServers()')
