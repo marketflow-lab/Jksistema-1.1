@@ -345,6 +345,166 @@ def test_pacote_v2_criptografa_credenciais_sem_texto_legivel(monkeypatch):
         shared_sync_remote._shared_sync_decrypt_bundle("outro-vinculo", encrypted)
 
 
+def test_oauth_draft_transitorio_nao_altera_fingerprint_nem_pacote(monkeypatch):
+    base = {
+        "lojas": [
+            {
+                "nome": "Loja",
+                "integracoes": {"mercadolivre": {"connected": False}},
+            }
+        ]
+    }
+    com_draft = json.loads(json.dumps(base))
+    com_draft["lojas"][0]["integracoes"]["mercadolivre"]["oauth_draft"] = {
+        "state": "state-transitorio",
+        "app_id": "app-transitorio",
+        "client_secret": "secret-transitorio",
+    }
+    raw_base = json.dumps(base, ensure_ascii=False).encode("utf-8")
+    raw_draft = json.dumps(com_draft, ensure_ascii=False).encode("utf-8")
+    sessao = {"client_id": "000002", "username": "operador"}
+
+    def fingerprint(data):
+        monkeypatch.setattr(
+            shared_sync_operations,
+            "_shared_sync_coletar_arquivos",
+            lambda *_args, **_kwargs: ([_entry("lojas_config.json", data)], []),
+        )
+        return shared_sync_operations._shared_sync_local_fingerprint(
+            sessao,
+            ["lojas_integracoes"],
+        )
+
+    hash_base, files_base = fingerprint(raw_base)
+    hash_draft, files_draft = fingerprint(raw_draft)
+    assert hash_draft == hash_base
+    assert files_draft == files_base
+
+    monkeypatch.setattr(
+        shared_sync_bundle,
+        "_shared_sync_coletar_arquivos",
+        lambda *_args, **_kwargs: ([_entry("lojas_config.json", raw_draft)], []),
+    )
+    monkeypatch.setattr(
+        shared_sync_bundle,
+        "_shared_sync_coletar_arquivos_delta",
+        lambda *_args, **_kwargs: ([_entry("lojas_config.json", raw_draft)], [], []),
+    )
+    full_bundle, full_manifest, _ = shared_sync_bundle._shared_sync_montar_pacote(
+        "000002", "lojas_integracoes", "operador", user_only=True,
+    )
+    delta_bundle, delta_manifest, _ = shared_sync_bundle._shared_sync_montar_pacote(
+        "000002", "lojas_integracoes", "operador", user_only=True, known_keys=set(),
+    )
+    assert full_manifest["snapshot_hash"] == hash_base["lojas_integracoes"]
+    assert delta_manifest["snapshot_hash"] == hash_base["lojas_integracoes"]
+    for bundle in (full_bundle, delta_bundle):
+        with zipfile.ZipFile(io.BytesIO(bundle), "r") as zf:
+            persisted = zf.read("files/lojas_config.json")
+        assert b"oauth_draft" not in persisted
+        assert b"state-transitorio" not in persisted
+        assert b"secret-transitorio" not in persisted
+    assert b"oauth_draft" in raw_draft
+
+
+@pytest.mark.parametrize(
+    ("servico", "transitorio", "chave_transitoria"),
+    [
+        (
+            "mercadolivre",
+            {
+                "oauth_draft": {
+                    "state": "state-transitorio",
+                    "app_id": "app-transitorio",
+                    "client_secret": "secret-transitorio",
+                }
+            },
+            "oauth_draft",
+        ),
+        (
+            "bling",
+            {"oauth_pending_state": "state-transitorio"},
+            "oauth_pending_state",
+        ),
+    ],
+)
+def test_oauth_transitorio_persistido_nao_altera_fingerprint_nem_pacote(
+    tmp_path,
+    monkeypatch,
+    servico,
+    transitorio,
+    chave_transitoria,
+):
+    info = tmp_path / "info"
+
+    def tenant_path(client_id):
+        path = info / str(client_id)
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
+    monkeypatch.setattr(integracoes, "PASTA_INFO", str(info))
+    monkeypatch.setattr(integracoes, "_get_tenant_path", tenant_path)
+    monkeypatch.setattr(
+        integracoes,
+        "_normalizar_integracao_conectada",
+        lambda _servico, dados: dados,
+    )
+    integracoes.salvar_lojas(
+        "000002",
+        [
+            {
+                "nome": "Loja",
+                "integracoes": {servico: {"connected": False}},
+            }
+        ],
+    )
+    lojas_path = info / "000002" / "lojas_config.json"
+
+    def coletar(*_args, **_kwargs):
+        return [_entry("lojas_config.json", lojas_path.read_bytes())], []
+
+    monkeypatch.setattr(
+        shared_sync_operations,
+        "_shared_sync_coletar_arquivos",
+        coletar,
+    )
+    monkeypatch.setattr(
+        shared_sync_bundle,
+        "_shared_sync_coletar_arquivos",
+        coletar,
+    )
+    sessao = {"client_id": "000002", "username": "operador"}
+
+    def capturar():
+        hashes, _files = shared_sync_operations._shared_sync_local_fingerprint(
+            sessao,
+            ["lojas_integracoes"],
+        )
+        bundle, manifest, _warnings = shared_sync_bundle._shared_sync_montar_pacote(
+            "000002",
+            "lojas_integracoes",
+            "operador",
+            user_only=True,
+        )
+        with zipfile.ZipFile(io.BytesIO(bundle), "r") as zf:
+            arquivo = zf.read("files/lojas_config.json")
+        return hashes["lojas_integracoes"], manifest["snapshot_hash"], arquivo
+
+    antes = capturar()
+    integracoes.atualizar_api_loja(
+        "000002",
+        "Loja",
+        servico,
+        transitorio,
+        require_existing=True,
+    )
+    depois = capturar()
+
+    assert depois == antes
+    assert chave_transitoria.encode() not in depois[2]
+    assert b"state-transitorio" not in depois[2]
+
+
 def test_coleta_integracoes_exclui_temporarios_oauth(tmp_path, monkeypatch):
     tenant = tmp_path / "000002"
     tenant.mkdir()
@@ -1623,7 +1783,7 @@ def test_versoes_fonte_e_electron_estao_alinhadas_com_a_release():
     root_package = json.loads(open("package.json", "r", encoding="utf-8").read())
     electron_package = json.loads(open("electron_app/package.json", "r", encoding="utf-8").read())
     backend_source = open("backend_api.py", "r", encoding="utf-8-sig").read()
-    assert root_package["version"] == "1.0.128-private.1"
+    assert root_package["version"] == "1.0.128"
     assert electron_package["version"] == root_package["version"]
     # O minimo do backend pode permanecer anterior para nao derrubar clientes
     # durante o rollout em duas ondas.

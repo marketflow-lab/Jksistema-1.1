@@ -443,22 +443,35 @@
                     const integracoes = selectedStore.integracoes || {};
                     const blingCfg = integracoes.bling || {};
                     const mlCfg = integracoes.mercadolivre || {};
+                    const mlDraft = mlCfg.oauth_draft && typeof mlCfg.oauth_draft === 'object'
+                        ? mlCfg.oauth_draft
+                        : {};
+                    const mlDraftCompleto = !!(mlDraft.app_id && mlDraft.client_secret);
                     const turboCfg = integracoes.mercadoturbo || {};
 
                     document.getElementById('bling-client-id').value = blingCfg.id || '';
                     document.getElementById('bling-client-secret').value = blingCfg.secret || '';
                     updateOauthStatus('bling-status', blingCfg);
                     
-                    document.getElementById('ml-app-id').value = mlCfg.id || mlCfg.app_id || mlCfg.client_id || '';
-                    document.getElementById('ml-client-secret').value = mlCfg.secret || mlCfg.client_secret || '';
+                    document.getElementById('ml-app-id').value = mlDraftCompleto
+                        ? mlDraft.app_id
+                        : (mlCfg.id || mlCfg.app_id || mlCfg.client_id || '');
+                    document.getElementById('ml-client-secret').value = mlDraftCompleto
+                        ? mlDraft.client_secret
+                        : (mlCfg.secret || mlCfg.client_secret || '');
                     const mlCamposFaltando = [];
                     if (!(mlCfg.id || mlCfg.app_id || mlCfg.client_id)) mlCamposFaltando.push('app_id');
                     if (!(mlCfg.secret || mlCfg.client_secret)) mlCamposFaltando.push('client_secret');
                     if (!mlCfg.access_token) mlCamposFaltando.push('access_token');
                     if (!mlCfg.refresh_token) mlCamposFaltando.push('refresh_token');
                     const mlOAuthCompleto = mlCamposFaltando.length === 0;
-                    updateStatus('ml-status', mlOAuthCompleto);
-                    if(mlOAuthCompleto && mlCfg.user_id) {
+                    const mlConectado = !!mlCfg.connected && mlOAuthCompleto && !mlCfg.oauth_invalid;
+                    updateStatus('ml-status', mlConectado);
+                    if (mlDraftCompleto) {
+                        document.getElementById('ml-user-id').textContent = mlConectado
+                            ? '(Novas credenciais salvas. Conclua a autorização; a conexão atual permanece ativa.)'
+                            : '(Credenciais salvas. Conclua a autorização no Mercado Livre.)';
+                    } else if(mlConectado && mlCfg.user_id) {
                         document.getElementById('ml-user-id').textContent = `(ID do Usuário: ${mlCfg.user_id})`;
                     } else if (mlCfg.shared_without_oauth_tokens || mlCfg.status === 'reautenticacao_necessaria') {
                         document.getElementById('ml-user-id').textContent = '(Autentique o Mercado Livre nesta instalação para usar esta loja.)';
@@ -593,8 +606,8 @@
 
             formML.addEventListener('submit', async (e) => {
                 e.preventDefault();
-                const appId = document.getElementById('ml-app-id').value;
-                const clientSecret = document.getElementById('ml-client-secret').value;
+                const appId = document.getElementById('ml-app-id').value.trim();
+                const clientSecret = document.getElementById('ml-client-secret').value.trim();
                 if (!appId || !clientSecret) {
                     alert('Preencha o App ID e o Client Secret do Mercado Livre.');
                     return;

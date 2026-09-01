@@ -345,8 +345,18 @@ async function testarCliqueConcorrenteAposMax() {
         const preferenciasSalvas = [];
         const urlsAtualizadas = [];
         const periodosConfirmadosNaUi = [];
+        const DataFixa = class extends Date {
+            constructor(...args) {
+                if (args.length) {
+                    super(...args);
+                } else {
+                    super(2026, 7, 19, 12, 0, 0);
+                }
+            }
+        };
         const criarHarness = new Function(
             'window',
+            'Date',
             'limitesMaxPendentes',
             'registrarPeriodo',
             'registrarPreferencia',
@@ -409,6 +419,7 @@ async function testarCliqueConcorrenteAposMax() {
         return {
             harness: criarHarness(
                 janela,
+                DataFixa,
                 limitesMaxPendentes,
                 (inicio, fim) => periodosAplicados.push({ inicio, fim }),
                 preferencia => preferenciasSalvas.push(preferencia),
@@ -649,8 +660,18 @@ async function testarAplicacaoPeriodoSku() {
         const periodosAplicados = [];
         const periodosUrl = [];
         const periodosConfirmadosNaUi = [];
+        const DataFixa = class extends Date {
+            constructor(...args) {
+                if (args.length) {
+                    super(...args);
+                } else {
+                    super(2026, 7, 19, 12, 0, 0);
+                }
+            }
+        };
         const criarHarness = new Function(
             'window',
+            'Date',
             'limitesPendentes',
             'registrarPeriodo',
             'registrarUrl',
@@ -697,6 +718,7 @@ async function testarAplicacaoPeriodoSku() {
         return {
             harness: criarHarness(
                 { JKVendasPeriodosCompletos: helpers },
+                DataFixa,
                 limitesPendentes,
                 (inicio, fim) => periodosAplicados.push({ inicio, fim }),
                 periodo => periodosUrl.push(periodo),

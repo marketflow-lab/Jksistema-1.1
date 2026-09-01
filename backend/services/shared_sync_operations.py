@@ -14,6 +14,7 @@ from typing import Optional
 from fastapi import HTTPException
 
 from backend.services.runtime_bridge import bind_runtime_globals
+from backend.services.shared_sync_bundle import _shared_sync_sanitize_transient_oauth_entries
 from backend.services.shared_sync_common import *
 from backend.services.shared_sync_context import configure_shared_sync_context
 
@@ -50,6 +51,7 @@ def _shared_sync_local_fingerprint(sessao: dict, scopes: list[str]) -> tuple[dic
         entries, _warnings = _shared_sync_coletar_arquivos(
             sessao.get("client_id"), scope, username=sessao.get("username"), user_only=True,
         )
+        entries = _shared_sync_sanitize_transient_oauth_entries(scope, entries)
         hashes[scope] = _shared_sync_snapshot_hash(entries)
         files[scope] = [
             {

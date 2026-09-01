@@ -57,7 +57,8 @@ def _shared_sync_snapshot_hash(entries: list[dict]) -> str:
 
 _SHARED_SYNC_TRANSIENT_OAUTH_KEYS = {
     "state", "code", "oauth_code", "authorization_code", "callback",
-    "callback_url", "oauth_callback", "oauth_callback_url",
+    "callback_url", "oauth_callback", "oauth_callback_url", "oauth_draft",
+    "oauth_pending_state",
 }
 
 

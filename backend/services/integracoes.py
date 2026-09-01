@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import threading
 import time
@@ -33,8 +34,11 @@ _resolver_redirect_uri_publica: Callable[..., str] = lambda **kwargs: ""
 _resolver_redirect_uri_bling: Callable[..., str] = lambda **kwargs: ""
 _bling_session = requests.Session()
 _LOJAS_CONFIG_LOCK = threading.RLock()
+_TEMP_AUTH_LOCK = threading.RLock()
+_TEMP_AUTH_TTL_SECONDS = 15 * 60
 _BLING_REFRESH_LOCKS_GUARD = threading.Lock()
 _BLING_REFRESH_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+_INTEGRACOES_SYNC_TRANSIENT_KEYS = {"oauth_draft", "oauth_pending_state"}
 
 
 def configure_integracoes_context(
@@ -388,7 +392,8 @@ def _integracoes_sync_clean(value):
         return {
             key: _integracoes_sync_clean(item)
             for key, item in value.items()
-            if key not in {"_sync_version", "_sync_updated_at"}
+            if str(key or "").strip().lower()
+            not in {"_sync_version", "_sync_updated_at", *_INTEGRACOES_SYNC_TRANSIENT_KEYS}
         }
     return value
 
@@ -550,7 +555,15 @@ def _integracoes_encontrar_loja(lojas: list, nome_loja: str):
     return None
 
 
-def atualizar_api_loja(client_id: str, nome_loja: str, api_nome: str, dados_api: dict):
+def atualizar_api_loja(
+    client_id: str,
+    nome_loja: str,
+    api_nome: str,
+    dados_api: dict,
+    *,
+    require_existing: bool = False,
+    expected_oauth_state: str | None = None,
+):
     """Cria ou atualiza uma loja e sua integracao para um cliente especifico."""
     if isinstance(dados_api, dict) and str(api_nome or "").strip().lower() in {"bling", "mercadolivre", "ml"}:
         try:
@@ -561,12 +574,49 @@ def atualizar_api_loja(client_id: str, nome_loja: str, api_nome: str, dados_api:
     # protegidos isoladamente, permitindo que duas lojas perdessem updates.
     with _LOJAS_CONFIG_LOCK:
         lojas = carregar_lojas(client_id)
-        loja = _integracoes_encontrar_loja(lojas, nome_loja)
+        exige_identidade_exata = bool(require_existing or expected_oauth_state)
+        if exige_identidade_exata:
+            nome_exato = str(nome_loja or "").strip()
+            loja = next(
+                (
+                    item
+                    for item in lojas
+                    if isinstance(item, dict)
+                    and str(item.get("nome") or "").strip() == nome_exato
+                ),
+                None,
+            )
+        else:
+            loja = _integracoes_encontrar_loja(lojas, nome_loja)
         if loja is None:
+            if exige_identidade_exata:
+                raise HTTPException(
+                    status_code=409,
+                    detail="A loja do fluxo OAuth nao existe mais.",
+                )
             loja = {"nome": nome_loja, "integracoes": {}}
             lojas.append(loja)
         integracoes = loja.setdefault("integracoes", {})
         atual = integracoes.get(api_nome)
+        if expected_oauth_state:
+            atual_dict = atual if isinstance(atual, dict) else {}
+            if str(api_nome or "").strip().lower() == "bling":
+                oauth_state_atual = str(
+                    atual_dict.get("oauth_pending_state") or ""
+                ).strip()
+            else:
+                draft = atual_dict.get("oauth_draft")
+                oauth_state_atual = str(
+                    draft.get("state") if isinstance(draft, dict) else ""
+                ).strip()
+            if not oauth_state_atual or not secrets.compare_digest(
+                oauth_state_atual,
+                str(expected_oauth_state).strip(),
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="O fluxo OAuth foi substituido ou cancelado.",
+                )
         if isinstance(atual, dict) and isinstance(dados_api, dict):
             merged = dict(atual)
             merged.update(dados_api)
@@ -770,27 +820,103 @@ def desconectar_api_loja(client_id: str, nome_loja: str, api_nome: str) -> dict:
     raise HTTPException(status_code=404, detail="Loja nao encontrada.")
 
 
+def _integracoes_temp_auth_carregar_fluxos() -> tuple[dict[str, dict], bool]:
+    payload = _integracoes_ler_json(ARQUIVO_TEMP_AUTH, {})
+    fluxos: dict[str, dict] = {}
+    if isinstance(payload, dict) and isinstance(payload.get("flows"), dict):
+        fluxos = {
+            str(chave): dict(valor)
+            for chave, valor in payload["flows"].items()
+            if str(chave).strip() and isinstance(valor, dict)
+        }
+    elif isinstance(payload, dict) and str(payload.get("state") or "").strip():
+        estado_legado = str(payload.get("state") or "").strip()
+        fluxos[estado_legado] = dict(payload)
+
+    agora = time.time()
+    ativos: dict[str, dict] = {}
+    for estado, dados in fluxos.items():
+        try:
+            criado_em = float(dados.get("created_at") or 0)
+        except (TypeError, ValueError):
+            criado_em = 0
+        if (
+            criado_em <= 0
+            or criado_em > agora + 60
+            or agora - criado_em > _TEMP_AUTH_TTL_SECONDS
+        ):
+            continue
+        if str(dados.get("state") or "").strip() != estado:
+            continue
+        ativos[estado] = dados
+    return ativos, ativos != fluxos
+
+
+def _integracoes_temp_auth_persistir_fluxos(fluxos: dict[str, dict]) -> None:
+    _integracoes_escrever_lojas_config_atomico(
+        ARQUIVO_TEMP_AUTH,
+        {"version": 2, "flows": fluxos},
+    )
+
+
 def salvar_temp_auth(dados):
-    with open(ARQUIVO_TEMP_AUTH, "w", encoding="utf-8") as f:
-        json.dump(dados, f, ensure_ascii=False)
+    registro = dict(dados or {})
+    estado = str(registro.get("state") or "").strip()
+    if not estado:
+        estado = secrets.token_urlsafe(24)
+    registro["state"] = estado
+    try:
+        criado_em = float(registro.get("created_at") or time.time())
+    except (TypeError, ValueError):
+        criado_em = time.time()
+    registro["created_at"] = criado_em
+    with _TEMP_AUTH_LOCK:
+        fluxos, _ = _integracoes_temp_auth_carregar_fluxos()
+        fluxos[estado] = registro
+        _integracoes_temp_auth_persistir_fluxos(fluxos)
+    return estado
 
 
-def ler_temp_auth():
-    if os.path.exists(ARQUIVO_TEMP_AUTH):
-        try:
-            with open(ARQUIVO_TEMP_AUTH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return None
-    return None
+def ler_temp_auth(state: str | None = None):
+    estado = str(state or "").strip()
+    with _TEMP_AUTH_LOCK:
+        fluxos, mudou = _integracoes_temp_auth_carregar_fluxos()
+        if mudou:
+            _integracoes_temp_auth_persistir_fluxos(fluxos)
+        if estado:
+            registro = fluxos.get(estado)
+        else:
+            registro = max(
+                fluxos.values(),
+                key=lambda item: float(item.get("created_at") or 0),
+                default=None,
+            )
+        return dict(registro) if isinstance(registro, dict) else None
 
 
-def limpar_temp_auth():
-    if os.path.exists(ARQUIVO_TEMP_AUTH):
-        try:
-            os.remove(ARQUIVO_TEMP_AUTH)
-        except Exception:
-            pass
+def consumir_temp_auth(state: str | None):
+    estado = str(state or "").strip()
+    if not estado:
+        return None
+    with _TEMP_AUTH_LOCK:
+        fluxos, mudou = _integracoes_temp_auth_carregar_fluxos()
+        registro = fluxos.pop(estado, None)
+        if registro is not None or mudou:
+            _integracoes_temp_auth_persistir_fluxos(fluxos)
+        return dict(registro) if isinstance(registro, dict) else None
+
+
+def limpar_temp_auth(state: str | None = None):
+    estado = str(state or "").strip()
+    with _TEMP_AUTH_LOCK:
+        fluxos, mudou = _integracoes_temp_auth_carregar_fluxos()
+        if estado:
+            mudou = fluxos.pop(estado, None) is not None or mudou
+        elif fluxos:
+            fluxos = {}
+            mudou = True
+        if mudou:
+            _integracoes_temp_auth_persistir_fluxos(fluxos)
 
 
 def auth_bling_get_link(client_id, state, redirect_uri=None):
@@ -887,6 +1013,7 @@ __all__ = [
     "registrar_tombstone_integracao",
     "salvar_temp_auth",
     "ler_temp_auth",
+    "consumir_temp_auth",
     "limpar_temp_auth",
     "auth_bling_get_link",
     "auth_bling_exchange",
