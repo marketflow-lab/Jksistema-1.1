@@ -532,7 +532,12 @@ def _shared_sync_aplicar_user_share_add_only(
             info = _shared_sync_merge_csv_add_only(target_abs, data, scope, rel)
         elif scope == "lojas_integracoes" and lower == "lojas_config.json":
             _shared_sync_backup_target(tenant_abs, backup_dir, rel, target_abs)
-            merged = _shared_sync_merge_lojas_integracoes_bytes(target_abs, data, add_only=True)
+            merged = _shared_sync_merge_lojas_integracoes_bytes(
+                target_abs,
+                data,
+                add_only=True,
+                client_id=client_id,
+            )
             os.makedirs(os.path.dirname(target_abs), exist_ok=True)
             with open(target_abs, "wb") as f:
                 f.write(merged)

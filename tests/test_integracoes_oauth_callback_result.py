@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
 
 from backend.routers.integracoes import IntegracoesRouterConfig, create_integracoes_router
-from backend.schemas import AuthRequest
+from backend.schemas import AuthRequest, StoreRequest
 from backend.services import integracoes as integracoes_service
 from backend.services import integracoes_api
 from backend.services import shared_sync_bundle
@@ -618,6 +618,158 @@ def test_callback_after_disconnect_or_delete_never_reconnects_or_recreates_store
         assert "refresh_token" not in cfg
     else:
         assert loja is None
+
+
+@pytest.mark.parametrize("servico", ["mercadolivre", "bling"])
+@pytest.mark.parametrize("mudanca", ["disconnect", "recreate"])
+@pytest.mark.parametrize("resultado", ["success", "provider_denied"])
+def test_oauth_so_restaura_tombstone_depois_do_callback_bem_sucedido(
+    isolated_integracoes,
+    monkeypatch,
+    servico,
+    mudanca,
+    resultado,
+):
+    credenciais = {
+        "access_token": f"{servico}-access-antigo",
+        "refresh_token": f"{servico}-refresh-antigo",
+        "connected": True,
+    }
+    if servico == "mercadolivre":
+        credenciais.update({
+            "app_id": "ml-app-antigo",
+            "client_secret": "ml-secret-antigo",
+            "user_id": "seller-antigo",
+        })
+    else:
+        credenciais.update({
+            "id": "bling-app-antigo",
+            "secret": "bling-secret-antigo",
+        })
+    integracoes_service.atualizar_api_loja(
+        TENANT,
+        STORE,
+        servico,
+        credenciais,
+        require_existing=True,
+    )
+
+    if mudanca == "disconnect":
+        integracoes_service.desconectar_api_loja(TENANT, STORE, servico)
+    else:
+        asyncio.run(integracoes_api.delete_loja(STORE, client_id=TENANT))
+        asyncio.run(
+            integracoes_api.create_loja(
+                StoreRequest(nome=STORE),
+                client_id=TENANT,
+            )
+        )
+
+    tombstones_antes = integracoes_service._integracoes_ler_tombstones_estrito(TENANT)
+    exclusao_antes = next(
+        item
+        for item in tombstones_antes
+        if item.get("type") == "integration" and item.get("service") == servico
+    )
+    assert exclusao_antes.get("deleted_at")
+    assert not exclusao_antes.get("restored_at")
+
+    if servico == "mercadolivre":
+        asyncio.run(
+            integracoes_api.start_mercadolivre_auth(
+                AuthRequest(
+                    loja=STORE,
+                    client_id="ml-app-novo",
+                    client_secret="ml-secret-novo",
+                ),
+                object(),
+                client_id=TENANT,
+            )
+        )
+        cfg = _ml_config()
+        assert cfg["oauth_draft"]["app_id"] == "ml-app-novo"
+        oauth_state = cfg["oauth_draft"]["state"]
+    else:
+        asyncio.run(
+            integracoes_api.start_bling_auth(
+                AuthRequest(
+                    loja=STORE,
+                    client_id="bling-app-novo",
+                    client_secret="bling-secret-novo",
+                ),
+                object(),
+                client_id=TENANT,
+            )
+        )
+        cfg = integracoes_service.buscar_loja(TENANT, STORE)["integracoes"]["bling"]
+        assert cfg.get("oauth_pending_state")
+        oauth_state = cfg["oauth_pending_state"]
+
+    tombstones_depois = integracoes_service._integracoes_ler_tombstones_estrito(TENANT)
+    exclusao_depois = next(
+        item
+        for item in tombstones_depois
+        if item.get("type") == "integration" and item.get("service") == servico
+    )
+    assert exclusao_depois == exclusao_antes
+
+    if resultado == "success":
+        if servico == "mercadolivre":
+            monkeypatch.setattr(
+                integracoes_api,
+                "auth_ml_exchange",
+                lambda *_args, **_kwargs: (
+                    True,
+                    {
+                        "access_token": "ml-access-novo",
+                        "refresh_token": "ml-refresh-novo",
+                        "user_id": "seller-novo",
+                    },
+                ),
+            )
+        else:
+            monkeypatch.setattr(
+                integracoes_api,
+                "auth_bling_exchange",
+                lambda *_args, **_kwargs: (
+                    True,
+                    {
+                        "access_token": "bling-access-novo",
+                        "refresh_token": "bling-refresh-novo",
+                    },
+                ),
+            )
+        response = _run_callback(code="oauth-code", state=oauth_state)
+    else:
+        response = _run_callback(
+            state=oauth_state,
+            error="access_denied",
+            error_description="Authorization was denied",
+        )
+    _, _, query = _redirect_parts(response)
+    _assert_signed_result_query(
+        query,
+        status="success" if resultado == "success" else "error",
+        reason=None if resultado == "success" else "provider_denied",
+    )
+
+    tombstones_finais = integracoes_service._integracoes_ler_tombstones_estrito(TENANT)
+    exclusao_final = next(
+        item
+        for item in tombstones_finais
+        if item.get("type") == "integration" and item.get("service") == servico
+    )
+    if resultado == "success":
+        assert exclusao_final.get("restored_at")
+        assert not exclusao_final.get("deleted_at")
+        cfg_final = integracoes_service.buscar_loja(TENANT, STORE)["integracoes"][servico]
+        assert cfg_final["connected"] is True
+        token_esperado = (
+            "ml-access-novo" if servico == "mercadolivre" else "bling-access-novo"
+        )
+        assert cfg_final["access_token"] == token_esperado
+    else:
+        assert exclusao_final == exclusao_antes
 
 
 def test_cas_blocks_draft_replacement_during_token_exchange(

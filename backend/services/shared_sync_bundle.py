@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 import zipfile
+from contextlib import nullcontext
 from datetime import datetime
 from typing import Any, Callable, Optional
 
@@ -102,16 +103,117 @@ def _shared_sync_montar_pacote(
     sanitize_user_share_oauth: bool = False,
 ) -> tuple[bytes, dict, list[str]]:
     item_keys: list[str] = []
-    if known_keys is None:
-        entries, warnings = _shared_sync_coletar_arquivos(client_id, scope, username=username, user_only=user_only)
+    arquivos_sensiveis_obrigatorios: set[str] = set()
+    if scope == "lojas_integracoes":
+        from backend.services import integracoes as integracoes_service
+        snapshot_lock = integracoes_service._LOJAS_CONFIG_LOCK
     else:
-        entries, warnings, item_keys = _shared_sync_coletar_arquivos_delta(
-            client_id,
-            scope,
-            username=username,
-            user_only=user_only,
-            known_keys=known_keys,
-        )
+        snapshot_lock = nullcontext()
+
+    with snapshot_lock:
+        if scope == "lojas_integracoes":
+            try:
+                # Materializa migracoes e a recuperacao aditiva do .bak antes
+                # de congelar os bytes. Assim uma maquina ja afetada nunca
+                # publica o arquivo principal reduzido sobre as outras.
+                integracoes_service._integracoes_validar_estado_atual_para_envio(
+                    client_id,
+                )
+                lojas_materializadas = integracoes_service.carregar_lojas(client_id)
+                integracoes_service._integracoes_validar_tombstones_contra_lojas_para_envio(
+                    client_id,
+                    lojas_materializadas,
+                )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Nao foi possivel validar as lojas locais antes do envio. "
+                        "A sincronizacao foi cancelada para preservar as contas."
+                    ),
+                ) from exc
+            if known_keys is None:
+                tenant_abs = os.path.abspath(
+                    integracoes_service._tenant_path(client_id)
+                )
+                arquivos_sensiveis_obrigatorios = {
+                    rel
+                    for rel in (
+                        "lojas_config.json",
+                        "integracoes.json",
+                        "lojas_sync_tombstones.json",
+                    )
+                    if os.path.exists(os.path.join(tenant_abs, rel))
+                }
+        if known_keys is None:
+            entries, warnings = _shared_sync_coletar_arquivos(
+                client_id,
+                scope,
+                username=username,
+                user_only=user_only,
+            )
+        else:
+            entries, warnings, item_keys = _shared_sync_coletar_arquivos_delta(
+                client_id,
+                scope,
+                username=username,
+                user_only=user_only,
+                known_keys=known_keys,
+            )
+        # Mantem o conjunto de arquivos, bytes, hash e tamanho no mesmo
+        # instante. Antes, um tombstone podia nascer entre a coleta e o ZIP.
+        materializadas = []
+        if scope == "lojas_integracoes":
+            for item in entries:
+                data = (
+                    item.get("data")
+                    if "data" in item
+                    else _shared_sync_ler_arquivo_pacote(item["abs_path"])
+                )
+                materializadas.append(
+                    _shared_sync_entry_from_bytes(
+                        item.get("relative_path") or "",
+                        data or b"",
+                        item.get("mtime") or time.time(),
+                        item.get("item_keys") or [],
+                    )
+                )
+            entries = materializadas
+            if known_keys is None:
+                # O coletor generico tolera OSError e arquivos acima do limite.
+                # Para credenciais/tombstones isso seria um snapshot parcial
+                # perigoso: um primeiro push poderia perder a autoridade de
+                # exclusao. Todo arquivo canonico existente e obrigatorio.
+                tenant_abs = os.path.abspath(
+                    integracoes_service._tenant_path(client_id)
+                )
+                rels_materializados = {
+                    str(item.get("relative_path") or "").replace("\\", "/").lower()
+                    for item in entries
+                }
+                # A uniao antes+depois fecha tanto o desaparecimento durante
+                # a coleta quanto um tombstone que nasce enquanto ela ocorre.
+                arquivos_sensiveis_obrigatorios.update(
+                    rel
+                    for rel in (
+                        "lojas_config.json",
+                        "integracoes.json",
+                        "lojas_sync_tombstones.json",
+                    )
+                    if os.path.exists(os.path.join(tenant_abs, rel))
+                )
+                for rel_canonico in arquivos_sensiveis_obrigatorios:
+                    if rel_canonico not in rels_materializados:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                "Um arquivo local essencial de lojas e integracoes "
+                                "nao pôde ser incluido no pacote. O envio foi "
+                                "cancelado para preservar as contas."
+                            ),
+                        )
     if sanitize_user_share_oauth and scope == "lojas_integracoes":
         sanitizadas = []
         for item in entries:

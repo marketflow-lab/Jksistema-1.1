@@ -17,6 +17,11 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from backend.schemas import AuthRequest, StoreRequest, TokenRequest
 from backend.services.integracoes import (
+    _LOJAS_CONFIG_LOCK,
+    _integracoes_atualizar_tombstone_payload,
+    _integracoes_commit_lojas_tombstones,
+    _integracoes_ler_tombstones_estrito,
+    _integracoes_servico_key,
     auth_bling_exchange,
     auth_bling_get_link,
     auth_ml_exchange,
@@ -29,7 +34,6 @@ from backend.services.integracoes import (
     ler_temp_auth,
     salvar_lojas,
     salvar_temp_auth,
-    registrar_tombstone_integracao,
 )
 
 
@@ -333,13 +337,46 @@ async def create_loja(store_request: StoreRequest, client_id: str = Depends(get_
 
 
 async def delete_loja(nome_loja: str, client_id: str = Depends(get_tenant_id)):
-    lojas = carregar_lojas(client_id)
-    lojas_filtradas = [loja for loja in lojas if loja["nome"] != nome_loja]
-    if len(lojas) == len(lojas_filtradas):
-        raise HTTPException(status_code=404, detail="Loja nao encontrada para deletar.")
-    removida = next((loja for loja in lojas if loja.get("nome") == nome_loja), {})
-    registrar_tombstone_integracao(client_id, loja=removida, tipo="store")
-    salvar_lojas(client_id, lojas_filtradas)
+    # Exclusao, tombstone e save formam uma unica operacao read-modify-write.
+    # Assim um callback OAuth ou pull concorrente nao perde atualizacoes feitas
+    # depois da leitura inicial.
+    with _LOJAS_CONFIG_LOCK:
+        lojas = carregar_lojas(client_id)
+        lojas_filtradas = [loja for loja in lojas if loja["nome"] != nome_loja]
+        if len(lojas) == len(lojas_filtradas):
+            raise HTTPException(status_code=404, detail="Loja nao encontrada para deletar.")
+        removida = next((loja for loja in lojas if loja.get("nome") == nome_loja), {})
+        tombstones = _integracoes_atualizar_tombstone_payload(
+            client_id,
+            _integracoes_ler_tombstones_estrito(client_id),
+            loja=removida,
+            tipo="store",
+        )
+        integracoes_removidas = (
+            removida.get("integracoes")
+            if isinstance(removida.get("integracoes"), dict)
+            else {}
+        )
+        for servico in integracoes_removidas:
+            servico_key = _integracoes_servico_key(servico)
+            if not servico_key or servico_key == "criacao":
+                continue
+            # Recriar o mesmo nome cancela somente a exclusao da loja. Cada
+            # conta/API anterior continua apagada ate ser reconectada de forma
+            # explicita, impedindo que um snapshot antigo a ressuscite.
+            tombstones = _integracoes_atualizar_tombstone_payload(
+                client_id,
+                tombstones,
+                loja=removida,
+                servico=servico_key,
+                tipo="integration",
+            )
+        _integracoes_commit_lojas_tombstones(
+            client_id,
+            lojas_filtradas,
+            tombstones,
+            permitir_reducao_confirmada=True,
+        )
     return {"success": True}
 
 

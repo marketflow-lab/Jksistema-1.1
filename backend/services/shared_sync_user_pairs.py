@@ -323,7 +323,42 @@ def _shared_sync_start_invite_prepare_thread(invite_id: str, source_sessao: dict
     # agora cria um vinculo direto e o pacote so nasce apos previa + Enviar agora.
     return None
 
-def _shared_sync_pull_pair_scope(target_sessao: dict, link: dict, scope: str) -> dict:
+def _shared_sync_pull_pair_scope(
+    target_sessao: dict,
+    link: dict,
+    scope: str,
+    *,
+    force: bool = False,
+    expected_snapshot_id: str = "",
+    expected_remote_fingerprint: str = "",
+    expected_bundle_hash: str = "",
+) -> dict:
+    with _shared_sync_pull_lock(
+        "destination",
+        target_sessao.get("client_id"),
+        scope,
+    ):
+        return _shared_sync_pull_pair_scope_serialized(
+            target_sessao,
+            link,
+            scope,
+            force=force,
+            expected_snapshot_id=expected_snapshot_id,
+            expected_remote_fingerprint=expected_remote_fingerprint,
+            expected_bundle_hash=expected_bundle_hash,
+        )
+
+
+def _shared_sync_pull_pair_scope_serialized(
+    target_sessao: dict,
+    link: dict,
+    scope: str,
+    *,
+    force: bool = False,
+    expected_snapshot_id: str = "",
+    expected_remote_fingerprint: str = "",
+    expected_bundle_hash: str = "",
+) -> dict:
     if not _shared_sync_scope_permitido_entre_clientes(link, scope, target_sessao):
         raise HTTPException(status_code=400, detail="Lojas e integracoes nao podem ser importadas entre clientes diferentes.")
     my_direction = _shared_sync_link_direction_for_session(target_sessao, link)
@@ -334,16 +369,85 @@ def _shared_sync_pull_pair_scope(target_sessao: dict, link: dict, scope: str) ->
     meta = _shared_sync_remote_meta_by_id(bundle_id)
     if not meta:
         raise HTTPException(status_code=404, detail="Nenhum backup remoto encontrado para esse compartilhamento.")
+    initial_remote_fingerprint = _shared_sync_remote_fingerprint_from_meta(meta)
+    current_snapshot_id = str(meta.get("snapshot_id") or meta.get("id") or "").strip()
+    if expected_snapshot_id and current_snapshot_id != str(expected_snapshot_id).strip():
+        raise HTTPException(
+            status_code=409,
+            detail="O snapshot remoto mudou depois da previa; confira novamente.",
+        )
+    if (
+        expected_remote_fingerprint
+        and _shared_sync_remote_fingerprint_from_meta(meta)
+        != str(expected_remote_fingerprint)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="O snapshot remoto mudou depois da previa; confira novamente.",
+        )
     state_scope = _shared_sync_user_share_state_scope(link.get("id"), receive_direction, scope)
-    if _shared_sync_pull_already_current(target_sessao.get("client_id"), target_sessao.get("username") or "", state_scope, meta):
+    if not force and _shared_sync_pull_already_current(target_sessao.get("client_id"), target_sessao.get("username") or "", state_scope, meta):
         return _shared_sync_pull_skip_payload(
             scope,
             meta,
             extra={"sync_direction": receive_direction, "link_id": link.get("id"), "item_count": int(meta.get("item_count") or 0)},
         )
-    bundle, meta = _shared_sync_obter_bundle_por_id(bundle_id, meta)
+    if scope == "lojas_integracoes":
+        remoto = _shared_sync_obter_bundle_remoto_para_guard(bundle_id)
+        if remoto is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Nenhum backup remoto encontrado para esse compartilhamento.",
+            )
+        bundle, meta = remoto
+    else:
+        bundle, meta = _shared_sync_obter_bundle_por_id(bundle_id, meta)
+    if _shared_sync_remote_fingerprint_from_meta(meta) != initial_remote_fingerprint:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "O snapshot remoto mudou durante a importacao; "
+                "confira novamente."
+            ),
+        )
+    if (
+        expected_bundle_hash
+        and _shared_sync_bytes_sha256(bundle) != str(expected_bundle_hash)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="O conteúdo remoto mudou depois da previa; confira novamente.",
+        )
     manifest = _shared_sync_manifest_from_bundle(bundle)
-    scope_config = {"user_share": True, "share_between_users": True}
+    base_bundle = None
+    if scope == "lojas_integracoes":
+        immutable_current_snapshot_id = _shared_sync_immutable_snapshot_id(meta)
+        base_snapshot_id = _shared_sync_state_snapshot_id(
+            target_sessao.get("client_id"),
+            target_sessao.get("username") or "",
+            state_scope,
+        )
+        if (
+            immutable_current_snapshot_id
+            and base_snapshot_id == immutable_current_snapshot_id
+        ):
+            base_bundle = bundle
+        elif immutable_current_snapshot_id and base_snapshot_id:
+            try:
+                base_meta = _shared_sync_remote_meta_by_id(base_snapshot_id)
+                if base_meta:
+                    base_bundle, _ = _shared_sync_obter_bundle_por_id(
+                        base_snapshot_id,
+                        base_meta,
+                    )
+            except Exception:
+                base_bundle = None
+    scope_config = {
+        "user_share": True,
+        "share_between_users": True,
+        "base_bundle": base_bundle,
+        "strict_oauth_conflicts": scope == "lojas_integracoes",
+    }
     result = _shared_sync_aplicar_pacote(target_sessao.get("client_id"), scope, bundle, target_sessao.get("username") or "", scope_config)
     _shared_sync_state_update(target_sessao.get("client_id"), target_sessao.get("username") or "", state_scope, meta, "pull")
     _shared_sync_user_share_add_known_keys(
@@ -367,7 +471,14 @@ def _shared_sync_pull_pair_scope(target_sessao: dict, link: dict, scope: str) ->
         "remote_updated_by": meta.get("updated_by") or "",
     }
 
-def _shared_sync_push_link_scope(source_sessao: dict, link: dict, scope: str, machine_id: str = "", skip_if_remote_hash_matches: bool = False) -> dict:
+def _shared_sync_push_link_scope(
+    source_sessao: dict,
+    link: dict,
+    scope: str,
+    machine_id: str = "",
+    skip_if_remote_hash_matches: bool = False,
+    expected_snapshot_hash: str = "",
+) -> dict:
     direction_key = _shared_sync_link_direction_for_session(source_sessao, link)
     admin_origem_atualizado = False
     if direction_key == "source_to_target":
@@ -411,21 +522,20 @@ def _shared_sync_push_link_scope(source_sessao: dict, link: dict, scope: str, ma
         allow_empty_delta=False,
         sanitize_user_share_oauth=False,
         skip_if_remote_hash_matches=(skip_if_remote_hash_matches or scope == "lojas_integracoes"),
+        expected_snapshot_hash=expected_snapshot_hash,
     )
     if result.get("skipped"):
         if admin_origem_atualizado:
             link["updated_at"] = _shared_sync_now_iso()
             link["updated_ts"] = int(time.time())
             _shared_sync_save_link(link)
-        state = _shared_sync_state_read(source_sessao.get("client_id"), source_sessao.get("username") or "")
-        scopes_state = state.setdefault("scopes", {})
-        scopes_state[_shared_sync_user_share_state_scope(link.get("id"), direction_key, scope)] = {
-            "direction": "push",
-            "skipped": True,
-            "reason": result.get("reason") or "already_shared",
-            "synced_at": _shared_sync_now_iso(),
-        }
-        _shared_sync_state_write(source_sessao.get("client_id"), source_sessao.get("username") or "", state)
+        _shared_sync_state_mark_skipped(
+            source_sessao.get("client_id"),
+            source_sessao.get("username") or "",
+            _shared_sync_user_share_state_scope(link.get("id"), direction_key, scope),
+            direction="push",
+            reason=result.get("reason") or "already_shared",
+        )
         return result
     _shared_sync_link_set_bundle_for_direction(link, scope, direction_key, result.get("id") or bundle_id)
     _shared_sync_user_share_add_known_keys(source_sessao.get("client_id"), source_sessao.get("username") or "", link.get("id"), scope, result.get("item_keys") or [])

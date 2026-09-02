@@ -6,6 +6,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -33,6 +34,9 @@ from backend.schemas import (
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.shared_sync_common import *
 from backend.services.shared_sync_context import configure_shared_sync_context, get_tenant_id
+
+
+logger = logging.getLogger("jk_sistema")
 
 
 def configure_shared_sync_apply_scope_runtime(runtime_module=None, peer_globals: dict[str, object] | None = None):
@@ -119,6 +123,17 @@ def _shared_sync_read_validated_bundle(bundle: bytes, scope: str) -> tuple[dict,
                 legacy_state = scope == "vendas" and rel_key == "vendas_sync_state.json"
                 if not legacy_state and not _shared_sync_scope_match(scope, rel):
                     raise HTTPException(status_code=400, detail=f"Arquivo fora do escopo: {rel}")
+                if scope == "lojas_integracoes":
+                    canonical = {
+                        "lojas_config.json": "lojas_config.json",
+                        "integracoes.json": "integracoes.json",
+                        "lojas_sync_tombstones.json": "lojas_sync_tombstones.json",
+                    }.get(rel_key)
+                    if canonical and rel != canonical:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=f"Nome de arquivo nao canonico no pacote: {rel}",
+                        )
                 if _shared_sync_transient_filename(os.path.basename(rel)):
                     raise HTTPException(status_code=400, detail=f"Arquivo temporario nao permitido no pacote: {rel}")
 
@@ -174,6 +189,401 @@ def _shared_sync_atomic_write(target_abs: str, data: bytes) -> None:
             pass
 
 
+def _shared_sync_legacy_root_pertence_ao_cliente(
+    integracoes_service: Any,
+    client_id: str,
+    legacy_bytes: bytes,
+) -> bool:
+    """Confirma ownership antes de mesclar o antigo arquivo global em um tenant."""
+    return bool(
+        integracoes_service._integracoes_lojas_bytes_pertencem_ao_cliente(
+            client_id,
+            legacy_bytes,
+        )
+    )
+
+
+def _shared_sync_aplicar_lojas_integracoes(
+    client_id: str,
+    fontes: list[tuple[str, bytes]],
+    tenant_abs: str,
+    backup_dir: str,
+    *,
+    add_only: bool = False,
+    base_lojas_bytes: Optional[bytes] = None,
+    base_integracoes_bytes: Optional[bytes] = None,
+    base_tombstones_bytes: Optional[bytes] = None,
+    strict_oauth_conflicts: bool = False,
+) -> dict:
+    """Mescla e grava o escopo inteiro sem expor estado parcialmente aplicado."""
+    canonical_order = (
+        "lojas_config.json",
+        "integracoes.json",
+        "lojas_sync_tombstones.json",
+    )
+    por_rel = {rel: data for rel, data in fontes}
+    if set(por_rel) - set(canonical_order):
+        raise HTTPException(
+            status_code=502,
+            detail="O snapshot remoto de Lojas e integracoes contem arquivo inesperado.",
+        )
+    if "lojas_config.json" not in por_rel:
+        raise HTTPException(
+            status_code=502,
+            detail="O snapshot remoto de Lojas e integracoes nao contem lojas_config.json.",
+        )
+
+    from backend.services import integracoes as integracoes_service
+    from backend.services.shared_sync_merge_integracoes import (
+        _shared_sync_merge_integracoes_legacy_bytes,
+        _shared_sync_merge_lojas_integracoes_bytes,
+        _shared_sync_recuperar_backup_lojas_integracoes_bytes,
+        _shared_sync_merge_tombstones_integracoes_bytes,
+    )
+
+    try:
+        lojas_remotas = json.loads(
+            por_rel["lojas_config.json"].decode("utf-8-sig")
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"lojas_config.json remoto invalido: {exc}",
+        ) from exc
+    if not isinstance(lojas_remotas, list):
+        raise HTTPException(
+            status_code=502,
+            detail="lojas_config.json remoto nao contem uma lista.",
+        )
+
+    rels = [rel for rel in canonical_order if rel in por_rel]
+    targets = {
+        rel: _shared_sync_resolve_tenant_path(tenant_abs, rel)
+        for rel in rels
+    }
+    preimages: dict[str, Optional[bytes]] = {}
+    prepared: dict[str, bytes] = {}
+    recovered_local_lojas: Optional[bytes] = None
+    legacy_recovery_bytes: Optional[bytes] = None
+    legacy_lojas_path = str(integracoes_service.ARQUIVO_LOJAS or "").strip()
+    tenant_lojas_path = targets["lojas_config.json"]
+    immediate_backup_path = f"{tenant_lojas_path}.bak"
+    immediate_backup_existed = False
+    immediate_backup_preimage: Optional[bytes] = None
+    legacy_distinto = bool(
+        legacy_lojas_path
+        and os.path.abspath(legacy_lojas_path) != os.path.abspath(tenant_lojas_path)
+    )
+
+    with integracoes_service._LOJAS_CONFIG_LOCK:
+        # Uma operacao local interrompida e causalmente anterior a este pull.
+        # Conclua seu journal antes de capturar preimages ou o novo merge
+        # poderia sobrescreve-lo e ressuscitar a conta que ele removia.
+        integracoes_service._integracoes_recuperar_transacao_pendente(
+            client_id
+        )
+        # Materialize primeiro a migracao do antigo info/lojas_config.json e a
+        # incorporacao de integracoes.json. Se o pull criasse o arquivo tenant
+        # antes disso, carregar_lojas deixaria de migrar as contas preexistentes
+        # e elas pareceriam ter sido apagadas no upgrade.
+        legacy_pending = bool(
+            legacy_distinto
+            and os.path.exists(legacy_lojas_path)
+            and not os.path.exists(tenant_lojas_path)
+        )
+        if legacy_pending:
+            with open(legacy_lojas_path, "rb") as legacy_file:
+                legacy_pending_bytes = legacy_file.read()
+            if not _shared_sync_legacy_root_pertence_ao_cliente(
+                integracoes_service,
+                client_id,
+                legacy_pending_bytes,
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Existe uma configuracao global antiga de lojas sem vinculo "
+                        "comprovado com este cliente. A sincronizacao foi cancelada "
+                        "para impedir mistura de contas; recupere ou migre esse "
+                        "arquivo explicitamente."
+                    ),
+                )
+        # Recupera tambem maquinas que ja sofreram o bug antigo, mas somente
+        # quando o arquivo global pode ser atribuido deterministicamente a este
+        # tenant. A coexistencia, sozinha, nao prova ownership e poderia vazar
+        # lojas/credenciais entre clientes numa maquina reutilizada.
+        if (
+            legacy_distinto
+            and os.path.exists(legacy_lojas_path)
+            and os.path.exists(tenant_lojas_path)
+        ):
+            with open(legacy_lojas_path, "rb") as legacy_file:
+                legacy_bytes = legacy_file.read()
+            if not _shared_sync_legacy_root_pertence_ao_cliente(
+                integracoes_service,
+                client_id,
+                legacy_bytes,
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Existe uma configuracao global antiga de lojas sem vinculo "
+                        "comprovado com este cliente. A sincronizacao foi cancelada "
+                        "para impedir mistura de contas; recupere ou migre esse "
+                        "arquivo explicitamente."
+                    ),
+                )
+            legacy_recovery_bytes = legacy_bytes
+
+        # O salvar_lojas atualiza o .bak imediato. Preserve a preimage antes de
+        # qualquer migracao/escrita para que a ultima copia recuperavel nunca
+        # seja apagada por um pull nem por um rollback incompleto.
+        immediate_backup_existed = os.path.exists(immediate_backup_path)
+        if immediate_backup_existed:
+            with open(immediate_backup_path, "rb") as backup_file:
+                immediate_backup_preimage = backup_file.read()
+            _shared_sync_backup_target(
+                tenant_abs,
+                backup_dir,
+                "lojas_config.json.bak",
+                immediate_backup_path,
+            )
+
+        if legacy_pending:
+            integracoes_service.carregar_lojas(client_id)
+            if not os.path.exists(tenant_lojas_path):
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "Nao foi possivel migrar as lojas locais antigas para o cliente. "
+                        "A sincronizacao foi cancelada para preservar as contas."
+                    ),
+                )
+
+        # Todos os JSONs sao validados e mesclados antes da primeira escrita.
+        # Isso evita que um arquivo posterior invalido deixe apenas parte do
+        # snapshot aplicada.
+        for rel in rels:
+            target_abs = targets[rel]
+            if os.path.exists(target_abs):
+                with open(target_abs, "rb") as arquivo:
+                    preimages[rel] = arquivo.read()
+            else:
+                preimages[rel] = None
+
+        local_tombstones_bytes = preimages.get("lojas_sync_tombstones.json")
+        if "lojas_sync_tombstones.json" not in preimages:
+            local_tombstones_path = _shared_sync_resolve_tenant_path(
+                tenant_abs,
+                "lojas_sync_tombstones.json",
+            )
+            if os.path.exists(local_tombstones_path):
+                with open(local_tombstones_path, "rb") as arquivo:
+                    local_tombstones_bytes = arquivo.read()
+
+        effective_tombstones_bytes = local_tombstones_bytes
+        if "lojas_sync_tombstones.json" in por_rel:
+            prepared["lojas_sync_tombstones.json"] = (
+                _shared_sync_merge_tombstones_integracoes_bytes(
+                    targets["lojas_sync_tombstones.json"],
+                    por_rel["lojas_sync_tombstones.json"],
+                    base_bytes=base_tombstones_bytes,
+                )
+            )
+            effective_tombstones_bytes = prepared[
+                "lojas_sync_tombstones.json"
+            ]
+
+        recovered_local_lojas = preimages.get("lojas_config.json")
+        if immediate_backup_preimage:
+            try:
+                recovered_local_lojas = _shared_sync_recuperar_backup_lojas_integracoes_bytes(
+                    recovered_local_lojas or b"[]",
+                    immediate_backup_preimage,
+                    client_id=client_id,
+                    local_tombstones_bytes=effective_tombstones_bytes,
+                )
+            except HTTPException as backup_exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "O backup local de lojas diverge da configuracao atual. "
+                        "A sincronizacao foi cancelada para preservar as contas."
+                    ),
+                ) from backup_exc
+            except Exception as backup_exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "O backup local de lojas nao pôde ser validado. "
+                        "A sincronizacao foi cancelada para preservar as contas."
+                    ),
+                ) from backup_exc
+
+        if legacy_recovery_bytes is not None:
+            recovered_local_lojas = _shared_sync_merge_lojas_integracoes_bytes(
+                tenant_lojas_path,
+                legacy_recovery_bytes,
+                add_only=True,
+                current_bytes=recovered_local_lojas,
+                local_tombstones_bytes=effective_tombstones_bytes,
+                strict_oauth_conflicts=True,
+                client_id=client_id,
+            )
+
+        for rel in rels:
+            target_abs = targets[rel]
+            if rel == "lojas_config.json":
+                prepared[rel] = _shared_sync_merge_lojas_integracoes_bytes(
+                    target_abs,
+                    por_rel[rel],
+                    add_only=add_only,
+                    current_bytes=recovered_local_lojas,
+                    base_bytes=base_lojas_bytes,
+                    local_tombstones_bytes=effective_tombstones_bytes,
+                    incoming_tombstones_bytes=por_rel.get(
+                        "lojas_sync_tombstones.json"
+                    ),
+                    base_tombstones_bytes=base_tombstones_bytes,
+                    strict_oauth_conflicts=strict_oauth_conflicts,
+                    client_id=client_id,
+                )
+            elif rel == "integracoes.json":
+                prepared[rel] = _shared_sync_merge_integracoes_legacy_bytes(
+                    target_abs,
+                    por_rel[rel],
+                    base_bytes=base_integracoes_bytes,
+                    strict_oauth_conflicts=strict_oauth_conflicts,
+                )
+            else:
+                if rel not in prepared:
+                    prepared[rel] = _shared_sync_merge_tombstones_integracoes_bytes(
+                        target_abs,
+                        por_rel[rel],
+                    )
+
+        try:
+            lojas = json.loads(prepared["lojas_config.json"].decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Merge de lojas_config.json invalido: {exc}",
+            ) from exc
+
+        if not isinstance(lojas, list):
+            raise HTTPException(
+                status_code=502,
+                detail="Merge de lojas_config.json nao contem uma lista.",
+            )
+
+        # Os backups sao materializados antes de qualquer alteracao. Se uma
+        # escrita falhar, as preimages sao restauradas ainda sob o mesmo lock.
+        for rel in rels:
+            _shared_sync_backup_target(tenant_abs, backup_dir, rel, targets[rel])
+        try:
+            if "lojas_sync_tombstones.json" in prepared:
+                tombstones_finais = json.loads(
+                    prepared["lojas_sync_tombstones.json"].decode("utf-8-sig")
+                )
+            else:
+                tombstones_finais = (
+                    integracoes_service._integracoes_ler_tombstones_estrito(
+                        client_id
+                    )
+                )
+            integracoes_service._integracoes_commit_lojas_tombstones(
+                client_id,
+                lojas,
+                tombstones_finais,
+            )
+            for rel in rels:
+                if rel not in {
+                    "lojas_config.json",
+                    "lojas_sync_tombstones.json",
+                }:
+                    _shared_sync_atomic_write(targets[rel], prepared[rel])
+            # Depois que todo o escopo foi confirmado, o backup imediato deve
+            # refletir a uniao final. Manter nele a preimage reduzida faria uma
+            # restauracao posterior perder novamente as contas recuperadas.
+            integracoes_service._integracoes_espelhar_backup_final_seguro(
+                client_id,
+                tenant_lojas_path,
+                lojas,
+            )
+        except Exception as exc:
+            rollback_errors = []
+            for rel in reversed(rels):
+                target_abs = targets[rel]
+                try:
+                    original = preimages[rel]
+                    if original is None:
+                        if os.path.exists(target_abs):
+                            os.remove(target_abs)
+                    else:
+                        _shared_sync_atomic_write(target_abs, original)
+                except Exception as rollback_exc:
+                    rollback_errors.append(type(rollback_exc).__name__)
+            try:
+                if immediate_backup_existed:
+                    _shared_sync_atomic_write(
+                        immediate_backup_path,
+                        immediate_backup_preimage or b"",
+                    )
+                elif os.path.exists(immediate_backup_path):
+                    os.remove(immediate_backup_path)
+            except Exception as rollback_exc:
+                rollback_errors.append(type(rollback_exc).__name__)
+            try:
+                integracoes_service._integracoes_abortar_transacao_pendente(
+                    client_id
+                )
+            except Exception as rollback_exc:
+                rollback_errors.append(type(rollback_exc).__name__)
+            if rollback_errors:
+                logger.error(
+                    "[SHARED-SYNC] Falha ao restaurar escopo lojas_integracoes: %s",
+                    ",".join(rollback_errors),
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "Falha ao aplicar Lojas e integracoes e ao restaurar o estado anterior. "
+                        "Use o backup local criado para esta operacao."
+                    ),
+                ) from exc
+            if isinstance(exc, HTTPException):
+                raise
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Falha ao aplicar Lojas e integracoes; o estado anterior foi restaurado."
+                ),
+            ) from exc
+
+        if legacy_recovery_bytes is not None and os.path.exists(legacy_lojas_path):
+            try:
+                os.makedirs(backup_dir, exist_ok=True)
+                shutil.move(
+                    legacy_lojas_path,
+                    os.path.join(backup_dir, "legacy_root_lojas_config.json"),
+                )
+            except Exception as archive_exc:
+                logger.warning(
+                    "[SHARED-SYNC] Lojas legadas foram recuperadas, mas o arquivo "
+                    "global nao pôde ser arquivado: %s",
+                    archive_exc,
+                )
+
+    _shared_sync_prune_local_backups(tenant_abs)
+    return {
+        "file_count": len(rels),
+        "files": rels,
+        "backup_dir": backup_dir,
+        "stores_count": len(lojas),
+        "snapshot_stores_count": len(lojas_remotas),
+    }
+
+
 def _shared_sync_aplicar_pacote(
     client_id: str,
     scope: str,
@@ -190,12 +600,61 @@ def _shared_sync_aplicar_pacote(
     )
     escritos = []
     lojas_aplicadas: Optional[int] = None
+    lojas_snapshot: Optional[int] = None
     user_scoped_fontes: list[tuple[str, bytes]] = []
     user_share_fontes: list[tuple[str, bytes]] = []
     legacy_favoritos_fontes: list[tuple[str, bytes]] = []
     user_share = bool((scope_config or {}).get("user_share"))
     share_between_users = bool((scope_config or {}).get("share_between_users")) and bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped"))
     _manifest, fontes = _shared_sync_read_validated_bundle(bundle, scope)
+
+    if scope == "lojas_integracoes":
+        base_lojas_bytes = None
+        base_integracoes_bytes = None
+        base_tombstones_bytes = None
+        base_bundle = (scope_config or {}).get("base_bundle")
+        if isinstance(base_bundle, bytes) and base_bundle:
+            _base_manifest, base_fontes = _shared_sync_read_validated_bundle(
+                base_bundle,
+                scope,
+            )
+            base_lojas_bytes = next(
+                (
+                    data
+                    for rel, data in base_fontes
+                    if rel == "lojas_config.json"
+                ),
+                None,
+            )
+            base_integracoes_bytes = next(
+                (
+                    data
+                    for rel, data in base_fontes
+                    if rel == "integracoes.json"
+                ),
+                None,
+            )
+            base_tombstones_bytes = next(
+                (
+                    data
+                    for rel, data in base_fontes
+                    if rel == "lojas_sync_tombstones.json"
+                ),
+                None,
+            )
+        return _shared_sync_aplicar_lojas_integracoes(
+            client_id,
+            fontes,
+            tenant_abs,
+            backup_dir,
+            add_only=bool(user_share or share_between_users),
+            base_lojas_bytes=base_lojas_bytes,
+            base_integracoes_bytes=base_integracoes_bytes,
+            base_tombstones_bytes=base_tombstones_bytes,
+            strict_oauth_conflicts=bool(
+                (scope_config or {}).get("strict_oauth_conflicts")
+            ),
+        )
 
     if scope == "vendas":
         vendas_dbs = [(rel, data) for rel, data in fontes if _shared_sync_vendas_history_db(rel)]
@@ -205,22 +664,6 @@ def _shared_sync_aplicar_pacote(
         fontes = [(rel, data) for rel, data in fontes if not _shared_sync_vendas_history_db(rel)]
 
     for rel, data in fontes:
-        if scope == "lojas_integracoes" and rel == "lojas_config.json":
-            # A operacao manual confirmada e autoritativa. Toda escrita passa
-            # pelo lock, backup imediato, validacao e os.replace de Integracoes.
-            try:
-                lojas = json.loads(data.decode("utf-8-sig"))
-            except Exception as exc:
-                raise HTTPException(status_code=502, detail=f"lojas_config.json remoto invalido: {exc}")
-            if not isinstance(lojas, list):
-                raise HTTPException(status_code=502, detail="lojas_config.json remoto nao contem uma lista.")
-            target_abs = _shared_sync_resolve_tenant_path(tenant_abs, rel)
-            _shared_sync_backup_target(tenant_abs, backup_dir, rel, target_abs)
-            from backend.services.integracoes import salvar_lojas
-            salvar_lojas(client_id, lojas, permitir_reducao_confirmada=True)
-            lojas_aplicadas = len(lojas)
-            escritos.append(rel)
-            continue
         if (
             scope == "favoritos_historico"
             and not user_share
@@ -254,26 +697,55 @@ def _shared_sync_aplicar_pacote(
         escritos.extend(resultado_share.get("files") or [])
     if escritos:
         _shared_sync_prune_local_backups(tenant_abs)
-    if scope == "lojas_integracoes" and lojas_aplicadas is None:
-        raise HTTPException(
-            status_code=502,
-            detail="O snapshot remoto de Lojas e integracoes nao contem lojas_config.json.",
-        )
     return {
         "file_count": len(escritos),
         "files": escritos[:250],
         "backup_dir": backup_dir if escritos else "",
         "stores_count": lojas_aplicadas if lojas_aplicadas is not None else 0,
+        "snapshot_stores_count": lojas_snapshot if lojas_snapshot is not None else 0,
     }
 
 def _shared_sync_pull_scope(client_id: str, scope: str, sessao: dict, machine_id: str = "", scope_config: Optional[dict] = None) -> dict:
+    with _shared_sync_pull_lock(
+        "destination",
+        client_id,
+        scope,
+    ):
+        return _shared_sync_pull_scope_serialized(
+            client_id,
+            scope,
+            sessao,
+            machine_id,
+            scope_config,
+        )
+
+
+def _shared_sync_pull_scope_serialized(client_id: str, scope: str, sessao: dict, machine_id: str = "", scope_config: Optional[dict] = None) -> dict:
     bundle_id = _shared_sync_doc_id(client_id, scope)
     meta = _shared_sync_remote_meta_by_id(bundle_id)
     if not meta:
         raise HTTPException(status_code=404, detail="Nenhum backup remoto encontrado para esse compartilhamento.")
+    initial_remote_fingerprint = _shared_sync_remote_fingerprint_from_meta(meta)
     if _shared_sync_pull_already_current(client_id, sessao.get("username") or "", scope, meta):
         return _shared_sync_pull_skip_payload(scope, meta)
-    bundle, meta = _shared_sync_obter_bundle_por_id(bundle_id, meta)
+    if scope == "lojas_integracoes":
+        remoto = _shared_sync_obter_bundle_remoto_para_guard(bundle_id)
+        if remoto is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Nenhum backup remoto encontrado para esse compartilhamento.",
+            )
+        bundle, meta = remoto
+    else:
+        bundle, meta = _shared_sync_obter_bundle_por_id(bundle_id, meta)
+    if _shared_sync_remote_fingerprint_from_meta(meta) != initial_remote_fingerprint:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "O snapshot remoto mudou durante a importacao; "
+                "confira novamente."
+            ),
+        )
     result = _shared_sync_aplicar_pacote(client_id, scope, bundle, sessao.get("username") or "", scope_config)
     _shared_sync_state_update(client_id, sessao.get("username") or "", scope, meta, "pull")
     return {

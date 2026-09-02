@@ -209,48 +209,141 @@ def _shared_sync_config_local_write(client_id: str, config: dict) -> None:
 def _shared_sync_state_path(client_id: str, username: str) -> str:
     return os.path.join(get_tenant_path(client_id), f"shared_sync_state_{_shared_sync_safe_filename(username)}.json")
 
+
+_SHARED_SYNC_STATE_LOCK = threading.RLock()
+
+
 def _shared_sync_state_read(client_id: str, username: str) -> dict:
-    path = _shared_sync_state_path(client_id, username)
-    try:
-        if not os.path.exists(path):
+    with _SHARED_SYNC_STATE_LOCK:
+        path = _shared_sync_state_path(client_id, username)
+        try:
+            if not os.path.exists(path):
+                return {"scopes": {}}
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {"scopes": {}}
+        except Exception:
             return {"scopes": {}}
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {"scopes": {}}
-    except Exception:
-        return {"scopes": {}}
 
 def _shared_sync_state_write(client_id: str, username: str, data: dict) -> None:
-    path = _shared_sync_state_path(client_id, username)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    payload = data if isinstance(data, dict) else {"scopes": {}}
-    payload["updated_at"] = _shared_sync_now_iso()
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    with _SHARED_SYNC_STATE_LOCK:
+        path = _shared_sync_state_path(client_id, username)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        payload = data if isinstance(data, dict) else {"scopes": {}}
+        payload["updated_at"] = _shared_sync_now_iso()
+        fd, temp_path = tempfile.mkstemp(
+            prefix=".shared_sync_state_",
+            suffix=".tmp",
+            dir=os.path.dirname(path),
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, path)
+        except Exception:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+            raise
+
+def _shared_sync_immutable_snapshot_id(meta: dict) -> str:
+    """Retorna somente IDs de snapshots v2 imutaveis e criptografados."""
+    if not isinstance(meta, dict):
+        return ""
+    try:
+        schema = int(meta.get("schema") or 0)
+    except (TypeError, ValueError):
+        return ""
+    if schema != 2 or not bool(meta.get("encrypted")):
+        return ""
+    return str(meta.get("snapshot_id") or "").strip()
+
 
 def _shared_sync_state_update(client_id: str, username: str, scope: str, meta: dict, direction: str) -> None:
-    state = _shared_sync_state_read(client_id, username)
-    scopes = state.setdefault("scopes", {})
-    scopes[scope] = {
-        "snapshot_hash": str((meta or {}).get("snapshot_hash") or ""),
-        "remote_updated_at": str((meta or {}).get("updated_at") or ""),
-        "remote_updated_by": str((meta or {}).get("updated_by") or ""),
-        "direction": direction,
-        "synced_at": _shared_sync_now_iso(),
-    }
-    _shared_sync_state_write(client_id, username, state)
+    with _SHARED_SYNC_STATE_LOCK:
+        state = _shared_sync_state_read(client_id, username)
+        scopes = state.setdefault("scopes", {})
+        current = scopes.get(scope) if isinstance(scopes.get(scope), dict) else {}
+        entry = dict(current)
+        entry.pop("skipped", None)
+        entry.pop("reason", None)
+        entry.update({
+            "snapshot_hash": str((meta or {}).get("snapshot_hash") or ""),
+            "snapshot_id": _shared_sync_immutable_snapshot_id(meta),
+            "remote_updated_at": str((meta or {}).get("updated_at") or ""),
+            "remote_updated_by": str((meta or {}).get("updated_by") or ""),
+            "direction": direction,
+            "synced_at": _shared_sync_now_iso(),
+        })
+        scopes[scope] = entry
+        _shared_sync_state_write(client_id, username, state)
+
+
+def _shared_sync_state_mark_skipped(
+    client_id: str,
+    username: str,
+    scope: str,
+    *,
+    direction: str,
+    reason: str,
+) -> None:
+    """Registra um skip sem apagar a base causal ja confirmada do escopo."""
+    with _SHARED_SYNC_STATE_LOCK:
+        state = _shared_sync_state_read(client_id, username)
+        scopes = state.setdefault("scopes", {})
+        current = scopes.get(scope) if isinstance(scopes.get(scope), dict) else {}
+        entry = dict(current)
+        entry.update({
+            "direction": str(direction or ""),
+            "skipped": True,
+            "reason": str(reason or "already_current"),
+            "synced_at": _shared_sync_now_iso(),
+        })
+        scopes[scope] = entry
+        _shared_sync_state_write(client_id, username, state)
 
 def _shared_sync_state_snapshot_hash(client_id: str, username: str, scope: str) -> str:
     state = _shared_sync_state_read(client_id, username)
     scopes = state.get("scopes") if isinstance(state.get("scopes"), dict) else {}
     return str(((scopes.get(scope) or {}).get("snapshot_hash")) or "")
 
+
+def _shared_sync_state_snapshot_id(client_id: str, username: str, scope: str) -> str:
+    state = _shared_sync_state_read(client_id, username)
+    scopes = state.get("scopes") if isinstance(state.get("scopes"), dict) else {}
+    return str(((scopes.get(scope) or {}).get("snapshot_id")) or "")
+
 def _shared_sync_pull_already_current(client_id: str, username: str, scope: str, meta: dict) -> bool:
     remote_hash = str((meta or {}).get("snapshot_hash") or "")
     if not remote_hash:
         return False
-    local_hash = _shared_sync_state_snapshot_hash(client_id, username, scope)
-    return bool(local_hash and local_hash == remote_hash)
+    with _SHARED_SYNC_STATE_LOCK:
+        state = _shared_sync_state_read(client_id, username)
+        scopes = state.get("scopes") if isinstance(state.get("scopes"), dict) else {}
+        current = scopes.get(scope) if isinstance(scopes.get(scope), dict) else {}
+        local_hash = str(current.get("snapshot_hash") or "")
+        if not local_hash or local_hash != remote_hash:
+            return False
+
+        # Um hash legado prova qual snapshot foi visto, mas nao prova que o merge
+        # antigo aplicou o mesmo bloco OAuth. Force uma reaplicacao segura antes
+        # de conceder autoridade causal ao snapshot_id v2.
+        remote_snapshot_id = _shared_sync_immutable_snapshot_id(meta)
+        current_snapshot_id = str(current.get("snapshot_id") or "").strip()
+        if remote_snapshot_id and not current_snapshot_id:
+            return False
+        if remote_snapshot_id and current_snapshot_id != remote_snapshot_id:
+            current = dict(current)
+            current["snapshot_id"] = remote_snapshot_id
+            current["remote_updated_at"] = str((meta or {}).get("updated_at") or "")
+            current["remote_updated_by"] = str((meta or {}).get("updated_by") or "")
+            scopes[scope] = current
+            state["scopes"] = scopes
+            _shared_sync_state_write(client_id, username, state)
+        return True
 
 def _shared_sync_pull_skip_payload(scope: str, meta: dict, *, direction: str = "pull", extra: Optional[dict] = None) -> dict:
     payload = {
@@ -307,20 +400,21 @@ def _shared_sync_user_share_add_known_keys(
     }
     if not novos:
         return
-    state = _shared_sync_state_read(client_id, username)
-    shares = state.setdefault("user_share_known", {})
-    link_state = shares.setdefault(str(link_id or ""), {})
-    scope_state = link_state.setdefault(scope, {})
-    atuais = {
-        str(key or "").strip()
-        for key in (scope_state.get("keys") or [])
-        if str(key or "").strip()
-    }
-    atuais.update(novos)
-    scope_state["keys"] = sorted(atuais)
-    scope_state["count"] = len(atuais)
-    scope_state["updated_at"] = _shared_sync_now_iso()
-    _shared_sync_state_write(client_id, username, state)
+    with _SHARED_SYNC_STATE_LOCK:
+        state = _shared_sync_state_read(client_id, username)
+        shares = state.setdefault("user_share_known", {})
+        link_state = shares.setdefault(str(link_id or ""), {})
+        scope_state = link_state.setdefault(scope, {})
+        atuais = {
+            str(key or "").strip()
+            for key in (scope_state.get("keys") or [])
+            if str(key or "").strip()
+        }
+        atuais.update(novos)
+        scope_state["keys"] = sorted(atuais)
+        scope_state["count"] = len(atuais)
+        scope_state["updated_at"] = _shared_sync_now_iso()
+        _shared_sync_state_write(client_id, username, state)
 
 def _shared_sync_config_normalizar(client_id: str, data: Optional[dict]) -> dict:
     config = _shared_sync_config_default(client_id)
@@ -466,9 +560,10 @@ def _shared_sync_machine_config_save(sessao: dict, payload: dict) -> dict:
     explicit_payload["mode_version"] = 2
     config = _shared_sync_machine_config_normalizar(sessao, explicit_payload)
     config["updated_at"] = _shared_sync_now_iso()
-    state = _shared_sync_state_read(sessao.get("client_id"), sessao.get("username") or "")
-    state["machine_sync"] = config
-    _shared_sync_state_write(sessao.get("client_id"), sessao.get("username") or "", state)
+    with _SHARED_SYNC_STATE_LOCK:
+        state = _shared_sync_state_read(sessao.get("client_id"), sessao.get("username") or "")
+        state["machine_sync"] = config
+        _shared_sync_state_write(sessao.get("client_id"), sessao.get("username") or "", state)
     return config
 
 def _shared_sync_machine_resolver_scopes(sessao: dict, requested: Optional[list[str]] = None, require_enabled: bool = True) -> list[str]:
@@ -528,6 +623,8 @@ __all__ = [
     "_shared_sync_state_write",
     "_shared_sync_state_update",
     "_shared_sync_state_snapshot_hash",
+    "_shared_sync_state_snapshot_id",
+    "_shared_sync_state_mark_skipped",
     "_shared_sync_pull_already_current",
     "_shared_sync_pull_skip_payload",
     "_shared_sync_user_share_state_scope",

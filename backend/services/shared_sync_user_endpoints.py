@@ -426,7 +426,9 @@ def shared_sync_user_shares_accept(
 
     results = []
     for scope in scopes:
-        results.append(_shared_sync_pull_pair_scope(sessao, link, scope))
+        results.append(
+            _shared_sync_pull_pair_scope(sessao, link, scope, force=True)
+        )
 
     agora = _shared_sync_now_iso()
     invite["status"] = "accepted"
@@ -629,7 +631,21 @@ def shared_sync_user_shares_link_push(
         payload.operation_id, sessao, kind="user-link", resource_id=link_id,
         direction="push", scopes=scopes, bundle_ids=bundle_ids,
     )
-    results = [_shared_sync_push_link_scope(sessao, link, scope, payload.machine_id or "") for scope in scopes]
+    expected_hashes = (
+        operation.get("local_hashes")
+        if isinstance(operation.get("local_hashes"), dict)
+        else {}
+    )
+    results = [
+        _shared_sync_push_link_scope(
+            sessao,
+            link,
+            scope,
+            payload.machine_id or "",
+            expected_snapshot_hash=str(expected_hashes.get(scope) or ""),
+        )
+        for scope in scopes
+    ]
     _shared_sync_audit(sessao, record=operation, results=results, link_id=link_id)
     return {"success": True, "direction": "push", "results": results, "link": _shared_sync_link_public(link, sessao)}
 
@@ -650,7 +666,35 @@ def shared_sync_user_shares_link_pull(
         payload.operation_id, sessao, kind="user-link", resource_id=link_id,
         direction="pull", scopes=scopes, bundle_ids=bundle_ids,
     )
-    results = [_shared_sync_pull_pair_scope(sessao, link, scope) for scope in scopes]
+    expected_snapshots = (
+        operation.get("remote_snapshot_ids")
+        if isinstance(operation.get("remote_snapshot_ids"), dict)
+        else {}
+    )
+    expected_remote_fingerprints = (
+        operation.get("remote_hashes")
+        if isinstance(operation.get("remote_hashes"), dict)
+        else {}
+    )
+    expected_bundle_hashes = (
+        operation.get("remote_bundle_hashes")
+        if isinstance(operation.get("remote_bundle_hashes"), dict)
+        else {}
+    )
+    results = [
+        _shared_sync_pull_pair_scope(
+            sessao,
+            link,
+            scope,
+            force=True,
+            expected_snapshot_id=str(expected_snapshots.get(scope) or ""),
+            expected_remote_fingerprint=str(
+                expected_remote_fingerprints.get(scope) or ""
+            ),
+            expected_bundle_hash=str(expected_bundle_hashes.get(scope) or ""),
+        )
+        for scope in scopes
+    ]
     _shared_sync_audit(sessao, record=operation, results=results, link_id=link_id)
     return {"success": True, "direction": "pull", "results": results, "link": _shared_sync_link_public(link, sessao)}
 
@@ -736,8 +780,12 @@ def shared_sync_user_shares_auto(
             if meta:
                 remote_hash = str(meta.get("snapshot_hash") or "")
                 state_scope = _shared_sync_user_share_state_scope(link.get("id"), receive_direction, scope)
-                local_hash = str(((state_scopes.get(state_scope) or {}).get("snapshot_hash")) or "")
-                if remote_hash and remote_hash != local_hash:
+                if not _shared_sync_pull_already_current(
+                    sessao.get("client_id"),
+                    sessao.get("username") or "",
+                    state_scope,
+                    meta,
+                ):
                     try:
                         results.append(_shared_sync_pull_pair_scope(sessao, link, scope))
                     except Exception as exc:

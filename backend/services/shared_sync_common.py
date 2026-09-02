@@ -33,6 +33,24 @@ SHARED_SYNC_DEFAULT_LOCAL_BACKUP_RETENTION = 24
 SHARED_SYNC_DOCS_CACHE_LOCK = threading.RLock()
 SHARED_SYNC_DOCS_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 
+# O recebimento precisa serializar o ciclo inteiro (leitura do ponteiro,
+# aplicacao dos arquivos e gravacao do estado causal). O lock interno usado
+# pelos arquivos de lojas protege apenas as escritas desses JSONs; sem este
+# lock, dois pulls do mesmo destino podem aplicar snapshots em uma ordem e
+# registrar o estado na ordem inversa.
+SHARED_SYNC_PULL_LOCKS_LOCK = threading.RLock()
+SHARED_SYNC_PULL_LOCKS: dict[tuple[str, ...], threading.RLock] = {}
+
+
+def _shared_sync_pull_lock(*partes: Any) -> threading.RLock:
+    chave = tuple(str(parte or "").strip().lower() for parte in partes)
+    with SHARED_SYNC_PULL_LOCKS_LOCK:
+        lock = SHARED_SYNC_PULL_LOCKS.get(chave)
+        if lock is None:
+            lock = threading.RLock()
+            SHARED_SYNC_PULL_LOCKS[chave] = lock
+        return lock
+
 
 def _shared_sync_safe_doc_id(*partes: str) -> str:
     raw = "|".join(str(parte or "").strip().lower() for parte in partes)
@@ -202,6 +220,31 @@ def _shared_sync_sha256_file(path: str) -> str:
 
 def _shared_sync_bytes_sha256(data: bytes) -> str:
     return hashlib.sha256(data or b"").hexdigest()
+
+
+def _shared_sync_remote_fingerprint_from_meta(meta: Any) -> str:
+    dados = meta if isinstance(meta, dict) else {}
+    return "|".join([
+        str(dados.get("snapshot_id") or dados.get("id") or ""),
+        str(dados.get("snapshot_hash") or ""),
+        str(dados.get("bundle_sha256") or ""),
+        str(dados.get("updated_at") or ""),
+        str(dados.get("chunk_count") or ""),
+        str(dados.get("bundle_bytes") or ""),
+    ])
+
+
+def _shared_sync_immutable_snapshot_id(meta: Any) -> str:
+    """Retorna somente IDs causais de snapshots v2 imutaveis e criptografados."""
+    if not isinstance(meta, dict):
+        return ""
+    try:
+        schema = int(meta.get("schema") or 0)
+    except (TypeError, ValueError):
+        return ""
+    if schema != 2 or not bool(meta.get("encrypted")):
+        return ""
+    return str(meta.get("snapshot_id") or "").strip()
 
 
 def _shared_sync_vendas_history_db(rel: str) -> bool:
