@@ -1,4 +1,9 @@
 {
   "appUrl": "http://127.0.0.1:8001/frontend_index.html",
+  "remoteAuth": {
+    "url": "https://jkjkjk-485920.web.app/api/auth/v1/login",
+    "projectId": "jkjkjk-485920",
+    "mode": "prefer"
+  },
   "notes": "Endereco local do JK Sistema. O app inicia o backend local automaticamente."
 }

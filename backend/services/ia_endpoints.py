@@ -103,12 +103,24 @@ def ia_agent_perguntas_query(payload: IAAgentQueryRequest, request: Request):
     if metodo not in {"query", "run"}:
         raise HTTPException(status_code=400, detail="Metodo do agente nao suportado.")
     agent_input = perguntas_agent_api.parse_request_input(payload)
-    client_id = str(
-        agent_input.get("tenant_id")
-        or agent_input.get("client_id")
-        or request.headers.get("x-client-id")
-        or ""
-    ).strip()
+    payload_client_id = str(agent_input.get("tenant_id") or agent_input.get("client_id") or "").strip()
+    payload_store = str(agent_input.get("store") or agent_input.get("loja") or "").strip()
+    binding_version = str(request.headers.get("x-jk-agent-binding") or "").strip().lower()
+    header_client_id = unquote(str(request.headers.get("x-client-id") or "")).strip()
+    header_store = unquote(str(request.headers.get("x-jk-store") or "")).strip()
+    if binding_version == "tenant-store-v1":
+        if not header_client_id or not header_store:
+            raise HTTPException(status_code=400, detail="Vinculo de tenant e loja incompleto.")
+        if payload_client_id and payload_client_id != header_client_id:
+            raise HTTPException(status_code=403, detail="Tenant do input diverge do vinculo de transporte.")
+        if payload_store and payload_store != header_store:
+            raise HTTPException(status_code=403, detail="Loja do input diverge do vinculo de transporte.")
+        client_id = header_client_id
+        agent_input = dict(agent_input)
+        agent_input["tenant_id"] = header_client_id
+        agent_input["store"] = header_store
+    else:
+        client_id = payload_client_id or header_client_id
     if not client_id:
         raise HTTPException(status_code=400, detail="Informe tenant_id no input do agente.")
     task = str(agent_input.get("task") or "").strip()

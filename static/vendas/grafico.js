@@ -13,6 +13,9 @@ let carregarGraficoToken = 0;
 let carregarGraficoController = null;
 let carregarGraficoPromise = null;
 let carregarGraficoRequestKey = '';
+let periodoGraficoSelecaoToken = 0;
+let periodoGraficoAtalhoPendente = null;
+const PERIODOS_GRAFICO_COM_MES_ATUAL = Object.freeze(['3m', '6m', '1a', '2a']);
 let rankingSidebarModo = 'vendidos';
 let compararAnoPassado = false;
 const GRAFICO_ESTOQUE_LAYOUT_VERSION = 2;
@@ -237,6 +240,72 @@ function formatarLabelDataGrafico(label) {
     return label;
 }
 
+function periodoGraficoIncluiMesAtual(periodo = periodoGrafico) {
+    return PERIODOS_GRAFICO_COM_MES_ATUAL.includes(String(periodo || ''));
+}
+
+function formatarDataIsoCurta(dataIso) {
+    const partes = String(dataIso || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!partes) return '';
+    return `${partes[3]}/${partes[2]}/${partes[1]}`;
+}
+
+function obterChaveMesLabelGrafico(label) {
+    const raw = String(label || '').trim();
+    const iso = raw.match(/^(\d{4})-(\d{2})(?:-\d{2})?$/);
+    if (iso) return `${iso[1]}-${iso[2]}`;
+
+    const dataBr = raw.match(/^\d{2}\/(\d{2})\/(\d{4})$/);
+    if (dataBr) return `${dataBr[2]}-${dataBr[1]}`;
+
+    const mesAno = raw.match(/^([A-Za-zÀ-ÿ]{3})\/(\d{4})$/);
+    if (!mesAno) return '';
+    const mapaMes = {
+        jan: '01', fev: '02', mar: '03', abr: '04', mai: '05', jun: '06',
+        jul: '07', ago: '08', set: '09', out: '10', nov: '11', dez: '12'
+    };
+    const mes = mapaMes[mesAno[1].toLowerCase().slice(0, 3)];
+    return mes ? `${mesAno[2]}-${mes}` : '';
+}
+
+function normalizarPrevisaoMesAtual(data) {
+    if (!periodoGraficoIncluiMesAtual()) return null;
+    const previsao = data?.previsao_mes_atual;
+    if (!previsao || typeof previsao !== 'object') return null;
+
+    const mes = String(previsao.mes || '').trim();
+    const dataReferencia = String(previsao.data_referencia || '').trim();
+    const valorRealizado = Number(previsao.valor_realizado);
+    const valorProjetado = Number(previsao.valor_projetado);
+    const ritmoDiario = Number(previsao.ritmo_diario);
+    const diasDecorridos = Number(previsao.dias_decorridos);
+    const diasNoMes = Number(previsao.dias_no_mes);
+    if (
+        !/^\d{4}-\d{2}$/.test(mes)
+        || !/^\d{4}-\d{2}-\d{2}$/.test(dataReferencia)
+        || !Number.isFinite(valorRealizado)
+        || !Number.isFinite(valorProjetado)
+        || !Number.isFinite(ritmoDiario)
+        || !Number.isInteger(diasDecorridos)
+        || !Number.isInteger(diasNoMes)
+        || diasDecorridos < 1
+        || diasNoMes < diasDecorridos
+    ) {
+        return null;
+    }
+
+    return {
+        mes,
+        dataReferencia,
+        valorRealizado,
+        valorProjetado,
+        ritmoDiario,
+        diasDecorridos,
+        diasNoMes,
+        metodo: String(previsao.metodo || '')
+    };
+}
+
 function atualizarObservacoesGraficoVendas(data) {
     if (!graficoObservacoesVendas) return;
     const labels = Array.isArray(data?.labels) ? data.labels : [];
@@ -351,6 +420,19 @@ function atualizarObservacoesGraficoVendas(data) {
     const qtdDevolTotalContexto = devolContexto.reduce((acc, cur) => acc + Number(cur?.quantidade || 0), 0);
     const qtdVendasContexto = vendasContexto.reduce((acc, cur) => acc + Number(cur?.quantidade || 0), 0);
     const taxaContexto = qtdVendasContexto > 0 ? (qtdDevolTotalContexto / qtdVendasContexto) * 100 : 0;
+    const previsaoMesAtual = normalizarPrevisaoMesAtual(data);
+    const cardPrevisaoMesAtual = previsaoMesAtual ? `
+        <div class="sidebar-obs-card sidebar-obs-neutro" style="border-color: rgba(245, 158, 11, 0.7);">
+            <div class="sidebar-obs-label">📈 Previsão linear do mês</div>
+            <div class="sidebar-obs-valor">${previsaoMesAtual.valorProjetado.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</div>
+            <div class="sidebar-obs-detalhe">
+                Realizado até ${formatarDataIsoCurta(previsaoMesAtual.dataReferencia)}:
+                ${previsaoMesAtual.valorRealizado.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                · ${previsaoMesAtual.diasDecorridos}/${previsaoMesAtual.diasNoMes} dias
+                · estimativa, não valor realizado
+            </div>
+        </div>
+    ` : '';
 
     const obsCards = `
         <div class="sidebar-obs-card sidebar-obs-vendas">
@@ -358,6 +440,7 @@ function atualizarObservacoesGraficoVendas(data) {
             <div class="sidebar-obs-valor">${Math.round(totalQtdV).toLocaleString('pt-BR')} item(ns)</div>
             <div class="sidebar-obs-detalhe">${totalValV.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</div>
         </div>
+        ${cardPrevisaoMesAtual}
         <div class="sidebar-obs-card sidebar-obs-devolucao">
             <div class="sidebar-obs-label">📦 Total Devolvido</div>
             <div class="sidebar-obs-valor">${Math.round(totalQtdD).toLocaleString('pt-BR')} item(ns)</div>
@@ -420,6 +503,14 @@ function aplicarFiltroTempoDoGrafico(labelOriginal) {
     }
 
     if (!inicio || !fim) return;
+    const hoje = new Date();
+    const hojeIso = [
+        String(hoje.getFullYear()).padStart(4, '0'),
+        String(hoje.getMonth() + 1).padStart(2, '0'),
+        String(hoje.getDate()).padStart(2, '0')
+    ].join('-');
+    if (fim > hojeIso) fim = hojeIso;
+    if (inicio > fim) inicio = fim;
     sincronizarPeriodoTopo(inicio, fim);
     atualizarPeriodoComRecarregamento(true);
 }
@@ -476,6 +567,7 @@ async function carregarGrafico() {
     const dataFimAtual = getDataFimISO();
     if (dataInicioAtual) params.append('data_inicio', dataInicioAtual);
     if (dataFimAtual) params.append('data_fim', dataFimAtual);
+    if (periodoGraficoIncluiMesAtual()) params.set('incluir_previsao_mes_atual', 'true');
     if (lojaSelecionada && lojaSelecionada !== '__todas') params.append('loja', lojaSelecionada);
     if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
         params.append('unidade_negocio', unidadeNegocioSelect.value);
@@ -570,16 +662,25 @@ function compactarDadosGrafico(labels, series, maxPontos = 160) {
     }
 
     const passo = Math.max(1, Math.ceil(baseLabels.length / maxPontos));
-    const labelsCompactos = [];
-    const seriesCompactas = series.map(() => []);
+    const indicesCompactos = [];
 
     for (let i = 0; i < baseLabels.length; i += passo) {
-        labelsCompactos.push(baseLabels[i]);
-        series.forEach((arr, idx) => {
-            seriesCompactas[idx].push(Array.isArray(arr) ? arr[i] : undefined);
-        });
+        indicesCompactos.push(i);
     }
 
+    const ultimoIndice = baseLabels.length - 1;
+    if (indicesCompactos[indicesCompactos.length - 1] !== ultimoIndice) {
+        if (indicesCompactos.length >= maxPontos) {
+            indicesCompactos[indicesCompactos.length - 1] = ultimoIndice;
+        } else {
+            indicesCompactos.push(ultimoIndice);
+        }
+    }
+
+    const labelsCompactos = indicesCompactos.map(indice => baseLabels[indice]);
+    const seriesCompactas = series.map(arr => (
+        indicesCompactos.map(indice => Array.isArray(arr) ? arr[indice] : undefined)
+    ));
     return { labels: labelsCompactos, series: seriesCompactas };
 }
 
@@ -646,6 +747,17 @@ function renderizarGrafico(data, dataComparativo = null) {
     const skusParetoComEstoque = compactado.series[7] || [];
     const mostrarEstoqueNoGrafico = false;
     const usandoQuantidade = metricaGrafico === 'quantidade';
+    const previsaoMesAtual = normalizarPrevisaoMesAtual(data);
+    const dadosPrevisaoMesAtual = previsaoMesAtual && intervaloGrafico === 'mes' && !usandoQuantidade
+        ? labelsRender.map(label => (
+            obterChaveMesLabelGrafico(label) === previsaoMesAtual.mes
+                ? previsaoMesAtual.valorProjetado
+                : null
+        ))
+        : [];
+    const mostrarPrevisaoNoGrafico = dadosPrevisaoMesAtual.some(valor => (
+        valor !== null && valor !== undefined && valor !== '' && Number.isFinite(Number(valor))
+    ));
     const vendasCompAlinhadas = alinharSerieComparativa(labelsOriginais, labelsCompOrig, usandoQuantidade ? qtdVendasCompOrig : valoresVendasCompOrig);
     const devolCompAlinhadas = alinharSerieComparativa(labelsOriginais, labelsCompOrig, usandoQuantidade ? qtdDevCompOrig : valoresDevCompOrig);
     const qtdVendasCompAlinhadas = alinharSerieComparativa(labelsOriginais, labelsCompOrig, qtdVendasCompOrig);
@@ -666,7 +778,8 @@ function renderizarGrafico(data, dataComparativo = null) {
         borderWidth: 2,
         tension: 0.4,
         fill: true,
-        quantidades: quantidadesVendas // Armazenar quantidades como metadado
+        quantidades: quantidadesVendas, // Armazenar quantidades como metadado
+        isSalesActual: true
     };
     
     const datasetsDevol = {
@@ -679,6 +792,25 @@ function renderizarGrafico(data, dataComparativo = null) {
         tension: 0.4,
         fill: true,
         quantidades: quantidadesDevolucoes // Armazenar quantidades como metadado
+    };
+
+    const datasetPrevisaoMesAtual = {
+        label: 'Previsão linear do mês (R$)',
+        data: dadosPrevisaoMesAtual,
+        yAxisID: 'y',
+        backgroundColor: tipoGrafico === 'linha' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(245, 158, 11, 0.62)',
+        borderColor: 'rgba(245, 158, 11, 1)',
+        borderWidth: 2,
+        borderDash: [7, 5],
+        tension: 0,
+        fill: false,
+        spanGaps: false,
+        pointStyle: 'rectRot',
+        pointRadius: 6,
+        pointHoverRadius: 8,
+        topLabelColor: '#fbbf24',
+        quantidades: [],
+        isForecast: true
     };
 
     const datasetsVendasAnoPassado = {
@@ -714,6 +846,9 @@ function renderizarGrafico(data, dataComparativo = null) {
     const datasets = [datasetsVendas];
     if (mostrarDevolucoesGrafico) {
         datasets.push(datasetsDevol);
+    }
+    if (mostrarPrevisaoNoGrafico) {
+        datasets.push(datasetPrevisaoMesAtual);
     }
     if (compararAnoPassado && dataComparativo) {
         datasets.push(datasetsVendasAnoPassado);
@@ -752,6 +887,8 @@ function renderizarGrafico(data, dataComparativo = null) {
                 if (!meta || meta.hidden) return;
 
                 meta.data.forEach((pointOrBar, index) => {
+                    const valorBruto = (dataset.data || [])[index];
+                    if (valorBruto === null || valorBruto === undefined || valorBruto === '') return;
                     const pos = pointOrBar.tooltipPosition();
                     ctx.fillStyle = dataset.topLabelColor || (datasetIndex === 0 ? '#9bd1ff' : '#ffb3b3');
 
@@ -786,7 +923,17 @@ function renderizarGrafico(data, dataComparativo = null) {
         type: tipo,
         plugins: graficoPesado ? [] : [unidadesNoTopoPlugin],
         data: {
-            labels: labelsRender.map(formatarLabelDataGrafico),
+            labels: labelsRender.map(label => {
+                const labelFormatado = formatarLabelDataGrafico(label);
+                if (
+                    previsaoMesAtual
+                    && intervaloGrafico === 'mes'
+                    && obterChaveMesLabelGrafico(label) === previsaoMesAtual.mes
+                ) {
+                    return `${labelFormatado} · realizado até ${formatarDataIsoCurta(previsaoMesAtual.dataReferencia)}`;
+                }
+                return labelFormatado;
+            }),
             datasets
         },
         options: {
@@ -797,8 +944,10 @@ function renderizarGrafico(data, dataComparativo = null) {
                 point: { radius: graficoPesado ? 0 : 2, hitRadius: 8 },
                 line: { tension: 0.35 }
             },
-            onClick: function(_event, elements) {
+            onClick: function(_event, elements, chart) {
                 if (!elements || !elements.length) return;
+                const datasetClicado = chart?.data?.datasets?.[elements[0].datasetIndex];
+                if (datasetClicado?.isForecast) return;
                 const idx = elements[0].index;
                 const labelOriginal = (labelsRender || [])[idx] || '';
                 aplicarFiltroTempoDoGrafico(labelOriginal);
@@ -816,6 +965,13 @@ function renderizarGrafico(data, dataComparativo = null) {
                     callbacks: {
                         label: function(context) {
                             const dataset = context.chart.data.datasets[context.datasetIndex];
+                            if (dataset.isForecast && previsaoMesAtual) {
+                                return [
+                                    `${dataset.label}: ${formatarMoeda(context.parsed.y)}`,
+                                    `Realizado até ${formatarDataIsoCurta(previsaoMesAtual.dataReferencia)}: ${formatarMoeda(previsaoMesAtual.valorRealizado)}`,
+                                    `Cálculo linear: ${previsaoMesAtual.diasDecorridos}/${previsaoMesAtual.diasNoMes} dias · estimativa, não valor realizado`
+                                ];
+                            }
                             if (dataset.isEstoque) {
                                 const valorEstoque = context.parsed?.y;
                                 const baseLabel = context.dataset.label || 'Estoque';
@@ -836,6 +992,15 @@ function renderizarGrafico(data, dataComparativo = null) {
                             } else {
                                 label += formatarMoeda(context.parsed.y);
                                 label += ' | Qtd: ' + Math.round(quantidade);
+                                const labelOriginal = labelsRender[context.dataIndex];
+                                if (
+                                    dataset.isSalesActual
+                                    && previsaoMesAtual
+                                    && intervaloGrafico === 'mes'
+                                    && obterChaveMesLabelGrafico(labelOriginal) === previsaoMesAtual.mes
+                                ) {
+                                    label += ` | realizado até ${formatarDataIsoCurta(previsaoMesAtual.dataReferencia)}`;
+                                }
                             }
                             return label;
                         }
@@ -1251,25 +1416,6 @@ function renderizarGraficoSkusComEstoque(
     });
 }
 
-function obterLimitesComVendas() {
-    let lista = Array.isArray(dados) ? dados : [];
-
-    if (lojaSelecionada && lojaSelecionada !== '__todas') {
-        lista = lista.filter(row => mesmaLoja(row.loja_conta, lojaSelecionada));
-    }
-    if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
-        lista = lista.filter(row => mesmaUnidade(row.unidade_negocio, unidadeNegocioSelect.value));
-    }
-
-    const datas = lista
-        .map(row => String(row.data || '').slice(0, 10))
-        .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d))
-        .sort();
-
-    if (!datas.length) return null;
-    return { inicio: datas[0], fim: datas[datas.length - 1] };
-}
-
 async function obterLimitesComVendasServidor() {
     try {
         const params = new URLSearchParams();
@@ -1294,48 +1440,179 @@ async function obterLimitesComVendasServidor() {
     }
 }
 
+function invalidarPeriodoGraficoPendente() {
+    periodoGraficoSelecaoToken += 1;
+    periodoGraficoAtalhoPendente = null;
+}
+
+function marcarPeriodoGraficoManual() {
+    invalidarPeriodoGraficoPendente();
+    periodoGrafico = 'manual';
+    salvarPreferenciaGrafico();
+    aplicarPreferenciaGraficoUI();
+}
+
+function obterAssinaturaContextoPeriodoGrafico() {
+    return JSON.stringify([
+        String(lojaSelecionada || ''),
+        String(unidadeNegocioSelect?.value || ''),
+        getDataIniISO(),
+        getDataFimISO()
+    ]);
+}
+
+function removerDatasExplicitasUrlAposAtalho() {
+    try {
+        const params = new URLSearchParams(window.location.search);
+        if (!params.has('data_inicio') && !params.has('data_fim')) return;
+        params.delete('data_inicio');
+        params.delete('data_fim');
+        const consulta = params.toString();
+        const destino = `${window.location.pathname}${consulta ? `?${consulta}` : ''}${window.location.hash}`;
+        window.history.replaceState(null, '', destino);
+    } catch (_e) {
+        // A persistência local ainda preserva o atalho se a URL não puder ser atualizada.
+    }
+}
+
+async function aplicarPeriodoGraficoMesesCompletos(periodo, opcoes = {}) {
+    const tokenAtual = ++periodoGraficoSelecaoToken;
+    const assinaturaContexto = obterAssinaturaContextoPeriodoGrafico();
+    const hoje = opcoes.hoje instanceof Date ? opcoes.hoje : new Date();
+    const periodosCompletos = window.JKVendasPeriodosCompletos;
+    const periodoFallback = periodosCompletos.calcularPeriodoComMesAtual('3m', hoje);
+    let periodoCompleto = ['3m', '6m', '1a', '2a'].includes(periodo)
+        ? periodosCompletos.calcularPeriodoComMesAtual(periodo, hoje)
+        : periodosCompletos.calcularPeriodoMesesCompletos(periodo, hoje);
+
+    if (periodo === 'max') {
+        const limites = Object.prototype.hasOwnProperty.call(opcoes, 'limites')
+            ? opcoes.limites
+            : await obterLimitesComVendasServidor();
+        periodoCompleto = periodosCompletos.calcularPeriodoMaximoMesesCompletos(limites, hoje);
+    }
+
+    if (
+        tokenAtual !== periodoGraficoSelecaoToken
+        || periodoGrafico !== periodo
+        || assinaturaContexto !== obterAssinaturaContextoPeriodoGrafico()
+    ) {
+        return false;
+    }
+
+    if (!periodoCompleto) {
+        if (periodo === 'max') return null;
+        periodoCompleto = periodoFallback;
+    }
+    sincronizarPeriodoTopo(periodoCompleto.inicio, periodoCompleto.fim);
+    periodoSelecionadoPeloUsuario = true;
+    const preferencia = { origem: 'atalho', periodo };
+    if (opcoes.recarregar === false) {
+        atualizarPeriodoTexto();
+        salvarPreferenciaPeriodoData(preferencia);
+    } else {
+        atualizarPeriodoComRecarregamento(true, preferencia);
+    }
+    aplicarPreferenciaGraficoUI();
+    salvarPreferenciaGrafico();
+    removerDatasExplicitasUrlAposAtalho();
+    return true;
+}
+
+async function aplicarFallbackPeriodoGraficoCompleto() {
+    periodoGrafico = '3m';
+    return aplicarPeriodoGraficoMesesCompletos('3m', { recarregar: false });
+}
+
+async function reaplicarPeriodoGraficoAposMudancaFiltro() {
+    periodoGraficoAtalhoPendente = null;
+    const periodoAtual = periodoGrafico;
+    if (!['3m', '6m', '1a', '2a', 'max'].includes(periodoAtual)) {
+        invalidarPeriodoGraficoPendente();
+        return true;
+    }
+
+    const resultado = await aplicarPeriodoGraficoMesesCompletos(periodoAtual, { recarregar: false });
+    if (resultado === null && periodoGrafico === periodoAtual && periodoAtual === 'max') {
+        return aplicarFallbackPeriodoGraficoCompleto();
+    }
+    return resultado;
+}
+
+async function normalizarPeriodoGraficoRestaurado() {
+    if (data_inicio_param && data_fim_param) return false;
+    if (periodoGraficoAtalhoPendente) return false;
+    const preferenciaRestaurada = carregarPreferenciaPeriodoData();
+    if (!preferenciaRestaurada?.inicio || !preferenciaRestaurada?.fim) return false;
+    if (
+        getDataIniISO() !== preferenciaRestaurada.inicio
+        || getDataFimISO() !== preferenciaRestaurada.fim
+    ) {
+        marcarPeriodoGraficoManual();
+        return false;
+    }
+
+    if (preferenciaRestaurada.origem === 'manual') {
+        if (periodoGrafico !== 'manual') marcarPeriodoGraficoManual();
+        return false;
+    }
+    if (
+        preferenciaRestaurada.origem === 'atalho'
+        && ['3m', '6m', '1a', '2a', 'max'].includes(preferenciaRestaurada.periodo)
+        && preferenciaRestaurada.periodo !== periodoGrafico
+    ) {
+        periodoGrafico = preferenciaRestaurada.periodo;
+        salvarPreferenciaGrafico();
+        aplicarPreferenciaGraficoUI();
+    }
+
+    const deveNormalizar = window.JKVendasPeriodosCompletos.deveNormalizarPreferenciaAtalho(
+        preferenciaRestaurada,
+        periodoGrafico
+    );
+    if (!deveNormalizar) {
+        const periodoFixoLegado = ['3m', '6m', '1a', '2a'].includes(periodoGrafico);
+        if (!preferenciaRestaurada.origem && periodoFixoLegado) {
+            marcarPeriodoGraficoManual();
+            salvarPreferenciaPeriodoData();
+        }
+        return false;
+    }
+
+    const periodoNormalizado = periodoGrafico;
+    const resultado = await aplicarPeriodoGraficoMesesCompletos(periodoNormalizado, {
+        recarregar: false
+    });
+    if (resultado === null && periodoGrafico === periodoNormalizado && periodoNormalizado === 'max') {
+        return aplicarFallbackPeriodoGraficoCompleto();
+    }
+    return resultado;
+}
+
 // Event listeners para controles de gráfico
 document.querySelectorAll('.grafico-btn[data-periodo]').forEach(btn => {
     btn.addEventListener('click', async function() {
-        document.querySelectorAll('.grafico-btn[data-periodo]').forEach(b => b.classList.remove('active'));
-        this.classList.add('active');
-        periodoGrafico = this.dataset.periodo;
-        salvarPreferenciaGrafico();
-        
-        // Calcular e aplicar datas correspondentes
-        const hoje = new Date();
-        let dataInicial;
-        
-        if (periodoGrafico === '3m') {
-            dataInicial = new Date(hoje);
-            dataInicial.setDate(hoje.getDate() - 90);
-        } else if (periodoGrafico === '6m') {
-            dataInicial = new Date(hoje);
-            dataInicial.setDate(hoje.getDate() - 180);
-        } else if (periodoGrafico === '1a') {
-            dataInicial = new Date(hoje);
-            dataInicial.setDate(hoje.getDate() - 365);
-        } else if (periodoGrafico === '2a') {
-            dataInicial = new Date(hoje);
-            dataInicial.setDate(hoje.getDate() - 730);
-        } else if (periodoGrafico === 'max') {
-            const limites = await obterLimitesComVendasServidor() || obterLimitesComVendas();
-            if (limites) {
-                sincronizarPeriodoTopo(limites.inicio, limites.fim);
-                atualizarPeriodoComRecarregamento(true);
-                return;
+        const periodoSelecionado = this.dataset.periodo;
+        if (periodoGraficoAtalhoPendente === periodoSelecionado) return;
+        const periodoAnterior = periodoGrafico;
+        periodoGrafico = periodoSelecionado;
+        periodoGraficoAtalhoPendente = periodoSelecionado;
+        let resultado;
+        try {
+            resultado = await aplicarPeriodoGraficoMesesCompletos(periodoSelecionado);
+        } finally {
+            if (periodoGraficoAtalhoPendente === periodoSelecionado) {
+                periodoGraficoAtalhoPendente = null;
             }
-            dataInicial = new Date(hoje);
-            dataInicial.setDate(hoje.getDate() - 90);
-        } else {
-            // Padrão: 3 meses
-            dataInicial = new Date(hoje);
-            dataInicial.setDate(hoje.getDate() - 90);
         }
-        
-        // Atualizar inputs de data
-        sincronizarPeriodoTopo(dataInicial.toISOString().split('T')[0], hoje.toISOString().split('T')[0]);
-        atualizarPeriodoComRecarregamento(true);
+        if (resultado === null && periodoGrafico === periodoSelecionado) {
+            periodoGrafico = periodoAnterior || '3m';
+            salvarPreferenciaGrafico();
+            aplicarPreferenciaGraficoUI();
+            statusEl.className = 'status-bar';
+            statusEl.textContent = 'Não há meses completos disponíveis para o período Máximo.';
+            return;
+        }
     });
 });
 

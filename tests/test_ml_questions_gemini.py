@@ -706,6 +706,24 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         result = process("Qual material?", ai="Chama no WhatsApp 31999998888.")
         self.assertIn("external_contact", result.validation.issues)
 
+    def test_official_same_marketplace_alternative_link_is_not_external_contact(self):
+        result = process(
+            "Tem outra opcao compativel?",
+            ai=(
+                "Este anuncio nao atende, mas confirmamos uma alternativa compativel da nossa loja. "
+                "Acesse https://produto.mercadolivre.com.br/MLB-2222222222-alternativa-_JM para conferir."
+            ),
+        )
+        self.assertNotIn("external_contact", result.validation.issues)
+        self.assertNotIn("too_many_sentences", result.validation.issues)
+
+    def test_lookalike_marketplace_link_remains_external_contact(self):
+        result = process(
+            "Tem outra opcao?",
+            ai="Veja https://produto.mercadolivre.com.br.exemplo.com/MLB-2222222222.",
+        )
+        self.assertIn("external_contact", result.validation.issues)
+
     def test_more_than_three_sentences_is_blocked(self):
         result = process("Qual material?", ai="E de metal. Produto novo. Temos envio rapido. Obrigado.")
         self.assertIn("too_many_sentences", result.validation.issues)
@@ -794,7 +812,8 @@ class MlQuestionsGeminiTests(unittest.TestCase):
     def test_audit_log_is_created(self):
         result = process("Qual material?", ai="O material informado e plastico reforcado.")
         self.assertEqual(result.audit["action"], "ml_question_processed")
-        self.assertEqual(result.audit["question_id"], "Q1")
+        self.assertEqual(result.audit["processed_count"], 1)
+        self.assertFalse(any(key == "id" or key.endswith("_id") for key in result.audit))
 
     def test_invalid_ai_payload_goes_review(self):
         client = MockGeminiClient(lambda prompt, meta: "texto solto sem json")
@@ -828,8 +847,8 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         self.assertIn("Nunca se apresente como IA", prompt)
         self.assertIn("PERGUNTA_DO_COMPRADOR", prompt)
         self.assertIn("PRODUTO_DO_ANUNCIO", prompt)
-        self.assertIn("PESQUISA_TECNICA_AUTOMATICA_QUANDO_NECESSARIA", prompt)
-        self.assertIn("O orquestrador continuara automaticamente", prompt)
+        self.assertIn("PESQUISA_TECNICA_AUTOMATICA_OBRIGATORIA", prompt)
+        self.assertIn("O orquestrador sempre tentara pesquisar", prompt)
         self.assertIn("compatibilidade, aplicacao, caracteristicas e funcoes", prompt)
         self.assertIn("fabricante, manual, catalogo OEM", prompt)
         self.assertIn("REGRAS_DO_APP", prompt)
@@ -838,8 +857,8 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         self.assertIn("https://produto.mercadolivre.com.br/MLB-1-produto", prompt)
         self.assertLess(prompt.index("\nPERGUNTA_DO_COMPRADOR:"), prompt.index("\nHISTORICO_DE_PERGUNTAS:"))
         self.assertLess(prompt.index("\nHISTORICO_DE_PERGUNTAS:"), prompt.index("\nPRODUTO_DO_ANUNCIO:"))
-        self.assertLess(prompt.index("\nPRODUTO_DO_ANUNCIO:"), prompt.index("\nPESQUISA_TECNICA_AUTOMATICA_QUANDO_NECESSARIA:"))
-        self.assertLess(prompt.index("\nPESQUISA_TECNICA_AUTOMATICA_QUANDO_NECESSARIA:"), prompt.index("\nREGRAS_DO_APP:"))
+        self.assertLess(prompt.index("\nPRODUTO_DO_ANUNCIO:"), prompt.index("\nPESQUISA_TECNICA_AUTOMATICA_OBRIGATORIA:"))
+        self.assertLess(prompt.index("\nPESQUISA_TECNICA_AUTOMATICA_OBRIGATORIA:"), prompt.index("\nREGRAS_DO_APP:"))
         self.assertLess(prompt.index("\nREGRAS_DO_APP:"), prompt.index("\nCONTEXTO_MINIMO_ENVIADO_A_IA"))
 
     def test_prompt_context_is_minimal_for_ai(self):
@@ -854,6 +873,7 @@ class MlQuestionsGeminiTests(unittest.TestCase):
                 price=199.9,
                 available_quantity=10,
                 raw={
+                    "official_current_listing": True,
                     "shipping": {"mode": "me2"},
                     "sale_terms": [{"id": "WARRANTY_TYPE", "value_name": "Garantia"}],
                     "variations": [{"id": 123}],
@@ -866,7 +886,7 @@ class MlQuestionsGeminiTests(unittest.TestCase):
             search_results=[SearchResult(title="resultado externo", url="https://example.com", snippet="nao deve ir")],
         )
         self.assertIn("Descricao completa com manual incluso.", prompt)
-        self.assertIn("Somente se a resposta nao estiver", prompt)
+        self.assertIn("Sempre complemente a analise com a pesquisa externa", prompt)
         self.assertIn("Tem manual?", prompt)
         self.assertIn("Use tom curto.", prompt)
         self.assertIn("Titulo nao deve ir para o prompt", prompt)
@@ -875,7 +895,9 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         self.assertNotIn('"shipping"', prompt)
         self.assertNotIn('"sale_terms"', prompt)
         self.assertNotIn('"variations"', prompt)
-        self.assertNotIn('"price"', prompt)
+        self.assertIn('"current_commercial_facts"', prompt)
+        self.assertIn('"price": 199.9', prompt)
+        self.assertIn('"availability": "available_for_purchase"', prompt)
         self.assertNotIn('"available_quantity"', prompt)
         self.assertNotIn('"search_results"', prompt)
         self.assertNotIn("resultado externo", prompt)

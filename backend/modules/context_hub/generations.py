@@ -74,6 +74,15 @@ from backend.modules.context_hub.paths import (
     _tenant_paths,
 )
 
+from backend.modules.context_hub.materialization import (
+    capture_generation_materialization,
+)
+
+from backend.modules.context_hub.product_evidence_editorial import (
+    PRODUCT_EVIDENCE_EDITORIAL_SCHEMA,
+    collect_product_evidence_editorial_snapshot,
+)
+
 from backend.modules.context_hub.runtime import (
     _new_id,
     _runtime_config,
@@ -105,6 +114,8 @@ class _RebuildSource:
     inventory: Mapping[str, Any]
     curated_documents: Sequence[Mapping[str, Any]]
     bundle_documents: Sequence[Mapping[str, Any]]
+    product_evidence_snapshot: Mapping[str, Any]
+    product_evidence_revision: int
     findings: list[dict[str, Any]]
     source_version: str
     source_hash: str
@@ -131,6 +142,38 @@ def _collect_rebuild_source(
         + curated_findings
         + bundle_findings
     )
+    captured_at = _utc_now()
+    product_evidence_revision = 0
+    try:
+        with _connect(paths) as connection:
+            connection.execute("BEGIN")
+            product_evidence_snapshot = collect_product_evidence_editorial_snapshot(
+                connection,
+                client_id=paths.client_id,
+                as_of=captured_at,
+            )
+            outbox = connection.execute(
+                "SELECT requested_revision FROM context_hub_product_evidence_outbox "
+                "WHERE singleton_id=1"
+            ).fetchone()
+            product_evidence_revision = int(outbox["requested_revision"] or 0) if outbox else 0
+            connection.commit()
+    except Exception:
+        product_evidence_snapshot = {
+            "schema_version": PRODUCT_EVIDENCE_EDITORIAL_SCHEMA,
+            "policy_version": "",
+            "snapshot_hash": "0" * 64,
+            "projection_hash": "0" * 64,
+            "captured_at": captured_at,
+            "next_transition_at": "",
+            "projection_next_transition_at": "",
+            "identities": [],
+            "editorial_identities": [],
+            "stats": {},
+        }
+        findings.append(
+            _finding("product_evidence_snapshot_failed", category="product_evidence")
+        )
     runtime_version = _runtime_source_version(config)
     if runtime_version != "unknown" and source_version != runtime_version:
         findings.append(_finding("inventory_source_version_mismatch", category="inventory"))
@@ -140,13 +183,27 @@ def _collect_rebuild_source(
         for key, value in raw_stats.items()
         if isinstance(value, (int, float, bool, type(None))) and len(str(key)) <= 80
     }
+    for key, value in dict(product_evidence_snapshot.get("stats") or {}).items():
+        if isinstance(value, (int, float, bool, type(None))):
+            stats[f"product_evidence_{str(key)[:60]}"] = value
     return _RebuildSource(
         inventory=inventory,
         curated_documents=curated_documents,
         bundle_documents=bundle_documents,
+        product_evidence_snapshot=product_evidence_snapshot,
+        product_evidence_revision=product_evidence_revision,
         findings=findings,
         source_version=source_version,
-        source_hash=_inventory_source_hash(inventory, curated_hashes, bundle_hashes),
+        source_hash=_inventory_source_hash(
+            inventory,
+            curated_hashes,
+            bundle_hashes,
+            str(
+                product_evidence_snapshot.get("projection_hash")
+                or product_evidence_snapshot.get("snapshot_hash")
+                or ""
+            ),
+        ),
         stats=stats,
     )
 
@@ -227,7 +284,8 @@ def _persist_generation(
 ) -> dict[str, Any]:
     generation_id = _new_id()
     try:
-        _write_generation_snapshot(paths, generation_id, managed_files)
+        snapshot_root = _write_generation_snapshot(paths, generation_id, managed_files)
+        materialization = capture_generation_materialization(snapshot_root / "70_Gerado")
         _persist_ready_generation(
             paths,
             generation_id,
@@ -240,6 +298,18 @@ def _persist_generation(
             base_active_generation_id=base_active,
             created_at=created_at,
             documents=documents,
+            product_evidence_attestation={
+                "evidence_revision": source.product_evidence_revision,
+                "snapshot_hash": source.product_evidence_snapshot.get("snapshot_hash"),
+                "projection_hash": source.product_evidence_snapshot.get("projection_hash"),
+                "policy_version": source.product_evidence_snapshot.get("policy_version"),
+                "captured_at": source.product_evidence_snapshot.get("captured_at"),
+                "next_transition_at": source.product_evidence_snapshot.get("next_transition_at"),
+                "projection_next_transition_at": source.product_evidence_snapshot.get(
+                    "projection_next_transition_at"
+                ),
+            },
+            generation_materialization=materialization,
         )
     except Exception:
         _safe_remove_tree(paths.generations_dir / generation_id, paths.internal_dir)
@@ -296,6 +366,7 @@ def rebuild_context(
             source.inventory,
             source.bundle_documents,
             source.curated_documents,
+            source.product_evidence_snapshot,
             client_id=paths.client_id,
             surface=config.surface,
             source_version=source.source_version,

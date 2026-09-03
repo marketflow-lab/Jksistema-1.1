@@ -39,6 +39,7 @@ from fastapi import Depends, File, Form, Header, HTTPException, Request, UploadF
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
+from backend.services.path_coordination import path_lock_for
 
 
 def configure_favoritos_storage_runtime(runtime_module=None, peers=None):
@@ -2299,7 +2300,7 @@ def _favoritos_listar_skus_payload(client_id: str) -> dict:
     return {"success": True, "lojas": lojas_payload, "skus": itens, "total": len(itens)}
 
 
-def _favoritos_salvar_descricao_cadastro(client_id: str, sku: str, descricao: str) -> None:
+def _favoritos_salvar_descricao_cadastro_sem_lock(client_id: str, sku: str, descricao: str) -> None:
     sku_norm = _normalizar_sku_match_favoritos(sku)
     if not sku_norm:
         return
@@ -2350,7 +2351,7 @@ def _favoritos_salvar_descricao_cadastro(client_id: str, sku: str, descricao: st
         logger.warning("[Favoritos SKU] Falha ao salvar descricao no cadastro do SKU %s: %s", sku_norm, exc)
 
 
-def _favoritos_salvar_pesquisas_batch(
+def _favoritos_salvar_pesquisas_batch_sem_lock(
     client_id: str,
     itens: list[dict],
     preencher_nome_quando_vazio: bool = True,
@@ -2448,6 +2449,77 @@ def _favoritos_salvar_pesquisas_batch(
     except Exception as exc:
         logger.warning("[Favoritos SKU] Falha ao salvar pesquisas em lote no cadastro: %s", exc)
         raise
+
+
+def _favoritos_validar_skus_cadastro_global_atual(
+    client_id: str,
+    cadastro_path: str,
+) -> None:
+    if not cadastro_path or not os.path.exists(cadastro_path):
+        return
+    df_atual = _favoritos_ler_cadastro_csv(cadastro_path, ["sku"])
+    if "sku" not in df_atual.columns:
+        return
+    from backend.services.cadastro_compatibilidade import (
+        exigir_mutacao_legada_sem_sku_controlado,
+    )
+
+    exigir_mutacao_legada_sem_sku_controlado(
+        client_id,
+        df_atual["sku"].astype(str).tolist(),
+    )
+
+
+def _favoritos_salvar_descricao_cadastro(
+    client_id: str,
+    sku: str,
+    descricao: str,
+) -> None:
+    sku_norm = _normalizar_sku_match_favoritos(sku)
+    cadastro_path, _ = _favoritos_sku_caminhos(client_id)
+    if not sku_norm or not cadastro_path:
+        return
+    from backend.services.cadastro_compatibilidade import (
+        bloquear_mutacao_legada_sem_sku_controlado,
+    )
+
+    with bloquear_mutacao_legada_sem_sku_controlado(client_id, [sku_norm]):
+        with path_lock_for(cadastro_path):
+            _favoritos_validar_skus_cadastro_global_atual(client_id, cadastro_path)
+            return _favoritos_salvar_descricao_cadastro_sem_lock(
+                client_id,
+                sku_norm,
+                descricao,
+            )
+
+
+def _favoritos_salvar_pesquisas_batch(
+    client_id: str,
+    itens: list[dict],
+    preencher_nome_quando_vazio: bool = True,
+) -> list[dict]:
+    skus = [
+        _normalizar_sku_match_favoritos(str((item or {}).get("sku") or ""))
+        for item in (itens or [])
+    ]
+    skus = [sku for sku in skus if sku]
+    if not skus:
+        return []
+    cadastro_path, _ = _favoritos_sku_caminhos(client_id)
+    if not cadastro_path:
+        return []
+    from backend.services.cadastro_compatibilidade import (
+        bloquear_mutacao_legada_sem_sku_controlado,
+    )
+
+    with bloquear_mutacao_legada_sem_sku_controlado(client_id, skus):
+        with path_lock_for(cadastro_path):
+            _favoritos_validar_skus_cadastro_global_atual(client_id, cadastro_path)
+            return _favoritos_salvar_pesquisas_batch_sem_lock(
+                client_id,
+                itens,
+                preencher_nome_quando_vazio=preencher_nome_quando_vazio,
+            )
 
 
 def _favoritos_gerar_pesquisas_ia(

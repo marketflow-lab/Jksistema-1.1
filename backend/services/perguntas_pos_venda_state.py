@@ -211,7 +211,7 @@ def _perguntas_loja_config_salvar(
         "notificar_whatsapp_aprovacoes": bool(notificar_whatsapp_aprovacoes),
         "habilitar_pos_venda_automatico": False,
         "intervalo_minutos": intervalo_cfg["intervalo_minutos"],
-        "updated_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
     configs[nome_loja] = payload
     caminho = _perguntas_loja_config_path(client_id)
@@ -288,7 +288,7 @@ def _perguntas_ia_marcar_processada(state: dict, loja: str, question_id: str, st
     processadas = loja_state.setdefault("processadas", {})
     processadas[qid] = {
         "status": status,
-        "updated_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
     if len(processadas) > 1000:
         for chave in list(processadas.keys())[:-800]:
@@ -319,10 +319,11 @@ def _perguntas_ia_resolver_aprovacao(approval: dict, status: str, motivo: str, r
     if not isinstance(approval, dict) or str(approval.get("status") or "pending") != "pending":
         return False
     approval["status"] = str(status or "answered_elsewhere").strip() or "answered_elsewhere"
-    approval["resolved_at"] = dt.datetime.now().isoformat(timespec="seconds")
+    approval["resolved_at"] = datetime.now().isoformat(timespec="seconds")
     approval["resolved_reason"] = str(motivo or "respondida_por_outro_fluxo").strip()
-    if resposta:
-        approval["resposta_enviada"] = str(resposta or "").strip()
+    resposta_literal = resposta if isinstance(resposta, str) else str(resposta or "")
+    if resposta_literal.strip():
+        approval["resposta_enviada"] = resposta_literal
     return True
 
 
@@ -442,22 +443,15 @@ def _perguntas_ia_remover_apresentacao_sistema(texto: str) -> str:
 
 
 def _perguntas_ia_resposta_final_loja(resposta: str, loja: str) -> str:
+    """Acrescenta a assinatura publica sem reescrever o corpo produzido pela IA."""
+
     assinatura = _perguntas_ia_assinatura_loja(loja)
-    corpo = _perguntas_ia_limpar_resposta(_perguntas_ia_remover_apresentacao_sistema(resposta))
-    corpo = re.sub(
-        r"(?is)\s*Equipe\s+.+?\s+agradece\s+(?:(?:o\s+)?seu\s+contato\.?|pelo\s+contato,\s*Precisando\s+estamos\s+[àa]\s+disposi[cç][ãa]o!)\s*$",
-        "",
-        corpo,
-    ).strip()
-    if not corpo:
+    corpo = resposta if isinstance(resposta, str) else str(resposta or "")
+    if not corpo.strip():
         return ""
-    limite = min(ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO, ML_RESPOSTA_PERGUNTA_MAX_CHARS)
-    separador = "\n\n"
-    total = len(corpo) + len(separador) + len(assinatura)
-    if total > limite:
-        limite_corpo = max(40, limite - len(separador) - len(assinatura) - 3)
-        corpo = corpo[:limite_corpo].rstrip() + "..."
-    return _perguntas_ia_limpar_resposta(f"{corpo}{separador}{assinatura}")
+    if corpo.rstrip().endswith(assinatura):
+        return corpo
+    return f"{corpo}\n\n{assinatura}"
 
 
 class PerguntasIARespostaIndisponivel(RuntimeError):
@@ -918,6 +912,7 @@ def _perguntas_ia_classification_prompt(
         f"{mapa_perfis}. "
         "Nao invente target_item ausente e nao use generic como correcao automatica de um alvo desconhecido; descreva os dados decisivos ausentes em missing_fields. "
         "Quando compatibilidade.aplicavel for false, target_item, target_type, compatibility_profile e missing_fields devem estar vazios; technical_focus e decisive_fields podem descrever a caracteristica tecnica pedida. "
+        "target_item e technical_focus devem conter somente o alvo e termos tecnicos; nunca copie nome do comprador, telefone, e-mail, pedido, endereco, CEP, placa, chassi ou VIN para esses campos. "
         "Exemplo valido de compatibilidade independente, sem copiar os valores: {\"intencao\":\"compatibilidade\",\"categoria\":\"compatibility\",\"categorias\":[\"compatibility\"],\"fluxo\":\"perguntas_anuncio\",\"confianca\":0.95,\"continuidade\":{\"tipo\":\"independente\",\"herdou_historico\":false},\"flags\":{\"usar_busca_web\":true,\"usar_mercado_livre_anuncio\":true,\"usar_bling\":true},\"subperguntas\":[{\"intent\":\"compatibility\",\"question\":\"Serve no Honda Civic 2008?\",\"required_evidence\":\"codigo e interface decisiva\"}],\"compatibilidade\":{\"aplicavel\":true,\"target_item\":\"Honda Civic 2008\",\"target_type\":\"vehicle\",\"compatibility_profile\":\"vehicle_fitment\",\"technical_focus\":\"codigo e encaixe\",\"missing_fields\":[\"codigo OEM\"],\"decisive_fields\":[\"codigo OEM\",\"conector\"]}}. "
         "Exemplo de continuidade: se a pergunta anterior era sobre servir em um veiculo e a loja pediu o codigo da peca, "
         "a resposta atual 'ainda nao desmontei para ver o codigo' continua sendo compatibilidade; use continuidade.tipo=continuacao, "
@@ -2134,7 +2129,7 @@ def _perguntas_ia_memoria_sku_path(client_id: str, sku: str) -> str:
 
 
 def _perguntas_ia_memoria_payload_vazio(sku: str) -> dict:
-    agora = dt.datetime.now().isoformat(timespec="seconds")
+    agora = datetime.now().isoformat(timespec="seconds")
     return {
         "version": 1,
         "sku": _perguntas_ia_memoria_sku_normalizar(sku),
@@ -2243,7 +2238,7 @@ def _perguntas_ia_memoria_resumir_tool_results(tool_results: object) -> list[dic
 def _perguntas_ia_memoria_evento_base(tipo: str, loja: str, sku: str, item_id: str = "", question_id: str = "") -> dict:
     return {
         "tipo": str(tipo or "evento").strip()[:80],
-        "at": dt.datetime.now().isoformat(timespec="seconds"),
+        "at": datetime.now().isoformat(timespec="seconds"),
         "loja": str(loja or "").strip()[:160],
         "sku": _perguntas_ia_memoria_sku_normalizar(sku),
         "item_id": str(item_id or "").strip()[:80],
@@ -2349,7 +2344,7 @@ def _perguntas_ia_memoria_registrar_evento(client_id: str, sku: str, evento: dic
         memoria["eventos"] = [
             ev for ev in memoria.get("eventos", []) if isinstance(ev, dict)
         ][-ML_PERGUNTAS_IA_MEMORIA_SKU_MAX_EVENTOS:]
-        memoria["updated_at"] = dt.datetime.now().isoformat(timespec="seconds")
+        memoria["updated_at"] = datetime.now().isoformat(timespec="seconds")
         stats = memoria.setdefault("estatisticas", {})
         stats["total_eventos"] = int(stats.get("total_eventos") or 0) + 1
         memoria = _perguntas_ia_memoria_garantir_limite(client_id, memoria)
@@ -2740,7 +2735,7 @@ def _ia_agent_endpoint_query_url(endpoint_url: str) -> str:
     return f"{url.rstrip('/')}/api/ia/agente/perguntas/query"
 
 
-def _ia_agent_endpoint_headers() -> dict:
+def _ia_agent_endpoint_headers(client_id: str = "", loja: str = "") -> dict:
     headers = {"Content-Type": "application/json"}
     api_key = (
         _env_config_value("JK_AGENT_ENDPOINT_API_KEY", "IA_AGENT_ENDPOINT_API_KEY")
@@ -2749,6 +2744,12 @@ def _ia_agent_endpoint_headers() -> dict:
     )
     if api_key:
         headers["X-JK-Agent-Key"] = api_key
+    tenant_bound = str(client_id or "").strip()
+    store_bound = str(loja or "").strip()
+    if tenant_bound and store_bound:
+        headers["X-JK-Agent-Binding"] = "tenant-store-v1"
+        headers["X-Client-ID"] = quote(tenant_bound, safe="")
+        headers["X-JK-Store"] = quote(store_bound, safe="")
     return headers
 
 
@@ -2850,11 +2851,12 @@ def _perguntas_ia_item_para_agente(item: dict, descricao: str = "") -> dict:
 def _perguntas_ia_pergunta_para_agente(pergunta: dict) -> dict:
     pergunta = pergunta if isinstance(pergunta, dict) else {}
     historico = pergunta.get("buyer_question_chat") if isinstance(pergunta.get("buyer_question_chat"), list) else []
-    resposta_atual = str(pergunta.get("_resposta_atual") or "").strip()
+    resposta_atual_bruta = str(pergunta.get("_resposta_atual") or "")
+    resposta_atual = resposta_atual_bruta if resposta_atual_bruta.strip() else ""
     return {
         "id": pergunta.get("id") or "",
         "text": pergunta.get("text") or "",
-        "current_draft_to_avoid": resposta_atual[:ML_RESPOSTA_PERGUNTA_MAX_CHARS],
+        "current_draft_to_avoid": resposta_atual,
         "item_id": pergunta.get("item_id") or "",
         "date_created": pergunta.get("date_created") or "",
         "status": pergunta.get("status") or "",

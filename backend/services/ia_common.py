@@ -29,16 +29,17 @@ def _normalizar_texto(texto: str):
 def _extrair_texto_openai_response(payload: dict) -> str:
     texto = payload.get("output_text")
     if isinstance(texto, str) and texto.strip():
-        return texto.strip()
+        return texto
 
     partes = []
     for item in payload.get("output") or []:
         for content in item.get("content") or []:
             if isinstance(content, dict):
                 valor = content.get("text")
-                if isinstance(valor, str) and valor.strip():
-                    partes.append(valor.strip())
-    return "\n".join(partes).strip()
+                if isinstance(valor, str):
+                    partes.append(valor)
+    texto = "".join(partes)
+    return texto if texto.strip() else ""
 
 
 def _extrair_b64_openai_image_response(payload: dict) -> str:
@@ -522,7 +523,10 @@ def _ia_chat_mensagem_contextual(payload: IAChatRequest) -> str:
 def _ia_chat_normalizar_anexos(payload: IAChatRequest) -> list[dict]:
     anexos_norm = []
     anexos_raw = payload.attachments or []
-    for item in anexos_raw[:4]:
+    contexto = payload.context if isinstance(payload.context, dict) else {}
+    stage = str(contexto.get("context_collection_stage") or "").strip().lower()
+    limite_anexos = 8 if stage == "technical_evidence_graph" else 4
+    for item in anexos_raw[:limite_anexos]:
         try:
             nome = str(getattr(item, "name", "") or "anexo").strip()[:120] or "anexo"
             mime = str(getattr(item, "mime_type", "") or "application/octet-stream").strip().lower()[:100]

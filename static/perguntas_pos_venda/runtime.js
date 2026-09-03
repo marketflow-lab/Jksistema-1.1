@@ -58,6 +58,7 @@ const state = {
     treinamentoSkuNotasAtual: '',
     produtosTreinamento: [],
     produtosTreinamentoCarregados: false,
+    produtosTreinamentoEscopo: null,
     automacaoPerguntasTimers: [],
     automacaoPerguntasStartupTimers: [],
     automacaoPerguntasGeracao: 0,
@@ -293,9 +294,11 @@ function montarSeletorEscopoTreinamento() {
 
     lojasMercadoLivreConectadas().forEach((loja) => {
         const nome = String(loja && loja.nome || '').trim();
-        if (!nome) return;
+        const storeId = String(loja && loja.store_id || '').trim();
+        if (!nome || !storeId) return;
         const option = document.createElement('option');
-        option.value = nome;
+        option.value = storeId;
+        option.dataset.nomeLoja = nome;
         option.textContent = nome;
         aiTrainingScope.appendChild(option);
     });
@@ -309,7 +312,12 @@ function lojaEscopoTreinamento() {
     return String(state.treinamentoEscopoLoja || aiTrainingScope?.value || '').trim();
 }
 
+function nomeLojaEscopoTreinamento() {
+    const storeId = lojaEscopoTreinamento();
+    const loja = lojasMercadoLivreConectadas().find((item) => String(item.store_id || '').trim() === storeId);
+    return String((loja && loja.nome) || '').trim();
+}
+
 function rotuloEscopoTreinamento() {
-    const loja = lojaEscopoTreinamento();
-    return loja || 'padrao de todas as contas';
+    return nomeLojaEscopoTreinamento() || 'padrao de todas as contas';
 }

@@ -129,7 +129,20 @@ def shared_sync_machine_push(
         payload.operation_id, sessao, kind="machine", resource_id="self",
         direction="push", scopes=scopes, bundle_ids=bundle_ids,
     )
-    results = [_shared_sync_machine_push_scope(sessao, scope, payload.machine_id or "") for scope in scopes]
+    expected_hashes = (
+        operation.get("local_hashes")
+        if isinstance(operation.get("local_hashes"), dict)
+        else {}
+    )
+    results = [
+        _shared_sync_machine_push_scope(
+            sessao,
+            scope,
+            payload.machine_id or "",
+            expected_snapshot_hash=str(expected_hashes.get(scope) or ""),
+        )
+        for scope in scopes
+    ]
     _shared_sync_audit(sessao, record=operation, results=results)
     return {"success": True, "direction": "machine-push", "results": results}
 
@@ -150,19 +163,49 @@ def shared_sync_machine_pull(
     # divergido depois da ultima sincronizacao.
     results = []
     lojas_esperadas = int(((operation.get("totals") or {}).get("stores")) or 0)
+    expected_snapshots = (
+        operation.get("remote_snapshot_ids")
+        if isinstance(operation.get("remote_snapshot_ids"), dict)
+        else {}
+    )
+    expected_remote_fingerprints = (
+        operation.get("remote_hashes")
+        if isinstance(operation.get("remote_hashes"), dict)
+        else {}
+    )
+    expected_bundle_hashes = (
+        operation.get("remote_bundle_hashes")
+        if isinstance(operation.get("remote_bundle_hashes"), dict)
+        else {}
+    )
     for scope in scopes:
         try:
             result = _shared_sync_machine_pull_scope(
-                sessao, scope, force=True, machine_id=payload.machine_id or "",
+                sessao,
+                scope,
+                force=True,
+                machine_id=payload.machine_id or "",
+                expected_snapshot_id=str(expected_snapshots.get(scope) or ""),
+                expected_remote_fingerprint=str(
+                    expected_remote_fingerprints.get(scope) or ""
+                ),
+                expected_bundle_hash=str(
+                    expected_bundle_hashes.get(scope) or ""
+                ),
             )
             if scope == "lojas_integracoes":
-                lojas_aplicadas = int(result.get("stores_count") or 0)
-                if lojas_aplicadas != lojas_esperadas:
+                lojas_snapshot = result.get("snapshot_stores_count")
+                if lojas_snapshot is None:
+                    # Compatibilidade com implementacoes anteriores ao campo
+                    # separado, nas quais stores_count representava o snapshot.
+                    lojas_snapshot = result.get("stores_count")
+                lojas_snapshot = int(lojas_snapshot or 0)
+                if lojas_snapshot != lojas_esperadas:
                     raise HTTPException(
                         status_code=502,
                         detail=(
                             "A importacao de Lojas e integracoes ficou incompleta: "
-                            f"o snapshot continha {lojas_esperadas} loja(s), mas {lojas_aplicadas} foram aplicadas."
+                            f"a previa continha {lojas_esperadas} loja(s), mas o pacote recebido continha {lojas_snapshot}."
                         ),
                     )
             results.append(result)
@@ -252,8 +295,12 @@ def shared_sync_auto_pull(
             ignorados.append({"scope": scope, "reason": "no_remote"})
             continue
         remote_hash = str(meta.get("snapshot_hash") or "")
-        local_hash = str(((state_scopes.get(scope) or {}).get("snapshot_hash")) or "")
-        if remote_hash and local_hash == remote_hash:
+        if _shared_sync_pull_already_current(
+            client_id,
+            sessao.get("username") or "",
+            scope,
+            meta,
+        ):
             ignorados.append({"scope": scope, "reason": "already_current", "snapshot_hash": remote_hash})
             continue
         try:
@@ -293,8 +340,12 @@ def shared_sync_auto_pull(
                 continue
             remote_hash = str(meta.get("snapshot_hash") or "")
             state_scope = _shared_sync_user_share_state_scope(link.get("id"), receive_direction, scope)
-            local_hash = str(((state_scopes.get(state_scope) or {}).get("snapshot_hash")) or "")
-            if remote_hash and local_hash == remote_hash:
+            if _shared_sync_pull_already_current(
+                client_id,
+                sessao.get("username") or "",
+                state_scope,
+                meta,
+            ):
                 ignorados.append({"link_id": link.get("id"), "scope": scope, "reason": "already_current", "snapshot_hash": remote_hash})
                 continue
             try:

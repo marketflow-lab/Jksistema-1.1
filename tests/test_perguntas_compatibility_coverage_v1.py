@@ -334,7 +334,7 @@ def test_active_generation_mismatch_cannot_resolve_compatibility() -> None:
     assert agent_context._perguntas_ia_v2_coverage_match(agent_input, hub_result) == {}
 
 
-def test_regression_skus_use_the_general_contract_without_web_research() -> None:
+def test_canonical_coverage_is_model_context_and_never_overwrites_its_decision() -> None:
     import backend_api  # noqa: F401
     dossier = _reviewed_dossier(items=["O encaixe serve em qualquer celular do mercado"])
     for sku in ("241", "241-1"):
@@ -382,18 +382,81 @@ def test_regression_skus_use_the_general_contract_without_web_research() -> None
             "tenant-a", "JK Pecas", "codex:gpt-5.5", agent_input
         )
         seller_answer = AIAnswer(
-            answer="Sim, da certo no Samsung S25 para o encaixe do suporte.",
-            confidence=0.97,
-            requires_human_review=False,
-            reason="canonical_coverage_sufficient",
+            answer="Ainda nao e possivel confirmar o encaixe no Samsung S25.",
+            confidence=0.20,
+            requires_human_review=True,
+            reason="untrusted_external_conflict",
         )
+        stage_prompts: dict[str, str] = {}
+        technical_candidate: dict[str, AIAnswer] = {}
+
+        def model_answer(_prompt, _metadata, *, stage, tool_results=None):
+            del tool_results
+            stage_prompts[stage] = _prompt
+            if stage == "compatibility_analysis":
+                client.compatibility_analysis.update({
+                    "decision": "insufficient",
+                    "reason": "untrusted_external_conflict",
+                    "confidence": 0.20,
+                    "evidence": {"product": [], "target_vehicle": [], "target": [], "equivalence": []},
+                })
+            return seller_answer
+
+        def structured_answer(prompt, metadata, *, stage, tool_results=None, **_kwargs):
+            if stage == "technical_question_plan":
+                return {
+                    "schema": "jk_ml_technical_question_plan_v1",
+                    "requirements": [{
+                        "id": "q1", "essential": True, "kind": "compatibility",
+                        "question": "O suporte encaixa no celular informado?",
+                        "subject": {"kind": "product", "name": "suporte", "identifiers": []},
+                        "target": {"kind": "application", "name": "Samsung S25", "identifiers": []},
+                        "relation": "compatible_with", "required_fields": ["compatibility.physical_fit"],
+                        "search_terms": ["suporte Samsung S25 encaixe fisico"],
+                    }],
+                    "queries": [],
+                }
+            if stage == "technical_evidence_graph":
+                return {
+                    "schema": "jk_ml_evidence_graph_v2", "entities": [], "claims": [],
+                    "passages": [], "relations": [], "unresolved_requirement_ids": ["q1"],
+                }
+            if stage in {"technical_resolution_round_1", "technical_resolution_final"}:
+                if "value" not in technical_candidate:
+                    technical_candidate["value"] = client._call_model(
+                        prompt, metadata, stage="compatibility_analysis", tool_results=tool_results,
+                    )
+                candidate = technical_candidate["value"]
+                is_final = stage == "technical_resolution_final"
+                return {
+                    "schema": "jk_ml_technical_resolution_v1", "round": 2 if is_final else 1,
+                    "final": is_final,
+                    "requirements": [{
+                        "id": "q1", "decision": "insufficient", "conclusion": candidate.answer,
+                        "condition": "", "commercial_impact": "unknown", "facts": [],
+                        "missing_fields": ["compatibility.physical_fit"], "confidence": 0.20,
+                    }],
+                    "reference_relations": [], "overall_decision": "insufficient",
+                    "commercial_state": "insufficient", "confidence": 0.20,
+                    "reason": "untrusted_external_conflict", "gap_queries": [],
+                    "contingency_answer_body": candidate.answer,
+                    "compatibility_analysis": dict(client.compatibility_analysis),
+                }
+            if stage == "factual_critic":
+                return {
+                    "schema": "jk_ml_factual_review_v1", "verdict": "pass", "issues": [],
+                    "revision_instructions": [], "confidence": 1.0,
+                }
+            raise AssertionError(f"unexpected v16 stage: {stage}")
+
         with patch.object(agent_clients, "marketplace_listing_query", return_value={}), \
              patch.object(agent_clients, "_ia_tool_get_product_data", return_value={}), \
              patch.object(agent_clients, "_ia_tool_get_bling_product", return_value={}), \
              patch.object(agent_clients, "_perguntas_ia_context_hub_tool", return_value=hub_result), \
-             patch.object(agent_clients, "_ia_agent_perguntas_product_identity_web_tool", side_effect=AssertionError("web identity must be skipped")), \
-             patch.object(agent_clients, "_ia_agent_perguntas_web_tool", side_effect=AssertionError("web research must be skipped")), \
-             patch.object(client, "_call_model", return_value=seller_answer) as model_call:
+             patch.object(agent_clients, "_ia_agent_perguntas_product_identity_web_tool", return_value=None) as identity_call, \
+             patch.object(agent_clients, "_ia_agent_perguntas_web_tool", return_value=None) as web_call, \
+             patch.object(client, "_call_model", side_effect=model_answer) as model_call, \
+             patch.object(client, "_call_structured_model", side_effect=structured_answer):
             result = client.generate(
                 "prompt",
                 {
@@ -403,12 +466,20 @@ def test_regression_skus_use_the_general_contract_without_web_research() -> None
                 },
             )
 
-        assert result.answer.startswith("Sim")
-        assert model_call.call_count == 1
-        assert client.compatibility_analysis["research_skipped"] == "canonical_coverage_sufficient"
+        assert result.answer.startswith("Ainda nao")
+        assert model_call.call_count == 2
+        identity_call.assert_called_once()
+        assert web_call.call_count == 2
+        assert "research_skipped" not in client.compatibility_analysis
+        assert "qualquer celular do mercado" in stage_prompts["compatibility_analysis"]
+        assert client.compatibility_analysis["decision"] == "insufficient"
+        assert client.compatibility_analysis["reason"] == "untrusted_external_conflict"
         assert [step["status"] for step in client.context_pipeline if step["name"] in {
             "product_interface_research", "official_technical_research"
-        }] == ["skipped", "skipped"]
+        }] == ["unavailable", "unavailable"]
+        pipeline_steps = [int(step["step"]) for step in client.context_pipeline]
+        assert pipeline_steps == sorted(pipeline_steps)
+        assert len(pipeline_steps) == len(set(pipeline_steps))
 
 
 def test_public_seller_style_is_objective_and_signature_is_not_counted() -> None:

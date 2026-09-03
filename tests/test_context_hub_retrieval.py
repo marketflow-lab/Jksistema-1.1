@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from backend.modules.context_hub import paths as hub_paths
+from backend.modules.context_hub import retrieval as hub_retrieval
 from backend.modules.context_hub import storage as hub_storage
 from backend.services import context_hub
 
@@ -214,3 +215,98 @@ def test_local_lexical_fallback_preserves_strict_then_relaxed_contract(retrieval
     assert result["relaxation_used"] is False
     assert result["count"] >= 1
     assert {item["selection_strategy"] for item in result["results"]} == {"lexical_strict"}
+
+
+def test_product_evidence_expiry_is_enforced_without_valid_at(
+    retrieval_hub: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        hub_retrieval,
+        "_utc_now",
+        lambda: "2026-07-20T12:00:00.000000+00:00",
+    )
+    paths = hub_paths._tenant_paths("tenant-rag", info_root=retrieval_hub)
+    generation_id = "a" * 32
+    content = "especificacao vencida singular"
+    identity = {
+        "store_ref": "store-a", "seller_id": "seller-a", "site_id": "MLB",
+        "sku": "SKU-1", "item_id": "MLB100", "variation_id": "var-a",
+    }
+    with hub_storage._connect(paths) as connection:
+        for suffix, kind in (("evidence", "product_evidence_fact"), ("manual", "technical_knowledge")):
+            doc_id = f"jk:test:{suffix}"
+            chunk_id = _sha(doc_id)[:32]
+            connection.execute(
+                """
+                INSERT INTO context_hub_documents(
+                    generation_id, doc_id, entity_id, relative_path, title, kind,
+                    module, surface, truth_class, sensitivity, source_version,
+                    source_hash, content_hash, source_refs_json, store_ref, seller_id,
+                    site_id, sku, item_id, variation_id, valid_from, valid_to, content, managed
+                ) VALUES (?, ?, ?, ?, ?, ?, 'produto', 'installed',
+                          'generated_verified', 'internal', '1.0.105', ?, ?, '[]',
+                          'store-a', 'seller-a', 'MLB', 'SKU-1', 'MLB100', 'var-a',
+                          '2026-07-01T00:00:00.000000+00:00',
+                          '2026-07-19T00:00:00.000000+00:00', ?, 1)
+                """,
+                (
+                    generation_id,
+                    doc_id,
+                    doc_id,
+                    f"70_Gerado/Produtos/{suffix}.md",
+                    suffix,
+                    kind,
+                    _sha(doc_id + ":source"),
+                    _sha(content),
+                    content,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO context_hub_chunks("
+                "generation_id, chunk_id, doc_id, ordinal, content, content_hash"
+                ") VALUES (?, ?, ?, 0, ?, ?)",
+                (generation_id, chunk_id, doc_id, content, _sha(content)),
+            )
+            connection.execute(
+                "INSERT INTO context_hub_chunks_fts("
+                "generation_id, chunk_id, doc_id, title, content, module, kind, surface, truth_class"
+                ") VALUES (?, ?, ?, ?, ?, 'produto', ?, 'installed', 'generated_verified')",
+                (generation_id, chunk_id, doc_id, suffix, content, kind),
+            )
+        connection.execute(
+            "UPDATE context_hub_product_evidence_outbox "
+            "SET completed_generation_id=? WHERE singleton_id=1",
+            (generation_id,),
+        )
+        snapshot_hash = _sha("retrieval-evidence-snapshot")
+        connection.execute(
+            "INSERT INTO context_hub_generation_product_evidence("
+            "generation_id, evidence_revision, snapshot_hash, projection_hash, "
+            "policy_version, captured_at, next_transition_at, "
+            "projection_next_transition_at) VALUES (?, 0, ?, ?, ?, ?, NULL, NULL)",
+            (
+                generation_id,
+                snapshot_hash,
+                snapshot_hash,
+                "jk_product_evidence_v2",
+                "2026-07-01T00:00:00.000000+00:00",
+            ),
+        )
+        connection.commit()
+
+    current = context_hub.search_context(
+        "tenant-rag", content, info_root=retrieval_hub,
+        _product_evidence_identity=identity,
+    )
+    historical = context_hub.search_context(
+        "tenant-rag",
+        content,
+        filters={"valid_at": "2026-07-18T00:00:00+00:00"},
+        info_root=retrieval_hub,
+        _product_evidence_identity=identity,
+    )
+
+    assert "jk:test:evidence" not in {item["doc_id"] for item in current["results"]}
+    assert "jk:test:manual" in {item["doc_id"] for item in current["results"]}
+    assert "jk:test:evidence" in {item["doc_id"] for item in historical["results"]}

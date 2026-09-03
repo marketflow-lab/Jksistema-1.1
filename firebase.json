@@ -13,6 +13,14 @@
     "trailingSlash": false,
     "rewrites": [
       {
+        "source": "/api/auth/**",
+        "run": {
+          "serviceId": "jk-auth-gateway",
+          "region": "southamerica-east1",
+          "pinTag": true
+        }
+      },
+      {
         "source": "/auth/callback",
         "destination": "/oauth-bridge.html"
       },

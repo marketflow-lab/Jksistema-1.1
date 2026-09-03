@@ -39,6 +39,7 @@ from fastapi import Depends, File, Form, Header, HTTPException, Request, UploadF
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from backend.services.favoritos_margem import margem_calcular_anuncio
+from backend.services.mercadolivre_legacy_api import _ml_cfg_com_store_id_context
 from backend.services.runtime_bridge import bind_runtime_globals
 
 
@@ -56,6 +57,10 @@ def configure_favoritos_ml_runtime(runtime_module=None, peers=None):
 
 
 configure_favoritos_ml_runtime()
+
+
+FAVORITOS_FINANCIAL_QUOTE_SHADOW_ENV = "JK_ML_FINANCIAL_QUOTE_SHADOW"
+FAVORITOS_FINANCIAL_QUOTE_SIDECAR = "_jk_financial_quote_shadow"
 
 
 def _ml_favoritos_buscar_itens_por_sku(
@@ -3316,14 +3321,113 @@ def _favoritos_resolver_sku_para_margem(anuncio: dict, sku_hint: str = "") -> st
     return ""
 
 
+def _favoritos_cotacao_financeira_shadow_habilitada() -> bool:
+    value = str(
+        os.getenv(FAVORITOS_FINANCIAL_QUOTE_SHADOW_ENV, "") or ""
+    ).strip().lower()
+    return value in {"1", "true", "yes", "sim", "on"}
+
+
+def _favoritos_valores_financeiros_equivalentes(left: Any, right: Any) -> bool:
+    left_value = _to_float_safe(left)
+    right_value = _to_float_safe(right)
+    return bool(
+        left_value is not None
+        and right_value is not None
+        and abs(float(left_value) - float(right_value)) <= 0.005
+    )
+
+
+def _favoritos_observar_cotacao_financeira_shadow(
+    *,
+    client_id: Any,
+    loja: Any,
+    contexto: Any,
+    preco: Any,
+    custo: Any,
+    imposto_rate: Any,
+    tarifa: Any,
+    frete: Any,
+    resultado_legado: Any,
+    frete_fallback: bool,
+) -> None:
+    """Observe Favoritos after its legacy result without changing that result."""
+
+    if not _favoritos_cotacao_financeira_shadow_habilitada():
+        return
+    context = contexto if isinstance(contexto, dict) else {}
+    context_fee = context.get("tarifa_total")
+    context_shipping = context.get("frete_vendedor")
+    tarifa_exata = bool(
+        context.get("tarifa_exata") is True
+        and _favoritos_valores_financeiros_equivalentes(tarifa, context_fee)
+    )
+    frete_exato = bool(
+        not frete_fallback
+        and context.get("frete_exato") is True
+        and _favoritos_valores_financeiros_equivalentes(frete, context_shipping)
+    )
+    tarifa_fallback = bool(tarifa is not None and context_fee in (None, ""))
+    tarifa_fonte = context.get("tarifa_fonte") or (
+        "favoritos.legacy_percentage_fallback" if tarifa_fallback else ""
+    )
+    frete_fonte = (
+        "favoritos.same_sku_fallback"
+        if frete_fallback
+        else context.get("frete_fonte") or ""
+    )
+    try:
+        from backend.services.mercadolivre_cotacao_shadow import (
+            observar_cotacao_financeira,
+        )
+
+        observar_cotacao_financeira(
+            origem="favoritos",
+            preco_efetivo=preco,
+            custo_produto=custo,
+            aliquota_imposto=imposto_rate,
+            tarifa_total=tarifa,
+            tarifa_exata=tarifa_exata,
+            tarifa_fonte=tarifa_fonte,
+            tarifa_contexto_preco=context.get("tarifa_contexto_preco"),
+            frete_vendedor=frete,
+            frete_exato=frete_exato,
+            frete_fonte=frete_fonte,
+            frete_contexto_preco=context.get("frete_contexto_preco"),
+            contexto_financeiro=copy.deepcopy(
+                context.get("contexto_financeiro") or {}
+            ),
+            resultado_legado=copy.deepcopy(resultado_legado),
+            currency_id=context.get("currency_id") or "BRL",
+            tarifa_fallback=tarifa_fallback,
+            frete_fallback=bool(frete_fallback),
+            client_id=client_id,
+            loja=loja,
+        )
+    except Exception:
+        try:
+            from backend.services.mercadolivre_cotacao_shadow import (
+                registrar_erro_shadow,
+            )
+
+            registrar_erro_shadow(origem="favoritos")
+        except Exception:
+            pass
+
+
 def _favoritos_aplicar_margem_anuncio_ml(
     anuncio: dict,
     sku_hint: str,
     custos_por_sku: dict,
     impostos_por_sku: dict,
+    *,
+    client_id: Any = None,
+    loja: Any = None,
 ) -> dict:
     if not isinstance(anuncio, dict):
         return anuncio
+
+    contexto_shadow = anuncio.pop(FAVORITOS_FINANCIAL_QUOTE_SIDECAR, None)
 
     sku_margem = _favoritos_resolver_sku_para_margem(anuncio, sku_hint)
     preco_final = None
@@ -3396,14 +3500,25 @@ def _favoritos_aplicar_margem_anuncio_ml(
         dados_margem["free_shipping"] = True
     if taxa_pct is not None:
         dados_margem["sale_fee_pct"] = taxa_pct
-    anuncio.update(
-        margem_calcular_anuncio(
-            dados_margem,
-            sku_hint=sku_margem,
-            custo=custo,
-            imposto_rate=imposto_rate,
-            taxa_padrao=taxa_pct,
-        )
+    resultado_margem = margem_calcular_anuncio(
+        dados_margem,
+        sku_hint=sku_margem,
+        custo=custo,
+        imposto_rate=imposto_rate,
+        taxa_padrao=taxa_pct,
+    )
+    anuncio.update(resultado_margem)
+    _favoritos_observar_cotacao_financeira_shadow(
+        client_id=client_id,
+        loja=loja,
+        contexto=contexto_shadow,
+        preco=preco_final,
+        custo=custo,
+        imposto_rate=imposto_rate,
+        tarifa=tarifa,
+        frete=frete,
+        resultado_legado=resultado_margem,
+        frete_fallback=bool(anuncio.get("shipping_cost_fallback_source")),
     )
     return anuncio
 
@@ -3478,8 +3593,12 @@ def _ml_api_items_multiget_tenant(client_id: str | None, item_ids: list[str] | t
         cfg = dict(integracoes.get("mercadolivre") or {})
         if not nome_loja or not cfg.get("access_token"):
             continue
+        store_id = str((loja or {}).get("store_id") or "").strip()
+        if not store_id:
+            continue
         cfg["app_id"] = cfg.get("app_id") or cfg.get("id") or cfg.get("client_id")
         cfg["client_secret"] = cfg.get("client_secret") or cfg.get("secret")
+        cfg = _ml_cfg_com_store_id_context(cfg, store_id)
         lojas_oauth.append((nome_loja, cfg))
 
     def _itens_payload(payload):
@@ -3591,8 +3710,12 @@ def _ml_api_item_com_oauth_tenant(client_id: str | None, item_id: str):
         cfg = dict(integracoes.get("mercadolivre") or {})
         if not nome_loja or not cfg.get("access_token"):
             continue
+        store_id = str((loja or {}).get("store_id") or "").strip()
+        if not store_id:
+            continue
         cfg["app_id"] = cfg.get("app_id") or cfg.get("id") or cfg.get("client_id")
         cfg["client_secret"] = cfg.get("client_secret") or cfg.get("secret")
+        cfg = _ml_cfg_com_store_id_context(cfg, store_id)
         try:
             resp, _cfg = _ml_api_request(
                 client_id,
@@ -3633,8 +3756,12 @@ def _ml_api_user_com_oauth_tenant(client_id: str | None, user_id: str | None):
         cfg = dict(integracoes.get("mercadolivre") or {})
         if not nome_loja or not cfg.get("access_token"):
             continue
+        store_id = str((loja or {}).get("store_id") or "").strip()
+        if not store_id:
+            continue
         cfg["app_id"] = cfg.get("app_id") or cfg.get("id") or cfg.get("client_id")
         cfg["client_secret"] = cfg.get("client_secret") or cfg.get("secret")
+        cfg = _ml_cfg_com_store_id_context(cfg, store_id)
         try:
             resp, _cfg = _ml_api_request(
                 client_id,
@@ -3697,8 +3824,12 @@ def _ml_api_visitas_com_oauth_tenant(client_id: str | None, item_id: str | None,
         cfg = dict(integracoes.get("mercadolivre") or {})
         if not nome_loja or not cfg.get("access_token"):
             continue
+        store_id = str((loja or {}).get("store_id") or "").strip()
+        if not store_id:
+            continue
         cfg["app_id"] = cfg.get("app_id") or cfg.get("id") or cfg.get("client_id")
         cfg["client_secret"] = cfg.get("client_secret") or cfg.get("secret")
+        cfg = _ml_cfg_com_store_id_context(cfg, store_id)
         lojas_oauth.append((nome_loja, cfg))
 
     def _consultar_visitas_loja(nome_loja, cfg):

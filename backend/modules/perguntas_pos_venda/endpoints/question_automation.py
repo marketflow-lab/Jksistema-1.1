@@ -109,6 +109,9 @@ def _question_poll_load_batch(
     ))
     items, cfg = _ml_buscar_itens_batch(poll.client_id, store, cfg, item_ids)
     items = _ml_perguntas_completar_skus_itens(poll.client_id, store, cfg, items)
+    for item in items:
+        if isinstance(item, dict):
+            item["_ppv_official_current_listing"] = True
     item_by_id = {str(item.get("id") or "").strip(): item for item in items if isinstance(item, dict)}
     user_ids = list(dict.fromkeys(
         str((question.get("from") or {}).get("id") or "").strip()
@@ -207,10 +210,7 @@ def _question_poll_process_candidate(
                 poll.client_id, store, cfg, question, item
             )
     except PerguntasIARespostaIndisponivel as exc:
-        logger.warning(
-            "[ML PERGUNTAS IA] Resposta bloqueada para a loja %s, pergunta %s: %s",
-            store, question_id, exc,
-        )
+        logger.warning("[ML PERGUNTAS IA] evento=resposta_indisponivel status=erro tipo=%s", type(exc).__name__)
         poll.errors.append({"loja": store, "question_id": question_id, "erro": str(exc)})
         return cfg, 0, False
     if not answer or _customer_reply_job_already_reconciled(
@@ -306,7 +306,7 @@ def ml_perguntas_automacao_poll(
         except HTTPException as exc:
             poll.errors.append({"loja": store, "erro": exc.detail})
         except Exception as exc:
-            logger.exception("[ML PERGUNTAS IA] Falha na automacao da loja %s: %s", store, exc)
+            logger.warning("[ML PERGUNTAS IA] evento=automacao_loja status=erro tipo=%s", type(exc).__name__)
             poll.errors.append({"loja": store, "erro": str(exc)})
     if poll.approvals_changed:
         _perguntas_ia_aprovacoes_salvar(client_id, approvals)

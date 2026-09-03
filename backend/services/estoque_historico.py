@@ -45,22 +45,84 @@ def _estoque_historico_db_path(client_id: str) -> str:
     return os.path.join(get_tenant_path(client_id), "estoque_historico.db")
 
 
-def _lojas_estoque_ativas(client_id: str) -> list[str]:
+def _lojas_estoque_configuradas(
+    client_id: str,
+    *,
+    tenant_path: str | None = None,
+) -> list[dict] | None:
     """Le o cadastro atual de lojas sem acionar migracoes ou gravacoes."""
-    caminho = os.path.join(get_tenant_path(client_id), "lojas_config.json")
+    base_path = str(tenant_path or get_tenant_path(client_id))
+    caminho = os.path.join(base_path, "lojas_config.json")
     try:
         with open(caminho, "r", encoding="utf-8-sig") as arquivo:
             payload = json.load(arquivo)
     except (OSError, ValueError, TypeError):
-        return []
+        return None
     if not isinstance(payload, list):
-        return []
+        return None
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def _estoque_historico_ambiguidade(
+    client_id: str,
+    loja: str | None,
+    *,
+    tenant_path: str | None = None,
+) -> dict | None:
+    lojas = _lojas_estoque_configuradas(client_id, tenant_path=tenant_path)
+    if not lojas:
+        return {
+            "code": "estoque_historico_identidade_indisponivel",
+            "message": (
+                "O histórico de estoque foi omitido porque a identidade das lojas "
+                "não pôde ser comprovada."
+            ),
+            "store_ids": [],
+        }
+    grupos: dict[str, list[dict]] = {}
+    for item in lojas:
+        nome = str(item.get("nome") or "").strip()
+        if nome:
+            grupos.setdefault(nome.casefold(), []).append(item)
+    ambiguos = {chave: itens for chave, itens in grupos.items() if len(itens) > 1}
+    loja_txt = str(loja or "").strip()
+    if loja_txt and loja_txt != "__todas":
+        chave_loja = loja_txt.casefold()
+        if chave_loja not in grupos:
+            return {
+                "code": "estoque_historico_identidade_indisponivel",
+                "message": (
+                    "O histórico de estoque foi omitido porque a loja não pôde ser "
+                    "associada ao cadastro atual."
+                ),
+                "store_ids": [],
+            }
+        ambiguos = {chave_loja: ambiguos.get(chave_loja, [])}
+        ambiguos = {chave: itens for chave, itens in ambiguos.items() if itens}
+    if not ambiguos:
+        return None
+    store_ids = sorted({
+        str(item.get("store_id") or "").strip()
+        for itens in ambiguos.values()
+        for item in itens
+        if str(item.get("store_id") or "").strip()
+    })
+    return {
+        "code": "estoque_historico_loja_ambigua",
+        "message": (
+            "O histórico de estoque foi omitido porque ainda é identificado pelo "
+            "nome e existem lojas homônimas."
+        ),
+        "store_ids": store_ids,
+    }
+
+
+def _lojas_estoque_ativas(client_id: str) -> list[str]:
+    """Lista nomes únicos de lojas ativas para compatibilidade histórica."""
 
     nomes: list[str] = []
     vistos: set[str] = set()
-    for item in payload:
-        if not isinstance(item, dict):
-            continue
+    for item in (_lojas_estoque_configuradas(client_id) or []):
         nome = str(item.get("nome") or "").strip()
         chave = nome.casefold()
         if not nome or chave in vistos:
@@ -1137,6 +1199,16 @@ def _vendas_series_estoque_historico(
             resultado["estoque_meta"]["detail"] = "Informe um SKU para exibir estoque por SKU."
         return resultado
 
+    ambiguidade = _estoque_historico_ambiguidade(client_id, loja)
+    if ambiguidade:
+        resultado["estoque_meta"].update({
+            "success": False,
+            "code": ambiguidade["code"],
+            "detail": ambiguidade["message"],
+            "store_ids": ambiguidade["store_ids"],
+        })
+        return resultado
+
     db_hist = _estoque_historico_db_path(client_id)
     if not os.path.exists(db_hist):
         resultado["estoque_meta"]["detail"] = "Histórico de estoque ainda não foi gerado."
@@ -1459,4 +1531,5 @@ __all__ = [
     "_inicio_periodo_estoque",
     "_estoque_serie_eventos",
     "_vendas_series_estoque_historico",
+    "_estoque_historico_ambiguidade",
 ]

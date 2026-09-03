@@ -31,6 +31,7 @@ class AuthRequest(BaseModel):
     loja: str
     client_id: str
     client_secret: str
+    store_id: Optional[str] = None
 
 
 class TokenRequest(BaseModel):

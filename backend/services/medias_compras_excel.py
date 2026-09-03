@@ -127,41 +127,93 @@ def _formatar_data_commercial_invoice(valor) -> str:
         return texto
 
 
-def _resolver_caminho_foto_commercial_invoice(client_id: str | None, foto_ref: str, sku: str) -> str | None:
-    diretorios = []
+def _resolver_caminho_foto_cadastro_seguro(
+    client_id: str | None,
+    foto_ref: str,
+    sku: str,
+    store_id: str | None = None,
+) -> str | None:
+    diretorios: list[tuple[str, bool]] = []
     if client_id:
-        diretorios.append(os.path.join(get_tenant_path(client_id), "cadastro_fotos"))
+        diretorios.append((os.path.realpath(os.path.join(get_tenant_path(client_id), "cadastro_fotos")), False))
     if PASTA_INFO:
-        diretorios.append(os.path.join(PASTA_INFO, "default", "cadastro_fotos"))
-    diretorios = [os.path.realpath(diretorio) for diretorio in diretorios if diretorio]
+        diretorios.append((os.path.realpath(os.path.join(PASTA_INFO, "default", "cadastro_fotos")), True))
 
-    def _caminho_permitido(caminho: str) -> bool:
-        caminho_real = os.path.realpath(caminho)
-        for diretorio in diretorios:
-            try:
-                if os.path.commonpath([caminho_real, diretorio]) == diretorio:
-                    return True
-            except ValueError:
-                continue
-        return False
-
-    foto_txt = _resolver_foto_cadastro_sku(client_id, sku, foto_ref)
+    foto_txt = (
+        _resolver_foto_cadastro_sku(client_id, sku, foto_ref, store_id)
+        if store_id
+        else _resolver_foto_cadastro_sku(client_id, sku, foto_ref)
+    )
     foto_txt = str(foto_txt or "").replace("\\", "/").strip()
     if not foto_txt:
         return None
-    if os.path.isabs(foto_txt):
-        return foto_txt if os.path.isfile(foto_txt) and _caminho_permitido(foto_txt) else None
-
-    nome = foto_txt.split("/", 1)[1] if foto_txt.lower().startswith("cadastro_fotos/") else foto_txt
-    nome = os.path.basename(nome)
-    if not nome:
+    if re.match(r"^https?://", foto_txt, re.IGNORECASE) or foto_txt.startswith("/api/"):
         return None
 
-    for diretorio in diretorios:
-        candidato = os.path.join(diretorio, nome)
+    if os.path.isabs(foto_txt):
+        caminho_real = os.path.realpath(foto_txt)
+        for diretorio, eh_default in diretorios:
+            try:
+                if os.path.commonpath([caminho_real, diretorio]) == diretorio:
+                    relativo = os.path.relpath(caminho_real, diretorio).replace("\\", "/")
+                    partes = relativo.strip("/").split("/")
+                    if any(
+                        not parte or parte in {".", ".."} or ":" in parte
+                        for parte in partes
+                    ):
+                        return None
+                    scoped = partes[0].lower() == "lojas"
+                    if scoped:
+                        if len(partes) != 3 or eh_default:
+                            return None
+                    elif len(partes) != 1:
+                        return None
+                    return caminho_real if os.path.isfile(caminho_real) else None
+            except ValueError:
+                continue
+        return None
+
+    relativo = foto_txt
+    if relativo.lower().startswith("cadastro_fotos/"):
+        relativo = relativo.split("/", 1)[1]
+    relativo = relativo.strip("/")
+    partes = relativo.split("/")
+    if any(not parte or parte in {".", ".."} or ":" in parte for parte in partes):
+        return None
+    scoped = partes[0].lower() == "lojas"
+    if scoped:
+        if len(partes) != 3 or not client_id:
+            return None
+    elif len(partes) != 1:
+        # A compatibilidade antiga aceita apenas basename na raiz.
+        return None
+
+    for diretorio, eh_default in diretorios:
+        if scoped and eh_default:
+            continue
+        candidato = os.path.realpath(os.path.join(diretorio, *partes))
+        try:
+            if os.path.commonpath([candidato, diretorio]) != diretorio:
+                continue
+        except ValueError:
+            continue
         if os.path.isfile(candidato):
             return candidato
     return None
+
+
+def _resolver_caminho_foto_commercial_invoice(
+    client_id: str | None,
+    foto_ref: str,
+    sku: str,
+    store_id: str | None = None,
+) -> str | None:
+    return _resolver_caminho_foto_cadastro_seguro(
+        client_id,
+        foto_ref,
+        sku,
+        store_id,
+    )
 
 
 def _gerar_commercial_invoice_bytes(
@@ -171,6 +223,20 @@ def _gerar_commercial_invoice_bytes(
     data_aprovacao: str = "",
 ) -> bytes:
     lista = lista if isinstance(lista, dict) else {}
+    store_id_cadastro = ""
+    if client_id:
+        from backend.services.cadastro_compatibilidade import (
+            visao_produtos_cadastro_contexto_loja,
+        )
+
+        try:
+            contexto_cadastro = visao_produtos_cadastro_contexto_loja(
+                client_id,
+                lista.get("store_id") or lista.get("loja") or "",
+            )
+        except RuntimeError:
+            contexto_cadastro = {"store_id": "", "scope": "unavailable"}
+        store_id_cadastro = str(contexto_cadastro.get("store_id") or "").strip()
     itens = [
         (item, _normalizar_item_lista_pedido(item))
         for item in (lista.get("itens") or [])
@@ -324,6 +390,7 @@ def _gerar_commercial_invoice_bytes(
             client_id,
             item.get("Foto", ""),
             item.get("SKU", ""),
+            store_id_cadastro or None,
         )
         if caminho_foto:
             try:
@@ -433,7 +500,13 @@ def _gerar_commercial_invoice_bytes(
     return buffer.getvalue()
 
 
-def _gerar_excel_lista_pedido_bytes(nome_lista: str, itens: list[dict], client_id: str | None = None) -> bytes:
+def _gerar_excel_lista_pedido_bytes(
+    nome_lista: str,
+    itens: list[dict],
+    client_id: str | None = None,
+    *,
+    loja: str = "",
+) -> bytes:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Import 54"
@@ -460,40 +533,28 @@ def _gerar_excel_lista_pedido_bytes(nome_lista: str, itens: list[dict], client_i
         cell.border = borda_fina
     ws.row_dimensions[1].height = 25.5
 
-    diretorios_fotos = []
+    store_id_cadastro = ""
     if client_id:
-        diretorios_fotos.append(os.path.join(get_tenant_path(client_id), "cadastro_fotos"))
-    diretorios_fotos.append(os.path.join(PASTA_INFO, "default", "cadastro_fotos"))
+        from backend.services.cadastro_compatibilidade import (
+            visao_produtos_cadastro_contexto_loja,
+        )
 
-    cache_fotos: dict[str, str | None] = {}
+        try:
+            contexto_cadastro = visao_produtos_cadastro_contexto_loja(
+                client_id,
+                loja,
+            )
+        except RuntimeError:
+            contexto_cadastro = {"store_id": "", "scope": "unavailable"}
+        store_id_cadastro = str(contexto_cadastro.get("store_id") or "").strip()
 
     def _resolver_caminho_foto_lista(foto_ref: str, sku: str) -> str | None:
-        foto_txt = _resolver_foto_cadastro_sku(client_id, sku, foto_ref)
-        foto_txt = str(foto_txt or "").replace("\\", "/").strip()
-        if not foto_txt:
-            return None
-
-        if os.path.isabs(foto_txt) and os.path.exists(foto_txt):
-            return foto_txt
-
-        nome = foto_txt
-        if nome.lower().startswith("cadastro_fotos/"):
-            nome = nome.split("/", 1)[1]
-        nome = os.path.basename(nome)
-        if not nome:
-            return None
-
-        if nome in cache_fotos:
-            return cache_fotos[nome]
-
-        caminho = None
-        for pasta_fotos in diretorios_fotos:
-            candidato = os.path.join(pasta_fotos, nome)
-            if os.path.exists(candidato):
-                caminho = candidato
-                break
-        cache_fotos[nome] = caminho
-        return caminho
+        return _resolver_caminho_foto_cadastro_seguro(
+            client_id,
+            foto_ref,
+            sku,
+            store_id_cadastro or None,
+        )
 
     itens_norm = [_normalizar_item_lista_pedido(i) for i in (itens or [])]
     for idx, item in enumerate(itens_norm, start=2):

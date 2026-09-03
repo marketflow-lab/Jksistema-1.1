@@ -28,6 +28,10 @@ from backend.modules.context_hub.paths import (
     _tenant_paths,
 )
 
+from backend.modules.context_hub.product_evidence_attestation import (
+    product_evidence_generation_matches_completed_projection,
+)
+
 from backend.modules.context_hub.runtime import (
     _runtime_config,
 )
@@ -106,6 +110,73 @@ def _generation_document_hashes(
     }
 
 
+def _product_evidence_sync_snapshot(
+    connection: sqlite3.Connection,
+    active_id: Optional[str],
+) -> tuple[sqlite3.Row, int, Optional[sqlite3.Row], bool]:
+    row = connection.execute(
+        "SELECT requested_revision, completed_revision, not_before, "
+        "attempt_count, last_attempt_at, last_success_at, last_error_code, "
+        "completed_generation_id, updated_at "
+        "FROM context_hub_product_evidence_outbox WHERE singleton_id=1"
+    ).fetchone()
+    count = int(connection.execute(
+        "SELECT COUNT(*) FROM context_hub_documents "
+        "WHERE generation_id=? AND kind='product_evidence_fact'",
+        (active_id,),
+    ).fetchone()[0]) if active_id else 0
+    attestation = connection.execute(
+        "SELECT next_transition_at, projection_next_transition_at "
+        "FROM context_hub_generation_product_evidence "
+        "WHERE generation_id=?",
+        (active_id,),
+    ).fetchone() if active_id else None
+    current = product_evidence_generation_matches_completed_projection(
+        connection,
+        active_id,
+    )
+    return row, count, attestation, current
+
+
+def _public_product_evidence_sync(
+    paths: Any,
+    active_id: Optional[str],
+    snapshot: tuple[sqlite3.Row, int, Optional[sqlite3.Row], bool],
+) -> dict[str, Any]:
+    row, active_count, attestation, current = snapshot
+    key = str(paths.internal_dir).casefold()
+    with CONTEXT_HUB_STATE.product_evidence_sync_guard:
+        worker = CONTEXT_HUB_STATE.product_evidence_sync_workers.get(key)
+        worker_running = bool(worker and worker[0].is_alive())
+        transition_scheduled = key in CONTEXT_HUB_STATE.product_evidence_transition_schedule
+        scheduler = CONTEXT_HUB_STATE.product_evidence_transition_scheduler
+        scheduler_running = bool(scheduler and scheduler[0].is_alive())
+    requested = int(row["requested_revision"] or 0)
+    completed = int(row["completed_revision"] or 0)
+    return {
+        "pending": requested > completed,
+        "requested_revision": requested,
+        "completed_revision": completed,
+        "attempt_count": int(row["attempt_count"] or 0),
+        "last_error_code": str(row["last_error_code"] or ""),
+        "not_before": str(row["not_before"] or ""),
+        "last_attempt_at": row["last_attempt_at"],
+        "last_success_at": row["last_success_at"],
+        "updated_at": str(row["updated_at"] or ""),
+        "worker_running": worker_running,
+        "transition_scheduled": transition_scheduled,
+        "scheduler_running": scheduler_running,
+        "active_evidence_current": current,
+        "active_verified_facts": active_count,
+        "next_transition_at": (
+            attestation["projection_next_transition_at"]
+            or attestation["next_transition_at"]
+            if attestation
+            else None
+        ),
+    }
+
+
 def get_status(
     client_id: object,
     *,
@@ -151,6 +222,7 @@ def get_status(
                 FROM context_hub_curated_approvals WHERE present=1 GROUP BY state
                 """
             ).fetchall()
+            evidence_sync_snapshot = _product_evidence_sync_snapshot(connection, active_id)
             connection.commit()
         except Exception:
             connection.rollback()
@@ -160,6 +232,11 @@ def get_status(
     with CONTEXT_HUB_STATE.watchers_guard:
         watcher = CONTEXT_HUB_STATE.watchers.get(watcher_key)
         watcher_running = bool(watcher and watcher[0].is_alive())
+    evidence_sync = _public_product_evidence_sync(
+        paths,
+        active_id,
+        evidence_sync_snapshot,
+    )
     latest_public = _public_generation(latest, include_details=True) if latest else None
     active_ids = set(active_hashes)
     target_ids = set(target_hashes)
@@ -181,6 +258,7 @@ def get_status(
         "counts": {"documents": int(counts["documents"] or 0), "chunks": int(counts["chunks"] or 0)},
         "settings": settings,
         "watcher_running": watcher_running,
+        "product_evidence_sync": evidence_sync,
         "curation": {
             "states": {str(row["state"]): int(row["count"] or 0) for row in curation_rows},
             "manual_publication_only": True,

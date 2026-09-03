@@ -131,7 +131,7 @@
     "favoritos/init.js"
   ],
   "sha256": {
-    "favoritos.html": "759d8b1340147818fe77430ea13d2c7bcabbde6528ad79ca09b3490fb8addfd8",
+    "favoritos.html": "99d02bb91da10ba15f0fc7ae80b203b9e912f073235ec19f98d8f8f3465ebcad",
     "favoritos/styles.css": "64b1ab3d9462915fb4ee8a95c8b3688de8c2c4b1553031bfa0010eaaabca1f08",
     "favoritos/styles/01-foundation.css": "ecf44e129b48a9cb5dd7222af5f718600031f62946696601cfda14f6325fadff",
     "favoritos/styles/02-sku.css": "585fe80c43c5726d09a5842461c12f095a6ebb9b3e81e0d433a7287ca418223b",
@@ -145,7 +145,7 @@
     "favoritos/styles/10-sheets-and-ignored.css": "7e91e61bf4faef6fed09102ba18a984c479104072c5d684dfcc9c4eb01d6e059",
     "favoritos/styles/11-browser.css": "0e5b292627bc25a7735fcc0a90b5dd4d312b633b8a7bd38a8e75f20e69fdce0d",
     "favoritos/styles/12-responsive.css": "2baf1e1ebce441ceb426b8cdead229461a579083521b95f63378db373e2137d5",
-    "favoritos/runtime.js": "6a126e5b4cd1695613811b81ab2fc553b49b5f41684dfcafbadf0d008d6e6192",
+    "favoritos/runtime.js": "fd46a5e9406054b858b39749c845f666d29df693d43dc421cc35bb7227b51222",
     "favoritos/v2/ui/elapsed-timer.js": "cfe5e2b31f9a33740d2bd1fc44a6470cc56a19fb35707065ac5b4cebe07514db",
     "favoritos/v2/ui/status-modal.js": "f5ba89c037a922a6503f3b6926eff4ff94fa76512c33eced31300e0878d63cd1",
     "favoritos/v2/browser/url-utils.js": "8b30a0ccce7bd10ccd8243c70731efe8b10c6775a2c3b384f7f6f3c45321c2df",

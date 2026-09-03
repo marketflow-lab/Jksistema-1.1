@@ -36,6 +36,10 @@ from backend.modules.context_hub.paths import (
     _tenant_paths,
 )
 
+from backend.modules.context_hub.product_evidence_attestation import (
+    product_evidence_generation_matches_completed_projection,
+)
+
 from backend.modules.context_hub.retrieval_filters import (
     _closed_context_filters,
     _finalize_context_retrieval_v3,
@@ -50,6 +54,7 @@ from backend.modules.context_hub.retrieval_filters import (
 
 from backend.modules.context_hub.runtime import (
     _sha256_text,
+    _utc_now,
 )
 
 from backend.modules.context_hub.storage import (
@@ -190,6 +195,7 @@ def _normalized_search(
     query: object,
     filters: Optional[Mapping[str, Any]],
     limit: int,
+    product_evidence_identity: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     raw_filters = _closed_context_filters(filters)
     safe_query = str(query or "").strip()[:500]
@@ -224,6 +230,14 @@ def _normalized_search(
         "",
         {"sku": raw_filters.get("sku"), "mlb": raw_filters.get("mlb")},
     )
+    identity_keys = ("store_ref", "seller_id", "site_id", "sku", "item_id", "variation_id")
+    raw_identity = dict(product_evidence_identity or {}) if isinstance(product_evidence_identity, Mapping) else {}
+    evidence_identity = {
+        key: str(raw_identity.get(key) or "").strip()[:180]
+        for key in identity_keys
+    } if all(key in raw_identity for key in identity_keys) else {}
+    if evidence_identity and not all(evidence_identity[key] for key in identity_keys[:-1]):
+        evidence_identity = {}
     return {
         "filters": raw_filters,
         "query": safe_query,
@@ -244,10 +258,21 @@ def _normalized_search(
         "significant_terms": significant_terms,
         "identifiers": identifiers,
         "required_identifiers": required_identifiers,
+        "product_evidence_identity": evidence_identity,
         "strict_match": _fts_match_query(query_terms, "AND"),
         "relaxed_match": _fts_match_query(significant_terms, "OR"),
         "retrieval_limit": min(max(safe_limit * 8, 32), 96),
     }
+
+
+def _product_evidence_generation_current(
+    connection: sqlite3.Connection,
+    active_id: str,
+) -> bool:
+    return product_evidence_generation_matches_completed_projection(
+        connection,
+        active_id,
+    )
 
 
 def _base_search_query(active_id: str, search: Mapping[str, Any]) -> tuple[list[str], list[Any], str]:
@@ -287,6 +312,25 @@ def _base_search_query(active_id: str, search: Mapping[str, Any]) -> tuple[list[
     for tag in search["tags"]:
         clauses.append("instr(char(10) || lower(d.tags_text) || char(10), char(10) || ? || char(10)) > 0")
         parameters.append(tag)
+    evidence_identity = search.get("product_evidence_identity") or {}
+    if not bool(search.get("product_evidence_current")) or not evidence_identity:
+        clauses.append("lower(d.kind) != 'product_evidence_fact'")
+    else:
+        clauses.append(
+            "(lower(d.kind) != 'product_evidence_fact' OR ("
+            "d.store_ref=? AND d.seller_id=? AND d.site_id=? "
+            "AND d.sku=? AND d.item_id=? AND d.variation_id=?))"
+        )
+        parameters.extend(evidence_identity[key] for key in (
+            "store_ref", "seller_id", "site_id", "sku", "item_id", "variation_id"
+        ))
+    evidence_valid_at = search["valid_at"] or _utc_now()
+    clauses.append(
+        "(lower(d.kind) != 'product_evidence_fact' OR ("
+        "d.valid_from != '' AND d.valid_to != '' "
+        "AND d.valid_from <= ? AND d.valid_to > ?))"
+    )
+    parameters.extend((evidence_valid_at, evidence_valid_at))
     if search["valid_at"]:
         clauses.extend((
             "(d.valid_from != '' OR d.valid_to != '')",
@@ -500,10 +544,11 @@ def search_context(
     limit: int = 12,
     *,
     info_root: Optional[os.PathLike[str] | str] = None,
+    _product_evidence_identity: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Search an active generation by exact ID, strict BM25 and bounded relaxation."""
 
-    search = _normalized_search(query, filters, limit)
+    search = _normalized_search(query, filters, limit, _product_evidence_identity)
     paths = _tenant_paths(client_id, info_root=info_root)
     bootstrap_context_hub(paths.client_id, info_root=paths.info_root)
     state = _SearchExecution()
@@ -513,6 +558,11 @@ def search_context(
         if not active_id:
             connection.commit()
             return _empty_search_result(search)
+        search = dict(search)
+        search["product_evidence_current"] = _product_evidence_generation_current(
+            connection,
+            active_id,
+        )
         generation = connection.execute(
             "SELECT source_version FROM context_hub_generations WHERE generation_id=? AND status='active'",
             (active_id,),

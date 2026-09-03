@@ -128,11 +128,30 @@ def get_tenant_path(client_id: str) -> str:
     return tenant_path
 
 
-def atualizar_api_loja(client_id: str, nome_loja: str, api_nome: str, dados_api: dict):
+def atualizar_api_loja(
+    client_id: str,
+    nome_loja: str,
+    api_nome: str,
+    dados_api: dict,
+    *,
+    store_id: str,
+):
     if callable(_atualizar_api_loja_fn):
-        return _atualizar_api_loja_fn(client_id, nome_loja, api_nome, dados_api)
+        return _atualizar_api_loja_fn(
+            client_id,
+            nome_loja,
+            api_nome,
+            dados_api,
+            store_id=store_id,
+        )
     from backend.services.integracoes import atualizar_api_loja as _atualizar
-    return _atualizar(client_id, nome_loja, api_nome, dados_api)
+    return _atualizar(
+        client_id,
+        nome_loja,
+        api_nome,
+        dados_api,
+        store_id=store_id,
+    )
 
 
 def _shared_sync_propagar_lojas_integracoes_cliente(client_id: str, machine_id: str = ""):
@@ -233,13 +252,28 @@ def _bling_refresh_token(client_id, client_secret, refresh_token):
     return exchange_bling_refresh_token(client_id, client_secret, refresh_token)
 
 
-def _bling_marcar_oauth_invalido(client_id: str, nome_loja: str, cfg: dict | None, motivo: str) -> dict:
+def _bling_marcar_oauth_invalido(
+    client_id: str,
+    nome_loja: str,
+    cfg: dict | None,
+    motivo: str,
+    *,
+    store_id: str,
+) -> dict:
     from backend.services.integracoes import marcar_token_bling_invalido
 
-    return marcar_token_bling_invalido(client_id, nome_loja, cfg, motivo)
+    return marcar_token_bling_invalido(
+        client_id, nome_loja, cfg, motivo, store_id=store_id
+    )
 
 
-def _bling_salvar_oauth_valido(client_id: str, nome_loja: str, cfg: dict) -> dict:
+def _bling_salvar_oauth_valido(
+    client_id: str,
+    nome_loja: str,
+    cfg: dict,
+    *,
+    store_id: str,
+) -> dict:
     atualizado = dict(cfg or {})
     atualizado["connected"] = True
     atualizado["status"] = "conectado"
@@ -247,28 +281,94 @@ def _bling_salvar_oauth_valido(client_id: str, nome_loja: str, cfg: dict) -> dic
     atualizado["oauth_invalid"] = False
     atualizado["shared_without_oauth_tokens"] = False
     atualizado["updated_at"] = str(time.time())
-    atualizar_api_loja(client_id, nome_loja, "bling", atualizado)
+    atualizar_api_loja(
+        client_id,
+        nome_loja,
+        "bling",
+        atualizado,
+        store_id=store_id,
+    )
     return atualizado
 
 
-def _bling_renovar_token_loja(client_id: str, nome_loja: str, cfg: dict | None) -> dict:
+def _bling_renovar_token_loja(
+    client_id: str,
+    nome_loja: str,
+    cfg: dict | None,
+    *,
+    store_id: str,
+    return_disposition: bool = False,
+) -> dict | tuple[dict, str]:
     from backend.services.integracoes import renovar_token_bling_loja
 
-    return renovar_token_bling_loja(client_id, nome_loja, cfg)
+    return renovar_token_bling_loja(
+        client_id,
+        nome_loja,
+        cfg,
+        store_id=store_id,
+        return_disposition=return_disposition,
+    )
 
 
-def _bling_executar_com_refresh(client_id: str, nome_loja: str, cfg: dict, chamada: Callable[[str], tuple[Any, int]], on_refresh: Optional[Callable[[], None]] = None) -> tuple[Any, int, dict]:
+def _bling_executar_com_refresh(
+    client_id: str,
+    nome_loja: str,
+    cfg: dict,
+    chamada: Callable[[str], tuple[Any, int]],
+    on_refresh: Optional[Callable[[], None]] = None,
+    *,
+    store_id: str,
+    require_owned_refresh: bool = False,
+    reused_concurrent_validator: Optional[Callable[[dict, dict], bool]] = None,
+) -> tuple[Any, int, dict]:
     cfg = dict(cfg or {})
     access_token = str(cfg.get("access_token") or "").strip()
     resultado, status = chamada(access_token)
     if status == 401:
         if on_refresh:
             on_refresh()
-        cfg = _bling_renovar_token_loja(client_id, nome_loja, cfg)
+        if require_owned_refresh:
+            cfg_anterior = dict(cfg)
+            cfg, disposition = _bling_renovar_token_loja(
+                client_id,
+                nome_loja,
+                cfg,
+                store_id=store_id,
+                return_disposition=True,
+            )
+            reused_concurrent_aceito = False
+            if (
+                disposition == "reused_concurrent"
+                and reused_concurrent_validator is not None
+            ):
+                try:
+                    reused_concurrent_aceito = bool(
+                        reused_concurrent_validator(cfg_anterior, dict(cfg or {}))
+                    )
+                except Exception:
+                    reused_concurrent_aceito = False
+            if disposition != "committed_by_caller" and not reused_concurrent_aceito:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "bling_refresh_not_owned",
+                        "message": (
+                            "A credencial Bling mudou durante o refresh; "
+                            "a consulta nao foi repetida."
+                        ),
+                        "disposition": disposition,
+                    },
+                )
+        else:
+            cfg = _bling_renovar_token_loja(
+                client_id, nome_loja, cfg, store_id=store_id
+            )
         resultado, status = chamada(str(cfg.get("access_token") or ""))
     if status == 401:
         motivo = "Token Bling expirado. Refaça a conexão em Integrações."
-        _bling_marcar_oauth_invalido(client_id, nome_loja, cfg, motivo)
+        _bling_marcar_oauth_invalido(
+            client_id, nome_loja, cfg, motivo, store_id=store_id
+        )
     return resultado, status, cfg
 
 

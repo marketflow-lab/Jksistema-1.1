@@ -109,7 +109,7 @@ def _customer_reply_automation_terminal_blocker(
 
 def _customer_reply_job_draft(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     result = job.get("result") if isinstance(job.get("result"), dict) else {}
-    resposta = str(result.get("resposta") or "").strip()
+    resposta = str(result.get("resposta") or "")
     contexto = dict(result.get("contexto") or {}) if isinstance(result.get("contexto"), dict) else {}
     contexto.update(
         {
@@ -160,6 +160,8 @@ def _customer_reply_question_approval(
         "ia_validacao_ok": contexto.get("ia_validacao_ok"),
         "ia_validacao_issues": contexto.get("ia_validacao_issues") or [],
         "ia_requer_revisao_humana": bool(contexto.get("ia_requer_revisao_humana")),
+        "manual_edit_required": bool(contexto.get("manual_edit_required")),
+        "manual_edit_reason": str(contexto.get("manual_edit_reason") or ""),
         "codex_job_id": contexto.get("codex_job_id") or "",
         "proposal_id": contexto.get("codex_job_id") or "",
         "proposal_version": contexto.get("proposal_version") or 1,
@@ -239,7 +241,7 @@ def _customer_reply_post_sale_approval(
         "pergunta": last_text,
         "conversa": conversa_aprovacao,
         "mensagens": conversa_aprovacao["messages"],
-        "resposta_sugerida": str(resultado_ia.get("resposta") or "").strip(),
+        "resposta_sugerida": str(resultado_ia.get("resposta") or ""),
         "max_chars": max_chars,
         "model": str(resultado_ia.get("model") or "").strip(),
         "ia_origem": "mercado_livre_pos_venda",

@@ -15,7 +15,10 @@ from backend.modules.perguntas_pos_venda.endpoints.security import get_tenant_id
 from backend.modules.perguntas_pos_venda.endpoints.state import ENDPOINTS_STATE
 from backend.schemas import PerguntasAprovacaoRequest
 from backend.services import perguntas_pos_venda_codex
-from backend.services.perguntas_pos_venda_state import ML_POS_VENDA_DEFAULT_MAX_CHARS
+from backend.services.perguntas_pos_venda_state import (
+    ML_POS_VENDA_DEFAULT_MAX_CHARS,
+    ML_RESPOSTA_PERGUNTA_MAX_CHARS,
+)
 from backend.modules.perguntas_pos_venda.endpoints.customer_reply import (
     _customer_reply_approval_job_current,
 )
@@ -124,7 +127,7 @@ def ml_perguntas_aprovacoes_listar(client_id: str = Depends(get_tenant_id)):
                     approval["pergunta"] = approval.get("pergunta") or conversa_aprovacao["last_message_text"]
                     mudou = True
             except Exception as exc:
-                logger.warning("[PERGUNTAS IA] Nao foi possivel validar aprovacao pos-venda %s: %s", approval.get("id"), exc)
+                logger.warning("[PERGUNTAS IA] evento=validar_aprovacao_pos_venda status=erro tipo=%s", type(exc).__name__)
         else:
             try:
                 if loja and question_id:
@@ -134,7 +137,7 @@ def ml_perguntas_aprovacoes_listar(client_id: str = Depends(get_tenant_id)):
                         resposta_ml = ""
                         answer = pergunta_ml.get("answer") if isinstance(pergunta_ml.get("answer"), dict) else {}
                         if isinstance(answer, dict):
-                            resposta_ml = str(answer.get("text") or "").strip()
+                            resposta_ml = str(answer.get("text") or "")
                         if _perguntas_ia_resolver_aprovacao(approval, "answered_elsewhere", "pergunta_respondida_por_outro_fluxo", resposta_ml):
                             state = state or _perguntas_ia_state_carregar(client_id)
                             _perguntas_ia_marcar_processada(state, loja, question_id, "answered_elsewhere")
@@ -142,7 +145,7 @@ def ml_perguntas_aprovacoes_listar(client_id: str = Depends(get_tenant_id)):
                             mudou_state = True
                         continue
             except Exception as exc:
-                logger.warning("[PERGUNTAS IA] Nao foi possivel validar aprovacao de pergunta %s: %s", approval.get("id"), exc)
+                logger.warning("[PERGUNTAS IA] evento=validar_aprovacao_pergunta status=erro tipo=%s", type(exc).__name__)
         pendentes.append(approval)
     if mudou:
         _perguntas_ia_aprovacoes_salvar(client_id, aprovacoes)
@@ -209,7 +212,7 @@ def _approval_prepare(
     store = str(approval.get("loja") or "").strip()
     question_id = str(approval.get("question_id") or "").strip()
     edited = req.resposta if req.resposta is not None else req.texto
-    answer = str(edited if edited is not None else approval.get("resposta_sugerida") or "").strip()
+    answer = str(edited if edited is not None else approval.get("resposta_sugerida") or "")
     draft_hash = hashlib.sha256(answer.encode("utf-8")).hexdigest()
     expected_key = hashlib.sha256(
         f"{client_id}|{store}|{question_id}|{draft_hash}".encode("utf-8")
@@ -244,9 +247,18 @@ def _approval_prepare(
 
 
 def _approval_question_preflight(context: _ApprovalSend) -> Optional[dict]:
-    context.answer = _perguntas_ia_limpar_resposta(context.answer)
-    if not context.answer:
+    if not context.answer.strip():
         raise HTTPException(status_code=400, detail="Informe uma resposta antes de aprovar.")
+    if len(context.answer) > ML_RESPOSTA_PERGUNTA_MAX_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"A resposta possui {len(context.answer)} caracteres. Edite o rascunho para no maximo "
+                f"{ML_RESPOSTA_PERGUNTA_MAX_CHARS} caracteres antes de enviar."
+            ),
+        )
+    context.approval["manual_edit_required"] = False
+    context.approval["manual_edit_reason"] = ""
     responded, question, context.cfg = _perguntas_ia_pergunta_respondida_ml(
         context.client_id, context.store, context.cfg, context.question_id
     )
@@ -256,7 +268,7 @@ def _approval_question_preflight(context: _ApprovalSend) -> Optional[dict]:
         )
     if responded:
         answer_data = question.get("answer") if isinstance(question.get("answer"), dict) else {}
-        existing_answer = str(answer_data.get("text") or "").strip()
+        existing_answer = str(answer_data.get("text") or "")
         reconciled = context.previous_status == "sending" and existing_answer == context.answer
         context.approval.update({
             "status": "sent_reconciled" if reconciled else "answered_elsewhere",
@@ -360,9 +372,7 @@ def _approval_finalize(
             question_id=context.question_id,
         )
     except Exception as exc:
-        logger.warning(
-            "[ML PERGUNTAS IA] Falha ao registrar resposta aprovada na memoria do SKU: %s", exc
-        )
+        logger.warning("[ML PERGUNTAS IA] evento=registrar_memoria_aprovada status=erro tipo=%s", type(exc).__name__)
     return {"success": True, "approval": context.approval}
 
 

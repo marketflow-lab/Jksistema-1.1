@@ -10,6 +10,7 @@ const NCM_SYNC = {
     
     // Estado
     jobId: null,
+    storeId: null,
     progressTimer: null,
     statusCallback: null,
     onCompleteCallback: null,
@@ -25,8 +26,9 @@ const NCM_SYNC = {
         window.addEventListener('storage', (e) => {
             if (e.key === this.LOCAL_STORAGE_KEY) {
                 const novoJob = e.newValue ? JSON.parse(e.newValue) : null;
-                if (novoJob && novoJob.jobId) {
+                if (novoJob && novoJob.jobId && novoJob.clientId === this._getClientId()) {
                     this.jobId = novoJob.jobId;
+                    this.storeId = novoJob.storeId || null;
                     console.log('[NCM-SYNC] Job detectado de outra aba:', this.jobId);
                     this.startMonitoring();
                 }
@@ -37,8 +39,9 @@ const NCM_SYNC = {
         const stored = localStorage.getItem(this.LOCAL_STORAGE_KEY);
         if (stored) {
             const data = JSON.parse(stored);
-            if (data.jobId && data.status === 'running') {
+            if (data.jobId && data.status === 'running' && data.clientId === this._getClientId()) {
                 this.jobId = data.jobId;
+                this.storeId = data.storeId || null;
                 console.log('[NCM-SYNC] Recuperando job anterior:', this.jobId);
                 this.startMonitoring();
             }
@@ -48,14 +51,20 @@ const NCM_SYNC = {
     /**
      * Inicia uma nova sincronização NCM
      */
-    async iniciarSincronizacao() {
+    async iniciarSincronizacao(storeId) {
+        const storeIdSeguro = String(storeId || '').trim();
+        if (!storeIdSeguro) throw new Error('Selecione uma loja especifica para sincronizar NCM.');
         if (this.jobId && this.isRunning()) {
+            if (this.storeId && this.storeId !== storeIdSeguro) {
+                throw new Error('Ja existe uma sincronizacao NCM em andamento para outra loja.');
+            }
             console.log('[NCM-SYNC] Sincronização já em andamento:', this.jobId);
             return this.jobId;
         }
         
         try {
-            const resp = await fetch('/api/cadastro/sync-ncm/iniciar', {
+            const params = new URLSearchParams({ store_id: storeIdSeguro });
+            const resp = await fetch(`/api/cadastro/sync-ncm/iniciar?${params.toString()}`, {
                 method: 'POST',
                 headers: this._getAuthHeaders()
             });
@@ -67,10 +76,13 @@ const NCM_SYNC = {
             
             const data = await resp.json();
             this.jobId = data.job_id;
+            this.storeId = storeIdSeguro;
             
             // Guardar no localStorage para outras abas
             localStorage.setItem(this.LOCAL_STORAGE_KEY, JSON.stringify({
                 jobId: this.jobId,
+                clientId: this._getClientId(),
+                storeId: this.storeId,
                 status: 'running',
                 startTime: Date.now()
             }));
@@ -133,6 +145,8 @@ const NCM_SYNC = {
             // Atualizar localStorage para outras abas
             localStorage.setItem(this.LOCAL_STORAGE_KEY, JSON.stringify({
                 jobId: this.jobId,
+                clientId: this._getClientId(),
+                storeId: this.storeId,
                 status: progress.status,
                 progress: progress,
                 lastUpdate: Date.now()
@@ -145,6 +159,7 @@ const NCM_SYNC = {
                 this.stopMonitoring();
                 setTimeout(() => {
                     this.jobId = null;
+                    this.storeId = null;
                     localStorage.removeItem(this.LOCAL_STORAGE_KEY);
                     if (this.onCompleteCallback) {
                         this.onCompleteCallback(progress.status);
@@ -203,7 +218,18 @@ const NCM_SYNC = {
         const stored = localStorage.getItem(this.LOCAL_STORAGE_KEY);
         if (!stored) return false;
         const data = JSON.parse(stored);
-        return data.status === 'running';
+        return data.status === 'running'
+            && data.clientId === this._getClientId()
+            && (!this.storeId || data.storeId === this.storeId);
+    },
+
+    _getClientId() {
+        try {
+            const user = JSON.parse(localStorage.getItem('user_data') || 'null');
+            return String(user && user.client_id || '').trim();
+        } catch (_error) {
+            return '';
+        }
     },
     
     /**

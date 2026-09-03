@@ -36,6 +36,15 @@ def configure_admin_usuarios_common_runtime(runtime_module=None):
 
 configure_admin_usuarios_common_runtime()
 
+CADASTRO_PHOTO_READ_PERMISSIONS = (
+    "cadastro",
+    "medias_compras",
+    "vendas",
+    "importacoes",
+    "perguntas_pos_venda",
+)
+
+
 def _permissao_exigida_por_rota(path: str, method: str = "GET") -> Optional[Any]:
     """Mapeia cada grupo de rotas ao mÃƒÂ³dulo correspondente da planilha de usuÃƒÂ¡rios."""
     rota = str(path or "").lower()
@@ -61,6 +70,13 @@ def _permissao_exigida_por_rota(path: str, method: str = "GET") -> Optional[Any]
         return "integracao"
     if rota.startswith("/api/lojas") and metodo in {"POST", "PUT", "PATCH", "DELETE"}:
         return "integracao"
+    if metodo in {"GET", "HEAD"} and (
+        rota.startswith("/api/cadastro/foto/")
+        or rota.startswith("/api/cadastro/foto-arquivo/")
+    ):
+        # Fotos do cadastro sao um recurso autenticado compartilhado por estas
+        # telas. O proprio endpoint continua validando o tenant da sessao.
+        return CADASTRO_PHOTO_READ_PERMISSIONS
     if rota.startswith("/api/cadastro/"):
         return "cadastro"
     if rota.startswith("/api/impostos/"):
@@ -107,39 +123,50 @@ def _permissoes_autorizam_rota(permissoes: dict, permissao_necessaria: Any) -> b
     return any(permissoes.get(chave) is True for chave in _normalizar_permissoes_exigidas(permissao_necessaria))
 
 def _carregar_permissoes_usuario(username: str, client_id: Optional[str] = None) -> dict:
-    """Obtem permissoes priorizando fontes locais, com fallback para Firebase/planilha."""
+    """Obtem permissoes na fonte autoritativa sem listar todos os usuarios."""
     username_norm = str(username or "").strip().lower()
     usuarios = None
     headers = []
+    firebase_ativo = _firebase_deve_usar()
 
-    try:
-        usuarios_aut, _ws_aut, headers_aut = carregar_usuarios_sheets()
-    except HTTPException as exc:
-        if not _firebase_http_exception_permite_fallback(exc):
-            raise
-        logger.warning("[LOGIN] Firebase indisponivel ao carregar permissoes; usando cache local para '%s'.", username_norm)
-        usuarios_aut, headers_aut = None, []
-    except Exception:
-        usuarios_aut, headers_aut = None, []
+    if firebase_ativo:
+        usuario_firebase = _firebase_obter_usuario(username_norm)
+        if isinstance(usuario_firebase, dict):
+            usuarios = {username_norm: usuario_firebase}
+        elif _firebase_access_obrigatorio():
+            raise HTTPException(status_code=401, detail="Usuario da sessao nao encontrado. Faca login novamente.")
 
-    if isinstance(usuarios_aut, dict) and username_norm in usuarios_aut:
-        usuarios = usuarios_aut
-        headers = headers_aut or []
-    else:
-        usuarios_sql, headers_sql = _carregar_usuarios_sql()
-        if isinstance(usuarios_sql, dict) and username_norm in usuarios_sql:
-            usuarios = usuarios_sql
-            headers = headers_sql or []
+    if usuarios is None:
+        try:
+            usuarios_aut, _ws_aut, headers_aut = carregar_usuarios_sheets(
+                skip_firebase=firebase_ativo,
+            )
+        except HTTPException as exc:
+            if not _firebase_http_exception_permite_fallback(exc):
+                raise
+            logger.warning("[LOGIN] Firebase indisponivel ao carregar permissoes; usando cache local para '%s'.", username_norm)
+            usuarios_aut, headers_aut = None, []
+        except Exception:
+            usuarios_aut, headers_aut = None, []
+
+        if isinstance(usuarios_aut, dict) and username_norm in usuarios_aut:
+            usuarios = usuarios_aut
+            headers = headers_aut or []
         else:
-            usuarios_cache, headers_cache = _carregar_cache_usuarios()
-            if isinstance(usuarios_cache, dict) and username_norm in usuarios_cache:
-                usuarios = usuarios_cache
-                headers = headers_cache or []
+            usuarios_sql, headers_sql = _carregar_usuarios_sql()
+            if isinstance(usuarios_sql, dict) and username_norm in usuarios_sql:
+                usuarios = usuarios_sql
+                headers = headers_sql or []
             else:
-                usuarios_local, headers_local = _carregar_usuarios_local()
-                if isinstance(usuarios_local, dict) and username_norm in usuarios_local:
-                    usuarios = usuarios_local
-                    headers = headers_local or []
+                usuarios_cache, headers_cache = _carregar_cache_usuarios()
+                if isinstance(usuarios_cache, dict) and username_norm in usuarios_cache:
+                    usuarios = usuarios_cache
+                    headers = headers_cache or []
+                else:
+                    usuarios_local, headers_local = _carregar_usuarios_local()
+                    if isinstance(usuarios_local, dict) and username_norm in usuarios_local:
+                        usuarios = usuarios_local
+                        headers = headers_local or []
 
     if not isinstance(usuarios, dict) or username_norm not in usuarios:
         raise HTTPException(status_code=401, detail="UsuÃ¡rio da sessÃ£o nÃ£o encontrado. FaÃ§a login novamente.")

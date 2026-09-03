@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         'context-vault-open',
         typeof authToken === 'string' ? authToken : ''
     ),
+    trackCoscoShipment: (payload) => ipcRenderer.invoke('importacoes-cosco-tracking', payload || {}),
     getBrowserSessionPartition: () => ipcRenderer.invoke('get-browser-session-partition'),
     ensureBrowserExtensions: () => ipcRenderer.invoke('ensure-browser-extensions'),
     getBrowserExtensionSettings: () => ipcRenderer.invoke('get-browser-extension-settings'),

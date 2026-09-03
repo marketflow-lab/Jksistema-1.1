@@ -52,7 +52,13 @@ def _shared_sync_machine_state_scope(scope: str) -> str:
 def _shared_sync_machine_remote_meta(sessao: dict, scope: str) -> Optional[dict]:
     return _shared_sync_remote_meta_by_id(_shared_sync_machine_doc_id(sessao.get("client_id"), sessao.get("username"), scope))
 
-def _shared_sync_machine_push_scope(sessao: dict, scope: str, machine_id: str = "", skip_if_remote_hash_matches: bool = False) -> dict:
+def _shared_sync_machine_push_scope(
+    sessao: dict,
+    scope: str,
+    machine_id: str = "",
+    skip_if_remote_hash_matches: bool = False,
+    expected_snapshot_hash: str = "",
+) -> dict:
     bundle_id = _shared_sync_machine_doc_id(sessao.get("client_id"), sessao.get("username"), scope)
     return _shared_sync_push_scope(
         sessao.get("client_id"),
@@ -68,6 +74,7 @@ def _shared_sync_machine_push_scope(sessao: dict, scope: str, machine_id: str = 
         user_only=True,
         state_scope=_shared_sync_machine_state_scope(scope),
         skip_if_remote_hash_matches=skip_if_remote_hash_matches,
+        expected_snapshot_hash=expected_snapshot_hash,
         key_context={"sessao": sessao, "machine_id": machine_id},
     )
 
@@ -77,27 +84,161 @@ def _shared_sync_machine_pull_scope(
     *,
     force: bool = False,
     machine_id: str = "",
+    expected_snapshot_id: str = "",
+    expected_remote_fingerprint: str = "",
+    expected_bundle_hash: str = "",
+) -> dict:
+    with _shared_sync_pull_lock(
+        "destination",
+        sessao.get("client_id"),
+        scope,
+    ):
+        return _shared_sync_machine_pull_scope_serialized(
+            sessao,
+            scope,
+            force=force,
+            machine_id=machine_id,
+            expected_snapshot_id=expected_snapshot_id,
+            expected_remote_fingerprint=expected_remote_fingerprint,
+            expected_bundle_hash=expected_bundle_hash,
+        )
+
+
+def _shared_sync_machine_pull_scope_serialized(
+    sessao: dict,
+    scope: str,
+    *,
+    force: bool = False,
+    machine_id: str = "",
+    expected_snapshot_id: str = "",
+    expected_remote_fingerprint: str = "",
+    expected_bundle_hash: str = "",
 ) -> dict:
     bundle_id = _shared_sync_machine_doc_id(sessao.get("client_id"), sessao.get("username"), scope)
     meta = _shared_sync_remote_meta_by_id(bundle_id)
     if not meta:
         raise HTTPException(status_code=404, detail="Nenhum backup remoto encontrado para esse compartilhamento.")
+    initial_remote_fingerprint = _shared_sync_remote_fingerprint_from_meta(meta)
+    current_snapshot_id = str(meta.get("snapshot_id") or meta.get("id") or "").strip()
+    if expected_snapshot_id and current_snapshot_id != str(expected_snapshot_id).strip():
+        raise HTTPException(
+            status_code=409,
+            detail="O snapshot remoto mudou depois da previa; confira novamente.",
+        )
+    if (
+        expected_remote_fingerprint
+        and _shared_sync_remote_fingerprint_from_meta(meta)
+        != str(expected_remote_fingerprint)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="O snapshot remoto mudou depois da previa; confira novamente.",
+        )
     state_scope = _shared_sync_machine_state_scope(scope)
     # A importacao manual vem depois de uma previa confirmada pelo usuario e
     # precisa reaplicar o snapshot. O estado historico pode dizer que o hash ja
     # foi recebido mesmo quando o arquivo local foi removido, substituido ou
     # gravado em outra copia do app. O skip continua valido apenas para rotinas
     # automaticas/idempotentes que nao foram explicitamente solicitadas.
-    if not force and _shared_sync_pull_already_current(
+    already_current = _shared_sync_pull_already_current(
         sessao.get("client_id"), sessao.get("username") or "", state_scope, meta,
-    ):
-        return _shared_sync_pull_skip_payload(scope, meta)
-    bundle, meta = _shared_sync_obter_bundle_por_id(
-        bundle_id,
-        meta,
-        key_context={"sessao": sessao, "machine_id": machine_id},
     )
-    scope_config = {"share_between_users": bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped"))}
+    if not force and already_current:
+        return _shared_sync_pull_skip_payload(scope, meta)
+    if scope == "lojas_integracoes":
+        remoto = _shared_sync_obter_bundle_remoto_para_guard(
+            bundle_id,
+            key_context={"sessao": sessao, "machine_id": machine_id},
+        )
+        if remoto is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Nenhum backup remoto encontrado para esse compartilhamento.",
+            )
+        bundle, meta = remoto
+    else:
+        bundle, meta = _shared_sync_obter_bundle_por_id(
+            bundle_id,
+            meta,
+            key_context={"sessao": sessao, "machine_id": machine_id},
+        )
+    if _shared_sync_remote_fingerprint_from_meta(meta) != initial_remote_fingerprint:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "O snapshot remoto mudou durante a importacao; "
+                "confira novamente."
+            ),
+        )
+    if (
+        expected_bundle_hash
+        and _shared_sync_bytes_sha256(bundle) != str(expected_bundle_hash)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="O conteúdo remoto mudou depois da previa; confira novamente.",
+        )
+    base_bundle = None
+    if scope == "lojas_integracoes":
+        immutable_current_snapshot_id = _shared_sync_immutable_snapshot_id(meta)
+        base_snapshot_id = _shared_sync_state_snapshot_id(
+            sessao.get("client_id"),
+            sessao.get("username") or "",
+            state_scope,
+        )
+        base_snapshot_hash = ""
+        if immutable_current_snapshot_id and not base_snapshot_id:
+            try:
+                base_snapshot_hash = _shared_sync_state_snapshot_hash(
+                    sessao.get("client_id"),
+                    sessao.get("username") or "",
+                    state_scope,
+                )
+            except Exception:
+                # A compatibilidade antiga nunca reduz o fail-closed: se o
+                # estado nao puder ser lido, nenhum hash recebe autoridade.
+                base_snapshot_hash = ""
+        # Um writer v1 pode recolocar o ponteiro legado depois de uma publicacao
+        # v2. Nunca trate esse ponteiro mutavel como descendente da base v2:
+        # sem base, o merge estrito bloqueia OAuth divergente em vez de escolher.
+        if (
+            immutable_current_snapshot_id
+            and base_snapshot_id == immutable_current_snapshot_id
+        ):
+            base_bundle = bundle
+        elif immutable_current_snapshot_id and base_snapshot_id:
+            try:
+                base_meta = _shared_sync_remote_meta_by_id(base_snapshot_id)
+                if base_meta:
+                    base_bundle, _ = _shared_sync_obter_bundle_por_id(
+                        base_snapshot_id,
+                        base_meta,
+                        key_context={"sessao": sessao, "machine_id": machine_id},
+                    )
+            except Exception:
+                # Sem base confiavel, o merge estrito bloqueia credenciais
+                # divergentes em vez de decidir por relogio.
+                base_bundle = None
+        elif immutable_current_snapshot_id and base_snapshot_hash:
+            current_hash = str(meta.get("snapshot_hash") or "").strip().lower()
+            legacy_hash = str(base_snapshot_hash or "").strip().lower()
+            if re.fullmatch(r"[a-f0-9]{64}", legacy_hash) and legacy_hash == current_hash:
+                base_bundle = bundle
+            else:
+                recovered = _shared_sync_obter_base_causal_por_hash(
+                    bundle_id,
+                    legacy_hash,
+                    expected_client_id=str(sessao.get("client_id") or ""),
+                    expected_scope=scope,
+                    key_context={"sessao": sessao, "machine_id": machine_id},
+                )
+                if recovered is not None:
+                    base_bundle, _ = recovered
+    scope_config = {
+        "share_between_users": bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped")),
+        "base_bundle": base_bundle,
+        "strict_oauth_conflicts": scope == "lojas_integracoes",
+    }
     result = _shared_sync_aplicar_pacote(sessao.get("client_id"), scope, bundle, sessao.get("username") or "", scope_config)
     _shared_sync_state_update(sessao.get("client_id"), sessao.get("username") or "", state_scope, meta, "pull")
     return {
@@ -106,6 +247,7 @@ def _shared_sync_machine_pull_scope(
         "direction": "pull",
         "file_count": result.get("file_count") or 0,
         "stores_count": int(result.get("stores_count") or 0),
+        "snapshot_stores_count": int(result.get("snapshot_stores_count") or 0),
         "backup_dir": result.get("backup_dir") or "",
         "snapshot_hash": meta.get("snapshot_hash") or "",
         "remote_updated_at": meta.get("updated_at") or "",
@@ -125,6 +267,8 @@ def _shared_sync_machine_status_payload(sessao: dict, machine_id: str = "") -> d
         scope_state = state_scopes.get(state_key) or {}
         remote_hash = str(meta.get("snapshot_hash") or "")
         state_hash = str(scope_state.get("snapshot_hash") or "")
+        remote_snapshot_id = str(meta.get("snapshot_id") or "").strip()
+        state_snapshot_id = str(scope_state.get("snapshot_id") or "").strip()
         remote_machine = str(meta.get("machine_id") or "").strip()
         current_machine = str(machine_id or "").strip()
         synced_at = str(scope_state.get("synced_at") or "")
@@ -136,7 +280,13 @@ def _shared_sync_machine_status_payload(sessao: dict, machine_id: str = "") -> d
             "pending_receive": bool(
                 meta
                 and remote_hash
-                and remote_hash != state_hash
+                and (
+                    remote_hash != state_hash
+                    or (
+                        remote_snapshot_id
+                        and remote_snapshot_id != state_snapshot_id
+                    )
+                )
                 and remote_machine != current_machine
             ),
             "synced_at": synced_at,
@@ -197,7 +347,13 @@ def _shared_sync_machine_auto_run(sessao: dict, machine_id: str = "", requested:
         if not remote_hash:
             skipped.append({"scope": scope, "reason": "remote_hash_missing"})
             continue
-        if state_hash == remote_hash:
+        state_scope = state_scopes.get(state_key) if isinstance(state_scopes.get(state_key), dict) else {}
+        remote_snapshot_id = str(remote.get("snapshot_id") or "").strip()
+        state_snapshot_id = str(state_scope.get("snapshot_id") or "").strip()
+        if (
+            state_hash == remote_hash
+            and (not remote_snapshot_id or state_snapshot_id == remote_snapshot_id)
+        ):
             skipped.append({"scope": scope, "reason": "already_current", "snapshot_hash": remote_hash})
             continue
         if remote_machine == current_machine:

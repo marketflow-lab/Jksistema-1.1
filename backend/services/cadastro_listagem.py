@@ -34,8 +34,11 @@ def _configure_runtime_globals(target_globals, runtime_module=None):
 
 
 import io
+import hashlib
 import os
 import re
+import tempfile
+from contextlib import ExitStack
 from datetime import datetime
 from typing import Optional
 
@@ -46,7 +49,12 @@ from backend.schemas import CadastroProdutoRequest
 from backend.services.cadastro_common import *
 from backend.services.cadastro_custos import *
 from backend.services.cadastro_fotos import *
+from backend.services.cadastro_fotos import (
+    _cadastro_caminhos_variantes_fotos_preparadas,
+    _validar_caminhos_variantes_fotos,
+)
 from backend.services.cadastro_sync_ncm import *
+from backend.services.cadastro_sync_ncm import _sync_ncm_salvar_estoque_atomico
 from backend.services.integracoes import renovar_token_bling_loja
 
 
@@ -60,11 +68,68 @@ def configure_cadastro_listagem_runtime(runtime_module=None):
 
 configure_cadastro_listagem_runtime()
 
+
+def _cadastro_escrever_bytes_atomico(caminho: str, conteudo: bytes) -> None:
+    destino = os.path.abspath(caminho)
+    pasta = os.path.dirname(destino)
+    os.makedirs(pasta, exist_ok=True)
+    temporario = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{os.path.basename(destino)}.",
+            suffix=".tmp",
+            dir=pasta,
+            delete=False,
+        ) as arquivo:
+            temporario = arquivo.name
+            arquivo.write(conteudo)
+            arquivo.flush()
+            os.fsync(arquivo.fileno())
+        os.replace(temporario, destino)
+        temporario = ""
+    finally:
+        if temporario:
+            try:
+                os.unlink(temporario)
+            except OSError:
+                pass
+
+
+def _cadastro_digest_arquivo(caminho: str) -> bytes | None:
+    try:
+        with open(caminho, "rb") as arquivo:
+            return hashlib.sha256(arquivo.read()).digest()
+    except FileNotFoundError:
+        return None
+
 async def listar_produtos_cadastro(
     client_id: str = Depends(get_tenant_id),
     sync_fotos: bool = False,
     sync_ncm: bool = False,
 ):
+    if sync_fotos:
+        _cadastro_fotos_exigir_mutacao_global_permitida(client_id)
+
+    from backend.services.cadastro_compatibilidade import (
+        skus_controlados_cadastro_lojas,
+    )
+
+    skus_controlados_lojas = skus_controlados_cadastro_lojas(client_id)
+    cadastro_por_loja_ativo = bool(skus_controlados_lojas)
+    if cadastro_por_loja_ativo and (sync_fotos or sync_ncm):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "store_id_required",
+                "message": (
+                    "A sincronizacao global foi desativada porque existem SKUs "
+                    "com cadastro separado por loja. Informe o store_id."
+                ),
+                "skus": sorted(skus_controlados_lojas),
+            },
+        )
+
     def _sku_lookup_keys(sku_val: str) -> tuple[str, str, str]:
         """Gera chaves de busca por SKU para melhorar match entre fontes com formatos diferentes."""
         sku_norm = _normalizar_sku_mes(str(sku_val or "").strip())
@@ -136,9 +201,21 @@ async def listar_produtos_cadastro(
 
     if alvo and os.path.exists(alvo):
         try:
-            df = pd.read_csv(alvo, dtype=str).fillna("")
+            with open(alvo, "rb") as arquivo_snapshot:
+                cadastro_snapshot_bytes = arquivo_snapshot.read()
+            cadastro_snapshot_digest = hashlib.sha256(cadastro_snapshot_bytes).digest()
+            df = pd.read_csv(io.BytesIO(cadastro_snapshot_bytes), dtype=str).fillna("")
             df.columns = [c.strip().lower() for c in df.columns]
             df = df.loc[:, ~df.columns.duplicated()]  # remove colunas com nome duplicado
+            skus_mutacao_global = {
+                str(valor or "").strip()
+                for valor in (df["sku"].tolist() if "sku" in df.columns else [])
+                if str(valor or "").strip()
+            }
+            fotos_arquivos_pendentes: list[
+                tuple[dict[str, object], dict[str, bytes | None]]
+            ] = []
+            commit_estoque_pendente = None
             cols_remover = [
                 c for c in df.columns
                 if _cadastro_coluna_indesejada(c)
@@ -194,7 +271,6 @@ async def listar_produtos_cadastro(
                 imagens_por_sku = _extrair_imagens_planilha_por_sku()
                 if imagens_por_sku:
                     pasta_fotos = os.path.join(tenant_path, "cadastro_fotos")
-                    os.makedirs(pasta_fotos, exist_ok=True)
                     if "foto" not in df.columns:
                         df["foto"] = ""
                     for idx, sku_val in df["sku"].astype(str).apply(_normalizar_sku_mes).items():
@@ -204,17 +280,31 @@ async def listar_produtos_cadastro(
                         nome_arquivo = _nome_arquivo_foto_sku(sku_val, payload['ext'])
                         caminho_arquivo = os.path.join(pasta_fotos, nome_arquivo)
                         try:
-                            with open(caminho_arquivo, "wb") as f:
-                                f.write(payload["bytes"])
                             relativo = f"cadastro_fotos/{nome_arquivo}"
+                            preparada = {
+                                "caminho": caminho_arquivo,
+                                "relativo": relativo,
+                                "conteudo": bytes(payload["bytes"]),
+                                "store_id": "",
+                                "sku": sku_val,
+                            }
+                            variantes = _cadastro_caminhos_variantes_fotos_preparadas(
+                                [preparada]
+                            )
+                            fotos_arquivos_pendentes.append(
+                                (
+                                    preparada,
+                                    {
+                                        variante: _cadastro_digest_arquivo(variante)
+                                        for variante in variantes
+                                    },
+                                )
+                            )
                             if str(df.at[idx, "foto"] or "").strip() != relativo:
                                 df.at[idx, "foto"] = relativo
                                 precisa_salvar = True
                         except Exception as e:
                             logger.warning(f"[CADASTRO] NÃƒÂ£o foi possÃƒÂ­vel salvar foto do SKU {sku_val}: {e}")
-
-            if precisa_salvar:
-                df.to_csv(alvo, index=False)  # persiste limpeza/sincronizaÃƒÂ§ÃƒÂ£o no CSV
 
             # Enriquecimento: traz "Produto Bling" do banco de estoque (produtos_compilado.csv) por SKU.
             try:
@@ -223,28 +313,46 @@ async def listar_produtos_cadastro(
                 if alvo_estoque and os.path.exists(alvo_estoque):
                     df_estoque = pd.read_csv(alvo_estoque, dtype=str).fillna("")
                     df_estoque.columns = [c.strip().lower() for c in df_estoque.columns]
+                    df_estoque_base_sync_ncm = df_estoque.copy(deep=True)
+                    if "sku" in df_estoque.columns:
+                        skus_mutacao_global.update(
+                            str(valor or "").strip()
+                            for valor in df_estoque["sku"].tolist()
+                            if str(valor or "").strip()
+                        )
 
                     # SincronizaÃƒÂ§ÃƒÂ£o opcional de NCM (manual no mÃƒÂ³dulo Cadastro).
                     # MantÃ©m o sync de estoque rÃƒÂ¡pido e sÃƒÂ³ consulta detalhe do Bling quando solicitado.
                     if sync_ncm and "id_bling" in df_estoque.columns:
                         lojas = carregar_lojas(client_id)
-                        bling_por_loja = {}
+                        bling_por_id = {}
+                        ids_por_nome = {}
                         for loja in lojas:
                             cfg_bling = (loja.get("integracoes") or {}).get("bling") or {}
                             if cfg_bling.get("access_token") and cfg_bling.get("id") and cfg_bling.get("secret"):
                                 nome_loja = str(loja.get("nome") or "").strip()
-                                if nome_loja:
-                                    bling_por_loja[nome_loja] = {
+                                store_id_loja = str(loja.get("store_id") or "").strip()
+                                if nome_loja and store_id_loja:
+                                    bling_por_id[store_id_loja] = {
+                                        "_nome_context": nome_loja,
+                                        "_store_id_context": store_id_loja,
                                         "id": cfg_bling.get("id"),
                                         "secret": cfg_bling.get("secret"),
                                         "access_token": cfg_bling.get("access_token"),
                                         "refresh_token": cfg_bling.get("refresh_token"),
                                     }
+                                    nomes_identidade = [nome_loja]
+                                    if isinstance(loja.get("nomes_anteriores"), list):
+                                        nomes_identidade.extend(loja["nomes_anteriores"])
+                                    for nome_identidade in nomes_identidade:
+                                        chave_nome = str(nome_identidade or "").strip().casefold()
+                                        if not chave_nome:
+                                            continue
+                                        candidatos_nome = ids_por_nome.setdefault(chave_nome, [])
+                                        if store_id_loja not in candidatos_nome:
+                                            candidatos_nome.append(store_id_loja)
 
-                        if bling_por_loja:
-                            def _norm_loja_nome(v: str) -> str:
-                                return str(v or "").strip().lower()
-
+                        if bling_por_id:
                             if "ncm_bling" not in df_estoque.columns:
                                 df_estoque["ncm_bling"] = ""
 
@@ -259,27 +367,29 @@ async def listar_produtos_cadastro(
                                     continue
 
                                 loja_sync = str(row_est.get("loja_sync", "") or "").strip()
-                                loja_sync_norm = _norm_loja_nome(loja_sync)
+                                loja_sync_norm = loja_sync.casefold()
+                                store_id_row = str(row_est.get("store_id", "") or "").strip()
 
                                 candidatos = []
-                                if loja_sync_norm:
-                                    for nome in bling_por_loja.keys():
-                                        if _norm_loja_nome(nome) == loja_sync_norm:
-                                            candidatos.append(nome)
-                                            break
-                                if not candidatos:
-                                    candidatos = list(bling_por_loja.keys())
+                                if store_id_row:
+                                    if store_id_row in bling_por_id:
+                                        candidatos = [store_id_row]
+                                elif loja_sync_norm:
+                                    ids_nome = ids_por_nome.get(loja_sync_norm, [])
+                                    if len(ids_nome) == 1:
+                                        candidatos = list(ids_nome)
 
                                 ncm_novo = ""
-                                for nome_loja in candidatos:
-                                    chave_cache = (nome_loja, pid)
+                                for store_id_loja in candidatos:
+                                    cfg_loja = bling_por_id.get(store_id_loja) or {}
+                                    nome_loja = str(cfg_loja.get("_nome_context") or "").strip()
+                                    chave_cache = (store_id_loja, pid)
                                     if chave_cache in cache_ncm:
                                         ncm_novo = cache_ncm[chave_cache]
                                         if ncm_novo:
                                             break
                                         continue
 
-                                    cfg_loja = bling_por_loja.get(nome_loja) or {}
                                     access_token_ncm = cfg_loja.get("access_token")
                                     cid_ncm = cfg_loja.get("id")
                                     sec_ncm = cfg_loja.get("secret")
@@ -291,8 +401,17 @@ async def listar_produtos_cadastro(
                                     ncm_resp, status_ncm = _bling_obter_ncm_produto(access_token_ncm, pid)
                                     if status_ncm == 401 and refresh_ncm:
                                         try:
-                                            renovado = renovar_token_bling_loja(client_id, nome_loja, cfg_loja)
-                                            bling_por_loja[nome_loja] = dict(renovado)
+                                            renovado = renovar_token_bling_loja(
+                                                client_id,
+                                                nome_loja,
+                                                cfg_loja,
+                                                store_id=store_id_loja,
+                                            )
+                                            bling_por_id[store_id_loja] = {
+                                                **dict(renovado),
+                                                "_nome_context": nome_loja,
+                                                "_store_id_context": store_id_loja,
+                                            }
                                             access_token_ncm = renovado.get("access_token") or access_token_ncm
                                             ncm_resp, status_ncm = _bling_obter_ncm_produto(access_token_ncm, pid)
                                         except Exception:
@@ -309,7 +428,11 @@ async def listar_produtos_cadastro(
                                     alterou_ncm_estoque = True
 
                             if alterou_ncm_estoque:
-                                df_estoque.to_csv(alvo_estoque, index=False)
+                                commit_estoque_pendente = (
+                                    alvo_estoque,
+                                    df_estoque_base_sync_ncm,
+                                    df_estoque,
+                                )
 
                     if "sku" in df_estoque.columns and "nome_bling" in df_estoque.columns:
                         mapa_bling = {}
@@ -464,8 +587,113 @@ async def listar_produtos_cadastro(
             if classificados_alterados:
                 precisa_salvar = True
 
-            if precisa_salvar:
-                df.to_csv(alvo, index=False)
+            if not cadastro_por_loja_ativo and (
+                precisa_salvar
+                or commit_estoque_pendente is not None
+                or fotos_arquivos_pendentes
+            ):
+                from backend.services.cadastro_compatibilidade import (
+                    bloquear_mutacao_legada_sem_sku_controlado,
+                )
+                from backend.services.path_coordination import path_lock_for
+
+                # Recheck independent legacy/compiled SKU candidates only at
+                # commit time, while holding the canonical store lock.  The
+                # remote Sheets/Bling work above therefore cannot race a newly
+                # created store-scoped row into global side effects.
+                with (
+                    bloquear_mutacao_legada_sem_sku_controlado(
+                        client_id, skus_mutacao_global
+                    ),
+                    _cadastro_fotos_bloquear_mutacao_global(
+                        client_id,
+                        enabled=bool(fotos_arquivos_pendentes),
+                    ),
+                ):
+                    with ExitStack() as locks_arquivos:
+                        caminhos_variantes_pendentes = sorted(
+                            {
+                                caminho_variante
+                                for _preparada, snapshots_variantes
+                                in fotos_arquivos_pendentes
+                                for caminho_variante in snapshots_variantes
+                            },
+                            key=os.path.normcase,
+                        )
+                        caminhos_mutados = sorted(
+                            {
+                                os.path.realpath(alvo),
+                                *(
+                                    [os.path.realpath(commit_estoque_pendente[0])]
+                                    if commit_estoque_pendente is not None
+                                    else []
+                                ),
+                                *(
+                                    os.path.realpath(caminho_variante)
+                                    for caminho_variante
+                                    in caminhos_variantes_pendentes
+                                ),
+                            }
+                        )
+                        for caminho_mutado in caminhos_mutados:
+                            locks_arquivos.enter_context(path_lock_for(caminho_mutado))
+                        if _cadastro_digest_arquivo(alvo) != cadastro_snapshot_digest:
+                            raise HTTPException(
+                                status_code=409,
+                                detail={
+                                    "code": "legacy_catalog_changed",
+                                    "message": (
+                                        "O cadastro global mudou durante a sincronizacao; "
+                                        "nenhum efeito foi aplicado."
+                                    ),
+                                },
+                            )
+                        for _preparada, snapshots_variantes in fotos_arquivos_pendentes:
+                            for caminho_variante, digest_esperado in snapshots_variantes.items():
+                                if _cadastro_digest_arquivo(caminho_variante) != digest_esperado:
+                                    raise HTTPException(
+                                        status_code=409,
+                                        detail={
+                                            "code": "legacy_photo_changed",
+                                            "message": (
+                                                "Uma foto global mudou durante a sincronizacao; "
+                                                "nenhum efeito foi aplicado."
+                                            ),
+                                        },
+                                    )
+                        fotos_preparadas = [
+                            preparada
+                            for preparada, _snapshots_variantes
+                            in fotos_arquivos_pendentes
+                        ]
+                        from backend.services.cadastro_lojas_produtos import (
+                            _capturar_estados_arquivos,
+                            _rollback_arquivos,
+                        )
+
+                        estados = _capturar_estados_arquivos(caminhos_mutados)
+                        try:
+                            if commit_estoque_pendente is not None:
+                                df_estoque = _sync_ncm_commit_estoque(
+                                    *commit_estoque_pendente,
+                                    permitir_fallback_nome=True,
+                                )
+                            if fotos_preparadas:
+                                _cadastro_fotos_validar_preparadas_no_lock(
+                                    client_id,
+                                    fotos_preparadas,
+                                )
+                                _validar_caminhos_variantes_fotos(
+                                    caminhos_variantes_pendentes
+                                )
+                                _salvar_fotos_preparadas_atomico(
+                                    fotos_preparadas
+                                )
+                            if precisa_salvar:
+                                _sync_ncm_salvar_estoque_atomico(df, alvo)
+                        except BaseException:
+                            _rollback_arquivos(estados)
+                            raise
 
             cols_base = ["sku", "foto", "nome", "produto_bling", "loja_sync", "ncm", "cest", "categoria", "marca", "custo", "preco", "descricao", "updated_at"] + CADASTRO_PESQUISA_COLS
             for c in cols_base:
@@ -502,9 +730,18 @@ async def listar_produtos_cadastro(
             df = _cadastro_anexar_custos_por_loja(client_id, df)
 
             cols_extra = [c for c in df.columns if c not in cols_base]
-            return df[cols_base + cols_extra].to_dict(orient="records")
+            from backend.services.cadastro_compatibilidade import (
+                mesclar_produtos_legados_com_lojas,
+            )
+
+            produtos_legados = df[cols_base + cols_extra].to_dict(orient="records")
+            return mesclar_produtos_legados_com_lojas(client_id, produtos_legados)
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Erro ao ler cadastro de produtos: {str(e)}")
-    return []
+    from backend.services.cadastro_compatibilidade import mesclar_produtos_legados_com_lojas
+
+    return mesclar_produtos_legados_com_lojas(client_id, [])
 
 __all__ = ['listar_produtos_cadastro', 'configure_cadastro_listagem_runtime']

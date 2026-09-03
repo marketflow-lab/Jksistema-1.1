@@ -18,7 +18,6 @@ import threading
 import time
 import unicodedata
 import uuid
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timedelta
 from typing import Any, Optional
 from urllib.parse import parse_qs, quote, quote_plus, unquote, urlencode, urlparse
@@ -200,7 +199,11 @@ def _ia_chat_precisa_busca_web(mensagem: str, page: Optional[str] = None, contex
 
 def _ia_web_normalizar_result_url(url: str) -> str:
     url_txt = str(url or "").strip()
-    if not url_txt:
+    if (
+        not url_txt
+        or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in url_txt)
+        or re.search(r"%(?:0[0ad]|7f)", url_txt, flags=re.IGNORECASE)
+    ):
         return ""
     if url_txt.startswith("//"):
         url_txt = "https:" + url_txt
@@ -209,7 +212,13 @@ def _ia_web_normalizar_result_url(url: str) -> str:
         if "duckduckgo.com" in (parsed.netloc or "") and parsed.path.startswith("/l/"):
             uddg = parse_qs(parsed.query).get("uddg")
             if uddg and uddg[0]:
-                return unquote(uddg[0])
+                decoded = unquote(uddg[0]).strip()
+                if (
+                    any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in decoded)
+                    or re.search(r"%(?:0[0ad]|7f)", decoded, flags=re.IGNORECASE)
+                ):
+                    return ""
+                return decoded
     except Exception:
         pass
     return url_txt
@@ -415,7 +424,7 @@ def _ia_web_buscar_noticias(query: str, max_results: int = 5) -> list[dict]:
                 break
         return resultados
     except Exception as exc:
-        logger.warning(f"[IA WEB] Falha na busca de noticias: {type(exc).__name__}: {exc}")
+        logger.warning("[IA WEB] Falha na busca de noticias: %s", type(exc).__name__)
         return []
 
 
@@ -443,7 +452,7 @@ def _ia_web_buscar(query: str, max_results: int = 5, *, fast: bool = False) -> l
                 if isinstance(item, dict)
             ][:max_results]
     except Exception as exc:
-        logger.warning(f"[IA WEB] Falha na busca por provedor externo: {type(exc).__name__}: {exc}")
+        logger.warning("[IA WEB] Falha na busca por provedor externo: %s", type(exc).__name__)
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (compatible; JKSistema/1.0; +https://jksistema.local)",
@@ -481,7 +490,7 @@ def _ia_web_buscar(query: str, max_results: int = 5, *, fast: bool = False) -> l
         if resultados:
             return resultados
     except Exception as exc:
-        logger.warning(f"[IA WEB] Falha na busca web: {type(exc).__name__}: {exc}")
+        logger.warning("[IA WEB] Falha na busca web: %s", type(exc).__name__)
     try:
         if fast:
             raise RuntimeError("fallback_lite_omitido_no_modo_rapido")
@@ -527,7 +536,7 @@ def _ia_web_buscar(query: str, max_results: int = 5, *, fast: bool = False) -> l
             return resultados
     except Exception as exc:
         if not fast:
-            logger.warning(f"[IA WEB] Falha na busca web lite: {type(exc).__name__}: {exc}")
+            logger.warning("[IA WEB] Falha na busca web lite: %s", type(exc).__name__)
     try:
         jina_url = "https://r.jina.ai/http://https://duckduckgo.com/html/?" + urlencode({"q": consulta})
         resp = requests.get(
@@ -539,8 +548,11 @@ def _ia_web_buscar(query: str, max_results: int = 5, *, fast: bool = False) -> l
         resp.raise_for_status()
         return _ia_web_extrair_resultados_jina_duckduckgo(resp.text or "", max_results=max_results)
     except Exception as exc:
-        logger.warning(f"[IA WEB] Falha na busca web jina: {type(exc).__name__}: {exc}")
+        logger.warning("[IA WEB] Falha na busca web jina: %s", type(exc).__name__)
         return []
+
+
+_IA_WEB_PUBLIC_PROVIDER_SLOTS = threading.BoundedSemaphore(16)
 
 
 def _ia_web_buscar_amplo(query: str, max_results: int = 8, *, fast: bool = True) -> list[dict]:
@@ -564,24 +576,18 @@ def _ia_web_buscar_amplo(query: str, max_results: int = 8, *, fast: bool = True)
         provedores = ["duckduckgo_html"]
     timeout_s = 4 if fast else 12
     por_provedor = max(3, min(int(max_results or 8), 8))
-    respostas: list[dict] = []
-    with ThreadPoolExecutor(
-        max_workers=min(4, len(provedores)),
-        thread_name_prefix="ia-web-publica",
-    ) as executor:
-        futuros = {
-            executor.submit(
-                chamar_provedor,
-                consulta,
-                max_results=por_provedor,
-                timeout_s=timeout_s,
-                provider=provider,
-            ): provider
-            for provider in provedores
-        }
-        for futuro, provider in futuros.items():
+    respostas_indexadas: list[tuple[int, dict]] = []
+    respostas_lock = threading.Lock()
+
+    def buscar_provedor(provider_index: int, provider: str) -> None:
+        try:
             try:
-                resposta = futuro.result()
+                resposta = chamar_provedor(
+                    consulta,
+                    max_results=por_provedor,
+                    timeout_s=timeout_s,
+                    provider=provider,
+                )
             except Exception as exc:
                 if logger is not None:
                     logger.warning(
@@ -589,9 +595,44 @@ def _ia_web_buscar_amplo(query: str, max_results: int = 8, *, fast: bool = True)
                         provider,
                         type(exc).__name__,
                     )
-                continue
+                return
             if isinstance(resposta, dict):
-                respostas.append(resposta)
+                with respostas_lock:
+                    respostas_indexadas.append((provider_index, resposta))
+        finally:
+            _IA_WEB_PUBLIC_PROVIDER_SLOTS.release()
+
+    workers = []
+    for idx, provider in enumerate(provedores[:4]):
+        if not _IA_WEB_PUBLIC_PROVIDER_SLOTS.acquire(blocking=False):
+            break
+        try:
+            worker = threading.Thread(
+                target=buscar_provedor,
+                args=(idx, provider),
+                name=f"ia-web-publica-{idx + 1}",
+                daemon=True,
+            )
+        except Exception as exc:
+            _IA_WEB_PUBLIC_PROVIDER_SLOTS.release()
+            if logger is not None:
+                logger.warning("[IA WEB] Falha ao preparar provedor publico: %s", type(exc).__name__)
+            continue
+        workers.append(worker)
+    started_workers = []
+    for worker in workers:
+        try:
+            worker.start()
+            started_workers.append(worker)
+        except Exception as exc:
+            _IA_WEB_PUBLIC_PROVIDER_SLOTS.release()
+            if logger is not None:
+                logger.warning("[IA WEB] Falha ao iniciar provedor publico: %s", type(exc).__name__)
+    for worker in started_workers:
+        worker.join()
+    respostas = [
+        resposta for _idx, resposta in sorted(respostas_indexadas, key=lambda item: item[0])
+    ]
     resultados = _ia_web_mesclar_resultados_provedores(respostas, max_results=max_results)
     if resultados:
         return resultados

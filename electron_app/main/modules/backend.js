@@ -583,6 +583,39 @@ function getLocalBackendFirebaseEnv(localAppDir) {
     return { JK_ACCESS_BACKEND: 'auto' };
 }
 
+function normalizeRemoteAuthUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    try {
+        const parsed = new URL(raw);
+        if (parsed.protocol !== 'https:' || !parsed.hostname || parsed.username || parsed.password) return '';
+        if (parsed.search || parsed.hash) return '';
+        return parsed.toString().replace(/\/$/, '');
+    } catch (_err) {
+        return '';
+    }
+}
+
+function getLocalBackendRemoteAuthEnv() {
+    const paths = getConfigPaths();
+    const bundledConfig = readJsonFile(paths.bundledConfig) || readJsonFile(paths.devConfig) || {};
+    const remoteAuth = bundledConfig && typeof bundledConfig.remoteAuth === 'object'
+        ? bundledConfig.remoteAuth
+        : {};
+    const url = normalizeRemoteAuthUrl(process.env.JK_REMOTE_AUTH_URL || remoteAuth.url);
+    const projectId = String(
+        process.env.JK_REMOTE_AUTH_PROJECT_ID || remoteAuth.projectId || ''
+    ).trim();
+    const requestedMode = String(process.env.JK_REMOTE_AUTH_MODE || remoteAuth.mode || 'prefer').trim().toLowerCase();
+    const mode = ['prefer', 'required'].includes(requestedMode) ? requestedMode : 'prefer';
+    if (!url || !/^[a-z][a-z0-9-]{4,29}$/.test(projectId)) return {};
+    return {
+        JK_REMOTE_AUTH_URL: url,
+        JK_REMOTE_AUTH_PROJECT_ID: projectId,
+        JK_REMOTE_AUTH_MODE: mode
+    };
+}
+
 let backendRuntimeMaterializerModule = null;
 
 function getBackendRuntimeMaterializer() {
@@ -795,19 +828,148 @@ function waitForLocalBackendCompatibleHealth(firebaseEnv, timeoutMs = 45000, int
     });
 }
 
+function managedServerRuntimeRoots() {
+    const candidates = [
+        getLocalBackendRuntimeDir(),
+        getBundledLocalBackendSourceDir()
+    ];
+    const seen = new Set();
+    return candidates
+        .filter(Boolean)
+        .map(candidate => path.resolve(String(candidate)))
+        .filter((candidate) => {
+            const normalized = process.platform === 'win32' ? candidate.toLowerCase() : candidate;
+            if (seen.has(normalized)) return false;
+            seen.add(normalized);
+            return true;
+        });
+}
+
+function managedServerStopPowerShell(port) {
+    const safePort = Number(port);
+    if (!Number.isInteger(safePort) || safePort <= 0 || safePort > 65535) {
+        throw new Error('Porta local invalida para inspecao de processo.');
+    }
+    return [
+        `$ErrorActionPreference = 'Stop'`,
+        `$targetPort = ${safePort}`,
+        `$result = [ordered]@{ ok = $false; listenerProcessCount = 0; ownedProcessCount = 0; stopRequestedCount = 0; foreignProcessCount = 0; stopErrorCount = 0 }`,
+        `function Test-PathInsideRoot([string]$Candidate, [string]$Root) {`,
+        `  if ([string]::IsNullOrWhiteSpace($Candidate) -or [string]::IsNullOrWhiteSpace($Root)) { return $false }`,
+        `  try {`,
+        `    $candidateFull = [IO.Path]::GetFullPath($Candidate).TrimEnd('\\', '/')`,
+        `    $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\\', '/')`,
+        `    return $candidateFull.Equals($rootFull, [StringComparison]::OrdinalIgnoreCase) -or $candidateFull.StartsWith($rootFull + '\\', [StringComparison]::OrdinalIgnoreCase)`,
+        `  } catch { return $false }`,
+        `}`,
+        `function Test-CommandReferencesRoot([string]$CommandLine, [string]$Root) {`,
+        `  if ([string]::IsNullOrWhiteSpace($CommandLine) -or [string]::IsNullOrWhiteSpace($Root)) { return $false }`,
+        `  try {`,
+        `    $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\\', '/')`,
+        `    return $CommandLine.IndexOf($rootFull + '\\', [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $CommandLine.IndexOf('"' + $rootFull + '"', [StringComparison]::OrdinalIgnoreCase) -ge 0`,
+        `  } catch { return $false }`,
+        `}`,
+        `function Test-JkManagedProcess($Process, [int]$Port, [string[]]$Roots) {`,
+        `  if ($null -eq $Process) { return $false }`,
+        `  $name = [string]$Process.Name`,
+        `  if (@('python.exe', 'pythonw.exe') -notcontains $name.ToLowerInvariant()) { return $false }`,
+        `  $commandLine = [string]$Process.CommandLine`,
+        `  $markerMatches = switch ($Port) {`,
+        `    ${Number(JK_LOCAL_BACKEND_PORT)} { $commandLine -match '(?i)(^|[\\/\\s"''])backend_api(?::app|\\.py)?($|[\\s"''])'; break }`,
+        `    ${Number(JK_PROMO_WORKER_PORT)} { $commandLine -match '(?i)(^|[\\/\\s"''])promo_worker_api(?::app|\\.py)?($|[\\s"''])'; break }`,
+        `    ${Number(JK_LEGACY_WHATSAPP_VOICE_PORT)} { $commandLine -match '(?i)(whatsapp[_-]?voice|voice[_-]?(api|server|worker)|\\bvoice\\b)'; break }`,
+        `    default { $false }`,
+        `  }`,
+        `  if (-not $markerMatches) { return $false }`,
+        `  foreach ($root in $Roots) {`,
+        `    if ((Test-PathInsideRoot ([string]$Process.ExecutablePath) $root) -or (Test-CommandReferencesRoot $commandLine $root)) { return $true }`,
+        `  }`,
+        `  return $false`,
+        `}`,
+        `try {`,
+        `  $decodedRoots = $env:JK_MANAGED_SERVER_ROOTS_JSON | ConvertFrom-Json`,
+        `  $roots = @($decodedRoots | ForEach-Object { [string]$_ } | Where-Object { $_ })`,
+        `  if (-not $roots.Count) { throw 'Nenhuma raiz de runtime JK foi fornecida.' }`,
+        `  $listenerPids = @(Get-NetTCPConnection -LocalPort $targetPort -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | Where-Object { $_ })`,
+        `  $result.listenerProcessCount = $listenerPids.Count`,
+        `  $ownedPids = @()`,
+        `  foreach ($pidValue in $listenerPids) {`,
+        `    $listenerProcess = Get-CimInstance Win32_Process -Filter (\"ProcessId = $pidValue\")`,
+        `    if (Test-JkManagedProcess -Process $listenerProcess -Port $targetPort -Roots $roots) { $ownedPids += $pidValue } else { $result.foreignProcessCount++ }`,
+        `  }`,
+        `  $result.ownedProcessCount = $ownedPids.Count`,
+        `  foreach ($ownedPid in $ownedPids) {`,
+        `    try {`,
+        `      $currentProcess = Get-CimInstance Win32_Process -Filter (\"ProcessId = $ownedPid\")`,
+        `      if (-not (Test-JkManagedProcess -Process $currentProcess -Port $targetPort -Roots $roots)) { $result.foreignProcessCount++; continue }`,
+        `      $termination = Invoke-CimMethod -InputObject $currentProcess -MethodName Terminate -ErrorAction Stop`,
+        `      if ([int]$termination.ReturnValue -eq 0) { $result.stopRequestedCount++ } else { $result.stopErrorCount++ }`,
+        `    } catch { $result.stopErrorCount++ }`,
+        `  }`,
+        `  $result.ok = $true`,
+        `} catch { $result.ok = $false }`,
+        `$result | ConvertTo-Json -Compress`
+    ].join('\n');
+}
+
+function emptyManagedServerStopResult(overrides = {}) {
+    return {
+        ok: false,
+        listenerProcessCount: 0,
+        ownedProcessCount: 0,
+        stopRequestedCount: 0,
+        foreignProcessCount: 0,
+        stopErrorCount: 0,
+        ...overrides
+    };
+}
+
 function stopProcessListeningOnPort(port) {
     return new Promise((resolve) => {
-        const script = [
-            `$ErrorActionPreference = 'SilentlyContinue'`,
-            `$pids = Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen | Select-Object -ExpandProperty OwningProcess -Unique`,
-            `foreach ($pidValue in $pids) { if ($pidValue) { Stop-Process -Id $pidValue -Force } }`
-        ].join('; ');
+        let settled = false;
+        const finish = (result) => {
+            if (settled) return;
+            settled = true;
+            resolve(emptyManagedServerStopResult(result));
+        };
+        let script;
+        let roots;
+        try {
+            script = managedServerStopPowerShell(port);
+            roots = managedServerRuntimeRoots();
+        } catch (_err) {
+            finish();
+            return;
+        }
+        let stdout = '';
         const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
-            stdio: 'ignore',
-            windowsHide: true
+            stdio: ['ignore', 'pipe', 'ignore'],
+            windowsHide: true,
+            env: {
+                ...process.env,
+                JK_MANAGED_SERVER_ROOTS_JSON: JSON.stringify(roots)
+            }
         });
-        child.on('error', () => resolve(false));
-        child.on('exit', (code) => resolve(code === 0));
+        if (child.stdout) {
+            child.stdout.setEncoding('utf8');
+            child.stdout.on('data', chunk => { stdout += chunk; });
+        }
+        child.on('error', () => finish());
+        child.on('exit', (code) => {
+            try {
+                const parsed = JSON.parse(String(stdout || '').trim());
+                finish({
+                    ok: code === 0 && parsed.ok === true,
+                    listenerProcessCount: Number(parsed.listenerProcessCount || 0),
+                    ownedProcessCount: Number(parsed.ownedProcessCount || 0),
+                    stopRequestedCount: Number(parsed.stopRequestedCount || 0),
+                    foreignProcessCount: Number(parsed.foreignProcessCount || 0),
+                    stopErrorCount: Number(parsed.stopErrorCount || 0)
+                });
+            } catch (_err) {
+                finish();
+            }
+        });
     });
 }
 
@@ -830,16 +992,35 @@ function managedLocalServerPorts() {
 async function stopManagedLocalServers(reason = 'unspecified') {
     const ports = managedLocalServerPorts();
     const listeningBefore = await Promise.all(ports.map(port => isTcpPortOpen(port)));
-    const killRequested = await Promise.all(ports.map(port => stopProcessListeningOnPort(port)));
-    const closed = await Promise.all(ports.map(port => waitForTcpPortClosed(port)));
+    const stopResults = await Promise.all(ports.map(port => stopProcessListeningOnPort(port)));
+    const closed = await Promise.all(ports.map(async (port, index) => {
+        const stopResult = stopResults[index];
+        if (stopResult.stopRequestedCount > 0) return await waitForTcpPortClosed(port);
+        if (!listeningBefore[index] && stopResult.listenerProcessCount === 0) return true;
+        return !(await isTcpPortOpen(port));
+    }));
     const servers = ports.map((port, index) => ({
         port,
+        required: port === Number(JK_LOCAL_BACKEND_PORT),
         listeningBefore: listeningBefore[index],
-        killRequested: killRequested[index],
-        closed: closed[index]
+        inspected: stopResults[index].ok,
+        ownedProcessCount: stopResults[index].ownedProcessCount,
+        stopRequestedCount: stopResults[index].stopRequestedCount,
+        foreignProcessCount: stopResults[index].foreignProcessCount,
+        stopErrorCount: stopResults[index].stopErrorCount,
+        closed: closed[index],
+        blocking: false
     }));
+    for (const server of servers) {
+        const ownedListenerFailed = (
+            server.ownedProcessCount > 0
+            && !server.closed
+            && (server.foreignProcessCount === 0 || server.stopErrorCount > 0)
+        );
+        server.blocking = !server.closed && (server.required || ownedListenerFailed);
+    }
     const result = {
-        success: servers.every(server => server.closed),
+        success: servers.every(server => !server.blocking),
         reason: String(reason || 'unspecified'),
         servers
     };
@@ -1096,6 +1277,7 @@ function ensurePythonRuntimeProvisioned(sourceRoot, targetRoot) {
 function writeLocalBackendLauncher(localAppDir) {
     const infoDir = path.join(localAppDir, 'info');
     const firebaseEnv = getLocalBackendFirebaseEnv(localAppDir);
+    const remoteAuthEnv = getLocalBackendRemoteAuthEnv();
     const launcherPath = path.join(JK_ELECTRON_USER_DATA_DIR, 'start-local-backend.cmd');
     const logPath = path.join(localAppDir, 'logs', `local_backend_start_${Date.now()}_${process.pid}.log`);
     const localCallback = process.env.JK_LOCAL_OAUTH_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/callback';
@@ -1120,6 +1302,11 @@ function writeLocalBackendLauncher(localAppDir) {
         'set "IA_RAG_TOP_K=5"',
         'set "IA_RAG_SEARCH_TIMEOUT_S=4"',
         `set "JK_ACCESS_BACKEND=${cmdValue(firebaseEnv.JK_ACCESS_BACKEND || 'auto')}"`,
+        ...(remoteAuthEnv.JK_REMOTE_AUTH_URL ? [
+            `set "JK_REMOTE_AUTH_URL=${cmdValue(remoteAuthEnv.JK_REMOTE_AUTH_URL)}"`,
+            `set "JK_REMOTE_AUTH_PROJECT_ID=${cmdValue(remoteAuthEnv.JK_REMOTE_AUTH_PROJECT_ID)}"`,
+            `set "JK_REMOTE_AUTH_MODE=${cmdValue(remoteAuthEnv.JK_REMOTE_AUTH_MODE || 'prefer')}"`
+        ] : []),
         ...(firebaseEnv.FIREBASE_SERVICE_ACCOUNT_FILE ? [
             `set "FIREBASE_SERVICE_ACCOUNT_FILE=${cmdValue(firebaseEnv.FIREBASE_SERVICE_ACCOUNT_FILE)}"`
         ] : []),
@@ -1174,6 +1361,7 @@ function ensureLocalBackendStarted() {
         const localAppDir = inspection.runtimeDir;
         const bundledSourceDir = inspection.bundledDir;
         const firebaseEnv = getLocalBackendFirebaseEnv(localAppDir);
+        const remoteAuthEnv = getLocalBackendRemoteAuthEnv();
 
         const launcherPrepared = consumeCanonicalLauncherPreparedServers();
         if (launcherPrepared && await isTcpPortOpen(JK_LOCAL_BACKEND_PORT)) {
@@ -1195,7 +1383,7 @@ function ensureLocalBackendStarted() {
         const cleanup = await stopManagedLocalServers('before-start');
         if (!cleanup.success) {
             const blockedPorts = cleanup.servers
-                .filter(server => !server.closed)
+                .filter(server => server.blocking)
                 .map(server => server.port)
                 .join(', ');
             throw new Error(`Nao foi possivel encerrar os servidores antigos nas portas ${blockedPorts}.`);
@@ -1212,6 +1400,7 @@ function ensureLocalBackendStarted() {
             cwd: localAppDir,
             env: isolatedPythonChildEnv({
                 ...firebaseEnv,
+                ...remoteAuthEnv,
                 JK_INFO_DIR: path.join(localAppDir, 'info'),
                 JK_REDIRECT_URI: process.env.JK_LOCAL_OAUTH_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/callback',
                 JK_BLING_REDIRECT_URI: process.env.JK_LOCAL_OAUTH_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/callback',
@@ -1364,8 +1553,8 @@ async function stopLocalBackend() {
             ? await stopTrackedProcessTree(trackedPid)
             : false;
 
-        // O .cmd de inicializacao pode terminar antes do Uvicorn. Por isso
-        // todas as portas gerenciadas sao encerradas mesmo sem PID rastreado.
+        // O .cmd de inicializacao pode terminar antes do Uvicorn. Por isso as
+        // portas sao inspecionadas, mas somente processos JK reconhecidos sao encerrados.
         const managedStop = await stopManagedLocalServers('quit');
 
         localBackendStartupPromise = null;

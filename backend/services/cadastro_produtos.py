@@ -36,8 +36,10 @@ def _configure_runtime_globals(target_globals, runtime_module=None):
 import io
 import os
 import re
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime
-from typing import Optional
+from typing import Any, Iterator, Optional
 
 import pandas as pd
 from fastapi import Depends, File, Form, HTTPException, UploadFile
@@ -47,6 +49,7 @@ from backend.services.cadastro_common import *
 from backend.services.cadastro_custos import *
 from backend.services.cadastro_fotos import *
 from backend.services.cadastro_sync_ncm import *
+from backend.services.path_coordination import path_locks_for
 
 
 def configure_cadastro_produtos_runtime(runtime_module=None):
@@ -60,6 +63,98 @@ def configure_cadastro_produtos_runtime(runtime_module=None):
 configure_cadastro_produtos_runtime()
 
 CADASTRO_CAMPO_M3_INDIVIDUAL = "m3 individual"
+
+
+def _cadastro_salvar_dataframe_atomico(df: pd.DataFrame, caminho: str) -> None:
+    pasta = os.path.dirname(os.path.abspath(caminho))
+    os.makedirs(pasta, exist_ok=True)
+    temporario = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            prefix=f".{os.path.basename(caminho)}.",
+            suffix=".tmp",
+            dir=pasta,
+            delete=False,
+        ) as arquivo:
+            temporario = arquivo.name
+            df.to_csv(arquivo, index=False)
+            arquivo.flush()
+            os.fsync(arquivo.fileno())
+        os.replace(temporario, caminho)
+        temporario = ""
+    finally:
+        if temporario:
+            try:
+                os.unlink(temporario)
+            except OSError:
+                pass
+
+
+@contextmanager
+def _cadastro_transacao_legada_arquivo_foto(
+    client_id: str,
+    tenant_path: str,
+    arquivo_cliente: str,
+    *,
+    skus_guard: tuple[str, ...] = (),
+    sku_foto: str = "",
+    foto_data_url: str = "",
+    referencias_foto: tuple[object, ...] = (),
+) -> Iterator[list[dict[str, Any]]]:
+    """Coordena CSV global e variantes de foto como uma unica transacao."""
+
+    from backend.services.cadastro_lojas_produtos import (
+        _capturar_estados_arquivos,
+        _rollback_arquivos,
+    )
+    from backend.services.cadastro_compatibilidade import (
+        exigir_mutacao_legada_sem_sku_controlado,
+    )
+
+    with _cadastro_fotos_bloquear_transicao(client_id, tenant_path):
+        exigir_mutacao_legada_sem_sku_controlado(client_id, skus_guard)
+        preparadas = (
+            _preparar_fotos_data_url_no_tenant(
+                client_id,
+                sku_foto,
+                foto_data_url,
+                "",
+            )
+            if foto_data_url
+            else []
+        )
+        if preparadas:
+            _cadastro_fotos_validar_preparadas_no_lock(client_id, preparadas)
+        if any(
+            _cadastro_foto_referencia_local_cadastro(referencia)
+            for referencia in referencias_foto
+        ):
+            _cadastro_fotos_exigir_mutacao_global_permitida(
+                client_id,
+                tenant_path,
+            )
+
+        caminhos_variantes = _cadastro_caminhos_variantes_fotos_preparadas(
+            preparadas
+        ) if preparadas else []
+        caminhos_mutados = sorted(
+            {
+                os.path.realpath(arquivo_cliente),
+                *(os.path.realpath(item) for item in caminhos_variantes),
+            },
+            key=os.path.normcase,
+        )
+        with path_locks_for(caminhos_mutados):
+            _validar_caminhos_variantes_fotos(caminhos_variantes)
+            estados = _capturar_estados_arquivos(caminhos_mutados)
+            try:
+                yield preparadas
+            except BaseException:
+                _rollback_arquivos(estados)
+                raise
 
 
 def _cadastro_tem_valor(v) -> bool:
@@ -163,55 +258,69 @@ async def salvar_produto_cadastro(req: CadastroProdutoRequest, client_id: str = 
     if not sku or not nome:
         raise HTTPException(status_code=400, detail="SKU e nome sÃƒÂ£o obrigatÃƒÂ³rios.")
 
-    tenant_path = get_tenant_path(client_id)
-    arquivo_cliente = os.path.join(tenant_path, "cadastro_produtos.csv")
-    cols_base = _cadastro_cols_base()
+    from backend.services.cadastro_compatibilidade import (
+        bloquear_mutacao_legada_sem_sku_controlado,
+    )
 
-    if os.path.exists(arquivo_cliente):
+    with bloquear_mutacao_legada_sem_sku_controlado(client_id, [sku]):
+        tenant_path = get_tenant_path(client_id)
+        arquivo_cliente = os.path.join(tenant_path, "cadastro_produtos.csv")
         try:
-            df = pd.read_csv(arquivo_cliente).fillna("")
+            with _cadastro_transacao_legada_arquivo_foto(
+                client_id,
+                tenant_path,
+                arquivo_cliente,
+                skus_guard=(sku,),
+            ):
+                cols_base = _cadastro_cols_base()
+                if os.path.exists(arquivo_cliente):
+                    try:
+                        df = pd.read_csv(arquivo_cliente).fillna("")
+                    except Exception as e:
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Erro ao abrir cadastro atual: {str(e)}",
+                        )
+                else:
+                    df = pd.DataFrame(columns=cols_base)
+
+                for c in cols_base:
+                    if c not in df.columns:
+                        df[c] = ""
+                df = _cadastro_garantir_colunas_pesquisa(df)
+                df, _ = _consolidar_cadastro_por_sku(df)
+
+                agora = datetime.now().strftime("%d/%m/%Y %H:%M")
+                novo = {
+                    "sku": sku,
+                    "nome": nome,
+                    "categoria": (req.categoria or "").strip(),
+                    "marca": (req.marca or "").strip(),
+                    "custo": req.custo if req.custo is not None else "",
+                    "preco": req.preco if req.preco is not None else "",
+                    "descricao": (req.descricao or "").strip(),
+                    "updated_at": agora,
+                }
+
+                mask = df["sku"].astype(str).str.strip().str.lower() == sku.lower()
+                if mask.any():
+                    for k, v in novo.items():
+                        df.loc[mask, k] = v
+                else:
+                    nova_linha = {c: "" for c in df.columns}
+                    nova_linha.update(novo)
+                    df.loc[len(df)] = nova_linha
+
+                df, _ = _consolidar_cadastro_por_sku(df)
+                _cadastro_salvar_dataframe_atomico(df, arquivo_cliente)
+                return {"success": True, "message": "Produto salvo com sucesso."}
+        except HTTPException:
+            raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Erro ao abrir cadastro atual: {str(e)}")
-    else:
-        df = pd.DataFrame(columns=cols_base)
-
-    for c in cols_base:
-        if c not in df.columns:
-            df[c] = ""
-    df = _cadastro_garantir_colunas_pesquisa(df)
-
-    # Antes de salvar, limpa duplicados antigos no arquivo.
-    df, _ = _consolidar_cadastro_por_sku(df)
-
-    agora = datetime.now().strftime("%d/%m/%Y %H:%M")
-    novo = {
-        "sku": sku,
-        "nome": nome,
-        "categoria": (req.categoria or "").strip(),
-        "marca": (req.marca or "").strip(),
-        "custo": req.custo if req.custo is not None else "",
-        "preco": req.preco if req.preco is not None else "",
-        "descricao": (req.descricao or "").strip(),
-        "updated_at": agora,
-    }
-
-    mask = df["sku"].astype(str).str.strip().str.lower() == sku.lower()
-    if mask.any():
-        for k, v in novo.items():
-            df.loc[mask, k] = v
-    else:
-        nova_linha = {c: "" for c in df.columns}
-        nova_linha.update(novo)
-        df.loc[len(df)] = nova_linha
-
-    # Garante unicidade de SKU apÃƒÂ³s inserÃƒÂ§ÃƒÂ£o/ediÃƒÂ§ÃƒÂ£o.
-    df, _ = _consolidar_cadastro_por_sku(df)
-
-    try:
-        df.to_csv(arquivo_cliente, index=False)
-        return {"success": True, "message": "Produto salvo com sucesso."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao salvar cadastro de produtos: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Erro ao salvar cadastro de produtos: {str(e)}",
+            ) from e
 
 async def listar_colunas_cadastro(client_id: str = Depends(get_tenant_id)):
     tenant_path = get_tenant_path(client_id)
@@ -236,6 +345,18 @@ async def listar_colunas_cadastro(client_id: str = Depends(get_tenant_id)):
 
 async def obter_produto_cadastro(sku: str, client_id: str = Depends(get_tenant_id)):
     sku_norm = _normalizar_sku_mes(sku)
+    from backend.services.cadastro_compatibilidade import (
+        obter_produto_controlado_para_compatibilidade,
+    )
+
+    controlado, produto_lojas = obter_produto_controlado_para_compatibilidade(
+        client_id, sku_norm
+    )
+    if controlado:
+        if produto_lojas is None:
+            raise HTTPException(status_code=404, detail="SKU nao encontrado no cadastro por loja.")
+        return {"produto": produto_lojas}
+
     tenant_path = get_tenant_path(client_id)
     arquivo_cliente = os.path.join(tenant_path, "cadastro_produtos.csv")
     if not os.path.exists(arquivo_cliente):
@@ -282,68 +403,98 @@ async def obter_produto_cadastro(sku: str, client_id: str = Depends(get_tenant_i
 
 async def atualizar_produto_cadastro_completo(sku: str, payload: dict, client_id: str = Depends(get_tenant_id)):
     sku_norm = _normalizar_sku_mes(sku)
-    tenant_path = get_tenant_path(client_id)
-    arquivo_cliente = os.path.join(tenant_path, "cadastro_produtos.csv")
-    if not os.path.exists(arquivo_cliente):
-        raise HTTPException(status_code=404, detail="Cadastro de produtos nÃ£o encontrado para este cliente.")
+    from backend.services.cadastro_compatibilidade import (
+        bloquear_mutacao_legada_sem_sku_controlado,
+        exigir_mutacao_legada_sem_campos_loja,
+        exigir_mutacao_legada_sem_sku_controlado,
+    )
+
+    exigir_mutacao_legada_sem_sku_controlado(client_id, [sku_norm])
+    payload = payload or {}
+    data = {}
+    for k, v in payload.items():
+        key = str(k or "").strip().lower()
+        if not key:
+            continue
+        data[key] = "" if v is None else str(v)
+    exigir_mutacao_legada_sem_campos_loja(data)
+
+    foto_data_url = str(data.pop("__foto_data_url", "") or "").strip()
+    data.pop("__foto_filename", None)
+    novo_sku = _normalizar_sku_mes(data.get("sku", sku_norm))
+    if not novo_sku:
+        raise HTTPException(status_code=400, detail="SKU invalido.")
 
     try:
-        df = pd.read_csv(arquivo_cliente, dtype=str).fillna("")
-        df.columns = [str(c).strip().lower() for c in df.columns]
-        df = df.loc[:, ~df.columns.duplicated()]
-        df = _cadastro_garantir_colunas_pesquisa(df)
-        if "sku" not in df.columns:
-            df["sku"] = ""
+        with bloquear_mutacao_legada_sem_sku_controlado(
+            client_id,
+            [sku_norm, novo_sku],
+        ):
+            tenant_path = get_tenant_path(client_id)
+            arquivo_cliente = os.path.join(tenant_path, "cadastro_produtos.csv")
+            with _cadastro_transacao_legada_arquivo_foto(
+                client_id,
+                tenant_path,
+                arquivo_cliente,
+                skus_guard=(sku_norm, novo_sku),
+                sku_foto=novo_sku,
+                foto_data_url=foto_data_url,
+                referencias_foto=tuple(
+                    referencia
+                    for _coluna, referencia in _cadastro_foto_referencias_candidatas(
+                        data
+                    )
+                ),
+            ) as fotos_preparadas:
+                if not os.path.exists(arquivo_cliente):
+                    raise HTTPException(
+                        status_code=404,
+                        detail="Cadastro de produtos nao encontrado para este cliente.",
+                    )
 
-        df["sku"] = df["sku"].astype(str).apply(_normalizar_sku_mes)
-        df, _ = _consolidar_cadastro_por_sku(df)
-        mask = df["sku"].astype(str).str.strip().str.lower() == sku_norm.lower()
-        if not mask.any():
-            raise HTTPException(status_code=404, detail="SKU nÃ£o encontrado no cadastro.")
+                df = pd.read_csv(arquivo_cliente, dtype=str).fillna("")
+                df.columns = [str(c).strip().lower() for c in df.columns]
+                df = df.loc[:, ~df.columns.duplicated()]
+                df = _cadastro_garantir_colunas_pesquisa(df)
+                if "sku" not in df.columns:
+                    df["sku"] = ""
 
-        payload = payload or {}
-        data = {}
-        for k, v in payload.items():
-            key = str(k or "").strip().lower()
-            if not key:
-                continue
-            data[key] = "" if v is None else str(v)
+                df["sku"] = df["sku"].astype(str).apply(_normalizar_sku_mes)
+                df, _ = _consolidar_cadastro_por_sku(df)
+                mask = df["sku"].astype(str).str.strip().str.lower() == sku_norm.lower()
+                if not mask.any():
+                    raise HTTPException(status_code=404, detail="SKU nao encontrado no cadastro.")
 
-        foto_data_url = str(data.pop("__foto_data_url", "") or "").strip()
-        foto_filename = str(data.pop("__foto_filename", "") or "").strip()
+                if fotos_preparadas:
+                    data["foto"] = str(fotos_preparadas[0]["relativo"])
 
-        novo_sku = _normalizar_sku_mes(data.get("sku", sku_norm))
-        if not novo_sku:
-            raise HTTPException(status_code=400, detail="SKU invalido.")
+                # Se mudar o SKU, valida conflito com outro registro.
+                if novo_sku.lower() != sku_norm.lower():
+                    conflito = df["sku"].astype(str).str.strip().str.lower() == novo_sku.lower()
+                    if conflito.any() and (df.loc[conflito].index[0] != df.loc[mask].index[0]):
+                        raise HTTPException(status_code=400, detail="Ja existe outro produto com o SKU informado.")
 
-        if foto_data_url:
-            data["foto"] = _salvar_foto_data_url_no_tenant(client_id, novo_sku, foto_data_url, foto_filename)
+                for col in data.keys():
+                    if col not in df.columns:
+                        df[col] = ""
 
-        # Se mudar o SKU, valida conflito com outro registro.
-        if novo_sku.lower() != sku_norm.lower():
-            conflito = df["sku"].astype(str).str.strip().str.lower() == novo_sku.lower()
-            if conflito.any() and (df.loc[conflito].index[0] != df.loc[mask].index[0]):
-                raise HTTPException(status_code=400, detail="JÃƒÂ¡ existe outro produto com o SKU informado.")
+                idx = df.loc[mask].index[0]
+                for col, val in data.items():
+                    df.at[idx, col] = val
+                df.at[idx, "sku"] = novo_sku
+                if "updated_at" in df.columns:
+                    df.at[idx, "updated_at"] = datetime.now().strftime("%d/%m/%Y %H:%M")
 
-        for col in data.keys():
-            if col not in df.columns:
-                df[col] = ""
-
-        idx = df.loc[mask].index[0]
-        for col, val in data.items():
-            df.at[idx, col] = val
-        df.at[idx, "sku"] = novo_sku
-        if "updated_at" in df.columns:
-            df.at[idx, "updated_at"] = datetime.now().strftime("%d/%m/%Y %H:%M")
-
-        df, _ = _consolidar_cadastro_por_sku(df)
-        df.to_csv(arquivo_cliente, index=False)
-        return {
-            "success": True,
-            "message": "Produto atualizado com sucesso.",
-            "sku": novo_sku,
-            "foto": str(data.get("foto", "") or "")
-        }
+                df, _ = _consolidar_cadastro_por_sku(df)
+                if fotos_preparadas:
+                    _salvar_fotos_preparadas_atomico(fotos_preparadas)
+                _cadastro_salvar_dataframe_atomico(df, arquivo_cliente)
+                return {
+                    "success": True,
+                    "message": "Produto atualizado com sucesso.",
+                    "sku": novo_sku,
+                    "foto": str(data.get("foto", "") or ""),
+                }
     except HTTPException:
         raise
     except Exception as e:
@@ -355,56 +506,82 @@ async def incluir_produto_cadastro_completo(payload: dict, client_id: str = Depe
     if not sku:
         raise HTTPException(status_code=400, detail="SKU ÃƒÂ© obrigatÃƒÂ³rio.")
 
-    tenant_path = get_tenant_path(client_id)
-    arquivo_cliente = os.path.join(tenant_path, "cadastro_produtos.csv")
-    cols_base = _cadastro_cols_base()
+    from backend.services.cadastro_compatibilidade import (
+        bloquear_mutacao_legada_sem_sku_controlado,
+        exigir_mutacao_legada_sem_campos_loja,
+        exigir_mutacao_legada_sem_sku_controlado,
+    )
+
+    exigir_mutacao_legada_sem_sku_controlado(client_id, [sku])
+
+    data = {}
+    for k, v in payload.items():
+        key = str(k or "").strip().lower()
+        if not key:
+            continue
+        data[key] = "" if v is None else str(v)
+    exigir_mutacao_legada_sem_campos_loja(data)
+
+    foto_data_url = str(data.pop("__foto_data_url", "") or "").strip()
+    data.pop("__foto_filename", None)
+    data["sku"] = sku
 
     try:
-        if os.path.exists(arquivo_cliente):
-            df = pd.read_csv(arquivo_cliente, dtype=str).fillna("")
-            df.columns = [str(c).strip().lower() for c in df.columns]
-            df = df.loc[:, ~df.columns.duplicated()]
-        else:
-            df = pd.DataFrame(columns=cols_base)
+        with bloquear_mutacao_legada_sem_sku_controlado(client_id, [sku]):
+            tenant_path = get_tenant_path(client_id)
+            arquivo_cliente = os.path.join(tenant_path, "cadastro_produtos.csv")
+            with _cadastro_transacao_legada_arquivo_foto(
+                client_id,
+                tenant_path,
+                arquivo_cliente,
+                skus_guard=(sku,),
+                sku_foto=sku,
+                foto_data_url=foto_data_url,
+                referencias_foto=tuple(
+                    referencia
+                    for _coluna, referencia in _cadastro_foto_referencias_candidatas(
+                        data
+                    )
+                ),
+            ) as fotos_preparadas:
+                cols_base = _cadastro_cols_base()
+                if os.path.exists(arquivo_cliente):
+                    df = pd.read_csv(arquivo_cliente, dtype=str).fillna("")
+                    df.columns = [str(c).strip().lower() for c in df.columns]
+                    df = df.loc[:, ~df.columns.duplicated()]
+                else:
+                    df = pd.DataFrame(columns=cols_base)
 
-        if "sku" not in df.columns:
-            df["sku"] = ""
-        for c in cols_base:
-            if c not in df.columns:
-                df[c] = ""
-        df = _cadastro_garantir_colunas_pesquisa(df)
+                if "sku" not in df.columns:
+                    df["sku"] = ""
+                for c in cols_base:
+                    if c not in df.columns:
+                        df[c] = ""
+                df = _cadastro_garantir_colunas_pesquisa(df)
 
-        df["sku"] = df["sku"].astype(str).apply(_normalizar_sku_mes)
-        if (df["sku"].astype(str).str.strip().str.lower() == sku.lower()).any():
-            raise HTTPException(status_code=400, detail="JÃƒÂ¡ existe um produto com este SKU.")
+                df["sku"] = df["sku"].astype(str).apply(_normalizar_sku_mes)
+                if (df["sku"].astype(str).str.strip().str.lower() == sku.lower()).any():
+                    raise HTTPException(status_code=400, detail="Ja existe um produto com este SKU.")
 
-        data = {}
-        for k, v in payload.items():
-            key = str(k or "").strip().lower()
-            if not key:
-                continue
-            data[key] = "" if v is None else str(v)
+                if fotos_preparadas:
+                    data["foto"] = str(fotos_preparadas[0]["relativo"])
+                if "updated_at" in df.columns:
+                    data["updated_at"] = datetime.now().strftime("%d/%m/%Y %H:%M")
 
-        foto_data_url = str(data.pop("__foto_data_url", "") or "").strip()
-        foto_filename = str(data.pop("__foto_filename", "") or "").strip()
-        data["sku"] = sku
-        if foto_data_url:
-            data["foto"] = _salvar_foto_data_url_no_tenant(client_id, sku, foto_data_url, foto_filename)
-        if "updated_at" in df.columns:
-            data["updated_at"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+                for col in data.keys():
+                    if col not in df.columns:
+                        df[col] = ""
 
-        for col in data.keys():
-            if col not in df.columns:
-                df[col] = ""
+                nova_linha = {c: "" for c in df.columns}
+                for col, val in data.items():
+                    nova_linha[col] = val
+                df.loc[len(df)] = nova_linha
 
-        nova_linha = {c: "" for c in df.columns}
-        for col, val in data.items():
-            nova_linha[col] = val
-        df.loc[len(df)] = nova_linha
-
-        df, _ = _consolidar_cadastro_por_sku(df)
-        df.to_csv(arquivo_cliente, index=False)
-        return {"success": True, "message": "Produto incluÃƒÂ­do com sucesso.", "sku": sku}
+                df, _ = _consolidar_cadastro_por_sku(df)
+                if fotos_preparadas:
+                    _salvar_fotos_preparadas_atomico(fotos_preparadas)
+                _cadastro_salvar_dataframe_atomico(df, arquivo_cliente)
+                return {"success": True, "message": "Produto incluido com sucesso.", "sku": sku}
     except HTTPException:
         raise
     except Exception as e:

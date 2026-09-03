@@ -15,9 +15,14 @@ assert.match(source, /next_retry_at_epoch|next_retry_in_seconds|Nova tentativa/)
 assert.match(source, /\/api\/mercadolivre\/assistant\/jobs\/\$\{encodeURIComponent\(jobId\)\}\/cancel/);
 assert.match(source, /question-ai-cancel-btn[\s\S]*Cancelar pesquisa/);
 assert.match(source, /cancelarPesquisaAtendimentoCodex\(questionKey\)/);
-assert.match(html, /perguntas\.js\?v=20260817-draft-source-v1/);
+assert.match(html, /perguntas\.js\?v=20260825-seller-profile-v2/);
 assert.doesNotMatch(source, /A pesquisa terminou sem rascunho/);
 assert.match(source, /Rascunho gerado com as informacoes disponiveis/);
+assert.match(source, /const resposta = String\(result\.resposta \?\? data\.resposta \?\? ''\);/);
+assert.match(source, /resposta_atual: String\(textarea\.value \|\| ''\)/);
+assert.match(source, /function skuRealPergunta\(pergunta\)/);
+assert.doesNotMatch(source, /String\(result\.resposta \|\| data\.resposta \|\| ''\)\.trim\(\)/);
+assert.doesNotMatch(source, /resposta_atual: String\(textarea\.value \|\| ''\)\.trim\(\)/);
 
 class FakeClassList {
     constructor() { this.values = new Set(['hidden']); }

@@ -8,6 +8,10 @@ from .context_hub import create_context_hub_router
 from .estoque import create_estoque_router
 from .etiquetas import EtiquetasRouterConfig, create_etiquetas_router
 from .favoritos import create_favoritos_router
+from .financial_comparison import (
+    FinancialComparisonRouterConfig,
+    create_financial_comparison_router,
+)
 from .frontend import FrontendRouterConfig, create_frontend_router, mount_static_assets
 from .full import FullRouterConfig, create_full_router
 from .ia import create_ia_router
@@ -33,6 +37,7 @@ def create_shared_sync_router():
 
 __all__ = [
     "FrontendRouterConfig",
+    "FinancialComparisonRouterConfig",
     "ConfiguracoesRouterConfig",
     "FullRouterConfig",
     "InfraRouterConfig",
@@ -48,6 +53,7 @@ __all__ = [
     "EtiquetasRouterConfig",
     "create_etiquetas_router",
     "create_favoritos_router",
+    "create_financial_comparison_router",
     "create_frontend_router",
     "create_full_router",
     "create_ia_router",

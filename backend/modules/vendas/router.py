@@ -83,8 +83,9 @@ def create_vendas_router(
         mostrar_estoque_geral: bool = False,
         mostrar_estoque_sku: bool = False,
         client_id: str = Depends(tenant_dependency),
+        incluir_previsao_mes_atual: bool = False,
     ):
-        return _transport(service.grafico_vendas, periodo=periodo, intervalo=intervalo, sku=sku, data_inicio=data_inicio, data_fim=data_fim, loja=loja, unidade_negocio=unidade_negocio, mostrar_estoque_geral=mostrar_estoque_geral, mostrar_estoque_sku=mostrar_estoque_sku, client_id=client_id)
+        return _transport(service.grafico_vendas, periodo=periodo, intervalo=intervalo, sku=sku, data_inicio=data_inicio, data_fim=data_fim, loja=loja, unidade_negocio=unidade_negocio, mostrar_estoque_geral=mostrar_estoque_geral, mostrar_estoque_sku=mostrar_estoque_sku, incluir_previsao_mes_atual=incluir_previsao_mes_atual, client_id=client_id)
 
     @router.get(
         "/api/vendas/skus-sem-venda",

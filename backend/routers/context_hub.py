@@ -17,10 +17,34 @@ def create_context_hub_router(
     info_root: Optional[str | Path] = None,
     surface: Optional[str] = None,
 ) -> APIRouter:
+    recovery_info_root: Optional[str | Path] = None
     if base_dir is not None or info_root is not None or surface is not None:
-        context_hub_api.configure_context_hub(base_dir=base_dir, info_root=info_root, surface=surface)
+        configured = context_hub_api.configure_context_hub(
+            base_dir=base_dir,
+            info_root=info_root,
+            surface=surface,
+        )
+        recovery_info_root = configured.info_root
 
     router = APIRouter(tags=["context-hub"])
+    recovery_lifecycle = {"started": False}
+
+    def recover_product_evidence_outboxes() -> None:
+        if recovery_lifecycle["started"]:
+            return
+        recovery_lifecycle["started"] = True
+        context_hub_api.recover_pending_product_evidence_syncs(
+            info_root=recovery_info_root
+        )
+
+    def stop_product_evidence_workers() -> None:
+        if not recovery_lifecycle["started"]:
+            return
+        recovery_lifecycle["started"] = False
+        context_hub_api.stop_all_product_evidence_sync_workers()
+
+    router.add_event_handler("startup", recover_product_evidence_outboxes)
+    router.add_event_handler("shutdown", stop_product_evidence_workers)
     router.add_api_route(
         "/api/admin/context-hub/status",
         context_hub_endpoints.context_hub_status,

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
+
+from backend.services.legacy_tenant_migration import (
+    migrar_arquivo_legado_para_tenant_seguro,
+)
 
 
 @dataclass(frozen=True)
@@ -51,37 +54,15 @@ class AppPaths:
         filename: str,
         legacy_path: str | os.PathLike[str] | None,
     ) -> str:
-        """Move a legacy shared file into a tenant, falling back to a safe copy."""
+        """Importa legado global apenas no tenant historico ``default``."""
 
-        destination = Path(self.tenant_file(client_id, filename))
-        if destination.exists():
-            return str(destination)
-
-        source = Path(legacy_path).expanduser() if legacy_path else None
-        if source is None or not source.exists():
-            return str(destination)
-
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            shutil.move(str(source), str(destination))
-            self.logger.info("[MIGRACAO] %s movido para tenant %s", filename, client_id)
-        except Exception as move_error:
-            try:
-                shutil.copy2(str(source), str(destination))
-                self.logger.warning(
-                    "[MIGRACAO] %s copiado para tenant %s (origem preservada): %s",
-                    filename,
-                    client_id,
-                    move_error,
-                )
-            except Exception as copy_error:
-                self.logger.warning(
-                    "[MIGRACAO] Falha ao migrar %s para tenant %s: %s",
-                    filename,
-                    client_id,
-                    copy_error,
-                )
-        return str(destination)
+        return migrar_arquivo_legado_para_tenant_seguro(
+            client_id,
+            filename,
+            str(Path(legacy_path).expanduser()) if legacy_path else "",
+            get_tenant_path=self.tenant_path,
+            logger=self.logger,
+        )
 
 
 __all__ = ["AppPaths"]

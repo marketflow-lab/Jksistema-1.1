@@ -1,9 +1,23 @@
 // Carregar lojas e vendas salvas automaticamente
 carregarPreferenciaGrafico();
+if (data_inicio_param && data_fim_param) {
+    periodoGrafico = 'manual';
+}
 agendarSegundoPlano(() => iaRestaurarOuCriarConversa().catch(() => {}), 900);
 aplicarPreferenciaGraficoUI();
 carregarLojas()
     .then(async () => {
+        const periodoNormalizado = await normalizarPeriodoGraficoRestaurado();
+        if (
+            periodoNormalizado === false
+            && !periodoGraficoAtalhoPendente
+            && periodoGrafico === 'max'
+            && !periodoPrefSalvo?.origem
+            && getDataIniISO() === periodoPrefSalvo?.inicio
+            && getDataFimISO() === periodoPrefSalvo?.fim
+        ) {
+            await reaplicarPeriodoGraficoAposMudancaFiltro();
+        }
         if (retornoDoSku) {
             statusEl.className = 'status-bar loading';
             statusEl.innerHTML = `${spinnerHtml}Retornando da visão SKU...`;

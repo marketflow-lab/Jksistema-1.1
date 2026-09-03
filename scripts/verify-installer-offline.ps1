@@ -7,6 +7,15 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
+if ($PSVersionTable.PSEdition -eq "Desktop") {
+    $windowsPowerShellModulePaths = @(
+        (Join-Path ([Environment]::GetFolderPath("MyDocuments")) "WindowsPowerShell\Modules")
+        (Join-Path $env:ProgramFiles "WindowsPowerShell\Modules")
+        (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\Modules")
+    )
+    $env:PSModulePath = $windowsPowerShellModulePaths -join [IO.Path]::PathSeparator
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
 if (-not $ResourcesRoot) {

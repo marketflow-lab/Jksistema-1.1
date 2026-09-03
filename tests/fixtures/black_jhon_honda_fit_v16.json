@@ -1,0 +1,111 @@
+{
+  "agent_input": {
+    "_codex_job_id": "job-honda-fit-v16",
+    "tenant_id": "tenant-fixture",
+    "store": "Uai Mineirinho",
+    "question": {
+      "id": "question-fixture",
+      "text": "Bom dia. Esse cebolao e o que vai na carcaca da valvula termostatica?"
+    },
+    "item": {
+      "id": "MLB-FIXTURE-HONDA-FIT",
+      "seller_sku": "SKU-FIT-CEBOLAO",
+      "title": "Cebolao Interruptor Ventoinha Honda Fit 1.4 2003 2004 2005",
+      "description": "Interruptor termico da ventoinha. Codigo OEM: 37760-P00-003. Referencia: 37760-P00-004.",
+      "permalink": "https://produto.mercadolivre.com.br/MLB-fixture-honda-fit",
+      "official_current_listing": true,
+      "attributes": [
+        {
+          "id": "BRAND",
+          "name": "Marca",
+          "value_name": "Honda"
+        },
+        {
+          "id": "PART_NUMBER",
+          "name": "Part number",
+          "value_name": "37760-P00-003"
+        }
+      ]
+    },
+    "context": {
+      "titulo": "Cebolao Interruptor Ventoinha Honda Fit 1.4 2003 2004 2005",
+      "descricao": "Codigo OEM: 37760-P00-003"
+    },
+    "intent": {
+      "fluxo": "perguntas_anuncio",
+      "categoria": "product_feature",
+      "compatibilidade": {
+        "technical_focus": "local de instalacao na carcaca da valvula termostatica e funcao de acionamento da ventoinha"
+      }
+    },
+    "question_plan": {
+      "schema": "jk_ml_technical_question_plan_v1",
+      "queries": [
+        {
+          "type": "installation_location_by_code",
+          "query": "37760-P00-003 Honda Fit 1.4 2003 2004 2005 local de instalacao carcaca da valvula termostatica diagrama catalogo OEM"
+        },
+        {
+          "type": "assembly_diagram_by_code",
+          "query": "37760-P00-003 Honda Fit 1.4 switch assy thermo thermostat housing parts diagram PDF"
+        }
+      ]
+    },
+    "gap_queries": [
+      {
+        "type": "directed_supersession",
+        "query": "37760-PHM-004 superseded by 37760-P00-003 Honda parts catalog"
+      }
+    ],
+    "product_evidence_identity": {
+      "store_ref": "store-fixture",
+      "seller_id": "seller-fixture",
+      "site_id": "MLB",
+      "sku": "SKU-FIT-CEBOLAO",
+      "item_id": "MLB-FIXTURE-HONDA-FIT",
+      "variation_id": ""
+    }
+  },
+  "document": {
+    "url": "https://techinfo.honda.example/parts/fit/thermostat-housing-diagram.pdf",
+    "title": "Honda Fit thermostat housing parts diagram",
+    "text": "SECTION: THERMOSTAT HOUSING\nFIGURE 12 - COOLING SYSTEM\nITEM | PART NUMBER | DESCRIPTION | INSTALLATION LOCATION\n14 | 37760-P00-003 | SWITCH ASSY., THERMO | thermostat housing\nASSEMBLY: SWITCH ASSY., THERMO\nPart number: 37760-P00-003\nInstalled in thermostat housing.\n37760-PHM-004 superseded by 37760-P00-003.\nApplication: Honda Fit 1.4 2003 2004 2005.\nFiller line 01.\nFiller line 02.\nFiller line 03.\nFiller line 04.\nFiller line 05.\nFiller line 06.\nFiller line 07.\nFiller line 08.\nFiller line 09.\nFiller line 10.\nSECTION: ENGINE MANAGEMENT - DIFFERENT COMPONENT\nITEM | PART NUMBER | DESCRIPTION | INSTALLATION LOCATION\n31 | 37760-PWA-J01 | SENSOR, WATER TEMPERATURE | cylinder head outlet\nApplication: another engine and another component.\nRAW_PAGE_TAIL_SHOULD_NOT_BE_PROJECTED"
+  },
+  "search_results": [
+    {
+      "title": "Contact Honda sales",
+      "url": "https://techinfo.honda.example/contact/sales",
+      "snippet": "Contact and sales department"
+    },
+    {
+      "title": "Privacy policy",
+      "url": "https://techinfo.honda.example/policy/privacy",
+      "snippet": "Privacy policy"
+    },
+    {
+      "title": "Account login",
+      "url": "https://techinfo.honda.example/login",
+      "snippet": "Login"
+    },
+    {
+      "title": "Honda customer support",
+      "url": "https://techinfo.honda.example/support/faq",
+      "snippet": "Generic support page without a parts diagram"
+    },
+    {
+      "title": "Generic marketplace listing for Honda temperature sensor 37760-PWA-J01",
+      "url": "https://produto.mercadolivre.com.br/MLB-generic-pwa-j01",
+      "snippet": "Marketplace offer for another code and another component"
+    },
+    {
+      "title": "Honda Fit thermostat housing parts diagram 37760-P00-003",
+      "url": "https://techinfo.honda.example/parts/fit/thermostat-housing-diagram.pdf",
+      "snippet": "37760-P00-003 switch assy thermo installed in thermostat housing"
+    },
+    {
+      "title": "Generic cooling system article",
+      "url": "https://generic.example/articles/cooling-system",
+      "snippet": "General cooling system information"
+    }
+  ]
+}

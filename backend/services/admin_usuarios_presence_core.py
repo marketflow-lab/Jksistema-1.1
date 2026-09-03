@@ -385,7 +385,8 @@ def _machine_presence_save(record: dict) -> dict:
                 firebase_record = dict(record_to_save)
                 if not _machine_presence_resolve_app_version(firebase_record.get("app_version"), firebase_record.get("user_agent")):
                     firebase_record.pop("app_version", None)
-                db.collection(_firebase_presence_collection_name()).document(record_id).set(firebase_record, merge=True)
+                ref = db.collection(_firebase_presence_collection_name()).document(record_id)
+                _firebase_noncritical_write(ref.set, firebase_record, merge=True)
         except Exception as exc:
             logger.warning("[MACHINES] Falha ao salvar presenca no Firebase: %s", exc)
     return record_to_save
@@ -404,7 +405,10 @@ def _machine_presence_list_firebase(username: str, client_id: str) -> list[dict]
         if db is None:
             return []
         coll = db.collection(_firebase_presence_collection_name())
-        docs = coll.where("username", "==", username_norm).stream()
+        docs = coll.where("username", "==", username_norm).stream(
+            retry=None,
+            timeout=_firebase_call_timeout_seconds(),
+        )
         registros = []
         for snap in docs:
             data = snap.to_dict() or {}
@@ -430,7 +434,13 @@ def _machine_presence_list_firebase_client(client_id: str) -> list[dict]:
         if db is None:
             return []
         coll = db.collection(_firebase_presence_collection_name())
-        registros = [(snap.to_dict() or {}) for snap in coll.where("client_id", "==", client_norm).stream()]
+        registros = [
+            (snap.to_dict() or {})
+            for snap in coll.where("client_id", "==", client_norm).stream(
+                retry=None,
+                timeout=_firebase_call_timeout_seconds(),
+            )
+        ]
         _backend_cache_set(cache_key, registros, ttl_seconds=90)
         return registros
     except Exception as exc:

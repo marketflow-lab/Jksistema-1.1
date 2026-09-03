@@ -12,7 +12,7 @@ class AIResponseParser:
         data = self._coerce_json(payload)
         if not isinstance(data, dict):
             return AIAnswer(answer="", confidence=0.0, requires_human_review=True, reason="invalid_ai_payload", raw=payload)
-        answer = str(data.get("answer") or data.get("resposta") or "").strip()
+        answer = str(data.get("answer") or data.get("resposta") or "")
         try:
             confidence = float(data.get("confidence", data.get("confianca", 0.0)) or 0.0)
         except Exception:

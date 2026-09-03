@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import csv
+import hashlib
 import io
 import json
 import os
@@ -12,6 +14,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
 import zipfile
 from datetime import datetime
@@ -30,6 +33,7 @@ from backend.schemas import (
     SharedSyncUserLinkUpdateRequest,
 )
 from backend.services.runtime_bridge import bind_runtime_globals
+from backend.services.cadastro_common import _normalizar_sku_mes
 from backend.services.favoritos_storage import (
     _favoritos_historico_payload_from_bytes,
     _favoritos_historico_sqlite_bytes_from_payload,
@@ -57,7 +61,241 @@ def _shared_sync_col_norm(coluna: Any) -> str:
     texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
     return re.sub(r"[^a-z0-9]+", "", texto.lower())
 
-def _shared_sync_csv_read_bytes(data: bytes) -> pd.DataFrame:
+
+_SHARED_SYNC_CADASTRO_LOJAS_REL = "cadastro_produtos_lojas.csv"
+_SHARED_SYNC_CADASTRO_CUSTOS_REL = "cadastro_custos_lojas.csv"
+_SHARED_SYNC_CADASTRO_LOJAS_COLUMNS = (
+    "store_id",
+    "sku",
+    "row_version",
+    "updated_at_utc",
+    "deleted_at_utc",
+)
+
+
+def _shared_sync_is_cadastro_lojas_csv(scope: str, rel: str) -> bool:
+    rel_norm = str(rel or "").replace("\\", "/").strip().lower()
+    return str(scope or "").strip().lower() == "cadastro" and rel_norm == _SHARED_SYNC_CADASTRO_LOJAS_REL
+
+
+def _shared_sync_is_cadastro_custos_csv(scope: str, rel: str) -> bool:
+    rel_norm = str(rel or "").replace("\\", "/").strip().lower()
+    return str(scope or "").strip().lower() == "cadastro" and rel_norm == _SHARED_SYNC_CADASTRO_CUSTOS_REL
+
+
+def _shared_sync_is_cadastro_store_photo(scope: str, rel: str) -> bool:
+    rel_norm = str(rel or "").replace("\\", "/").strip().casefold()
+    return (
+        str(scope or "").strip().casefold() == "cadastro"
+        and rel_norm.startswith("cadastro_fotos/lojas/")
+    )
+
+
+def _shared_sync_cadastro_custos_columns(columns: list[Any]) -> dict[str, str]:
+    aliases = {
+        "store_id": {"storeid"},
+        "loja_sync": {"lojasync", "loja"},
+        "sku": {"sku"},
+        "updated_at": {"updatedat"},
+    }
+    mapped: dict[str, str] = {}
+    ambiguous: list[str] = []
+    for canonical, accepted in aliases.items():
+        matches = [str(column) for column in columns if _shared_sync_col_norm(column) in accepted]
+        if len(matches) > 1:
+            ambiguous.append(canonical)
+        elif matches:
+            mapped[canonical] = matches[0]
+    missing = []
+    if "sku" not in mapped:
+        missing.append("sku")
+    if "store_id" not in mapped and "loja_sync" not in mapped:
+        missing.append("store_id ou loja_sync")
+    if missing or ambiguous:
+        details = []
+        if missing:
+            details.append("ausentes: " + ", ".join(missing))
+        if ambiguous:
+            details.append("duplicadas/ambiguas: " + ", ".join(ambiguous))
+        raise HTTPException(
+            status_code=502,
+            detail="cadastro_custos_lojas.csv possui colunas invalidas (" + "; ".join(details) + ").",
+        )
+    return mapped
+
+
+def _shared_sync_row_content_digest(
+    row: Any,
+    columns: list[Any],
+    canonical_by_actual: Optional[dict[str, str]] = None,
+) -> str:
+    aliases = canonical_by_actual or {}
+    content = sorted(
+        (
+            aliases.get(str(column), str(column)),
+            "" if row.get(column) is None else str(row.get(column)),
+        )
+        for column in columns
+    )
+    return hashlib.sha256(
+        json.dumps(content, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _shared_sync_cadastro_lojas_columns(columns: list[Any]) -> dict[str, str]:
+    by_norm: dict[str, str] = {}
+    duplicates = set()
+    for col in columns:
+        norm = _shared_sync_col_norm(col)
+        if norm in by_norm:
+            duplicates.add(norm)
+        else:
+            by_norm[norm] = str(col)
+    required = {
+        _shared_sync_col_norm(name): name
+        for name in _SHARED_SYNC_CADASTRO_LOJAS_COLUMNS
+    }
+    missing = [canonical for norm, canonical in required.items() if norm not in by_norm]
+    ambiguous = [canonical for norm, canonical in required.items() if norm in duplicates]
+    if missing or ambiguous:
+        details = []
+        if missing:
+            details.append("ausentes: " + ", ".join(missing))
+        if ambiguous:
+            details.append("duplicadas: " + ", ".join(ambiguous))
+        raise HTTPException(
+            status_code=502,
+            detail="cadastro_produtos_lojas.csv possui colunas invalidas (" + "; ".join(details) + ").",
+        )
+    return {
+        canonical: by_norm[_shared_sync_col_norm(canonical)]
+        for canonical in _SHARED_SYNC_CADASTRO_LOJAS_COLUMNS
+    }
+
+
+def _shared_sync_cadastro_lojas_row_key(scope: str, rel: str, row: Any, columns: list[Any]) -> str:
+    mapped = _shared_sync_cadastro_lojas_columns(columns)
+    # store_id e uma identidade opaca e case-sensitive no CRUD/Integracoes.
+    # Normaliza apenas espacos externos para nao colapsar duas lojas validas.
+    store_id = str(row.get(mapped["store_id"]) or "").strip()
+    sku = _shared_sync_texto_chave(_normalizar_sku_mes(row.get(mapped["sku"])))
+    if not store_id or not sku:
+        raise HTTPException(
+            status_code=502,
+            detail="cadastro_produtos_lojas.csv contem linha sem store_id ou sku.",
+        )
+    return f"{scope}:{_SHARED_SYNC_CADASTRO_LOJAS_REL}:store_id:{store_id}:sku:{sku}"
+
+
+def _shared_sync_cadastro_lojas_content_digest(row: Any, columns: list[Any]) -> str:
+    """Hash the complete logical row independently from CSV column order."""
+
+    mapped = _shared_sync_cadastro_lojas_columns(columns)
+    canonical_by_actual = {
+        actual: canonical
+        for canonical, actual in mapped.items()
+    }
+    return _shared_sync_row_content_digest(row, columns, canonical_by_actual)
+
+
+def _shared_sync_cadastro_lojas_delta_key(scope: str, rel: str, row: Any, columns: list[Any]) -> str:
+    business_key = _shared_sync_cadastro_lojas_row_key(scope, rel, row, columns)
+    digest = _shared_sync_cadastro_lojas_content_digest(row, columns)
+    return f"{business_key}:revision:{digest}"
+
+
+def _shared_sync_cadastro_custos_row_key(scope: str, rel: str, row: Any, columns: list[Any]) -> str:
+    mapped = _shared_sync_cadastro_custos_columns(columns)
+    sku = _normalizar_sku_mes(row.get(mapped["sku"])).strip().upper()
+    if not sku:
+        raise HTTPException(status_code=502, detail="cadastro_custos_lojas.csv contem linha sem SKU.")
+
+    store_id = str(row.get(mapped["store_id"]) or "").strip() if mapped.get("store_id") else ""
+    if store_id:
+        identity = f"store_id:{store_id}"
+    else:
+        loja_sync = _shared_sync_texto_chave(row.get(mapped["loja_sync"])) if mapped.get("loja_sync") else ""
+        if not loja_sync:
+            raise HTTPException(
+                status_code=502,
+                detail="cadastro_custos_lojas.csv contem linha sem store_id ou loja_sync.",
+            )
+        identity = f"loja_sync:{loja_sync}"
+    return f"{scope}:{_SHARED_SYNC_CADASTRO_CUSTOS_REL}:{identity}:sku:{sku}"
+
+
+def _shared_sync_cadastro_custos_content_digest(row: Any, columns: list[Any]) -> str:
+    mapped = _shared_sync_cadastro_custos_columns(columns)
+    canonical_by_actual = {actual: canonical for canonical, actual in mapped.items()}
+    return _shared_sync_row_content_digest(row, columns, canonical_by_actual)
+
+
+def _shared_sync_cadastro_custos_delta_key(scope: str, rel: str, row: Any, columns: list[Any]) -> str:
+    business_key = _shared_sync_cadastro_custos_row_key(scope, rel, row, columns)
+    digest = _shared_sync_cadastro_custos_content_digest(row, columns)
+    return f"{business_key}:revision:{digest}"
+
+def _shared_sync_csv_read_canonical_bytes(scope: str, rel: str, data: bytes) -> pd.DataFrame:
+    texto = None
+    ultimo_erro: Exception | None = None
+    for encoding in ("utf-8-sig", "utf-8", "latin1"):
+        try:
+            texto = (data or b"").decode(encoding)
+            ultimo_erro = None
+            break
+        except UnicodeDecodeError as exc:
+            ultimo_erro = exc
+    if texto is None:
+        raise HTTPException(
+            status_code=502,
+            detail=f"CSV canonico invalido no pacote de compartilhamento: {ultimo_erro}",
+        )
+
+    try:
+        leitor = csv.reader(io.StringIO(texto, newline=""), delimiter=",", strict=True)
+        linhas = list(leitor)
+    except csv.Error as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"CSV canonico invalido no pacote de compartilhamento: {exc}",
+        ) from exc
+    if not linhas:
+        raise HTTPException(status_code=502, detail="CSV canonico vazio no pacote de compartilhamento.")
+
+    cabecalho = [str(coluna or "") for coluna in linhas[0]]
+    largura = len(cabecalho)
+    if not largura:
+        raise HTTPException(status_code=502, detail="CSV canonico sem cabecalho no pacote de compartilhamento.")
+    dados: list[list[str]] = []
+    for numero_linha, linha in enumerate(linhas[1:], start=2):
+        if not linha or not any(str(valor or "").strip() for valor in linha):
+            continue
+        if len(linha) != largura:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "CSV canonico possui quantidade de campos inconsistente "
+                    f"na linha {numero_linha}."
+                ),
+            )
+        dados.append([str(valor or "") for valor in linha])
+
+    df = pd.DataFrame(dados, columns=cabecalho, dtype=str).fillna("")
+    if _shared_sync_is_cadastro_custos_csv(scope, rel):
+        _shared_sync_cadastro_custos_columns(list(df.columns))
+    else:
+        _shared_sync_cadastro_lojas_columns(list(df.columns))
+    return df
+
+
+def _shared_sync_csv_read_bytes(data: bytes, *, scope: str = "", rel: str = "") -> pd.DataFrame:
+    if _shared_sync_is_cadastro_custos_csv(scope, rel) or _shared_sync_is_cadastro_lojas_csv(scope, rel):
+        # Both canonical Cadastro stores are written as comma-separated CSV.
+        # Parsing another separator after a structural error could turn a
+        # damaged row into a seemingly valid one-column file, so these paths
+        # deliberately use one strict parser only.
+        return _shared_sync_csv_read_canonical_bytes(scope, rel, data)
+
     tentativas = [
         {"sep": None, "encoding": "utf-8-sig", "engine": "python"},
         {"sep": None, "encoding": "utf-8", "engine": "python"},
@@ -74,7 +312,7 @@ def _shared_sync_csv_read_bytes(data: bytes) -> pd.DataFrame:
     ultimo_erro = None
     for cfg in tentativas:
         try:
-            df = pd.read_csv(io.BytesIO(data or b""), dtype=str, on_bad_lines="skip", **cfg).fillna("")
+            df = pd.read_csv(io.BytesIO(data or b""), dtype=str, on_bad_lines="error", **cfg).fillna("")
             score = len(df.columns) + (1000 if any(_shared_sync_col_norm(c) == "sku" for c in df.columns) else 0)
             if score > melhor_score:
                 melhor_df = df
@@ -98,7 +336,49 @@ def _shared_sync_csv_key_columns(columns: list[Any]) -> tuple[Optional[str], Opt
             loja_col = str(col)
     return sku_col, loja_col
 
+def _shared_sync_produtos_compilado_row_key(
+    scope: str,
+    rel: str,
+    row: Any,
+    columns: list[Any],
+) -> str:
+    store_col = next(
+        (
+            str(col)
+            for col in columns
+            if _shared_sync_col_norm(col) == "storeid"
+        ),
+        None,
+    )
+    sku_col, _loja_col = _shared_sync_csv_key_columns(columns)
+    store_id = str(row.get(store_col) or "").strip() if store_col else ""
+    sku = _shared_sync_texto_chave(row.get(sku_col)) if sku_col else ""
+    if store_id and sku:
+        # store_id is opaque and case-sensitive; SKU keeps the established
+        # normalized comparison used by compiled-product deltas.
+        return f"{scope}:{rel}:store_id:{store_id}:sku:{sku}"
+
+    # Historical local files may predate durable store identity.  Keep their
+    # keys in a separate namespace so a global row never suppresses a scoped
+    # row arriving from a current peer.
+    bruto = json.dumps(
+        {str(col): str(row.get(col) or "") for col in columns},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return f"{scope}:{rel}:legacy:{hashlib.sha256(bruto.encode('utf-8')).hexdigest()}"
+
 def _shared_sync_csv_row_key(scope: str, rel: str, row: Any, columns: list[Any]) -> str:
+    if _shared_sync_is_cadastro_custos_csv(scope, rel):
+        return _shared_sync_cadastro_custos_row_key(scope, rel, row, columns)
+    if _shared_sync_is_cadastro_lojas_csv(scope, rel):
+        return _shared_sync_cadastro_lojas_row_key(scope, rel, row, columns)
+    if (
+        scope in {"cadastro", "vendas"}
+        and str(rel or "").replace("\\", "/").strip("/").casefold()
+        == "produtos_compilado.csv"
+    ):
+        return _shared_sync_produtos_compilado_row_key(scope, rel, row, columns)
     sku_col, loja_col = _shared_sync_csv_key_columns(columns)
     if sku_col and _shared_sync_texto_chave(row.get(sku_col)):
         partes = [scope, rel, "sku", _shared_sync_texto_chave(row.get(sku_col))]
@@ -109,7 +389,7 @@ def _shared_sync_csv_row_key(scope: str, rel: str, row: Any, columns: list[Any])
     return f"{scope}:{rel}:row:{hashlib.sha256(bruto.encode('utf-8')).hexdigest()}"
 
 def _shared_sync_csv_delta_bytes(scope: str, rel: str, data: bytes, known_keys: set[str]) -> tuple[Optional[bytes], list[str]]:
-    df = _shared_sync_csv_read_bytes(data)
+    df = _shared_sync_csv_read_bytes(data, scope=scope, rel=rel)
     if df.empty:
         return None, []
     selected_idx = []
@@ -117,7 +397,12 @@ def _shared_sync_csv_delta_bytes(scope: str, rel: str, data: bytes, known_keys: 
     vistos_lote = set()
     columns = list(df.columns)
     for idx, row in df.iterrows():
-        chave = _shared_sync_csv_row_key(scope, rel, row, columns)
+        if _shared_sync_is_cadastro_custos_csv(scope, rel):
+            chave = _shared_sync_cadastro_custos_delta_key(scope, rel, row, columns)
+        elif _shared_sync_is_cadastro_lojas_csv(scope, rel):
+            chave = _shared_sync_cadastro_lojas_delta_key(scope, rel, row, columns)
+        else:
+            chave = _shared_sync_csv_row_key(scope, rel, row, columns)
         if chave in known_keys or chave in vistos_lote:
             continue
         vistos_lote.add(chave)
@@ -303,7 +588,11 @@ def _shared_sync_lojas_delta_bytes(scope: str, rel: str, data: bytes, known_keys
     filtradas = []
     keys = []
     for loja in lojas:
-        loja_key = _shared_sync_loja_key(loja.get("nome"))
+        store_id = str(loja.get("store_id") or "").strip()
+        nome_key = _shared_sync_col_norm(loja.get("nome"))
+        # store_id is opaque and case-sensitive.  Normalized name is retained
+        # only as a compatibility identity for records that predate store_id.
+        loja_key = f"store_id:{store_id}" if store_id else nome_key
         loja_chave = f"{scope}:loja:{loja_key}" if loja_key else ""
         nova_loja = None
         if loja_chave and loja_chave not in known_keys:
@@ -446,6 +735,11 @@ def _shared_sync_delta_for_entry(scope: str, entry: dict, known_keys: set[str]) 
         return _shared_sync_lojas_delta_bytes(scope, rel, data, known_keys)
 
     chave = f"{scope}:file:{rel.lower()}"
+    if _shared_sync_is_cadastro_store_photo(scope, rel):
+        # Store photos use deterministic paths, so the path alone cannot
+        # represent a revision.  Including the bytes allows a v2 image at the
+        # same SKU path to be published after v1.
+        chave += f":revision:{hashlib.sha256(data or b'').hexdigest()}"
     if chave in known_keys:
         return None, []
     return data, [chave]
@@ -478,6 +772,60 @@ def _shared_sync_coletar_arquivos_delta(
         item_keys.extend(keys)
         conhecidos.update(keys)
         saida.append(_shared_sync_entry_from_bytes(rel, data_filtrada or b"", entry.get("mtime") or time.time(), keys))
+
+    # A versioned Cadastro row is also the authorization for its physical
+    # store photo.  When only product metadata changed, the image revision can
+    # already be present in ``known_keys`` and would normally be omitted from
+    # the delta.  Keep the wire contract self-contained by carrying the
+    # collected store-photo entries whenever the canonical CSV is emitted.
+    # The bundle layer subsequently filters this superset to active canonical
+    # references and fails closed if collection skipped a referenced file.
+    cadastro_emitido = any(
+        _shared_sync_is_cadastro_lojas_csv(
+            scope,
+            str(item.get("relative_path") or ""),
+        )
+        for item in saida
+    )
+    if cadastro_emitido:
+        incluidos = {
+            str(item.get("relative_path") or "")
+            .strip()
+            .replace("\\", "/")
+            .casefold()
+            for item in saida
+        }
+        for entry in entries:
+            rel = str(entry.get("relative_path") or "")
+            rel_key = rel.strip().replace("\\", "/").casefold()
+            if (
+                rel_key in incluidos
+                or not _shared_sync_is_cadastro_store_photo(scope, rel)
+            ):
+                continue
+            data = (
+                entry.get("data")
+                if "data" in entry
+                else _shared_sync_ler_arquivo_pacote(entry.get("abs_path") or "")
+            ) or b""
+            if hashlib.sha256(data).hexdigest() != str(entry.get("sha256") or ""):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "shared_sync_snapshot_changed",
+                        "message": "Uma foto mudou durante a criacao do delta.",
+                        "file": rel,
+                    },
+                )
+            saida.append(
+                _shared_sync_entry_from_bytes(
+                    rel,
+                    data,
+                    entry.get("mtime") or time.time(),
+                    [],
+                )
+            )
+            incluidos.add(rel_key)
     saida.sort(key=lambda item: item["relative_path"])
     return saida, warnings, item_keys
 
@@ -487,6 +835,18 @@ __all__ = [
     "configure_shared_sync_delta_runtime",
     "_shared_sync_texto_chave",
     "_shared_sync_col_norm",
+    "_shared_sync_is_cadastro_custos_csv",
+    "_shared_sync_is_cadastro_store_photo",
+    "_shared_sync_cadastro_custos_columns",
+    "_shared_sync_cadastro_custos_row_key",
+    "_shared_sync_cadastro_custos_content_digest",
+    "_shared_sync_cadastro_custos_delta_key",
+    "_shared_sync_row_content_digest",
+    "_shared_sync_is_cadastro_lojas_csv",
+    "_shared_sync_cadastro_lojas_columns",
+    "_shared_sync_cadastro_lojas_row_key",
+    "_shared_sync_cadastro_lojas_content_digest",
+    "_shared_sync_cadastro_lojas_delta_key",
     "_shared_sync_csv_read_bytes",
     "_shared_sync_csv_key_columns",
     "_shared_sync_csv_row_key",

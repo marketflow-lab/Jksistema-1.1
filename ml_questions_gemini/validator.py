@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 from .classifier import normalize
 from .compatibility import normalize_comparison_attributes, normalize_target_type, profile_language_issues
@@ -71,7 +72,8 @@ class AnswerValidator:
 
 
 def count_sentences(text: str) -> int:
-    cleaned = re.sub(r"\b(sr|sra|dr|dra)\.", r"\1", text.lower())
+    cleaned = re.sub(r"https?://[^\s<>\"']+|www\.[^\s<>\"']+", _mask_url_for_sentence_count, text.lower())
+    cleaned = re.sub(r"\b(sr|sra|dr|dra)\.", r"\1", cleaned)
     cleaned = re.sub(r"(?<=\d)\.(?=\d)", "", cleaned)
     parts = [part.strip() for part in re.split(r"[.!?]+", cleaned) if part.strip()]
     return len(parts) if parts else (1 if text.strip() else 0)
@@ -127,16 +129,45 @@ def _without_greeting_only_opening(text: str) -> str:
 
 
 def _has_external_contact(text: str) -> bool:
-    norm = normalize(text)
+    text_without_allowed_links = re.sub(
+        r"https?://[^\s<>\"']+",
+        lambda match: " " if _is_official_mercado_livre_url(match.group(0)) else match.group(0),
+        str(text or ""),
+        flags=re.I,
+    )
+    norm = normalize(text_without_allowed_links)
     if any(term in norm for term in ("whatsapp", "whats", " zap ", "telefone", "instagram", "email", "pix", "fora do mercado livre")):
         return True
-    if re.search(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}", text, flags=re.I):
+    if re.search(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}", text_without_allowed_links, flags=re.I):
         return True
-    if re.search(r"(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?\d{4,5}[-.\s]?\d{4}", text):
+    if re.search(r"(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?\d{4,5}[-.\s]?\d{4}", text_without_allowed_links):
         return True
-    if re.search(r"https?://|www\.", text, flags=re.I):
+    if re.search(r"https?://|www\.", text_without_allowed_links, flags=re.I):
         return True
     return False
+
+
+def _mask_url_for_sentence_count(match: re.Match) -> str:
+    value = match.group(0)
+    trailing = value[len(value.rstrip(".!?")):]
+    return "URL" + trailing
+
+
+def _is_official_mercado_livre_url(value: str) -> bool:
+    candidate = str(value or "").rstrip(".,;:!?)]}")
+    try:
+        parsed = urlparse(candidate)
+        hostname = str(parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        parsed.scheme.lower() == "https"
+        and parsed.username is None
+        and parsed.password is None
+        and port in (None, 443)
+        and (hostname == "mercadolivre.com.br" or hostname.endswith(".mercadolivre.com.br"))
+    )
 
 
 def _has_internal_ai_terms(norm: str) -> bool:

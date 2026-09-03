@@ -5,10 +5,15 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
-const canonical = fs.readFileSync(path.join(root, 'medias_compras.html'), 'utf8');
+const canonicalHtml = fs.readFileSync(path.join(root, 'medias_compras.html'), 'utf8');
 const served = fs.readFileSync(path.join(root, 'static', 'medias_compras.html'), 'utf8');
+const moduleDirectory = path.join(root, 'static', 'medias_compras');
+const extractedSources = fs.readdirSync(moduleDirectory)
+  .sort()
+  .map(name => fs.readFileSync(path.join(moduleDirectory, name), 'utf8'));
+const canonical = [canonicalHtml, ...extractedSources].join('\n');
 
-assert.strictEqual(served, canonical, 'os espelhos de Médias e Pedidos divergiram');
+assert.strictEqual(served, canonicalHtml, 'os espelhos de Médias e Pedidos divergiram');
 assert(
   /\*\s*\{[^}]*scrollbar-width:\s*thin;[^}]*scrollbar-color:\s*rgba\(100, 116, 139, 0\.42\) transparent;/s.test(canonical),
   'o módulo deve usar uma barra de rolagem fina e discreta',

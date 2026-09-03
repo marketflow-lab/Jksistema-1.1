@@ -274,22 +274,32 @@ def verificar_trava_seguranca(ws, row_index, headers, username, client_id=None):
         print(f"Erro ao registrar acesso: {e}")
         return False, f"Erro seguranÃƒÆ’Ã‚Â§a: {e}"
 
-def carregar_usuarios_sheets():
-    firebase_primeiro = _env_config_bool(
-        ("JK_FIREBASE_USERS_FIRST", "FIREBASE_USERS_FIRST"),
-        default=False,
+def carregar_usuarios_sheets(*, skip_firebase: bool = False):
+    firebase_ativo = _firebase_deve_usar() and not skip_firebase
+    firebase_obrigatorio = _firebase_access_obrigatorio()
+    firebase_primeiro = firebase_ativo and (
+        firebase_obrigatorio
+        or _env_config_bool(
+            ("JK_FIREBASE_USERS_FIRST", "FIREBASE_USERS_FIRST"),
+            default=True,
+        )
     )
     if firebase_primeiro:
-        usuarios_firebase = _firebase_listar_usuarios(seed_if_empty=True) if _firebase_deve_usar() else None
+        usuarios_firebase = _firebase_listar_usuarios(seed_if_empty=not firebase_obrigatorio)
         if isinstance(usuarios_firebase, dict):
             return usuarios_firebase, None, []
+        if firebase_obrigatorio:
+            raise HTTPException(
+                status_code=503,
+                detail="Firebase indisponivel para autenticar usuarios.",
+            )
 
     usuarios_sql, headers_sql = _carregar_usuarios_sql()
     if usuarios_sql is not None:
         return usuarios_sql, None, headers_sql
 
-    if not firebase_primeiro:
-        usuarios_firebase = _firebase_listar_usuarios(seed_if_empty=True) if _firebase_deve_usar() else None
+    if firebase_ativo and not firebase_primeiro:
+        usuarios_firebase = _firebase_listar_usuarios(seed_if_empty=True)
         if isinstance(usuarios_firebase, dict):
             return usuarios_firebase, None, []
 
@@ -401,6 +411,21 @@ def carregar_usuarios_sheets():
             return usuarios_local, None, headers_local
         return None, None, None
 
+
+def _carregar_usuario_login(username: str):
+    username_norm = str(username or "").strip().lower()
+    if not username_norm:
+        return None, None, []
+    firebase_ativo = _firebase_deve_usar()
+    if firebase_ativo:
+        usuario_firebase = _firebase_obter_usuario(username_norm)
+        if isinstance(usuario_firebase, dict) or _firebase_access_obrigatorio():
+            return usuario_firebase, None, []
+    usuarios, worksheet, headers = carregar_usuarios_sheets(skip_firebase=firebase_ativo)
+    usuario = usuarios.get(username_norm) if isinstance(usuarios, dict) else None
+    return usuario if isinstance(usuario, dict) else None, worksheet, headers or []
+
+
 def _login_senha_confere(senha_informada: str, senha_salva: str) -> bool:
     senha = str(senha_informada or "")
     salva = str(senha_salva or "")
@@ -445,20 +470,24 @@ def _firebase_validar_e_registrar_maquina(username: str, usuario: dict, permisso
     ref = coll.document(_firebase_doc_id(username_norm))
 
     try:
-        snap = ref.get()
-        if not snap.exists:
+        usuario_atual = _firebase_obter_usuario(username_norm)
+        if not isinstance(usuario_atual, dict):
             return False, "Usuario nao encontrado no Firebase.", machine_final
-        usuario_atual = _firebase_user_from_data(username_norm, snap.to_dict() or {})
         maquinas = _normalizar_lista_maquinas(usuario_atual.get("machine_ids"), usuario_atual.get("machine_id"))
         if machine_final in maquinas:
             return True, "", machine_final
         if unrestricted:
             if _FirestoreArrayUnion is None:
                 return False, "Firebase indisponivel para registrar esta maquina.", machine_final
-            ref.update({
-                "machine_ids": _FirestoreArrayUnion([machine_final]),
-                "updated_at": _firebase_now_iso(),
-            })
+            ref.update(
+                {
+                    "machine_ids": _FirestoreArrayUnion([machine_final]),
+                    "updated_at": _firebase_now_iso(),
+                },
+                retry=None,
+                timeout=_firebase_call_timeout_seconds(),
+            )
+            _firebase_user_cache_invalidate(username_norm)
             maquinas.append(machine_final)
             usuario_atualizado = dict(usuario)
             maquinas_locais = _normalizar_lista_maquinas(usuario.get("machine_ids"), usuario.get("machine_id"))
@@ -472,11 +501,16 @@ def _firebase_validar_e_registrar_maquina(username: str, usuario: dict, permisso
         if max_machines != 0 and len(maquinas) >= max_machines:
             return False, "Limite de dispositivos atingido para este usuario. Peca ao administrador para resetar os dispositivos.", machine_final
         maquinas.append(machine_final)
-        ref.update({
-            "machine_id": maquinas[0] if maquinas else machine_final,
-            "machine_ids": maquinas,
-            "updated_at": _firebase_now_iso(),
-        })
+        ref.update(
+            {
+                "machine_id": maquinas[0] if maquinas else machine_final,
+                "machine_ids": maquinas,
+                "updated_at": _firebase_now_iso(),
+            },
+            retry=None,
+            timeout=_firebase_call_timeout_seconds(),
+        )
+        _firebase_user_cache_invalidate(username_norm)
         ok, msg = True, ""
         if ok:
             usuario_atualizado = dict(usuario)
@@ -881,6 +915,7 @@ __all__ = [
     "extrair_permissoes",
     "verificar_trava_seguranca",
     "carregar_usuarios_sheets",
+    "_carregar_usuario_login",
     "_login_senha_confere",
     "_login_validade_ok",
     "_login_usuario_ativo",

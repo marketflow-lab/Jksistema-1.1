@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest
+from fastapi import HTTPException
+
+from backend.modules.perguntas_pos_venda.endpoints import approvals as approval_endpoints
 from backend.services import perguntas_pos_venda_codex as codex
 from backend.services import perguntas_pos_venda_core as state
 from backend.services import perguntas_pos_venda_state as state_module
@@ -17,7 +21,7 @@ def test_public_question_uses_full_mercado_livre_limit_and_keeps_post_sale_limit
     assert state.ML_POS_VENDA_LIMITE_SEGURO == 340
 
 
-def test_public_question_cleaner_preserves_2000_and_truncates_only_above_limit():
+def test_legacy_public_question_cleaner_keeps_its_bounded_contract():
     exact = "x" * 2000
     over = "x" * 2001
 
@@ -27,17 +31,19 @@ def test_public_question_cleaner_preserves_2000_and_truncates_only_above_limit()
     assert truncated.endswith("...")
 
 
-def test_public_question_signature_stays_inside_2000_characters(monkeypatch):
+def test_public_question_signature_append_only_preserves_oversize_body(monkeypatch):
     monkeypatch.setattr(
         state_module,
         "_favoritos_normalizar_sem_acentos",
         _favoritos_normalizar_sem_acentos,
         raising=False,
     )
-    answer = state._perguntas_ia_resposta_final_loja("x" * 2000, "JK Pecas")
+    body = "x" * 2000
+    signature = "Equipe JK Pecas agradece pelo contato, Precisando estamos a disposição!"
+    answer = state._perguntas_ia_resposta_final_loja(body, "JK Pecas")
 
-    assert len(answer) == 2000
-    assert answer.endswith("Equipe JK Pecas agradece pelo contato, Precisando estamos a disposição!")
+    assert answer == f"{body}\n\n{signature}"
+    assert len(answer) > 2000
 
 
 def test_public_question_signature_uses_store_name_and_is_not_duplicated(monkeypatch):
@@ -57,14 +63,50 @@ def test_public_question_signature_uses_store_name_and_is_not_duplicated(monkeyp
         f"Serve para a aplicação informada.\n\n{signature}",
         "JK Peças",
     )
+    legacy_body = "Serve para a aplicação informada.\n\nEquipe JK Peças agradece o seu contato."
     legacy_answer = state._perguntas_ia_resposta_final_loja(
-        "Serve para a aplicação informada.\n\nEquipe JK Peças agradece o seu contato.",
+        legacy_body,
         "JK Peças",
     )
 
     assert answer == f"Serve para a aplicação informada.\n\n{signature}"
     assert answer.count(signature) == 1
-    assert legacy_answer == answer
+    assert legacy_answer == f"{legacy_body}\n\n{signature}"
+
+
+def test_public_question_signature_detection_preserves_body_bytes_and_trailing_whitespace():
+    signature = "Equipe JK Pecas agradece pelo contato, Precisando estamos a disposição!"
+    literal = f"  Corpo com espaços.  \n\n{signature}  \n"
+
+    assert state._perguntas_ia_resposta_final_loja(literal, "JK Pecas") == literal
+
+
+def test_public_question_oversize_draft_is_blocked_only_at_send_preflight():
+    approval = {"manual_edit_required": True, "manual_edit_reason": "mercado_livre_public_reply_over_limit"}
+    context = approval_endpoints._ApprovalSend(
+        client_id="tenant-a",
+        approvals=[approval],
+        index=0,
+        approval=approval,
+        approval_id="approval-1",
+        store="JK Pecas",
+        question_id="Q1",
+        answer="x" * 2001,
+        draft_hash="hash",
+        idempotency_key="key",
+        existing_idempotency_key="",
+        previous_status="pending",
+        proposal_id="proposal-1",
+        cfg={},
+    )
+
+    with pytest.raises(HTTPException) as captured:
+        approval_endpoints._approval_question_preflight(context)
+
+    assert captured.value.status_code == 400
+    assert "2001 caracteres" in str(captured.value.detail)
+    assert "no maximo 2000" in str(captured.value.detail)
+    assert context.answer == "x" * 2001
 
 
 def test_public_question_draft_preserves_2000_characters_for_revision():

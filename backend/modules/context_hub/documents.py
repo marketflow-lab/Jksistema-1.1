@@ -29,7 +29,6 @@ from backend.modules.context_hub.contracts import (
 )
 
 from backend.modules.context_hub import curation_records
-
 from backend.modules.context_hub.dlp import (
     scan_dlp,
 )
@@ -64,6 +63,15 @@ from backend.modules.context_hub.metadata import (
 from backend.modules.context_hub.path_safety import (
     _assert_path_chain_safe,
 )
+
+from backend.modules.context_hub.materialization import persist_generation_materialization
+
+from backend.modules.context_hub.product_evidence_editorial import (
+    PRODUCT_EVIDENCE_EDITORIAL_ROOT,
+    render_product_evidence_editorial,
+)
+
+from backend.modules.context_hub.product_evidence_attestation import persist_product_evidence_attestation
 
 from backend.modules.context_hub.runtime import (
     _json_canonical,
@@ -402,10 +410,75 @@ def _append_curated_documents(
         state.documents.append(dict(curated))
 
 
+def _append_product_evidence_documents(
+    state: _DocumentPreparation,
+    snapshot: Mapping[str, Any],
+    *,
+    client_id: str,
+    surface: str,
+    source_version: str,
+    generated_at: str,
+) -> None:
+    try:
+        documents, managed_files, findings = render_product_evidence_editorial(
+            snapshot,
+            client_id=client_id,
+            surface=surface,
+            source_version=source_version,
+            generated_at=generated_at,
+        )
+    except ContextHubValidationError:
+        state.findings.append(
+            _finding("product_evidence_render_failed", category="product_evidence")
+        )
+        return
+    state.findings.extend(findings)
+    projection_paths: set[str] = set()
+    for raw_relative, raw_content in sorted(managed_files.items()):
+        try:
+            relative = _safe_relative_markdown_path(raw_relative).as_posix()
+        except ContextHubValidationError:
+            state.findings.append(
+                _finding("product_evidence_path_invalid", category="product_evidence")
+            )
+            continue
+        content = str(raw_content or "")
+        path_key = relative.casefold()
+        if (
+            not relative.startswith(PRODUCT_EVIDENCE_EDITORIAL_ROOT + "/")
+            or len(content.encode("utf-8")) > 1_000_000
+            or path_key in state.seen_paths
+        ):
+            state.findings.append(
+                _finding("product_evidence_file_invalid", category="product_evidence")
+            )
+            continue
+        projection_paths.add(relative)
+        state.seen_paths.add(path_key)
+        state.managed_files[relative] = content
+    for document in documents:
+        metadata = dict(document.get("metadata") or {})
+        relative = str(document.get("relative_path") or "")
+        doc_id = str(metadata.get("id") or "")
+        body = str(document.get("body") or "")
+        if relative not in projection_paths or not doc_id or doc_id in state.seen_ids:
+            state.findings.append(
+                _finding("product_evidence_document_invalid", category="product_evidence")
+            )
+            continue
+        dlp = scan_dlp(_dlp_document_text(metadata, body), source_ref=relative)
+        if dlp:
+            state.findings.extend(dlp)
+            continue
+        state.seen_ids.add(doc_id)
+        state.documents.append(dict(document))
+
+
 def _prepare_documents(
     inventory: Mapping[str, Any],
     bundle_documents: Sequence[Mapping[str, Any]],
     curated_documents: Sequence[Mapping[str, Any]],
+    product_evidence_snapshot: Mapping[str, Any],
     *,
     client_id: str,
     surface: str,
@@ -432,6 +505,14 @@ def _prepare_documents(
     )
     inventory_managed_paths = _prepare_bundle_documents(state, bundle_documents)
     _link_reviewed_bundles(state, inventory_managed_paths)
+    _append_product_evidence_documents(
+        state,
+        product_evidence_snapshot,
+        client_id=client_id,
+        surface=surface,
+        source_version=source_version,
+        generated_at=generated_at,
+    )
     _append_curated_documents(state, curated_documents)
     return state.documents, state.managed_files, state.findings
 
@@ -519,9 +600,9 @@ _DOCUMENT_INSERT_SQL = """
 INSERT INTO context_hub_documents(
     generation_id, doc_id, entity_id, relative_path, title, kind, module,
     surface, truth_class, sensitivity, source_version, source_hash,
-    content_hash, source_refs_json, store_ref, tags_text,
-    valid_from, valid_to, content, managed
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    content_hash, source_refs_json, store_ref, seller_id, site_id, sku,
+    item_id, variation_id, tags_text, valid_from, valid_to, content, managed
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -584,7 +665,9 @@ def _document_values(
         str(metadata.get("source_version") or source_version),
         str(metadata.get("source_hash") or _sha256_text(body)), _sha256_text(content),
         _json_canonical(source_refs), str(metadata.get("store_ref") or "")[:180],
-        "\n".join(tags), valid_from, valid_to, content,
+        str(metadata.get("seller_id") or "")[:180], str(metadata.get("site_id") or "")[:32],
+        str(metadata.get("sku") or "")[:180], str(metadata.get("item_id") or "")[:180],
+        str(metadata.get("variation_id") or "")[:180], "\n".join(tags), valid_from, valid_to, content,
         1 if metadata.get("managed") is True else 0,
     )
     return values, metadata, body, doc_id, relative_path
@@ -675,6 +758,8 @@ def _persist_ready_generation(
     base_active_generation_id: Optional[str],
     created_at: str,
     documents: Sequence[Mapping[str, Any]],
+    product_evidence_attestation: Mapping[str, Any],
+    generation_materialization: Mapping[str, Any],
 ) -> None:
     with _connect(paths) as connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -699,6 +784,12 @@ def _persist_ready_generation(
                     surface=surface,
                     source_version=source_version,
                 )
+            persist_product_evidence_attestation(
+                connection,
+                generation_id,
+                product_evidence_attestation,
+            )
+            persist_generation_materialization(connection, generation_id, generation_materialization)
             connection.execute(
                 "UPDATE context_hub_generations SET status='ready', validated_at=? WHERE generation_id=?",
                 (_utc_now(), generation_id),

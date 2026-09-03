@@ -382,15 +382,32 @@ def _calcular_margens_concorrentes_promocoes(
 
 async def api_medias_compras_listas_pedidos(
     loja: str = "__todas",
+    store_id: str = "",
     client_id: str = Depends(medias_common.get_tenant_id)
 ):
     listas = _carregar_listas_pedidos(client_id)
-    loja_sel = str(loja or "").strip().lower()
-    if loja_sel and loja_sel != "__todas":
-        listas = [
-            l for l in listas
-            if str((l or {}).get("loja") or "").strip().lower() == loja_sel
-        ]
+    escopo = _resolver_escopo_loja_medias(client_id, loja, store_id)
+    store_id_alvo = escopo["store_id"]
+    if store_id_alvo:
+        filtradas = []
+        for lista in listas:
+            lista_store_id = str((lista or {}).get("store_id") or "").strip()
+            if lista_store_id:
+                if lista_store_id == store_id_alvo:
+                    filtradas.append(lista)
+                continue
+            try:
+                legado = _resolver_escopo_loja_medias(
+                    client_id,
+                    str((lista or {}).get("loja") or ""),
+                    "",
+                    exigir_especifica=True,
+                )
+            except HTTPException:
+                continue
+            if legado["store_id"] == store_id_alvo:
+                filtradas.append(lista)
+        listas = filtradas
     m3_lookup = _construir_mapa_m3_sku(client_id)
     return {
         "success": True,
@@ -592,9 +609,59 @@ async def api_medias_compras_lista_pedido_detalhe(lista_id: str, client_id: str 
         raise HTTPException(status_code=404, detail="Lista de pedidos nÃ£o encontrada")
 
     # Backfill: garante coluna persistida de frete internacional para listas antigas.
-    itens_recalculados = _recalcular_frete_internacional_itens_lista(client_id, alvo.get("itens") or [])
-    if json.dumps(itens_recalculados, ensure_ascii=False, sort_keys=True) != json.dumps(alvo.get("itens") or [], ensure_ascii=False, sort_keys=True):
-        alvo["itens"] = itens_recalculados
+    # Listas novas guardam o store_id imutavel. As antigas ainda podem trazer o
+    # nome atual ou um nome historico unico da loja.
+    store_id_antes = str(alvo.get("store_id") or "").strip()
+    referencia_loja_cadastro = str(
+        store_id_antes or alvo.get("loja") or ""
+    ).strip()
+    escopo_cadastro_nao_resolvido = False
+    if referencia_loja_cadastro and referencia_loja_cadastro != "__todas":
+        try:
+            from backend.services.cadastro_compatibilidade import (
+                visao_produtos_cadastro_contexto_loja,
+            )
+
+            contexto_cadastro = visao_produtos_cadastro_contexto_loja(
+                client_id,
+                referencia_loja_cadastro,
+            )
+            escopo_cadastro_nao_resolvido = (
+                contexto_cadastro.get("scope") == "unresolved"
+            )
+            store_id_resolvido = str(
+                contexto_cadastro.get("store_id") or ""
+            ).strip()
+            if store_id_resolvido and not store_id_antes:
+                alvo["store_id"] = store_id_resolvido
+                referencia_loja_cadastro = store_id_resolvido
+        except RuntimeError:
+            escopo_cadastro_nao_resolvido = True
+
+    itens_recalculados = _recalcular_frete_internacional_itens_lista(
+        client_id,
+        alvo.get("itens") or [],
+        loja=referencia_loja_cadastro,
+    )
+    itens_persistidos = itens_recalculados
+    if escopo_cadastro_nao_resolvido:
+        # A resposta permanece fail-closed, mas um GET nunca apaga do JSON a
+        # referencia anterior enquanto a identidade da loja estiver ambigua.
+        itens_persistidos = [dict(item) for item in itens_recalculados]
+        for indice, original in enumerate(alvo.get("itens") or []):
+            if indice >= len(itens_persistidos) or not isinstance(original, dict):
+                continue
+            foto_original = str(original.get("Foto") or "").strip()
+            if foto_original:
+                itens_persistidos[indice]["Foto"] = foto_original
+    mudou_itens = json.dumps(
+        itens_persistidos,
+        ensure_ascii=False,
+        sort_keys=True,
+    ) != json.dumps(alvo.get("itens") or [], ensure_ascii=False, sort_keys=True)
+    mudou_store_id = str(alvo.get("store_id") or "").strip() != store_id_antes
+    if mudou_itens or mudou_store_id:
+        alvo["itens"] = itens_persistidos
         alvo["updated_at"] = datetime.now().isoformat(timespec="seconds")
         listas[idx] = alvo
         _salvar_listas_pedidos(client_id, listas)
@@ -701,7 +768,6 @@ async def api_medias_compras_lista_pedido_editar(
     idx = next((i for i, l in enumerate(listas) if str(l.get("id", "")) == str(lista_id)), -1)
     if idx < 0:
         raise HTTPException(status_code=404, detail="Lista de pedidos nÃ£o encontrada")
-
     lista = listas[idx]
     campos_informados = (
         getattr(req, "model_fields_set", None)
@@ -709,6 +775,7 @@ async def api_medias_compras_lista_pedido_editar(
         or set()
     )
     alterou = False
+    alterou_loja = False
     if req.nome_lista is not None:
         nome_lista = str(req.nome_lista or "").strip()
         if nome_lista:
@@ -717,10 +784,16 @@ async def api_medias_compras_lista_pedido_editar(
     if req.status is not None:
         lista["status"] = _normalizar_status_lista_pedido(req.status)
         alterou = True
-    if "loja" in campos_informados:
-        loja = str(req.loja or "").strip()
-        lista["loja"] = loja if loja and loja.lower() != "__todas" else "__todas"
+    if "loja" in campos_informados or "store_id" in campos_informados:
+        escopo = _resolver_escopo_loja_medias(
+            client_id,
+            req.loja if "loja" in campos_informados else lista.get("loja"),
+            req.store_id if "store_id" in campos_informados else "",
+        )
+        lista["loja"] = escopo["loja"]
+        lista["store_id"] = escopo["store_id"]
         alterou = True
+        alterou_loja = True
 
     campos_logisticos = (
         "numero_invoice",
@@ -744,9 +817,22 @@ async def api_medias_compras_lista_pedido_editar(
 
     if "itens" in campos_informados:
         itens_protegidos = _proteger_itens_aprovados_lista(lista.get("itens") or [], req.itens or [])
-        itens_norm = _recalcular_frete_internacional_itens_lista(client_id, itens_protegidos)
+        itens_norm = _recalcular_frete_internacional_itens_lista(
+            client_id,
+            itens_protegidos,
+            loja=str(lista.get("store_id") or lista.get("loja") or ""),
+        )
         lista["itens"] = itens_norm
         alterou = True
+    elif alterou_loja:
+        # A identidade da loja e parte da identidade da Foto. A troca de loja
+        # precisa limpar/reidratar as referencias no mesmo commit, mesmo quando
+        # o PATCH nao reenviar a colecao de itens.
+        lista["itens"] = _recalcular_frete_internacional_itens_lista(
+            client_id,
+            lista.get("itens") or [],
+            loja=str(lista.get("store_id") or lista.get("loja") or ""),
+        )
 
     if alterou:
         lista["updated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -963,6 +1049,7 @@ async def api_medias_compras_lista_pedido_adicionar_sku(
     idx = next((i for i, l in enumerate(listas) if str(l.get("id", "")) == str(lista_id)), -1)
     if idx < 0:
         raise HTTPException(status_code=404, detail="Lista de pedidos nÃ£o encontrada")
+    lista = listas[idx]
 
     sku_input = str(req.sku or "").strip()
     sku_in = _normalizar_sku_mes(sku_input)
@@ -999,6 +1086,27 @@ async def api_medias_compras_lista_pedido_adicionar_sku(
                 break
         if not produto:
             raise HTTPException(status_code=404, detail="SKU nÃ£o encontrado no cadastro")
+
+    from backend.services.cadastro_compatibilidade import (
+        mesclar_produtos_legados_com_contexto_loja,
+    )
+
+    contexto_cadastro = mesclar_produtos_legados_com_contexto_loja(
+        client_id,
+        [produto] if isinstance(produto, dict) else [],
+        str(lista.get("store_id") or lista.get("loja") or ""),
+    )
+    produto = next(
+        (
+            dict(item)
+            for item in contexto_cadastro.get("produtos") or []
+            if _normalizar_sku_mes(str(item.get("sku") or "")) == sku_in
+        ),
+        None,
+    )
+    if not produto:
+        raise HTTPException(status_code=404, detail="SKU nÃ£o encontrado no cadastro desta loja")
+    store_id_cadastro = str(contexto_cadastro.get("store_id") or "").strip()
 
     def _norm_prod_key(chave: str) -> str:
         txt = unicodedata.normalize("NFKD", str(chave or ""))
@@ -1047,12 +1155,16 @@ async def api_medias_compras_lista_pedido_adicionar_sku(
         "titulo em ingles", "titulo", "product name", "nome", "produto",
         "traducao ptbr ou nome na bling"
     ])
-    foto = _resolver_foto_cadastro_sku(client_id, sku_final, _pick_prod(["foto", "imagem", "url foto", "link foto"]))
+    foto = _resolver_foto_cadastro_sku(
+        client_id,
+        sku_final,
+        _pick_prod(["foto", "imagem", "url foto", "link foto"]),
+        store_id_cadastro or None,
+    )
     oem = _pick_prod(["oem", "codigo oem", "part number", "oem model", "oem model"])
     cor_lado = _pick_prod(["color side", "color/side", "cor lado", "cor/lado", "lado cor", "lado/cor", "lado", "cor", "color", "side"])
     link = _pick_prod(["link", "url", "link aliexpress", "url aliexpress", "mlb principal", "url ml"])
 
-    lista = listas[idx]
     itens = [_normalizar_item_lista_pedido(i) for i in (lista.get("itens") or [])]
     idx_existente = next((i for i, it in enumerate(itens) if _normalizar_sku_mes(it.get("SKU", "")) == sku_final), -1)
 
@@ -1075,7 +1187,11 @@ async def api_medias_compras_lista_pedido_adicionar_sku(
     else:
         itens.append(_normalizar_item_lista_pedido(item_novo))
 
-    lista["itens"] = _recalcular_frete_internacional_itens_lista(client_id, itens)
+    lista["itens"] = _recalcular_frete_internacional_itens_lista(
+        client_id,
+        itens,
+        loja=str(lista.get("store_id") or lista.get("loja") or ""),
+    )
     lista["updated_at"] = datetime.now().isoformat(timespec="seconds")
     listas[idx] = lista
     _salvar_listas_pedidos(client_id, listas)
@@ -1180,7 +1296,12 @@ async def api_medias_compras_lista_pedido_download(lista_id: str, client_id: str
 
     file_bytes = LISTA_PEDIDO_XLSX_CACHE.get(cache_key)
     if not file_bytes:
-        file_bytes = _gerar_excel_lista_pedido_bytes(nome_lista, lista.get("itens") or [], client_id=client_id)
+        file_bytes = _gerar_excel_lista_pedido_bytes(
+            nome_lista,
+            lista.get("itens") or [],
+            client_id=client_id,
+            loja=str(lista.get("store_id") or lista.get("loja") or ""),
+        )
         LISTA_PEDIDO_XLSX_CACHE[cache_key] = file_bytes
         # MantÃ©m cache pequeno para evitar crescimento sem controle.
         while len(LISTA_PEDIDO_XLSX_CACHE) > LISTA_PEDIDO_XLSX_CACHE_MAX_ITENS:
@@ -1272,7 +1393,12 @@ async def api_medias_compras_lista_pedido_gerar_download(lista_id: str, client_i
     file_bytes = LISTA_PEDIDO_XLSX_CACHE.get(cache_key)
 
     if file_bytes is None:
-        file_bytes = _gerar_excel_lista_pedido_bytes(nome_lista, lista.get("itens") or [], client_id=client_id)
+        file_bytes = _gerar_excel_lista_pedido_bytes(
+            nome_lista,
+            lista.get("itens") or [],
+            client_id=client_id,
+            loja=str(lista.get("store_id") or lista.get("loja") or ""),
+        )
         LISTA_PEDIDO_XLSX_CACHE[cache_key] = file_bytes
         while len(LISTA_PEDIDO_XLSX_CACHE) > LISTA_PEDIDO_XLSX_CACHE_MAX_ITENS:
             try:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import sqlite3
@@ -39,6 +40,59 @@ def configure_estoque_common_runtime(runtime_module=None):
 
 configure_estoque_common_runtime()
 
+_ESTOQUE_SYNC_STATE_LOCK = threading.RLock()
+_ESTOQUE_SYNC_TERMINAL_TTL_SECONDS = 15 * 60
+_ESTOQUE_SYNC_TERMINAL_JOBS: dict[str, dict[str, dict[str, Any]]] = {}
+
+
+def _estoque_podar_jobs_terminais_locked(
+    client_id: str,
+    *,
+    agora: float | None = None,
+) -> None:
+    instante = time.monotonic() if agora is None else agora
+    cache_tenant = _ESTOQUE_SYNC_TERMINAL_JOBS.get(client_id)
+    if not cache_tenant:
+        return
+    expirados = [
+        job_id
+        for job_id, entrada in cache_tenant.items()
+        if float(entrada.get("expires_at") or 0) <= instante
+    ]
+    for job_id in expirados:
+        cache_tenant.pop(job_id, None)
+    if not cache_tenant:
+        _ESTOQUE_SYNC_TERMINAL_JOBS.pop(client_id, None)
+
+
+def _cache_estoque_job_terminal(
+    client_id: str,
+    job_id: str,
+    *,
+    progress: dict[str, Any] | None,
+    logs: list[Any],
+    sync_meta: dict[str, Any],
+) -> None:
+    job_id_exato = str(job_id or "").strip()
+    if not job_id_exato:
+        return
+    with _ESTOQUE_SYNC_STATE_LOCK:
+        agora = time.monotonic()
+        _estoque_podar_jobs_terminais_locked(client_id, agora=agora)
+        cache_tenant = _ESTOQUE_SYNC_TERMINAL_JOBS.setdefault(client_id, {})
+        cache_tenant[job_id_exato] = {
+            "expires_at": agora + _ESTOQUE_SYNC_TERMINAL_TTL_SECONDS,
+            "payload": {
+                "success": True,
+                "job_id": job_id_exato,
+                "progress": copy.deepcopy(progress),
+                "logs": copy.deepcopy(list(logs)),
+                "active": False,
+                "sync_meta": copy.deepcopy(sync_meta),
+            },
+        }
+
+
 async def listar_estoque(client_id: str = Depends(get_tenant_id)):
     """Retorna o estoque compilado especÃƒÆ’Ã‚Â­fico do cliente (pasta info/<client_id>/)."""
     arquivo_cliente = _migrar_arquivo_legado_para_tenant(client_id, "produtos_compilado.csv", ARQUIVO_DB_PRODUTOS)
@@ -56,7 +110,9 @@ async def listar_estoque(client_id: str = Depends(get_tenant_id)):
     return []
 
 def _set_estoque_progresso(client_id: str, data: dict):
-    ESTOQUE_SYNC_PROGRESS[client_id] = data
+    with _ESTOQUE_SYNC_STATE_LOCK:
+        ESTOQUE_SYNC_PROGRESS[client_id] = data
+
 
 def _set_estoque_lanc_progresso(client_id: str, data: dict):
     ESTOQUE_LANC_SYNC_PROGRESS[client_id] = data
@@ -211,24 +267,54 @@ def _salvar_preferencias_colunas_promo(client_id: str, preferencias: dict) -> di
 
 def _estoque_log(client_id: str, mensagem: str):
     logger.info(mensagem)
-    logs = ESTOQUE_SYNC_LOGS.get(client_id, [])
-    logs.append(mensagem)
-    if len(logs) > 200:
-        logs = logs[-200:]
-    ESTOQUE_SYNC_LOGS[client_id] = logs
+    with _ESTOQUE_SYNC_STATE_LOCK:
+        logs = ESTOQUE_SYNC_LOGS.get(client_id, [])
+        logs.append(mensagem)
+        if len(logs) > 200:
+            logs = logs[-200:]
+        ESTOQUE_SYNC_LOGS[client_id] = logs
 
-async def progresso_sincronizacao_estoque(client_id: str = Depends(get_tenant_id)):
-    active = bool(ESTOQUE_SYNC_ACTIVE.get(client_id))
-    progress = ESTOQUE_SYNC_PROGRESS.get(client_id)
-    if progress is None and active:
-        progress = _criar_progresso("Preparando", 0, 0, 0, "Iniciando atualização de estoque...")
-    return {
-        "success": True,
-        "progress": progress,
-        "logs": ESTOQUE_SYNC_LOGS.get(client_id, []),
-        "active": active,
-        "sync_meta": ESTOQUE_SYNC_META.get(client_id)
-    }
+
+async def progresso_sincronizacao_estoque(
+    client_id: str = Depends(get_tenant_id),
+    job_id: str | None = None,
+):
+    job_id_esperado = str(job_id or "").strip()
+    with _ESTOQUE_SYNC_STATE_LOCK:
+        _estoque_podar_jobs_terminais_locked(client_id)
+        sync_meta = ESTOQUE_SYNC_META.get(client_id)
+        job_id_corrente = str((sync_meta or {}).get("job_id") or "").strip()
+        if job_id_esperado and job_id_esperado != job_id_corrente:
+            entrada = (
+                _ESTOQUE_SYNC_TERMINAL_JOBS.get(client_id, {}).get(job_id_esperado)
+            )
+            if entrada is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "code": "estoque_sync_job_not_found",
+                        "message": "Job de estoque nao encontrado ou expirado.",
+                    },
+                )
+            return copy.deepcopy(entrada["payload"])
+
+        active = bool(ESTOQUE_SYNC_ACTIVE.get(client_id)) and not bool(
+            (sync_meta or {}).get("outcome")
+        )
+        progress = ESTOQUE_SYNC_PROGRESS.get(client_id)
+        if progress is None and active:
+            progress = _criar_progresso(
+                "Preparando", 0, 0, 0, "Iniciando atualização de estoque..."
+            )
+        return {
+            "success": True,
+            "job_id": job_id_corrente or None,
+            "progress": copy.deepcopy(progress),
+            "logs": copy.deepcopy(ESTOQUE_SYNC_LOGS.get(client_id, [])),
+            "active": active,
+            "sync_meta": copy.deepcopy(sync_meta),
+        }
+
 
 async def api_estoque_preferencias_colunas_get(client_id: str = Depends(get_tenant_id)):
     prefs = _carregar_preferencias_colunas_estoque(client_id)

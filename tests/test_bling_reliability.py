@@ -46,11 +46,38 @@ class FakeSession:
         return result
 
 
+@pytest.fixture(autouse=True)
+def limpar_limitador_de_conta_bling():
+    with bling._BLING_ACCOUNT_LIMIT_LOCK:
+        bling._BLING_ACCOUNT_NEXT_CALL.clear()
+    yield
+    with bling._BLING_ACCOUNT_LIMIT_LOCK:
+        bling._BLING_ACCOUNT_NEXT_CALL.clear()
+
 def test_bling_session_adapter_nao_repete_status_http():
     session = bling._get_bling_session()
 
     assert session.adapters["https://"].max_retries.total == 0
     assert session.adapters["http://"].max_retries.total == 0
+
+
+def test_limite_de_conta_permanece_compartilhado_apos_rotacao_de_token(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(bling.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(
+        bling,
+        "_bling_cancelable_sleep",
+        lambda seconds, **_kwargs: sleeps.append(seconds),
+    )
+    headers = {"Authorization": "Bearer conta-compartilhada"}
+
+    bling._bling_wait_account_turn(headers)
+    bling._bling_wait_account_turn(headers)
+    bling._bling_wait_account_turn({"Authorization": "Bearer outra-conta"})
+
+    assert sleeps == pytest.approx([0.0, 0.35, 0.70])
+    with bling._BLING_ACCOUNT_LIMIT_LOCK:
+        assert list(bling._BLING_ACCOUNT_NEXT_CALL) == ["bling-process-wide"]
 
 
 def test_get_limita_tentativas_timeout_e_retry_after(monkeypatch):

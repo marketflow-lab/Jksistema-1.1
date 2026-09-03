@@ -1687,7 +1687,7 @@ def _expand_lojas(client_id: str, loja: str) -> list[str]:
     return [loja] if loja else []
 
 
-def _progress_payload(kind: str, client_id: str) -> dict[str, Any]:
+def _progress_payload(kind: str, client_id: str, *, job_id: str = "") -> dict[str, Any]:
     try:
         if kind == "vendas_sync":
             from backend.services import vendas
@@ -1696,7 +1696,12 @@ def _progress_payload(kind: str, client_id: str) -> dict[str, Any]:
         if kind == "estoque_sync":
             from backend.services import estoque
 
-            return _run_async(estoque.progresso_sincronizacao_estoque(client_id))
+            return _run_async(
+                estoque.progresso_sincronizacao_estoque(
+                    client_id,
+                    job_id=str(job_id or "").strip() or None,
+                )
+            )
         if kind == "estoque_lancamentos":
             from backend.services import estoque
 
@@ -1715,13 +1720,46 @@ def _progress_is_active(payload: dict[str, Any]) -> bool:
         return False
 
 
-def _poll_progress_until_idle(run_id: str, kind: str, client_id: str, max_seconds: int = 12 * 60 * 60) -> dict[str, Any]:
+def _poll_progress_until_idle(
+    run_id: str,
+    kind: str,
+    client_id: str,
+    max_seconds: int = 12 * 60 * 60,
+    *,
+    job_id: str = "",
+    owned_job: bool = False,
+) -> dict[str, Any]:
     deadline = time.time() + max_seconds
     last: dict[str, Any] = {}
     checks = 0
     seen_active = False
+    cancelamento_sinalizado = False
     while time.time() < deadline:
-        last = _progress_payload(kind, client_id)
+        run_atual = _run_load(run_id, client_id) or {}
+        cancel_requested = str(run_atual.get("status") or "") == "cancel_requested"
+        if cancel_requested and kind == "estoque_sync" and not owned_job:
+            return {
+                "success": True,
+                "active": False,
+                "cancel_requested": True,
+                "sync_meta": {
+                    "job_id": str(job_id or "").strip() or None,
+                    "outcome": "cancelled",
+                    "adopted_job": True,
+                },
+            }
+        if (
+            cancel_requested
+            and owned_job
+            and kind == "estoque_sync"
+            and job_id
+            and not cancelamento_sinalizado
+        ):
+            from backend.services import estoque_sync
+
+            estoque_sync._estoque_solicitar_cancelamento_job(client_id, job_id)
+            cancelamento_sinalizado = True
+        last = _progress_payload(kind, client_id, job_id=job_id)
         active = _progress_is_active(last)
         seen_active = seen_active or active
         _update_run(
@@ -1732,6 +1770,10 @@ def _poll_progress_until_idle(run_id: str, kind: str, client_id: str, max_second
             sync_meta=last.get("sync_meta"),
             result_preview=last,
         )
+        sync_meta = last.get("sync_meta") if isinstance(last.get("sync_meta"), dict) else {}
+        outcome = str(sync_meta.get("outcome") or "").strip().lower()
+        if not active and outcome in {"completed", "partial", "failed", "cancelled"}:
+            return last
         if not active and (seen_active or checks >= 3):
             return last
         checks += 1
@@ -1791,21 +1833,43 @@ def _execute_estoque_sync(run_id: str, proposal: dict[str, Any]) -> dict[str, An
 
     client_id = str(proposal.get("client_id") or "default")
     params = proposal.get("params") or {}
-    lojas = _expand_lojas(client_id, str(params.get("loja") or ""))
-    if not lojas:
+    loja = str(params.get("loja") or "").strip()
+    if not loja:
         raise RuntimeError("Nenhuma loja encontrada para atualizar estoque.")
 
-    results: list[dict[str, Any]] = []
-    for loja in lojas:
-        while _progress_is_active(_progress_payload("estoque_sync", client_id)):
-            _update_run(run_id, live_status="Aguardando estoque atual terminar antes da proxima loja.")
-            time.sleep(2)
-        req = EstoqueSyncRequest(loja=loja)
-        result = _run_async(estoque.sincronizar_estoque(req, client_id))
-        results.append({"loja": loja, "result": result})
-        _update_run(run_id, live_status=f"Atualizacao de estoque iniciada para {loja}.", result={"lojas": results})
-        _poll_progress_until_idle(run_id, "estoque_sync", client_id)
-    return {"lojas": results, "final_progress": _progress_payload("estoque_sync", client_id)}
+    todas_lojas = loja == "__todas"
+    req = EstoqueSyncRequest(
+        loja="Todas as lojas" if todas_lojas else loja,
+        store_id="__todas" if todas_lojas else None,
+        todas_lojas=todas_lojas,
+    )
+    result = _run_async(estoque.sincronizar_estoque(req, client_id))
+    job_id = str((result or {}).get("job_id") or "").strip()
+    if not job_id:
+        raise RuntimeError(
+            "A atualizacao de estoque nao informou job_id; o acompanhamento foi interrompido."
+        )
+    job_iniciado_por_run = bool((result or {}).get("started") is True and job_id)
+    results = [{"loja": "Todas as lojas" if todas_lojas else loja, "result": result}]
+    _update_run(
+        run_id,
+        live_status=(
+            "Atualizacao de estoque iniciada para todas as lojas."
+            if todas_lojas
+            else f"Atualizacao de estoque iniciada para {loja}."
+        ),
+        result={"lojas": results},
+        estoque_sync_job_id=job_id,
+        estoque_sync_owned_job_id=job_id if job_iniciado_por_run else "",
+    )
+    final_progress = _poll_progress_until_idle(
+        run_id,
+        "estoque_sync",
+        client_id,
+        job_id=job_id,
+        owned_job=job_iniciado_por_run,
+    )
+    return {"lojas": results, "final_progress": final_progress}
 
 
 def _execute_estoque_lancamentos_sku(run_id: str, proposal: dict[str, Any]) -> dict[str, Any]:
@@ -2003,6 +2067,8 @@ def _sync_task_from_action(proposal: dict[str, Any], run: dict[str, Any]) -> Non
             response = f"{label}: execucao concluida e verificada."
         elif status == "partial":
             response = f"{label}: execucao concluida, mas a verificacao retornou evidencias parciais."
+        elif status == "canceled":
+            response = f"{label}: execucao cancelada."
         else:
             response = f"{label}: a execucao falhou. {str(run.get('error') or '').strip()}".strip()
         console_tasks.update(
@@ -2025,7 +2091,33 @@ def _execute_run_worker(run_id: str, proposal: dict[str, Any], authorization: Op
     spec_id = str((proposal.get("action") or {}).get("id") or "")
     executor = str((proposal.get("action") or {}).get("executor") or "generic_route")
     try:
-        _update_run(run_id, status="running", started_at=_now(), live_status="Executando acao.")
+        client_id = str(proposal.get("client_id") or "default")
+        canceled_run = None
+        with CODEX_ACTIONS_LOCK:
+            run_antes_inicio = _run_load(run_id, client_id) or {}
+            if str(run_antes_inicio.get("status") or "") == "cancel_requested":
+                canceled_run = _update_run(
+                    run_id,
+                    status="canceled",
+                    completed_at=_now(),
+                    live_status="Acao cancelada antes de iniciar.",
+                    verification={
+                        "status": "canceled",
+                        "confirmed": False,
+                        "reason": "cancel_requested_before_start",
+                    },
+                    error="",
+                )
+            else:
+                _update_run(
+                    run_id,
+                    status="running",
+                    started_at=_now(),
+                    live_status="Executando acao.",
+                )
+        if canceled_run is not None:
+            _sync_task_from_action(proposal, canceled_run)
+            return
         if executor == "vendas_sync":
             result = _execute_vendas_sync(run_id, proposal)
         elif executor == "vendas_cancel":
@@ -2048,7 +2140,6 @@ def _execute_run_worker(run_id: str, proposal: dict[str, Any], authorization: Op
             raise RuntimeError("Executor generico bloqueado. Esta funcao precisa de um adaptador seguro e testado.")
         _update_run(run_id, live_status="Verificando o resultado da acao.")
         plan_id = str(proposal.get("plan_id") or "")
-        client_id = str(proposal.get("client_id") or "default")
         if plan_id:
             try:
                 codex_agent_runtime.transition_plan(
@@ -2061,17 +2152,105 @@ def _execute_run_worker(run_id: str, proposal: dict[str, Any], authorization: Op
                 )
             except Exception:
                 pass
-        verification = codex_agent_runtime.verification_from_result(result, executor=executor)
-        final_status = "completed" if verification.get("confirmed") else "partial"
-        final_run = _update_run(
-            run_id,
-            status=final_status,
-            completed_at=_now(),
-            live_status="Acao concluida e verificada." if verification.get("confirmed") else "Acao concluida com verificacao parcial.",
-            result=result,
-            verification=verification,
-            error="",
+        final_progress = result.get("final_progress") if isinstance(result, dict) else {}
+        sync_meta_final = (
+            final_progress.get("sync_meta")
+            if isinstance(final_progress, dict) and isinstance(final_progress.get("sync_meta"), dict)
+            else {}
         )
+        estoque_outcome = str(sync_meta_final.get("outcome") or "").strip().lower()
+        outcome_cancelado = (
+            estoque_outcome == "cancelled"
+            or (
+                isinstance(final_progress, dict)
+                and bool(final_progress.get("cancel_requested"))
+            )
+        )
+        verification_resultado = (
+            None
+            if outcome_cancelado or executor == "estoque_sync"
+            else codex_agent_runtime.verification_from_result(result, executor=executor)
+        )
+        with CODEX_ACTIONS_LOCK:
+            run_atual = _run_load(run_id, client_id) or {}
+            cancelado = bool(
+                str(run_atual.get("status") or "") == "cancel_requested"
+                or outcome_cancelado
+            )
+            if cancelado:
+                verification = {
+                    "status": "canceled",
+                    "confirmed": False,
+                    "reason": "cancel_requested",
+                }
+                final_status = "canceled"
+                final_error = ""
+            elif executor == "estoque_sync" and estoque_outcome == "completed":
+                verification = {
+                    "status": "confirmed",
+                    "confirmed": True,
+                    "reason": "estoque_sync_completed",
+                }
+                final_status = "completed"
+                final_error = ""
+            elif executor == "estoque_sync" and estoque_outcome == "partial":
+                verification = {
+                    "status": "partial",
+                    "confirmed": False,
+                    "reason": "estoque_sync_partial",
+                }
+                final_status = "partial"
+                final_error = ""
+            elif executor == "estoque_sync" and (
+                estoque_outcome == "failed"
+                or (
+                    isinstance(final_progress, dict)
+                    and final_progress.get("success") is False
+                )
+            ):
+                verification = {
+                    "status": "failed",
+                    "confirmed": False,
+                    "reason": "estoque_sync_failed",
+                }
+                final_status = "failed"
+                final_error = "Atualizacao de estoque falhou."
+            elif executor == "estoque_sync":
+                verification = {
+                    "status": "partial",
+                    "confirmed": False,
+                    "reason": "estoque_sync_inconclusive",
+                }
+                final_status = "partial"
+                final_error = ""
+            else:
+                verification = verification_resultado or {
+                    "status": "partial",
+                    "confirmed": False,
+                }
+                final_status = "completed" if verification.get("confirmed") else "partial"
+                final_error = ""
+            final_run = _update_run(
+                run_id,
+                status=final_status,
+                completed_at=_now(),
+                live_status=(
+                "Acao cancelada."
+                if final_status == "canceled"
+                else (
+                    "Acao falhou."
+                    if final_status == "failed"
+                    else (
+                        "Acao concluida e verificada."
+                        if verification.get("confirmed")
+                        else "Acao concluida com verificacao parcial."
+                    )
+                )
+                ),
+                result=result,
+                verification=verification,
+                error=final_error,
+            )
         _sync_task_from_action(proposal, final_run)
         if plan_id:
             try:
@@ -2079,34 +2258,65 @@ def _execute_run_worker(run_id: str, proposal: dict[str, Any], authorization: Op
                     _assistant_info_base(),
                     client_id,
                     plan_id,
-                    "concluido" if verification.get("confirmed") else "parcial",
-                    current_step="responder",
-                    step_status="completed",
+                    {
+                        "canceled": "cancelado",
+                        "failed": "falhou",
+                        "completed": "concluido",
+                    }.get(final_status, "parcial"),
+                    current_step=(
+                        "executar" if final_status in {"canceled", "failed"} else "responder"
+                    ),
+                    step_status=(
+                        "canceled"
+                        if final_status == "canceled"
+                        else ("failed" if final_status == "failed" else "completed")
+                    ),
                     verification=verification,
                     details={"run_id": run_id},
                 )
             except Exception:
                 pass
     except Exception as exc:
-        failed_run = _update_run(
-            run_id,
-            status="failed",
-            completed_at=_now(),
-            live_status="Acao falhou.",
-            error=f"{spec_id}: {str(exc)}",
-        )
-        _sync_task_from_action(proposal, failed_run)
+        client_id = str(proposal.get("client_id") or "default")
+        with CODEX_ACTIONS_LOCK:
+            run_atual = _run_load(run_id, client_id) or {}
+            cancelado = str(run_atual.get("status") or "") == "cancel_requested"
+            terminal_run = _update_run(
+                run_id,
+                status="canceled" if cancelado else "failed",
+                completed_at=_now(),
+                live_status="Acao cancelada." if cancelado else "Acao falhou.",
+                verification=(
+                    {
+                        "status": "canceled",
+                        "confirmed": False,
+                        "reason": "cancel_requested",
+                    }
+                    if cancelado
+                    else {
+                        "status": "failed",
+                        "confirmed": False,
+                        "error": str(exc)[:1000],
+                    }
+                ),
+                error="" if cancelado else f"{spec_id}: {str(exc)}",
+            )
+        _sync_task_from_action(proposal, terminal_run)
         plan_id = str(proposal.get("plan_id") or "")
         if plan_id:
             try:
                 codex_agent_runtime.transition_plan(
                     _assistant_info_base(),
-                    str(proposal.get("client_id") or "default"),
+                    client_id,
                     plan_id,
-                    "falhou",
+                    "cancelado" if cancelado else "falhou",
                     current_step="executar",
-                    step_status="failed",
-                    verification={"status": "failed", "confirmed": False, "error": str(exc)[:1000]},
+                    step_status="canceled" if cancelado else "failed",
+                    verification=(
+                        {"status": "canceled", "confirmed": False}
+                        if cancelado
+                        else {"status": "failed", "confirmed": False, "error": str(exc)[:1000]}
+                    ),
                 )
             except Exception:
                 pass
@@ -2391,7 +2601,14 @@ def get_run(run_id: str, *, client_id: str = "") -> dict[str, Any]:
     kind = str(action.get("status_kind") or "")
     client_id = str(run.get("client_id") or "default")
     if run.get("status") == "running" and kind:
-        progress = _progress_payload(kind, client_id)
+        estoque_job_id = (
+            str(run.get("estoque_sync_job_id") or "").strip()
+            if kind == "estoque_sync"
+            else ""
+        )
+        if kind == "estoque_sync" and not estoque_job_id:
+            return {"success": True, "run": run}
+        progress = _progress_payload(kind, client_id, job_id=estoque_job_id)
         run = _update_run(
             run_id,
             _client_id=client_id,
@@ -2404,29 +2621,41 @@ def get_run(run_id: str, *, client_id: str = "") -> dict[str, Any]:
 
 
 def cancel_run(run_id: str, *, client_id: str = "") -> dict[str, Any]:
-    run = get_run(run_id, client_id=client_id).get("run") or {}
-    if str(run.get("status") or "") in {"completed", "partial", "failed", "canceled"}:
-        return {"success": True, "run": run}
-    action = run.get("action") if isinstance(run.get("action"), dict) else {}
-    kind = str(action.get("status_kind") or "")
-    client_id = str(run.get("client_id") or "default")
+    requested_client_id = str(client_id or "")
+    with CODEX_ACTIONS_LOCK:
+        run = _run_load(run_id, requested_client_id)
+        if not isinstance(run, dict):
+            raise HTTPException(status_code=404, detail="Execucao Codex Action nao encontrada.")
+        if str(run.get("status") or "") in {"completed", "partial", "failed", "canceled"}:
+            return {"success": True, "run": run}
+        action = run.get("action") if isinstance(run.get("action"), dict) else {}
+        kind = str(action.get("status_kind") or "")
+        client_id = str(run.get("client_id") or "default")
+        job_id = str(run.get("estoque_sync_owned_job_id") or "").strip()
+        run = _update_run(
+            run_id,
+            _client_id=client_id,
+            status="cancel_requested",
+            live_status="Cancelamento solicitado.",
+        )
     try:
         if kind == "vendas_sync":
             from backend.services import vendas
 
             _run_async(vendas.cancelar_sincronizacao_vendas(client_id))
         elif kind == "estoque_sync":
-            from backend.services import estoque_context
+            from backend.services import estoque_sync
 
-            estoque_context.ESTOQUE_SYNC_CANCEL_FLAGS[client_id] = True
+            if job_id:
+                estoque_sync._estoque_solicitar_cancelamento_job(client_id, job_id)
         elif kind == "estoque_lancamentos":
             from backend.services import estoque_context
 
             estoque_context.ESTOQUE_LANC_SYNC_ACTIVE.pop(client_id, None)
     except Exception:
         pass
-    run = _update_run(run_id, _client_id=client_id, status="cancel_requested", live_status="Cancelamento solicitado.")
-    return {"success": True, "run": run}
+    run_atual = _run_load(run_id, client_id)
+    return {"success": True, "run": run_atual if isinstance(run_atual, dict) else run}
 
 
 configure_codex_actions_runtime()

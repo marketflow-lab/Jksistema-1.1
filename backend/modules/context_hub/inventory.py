@@ -54,6 +54,7 @@ def _inventory_source_hash(
     inventory: Mapping[str, Any],
     curated_hashes: Sequence[tuple[str, str]],
     bundle_hashes: Sequence[tuple[str, str]],
+    product_evidence_hash: str = "",
 ) -> str:
     payload = {
         "schema_version": CONTEXT_HUB_SCHEMA_VERSION,
@@ -62,6 +63,7 @@ def _inventory_source_hash(
         "findings": _strip_volatile(_sanitize_inventory_findings(inventory.get("findings"))),
         "curated": sorted(curated_hashes),
         "bundle": sorted(bundle_hashes),
+        "product_evidence": str(product_evidence_hash or ""),
     }
     return _sha256_text(_json_canonical(payload))
 

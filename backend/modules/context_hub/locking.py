@@ -8,6 +8,7 @@ import os
 import shutil
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import (
     Any,
@@ -39,6 +40,16 @@ def _tenant_thread_lock(paths: ContextHubPaths) -> threading.RLock:
     key = str(paths.internal_dir).lower()
     with CONTEXT_HUB_STATE.tenant_locks_guard:
         return CONTEXT_HUB_STATE.tenant_locks.setdefault(key, threading.RLock())
+
+
+def _product_evidence_thread_lock(paths: ContextHubPaths) -> threading.RLock:
+    """Serialize only operational product-evidence mutations for one tenant."""
+
+    key = str(paths.internal_dir).lower()
+    with CONTEXT_HUB_STATE.product_evidence_locks_guard:
+        return CONTEXT_HUB_STATE.product_evidence_locks.setdefault(
+            key, threading.RLock()
+        )
 
 
 def _read_lock_owner(lock_path: Path) -> dict[str, Any]:
@@ -130,6 +141,22 @@ def _exclusive_file_lock(paths: ContextHubPaths, *, timeout: float = 8.0) -> Ite
         yield
     finally:
         _remove_owned_lock(paths.lock_path, owner_token)
+
+
+@contextlib.contextmanager
+def _exclusive_product_evidence_file_lock(
+    paths: ContextHubPaths,
+    *,
+    timeout: float = 8.0,
+) -> Iterator[None]:
+    """Use a tenant-local lock distinct from generation/publication operations."""
+
+    evidence_paths = replace(
+        paths,
+        lock_path=paths.internal_dir / "product-evidence.lock",
+    )
+    with _exclusive_file_lock(evidence_paths, timeout=timeout):
+        yield
 
 
 def _safe_remove_tree(path: Path, root: Path) -> None:

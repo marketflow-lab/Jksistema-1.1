@@ -21,6 +21,7 @@ from statistics import NormalDist
 from typing import Any, Optional
 
 from backend.services import codex_assistant_storage
+from backend.services.estoque_historico import _estoque_historico_ambiguidade
 from backend.services.favoritos_margem import margem_calcular_anuncio
 
 
@@ -352,11 +353,31 @@ def _load_return_rows(tenant: str, start: date, end: date, store: str = "") -> t
 def _load_cost_maps(tenant: str) -> tuple[dict[tuple[str, str], dict[str, Any]], dict[str, dict[str, Any]]]:
     by_store: dict[tuple[str, str], dict[str, Any]] = {}
     generic: dict[str, dict[str, Any]] = {}
+    identities: dict[tuple[str, str], str] = {}
+    ambiguous: set[tuple[str, str]] = set()
     for row in _read_csv(os.path.join(tenant, "cadastro_custos_lojas.csv")):
         sku = str(row.get("sku") or row.get("SKU") or "").strip().upper()
         store = str(row.get("loja_sync") or row.get("loja") or "").strip()
         if sku:
-            by_store[(_text_key(store), sku)] = {
+            key = (_text_key(store), sku)
+            store_id = str(row.get("store_id") or "").strip()
+            if key in ambiguous:
+                continue
+            identity = store_id
+            if key not in identities:
+                identities[key] = identity
+            else:
+                previous = identities[key]
+                if previous and identity and previous != identity:
+                    ambiguous.add(key)
+                    by_store.pop(key, None)
+                    continue
+                if previous and not identity:
+                    continue
+                identities[key] = identity or previous
+            if key in ambiguous:
+                continue
+            by_store[key] = {
                 "cost": _optional_float(row.get("custo")),
                 "price": _optional_float(row.get("preco")),
                 "tax_pct": _optional_float(row.get("imposto")),
@@ -1099,16 +1120,29 @@ def build_profile_context(
     tenant = _tenant_path(info_base, client_id)
     sales_source_available = _tenant_has_table(tenant, "vendas")
     returns_source_available = _tenant_has_table(tenant, "notas_entrada_itens")
-    stock_source_available = _sqlite_has_table(os.path.join(tenant, "estoque_historico.db"), "estoque_historico")
     pipeline_source_available = isinstance(_read_json(os.path.join(tenant, "listas_pedidos.json"), None), list)
     selected_store = str(store or tool_plan.get("loja") or "").strip()
     if _text_key(selected_store) in {_text_key("todas"), _text_key("todas as lojas"), _text_key("__todas")}:
         selected_store = ""
+    stock_ambiguidade = _estoque_historico_ambiguidade(
+        client_id,
+        selected_store or "__todas",
+        tenant_path=tenant,
+    )
+    stock_source_available = bool(
+        not stock_ambiguidade
+        and _sqlite_has_table(os.path.join(tenant, "estoque_historico.db"), "estoque_historico")
+    )
     sales, sales_warnings = _load_sales_rows(tenant, start, end, selected_store)
     previous_sales, previous_warnings = _load_sales_rows(tenant, comparison_start, comparison_end, selected_store)
     returns, return_warnings = _load_return_rows(tenant, start, end, selected_store)
-    stock, stock_stamp, stock_warnings = _load_latest_stock(tenant, selected_store)
-    opening_stock, opening_stock_stamp = _load_opening_stock(tenant, start, selected_store)
+    if stock_ambiguidade:
+        stock, stock_stamp = {}, None
+        stock_warnings = [stock_ambiguidade["message"]]
+        opening_stock, opening_stock_stamp = {}, None
+    else:
+        stock, stock_stamp, stock_warnings = _load_latest_stock(tenant, selected_store)
+        opening_stock, opening_stock_stamp = _load_opening_stock(tenant, start, selected_store)
     received_units, received_units_available = _load_received_units(tenant, start, end, selected_store)
     pipeline, pipeline_rows, pipeline_warnings = _load_purchase_pipeline(tenant, selected_store)
     global_cfg = settings.get("global") or {}

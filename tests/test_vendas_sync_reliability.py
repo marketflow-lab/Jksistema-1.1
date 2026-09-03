@@ -354,7 +354,16 @@ def test_mandatory_note_detail_failure_aborts_before_database_write(monkeypatch)
     }
     database_touched = False
 
-    def execute_with_refresh(_client_id, _loja, current_cfg, chamada, on_refresh=None):
+    def execute_with_refresh(
+        _client_id,
+        _loja,
+        current_cfg,
+        chamada,
+        on_refresh=None,
+        *,
+        store_id,
+    ):
+        assert store_id == "store-a"
         result, status = chamada(current_cfg["access_token"])
         return result, status, current_cfg
 
@@ -366,7 +375,7 @@ def test_mandatory_note_detail_failure_aborts_before_database_write(monkeypatch)
     monkeypatch.setattr(
         sync_period,
         "buscar_loja",
-        lambda *_args: {"integracoes": {"bling": cfg}},
+        lambda *_args: {"store_id": "store-a", "integracoes": {"bling": cfg}},
     )
     monkeypatch.setattr(sync_period, "_carregar_mapeamento_unidades", lambda: {})
     monkeypatch.setattr(
@@ -425,7 +434,16 @@ def test_full_valid_empty_force_sync_clears_only_after_collection(tmp_path, monk
     }
     collected = []
 
-    def execute_with_refresh(_client_id, _loja, current_cfg, chamada, on_refresh=None):
+    def execute_with_refresh(
+        _client_id,
+        _loja,
+        current_cfg,
+        chamada,
+        on_refresh=None,
+        *,
+        store_id,
+    ):
+        assert store_id == "store-a"
         result, status = chamada(current_cfg["access_token"])
         return result, status, current_cfg
 
@@ -452,7 +470,7 @@ def test_full_valid_empty_force_sync_clears_only_after_collection(tmp_path, monk
     monkeypatch.setattr(
         sync_period,
         "buscar_loja",
-        lambda *_args: {"integracoes": {"bling": cfg}},
+        lambda *_args: {"store_id": "store-a", "integracoes": {"bling": cfg}},
     )
     monkeypatch.setattr(sync_period, "_carregar_mapeamento_unidades", lambda: {})
     monkeypatch.setattr(

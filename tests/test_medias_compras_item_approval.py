@@ -35,7 +35,7 @@ def _configurar_estado(monkeypatch, itens):
 
     monkeypatch.setattr(listas_service, "_salvar_listas_pedidos", salvar)
     monkeypatch.setattr(listas_service, "_limpar_cache_lista_pedido", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(listas_service, "_recalcular_frete_internacional_itens_lista", lambda _client_id, itens: itens)
+    monkeypatch.setattr(listas_service, "_recalcular_frete_internacional_itens_lista", lambda _client_id, itens, **_kwargs: itens)
     monkeypatch.setattr(listas_service, "_resumo_lista_pedido", lambda lista, *_args: {"id": lista["id"]})
     monkeypatch.setattr(listas_service, "_normalizar_sku_mes", lambda sku: str(sku or "").strip().upper())
     return estado

@@ -75,6 +75,11 @@ from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.marketplace_tools import integrations as marketplace_integrations
 from backend.services.marketplace_tools import images as marketplace_images
+from backend.services.cadastro_fotos import (
+    _cadastro_foto_referencia_local_cadastro,
+    _cadastro_mapa_fotos_locais,
+    _cadastro_resolver_foto_local,
+)
 from backend.services.ia_common import *
 from backend.services.ia_context import get_tenant_id, get_tenant_path
 from backend.services.ia_state import *
@@ -128,8 +133,23 @@ def _ia_estoque_texto(client_id: str) -> str:
 
 def _ia_carregar_produtos_tool_df(client_id: str) -> Optional[pd.DataFrame]:
     try:
+        from backend.services.cadastro_compatibilidade import (
+            visao_compatibilidade_produtos_lojas,
+        )
+
         arquivo_estoque = _migrar_arquivo_legado_para_tenant(client_id, "produtos_compilado.csv", ARQUIVO_DB_PRODUTOS)
         arquivo_cadastro = _migrar_arquivo_legado_para_tenant(client_id, "cadastro_produtos.csv", ARQUIVO_DB_CADASTRO_PRODUTOS)
+        visao_lojas = visao_compatibilidade_produtos_lojas(client_id)
+        skus_controlados = {
+            str(sku or "").strip().upper()
+            for sku in (visao_lojas.get("skus_controlados") or set())
+            if str(sku or "").strip()
+        }
+        produtos_controlados = [
+            dict(item)
+            for item in (visao_lojas.get("produtos") or [])
+            if isinstance(item, dict)
+        ]
 
         df_estoque = None
         df_cadastro = None
@@ -138,12 +158,35 @@ def _ia_carregar_produtos_tool_df(client_id: str) -> Optional[pd.DataFrame]:
         if os.path.exists(arquivo_cadastro):
             df_cadastro = pd.read_csv(arquivo_cadastro, dtype=str).fillna("")
 
-        if df_estoque is None and df_cadastro is None:
+        def _sem_skus_controlados(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+            if df is None or df.empty or not skus_controlados:
+                return df
+            coluna_sku = next(
+                (col for col in df.columns if str(col).strip().lower() == "sku"),
+                None,
+            )
+            if coluna_sku is None:
+                return df
+            normalizados = df[coluna_sku].astype(str).map(
+                lambda valor: _normalizar_sku_mes(valor).upper()
+            )
+            return df.loc[~normalizados.isin(skus_controlados)].copy()
+
+        # Once a SKU is controlled by the store file (including tombstones),
+        # neither the stale global row nor a compiled row may be merged by SKU.
+        # The safe compatibility projection below is its sole IA source.
+        df_estoque = _sem_skus_controlados(df_estoque)
+        df_cadastro = _sem_skus_controlados(df_cadastro)
+
+        if df_estoque is None and df_cadastro is None and not produtos_controlados:
             return None
 
-        if df_estoque is None:
-            df_base = df_cadastro.copy()
-        elif df_cadastro is None:
+        if df_estoque is None or df_estoque.empty:
+            if df_cadastro is None:
+                df_base = pd.DataFrame()
+            else:
+                df_base = df_cadastro.copy()
+        elif df_cadastro is None or df_cadastro.empty:
             df_base = df_estoque.copy()
         else:
             cols_cadastro = [
@@ -173,13 +216,36 @@ def _ia_carregar_produtos_tool_df(client_id: str) -> Optional[pd.DataFrame]:
             ]
             df_base = df_estoque.merge(df_cadastro[cols_cadastro], on="sku", how="outer")
 
+        if produtos_controlados:
+            df_lojas = pd.DataFrame(produtos_controlados)
+            if "sku" not in df_lojas.columns and "sku_normalizado" in df_lojas.columns:
+                df_lojas["sku"] = df_lojas["sku_normalizado"]
+            df_base = pd.concat([df_base, df_lojas], ignore_index=True, sort=False)
+
+        if df_base.empty and "sku" not in df_base.columns:
+            return pd.DataFrame(columns=["sku", "sku_norm", "nome_tool", "nome_tool_norm"])
+
         if "sku" not in df_base.columns:
             return None
 
-        df_base = df_base.fillna("")
-        df_base["sku_norm"] = df_base["sku"].astype(str).str.strip().str.upper()
-        nome_principal = df_base.get("nome_bling", "").astype(str) if "nome_bling" in df_base.columns else ""
-        nome_secundario = df_base.get("nome", "").astype(str) if "nome" in df_base.columns else ""
+        # The safe store projection contains booleans while CSV sources are
+        # textual. Keep the mixed frame explicit and replace missing values
+        # without pandas' deprecated silent object downcast.
+        df_base = df_base.astype(object).where(pd.notna(df_base), "")
+        df_base["sku_norm"] = df_base["sku"].astype(str).map(
+            lambda valor: _normalizar_sku_mes(valor).upper()
+        )
+        vazio = pd.Series("", index=df_base.index, dtype=str)
+        nome_principal = (
+            df_base["nome_bling"].astype(str)
+            if "nome_bling" in df_base.columns
+            else vazio
+        )
+        nome_secundario = (
+            df_base["nome"].astype(str)
+            if "nome" in df_base.columns
+            else vazio
+        )
         df_base["nome_tool"] = nome_principal.where(nome_principal.str.strip() != "", nome_secundario)
         df_base["nome_tool"] = df_base["nome_tool"].astype(str).fillna("")
         df_base["nome_tool_norm"] = df_base["nome_tool"].map(_normalizar_texto)
@@ -263,22 +329,71 @@ def _ia_extrair_referencia_produto_mensagem(mensagem: str) -> dict:
     return {"sku": "", "termo": ""}
 
 
-def _ia_normalizar_imagem_cadastro_url(imagem_ref: str) -> str:
-    ref = str(imagem_ref or "").replace("\\", "/").strip()
+def _ia_normalizar_imagem_cadastro_url(
+    imagem_ref: str,
+    client_id: str | None = None,
+) -> str:
+    ref_original = str(imagem_ref or "").strip()
+    ref = ref_original.replace("\\", "/")
     if not ref:
         return ""
-    if re.match(r"^https?://", ref, re.IGNORECASE):
-        return ref
+    # O classificador canonico distingue referencias externas de caminhos do
+    # cadastro. Protocolos externos permanecem intactos; file/Windows/API local
+    # continuam sujeitos aos limites do tenant abaixo (fail closed).
+    if not _cadastro_foto_referencia_local_cadastro(ref_original):
+        return ref_original
     if ref.startswith("/api/cadastro/foto-arquivo/") or ref.startswith("/api/cadastro/foto/") or ref.startswith("/img/"):
         return ref
-    if ref.lower().startswith("cadastro_fotos/"):
-        ref = ref.split("/", 1)[1]
-    nome = os.path.basename(ref)
-    if not nome:
+
+    relativo = ""
+    if client_id and os.path.isabs(ref_original):
+        candidato = os.path.realpath(ref_original)
+        bases = [os.path.realpath(os.path.join(get_tenant_path(client_id), "cadastro_fotos"))]
+        if PASTA_INFO:
+            bases.append(os.path.realpath(os.path.join(PASTA_INFO, "default", "cadastro_fotos")))
+        for base in bases:
+            try:
+                if os.path.commonpath([base, candidato]) == base:
+                    relativo = os.path.relpath(candidato, base).replace("\\", "/")
+                    break
+            except ValueError:
+                continue
+        if not relativo:
+            return ""
+    elif ref.lower().startswith("cadastro_fotos/"):
+        relativo = ref.split("/", 1)[1]
+    elif ref.lower().startswith("lojas/"):
+        relativo = ref
+    elif "/" not in ref:
+        relativo = ref
+    else:
+        # Referencias legadas eram somente nomes de arquivo. Nao achatamos um
+        # caminho desconhecido, pois ele poderia apontar para outra loja.
         return ""
+
+    partes = relativo.strip("/").split("/")
+    if any(not parte or parte in {".", ".."} for parte in partes):
+        return ""
+    if partes[0].lower() == "lojas":
+        if len(partes) != 3:
+            return ""
+    elif len(partes) != 1:
+        return ""
+
+    nome = partes[-1]
     if re.search(r"\.(png|jpe?g|gif|webp|bmp)$", nome, re.IGNORECASE):
-        return f"/api/cadastro/foto-arquivo/{quote_plus(nome)}"
+        caminho_url = "/".join(quote(parte, safe="") for parte in partes)
+        return f"/api/cadastro/foto-arquivo/{caminho_url}"
     return ref
+
+
+def _ia_store_scope_ambiguo(registro: Any) -> bool:
+    if registro is None or not hasattr(registro, "get"):
+        return False
+    valor = registro.get("store_scope_ambiguous")
+    if isinstance(valor, bool):
+        return valor
+    return str(valor or "").strip().lower() in {"1", "true", "sim", "yes"}
 
 
 def _ia_tool_get_product_data(client_id: str, mensagem: str, limite: int = 5) -> Optional[dict]:
@@ -315,17 +430,18 @@ def _ia_tool_get_product_data(client_id: str, mensagem: str, limite: int = 5) ->
     registros = []
     mapa_fotos_locais = _cadastro_mapa_fotos_locais(client_id)
     for _, row in candidatos.head(limite).iterrows():
+        store_scope_ambiguous = _ia_store_scope_ambiguo(row)
         imagem_url = ""
         for col_img in ("foto", "imagem", "imagem_url", "image_url", "url_imagem", "link_imagem"):
             if col_img in row.index:
                 valor = str(row.get(col_img) or "").strip()
                 if valor:
-                    imagem_url = _ia_normalizar_imagem_cadastro_url(valor)
+                    imagem_url = _ia_normalizar_imagem_cadastro_url(valor, client_id)
                     break
-        if not imagem_url:
+        if not imagem_url and not store_scope_ambiguous:
             foto_local = _cadastro_resolver_foto_local(mapa_fotos_locais, str(row.get("sku") or "").strip())
             if foto_local:
-                imagem_url = _ia_normalizar_imagem_cadastro_url(foto_local)
+                imagem_url = _ia_normalizar_imagem_cadastro_url(foto_local, client_id)
         registros.append({
             "sku": str(row.get("sku") or "").strip(),
             "id_bling": str(row.get("id_bling") or "").strip(),
@@ -340,6 +456,8 @@ def _ia_tool_get_product_data(client_id: str, mensagem: str, limite: int = 5) ->
             "mlb_principal": str(row.get("mlb_principal") or "").strip(),
             "mlb_ids": str(row.get("mlb_ids") or "").strip(),
             "imagem_url": imagem_url,
+            "store_scope_ambiguous": store_scope_ambiguous,
+            "campos_ambiguos": str(row.get("campos_ambiguos") or "").strip(),
         })
 
     return {
@@ -394,17 +512,18 @@ def _ia_tool_get_product_registry_info(client_id: str, mensagem: str, produto_to
         registros = []
         mapa_fotos_locais = _cadastro_mapa_fotos_locais(client_id)
         for _, row in candidatos.head(limite).iterrows():
+            store_scope_ambiguous = _ia_store_scope_ambiguo(row)
             imagem_url = ""
             for col_img in ("foto", "imagem", "imagem_url", "image_url", "url_imagem", "link_imagem"):
                 if col_img in row.index:
                     valor = str(row.get(col_img) or "").strip()
                     if valor:
-                        imagem_url = _ia_normalizar_imagem_cadastro_url(valor)
+                        imagem_url = _ia_normalizar_imagem_cadastro_url(valor, client_id)
                         break
-            if not imagem_url:
+            if not imagem_url and not store_scope_ambiguous:
                 foto_local = _cadastro_resolver_foto_local(mapa_fotos_locais, str(row.get("sku") or "").strip())
                 if foto_local:
-                    imagem_url = _ia_normalizar_imagem_cadastro_url(foto_local)
+                    imagem_url = _ia_normalizar_imagem_cadastro_url(foto_local, client_id)
 
             registros.append({
                 "sku": str(row.get("sku") or "").strip(),
@@ -426,6 +545,8 @@ def _ia_tool_get_product_registry_info(client_id: str, mensagem: str, produto_to
                 "link_aliexpress": str(row.get("link aliexpress") or "").strip(),
                 "imagem_url": imagem_url,
                 "updated_at": str(row.get("updated_at") or "").strip(),
+                "store_scope_ambiguous": store_scope_ambiguous,
+                "campos_ambiguos": str(row.get("campos_ambiguos") or "").strip(),
             })
 
         return {
@@ -501,7 +622,7 @@ def _ia_produtos_info_por_sku(client_id: str, skus: list[str]) -> dict[str, dict
                 if col_img in row.index:
                     valor = str(row.get(col_img) or "").strip()
                     if valor:
-                        imagem_url = _ia_normalizar_imagem_cadastro_url(valor)
+                        imagem_url = _ia_normalizar_imagem_cadastro_url(valor, client_id)
                         break
             out[sku] = {
                 "sku": str(row.get("sku") or sku).strip(),
@@ -650,6 +771,12 @@ def _ia_tool_get_bling_product(
                 break
             try:
                 cfg = marketplace_integrations.get_bling_config(client_id, nome_loja)
+                store_id = str(cfg.pop("_store_id_context", "") or "").strip()
+                if not store_id:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Loja sem store_id persistido.",
+                    )
                 candidatos = []
                 if ids_bling:
                     candidatos = [{"id": pid} for pid in ids_bling[:limite]]
@@ -659,6 +786,7 @@ def _ia_tool_get_bling_product(
                         nome_loja,
                         cfg,
                         lambda token: _ia_bling_buscar_produtos_codigo(token, sku),
+                        store_id=store_id,
                     )
                     if status_busca != 200:
                         erros.append({"loja": nome_loja, "erro": f"Bling HTTP {status_busca} ao buscar produto"})
@@ -674,6 +802,7 @@ def _ia_tool_get_bling_product(
                         nome_loja,
                         cfg,
                         lambda token, _pid=pid: _ia_bling_produto_detalhe(token, _pid),
+                        store_id=store_id,
                     )
                     if status_det == 200 and isinstance(detalhe, dict):
                         produtos_detalhe.append(detalhe)
@@ -688,6 +817,7 @@ def _ia_tool_get_bling_product(
                         nome_loja,
                         cfg,
                         _bling_map_depositos,
+                        store_id=store_id,
                     )
                     if status_dep == 200 and isinstance(mapa_dep, dict):
                         saldos, status_saldo, cfg = _bling_executar_com_refresh(
@@ -695,6 +825,7 @@ def _ia_tool_get_bling_product(
                             nome_loja,
                             cfg,
                             lambda token: _bling_saldos(token, ids_saldo, mapa_dep),
+                            store_id=store_id,
                         )
                         if status_saldo != 200 or not isinstance(saldos, dict):
                             saldos = {}
@@ -738,30 +869,36 @@ def _ia_tool_get_product_image(client_id: str, mensagem: str, produto_tool: Opti
         produto = matches[0] or {}
         sku = str(produto.get("sku") or result.get("canonical_sku") or "").strip()
         nome = str(produto.get("nome") or produto.get("produto") or "").strip()
-        imagem_url = _ia_normalizar_imagem_cadastro_url(str(produto.get("imagem_url") or "").strip())
+        imagem_url = _ia_normalizar_imagem_cadastro_url(
+            str(produto.get("imagem_url") or "").strip(), client_id
+        )
+        store_scope_ambiguous = _ia_store_scope_ambiguo(produto)
         origem_imagem = "cadastro" if imagem_url else ""
         ml_imagem = {}
 
-        if not imagem_url:
+        if not imagem_url and not store_scope_ambiguous:
             cadastro = _ia_tool_get_product_registry_info(client_id, mensagem, produto_tool=base_produto, limite=1)
             cadastro_matches = ((cadastro or {}).get("result") or {}).get("matches") or []
             if cadastro_matches:
                 cad = cadastro_matches[0] or {}
+                store_scope_ambiguous = _ia_store_scope_ambiguo(cad)
                 sku = sku or str(cad.get("sku") or "").strip()
                 nome = nome or str(cad.get("nome") or "").strip()
-                imagem_url = _ia_normalizar_imagem_cadastro_url(str(cad.get("imagem_url") or "").strip())
+                imagem_url = _ia_normalizar_imagem_cadastro_url(
+                    str(cad.get("imagem_url") or "").strip(), client_id
+                )
                 origem_imagem = "cadastro" if imagem_url else ""
-                if not imagem_url:
+                if not imagem_url and not store_scope_ambiguous:
                     foto_local = _cadastro_resolver_foto_local(_cadastro_mapa_fotos_locais(client_id), sku)
                     if foto_local:
-                        imagem_url = _ia_normalizar_imagem_cadastro_url(foto_local)
+                        imagem_url = _ia_normalizar_imagem_cadastro_url(foto_local, client_id)
                         origem_imagem = "cadastro"
                     else:
                         ml_imagem = marketplace_images.find_listing_image(client_id, sku, produto=produto, cadastro=cad)
             else:
                 foto_local = _cadastro_resolver_foto_local(_cadastro_mapa_fotos_locais(client_id), sku)
                 if foto_local:
-                    imagem_url = _ia_normalizar_imagem_cadastro_url(foto_local)
+                    imagem_url = _ia_normalizar_imagem_cadastro_url(foto_local, client_id)
                     origem_imagem = "cadastro"
                 else:
                     ml_imagem = marketplace_images.find_listing_image(client_id, sku, produto=produto, cadastro=None)
@@ -783,6 +920,7 @@ def _ia_tool_get_product_image(client_id: str, mensagem: str, produto_tool: Opti
                 "imagem_url": imagem_url,
                 "imagem_markdown": imagem_markdown,
                 "origem_imagem": origem_imagem,
+                "store_scope_ambiguous": store_scope_ambiguous,
                 "mercado_livre_item_id": str(ml_imagem.get("item_id") or "") if ml_imagem else "",
                 "mercado_livre_loja": str(ml_imagem.get("loja") or "") if ml_imagem else "",
             },

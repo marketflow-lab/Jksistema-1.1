@@ -13,8 +13,11 @@ function ocultarCarregamentoSku() {
 
 
 
-window.addEventListener('pageshow', () => {
+window.addEventListener('pageshow', (event) => {
     ocultarCarregamentoSku();
+    if (event.persisted && typeof carregarLojas === 'function') {
+        void carregarLojas({ silencioso: true });
+    }
 });
 
 
@@ -39,7 +42,10 @@ tBody.addEventListener('click', (event) => {
     });
 });
 
-function atualizarPeriodoComRecarregamento(marcarSelecaoManual = false) {
+function atualizarPeriodoComRecarregamento(marcarSelecaoManual = false, preferencia = {}) {
+    if (preferencia?.origem !== 'atalho' && typeof marcarPeriodoGraficoManual === 'function') {
+        marcarPeriodoGraficoManual();
+    }
     if (marcarSelecaoManual) {
         periodoSelecionadoPeloUsuario = true;
     }
@@ -47,7 +53,7 @@ function atualizarPeriodoComRecarregamento(marcarSelecaoManual = false) {
     if (!getDataIniISO() || !getDataFimISO()) {
         return;
     }
-    salvarPreferenciaPeriodoData();
+    salvarPreferenciaPeriodoData(preferencia);
     if (periodoApplyTimer) {
         clearTimeout(periodoApplyTimer);
     }
@@ -208,15 +214,21 @@ function chavePreferenciaPeriodoData() {
     return `vendas_periodo_pref_${cid}`;
 }
 
-function salvarPreferenciaPeriodoData() {
+function salvarPreferenciaPeriodoData(preferencia = {}) {
     const iniIso = getDataIniISO();
     const fimIso = getDataFimISO();
     if (!iniIso || !fimIso) return;
 
+    const origem = preferencia?.origem === 'atalho' ? 'atalho' : 'manual';
+    const periodo = origem === 'atalho' ? String(preferencia?.periodo || '').trim() : '';
+
     try {
         localStorage.setItem(chavePreferenciaPeriodoData(), JSON.stringify({
             data_inicio: iniIso,
-            data_fim: fimIso
+            data_fim: fimIso,
+            origem,
+            periodo,
+            versao: 2
         }));
     } catch (_e) {
         // Ignora erro de localStorage.
@@ -236,7 +248,13 @@ function carregarPreferenciaPeriodoData() {
         if (fim > hojeIso) fim = hojeIso;
         if (inicio > fim) inicio = fim;
 
-        return { inicio, fim };
+        return {
+            inicio,
+            fim,
+            origem: String(pref?.origem || '').trim(),
+            periodo: String(pref?.periodo || '').trim(),
+            versao: Number(pref?.versao || 0)
+        };
     } catch (_e) {
         return null;
     }

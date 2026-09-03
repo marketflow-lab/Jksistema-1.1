@@ -231,7 +231,7 @@ class QuestionAnswerOrchestrator:
     ) -> ProcessingResult:
         audit = self.audit_logger.log(
             "ml_question_processed",
-            question_id=question.id,
+            processed_count=1,
             category=category.value,
             route=route.value,
             decision=decision.value,

@@ -1,4 +1,5 @@
 import base64
+import asyncio
 import hashlib
 import io
 import json
@@ -20,6 +21,7 @@ from backend.services import admin_usuarios_presence
 from backend.services import admin_usuarios_presence_core
 from backend.services import shared_sync  # configura o facade e injeta dependências entre módulos
 from backend.services import integracoes
+from backend.services import integracoes_api
 from backend.services import shared_sync_apply_scope
 from backend.services import shared_sync_common
 from backend.services import shared_sync_bundle
@@ -28,11 +30,13 @@ from backend.services import shared_sync_config
 from backend.services import shared_sync_machine
 from backend.services import shared_sync_machine_endpoints
 from backend.services import shared_sync_keyring
+from backend.services import shared_sync_merge_integracoes
 from backend.services import shared_sync_merge_sqlite
 from backend.services import shared_sync_merge_user_data
 from backend.services import shared_sync_operations
 from backend.services import shared_sync_remote
 from backend.services import shared_sync_user_endpoints
+from backend.services import shared_sync_user_pairs
 
 
 def _entry(relative_path: str, data: bytes) -> dict:
@@ -44,6 +48,62 @@ def _entry(relative_path: str, data: bytes) -> dict:
         "sha256": hashlib.sha256(data).hexdigest(),
         "item_keys": [],
     }
+
+
+def _scope_bundle(scope: str, arquivos: list[tuple[str, bytes]]) -> bytes:
+    manifest_files = [
+        {
+            "relative_path": rel,
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+        for rel, data in arquivos
+    ]
+    manifest = {
+        "schema": 2,
+        "scope": scope,
+        "file_count": len(manifest_files),
+        "snapshot_hash": shared_sync_bundle._shared_sync_snapshot_hash(manifest_files),
+        "files": manifest_files,
+    }
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as arquivo:
+        arquivo.writestr("manifest.json", json.dumps(manifest))
+        for rel, data in arquivos:
+            arquivo.writestr(f"files/{rel}", data)
+    return buffer.getvalue()
+
+
+def _scope_bundle_v1(scope: str, arquivos: list[tuple[str, bytes]]) -> tuple[bytes, str]:
+    manifest_files = [
+        {
+            "relative_path": rel,
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+        for rel, data in arquivos
+    ]
+    snapshot_hash = shared_sync_bundle._shared_sync_snapshot_hash(manifest_files)
+    manifest = {
+        "schema": 1,
+        "scope": scope,
+        "file_count": len(manifest_files),
+        "snapshot_hash": snapshot_hash,
+        "files": manifest_files,
+    }
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as arquivo:
+        arquivo.writestr("manifest.json", json.dumps(manifest))
+        for rel, data in arquivos:
+            arquivo.writestr(f"files/{rel}", data)
+    return buffer.getvalue(), snapshot_hash
+
+
+def _lojas_bundle(lojas: list[dict]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as arquivo:
+        arquivo.writestr("files/lojas_config.json", json.dumps(lojas))
+    return buffer.getvalue()
 
 
 def test_shared_sync_inicializa_depois_de_get_tenant_path():
@@ -318,8 +378,23 @@ def test_machine_status_expoe_recebimento_pendente_e_ultimo_pull(monkeypatch):
     assert cadastro["remote"]["snapshot_hash"] == "hash-novo"
 
 
-def test_pacote_v2_criptografa_credenciais_sem_texto_legivel(monkeypatch):
+def test_pacote_v2_criptografa_credenciais_sem_texto_legivel(
+    tmp_path,
+    monkeypatch,
+):
+    _configure_integracoes_sync_test(tmp_path)
     secret = b"segredo-local-de-teste-com-entropia"
+    monkeypatch.setattr(integracoes, "carregar_lojas", lambda _client_id: [])
+    monkeypatch.setattr(
+        integracoes,
+        "_integracoes_validar_estado_atual_para_envio",
+        lambda _client_id: None,
+    )
+    monkeypatch.setattr(
+        integracoes,
+        "_integracoes_validar_tombstones_contra_lojas_para_envio",
+        lambda _client_id, _lojas: None,
+    )
     monkeypatch.setattr(shared_sync_remote, "_shared_sync_encryption_secret", lambda: secret)
     credentials = b'{"access_token":"token-super-secreto","refresh_token":"refresh-secreto","state":"temporario","code":"oauth-code"}'
     monkeypatch.setattr(
@@ -327,7 +402,7 @@ def test_pacote_v2_criptografa_credenciais_sem_texto_legivel(monkeypatch):
         "_shared_sync_coletar_arquivos",
         lambda *args, **kwargs: ([_entry("lojas_config.json", credentials)], []),
     )
-    bundle, manifest, _ = shared_sync_bundle._shared_sync_montar_pacote(
+    bundle, manifest, _ = shared_sync_bundle._shared_sync_montar_pacote_locked(
         "000002", "lojas_integracoes", "operador", user_only=True,
     )
     assert manifest["schema"] == 2
@@ -343,6 +418,324 @@ def test_pacote_v2_criptografa_credenciais_sem_texto_legivel(monkeypatch):
     assert shared_sync_remote._shared_sync_decrypt_bundle("conta-ou-vinculo", encrypted) == bundle
     with pytest.raises(HTTPException):
         shared_sync_remote._shared_sync_decrypt_bundle("outro-vinculo", encrypted)
+
+
+def test_oauth_draft_transitorio_nao_altera_fingerprint_nem_pacote(
+    tmp_path,
+    monkeypatch,
+):
+    _configure_integracoes_sync_test(tmp_path)
+    monkeypatch.setattr(integracoes, "carregar_lojas", lambda _client_id: [])
+    monkeypatch.setattr(
+        integracoes,
+        "_integracoes_validar_estado_atual_para_envio",
+        lambda _client_id: None,
+    )
+    monkeypatch.setattr(
+        integracoes,
+        "_integracoes_validar_tombstones_contra_lojas_para_envio",
+        lambda _client_id, _lojas: None,
+    )
+    base = {
+        "lojas": [
+            {
+                "nome": "Loja",
+                "integracoes": {"mercadolivre": {"connected": False}},
+            }
+        ]
+    }
+    com_draft = json.loads(json.dumps(base))
+    com_draft["lojas"][0]["integracoes"]["mercadolivre"]["oauth_draft"] = {
+        "state": "state-transitorio",
+        "app_id": "app-transitorio",
+        "client_secret": "secret-transitorio",
+    }
+    raw_base = json.dumps(base, ensure_ascii=False).encode("utf-8")
+    raw_draft = json.dumps(com_draft, ensure_ascii=False).encode("utf-8")
+    sessao = {"client_id": "000002", "username": "operador"}
+
+    def fingerprint(data):
+        monkeypatch.setattr(
+            shared_sync_operations,
+            "_shared_sync_coletar_arquivos",
+            lambda *_args, **_kwargs: ([_entry("lojas_config.json", data)], []),
+        )
+        return shared_sync_operations._shared_sync_local_fingerprint(
+            sessao,
+            ["lojas_integracoes"],
+        )
+
+    hash_base, files_base = fingerprint(raw_base)
+    hash_draft, files_draft = fingerprint(raw_draft)
+    assert hash_draft == hash_base
+    assert files_draft == files_base
+
+    monkeypatch.setattr(
+        shared_sync_bundle,
+        "_shared_sync_coletar_arquivos",
+        lambda *_args, **_kwargs: ([_entry("lojas_config.json", raw_draft)], []),
+    )
+    monkeypatch.setattr(
+        shared_sync_bundle,
+        "_shared_sync_coletar_arquivos_delta",
+        lambda *_args, **_kwargs: ([_entry("lojas_config.json", raw_draft)], [], []),
+    )
+    full_bundle, full_manifest, _ = shared_sync_bundle._shared_sync_montar_pacote_locked(
+        "000002", "lojas_integracoes", "operador", user_only=True,
+    )
+    delta_bundle, delta_manifest, _ = shared_sync_bundle._shared_sync_montar_pacote_locked(
+        "000002", "lojas_integracoes", "operador", user_only=True, known_keys=set(),
+    )
+    assert full_manifest["snapshot_hash"] == hash_base["lojas_integracoes"]
+    assert delta_manifest["snapshot_hash"] == hash_base["lojas_integracoes"]
+    for bundle in (full_bundle, delta_bundle):
+        with zipfile.ZipFile(io.BytesIO(bundle), "r") as zf:
+            persisted = zf.read("files/lojas_config.json")
+        assert b"oauth_draft" not in persisted
+        assert b"state-transitorio" not in persisted
+        assert b"secret-transitorio" not in persisted
+    assert b"oauth_draft" in raw_draft
+
+
+@pytest.mark.parametrize(
+    ("servico", "transitorio", "chave_transitoria"),
+    [
+        (
+            "mercadolivre",
+            {
+                "oauth_draft": {
+                    "state": "state-transitorio",
+                    "app_id": "app-transitorio",
+                    "client_secret": "secret-transitorio",
+                }
+            },
+            "oauth_draft",
+        ),
+        (
+            "bling",
+            {"oauth_pending_state": "state-transitorio"},
+            "oauth_pending_state",
+        ),
+    ],
+)
+def test_oauth_transitorio_persistido_nao_altera_fingerprint_nem_pacote(
+    tmp_path,
+    monkeypatch,
+    servico,
+    transitorio,
+    chave_transitoria,
+):
+    info = tmp_path / "info"
+
+    def tenant_path(client_id):
+        path = info / str(client_id)
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
+    monkeypatch.setattr(integracoes, "PASTA_INFO", str(info))
+    monkeypatch.setattr(integracoes, "_get_tenant_path", tenant_path)
+    monkeypatch.setattr(
+        integracoes,
+        "_normalizar_integracao_conectada",
+        lambda _servico, dados: dados,
+    )
+    integracoes.salvar_lojas(
+        "000002",
+        [
+            {
+                "nome": "Loja",
+                "integracoes": {servico: {"connected": False}},
+            }
+        ],
+    )
+    store_id = integracoes.carregar_lojas("000002")[0]["store_id"]
+    lojas_path = info / "000002" / "lojas_config.json"
+
+    def coletar(*_args, **_kwargs):
+        return [_entry("lojas_config.json", lojas_path.read_bytes())], []
+
+    monkeypatch.setattr(
+        shared_sync_operations,
+        "_shared_sync_coletar_arquivos",
+        coletar,
+    )
+    monkeypatch.setattr(
+        shared_sync_bundle,
+        "_shared_sync_coletar_arquivos",
+        coletar,
+    )
+    sessao = {"client_id": "000002", "username": "operador"}
+
+    def capturar():
+        hashes, _files = shared_sync_operations._shared_sync_local_fingerprint(
+            sessao,
+            ["lojas_integracoes"],
+        )
+        bundle, manifest, _warnings = shared_sync_bundle._shared_sync_montar_pacote(
+            "000002",
+            "lojas_integracoes",
+            "operador",
+            user_only=True,
+        )
+        with zipfile.ZipFile(io.BytesIO(bundle), "r") as zf:
+            arquivo = zf.read("files/lojas_config.json")
+        return hashes["lojas_integracoes"], manifest["snapshot_hash"], arquivo
+
+    antes = capturar()
+    integracoes.atualizar_api_loja(
+        "000002",
+        "Loja",
+        servico,
+        transitorio,
+        store_id=store_id,
+        require_existing=True,
+    )
+    depois = capturar()
+
+    assert depois == antes
+    assert chave_transitoria.encode() not in depois[2]
+    assert b"state-transitorio" not in depois[2]
+
+
+def test_pacote_lojas_materializa_json_uma_vez_para_hash_e_zip(tmp_path, monkeypatch):
+    _info, tenant = _configure_integracoes_sync_test(tmp_path)
+    monkeypatch.setattr(integracoes, "carregar_lojas", lambda _client_id: [])
+    monkeypatch.setattr(
+        integracoes,
+        "_integracoes_validar_estado_atual_para_envio",
+        lambda _client_id: None,
+    )
+    monkeypatch.setattr(
+        integracoes,
+        "_integracoes_validar_tombstones_contra_lojas_para_envio",
+        lambda _client_id, _lojas: None,
+    )
+    target = tenant / "lojas_sync_tombstones.json"
+    antigo = b'[{"key":"store:antiga:","version":1}]'
+    novo = b'[{"key":"store:nova:","version":2}]'
+    target.write_bytes(antigo)
+    entry = {
+        "relative_path": "lojas_sync_tombstones.json",
+        "abs_path": str(target),
+        "mtime": 1,
+        "size": len(antigo),
+        "sha256": hashlib.sha256(antigo).hexdigest(),
+        "item_keys": [],
+    }
+
+    def coletar(*_args, **_kwargs):
+        target.write_bytes(novo)
+        return [dict(entry)], []
+
+    monkeypatch.setattr(shared_sync_bundle, "_shared_sync_coletar_arquivos", coletar)
+    bundle, manifest, _warnings = shared_sync_bundle._shared_sync_montar_pacote(
+        "000002", "lojas_integracoes", "operador",
+    )
+    with zipfile.ZipFile(io.BytesIO(bundle), "r") as arquivo:
+        persisted = arquivo.read("files/lojas_sync_tombstones.json")
+
+    assert persisted == novo
+    assert manifest["files"][0]["size"] == len(novo)
+    assert manifest["files"][0]["sha256"] == hashlib.sha256(novo).hexdigest()
+
+
+def test_pacote_lojas_recupera_backup_antes_de_congelar_snapshot(
+    tmp_path,
+    monkeypatch,
+):
+    info = tmp_path / "info"
+    tenant = info / "000002"
+    tenant.mkdir(parents=True)
+
+    integracoes.configure_integracoes_context(
+        pasta_info=str(info),
+        get_tenant_path=lambda _client_id: str(tenant),
+        normalizar_integracao_conectada=lambda _servico, dados: dados,
+    )
+    nome = "Loja recuperada"
+    store_id = integracoes._integracoes_store_id("000002", {"nome": nome})
+    (tenant / "lojas_config.json").write_text("[]", encoding="utf-8")
+    (tenant / "lojas_config.json.bak").write_text(
+        json.dumps([{
+            "nome": nome,
+            "integracoes": {
+                "bling": {
+                    "access_token": "access-recuperado",
+                    "refresh_token": "refresh-recuperado",
+                },
+            },
+        }]),
+        encoding="utf-8",
+    )
+
+    def coletar(*_args, **_kwargs):
+        data = (tenant / "lojas_config.json").read_bytes()
+        return [_entry("lojas_config.json", data)], []
+
+    monkeypatch.setattr(shared_sync_bundle, "_shared_sync_coletar_arquivos", coletar)
+
+    bundle, _manifest, _warnings = shared_sync_bundle._shared_sync_montar_pacote(
+        "000002",
+        "lojas_integracoes",
+        "operador",
+    )
+
+    with zipfile.ZipFile(io.BytesIO(bundle), "r") as arquivo:
+        lojas = json.loads(arquivo.read("files/lojas_config.json"))
+    assert lojas[0]["store_id"]
+    assert lojas[0]["store_id"] != store_id
+    assert lojas[0]["integracoes"]["bling"]["access_token"] == "access-recuperado"
+    assert json.loads((tenant / "lojas_config.json").read_text(encoding="utf-8")) == lojas
+
+
+def test_pacote_lojas_materializa_migracao_global_antes_da_coleta(
+    tmp_path,
+    monkeypatch,
+):
+    info = tmp_path / "info"
+    info.mkdir()
+    tenant = info / "000002"
+
+    def tenant_path(_client_id):
+        tenant.mkdir(parents=True, exist_ok=True)
+        return str(tenant)
+
+    integracoes.configure_integracoes_context(
+        pasta_info=str(info),
+        get_tenant_path=tenant_path,
+        normalizar_integracao_conectada=lambda _servico, dados: dados,
+    )
+    nome = "Loja global atribuida"
+    store_id = integracoes._integracoes_store_id("000002", {"nome": nome})
+    (info / "lojas_config.json").write_text(
+        json.dumps([{
+            "nome": nome,
+            "store_id": store_id,
+            "integracoes": {"mercadolivre": {"access_token": "access-local"}},
+        }]),
+        encoding="utf-8",
+    )
+
+    def coletar(*_args, **_kwargs):
+        data = (
+            (tenant / "lojas_config.json").read_bytes()
+            if (tenant / "lojas_config.json").exists()
+            else b"[]"
+        )
+        return [_entry("lojas_config.json", data)], []
+
+    monkeypatch.setattr(shared_sync_bundle, "_shared_sync_coletar_arquivos", coletar)
+
+    bundle, _manifest, _warnings = shared_sync_bundle._shared_sync_montar_pacote(
+        "000002",
+        "lojas_integracoes",
+        "operador",
+    )
+
+    with zipfile.ZipFile(io.BytesIO(bundle), "r") as arquivo:
+        lojas = json.loads(arquivo.read("files/lojas_config.json"))
+    assert lojas == []
+    assert (info / "lojas_config.json").exists()
 
 
 def test_coleta_integracoes_exclui_temporarios_oauth(tmp_path, monkeypatch):
@@ -586,6 +979,34 @@ def test_operacao_expirada_ou_com_hash_alterado_requer_nova_previa(monkeypatch):
     assert changed.value.status_code == 409
 
     local["lojas_integracoes"] = "hash-a"
+    remote = {"lojas_integracoes": "snapshot-a|hash-remoto|bundle-a"}
+    monkeypatch.setattr(
+        shared_sync_operations,
+        "_shared_sync_remote_fingerprint",
+        lambda *args: (dict(remote), {"lojas_integracoes": {}}),
+    )
+    preview_remoto = shared_sync_operations._shared_sync_create_preview(
+        sessao,
+        kind="machine",
+        resource_id="self",
+        direction="push",
+        scopes=["lojas_integracoes"],
+        bundle_ids={"lojas_integracoes": "bundle"},
+    )
+    remote["lojas_integracoes"] = "snapshot-b|hash-novo|bundle-b"
+    with pytest.raises(HTTPException) as remoto_changed:
+        shared_sync_operations._shared_sync_require_operation(
+            preview_remoto["operation_id"],
+            sessao,
+            kind="machine",
+            resource_id="self",
+            direction="push",
+            scopes=["lojas_integracoes"],
+            bundle_ids={"lojas_integracoes": "bundle"},
+        )
+    assert remoto_changed.value.status_code == 409
+
+    local["lojas_integracoes"] = "hash-a"
     preview = shared_sync_operations._shared_sync_create_preview(
         sessao,
         kind="machine",
@@ -603,7 +1024,51 @@ def test_operacao_expirada_ou_com_hash_alterado_requer_nova_previa(monkeypatch):
     assert expired.value.status_code == 409
 
 
-def test_importacao_manual_substitui_integracoes_pelo_snapshot_confirmado(tmp_path, monkeypatch):
+def test_mesma_operacao_manual_nao_pode_ser_confirmada_duas_vezes(monkeypatch):
+    sessao = {"username": "operador", "client_id": "000002"}
+    local = {"lojas_integracoes": "hash-a"}
+    remote = {"lojas_integracoes": "snapshot-a|hash-remoto|bundle-a"}
+    monkeypatch.setattr(
+        shared_sync_operations,
+        "_shared_sync_local_fingerprint",
+        lambda *args: (dict(local), {"lojas_integracoes": []}),
+    )
+    monkeypatch.setattr(
+        shared_sync_operations,
+        "_shared_sync_remote_fingerprint",
+        lambda *args: (dict(remote), {"lojas_integracoes": {}}),
+    )
+    preview = shared_sync_operations._shared_sync_create_preview(
+        sessao,
+        kind="machine",
+        resource_id="self",
+        direction="push",
+        scopes=["lojas_integracoes"],
+        bundle_ids={"lojas_integracoes": "bundle"},
+    )
+
+    def confirmar():
+        try:
+            shared_sync_operations._shared_sync_require_operation(
+                preview["operation_id"],
+                sessao,
+                kind="machine",
+                resource_id="self",
+                direction="push",
+                scopes=["lojas_integracoes"],
+                bundle_ids={"lojas_integracoes": "bundle"},
+            )
+            return "ok"
+        except HTTPException as exc:
+            return exc.status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        resultados = list(pool.map(lambda _item: confirmar(), range(2)))
+
+    assert sorted(resultados, key=str) == [409, "ok"]
+
+
+def test_importacao_manual_mescla_integracoes_sem_remover_lojas_locais(tmp_path, monkeypatch):
     info = tmp_path / "info"
 
     def tenant_path(client_id):
@@ -615,7 +1080,14 @@ def test_importacao_manual_substitui_integracoes_pelo_snapshot_confirmado(tmp_pa
         pasta_info=str(info), get_tenant_path=tenant_path, normalizar_integracao_conectada=lambda _s, data: data,
     )
     monkeypatch.setattr(shared_sync_apply_scope, "get_tenant_path", tenant_path, raising=False)
-    integracoes.salvar_lojas("000002", [{"nome": "Antiga", "integracoes": {"bling": {"access_token": "antigo"}}}])
+    integracoes.salvar_lojas(
+        "000002",
+        [{
+            "nome": "Antiga",
+            "store_id": "store-local",
+            "integracoes": {"bling": {"access_token": "antigo"}},
+        }],
+    )
     source = [{
         "nome": "Nova",
         "store_id": "store-estavel",
@@ -625,10 +1097,17 @@ def test_importacao_manual_substitui_integracoes_pelo_snapshot_confirmado(tmp_pa
         },
     }]
     raw = json.dumps(source).encode("utf-8")
+    tombstone_raw = b"[]"
     monkeypatch.setattr(
         shared_sync_bundle,
         "_shared_sync_coletar_arquivos",
-        lambda *args, **kwargs: ([_entry("lojas_config.json", raw)], []),
+        lambda *args, **kwargs: (
+            [
+                _entry("lojas_config.json", raw),
+                _entry("lojas_sync_tombstones.json", tombstone_raw),
+            ],
+            [],
+        ),
     )
     bundle, _, _ = shared_sync_bundle._shared_sync_montar_pacote(
         "000008", "lojas_integracoes", "origem", user_only=True,
@@ -637,13 +1116,1786 @@ def test_importacao_manual_substitui_integracoes_pelo_snapshot_confirmado(tmp_pa
         "000002", "lojas_integracoes", bundle, "destino", {"user_share": True},
     )
     saved = json.loads((info / "000002" / "lojas_config.json").read_text(encoding="utf-8"))
-    assert result["file_count"] == 1
-    assert result["stores_count"] == 1
-    assert [item["nome"] for item in saved] == ["Nova"]
-    assert saved[0]["store_id"] == "store-estavel"
-    assert saved[0]["integracoes"]["bling"]["access_token"] == "novo"
-    assert saved[0]["integracoes"]["bling"]["refresh_token"] == "refresh"
-    assert saved[0]["integracoes"]["mercadoturbo"]["token"] == "turbo"
+    assert result["file_count"] == 2
+    assert result["stores_count"] == 2
+    assert [item["nome"] for item in saved] == ["Antiga", "Nova"]
+    assert saved[0]["store_id"] == "store-local"
+    assert saved[0]["integracoes"]["bling"]["access_token"] == "antigo"
+    assert saved[1]["store_id"] == "store-estavel"
+    assert saved[1]["integracoes"]["bling"]["access_token"] == "novo"
+    assert saved[1]["integracoes"]["bling"]["refresh_token"] == "refresh"
+    assert saved[1]["integracoes"]["mercadoturbo"]["token"] == "turbo"
+
+
+def test_pacote_lojas_rejeita_casing_nao_canonico_antes_de_escrever(tmp_path, monkeypatch):
+    info = tmp_path / "info"
+
+    def tenant_path(client_id):
+        path = info / str(client_id)
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
+    integracoes.configure_integracoes_context(
+        pasta_info=str(info),
+        get_tenant_path=tenant_path,
+        normalizar_integracao_conectada=lambda _s, data: data,
+    )
+    monkeypatch.setattr(shared_sync_apply_scope, "get_tenant_path", tenant_path, raising=False)
+    integracoes.salvar_lojas(
+        "000002",
+        [{"nome": "Local", "store_id": "store-local", "integracoes": {}}],
+    )
+    target = info / "000002" / "lojas_config.json"
+    before = target.read_bytes()
+    bundle = _scope_bundle(
+        "lojas_integracoes",
+        [("Lojas_Config.json", json.dumps([
+            {"nome": "Remota", "store_id": "store-remota", "integracoes": {}},
+        ]).encode("utf-8"))],
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        shared_sync_apply_scope._shared_sync_aplicar_pacote(
+            "000002", "lojas_integracoes", bundle,
+        )
+
+    assert exc_info.value.status_code == 502
+    assert target.read_bytes() == before
+
+
+def test_pacote_lojas_restaura_todos_os_arquivos_se_ultima_escrita_falha(tmp_path, monkeypatch):
+    info = tmp_path / "info"
+
+    def tenant_path(client_id):
+        path = info / str(client_id)
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
+    integracoes.configure_integracoes_context(
+        pasta_info=str(info),
+        get_tenant_path=tenant_path,
+        normalizar_integracao_conectada=lambda _s, data: data,
+    )
+    monkeypatch.setattr(shared_sync_apply_scope, "get_tenant_path", tenant_path, raising=False)
+    integracoes.salvar_lojas(
+        "000002",
+        [{"nome": "Local", "store_id": "store-local", "integracoes": {}}],
+    )
+    tenant = info / "000002"
+    (tenant / "integracoes.json").write_text(
+        json.dumps({"local": {"bling": {"access_token": "local"}}}),
+        encoding="utf-8",
+    )
+    (tenant / "lojas_sync_tombstones.json").write_text(
+        json.dumps([{
+            "key": "store:store-deleted-local:",
+            "type": "store",
+            "store_id": "store-deleted-local",
+            "service": "",
+            "version": 1,
+            "deleted_at": "2026-09-02T12:00:00Z",
+        }]), encoding="utf-8",
+    )
+    (tenant / "lojas_config.json.bak").write_text(
+        json.dumps([{
+            "nome": "Copia recuperavel",
+            "store_id": "store-recuperavel",
+            "integracoes": {"bling": {"access_token": "preservar"}},
+        }]),
+        encoding="utf-8",
+    )
+    targets = [
+        tenant / "lojas_config.json",
+        tenant / "lojas_config.json.bak",
+        tenant / "integracoes.json",
+        tenant / "lojas_sync_tombstones.json",
+    ]
+    before = {path.name: path.read_bytes() for path in targets}
+    bundle = _scope_bundle(
+        "lojas_integracoes",
+        [
+            ("lojas_config.json", json.dumps([
+                {"nome": "Remota", "store_id": "store-remota", "integracoes": {}},
+            ]).encode("utf-8")),
+            (
+                "integracoes.json",
+                json.dumps({
+                    "remoto": {
+                        "mercadolivre": {"access_token": "remoto"},
+                    },
+                }).encode("utf-8"),
+            ),
+            ("lojas_sync_tombstones.json", json.dumps([
+                {
+                        "key": "store:store-deleted-remote:",
+                        "type": "store",
+                        "store_id": "store-deleted-remote",
+                    "service": "",
+                    "version": 2,
+                    "deleted_at": "2026-09-02T12:00:00Z",
+                },
+            ]).encode("utf-8")),
+        ],
+    )
+    real_atomic_write = shared_sync_apply_scope._shared_sync_atomic_write
+    failed = False
+
+    def fail_last_write(target_abs, data):
+        nonlocal failed
+        if target_abs.endswith("integracoes.json") and not failed:
+            failed = True
+            raise OSError("falha simulada")
+        return real_atomic_write(target_abs, data)
+
+    monkeypatch.setattr(shared_sync_apply_scope, "_shared_sync_atomic_write", fail_last_write)
+    with pytest.raises(HTTPException) as exc_info:
+        shared_sync_apply_scope._shared_sync_aplicar_pacote(
+            "000002", "lojas_integracoes", bundle,
+        )
+
+    assert exc_info.value.status_code == 500
+    assert "estado anterior foi restaurado" in str(exc_info.value.detail)
+    assert {path.name: path.read_bytes() for path in targets} == before
+
+
+def test_merge_lojas_preserva_nomes_homonimos_com_store_ids_distintos(tmp_path):
+    target = tmp_path / "lojas_config.json"
+    target.write_text(
+        json.dumps([
+            {
+                "nome": "Nome igual",
+                "store_id": "store-local",
+                "integracoes": {"bling": {"access_token": "token-local"}},
+            }
+        ]),
+        encoding="utf-8",
+    )
+    remoto = json.dumps([
+        {
+            "nome": "Nome igual",
+            "store_id": "store-remoto",
+            "integracoes": {"mercadolivre": {"access_token": "token-remoto"}},
+        }
+    ]).encode("utf-8")
+
+    merged = json.loads(
+        shared_sync._shared_sync_merge_lojas_integracoes_bytes(
+            str(target),
+            remoto,
+        )
+    )
+
+    assert {loja["store_id"] for loja in merged} == {
+        "store-local",
+        "store-remoto",
+    }
+
+
+def test_merge_lojas_usa_store_id_para_unir_loja_renomeada(tmp_path):
+    target = tmp_path / "lojas_config.json"
+    target.write_text(
+        json.dumps([
+            {
+                "nome": "Nome local",
+                "store_id": "store-compartilhada",
+                "integracoes": {"bling": {"access_token": "token-local"}},
+            }
+        ]),
+        encoding="utf-8",
+    )
+    remoto = json.dumps([
+        {
+            "nome": "Nome remoto",
+            "store_id": "store-compartilhada",
+            "integracoes": {"mercadolivre": {"access_token": "token-remoto"}},
+        }
+    ]).encode("utf-8")
+
+    merged = json.loads(
+        shared_sync._shared_sync_merge_lojas_integracoes_bytes(str(target), remoto).decode("utf-8")
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["store_id"] == "store-compartilhada"
+    assert merged[0]["integracoes"]["bling"]["access_token"] == "token-local"
+    assert merged[0]["integracoes"]["mercadolivre"]["access_token"] == "token-remoto"
+
+
+def test_merge_lojas_preserva_conta_ml_local_quando_seller_remoto_diverge(tmp_path):
+    target = tmp_path / "lojas_config.json"
+    target.write_text(
+        json.dumps([
+            {
+                "nome": "Loja",
+                "store_id": "store-compartilhada",
+                "integracoes": {
+                    "mercadolivre": {
+                        "user_id": "seller-local",
+                        "app_id": "app-local",
+                        "client_secret": "secret-local",
+                        "access_token": "access-local",
+                        "refresh_token": "refresh-local",
+                        "updated_at": "10",
+                    }
+                },
+            }
+        ]),
+        encoding="utf-8",
+    )
+    remoto = json.dumps([
+        {
+            "nome": "Loja",
+            "store_id": "store-compartilhada",
+            "integracoes": {
+                "mercadolivre": {
+                    "user_id": "seller-remoto",
+                    "app_id": "app-remoto",
+                    "client_secret": "secret-remoto",
+                    "access_token": "access-remoto",
+                    "refresh_token": "refresh-remoto",
+                    "updated_at": "20",
+                },
+                "bling": {"access_token": "bling-remoto"},
+            },
+        }
+    ]).encode("utf-8")
+
+    merged = json.loads(
+        shared_sync._shared_sync_merge_lojas_integracoes_bytes(str(target), remoto).decode("utf-8")
+    )
+    ml = merged[0]["integracoes"]["mercadolivre"]
+
+    assert len(merged) == 1
+    assert ml["user_id"] == "seller-local"
+    assert ml["app_id"] == "app-local"
+    assert ml["client_secret"] == "secret-local"
+    assert ml["access_token"] == "access-local"
+    assert ml["refresh_token"] == "refresh-local"
+    assert merged[0]["integracoes"]["bling"]["access_token"] == "bling-remoto"
+
+
+def test_merge_bling_preserva_bloco_local_diante_de_oauth_divergente():
+    local = {
+        "id": "app-local",
+        "secret": "secret-local",
+        "access_token": "access-local",
+        "refresh_token": "refresh-local",
+        "updated_at": "10",
+        "marcador_local": "preservar",
+    }
+    remoto_incompleto = {
+        "id": "app-remoto",
+        "secret": "secret-remoto",
+        "refresh_token": "refresh-remoto",
+        "updated_at": "20",
+    }
+
+    preservado = shared_sync._shared_sync_merge_integracao_loja(
+        local,
+        remoto_incompleto,
+        servico_key="bling",
+    )
+    assert preservado["id"] == "app-local"
+    assert preservado["access_token"] == "access-local"
+    assert preservado["refresh_token"] == "refresh-local"
+
+    remoto_completo = {
+        **remoto_incompleto,
+        "access_token": "access-remoto",
+    }
+    atualizado = shared_sync._shared_sync_merge_integracao_loja(
+        local,
+        remoto_completo,
+        servico_key="bling",
+    )
+    assert atualizado["id"] == "app-local"
+    assert atualizado["secret"] == "secret-local"
+    assert atualizado["access_token"] == "access-local"
+    assert atualizado["refresh_token"] == "refresh-local"
+    assert atualizado["marcador_local"] == "preservar"
+
+
+@pytest.mark.parametrize(
+    "lojas",
+    [
+        [
+            {"nome": "A", "store_id": "store-duplicada", "integracoes": {}},
+            {"nome": "B", "store_id": "store-duplicada", "integracoes": {}},
+        ],
+        [
+            {
+                "nome": "A",
+                "store_id": "store-a",
+                "integracoes": {"ML": {}, "mercadolivre": {}},
+            },
+        ],
+    ],
+)
+def test_merge_lojas_bloqueia_identidade_ambigua_sem_colapsar(tmp_path, lojas):
+    target = tmp_path / "lojas_config.json"
+
+    with pytest.raises(HTTPException) as exc_info:
+        shared_sync_merge_integracoes._shared_sync_merge_lojas_integracoes_bytes(
+            str(target),
+            json.dumps(lojas).encode("utf-8"),
+        )
+
+    assert exc_info.value.status_code == 502
+    assert not target.exists()
+
+
+def test_merge_ml_preserva_bloco_local_quando_identidade_nao_pode_ser_provada():
+    local = {
+        "app_id": "app-local",
+        "client_secret": "secret-local",
+        "access_token": "access-local",
+        "updated_at": "10",
+    }
+    remoto = {
+        "user_id": "seller-remoto",
+        "app_id": "app-remoto",
+        "client_secret": "secret-remoto",
+        "access_token": "access-remoto",
+        "refresh_token": "refresh-remoto",
+        "updated_at": "20",
+    }
+
+    merged = shared_sync_merge_integracoes._shared_sync_merge_integracao_loja(
+        local,
+        remoto,
+        servico_key="mercadolivre",
+    )
+
+    assert merged["app_id"] == "app-local"
+    assert merged["access_token"] == "access-local"
+    assert "user_id" not in merged
+
+
+@pytest.mark.parametrize(
+    ("service", "pending_key", "pending_value"),
+    [
+        ("mercadolivre", "oauth_draft", {"state": "state-local"}),
+        ("bling", "oauth_pending_state", "state-local"),
+    ],
+)
+def test_merge_oauth_preserva_fluxo_local_em_andamento(service, pending_key, pending_value):
+    local = {
+        "id": "app-local",
+        "secret": "secret-local",
+        "access_token": "access-local",
+        "refresh_token": "refresh-local",
+        pending_key: pending_value,
+        "updated_at": "10",
+    }
+    if service == "mercadolivre":
+        local["app_id"] = local.pop("id")
+        local["client_secret"] = local.pop("secret")
+        local["user_id"] = "seller-a"
+    remoto = dict(local)
+    remoto.pop(pending_key)
+    remoto["access_token"] = "access-remoto"
+    remoto["refresh_token"] = "refresh-remoto"
+    remoto["updated_at"] = "20"
+
+    merged = shared_sync_merge_integracoes._shared_sync_merge_integracao_loja(
+        local,
+        remoto,
+        servico_key=service,
+    )
+
+    assert merged[pending_key] == pending_value
+    assert merged["access_token"] == "access-local"
+
+
+def test_merge_oauth_tres_vias_aplica_so_a_alteracao_causal():
+    base = {
+        "id": "app",
+        "secret": "secret",
+        "access_token": "access-base",
+        "refresh_token": "refresh-base",
+    }
+    remoto_novo = {
+        **base,
+        "access_token": "access-remoto",
+        "refresh_token": "refresh-remoto",
+    }
+    local_novo = {
+        **base,
+        "access_token": "access-local",
+        "refresh_token": "refresh-local",
+    }
+
+    recebido = shared_sync_merge_integracoes._shared_sync_merge_integracao_loja(
+        base,
+        remoto_novo,
+        servico_key="bling",
+        base=base,
+        strict_oauth_conflicts=True,
+    )
+    assert recebido["access_token"] == "access-remoto"
+
+    preservado = shared_sync_merge_integracoes._shared_sync_merge_integracao_loja(
+        local_novo,
+        base,
+        servico_key="bling",
+        base=base,
+        strict_oauth_conflicts=True,
+    )
+    assert preservado["access_token"] == "access-local"
+
+    with pytest.raises(HTTPException) as conflict_exc:
+        shared_sync_merge_integracoes._shared_sync_merge_integracao_loja(
+            local_novo,
+            remoto_novo,
+            servico_key="bling",
+            base=base,
+            strict_oauth_conflicts=True,
+        )
+    assert conflict_exc.value.status_code == 409
+
+
+@pytest.mark.parametrize(
+    ("service", "completo", "parcial", "token_key"),
+    [
+        (
+            "bling",
+            {
+                "id": "app",
+                "secret": "secret",
+                "access_token": "access",
+                "refresh_token": "refresh",
+                "connected": True,
+            },
+            {
+                "id": "app-novo",
+                "secret": "secret-novo",
+                "refresh_token": "refresh-novo",
+                "connected": False,
+            },
+            "access_token",
+        ),
+        (
+            "bling",
+            {
+                "access_token": "legacy-access",
+                "api_key": "legacy-api-key",
+                "connected": True,
+            },
+            {
+                "id": "draft-id",
+                "secret": "draft-secret",
+                "connected": False,
+            },
+            "access_token",
+        ),
+        (
+            "bling",
+            {
+                "token": "legacy-token-alias",
+                "apikey": "legacy-apikey-alias",
+                "connected": True,
+            },
+            {
+                "id": "draft-id",
+                "secret": "draft-secret",
+                "connected": False,
+            },
+            "token",
+        ),
+        (
+            "mercadolivre",
+            {
+                "app_id": "app",
+                "client_secret": "secret",
+                "access_token": "access",
+                "refresh_token": "refresh",
+                "user_id": "seller-1",
+                "connected": True,
+            },
+            {
+                "app_id": "app",
+                "client_secret": "secret",
+                "user_id": "seller-1",
+                "connected": False,
+            },
+            "access_token",
+        ),
+        (
+            "mercadoturbo",
+            {"token": "token-completo", "connected": True},
+            {"refresh_token": "parcial", "connected": False},
+            "token",
+        ),
+    ],
+)
+def test_merge_causal_nunca_rebaixa_oauth_completo_para_parcial(
+    service,
+    completo,
+    parcial,
+    token_key,
+):
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_merge_integracoes._shared_sync_merge_integracao_loja(
+            completo,
+            parcial,
+            servico_key=service,
+            base=completo,
+            strict_oauth_conflicts=True,
+        )
+    assert bloqueado.value.status_code == 409
+
+    preservado = shared_sync_merge_integracoes._shared_sync_merge_integracao_loja(
+        completo,
+        parcial,
+        servico_key=service,
+        base=completo,
+        strict_oauth_conflicts=False,
+    )
+    assert preservado[token_key] == completo[token_key]
+
+
+def test_merge_integracoes_json_bloqueia_oauth_completo_para_parcial(tmp_path):
+    target = tmp_path / "integracoes.json"
+    completo = {
+        "Loja": {
+            "bling": {
+                "id": "app",
+                "secret": "secret",
+                "access_token": "access",
+                "refresh_token": "refresh",
+                "connected": True,
+            },
+        },
+    }
+    parcial = {
+        "Loja": {
+            "bling": {
+                "id": "app-novo",
+                "secret": "secret-novo",
+                "refresh_token": "refresh-novo",
+                "connected": False,
+            },
+        },
+    }
+    target.write_text(json.dumps(completo), encoding="utf-8")
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_merge_integracoes._shared_sync_merge_integracoes_legacy_bytes(
+            str(target),
+            json.dumps(parcial).encode("utf-8"),
+            base_bytes=json.dumps(completo).encode("utf-8"),
+            strict_oauth_conflicts=True,
+        )
+
+    assert bloqueado.value.status_code == 409
+
+
+def test_merge_integracoes_json_bloqueia_troca_de_seller_ml_mesmo_com_base(
+    tmp_path,
+):
+    target = tmp_path / "integracoes.json"
+
+    def payload(seller):
+        return {
+            "Loja": {
+                "mercadolivre": {
+                    "app_id": "app",
+                    "client_secret": "secret",
+                    "access_token": "access",
+                    "refresh_token": "refresh",
+                    "user_id": seller,
+                    "connected": True,
+                },
+            },
+        }
+
+    remoto = payload("seller-a")
+    target.write_text(json.dumps(payload("seller-b")), encoding="utf-8")
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_merge_integracoes._shared_sync_merge_integracoes_legacy_bytes(
+            str(target),
+            json.dumps(remoto).encode("utf-8"),
+            base_bytes=json.dumps(remoto).encode("utf-8"),
+            strict_oauth_conflicts=False,
+        )
+
+    assert bloqueado.value.status_code == 409
+
+
+def test_merge_integracoes_json_bloqueia_contas_ml_sem_seller_divergentes(
+    tmp_path,
+):
+    target = tmp_path / "integracoes.json"
+
+    def payload(sufixo):
+        return {
+            "Loja": {
+                "mercadolivre": {
+                    "app_id": f"app-{sufixo}",
+                    "client_secret": f"secret-{sufixo}",
+                    "access_token": f"access-{sufixo}",
+                    "refresh_token": f"refresh-{sufixo}",
+                    "connected": True,
+                },
+            },
+        }
+
+    remoto = payload("a")
+    target.write_text(json.dumps(payload("b")), encoding="utf-8")
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_merge_integracoes._shared_sync_merge_integracoes_legacy_bytes(
+            str(target),
+            json.dumps(remoto).encode("utf-8"),
+            base_bytes=json.dumps(remoto).encode("utf-8"),
+            strict_oauth_conflicts=False,
+        )
+
+    assert bloqueado.value.status_code == 409
+
+
+def test_merge_integracoes_json_preserva_bling_legado_operacional(tmp_path):
+    target = tmp_path / "integracoes.json"
+    operacional = {
+        "Loja": {
+            "bling": {
+                "access_token": "legacy-access",
+                "api_key": "legacy-api-key",
+                "connected": True,
+            },
+        },
+    }
+    draft = {
+        "Loja": {
+            "bling": {
+                "id": "draft-id",
+                "secret": "draft-secret",
+                "connected": False,
+            },
+        },
+    }
+    target.write_text(json.dumps(operacional), encoding="utf-8")
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_merge_integracoes._shared_sync_merge_integracoes_legacy_bytes(
+            str(target),
+            json.dumps(draft).encode("utf-8"),
+            base_bytes=json.dumps(operacional).encode("utf-8"),
+            strict_oauth_conflicts=True,
+        )
+
+    assert bloqueado.value.status_code == 409
+
+
+def test_merge_lojas_snapshot_vazio_preserva_destino_e_e_idempotente(tmp_path):
+    target = tmp_path / "lojas_config.json"
+    local = [{
+        "nome": "Somente local",
+        "store_id": "store-local",
+        "integracoes": {"bling": {"access_token": "local"}},
+    }]
+    target.write_text(json.dumps(local), encoding="utf-8")
+
+    primeira = shared_sync._shared_sync_merge_lojas_integracoes_bytes(
+        str(target),
+        b"[]",
+    )
+    target.write_bytes(primeira)
+    segunda = shared_sync._shared_sync_merge_lojas_integracoes_bytes(
+        str(target),
+        b"[]",
+    )
+
+    assert json.loads(primeira) == local
+    assert json.loads(segunda) == local
+
+
+def test_merge_integracoes_legadas_e_tombstones_preserva_registros_locais(tmp_path):
+    legacy = tmp_path / "integracoes.json"
+    legacy.write_text(
+        json.dumps({"Loja local": {"bling": {"access_token": "local"}}}),
+        encoding="utf-8",
+    )
+    legacy_merged = json.loads(
+        shared_sync._shared_sync_merge_integracoes_legacy_bytes(
+            str(legacy),
+            json.dumps({"Loja remota": {"mercadolivre": {"access_token": "remoto"}}}).encode("utf-8"),
+        )
+    )
+
+    assert set(legacy_merged) == {"Loja local", "Loja remota"}
+    assert legacy_merged["Loja local"]["bling"]["access_token"] == "local"
+
+    tombstones = tmp_path / "lojas_sync_tombstones.json"
+    tombstones.write_text(
+        json.dumps([{
+            "key": "store:local:",
+            "type": "store",
+            "store_id": "local",
+            "version": 4,
+            "deleted_at": "2026-09-02T10:00:00Z",
+        }]),
+        encoding="utf-8",
+    )
+    tombstones_merged = json.loads(
+        shared_sync._shared_sync_merge_tombstones_integracoes_bytes(
+            str(tombstones),
+            json.dumps([
+                {
+                    "key": "store:local:",
+                    "type": "store",
+                    "store_id": "local",
+                    "version": 2,
+                    "deleted_at": "2026-09-01T10:00:00Z",
+                },
+                {
+                    "key": "store:remota:",
+                    "type": "store",
+                    "store_id": "remota",
+                    "version": 1,
+                    "deleted_at": "2026-09-02T11:00:00Z",
+                },
+            ]).encode("utf-8"),
+        )
+    )
+    por_chave = {item["key"]: item for item in tombstones_merged}
+
+    assert set(por_chave) == {"store:local:", "store:remota:"}
+    assert por_chave["store:local:"]["version"] == 4
+
+
+def test_push_lojas_bloqueia_qualquer_perda_do_snapshot_remoto(monkeypatch):
+    def bundle(lojas):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as arquivo:
+            arquivo.writestr("files/lojas_config.json", json.dumps(lojas))
+        return buffer.getvalue()
+
+    remoto = bundle([
+        {"nome": "Loja A", "store_id": "store-a", "integracoes": {}},
+        {"nome": "Loja B", "store_id": "store-b", "integracoes": {}},
+    ])
+    local_reduzido = bundle([
+        {"nome": "Loja A", "store_id": "store-a", "integracoes": {}},
+    ])
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (remoto, {"snapshot_id": "snapshot-remoto"}),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas",
+            local_reduzido,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "parece remover lojas" in str(exc_info.value.detail)
+
+    remoto_legado = bundle([{
+        "nome": "Loja A",
+        "integracoes": {
+            "mercadolivre": {"connected": True, "user_id": "seller-a"},
+        },
+    }])
+    local_com_id = bundle([{
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {
+            "mercadolivre": {"connected": True, "user_id": "seller-a"},
+        },
+    }])
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (remoto_legado, {"snapshot_id": "snapshot-remoto"}),
+    )
+    shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+        "bundle-lojas",
+        local_com_id,
+    )
+
+    remoto_outro_seller = bundle([{
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {
+            "mercadolivre": {"connected": True, "user_id": "seller-remoto"},
+        },
+    }])
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (remoto_outro_seller, {"snapshot_id": "snapshot-remoto"}),
+    )
+    with pytest.raises(HTTPException) as seller_exc:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas",
+            local_com_id,
+        )
+    assert seller_exc.value.status_code == 409
+
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("indisponivel")),
+    )
+    with pytest.raises(HTTPException) as unavailable_exc:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas",
+            local_com_id,
+        )
+    assert unavailable_exc.value.status_code == 503
+
+
+@pytest.mark.parametrize("tipo", ["store", "integration"])
+@pytest.mark.parametrize(
+    ("base_snapshot_id", "com_tombstone", "permitido"),
+    [
+        ("snapshot-remoto", True, True),
+        ("", True, False),
+        ("snapshot-remoto", False, False),
+    ],
+)
+def test_push_aceita_exclusao_somente_com_base_causal_e_tombstone_ativo(
+    monkeypatch,
+    tipo,
+    base_snapshot_id,
+    com_tombstone,
+    permitido,
+):
+    integracao_remota = {
+        "app_id": "app",
+        "client_secret": "secret",
+        "access_token": "access-remoto",
+        "refresh_token": "refresh-remoto",
+        "user_id": "seller-remoto",
+        "connected": True,
+    }
+    remoto = _lojas_bundle([{
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {"mercadolivre": integracao_remota},
+    }])
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (remoto, {"snapshot_id": "snapshot-remoto"}),
+    )
+
+    lojas_locais = [] if tipo == "store" else [{
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {"mercadolivre": {"connected": False}},
+    }]
+    arquivos = [("lojas_config.json", json.dumps(lojas_locais).encode("utf-8"))]
+    if com_tombstone:
+        servico = "mercadolivre" if tipo == "integration" else ""
+        tombstone = {
+            "key": f"{tipo}:store-a:{servico}",
+            "type": tipo,
+            "store_id": "store-a",
+            "service": servico,
+            "version": 2,
+            "deleted_at": "2026-09-02T12:00:00Z",
+        }
+        arquivos.append(
+            (
+                "lojas_sync_tombstones.json",
+                json.dumps([tombstone]).encode("utf-8"),
+            )
+        )
+    local = _scope_bundle("lojas_integracoes", arquivos)
+
+    if permitido:
+        assert shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas",
+            local,
+            base_snapshot_id=base_snapshot_id,
+        ) == "snapshot-remoto"
+    else:
+        with pytest.raises(HTTPException) as bloqueado:
+            shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+                "bundle-lojas",
+                local,
+                base_snapshot_id=base_snapshot_id,
+            )
+        assert bloqueado.value.status_code == 409
+
+
+@pytest.mark.parametrize("tipo", ["store", "integration"])
+@pytest.mark.parametrize("com_base", [True, False])
+def test_push_exclusao_de_snapshot_legado_sem_id_falha_fechado(
+    monkeypatch,
+    tipo,
+    com_base,
+):
+    client_id = "000002"
+    nome = "Loja legada"
+    store_id = shared_sync_merge_integracoes._shared_sync_store_id_deterministico(
+        client_id,
+        nome,
+    )
+    remoto = _lojas_bundle([{
+        "nome": nome,
+        "integracoes": {
+            "mercadolivre": {
+                "access_token": "access-remoto",
+                "refresh_token": "refresh-remoto",
+                "connected": True,
+            },
+        },
+    }])
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (remoto, {"snapshot_id": "snapshot-remoto"}),
+    )
+    lojas_locais = [] if tipo == "store" else [{
+        "nome": nome,
+        "store_id": store_id,
+        "integracoes": {"mercadolivre": {"connected": False}},
+    }]
+    servico = "mercadolivre" if tipo == "integration" else ""
+    tombstone = {
+        "key": f"{tipo}:{store_id}:{servico}",
+        "type": tipo,
+        "store_id": store_id,
+        "service": servico,
+        "version": 1,
+        "deleted_at": "2026-09-02T12:00:00Z",
+    }
+    local = _scope_bundle(
+        "lojas_integracoes",
+        [
+            ("lojas_config.json", json.dumps(lojas_locais).encode("utf-8")),
+            (
+                "lojas_sync_tombstones.json",
+                json.dumps([tombstone]).encode("utf-8"),
+            ),
+        ],
+    )
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas",
+            local,
+            base_snapshot_id="snapshot-remoto" if com_base else "",
+            client_id=client_id,
+        )
+    assert bloqueado.value.status_code == 409
+
+
+@pytest.mark.parametrize("tipo", ["store", "integration"])
+@pytest.mark.parametrize("evento_remoto", ["restored_at", "deleted_at"])
+def test_push_exclusao_exige_tombstone_posterior_ao_evento_remoto(
+    monkeypatch,
+    tipo,
+    evento_remoto,
+):
+    loja_remota = {
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {
+            "mercadolivre": {
+                "app_id": "app",
+                "client_secret": "secret",
+                "access_token": "access-remoto",
+                "refresh_token": "refresh-remoto",
+                "user_id": "seller-remoto",
+                "connected": True,
+            },
+        },
+    }
+    servico = "mercadolivre" if tipo == "integration" else ""
+    chave = f"{tipo}:store-a:{servico}"
+    tombstone_remoto = {
+        "key": chave,
+        "type": tipo,
+        "store_id": "store-a",
+        "service": servico,
+        "version": 5,
+        evento_remoto: "2026-09-02T12:00:00Z",
+    }
+    remoto = _scope_bundle(
+        "lojas_integracoes",
+        [
+            ("lojas_config.json", json.dumps([loja_remota]).encode("utf-8")),
+            (
+                "lojas_sync_tombstones.json",
+                json.dumps([tombstone_remoto]).encode("utf-8"),
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (remoto, {"snapshot_id": "snapshot-remoto"}),
+    )
+    lojas_locais = [] if tipo == "store" else [{
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {"mercadolivre": {"connected": False}},
+    }]
+
+    def local_bundle(*, version, deleted_at):
+        tombstone_local = {
+            "key": chave,
+            "type": tipo,
+            "store_id": "store-a",
+            "service": servico,
+            "version": version,
+            "deleted_at": deleted_at,
+        }
+        return _scope_bundle(
+            "lojas_integracoes",
+            [
+                (
+                    "lojas_config.json",
+                    json.dumps(lojas_locais).encode("utf-8"),
+                ),
+                (
+                    "lojas_sync_tombstones.json",
+                    json.dumps([tombstone_local]).encode("utf-8"),
+                ),
+            ],
+        )
+
+    stale_version = 5
+    stale_deleted_at = (
+        "2026-09-02T13:00:00Z"
+        if evento_remoto == "restored_at"
+        else "2026-09-02T11:00:00Z"
+    )
+    with pytest.raises(HTTPException) as stale:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas",
+            local_bundle(
+                version=stale_version,
+                deleted_at=stale_deleted_at,
+            ),
+            base_snapshot_id="snapshot-remoto",
+        )
+    assert stale.value.status_code == 409
+
+    causal_version = 6 if evento_remoto == "restored_at" else 5
+    assert shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+        "bundle-lojas",
+        local_bundle(
+            version=causal_version,
+            deleted_at="2026-09-02T13:00:00Z",
+        ),
+        base_snapshot_id="snapshot-remoto",
+    ) == "snapshot-remoto"
+
+
+@pytest.mark.parametrize("tipo", ["store", "integration"])
+def test_push_bloqueia_tombstone_ativo_contradito_por_payload_local(
+    monkeypatch,
+    tipo,
+):
+    loja = {
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {
+            "mercadolivre": {
+                "access_token": "access",
+                "refresh_token": "refresh",
+                "connected": True,
+            },
+        },
+    }
+    remoto = _lojas_bundle([loja])
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (remoto, {"snapshot_id": "snapshot-remoto"}),
+    )
+    servico = "mercadolivre" if tipo == "integration" else ""
+    tombstone = {
+        "key": f"{tipo}:store-a:{servico}",
+        "type": tipo,
+        "store_id": "store-a",
+        "service": servico,
+        "version": 2,
+        "deleted_at": "2026-09-02T13:00:00Z",
+    }
+    local = _scope_bundle(
+        "lojas_integracoes",
+        [
+            ("lojas_config.json", json.dumps([loja]).encode("utf-8")),
+            (
+                "lojas_sync_tombstones.json",
+                json.dumps([tombstone]).encode("utf-8"),
+            ),
+        ],
+    )
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas",
+            local,
+            base_snapshot_id="snapshot-remoto",
+        )
+    assert bloqueado.value.status_code == 409
+
+
+def test_push_lojas_bloqueia_oauth_local_antigo_e_identidade_ml_incerta(monkeypatch):
+    remoto = _lojas_bundle([{
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {
+            "mercadolivre": {
+                "connected": True,
+                "user_id": "seller-a",
+                "app_id": "app",
+                "client_secret": "secret",
+                "access_token": "access-remoto",
+                "refresh_token": "refresh-remoto",
+                "updated_at": "20",
+            },
+        },
+    }])
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (remoto, {"snapshot_id": "snapshot-remoto"}),
+    )
+    local_antigo = _lojas_bundle([{
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {
+            "mercadolivre": {
+                "connected": True,
+                "user_id": "seller-a",
+                "app_id": "app",
+                "client_secret": "secret",
+                "access_token": "access-local",
+                "refresh_token": "refresh-local",
+                "updated_at": "10",
+            },
+        },
+    }])
+    with pytest.raises(HTTPException) as stale_exc:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas", local_antigo,
+        )
+    assert stale_exc.value.status_code == 409
+
+    assert shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+        "bundle-lojas",
+        local_antigo,
+        base_snapshot_id="snapshot-remoto",
+    ) == "snapshot-remoto"
+
+    local_parcial = _lojas_bundle([{
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {
+            "mercadolivre": {
+                "connected": False,
+                "user_id": "seller-a",
+                "app_id": "app",
+                "client_secret": "secret",
+                "refresh_token": "refresh-parcial",
+                "updated_at": "30",
+            },
+        },
+    }])
+    with pytest.raises(HTTPException) as parcial_exc:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas",
+            local_parcial,
+            base_snapshot_id="snapshot-remoto",
+        )
+    assert parcial_exc.value.status_code == 409
+
+    local_sem_identidade = _lojas_bundle([{
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {
+            "mercadolivre": {
+                "connected": True,
+                "app_id": "app-diferente",
+                "client_secret": "secret",
+                "access_token": "access-local",
+                "refresh_token": "refresh-local",
+                "updated_at": "30",
+            },
+        },
+    }])
+    with pytest.raises(HTTPException) as identity_exc:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas", local_sem_identidade,
+        )
+    assert identity_exc.value.status_code == 409
+
+    local_sem_seller_mesmo_oauth = _lojas_bundle([{
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {
+            "mercadolivre": {
+                "connected": True,
+                "app_id": "app",
+                "client_secret": "secret",
+                "access_token": "access-remoto",
+                "refresh_token": "refresh-remoto",
+                "updated_at": "30",
+            },
+        },
+    }])
+    with pytest.raises(HTTPException) as seller_missing_exc:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas", local_sem_seller_mesmo_oauth,
+        )
+    assert seller_missing_exc.value.status_code == 409
+
+
+def test_push_ml_legado_sem_user_id_so_e_permitido_com_mesmo_bloco_oauth(monkeypatch):
+    oauth = {
+        "connected": True,
+        "app_id": "app",
+        "client_secret": "secret",
+        "access_token": "access",
+        "refresh_token": "refresh",
+        "updated_at": "20",
+    }
+    remoto = _lojas_bundle([{
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {"mercadolivre": dict(oauth)},
+    }])
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (remoto, {"snapshot_id": "snapshot-remoto"}),
+    )
+    local = _lojas_bundle([{
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {
+            "mercadolivre": {**oauth, "user_id": "seller-a"},
+        },
+    }])
+
+    expected = shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+        "bundle-lojas", local,
+    )
+
+    assert expected == "snapshot-remoto"
+
+
+def test_push_preserva_integracoes_json_legado_e_aceita_upgrade_causal(monkeypatch):
+    remoto = _scope_bundle(
+        "lojas_integracoes",
+        [
+            ("lojas_config.json", b"[]"),
+            (
+                "integracoes.json",
+                json.dumps({
+                    "Loja A": {
+                        "mercadolivre": {
+                            "access_token": "token-remoto",
+                            "user_id": "seller-a",
+                        },
+                    },
+                }).encode("utf-8"),
+            ),
+        ],
+    )
+    meta = {"snapshot_id": "snapshot-remoto", "snapshot_hash": "hash-base"}
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (remoto, dict(meta)),
+    )
+    local_sem_conta = _scope_bundle(
+        "lojas_integracoes",
+        [
+            ("lojas_config.json", b"[]"),
+            (
+                "integracoes.json",
+                json.dumps({
+                    "Loja B": {
+                        "bling": {"access_token": "token-local"},
+                    },
+                }).encode("utf-8"),
+            ),
+        ],
+    )
+
+    with pytest.raises(HTTPException) as perda:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas",
+            local_sem_conta,
+            base_snapshot_id="snapshot-remoto",
+        )
+    assert perda.value.status_code == 409
+    assert "dados legados" in str(perda.value.detail)
+
+    local_sem_arquivo_legado = _scope_bundle(
+        "lojas_integracoes",
+        [("lojas_config.json", b"[]")],
+    )
+    with pytest.raises(HTTPException) as arquivo_omitido:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas",
+            local_sem_arquivo_legado,
+            base_snapshot_id="snapshot-remoto",
+        )
+    assert arquivo_omitido.value.status_code == 409
+
+    local_atualizado = _scope_bundle(
+        "lojas_integracoes",
+        [
+            ("lojas_config.json", b"[]"),
+            (
+                "integracoes.json",
+                json.dumps({
+                    "Loja A": {
+                        "mercadolivre": {
+                            "access_token": "token-renovado",
+                            "user_id": "seller-a",
+                        },
+                    },
+                }).encode("utf-8"),
+            ),
+        ],
+    )
+    assert shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+        "bundle-lojas",
+        local_atualizado,
+        base_snapshot_id="snapshot-remoto",
+    ) == "snapshot-remoto"
+
+
+def test_push_legado_bloqueia_troca_de_seller_ml_mesmo_com_base(monkeypatch):
+    def legacy(seller):
+        return {
+            "Loja": {
+                "mercadolivre": {
+                    "app_id": "app",
+                    "client_secret": "secret",
+                    "access_token": "access",
+                    "refresh_token": "refresh",
+                    "user_id": seller,
+                    "connected": True,
+                },
+            },
+        }
+
+    remoto = _scope_bundle(
+        "lojas_integracoes",
+        [
+            ("lojas_config.json", b"[]"),
+            (
+                "integracoes.json",
+                json.dumps(legacy("seller-a")).encode("utf-8"),
+            ),
+        ],
+    )
+    local = _scope_bundle(
+        "lojas_integracoes",
+        [
+            ("lojas_config.json", b"[]"),
+            (
+                "integracoes.json",
+                json.dumps(legacy("seller-b")).encode("utf-8"),
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (
+            remoto,
+            {
+                "snapshot_id": "snapshot-remoto",
+                "schema": 2,
+                "encrypted": True,
+            },
+        ),
+    )
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas",
+            local,
+            base_snapshot_id="snapshot-remoto",
+        )
+
+    assert bloqueado.value.status_code == 409
+
+
+def test_push_legado_bloqueia_contas_ml_sem_seller_divergentes(monkeypatch):
+    def legacy(sufixo):
+        return {
+            "Loja": {
+                "mercadolivre": {
+                    "app_id": f"app-{sufixo}",
+                    "client_secret": f"secret-{sufixo}",
+                    "access_token": f"access-{sufixo}",
+                    "refresh_token": f"refresh-{sufixo}",
+                    "connected": True,
+                },
+            },
+        }
+
+    remoto = _scope_bundle(
+        "lojas_integracoes",
+        [
+            ("lojas_config.json", b"[]"),
+            ("integracoes.json", json.dumps(legacy("a")).encode("utf-8")),
+        ],
+    )
+    local = _scope_bundle(
+        "lojas_integracoes",
+        [
+            ("lojas_config.json", b"[]"),
+            ("integracoes.json", json.dumps(legacy("b")).encode("utf-8")),
+        ],
+    )
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (
+            remoto,
+            {
+                "snapshot_id": "snapshot-remoto",
+                "schema": 2,
+                "encrypted": True,
+            },
+        ),
+    )
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas",
+            local,
+            base_snapshot_id="snapshot-remoto",
+        )
+
+    assert bloqueado.value.status_code == 409
+
+
+def test_push_legado_bloqueia_oauth_completo_para_campos_vazios(monkeypatch):
+    completo = {
+        "Loja": {
+            "bling": {
+                "id": "app",
+                "secret": "secret",
+                "access_token": "access",
+                "refresh_token": "refresh",
+                "connected": True,
+            },
+        },
+    }
+    parcial = {
+        "Loja": {
+            "bling": {
+                "id": "app-novo",
+                "secret": "secret-novo",
+                "access_token": "",
+                "refresh_token": "refresh-novo",
+                "connected": False,
+            },
+        },
+    }
+    remoto = _scope_bundle(
+        "lojas_integracoes",
+        [
+            ("lojas_config.json", b"[]"),
+            ("integracoes.json", json.dumps(completo).encode("utf-8")),
+        ],
+    )
+    local = _scope_bundle(
+        "lojas_integracoes",
+        [
+            ("lojas_config.json", b"[]"),
+            ("integracoes.json", json.dumps(parcial).encode("utf-8")),
+        ],
+    )
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (
+            remoto,
+            {
+                "snapshot_id": "snapshot-remoto",
+                "schema": 2,
+                "encrypted": True,
+            },
+        ),
+    )
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas",
+            local,
+            base_snapshot_id="snapshot-remoto",
+        )
+
+    assert bloqueado.value.status_code == 409
+
+
+@pytest.mark.parametrize(
+    ("service", "completo", "parcial"),
+    [
+        (
+            "mercadolivre",
+            {
+                "app_id": "app",
+                "secret_key": "secret",
+                "access_token": "access",
+                "refresh_token": "refresh",
+                "user_id": "seller-1",
+                "connected": True,
+            },
+            {
+                "app_id": "app",
+                "secret_key": "secret",
+                "access_token": "",
+                "refresh_token": "refresh",
+                "user_id": "seller-1",
+                "connected": False,
+            },
+        ),
+        (
+            "bling",
+            {
+                "app_id": "app",
+                "secret_key": "secret",
+                "access_token": "access",
+                "refresh_token": "refresh",
+                "connected": True,
+            },
+            {
+                "app_id": "app",
+                "secret_key": "secret",
+                "access_token": "",
+                "refresh_token": "refresh",
+                "connected": False,
+            },
+        ),
+    ],
+)
+def test_push_canonico_bloqueia_downgrade_com_aliases_oauth(
+    monkeypatch,
+    service,
+    completo,
+    parcial,
+):
+    remoto = _lojas_bundle([{
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {service: completo},
+    }])
+    local = _lojas_bundle([{
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {service: parcial},
+    }])
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (
+            remoto,
+            {
+                "snapshot_id": "snapshot-remoto",
+                "schema": 2,
+                "encrypted": True,
+            },
+        ),
+    )
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas",
+            local,
+            base_snapshot_id="snapshot-remoto",
+        )
+
+    assert bloqueado.value.status_code == 409
+
+
+def test_push_bloqueia_downgrade_de_bling_legado_operacional(monkeypatch):
+    operacional = {
+        "access_token": "legacy-access",
+        "api_key": "legacy-api-key",
+        "connected": True,
+    }
+    draft = {
+        "id": "draft-id",
+        "secret": "draft-secret",
+        "connected": False,
+    }
+    remoto = _lojas_bundle([{
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {"bling": operacional},
+    }])
+    local = _lojas_bundle([{
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {"bling": draft},
+    }])
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (
+            remoto,
+            {
+                "snapshot_id": "snapshot-remoto",
+                "schema": 2,
+                "encrypted": True,
+            },
+        ),
+    )
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas",
+            local,
+            base_snapshot_id="snapshot-remoto",
+        )
+
+    assert bloqueado.value.status_code == 409
+
+    remoto_legado = _scope_bundle(
+        "lojas_integracoes",
+        [
+            ("lojas_config.json", b"[]"),
+            (
+                "integracoes.json",
+                json.dumps({"Loja": {"bling": operacional}}).encode("utf-8"),
+            ),
+        ],
+    )
+    local_legado = _scope_bundle(
+        "lojas_integracoes",
+        [
+            ("lojas_config.json", b"[]"),
+            (
+                "integracoes.json",
+                json.dumps({
+                    "Loja": {
+                        "bling": {
+                            **draft,
+                            "access_token": "",
+                            "api_key": "",
+                        },
+                    },
+                }).encode("utf-8"),
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (
+            remoto_legado,
+            {
+                "snapshot_id": "snapshot-remoto",
+                "schema": 2,
+                "encrypted": True,
+            },
+        ),
+    )
+
+    with pytest.raises(HTTPException) as bloqueado_legado:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas",
+            local_legado,
+            base_snapshot_id="snapshot-remoto",
+        )
+
+    assert bloqueado_legado.value.status_code == 409
+
+
+def test_estado_legado_recebe_snapshot_id_e_skip_nao_apaga_base(monkeypatch):
+    estado = {
+        "scopes": {
+            "machine-sync:lojas_integracoes": {
+                "snapshot_hash": "hash-base",
+                "direction": "pull",
+            },
+        },
+    }
+
+    def ler(*_args):
+        return json.loads(json.dumps(estado))
+
+    def salvar(_client_id, _username, payload):
+        estado.clear()
+        estado.update(json.loads(json.dumps(payload)))
+
+    monkeypatch.setattr(shared_sync_config, "_shared_sync_state_read", ler)
+    monkeypatch.setattr(shared_sync_config, "_shared_sync_state_write", salvar)
+    meta = {
+        "snapshot_hash": "hash-base",
+        "snapshot_id": "snapshot-base",
+        "schema": 2,
+        "encrypted": True,
+        "updated_at": "2026-09-02T12:00:00Z",
+    }
+
+    assert shared_sync_config._shared_sync_pull_already_current(
+        "000002",
+        "operador",
+        "machine-sync:lojas_integracoes",
+        meta,
+    ) is False
+    scope_state = estado["scopes"]["machine-sync:lojas_integracoes"]
+    assert "snapshot_id" not in scope_state
+
+    shared_sync_config._shared_sync_state_update(
+        "000002",
+        "operador",
+        "machine-sync:lojas_integracoes",
+        meta,
+        "pull",
+    )
+    shared_sync_config._shared_sync_state_mark_skipped(
+        "000002",
+        "operador",
+        "machine-sync:lojas_integracoes",
+        direction="push",
+        reason="already_current",
+    )
+
+    scope_state = estado["scopes"]["machine-sync:lojas_integracoes"]
+    assert scope_state["snapshot_hash"] == "hash-base"
+    assert scope_state["snapshot_id"] == "snapshot-base"
+    assert scope_state["skipped"] is True
+
+    shared_sync_config._shared_sync_state_update(
+        "000002",
+        "operador",
+        "machine-sync:lojas_integracoes",
+        meta,
+        "pull",
+    )
+    scope_state = estado["scopes"]["machine-sync:lojas_integracoes"]
+    assert "skipped" not in scope_state
+    assert "reason" not in scope_state
+
+    meta_v1 = {
+        "id": "ponteiro-mutavel-v1",
+        "snapshot_id": "nao-confiavel",
+        "snapshot_hash": "hash-v1",
+        "schema": 1,
+    }
+    shared_sync_config._shared_sync_state_update(
+        "000002",
+        "operador",
+        "machine-sync:lojas_integracoes",
+        meta_v1,
+        "pull",
+    )
+    scope_state = estado["scopes"]["machine-sync:lojas_integracoes"]
+    assert scope_state["snapshot_hash"] == "hash-v1"
+    assert scope_state["snapshot_id"] == ""
 
 
 def test_importacao_manual_de_maquina_reaplica_snapshot_mesmo_com_estado_ja_atual(monkeypatch):
@@ -660,10 +2912,11 @@ def test_importacao_manual_de_maquina_reaplica_snapshot_mesmo_com_estado_ja_atua
     monkeypatch.setattr(shared_sync_machine, "_shared_sync_machine_doc_id", lambda *args: "bundle-lojas")
     monkeypatch.setattr(shared_sync_machine, "_shared_sync_remote_meta_by_id", lambda _bundle_id: dict(meta))
     monkeypatch.setattr(shared_sync_machine, "_shared_sync_pull_already_current", lambda *args: True)
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_snapshot_id", lambda *args: "")
     monkeypatch.setattr(
         shared_sync_machine,
-        "_shared_sync_obter_bundle_por_id",
-        lambda _bundle_id, _meta, **_kwargs: (b"pacote-confirmado", dict(meta)),
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda _bundle_id, **_kwargs: (b"pacote-confirmado", dict(meta)),
     )
     monkeypatch.setattr(
         shared_sync_machine,
@@ -698,14 +2951,121 @@ def test_importacao_automatica_de_maquina_ainda_pode_pular_snapshot_ja_atual(mon
     monkeypatch.setattr(shared_sync_machine, "_shared_sync_pull_already_current", lambda *args: True)
     monkeypatch.setattr(
         shared_sync_machine,
-        "_shared_sync_obter_bundle_por_id",
-        lambda *args: pytest.fail("o pacote automatico ja atual nao deveria ser baixado"),
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: pytest.fail("o pacote automatico ja atual nao deveria ser baixado"),
     )
 
     result = shared_sync_machine._shared_sync_machine_pull_scope(sessao, "lojas_integracoes")
 
     assert result["skipped"] is True
     assert result["reason"] == "already_current"
+
+
+def test_importacao_de_maquina_recupera_base_v2_para_estado_legado_com_apenas_hash(monkeypatch):
+    sessao = {"username": "operador", "client_id": "000002"}
+    hash_base = "a" * 64
+    hash_atual = "b" * 64
+    meta = {
+        "id": "bundle-lojas",
+        "pointer_id": "bundle-lojas",
+        "snapshot_id": "snapshot-atual",
+        "snapshot_hash": hash_atual,
+        "schema": 2,
+        "encrypted": True,
+        "updated_at": "2026-09-03T12:15:21Z",
+    }
+    aplicacoes = []
+    recuperacoes = []
+
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_machine_doc_id", lambda *args: "bundle-lojas")
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_remote_meta_by_id", lambda _bundle_id: dict(meta))
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_pull_already_current", lambda *args: False)
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_snapshot_id", lambda *args: "")
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_snapshot_hash", lambda *args: hash_base)
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (b"snapshot-atual", dict(meta)),
+    )
+
+    def recuperar(bundle_id, snapshot_hash, **kwargs):
+        recuperacoes.append((bundle_id, snapshot_hash, kwargs))
+        return b"snapshot-base", {"snapshot_id": "snapshot-base"}
+
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_obter_base_causal_por_hash",
+        recuperar,
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_aplicar_pacote",
+        lambda *args, **kwargs: aplicacoes.append((args, kwargs)) or {"file_count": 2, "stores_count": 11},
+    )
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_update", lambda *args, **kwargs: None)
+
+    result = shared_sync_machine._shared_sync_machine_pull_scope(
+        sessao,
+        "lojas_integracoes",
+        force=True,
+    )
+
+    assert result["success"] is True
+    assert result["stores_count"] == 11
+    assert recuperacoes == [(
+        "bundle-lojas",
+        hash_base,
+        {
+            "expected_client_id": "000002",
+            "expected_scope": "lojas_integracoes",
+            "key_context": {"sessao": sessao, "machine_id": ""},
+        },
+    )]
+    assert aplicacoes[0][0][-1]["base_bundle"] == b"snapshot-base"
+    assert aplicacoes[0][0][-1]["strict_oauth_conflicts"] is True
+
+
+def test_importacao_de_maquina_sem_base_legada_confiavel_continua_fechada(monkeypatch):
+    sessao = {"username": "operador", "client_id": "000002"}
+    meta = {
+        "id": "bundle-lojas",
+        "pointer_id": "bundle-lojas",
+        "snapshot_id": "snapshot-atual",
+        "snapshot_hash": "b" * 64,
+        "schema": 2,
+        "encrypted": True,
+    }
+    configuracoes = []
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_machine_doc_id", lambda *args: "bundle-lojas")
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_remote_meta_by_id", lambda _bundle_id: dict(meta))
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_pull_already_current", lambda *args: False)
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_snapshot_id", lambda *args: "")
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_snapshot_hash", lambda *args: "a" * 64)
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (b"snapshot-atual", dict(meta)),
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_obter_base_causal_por_hash",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_aplicar_pacote",
+        lambda *args, **kwargs: configuracoes.append(args[-1]) or {"file_count": 2},
+    )
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_update", lambda *args, **kwargs: None)
+
+    shared_sync_machine._shared_sync_machine_pull_scope(
+        sessao,
+        "lojas_integracoes",
+        force=True,
+    )
+
+    assert configuracoes[0]["base_bundle"] is None
+    assert configuracoes[0]["strict_oauth_conflicts"] is True
 
 
 def test_endpoint_de_importacao_manual_forca_reaplicacao(monkeypatch):
@@ -722,14 +3082,26 @@ def test_endpoint_de_importacao_manual_forca_reaplicacao(monkeypatch):
         "_shared_sync_machine_bundle_ids",
         lambda *args: {"lojas_integracoes": "bundle-lojas"},
     )
-    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_require_operation", lambda *args, **kwargs: {"id": "op"})
+    monkeypatch.setattr(
+        shared_sync_machine_endpoints,
+        "_shared_sync_require_operation",
+        lambda *args, **kwargs: {
+            "id": "op",
+                "totals": {"stores": 1},
+                "remote_snapshot_ids": {"lojas_integracoes": "snapshot-previa"},
+                "remote_hashes": {"lojas_integracoes": "fingerprint-previa"},
+                "remote_bundle_hashes": {"lojas_integracoes": "bundle-hash-previa"},
+        },
+    )
     monkeypatch.setattr(
         shared_sync_machine_endpoints,
         "_shared_sync_machine_pull_scope",
-        lambda _sessao, scope, *, force=False, machine_id="": chamadas.append((scope, force)) or {
+        lambda _sessao, scope, *, force=False, machine_id="", expected_snapshot_id="", expected_remote_fingerprint="", expected_bundle_hash="": chamadas.append((scope, force, expected_snapshot_id, expected_remote_fingerprint, expected_bundle_hash)) or {
             "scope": scope,
             "success": True,
             "file_count": 1,
+            "stores_count": 2,
+            "snapshot_stores_count": 1,
         },
     )
     monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_audit", lambda *args, **kwargs: None)
@@ -741,7 +3113,13 @@ def test_endpoint_de_importacao_manual_forca_reaplicacao(monkeypatch):
     )
 
     assert result["success"] is True
-    assert chamadas == [("lojas_integracoes", True)]
+    assert chamadas == [(
+        "lojas_integracoes",
+        True,
+        "snapshot-previa",
+        "fingerprint-previa",
+        "bundle-hash-previa",
+    )]
 
 
 def test_endpoint_marca_importacao_com_quantidade_de_lojas_divergente(monkeypatch):
@@ -769,7 +3147,8 @@ def test_endpoint_marca_importacao_com_quantidade_de_lojas_divergente(monkeypatc
             "scope": "lojas_integracoes",
             "success": True,
             "file_count": 1,
-            "stores_count": 3,
+            "stores_count": 7,
+            "snapshot_stores_count": 3,
         },
     )
     monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_audit", lambda *args, **kwargs: None)
@@ -784,7 +3163,7 @@ def test_endpoint_marca_importacao_com_quantidade_de_lojas_divergente(monkeypatc
     assert result["partial"] is False
     assert result["results"][0]["scope"] == "lojas_integracoes"
     assert result["results"][0]["status_code"] == 502
-    assert "snapshot continha 4 loja(s), mas 3 foram aplicadas" in result["results"][0]["message"]
+    assert "previa continha 4 loja(s), mas o pacote recebido continha 3" in result["results"][0]["message"]
 
 
 def test_falha_em_cadastro_nao_impede_importacao_das_lojas(monkeypatch):
@@ -807,7 +3186,16 @@ def test_falha_em_cadastro_nao_impede_importacao_das_lojas(monkeypatch):
         lambda *args, **kwargs: {"id": "op", "totals": {"stores": 4}},
     )
 
-    def pull_scope(_sessao, scope, *, force=False, machine_id=""):
+    def pull_scope(
+        _sessao,
+        scope,
+        *,
+        force=False,
+        machine_id="",
+        expected_snapshot_id="",
+        expected_remote_fingerprint="",
+        expected_bundle_hash="",
+    ):
         chamadas.append((scope, force))
         if scope == "cadastro":
             raise HTTPException(status_code=423, detail="Cadastro temporariamente bloqueado.")
@@ -980,6 +3368,372 @@ class _FakeFirestore:
         return self.collections.setdefault(name, _FakeCollection())
 
 
+def test_base_causal_por_hash_escolhe_apenas_snapshot_v2_completo_do_mesmo_ponteiro(monkeypatch):
+    db = _FakeFirestore()
+    coll = db.collection("shared_sync")
+    hash_base = "a" * 64
+    base = {
+        "id": "bundle-lojas",
+        "pointer_id": "bundle-lojas",
+        "schema": 2,
+        "encrypted": True,
+        "status": "complete",
+        "snapshot_hash": hash_base,
+        "client_id": "000002",
+        "scope": "lojas_integracoes",
+    }
+    coll.data["snapshot-antigo"] = {
+        **base,
+        "snapshot_id": "snapshot-antigo",
+        "updated_ts": 10,
+    }
+    coll.data["snapshot-recente"] = {
+        **base,
+        "snapshot_id": "snapshot-recente",
+        "updated_ts": 20,
+    }
+    coll.data["snapshot-uploading"] = {
+        **base,
+        "snapshot_id": "snapshot-uploading",
+        "status": "uploading",
+        "updated_ts": 30,
+    }
+    coll.data["snapshot-outro-tenant"] = {
+        **base,
+        "snapshot_id": "snapshot-outro-tenant",
+        "client_id": "000003",
+        "updated_ts": 40,
+    }
+    coll.data["snapshot-outro-ponteiro"] = {
+        **base,
+        "pointer_id": "bundle-outro",
+        "snapshot_id": "snapshot-outro-ponteiro",
+        "updated_ts": 50,
+    }
+    monkeypatch.setattr(shared_sync_remote, "_shared_sync_firestore_required", lambda: db)
+    monkeypatch.setattr(shared_sync_remote, "_firebase_shared_sync_collection_name", lambda: "shared_sync")
+
+    meta = shared_sync_remote._shared_sync_remote_snapshot_meta_by_hash(
+        "bundle-lojas",
+        hash_base,
+        expected_client_id="000002",
+        expected_scope="lojas_integracoes",
+    )
+
+    assert meta is not None
+    assert meta["snapshot_id"] == "snapshot-recente"
+    assert meta["_guard_pointer_id"] == "snapshot-recente"
+    assert shared_sync_remote._shared_sync_remote_snapshot_meta_by_hash(
+        "bundle-lojas",
+        "hash-invalido",
+        expected_client_id="000002",
+        expected_scope="lojas_integracoes",
+    ) is None
+
+
+def test_base_causal_por_hash_revalida_manifest_antes_de_usar_snapshot(monkeypatch):
+    bundle = _scope_bundle(
+        "lojas_integracoes",
+        [("lojas_config.json", b"[]")],
+    )
+    manifest = shared_sync_remote._shared_sync_manifest_from_bundle(bundle)
+    snapshot_hash = str(manifest["snapshot_hash"])
+    meta = {
+        "snapshot_id": "snapshot-base",
+        "snapshot_hash": snapshot_hash,
+        "scope": "lojas_integracoes",
+    }
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_remote_snapshot_meta_by_hash",
+        lambda *args, **kwargs: dict(meta),
+    )
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_por_id",
+        lambda *args, **kwargs: (bundle, dict(meta)),
+    )
+
+    recovered = shared_sync_remote._shared_sync_obter_base_causal_por_hash(
+        "bundle-lojas",
+        snapshot_hash,
+        expected_client_id="000002",
+        expected_scope="lojas_integracoes",
+    )
+    rejected = shared_sync_remote._shared_sync_obter_base_causal_por_hash(
+        "bundle-lojas",
+        "f" * 64,
+        expected_client_id="000002",
+        expected_scope="lojas_integracoes",
+    )
+
+    assert recovered is not None
+    assert recovered[0] == bundle
+    assert rejected is None
+
+
+def test_pointer_v2_autoritativo_isola_writer_legado_e_mantem_cas(monkeypatch):
+    db = _FakeFirestore()
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_firebase_shared_sync_collection_name",
+        lambda: "shared_sync",
+    )
+    pointer = db.collection("shared_sync").document("bundle-lojas")
+    meta_a = {
+        "id": "bundle-lojas",
+        "snapshot_id": "snapshot-a",
+        "schema": 2,
+        "encrypted": True,
+        "chunk_count": 1,
+    }
+    pointer.set(meta_a)
+    expected_a = shared_sync_remote._shared_sync_guard_expectation_from_meta(
+        {**meta_a, "_guard_pointer_id": "bundle-lojas"},
+        "bundle-lojas",
+    )
+
+    shared_sync_remote._shared_sync_publicar_pointer_cas(
+        db,
+        "bundle-lojas",
+        {**meta_a, "snapshot_id": "snapshot-b"},
+        expected_a,
+    )
+    assert pointer.get().to_dict()["snapshot_id"] == "snapshot-b"
+    assert pointer.get().to_dict()["chunk_count"] == 0
+    authority = db.collection("shared_sync").document(
+        shared_sync_remote._shared_sync_v2_authority_id("bundle-lojas")
+    )
+    assert authority.get().to_dict()["snapshot_id"] == "snapshot-b"
+    assert authority.get().to_dict()["chunk_count"] == 1
+    expected_b = shared_sync_remote._shared_sync_guard_expectation_from_meta(
+        {
+            **authority.get().to_dict(),
+            "_guard_pointer_id": authority.id,
+        },
+        "bundle-lojas",
+    )
+
+    # Um writer antigo ainda consegue tocar o ponteiro conhecido por ele, mas
+    # nao altera mais a autoridade consumida pelas versoes novas.
+    pointer.set({
+        "id": "bundle-lojas",
+        "schema": 1,
+        "encrypted": False,
+        "snapshot_hash": "c" * 64,
+        "chunk_count": 1,
+    })
+    shared_sync_remote._shared_sync_publicar_pointer_cas(
+        db,
+        "bundle-lojas",
+        {**meta_a, "snapshot_id": "snapshot-d"},
+        expected_b,
+    )
+    assert pointer.get().to_dict()["snapshot_id"] == "snapshot-d"
+    assert authority.get().to_dict()["snapshot_id"] == "snapshot-d"
+
+    with pytest.raises(HTTPException) as exc_info:
+        shared_sync_remote._shared_sync_publicar_pointer_cas(
+            db,
+            "bundle-lojas",
+            {**meta_a, "snapshot_id": "snapshot-e"},
+            expected_b,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert pointer.get().to_dict()["snapshot_id"] == "snapshot-d"
+    assert authority.get().to_dict()["snapshot_id"] == "snapshot-d"
+
+
+def test_leitor_novo_prefere_autoridade_v2_apos_writer_legado(monkeypatch):
+    db = _FakeFirestore()
+    coll = db.collection("shared_sync")
+    coll.data["bundle-lojas"] = {
+        "id": "bundle-lojas",
+        "schema": 1,
+        "encrypted": False,
+        "snapshot_hash": "b" * 64,
+    }
+    authority_id = shared_sync_remote._shared_sync_v2_authority_id(
+        "bundle-lojas"
+    )
+    coll.data[authority_id] = {
+        "id": "bundle-lojas",
+        "snapshot_id": "snapshot-c",
+        "schema": 2,
+        "encrypted": True,
+        "snapshot_hash": "c" * 64,
+        "chunk_count": 1,
+    }
+    monkeypatch.setattr(shared_sync_remote, "_firebase_db", lambda: db, raising=False)
+    monkeypatch.setattr(shared_sync_remote, "_firebase_deve_usar", lambda: True, raising=False)
+    monkeypatch.setattr(shared_sync_remote, "_firebase_shared_sync_collection_name", lambda: "shared_sync")
+
+    meta = shared_sync_remote._shared_sync_remote_meta_by_id("bundle-lojas")
+
+    assert meta["snapshot_id"] == "snapshot-c"
+    assert meta["snapshot_hash"] == "c" * 64
+    assert meta["_guard_pointer_id"] == authority_id
+
+
+def test_pointer_v1_com_mesmo_id_bloqueia_revisao_concorrente(monkeypatch):
+    db = _FakeFirestore()
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_firebase_shared_sync_collection_name",
+        lambda: "shared_sync",
+    )
+    pointer = db.collection("shared_sync").document("bundle-lojas")
+    meta_a = {
+        "id": "bundle-lojas",
+        "schema": 1,
+        "encrypted": False,
+        "snapshot_hash": "a" * 64,
+        "updated_at": "2026-09-02T10:00:00Z",
+        "chunk_count": 1,
+        "bundle_bytes": 100,
+    }
+    pointer.set(meta_a)
+    revision_a = shared_sync_remote._shared_sync_guard_expectation_from_meta(
+        {**meta_a, "_guard_pointer_id": "bundle-lojas"},
+        "bundle-lojas",
+    )
+    pointer.set({
+        **meta_a,
+        "snapshot_hash": "b" * 64,
+        "updated_at": "2026-09-02T10:01:00Z",
+    })
+
+    with pytest.raises(HTTPException) as exc_info:
+        shared_sync_remote._shared_sync_publicar_pointer_cas(
+            db,
+            "bundle-lojas",
+            {"id": "bundle-lojas", "snapshot_id": "snapshot-v2"},
+            revision_a,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert pointer.get().to_dict()["snapshot_hash"] == "b" * 64
+
+
+def test_guard_le_e_valida_snapshot_v1_para_migracao_segura(monkeypatch):
+    db = _FakeFirestore()
+    bundle, snapshot_hash = _scope_bundle_v1(
+        "lojas_integracoes",
+        [("lojas_config.json", json.dumps([{
+            "nome": "Loja v1",
+            "store_id": "store-v1",
+            "integracoes": {},
+        }]).encode("utf-8"))],
+    )
+    db.collection("shared_sync").data["bundle-v1"] = {
+        "id": "bundle-v1",
+        "scope": "lojas_integracoes",
+        "schema": 1,
+        "encrypted": False,
+        "chunk_count": 1,
+        "bundle_bytes": len(bundle),
+        "snapshot_hash": snapshot_hash,
+    }
+    db.collection("shared_sync_chunks").data["bundle-v1_00000"] = {
+        "bundle_id": "bundle-v1",
+        "data": base64.b64encode(bundle).decode("ascii"),
+    }
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_firestore_required",
+        lambda: db,
+    )
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_firebase_shared_sync_collection_name",
+        lambda: "shared_sync",
+    )
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_firebase_shared_sync_chunks_collection_name",
+        lambda: "shared_sync_chunks",
+    )
+
+    opened, meta = (
+        shared_sync_remote._shared_sync_obter_bundle_remoto_para_guard(
+            "bundle-v1"
+        )
+    )
+
+    assert opened == bundle
+    assert meta["legacy_plaintext"] is True
+    assert meta.get("snapshot_id") in (None, "")
+
+
+def test_guard_v1_rejeita_manifesto_com_snapshot_hash_nao_recalculado(monkeypatch):
+    db = _FakeFirestore()
+    arquivos = [("lojas_config.json", b'[{"nome":"Loja alterada"}]')]
+    bundle, snapshot_hash = _scope_bundle_v1("lojas_integracoes", arquivos)
+    with zipfile.ZipFile(io.BytesIO(bundle), "r") as source:
+        manifest = json.loads(source.read("manifest.json"))
+        data = source.read("files/lojas_config.json")
+    manifest["snapshot_hash"] = "0" * 64
+    adulterado = io.BytesIO()
+    with zipfile.ZipFile(adulterado, "w", compression=zipfile.ZIP_DEFLATED) as target:
+        target.writestr("manifest.json", json.dumps(manifest))
+        target.writestr("files/lojas_config.json", data)
+    payload = adulterado.getvalue()
+    db.collection("shared_sync").data["bundle-v1"] = {
+        "id": "bundle-v1",
+        "scope": "lojas_integracoes",
+        "schema": 1,
+        "encrypted": False,
+        "chunk_count": 1,
+        "bundle_bytes": len(payload),
+        "snapshot_hash": snapshot_hash,
+    }
+    db.collection("shared_sync_chunks").data["bundle-v1_00000"] = {
+        "bundle_id": "bundle-v1",
+        "data": base64.b64encode(payload).decode("ascii"),
+    }
+    monkeypatch.setattr(shared_sync_remote, "_shared_sync_firestore_required", lambda: db)
+    monkeypatch.setattr(shared_sync_remote, "_firebase_shared_sync_collection_name", lambda: "shared_sync")
+    monkeypatch.setattr(shared_sync_remote, "_firebase_shared_sync_chunks_collection_name", lambda: "shared_sync_chunks")
+
+    with pytest.raises(HTTPException) as exc_info:
+        shared_sync_remote._shared_sync_obter_bundle_remoto_para_guard("bundle-v1")
+
+    assert exc_info.value.status_code == 502
+
+
+def test_leitura_autoritativa_da_guarda_distingue_ausencia_de_falha(monkeypatch):
+    db = _FakeFirestore()
+    monkeypatch.setattr(shared_sync_remote, "_shared_sync_firestore_required", lambda: db)
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_firebase_shared_sync_collection_name",
+        lambda: "shared_sync",
+    )
+    assert shared_sync_remote._shared_sync_obter_bundle_remoto_para_guard("ausente") is None
+
+    class FailingDocument:
+        def get(self):
+            raise RuntimeError("firestore indisponivel")
+
+    class FailingCollection:
+        def document(self, _doc_id):
+            return FailingDocument()
+
+    class FailingFirestore:
+        def collection(self, _name):
+            return FailingCollection()
+
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_firestore_required",
+        lambda: FailingFirestore(),
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        shared_sync_remote._shared_sync_obter_bundle_remoto_para_guard("bundle-lojas")
+    assert exc_info.value.status_code == 503
+
+
 def _configure_keyring_test(monkeypatch, db, active_device, secure_stores, approved, present=None):
     present = set(present if present is not None else approved)
     monkeypatch.setattr(shared_sync_keyring, "_firebase_db", lambda: db)
@@ -1032,7 +3786,11 @@ def test_envio_e_importacao_entre_duas_maquinas_transfere_todas_as_lojas(tmp_pat
         }
         for indice, nome in enumerate(("JK Peças", "Uai Mineirinho", "Carlos José", "Deckas"), start=1)
     ]
-    lojas_destino = [{"nome": "Loja antiga do destino", "integracoes": {}}]
+    lojas_destino = [{
+        "nome": "Loja antiga do destino",
+        "store_id": "store-exclusiva-destino",
+        "integracoes": {"bling": {"access_token": "token-exclusivo-destino"}},
+    }]
     origem_path = origem / "info" / "000002"
     destino_path = destino / "info" / "000002"
     origem_path.mkdir(parents=True)
@@ -1055,7 +3813,11 @@ def test_envio_e_importacao_entre_duas_maquinas_transfere_todas_as_lojas(tmp_pat
     monkeypatch.setattr(shared_sync_remote, "_firebase_shared_sync_collection_name", lambda: "shared_sync")
     monkeypatch.setattr(shared_sync_remote, "_firebase_shared_sync_chunks_collection_name", lambda: "shared_sync_chunks")
     monkeypatch.setattr(shared_sync_remote, "_shared_sync_state_update", lambda *args, **kwargs: None)
+    monkeypatch.setattr(shared_sync_remote, "_shared_sync_state_snapshot_id", lambda *args, **kwargs: "")
+    monkeypatch.setattr(shared_sync_remote, "_shared_sync_state_snapshot_hash", lambda *args, **kwargs: "")
     monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_update", lambda *args, **kwargs: None)
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_snapshot_id", lambda *args, **kwargs: "")
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_pull_already_current", lambda *args, **kwargs: False)
 
     active_device = {"id": "pc:destino"}
     secure_stores = {"pc:origem": {}, "pc:destino": {}}
@@ -1111,9 +3873,14 @@ def test_envio_e_importacao_entre_duas_maquinas_transfere_todas_as_lojas(tmp_pat
 
     lojas_recebidas = json.loads((destino_path / "lojas_config.json").read_text(encoding="utf-8"))
     assert recebido["success"] is True
-    assert recebido["stores_count"] == 4
-    assert [loja["nome"] for loja in lojas_recebidas] == [loja["nome"] for loja in lojas_origem]
-    assert lojas_recebidas[0]["integracoes"]["mercadolivre"]["access_token"] == "token-1"
+    assert recebido["stores_count"] == 5
+    assert recebido["snapshot_stores_count"] == 4
+    assert [loja["nome"] for loja in lojas_recebidas] == [
+        "Loja antiga do destino",
+        *[loja["nome"] for loja in lojas_origem],
+    ]
+    assert lojas_recebidas[0]["integracoes"]["bling"]["access_token"] == "token-exclusivo-destino"
+    assert lojas_recebidas[1]["integracoes"]["mercadolivre"]["access_token"] == "token-1"
 
 
 def test_keyring_nova_maquina_so_recebe_envelope_apos_reenvio_e_ignora_membro_injetado(monkeypatch):
@@ -1244,6 +4011,13 @@ def test_login_admin_full_persiste_machine_allowlist_sem_aplicar_limite(monkeypa
     saved = []
     monkeypatch.setattr(admin_usuarios_login_core, "_firebase_collection", lambda: users)
     monkeypatch.setattr(admin_usuarios_login_core, "_firebase_doc_id", lambda username: username)
+    monkeypatch.setattr(
+        admin_usuarios_login_core,
+        "_firebase_obter_usuario",
+        lambda username: dict(users.data.get(username) or {}) or None,
+    )
+    monkeypatch.setattr(admin_usuarios_login_core, "_firebase_user_cache_invalidate", lambda _username: None)
+    monkeypatch.setattr(admin_usuarios_login_core, "_firebase_call_timeout_seconds", lambda: 5.0)
     monkeypatch.setattr(
         admin_usuarios_login_core, "_usuario_pode_logar_em_qualquer_dispositivo", lambda *_args: True,
     )
@@ -1524,6 +4298,91 @@ def test_upload_v2_publica_chunks_cifrados_antes_de_trocar_ponteiro(monkeypatch)
     assert "v1-legivel" not in remote_text
 
 
+def test_push_igual_so_pula_depois_de_criar_autoridade_v2(monkeypatch):
+    db = _FakeFirestore()
+    bundle = _scope_bundle(
+        "lojas_integracoes",
+        [("lojas_config.json", b"[]")],
+    )
+    manifest = {
+        "schema": 2,
+        "created_at": "2026-09-02T12:00:00Z",
+        "snapshot_hash": "hash-igual",
+        "file_count": 1,
+        "item_count": 0,
+        "item_keys": [],
+        "delta": False,
+        "files": [],
+    }
+    monkeypatch.setattr(shared_sync_remote, "_shared_sync_firestore_required", lambda: db)
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_montar_pacote",
+        lambda *args, **kwargs: (bundle, manifest, []),
+    )
+    monkeypatch.setattr(shared_sync_remote, "_shared_sync_state_snapshot_id", lambda *args: "")
+    monkeypatch.setattr(shared_sync_remote, "_shared_sync_state_update", lambda *args: None)
+    chamadas_guard = []
+
+    def bloquear_para_provar_chamada(*args, **kwargs):
+        chamadas_guard.append(True)
+        raise HTTPException(status_code=418, detail="guard chamado")
+
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_validar_push_lojas_integracoes",
+        bloquear_para_provar_chamada,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_remote_meta_by_id",
+        lambda *_args: {
+            "id": "bundle-lojas",
+            "snapshot_hash": "hash-igual",
+            "_guard_pointer_id": "bundle-lojas",
+        },
+    )
+
+    with pytest.raises(HTTPException) as sem_autoridade:
+        shared_sync_remote._shared_sync_push_scope(
+            "000002",
+            "lojas_integracoes",
+            {"username": "origem"},
+            bundle_id="bundle-lojas",
+            skip_if_remote_hash_matches=True,
+        )
+    assert sem_autoridade.value.status_code == 418
+    assert chamadas_guard == [True]
+
+    authority_id = shared_sync_remote._shared_sync_v2_authority_id(
+        "bundle-lojas"
+    )
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_remote_meta_by_id",
+        lambda *_args: {
+            "id": "bundle-lojas",
+            "snapshot_id": "snapshot-v2",
+            "schema": 2,
+            "encrypted": True,
+            "snapshot_hash": "hash-igual",
+            "_guard_pointer_id": authority_id,
+        },
+    )
+    result = shared_sync_remote._shared_sync_push_scope(
+        "000002",
+        "lojas_integracoes",
+        {"username": "origem"},
+        bundle_id="bundle-lojas",
+        skip_if_remote_hash_matches=True,
+    )
+
+    assert result["skipped"] is True
+    assert result["reason"] == "already_current"
+    assert chamadas_guard == [True]
+
+
 def test_retencao_preserva_dois_snapshots_e_remove_antigos_apos_sete_dias(monkeypatch):
     db = _FakeFirestore()
     monkeypatch.setattr(shared_sync_remote, "_firebase_shared_sync_collection_name", lambda: "shared_sync")
@@ -1541,6 +4400,69 @@ def test_retencao_preserva_dois_snapshots_e_remove_antigos_apos_sete_dias(monkey
     assert "old_00000" not in db.collection("shared_sync_chunks").data
 
 
+def test_retencao_nunca_remove_autoridade_nem_candidato_pending(monkeypatch):
+    db = _FakeFirestore()
+    monkeypatch.setattr(shared_sync_remote, "_firebase_shared_sync_collection_name", lambda: "shared_sync")
+    monkeypatch.setattr(shared_sync_remote, "_firebase_shared_sync_chunks_collection_name", lambda: "shared_sync_chunks")
+    now = int(time.time())
+    old = now - (10 * 24 * 60 * 60)
+    metas = db.collection("shared_sync").data
+    authority_id = shared_sync_remote._shared_sync_v2_authority_id("bundle")
+    metas[authority_id] = {
+        "id": "bundle",
+        "snapshot_id": "snapshot-b",
+        "schema": 2,
+        "encrypted": True,
+    }
+    metas["snapshot-a"] = {
+        "pointer_id": "bundle",
+        "status": "complete",
+        "updated_ts": old - 1,
+    }
+    metas["snapshot-b"] = {
+        "pointer_id": "bundle",
+        "status": "complete",
+        "updated_ts": old,
+    }
+    metas["snapshot-c"] = {
+        "pointer_id": "bundle",
+        "status": "complete",
+        "updated_ts": now,
+    }
+    metas["snapshot-d"] = {
+        "pointer_id": "bundle",
+        "status": "complete",
+        "updated_ts": now - 1,
+    }
+    metas["snapshot-pending"] = {
+        "pointer_id": "bundle",
+        "status": "pending",
+        "updated_ts": old - 2,
+    }
+    chunks = db.collection("shared_sync_chunks").data
+    for snapshot_id in (
+        "snapshot-a",
+        "snapshot-b",
+        "snapshot-pending",
+    ):
+        chunks[f"{snapshot_id}_00000"] = {
+            "bundle_id": snapshot_id,
+            "data": "cipher",
+        }
+
+    shared_sync_remote._shared_sync_cleanup_old_snapshots(
+        db,
+        "bundle",
+        "snapshot-a",
+    )
+
+    assert "snapshot-a" in metas
+    assert "snapshot-b" in metas
+    assert "snapshot-pending" in metas
+    assert "snapshot-b_00000" in chunks
+    assert "snapshot-pending_00000" in chunks
+
+
 def test_escritas_concorrentes_de_lojas_permanecem_json_atomico(tmp_path):
     info = tmp_path / "info"
 
@@ -1555,7 +4477,13 @@ def test_escritas_concorrentes_de_lojas_permanecem_json_atomico(tmp_path):
 
     def save(index):
         lojas = [
-            {"nome": f"Loja {index}-{item}", "integracoes": {"mercadolivre": {"access_token": f"token-{index}-{item}"}}}
+            {
+                "store_id": f"store-{item}",
+                "nome": f"Loja {index}-{item}",
+                "integracoes": {
+                    "mercadolivre": {"access_token": f"token-{index}-{item}"}
+                },
+            }
             for item in range(4)
         ]
         integracoes.salvar_lojas("000002", lojas)
@@ -1602,21 +4530,1859 @@ def test_desconexao_cria_tombstone_sem_remover_registro(tmp_path):
     integracoes.configure_integracoes_context(
         pasta_info=str(info), get_tenant_path=tenant_path, normalizar_integracao_conectada=lambda _s, data: data,
     )
-    integracoes.salvar_lojas("000002", [{"nome": "Loja", "integracoes": {"bling": {"access_token": "token", "connected": True}}}])
-    integracoes.desconectar_api_loja("000002", "Loja", "bling")
+    lojas = [{"nome": "Loja", "integracoes": {"bling": {"access_token": "token", "connected": True}}}]
+    integracoes.salvar_lojas("000002", lojas)
+    integracoes.desconectar_api_loja(
+        "000002",
+        "Loja",
+        "bling",
+        store_id=lojas[0]["store_id"],
+    )
     lojas = json.loads((info / "000002" / "lojas_config.json").read_text(encoding="utf-8"))
     tombstones = json.loads((info / "000002" / "lojas_sync_tombstones.json").read_text(encoding="utf-8"))
     assert lojas[0]["store_id"]
     assert lojas[0]["integracoes"]["bling"]["connected"] is False
     assert tombstones[-1]["type"] == "integration"
     assert tombstones[-1]["store_id"] == lojas[0]["store_id"]
+    assert tombstones[-1]["version"] == lojas[0]["integracoes"]["bling"]["_sync_version"]
+
+
+def test_pull_machine_serializa_aplicacao_e_estado_causal(monkeypatch):
+    sessao = {"username": "operador", "client_id": "000002"}
+    iniciou_primeiro_apply = threading.Event()
+    liberar_primeiro_apply = threading.Event()
+    chamadas_meta = []
+    aplicados = []
+    estados = []
+    controle = threading.Lock()
+
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_machine_doc_id",
+        lambda *args: "bundle-cadastro",
+    )
+
+    def remote_meta(_bundle_id):
+        with controle:
+            indice = len(chamadas_meta)
+            snapshot = "snapshot-a" if indice == 0 else "snapshot-b"
+            chamadas_meta.append(snapshot)
+        return {
+            "snapshot_id": snapshot,
+            "snapshot_hash": f"hash-{snapshot}",
+        }
+
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_remote_meta_by_id",
+        remote_meta,
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_pull_already_current",
+        lambda *args: False,
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_obter_bundle_por_id",
+        lambda _bundle_id, meta, **kwargs: (
+            str(meta["snapshot_id"]).encode("utf-8"),
+            meta,
+        ),
+    )
+
+    def aplicar(_client_id, _scope, bundle, *_args, **_kwargs):
+        snapshot = bundle.decode("utf-8")
+        aplicados.append(snapshot)
+        if snapshot == "snapshot-a":
+            iniciou_primeiro_apply.set()
+            assert liberar_primeiro_apply.wait(timeout=5)
+        return {"file_count": 1}
+
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_aplicar_pacote", aplicar)
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_state_update",
+        lambda _client, _user, _scope, meta, _direction: estados.append(
+            meta["snapshot_id"]
+        ),
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        primeiro = pool.submit(
+            shared_sync_machine._shared_sync_machine_pull_scope,
+            sessao,
+            "cadastro",
+        )
+        assert iniciou_primeiro_apply.wait(timeout=5)
+        segundo = pool.submit(
+            shared_sync_machine._shared_sync_machine_pull_scope,
+            sessao,
+            "cadastro",
+        )
+        time.sleep(0.05)
+        assert chamadas_meta == ["snapshot-a"]
+        liberar_primeiro_apply.set()
+        assert primeiro.result(timeout=5)["success"] is True
+        assert segundo.result(timeout=5)["success"] is True
+
+    assert aplicados == ["snapshot-a", "snapshot-b"]
+    assert estados == ["snapshot-a", "snapshot-b"]
+
+
+def test_merge_integracoes_legadas_usa_base_e_bloqueia_conflito_duplo(tmp_path):
+    target = tmp_path / "integracoes.json"
+    bloco_a = {
+        "id": "app",
+        "secret": "secret",
+        "access_token": "access-a",
+        "refresh_token": "refresh-a",
+    }
+    bloco_b = {**bloco_a, "access_token": "access-b", "refresh_token": "refresh-b"}
+    bloco_c = {**bloco_a, "access_token": "access-c", "refresh_token": "refresh-c"}
+    base = {"Loja": {"bling": bloco_a}}
+    remoto = {"Loja": {"bling": bloco_b}}
+    target.write_text(json.dumps(base), encoding="utf-8")
+
+    merged = json.loads(
+        shared_sync_merge_integracoes._shared_sync_merge_integracoes_legacy_bytes(
+            str(target),
+            json.dumps(remoto).encode("utf-8"),
+            base_bytes=json.dumps(base).encode("utf-8"),
+            strict_oauth_conflicts=True,
+        )
+    )
+    assert merged["Loja"]["bling"]["access_token"] == "access-b"
+    assert merged["Loja"]["bling"]["refresh_token"] == "refresh-b"
+
+    target.write_text(
+        json.dumps({"Loja": {"bling": bloco_c}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(HTTPException) as conflito:
+        shared_sync_merge_integracoes._shared_sync_merge_integracoes_legacy_bytes(
+            str(target),
+            json.dumps(remoto).encode("utf-8"),
+            base_bytes=json.dumps(base).encode("utf-8"),
+            strict_oauth_conflicts=True,
+        )
+    assert conflito.value.status_code == 409
+
+    with pytest.raises(HTTPException) as sem_base:
+        shared_sync_merge_integracoes._shared_sync_merge_integracoes_legacy_bytes(
+            str(target),
+            json.dumps(remoto).encode("utf-8"),
+            strict_oauth_conflicts=True,
+        )
+    assert sem_base.value.status_code == 409
+
+
+def test_merge_integracoes_legadas_nao_combina_nomes_crus_ambiguos(tmp_path):
+    target = tmp_path / "integracoes.json"
+    local = {
+        "Loja A": {
+            "mercadolivre": {
+                "app_id": "app-local",
+                "client_secret": "secret-local",
+            },
+        },
+    }
+    remoto = {
+        "Loja Á": {
+            "bling": {
+                "id": "app-remoto",
+                "secret": "secret-remoto",
+            },
+        },
+    }
+    target.write_text(json.dumps(local), encoding="utf-8")
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_merge_integracoes._shared_sync_merge_integracoes_legacy_bytes(
+            str(target),
+            json.dumps(remoto).encode("utf-8"),
+            strict_oauth_conflicts=True,
+        )
+    assert bloqueado.value.status_code == 409
+
+    preservado = json.loads(
+        shared_sync_merge_integracoes._shared_sync_merge_integracoes_legacy_bytes(
+            str(target),
+            json.dumps(remoto).encode("utf-8"),
+            strict_oauth_conflicts=False,
+        )
+    )
+    assert set(preservado) == {"Loja A", "Loja Á"}
+    assert set(preservado["Loja A"]) == {"mercadolivre"}
+    assert set(preservado["Loja Á"]) == {"bling"}
+
+
+def test_merge_ml_enriquece_user_id_legado_sem_trocar_oauth():
+    oauth = {
+        "app_id": "app",
+        "client_secret": "secret",
+        "access_token": "access",
+        "refresh_token": "refresh",
+    }
+    legado = dict(oauth)
+    identificado = {**oauth, "user_id": "seller-1"}
+
+    enriquecido = shared_sync_merge_integracoes._shared_sync_merge_integracao_loja(
+        legado,
+        identificado,
+        servico_key="mercadolivre",
+        strict_oauth_conflicts=True,
+    )
+    preservado = shared_sync_merge_integracoes._shared_sync_merge_integracao_loja(
+        identificado,
+        legado,
+        servico_key="mercadolivre",
+        strict_oauth_conflicts=True,
+    )
+
+    assert enriquecido["user_id"] == "seller-1"
+    assert preservado["user_id"] == "seller-1"
+    assert enriquecido["access_token"] == preservado["access_token"] == "access"
+
+
+@pytest.mark.parametrize(
+    "arquivos",
+    [
+        [("lojas_config.json", json.dumps([{}]).encode("utf-8"))],
+        [
+            ("lojas_config.json", b"[]"),
+            ("lojas_sync_tombstones.json", json.dumps([42]).encode("utf-8")),
+        ],
+        [
+            ("lojas_config.json", b"[]"),
+            ("integracoes.json", json.dumps({"Loja": {"bling": "invalido"}}).encode("utf-8")),
+        ],
+    ],
+)
+def test_primeiro_push_bloqueia_snapshot_local_invalido(monkeypatch, arquivos):
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: None,
+    )
+    bundle = _scope_bundle("lojas_integracoes", arquivos)
+
+    with pytest.raises(HTTPException) as invalido:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas",
+            bundle,
+        )
+
+    assert invalido.value.status_code == 409
+
+
+def test_preview_conta_credenciais_do_integracoes_json_legado():
+    bundle = _scope_bundle(
+        "lojas_integracoes",
+        [
+            ("lojas_config.json", b"[]"),
+            (
+                "integracoes.json",
+                json.dumps({
+                    "Loja": {
+                        "mercadolivre": {
+                            "app_id": "app",
+                            "client_secret": "secret",
+                            "access_token": "access",
+                            "refresh_token": "refresh",
+                            "connected": False,
+                        },
+                    },
+                }).encode("utf-8"),
+            ),
+        ],
+    )
+
+    credentials, disconnects, stores = (
+        shared_sync_operations._shared_sync_bundle_sensitive_counts(bundle)
+    )
+
+    assert credentials == 3
+    assert disconnects == 1
+    assert stores == 0
+
+
+def test_push_bloqueia_regressao_de_campos_da_loja_sem_base_causal(monkeypatch):
+    remoto = _lojas_bundle([{
+        "nome": "Nome remoto",
+        "store_id": "store-a",
+        "integracoes": {},
+    }])
+    local = _lojas_bundle([{
+        "nome": "Nome local",
+        "store_id": "store-a",
+        "integracoes": {},
+    }])
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (
+            remoto,
+            {"snapshot_id": "snapshot-remoto"},
+        ),
+    )
+
+    with pytest.raises(HTTPException) as sem_base:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+            "bundle-lojas",
+            local,
+        )
+    assert sem_base.value.status_code == 409
+
+    assert shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+        "bundle-lojas",
+        local,
+        base_snapshot_id="snapshot-remoto",
+    ) == "snapshot-remoto"
+
+
+def test_recriacao_explicita_supera_tombstone_sem_apaga_loja_futura(tmp_path):
+    info = tmp_path / "info"
+
+    def tenant_path(client_id):
+        path = info / str(client_id)
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
+    integracoes.configure_integracoes_context(
+        pasta_info=str(info),
+        get_tenant_path=tenant_path,
+        normalizar_integracao_conectada=lambda _s, data: data,
+    )
+    integracoes.salvar_lojas(
+        "000002",
+        [{"nome": "Loja", "integracoes": {}}],
+    )
+    loja = integracoes.carregar_lojas("000002")[0]
+    integracoes.registrar_tombstone_integracao(
+        "000002",
+        loja=loja,
+        tipo="store",
+    )
+    integracoes.salvar_lojas(
+        "000002",
+        [],
+        permitir_reducao_confirmada=True,
+    )
+    nova = integracoes.criar_loja("000002", "Loja")
+
+    tombstones = json.loads(
+        (info / "000002" / "lojas_sync_tombstones.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    tombstone_antigo = next(
+        item
+        for item in tombstones
+        if item.get("type") == "store"
+        and item.get("store_id") == loja["store_id"]
+    )
+    assert tombstone_antigo["deleted_at"]
+    assert not tombstone_antigo.get("restored_at")
+    remoto = json.dumps([{
+        "nome": "Loja",
+        "store_id": loja["store_id"],
+        "integracoes": {},
+    }]).encode("utf-8")
+    target_vazio = tmp_path / "destino" / "lojas_config.json"
+    target_vazio.parent.mkdir()
+    target_vazio.write_text(json.dumps([nova]), encoding="utf-8")
+    merged = json.loads(
+        shared_sync_merge_integracoes._shared_sync_merge_lojas_integracoes_bytes(
+            str(target_vazio),
+            remoto,
+            local_tombstones_bytes=json.dumps(tombstones).encode("utf-8"),
+        )
+    )
+    assert [item["store_id"] for item in merged] == [nova["store_id"]]
+
+
+def test_push_rejeita_hash_local_diferente_da_previa_antes_do_upload(monkeypatch):
+    db = _FakeFirestore()
+    _configure_remote_push_for_test(monkeypatch, db, b"pacote-local")
+
+    with pytest.raises(HTTPException) as mudou:
+        shared_sync_remote._shared_sync_push_scope(
+            "000002",
+            "cadastro",
+            {"username": "origem"},
+            bundle_id="bundle",
+            expected_snapshot_hash="hash-da-previa",
+        )
+
+    assert mudou.value.status_code == 409
+    assert db.collection("shared_sync_chunks").data == {}
+    assert db.collection("shared_sync").data == {}
+
+
+def test_aliases_oauth_equivalentes_nao_criam_falso_conflito():
+    ml_canonico = {
+        "app_id": "app",
+        "client_secret": "secret",
+        "access_token": "access",
+        "refresh_token": "refresh",
+        "user_id": "123",
+    }
+    ml_legado = {
+        "id": "app",
+        "secret": "secret",
+        "access_token": "access",
+        "refresh_token": "refresh",
+        "user_id": 123,
+    }
+    nos_dois_sentidos = [
+        (ml_canonico, ml_legado),
+        (ml_legado, ml_canonico),
+    ]
+    for local, remoto in nos_dois_sentidos:
+        merged = shared_sync_merge_integracoes._shared_sync_merge_integracao_loja(
+            local,
+            remoto,
+            servico_key="mercadolivre",
+            strict_oauth_conflicts=True,
+        )
+        assert str(merged["user_id"]) == "123"
+        assert merged["access_token"] == "access"
+        assert merged["refresh_token"] == "refresh"
+
+    bling_canonico = {
+        "id": "app",
+        "secret": "secret",
+        "access_token": "access",
+        "refresh_token": "refresh",
+    }
+    bling_alias = {
+        "client_id": "app",
+        "client_secret": "secret",
+        "access_token": "access",
+        "refresh_token": "refresh",
+    }
+    for local, remoto in [
+        (bling_canonico, bling_alias),
+        (bling_alias, bling_canonico),
+    ]:
+        merged = shared_sync_merge_integracoes._shared_sync_merge_integracao_loja(
+            local,
+            remoto,
+            servico_key="bling",
+            strict_oauth_conflicts=True,
+        )
+        assert merged["access_token"] == "access"
+        assert merged["refresh_token"] == "refresh"
+
+
+def test_todas_as_rotas_de_pull_usam_mesma_chave_de_destino(monkeypatch):
+    chamadas = []
+
+    class Contexto:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def registrar(*partes):
+        chamadas.append(partes)
+        return Contexto()
+
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_pull_lock", registrar)
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_machine_pull_scope_serialized",
+        lambda *args, **kwargs: {"success": True},
+    )
+    monkeypatch.setattr(shared_sync_user_pairs, "_shared_sync_pull_lock", registrar)
+    monkeypatch.setattr(
+        shared_sync_user_pairs,
+        "_shared_sync_pull_pair_scope_serialized",
+        lambda *args, **kwargs: {"success": True},
+    )
+    monkeypatch.setattr(shared_sync_apply_scope, "_shared_sync_pull_lock", registrar)
+    monkeypatch.setattr(
+        shared_sync_apply_scope,
+        "_shared_sync_pull_scope_serialized",
+        lambda *args, **kwargs: {"success": True},
+    )
+    sessao = {"client_id": "000002", "username": "operador"}
+
+    shared_sync_machine._shared_sync_machine_pull_scope(sessao, "cadastro")
+    shared_sync_user_pairs._shared_sync_pull_pair_scope(
+        sessao,
+        {"id": "link"},
+        "cadastro",
+    )
+    shared_sync_apply_scope._shared_sync_pull_scope(
+        "000002",
+        "cadastro",
+        sessao,
+    )
+
+    assert chamadas == [
+        ("destination", "000002", "cadastro"),
+        ("destination", "000002", "cadastro"),
+        ("destination", "000002", "cadastro"),
+    ]
+
+
+def test_pull_migra_snapshot_v1_parcial_sem_perder_loja_local(tmp_path, monkeypatch):
+    info = tmp_path / "info"
+
+    def tenant_path(client_id):
+        path = info / str(client_id)
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
+    integracoes.configure_integracoes_context(
+        pasta_info=str(info),
+        get_tenant_path=tenant_path,
+        normalizar_integracao_conectada=lambda _s, data: data,
+    )
+    monkeypatch.setattr(
+        shared_sync_apply_scope,
+        "get_tenant_path",
+        tenant_path,
+        raising=False,
+    )
+    integracoes.salvar_lojas(
+        "000002",
+        [{
+            "nome": "Loja local",
+            "store_id": "store-local",
+            "integracoes": {
+                "bling": {
+                    "id": "local",
+                    "secret": "secret-local",
+                    "access_token": "access-local",
+                    "refresh_token": "refresh-local",
+                },
+            },
+        }],
+    )
+    remoto = [{
+        "nome": "Loja remota",
+        "store_id": "store-remota",
+        "integracoes": {
+            "mercadolivre": {
+                "app_id": "app-remoto",
+                "client_secret": "secret-remoto",
+                "access_token": "access-remoto",
+                "refresh_token": "refresh-remoto",
+                "user_id": "seller-remoto",
+            },
+        },
+    }]
+    bundle = _scope_bundle(
+        "lojas_integracoes",
+        [("lojas_config.json", json.dumps(remoto).encode("utf-8"))],
+    )
+    meta = {
+        "id": "bundle-lojas",
+        "schema": 1,
+        "encrypted": False,
+        "snapshot_hash": "hash-v1",
+        "chunk_count": 1,
+        "bundle_bytes": len(bundle),
+    }
+    atualizacoes = []
+    leituras_meta = []
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_machine_doc_id",
+        lambda *args: "bundle-lojas",
+    )
+    def remote_meta(bundle_id):
+        leituras_meta.append(bundle_id)
+        assert bundle_id == "bundle-lojas"
+        return dict(meta)
+
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_remote_meta_by_id",
+        remote_meta,
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_pull_already_current",
+        lambda *args: False,
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (bundle, dict(meta, legacy_plaintext=True)),
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_state_snapshot_id",
+        lambda *args: "snapshot-v2-anterior",
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_state_update",
+        lambda *args: atualizacoes.append(args),
+    )
+
+    result = shared_sync_machine._shared_sync_machine_pull_scope(
+        {"client_id": "000002", "username": "operador"},
+        "lojas_integracoes",
+        force=True,
+        expected_snapshot_id="bundle-lojas",
+        expected_remote_fingerprint=(
+            shared_sync_common._shared_sync_remote_fingerprint_from_meta(meta)
+        ),
+        expected_bundle_hash=hashlib.sha256(bundle).hexdigest(),
+    )
+
+    lojas = integracoes.carregar_lojas("000002")
+    assert result["success"] is True
+    assert result["stores_count"] == 2
+    assert result["snapshot_stores_count"] == 1
+    assert {loja["store_id"] for loja in lojas} == {
+        "store-local",
+        "store-remota",
+    }
+    assert atualizacoes
+    assert atualizacoes[-1][3].get("snapshot_id") in (None, "")
+    assert leituras_meta == ["bundle-lojas"]
+
+
+def test_apply_ignora_loja_global_em_tenant_nao_default(tmp_path):
+    info = tmp_path / "info"
+    info.mkdir()
+
+    def tenant_path(client_id):
+        path = info / str(client_id)
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
+    integracoes.configure_integracoes_context(
+        pasta_info=str(info),
+        get_tenant_path=tenant_path,
+        normalizar_integracao_conectada=lambda _s, data: data,
+    )
+    nome_local = "Loja local legada"
+    store_id_local = integracoes._integracoes_store_id(
+        "000002",
+        {"nome": nome_local},
+    )
+    local = [{
+        "nome": nome_local,
+        "store_id": store_id_local,
+        "integracoes": {
+            "bling": {
+                "id": "app-local",
+                "secret": "secret-local",
+                "access_token": "access-local",
+                "refresh_token": "refresh-local",
+            },
+        },
+    }]
+    remoto = [{
+        "nome": "Loja remota",
+        "store_id": "store-remota",
+        "integracoes": {},
+    }]
+    (info / "lojas_config.json").write_text(
+        json.dumps(local),
+        encoding="utf-8",
+    )
+    tenant_abs = tenant_path("000002")
+
+    result = shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+        "000002",
+        [("lojas_config.json", json.dumps(remoto).encode("utf-8"))],
+        tenant_abs,
+        str(tmp_path / "backup"),
+        strict_oauth_conflicts=True,
+    )
+
+    lojas = integracoes.carregar_lojas("000002")
+    assert result["stores_count"] == 1
+    assert {loja["store_id"] for loja in lojas} == {"store-remota"}
+    assert (info / "lojas_config.json").exists()
+
+
+def test_apply_nao_recupera_global_quando_tenant_nao_default_ja_existe(tmp_path):
+    info = tmp_path / "info"
+    tenant = info / "000002"
+    tenant.mkdir(parents=True)
+
+    def tenant_path(_client_id):
+        return str(tenant)
+
+    integracoes.configure_integracoes_context(
+        pasta_info=str(info),
+        get_tenant_path=tenant_path,
+        normalizar_integracao_conectada=lambda _s, data: data,
+    )
+    nome_legado = "Loja local ainda no global"
+    store_id_legado = integracoes._integracoes_store_id(
+        "000002",
+        {"nome": nome_legado},
+    )
+    legado = [{
+        "nome": nome_legado,
+        "store_id": store_id_legado,
+        "integracoes": {
+            "bling": {
+                "access_token": "legacy-access",
+                "api_key": "legacy-key",
+                "connected": True,
+            },
+        },
+    }]
+    tenant_remoto = [{
+        "nome": "Loja do pull antigo",
+        "store_id": "store-remota-antiga",
+        "integracoes": {},
+    }]
+    remoto_novo = [{
+        "nome": "Loja remota nova",
+        "store_id": "store-remota-nova",
+        "integracoes": {},
+    }]
+    (info / "lojas_config.json").write_text(
+        json.dumps(legado),
+        encoding="utf-8",
+    )
+    (tenant / "lojas_config.json").write_text(
+        json.dumps(tenant_remoto),
+        encoding="utf-8",
+    )
+    backup_dir = tmp_path / "backup"
+
+    result = shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+        "000002",
+        [("lojas_config.json", json.dumps(remoto_novo).encode("utf-8"))],
+        str(tenant),
+        str(backup_dir),
+        strict_oauth_conflicts=True,
+    )
+
+    lojas = integracoes.carregar_lojas("000002")
+    assert result["stores_count"] == 2
+    assert {loja["store_id"] for loja in lojas} == {
+        "store-remota-antiga",
+        "store-remota-nova",
+    }
+    assert (info / "lojas_config.json").exists()
+    assert not (backup_dir / "legacy_root_lojas_config.json").exists()
+
+
+def test_apply_recupera_backup_imediato_sem_ressuscitar_integracao_excluida(
+    tmp_path,
+):
+    info = tmp_path / "info"
+    tenant = info / "000002"
+    tenant.mkdir(parents=True)
+
+    integracoes.configure_integracoes_context(
+        pasta_info=str(info),
+        get_tenant_path=lambda _client_id: str(tenant),
+        normalizar_integracao_conectada=lambda _s, data: data,
+    )
+    atual = [{
+        "nome": "Loja atual",
+        "store_id": "store-atual",
+        "integracoes": {"mercadolivre": {"connected": False}},
+    }]
+    backup = [
+        {
+            "nome": "Loja recuperada",
+            "store_id": "store-recuperada",
+            "integracoes": {"bling": {"access_token": "recuperado"}},
+        },
+        {
+            "nome": "Loja excluida",
+            "store_id": "store-excluida",
+            "integracoes": {"bling": {"access_token": "nao-ressuscitar"}},
+        },
+        {
+            "nome": "Loja atual",
+            "store_id": "store-atual",
+            "integracoes": {
+                "mercadolivre": {
+                    "access_token": "credencial-antiga",
+                    "connected": True,
+                },
+            },
+        },
+    ]
+    backup_original = json.dumps(backup).encode("utf-8")
+    (tenant / "lojas_config.json").write_text(json.dumps(atual), encoding="utf-8")
+    (tenant / "lojas_config.json.bak").write_bytes(backup_original)
+    (tenant / "lojas_sync_tombstones.json").write_text(
+        json.dumps([
+            {
+                "key": "store:store-excluida:",
+                "type": "store",
+                "store_id": "store-excluida",
+                "version": 2,
+                "deleted_at": "2026-09-02T12:00:00Z",
+            },
+            {
+                "key": "integration:store-atual:mercadolivre",
+                "type": "integration",
+                "store_id": "store-atual",
+                "service": "mercadolivre",
+                "version": 2,
+                "deleted_at": "2026-09-02T12:00:00Z",
+            },
+        ]),
+        encoding="utf-8",
+    )
+    backup_dir = tmp_path / "backup"
+
+    result = shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+        "000002",
+        [(
+            "lojas_config.json",
+            b'[{"nome":"Remota","store_id":"store-remota","integracoes":{}}]',
+        )],
+        str(tenant),
+        str(backup_dir),
+        strict_oauth_conflicts=True,
+    )
+
+    lojas = json.loads((tenant / "lojas_config.json").read_text(encoding="utf-8"))
+    por_id = {loja["store_id"]: loja for loja in lojas}
+    assert result["stores_count"] == 3
+    assert set(por_id) == {"store-atual", "store-recuperada", "store-remota"}
+    assert por_id["store-recuperada"]["integracoes"]["bling"]["access_token"] == "recuperado"
+    ml_atual = por_id["store-atual"]["integracoes"]["mercadolivre"]
+    assert ml_atual["connected"] is False
+    assert "access_token" not in ml_atual
+    assert (backup_dir / "lojas_config.json.bak").read_bytes() == backup_original
+    backup_final = json.loads(
+        (tenant / "lojas_config.json.bak").read_text(encoding="utf-8")
+    )
+    assert {loja["store_id"] for loja in backup_final} == set(por_id)
+
+    (tenant / "lojas_config.json").write_bytes(b"{invalido")
+    restauradas = integracoes.carregar_lojas("000002")
+    por_id_restaurado = {loja["store_id"]: loja for loja in restauradas}
+    assert set(por_id_restaurado) == set(por_id)
+    assert (
+        por_id_restaurado["store-recuperada"]["integracoes"]["bling"][
+            "access_token"
+        ]
+        == "recuperado"
+    )
+
+
+@pytest.mark.parametrize(
+    "legado",
+    [
+        [{
+            "nome": "Loja sem owner",
+            "integracoes": {"bling": {"access_token": "nao-vazar"}},
+        }],
+        [{
+            "nome": "Loja de outro cliente",
+            "store_id": integracoes._integracoes_store_id(
+                "cliente-a",
+                {"nome": "Loja de outro cliente"},
+            ),
+            "integracoes": {"bling": {"access_token": "nao-vazar"}},
+        }],
+        [
+            {
+                "nome": "Loja atribuida",
+                "store_id": integracoes._integracoes_store_id(
+                    "000002",
+                    {"nome": "Loja atribuida"},
+                ),
+                "integracoes": {},
+            },
+            {
+                "nome": "Loja sem owner",
+                "integracoes": {"bling": {"access_token": "nao-vazar"}},
+            },
+        ],
+    ],
+    ids=["sem-store-id", "outro-cliente", "payload-misto"],
+)
+def test_apply_ignora_recuperacao_global_sem_ownership_comprovado(
+    tmp_path,
+    legado,
+):
+    info = tmp_path / "info"
+    tenant = info / "000002"
+    tenant.mkdir(parents=True)
+
+    integracoes.configure_integracoes_context(
+        pasta_info=str(info),
+        get_tenant_path=lambda _client_id: str(tenant),
+        normalizar_integracao_conectada=lambda _s, data: data,
+    )
+    tenant_original = json.dumps([{
+        "nome": "Loja do tenant",
+        "store_id": "store-tenant",
+        "integracoes": {},
+    }]).encode("utf-8")
+    legacy_original = json.dumps(legado).encode("utf-8")
+    legacy_path = info / "lojas_config.json"
+    tenant_path = tenant / "lojas_config.json"
+    legacy_path.write_bytes(legacy_original)
+    tenant_path.write_bytes(tenant_original)
+
+    result = shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+        "000002",
+        [(
+            "lojas_config.json",
+            b'[{"nome":"Remota","store_id":"remote","integracoes":{}}]',
+        )],
+        str(tenant),
+        str(tmp_path / "backup"),
+        strict_oauth_conflicts=True,
+    )
+
+    assert result["stores_count"] == 2
+    assert legacy_path.read_bytes() == legacy_original
+    persistidas = json.loads(tenant_path.read_text(encoding="utf-8"))
+    assert {loja["store_id"] for loja in persistidas} == {
+        "store-tenant",
+        "remote",
+    }
+
+
+def test_apply_cancela_se_migracao_legada_nao_puder_ser_materializada(
+    tmp_path,
+    monkeypatch,
+):
+    info = tmp_path / "info"
+    info.mkdir()
+    tenant = info / "000002"
+
+    def tenant_path(_client_id):
+        tenant.mkdir(parents=True, exist_ok=True)
+        return str(tenant)
+
+    integracoes.configure_integracoes_context(
+        pasta_info=str(info),
+        get_tenant_path=tenant_path,
+        normalizar_integracao_conectada=lambda _s, data: data,
+    )
+    nome_local = "Loja local protegida"
+    (info / "lojas_config.json").write_text(
+        json.dumps([{
+            "nome": nome_local,
+            "store_id": integracoes._integracoes_store_id(
+                "000002",
+                {"nome": nome_local},
+            ),
+            "integracoes": {},
+        }]),
+        encoding="utf-8",
+    )
+    escritor_real = integracoes._integracoes_escrever_lojas_config_atomico
+
+    def falhar_materializacao(caminho, payload):
+        if str(caminho) == str(tenant / "lojas_config.json"):
+            raise PermissionError("replace")
+        return escritor_real(caminho, payload)
+
+    monkeypatch.setattr(
+        integracoes,
+        "_integracoes_escrever_lojas_config_atomico",
+        falhar_materializacao,
+    )
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+            "000002",
+            [("lojas_config.json", b'[{"nome":"Remota","store_id":"remote","integracoes":{}}]')],
+            str(tenant),
+            str(tmp_path / "backup"),
+            strict_oauth_conflicts=True,
+        )
+
+    assert bloqueado.value.status_code == 500
+    assert (info / "lojas_config.json").exists()
+    assert not (tenant / "lojas_config.json").exists()
+
+
+def test_apply_ignora_global_sem_owner_antes_de_criar_tenant(
+    tmp_path,
+):
+    info = tmp_path / "info"
+    info.mkdir()
+    tenant = info / "000002"
+
+    def tenant_path(_client_id):
+        tenant.mkdir(parents=True, exist_ok=True)
+        return str(tenant)
+
+    integracoes.configure_integracoes_context(
+        pasta_info=str(info),
+        get_tenant_path=tenant_path,
+        normalizar_integracao_conectada=lambda _s, data: data,
+    )
+    legacy_original = json.dumps([{
+        "nome": "Loja de cliente desconhecido",
+        "integracoes": {"mercadolivre": {"access_token": "nao-vazar"}},
+    }]).encode("utf-8")
+    legacy_path = info / "lojas_config.json"
+    legacy_path.write_bytes(legacy_original)
+
+    result = shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+        "000002",
+        [(
+            "lojas_config.json",
+            b'[{"nome":"Remota","store_id":"remote","integracoes":{}}]',
+        )],
+        tenant_path("000002"),
+        str(tmp_path / "backup"),
+        strict_oauth_conflicts=True,
+    )
+
+    assert result["stores_count"] == 1
+    assert legacy_path.read_bytes() == legacy_original
+    persistidas = json.loads(
+        (tenant / "lojas_config.json").read_text(encoding="utf-8")
+    )
+    assert [loja["store_id"] for loja in persistidas] == ["remote"]
+
+
+def test_pull_bloqueia_se_pointer_muda_entre_meta_e_download(monkeypatch):
+    sessao = {"client_id": "000002", "username": "operador"}
+    meta_a = {
+        "id": "bundle-lojas",
+        "snapshot_id": "snapshot-a",
+        "snapshot_hash": "hash-a",
+        "bundle_sha256": "cipher-a",
+    }
+    meta_b = {
+        "id": "bundle-lojas",
+        "snapshot_id": "snapshot-b",
+        "snapshot_hash": "hash-b",
+        "bundle_sha256": "cipher-b",
+    }
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_machine_doc_id",
+        lambda *args: "bundle-lojas",
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_remote_meta_by_id",
+        lambda *_args: dict(meta_a),
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_pull_already_current",
+        lambda *args: False,
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (b"snapshot-b", dict(meta_b)),
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_aplicar_pacote",
+        lambda *args, **kwargs: pytest.fail(
+            "snapshot trocado nao pode ser aplicado"
+        ),
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_state_update",
+        lambda *args, **kwargs: pytest.fail(
+            "snapshot trocado nao pode atualizar estado"
+        ),
+    )
+
+    with pytest.raises(HTTPException) as mudou:
+        shared_sync_machine._shared_sync_machine_pull_scope(
+            sessao,
+            "lojas_integracoes",
+            force=True,
+        )
+
+    assert mudou.value.status_code == 409
+    assert "mudou durante a importacao" in str(mudou.value.detail)
+
+
+def _configure_integracoes_sync_test(tmp_path, client_id="000002"):
+    info = tmp_path / "info"
+    tenant = info / client_id
+    tenant.mkdir(parents=True)
+    integracoes.configure_integracoes_context(
+        pasta_info=str(info),
+        get_tenant_path=lambda _client_id: str(tenant),
+        normalizar_integracao_conectada=lambda _servico, dados: dados,
+    )
+    return info, tenant
+
+
+@pytest.mark.parametrize("tipo", ["store", "integration"])
+def test_apply_backup_legado_sem_store_id_respeita_tombstone(tmp_path, tipo):
+    _info, tenant = _configure_integracoes_sync_test(tmp_path)
+    nome = "Loja antiga"
+    store_id = integracoes._integracoes_store_id("000002", {"nome": nome})
+    atual = [] if tipo == "store" else [{
+        "nome": nome,
+        "store_id": store_id,
+        "integracoes": {},
+    }]
+    backup = [{
+        "nome": nome,
+        "integracoes": {
+            "mercadolivre": {
+                "access_token": "nao-voltar",
+                "refresh_token": "nao-voltar-refresh",
+            },
+        },
+    }]
+    tombstone = {
+        "key": f"{tipo}:{store_id}:{'mercadolivre' if tipo == 'integration' else ''}",
+        "type": tipo,
+        "store_id": store_id,
+        "version": 3,
+        "deleted_at": "2026-09-02T12:00:00Z",
+    }
+    if tipo == "integration":
+        tombstone["service"] = "mercadolivre"
+    (tenant / "lojas_config.json").write_text(json.dumps(atual), encoding="utf-8")
+    (tenant / "lojas_config.json.bak").write_text(json.dumps(backup), encoding="utf-8")
+    (tenant / "lojas_sync_tombstones.json").write_text(
+        json.dumps([tombstone]),
+        encoding="utf-8",
+    )
+
+    main_antes = (tenant / "lojas_config.json").read_bytes()
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+            "000002",
+            [("lojas_config.json", b"[]")],
+            str(tenant),
+            str(tmp_path / "backup-operacao"),
+            strict_oauth_conflicts=True,
+        )
+
+    assert bloqueado.value.status_code == 409
+    assert (tenant / "lojas_config.json").read_bytes() == main_antes
+
+
+def test_apply_backup_legado_com_nome_ambiguo_falha_sem_alterar_bytes(tmp_path):
+    _info, tenant = _configure_integracoes_sync_test(tmp_path)
+    nome_atual = "Loja A"
+    main = json.dumps([{
+        "nome": nome_atual,
+        "store_id": integracoes._integracoes_store_id(
+            "000002",
+            {"nome": nome_atual},
+        ),
+        "integracoes": {"bling": {"access_token": "local"}},
+    }]).encode("utf-8")
+    backup = json.dumps([{
+        "nome": "Loja Á",
+        "integracoes": {"mercadolivre": {"access_token": "ambiguo"}},
+    }]).encode("utf-8")
+    (tenant / "lojas_config.json").write_bytes(main)
+    (tenant / "lojas_config.json.bak").write_bytes(backup)
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+            "000002",
+            [("lojas_config.json", main)],
+            str(tenant),
+            str(tmp_path / "backup-operacao"),
+            strict_oauth_conflicts=True,
+        )
+
+    assert bloqueado.value.status_code == 409
+    assert (tenant / "lojas_config.json").read_bytes() == main
+    assert (tenant / "lojas_config.json.bak").read_bytes() == backup
+    assert (tmp_path / "backup-operacao" / "lojas_config.json.bak").read_bytes() == backup
+
+
+@pytest.mark.parametrize("tipo", ["store", "integration"])
+def test_apply_snapshot_v1_sem_store_id_respeita_tombstone_local(tmp_path, tipo):
+    _info, tenant = _configure_integracoes_sync_test(tmp_path)
+    nome = "Loja v1"
+    store_id = integracoes._integracoes_store_id("000002", {"nome": nome})
+    atual = [] if tipo == "store" else [{
+        "nome": nome,
+        "store_id": store_id,
+        "integracoes": {},
+    }]
+    remoto = [{
+        "nome": nome,
+        "integracoes": {"mercadolivre": {"access_token": "v1-antigo"}},
+    }]
+    tombstone = {
+        "key": f"{tipo}:{store_id}:{'mercadolivre' if tipo == 'integration' else ''}",
+        "type": tipo,
+        "store_id": store_id,
+        "version": 4,
+        "deleted_at": "2026-09-02T12:00:00Z",
+    }
+    if tipo == "integration":
+        tombstone["service"] = "mercadolivre"
+    (tenant / "lojas_config.json").write_text(json.dumps(atual), encoding="utf-8")
+    (tenant / "lojas_sync_tombstones.json").write_text(
+        json.dumps([tombstone]),
+        encoding="utf-8",
+    )
+
+    main_antes = (tenant / "lojas_config.json").read_bytes()
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+            "000002",
+            [("lojas_config.json", json.dumps(remoto).encode("utf-8"))],
+            str(tenant),
+            str(tmp_path / "backup-operacao"),
+            strict_oauth_conflicts=True,
+        )
+
+    assert bloqueado.value.status_code == 409
+    assert (tenant / "lojas_config.json").read_bytes() == main_antes
+
+
+@pytest.mark.parametrize("tipo", ["store", "integration"])
+def test_apply_tombstone_remoto_filtra_loja_do_mesmo_bundle(tmp_path, tipo):
+    _info, tenant = _configure_integracoes_sync_test(tmp_path)
+    nome = "Loja remota apagada"
+    store_id = "store-remota"
+    remoto = [{
+        "nome": nome,
+        "store_id": store_id,
+        "integracoes": {"mercadolivre": {"access_token": "stale"}},
+    }]
+    tombstone = {
+        "key": f"{tipo}:{store_id}:{'mercadolivre' if tipo == 'integration' else ''}",
+        "type": tipo,
+        "store_id": store_id,
+        "version": 5,
+        "deleted_at": "2026-09-02T12:00:00Z",
+    }
+    if tipo == "integration":
+        tombstone["service"] = "mercadolivre"
+    (tenant / "lojas_config.json").write_text("[]", encoding="utf-8")
+
+    shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+        "000002",
+        [
+            ("lojas_config.json", json.dumps(remoto).encode("utf-8")),
+            ("lojas_sync_tombstones.json", json.dumps([tombstone]).encode("utf-8")),
+        ],
+        str(tenant),
+        str(tmp_path / "backup-operacao"),
+        strict_oauth_conflicts=True,
+    )
+
+    lojas = json.loads((tenant / "lojas_config.json").read_text(encoding="utf-8"))
+    if tipo == "store":
+        assert lojas == []
+    else:
+        assert len(lojas) == 1
+        assert lojas[0]["integracoes"] == {}
+
+
+def test_apply_tombstone_remoto_conflitante_preserva_conta_local(tmp_path):
+    _info, tenant = _configure_integracoes_sync_test(tmp_path)
+    local = [{
+        "nome": "Loja local",
+        "store_id": "store-local",
+        "integracoes": {
+            "mercadolivre": {
+                "app_id": "app",
+                "client_secret": "secret",
+                "access_token": "local-novo",
+                "refresh_token": "local-refresh",
+                "connected": True,
+            },
+        },
+    }]
+    main = json.dumps(local).encode("utf-8")
+    (tenant / "lojas_config.json").write_bytes(main)
+    tombstone = [{
+        "key": "integration:store-local:mercadolivre",
+        "type": "integration",
+        "store_id": "store-local",
+        "service": "mercadolivre",
+        "version": 99,
+        "deleted_at": "2026-09-02T12:00:00Z",
+    }]
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+            "000002",
+            [
+                ("lojas_config.json", b"[]"),
+                ("lojas_sync_tombstones.json", json.dumps(tombstone).encode("utf-8")),
+            ],
+            str(tenant),
+            str(tmp_path / "backup-operacao"),
+            strict_oauth_conflicts=True,
+        )
+
+    assert bloqueado.value.status_code == 409
+    assert (tenant / "lojas_config.json").read_bytes() == main
+    assert not (tenant / "lojas_sync_tombstones.json").exists()
+
+
+def test_bundle_bloqueia_main_conectado_com_tombstone_ativo(tmp_path, monkeypatch):
+    _info, tenant = _configure_integracoes_sync_test(tmp_path)
+    lojas = [{
+        "nome": "Loja contraditoria",
+        "store_id": "store-x",
+        "integracoes": {"mercadolivre": {"access_token": "preservar", "connected": True}},
+    }]
+    main = json.dumps(lojas).encode("utf-8")
+    tombstones = json.dumps([{
+        "key": "integration:store-x:mercadolivre",
+        "type": "integration",
+        "store_id": "store-x",
+        "service": "mercadolivre",
+        "version": 2,
+        "deleted_at": "2026-09-02T12:00:00Z",
+    }]).encode("utf-8")
+    (tenant / "lojas_config.json").write_bytes(main)
+    (tenant / "lojas_sync_tombstones.json").write_bytes(tombstones)
+
+    def coletar(*_args, **_kwargs):
+        return [
+            _entry("lojas_config.json", (tenant / "lojas_config.json").read_bytes()),
+            _entry("lojas_sync_tombstones.json", (tenant / "lojas_sync_tombstones.json").read_bytes()),
+        ], []
+
+    monkeypatch.setattr(shared_sync_bundle, "_shared_sync_coletar_arquivos", coletar)
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_bundle._shared_sync_montar_pacote(
+            "000002",
+            "lojas_integracoes",
+            "operador",
+        )
+    assert bloqueado.value.status_code == 409
+    assert (tenant / "lojas_config.json").read_bytes() == main
+    assert (tenant / "lojas_sync_tombstones.json").read_bytes() == tombstones
+
+
+def test_bundle_ignora_root_coexistente_de_tenant_nao_default(tmp_path, monkeypatch):
+    info, tenant = _configure_integracoes_sync_test(tmp_path)
+    nome = "Loja coexistente"
+    store_id = integracoes._integracoes_store_id("000002", {"nome": nome})
+    (tenant / "lojas_config.json").write_text("[]", encoding="utf-8")
+    (info / "lojas_config.json").write_text(
+        json.dumps([{
+            "nome": nome,
+            "store_id": store_id,
+            "integracoes": {"bling": {"access_token": "root-only"}},
+        }]),
+        encoding="utf-8",
+    )
+
+    def coletar(*_args, **_kwargs):
+        data = (tenant / "lojas_config.json").read_bytes()
+        return [_entry("lojas_config.json", data)], []
+
+    monkeypatch.setattr(shared_sync_bundle, "_shared_sync_coletar_arquivos", coletar)
+    bundle, _manifest, _warnings = shared_sync_bundle._shared_sync_montar_pacote(
+        "000002",
+        "lojas_integracoes",
+        "operador",
+    )
+
+    with zipfile.ZipFile(io.BytesIO(bundle), "r") as arquivo:
+        lojas = json.loads(arquivo.read("files/lojas_config.json"))
+    assert lojas == []
+    assert (info / "lojas_config.json").exists()
+
+
+def test_apply_rejeita_tombstone_remoto_malformado_sem_escrever(tmp_path):
+    _info, tenant = _configure_integracoes_sync_test(tmp_path)
+    main = b"[]"
+    (tenant / "lojas_config.json").write_bytes(main)
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+            "000002",
+            [
+                ("lojas_config.json", b"[]"),
+                ("lojas_sync_tombstones.json", b"[42]"),
+            ],
+            str(tenant),
+            str(tmp_path / "backup-operacao"),
+            strict_oauth_conflicts=True,
+        )
+    assert bloqueado.value.status_code == 502
+    assert (tenant / "lojas_config.json").read_bytes() == main
+    assert not (tenant / "lojas_sync_tombstones.json").exists()
+
+
+def test_merge_legacy_base_com_aliases_equivalentes_aceita_refresh_remoto(tmp_path):
+    target = tmp_path / "integracoes.json"
+    base = {"Loja": {"bling": {
+        "id": "app",
+        "secret": "secret",
+        "access_token": "old",
+        "refresh_token": "refresh-old",
+    }}}
+    local = {"Loja": {"bling": {
+        "client_id": "app",
+        "client_secret": "secret",
+        "token": "old",
+        "refresh_token": "refresh-old",
+    }}}
+    remoto = {"Loja": {"bling": {
+        "id": "app",
+        "secret": "secret",
+        "access_token": "new",
+        "refresh_token": "refresh-new",
+    }}}
+    target.write_text(json.dumps(local), encoding="utf-8")
+
+    merged = json.loads(
+        shared_sync_merge_integracoes._shared_sync_merge_integracoes_legacy_bytes(
+            str(target),
+            json.dumps(remoto).encode("utf-8"),
+            base_bytes=json.dumps(base).encode("utf-8"),
+            strict_oauth_conflicts=True,
+        )
+    )
+    assert merged["Loja"]["bling"]["access_token"] == "new"
+    assert merged["Loja"]["bling"]["refresh_token"] == "refresh-new"
+
+
+@pytest.mark.parametrize("local_restaurado", [False, True])
+def test_merge_tombstones_bloqueia_conflito_delete_restore(
+    tmp_path,
+    local_restaurado,
+):
+    target = tmp_path / "lojas_sync_tombstones.json"
+    base = {
+        "key": "store:store-x:",
+        "type": "store",
+        "store_id": "store-x",
+        "version": 2,
+    }
+    local = dict(base)
+    remoto = dict(base, version=100)
+    if local_restaurado:
+        local["restored_at"] = "2026-09-02T10:00:00Z"
+        remoto["deleted_at"] = "2026-09-02T11:00:00Z"
+    else:
+        local["deleted_at"] = "2026-09-02T11:00:00Z"
+        remoto["restored_at"] = "2026-09-02T10:00:00Z"
+    target.write_text(json.dumps([local]), encoding="utf-8")
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_merge_integracoes._shared_sync_merge_tombstones_integracoes_bytes(
+            str(target),
+            json.dumps([remoto]).encode("utf-8"),
+        )
+    assert bloqueado.value.status_code == 409
+    assert not shared_sync_merge_integracoes._shared_sync_tombstones_preservados(
+        [local],
+        [remoto],
+    )
+
+
+def test_merge_tombstone_aceita_recriacao_com_base_causal(tmp_path):
+    target = tmp_path / "lojas_sync_tombstones.json"
+    excluido = {
+        "key": "store:store-x:",
+        "type": "store",
+        "store_id": "store-x",
+        "version": 1,
+        "deleted_at": "2026-09-02T10:00:00Z",
+    }
+    restaurado = {
+        "key": "store:store-x:",
+        "type": "store",
+        "store_id": "store-x",
+        "version": 2,
+        "restored_at": "2026-09-02T11:00:00Z",
+    }
+    target.write_text(json.dumps([excluido]), encoding="utf-8")
+
+    merged = json.loads(
+        shared_sync_merge_integracoes._shared_sync_merge_tombstones_integracoes_bytes(
+            str(target),
+            json.dumps([restaurado]).encode("utf-8"),
+            base_bytes=json.dumps([excluido]).encode("utf-8"),
+        )
+    )
+
+    assert merged == [restaurado]
+    assert shared_sync_merge_integracoes._shared_sync_tombstones_preservados(
+        [restaurado],
+        [excluido],
+        permitir_atualizacao=True,
+    )
+
+
+def test_merge_rejeita_aliases_oauth_conflitantes_no_snapshot_canonico(tmp_path):
+    remoto = [{
+        "nome": "Loja conflito",
+        "store_id": "store-x",
+        "integracoes": {
+            "mercadolivre": {
+                "app_id": "app-a",
+                "client_id": "app-b",
+                "client_secret": "secret",
+            },
+        },
+    }]
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_merge_integracoes._shared_sync_merge_lojas_integracoes_bytes(
+            str(tmp_path / "lojas_config.json"),
+            json.dumps(remoto).encode("utf-8"),
+            client_id="000002",
+            strict_oauth_conflicts=True,
+        )
+    assert bloqueado.value.status_code == 502
+
+
+def test_merge_rejeita_aliases_oauth_conflitantes_no_integracoes_legado(tmp_path):
+    remoto = {
+        "Loja conflito": {
+            "bling": {
+                "access_token": "token-a",
+                "token": "token-b",
+            },
+        },
+    }
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_merge_integracoes._shared_sync_merge_integracoes_legacy_bytes(
+            str(tmp_path / "integracoes.json"),
+            json.dumps(remoto).encode("utf-8"),
+            strict_oauth_conflicts=True,
+        )
+    assert bloqueado.value.status_code == 502
+
+
+def test_apply_preserva_backup_oauth_mais_forte_em_pull_nao_relacionado(tmp_path):
+    _info, tenant = _configure_integracoes_sync_test(tmp_path)
+    loja_a = {
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {
+            "mercadolivre": {
+                "app_id": "app",
+                "client_secret": "secret",
+                "connected": False,
+            },
+        },
+    }
+    backup = [{
+        **loja_a,
+        "integracoes": {
+            "mercadolivre": {
+                "app_id": "app",
+                "client_secret": "secret",
+                "access_token": "ultimo-access",
+                "refresh_token": "ultimo-refresh",
+                "user_id": "seller-ultimo",
+                "connected": True,
+            },
+        },
+    }]
+    backup_bytes = json.dumps(backup).encode("utf-8")
+    (tenant / "lojas_config.json").write_text(json.dumps([loja_a]), encoding="utf-8")
+    (tenant / "lojas_config.json.bak").write_bytes(backup_bytes)
+    remoto = [{
+        "nome": "Loja C",
+        "store_id": "store-c",
+        "integracoes": {},
+    }]
+
+    shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+        "000002",
+        [("lojas_config.json", json.dumps(remoto).encode("utf-8"))],
+        str(tenant),
+        str(tmp_path / "backup-operacao"),
+        strict_oauth_conflicts=True,
+    )
+
+    backup_final = json.loads(
+        (tenant / "lojas_config.json.bak").read_text(encoding="utf-8")
+    )
+    backup_por_id = {loja["store_id"]: loja for loja in backup_final}
+    assert set(backup_por_id) == {"store-a", "store-c"}
+    assert (
+        backup_por_id["store-a"]["integracoes"]["mercadolivre"][
+            "access_token"
+        ]
+        == "ultimo-access"
+    )
+    assert (
+        backup_por_id["store-a"]["integracoes"]["mercadolivre"]["user_id"]
+        == "seller-ultimo"
+    )
+    main = json.loads((tenant / "lojas_config.json").read_text(encoding="utf-8"))
+    por_id = {loja["store_id"]: loja for loja in main}
+    assert set(por_id) == {"store-a", "store-c"}
+    assert "access_token" not in por_id["store-a"]["integracoes"]["mercadolivre"]
+
+
+@pytest.mark.parametrize("tipo", ["store", "integration"])
+def test_apply_exclusao_remota_com_base_causal_converge(tmp_path, tipo):
+    _info, tenant = _configure_integracoes_sync_test(tmp_path)
+    base = [{
+        "nome": "Loja causal",
+        "store_id": "store-causal",
+        "integracoes": {
+            "mercadolivre": {
+                "app_id": "app",
+                "client_secret": "secret",
+                "access_token": "access",
+                "refresh_token": "refresh",
+                "connected": True,
+            },
+        },
+    }]
+    local = json.loads(json.dumps(base))
+    local[0]["_sync_version"] = 8
+    local[0]["_sync_updated_at"] = "2026-09-02T13:00:00Z"
+    local[0]["integracoes"]["mercadolivre"].update({
+        "status": "conectado",
+        "motivo": "",
+        "oauth_invalid": False,
+        "shared_without_oauth_tokens": False,
+        "_sync_version": 8,
+        "_sync_updated_at": "2026-09-02T13:00:00Z",
+    })
+    (tenant / "lojas_config.json").write_text(json.dumps(local), encoding="utf-8")
+    tombstone = {
+        "key": f"{tipo}:store-causal:{'mercadolivre' if tipo == 'integration' else ''}",
+        "type": tipo,
+        "store_id": "store-causal",
+        "version": 2,
+        "deleted_at": "2026-09-02T12:00:00Z",
+    }
+    if tipo == "integration":
+        tombstone["service"] = "mercadolivre"
+
+    shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+        "000002",
+        [
+            ("lojas_config.json", b"[]"),
+            ("lojas_sync_tombstones.json", json.dumps([tombstone]).encode("utf-8")),
+        ],
+        str(tenant),
+        str(tmp_path / "backup-operacao"),
+        base_lojas_bytes=json.dumps(base).encode("utf-8"),
+        base_tombstones_bytes=b"[]",
+        strict_oauth_conflicts=True,
+    )
+
+    main = json.loads((tenant / "lojas_config.json").read_text(encoding="utf-8"))
+    if tipo == "store":
+        assert main == []
+    else:
+        assert len(main) == 1
+        assert main[0]["integracoes"] == {}
+
+
+def test_bundle_bloqueia_tombstone_omitido_ou_removido_durante_coleta(
+    tmp_path,
+    monkeypatch,
+):
+    _info, tenant = _configure_integracoes_sync_test(tmp_path)
+    (tenant / "lojas_config.json").write_text("[]", encoding="utf-8")
+    tombstone_path = tenant / "lojas_sync_tombstones.json"
+    tombstone_path.write_text(
+        json.dumps([{
+            "key": "store:apagada:",
+            "type": "store",
+            "store_id": "apagada",
+            "service": "",
+            "version": 2,
+            "deleted_at": "2026-09-02T12:00:00Z",
+        }]),
+        encoding="utf-8",
+    )
+
+    def coletar(*_args, **_kwargs):
+        tombstone_path.unlink()
+        return [
+            _entry(
+                "lojas_config.json",
+                (tenant / "lojas_config.json").read_bytes(),
+            ),
+        ], []
+
+    monkeypatch.setattr(shared_sync_bundle, "_shared_sync_coletar_arquivos", coletar)
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_bundle._shared_sync_montar_pacote(
+            "000002",
+            "lojas_integracoes",
+            "operador",
+        )
+    assert bloqueado.value.status_code == 409
+
+
+def test_apply_rejeita_tombstone_com_chave_e_identidade_contraditorias(
+    tmp_path,
+):
+    _info, tenant = _configure_integracoes_sync_test(tmp_path)
+    main = b"[]"
+    (tenant / "lojas_config.json").write_bytes(main)
+    remoto = [{
+        "key": "store:outra:",
+        "type": "store",
+        "store_id": "store-real",
+        "service": "",
+        "version": 2,
+        "deleted_at": "2026-09-02T12:00:00Z",
+    }]
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+            "000002",
+            [
+                ("lojas_config.json", b"[]"),
+                (
+                    "lojas_sync_tombstones.json",
+                    json.dumps(remoto).encode("utf-8"),
+                ),
+            ],
+            str(tenant),
+            str(tmp_path / "backup-operacao"),
+            strict_oauth_conflicts=True,
+        )
+
+    assert bloqueado.value.status_code == 502
+    assert (tenant / "lojas_config.json").read_bytes() == main
+    assert not (tenant / "lojas_sync_tombstones.json").exists()
+
+
+@pytest.mark.parametrize("defeito", ["version", "timestamp"])
+def test_apply_rejeita_tombstone_sem_metadados_causais(
+    tmp_path,
+    defeito,
+):
+    _info, tenant = _configure_integracoes_sync_test(tmp_path)
+    main = b"[]"
+    (tenant / "lojas_config.json").write_bytes(main)
+    remoto = {
+        "key": "store:store-remota:",
+        "type": "store",
+        "store_id": "store-remota",
+        "service": "",
+        "version": 2,
+        "deleted_at": "2026-09-02T12:00:00Z",
+    }
+    if defeito == "version":
+        remoto["version"] = "2"
+    else:
+        remoto.pop("deleted_at")
+
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+            "000002",
+            [
+                ("lojas_config.json", b"[]"),
+                (
+                    "lojas_sync_tombstones.json",
+                    json.dumps([remoto]).encode("utf-8"),
+                ),
+            ],
+            str(tenant),
+            str(tmp_path / "backup-operacao"),
+            strict_oauth_conflicts=True,
+        )
+
+    assert bloqueado.value.status_code == 502
+    assert (tenant / "lojas_config.json").read_bytes() == main
+    assert not (tenant / "lojas_sync_tombstones.json").exists()
+
+
+def test_recriar_loja_nao_ressuscita_integracoes_antigas_do_snapshot(tmp_path):
+    _info, tenant = _configure_integracoes_sync_test(tmp_path)
+    store_id = integracoes._integracoes_store_id(
+        "000002",
+        {"nome": "Loja recriada"},
+    )
+    original = [{
+        "nome": "Loja recriada",
+        "store_id": store_id,
+        "integracoes": {
+            "mercadolivre": {
+                "app_id": "app",
+                "client_secret": "secret",
+                "access_token": "access-antigo",
+                "refresh_token": "refresh-antigo",
+                "user_id": "seller-antigo",
+                "connected": True,
+            },
+            "bling": {"api_key": "bling-antigo", "connected": True},
+            "mercadoturbo": {"token": "turbo-antigo", "connected": True},
+        },
+    }]
+    integracoes.salvar_lojas("000002", original)
+
+    asyncio.run(
+        integracoes_api.delete_loja(
+            "Loja recriada",
+            store_id=store_id,
+            client_id="000002",
+        )
+    )
+    nova = integracoes.criar_loja("000002", "Loja recriada")
+    tombstones_path = tenant / "lojas_sync_tombstones.json"
+    tombstones = json.loads(tombstones_path.read_text(encoding="utf-8"))
+    por_chave = {item["key"]: item for item in tombstones}
+    assert por_chave[f"store:{store_id}:"]["deleted_at"]
+    assert not por_chave[f"store:{store_id}:"].get("restored_at")
+
+    merged = shared_sync_merge_integracoes._shared_sync_merge_lojas_integracoes_bytes(
+        str(tenant / "lojas_config.json"),
+        json.dumps(original).encode("utf-8"),
+        local_tombstones_bytes=tombstones_path.read_bytes(),
+        client_id="000002",
+        strict_oauth_conflicts=True,
+    )
+    depois_stale = json.loads(merged)
+    assert set(depois_stale[0]["integracoes"]) == {"criacao"}
+
+    integracoes.atualizar_api_loja(
+        "000002",
+        "Loja recriada",
+        "mercadolivre",
+        {
+            "app_id": "app",
+            "client_secret": "secret",
+            "access_token": "access-novo",
+            "refresh_token": "refresh-novo",
+            "user_id": "seller-novo",
+            "connected": True,
+        },
+        store_id=nova["store_id"],
+        require_existing=True,
+    )
+    remoto_stale = json.loads(json.dumps(original))
+    merged_reconectado = (
+        shared_sync_merge_integracoes._shared_sync_merge_lojas_integracoes_bytes(
+            str(tenant / "lojas_config.json"),
+            json.dumps(remoto_stale).encode("utf-8"),
+            local_tombstones_bytes=tombstones_path.read_bytes(),
+            client_id="000002",
+            strict_oauth_conflicts=True,
+        )
+    )
+    integracoes_finais = json.loads(merged_reconectado)[0]["integracoes"]
+    assert integracoes_finais["mercadolivre"]["user_id"] == "seller-novo"
+    assert "bling" not in integracoes_finais
+    assert "mercadoturbo" not in integracoes_finais
 
 
 def test_versoes_fonte_e_electron_estao_alinhadas_com_a_release():
     root_package = json.loads(open("package.json", "r", encoding="utf-8").read())
     electron_package = json.loads(open("electron_app/package.json", "r", encoding="utf-8").read())
     backend_source = open("backend_api.py", "r", encoding="utf-8-sig").read()
-    assert root_package["version"] == "1.0.122"
+    assert root_package["version"] == "1.0.128-private.1"
     assert electron_package["version"] == root_package["version"]
     # O minimo do backend pode permanecer anterior para nao derrubar clientes
     # durante o rollout em duas ondas.

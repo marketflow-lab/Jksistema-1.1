@@ -8,6 +8,11 @@ from io import BytesIO
 import fitz
 
 from backend.services import etiquetas_marketplaces_context as marketplace_ctx
+from backend.services.etiquetas_marketplaces_common import (
+    extrair_chave_acesso,
+    gerar_imagem_barcode,
+)
+
 
 def _normalizar_id_ml(valor):
     """Normaliza IDs de venda/pack para facilitar o vínculo entre lista e etiqueta."""

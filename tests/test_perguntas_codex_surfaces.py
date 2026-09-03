@@ -12,6 +12,7 @@ from backend.modules.perguntas_pos_venda.ai.contracts import PerguntasIAResposta
 from backend.services import codex_assistant_storage
 from backend.services import perguntas_pos_venda_codex as codex_surface
 from backend.services import perguntas_pos_venda_state as perguntas_state
+from backend.services.favoritos_ranking_ia import _favoritos_normalizar_sem_acentos
 
 
 def _structured_intent(
@@ -158,6 +159,29 @@ def test_provider_policy_is_codex_only_until_two_operational_failures(monkeypatc
     fallback = agent_inputs._perguntas_codex_provider_selection("vertex:gemini-2.5-flash", 2)
     assert fallback["model"].startswith("vertex:")
     assert fallback["fallback_used"] is True
+
+
+def test_legacy_cloud_agent_preserves_nonempty_reply_previously_classified_as_fallback(monkeypatch):
+    reply = "Não foi possível gerar a resposta completa agora."
+    monkeypatch.setattr(
+        perguntas_state,
+        "_favoritos_normalizar_sem_acentos",
+        _favoritos_normalizar_sem_acentos,
+        raising=False,
+    )
+    assert perguntas_state._perguntas_ia_resposta_fallback_invalida(reply) is True
+
+    with patch.object(agent_inputs, "_perguntas_ia_agent_input", return_value={}), patch.object(
+        agent_inputs, "_ia_agent_endpoint_url_configurado", return_value="https://agent.example"
+    ), patch.object(agent_inputs, "_ia_agent_endpoint_headers", return_value={}), patch.object(
+        agent_inputs, "_ia_agent_http_post", return_value={"output": reply}
+    ):
+        response, origin = agent_inputs._perguntas_ia_chamar_agente_cloud(
+            "cliente", "Loja", {}, {}, {}, "prompt"
+        )
+
+    assert response == reply
+    assert origin == "agent:endpoint"
 
 
 def test_only_operational_errors_unlock_provider_fallback():

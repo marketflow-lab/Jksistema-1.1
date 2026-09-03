@@ -10,6 +10,12 @@ def _configurar_tenant(monkeypatch, tmp_path):
     def tenant_path(client_id):
         path = tmp_path / str(client_id)
         path.mkdir(parents=True, exist_ok=True)
+        config = path / "lojas_config.json"
+        if not config.exists():
+            config.write_text(
+                json.dumps([{"store_id": "store-a", "nome": "Loja A"}]),
+                encoding="utf-8",
+            )
         return str(path)
 
     monkeypatch.setattr(estoque_historico, "get_tenant_path", tenant_path)

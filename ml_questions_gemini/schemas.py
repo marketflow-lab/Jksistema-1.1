@@ -100,6 +100,8 @@ class PreviousQA:
 class SellerRules:
     store_name: str = ""
     guidance: str = ""
+    commercial_policy: dict[str, Any] = field(default_factory=dict)
+    behavior_profile: dict[str, Any] = field(default_factory=dict)
     whitelisted_domains: list[str] = field(default_factory=list)
     auto_publish_enabled: bool = False
     min_confidence: float = 0.78

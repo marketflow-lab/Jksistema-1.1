@@ -32,6 +32,9 @@ from .inputs import (
     _perguntas_ia_categoria_classificada,
     _perguntas_ia_compatibilidade_classificada,
     _perguntas_ia_deve_buscar_web_publica,
+    _perguntas_ia_remover_nome_comprador_texto,
+    _perguntas_ia_v2_texto_busca_curto,
+    _perguntas_ia_v2_texto_classificado_busca,
 )
 
 def _ia_agent_perguntas_texto_busca(agent_input: dict) -> str:
@@ -73,6 +76,12 @@ def _ia_agent_perguntas_adicionar_parte_busca(parte: object, destino: list[str],
     vistos.add(chave)
     destino.append(texto[:limite])
 
+
+def _perguntas_ia_v2_texto_livre_busca(agent_input: dict, valor: object, *, max_palavras: int, max_chars: int) -> str:
+    sem_nome = _perguntas_ia_remover_nome_comprador_texto(valor, agent_input)
+    return _perguntas_ia_v2_texto_classificado_busca(sem_nome, max_palavras=max_palavras, max_chars=max_chars)
+
+
 def _ia_agent_perguntas_query_web(agent_input: dict, tool_results: list[dict]) -> str:
     question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
     item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
@@ -86,7 +95,11 @@ def _ia_agent_perguntas_query_web(agent_input: dict, tool_results: list[dict]) -
     codigos = _ia_agent_perguntas_codigos_web(agent_input, tool_results)
     partes: list[str] = []
     vistos: set[str] = set()
-    _ia_agent_perguntas_adicionar_parte_busca(item.get("title"), partes, vistos)
+    _ia_agent_perguntas_adicionar_parte_busca(
+        _perguntas_ia_v2_texto_livre_busca(agent_input, item.get("title"), max_palavras=20, max_chars=180),
+        partes,
+        vistos,
+    )
     _ia_agent_perguntas_adicionar_parte_busca(item.get("seller_sku") or item.get("sku"), partes, vistos)
     for codigo in codigos[:4]:
         _ia_agent_perguntas_adicionar_parte_busca(codigo, partes, vistos)
@@ -114,7 +127,8 @@ def _ia_agent_perguntas_query_web(agent_input: dict, tool_results: list[dict]) -
             primeiro.get("marca"),
             primeiro.get("categoria"),
         ):
-            _ia_agent_perguntas_adicionar_parte_busca(valor, partes, vistos)
+            seguro = _perguntas_ia_v2_texto_livre_busca(agent_input, valor, max_palavras=20, max_chars=180)
+            _ia_agent_perguntas_adicionar_parte_busca(seguro, partes, vistos)
     consulta = " ".join([str(parte or "").strip() for parte in partes if str(parte or "").strip()])
     consulta = re.sub(r"\s+", " ", consulta).strip()
     if not consulta:
@@ -126,18 +140,12 @@ def _ia_agent_perguntas_query_web(agent_input: dict, tool_results: list[dict]) -
         consulta += " compatibilidade especificacao aplicacao"
     return consulta[:500]
 
-def _perguntas_ia_v2_texto_busca_curto(valor: object, max_palavras: int = 14, max_chars: int = 180) -> str:
-    texto = re.sub(r"\bMLB[\s_-]*\d{5,}\b", " ", str(valor or ""), flags=re.IGNORECASE)
-    texto = re.sub(r"\bSKU\s*[:#-]?\s*[A-Z0-9._/-]+\b", " ", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"https?://\S+", " ", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"[^0-9A-Za-zÀ-ÿ+./-]+", " ", texto)
-    palavras = [parte for parte in texto.split() if parte]
-    return " ".join(palavras[:max(1, int(max_palavras or 14))])[:max_chars].strip()
-
 def _perguntas_ia_v2_foco_tecnico_pergunta(agent_input: dict) -> str:
     compatibilidade = _perguntas_ia_compatibilidade_classificada(agent_input)
     focus = str(compatibilidade.get("technical_focus") or "").strip()
-    return _perguntas_ia_v2_texto_busca_curto(focus, max_palavras=16, max_chars=180)
+    focus = _perguntas_ia_remover_nome_comprador_texto(focus, agent_input)
+    focus = re.sub(r"(?<!\w)[A-ZÀ-Ý][a-zà-ÿ]{1,30}(?:\s+(?:(?:da|de|do|das|dos)\s+)?[A-ZÀ-Ý][a-zà-ÿ]{1,30}){1,4}(?!\w)", " ", focus)
+    return _perguntas_ia_v2_texto_classificado_busca(focus, max_palavras=16, max_chars=180)
 
 def _perguntas_ia_v2_perfil_compatibilidade(agent_input: Optional[dict[str, Any]] = None) -> dict[str, str]:
     compatibilidade = _perguntas_ia_compatibilidade_classificada(agent_input)
@@ -154,7 +162,26 @@ def _perguntas_ia_v2_perfil_compatibilidade(agent_input: Optional[dict[str, Any]
 def _perguntas_ia_v2_alvo_compatibilidade(agent_input: dict) -> str:
     compatibilidade = _perguntas_ia_compatibilidade_classificada(agent_input)
     alvo = str(compatibilidade.get("target_item") or "").strip()
-    return _perguntas_ia_v2_texto_busca_curto(alvo, max_palavras=10, max_chars=120) if alvo else ""
+    alvo = _perguntas_ia_remover_nome_comprador_texto(alvo, agent_input)
+    return _perguntas_ia_v2_texto_classificado_busca(alvo, max_palavras=10, max_chars=120) if alvo else ""
+
+
+def _perguntas_ia_v2_alvo_vehicle_identity(agent_input: dict) -> str:
+    """Build a VIN-free vehicle search target from the trusted decoder contract."""
+
+    identity = agent_input.get("vehicle_identity") if isinstance(agent_input.get("vehicle_identity"), dict) else {}
+    if str(identity.get("status") or "") not in {"confirmed", "partial"}:
+        return ""
+    values = (
+        identity.get("make") or identity.get("manufacturer"),
+        identity.get("model"),
+        identity.get("model_year"),
+        identity.get("series"),
+        identity.get("engine_model"),
+        (f"{identity.get('engine_displacement_l')}L" if identity.get("engine_displacement_l") else ""),
+    )
+    target = " ".join(dict.fromkeys(str(value or "").strip() for value in values if str(value or "").strip()))
+    return _perguntas_ia_v2_texto_classificado_busca(target, max_palavras=12, max_chars=150) if target else ""
 
 def _ia_agent_perguntas_valor_codigo_web(valor: object) -> str:
     texto = re.sub(r"\s+", " ", str(valor or "").strip()).strip(" ,;|")
@@ -189,6 +216,38 @@ def _ia_agent_perguntas_adicionar_codigo_web(valor: object, codigos: list[str], 
         codigos.append(parte[:60])
         if len(codigos) >= 10:
             return
+
+
+def _ia_agent_perguntas_codigos_rotulados_web(valor: object) -> list[str]:
+    texto = str(valor or "")
+    rotulo = (
+        r"(?:c[oó]d(?:igo)?s?\b\.?(?:\s+(?:de\s+)?(?:refer[eê]ncias?|originais?|oem|da\s+pe[cç]a|do\s+produto))?"
+        r"|refer[eê]ncias?\b|oem\b|part(?:\s+number)?\b|p/?n\b|ean\b|gtin\b|c[oó]digo\s+de\s+barras\b)"
+    )
+    padrao = rotulo + r"(?!\s+(?:(?:d[aoe]|para)\s+)?(?:pedido|compra|cliente|atendimento|rastreio)\b)\s*[:#=-]?\s*([^;|.!?]{0,240})"
+    sensivel = r"\b(?:telefone|fone|tel\.?|whats(?:app)?|contato|pedido|order|compra|cpf|cnpj|e-?mail)\b"
+    codigos: list[str] = []
+    for match in re.finditer(padrao, texto, flags=re.IGNORECASE):
+        trecho = re.split(sensivel, match.group(1), maxsplit=1, flags=re.IGNORECASE)[0]
+        for codigo in re.findall(r"(?<![A-Z0-9])(?=[A-Z0-9._-]{4,60}(?![A-Z0-9._-]))(?=[A-Z0-9._-]*\d)[A-Z0-9][A-Z0-9._-]{3,59}(?![A-Z0-9])", trecho, flags=re.IGNORECASE):
+            if codigo.isdigit() and len(codigo) < 8:
+                continue
+            if codigo not in codigos:
+                codigos.append(codigo)
+    return codigos
+
+
+def _ia_agent_perguntas_remover_metadados_etiqueta(valor: object) -> str:
+    """Part/Level/Oper/Serial labels identify a module label, not an OEM code."""
+
+    texto = str(valor or "")
+    return re.sub(
+        r"\b(?:part(?!\s+number)|level|oper|serial)\s*[:#=\-]?\s*[A-Z0-9._/\-]{1,60}",
+        " ",
+        texto,
+        flags=re.IGNORECASE,
+    )
+
 
 def _ia_agent_perguntas_match_relevante_web(agent_input: dict, match: dict) -> bool:
     if not isinstance(match, dict):
@@ -291,8 +350,27 @@ def _ia_agent_perguntas_codigos_web(agent_input: dict, tool_results: list[dict])
         for campo in campos:
             _ia_agent_perguntas_adicionar_codigo_web(origem.get(campo), codigos, vistos)
 
+    for attribute in (item.get("attributes") or [])[:60]:
+        if not isinstance(attribute, dict):
+            continue
+        label = _normalizar_texto(
+            f"{attribute.get('id') or ''} {attribute.get('name') or ''}"
+        )
+        if not any(
+            marker in label
+            for marker in (
+                "PART NUMBER", "NUMERO DA PECA", "NUMERO PECA", "CODIGO OEM",
+                "CODIGO ORIGINAL", "REFERENCIA", "REFERENCE", "OEM",
+            )
+        ):
+            continue
+        _ia_agent_perguntas_adicionar_codigo_web(
+            attribute.get("value_name") or attribute.get("value_id") or attribute.get("value"),
+            codigos,
+            vistos,
+        )
+
     textos_para_extrair = [
-        question.get("text"),
         item.get("title"),
         item.get("description"),
         context.get("titulo"),
@@ -322,9 +400,13 @@ def _ia_agent_perguntas_codigos_web(agent_input: dict, tool_results: list[dict])
             ])
 
     for texto in textos_para_extrair:
-        for codigo in _favoritos_busca_externa_extrair_codigos(str(texto or "")):
+        bruto = _ia_agent_perguntas_remover_metadados_etiqueta(texto)
+        for codigo in _ia_agent_perguntas_codigos_rotulados_web(bruto):
             _ia_agent_perguntas_adicionar_codigo_web(codigo, codigos, vistos)
-        for codigo in re.findall(r"\b\d{8,14}\b", str(texto or "")):
+        seguro = _perguntas_ia_v2_texto_classificado_busca(bruto, max_palavras=300, max_chars=4000)
+        for codigo in _favoritos_busca_externa_extrair_codigos(seguro):
+            if _ia_agent_perguntas_codigo_norm_web(codigo).isdigit():
+                continue
             _ia_agent_perguntas_adicionar_codigo_web(codigo, codigos, vistos)
         if len(codigos) >= 10:
             break
@@ -388,6 +470,141 @@ def _perguntas_ia_v2_interface_busca(agent_input: dict, tool_results: Optional[l
             return _perguntas_ia_v2_texto_busca_curto(match.group(0), max_palavras=12, max_chars=120)
     return ""
 
+
+def _ia_agent_perguntas_plan_query_values(value: object) -> list[object]:
+    if isinstance(value, list):
+        return list(value)
+    if not isinstance(value, dict):
+        return []
+    values: list[object] = []
+    for field in ("queries", "primary_queries", "research_queries"):
+        candidates = value.get(field)
+        if isinstance(candidates, list):
+            values.extend(candidates)
+    for subquestion in (value.get("subquestions") or [])[:12]:
+        if not isinstance(subquestion, dict):
+            continue
+        for field in ("queries", "search_queries", "research_queries"):
+            candidates = subquestion.get(field)
+            if isinstance(candidates, list):
+                values.extend(candidates)
+    return values
+
+
+def _ia_agent_perguntas_project_planned_queries(
+    agent_input: dict,
+    values: object,
+    *,
+    phase: str,
+    default_type: str,
+) -> list[dict[str, str]]:
+    """Project planner output into public queries without losing technical predicates."""
+
+    projected: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for value in _ia_agent_perguntas_plan_query_values(values)[:24]:
+        raw = value if isinstance(value, dict) else {"query": value}
+        query = _perguntas_ia_v2_texto_classificado_busca(
+            _perguntas_ia_remover_nome_comprador_texto(
+                raw.get("query") or raw.get("text") or raw.get("consulta"),
+                agent_input,
+            ),
+            max_palavras=36,
+            max_chars=260,
+        )
+        normalized = _normalizar_texto(query)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        query_type = re.sub(
+            r"[^a-z0-9_.-]",
+            "",
+            str(raw.get("type") or raw.get("query_type") or default_type).strip().lower(),
+        )[:80]
+        projected.append({
+            "type": query_type or default_type,
+            "query": query,
+            "research_phase": phase,
+        })
+    return projected[:8]
+
+
+def _ia_agent_perguntas_queries_prioritarias_web(agent_input: dict) -> list[dict[str, str]]:
+    plan = _ia_agent_perguntas_project_planned_queries(
+        agent_input,
+        agent_input.get("technical_question_plan") or agent_input.get("question_plan"),
+        phase="plan",
+        default_type="technical_plan",
+    )
+    gaps = _ia_agent_perguntas_project_planned_queries(
+        agent_input,
+        agent_input.get("technical_gap_queries") or agent_input.get("gap_queries"),
+        phase="gap",
+        default_type="technical_gap",
+    )
+    return [*plan, *gaps]
+
+
+def _ia_agent_perguntas_queries_gap_web(agent_input: dict) -> list[dict[str, str]]:
+    """Return only adjudicator-requested gaps for a second real research call."""
+
+    explicit = _ia_agent_perguntas_project_planned_queries(
+        agent_input,
+        agent_input.get("technical_gap_queries") or agent_input.get("gap_queries"),
+        phase="gap",
+        default_type="technical_gap",
+    )
+    if explicit:
+        return explicit[:4]
+    planned = _ia_agent_perguntas_project_planned_queries(
+        agent_input,
+        agent_input.get("technical_question_plan") or agent_input.get("question_plan"),
+        phase="gap",
+        default_type="technical_gap_replanned",
+    )
+    gaps = [
+        str(value or "").strip()
+        for value in list(agent_input.get("research_gaps") or [])[:8]
+        if str(value or "").strip()
+    ]
+    values: list[dict[str, str]] = []
+    for item in planned[:4]:
+        query = _perguntas_ia_v2_texto_classificado_busca(
+            f"{item.get('query') or ''} {' '.join(gaps[:2])} catalogo OEM diagrama explodido manual tecnico",
+            max_palavras=36,
+            max_chars=260,
+        )
+        if query:
+            values.append({
+                "type": "technical_gap_replanned",
+                "query": query,
+                "research_phase": "gap",
+            })
+    return _ia_agent_perguntas_mesclar_queries_web([], values)[:4]
+
+
+def _ia_agent_perguntas_mesclar_queries_web(
+    prioritized: list[dict[str, str]],
+    fallback: list[dict],
+) -> list[dict]:
+    result: list[dict] = []
+    seen: set[str] = set()
+    for raw in [*prioritized, *fallback]:
+        if not isinstance(raw, dict):
+            continue
+        query = str(raw.get("query") or "").strip()[:260]
+        normalized = _normalizar_texto(query)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        phase = str(raw.get("research_phase") or "fallback").strip().lower()
+        result.append({
+            "type": str(raw.get("type") or "web").strip()[:80],
+            "query": query,
+            "research_phase": phase if phase in {"plan", "gap", "fallback", "identity"} else "fallback",
+        })
+    return result[:12]
+
 def _ia_agent_perguntas_queries_identificacao_produto(
     agent_input: dict,
     tool_results: Optional[list[dict]] = None,
@@ -399,7 +616,7 @@ def _ia_agent_perguntas_queries_identificacao_produto(
         or context.get("titulo")
         or _ia_agent_perguntas_slug_link_produto(item.get("permalink") or context.get("permalink") or context.get("link"))
     )
-    base = _perguntas_ia_v2_texto_busca_curto(titulo, max_palavras=9, max_chars=120)
+    base = _perguntas_ia_v2_texto_livre_busca(agent_input, titulo, max_palavras=9, max_chars=120)
     if not base:
         return []
     interface = _perguntas_ia_v2_interface_busca(agent_input, tool_results)
@@ -427,19 +644,61 @@ def _ia_agent_perguntas_queries_identificacao_produto(
         })
     return queries[:2]
 
+def _ia_agent_perguntas_adicionar_queries_retry(
+    agent_input: dict, codigo_tecnico: str, titulo: str, alvo: str,
+    foco_tecnico: str, interface: str, queries: list[dict],
+) -> None:
+    tentativa = max(1, int(agent_input.get("research_attempt") or 1))
+    if tentativa > 1:
+        historico = agent_input.get("research_history") if isinstance(agent_input.get("research_history"), list) else []
+        consultas_anteriores = {
+            _normalizar_texto(item)
+            for tentativa_anterior in historico
+            if isinstance(tentativa_anterior, dict)
+            for item in (tentativa_anterior.get("queries") or [])
+            if str(item or "").strip()
+        }
+        estrategias = (
+            ("official_pdf_retry", "manual servico pdf catalogo OEM"),
+            ("cross_reference_retry", "part number cross reference aplicacao"),
+            ("technical_spec_retry", "datasheet especificacoes tecnicas fabricante"),
+            ("target_service_retry", "service manual especificacao tecnica"),
+        )
+        tipo_retry, sufixo_retry = estrategias[(tentativa - 2) % len(estrategias)]
+        bases_retry = [
+            " ".join(value for value in (codigo_tecnico, titulo) if value),
+            " ".join(value for value in (alvo, foco_tecnico or interface) if value),
+            " ".join(value for value in (codigo_tecnico, alvo) if value),
+        ]
+        for base_retry in bases_retry:
+            consulta_retry = re.sub(r"\s+", " ", f"{base_retry} {sufixo_retry}").strip()[:260]
+            if not consulta_retry or _normalizar_texto(consulta_retry) in consultas_anteriores:
+                continue
+            queries.append({"type": tipo_retry, "query": consulta_retry})
+
+
 def _ia_agent_perguntas_queries_web(agent_input: dict, tool_results: list[dict]) -> list[dict]:
+    prioritized = _ia_agent_perguntas_queries_prioritarias_web(agent_input)
+    if agent_input.get("research_gap_only") is True:
+        return _ia_agent_perguntas_queries_gap_web(agent_input)
     item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
     context = agent_input.get("context") if isinstance(agent_input.get("context"), dict) else {}
-    titulo = _perguntas_ia_v2_texto_busca_curto(
+    titulo = _perguntas_ia_v2_texto_livre_busca(
+        agent_input,
         item.get("title") or context.get("titulo"),
         max_palavras=12,
         max_chars=160,
     )
-    pergunta_compatibilidade = (
-        _perguntas_ia_categoria_classificada(agent_input) == QuestionCategory.COMPATIBILITY.value
-    )
+    pergunta_compatibilidade = _perguntas_ia_categoria_classificada(agent_input) == QuestionCategory.COMPATIBILITY.value
     foco_tecnico = _perguntas_ia_v2_foco_tecnico_pergunta(agent_input)
     alvo = _perguntas_ia_v2_alvo_compatibilidade(agent_input) if pergunta_compatibilidade else ""
+    alvo_decodificado = _perguntas_ia_v2_alvo_vehicle_identity(agent_input) if pergunta_compatibilidade else ""
+    if alvo_decodificado:
+        partes_alvo = [alvo_decodificado]
+        if alvo and _normalizar_texto(alvo) not in _normalizar_texto(alvo_decodificado):
+            partes_alvo.append(alvo)
+        alvo = " ".join(partes_alvo)
+        alvo = _perguntas_ia_v2_texto_classificado_busca(alvo, max_palavras=16, max_chars=190)
     interface = _perguntas_ia_v2_interface_busca(agent_input, tool_results)
     target_type = _perguntas_ia_v2_perfil_compatibilidade(agent_input).get("target_type") or ""
     termos_perfil = {
@@ -463,24 +722,25 @@ def _ia_agent_perguntas_queries_web(agent_input: dict, tool_results: list[dict])
     ]
     if not pergunta_compatibilidade and titulo and foco_tecnico:
         queries: list[dict] = []
-        produto_base = _perguntas_ia_v2_texto_busca_curto(titulo, max_palavras=6, max_chars=100)
-        foco_busca = " ".join(foco_tecnico.split()[:3])
+        produto_base = _perguntas_ia_v2_texto_busca_curto(titulo, max_palavras=12, max_chars=160)
+        foco_busca = _perguntas_ia_v2_texto_classificado_busca(
+            foco_tecnico,
+            max_palavras=20,
+            max_chars=180,
+        )
         for codigo in codigos_tecnicos[:2]:
             queries.append({
                 "type": "product_specification_by_code",
                 "query": f'"{codigo}" {produto_base} {foco_busca}'[:260],
+                "research_phase": "fallback",
             })
         queries.append({
             "type": "product_feature_technical",
             "query": f"{produto_base} {foco_busca}"[:260],
+            "research_phase": "fallback",
         })
-        return queries[:3]
-    codigo_tecnico = next(
-        (
-            codigo for codigo in codigos_tecnicos
-        ),
-        "",
-    )
+        return _ia_agent_perguntas_mesclar_queries_web(prioritized, queries)
+    codigo_tecnico = next(iter(codigos_tecnicos), "")
     queries: list[dict] = []
     if alvo:
         detalhes_alvo = " ".join(
@@ -514,172 +774,14 @@ def _ia_agent_perguntas_queries_web(agent_input: dict, tool_results: list[dict])
             "type": "interface_equivalence",
             "query": f"{alvo} {produto_equivalencia} compatibilidade interface oficial"[:260],
         })
-    tentativa = max(1, int(agent_input.get("research_attempt") or 1))
-    if tentativa > 1:
-        historico = agent_input.get("research_history") if isinstance(agent_input.get("research_history"), list) else []
-        consultas_anteriores = {
-            _normalizar_texto(item)
-            for tentativa_anterior in historico
-            if isinstance(tentativa_anterior, dict)
-            for item in (tentativa_anterior.get("queries") or [])
-            if str(item or "").strip()
-        }
-        estrategias = (
-            ("official_pdf_retry", "manual servico pdf catalogo OEM"),
-            ("cross_reference_retry", "part number cross reference aplicacao"),
-            ("technical_spec_retry", "datasheet especificacoes tecnicas fabricante"),
-            ("target_service_retry", "service manual especificacao tecnica"),
-        )
-        tipo_retry, sufixo_retry = estrategias[(tentativa - 2) % len(estrategias)]
-        bases_retry = [
-            " ".join(value for value in (codigo_tecnico, titulo) if value),
-            " ".join(value for value in (alvo, foco_tecnico or interface) if value),
-            " ".join(value for value in (codigo_tecnico, alvo) if value),
-        ]
-        for base_retry in bases_retry:
-            consulta_retry = re.sub(r"\s+", " ", f"{base_retry} {sufixo_retry}").strip()[:260]
-            if not consulta_retry or _normalizar_texto(consulta_retry) in consultas_anteriores:
-                continue
-            queries.append({"type": tipo_retry, "query": consulta_retry})
-    return queries[:6]
-
-def _ia_agent_perguntas_relaxar_query_web(query: str) -> str:
-    texto = str(query or "")
-    texto = re.sub(r"\bMLB[\s_-]*\d{5,}\b", " ", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"\bSKU[-_/A-Z0-9]{2,}\b", " ", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"\b\d{8,14}\b", " ", texto)
-    texto = re.sub(r"\b[A-Z]{2,8}[-./][A-Z0-9]{3,}\b", " ", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"[\"']+", " ", texto)
-    texto = re.sub(r"\s+", " ", texto).strip()
-    return texto[:500]
-
-def _ia_agent_perguntas_query_ml_publica(query: str) -> str:
-    texto = str(query or "")
-    texto = re.sub(r"\bMLB[\s_-]*\d{5,}\b", " ", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"\bSKU[-_/A-Z0-9]{2,}\b", " ", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"[\"']+", " ", texto)
-    texto = re.sub(
-        r"\b(mercado livre|anuncio|anuncios|descri[cç][aã]o|produto similar|compatibilidade|especificacao|aplicacao)\b",
-        " ",
-        texto,
-        flags=re.IGNORECASE,
+    _ia_agent_perguntas_adicionar_queries_retry(
+        agent_input, codigo_tecnico, titulo, alvo, foco_tecnico, interface, queries,
     )
-    texto = re.sub(r"\s+", " ", texto).strip()
-    return texto[:180]
+    return _ia_agent_perguntas_mesclar_queries_web(prioritized, queries)
 
-def _ia_agent_perguntas_anuncios_publicos_ml(query: str, max_results: int = 4) -> list[dict]:
-    consulta = _ia_agent_perguntas_query_ml_publica(query)
-    if not consulta:
-        return []
-    try:
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/125.0.0.0 Safari/537.36"
-            ),
-            "Accept": "application/json,text/plain,*/*",
-            "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.7",
-            "Origin": "https://www.mercadolivre.com.br",
-            "Referer": "https://www.mercadolivre.com.br/",
-        }
-        resp = requests.get(
-            "https://api.mercadolibre.com/sites/MLB/search",
-            params={"q": consulta, "limit": max(1, min(int(max_results or 4), 6))},
-            headers=headers,
-            timeout=15,
-            verify=requests_tls_verify(),
-        )
-        resp.raise_for_status()
-        payload = resp.json() or {}
-        resultados = []
-        for item in (payload.get("results") or [])[:max_results]:
-            if not isinstance(item, dict):
-                continue
-            item_id = str(item.get("id") or "").strip()
-            descricao = ""
-            if item_id:
-                try:
-                    desc_resp = requests.get(
-                        f"https://api.mercadolibre.com/items/{quote(item_id, safe='')}/description",
-                        headers=headers,
-                        timeout=10,
-                        verify=requests_tls_verify(),
-                    )
-                    if desc_resp.status_code == 200:
-                        desc_data = desc_resp.json() or {}
-                        descricao = str(desc_data.get("plain_text") or desc_data.get("text") or "").strip()
-                except Exception as exc:
-                    logger.warning("[IA AGENT PERGUNTAS] Falha ao consultar descricao publica ML %s: %s", item_id, exc)
-            resultados.append({
-                "id": item_id,
-                "title": str(item.get("title") or "").strip(),
-                "url": str(item.get("permalink") or "").strip(),
-                "price": item.get("price"),
-                "available_quantity": item.get("available_quantity"),
-                "condition": item.get("condition"),
-                "seller": ((item.get("seller") or {}).get("nickname") if isinstance(item.get("seller"), dict) else ""),
-                "description": descricao[:900],
-            })
-        return resultados
-    except Exception as exc:
-        logger.warning("[IA AGENT PERGUNTAS] Falha na busca publica de anuncios ML: %s", exc)
-        return []
-
-def _ia_agent_perguntas_anuncios_ml_autenticado(client_id: str, loja: str, query: str, max_results: int = 4) -> list[dict]:
-    consulta = _ia_agent_perguntas_query_ml_publica(query)
-    if not consulta:
-        return []
-    lojas = marketplace_integrations.connected_stores(client_id, "mercadolivre", loja)
-    if not lojas:
-        return []
-    for nome_loja in lojas[:3]:
-        try:
-            cfg = resolve_runtime_adapter("sources", "mercado_livre_config", _obter_cfg_ml)(client_id, nome_loja)
-            resp, cfg = resolve_runtime_adapter("sources", "mercado_livre_request", _ml_api_request)(
-                client_id,
-                nome_loja,
-                cfg,
-                "GET",
-                "https://api.mercadolibre.com/sites/MLB/search",
-                params={"q": consulta, "limit": max(1, min(int(max_results or 4), 6))},
-                timeout=18,
-            )
-            if resp.status_code != 200:
-                continue
-            payload = resp.json() or {}
-            resultados = []
-            for item in (payload.get("results") or [])[:max_results]:
-                if not isinstance(item, dict):
-                    continue
-                item_id = str(item.get("id") or "").strip()
-                descricao = ""
-                if item_id:
-                    desc_resp, cfg = resolve_runtime_adapter("sources", "mercado_livre_request", _ml_api_request)(
-                        client_id,
-                        nome_loja,
-                        cfg,
-                        "GET",
-                        f"https://api.mercadolibre.com/items/{quote(item_id, safe='')}/description",
-                        timeout=10,
-                    )
-                    if desc_resp.status_code == 200:
-                        desc_data = desc_resp.json() or {}
-                        descricao = str(desc_data.get("plain_text") or desc_data.get("text") or "").strip()
-                resultados.append({
-                    "loja_consulta": nome_loja,
-                    "id": item_id,
-                    "title": str(item.get("title") or "").strip(),
-                    "url": str(item.get("permalink") or "").strip(),
-                    "price": item.get("price"),
-                    "available_quantity": item.get("available_quantity"),
-                    "condition": item.get("condition"),
-                    "seller": ((item.get("seller") or {}).get("nickname") if isinstance(item.get("seller"), dict) else ""),
-                    "description": descricao[:900],
-                })
-            if resultados:
-                return resultados
-        except Exception as exc:
-            logger.warning("[IA AGENT PERGUNTAS] Falha na busca autenticada de anuncios ML (%s): %s", nome_loja, exc)
-            continue
-    return []
+from .marketplace_search import (
+    _ia_agent_perguntas_anuncios_ml_autenticado,
+    _ia_agent_perguntas_anuncios_publicos_ml,
+    _ia_agent_perguntas_query_ml_publica,
+    _ia_agent_perguntas_relaxar_query_web,
+)

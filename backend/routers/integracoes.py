@@ -38,6 +38,12 @@ def create_integracoes_router(config: IntegracoesRouterConfig) -> APIRouter:
     router.add_api_route("/api/integracoes/temp-auth", integracoes_api.save_temp_auth_endpoint, methods=["POST"], name="save_temp_auth_endpoint")
     router.add_api_route("/api/integracoes/bling/start", integracoes_api.start_bling_auth, methods=["POST"], name="start_bling_auth")
     router.add_api_route("/api/integracoes/mercadolivre/start", integracoes_api.start_mercadolivre_auth, methods=["POST"], name="start_mercadolivre_auth")
+    router.add_api_route(
+        "/auth/callback/result",
+        integracoes_api.integracoes_auth_callback_result,
+        methods=["GET"],
+        name="integracoes_auth_callback_result",
+    )
     router.add_api_route("/auth/callback", integracoes_api.integracoes_auth_callback, methods=["GET"], name="integracoes_auth_callback")
     return router
 

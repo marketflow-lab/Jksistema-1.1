@@ -206,6 +206,28 @@ def _ia_agent_perguntas_pede_conector(texto: str) -> bool:
         )
     )
 
+
+def _ia_agent_perguntas_inclui_contato_ou_pagamento_externo(texto: str) -> bool:
+    texto_sem_acentos = _favoritos_normalizar_sem_acentos(texto or "")
+    if re.search(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", texto, flags=re.IGNORECASE):
+        return True
+    if re.search(r"\b(?:whatsapp|telegram)\b", texto_sem_acentos):
+        return True
+    if re.search(
+        r"(?<!\d)(?:\+?55[\s.-]?)?(?:\(\d{2}\)|\d{2}[\s.-])"
+        r"[\s.-]?(?:9\d{4}|\d{4})[\s.-]?\d{4}(?!\d)",
+        texto,
+    ):
+        return True
+    return bool(
+        re.search(r"\b(?:pix|deposito|transferencia bancaria)\b", texto_sem_acentos)
+        and re.search(
+            r"\b(?:pague|pagamento|pagar|chave|envie|transferir|fora do mercado livre)\b",
+            texto_sem_acentos,
+        )
+    )
+
+
 def _ia_agent_perguntas_contexto_validacao(agent_input: dict, resposta: str) -> dict:
     texto = str(resposta or "").strip()
     question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
@@ -247,6 +269,8 @@ def _ia_agent_perguntas_violacoes_politica(contexto: dict) -> list[str]:
     intent = contexto["intent"]
     categoria = contexto["categoria"]
     violacoes: list[str] = []
+    if _ia_agent_perguntas_inclui_contato_ou_pagamento_externo(texto):
+        violacoes.append("incluiu contato ou pagamento externo ao Mercado Livre")
     if intent.get("fluxo") == "pos_venda":
         termos_compat = (
             "serve", "servi", "compativel", "compatibilidade", "aplicacao", "veiculo informado",

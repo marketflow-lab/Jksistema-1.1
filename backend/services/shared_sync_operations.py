@@ -14,6 +14,7 @@ from typing import Optional
 from fastapi import HTTPException
 
 from backend.services.runtime_bridge import bind_runtime_globals
+from backend.services.shared_sync_bundle import _shared_sync_sanitize_transient_oauth_entries
 from backend.services.shared_sync_common import *
 from backend.services.shared_sync_context import configure_shared_sync_context
 
@@ -50,6 +51,7 @@ def _shared_sync_local_fingerprint(sessao: dict, scopes: list[str]) -> tuple[dic
         entries, _warnings = _shared_sync_coletar_arquivos(
             sessao.get("client_id"), scope, username=sessao.get("username"), user_only=True,
         )
+        entries = _shared_sync_sanitize_transient_oauth_entries(scope, entries)
         hashes[scope] = _shared_sync_snapshot_hash(entries)
         files[scope] = [
             {
@@ -67,11 +69,7 @@ def _shared_sync_remote_fingerprint(bundle_ids: dict[str, str]) -> tuple[dict, d
     metas: dict[str, dict] = {}
     for scope, bundle_id in bundle_ids.items():
         meta = _shared_sync_remote_meta_by_id(bundle_id) or {}
-        hashes[scope] = "|".join([
-            str(meta.get("snapshot_id") or meta.get("id") or ""),
-            str(meta.get("snapshot_hash") or ""),
-            str(meta.get("bundle_sha256") or ""),
-        ])
+        hashes[scope] = _shared_sync_remote_fingerprint_from_meta(meta)
         metas[scope] = meta
     return hashes, metas
 
@@ -91,47 +89,74 @@ def _shared_sync_preview_file_counts(source_files: list[dict], target_files: lis
 def _shared_sync_count_sensitive(value) -> tuple[int, int, int]:
     credentials = 0
     disconnects = 0
-    stores = 0
-    if isinstance(value, list):
-        for item in value:
-            child = _shared_sync_count_sensitive(item)
-            credentials += child[0]
-            disconnects += child[1]
-            stores += child[2]
-        return credentials, disconnects, stores
-    if not isinstance(value, dict):
-        return 0, 0, 0
-    if "nome" in value and isinstance(value.get("integracoes"), dict):
-        stores += 1
-    for key, item in value.items():
-        key_norm = str(key or "").strip().lower()
-        if key_norm in _SECRET_KEYS and item not in (None, "", False):
-            credentials += 1
-        if key_norm == "connected" and item is False:
-            disconnects += 1
-        child = _shared_sync_count_sensitive(item)
-        credentials += child[0]
-        disconnects += child[1]
-        stores += child[2]
+    stores = sum(
+        1
+        for item in value
+        if isinstance(item, dict)
+        and (str(item.get("nome") or "").strip() or str(item.get("store_id") or "").strip())
+    ) if isinstance(value, list) else 0
+
+    def visitar(item) -> None:
+        nonlocal credentials, disconnects
+        if isinstance(item, list):
+            for child in item:
+                visitar(child)
+            return
+        if not isinstance(item, dict):
+            return
+        for key, child in item.items():
+            key_norm = str(key or "").strip().lower()
+            if key_norm in _SECRET_KEYS and child not in (None, "", False):
+                credentials += 1
+            if key_norm == "connected" and child is False:
+                disconnects += 1
+            visitar(child)
+
+    visitar(value)
     return credentials, disconnects, stores
 
 
 def _shared_sync_bundle_sensitive_counts(bundle: bytes) -> tuple[int, int, int]:
     try:
         with zipfile.ZipFile(io.BytesIO(bundle), "r") as zf:
-            raw = zf.read("files/lojas_config.json")
-        return _shared_sync_count_sensitive(json.loads(raw.decode("utf-8-sig")))
+            lojas_raw = zf.read("files/lojas_config.json")
+            try:
+                legado_raw = zf.read("files/integracoes.json")
+            except KeyError:
+                legado_raw = b"{}"
+        lojas = _shared_sync_count_sensitive(
+            json.loads(lojas_raw.decode("utf-8-sig"))
+        )
+        legado = _shared_sync_count_sensitive(
+            json.loads(legado_raw.decode("utf-8-sig"))
+        )
+        return lojas[0] + legado[0], lojas[1] + legado[1], lojas[2]
     except Exception:
         return 0, 0, 0
 
 
 def _shared_sync_local_sensitive_counts(sessao: dict) -> tuple[int, int, int]:
     try:
-        path = os.path.join(get_tenant_path(sessao.get("client_id")), "lojas_config.json")
-        with open(path, "r", encoding="utf-8-sig") as handle:
-            return _shared_sync_count_sensitive(json.load(handle))
+        tenant_path = get_tenant_path(sessao.get("client_id"))
     except Exception:
         return 0, 0, 0
+    lojas = (0, 0, 0)
+    legado = (0, 0, 0)
+    try:
+        path = os.path.join(tenant_path, "lojas_config.json")
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8-sig") as handle:
+                lojas = _shared_sync_count_sensitive(json.load(handle))
+    except Exception:
+        lojas = (0, 0, 0)
+    try:
+        legado_path = os.path.join(tenant_path, "integracoes.json")
+        if os.path.exists(legado_path):
+            with open(legado_path, "r", encoding="utf-8-sig") as handle:
+                legado = _shared_sync_count_sensitive(json.load(handle))
+    except Exception:
+        legado = (0, 0, 0)
+    return lojas[0] + legado[0], lojas[1] + legado[1], lojas[2]
 
 
 def _shared_sync_create_preview(
@@ -148,6 +173,7 @@ def _shared_sync_create_preview(
     direction = _shared_sync_operation_direction(direction)
     local_hashes, local_files = _shared_sync_local_fingerprint(sessao, scopes)
     remote_hashes, remote_metas = _shared_sync_remote_fingerprint(bundle_ids)
+    remote_bundle_hashes: dict[str, str] = {}
     totals = {"inclusions": 0, "changes": 0, "deletions": 0, "disconnects": 0, "credentials": 0, "stores": 0}
     per_scope = {}
     for scope in scopes:
@@ -162,8 +188,18 @@ def _shared_sync_create_preview(
             else:
                 meta = remote_metas.get(scope) or {}
                 if meta:
-                    bundle, _ = _shared_sync_obter_bundle_por_id(
-                        bundle_ids[scope], meta, key_context=key_context,
+                    remoto = _shared_sync_obter_bundle_remoto_para_guard(
+                        bundle_ids[scope],
+                        key_context=key_context,
+                    )
+                    if remoto is None:
+                        raise HTTPException(
+                            status_code=404,
+                            detail="Snapshot remoto nao encontrado.",
+                        )
+                    bundle, _ = remoto
+                    remote_bundle_hashes[scope] = _shared_sync_bytes_sha256(
+                        bundle
                     )
                     cred, disc, stores = _shared_sync_bundle_sensitive_counts(bundle)
                 else:
@@ -192,6 +228,15 @@ def _shared_sync_create_preview(
         "machine_id": str(machine_id or ""),
         "local_hashes": local_hashes,
         "remote_hashes": remote_hashes,
+        "remote_bundle_hashes": remote_bundle_hashes,
+        "remote_snapshot_ids": {
+            scope: str(
+                (remote_metas.get(scope) or {}).get("snapshot_id")
+                or (remote_metas.get(scope) or {}).get("id")
+                or ""
+            )
+            for scope in scopes
+        },
         "created_ts": now,
         "expires_ts": now + _OPERATION_TTL_SECONDS,
         "used": False,
@@ -230,23 +275,23 @@ def _shared_sync_require_operation(
     now = int(time.time())
     with _OPERATIONS_LOCK:
         record = dict(_OPERATIONS.get(operation_id) or {})
-    identity_ok = (
-        record.get("kind") == str(kind)
-        and record.get("resource_id") == str(resource_id or "")
-        and record.get("direction") == _shared_sync_operation_direction(direction)
-        and record.get("client_id") == str(sessao.get("client_id") or "")
-        and record.get("username") == str(sessao.get("username") or "")
-        and record.get("scopes") == list(scopes)
-    )
-    if not identity_ok or record.get("used") or int(record.get("expires_ts") or 0) < now:
-        raise HTTPException(status_code=409, detail="Previa invalida ou expirada; confira os dados novamente.")
+        identity_ok = (
+            record.get("kind") == str(kind)
+            and record.get("resource_id") == str(resource_id or "")
+            and record.get("direction") == _shared_sync_operation_direction(direction)
+            and record.get("client_id") == str(sessao.get("client_id") or "")
+            and record.get("username") == str(sessao.get("username") or "")
+            and record.get("scopes") == list(scopes)
+        )
+        if not identity_ok or record.get("used") or int(record.get("expires_ts") or 0) < now:
+            raise HTTPException(status_code=409, detail="Previa invalida ou expirada; confira os dados novamente.")
+        # Reclama a operacao ainda dentro do lock. Uma segunda confirmacao
+        # concorrente nao pode passar pelo mesmo operation_id.
+        _OPERATIONS[operation_id]["used"] = True
     current_local, _ = _shared_sync_local_fingerprint(sessao, scopes)
     current_remote, _ = _shared_sync_remote_fingerprint(bundle_ids)
     if current_local != record.get("local_hashes") or current_remote != record.get("remote_hashes"):
         raise HTTPException(status_code=409, detail="Os dados mudaram depois da previa; confira novamente.")
-    with _OPERATIONS_LOCK:
-        if operation_id in _OPERATIONS:
-            _OPERATIONS[operation_id]["used"] = True
     return record
 
 

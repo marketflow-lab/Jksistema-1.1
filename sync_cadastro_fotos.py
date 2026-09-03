@@ -3,7 +3,6 @@ import io
 import re
 
 import openpyxl
-import pandas as pd
 import requests
 from google.auth.transport.requests import Request
 from google.oauth2.service_account import Credentials
@@ -13,6 +12,8 @@ SPREADSHEET_ID = "1fehfm3TPRfM8PIVqRwGAZQHcSsf3p6vxKTKhM4B1lvM"
 GID = "630209700"
 INFO_DIR = Path("info")
 CREDENTIALS_FILE = INFO_DIR / "credentials.json"
+FOTOS_CONFIG_ARQUIVO = "cadastro_fotos_config.json"
+FOTOS_CONFIG_SCHEMA = "jk.cadastro.fotos.v1"
 
 
 def normalizar_sku(valor):
@@ -76,46 +77,16 @@ def nome_arquivo_foto_sku(sku, ext):
 
 
 def sincronizar_csv(csv_path: Path, imagens_por_sku):
-    dataframe = pd.read_csv(csv_path).fillna("")
-    dataframe.columns = [str(col).strip().lower() for col in dataframe.columns]
-    if "foto" not in dataframe.columns:
-        dataframe["foto"] = ""
-    if "cg_foto" in dataframe.columns:
-        vazias = dataframe["foto"].astype(str).str.strip().eq("")
-        dataframe.loc[vazias, "foto"] = dataframe.loc[vazias, "cg_foto"]
-        dataframe = dataframe.drop(columns=["cg_foto"])
-
-    pasta_fotos = csv_path.parent / "cadastro_fotos"
-    pasta_fotos.mkdir(exist_ok=True)
-
-    alteradas = 0
-    criadas = 0
-    for idx, sku in dataframe["sku"].astype(str).map(normalizar_sku).items():
-        imagem = imagens_por_sku.get(sku)
-        if not imagem:
-            continue
-        image_bytes, image_ext = imagem
-        filename = nome_arquivo_foto_sku(sku, image_ext)
-        destino = pasta_fotos / filename
-        if (not destino.exists()) or destino.stat().st_size != len(image_bytes):
-            destino.write_bytes(image_bytes)
-            criadas += 1
-        relativo = f"cadastro_fotos/{filename}"
-        if str(dataframe.at[idx, "foto"]).strip() != relativo:
-            dataframe.at[idx, "foto"] = relativo
-            alteradas += 1
-
-    dataframe.to_csv(csv_path, index=False)
-    return alteradas, criadas
+    del csv_path, imagens_por_sku
+    raise RuntimeError(
+        "Utilitario global descontinuado: use o Cadastro por loja com store_id."
+    )
 
 
 def main():
-    xlsx_bytes = baixar_planilha_xlsx()
-    imagens_por_sku = extrair_imagens_por_sku(xlsx_bytes)
-    print(f"SKUs com imagem mapeada: {len(imagens_por_sku)}")
-    for csv_path in sorted(INFO_DIR.rglob("cadastro_produtos.csv")):
-        alteradas, criadas = sincronizar_csv(csv_path, imagens_por_sku)
-        print(f"{csv_path.as_posix()} | atualizadas={alteradas} | arquivos_criados={criadas}")
+    raise RuntimeError(
+        "Utilitario global descontinuado: use o Cadastro por loja com store_id."
+    )
 
 
 if __name__ == "__main__":

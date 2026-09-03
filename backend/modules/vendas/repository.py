@@ -280,8 +280,15 @@ def listar_vendas(
                     estado = tokens_loja.get(loja_conta)
                     if estado is None:
                         loja_cfg = buscar_loja(client_id, loja_conta) or {}
+                        store_id = str(loja_cfg.get("store_id") or "").strip()
+                        if not store_id:
+                            raise HTTPException(
+                                status_code=409,
+                                detail="Loja sem store_id persistido.",
+                            )
                         bling_cfg = (loja_cfg.get("integracoes") or {}).get("bling") or {}
                         estado = {
+                            "store_id": store_id,
                             "access_token": bling_cfg.get("access_token"),
                             "refresh_token": bling_cfg.get("refresh_token"),
                             "id": bling_cfg.get("id"),
@@ -295,7 +302,12 @@ def listar_vendas(
                         resolucoes_nf += 1
                         numero_nf, status_nf = _bling_obter_numero_nf(access_token, nota_fiscal_id)
                         if status_nf == 401 and estado.get("refresh_token") and estado.get("id") and estado.get("secret"):
-                            renovado = _bling_renovar_token_loja(client_id, loja_conta, estado)
+                            renovado = _bling_renovar_token_loja(
+                                client_id,
+                                loja_conta,
+                                estado,
+                                store_id=str(estado.get("store_id") or ""),
+                            )
                             estado.update({
                                 "access_token": renovado.get("access_token"),
                                 "refresh_token": renovado.get("refresh_token"),

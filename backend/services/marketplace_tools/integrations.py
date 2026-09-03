@@ -54,6 +54,10 @@ def get_bling_config(client_id: str, nome_loja: str) -> dict:
     cfg["secret"] = cfg.get("secret") or cfg.get("client_secret")
     if not cfg.get("access_token"):
         raise HTTPException(status_code=401, detail="Token Bling ausente. Refaca a autenticacao OAuth.")
+    store_id = str(loja.get("store_id") or "").strip()
+    if not store_id:
+        raise HTTPException(status_code=409, detail="Loja sem store_id persistido.")
+    cfg["_store_id_context"] = store_id
     return cfg
 
 def get_status(client_id: str, loja: Optional[str] = None) -> Optional[dict]:

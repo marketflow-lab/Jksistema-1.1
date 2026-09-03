@@ -268,13 +268,13 @@ def test_whatsapp_ignores_public_draft_without_current_ai_job(monkeypatch):
 
 def test_typed_manual_post_sale_response_still_sends(monkeypatch):
     calls: list[tuple] = []
+    literal = "  Resposta escrita pelo operador.  \n\nAssinatura literal.  "
 
     def send_manual(*args):
         calls.append(args)
         return {"id": "MSG-OUT"}, {"access_token": "fixture"}
 
     monkeypatch.setattr(post_sale_actions, "_obter_cfg_ml", lambda *_args: {"access_token": "fixture"}, raising=False)
-    monkeypatch.setattr(post_sale_actions, "_pos_venda_ia_limpar_resposta", lambda value, _max: str(value).strip(), raising=False)
     monkeypatch.setattr(
         post_sale_actions,
         "_ml_pos_venda_enviar_resposta_ml",
@@ -290,15 +290,16 @@ def test_typed_manual_post_sale_response_still_sends(monkeypatch):
             loja="JK Pecas",
             pack_id="PACK-1",
             buyer_id="BUYER-1",
-            texto="Resposta escrita pelo operador",
+            texto=literal,
             conversa={"pack_id": "PACK-1", "buyer_id": "BUYER-1"},
         ),
         client_id="cliente",
     )
 
     assert result["success"] is True
-    assert result["resposta"] == "Resposta escrita pelo operador"
+    assert result["resposta"] == literal
     assert len(calls) == 1
+    assert calls[0][5] == literal
 
 
 def test_manual_post_sale_route_rejects_legacy_black_jhon_proposal_before_any_call(monkeypatch):

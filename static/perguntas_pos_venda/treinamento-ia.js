@@ -18,9 +18,29 @@ function obterNomeProdutoCadastro(item) {
 function obterFotoProdutoCadastro(item) {
     const foto = String((item || {}).foto || (item || {}).imagem || '').trim();
     if (!foto) return '';
-    if (/^(https?:\/\/|\/api\/|\/img\/)/i.test(foto)) return foto;
-    const nomeArquivo = foto.split(/[\\/]/).pop();
-    return nomeArquivo ? `/api/cadastro/foto-arquivo/${encodeURIComponent(nomeArquivo)}` : '';
+    const helper = globalThis.JKAuthenticatedMedia;
+    if (helper && typeof helper.normalizarUrlFotoCadastro === 'function') {
+        const normalizada = helper.normalizarUrlFotoCadastro(foto);
+        if (normalizada) return normalizada;
+        if (/^(?:cadastro_fotos\/|\/api\/cadastro\/(?:foto-arquivo\/|foto\/))/i.test(foto)) return '';
+    }
+    if (/^(?:https?:)?\/\//i.test(foto) || /^(\/api\/|\/img\/)/i.test(foto)) return foto;
+    return '';
+}
+
+function ehUrlFotoCadastroProtegida(url) {
+    const helper = globalThis.JKAuthenticatedMedia;
+    if (helper && typeof helper.ehUrlProtegidaCadastro === 'function') {
+        return helper.ehUrlProtegidaCadastro(url);
+    }
+    return /^(\/api\/cadastro\/foto-arquivo\/|\/api\/cadastro\/foto\/)/i.test(String(url || '').trim());
+}
+
+function atributoSrcFotoCadastro(url) {
+    const foto = escapeHtml(url);
+    return ehUrlFotoCadastroProtegida(url)
+        ? `data-jk-auth-src="${foto}"`
+        : `src="${foto}"`;
 }
 
 function produtoTreinamentoSelecionado() {
@@ -41,7 +61,7 @@ function renderizarSkuTreinamentoInfo() {
     const sku = formatarSkuExibicao(produto.sku);
     const foto = obterFotoProdutoCadastro(produto);
     const fotoHtml = foto
-        ? `<img src="${escapeHtml(foto)}" alt="${escapeHtml(nome)}" loading="lazy">`
+        ? `<img ${atributoSrcFotoCadastro(foto)} alt="${escapeHtml(nome)}" loading="lazy">`
         : '<span>Sem foto</span>';
     const meta = [
         produto.categoria ? `Categoria ${produto.categoria}` : '',
@@ -212,11 +232,21 @@ function montarSeletorSkusTreinamento() {
 }
 
 async function carregarSkusTreinamentoAI() {
-    if (state.produtosTreinamentoCarregados) return;
+    const lojaEscopo = String(lojaEscopoTreinamento() || '').trim();
+    if (
+        state.produtosTreinamentoCarregados
+        && state.produtosTreinamentoEscopo === lojaEscopo
+    ) return;
     aiTrainingSku.disabled = true;
     aiTrainingSku.innerHTML = '<option value="">Carregando SKUs...</option>';
     try {
-        const response = await fetch('/api/mercadolivre/ia-treinamento/skus', {
+        const params = new URLSearchParams();
+        if (lojaEscopo) {
+            params.set('store_id', lojaEscopo);
+            params.set('loja', nomeLojaEscopoTreinamento());
+        }
+        const url = `/api/mercadolivre/ia-treinamento/skus${params.toString() ? `?${params.toString()}` : ''}`;
+        const response = await fetch(url, {
             headers: obterAuthHeaders(),
             cache: 'no-store'
         });
@@ -225,6 +255,7 @@ async function carregarSkusTreinamentoAI() {
         const produtos = Array.isArray(data.produtos) ? data.produtos : [];
         state.produtosTreinamento = produtos.filter((item) => String((item || {}).sku || '').trim());
         state.produtosTreinamentoCarregados = true;
+        state.produtosTreinamentoEscopo = lojaEscopo;
         montarSeletorSkusTreinamento();
     } catch (error) {
         aiTrainingSku.innerHTML = '<option value="">Erro ao carregar SKUs</option>';
@@ -237,6 +268,32 @@ async function carregarSkusTreinamentoAI() {
 
 function rotuloTipoTreinamento(tipo = state.treinamentoTipo) {
     return tipo === 'pos_venda' ? 'pós-venda' : 'perguntas de anúncio';
+}
+
+function atualizarIndicadorPerfilTreinamento(data = {}) {
+    const indicador = document.getElementById('ai-training-profile-status');
+    if (!indicador) return;
+    const methodVersion = String(data.method_version || indicador.dataset.methodVersion || 'seller-conversion-v1');
+    const profileVersion = Number(data.profile_version || indicador.dataset.profileVersion || 2);
+    const profileActive = data.profile_active !== false;
+    const profileScope = String(data.profile_scope || (lojaEscopoTreinamento() ? 'store' : 'global'));
+    state.treinamentoProfileMetadata = {
+        method_version: methodVersion,
+        profile_version: profileVersion,
+        profile_active: profileActive,
+        profile_scope: profileScope
+    };
+    indicador.dataset.methodVersion = methodVersion;
+    indicador.dataset.profileVersion = String(profileVersion);
+    indicador.dataset.profileScope = profileScope;
+    indicador.dataset.profileActive = profileActive ? 'true' : 'false';
+    const titulo = indicador.querySelector('.training-sku-name');
+    const detalhe = indicador.querySelector('.training-sku-meta');
+    if (titulo) titulo.textContent = `Método RVC v6 ${profileActive ? 'ativo' : 'indisponível'} · perfil de vendedor v${profileVersion}`;
+    if (detalhe) {
+        const escopo = profileScope === 'store' ? 'loja selecionada' : profileScope === 'sku' ? 'SKU selecionado' : 'todas as lojas';
+        detalhe.textContent = `Personalização aplicada ao escopo ${escopo}. A IA esclarece primeiro e só conduz à compra com adequação comprovada; instruções salvas não alteram políticas, pesquisa ou fatos atuais.`;
+    }
 }
 
 function sincronizarOrientacoesTreinamentoAtual() {
@@ -311,7 +368,10 @@ async function carregarTreinamentoAI(forcar = false) {
     montarSeletorEscopoTreinamento();
     const lojaEscopo = lojaEscopoTreinamento();
     const params = new URLSearchParams();
-    if (lojaEscopo) params.set('loja', lojaEscopo);
+    if (lojaEscopo) {
+        params.set('store_id', lojaEscopo);
+        params.set('loja', nomeLojaEscopoTreinamento());
+    }
     const url = `/api/mercadolivre/ia-treinamento${params.toString() ? `?${params.toString()}` : ''}`;
     aiTrainingStatus.textContent = `Carregando orientacoes (${rotuloEscopoTreinamento()})...`;
     try {
@@ -341,6 +401,7 @@ async function carregarTreinamentoAI(forcar = false) {
         aiTrainingContextoLoja.value = state.treinamentoContexto.contexto_loja;
         aiTrainingCompatibilidade.value = state.treinamentoContexto.compatibilidade_autopecas;
         aiTrainingProibicoes.value = state.treinamentoContexto.proibicoes;
+        atualizarIndicadorPerfilTreinamento(data);
         state.treinamentoCarregado = true;
         renderizarNotasSkuTreinamento();
         renderizarTipoTreinamento(false);
@@ -365,7 +426,8 @@ async function salvarTreinamentoAI() {
             },
             body: JSON.stringify({
                 tipo: tipoAtual,
-                loja: lojaEscopo,
+                loja: nomeLojaEscopoTreinamento(),
+                store_id: lojaEscopo,
                 orientacoes: aiTrainingOrientacoes.value || '',
                 contexto_loja: state.treinamentoContexto.contexto_loja || '',
                 compatibilidade_autopecas: state.treinamentoContexto.compatibilidade_autopecas || '',
@@ -390,6 +452,7 @@ async function salvarTreinamentoAI() {
             proibicoes: typeof data.proibicoes === 'string' ? data.proibicoes : (state.treinamentoContexto.proibicoes || ''),
             notas_sku: normalizarNotasTreinamento(data.notas_sku || state.treinamentoContexto.notas_sku)
         };
+        atualizarIndicadorPerfilTreinamento(data);
         renderizarNotasSkuTreinamento();
         renderizarExemplosTreinamento();
         atualizarStatusTreinamentoTipo();
@@ -469,7 +532,8 @@ async function simularTreinamentoAI() {
             body: JSON.stringify({
                 pergunta,
                 tipo: state.treinamentoTipo,
-                loja: lojaEscopoTreinamento(),
+                loja: nomeLojaEscopoTreinamento(),
+                store_id: lojaEscopoTreinamento(),
                 sku: aiTrainingSku.value || '',
                 contexto: aiTrainingContexto.value || ''
             })

@@ -35,18 +35,21 @@ def _configure_runtime_globals(target_globals, runtime_module=None):
 
 import os
 import re
+import tempfile
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterable
 
 import pandas as pd
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 
+from backend.services import integracoes as integracoes_service
 from backend.services.cadastro_common import *
-from backend.services.integracoes import renovar_token_bling_loja
+from backend.services.integracoes import carregar_lojas, renovar_token_bling_loja
 from backend.services.monofasico_rules import avaliar_monofasico
+from backend.services.path_coordination import path_lock_for
 
 SYNC_NCM_JOBS: dict[str, dict] = {}
 
@@ -59,6 +62,53 @@ MONOFASICO_CADASTRO_COLUNAS = (
     "monofasico_motivo",
     "monofasico_verificado_em",
 )
+
+_SYNC_NCM_ESTOQUE_COLUNAS = (
+    "ncm_bling",
+    "cest_bling",
+    *MONOFASICO_CADASTRO_COLUNAS,
+)
+
+_SYNC_NCM_CADASTRO_COLUNAS = (
+    "ncm",
+    "cest",
+    *MONOFASICO_CADASTRO_COLUNAS,
+)
+
+_SYNC_NCM_CONFIG_ALTERADA = (
+    "A configuracao da loja mudou durante a sincronizacao NCM; nenhum dado foi gravado."
+)
+
+
+class _SyncNcmConfiguracaoAlterada(RuntimeError):
+    """Fail-closed signal that never carries credential values."""
+
+
+def _sync_ncm_bling_valor(cfg: dict[str, Any], *chaves: str) -> str:
+    for chave in chaves:
+        valor = cfg.get(chave)
+        if valor is None:
+            continue
+        texto = str(valor).strip()
+        if texto:
+            return texto
+    return ""
+
+
+def _sync_ncm_bling_fingerprint(cfg: Any) -> tuple[str, ...]:
+    """Return an in-memory comparison token without logging credential values."""
+
+    dados = cfg if isinstance(cfg, dict) else {}
+    return (
+        _sync_ncm_bling_valor(dados, "id", "client_id"),
+        _sync_ncm_bling_valor(dados, "secret", "client_secret"),
+        _sync_ncm_bling_valor(dados, "access_token"),
+        _sync_ncm_bling_valor(dados, "refresh_token"),
+        _sync_ncm_bling_valor(dados, "connected"),
+        _sync_ncm_bling_valor(dados, "oauth_invalid"),
+        _sync_ncm_bling_valor(dados, "status"),
+        _sync_ncm_bling_valor(dados, "_sync_version"),
+    )
 
 
 def _classificar_monofasico_cadastro(df_cad: pd.DataFrame) -> tuple[int, dict[str, int]]:
@@ -132,64 +182,684 @@ def _sku_lookup_keys_sync_ncm(sku_val: str) -> tuple[str, str, str]:
     sku_numsoft_compacto = re.sub(r"[^A-Z0-9]", "", sku_numsoft)
     return sku_norm, sku_compacto, sku_numsoft_compacto
 
+
+def _sync_ncm_path_lock(caminho: str) -> threading.RLock:
+    """Compatibility alias for the backend-wide canonical path lock."""
+
+    return path_lock_for(caminho)
+
+
+def _sync_ncm_texto(valor: Any) -> str:
+    if pd.isna(valor):
+        return ""
+    return str(valor)
+
+
+def _sync_ncm_nome_loja_chave(valor: Any) -> str:
+    """Normalize display names without weakening exact store-id identity."""
+
+    return _sync_ncm_texto(valor).strip().casefold()
+
+
+def _sync_ncm_nomes_loja(loja: Any) -> tuple[str, ...]:
+    """Return current and historical display names with stable casefold dedup."""
+
+    if not isinstance(loja, dict):
+        return ()
+    historicos = loja.get("nomes_anteriores")
+    if isinstance(historicos, (list, tuple, set)):
+        candidatos = [loja.get("nome"), *historicos]
+    else:
+        candidatos = [loja.get("nome"), historicos]
+    vistos: set[str] = set()
+    nomes: list[str] = []
+    for candidato in candidatos:
+        nome = _sync_ncm_texto(candidato).strip()
+        chave = _sync_ncm_nome_loja_chave(nome)
+        if not chave or chave in vistos:
+            continue
+        vistos.add(chave)
+        nomes.append(nome)
+    return tuple(nomes)
+
+
+def _sync_ncm_mapa_colunas(df: pd.DataFrame) -> dict[str, Any]:
+    mapa: dict[str, Any] = {}
+    for coluna in df.columns:
+        normalizada = str(coluna or "").strip().lower()
+        if not normalizada or normalizada in mapa:
+            raise RuntimeError("Cabecalho invalido no estoque durante o commit NCM.")
+        mapa[normalizada] = coluna
+    return mapa
+
+
+def _sync_ncm_chave_linha(
+    loja: Any,
+    sku: Any,
+    store_id: Any = None,
+) -> tuple[str, str]:
+    store_id_exato = _sync_ncm_texto(store_id).strip()
+    loja_chave = _sync_ncm_nome_loja_chave(loja)
+    identidade = (
+        f"store_id:{store_id_exato}"
+        if store_id_exato
+        else (f"loja:{loja_chave}" if loja_chave else "")
+    )
+    sku_norm = _sku_lookup_keys_sync_ncm(_sync_ncm_texto(sku))[0]
+    return identidade, sku_norm
+
+
+def _sync_ncm_ler_estoque_commit(caminho: str) -> pd.DataFrame:
+    try:
+        return pd.read_csv(
+            caminho,
+            dtype=str,
+            keep_default_na=False,
+        ).fillna("")
+    except Exception as exc:
+        raise RuntimeError("Nao foi possivel reler o estoque no commit NCM.") from exc
+
+
+def _sync_ncm_salvar_estoque_atomico(df: pd.DataFrame, caminho: str) -> None:
+    destino = os.path.abspath(caminho)
+    pasta = os.path.dirname(destino)
+    temporario = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            prefix=f".{os.path.basename(destino)}.",
+            suffix=".tmp",
+            dir=pasta,
+            delete=False,
+        ) as arquivo:
+            temporario = arquivo.name
+            df.to_csv(arquivo, index=False, lineterminator="\n")
+            arquivo.flush()
+            os.fsync(arquivo.fileno())
+        os.replace(temporario, destino)
+        temporario = ""
+    finally:
+        if temporario:
+            try:
+                os.unlink(temporario)
+            except OSError:
+                pass
+
+
+def _sync_ncm_commit_estoque(
+    caminho: str,
+    base: pd.DataFrame,
+    desejado: pd.DataFrame,
+    loja_alvo: str | None = None,
+    store_id_alvo: str | None = None,
+    permitir_fallback_nome: bool = True,
+    nomes_fallback_alvo: Iterable[Any] | None = None,
+) -> pd.DataFrame:
+    if not base.index.equals(desejado.index):
+        raise RuntimeError("O estoque mudou de estrutura durante a sincronizacao NCM.")
+
+    loja_alvo_exata = str(loja_alvo or "").strip()
+    loja_alvo_chave = _sync_ncm_nome_loja_chave(loja_alvo_exata)
+    nomes_fallback_chaves = {
+        _sync_ncm_nome_loja_chave(nome)
+        for nome in (nomes_fallback_alvo or ())
+        if _sync_ncm_nome_loja_chave(nome)
+    }
+    if permitir_fallback_nome and loja_alvo_chave and not nomes_fallback_chaves:
+        nomes_fallback_chaves.add(loja_alvo_chave)
+    store_id_alvo_exato = str(store_id_alvo or "").strip()
+    colunas_base = _sync_ncm_mapa_colunas(base)
+    colunas_desejado = _sync_ncm_mapa_colunas(desejado)
+    if "sku" not in colunas_base or "sku" not in colunas_desejado:
+        raise RuntimeError("Estoque sem SKU para commit NCM seguro.")
+    if (
+        loja_alvo_exata
+        and not store_id_alvo_exato
+        and ("loja_sync" not in colunas_base or "loja_sync" not in colunas_desejado)
+    ):
+        raise RuntimeError("Estoque sem chave loja/SKU para commit NCM seguro.")
+
+    def _chave(row: Any, colunas: dict[str, Any]) -> tuple[str, str]:
+        return _sync_ncm_chave_linha(
+            row[colunas["loja_sync"]] if "loja_sync" in colunas else "",
+            row[colunas["sku"]],
+            row[colunas["store_id"]] if "store_id" in colunas else "",
+        )
+
+    def _selecionada(row: Any, colunas: dict[str, Any]) -> bool:
+        row_store_id = (
+            _sync_ncm_texto(row[colunas["store_id"]]).strip()
+            if "store_id" in colunas
+            else ""
+        )
+        row_loja = (
+            _sync_ncm_texto(row[colunas["loja_sync"]]).strip()
+            if "loja_sync" in colunas
+            else ""
+        )
+        if store_id_alvo_exato:
+            if row_store_id:
+                return row_store_id == store_id_alvo_exato
+            return bool(
+                permitir_fallback_nome
+                and nomes_fallback_chaves
+                and _sync_ncm_nome_loja_chave(row_loja) in nomes_fallback_chaves
+            )
+        if loja_alvo_chave:
+            return _sync_ncm_nome_loja_chave(row_loja) == loja_alvo_chave
+        return True
+
+    alteracoes: dict[tuple[str, str], dict[str, tuple[str, str]]] = {}
+    for indice in desejado.index:
+        linha_base = base.loc[indice]
+        linha_desejada = desejado.loc[indice]
+        if not _selecionada(linha_desejada, colunas_desejado):
+            continue
+        chave = _chave(linha_desejada, colunas_desejado)
+        chave_base = _chave(linha_base, colunas_base)
+        if chave != chave_base:
+            raise RuntimeError("A identidade loja/SKU mudou durante a sincronizacao NCM.")
+
+        campos: dict[str, tuple[str, str]] = {}
+        for coluna in _SYNC_NCM_ESTOQUE_COLUNAS:
+            coluna_desejada = colunas_desejado.get(coluna)
+            if coluna_desejada is None:
+                continue
+            anterior = (
+                _sync_ncm_texto(linha_base[colunas_base[coluna]])
+                if coluna in colunas_base
+                else ""
+            )
+            novo = _sync_ncm_texto(linha_desejada[coluna_desejada])
+            if coluna not in colunas_base or anterior != novo:
+                campos[coluna] = (anterior, novo)
+
+        if not campos:
+            continue
+        if not chave[0] or not chave[1]:
+            raise RuntimeError("Linha alterada sem chave loja/SKU no commit NCM.")
+        if chave in alteracoes:
+            raise RuntimeError("Chave loja/SKU duplicada no commit NCM.")
+        alteracoes[chave] = campos
+
+    lock = _sync_ncm_path_lock(caminho)
+    with lock:
+        atual = _sync_ncm_ler_estoque_commit(caminho)
+        colunas_atual = _sync_ncm_mapa_colunas(atual)
+        if "sku" not in colunas_atual or (
+            loja_alvo_exata
+            and not store_id_alvo_exato
+            and "loja_sync" not in colunas_atual
+        ):
+            raise RuntimeError("Estoque atual sem chave loja/SKU no commit NCM.")
+
+        indices_por_chave: dict[tuple[str, str], list[Any]] = {}
+        for indice, linha in atual.iterrows():
+            chave = _chave(linha, colunas_atual)
+            indices_por_chave.setdefault(chave, []).append(indice)
+
+        for chave, campos in alteracoes.items():
+            indices = indices_por_chave.get(chave, [])
+            if len(indices) != 1:
+                raise RuntimeError("Conflito de chave loja/SKU no commit NCM.")
+            indice = indices[0]
+            for coluna, (anterior, novo) in campos.items():
+                coluna_atual = colunas_atual.get(coluna)
+                valor_atual = _sync_ncm_texto(atual.at[indice, coluna_atual]) if coluna_atual is not None else ""
+                if valor_atual not in {anterior, novo}:
+                    raise RuntimeError("Conflito concorrente nos campos NCM do estoque.")
+                if coluna_atual is None:
+                    atual[coluna] = ""
+                    coluna_atual = coluna
+                    colunas_atual[coluna] = coluna_atual
+                atual.at[indice, coluna_atual] = novo
+
+        if alteracoes:
+            _sync_ncm_salvar_estoque_atomico(atual, caminho)
+
+        normalizado = atual.copy()
+        normalizado.columns = [str(coluna).strip().lower() for coluna in normalizado.columns]
+        return normalizado
+
+
+def _sync_ncm_commit_cadastro(
+    caminho: str,
+    base: pd.DataFrame,
+    desejado: pd.DataFrame,
+) -> pd.DataFrame:
+    """Merge only fiscal fields by normalized SKU, preserving concurrent edits."""
+
+    if not base.index.equals(desejado.index):
+        raise RuntimeError("O cadastro mudou de estrutura durante a sincronizacao NCM.")
+    colunas_base = _sync_ncm_mapa_colunas(base)
+    colunas_desejado = _sync_ncm_mapa_colunas(desejado)
+    if "sku" not in colunas_base or "sku" not in colunas_desejado:
+        raise RuntimeError("Cadastro sem SKU para commit NCM seguro.")
+
+    alteracoes: dict[str, dict[str, tuple[str, str]]] = {}
+    for indice in desejado.index:
+        sku_base = _sku_lookup_keys_sync_ncm(
+            _sync_ncm_texto(base.at[indice, colunas_base["sku"]])
+        )[0]
+        sku_desejado = _sku_lookup_keys_sync_ncm(
+            _sync_ncm_texto(desejado.at[indice, colunas_desejado["sku"]])
+        )[0]
+        if not sku_base or sku_base != sku_desejado:
+            raise RuntimeError("A identidade SKU mudou durante a sincronizacao NCM.")
+        if sku_desejado in alteracoes:
+            raise RuntimeError("SKU duplicado no cadastro durante o commit NCM.")
+        campos: dict[str, tuple[str, str]] = {}
+        for coluna in _SYNC_NCM_CADASTRO_COLUNAS:
+            coluna_desejada = colunas_desejado.get(coluna)
+            if coluna_desejada is None:
+                continue
+            anterior = (
+                _sync_ncm_texto(base.at[indice, colunas_base[coluna]])
+                if coluna in colunas_base
+                else ""
+            )
+            novo = _sync_ncm_texto(desejado.at[indice, coluna_desejada])
+            if coluna not in colunas_base or anterior != novo:
+                campos[coluna] = (anterior, novo)
+        if campos:
+            alteracoes[sku_desejado] = campos
+
+    with path_lock_for(caminho):
+        atual = _sync_ncm_ler_estoque_commit(caminho)
+        colunas_atual = _sync_ncm_mapa_colunas(atual)
+        if "sku" not in colunas_atual:
+            raise RuntimeError("Cadastro atual sem SKU para commit NCM seguro.")
+        indices_por_sku: dict[str, list[Any]] = {}
+        for indice, linha in atual.iterrows():
+            sku = _sku_lookup_keys_sync_ncm(
+                _sync_ncm_texto(linha[colunas_atual["sku"]])
+            )[0]
+            if sku:
+                indices_por_sku.setdefault(sku, []).append(indice)
+        for sku, campos in alteracoes.items():
+            indices = indices_por_sku.get(sku, [])
+            if len(indices) != 1:
+                raise RuntimeError("Conflito de SKU no commit NCM do cadastro.")
+            indice = indices[0]
+            for coluna, (anterior, novo) in campos.items():
+                coluna_atual = colunas_atual.get(coluna)
+                valor_atual = (
+                    _sync_ncm_texto(atual.at[indice, coluna_atual])
+                    if coluna_atual is not None
+                    else ""
+                )
+                if valor_atual not in {anterior, novo}:
+                    raise RuntimeError("Conflito concorrente nos campos NCM do cadastro.")
+                if coluna_atual is None:
+                    atual[coluna] = ""
+                    coluna_atual = coluna
+                    colunas_atual[coluna] = coluna
+                atual.at[indice, coluna_atual] = novo
+        if alteracoes:
+            _sync_ncm_salvar_estoque_atomico(atual, caminho)
+        normalizado = atual.copy()
+        normalizado.columns = [str(coluna).strip().lower() for coluna in normalizado.columns]
+        return normalizado
+
 def _set_sync_ncm_job(job_id: str, **kwargs):
     atual = SYNC_NCM_JOBS.get(job_id, {})
     atual.update(kwargs)
     atual["updated_at"] = time.time()
     SYNC_NCM_JOBS[job_id] = atual
 
-def _sync_ncm_cadastro_worker(client_id: str, job_id: str):
+
+def _resolver_loja_sync_ncm(client_id: str, store_id: str) -> dict:
+    store_id_norm = str(store_id or "").strip()
+    lojas = carregar_lojas(client_id) or []
+    correspondentes = [
+        item
+        for item in lojas
+        if isinstance(item, dict)
+        and str(item.get("store_id") or "").strip() == store_id_norm
+    ]
+    if not correspondentes:
+        raise HTTPException(status_code=404, detail="Loja nao encontrada para este cliente.")
+    if len(correspondentes) != 1:
+        raise HTTPException(
+            status_code=409,
+            detail="store_id duplicado na configuracao de lojas.",
+        )
+    return correspondentes[0]
+
+
+def _sync_ncm_revalidar_loja_bloqueada(
+    client_id: str,
+    store_id: str,
+    nome_esperado: str,
+    *,
+    exigir_nome_unico: bool,
+    nomes_fallback_esperados: Iterable[Any] | None = None,
+) -> dict:
+    """Re-resolve exact identity while the caller holds the config lock."""
+
+    try:
+        loja = _resolver_loja_sync_ncm(client_id, store_id)
+    except HTTPException as exc:
+        raise _SyncNcmConfiguracaoAlterada(_SYNC_NCM_CONFIG_ALTERADA) from exc
+
+    store_id_atual = str(loja.get("store_id") or "").strip()
+    nome_atual = str(loja.get("nome") or "").strip()
+    if store_id_atual != str(store_id or "").strip() or nome_atual != nome_esperado:
+        raise _SyncNcmConfiguracaoAlterada(_SYNC_NCM_CONFIG_ALTERADA)
+
+    nomes_fallback = tuple(nomes_fallback_esperados or ())
+    if exigir_nome_unico and not nomes_fallback:
+        nomes_fallback = (nome_esperado,)
+    if nomes_fallback:
+        chaves_esperadas = {
+            _sync_ncm_nome_loja_chave(nome)
+            for nome in nomes_fallback
+            if _sync_ncm_nome_loja_chave(nome)
+        }
+        chaves_atuais = {
+            _sync_ncm_nome_loja_chave(nome)
+            for nome in _sync_ncm_nomes_loja(loja)
+            if _sync_ncm_nome_loja_chave(nome)
+        }
+        if not chaves_esperadas.issubset(chaves_atuais):
+            raise _SyncNcmConfiguracaoAlterada(_SYNC_NCM_CONFIG_ALTERADA)
+        lojas_atuais = [
+            item
+            for item in (carregar_lojas(client_id) or [])
+            if isinstance(item, dict)
+        ]
+        for nome_chave in chaves_esperadas:
+            correspondentes_nome = [
+                item
+                for item in lojas_atuais
+                if nome_chave
+                in {
+                    _sync_ncm_nome_loja_chave(nome)
+                    for nome in _sync_ncm_nomes_loja(item)
+                }
+            ]
+            if (
+                len(correspondentes_nome) != 1
+                or str(correspondentes_nome[0].get("store_id") or "").strip()
+                != store_id_atual
+            ):
+                raise _SyncNcmConfiguracaoAlterada(_SYNC_NCM_CONFIG_ALTERADA)
+
+    return loja
+
+
+def _sync_ncm_adotar_refresh_persistido(
+    client_id: str,
+    store_id: str,
+    nome_esperado: str,
+    cfg_anterior: dict[str, Any],
+    cfg_retornado: Any,
+    *,
+    exigir_nome_unico: bool,
+    nomes_fallback_esperados: Iterable[Any] | None = None,
+) -> dict[str, Any]:
+    """Accept token rotation only after observing that exact persisted snapshot."""
+
+    with integracoes_service._LOJAS_CONFIG_LOCK:
+        loja = _sync_ncm_revalidar_loja_bloqueada(
+            client_id,
+            store_id,
+            nome_esperado,
+            exigir_nome_unico=exigir_nome_unico,
+            nomes_fallback_esperados=nomes_fallback_esperados,
+        )
+        cfg_persistido = dict(((loja.get("integracoes") or {}).get("bling") or {}))
+        identidade_anterior = _sync_ncm_bling_fingerprint(cfg_anterior)[:2]
+        identidade_persistida = _sync_ncm_bling_fingerprint(cfg_persistido)[:2]
+        if identidade_persistida != identidade_anterior:
+            raise _SyncNcmConfiguracaoAlterada(_SYNC_NCM_CONFIG_ALTERADA)
+        if _sync_ncm_bling_fingerprint(cfg_persistido) != _sync_ncm_bling_fingerprint(
+            cfg_retornado
+        ):
+            raise _SyncNcmConfiguracaoAlterada(_SYNC_NCM_CONFIG_ALTERADA)
+        return cfg_persistido
+
+
+def _sync_ncm_commit_estoque_loja_revalidado(
+    client_id: str,
+    store_id: str,
+    nome_esperado: str,
+    fingerprint_bling_esperado: tuple[str, ...],
+    caminho: str,
+    base: pd.DataFrame,
+    desejado: pd.DataFrame,
+    *,
+    permitir_fallback_nome: bool,
+    nomes_fallback_alvo: Iterable[Any] | None = None,
+) -> pd.DataFrame:
+    """Linearize config validation and the scoped stock commit."""
+
+    with integracoes_service._LOJAS_CONFIG_LOCK:
+        loja = _sync_ncm_revalidar_loja_bloqueada(
+            client_id,
+            store_id,
+            nome_esperado,
+            exigir_nome_unico=permitir_fallback_nome,
+            nomes_fallback_esperados=nomes_fallback_alvo,
+        )
+        cfg_atual = ((loja.get("integracoes") or {}).get("bling") or {})
+        if _sync_ncm_bling_fingerprint(cfg_atual) != fingerprint_bling_esperado:
+            raise _SyncNcmConfiguracaoAlterada(_SYNC_NCM_CONFIG_ALTERADA)
+        return _sync_ncm_commit_estoque(
+            caminho,
+            base,
+            desejado,
+            nome_esperado,
+            store_id,
+            permitir_fallback_nome=permitir_fallback_nome,
+            nomes_fallback_alvo=nomes_fallback_alvo,
+        )
+
+
+def _classificar_monofasico_compilado_loja(
+    df_estoque: pd.DataFrame,
+    loja_nome: str,
+    store_id: str | None = None,
+    permitir_fallback_nome: bool = True,
+    nomes_fallback: Iterable[Any] | None = None,
+) -> tuple[int, dict[str, int]]:
+    store_id_exato = str(store_id or "").strip()
+    loja_exata = str(loja_nome or "").strip()
+    loja_chave = _sync_ncm_nome_loja_chave(loja_exata)
+    lojas_fallback_chaves = {
+        _sync_ncm_nome_loja_chave(nome)
+        for nome in (nomes_fallback or ())
+        if _sync_ncm_nome_loja_chave(nome)
+    }
+    if permitir_fallback_nome and loja_chave and not lojas_fallback_chaves:
+        lojas_fallback_chaves.add(loja_chave)
+    mask = pd.Series(False, index=df_estoque.index)
+    if store_id_exato and "store_id" in df_estoque.columns:
+        ids = df_estoque["store_id"].astype(str).str.strip()
+        mask = ids.eq(store_id_exato)
+        if permitir_fallback_nome and lojas_fallback_chaves and "loja_sync" in df_estoque.columns:
+            nomes = df_estoque["loja_sync"].map(_sync_ncm_nome_loja_chave)
+            mask |= ids.eq("") & nomes.isin(lojas_fallback_chaves)
+    elif permitir_fallback_nome and lojas_fallback_chaves and "loja_sync" in df_estoque.columns:
+        mask = df_estoque["loja_sync"].map(_sync_ncm_nome_loja_chave).isin(
+            lojas_fallback_chaves
+        )
+    if not mask.any():
+        return 0, {}
+
+    selecionado = df_estoque.loc[mask].copy()
+    if "ncm_bling" in selecionado.columns:
+        selecionado["ncm"] = selecionado["ncm_bling"].astype(str)
+    if "produto_bling" not in selecionado.columns and "nome_bling" in selecionado.columns:
+        selecionado["produto_bling"] = selecionado["nome_bling"].astype(str)
+
+    alterados, contagens = _classificar_monofasico_cadastro(selecionado)
+    for coluna in MONOFASICO_CADASTRO_COLUNAS:
+        if coluna not in selecionado.columns:
+            continue
+        if coluna not in df_estoque.columns:
+            df_estoque[coluna] = ""
+        df_estoque.loc[selecionado.index, coluna] = selecionado[coluna].astype(str)
+    return alterados, contagens
+
+
+def _sync_ncm_cadastro_worker(client_id: str, job_id: str, store_id: str | None = None):
     try:
         _set_sync_ncm_job(job_id, status="running", mensagem="Preparando sincronizaÃƒÂ§ÃƒÂ£o de NCM/CEST...", processados=0, total=0)
 
-        arquivo_cadastro = _migrar_arquivo_legado_para_tenant(client_id, "cadastro_produtos.csv", ARQUIVO_DB_CADASTRO_PRODUTOS)
+        store_id_alvo = str(store_id or "").strip()
+        loja_alvo = None
+        if store_id_alvo:
+            try:
+                loja_alvo = _resolver_loja_sync_ncm(client_id, store_id_alvo)
+            except HTTPException as exc:
+                _set_sync_ncm_job(job_id, status="error", mensagem=str(exc.detail))
+                return
+        else:
+            # Defesa em profundidade para chamadas internas diretas do worker:
+            # o modo global nao pode propagar um valor first-wins para SKUs que
+            # ja possuem identidade duravel por loja.
+            from backend.services.cadastro_compatibilidade import (
+                exigir_mutacao_legada_sem_sku_controlado,
+                skus_controlados_cadastro_lojas,
+            )
+
+            try:
+                exigir_mutacao_legada_sem_sku_controlado(
+                    client_id, skus_controlados_cadastro_lojas(client_id)
+                )
+            except HTTPException as exc:
+                detalhe = exc.detail if isinstance(exc.detail, dict) else {}
+                _set_sync_ncm_job(
+                    job_id,
+                    status="error",
+                    mensagem=str(detalhe.get("message") or exc.detail),
+                    code=str(detalhe.get("code") or "store_id_required"),
+                )
+                return
+
         arquivo_estoque = _migrar_arquivo_legado_para_tenant(client_id, "produtos_compilado.csv", ARQUIVO_DB_PRODUTOS)
-        if not (arquivo_cadastro and os.path.exists(arquivo_cadastro) and arquivo_estoque and os.path.exists(arquivo_estoque)):
-            _set_sync_ncm_job(job_id, status="error", mensagem="Arquivos de cadastro/estoque nÃ£o encontrados para o cliente.")
+        if not (arquivo_estoque and os.path.exists(arquivo_estoque)):
+            _set_sync_ncm_job(job_id, status="error", mensagem="Arquivo de estoque nao encontrado para o cliente.")
             return
 
-        df_cad = pd.read_csv(arquivo_cadastro, dtype=str).fillna("")
-        df_cad.columns = [c.strip().lower() for c in df_cad.columns]
-        df_estoque = pd.read_csv(arquivo_estoque, dtype=str).fillna("")
+        arquivo_cadastro = ""
+        df_cad = pd.DataFrame()
+        if not store_id_alvo:
+            arquivo_cadastro = _migrar_arquivo_legado_para_tenant(
+                client_id,
+                "cadastro_produtos.csv",
+                ARQUIVO_DB_CADASTRO_PRODUTOS,
+            )
+            if not (arquivo_cadastro and os.path.exists(arquivo_cadastro)):
+                _set_sync_ncm_job(
+                    job_id,
+                    status="error",
+                    mensagem="Arquivo de cadastro nao encontrado para o cliente.",
+                )
+                return
+            df_cad = pd.read_csv(arquivo_cadastro, dtype=str).fillna("")
+            df_cad.columns = [c.strip().lower() for c in df_cad.columns]
+            df_cad_base = df_cad.copy(deep=True)
+        df_estoque = pd.read_csv(
+            arquivo_estoque,
+            dtype=str,
+            keep_default_na=False,
+        ).fillna("")
         df_estoque.columns = [c.strip().lower() for c in df_estoque.columns]
+        skus_global_candidatos: set[str] = set()
+        if not store_id_alvo:
+            for frame in (df_cad, df_estoque):
+                if "sku" in frame.columns:
+                    skus_global_candidatos.update(
+                        str(valor or "").strip()
+                        for valor in frame["sku"].tolist()
+                        if str(valor or "").strip()
+                    )
 
         if "id_bling" not in df_estoque.columns:
             _set_sync_ncm_job(job_id, status="error", mensagem="Coluna id_bling nÃ£o encontrada no estoque.")
             return
+        df_estoque_base = df_estoque.copy(deep=True)
         if "ncm_bling" not in df_estoque.columns:
             df_estoque["ncm_bling"] = ""
         if "cest_bling" not in df_estoque.columns:
             df_estoque["cest_bling"] = ""
 
-        lojas = carregar_lojas(client_id)
-        bling_por_loja = {}
+        lojas = [
+            dict(loja)
+            for loja in (carregar_lojas(client_id) or [])
+            if isinstance(loja, dict)
+        ]
+        lojas_por_id: dict[str, list[dict[str, Any]]] = {}
+        lojas_por_nome: dict[str, list[dict[str, Any]]] = {}
+        bling_por_store_id: dict[str, dict[str, Any]] = {}
         for loja in lojas:
+            store_id_loja = str(loja.get("store_id") or "").strip()
+            if store_id_loja:
+                lojas_por_id.setdefault(store_id_loja, []).append(loja)
+            for nome_loja in _sync_ncm_nomes_loja(loja):
+                nome_loja_chave = _sync_ncm_nome_loja_chave(nome_loja)
+                if nome_loja_chave:
+                    lojas_por_nome.setdefault(nome_loja_chave, []).append(loja)
             cfg_bling = (loja.get("integracoes") or {}).get("bling") or {}
-            if cfg_bling.get("access_token") and cfg_bling.get("id") and cfg_bling.get("secret"):
-                nome_loja = str(loja.get("nome") or "").strip()
-                if nome_loja:
-                    bling_por_loja[nome_loja] = {
-                        "id": cfg_bling.get("id"),
-                        "secret": cfg_bling.get("secret"),
-                        "access_token": cfg_bling.get("access_token"),
-                        "refresh_token": cfg_bling.get("refresh_token"),
-                    }
+            if (
+                store_id_loja
+                and cfg_bling.get("access_token")
+                and _sync_ncm_bling_valor(cfg_bling, "id", "client_id")
+                and _sync_ncm_bling_valor(cfg_bling, "secret", "client_secret")
+            ):
+                bling_por_store_id[store_id_loja] = dict(cfg_bling)
 
-        if not bling_por_loja:
+        if not bling_por_store_id:
             _set_sync_ncm_job(job_id, status="error", mensagem="Nenhuma loja Bling conectada encontrada.")
             return
 
-        def _norm_loja_nome(v: str) -> str:
-            return str(v or "").strip().lower()
+        loja_alvo_nome = str((loja_alvo or {}).get("nome") or "").strip()
+        nomes_fallback_alvo = tuple(
+            nome
+            for nome in _sync_ncm_nomes_loja(loja_alvo)
+            if len(lojas_por_nome.get(_sync_ncm_nome_loja_chave(nome), [])) == 1
+            and str(
+                lojas_por_nome[_sync_ncm_nome_loja_chave(nome)][0].get("store_id")
+                or ""
+            ).strip()
+            == store_id_alvo
+        )
+        nome_alvo_unico = bool(nomes_fallback_alvo)
+        fingerprint_bling_alvo = (
+            _sync_ncm_bling_fingerprint(bling_por_store_id.get(store_id_alvo))
+            if store_id_alvo and store_id_alvo in bling_por_store_id
+            else None
+        )
 
-        candidatos_idx = []
+        def _loja_segura_da_linha(row: Any) -> dict[str, Any] | None:
+            row_store_id = str(row.get("store_id", "") or "").strip()
+            if row_store_id:
+                correspondentes = lojas_por_id.get(row_store_id, [])
+                if len(correspondentes) != 1:
+                    return None
+                loja_linha = correspondentes[0]
+            else:
+                row_nome = _sync_ncm_nome_loja_chave(row.get("loja_sync", ""))
+                correspondentes = lojas_por_nome.get(row_nome, [])
+                if len(correspondentes) != 1:
+                    return None
+                loja_linha = correspondentes[0]
+            if store_id_alvo and str(loja_linha.get("store_id") or "").strip() != store_id_alvo:
+                return None
+            return loja_linha
+
+        candidatos_linhas: list[tuple[Any, dict[str, Any]]] = []
         for idx_est, row_est in df_estoque.iterrows():
             pid = str(row_est.get("id_bling", "") or "").strip()
-            # Sempre renova NCM/CEST para todos os SKUs com id_bling quando o usuÃƒÂ¡rio dispara a sincronizaÃƒÂ§ÃƒÂ£o.
-            if pid:
-                candidatos_idx.append(idx_est)
+            loja_linha = _loja_segura_da_linha(row_est)
+            if pid and loja_linha:
+                candidatos_linhas.append((idx_est, loja_linha))
 
-        total = len(candidatos_idx)
+        total = len(candidatos_linhas)
         _set_sync_ncm_job(job_id, total=total, mensagem=f"Sincronizando NCM/CEST: 0/{total}")
 
         cache_ncm_cest = {}
@@ -197,27 +867,21 @@ def _sync_ncm_cadastro_worker(client_id: str, job_id: str):
         encontrados = 0
         processados = 0
 
-        for idx_est in candidatos_idx:
+        for idx_est, loja_linha in candidatos_linhas:
             row_est = df_estoque.loc[idx_est]
             pid = str(row_est.get("id_bling", "") or "").strip()
-            loja_sync = str(row_est.get("loja_sync", "") or "").strip()
-            loja_sync_norm = _norm_loja_nome(loja_sync)
+            store_id_linha = str(loja_linha.get("store_id") or "").strip()
+            nome_loja = str(loja_linha.get("nome") or "").strip()
             ncm_atual = str(row_est.get("ncm_bling", "") or "").strip()
             cest_atual = str(row_est.get("cest_bling", "") or "").strip()
 
-            candidatos = []
-            if loja_sync_norm:
-                for nome in bling_por_loja.keys():
-                    if _norm_loja_nome(nome) == loja_sync_norm:
-                        candidatos.append(nome)
-                        break
-            if not candidatos:
-                candidatos = list(bling_por_loja.keys())
-
             ncm_novo = ""
             cest_novo = ""
-            for nome_loja in candidatos:
-                chave_cache = (nome_loja, pid)
+            if store_id_linha not in bling_por_store_id:
+                processados += 1
+                continue
+            for _tentativa in range(1):
+                chave_cache = (store_id_linha, pid)
                 if chave_cache in cache_ncm_cest:
                     resp_cached = cache_ncm_cest[chave_cache]
                     ncm_cache = resp_cached.get("ncm", "")
@@ -230,10 +894,10 @@ def _sync_ncm_cadastro_worker(client_id: str, job_id: str):
                         break
                     continue
 
-                cfg_loja = bling_por_loja.get(nome_loja) or {}
+                cfg_loja = bling_por_store_id.get(store_id_linha) or {}
                 access_token_ncm = cfg_loja.get("access_token")
-                cid_ncm = cfg_loja.get("id")
-                sec_ncm = cfg_loja.get("secret")
+                cid_ncm = _sync_ncm_bling_valor(cfg_loja, "id", "client_id")
+                sec_ncm = _sync_ncm_bling_valor(cfg_loja, "secret", "client_secret")
                 refresh_ncm = cfg_loja.get("refresh_token")
                 if not (access_token_ncm and cid_ncm and sec_ncm):
                     cache_ncm_cest[chave_cache] = {"ncm": "", "cest": ""}
@@ -242,10 +906,30 @@ def _sync_ncm_cadastro_worker(client_id: str, job_id: str):
                 resp_ncm_cest, status_ncm = _bling_obter_ncm_cest_produto(access_token_ncm, pid)
                 if status_ncm == 401 and refresh_ncm:
                     try:
-                        renovado = renovar_token_bling_loja(client_id, nome_loja, cfg_loja)
-                        bling_por_loja[nome_loja] = dict(renovado)
+                        renovado = renovar_token_bling_loja(
+                            client_id,
+                            nome_loja,
+                            cfg_loja,
+                            store_id=store_id_linha,
+                        )
+                        if store_id_alvo and store_id_linha == store_id_alvo:
+                            renovado = _sync_ncm_adotar_refresh_persistido(
+                                client_id,
+                                store_id_linha,
+                                loja_alvo_nome,
+                                cfg_loja,
+                                renovado,
+                                exigir_nome_unico=nome_alvo_unico,
+                                nomes_fallback_esperados=nomes_fallback_alvo,
+                            )
+                            fingerprint_bling_alvo = _sync_ncm_bling_fingerprint(
+                                renovado
+                            )
+                        bling_por_store_id[store_id_linha] = dict(renovado)
                         access_token_ncm = renovado.get("access_token") or access_token_ncm
                         resp_ncm_cest, status_ncm = _bling_obter_ncm_cest_produto(access_token_ncm, pid)
+                    except _SyncNcmConfiguracaoAlterada:
+                        raise
                     except Exception:
                         status_ncm = 500
 
@@ -276,8 +960,56 @@ def _sync_ncm_cadastro_worker(client_id: str, job_id: str):
                 mensagem=f"Sincronizando NCM/CEST: {processados}/{total}"
             )
 
+        classificados_loja = 0
+        contagens_monofasico_loja: dict[str, int] = {}
+        if store_id_alvo:
+            _set_sync_ncm_job(job_id, mensagem="Classificando tributacao monofasica da loja...")
+            classificados_loja, contagens_monofasico_loja = _classificar_monofasico_compilado_loja(
+                df_estoque,
+                loja_alvo_nome,
+                store_id_alvo,
+                permitir_fallback_nome=nome_alvo_unico,
+                nomes_fallback=nomes_fallback_alvo,
+            )
+            if classificados_loja:
+                alterou_ncm_estoque = True
+
+        commit_estoque_global_pendente = False
         if alterou_ncm_estoque:
-            df_estoque.to_csv(arquivo_estoque, index=False)
+            if store_id_alvo:
+                if fingerprint_bling_alvo is None:
+                    raise _SyncNcmConfiguracaoAlterada(_SYNC_NCM_CONFIG_ALTERADA)
+                df_estoque = _sync_ncm_commit_estoque_loja_revalidado(
+                    client_id,
+                    store_id_alvo,
+                    loja_alvo_nome,
+                    fingerprint_bling_alvo,
+                    arquivo_estoque,
+                    df_estoque_base,
+                    df_estoque,
+                    permitir_fallback_nome=nome_alvo_unico,
+                    nomes_fallback_alvo=nomes_fallback_alvo,
+                )
+            else:
+                commit_estoque_global_pendente = True
+
+        # O cadastro legado nao possui loja. Em uma sincronizacao de loja especifica,
+        # gravar nele misturaria NCM/CEST entre contas; a nova listagem resolve os
+        # valores diretamente da linha da mesma loja em produtos_compilado.csv.
+        if store_id_alvo:
+            _set_sync_ncm_job(
+                job_id,
+                status="done",
+                mensagem=(
+                    f"Sincronizacao NCM da loja concluida: {encontrados}/{total} preenchidos; "
+                    f"{classificados_loja} classificacoes monofasicas atualizadas."
+                ),
+                processados=processados,
+                encontrados=encontrados,
+                monofasico_alterados=classificados_loja,
+                monofasico_contagens=contagens_monofasico_loja,
+            )
+            return
 
         # Propaga NCM e CEST para o cadastro por SKU e persiste no arquivo do usuÃƒÂ¡rio.
         mapa_ncm = {}
@@ -319,6 +1051,7 @@ def _sync_ncm_cadastro_worker(client_id: str, job_id: str):
                 or mapa_cest_numsoft.get(sku_numsoft, "")
             )
 
+        mudou_cadastro = False
         if "sku" in df_cad.columns:
             ncm_series = df_cad["sku"].astype(str).apply(_resolver_ncm_sku).fillna("")
             cest_series = df_cad["sku"].astype(str).apply(_resolver_cest_sku).fillna("")
@@ -359,7 +1092,6 @@ def _sync_ncm_cadastro_worker(client_id: str, job_id: str):
                 # evita apagar NCM/CEST jÃƒÂ¡ salvos no cadastro.
                 df_cad.loc[mask_ncm_novo, "ncm"] = ncm_series.loc[mask_ncm_novo]
                 df_cad.loc[mask_cest_novo, "cest"] = cest_series.loc[mask_cest_novo]
-                df_cad.to_csv(arquivo_cadastro, index=False)
 
             logger.info(
                 "[CADASTRO NCM/CEST][%s][job=%s] atualizados: ncm=%d, cest=%d | preservados: ncm=%d, cest=%d",
@@ -378,6 +1110,32 @@ def _sync_ncm_cadastro_worker(client_id: str, job_id: str):
                 contagens_monofasico,
             )
 
+        if commit_estoque_global_pendente or mudou_cadastro:
+            from backend.services.cadastro_compatibilidade import (
+                bloquear_mutacao_legada_sem_sku_controlado,
+            )
+
+            # The SKU candidates come from the independent legacy/compiled
+            # snapshots, not from a pre-lock canonical snapshot.  Rechecking
+            # them while holding the canonical lock closes the race where a
+            # scoped row is created during the remote Bling calls.
+            with bloquear_mutacao_legada_sem_sku_controlado(
+                client_id, skus_global_candidatos
+            ):
+                if commit_estoque_global_pendente:
+                    df_estoque = _sync_ncm_commit_estoque(
+                        arquivo_estoque,
+                        df_estoque_base,
+                        df_estoque,
+                        permitir_fallback_nome=True,
+                    )
+                if mudou_cadastro:
+                    df_cad = _sync_ncm_commit_cadastro(
+                        arquivo_cadastro,
+                        df_cad_base,
+                        df_cad,
+                    )
+
         _set_sync_ncm_job(
             job_id,
             status="done",
@@ -385,18 +1143,45 @@ def _sync_ncm_cadastro_worker(client_id: str, job_id: str):
             processados=processados,
             encontrados=encontrados,
         )
+    except HTTPException as e:
+        detalhe = e.detail if isinstance(e.detail, dict) else {}
+        _set_sync_ncm_job(
+            job_id,
+            status="error",
+            mensagem=str(detalhe.get("message") or e.detail),
+            code=str(detalhe.get("code") or "sync_ncm_error"),
+        )
     except Exception as e:
         _set_sync_ncm_job(job_id, status="error", mensagem=f"Erro na sincronizaÃƒÂ§ÃƒÂ£o de NCM: {e}")
 
-async def iniciar_sync_ncm_cadastro(client_id: str = Depends(get_tenant_id)):
+async def iniciar_sync_ncm_cadastro(
+    store_id: Optional[str] = None,
+    client_id: str = Depends(get_tenant_id),
+):
+    store_id_norm = str(store_id or "").strip()
+    if store_id_norm:
+        _resolver_loja_sync_ncm(client_id, store_id_norm)
+    else:
+        from backend.services.cadastro_compatibilidade import (
+            exigir_mutacao_legada_sem_sku_controlado,
+            skus_controlados_cadastro_lojas,
+        )
+
+        exigir_mutacao_legada_sem_sku_controlado(
+            client_id, skus_controlados_cadastro_lojas(client_id)
+        )
+
     # Reaproveita job em execuÃƒÂ§ÃƒÂ£o para o mesmo cliente.
     for job_id, job in SYNC_NCM_JOBS.items():
         if job.get("client_id") == client_id and job.get("status") == "running":
-            return {"job_id": job_id, "status": "running"}
+            if str(job.get("store_id") or "") == store_id_norm:
+                return {"job_id": job_id, "status": "running"}
+            raise HTTPException(status_code=409, detail="Ja existe uma sincronizacao NCM em andamento para este cliente.")
 
     job_id = uuid.uuid4().hex
     SYNC_NCM_JOBS[job_id] = {
         "client_id": client_id,
+        "store_id": store_id_norm,
         "status": "running",
         "mensagem": "Inicializando...",
         "processados": 0,
@@ -404,7 +1189,11 @@ async def iniciar_sync_ncm_cadastro(client_id: str = Depends(get_tenant_id)):
         "encontrados": 0,
         "updated_at": time.time(),
     }
-    t = threading.Thread(target=_sync_ncm_cadastro_worker, args=(client_id, job_id), daemon=True)
+    t = threading.Thread(
+        target=_sync_ncm_cadastro_worker,
+        args=(client_id, job_id, store_id_norm or None),
+        daemon=True,
+    )
     t.start()
     return {"job_id": job_id, "status": "running"}
 
@@ -416,4 +1205,4 @@ async def progresso_sync_ncm_cadastro(job_id: str, client_id: str = Depends(get_
         raise HTTPException(status_code=403, detail="Acesso negado a este job.")
     return {k: v for k, v in job.items() if k != "client_id"}
 
-__all__ = ['SYNC_NCM_JOBS', 'MONOFASICO_CADASTRO_COLUNAS', '_classificar_monofasico_cadastro', '_sku_lookup_keys_sync_ncm', '_set_sync_ncm_job', '_sync_ncm_cadastro_worker', 'iniciar_sync_ncm_cadastro', 'progresso_sync_ncm_cadastro', 'configure_cadastro_sync_ncm_runtime']
+__all__ = ['SYNC_NCM_JOBS', 'MONOFASICO_CADASTRO_COLUNAS', '_classificar_monofasico_cadastro', '_classificar_monofasico_compilado_loja', '_sku_lookup_keys_sync_ncm', '_sync_ncm_path_lock', '_sync_ncm_commit_estoque', '_set_sync_ncm_job', '_resolver_loja_sync_ncm', '_sync_ncm_cadastro_worker', 'iniciar_sync_ncm_cadastro', 'progresso_sync_ncm_cadastro', 'configure_cadastro_sync_ncm_runtime']

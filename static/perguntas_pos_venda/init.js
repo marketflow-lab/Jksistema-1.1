@@ -66,6 +66,7 @@ if (aiTrainingScope) {
         state.treinamentoCarregado = false;
         limparChatTreinamento();
         carregarTreinamentoAI(true);
+        carregarSkusTreinamentoAI();
     });
 }
 aiTrainingSku.addEventListener('change', () => {

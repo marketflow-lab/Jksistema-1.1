@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Detalhe da Lista - Importações</title>
-    <script src="/auth.js?v=20260618-persist-login"></script>
+    <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
     <style>
         body {
             margin: 0;
@@ -867,10 +867,26 @@
         function obterUrlFoto(valor) {
             const foto = String(valor || '').trim();
             if (!foto) return '';
-            if (ehUrlAbsoluta(foto)) return foto;
-            const nomeArquivo = foto.split('/').pop();
-            if (!nomeArquivo) return '';
-            return '/api/cadastro/foto-arquivo/' + encodeURIComponent(nomeArquivo);
+            const helper = globalThis.JKAuthenticatedMedia;
+            if (helper && typeof helper.normalizarUrlFotoCadastro === 'function') {
+                return helper.normalizarUrlFotoCadastro(foto);
+            }
+            return ehUrlAbsoluta(foto) ? foto : '';
+        }
+
+        function ehUrlFotoCadastroProtegida(url) {
+            const helper = globalThis.JKAuthenticatedMedia;
+            if (helper && typeof helper.ehUrlProtegidaCadastro === 'function') {
+                return helper.ehUrlProtegidaCadastro(url);
+            }
+            return /^(\/api\/cadastro\/foto-arquivo\/|\/api\/cadastro\/foto\/)/i.test(String(url || '').trim());
+        }
+
+        function atributoSrcFotoCadastro(url) {
+            const foto = escaparHtml(url);
+            return ehUrlFotoCadastroProtegida(url)
+                ? 'data-jk-auth-src="' + foto + '"'
+                : 'src="' + foto + '"';
         }
 
         function formatarNumero(v) {
@@ -2974,7 +2990,7 @@
                             : '<span>' + escaparHtml(sku || '-') + '</span>') +
                         '</div>',
                     foto: (fotoUrl
-                        ? '<img class="foto" src="' + escaparHtml(fotoUrl) + '" alt="Foto ' + escaparHtml(sku || '') + '" loading="lazy">'
+                        ? '<img class="foto" ' + atributoSrcFotoCadastro(fotoUrl) + ' alt="Foto ' + escaparHtml(sku || '') + '" loading="lazy">'
                         : '<span class="foto-empty">Sem foto</span>'),
                     quantidade: formatarNumero(qtd),
                     m3: formatarM3(m3),

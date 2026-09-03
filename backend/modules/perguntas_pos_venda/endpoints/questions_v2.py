@@ -13,7 +13,7 @@ from backend.modules.perguntas_pos_venda.endpoints.runtime import runtime_adapte
 from backend.modules.perguntas_pos_venda.endpoints.security import get_tenant_id
 from backend.schemas import MLQuestionsV2ProcessRequest, MLQuestionsV2ReviewActionRequest, PerguntasAprovacaoRequest
 from backend.services import perguntas_pos_venda_codex
-from backend.services.perguntas_pos_venda_state import ML_RESPOSTA_PERGUNTA_MAX_CHARS, PerguntasIARespostaIndisponivel
+from backend.services.perguntas_pos_venda_state import PerguntasIARespostaIndisponivel
 from backend.modules.perguntas_pos_venda.endpoints.approvals import (
     ml_perguntas_aprovacoes_aprovar,
     ml_perguntas_aprovacoes_listar,
@@ -25,6 +25,11 @@ from backend.modules.perguntas_pos_venda.endpoints.jobs import (
 
 MercadoLivreWebhookReceiver = runtime_adapter("MercadoLivreWebhookReceiver")
 _ml_questions_v2_webhook_events_path = runtime_adapter("_ml_questions_v2_webhook_events_path")
+_ml_api_item = runtime_adapter("_ml_api_item")
+_ml_api_item_com_oauth_tenant = runtime_adapter("_ml_api_item_com_oauth_tenant")
+_ml_api_request = runtime_adapter("_ml_api_request")
+_ml_extrair_sku = runtime_adapter("_ml_extrair_sku")
+_ml_perguntas_completar_skus_itens = runtime_adapter("_ml_perguntas_completar_skus_itens")
 _obter_cfg_ml = runtime_adapter("_obter_cfg_ml")
 _perguntas_ia_aprovacoes_carregar = runtime_adapter("_perguntas_ia_aprovacoes_carregar")
 _perguntas_ia_gerar_resposta = runtime_adapter("_perguntas_ia_gerar_resposta")
@@ -59,8 +64,8 @@ def ml_questions_v2_process(question_id: str, req: MLQuestionsV2ProcessRequest, 
         raise HTTPException(status_code=400, detail="Informe a loja.")
     pergunta = req.pergunta if isinstance(req.pergunta, dict) else {}
     pergunta = {**pergunta, "id": str(question_id or pergunta.get("id") or "").strip()}
-    if req.resposta_atual:
-        pergunta["_resposta_atual"] = str(req.resposta_atual or "")[:ML_RESPOSTA_PERGUNTA_MAX_CHARS]
+    if str(req.resposta_atual or "").strip():
+        pergunta["_resposta_atual"] = str(req.resposta_atual or "")
     if not pergunta.get("id"):
         raise HTTPException(status_code=400, detail="Informe a pergunta.")
     if not str(pergunta.get("text") or "").strip() and not pergunta.get("buyer_question_chat"):
@@ -94,6 +99,37 @@ def ml_questions_v2_process(question_id: str, req: MLQuestionsV2ProcessRequest, 
             "publish_attempted": False,
         })
     cfg = _obter_cfg_ml(client_id, loja)
+    request_item = dict(item)
+    item = {}
+    official_current_listing = False
+    item_id = str(pergunta.get("item_id") or request_item.get("id") or "").strip()
+    if item_id:
+        try:
+            response, cfg = _ml_api_request(
+                client_id,
+                loja,
+                cfg,
+                "GET",
+                f"https://api.mercadolibre.com/items/{item_id}",
+                timeout=12,
+            )
+            if response.status_code == 200:
+                loaded_item = response.json() or {}
+                if isinstance(loaded_item, dict) and loaded_item:
+                    item = loaded_item
+                    official_current_listing = True
+        except Exception:
+            item = {}
+    if not item:
+        loaded_item = _ml_api_item_com_oauth_tenant(client_id, item_id) or _ml_api_item(item_id) or {}
+        if isinstance(loaded_item, dict) and loaded_item:
+            item = loaded_item
+            official_current_listing = True
+    if not item:
+        item = request_item
+    if item and not _ml_extrair_sku(item):
+        item = _ml_perguntas_completar_skus_itens(client_id, loja, cfg, [item])[0]
+    item["_ppv_official_current_listing"] = official_current_listing
     try:
         resposta, cfg, contexto = _perguntas_ia_gerar_resposta(client_id, loja, cfg, pergunta, item)
     except PerguntasIARespostaIndisponivel as exc:

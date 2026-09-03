@@ -27,8 +27,13 @@
         .status-bar { margin:10px 0; padding:10px 12px; border-radius:8px; background:#161925; border:1px solid #222; min-height:20px; }
         .status-bar.loading { color:#9bd1ff; border-color:#4facfe; background:#0a1428; }
         .status-bar.error { color:#ff6b6b; border-color:#c62828; background:#28010d; }
+        .status-bar.warning { color:#ffcc80; border-color:#ef6c00; background:#2b1700; }
         .status-bar.success { color:#66bb6a; border-color:#1b5e20; background:#0f2e0d; }
         .status-bar.empty { color:#aaa; }
+        .sync-account-result.loading { color:#9bd1ff; }
+        .sync-account-result.warning { color:#ffcc80; }
+        .sync-account-result.error { color:#ff8a80; }
+        .sync-account-result.success { color:#81c784; }
         .spinner { display:inline-block; width:14px; height:14px; border:2px solid #4facfe; border-top-color:transparent; border-radius:50%; animation:spin 0.8s linear infinite; margin-right:8px; vertical-align:middle; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .paginacao { display:flex; align-items:center; gap:10px; margin:12px 0; flex-wrap:wrap; }
@@ -52,7 +57,7 @@
         .history-table .history-separator { border-left:2px solid #37536b; }
         #btnHistoricoSync:disabled, #btnHistoricoCarregar:disabled { opacity:0.6; cursor:not-allowed; }
     </style>
-    <script src="/auth.js?v=20260618-persist-login"></script>
+    <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
     <script src="/ncm-sync.js"></script>
     <script src="/global-status.js"></script>
 </head>
@@ -188,6 +193,10 @@
     const SYNC_PROGRESS_TIMEOUT_MS = 8000;
     let syncEmAndamento = false;
     let solicitandoSync = false;
+    let syncFinalizacaoProcessada = false;
+    let syncGeracaoAtual = 0;
+    let syncJobIdAtual = '';
+    let syncPollEmAndamento = null;
     let progressTimer = null;
     let autoSyncSolicitado = false;
     let janelaAutoSyncMinutos = 30;
@@ -242,72 +251,273 @@
         }
     }
 
-    function renderProgresso(progress, logs) {
+    function escaparHtmlSync(valor) {
+        return String(valor ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function normalizarOutcomeSync(syncMeta) {
+        return String(syncMeta?.outcome || '').trim().toLowerCase();
+    }
+
+    function normalizarJobIdSync(valor) {
+        return typeof valor === 'string' ? valor.trim() : '';
+    }
+
+    function jobIdPayloadSync(payload) {
+        return normalizarJobIdSync(payload?.sync_meta?.job_id);
+    }
+
+    function resultadosContasSync(syncMeta) {
+        return Array.isArray(syncMeta?.resultados)
+            ? syncMeta.resultados.filter(item => item && typeof item === 'object')
+            : [];
+    }
+
+    function textoMensagemSync(valor, profundidade = 0) {
+        if (valor === null || valor === undefined) return '';
+        if (typeof valor === 'string' || typeof valor === 'number' || typeof valor === 'boolean') {
+            return String(valor).trim();
+        }
+        if (typeof valor !== 'object' || profundidade >= 3) return '';
+        for (const chave of ['message', 'detail', 'mensagem', 'error', 'erro']) {
+            const texto = textoMensagemSync(valor[chave], profundidade + 1);
+            if (texto) return texto;
+        }
+        return '';
+    }
+
+    function primeiraMensagemSync(...valores) {
+        for (const valor of valores) {
+            const texto = textoMensagemSync(valor);
+            if (texto) return texto;
+        }
+        return '';
+    }
+
+    function classificarResultadoContaSync(resultado) {
+        const outcome = String(resultado?.outcome || resultado?.status || '').trim().toLowerCase();
+        if (['queued', 'running'].includes(outcome)) return { classe: 'loading', icone: '…' };
+        if (resultado?.success === true || ['completed', 'success', 'sucesso'].includes(outcome)) {
+            return { classe: 'success', icone: '✓' };
+        }
+        if (outcome === 'partial') return { classe: 'warning', icone: '⚠' };
+        if (outcome === 'cancelled') return { classe: 'error', icone: '■' };
+        return { classe: 'error', icone: '✕' };
+    }
+
+    function resumoContasSync(syncMeta) {
+        const resultados = resultadosContasSync(syncMeta);
+        if (!resultados.length) return '';
+        const linhas = resultados.map(resultado => {
+            const classificacao = classificarResultadoContaSync(resultado);
+            const loja = resultado.loja || resultado.nome || resultado.store_name || resultado.store_id || 'Conta';
+            const mensagem = primeiraMensagemSync(
+                resultado.mensagem,
+                resultado.message,
+                resultado.error,
+                resultado.erro,
+                resultado.detail,
+            );
+            const complemento = mensagem ? ` — ${escaparHtmlSync(mensagem)}` : '';
+            return `<div class="sync-account-result ${classificacao.classe}" style="margin-top:4px;">${classificacao.icone} <strong>${escaparHtmlSync(loja)}</strong>${complemento}</div>`;
+        }).join('');
+        return `<div class="sync-account-results" style="margin-top:10px;"><strong>Resumo por conta (${resultados.length})</strong>${linhas}</div>`;
+    }
+
+    function classificarFinalSync(payload) {
+        const progress = payload?.progress || {};
+        const syncMeta = payload?.sync_meta || {};
+        const outcome = normalizarOutcomeSync(syncMeta);
+        const mensagem = fallback => primeiraMensagemSync(
+            syncMeta.mensagem,
+            syncMeta.message,
+            syncMeta.error,
+            syncMeta.erro,
+            syncMeta.detail,
+            progress.mensagem,
+            fallback,
+        );
+        if (outcome === 'completed') {
+            return { terminal: true, classe: 'success', mensagem: mensagem('Estoque atualizado.') };
+        }
+        if (outcome === 'partial') {
+            return { terminal: true, classe: 'warning', mensagem: mensagem('Atualização concluída parcialmente. Confira as contas abaixo.') };
+        }
+        if (outcome === 'failed') {
+            return { terminal: true, classe: 'error', mensagem: mensagem('Falha na atualização do estoque.') };
+        }
+        if (outcome === 'cancelled') {
+            return { terminal: true, classe: 'error', mensagem: mensagem('Atualização de estoque cancelada.') };
+        }
+        if (['running', 'queued'].includes(outcome)) {
+            return payload?.active
+                ? { terminal: false, classe: 'loading', mensagem: mensagem('Atualizando estoque...') }
+                : { terminal: true, classe: 'error', mensagem: 'A atualização terminou sem resultado conclusivo.' };
+        }
+
+        const etapa = String(progress.etapa || '').trim().toLowerCase();
+        if (etapa === 'erro') {
+            return { terminal: true, classe: 'error', mensagem: mensagem('Falha na atualização do estoque.') };
+        }
+        if (Number(progress.percentual || 0) >= 100) {
+            return { terminal: true, classe: 'success', mensagem: mensagem('Estoque atualizado.') };
+        }
+        return { terminal: true, classe: 'error', mensagem: 'A atualização terminou sem resultado conclusivo.' };
+    }
+
+    function renderProgresso(progress, logs, syncMeta) {
         if (!progress) return;
         const percent = Math.max(0, Math.min(100, Number(progress.percentual || 0)));
-        const logsList = (logs || []).slice(-8).map(l => `<div style="color:#9bd1ff; margin:2px 0;">${l}</div>`).join('');
+        const logsList = (logs || []).slice(-8).map(l => `<div style="color:#9bd1ff; margin:2px 0;">${escaparHtmlSync(l)}</div>`).join('');
         statusEl.className = 'status-bar loading';
-        statusEl.innerHTML = `${spinnerHtml}<strong>${progress.mensagem || 'Atualizando estoque...'}</strong>
+        statusEl.innerHTML = `${spinnerHtml}<strong>${escaparHtmlSync(progress.mensagem || 'Atualizando estoque...')}</strong>
             <div style="margin-top:8px;background:#222;border-radius:6px;overflow:hidden;">
                 <div style="height:8px;width:${percent}%;background:#4facfe;"></div>
             </div>
             <div style="margin-top:6px;font-size:0.85rem;color:#9bd1ff;">${percent}%</div>
+            ${resumoContasSync(syncMeta)}
             <div style="margin-top:8px;font-size:0.85rem;">${logsList}</div>`;
+    }
+
+    function renderFinalSync(final, syncMeta) {
+        statusEl.className = `status-bar ${final.classe}`;
+        statusEl.innerHTML = `<strong>${escaparHtmlSync(final.mensagem)}</strong>${resumoContasSync(syncMeta || {})}`;
     }
 
     function pararMonitoramentoProgresso() {
         if (progressTimer) {
-            clearInterval(progressTimer);
+            clearTimeout(progressTimer);
             progressTimer = null;
         }
     }
 
-    async function verificarProgressoEstoque() {
+    function contextoSyncAtual(geracaoSync, jobIdEsperado, aceitarFinalizado = false) {
+        const jobId = normalizarJobIdSync(jobIdEsperado);
+        return geracaoSync === syncGeracaoAtual
+            && !!jobId
+            && jobId === syncJobIdAtual
+            && (aceitarFinalizado || !syncFinalizacaoProcessada);
+    }
+
+    async function verificarProgressoEstoque(geracaoSync = syncGeracaoAtual, jobIdEsperado = syncJobIdAtual) {
+        if (!contextoSyncAtual(geracaoSync, jobIdEsperado)) return null;
+        if (syncPollEmAndamento
+            && syncPollEmAndamento.geracao === geracaoSync
+            && syncPollEmAndamento.jobId === jobIdEsperado) {
+            return null;
+        }
+        const tokenPoll = { geracao: geracaoSync, jobId: jobIdEsperado };
+        syncPollEmAndamento = tokenPoll;
         try {
-            const resp = await fetchComTimeout('/api/estoque/sync/progress', { headers: obterAuthHeaders(), cache: 'no-store' }, SYNC_PROGRESS_TIMEOUT_MS);
-            if (!resp.ok) return null;
+            const progressUrl = `/api/estoque/sync/progress?job_id=${encodeURIComponent(jobIdEsperado)}`;
+            const resp = await fetchComTimeout(progressUrl, { headers: obterAuthHeaders(), cache: 'no-store' }, SYNC_PROGRESS_TIMEOUT_MS);
+            if (!contextoSyncAtual(geracaoSync, jobIdEsperado)) return null;
+            if (!resp.ok) {
+                if (resp.status === 404 || resp.status === 410) {
+                    const erroPayload = await resp.json().catch(() => ({}));
+                    if (!contextoSyncAtual(geracaoSync, jobIdEsperado)) return null;
+                    syncFinalizacaoProcessada = true;
+                    pararMonitoramentoProgresso();
+                    syncEmAndamento = false;
+                    setSyncButton(false);
+                    statusEl.className = 'status-bar error';
+                    statusEl.textContent = primeiraMensagemSync(
+                        erroPayload.detail,
+                        erroPayload.error,
+                        erroPayload.message,
+                        'Não foi possível recuperar o resultado desta atualização de estoque.',
+                    );
+                }
+                return null;
+            }
             const payload = await resp.json();
+            if (!contextoSyncAtual(geracaoSync, jobIdEsperado)) return null;
+            if (jobIdPayloadSync(payload) !== jobIdEsperado) return null;
             const progress = payload.progress;
             const active = !!payload.active;
-            if (progress && (active || !solicitandoSync)) {
-                renderProgresso(progress, payload.logs || []);
+            if (progress) {
+                renderProgresso(progress, payload.logs || [], payload.sync_meta || {});
             }
 
-            syncEmAndamento = active;
-            setSyncButton(syncEmAndamento || solicitandoSync);
+            if (active) {
+                syncEmAndamento = true;
+                setSyncButton(true);
+            }
 
-            if (!active && progress && !solicitandoSync) {
-                if (Number(progress.percentual || 0) >= 100) {
-                    statusEl.className = 'status-bar success';
-                    statusEl.textContent = `${progress.mensagem || 'Estoque atualizado.'}`;
-                    await carregar(false);
-                    setTimeout(() => {
-                        statusEl.className = 'status-bar';
-                        statusEl.textContent = '';
-                    }, 3500);
-                } else if ((progress.etapa || '').toLowerCase() === 'erro') {
-                    statusEl.className = 'status-bar error';
-                    statusEl.textContent = `${progress.mensagem || 'Falha na atualização do estoque.'}`;
-                }
+            if (!active && (progress || payload.sync_meta)) {
+                const final = classificarFinalSync(payload);
+                if (!final.terminal) return payload;
+                syncFinalizacaoProcessada = true;
                 pararMonitoramentoProgresso();
-            } else if (!active && !progress && !solicitandoSync && progressTimer) {
-                pararMonitoramentoProgresso();
-                if (statusEl.classList.contains('loading')) {
-                    statusEl.className = 'status-bar';
-                    statusEl.textContent = '';
+                syncEmAndamento = true;
+                renderFinalSync(final, payload.sync_meta || {});
+                const estoqueRecarregado = await carregar(false);
+                if (contextoSyncAtual(geracaoSync, jobIdEsperado, true) && syncFinalizacaoProcessada) {
+                    syncEmAndamento = false;
+                    setSyncButton(false);
+                    if (estoqueRecarregado) {
+                        renderFinalSync(final, payload.sync_meta || {});
+                    }
                 }
             }
             return payload;
         } catch (_e) {
             // Falha momentânea de rede durante polling; tenta novamente no próximo ciclo.
             return null;
+        } finally {
+            if (syncPollEmAndamento === tokenPoll) {
+                syncPollEmAndamento = null;
+            }
         }
     }
 
-    function iniciarMonitoramentoProgresso() {
+    function iniciarMonitoramentoProgresso(geracaoSync = syncGeracaoAtual, jobIdEsperado = syncJobIdAtual) {
         pararMonitoramentoProgresso();
-        progressTimer = setInterval(verificarProgressoEstoque, 2500);
-        verificarProgressoEstoque();
+        if (!contextoSyncAtual(geracaoSync, jobIdEsperado)) return;
+        const executarCiclo = async () => {
+            progressTimer = null;
+            if (!contextoSyncAtual(geracaoSync, jobIdEsperado)) return;
+            await verificarProgressoEstoque(geracaoSync, jobIdEsperado);
+            if (!contextoSyncAtual(geracaoSync, jobIdEsperado)) return;
+            progressTimer = setTimeout(executarCiclo, 2500);
+        };
+        progressTimer = setTimeout(executarCiclo, 0);
+    }
+
+    async function adotarSincronizacaoEstoqueAtiva() {
+        try {
+            const resp = await fetchComTimeout(
+                '/api/estoque/sync/progress',
+                { headers: obterAuthHeaders(), cache: 'no-store' },
+                SYNC_PROGRESS_TIMEOUT_MS,
+            );
+            if (!resp.ok) return false;
+            const payload = await resp.json();
+            const jobId = jobIdPayloadSync(payload);
+            if (!payload.active || !jobId) return false;
+
+            const geracaoSync = syncGeracaoAtual + 1;
+            syncGeracaoAtual = geracaoSync;
+            syncJobIdAtual = jobId;
+            syncFinalizacaoProcessada = false;
+            syncEmAndamento = true;
+            solicitandoSync = false;
+            setSyncButton(true);
+            if (payload.progress) {
+                renderProgresso(payload.progress, payload.logs || [], payload.sync_meta || {});
+            } else {
+                mostrarStatusCarregando('Atualização de estoque já em andamento.');
+            }
+            iniciarMonitoramentoProgresso(geracaoSync, jobId);
+            return true;
+        } catch (_e) {
+            return false;
+        }
     }
 
     function formatarDataInput(dt) {
@@ -406,14 +616,12 @@
         return Number.isNaN(dtIso.getTime()) ? null : dtIso;
     }
 
-    function obterUltimaAtualizacaoDaLoja(lojaNome) {
-        if (!lojaNome || lojaNome === '__todas') return null;
-        const alvo = String(lojaNome).toLowerCase();
+    function obterUltimaAtualizacaoDaLoja(storeId) {
+        if (!storeId || storeId === '__todas') return null;
         let ultima = null;
 
         for (const row of dados) {
-            const lojaRow = String(row.loja_sync || row.loja || '').toLowerCase();
-            if (lojaRow !== alvo) continue;
+            if (!linhaPertenceLojaSelecionada(row, storeId)) continue;
 
             const dt = parseDataHoraAtualizacao(row.last_update);
             if (!dt) continue;
@@ -425,11 +633,13 @@
         return ultima;
     }
 
-    async function solicitarSyncEstoque(lojaAlvo, isAuto = false) {
-        if (!lojaAlvo || lojaAlvo === '__todas') {
-            if (!isAuto) {
-                alert('Selecione uma loja para atualizar no Bling.');
-            }
+    async function solicitarSyncEstoque(storeIdAlvo, isAuto = false) {
+        if (solicitandoSync || syncEmAndamento) return;
+        const todasLojas = storeIdAlvo === '__todas';
+        if (!storeIdAlvo) return;
+        const lojaAlvo = todasLojas ? null : obterLojaPorStoreId(storeIdAlvo);
+        if (!todasLojas && !lojaAlvo) {
+            if (!isAuto) alert('A loja selecionada não está mais disponível.');
             return;
         }
 
@@ -439,12 +649,18 @@
             return;
         }
 
+        const geracaoSync = syncGeracaoAtual + 1;
+        syncGeracaoAtual = geracaoSync;
+        syncJobIdAtual = '';
         solicitandoSync = true;
+        syncFinalizacaoProcessada = false;
+        pararMonitoramentoProgresso();
         setSyncButton(true);
-        iniciarMonitoramentoProgresso();
 
         statusEl.className = 'status-bar loading';
-        statusEl.innerHTML = `${spinnerHtml}${isAuto ? 'Solicitando atualização automática...' : 'Solicitando atualização manual...'}`;
+        statusEl.innerHTML = `${spinnerHtml}${todasLojas
+            ? 'Solicitando atualização de todas as lojas...'
+            : (isAuto ? 'Solicitando atualização automática...' : 'Solicitando atualização manual...')}`;
 
         try {
             const resp = await fetchComTimeout('/api/estoque/sync', {
@@ -453,42 +669,54 @@
                     'Content-Type': 'application/json',
                     ...obterAuthHeaders()
                 },
-                body: JSON.stringify({ loja: lojaAlvo })
+                body: JSON.stringify(todasLojas ? {
+                    todas_lojas: true,
+                    store_id: '__todas',
+                    loja: 'Todas as lojas'
+                } : {
+                    store_id: String(lojaAlvo.store_id || '').trim(),
+                    loja: String(lojaAlvo.nome || '').trim()
+                })
             });
 
             const data = await resp.json().catch(() => ({}));
+            if (geracaoSync !== syncGeracaoAtual) return;
             if (!resp.ok) {
-                throw new Error(data.detail || `HTTP ${resp.status}`);
+                throw new Error(primeiraMensagemSync(data.detail, data.error, data.message, `HTTP ${resp.status}`));
             }
 
             solicitandoSync = false;
-            if (data.started || data.already_running) {
+            const jobIdResposta = normalizarJobIdSync(data.job_id);
+            if ((data.started === true || data.already_running === true) && jobIdResposta) {
+                syncJobIdAtual = jobIdResposta;
                 syncEmAndamento = true;
                 setSyncButton(true);
-                if (data.already_running && data.message) {
-                    mostrarStatusCarregando(data.message);
+                if (data.already_running === true) {
+                    mostrarStatusCarregando(primeiraMensagemSync(data.message, 'Atualização de estoque já em andamento.'));
                 }
-                iniciarMonitoramentoProgresso();
+                iniciarMonitoramentoProgresso(geracaoSync, jobIdResposta);
                 return;
             }
 
+            syncFinalizacaoProcessada = true;
             syncEmAndamento = false;
             pararMonitoramentoProgresso();
             statusEl.className = 'status-bar error';
-            statusEl.textContent = data.message || 'Atualizacao de estoque nao foi iniciada.';
+            statusEl.textContent = (data.started === true || data.already_running === true)
+                ? 'A atualização foi informada sem um job_id válido e não será monitorada.'
+                : primeiraMensagemSync(data.message, data.detail, data.error, 'Atualização de estoque não foi iniciada.');
             setSyncButton(false);
         } catch (e) {
+            if (geracaoSync !== syncGeracaoAtual) return;
             solicitandoSync = false;
-            const payload = await verificarProgressoEstoque();
-            if (payload && payload.active) {
-                return;
-            }
+            syncFinalizacaoProcessada = true;
+            syncJobIdAtual = '';
             syncEmAndamento = false;
             pararMonitoramentoProgresso();
             statusEl.className = 'status-bar error';
             statusEl.textContent = e.name === 'AbortError'
-                ? 'A solicitacao de estoque demorou demais e nao ha atualizacao ativa. Tente novamente em alguns instantes.'
-                : `Erro ao sincronizar: ${e.message}`;
+                ? 'A solicitação demorou demais e o resultado é incerto. Aguarde alguns instantes antes de tentar novamente.'
+                : `Erro ao sincronizar: ${primeiraMensagemSync(e, 'Falha inesperada.')}`;
             setSyncButton(false);
         }
     }
@@ -512,6 +740,53 @@
         } catch (_e) {
             return '__todas';
         }
+    }
+
+    function obterLojaPorStoreId(storeId) {
+        const alvo = String(storeId || '').trim();
+        if (!alvo || alvo === '__todas') return null;
+        return lojasDisponiveis.find(loja => String(loja?.store_id || '').trim() === alvo) || null;
+    }
+
+    function lojasComNomeExato(nome) {
+        const alvo = String(nome || '').trim();
+        if (!alvo) return [];
+        return lojasDisponiveis.filter(loja => String(loja?.nome || '').trim() === alvo);
+    }
+
+    function nomeLojaSelecionada() {
+        const loja = obterLojaPorStoreId(lojaSelecionada);
+        return loja ? String(loja.nome || '').trim() : '';
+    }
+
+    function rotuloLoja(loja) {
+        const nome = String(loja?.nome || '').trim() || 'Loja sem nome';
+        const storeId = String(loja?.store_id || '').trim();
+        return lojasComNomeExato(nome).length > 1 && storeId
+            ? `${nome} (${storeId})`
+            : nome;
+    }
+
+    function normalizarPreferenciaLoja(valor) {
+        const preferencia = String(valor || '').trim();
+        if (!preferencia || preferencia === '__todas') return '__todas';
+        if (obterLojaPorStoreId(preferencia)) return preferencia;
+        const legadoPorNome = lojasComNomeExato(preferencia);
+        return legadoPorNome.length === 1
+            ? String(legadoPorNome[0].store_id || '').trim() || '__todas'
+            : '__todas';
+    }
+
+    function linhaPertenceLojaSelecionada(row, storeId = lojaSelecionada) {
+        const alvo = String(storeId || '').trim();
+        if (!alvo || alvo === '__todas') return true;
+        const rowStoreId = String(row?.store_id || '').trim();
+        if (rowStoreId) return rowStoreId === alvo;
+
+        const loja = obterLojaPorStoreId(alvo);
+        const nome = String(loja?.nome || '').trim();
+        if (!nome || lojasComNomeExato(nome).length !== 1) return false;
+        return String(row?.loja_sync || row?.loja || '').trim() === nome;
     }
 
     function obterClientId() {
@@ -667,7 +942,7 @@
     function renderHistoricoResumo(payload, series) {
         historicoResumo.innerHTML = '';
         const cards = [
-            { label: 'Loja', value: payload.loja || lojaSelecionada || '-' },
+            { label: 'Loja', value: payload.loja || nomeLojaSelecionada() || '-' },
             { label: 'Tipo de saldo', value: 'Loja (Full separado)' },
             { label: 'Base', value: payload.base_snapshot_at || payload.base_snapshot_data || '-' },
         ];
@@ -834,7 +1109,7 @@
             if (resp.ok) data.__intervaloFallback = true;
         }
         if (!resp.ok) {
-            throw new Error(data.detail || `HTTP ${resp.status}`);
+            throw new Error(data?.detail?.message || data.detail || `HTTP ${resp.status}`);
         }
         return data;
     }
@@ -871,7 +1146,8 @@
         }
         try {
             const params = new URLSearchParams({
-                loja: lojaSelecionada,
+                loja: nomeLojaSelecionada(),
+                store_id: lojaSelecionada,
                 periodo: 'max',
                 intervalo: histIntervalo.value,
                 fonte: 'lancamentos',
@@ -995,14 +1271,15 @@
                     ...obterAuthHeaders()
                 },
                 body: JSON.stringify({
-                    loja: lojaSelecionada,
+                    loja: nomeLojaSelecionada(),
+                    store_id: lojaSelecionada,
                     data_inicio: histDataInicio.value || null,
                     data_fim: histDataFim.value || null
                 })
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok) {
-                throw new Error(data.detail || `HTTP ${resp.status}`);
+                throw new Error(data?.detail?.message || data.detail || `HTTP ${resp.status}`);
             }
 
             historicoSolicitandoSync = false;
@@ -1079,8 +1356,7 @@
     function atualizarOpcoesSkuHistorico() {
         const skus = new Set();
         dados.forEach(row => {
-            const loja = normalizarLoja(row?.loja_sync || row?.loja || '');
-            if (lojaSelecionada !== '__todas' && loja !== normalizarLoja(lojaSelecionada)) return;
+            if (!linhaPertenceLojaSelecionada(row)) return;
             const sku = obterSku(row);
             if (sku) skus.add(sku);
         });
@@ -1217,10 +1493,7 @@
         let lista = dados;
 
         if (lojaSelecionada && lojaSelecionada !== '__todas') {
-            lista = lista.filter(row => {
-                const loja = normalizarLoja(row.loja_sync || row.loja || '');
-                return loja === normalizarLoja(lojaSelecionada);
-            });
+            lista = lista.filter(row => linhaPertenceLojaSelecionada(row));
         }
 
         if (termo) {
@@ -1243,13 +1516,16 @@
 
     function renderBotoesLojas(lojas) {
         lojaBotoes.innerHTML = '';
-        const lojasNomes = new Set(lojas.map(l => l.nome));
-        if (lojaSelecionada !== '__todas' && !lojasNomes.has(lojaSelecionada)) {
+        const lojasComId = (Array.isArray(lojas) ? lojas : [])
+            .filter(loja => String(loja?.store_id || '').trim());
+        const lojasIds = new Set(lojasComId.map(loja => String(loja.store_id).trim()));
+        if (lojaSelecionada !== '__todas' && !lojasIds.has(lojaSelecionada)) {
             lojaSelecionada = '__todas';
         }
 
         const todosBtn = document.createElement('button');
         todosBtn.textContent = 'Todas as lojas';
+        todosBtn.dataset.storeId = '__todas';
         todosBtn.className = 'loja-btn' + (lojaSelecionada === '__todas' ? ' active' : '');
         todosBtn.onclick = () => {
             lojaSelecionada = '__todas';
@@ -1259,12 +1535,14 @@
         };
         lojaBotoes.appendChild(todosBtn);
 
-        lojas.forEach(l => {
+        lojasComId.forEach(l => {
+            const storeId = String(l.store_id).trim();
             const btn = document.createElement('button');
-            btn.textContent = l.nome;
-            btn.className = 'loja-btn' + (lojaSelecionada === l.nome ? ' active' : '');
+            btn.textContent = rotuloLoja(l);
+            btn.dataset.storeId = storeId;
+            btn.className = 'loja-btn' + (lojaSelecionada === storeId ? ' active' : '');
             btn.onclick = () => {
-                lojaSelecionada = l.nome;
+                lojaSelecionada = storeId;
                 salvarPreferenciaLoja();
                 paginaAtual = 1;
                 atualizarSelecao();
@@ -1276,7 +1554,7 @@
     function atualizarSelecao() {
         invalidarConsultaHistorico();
         Array.from(lojaBotoes.children).forEach(btn => {
-            btn.classList.toggle('active', btn.textContent === 'Todas as lojas' ? lojaSelecionada === '__todas' : btn.textContent === lojaSelecionada);
+            btn.classList.toggle('active', btn.dataset.storeId === lojaSelecionada);
         });
         filtrar();
         atualizarOpcoesSkuHistorico();
@@ -1296,14 +1574,14 @@
             clientId = obterClientId();
             if (!clientId) {
                 window.location.href = '/frontend_index.html';
-                return;
+                return false;
             }
             const resp = await fetch('/api/lojas', { headers: obterAuthHeaders() });
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const lojas = await resp.json();
             lojasDisponiveis = Array.isArray(lojas) ? lojas : [];
-            lojaSelecionada = carregarPreferenciaLoja();
-            renderBotoesLojas(lojas);
+            lojaSelecionada = normalizarPreferenciaLoja(carregarPreferenciaLoja());
+            renderBotoesLojas(lojasDisponiveis);
             salvarPreferenciaLoja();
         } catch (e) {
             statusEl.className = 'status-bar error';
@@ -1331,9 +1609,11 @@
                 statusEl.className = 'status-bar';
                 statusEl.textContent = '';
             }
+            return true;
         } catch (e) {
             statusEl.className = 'status-bar error';
             statusEl.textContent = `Erro ao carregar estoque: ${e.message}`;
+            return false;
         }
     }
 
@@ -1392,19 +1672,21 @@
         await carregarConfiguracoesGlobais();
         await carregarLojas();
         await carregar();
+        if (await adotarSincronizacaoEstoqueAtiva()) return;
 
         const lojaAuto = lojaSelecionada !== '__todas'
             ? lojaSelecionada
-            : (lojasDisponiveis[0] && lojasDisponiveis[0].nome ? lojasDisponiveis[0].nome : null);
+            : (lojasDisponiveis.find(loja => String(loja?.store_id || '').trim())?.store_id || null);
 
         if (!autoSyncSolicitado && lojaAuto) {
             autoSyncSolicitado = true;
+            const rotuloLojaAuto = rotuloLoja(obterLojaPorStoreId(lojaAuto));
             const ultimaAtualizacao = obterUltimaAtualizacaoDaLoja(lojaAuto);
             if (ultimaAtualizacao) {
                 const diffMin = (Date.now() - ultimaAtualizacao.getTime()) / 60000;
                 if (diffMin < janelaAutoSyncMinutos) {
                     statusEl.className = 'status-bar';
-                    statusEl.textContent = `Última atualização de ${lojaAuto} foi há ${Math.max(1, Math.round(diffMin))} min. Auto-atualização ignorada.`;
+                    statusEl.textContent = `Última atualização de ${rotuloLojaAuto} foi há ${Math.max(1, Math.round(diffMin))} min. Auto-atualização ignorada.`;
                     return;
                 }
             }

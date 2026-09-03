@@ -38,6 +38,10 @@ from backend.services.shared_sync_common import *
 from backend.services.shared_sync_context import configure_shared_sync_context, get_tenant_id
 
 
+_SHARED_SYNC_POINTER_CAS_FALLBACK_LOCK = threading.RLock()
+_SHARED_SYNC_V2_AUTHORITY_SUFFIX = "__v2_authority"
+
+
 def configure_shared_sync_remote_runtime(runtime_module=None, peer_globals: dict[str, object] | None = None):
     runtime = configure_shared_sync_context(runtime_module)
     bind_runtime_globals(globals(), runtime)
@@ -105,6 +109,21 @@ def _shared_sync_cleanup_old_snapshots(db, pointer_id: str, current_snapshot_id:
     """Retem os dois snapshots mais recentes e nunca remove o snapshot apontado."""
     try:
         coll = db.collection(_firebase_shared_sync_collection_name())
+        authority_id = _shared_sync_v2_authority_id(pointer_id)
+
+        def protected_snapshot_ids() -> set[str]:
+            protected = {str(current_snapshot_id or "").strip()}
+            for doc_id in (authority_id, pointer_id):
+                snap = coll.document(doc_id).get()
+                if not snap.exists:
+                    continue
+                snapshot_id = _shared_sync_pointer_snapshot_id(snap)
+                if snapshot_id:
+                    protected.add(snapshot_id)
+            protected.discard("")
+            return protected
+
+        protected = protected_snapshot_ids()
         snapshots = []
         for snap in coll.where("pointer_id", "==", pointer_id).stream():
             data = snap.to_dict() or {}
@@ -114,12 +133,235 @@ def _shared_sync_cleanup_old_snapshots(db, pointer_id: str, current_snapshot_id:
         snapshots.sort(reverse=True)
         cutoff = int(time.time()) - (7 * 24 * 60 * 60)
         for index, (_ts, snapshot_id, data) in enumerate(snapshots):
-            if snapshot_id == current_snapshot_id or index < 2 or int(data.get("updated_ts") or 0) >= cutoff:
+            if snapshot_id in protected or index < 2 or int(data.get("updated_ts") or 0) >= cutoff:
+                continue
+            # A autoridade pode mudar depois da listagem. Releia imediatamente
+            # antes de excluir para nunca coletar o snapshot que venceu outro CAS.
+            protected = protected_snapshot_ids()
+            if snapshot_id in protected:
                 continue
             _shared_sync_delete_chunks(db, snapshot_id)
             coll.document(snapshot_id).delete()
     except Exception as exc:
         logger.warning("[SHARED-SYNC] Falha ao limpar snapshots antigos: %s", exc)
+
+
+def _shared_sync_pointer_snapshot_id(snapshot) -> Optional[str]:
+    if not snapshot.exists:
+        return None
+    data = snapshot.to_dict()
+    if not isinstance(data, dict) or not data:
+        raise HTTPException(
+            status_code=409,
+            detail="Metadados do snapshot remoto atual estao invalidos.",
+        )
+    return str(data.get("snapshot_id") or data.get("id") or snapshot.id).strip()
+
+
+def _shared_sync_v2_authority_id(bundle_id: str) -> str:
+    return f"{str(bundle_id or '').strip()}{_SHARED_SYNC_V2_AUTHORITY_SUFFIX}"
+
+
+def _shared_sync_pointer_fail_closed_meta(meta: dict) -> dict:
+    """Espelho legado sem chunks: clientes antigos param em vez de ler v1 stale."""
+    pointer = dict(meta or {})
+    pointer["chunk_count"] = 0
+    pointer["bundle_b64_chars"] = 0
+    pointer["legacy_reader_blocked"] = True
+    return pointer
+
+
+def _shared_sync_guard_expectation_from_meta(
+    meta: Optional[dict],
+    bundle_id: str,
+) -> Optional[dict]:
+    if not isinstance(meta, dict) or not meta:
+        return None
+    return {
+        "pointer_id": str(
+            meta.get("_guard_pointer_id") or bundle_id or ""
+        ).strip(),
+        "revision": _shared_sync_pointer_revision_from_meta(meta, bundle_id),
+    }
+
+
+def _shared_sync_pointer_revision_from_meta(
+    meta: Optional[dict],
+    fallback_id: str = "",
+) -> Optional[str]:
+    """Cria a precondicao CAS; v1 precisa da revisao, pois seu ID era mutavel."""
+    if not isinstance(meta, dict) or not meta:
+        return None
+    try:
+        schema = int(meta.get("schema") or 0)
+    except (TypeError, ValueError):
+        schema = 0
+    if schema == 2 and bool(meta.get("encrypted")):
+        snapshot_id = str(
+            meta.get("snapshot_id") or meta.get("id") or fallback_id
+        ).strip()
+        return f"v2:{snapshot_id}"
+
+    revision_fields = {
+        key: str(meta.get(key) or "")
+        for key in (
+            "id",
+            "schema",
+            "encrypted",
+            "scope",
+            "snapshot_hash",
+            "bundle_sha256",
+            "updated_at",
+            "updated_ts",
+            "chunk_count",
+            "bundle_bytes",
+            "bundle_b64_chars",
+            "file_count",
+            "stores_count",
+        )
+    }
+    revision_fields["id"] = revision_fields["id"] or str(fallback_id or "")
+    encoded = json.dumps(
+        revision_fields,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"legacy:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _shared_sync_pointer_revision(snapshot) -> Optional[str]:
+    if not snapshot.exists:
+        return None
+    data = snapshot.to_dict()
+    if not isinstance(data, dict) or not data:
+        raise HTTPException(
+            status_code=409,
+            detail="Metadados do snapshot remoto atual estao invalidos.",
+        )
+    return _shared_sync_pointer_revision_from_meta(data, snapshot.id)
+
+
+def _shared_sync_publicar_pointer_cas(
+    db,
+    bundle_id: str,
+    meta: dict,
+    expected_revision: Any,
+) -> None:
+    """Publica autoridade v2 sem permitir que writers v1 a sobrescrevam."""
+    collection = db.collection(_firebase_shared_sync_collection_name())
+    pointer_ref = collection.document(bundle_id)
+    authority_id = _shared_sync_v2_authority_id(bundle_id)
+    authority_ref = collection.document(authority_id)
+    pointer_meta = _shared_sync_pointer_fail_closed_meta(meta)
+
+    def validar(source_snapshot, authority_snapshot) -> None:
+        if isinstance(expected_revision, dict):
+            expected_pointer_id = str(
+                expected_revision.get("pointer_id") or ""
+            ).strip()
+            expected_value = expected_revision.get("revision")
+            if expected_pointer_id not in {bundle_id, authority_id}:
+                raise HTTPException(
+                    status_code=409,
+                    detail="A origem autoritativa do snapshot remoto mudou.",
+                )
+            if expected_pointer_id != authority_id and authority_snapshot.exists:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "O snapshot remoto mudou durante o envio. Importe os dados "
+                        "mais recentes e tente novamente."
+                    ),
+                )
+            atual_revision = _shared_sync_pointer_revision(source_snapshot)
+        elif isinstance(expected_revision, str) and not expected_revision.startswith(
+            ("v2:", "legacy:")
+        ):
+            # Compatibilidade interna com chamadas antigas/testes que usavam o ID.
+            expected_value = expected_revision
+            atual_snapshot = (
+                authority_snapshot if authority_snapshot.exists else source_snapshot
+            )
+            atual_revision = _shared_sync_pointer_snapshot_id(atual_snapshot)
+        else:
+            expected_value = expected_revision
+            atual_snapshot = (
+                authority_snapshot if authority_snapshot.exists else source_snapshot
+            )
+            atual_revision = _shared_sync_pointer_revision(atual_snapshot)
+        if atual_revision != expected_value:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "O snapshot remoto mudou durante o envio. Importe os dados "
+                    "mais recentes e tente novamente."
+                ),
+            )
+
+    transaction_factory = getattr(db, "transaction", None)
+    if callable(transaction_factory):
+        try:
+            from google.cloud import firestore as google_firestore
+
+            transaction = transaction_factory()
+
+            @google_firestore.transactional
+            def publish(transaction_obj):
+                authority_snapshot = authority_ref.get(transaction=transaction_obj)
+                if isinstance(expected_revision, dict):
+                    expected_pointer_id = str(
+                        expected_revision.get("pointer_id") or ""
+                    ).strip()
+                    source_ref = (
+                        authority_ref
+                        if expected_pointer_id == authority_id
+                        else pointer_ref
+                    )
+                    source_snapshot = (
+                        authority_snapshot
+                        if source_ref is authority_ref
+                        else source_ref.get(transaction=transaction_obj)
+                    )
+                elif authority_snapshot.exists:
+                    source_snapshot = authority_snapshot
+                else:
+                    source_snapshot = pointer_ref.get(transaction=transaction_obj)
+                validar(source_snapshot, authority_snapshot)
+                transaction_obj.set(authority_ref, meta)
+                transaction_obj.set(pointer_ref, pointer_meta)
+
+            publish(transaction)
+            return
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning("[SHARED-SYNC] Falha na troca transacional do ponteiro: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="Nao foi possivel publicar o snapshot de forma atomica.",
+            ) from exc
+
+    # Implementacoes de teste/compatibilidade sem transacao ficam serializadas
+    # no processo. O Firestore real sempre segue o caminho transacional acima.
+    with _SHARED_SYNC_POINTER_CAS_FALLBACK_LOCK:
+        authority_snapshot = authority_ref.get()
+        if isinstance(expected_revision, dict):
+            expected_pointer_id = str(
+                expected_revision.get("pointer_id") or ""
+            ).strip()
+            source_snapshot = (
+                authority_snapshot
+                if expected_pointer_id == authority_id
+                else pointer_ref.get()
+            )
+        elif authority_snapshot.exists:
+            source_snapshot = authority_snapshot
+        else:
+            source_snapshot = pointer_ref.get()
+        validar(source_snapshot, authority_snapshot)
+        authority_ref.set(meta, merge=False)
+        pointer_ref.set(pointer_meta, merge=False)
 
 def _shared_sync_push_scope(
     client_id: str,
@@ -134,6 +376,7 @@ def _shared_sync_push_scope(
     allow_empty_delta: bool = False,
     sanitize_user_share_oauth: bool = False,
     skip_if_remote_hash_matches: bool = False,
+    expected_snapshot_hash: str = "",
     key_context: Optional[dict] = None,
 ) -> dict:
     db = _shared_sync_firestore_required()
@@ -151,6 +394,12 @@ def _shared_sync_push_scope(
         from backend.services.shared_sync_merge_integracoes import _shared_sync_lojas_config_from_bundle
 
         stores_count = len(_shared_sync_lojas_config_from_bundle(bundle))
+    local_hash = str(manifest.get("snapshot_hash") or "")
+    if expected_snapshot_hash and local_hash != str(expected_snapshot_hash).strip():
+        raise HTTPException(
+            status_code=409,
+            detail="Os dados locais mudaram depois da previa; confira novamente.",
+        )
     bundle_id = str(bundle_id or _shared_sync_doc_id(client_id, scope)).strip()
     encryption_secret: Optional[bytes] = None
     encryption_key_id = ""
@@ -162,10 +411,27 @@ def _shared_sync_push_scope(
     if skip_if_remote_hash_matches:
         remote_meta = _shared_sync_remote_meta_by_id(bundle_id) or {}
         remote_hash = str(remote_meta.get("snapshot_hash") or "")
-        local_hash = str(manifest.get("snapshot_hash") or "")
         remote_key_id = str(remote_meta.get("encryption_key_id") or "")
         same_key = remote_key_id == encryption_key_id if encryption_key_id else not remote_key_id
-        if remote_hash and local_hash and remote_hash == local_hash and same_key:
+        authority_ready = (
+            scope != "lojas_integracoes"
+            or str(remote_meta.get("_guard_pointer_id") or "").strip()
+            == _shared_sync_v2_authority_id(bundle_id)
+        )
+        if (
+            remote_hash
+            and local_hash
+            and remote_hash == local_hash
+            and same_key
+            and authority_ready
+        ):
+            _shared_sync_state_update(
+                client_id,
+                sessao.get("username") or "",
+                state_scope or scope,
+                remote_meta,
+                "push",
+            )
             return {
                 "scope": scope,
                 "success": True,
@@ -180,6 +446,11 @@ def _shared_sync_push_scope(
                 "chunk_count": int(remote_meta.get("chunk_count") or 0),
                 "bundle_bytes": int(remote_meta.get("bundle_bytes") or 0),
                 "snapshot_hash": local_hash,
+                "snapshot_id": str(
+                    remote_meta.get("snapshot_id")
+                    or remote_meta.get("id")
+                    or ""
+                ),
                 "warnings": warnings,
                 "updated_at": remote_meta.get("updated_at") or _shared_sync_now_iso(),
             }
@@ -200,8 +471,22 @@ def _shared_sync_push_scope(
             "warnings": warnings,
             "updated_at": _shared_sync_now_iso(),
         }
-    if scope == "lojas_integracoes" and known_keys is None:
-        _shared_sync_validar_push_lojas_integracoes(bundle_id, bundle, key_context=key_context)
+    expected_remote_revision: Any = None
+    guard_pointer = scope == "lojas_integracoes" and known_keys is None
+    if guard_pointer:
+        base_snapshot_id = _shared_sync_state_snapshot_id(
+            client_id,
+            sessao.get("username") or "",
+            state_scope or scope,
+        )
+        expected_remote_revision = _shared_sync_validar_push_lojas_integracoes(
+            bundle_id,
+            bundle,
+            key_context=key_context,
+            base_snapshot_id=base_snapshot_id,
+            return_guard_revision=True,
+            client_id=client_id,
+        )
     encrypted_bundle = _shared_sync_encrypt_bundle(bundle_id, bundle, encryption_secret)
     bundle_sha256 = _shared_sync_bytes_sha256(encrypted_bundle)
     bundle_b64 = base64.b64encode(encrypted_bundle).decode("ascii")
@@ -265,12 +550,45 @@ def _shared_sync_push_scope(
     # Fase 2: publica o snapshot completo e so entao troca o ponteiro atual.
     snapshot_meta = dict(meta)
     snapshot_meta["id"] = snapshot_id
-    snapshot_meta["status"] = "complete"
+    # Um candidato ainda nao publicado nunca pode ser coletado como historico.
+    snapshot_meta["status"] = "pending"
     db.collection(_firebase_shared_sync_collection_name()).document(snapshot_id).set(snapshot_meta, merge=False)
-    db.collection(_firebase_shared_sync_collection_name()).document(bundle_id).set(meta, merge=False)
-    # Chunks v1 usavam o proprio pointer_id como bundle_id. Os chunks v2 usam
-    # snapshot_id, entao esta limpeza remove apenas o legado legivel depois da
-    # publicacao atomica do primeiro snapshot v2 valido.
+    try:
+        if guard_pointer:
+            _shared_sync_publicar_pointer_cas(
+                db,
+                bundle_id,
+                meta,
+                expected_remote_revision,
+            )
+        else:
+            db.collection(_firebase_shared_sync_collection_name()).document(bundle_id).set(meta, merge=False)
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            # O CAS provou que nao houve commit; apenas neste caso e seguro
+            # remover o snapshot candidato. Falhas 5xx sao ambiguas e ficam
+            # para a coleta posterior, evitando apagar uma base ja publicada.
+            _shared_sync_delete_chunks(db, snapshot_id)
+            try:
+                db.collection(_firebase_shared_sync_collection_name()).document(
+                    snapshot_id
+                ).delete()
+            except Exception:
+                pass
+        raise
+    db.collection(_firebase_shared_sync_collection_name()).document(
+        snapshot_id
+    ).set(
+        {
+            "status": "complete",
+            "committed_at": _shared_sync_now_iso(),
+        },
+        merge=True,
+    )
+    # Chunks v1 usavam o proprio pointer_id. Depois do commit v2 eles precisam
+    # desaparecer: um cliente v1 ignora schema/snapshot_id e poderia combinar
+    # o ponteiro novo com esses chunks antigos, aplicando dados obsoletos de
+    # forma destrutiva. Assim, clientes antigos falham fechado ate o upgrade.
     _shared_sync_delete_chunks(db, bundle_id)
     _shared_sync_cleanup_old_snapshots(db, bundle_id, snapshot_id)
     _shared_sync_state_update(client_id, sessao.get("username") or "", state_scope or scope, meta, "push")
@@ -299,18 +617,299 @@ def _shared_sync_remote_meta_by_id(bundle_id: str) -> Optional[dict]:
     if db is None:
         return None
     try:
-        snap = db.collection(_firebase_shared_sync_collection_name()).document(str(bundle_id or "").strip()).get()
+        coll = db.collection(_firebase_shared_sync_collection_name())
+        logical_id = str(bundle_id or "").strip()
+        authority_snap = coll.document(
+            _shared_sync_v2_authority_id(logical_id)
+        ).get()
+        snap = (
+            authority_snap
+            if authority_snap.exists
+            else coll.document(logical_id).get()
+        )
         if not snap.exists:
             return None
         data = snap.to_dict() or {}
         data["id"] = data.get("id") or snap.id
+        data["_guard_pointer_id"] = snap.id
+        if int(data.get("schema") or 0) in {0, 1} and not bool(
+            data.get("encrypted")
+        ):
+            # v1 usava o proprio documento mutavel como snapshot. Mesmo que um
+            # campo snapshot_id apareca por migracao parcial, ele nao recebe
+            # autoridade causal de um ID imutavel v2.
+            data["snapshot_id"] = ""
         return data
     except Exception as exc:
         logger.warning("[SHARED-SYNC] Falha ao ler metadados remotos: %s", exc)
         return None
 
+
+def _shared_sync_remote_snapshot_meta_by_hash(
+    bundle_id: str,
+    snapshot_hash: str,
+    *,
+    expected_client_id: str = "",
+    expected_scope: str = "",
+) -> Optional[dict]:
+    """Resolve uma base v2 imutavel para estados legados que guardavam so o hash.
+
+    O ponteiro atual e os documentos v1 sao deliberadamente ignorados. A busca
+    apenas seleciona snapshots completos, cifrados e vinculados ao mesmo
+    pointer_id. Duplicatas do mesmo conteudo sao validas; a mais recente e
+    escolhida de forma deterministica e o bundle ainda sera revalidado antes de
+    receber autoridade causal.
+    """
+    logical_id = str(bundle_id or "").strip()
+    expected_hash = str(snapshot_hash or "").strip().lower()
+    if not logical_id or not re.fullmatch(r"[a-f0-9]{64}", expected_hash):
+        return None
+    client_id = str(expected_client_id or "").strip()
+    scope = str(expected_scope or "").strip()
+    try:
+        db = _shared_sync_firestore_required()
+    except HTTPException:
+        return None
+    try:
+        coll = db.collection(_firebase_shared_sync_collection_name())
+        candidates: list[tuple[tuple[int, str, str, str], dict]] = []
+        for snap in coll.where("pointer_id", "==", logical_id).stream():
+            data = snap.to_dict() or {}
+            if not isinstance(data, dict):
+                continue
+            try:
+                schema = int(data.get("schema") or 0)
+            except (TypeError, ValueError):
+                schema = 0
+            snapshot_id = str(data.get("snapshot_id") or "").strip()
+            if (
+                snap.id == logical_id
+                or snap.id == _shared_sync_v2_authority_id(logical_id)
+                or snapshot_id != snap.id
+                or str(data.get("pointer_id") or "").strip() != logical_id
+                or schema != 2
+                or not bool(data.get("encrypted"))
+                or str(data.get("status") or "").strip().lower() != "complete"
+                or str(data.get("snapshot_hash") or "").strip().lower() != expected_hash
+                or (client_id and str(data.get("client_id") or "").strip() != client_id)
+                or (scope and str(data.get("scope") or "").strip() != scope)
+            ):
+                continue
+            try:
+                updated_ts = int(data.get("updated_ts") or 0)
+            except (TypeError, ValueError):
+                updated_ts = 0
+            meta = dict(data)
+            meta["_guard_pointer_id"] = snap.id
+            candidates.append((
+                (
+                    updated_ts,
+                    str(data.get("committed_at") or ""),
+                    str(data.get("updated_at") or ""),
+                    snap.id,
+                ),
+                meta,
+            ))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+    except Exception as exc:
+        logger.warning(
+            "[SHARED-SYNC] Falha ao localizar base causal legada por hash: %s",
+            type(exc).__name__,
+        )
+        return None
+
+
+def _shared_sync_obter_base_causal_por_hash(
+    bundle_id: str,
+    snapshot_hash: str,
+    *,
+    expected_client_id: str = "",
+    expected_scope: str = "",
+    key_context: Optional[dict] = None,
+) -> Optional[tuple[bytes, dict]]:
+    """Baixa e valida integralmente uma base imutavel identificada por hash."""
+    expected_hash = str(snapshot_hash or "").strip().lower()
+    meta = _shared_sync_remote_snapshot_meta_by_hash(
+        bundle_id,
+        expected_hash,
+        expected_client_id=expected_client_id,
+        expected_scope=expected_scope,
+    )
+    if not meta:
+        return None
+    try:
+        snapshot_id = str(meta.get("snapshot_id") or "").strip()
+        bundle, loaded_meta = _shared_sync_obter_bundle_por_id(
+            snapshot_id,
+            meta,
+            key_context=key_context,
+        )
+        from backend.services.shared_sync_apply_scope import (
+            _shared_sync_read_validated_bundle,
+        )
+        from backend.services.shared_sync_bundle import _shared_sync_snapshot_hash
+
+        manifest, _ = _shared_sync_read_validated_bundle(
+            bundle,
+            str(expected_scope or meta.get("scope") or ""),
+        )
+        manifest_hash = str(manifest.get("snapshot_hash") or "").strip().lower()
+        manifest_files = manifest.get("files")
+        if (
+            not isinstance(manifest_files, list)
+            or not re.fullmatch(r"[a-f0-9]{64}", manifest_hash)
+            or manifest_hash != expected_hash
+            or _shared_sync_snapshot_hash(manifest_files) != expected_hash
+        ):
+            return None
+        return bundle, loaded_meta
+    except Exception as exc:
+        logger.warning(
+            "[SHARED-SYNC] Base causal legada por hash foi rejeitada: %s",
+            type(exc).__name__,
+        )
+        return None
+
 def _shared_sync_obter_bundle_remoto(client_id: str, scope: str) -> tuple[bytes, dict]:
     return _shared_sync_obter_bundle_por_id(_shared_sync_doc_id(client_id, scope))
+
+
+def _shared_sync_obter_bundle_remoto_para_guard(
+    bundle_id: str,
+    key_context: Optional[dict] = None,
+) -> Optional[tuple[bytes, dict]]:
+    """Distingue ausencia confirmada de indisponibilidade/corrupcao remota."""
+    db = _shared_sync_firestore_required()
+    try:
+        coll = db.collection(_firebase_shared_sync_collection_name())
+        logical_id = str(bundle_id or "").strip()
+        authority_snap = coll.document(
+            _shared_sync_v2_authority_id(logical_id)
+        ).get()
+        snap = (
+            authority_snap
+            if authority_snap.exists
+            else coll.document(logical_id).get()
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Nao foi possivel confirmar o snapshot remoto atual.",
+        ) from exc
+    if not snap.exists:
+        return None
+    meta = snap.to_dict()
+    if not isinstance(meta, dict) or not meta:
+        raise HTTPException(
+            status_code=502,
+            detail="Metadados do snapshot remoto estao invalidos.",
+        )
+    meta = dict(meta)
+    meta["id"] = meta.get("id") or snap.id
+    meta["_guard_pointer_id"] = snap.id
+    schema = int(meta.get("schema") or 0)
+    if schema in {0, 1} and not bool(meta.get("encrypted")):
+        meta["snapshot_id"] = ""
+        chunk_count = int(meta.get("chunk_count") or 0)
+        if chunk_count <= 0:
+            raise HTTPException(status_code=502, detail="Snapshot legado remoto sem chunks.")
+        max_bundle_bytes = _shared_sync_max_bundle_bytes()
+        max_b64_chars = ((max_bundle_bytes + 2) // 3) * 4
+        expected_size = int(meta.get("bundle_bytes") or 0)
+        expected_b64_chars = int(meta.get("bundle_b64_chars") or 0)
+        max_chunk_count = max(
+            4,
+            ((max_b64_chars + max(1, SHARED_SYNC_CHUNK_CHARS) - 1)
+             // max(1, SHARED_SYNC_CHUNK_CHARS)) * 4,
+        )
+        if expected_size > max_bundle_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail="Snapshot legado remoto maior que o limite permitido.",
+            )
+        if expected_b64_chars > max_b64_chars or chunk_count > max_chunk_count:
+            raise HTTPException(
+                status_code=413,
+                detail="Snapshot legado remoto excede os limites de transferencia.",
+            )
+        chunks = []
+        total_b64_chars = 0
+        coll = db.collection(_firebase_shared_sync_chunks_collection_name())
+        legacy_id = str(meta.get("id") or bundle_id)
+        for idx in range(chunk_count):
+            chunk = coll.document(f"{legacy_id}_{idx:05d}").get()
+            if not chunk.exists:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Snapshot legado remoto incompleto: parte {idx + 1}/{chunk_count}.",
+                )
+            chunk_text = str((chunk.to_dict() or {}).get("data") or "")
+            total_b64_chars += len(chunk_text)
+            if total_b64_chars > max_b64_chars:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Snapshot legado remoto maior que o limite permitido.",
+                )
+            chunks.append(chunk_text)
+        try:
+            bundle = base64.b64decode(
+                "".join(chunks).encode("ascii"),
+                validate=True,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="Snapshot legado remoto corrompido.",
+            ) from exc
+        if expected_size and len(bundle) != expected_size:
+            raise HTTPException(
+                status_code=502,
+                detail="Tamanho do snapshot legado remoto divergente.",
+            )
+        if len(bundle) > max_bundle_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail="Snapshot legado remoto maior que o limite permitido.",
+            )
+        from backend.services.shared_sync_apply_scope import (
+            _shared_sync_read_validated_bundle,
+        )
+
+        manifest, _ = _shared_sync_read_validated_bundle(
+            bundle,
+            str(meta.get("scope") or "lojas_integracoes"),
+        )
+        expected_snapshot_hash = str(meta.get("snapshot_hash") or "").strip().lower()
+        manifest_snapshot_hash = str(manifest.get("snapshot_hash") or "").strip().lower()
+        manifest_files = manifest.get("files")
+        if not isinstance(manifest_files, list):
+            raise HTTPException(
+                status_code=502,
+                detail="Lista de arquivos invalida no snapshot legado remoto.",
+            )
+        from backend.services.shared_sync_bundle import _shared_sync_snapshot_hash
+
+        calculated_snapshot_hash = _shared_sync_snapshot_hash(manifest_files)
+        if (
+            not re.fullmatch(r"[a-f0-9]{64}", expected_snapshot_hash)
+            or not re.fullmatch(r"[a-f0-9]{64}", manifest_snapshot_hash)
+            or calculated_snapshot_hash != manifest_snapshot_hash
+            or expected_snapshot_hash != manifest_snapshot_hash
+        ):
+            raise HTTPException(
+                status_code=502,
+                detail="Hash do snapshot legado remoto divergente.",
+            )
+        meta["legacy_plaintext"] = True
+        return bundle, meta
+    return _shared_sync_obter_bundle_por_id(
+        bundle_id,
+        meta=meta,
+        key_context=key_context,
+    )
 
 def _shared_sync_obter_bundle_por_id(
     bundle_id: str,
@@ -378,10 +977,14 @@ __all__ = [
     "_shared_sync_encrypt_bundle",
     "_shared_sync_decrypt_bundle",
     "_shared_sync_delete_chunks",
+    "_shared_sync_publicar_pointer_cas",
     "_shared_sync_push_scope",
     "_shared_sync_remote_meta",
     "_shared_sync_remote_meta_by_id",
+    "_shared_sync_remote_snapshot_meta_by_hash",
+    "_shared_sync_obter_base_causal_por_hash",
     "_shared_sync_obter_bundle_remoto",
+    "_shared_sync_obter_bundle_remoto_para_guard",
     "_shared_sync_obter_bundle_por_id",
     "_shared_sync_manifest_from_bundle",
 ]

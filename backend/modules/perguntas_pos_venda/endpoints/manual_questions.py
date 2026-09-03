@@ -37,9 +37,9 @@ def ml_perguntas_gerar_resposta_manual(
 ):
     loja = str(req.loja or "").strip()
     pergunta = req.pergunta if isinstance(req.pergunta, dict) else {}
-    resposta_atual = str(req.resposta_atual or "").strip()
-    if resposta_atual:
-        pergunta = {**pergunta, "_resposta_atual": resposta_atual[:ML_RESPOSTA_PERGUNTA_MAX_CHARS]}
+    resposta_atual = str(req.resposta_atual or "")
+    if resposta_atual.strip():
+        pergunta = {**pergunta, "_resposta_atual": resposta_atual}
     orientacao_usuario = str(req.orientacao_usuario or "").strip()
     if orientacao_usuario:
         pergunta = {**pergunta, "_orientacao_usuario": orientacao_usuario[:1200]}
@@ -90,6 +90,7 @@ def ml_perguntas_gerar_resposta_manual(
     cfg = _obter_cfg_ml(client_id, loja)
     item_id = str(pergunta.get("item_id") or "").strip()
     item = {}
+    official_current_listing = False
     if item_id:
         try:
             resp_item, cfg = _ml_api_request(
@@ -101,11 +102,17 @@ def ml_perguntas_gerar_resposta_manual(
                 timeout=12,
             )
             if resp_item.status_code == 200:
-                item = resp_item.json() or {}
+                loaded_item = resp_item.json() or {}
+                if isinstance(loaded_item, dict) and loaded_item:
+                    item = loaded_item
+                    official_current_listing = True
         except Exception as exc:
-            logger.warning("[ML PERGUNTAS] Falha ao buscar item %s para resposta manual: %s", item_id, exc)
+            logger.warning("[ML PERGUNTAS] evento=buscar_item_manual status=erro tipo=%s", type(exc).__name__)
     if not item:
-        item = _ml_api_item_com_oauth_tenant(client_id, item_id) or _ml_api_item(item_id) or {}
+        loaded_item = _ml_api_item_com_oauth_tenant(client_id, item_id) or _ml_api_item(item_id) or {}
+        if isinstance(loaded_item, dict) and loaded_item:
+            item = loaded_item
+            official_current_listing = True
     if not isinstance(item, dict):
         item = {}
     if item and not _ml_extrair_sku(item):
@@ -120,6 +127,7 @@ def ml_perguntas_gerar_resposta_manual(
                 {"id": "SELLER_SKU", "value_name": pergunta.get("item_sku") or ""}
             ] if pergunta.get("item_sku") else [],
         }
+    item["_ppv_official_current_listing"] = official_current_listing
 
     try:
         resposta, cfg, contexto = _perguntas_ia_gerar_resposta(client_id, loja, cfg, pergunta, item)
@@ -137,12 +145,12 @@ def ml_perguntas_gerar_resposta_manual(
 def ml_perguntas_responder_manual(req: PerguntasEnviarRespostaRequest, client_id: str = Depends(get_tenant_id)):
     loja = str(req.loja or "").strip()
     question_id = str(req.question_id or "").strip()
-    resposta = str(req.resposta or "").strip()
+    resposta = str(req.resposta or "")
     if not loja:
         raise HTTPException(status_code=400, detail="Informe a loja.")
     if not question_id:
         raise HTTPException(status_code=400, detail="Informe a pergunta.")
-    if not resposta:
+    if not resposta.strip():
         raise HTTPException(status_code=400, detail="Informe a resposta.")
 
     proposal_info = None
@@ -224,7 +232,7 @@ def ml_perguntas_responder_manual(req: PerguntasEnviarRespostaRequest, client_id
                 question_id=question_id,
             )
     except Exception as exc:
-        logger.warning("[ML PERGUNTAS IA] Falha ao registrar resposta manual na memoria do SKU: %s", exc)
+        logger.warning("[ML PERGUNTAS IA] evento=registrar_memoria_manual status=erro tipo=%s", type(exc).__name__)
     state = _perguntas_ia_state_carregar(client_id)
     _perguntas_ia_marcar_processada(state, loja, question_id, "sent_manual")
     _perguntas_ia_state_salvar(client_id, state)

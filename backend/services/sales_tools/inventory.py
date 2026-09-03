@@ -153,12 +153,47 @@ def _merge_store_costs(client_id: str, store_filter: Optional[str], maps: dict) 
         costs_by_sku: dict[str, list[float]] = {}
         prices_by_sku: dict[str, list[float]] = {}
         target_store = _normalizar_texto(store_filter or "")
+        exact_skus_target: set[str] = set()
+        if target_store and store_costs is not None and not store_costs.empty:
+            matching = store_costs[
+                store_costs["loja_sync"].astype(str).apply(_normalizar_texto)
+                == target_store
+            ]
+            identities = {
+                str(row.get("store_id") or "").strip()
+                for _, row in matching.iterrows()
+                if str(row.get("store_id") or "").strip()
+            }
+            if len(identities) > 1:
+                logger.warning(
+                    "[IA TOOLS] Custos por loja ignorados: nome de loja ambiguo no cadastro."
+                )
+                return
+            if identities:
+                exact_skus_target = {
+                    str(row.get("sku") or "").strip().upper()
+                    for _, row in matching.iterrows()
+                    if str(row.get("store_id") or "").strip()
+                }
+        exact_name_skus = set()
+        if not target_store and store_costs is not None and not store_costs.empty:
+            exact_name_skus = {
+                (_normalizar_texto(row.get("loja_sync") or ""), str(row.get("sku") or "").strip().upper())
+                for _, row in store_costs.iterrows()
+                if str(row.get("store_id") or "").strip()
+            }
         rows = store_costs.iterrows() if store_costs is not None and not store_costs.empty else []
         for _, row in rows:
             row_sku = str(row.get("sku") or "").strip().upper()
             if not row_sku:
                 continue
-            if target_store and _normalizar_texto(row.get("loja_sync") or "") != target_store:
+            row_store = _normalizar_texto(row.get("loja_sync") or "")
+            row_store_id = str(row.get("store_id") or "").strip()
+            if target_store and row_store != target_store:
+                continue
+            if target_store and not row_store_id and row_sku in exact_skus_target:
+                continue
+            if not target_store and not row_store_id and (row_store, row_sku) in exact_name_skus:
                 continue
             try:
                 variants = list(dict.fromkeys([row_sku, *_sku_lookup_variantes(row_sku)]))

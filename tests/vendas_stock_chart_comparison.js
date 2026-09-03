@@ -23,7 +23,7 @@ assert.match(source, /estoqueMeta\?\.detail/);
 
 const estoqueStart = source.indexOf('function renderizarGraficoEstoque(');
 const skusStart = source.indexOf('function renderizarGraficoSkusComEstoque(');
-const nextFunction = source.indexOf('function obterLimitesComVendas(', skusStart);
+const nextFunction = source.indexOf('async function obterLimitesComVendasServidor(', skusStart);
 assert.ok(estoqueStart >= 0 && skusStart > estoqueStart && nextFunction > skusStart);
 
 const estoqueChartSource = source.slice(estoqueStart, skusStart);
