@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Importações - Detalhe SKU</title>
-    <script src="/auth.js?v=20260618-persist-login"></script>
+    <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
     <style>
         :root {
             --bg: #0b0f1a;
@@ -2321,9 +2321,8 @@
                 box.innerHTML = '<div class="sem-foto">Sem foto</div>';
                 return;
             }
-            const segura = foto.replace(/"/g, '&quot;');
             const alt = String(sku || 'Produto').replace(/"/g, '&quot;');
-            box.innerHTML = '<img src="' + segura + '" alt="' + alt + '" loading="lazy" onerror="this.remove(); this.parentElement.innerHTML=\'<div class=\'sem-foto\'>Sem foto</div>\';">';
+            box.innerHTML = '<img ' + atributoSrcFotoCadastro(foto) + ' alt="' + alt + '" loading="lazy" onerror="this.remove(); this.parentElement.innerHTML=\'<div class=\'sem-foto\'>Sem foto</div>\';">';
         }
 
         function montarMeta(listaNome, sku) {
@@ -2337,10 +2336,26 @@
         function obterUrlFoto(valor) {
             const foto = String(valor || '').trim();
             if (!foto) return '';
-            if (/^https?:\/\//i.test(foto) || foto.startsWith('//')) return foto;
-            const nomeArquivo = foto.split('/').pop();
-            if (!nomeArquivo) return '';
-            return '/api/cadastro/foto-arquivo/' + encodeURIComponent(nomeArquivo);
+            const helper = globalThis.JKAuthenticatedMedia;
+            if (helper && typeof helper.normalizarUrlFotoCadastro === 'function') {
+                return helper.normalizarUrlFotoCadastro(foto);
+            }
+            return /^(?:https?:)?\/\//i.test(foto) ? foto : '';
+        }
+
+        function ehUrlFotoCadastroProtegida(url) {
+            const helper = globalThis.JKAuthenticatedMedia;
+            if (helper && typeof helper.ehUrlProtegidaCadastro === 'function') {
+                return helper.ehUrlProtegidaCadastro(url);
+            }
+            return /^(\/api\/cadastro\/foto-arquivo\/|\/api\/cadastro\/foto\/)/i.test(String(url || '').trim());
+        }
+
+        function atributoSrcFotoCadastro(url) {
+            const foto = escaparHtml(url);
+            return ehUrlFotoCadastroProtegida(url)
+                ? 'data-jk-auth-src="' + foto + '"'
+                : 'src="' + foto + '"';
         }
 
         function preencherCampos(item, lista, cad, itensLista, mapaM3Cadastro) {

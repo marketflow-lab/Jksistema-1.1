@@ -19,6 +19,9 @@ from backend.modules.context_hub.product_evidence_model import (
 from backend.modules.context_hub.runtime import _sha256_text
 
 
+_ADVISORY_FIELD_PREFIXES = ("context.", "refutation.")
+
+
 def _batch_identity(row: Mapping[str, Any]) -> tuple[str, str, str, str, str, str]:
     return tuple(
         str(row[key])
@@ -98,6 +101,13 @@ def _support_for_claim(
             active.append((source, expiry))
     if not active:
         return False, "", None, False
+    if field_name.startswith(_ADVISORY_FIELD_PREFIXES):
+        return (
+            False,
+            "advisory_candidate_v1",
+            max(expiry for _source, expiry in active),
+            True,
+        )
     strong = _is_strong_claim(field_name, scope)
     official_expiries = [
         expiry

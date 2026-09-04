@@ -24,8 +24,59 @@ class CodexAdvancedReportTest(unittest.TestCase):
         tenant.mkdir(parents=True, exist_ok=True)
         return tenant
 
+    def test_cost_map_fails_closed_for_duplicate_store_display_names(self):
+        with tempfile.TemporaryDirectory() as root:
+            tenant = self._tenant(root)
+            with (tenant / "cadastro_custos_lojas.csv").open(
+                "w", encoding="utf-8", newline=""
+            ) as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["store_id", "loja_sync", "sku", "custo"],
+                )
+                writer.writeheader()
+                writer.writerows(
+                    [
+                        {"store_id": "store-a", "loja_sync": "Mesmo nome", "sku": "SKU-1", "custo": "10"},
+                        {"store_id": "store-b", "loja_sync": "Mesmo nome", "sku": "SKU-1", "custo": "99"},
+                    ]
+                )
+
+            by_store, _generic = codex_reports_advanced._load_cost_maps(str(tenant))
+
+        self.assertNotIn((codex_reports_advanced._text_key("Mesmo nome"), "SKU-1"), by_store)
+
+    def test_cost_map_prefers_exact_identity_over_later_legacy_shadow(self):
+        with tempfile.TemporaryDirectory() as root:
+            tenant = self._tenant(root)
+            with (tenant / "cadastro_custos_lojas.csv").open(
+                "w", encoding="utf-8", newline=""
+            ) as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["store_id", "loja_sync", "sku", "custo"],
+                )
+                writer.writeheader()
+                writer.writerows(
+                    [
+                        {"store_id": "store-a", "loja_sync": "Loja A", "sku": "SKU-1", "custo": "10"},
+                        {"store_id": "", "loja_sync": "Loja A", "sku": "SKU-1", "custo": "999"},
+                    ]
+                )
+
+            by_store, _generic = codex_reports_advanced._load_cost_maps(str(tenant))
+
+        self.assertEqual(
+            by_store[(codex_reports_advanced._text_key("Loja A"), "SKU-1")]["cost"],
+            10,
+        )
+
     def _seed_operational_data(self, root: str) -> tuple[Path, dict]:
         tenant = self._tenant(root)
+        (tenant / "lojas_config.json").write_text(
+            json.dumps([{"store_id": "store-1", "nome": "Loja 1"}]),
+            encoding="utf-8",
+        )
         period = codex_reports_advanced._period_for_profile("daily_exceptions")
         current_start = date.fromisoformat(period["start"])
         current_end = date.fromisoformat(period["end"])
@@ -143,6 +194,43 @@ class CodexAdvancedReportTest(unittest.TestCase):
         self.assertLessEqual(len(result["top_actions"]), 5)
         self.assertTrue(any(action["action_type"] == "price_review" for action in result["top_actions"]))
 
+    def test_homonymous_store_blocks_stock_read_in_advanced_report(self):
+        with tempfile.TemporaryDirectory() as root:
+            tenant, _period = self._seed_operational_data(root)
+            (tenant / "lojas_config.json").write_text(
+                json.dumps([
+                    {"store_id": "store-a", "nome": "Loja 1"},
+                    {"store_id": "store-b", "nome": "loja 1"},
+                ]),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(
+                    codex_reports_advanced,
+                    "_load_latest_stock",
+                    side_effect=AssertionError("estoque ambiguo nao deve ser lido"),
+                ),
+                patch.object(
+                    codex_reports_advanced,
+                    "_load_opening_stock",
+                    side_effect=AssertionError("abertura ambigua nao deve ser lida"),
+                ),
+            ):
+                result = codex_reports_advanced.build_profile_context(
+                    info_base=root,
+                    client_id="000001",
+                    profile="weekly_sales_stock",
+                    store="Loja 1",
+                )
+
+        self.assertTrue(any("lojas homônimas" in item for item in result["data_quality"]["warnings"]))
+        estoque_source = next(
+            item
+            for item in result["data_quality"]["source_health"]
+            if item["source"] == "Histórico de estoque"
+        )
+        self.assertEqual(estoque_source["status"], "unavailable")
+
     def test_below_95_percent_keeps_consolidated_margin_unavailable(self):
         with tempfile.TemporaryDirectory() as root:
             tenant, _period = self._seed_operational_data(root)
@@ -190,6 +278,10 @@ class CodexAdvancedReportTest(unittest.TestCase):
     def test_unavailable_sources_never_publish_false_zeroes(self):
         with tempfile.TemporaryDirectory() as root:
             tenant = self._tenant(root)
+            (tenant / "lojas_config.json").write_text(
+                json.dumps([{"store_id": "store-1", "nome": "Loja 1"}]),
+                encoding="utf-8",
+            )
             stock_db = sqlite3.connect(tenant / "estoque_historico.db")
             stock_db.execute(
                 "CREATE TABLE estoque_historico (data_ref TEXT, recorded_at TEXT, loja_sync TEXT, sku TEXT, nome_bling TEXT, saldo_loja REAL, saldo_full REAL)"
@@ -515,6 +607,58 @@ class CodexAdvancedReportTest(unittest.TestCase):
         self.assertIsNone(item_b["valor_custo_estoque_loja"])
         self.assertEqual(result["resumo_estoque_parado"]["custos_cobertos"], 1)
         self.assertEqual(result["resumo_estoque_parado"]["capital_custo_conhecido"], 120)
+
+    def test_stale_stock_store_filter_fails_closed_for_duplicate_display_name(self):
+        maps = {
+            "products": {"A": "Produto A"},
+            "costs": {},
+            "prices": {},
+            "known_costs": set(),
+            "known_prices": set(),
+            "cost_sources": {},
+            "price_sources": {},
+        }
+        store_costs = pd.DataFrame(
+            [
+                {"store_id": "store-a", "loja_sync": "Mesmo nome", "sku": "A", "custo": "10"},
+                {"store_id": "store-b", "loja_sync": "Mesmo nome", "sku": "A", "custo": "99"},
+            ]
+        )
+
+        with patch.object(
+            sales_inventory,
+            "_cadastro_ler_custos_lojas",
+            return_value=store_costs,
+        ):
+            sales_inventory._merge_store_costs("tenant-a", "Mesmo nome", maps)
+
+        self.assertNotIn("A", maps["costs"])
+
+    def test_stale_stock_store_filter_prefers_exact_row_over_legacy_shadow(self):
+        maps = {
+            "products": {"A": "Produto A"},
+            "costs": {},
+            "prices": {},
+            "known_costs": set(),
+            "known_prices": set(),
+            "cost_sources": {},
+            "price_sources": {},
+        }
+        store_costs = pd.DataFrame(
+            [
+                {"store_id": "store-a", "loja_sync": "Loja A", "sku": "A", "custo": "10"},
+                {"store_id": "", "loja_sync": "Loja A", "sku": "A", "custo": "999"},
+            ]
+        )
+
+        with patch.object(
+            sales_inventory,
+            "_cadastro_ler_custos_lojas",
+            return_value=store_costs,
+        ):
+            sales_inventory._merge_store_costs("tenant-a", "Loja A", maps)
+
+        self.assertEqual(maps["costs"]["A"], 10)
 
     def test_marketplace_margin_keeps_same_sku_separate_by_store_mlb_and_variation(self):
         base = {

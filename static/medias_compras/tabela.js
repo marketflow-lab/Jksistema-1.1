@@ -170,6 +170,7 @@
                 params.set('meses', String(periodoSolicitado));
                 if (lojaSolicitada && lojaSolicitada !== '__todas') {
                     params.set('loja', lojaSolicitada);
+                    params.set('store_id', String(storeIdSelecionado || ''));
                 }
                 const resp = await fetchLatest('visao', '/api/medias-compras/visao?' + params.toString(), {
                     method: 'GET',
@@ -216,8 +217,10 @@
                 .concat(colunasMeses.map(c => c.key))
                 .concat(['Total período', 'VMM', 'Estoque físico', 'Em trânsito', 'Posição estoque', 'Cobertura (meses)', 'Sugestão compra', 'Ocultar']);
             chavesColunasAtuais = ['sku', 'foto', 'titulo_anuncio']
-                .concat(colunasMeses.map(c => 'mes_' + c.key))
+                .concat(colunasMeses.map((_c, indice) => 'mes_' + indice))
                 .concat(['total_periodo', 'media_mensal', 'saldo_estoque', 'estoque_transito', 'posicao_estoque', 'cobertura_meses', 'compra_sugerida', 'acao']);
+            carregarPerfilLargurasColunas(periodoAtual);
+            sanearLargurasColunas(chavesColunasAtuais);
 
             chavesColunasAtuais.forEach((colKey, idx) => {
                 const col = document.createElement('col');
@@ -229,11 +232,9 @@
                 if (colKey === 'saldo_estoque') col.classList.add('col-estoque-fisico');
                 if (colKey === 'posicao_estoque') col.classList.add('col-posicao-estoque');
                 if (colKey === 'cobertura_meses') col.classList.add('col-cobertura-estoque');
-                const largura = Number(largurasColunas[colKey] || 0);
-                if (largura > 0) {
-                    col.style.width = largura + 'px';
-                    col.style.minWidth = largura + 'px';
-                }
+                const largura = normalizarLarguraColuna(colKey, largurasColunas[colKey]);
+                col.style.width = largura + 'px';
+                col.style.minWidth = largura + 'px';
                 colgroup.appendChild(col);
                 colElementsAtuais.push(col);
             });
@@ -250,7 +251,10 @@
                     th.classList.add('th-mes');
                     th.innerHTML = '<span class="mes-ano-topo">' + escaparHtml(anoCurto) + '</span><span class="mes-nome-base">' + escaparHtml(mesNome) + '</span>';
                 } else {
-                    th.textContent = h;
+                    const label = document.createElement('span');
+                    label.className = 'cabecalho-coluna-label';
+                    label.textContent = h;
+                    th.appendChild(label);
                 }
                 th.dataset.colKey = chavesColunasAtuais[idx] || ('col_' + idx);
                 if (th.dataset.colKey.startsWith('mes_')) {
@@ -266,6 +270,7 @@
                 head.appendChild(th);
             });
             habilitarResizeColunas();
+            sincronizarLarguraTabelaPrincipal();
             const tbody = document.querySelector('#tblResultado tbody');
             tbody.innerHTML = '';
             return { headers, tbody };
@@ -284,6 +289,7 @@
                     : "Nenhum SKU encontrado para o período selecionado.";
                 tr.innerHTML = '<td colspan="' + headers.length + '">' + msgVazio + '</td>';
                 tbody.appendChild(tr);
+                autoAjustarLargurasColunasPrimeiroUso(itensVisaoAtual, colunasMeses);
                 return;
             }
 
@@ -309,7 +315,7 @@
 
                 const fotoUrl = obterUrlFoto(i.foto || '');
                 if (fotoUrl) {
-                    tds.push('<td><img class="foto-sku" src="' + escaparHtml(fotoUrl) + '" alt="Foto ' + escaparHtml(i.sku || '') + '" loading="lazy"></td>');
+                    tds.push('<td><img class="foto-sku" ' + atributoSrcFotoCadastro(fotoUrl) + ' alt="Foto ' + escaparHtml(i.sku || '') + '" loading="lazy"></td>');
                 } else {
                     tds.push('<td><span class="foto-empty">Sem foto</span></td>');
                 }
@@ -360,6 +366,7 @@
                 }
                 tbody.appendChild(tr);
             });
+            autoAjustarLargurasColunasPrimeiroUso(itensVisaoAtual, colunasMeses);
         }
 
         return {

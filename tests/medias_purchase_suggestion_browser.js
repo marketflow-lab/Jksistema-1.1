@@ -27,7 +27,7 @@ const html = fs.readFileSync(path.join(root, 'medias_compras.html'), 'utf8');
         return;
       }
       if (url.pathname === '/api/lojas') {
-        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ nome: 'JK Pecas' }]) });
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ nome: 'JK Pecas', store_id: 'store-jk' }]) });
         return;
       }
       if (url.pathname === '/api/medias-compras/preferencias-skus-ocultos') {

@@ -15,6 +15,7 @@ from .input_contracts import (
     VEHICLE_IDENTITY_PROMPT_FIELDS as _VEHICLE_IDENTITY_PROMPT_FIELDS,
     build_input_operational_contract,
 )
+from .deep_research_contracts import safe_agent_product_research_evidence
 
 from .runtime import (
     Any,
@@ -57,11 +58,11 @@ from .runtime import (
 
 ML_PERGUNTAS_IA_DESCRICAO_AGENT_MAX_CHARS = 12000
 _PERGUNTAS_IA_RESEARCH_INPUT_FIELDS = frozenset({
-    "_codex_job_id", "allowed_tools", "category", "classification", "context", "force_external_research",
-    "intent", "item", "locale", "question", "research_attempt", "research_directive",
+    "_codex_job_id", "_research_session_key", "allowed_tools", "category", "classification", "context", "force_external_research",
+    "intent", "item", "locale", "question", "question_plan", "gap_queries", "research_attempt", "research_directive", "research_gap_only",
     "research_gaps", "research_history", "store", "subquestions", "task", "tenant_id",
-    "use_web_search", "vehicle_identity", "verified_product_evidence", "web_search_required",
-    "product_evidence_identity",
+    "use_web_search", "vehicle_identity", "verified_product_evidence", "product_research_evidence", "web_search_required",
+    "product_evidence_identity", "technical_question_plan", "technical_gap_queries",
 })
 
 
@@ -69,11 +70,40 @@ def _perguntas_ia_research_input(agent_input: Optional[dict[str, Any]]) -> dict[
     """Keep seller instructions and examples outside research/tool decisions."""
 
     source = agent_input if isinstance(agent_input, dict) else {}
-    return {
+    projected = {
         key: copy.deepcopy(source[key])
         for key in _PERGUNTAS_IA_RESEARCH_INPUT_FIELDS
         if key in source
     }
+    if "technical_question_plan" in projected:
+        projected["technical_question_plan"] = _perguntas_ia_technical_question_plan_seguro(
+            projected.get("technical_question_plan")
+        )
+    if "technical_gap_queries" in projected:
+        projected["technical_gap_queries"] = _perguntas_ia_technical_gap_queries_seguras(
+            projected.get("technical_gap_queries")
+        )
+    plan_source = projected.get("technical_question_plan") or projected.get("question_plan")
+    gap_source = projected.get("technical_gap_queries") or projected.get("gap_queries")
+    projected["technical_question_plan"] = _perguntas_ia_technical_question_plan_seguro(plan_source)
+    projected["technical_gap_queries"] = _perguntas_ia_technical_gap_queries_seguras(gap_source)
+    projected.pop("question_plan", None)
+    projected.pop("gap_queries", None)
+    if "_research_session_key" in projected:
+        projected["_research_session_key"] = re.sub(
+            r"[^A-Za-z0-9_.-]", "", str(projected.get("_research_session_key") or "")
+        )[:128]
+    try:
+        research_attempt = int(projected.get("research_attempt") or 1)
+    except (TypeError, ValueError, OverflowError):
+        research_attempt = 1
+    if research_attempt >= 2 and (
+        projected["technical_gap_queries"]
+        or projected.get("research_gaps")
+        or projected.get("force_external_research") is True
+    ):
+        projected["research_gap_only"] = True
+    return projected
 
 
 def _perguntas_ia_cloud_extrair_resposta_literal(valor: Any) -> str:
@@ -221,140 +251,33 @@ def _perguntas_ia_verified_product_evidence_segura(pergunta: dict) -> list[dict[
         if isinstance(pergunta.get("_verified_product_evidence"), list)
         else []
     )
-    safe: list[dict[str, Any]] = []
-    for value in raw[:120]:
-        if not isinstance(value, dict):
-            continue
-        normalized_value = re.sub(r"\s+", " ", str(value.get("value") or "")).strip()[:256]
-        if contains_vin_like_identifier(normalized_value):
-            continue
-        safe.append(
-            {
-                "field_name": re.sub(r"[^a-z0-9_.]", "", str(value.get("field_name") or "").lower())[:96],
-                "scope": str(value.get("scope") or "")[:24],
-                "value": normalized_value,
-                "unit": str(value.get("unit") or "")[:16],
-                "activation_policy": str(value.get("activation_policy") or "")[:64],
-                "source_authorities": [
-                    str(authority or "")[:24]
-                    for authority in (value.get("source_authorities") or [])[:4]
-                    if str(authority or "").strip()
-                ],
-            }
-        )
-    return safe
-
-
-def _perguntas_ia_texto_sem_diacriticos_com_indices(valor: object) -> tuple[str, list[int]]:
-    partes: list[str] = []
-    indices: list[int] = []
-    for indice, char in enumerate(str(valor or "")):
-        for decomposed in unicodedata.normalize("NFKD", char):
-            if unicodedata.combining(decomposed):
-                continue
-            for folded in decomposed.casefold():
-                partes.append(folded)
-                indices.append(indice)
-    return "".join(partes), indices
-
-
-def _perguntas_ia_remover_nome_comprador_texto(valor: object, agent_input: Optional[dict[str, Any]]) -> str:
-    entrada = agent_input if isinstance(agent_input, dict) else {}
-    pergunta = entrada.get("question") if isinstance(entrada.get("question"), dict) else {}
-    nome = re.sub(r"\s+", " ", str(pergunta.get("buyer_name") or "")).strip()
-    texto = str(valor or "")
-    if len(nome) < 3:
-        return texto
-    nome_normalizado, _ = _perguntas_ia_texto_sem_diacriticos_com_indices(nome)
-    texto_normalizado, indices = _perguntas_ia_texto_sem_diacriticos_com_indices(texto)
-    pattern = r"(?<!\w)" + r"\s+".join(re.escape(parte) for parte in nome_normalizado.split()) + r"(?!\w)"
-    ranges = [
-        (indices[match.start()], indices[match.end() - 1] + 1)
-        for match in re.finditer(pattern, texto_normalizado)
-        if match.end() > match.start() and indices
+    projected = safe_agent_product_research_evidence(raw[:120])
+    return [
+        {
+            "field_name": str(value.get("field_name") or "")[:96],
+            "scope": str(value.get("scope") or "")[:24],
+            "value": str(value.get("value") or "")[:256],
+            "unit": str(value.get("unit") or "")[:16],
+            "activation_policy": str(value.get("activation_policy") or "")[:64],
+            "source_authorities": [
+                str(authority or "")[:24]
+                for authority in (value.get("source_authorities") or [])[:4]
+                if str(authority or "").strip()
+            ],
+        }
+        for value in projected
     ]
-    for start, end in reversed(ranges):
-        texto = texto[:start] + " " + texto[end:]
-    return texto
 
 
-def _perguntas_ia_v2_texto_busca_curto(valor: object, max_palavras: int = 14, max_chars: int = 180) -> str:
-    texto = re.sub(r"\bMLB[\s_-]*\d{5,}\b", " ", str(valor or ""), flags=re.IGNORECASE)
-    texto = re.sub(r"\bSKU\s*[:#-]?\s*[A-Z0-9._/-]+\b", " ", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"https?://\S+", " ", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"[^0-9A-Za-zÀ-ÿ+./-]+", " ", texto)
-    palavras = [parte for parte in texto.split() if parte]
-    return " ".join(palavras[:max(1, int(max_palavras or 14))])[:max_chars].strip()
-
-
-def _perguntas_ia_v2_texto_classificado_busca(
-    valor: object,
-    max_palavras: int = 14,
-    max_chars: int = 180,
-) -> str:
-    """Sanitize AI-classified or unstructured text before a public search."""
-
-    texto = re.sub(r"\s+", " ", str(valor or "")).strip()
-    texto = re.sub(
-        r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
-        " ", texto, flags=re.IGNORECASE,
-    )
-    texto = re.sub(
-        r"\b(?:nome(?:\s+do\s+comprador)?|cliente|comprador)\b"
-        r"[^;|.!?]{0,160}(?:[;|.!?]|$)", " ", texto, flags=re.IGNORECASE,
-    )
-    texto = re.sub(
-        r"\bde\s+[A-ZÀ-Ý][a-zà-ÿ]{1,30}\s+[A-ZÀ-Ý][a-zà-ÿ]{1,30}"
-        r"(?=\s+(?i:vin|chassi|placa)\b)", " ", texto,
-    )
-    texto = re.sub(
-        r"\b(?:chassi|vin)\b(?=[^;|.!?]{0,80}\d)[^;|.!?]{0,100}(?:[;|.!?]|$)",
-        " ", texto, flags=re.IGNORECASE,
-    )
-    texto = re.sub(
-        r"(?<![A-Z0-9])(?=(?:[A-HJ-NPR-Z0-9][ -]?){0,16}\d)"
-        r"(?=(?:[A-HJ-NPR-Z0-9][ -]?){0,16}[A-HJ-NPR-Z])"
-        r"(?:[A-HJ-NPR-Z0-9][ -]?){16}[A-HJ-NPR-Z0-9](?![A-Z0-9])",
-        " ", texto, flags=re.IGNORECASE,
-    )
-    texto = re.sub(
-        r"\bplaca\s*[:#-]?\s*[A-Z]{3}[- ]?(?:\d{4}|\d[A-Z]\d{2})\b",
-        " ", texto, flags=re.IGNORECASE,
-    )
-    texto = re.sub(r"\b[A-Z]{3}\d[A-Z]\d{2}\b", " ", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"\bCEP\s*[:#-]?\s*\d{5}-?\d{3}\b", " ", texto, flags=re.IGNORECASE)
-    texto = re.sub(
-        r"(?<!\w)(?:endere[cç]o(?:\s+(?:de\s+)?entrega)?|rua|avenida|av\.?|travessa|alameda|estrada|rodovia|"
-        r"r\.(?=\s+[A-Za-zÀ-ÿ]{2,}))(?=\s|[:#-])"
-        r"(?!\s*[:#-]?\s*(?:i2c|0x[0-9a-f]+|ip|mem[oó]ria)\b)"
-        r"\s*[:#-]?\s*[^;|.!?]{0,160}(?:[;|.!?]|$)",
-        " ", texto, flags=re.IGNORECASE,
-    )
-    texto = re.sub(
-        r"\b(?:telefone|fone|tel\.?|whats(?:app)?|contato)\s*"
-        r"(?:(?:n[uú]mero|n[ºo.]?)\s*)?[:#=-]?\s*"
-        r"(?:\+?\d[\d\s()./-]{5,}\d)\b",
-        " ", texto, flags=re.IGNORECASE,
-    )
-    texto = re.sub(
-        r"\b(?:pedido|order|compra)\s*"
-        r"(?:(?:n[uú]mero|n[ºo.]?)\s*)?[:#=-]?\s*"
-        r"(?=[A-Z0-9._/-]*\d)[A-Z0-9][A-Z0-9._/-]{5,}\b",
-        " ", texto, flags=re.IGNORECASE,
-    )
-    texto = re.sub(r"(?<![A-Za-z0-9])(?:\d[\s()./-]?){7,8}\d(?![A-Za-z0-9])", " ", texto)
-    texto = re.sub(r"(?<![A-Za-z0-9])\+?\d[\d\s()./-]{8,}\d(?![A-Za-z0-9])", " ", texto)
-    texto = re.sub(
-        r"\b(?:ignore|ignorar|desconsidere|desconsiderar)\b"
-        r"(?=[^;|.!?]{0,120}\b(?:regra|regras|instru[cç][aã]o|instru[cç][oõ]es|prompt|pol[ií]tica|sistema)\b)"
-        r"[^;|.!?]{0,160}(?:[;|.!?]|$)", " ", texto, flags=re.IGNORECASE,
-    )
-    texto = re.sub(
-        r"\b(?:revele|revelar|exiba|mostrar|vaze|vazar|troque|mude|altere)\b"
-        r"(?=[^;|.!?]{0,120}\b(?:tenant|loja|segredo|prompt|regra|pol[ií]tica|papel|ferramenta)\b)"
-        r"[^;|.!?]{0,160}(?:[;|.!?]|$)", " ", texto, flags=re.IGNORECASE,
-    )
-    return _perguntas_ia_v2_texto_busca_curto(texto, max_palavras=max_palavras, max_chars=max_chars)
+from .input_sanitization import (
+    _perguntas_ia_remover_nome_comprador_texto,
+    _perguntas_ia_technical_gap_queries_seguras,
+    _perguntas_ia_technical_query_segura,
+    _perguntas_ia_technical_question_plan_seguro,
+    _perguntas_ia_texto_sem_diacriticos_com_indices,
+    _perguntas_ia_v2_texto_busca_curto,
+    _perguntas_ia_v2_texto_classificado_busca,
+)
 
 
 def _perguntas_ia_classificacao_agent(agent_input: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -654,6 +577,11 @@ def _build_agent_payload(
         "vehicle_identity": _perguntas_ia_vehicle_identity_segura(pergunta),
         "product_evidence_identity": _perguntas_ia_product_evidence_identity_segura(pergunta),
         "verified_product_evidence": _perguntas_ia_verified_product_evidence_segura(pergunta),
+        "product_research_evidence": safe_agent_product_research_evidence(
+            pergunta.get("_product_research_evidence")
+            if isinstance(pergunta.get("_product_research_evidence"), list)
+            else []
+        ),
         "intent": intencao_atendimento,
         "classification": _perguntas_ia_classificacao_agent(classification_input),
         "category": _perguntas_ia_categoria_classificada(classification_input),
@@ -662,6 +590,9 @@ def _build_agent_payload(
         ),
         "_codex_thread_id": str((pergunta or {}).get("_codex_thread_id") or ""),
         "_codex_job_id": str((pergunta or {}).get("_codex_job_id") or ""),
+        "_research_session_key": re.sub(
+            r"[^A-Za-z0-9_.-]", "", str((pergunta or {}).get("_research_session_key") or "")
+        )[:128],
         "_codex_conversation_key": str((pergunta or {}).get("_codex_conversation_key") or ""),
         "_codex_active_turn_key": str((pergunta or {}).get("_codex_active_turn_key") or ""),
         "_codex_on_thread_ready": (pergunta or {}).get("_codex_on_thread_ready"),
@@ -673,6 +604,13 @@ def _build_agent_payload(
         "research_attempt": max(1, int((pergunta or {}).get("_research_attempt") or 1)),
         "research_history": list((pergunta or {}).get("_research_history") or [])[-6:],
         "research_gaps": list((pergunta or {}).get("_research_gaps") or [])[:16],
+        "technical_question_plan": _perguntas_ia_technical_question_plan_seguro(
+            (pergunta or {}).get("_technical_question_plan")
+        ),
+        "technical_gap_queries": _perguntas_ia_technical_gap_queries_seguras(
+            (pergunta or {}).get("_technical_gap_queries")
+        ),
+        "research_gap_only": bool((pergunta or {}).get("_research_gap_only")),
         "force_external_research": bool((pergunta or {}).get("_force_external_research")),
         "research_directive": str((pergunta or {}).get("_research_directive") or "")[:1200],
         **build_input_operational_contract(

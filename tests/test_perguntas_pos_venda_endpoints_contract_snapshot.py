@@ -34,8 +34,8 @@ MODEL_TYPES = (
 CONTRACT_HASHES = {
     "routes": "dc6cb53458cb92d7a76a72b148a26e7d4b658cfdbb829e2841a2f3c59eb95a39",
     "exports": "df0113be39e4824acefe0f41818ad35128010e58124b2f74afac3dd7be97fb0c",
-    "signatures": "2adf4cdfa2202c4b82472be0b32d42f296a1527b8d1bf72866da92600cd5bb10",
-    "schemas": "7072660f38ed088820ad73a7031121fe1fb28c6c76662c7097b401d77bc355f6",
+    "signatures": "2ac20c8fd3ec81c1a9b6d12d0e3239834cf6500840ffd7822f390b5f5135cdef",
+    "schemas": "9b75765d23e845fe6fa95d6a16f2706d9c10671323e8232b328f24c2777e512f",
     "http_status_codes": "acc10da582836299879007df1163cc7309f570313d1c6f557c3946c7fc11a463",
     "governance": "397babf72ba67a71b0d09d49bbb87bf01be0d04cee90dd595bd4fedbbbded76d",
 }

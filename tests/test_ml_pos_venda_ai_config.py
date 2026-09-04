@@ -124,6 +124,139 @@ def _verified_fact(field_name: str, value: str, *, scope: str = "product") -> di
     }
 
 
+def _v16_model_stages(model_call) -> list[str]:
+    return [
+        str(call.args[1].context.get("context_collection_stage") or "")
+        for call in model_call.call_args_list
+    ]
+
+
+def _v16_model_payload(model_call, stage: str, occurrence: int = 0):
+    matches = [
+        call.args[1]
+        for call in model_call.call_args_list
+        if call.args[1].context.get("context_collection_stage") == stage
+    ]
+    return matches[occurrence]
+
+
+def _v16_model_responder(
+    public_response: str | dict,
+    *,
+    decision: str | None = None,
+    compatibility_analysis: dict | None = None,
+    fail_stage: str = "",
+):
+    if isinstance(public_response, dict):
+        public_payload = dict(public_response)
+    else:
+        try:
+            parsed = json.loads(public_response)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed = {"answer": str(public_response or "")}
+        public_payload = parsed if isinstance(parsed, dict) else {"answer": str(public_response or "")}
+    supplied_analysis = (
+        dict(compatibility_analysis)
+        if isinstance(compatibility_analysis, dict)
+        else dict(public_payload.get("compatibility_analysis") or {})
+    )
+    technical_decision = str(decision or supplied_analysis.get("decision") or "yes")
+    confidence = float(public_payload.get("confidence") or supplied_analysis.get("confidence") or 0.9)
+    commercial_state = {
+        "yes": "fits",
+        "no": "incompatible",
+        "conditional": "partial",
+        "insufficient": "insufficient",
+        "not_applicable": "not_applicable",
+    }.get(technical_decision, "insufficient")
+    analysis = {
+        "target_type": "generic",
+        "target_item": "",
+        "target_vehicle": "",
+        "compatibility_profile": "generic",
+        "product_interface": "",
+        "target_interface": "",
+        "comparison_attributes": [],
+        "decision": "insufficient" if technical_decision == "not_applicable" else technical_decision,
+        "condition": "",
+        "missing_fields": [],
+        "evidence": {"product": [], "target": [], "target_vehicle": [], "equivalence": []},
+        "queries": [],
+        "sources": [],
+        "confidence": confidence,
+        "reason": str(public_payload.get("reason") or "v16_test_resolution"),
+    }
+    analysis.update(supplied_analysis)
+
+    def respond(_client_id, request, model_req):
+        stage = str(request.context.get("context_collection_stage") or "")
+        if stage == fail_stage:
+            raise RuntimeError(f"{stage}_unavailable")
+        if stage == "technical_question_plan":
+            payload = {
+                "schema": "jk_ml_technical_question_plan_v1",
+                "requirements": [{
+                    "id": "q1",
+                    "essential": True,
+                    "kind": "specification",
+                    "question": "Responder a pergunta técnica do comprador",
+                    "subject": {"kind": "product", "name": "produto", "identifiers": []},
+                    "target": {"kind": "application", "name": "alvo informado", "identifiers": []},
+                    "relation": "has_property",
+                    "required_fields": [],
+                    "search_terms": [],
+                }],
+                "queries": [],
+            }
+        elif stage == "technical_evidence_graph":
+            payload = {
+                "schema": "jk_ml_evidence_graph_v2",
+                "entities": [],
+                "claims": [],
+                "passages": [],
+                "relations": [],
+                "unresolved_requirement_ids": [],
+            }
+        elif stage in {"technical_resolution_round_1", "technical_resolution_final"}:
+            is_final = stage == "technical_resolution_final"
+            payload = {
+                "schema": "jk_ml_technical_resolution_v1",
+                "round": 2 if is_final else 1,
+                "final": is_final,
+                "requirements": [{
+                    "id": "q1",
+                    "decision": technical_decision,
+                    "conclusion": str(public_payload.get("answer") or ""),
+                    "condition": str(analysis.get("condition") or ""),
+                    "commercial_impact": "satisfies" if technical_decision == "yes" else "unknown",
+                    "facts": [],
+                    "missing_fields": list(analysis.get("missing_fields") or []),
+                    "confidence": confidence,
+                }],
+                "reference_relations": [],
+                "overall_decision": technical_decision,
+                "commercial_state": commercial_state,
+                "confidence": confidence,
+                "reason": str(public_payload.get("reason") or "v16_test_resolution"),
+                "gap_queries": [],
+                "contingency_answer_body": str(public_payload.get("answer") or ""),
+                "compatibility_analysis": analysis,
+            }
+        elif stage == "factual_critic":
+            payload = {
+                "schema": "jk_ml_factual_review_v1",
+                "verdict": "pass",
+                "issues": [],
+                "revision_instructions": [],
+                "confidence": 1.0,
+            }
+        else:
+            payload = public_payload
+        return json.dumps(payload, ensure_ascii=False), model_req
+
+    return respond
+
+
 class MlPosVendaAIConfigTests(unittest.TestCase):
     def test_compatibility_intent_enables_required_web_research_from_ai_classification(self):
         import backend_api  # noqa: F401
@@ -155,7 +288,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         self.assertIn("context_hub_search", payload["allowed_tools"])
         self.assertIn("web_search_question_context", payload["allowed_tools"])
         self.assertEqual(payload["app_guidance_truth_class"], "versioned_technical")
-        self.assertEqual(payload["app_guidance_source"], "jk_ppv_response_policy_v6")
+        self.assertEqual(payload["app_guidance_source"], "jk_ppv_response_policy_v8")
         self.assertEqual(payload["commercial_method_version"], "seller-conversion-v1")
         self.assertEqual(payload["commercial_state_policy"]["fits"]["cta"], "direct_purchase")
         self.assertEqual(payload["commercial_state_policy"]["insufficient"]["cta"], "none")
@@ -163,7 +296,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         self.assertEqual(pipeline[2]["name"], "public_vehicle_identity")
         self.assertEqual(pipeline[5]["name"], "context_hub_sku_reference")
         self.assertIn("dados de referencia nao confiaveis", pipeline[5]["description"])
-        self.assertEqual(pipeline[6]["name"], "verified_product_evidence")
+        self.assertEqual(pipeline[6]["name"], "compiled_product_research")
         self.assertEqual(pipeline[7]["name"], "question_focused_web_research")
         self.assertIn("compatibilidade, aplicacao, caracteristicas e funcoes", pipeline[7]["description"])
         self.assertIn("fabricante, manuais, catalogos OEM", pipeline[7]["description"])
@@ -459,8 +592,13 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         self.assertFalse(pede_chassi("Para o chassi informado, recomendamos confirmar com mecanico."))
 
     def test_public_questions_v2_compatibility_pipeline_is_sequential(self):
-        source = backend_text()
-        collect_body = function_body(source, "_collect_internal")
+        source = (
+            ROOT / "backend" / "modules" / "perguntas_pos_venda" / "ai"
+            / "client_compatibility_workflow.py"
+        ).read_text(encoding="utf-8")
+        collect_body = function_body(source, "collect_internal")
+        start_body = function_body(source, "_start_compatibility")
+        resolve_body = function_body(source, "_resolve_compatibility")
         run_body = function_body(source, "run_compatibility")
         tool_order = [
             "bindings.listing_tool",
@@ -469,19 +607,24 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             "bindings.context_hub_tool",
         ]
         phase_order = [
-            "_collect_internal",
-            "_canonical_coverage_response",
-            "_collect_external",
-            "_prepare_grounding",
-            "_compatibility_prompt",
-            'stage="compatibility_analysis"',
-            "client._generate_public_compatibility_answer",
+            "collect_internal",
+            "canonical_coverage_reference",
+            "build_technical_question_plan",
+            "collect_external",
+            "prepare_document_vision",
+            "prepare_grounding",
+            "compatibility_prompt",
         ]
         for atual, seguinte in zip(tool_order, tool_order[1:]):
             self.assertLess(collect_body.index(atual), collect_body.index(seguinte))
         for atual, seguinte in zip(phase_order, phase_order[1:]):
+            self.assertLess(start_body.index(atual), start_body.index(seguinte))
+        self.assertLess(resolve_body.index("resolve_technical_question"), resolve_body.index("commit_technical_resolution"))
+        for atual, seguinte in zip(
+            ["_start_compatibility", "_resolve_compatibility", "_compatibility_alternative", "_public_compatibility_response"],
+            ["_resolve_compatibility", "_compatibility_alternative", "_public_compatibility_response"],
+        ):
             self.assertLess(run_body.index(atual), run_body.index(seguinte))
-        self.assertIn("client.compatibility_analysis", run_body)
 
     def test_r1300gs_queries_are_short_and_separate_vehicle_from_listing_ids(self):
         import backend_api  # noqa: F401
@@ -603,7 +746,11 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             "question": {"text": "Acompanha cabo?"},
             "intent": ai_classification("Acompanha cabo?"),
         })
-        with patch.object(agent, "_ia_agent_perguntas_chamar_modelo", return_value=(answer, "codex:gpt-5.5")) as model_call, patch.object(
+        with patch.object(
+            agent,
+            "_ia_agent_perguntas_chamar_modelo",
+            side_effect=_v16_model_responder(answer),
+        ) as model_call, patch.object(
             agent,
             "_ia_agent_perguntas_web_tool",
             return_value=None,
@@ -617,10 +764,17 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             })
 
         self.assertEqual(result.answer, "Acompanha cabo USB.")
-        self.assertEqual(model_call.call_count, 2)
+        self.assertEqual(model_call.call_count, 6)
         self.assertEqual(
-            [call.args[1].context["context_collection_stage"] for call in model_call.call_args_list],
-            ["commercial_fit_evaluation", "external_research_final"],
+            _v16_model_stages(model_call),
+            [
+                "technical_question_plan",
+                "technical_evidence_graph",
+                "technical_resolution_round_1",
+                "technical_resolution_final",
+                "external_research_final",
+                "factual_critic",
+            ],
         )
         web_call.assert_called_once()
         research_step = _pipeline_step(client, "question_focused_web_research")
@@ -648,7 +802,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 with patch.object(
                     agent,
                     "_ia_agent_perguntas_chamar_modelo",
-                    return_value=(draft, "codex:gpt-5.5"),
+                    side_effect=_v16_model_responder(draft),
                 ), patch.object(
                     agent,
                     "_perguntas_ia_context_hub_tool",
@@ -693,7 +847,10 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         with patch.object(
             agent,
             "_ia_agent_perguntas_chamar_modelo",
-            side_effect=RuntimeError("external synthesis unavailable"),
+            side_effect=_v16_model_responder(
+                {"answer": draft, "confidence": 0.9, "reason": "listing_evidence"},
+                fail_stage="external_research_final",
+            ),
         ) as model_call, patch.object(
             agent,
             "_ia_agent_perguntas_web_tool",
@@ -707,11 +864,11 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             })
 
         web_call.assert_called_once()
-        self.assertEqual(model_call.call_count, 1)
+        self.assertEqual(model_call.call_count, 6)
         self.assertEqual(result.answer, draft)
         research_step = _pipeline_step(client, "question_focused_web_research")
         self.assertEqual(research_step["status"], "completed")
-        self.assertEqual(research_step["synthesis_status"], "fit_evaluation_error")
+        self.assertEqual(research_step["synthesis_status"], "error")
         self.assertEqual(research_step["fallback"], "best_existing_ai_draft")
         self.assertNotIn("seller_response_render", [step["name"] for step in client.context_pipeline])
 
@@ -727,7 +884,10 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         with patch.object(
             agent,
             "_ia_agent_perguntas_chamar_modelo",
-            side_effect=AssertionError("o modelo nao deve substituir o rascunho existente no timeout"),
+            side_effect=_v16_model_responder(
+                {"answer": draft, "confidence": 0.9, "reason": "listing_evidence"},
+                fail_stage="external_research_final",
+            ),
         ) as model_call, patch.object(
             agent,
             "_ia_agent_perguntas_web_tool",
@@ -741,11 +901,11 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             })
 
         web_call.assert_called_once()
-        model_call.assert_not_called()
+        self.assertEqual(model_call.call_count, 6)
         self.assertEqual(result.answer, draft)
         research_step = _pipeline_step(client, "question_focused_web_research")
         self.assertEqual(research_step["status"], "error")
-        self.assertEqual(research_step["synthesis_status"], "skipped_tool_error")
+        self.assertEqual(research_step["synthesis_status"], "error")
         self.assertEqual(research_step["fallback"], "best_existing_ai_draft")
         self.assertNotIn("seller_response_render", [step["name"] for step in client.context_pipeline])
 
@@ -796,14 +956,9 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
                 self.assertIs(result, draft)
                 self.assertEqual(result.answer, f"Rascunho autenticado de {category}.")
-                self.assertEqual(
-                    client.context_pipeline[-1]["synthesis_status"],
-                    "skipped_store_source_precedence",
-                )
-                self.assertEqual(
-                    client.context_pipeline[-1]["fallback"],
-                    "trusted_store_ai_draft",
-                )
+                research_step = _pipeline_step(client, "question_focused_web_research")
+                self.assertEqual(research_step["synthesis_status"], "error")
+                self.assertEqual(research_step["fallback"], "best_existing_ai_draft")
 
     def test_store_bound_public_questions_preserve_draft_end_to_end_against_conflicting_renderer(self):
         import backend_api  # noqa: F401
@@ -842,6 +997,13 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                     "requires_human_review": False,
                     "reason": "conflicting_renderer",
                 })
+                v16_responder = _v16_model_responder(draft)
+
+                def preserve_against_conflicting_critic(client_id, request, model_req):
+                    if request.context.get("context_collection_stage") == "factual_critic":
+                        return conflicting, model_req
+                    return v16_responder(client_id, request, model_req)
+
                 client = agent._PerguntasVertexGeminiV2Client("cliente", "Loja", "codex:gpt-5.5", {
                     "question": {"text": "Pergunta operacional"},
                     "intent": ai_classification("Pergunta operacional", category=category),
@@ -849,10 +1011,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 with patch.object(
                     agent,
                     "_ia_agent_perguntas_chamar_modelo",
-                    side_effect=[
-                        (draft, "codex:gpt-5.5"),
-                        (conflicting, "codex:gpt-5.5"),
-                    ],
+                    side_effect=preserve_against_conflicting_critic,
                 ) as model_call, patch.object(
                     agent,
                     "_ia_agent_perguntas_web_tool",
@@ -866,7 +1025,18 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                     })
 
                 web_call.assert_called_once()
-                self.assertEqual(model_call.call_count, 1)
+                self.assertEqual(model_call.call_count, 6)
+                self.assertEqual(
+                    _v16_model_stages(model_call),
+                    [
+                        "technical_question_plan",
+                        "technical_evidence_graph",
+                        "technical_resolution_round_1",
+                        "technical_resolution_final",
+                        "external_research_final",
+                        "factual_critic",
+                    ],
+                )
                 self.assertEqual(result.answer, expected)
                 research_step = _pipeline_step(client, "question_focused_web_research")
                 self.assertEqual(research_step["source_precedence"], "official_store_only")
@@ -908,7 +1078,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         with patch.object(
             agent,
             "_ia_agent_perguntas_chamar_modelo",
-            return_value=(final, "codex:gpt-5.5"),
+            side_effect=_v16_model_responder(final),
         ) as model_call, patch.object(
             agent,
             "_ia_agent_perguntas_web_tool",
@@ -922,7 +1092,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             })
 
         web_call.assert_called_once()
-        self.assertEqual(model_call.call_count, 2)
+        self.assertEqual(model_call.call_count, 6)
         self.assertEqual(result.answer, "Aciona a 93 C e enviamos hoje.")
         research_step = _pipeline_step(client, "question_focused_web_research")
         self.assertEqual(research_step["status"], "completed")
@@ -1100,7 +1270,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             ), patch.object(
                 agent,
                 "_ia_agent_perguntas_chamar_modelo",
-                return_value=(answer, "codex:gpt-5.5"),
+                side_effect=_v16_model_responder(answer),
             ) as model_call:
                 result = client.generate("prompt com anuncio", {
                     "category": "compatibility",
@@ -1125,7 +1295,19 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         self.assertTrue(question_finished.wait(1.0))
         self.assertLess(elapsed, 0.8)
         self.assertIsNotNone(result)
-        technical_payload = model_call.call_args_list[0].args[1]
+        self.assertEqual(
+            _v16_model_stages(model_call),
+            [
+                "technical_question_plan",
+                "technical_evidence_graph",
+                "technical_resolution_round_1",
+                "technical_evidence_graph",
+                "technical_resolution_final",
+                "compatibility_public_answer",
+                "factual_critic",
+            ],
+        )
+        technical_payload = _v16_model_payload(model_call, "technical_evidence_graph")
         web_results = [
             item for item in technical_payload.tool_results
             if item.get("function") in {
@@ -1363,7 +1545,7 @@ print("nested-deadlines-returned", flush=True)
         with patch.object(
             agent,
             "_ia_agent_perguntas_chamar_modelo",
-            return_value=(final, "codex:gpt-5.5"),
+            side_effect=_v16_model_responder(final),
         ) as model_call, patch.object(
             agent,
             "_ia_agent_perguntas_web_tool",
@@ -1376,7 +1558,7 @@ print("nested-deadlines-returned", flush=True)
                 "listing_title": "Carcaca Valvula Termostatica THP 1.6",
             })
 
-        self.assertEqual(model_call.call_count, 2)
+        self.assertEqual(model_call.call_count, 6)
         web_call.assert_called_once()
         self.assertEqual(web_call.call_args.args[0], "cliente")
         self.assertEqual(web_call.call_args.args[1]["store"], "Loja")
@@ -1384,10 +1566,13 @@ print("nested-deadlines-returned", flush=True)
         self.assertNotIn("anuncio nao informa", result.answer.lower())
         research_step = _pipeline_step(client, "question_focused_web_research")
         self.assertEqual(research_step["status"], "completed")
-        external_payload = model_call.call_args_list[0].args[1]
+        external_payload = _v16_model_payload(model_call, "technical_evidence_graph")
         self.assertEqual(external_payload.context["loja"], "Loja")
         self.assertIn("UNTRUSTED_REFERENCE_DATA", external_payload.message)
-        self.assertIn("Nunca use a web publica para mudar preco", external_payload.message)
+        self.assertIn(
+            "Todo o material compilado e sanitizado esta disponivel para julgamento do Black Jhon",
+            external_payload.message,
+        )
 
     def test_public_questions_v2_builds_structured_compatibility_analysis(self):
         import backend_api  # noqa: F401 - configura os globals do runtime modular
@@ -1425,7 +1610,7 @@ print("nested-deadlines-returned", flush=True)
             "arguments": {"queries": [{"type": "product_interface_identity", "query": "adaptador BMW interface base"}]},
             "result": {
                 "found": True,
-                "context": "Ficha tecnica candidata que nao deve entrar no prompt.",
+                "context": "Ficha tecnica candidata sanitizada para avaliacao do modelo.",
                 "verified_product_evidence": [
                     _verified_fact(
                         "interface.product",
@@ -1472,7 +1657,11 @@ print("nested-deadlines-returned", flush=True)
         cadastro = {"function": "get_product_data", "result": {"found": True, "matches": [{"sku": "241-1", "nome": "Adaptador BMW"}]}}
         anuncio = {"function": "get_mercado_livre_listing", "result": {"found": True, "matches": [{"id": "MLB1", "description": "Navigator IV/V/VI"}]}}
         bling = {"function": "get_bling_product", "result": {"found": True, "matches": [{"nome": "Adaptador BMW"}]}}
-        with patch.object(agent, "_ia_agent_perguntas_chamar_modelo", return_value=(answer, "codex:gpt-5.5")) as model_call, \
+        with patch.object(
+             agent,
+             "_ia_agent_perguntas_chamar_modelo",
+             side_effect=_v16_model_responder(answer),
+        ) as model_call, \
              patch.object(agent, "_ia_agent_perguntas_product_identity_web_tool", return_value=identity), \
              patch.object(agent, "_ia_tool_get_product_data", return_value=cadastro), \
              patch.object(agent, "marketplace_listing_query", return_value=anuncio), \
@@ -1482,7 +1671,7 @@ print("nested-deadlines-returned", flush=True)
                  "result": {"found": False, "results": [], "count": 0, "read_only": True},
              }), \
              patch.object(agent, "_perguntas_ia_memoria_bloco_prompt", return_value="Base Navigator IV/V/VI confirmada"), \
-             patch.object(agent, "_ia_agent_perguntas_web_tool", return_value=web_final):
+             patch.object(agent, "_ia_agent_perguntas_web_tool", return_value=web_final) as web_call:
             result = client.generate("prompt com historico e anuncio", {
                 "category": "compatibility",
                 "question_text": "Serve no suporte GPS da R1300GS?",
@@ -1496,7 +1685,20 @@ print("nested-deadlines-returned", flush=True)
             "Esse adaptador e compativel com a R1300GS equipada com a base original BMW Navigator IV ou posterior. "
             "Ele encaixa nessa base e nao acompanha nem substitui o suporte original.",
         )
-        self.assertEqual(model_call.call_count, 2)
+        self.assertEqual(model_call.call_count, 7)
+        self.assertEqual(web_call.call_count, 2)
+        self.assertEqual(
+            _v16_model_stages(model_call),
+            [
+                "technical_question_plan",
+                "technical_evidence_graph",
+                "technical_resolution_round_1",
+                "technical_evidence_graph",
+                "technical_resolution_final",
+                "compatibility_public_answer",
+                "factual_critic",
+            ],
+        )
         self.assertEqual(client.compatibility_analysis["decision"], "conditional")
         self.assertEqual(client.compatibility_analysis["target_vehicle"], "BMW R1300GS")
         self.assertEqual(len(client.compatibility_analysis["evidence"]["equivalence"]), 1)
@@ -1505,22 +1707,25 @@ print("nested-deadlines-returned", flush=True)
             for group in ("product", "target_vehicle", "equivalence")
             for evidence in client.compatibility_analysis["evidence"][group]
         ))
-        self.assertEqual(client.context_pipeline[-1]["status"], "completed")
-        self.assertEqual(
-            [step["name"] for step in client.context_pipeline],
-            [
-                "buyer_question_history_and_listing_snapshot", "mercado_livre_api_listing",
-                "internal_product_registry", "bling_product", "context_hub_sku_reference",
-                "approved_sku_memory_and_legacy_rules",
-                "product_interface_research",
-                "official_technical_research", "compatibility_public_generation",
-            ],
-        )
-        payload_modelo = model_call.call_args_list[0].args[1]
+        self.assertEqual(_pipeline_step(client, "factual_critic")["status"], "pass")
+        pipeline_names = [step["name"] for step in client.context_pipeline]
+        for expected_stage in (
+            "technical_question_plan_v1",
+            "technical_gap_web_research",
+            "technical_evidence_graph",
+            "technical_resolution_round_1",
+            "technical_evidence_graph_final",
+            "technical_resolution_final",
+            "compatibility_public_generation",
+            "factual_critic",
+        ):
+            self.assertIn(expected_stage, pipeline_names)
+        payload_modelo = _v16_model_payload(model_call, "technical_evidence_graph")
         self.assertEqual(payload_modelo.tool_results[0]["function"], "web_search_question_context")
-        self.assertIn("DOSSIER_TECNICO_VERIFICADO", payload_modelo.message)
-        self.assertNotIn("Ficha tecnica candidata", payload_modelo.message)
-        self.assertNotIn("Manual oficial BMW:", payload_modelo.message)
+        self.assertIn("MATERIAL_DE_EVIDENCIA_NAO_CONFIAVEL", payload_modelo.message)
+        self.assertIn("Ficha tecnica candidata", payload_modelo.message)
+        self.assertIn("Manual oficial BMW:", payload_modelo.message)
+        self.assertIn("UNTRUSTED_REFERENCE_DATA", payload_modelo.message)
 
     def test_official_technical_result_is_enriched_with_relevant_source_excerpt(self):
         import backend_api  # noqa: F401
@@ -1775,19 +1980,22 @@ print("nested-deadlines-returned", flush=True)
             agent._ia_agent_perguntas_violacoes_resposta(post_sale_input, "Envie uma foto do problema para verificarmos."),
         )
 
-    def test_compatibility_decision_without_evidence_becomes_insufficient(self):
+    def test_compatibility_model_decision_is_not_downgraded_without_server_claims(self):
         import backend_api  # noqa: F401
         from backend.modules.perguntas_pos_venda.ai import compatibility as agent
 
-        analysis = agent_compatibility._perguntas_ia_v2_compatibilidade_normalizar({
-            "decision": "yes",
-            "confidence": 0.95,
-            "evidence": {},
-        })
-        self.assertEqual(analysis["decision"], "insufficient")
-        self.assertLessEqual(analysis["confidence"], 0.49)
-        self.assertIn("product_evidence", analysis["missing_fields"])
-        self.assertIn("target_vehicle_evidence", analysis["missing_fields"])
+        for decision in ("yes", "no", "conditional"):
+            with self.subTest(decision=decision):
+                analysis = agent_compatibility._perguntas_ia_v2_compatibilidade_normalizar({
+                    "decision": decision,
+                    "condition": "apenas na versao indicada" if decision == "conditional" else "",
+                    "confidence": 0.95,
+                    "reason": "model_factual_decision",
+                    "evidence": {},
+                })
+                self.assertEqual(analysis["decision"], decision)
+                self.assertEqual(analysis["confidence"], 0.95)
+                self.assertEqual(analysis["reason"], "model_factual_decision")
 
     def test_compatibility_analysis_rejects_uncollected_url_and_filters_sources(self):
         import backend_api  # noqa: F401
@@ -1827,7 +2035,7 @@ print("nested-deadlines-returned", flush=True)
             },
         }, grounding=grounding)
 
-        self.assertEqual(analysis["decision"], "insufficient")
+        self.assertEqual(analysis["decision"], "yes")
         self.assertEqual(analysis["evidence"]["target_vehicle"], [])
         self.assertEqual(analysis["sources"], ["https://manuals.bmw-motorrad.com/manual.pdf"])
         self.assertNotIn("https://inventada.example/manual", analysis["sources"])
@@ -1864,9 +2072,8 @@ print("nested-deadlines-returned", flush=True)
             },
         }, grounding=grounding)
 
-        self.assertEqual(analysis["decision"], "insufficient")
+        self.assertEqual(analysis["decision"], "conditional")
         self.assertEqual(analysis["evidence"]["target_vehicle"][0]["authority"], "marketplace_hint")
-        self.assertIn("non_marketplace_target_evidence", analysis["missing_fields"])
 
     def test_web_grounding_does_not_move_marketplace_claim_to_official_url(self):
         import backend_api  # noqa: F401
@@ -1904,7 +2111,7 @@ print("nested-deadlines-returned", flush=True)
             },
         }, grounding=grounding)
 
-        self.assertEqual(analysis["decision"], "insufficient")
+        self.assertEqual(analysis["decision"], "conditional")
         self.assertEqual(analysis["evidence"]["target_vehicle"], [])
 
     def test_grounding_keeps_same_url_entries_separate_by_evidence_group(self):
@@ -1982,10 +2189,8 @@ print("nested-deadlines-returned", flush=True)
             },
         })
 
-        self.assertEqual(positive["decision"], "insufficient")
-        self.assertIn("explicit_equivalence_evidence", positive["missing_fields"])
-        self.assertEqual(negative["decision"], "insufficient")
-        self.assertIn("explicit_incompatibility_evidence", negative["missing_fields"])
+        self.assertEqual(positive["decision"], "yes")
+        self.assertEqual(negative["decision"], "no")
         self.assertFalse(any(
             item.get("source_type") == "derived_incompatibility_from_grounded_evidence"
             for item in negative["evidence"]["equivalence"]
@@ -2052,9 +2257,8 @@ print("nested-deadlines-returned", flush=True)
             },
         })
 
-        self.assertEqual(analysis["decision"], "insufficient")
+        self.assertEqual(analysis["decision"], "conditional")
         self.assertEqual(analysis["evidence"]["target_vehicle"], [])
-        self.assertIn("target_vehicle_evidence", analysis["missing_fields"])
 
     def test_insufficient_analysis_keeps_draft_blocked_for_human_review(self):
         import backend_api  # noqa: F401
@@ -2077,18 +2281,29 @@ print("nested-deadlines-returned", flush=True)
             ),
         }
         client = agent._PerguntasVertexGeminiV2Client("cliente", "Loja", "codex:gpt-5.5", agent_input)
+        public_response = {
+            "answer": "Esse adaptador e compativel com a moto informada.",
+            "confidence": 0.4,
+            "requires_human_review": False,
+            "reason": "unsupported_positive",
+            "compatibility_analysis": {
+                "decision": "insufficient",
+                "missing_fields": ["ano", "versao"],
+                "confidence": 0.4,
+                "reason": "missing_listing_evidence",
+            },
+        }
         with patch.object(agent, "_ia_agent_perguntas_product_identity_web_tool", return_value=None), \
              patch.object(agent, "_ia_tool_get_product_data", return_value=None), \
              patch.object(agent, "marketplace_listing_query", return_value=None), \
              patch.object(agent, "_ia_tool_get_bling_product", return_value=None), \
              patch.object(agent, "_perguntas_ia_memoria_bloco_prompt", return_value=""), \
-             patch.object(agent, "_ia_agent_perguntas_web_tool", return_value=None), \
-             patch.object(client, "_call_model", return_value=agent.AIAnswer(
-                 answer="Esse adaptador e compativel com a moto informada.",
-                 confidence=0.93,
-                 requires_human_review=False,
-                 reason="unsupported_positive",
-             )):
+             patch.object(agent, "_ia_agent_perguntas_web_tool", return_value=None) as web_call, \
+             patch.object(
+                 agent,
+                 "_ia_agent_perguntas_chamar_modelo",
+                 side_effect=_v16_model_responder(public_response),
+             ) as model_call:
             result = client.generate("prompt", {
                 "category": "compatibility",
                 "question_text": "Serve na minha moto?",
@@ -2097,8 +2312,22 @@ print("nested-deadlines-returned", flush=True)
             })
 
         self.assertEqual(result.answer, "Esse adaptador e compativel com a moto informada.")
-        self.assertLessEqual(result.confidence, 0.49)
+        self.assertEqual(result.confidence, 0.4)
         self.assertFalse(result.requires_human_review)
+        self.assertEqual(web_call.call_count, 2)
+        self.assertEqual(model_call.call_count, 7)
+        self.assertEqual(
+            _v16_model_stages(model_call),
+            [
+                "technical_question_plan",
+                "technical_evidence_graph",
+                "technical_resolution_round_1",
+                "technical_evidence_graph",
+                "technical_resolution_final",
+                "compatibility_public_answer",
+                "factual_critic",
+            ],
+        )
 
 
 if __name__ == "__main__":

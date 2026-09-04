@@ -289,7 +289,7 @@ def test_product_evidence_expiry_is_enforced_without_valid_at(
                 generation_id,
                 snapshot_hash,
                 snapshot_hash,
-                "jk_product_evidence_v1",
+                "jk_product_evidence_v2",
                 "2026-07-01T00:00:00.000000+00:00",
             ),
         )

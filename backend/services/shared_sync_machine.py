@@ -186,6 +186,18 @@ def _shared_sync_machine_pull_scope_serialized(
             sessao.get("username") or "",
             state_scope,
         )
+        base_snapshot_hash = ""
+        if immutable_current_snapshot_id and not base_snapshot_id:
+            try:
+                base_snapshot_hash = _shared_sync_state_snapshot_hash(
+                    sessao.get("client_id"),
+                    sessao.get("username") or "",
+                    state_scope,
+                )
+            except Exception:
+                # A compatibilidade antiga nunca reduz o fail-closed: se o
+                # estado nao puder ser lido, nenhum hash recebe autoridade.
+                base_snapshot_hash = ""
         # Um writer v1 pode recolocar o ponteiro legado depois de uma publicacao
         # v2. Nunca trate esse ponteiro mutavel como descendente da base v2:
         # sem base, o merge estrito bloqueia OAuth divergente em vez de escolher.
@@ -207,6 +219,21 @@ def _shared_sync_machine_pull_scope_serialized(
                 # Sem base confiavel, o merge estrito bloqueia credenciais
                 # divergentes em vez de decidir por relogio.
                 base_bundle = None
+        elif immutable_current_snapshot_id and base_snapshot_hash:
+            current_hash = str(meta.get("snapshot_hash") or "").strip().lower()
+            legacy_hash = str(base_snapshot_hash or "").strip().lower()
+            if re.fullmatch(r"[a-f0-9]{64}", legacy_hash) and legacy_hash == current_hash:
+                base_bundle = bundle
+            else:
+                recovered = _shared_sync_obter_base_causal_por_hash(
+                    bundle_id,
+                    legacy_hash,
+                    expected_client_id=str(sessao.get("client_id") or ""),
+                    expected_scope=scope,
+                    key_context={"sessao": sessao, "machine_id": machine_id},
+                )
+                if recovered is not None:
+                    base_bundle, _ = recovered
     scope_config = {
         "share_between_users": bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped")),
         "base_bundle": base_bundle,

@@ -24,6 +24,7 @@ from backend.services.sqlite_coordination import (
     sqlite_lock_for_path,
     sqlite_locks_for_paths,
 )
+from backend.services.path_coordination import path_lock_for
 
 
 SHARED_SYNC_DEFAULT_MAX_FILE_BYTES = 75 * 1024 * 1024
@@ -273,6 +274,7 @@ SHARED_SYNC_SQLITE_LOCK_RETRIES = 4
 # o modulo de Vendas.
 _shared_sync_sqlite_lock_for_path = sqlite_lock_for_path
 _shared_sync_sqlite_locks_for_paths = sqlite_locks_for_paths
+_shared_sync_path_lock_for = path_lock_for
 _shared_sync_sqlite_configure = configure_sqlite_connection
 
 
@@ -289,7 +291,10 @@ SHARED_SYNC_SCOPES = {
         "label": "Cadastro de produtos",
         "description": "Produtos cadastrados, fotos e cache de cadastro.",
         "patterns": [
+            "cadastro_fotos_config.json",
             "cadastro_produtos.csv",
+            "cadastro_produtos_lojas.csv",
+            "cadastro_custos_lojas.csv",
             "cadastro_produtos_meta.json",
             "cadastro_produtos_fotos/**",
             "cadastro_fotos/**",
@@ -360,7 +365,20 @@ SHARED_SYNC_SCOPES = {
     },
 }
 
-SHARED_SYNC_ALLOWED_EXTENSIONS = {".json", ".csv", ".db", ".sqlite", ".xlsx", ".xls", ".png", ".jpg", ".jpeg", ".webp"}
+SHARED_SYNC_ALLOWED_EXTENSIONS = {
+    ".json",
+    ".csv",
+    ".db",
+    ".sqlite",
+    ".xlsx",
+    ".xls",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".gif",
+    ".bmp",
+}
 SHARED_SYNC_CHUNK_CHARS = 620_000
 
 __all__ = [

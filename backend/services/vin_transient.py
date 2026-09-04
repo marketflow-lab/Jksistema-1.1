@@ -28,6 +28,10 @@ _LABEL_PREFIX_RE = re.compile(
 )
 _ALNUM_GROUP_RE = re.compile(r"[A-Z0-9]+", re.IGNORECASE)
 _VIN_LIKE_TOKEN_RE = re.compile(r"(?<![A-Z0-9])([A-Z0-9]{17})(?![A-Z0-9])", re.IGNORECASE)
+_VIN_GROUPED_LIKE_RE = re.compile(
+    r"(?<![A-Z0-9])((?:[A-Z0-9]{1,5}[ -]+){2,20}[A-Z0-9]{1,5})(?![A-Z0-9])",
+    re.IGNORECASE,
+)
 
 
 def normalize_vin(value: object) -> str:
@@ -271,19 +275,26 @@ def contains_vin_like_identifier(value: object) -> bool:
     """Reject VIN-shaped operational identifiers before hashing or persistence."""
 
     text = str(value or "")
+    if _find_candidates(text):
+        return True
+    compact_text = normalize_vin(text)
+    if (
+        len(compact_text) == 17
+        and is_valid_vin(compact_text)
+        and bool(re.fullmatch(r"[A-Z0-9\s-]{17,48}", text.strip(), flags=re.IGNORECASE))
+    ):
+        return True
     for match in _VIN_LIKE_TOKEN_RE.finditer(text):
-        if sum(character.isdigit() for character in match.group(1)) >= 2:
+        candidate = match.group(1)
+        if is_valid_vin(candidate) or sum(character.isdigit() for character in candidate) >= 2:
             return True
-    for label in _VIN_LABEL_RE.finditer(text):
-        chunks = re.findall(r"[A-Z0-9]+", text[label.end() : label.end() + 96], re.IGNORECASE)
-        for start in range(len(chunks)):
-            joined = ""
-            for chunk in chunks[start : start + 24]:
-                joined += chunk
-                if len(joined) == 17 and sum(character.isdigit() for character in joined) >= 2:
-                    return True
-                if len(joined) > 17:
-                    break
+    for match in _VIN_GROUPED_LIKE_RE.finditer(text):
+        compact = normalize_vin(match.group(1))
+        if len(compact) == 17 and (
+            is_valid_vin(compact)
+            or sum(character.isdigit() for character in compact) >= 2
+        ):
+            return True
     return False
 
 
@@ -293,7 +304,7 @@ def _sanitize_mapping_key(key: Any) -> tuple[Any, list[_VinCandidate]]:
     candidates = list(_find_candidates(key))
     for match in _VIN_LIKE_TOKEN_RE.finditer(key):
         raw = match.group(1).upper()
-        if sum(character.isdigit() for character in raw) < 2:
+        if not is_valid_vin(raw) and sum(character.isdigit() for character in raw) < 2:
             continue
         candidate = _VinCandidate(
             match.start(1),
@@ -352,16 +363,20 @@ def _candidate_after_label(text: str, label: re.Match[str]) -> _VinCandidate | N
     candidate_start = label.end() + chunks[0][1]
     candidate_end = label.end() + chunks[-1][2]
     joined = "".join(chunk for chunk, _start, _end in chunks).upper()
-    if sum(character.isdigit() for character in joined) < 2:
-        return None
-
     if len(joined) == 17:
+        if is_valid_vin(joined):
+            return _VinCandidate(candidate_start, candidate_end, joined, True)
+        if sum(character.isdigit() for character in joined) < 2:
+            return None
         if len(chunks) > 1:
             chunk_lengths_ok = all(2 <= len(chunk) <= 8 for chunk, _start, _end in chunks)
             digit_chunks = sum(any(char.isdigit() for char in chunk) for chunk, _start, _end in chunks)
             if not chunk_lengths_ok or digit_chunks < 2:
                 return _VinCandidate(candidate_start, candidate_end, joined, False)
-        return _VinCandidate(candidate_start, candidate_end, joined, is_valid_vin(joined))
+        return _VinCandidate(candidate_start, candidate_end, joined, False)
+
+    if sum(character.isdigit() for character in joined) < 2:
+        return None
 
     # A labelled but incomplete/oversized identifier is sanitized and rejected.
     if 6 <= len(joined) <= 40:
@@ -403,6 +418,13 @@ def _sanitize_candidates(text: str, candidates: list[_VinCandidate]) -> str:
     for candidate in sorted(candidates, key=lambda item: item.start, reverse=True):
         sanitized = f"{sanitized[:candidate.start]}{VIN_MARKER}{sanitized[candidate.end:]}"
     return sanitized
+
+
+def sanitize_vin_like_text(value: object) -> str:
+    """Redact labelled VIN/identifier candidates without creating an envelope."""
+
+    text = str(value or "")
+    return _sanitize_candidates(text, _find_candidates(text))
 
 
 def _find_field_candidates(text: str, *, labelled_field: bool) -> list[_VinCandidate]:

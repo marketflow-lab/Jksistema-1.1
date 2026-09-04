@@ -122,6 +122,8 @@ from .sala_reuniao import (
 )
 from .cadastro import (
     CadastroFornecedorRequest,
+    CadastroProdutoLojaAtualizacaoRequest,
+    CadastroProdutoLojaRequest,
     CadastroProdutoRequest,
 )
 from .impostos import (

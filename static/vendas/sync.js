@@ -335,7 +335,7 @@ function atualizarUnidadesNegocio(lista, mapeamento) {
     }
     const atual = unidadeNegocioSelect.value;
     
-    unidadeNegocioSelect.innerHTML = '<option value="__todos">Todas as lojas</option>';
+    unidadeNegocioSelect.innerHTML = '<option value="__todos">Todas as lojas virtuais</option>';
     
     // Ordenar IDs e criar options
     const idsOrdenados = Array.from(unidadeIds).sort();
@@ -580,6 +580,7 @@ async function iniciarSyncLoja(lojaNome, periodo = null) {
 }
 
 async function executarSync(opcoes = {}) {
+    if (syncEmAndamento) return;
     const syncAutomatico = false;
     cancelarSyncAutomaticoVendas();
     fecharCalendariosData();
@@ -592,6 +593,7 @@ async function executarSync(opcoes = {}) {
         return;
     }
     periodoSelecionadoPeloUsuario = true;
+    const lojaSelecionadaNoInicio = lojaSelecionada;
     const forcarResync = document.getElementById('forcarSync').checked;
     const diasSelecionados = diasNoPeriodo(dataIniIso, dataFimIso);
 
@@ -599,12 +601,12 @@ async function executarSync(opcoes = {}) {
     if (forcarResync) {
         periodosBase = [{ data_inicio: dataIniIso, data_fim: dataFimIso }];
     } else {
-        const dadosParaCalculo = (lojaSelecionada === '__todas')
+        const dadosParaCalculo = (lojaSelecionadaNoInicio === '__todas')
             ? dados
-            : (dados || []).filter(row => mesmaLoja(row.loja_conta, lojaSelecionada));
-        const devolucoesParaCalculo = (lojaSelecionada === '__todas')
+            : (dados || []).filter(row => mesmaLoja(row.loja_conta, lojaSelecionadaNoInicio));
+        const devolucoesParaCalculo = (lojaSelecionadaNoInicio === '__todas')
             ? devolucaoItens
-            : (devolucaoItens || []).filter(dev => mesmaLoja(dev.loja_conta, lojaSelecionada));
+            : (devolucaoItens || []).filter(dev => mesmaLoja(dev.loja_conta, lojaSelecionadaNoInicio));
 
         periodosBase = montarPeriodosFaltantes(dataIniIso, dataFimIso, dadosParaCalculo, devolucoesParaCalculo);
         if (!periodosBase.length) {
@@ -626,16 +628,60 @@ async function executarSync(opcoes = {}) {
     }
     clientId = clientId || obterClientId();
     if (!clientId) { window.location.href = '/frontend_index.html'; return; }
-    
+
     cancelSolicitado = false;
     syncEmAndamento = true;
-    setSyncButtons(true);
     syncController = new AbortController();
+    btnSync.disabled = true;
+    btnCancel.disabled = true;
+    statusEl.className = 'status-bar loading';
+    statusEl.innerHTML = `${spinnerHtml}Atualizando lista de lojas...`;
+    const lojasAtualizadas = await carregarLojas({ silencioso: true });
+    if (cancelSolicitado || syncController.signal.aborted) {
+        syncEmAndamento = false;
+        setSyncButtons(false);
+        syncController = null;
+        cancelSolicitado = false;
+        statusEl.className = 'status-bar';
+        statusEl.textContent = '⏹️ Sincronização cancelada.';
+        return;
+    }
+    if (!lojasAtualizadas) {
+        syncEmAndamento = false;
+        setSyncButtons(false);
+        syncController = null;
+        statusEl.className = 'status-bar error';
+        statusEl.textContent = 'Não foi possível atualizar a lista de lojas. A sincronização não foi iniciada.';
+        return;
+    }
+    if (
+        lojaSelecionada !== lojaSelecionadaNoInicio
+        || getDataIniISO() !== dataIniIso
+        || getDataFimISO() !== dataFimIso
+    ) {
+        syncEmAndamento = false;
+        setSyncButtons(false);
+        syncController = null;
+        statusEl.className = 'status-bar error';
+        statusEl.textContent = 'Os filtros mudaram durante a atualização das lojas. Clique em Atualizar novamente.';
+        return;
+    }
+    const lojaSelecionadaAindaExiste = lojaSelecionadaNoInicio === '__todas'
+        || (lojasDisponiveis || []).some(loja => mesmaLoja(loja?.nome, lojaSelecionadaNoInicio));
+    if (!lojaSelecionadaAindaExiste) {
+        syncEmAndamento = false;
+        setSyncButtons(false);
+        syncController = null;
+        statusEl.className = 'status-bar error';
+        statusEl.textContent = 'A loja selecionada não está mais cadastrada. Selecione outra loja antes de sincronizar.';
+        return;
+    }
+    setSyncButtons(true);
     iniciarMonitoramentoProgresso();
 
-    const lojasParaSincronizar = lojaSelecionada === '__todas'
+    const lojasParaSincronizar = lojaSelecionadaNoInicio === '__todas'
         ? obterNomesLojasParaSync()
-        : [lojaSelecionada];
+        : [lojaSelecionadaNoInicio];
 
     if (!lojasParaSincronizar.length) {
         if (syncAutomatico) {

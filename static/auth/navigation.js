@@ -418,3 +418,322 @@ function obterAuthHeaders(extra) {
     }
     return headers;
 }
+
+(function instalarMidiaAutenticadaJK(global) {
+    'use strict';
+
+    if (global.JKAuthenticatedMedia) return;
+    const SOURCE_ATTR = 'data-jk-auth-src';
+    const LINK_ATTR = 'data-jk-auth-link';
+    const registros = new WeakMap();
+    const ativos = new Set();
+
+    function segmentoFotoSeguro(valor) {
+        const bruto = String(valor || '');
+        if (!bruto || bruto === '.' || bruto === '..' || /[\\\u0000-\u001f\u007f]/.test(bruto)) return '';
+        let decodificado = bruto;
+        try {
+            decodificado = decodeURIComponent(bruto);
+        } catch (_error) {
+            // '%' e valido em nomes legados; a codificacao canonica abaixo o preserva como %25.
+        }
+        if (
+            !decodificado
+            || decodificado === '.'
+            || decodificado === '..'
+            || /[\/:\\\u0000-\u001f\u007f]/.test(decodificado)
+        ) return '';
+        return encodeURIComponent(decodificado);
+    }
+
+    function normalizarPartesFoto(caminho, comTenant) {
+        const bruto = String(caminho || '');
+        if (!bruto || bruto.startsWith('/') || bruto.endsWith('/')) return '';
+        const partes = bruto.split('/');
+        const formatoRaiz = comTenant ? partes.length === 2 : partes.length === 1;
+        const formatoLoja = comTenant
+            ? partes.length === 4 && partes[1].toLowerCase() === 'lojas'
+            : partes.length === 3 && partes[0].toLowerCase() === 'lojas';
+        if (!formatoRaiz && !formatoLoja) return '';
+        const codificadas = partes.map(segmentoFotoSeguro);
+        if (codificadas.some(parte => !parte)) return '';
+        if (!/\.(?:png|jpe?g|gif|webp|bmp)$/i.test(decodeURIComponent(codificadas[codificadas.length - 1]))) return '';
+        if (formatoLoja) codificadas[comTenant ? 1 : 0] = 'lojas';
+        return codificadas.join('/');
+    }
+
+    function dividirCaminhoESufixo(valor) {
+        const bruto = String(valor || '');
+        const indice = bruto.search(/[?#]/);
+        return indice < 0
+            ? { caminho: bruto, sufixo: '' }
+            : { caminho: bruto.slice(0, indice), sufixo: bruto.slice(indice) };
+    }
+
+    function caminhoUrlExternaSeguro(valor) {
+        const caminhoExterno = String(valor || '')
+            .replace(/^(?:https?:)?\/\/[^/?#]*/i, '')
+            .split(/[?#]/, 1)[0];
+        return !caminhoExterno.split('/').some((parte) => {
+            if (!parte) return false;
+            let decodificada = parte;
+            try { decodificada = decodeURIComponent(parte); } catch (_error) {}
+            return decodificada === '.'
+                || decodificada === '..'
+                || /[\\/\u0000-\u001f\u007f]/.test(decodificada);
+        });
+    }
+
+    function rotaFotoCadastroLocal(valor) {
+        const partes = [];
+        String(valor || '')
+            .split(/[?#]/, 1)[0]
+            .replace(/\\/g, '/')
+            .replace(/^\/+/, '')
+            .split('/')
+            .forEach((parte) => {
+                if (!parte || parte === '.') return;
+                if (parte === '..') partes.pop();
+                else partes.push(parte);
+            });
+        const normalizada = partes.join('/').toLowerCase();
+        return normalizada.startsWith('api/cadastro/foto/')
+            || normalizada.startsWith('api/cadastro/foto-arquivo/');
+    }
+
+    function normalizarCaminhoArquivoLocal(valor, endpointArquivo) {
+        let caminho = String(valor || '').replace(/\\/g, '/');
+        if (/^file:/i.test(caminho)) caminho = caminho.slice(caminho.indexOf(':') + 1);
+        caminho = caminho.split(/[?#]/, 1)[0];
+        const partes = caminho.split('/').filter(Boolean);
+        if (partes.length && /^[a-z]:$/i.test(partes[0])) partes.shift();
+        if (!partes.length) return '';
+        const codificadas = partes.map(segmentoFotoSeguro);
+        if (codificadas.some(parte => !parte)) return '';
+        const nome = codificadas[codificadas.length - 1];
+        if (!/\.(?:png|jpe?g|gif|webp|bmp)$/i.test(decodeURIComponent(nome))) return '';
+        return `${endpointArquivo}${nome}`;
+    }
+
+    function normalizarUrlFotoCadastro(valor) {
+        let bruto = String(valor || '').trim();
+        if (!bruto) return '';
+        bruto = bruto.replace(/^["'`‘’“”]+|["'`‘’“”]+$/g, '').trim();
+        if (!bruto) return '';
+
+        if (/^(?:https?:)?\/\//i.test(bruto)) {
+            return caminhoUrlExternaSeguro(bruto) ? bruto : '';
+        }
+
+        const endpointArquivo = '/api/cadastro/foto-arquivo/';
+        const endpointTenant = '/api/cadastro/foto/';
+        const caminhoWindows = /^[a-z]:[\\/]/i.test(bruto);
+        const esquema = /^([a-z][a-z0-9+.-]*):/i.exec(bruto);
+        if (esquema && !caminhoWindows && !/^file$/i.test(esquema[1])) {
+            if (!/^https?$/i.test(esquema[1]) || !rotaFotoCadastroLocal(bruto.slice(esquema[0].length))) {
+                return /[\u0000-\u001f\u007f]/.test(bruto) ? '' : bruto;
+            }
+            bruto = bruto.slice(esquema[0].length);
+        }
+        if (/^file:/i.test(bruto) || caminhoWindows) {
+            return normalizarCaminhoArquivoLocal(bruto, endpointArquivo);
+        }
+        if (/[\\\u0000-\u001f\u007f]/.test(bruto)) return '';
+
+        if (bruto.toLowerCase().startsWith(endpointArquivo)) {
+            const { caminho, sufixo } = dividirCaminhoESufixo(bruto.slice(endpointArquivo.length));
+            const seguro = normalizarPartesFoto(caminho, false);
+            return seguro ? `${endpointArquivo}${seguro}${sufixo}` : '';
+        }
+        if (bruto.toLowerCase().startsWith(endpointTenant)) {
+            const { caminho, sufixo } = dividirCaminhoESufixo(bruto.slice(endpointTenant.length));
+            const seguro = normalizarPartesFoto(caminho, true);
+            return seguro ? `${endpointTenant}${seguro}${sufixo}` : '';
+        }
+
+        if (/[?#]/.test(bruto)) return '';
+        if (/^cadastro_fotos\//i.test(bruto)) bruto = bruto.slice(bruto.indexOf('/') + 1);
+        const seguro = normalizarPartesFoto(bruto, false);
+        return seguro ? `${endpointArquivo}${seguro}` : normalizarCaminhoArquivoLocal(bruto, endpointArquivo);
+    }
+
+    function ehUrlProtegidaCadastro(valor) {
+        const bruto = String(valor || '').trim();
+        if (!bruto) return false;
+        try {
+            const url = new global.URL(bruto, global.location.href);
+            return url.origin === global.location.origin
+                && /^\/api\/cadastro\/(?:foto-arquivo\/|foto\/)/i.test(url.pathname);
+        } catch (_error) {
+            return false;
+        }
+    }
+
+    function revogarRegistro(registro) {
+        if (!registro) return;
+        if (registro.controller) registro.controller.abort();
+        if (registro.objectUrl && global.URL && typeof global.URL.revokeObjectURL === 'function') {
+            global.URL.revokeObjectURL(registro.objectUrl);
+        }
+        ativos.delete(registro);
+    }
+
+    function revogarImagem(img) {
+        const registro = registros.get(img);
+        if (!registro) return;
+        revogarRegistro(registro);
+        registros.delete(img);
+        if (registro.objectUrl && img.getAttribute('src') === registro.objectUrl) img.removeAttribute('src');
+        const link = img.closest && img.closest(`a[${LINK_ATTR}]`);
+        if (link && registro.objectUrl && link.getAttribute('href') === registro.objectUrl) link.removeAttribute('href');
+    }
+
+    async function hidratarImagem(img, fonteExplicita) {
+        if (!img || typeof img.getAttribute !== 'function') return '';
+        const fonte = String(fonteExplicita || img.getAttribute(SOURCE_ATTR) || '').trim();
+        if (!fonte) {
+            revogarImagem(img);
+            return '';
+        }
+        if (!ehUrlProtegidaCadastro(fonte)) {
+            revogarImagem(img);
+            img.setAttribute('src', fonte);
+            return fonte;
+        }
+
+        const anterior = registros.get(img);
+        if (anterior && anterior.source === fonte) return anterior.promise;
+        revogarImagem(img);
+        img.setAttribute(SOURCE_ATTR, fonte);
+        img.removeAttribute('src');
+
+        const controller = typeof global.AbortController === 'function' ? new global.AbortController() : null;
+        const registro = { source: fonte, controller, objectUrl: '', promise: null };
+        registros.set(img, registro);
+        ativos.add(registro);
+        registro.promise = (async () => {
+            if (typeof global.obterAuthHeaders !== 'function') throw new Error('Autenticacao indisponivel.');
+            const headers = global.obterAuthHeaders();
+            if (!headers || !Object.keys(headers).length) throw new Error('Autenticacao indisponivel.');
+            const response = await global.fetch(fonte, {
+                headers,
+                ...(controller ? { signal: controller.signal } : {}),
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const blob = await response.blob();
+            if (!blob || (blob.type && !String(blob.type).toLowerCase().startsWith('image/'))) {
+                throw new Error('Resposta de foto invalida.');
+            }
+            if (registros.get(img) !== registro) return '';
+            const objectUrl = global.URL.createObjectURL(blob);
+            if (registros.get(img) !== registro) {
+                global.URL.revokeObjectURL(objectUrl);
+                return '';
+            }
+            registro.objectUrl = objectUrl;
+            registro.controller = null;
+            img.setAttribute('src', objectUrl);
+            img.classList && img.classList.remove('jk-auth-image-error');
+            const link = img.closest && img.closest(`a[${LINK_ATTR}]`);
+            if (link) link.setAttribute('href', objectUrl);
+            return objectUrl;
+        })().catch((error) => {
+            if (registros.get(img) === registro) {
+                registros.delete(img);
+                ativos.delete(registro);
+                img.removeAttribute('src');
+                if (!error || error.name !== 'AbortError') {
+                    img.classList && img.classList.add('jk-auth-image-error');
+                    img.title = 'Nao foi possivel carregar esta imagem.';
+                }
+            }
+            return '';
+        });
+        return registro.promise;
+    }
+
+    let intersectionObserver = null;
+    if (typeof global.IntersectionObserver === 'function') {
+        intersectionObserver = new global.IntersectionObserver((entries) => {
+            entries.forEach((entry) => {
+                if (!entry.isIntersecting) return;
+                intersectionObserver.unobserve(entry.target);
+                hidratarImagem(entry.target);
+            });
+        }, { rootMargin: '160px' });
+    }
+
+    function agendarImagem(img) {
+        const fonte = String(img && img.getAttribute && img.getAttribute(SOURCE_ATTR) || '').trim();
+        if (!fonte) {
+            revogarImagem(img);
+            return;
+        }
+        const atual = registros.get(img);
+        if (atual && atual.source === fonte) {
+            if (atual.objectUrl && img.getAttribute('src') !== atual.objectUrl) {
+                img.setAttribute('src', atual.objectUrl);
+            }
+            return;
+        }
+        if (atual) revogarImagem(img);
+        img.removeAttribute('src');
+        if (intersectionObserver) intersectionObserver.observe(img);
+        else hidratarImagem(img);
+    }
+
+    function imagensDaRaiz(raiz) {
+        const imagens = [];
+        if (raiz && raiz.matches && raiz.matches(`img[${SOURCE_ATTR}]`)) imagens.push(raiz);
+        if (raiz && raiz.querySelectorAll) imagens.push(...raiz.querySelectorAll(`img[${SOURCE_ATTR}]`));
+        return imagens;
+    }
+
+    function hidratar(raiz) {
+        imagensDaRaiz(raiz || global.document).forEach(agendarImagem);
+    }
+
+    function liberar(raiz) {
+        imagensDaRaiz(raiz).forEach((img) => {
+            if (intersectionObserver) intersectionObserver.unobserve(img);
+            revogarImagem(img);
+        });
+    }
+
+    let mutationObserver = null;
+    function iniciarObservacao() {
+        hidratar(global.document);
+        if (typeof global.MutationObserver !== 'function' || !global.document.documentElement) return;
+        mutationObserver = new global.MutationObserver((mutations) => {
+            mutations.forEach((mutation) => {
+                mutation.removedNodes && mutation.removedNodes.forEach(liberar);
+                mutation.addedNodes && mutation.addedNodes.forEach(hidratar);
+                if (mutation.type === 'attributes') agendarImagem(mutation.target);
+            });
+        });
+        mutationObserver.observe(global.document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: [SOURCE_ATTR],
+        });
+    }
+
+    global.JKAuthenticatedMedia = Object.freeze({
+        ehUrlProtegidaCadastro,
+        hidratar,
+        hidratarImagem,
+        liberar,
+        normalizarUrlFotoCadastro,
+        revogarImagem,
+    });
+    if (global.document.readyState === 'loading') {
+        global.document.addEventListener('DOMContentLoaded', iniciarObservacao, { once: true });
+    } else iniciarObservacao();
+    global.addEventListener('beforeunload', () => {
+        if (mutationObserver) mutationObserver.disconnect();
+        if (intersectionObserver) intersectionObserver.disconnect();
+        Array.from(ativos).forEach(revogarRegistro);
+        ativos.clear();
+    });
+})(window);

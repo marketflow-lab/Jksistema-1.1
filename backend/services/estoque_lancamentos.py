@@ -20,7 +20,7 @@ from backend.schemas.estoque import (
     EstoquePreferenciasColunasRequest,
     EstoqueSyncRequest,
 )
-from backend.services import estoque_context
+from backend.services import estoque_context, integracoes as integracoes_service
 from backend.services.bling import _BlingAdaptiveLimiter, _bling_get_with_adaptive_limit
 from backend.services.integracoes import renovar_token_bling_loja
 from backend.services.runtime_bridge import bind_runtime_globals
@@ -53,6 +53,148 @@ from backend.services.estoque_historico import (
     _inicio_periodo_estoque,
     _normalizar_sku_estoque,
 )
+
+
+def _estoque_historico_nome_chave(nome: Any) -> str:
+    return str(nome or "").strip().casefold()
+
+
+def _estoque_historico_exigir_store_id(store_id: Any) -> str:
+    valor = str(store_id or "").strip()
+    if valor:
+        return valor
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "store_id_required",
+            "message": "Informe o identificador exato da loja para acessar o histórico.",
+        },
+    )
+
+
+def _carregar_lojas_historico(client_id: str) -> list[dict]:
+    try:
+        lojas = integracoes_service.carregar_lojas(client_id) or []
+        return [loja for loja in lojas if isinstance(loja, dict)]
+    except RuntimeError as exc:
+        if "context was not configured" not in str(exc):
+            raise
+
+    # Compatibilidade com o serviço histórico usado isoladamente em migrações
+    # e testes: leitura somente local, sem escolher loja nem criar identidade.
+    db_path = _estoque_historico_db_path(client_id)
+    lojas_path = os.path.join(os.path.dirname(db_path), "lojas_config.json")
+    if not os.path.exists(lojas_path):
+        return []
+    try:
+        with open(lojas_path, "r", encoding="utf-8") as arquivo:
+            payload = json.load(arquivo)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "estoque_historico_config_lojas_invalida",
+                "message": "Configuração de lojas inválida; histórico bloqueado.",
+            },
+        ) from exc
+    if not isinstance(payload, list):
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "estoque_historico_config_lojas_invalida",
+                "message": "Configuração de lojas inválida; histórico bloqueado.",
+            },
+        )
+    return [loja for loja in payload if isinstance(loja, dict)]
+
+
+def _estoque_historico_erro_loja_ambigua(loja_nome: str, lojas: list[dict]) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "estoque_historico_loja_ambigua",
+            "message": (
+                "O histórico de estoque ainda é identificado pelo nome da loja e "
+                "não pode ser usado com lojas homônimas."
+            ),
+            "loja": str(loja_nome or "").strip(),
+            "store_ids": [
+                str(loja.get("store_id") or "").strip()
+                for loja in lojas
+                if str(loja.get("store_id") or "").strip()
+            ],
+        },
+    )
+
+
+def _resolver_loja_historico_segura(
+    client_id: str,
+    loja_nome: str,
+    store_id: str | None = None,
+) -> dict | None:
+    """Resolve a loja sem permitir que o histórico legado misture homônimas."""
+    nome_alvo = str(loja_nome or "").strip()
+    store_id_alvo = str(store_id or "").strip()
+    lojas = _carregar_lojas_historico(client_id)
+
+    # Mantém consultas de bases históricas anteriores ao cadastro de lojas.
+    if not lojas and not store_id_alvo:
+        return None
+
+    loja_cfg = None
+    if store_id_alvo:
+        por_id = [
+            loja
+            for loja in lojas
+            if str(loja.get("store_id") or "").strip() == store_id_alvo
+        ]
+        if len(por_id) != 1:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "estoque_historico_store_id_nao_encontrado",
+                    "message": "Loja não encontrada para o identificador informado.",
+                },
+            )
+        loja_cfg = por_id[0]
+        nome_cfg = str(loja_cfg.get("nome") or "").strip()
+        if nome_cfg != nome_alvo:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "estoque_historico_loja_incompativel",
+                    "message": "O nome da loja não corresponde ao identificador informado.",
+                },
+            )
+    else:
+        chave_alvo = _estoque_historico_nome_chave(nome_alvo)
+        por_nome = [
+            loja
+            for loja in lojas
+            if _estoque_historico_nome_chave(loja.get("nome")) == chave_alvo
+        ]
+        if len(por_nome) > 1:
+            raise _estoque_historico_erro_loja_ambigua(nome_alvo, por_nome)
+        if not por_nome:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "estoque_historico_loja_nao_encontrada",
+                    "message": "Loja não encontrada para o cliente.",
+                },
+            )
+        loja_cfg = por_nome[0]
+
+    nome_cfg = str((loja_cfg or {}).get("nome") or nome_alvo).strip()
+    chave_cfg = _estoque_historico_nome_chave(nome_cfg)
+    homonimas = [
+        loja
+        for loja in lojas
+        if _estoque_historico_nome_chave(loja.get("nome")) == chave_cfg
+    ]
+    if len(homonimas) > 1:
+        raise _estoque_historico_erro_loja_ambigua(nome_cfg, homonimas)
+    return loja_cfg
 
 def _bling_listar_lotes_produto(access_token: str, produto_id: str) -> tuple[list[dict], int]:
     pid = str(produto_id or "").strip()
@@ -501,10 +643,16 @@ def _sincronizar_lancamentos_estoque_sku_api(
     sku: str,
     data_inicio: str,
     data_fim: str,
+    store_id: str | None = None,
 ) -> dict:
-    loja_cfg = buscar_loja(client_id, loja_nome)
+    loja_cfg = _resolver_loja_historico_segura(client_id, loja_nome, store_id)
+    if loja_cfg:
+        loja_nome = str(loja_cfg.get("nome") or loja_nome).strip()
+    else:
+        loja_cfg = buscar_loja(client_id, loja_nome)
     if not loja_cfg:
         raise HTTPException(status_code=404, detail="Loja não encontrada para o cliente.")
+    store_id_resolvido = str(loja_cfg.get("store_id") or store_id or "").strip() or None
     bling_cfg = (loja_cfg.get("integracoes") or {}).get("bling") or {}
     access_token = bling_cfg.get("access_token")
     cid = bling_cfg.get("id")
@@ -519,7 +667,12 @@ def _sincronizar_lancamentos_estoque_sku_api(
 
     lotes, status_lotes = _bling_listar_lotes_produto(access_token, id_bling_sku)
     if status_lotes == 401 and refresh_tok:
-        bling_cfg = renovar_token_bling_loja(client_id, loja_nome, bling_cfg)
+        bling_cfg = renovar_token_bling_loja(
+            client_id,
+            loja_nome,
+            bling_cfg,
+            store_id=store_id_resolvido,
+        )
         access_token = bling_cfg.get("access_token")
         refresh_tok = bling_cfg.get("refresh_token")
         lotes, status_lotes = _bling_listar_lotes_produto(access_token, id_bling_sku)
@@ -545,16 +698,22 @@ def _sincronizar_lancamentos_estoque_sku_api(
                 detail="Permissão insuficiente (insufficient_scope) no token Bling para consultar lançamentos de lote.",
             )
         total_lancamentos += len(lancs or [])
-        total_salvos += _salvar_lancamentos_estoque(
-            client_id=client_id,
-            loja=loja_nome,
-            sku=sku,
-            id_bling=id_bling_sku,
-            lote_id=str(lote_id or ""),
-            lancamentos=lancs or [],
-            data_inicio=data_inicio,
-            data_fim=data_fim,
-        )
+        with integracoes_service._LOJAS_CONFIG_LOCK:
+            _resolver_loja_historico_segura(
+                client_id,
+                loja_nome,
+                store_id_resolvido,
+            )
+            total_salvos += _salvar_lancamentos_estoque(
+                client_id=client_id,
+                loja=loja_nome,
+                sku=sku,
+                id_bling=id_bling_sku,
+                lote_id=str(lote_id or ""),
+                lancamentos=lancs or [],
+                data_inicio=data_inicio,
+                data_fim=data_fim,
+            )
 
     return {
         "sku": _normalizar_sku_estoque(sku),
@@ -577,6 +736,7 @@ async def sincronizar_lancamentos_estoque_api(
         raise HTTPException(status_code=400, detail="Informe uma loja específica.")
     if not sku:
         raise HTTPException(status_code=400, detail="Informe um SKU para sincronizar lançamentos.")
+    store_id = _estoque_historico_exigir_store_id(req.store_id)
 
     data_fim = req.data_fim or datetime.now().strftime("%Y-%m-%d")
     if req.data_inicio:
@@ -590,6 +750,7 @@ async def sincronizar_lancamentos_estoque_api(
         sku=sku,
         data_inicio=data_inicio,
         data_fim=data_fim,
+        store_id=store_id,
     )
     return {"success": True, **result}
 
@@ -600,6 +761,12 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
     loja_nome = str(req.loja or "").strip()
     if not loja_nome or loja_nome == "__todas":
         raise HTTPException(status_code=400, detail="Informe uma loja específica.")
+
+    store_id = _estoque_historico_exigir_store_id(req.store_id)
+    loja_cfg = _resolver_loja_historico_segura(client_id, loja_nome, store_id)
+    if loja_cfg:
+        loja_nome = str(loja_cfg.get("nome") or loja_nome).strip()
+    store_id_resolvido = str(loja_cfg.get("store_id") or store_id).strip()
 
     data_fim = req.data_fim or datetime.now().strftime("%Y-%m-%d")
     try:
@@ -615,10 +782,6 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
             raise HTTPException(status_code=400, detail="data_inicio invalida. Use YYYY-MM-DD.")
     else:
         data_inicio = (data_fim_ref - timedelta(days=365)).strftime("%Y-%m-%d")
-
-    loja_cfg = buscar_loja(client_id, loja_nome)
-    if not loja_cfg:
-        raise HTTPException(status_code=404, detail="Loja não encontrada para o cliente.")
 
     bling_cfg = (loja_cfg.get("integracoes") or {}).get("bling") or {}
     access_token = bling_cfg.get("access_token")
@@ -638,7 +801,12 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
 
     natureza_map, status_nat = _bling_listar_naturezas(access_token)
     if status_nat == 401 and refresh_tok:
-        bling_cfg = renovar_token_bling_loja(client_id, loja_nome, bling_cfg)
+        bling_cfg = renovar_token_bling_loja(
+            client_id,
+            loja_nome,
+            bling_cfg,
+            store_id=store_id_resolvido,
+        )
         access_token = bling_cfg.get("access_token")
         refresh_tok = bling_cfg.get("refresh_token")
         natureza_map, status_nat = _bling_listar_naturezas(access_token)
@@ -666,7 +834,12 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
         progress_end=44,
     )
     if status_entrada == 401 and refresh_tok:
-        bling_cfg = renovar_token_bling_loja(client_id, loja_nome, bling_cfg)
+        bling_cfg = renovar_token_bling_loja(
+            client_id,
+            loja_nome,
+            bling_cfg,
+            store_id=store_id_resolvido,
+        )
         access_token = bling_cfg.get("access_token")
         refresh_tok = bling_cfg.get("refresh_token")
         notas_entrada, notas_entrada_itens, status_entrada = _bling_listar_notas_entrada(
@@ -704,7 +877,12 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
         progress_end=74,
     )
     if status_saida == 401 and refresh_tok:
-        bling_cfg = renovar_token_bling_loja(client_id, loja_nome, bling_cfg)
+        bling_cfg = renovar_token_bling_loja(
+            client_id,
+            loja_nome,
+            bling_cfg,
+            store_id=store_id_resolvido,
+        )
         access_token = bling_cfg.get("access_token")
         refresh_tok = bling_cfg.get("refresh_token")
         notas_saida_itens, status_saida = _bling_listar_vendas_fallback_nf_saida(
@@ -791,8 +969,19 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
             }
         )
 
-    removidos = _limpar_lancamentos_nf_periodo(client_id, loja_nome, data_inicio, data_fim_str)
-    salvos = _salvar_movimentos_nf_estoque(client_id, loja_nome, movimentos_nf)
+    with integracoes_service._LOJAS_CONFIG_LOCK:
+        _resolver_loja_historico_segura(
+            client_id,
+            loja_nome,
+            store_id_resolvido,
+        )
+        removidos = _limpar_lancamentos_nf_periodo(
+            client_id,
+            loja_nome,
+            data_inicio,
+            data_fim_str,
+        )
+        salvos = _salvar_movimentos_nf_estoque(client_id, loja_nome, movimentos_nf)
 
     entradas_total = sum(float(mv.get("entrada") or 0) for mv in movimentos_nf)
     saidas_total = sum(float(mv.get("saida") or 0) for mv in movimentos_nf)
@@ -865,18 +1054,31 @@ async def sincronizar_lancamentos_estoque_lote_api(
     if not loja_nome or loja_nome == "__todas":
         raise HTTPException(status_code=400, detail="Informe uma loja específica.")
 
+    store_id = _estoque_historico_exigir_store_id(req.store_id)
+    loja_cfg = _resolver_loja_historico_segura(client_id, loja_nome, store_id)
+    if loja_cfg:
+        loja_nome = str(loja_cfg.get("nome") or loja_nome).strip()
+    store_id_resolvido = str(loja_cfg.get("store_id") or store_id).strip()
+    req_materializado = EstoqueLancamentosSyncLoteRequest(
+        loja=loja_nome,
+        store_id=store_id_resolvido,
+        data_inicio=req.data_inicio,
+        data_fim=req.data_fim,
+    )
+
     if ESTOQUE_LANC_SYNC_ACTIVE.get(client_id):
         return {"started": False, "already_running": True, "message": "Sincronização de lançamentos já em andamento."}
 
     ESTOQUE_LANC_SYNC_META[client_id] = {
         "loja": loja_nome,
+        "store_id": store_id_resolvido,
         "started_at": datetime.now().isoformat(),
         "last_result": None,
     }
 
     t = threading.Thread(
         target=_sincronizar_lancamentos_estoque_lote_thread_worker,
-        args=(req, client_id),
+        args=(req_materializado, client_id),
         daemon=True,
     )
     t.start()
@@ -903,11 +1105,17 @@ async def estoque_serie_retroativa(
     sku: str = None,
     data_inicio: str = None,
     data_fim: str = None,
+    store_id: str = None,
     client_id: str = Depends(get_tenant_id),
 ):
     loja_nome = str(loja or "").strip()
     if not loja_nome or loja_nome == "__todas":
         raise HTTPException(status_code=400, detail="Informe uma loja específica.")
+
+    store_id = _estoque_historico_exigir_store_id(store_id)
+    loja_cfg = _resolver_loja_historico_segura(client_id, loja_nome, store_id)
+    if loja_cfg:
+        loja_nome = str(loja_cfg.get("nome") or loja_nome).strip()
 
     intervalo = str(intervalo or "dia").strip().lower()
     if intervalo not in ("dia", "semana", "mes", "atualizacao"):
@@ -1205,6 +1413,7 @@ __all__ = [
     "_contar_lancamentos_cache_periodo",
     "_limpar_lancamentos_nf_periodo",
     "_salvar_movimentos_nf_estoque",
+    "_resolver_loja_historico_segura",
     "_sincronizar_lancamentos_estoque_sku_api",
     "sincronizar_lancamentos_estoque_api",
     "_sincronizar_lancamentos_estoque_lote_impl",

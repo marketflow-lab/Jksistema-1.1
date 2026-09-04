@@ -32,6 +32,7 @@ from backend.modules.context_hub.product_evidence import (
     add_product_evidence_source,
     complete_product_evidence_batch,
     create_product_evidence_batch,
+    list_product_research_evidence,
     list_verified_product_evidence,
     normalize_product_evidence_value,
 )
@@ -77,6 +78,7 @@ __all__ = [
     "list_generations",
     "list_curated_backups",
     "list_curated_notes",
+    "list_product_research_evidence",
     "list_verified_product_evidence",
     "normalize_product_evidence_value",
     "publish_curated_context",

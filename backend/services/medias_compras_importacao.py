@@ -374,7 +374,11 @@ async def api_medias_compras_lista_pedido_importar_excel_precos(
 
         atualizados += 1
 
-    lista["itens"] = _recalcular_frete_internacional_itens_lista(client_id, itens)
+    lista["itens"] = _recalcular_frete_internacional_itens_lista(
+        client_id,
+        itens,
+        loja=str(lista.get("store_id") or lista.get("loja") or ""),
+    )
     lista["status"] = _normalizar_status_lista_pedido("Analisando orçamento")
     lista["updated_at"] = datetime.now().isoformat(timespec="seconds")
     listas[idx] = lista
@@ -402,6 +406,7 @@ async def api_medias_compras_lista_pedido_importar_excel_nova_lista(
     file: UploadFile = File(...),
     nome_lista: str = Form(""),
     loja: str = Form("__todas"),
+    store_id: str = Form(""),
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
     conteudo = await file.read()
@@ -525,8 +530,19 @@ async def api_medias_compras_lista_pedido_importar_excel_nova_lista(
 
     agora_iso = datetime.now().isoformat(timespec="seconds")
     lista_id = str(uuid.uuid4())
-    itens_norm = _recalcular_frete_internacional_itens_lista(client_id, itens_lidos)
-    loja_final = str(loja or "__todas").strip() or "__todas"
+    escopo_loja = _resolver_escopo_loja_medias(
+        client_id,
+        loja,
+        store_id,
+        exigir_especifica=True,
+    )
+    loja_final = escopo_loja["loja"]
+    store_id_cadastro = escopo_loja["store_id"]
+    itens_norm = _recalcular_frete_internacional_itens_lista(
+        client_id,
+        itens_lidos,
+        loja=store_id_cadastro or loja_final,
+    )
 
     listas_salvas = _carregar_listas_pedidos(client_id)
     status_importacao = _normalizar_status_lista_pedido("Analisando orçamento")
@@ -534,6 +550,7 @@ async def api_medias_compras_lista_pedido_importar_excel_nova_lista(
         "id": lista_id,
         "nome_lista": nome_lista_final,
         "loja": loja_final,
+        "store_id": store_id_cadastro,
         "status": status_importacao,
         "created_at": agora_iso,
         "updated_at": agora_iso,
@@ -550,6 +567,7 @@ async def api_medias_compras_lista_pedido_importar_excel_nova_lista(
             "id": lista_id,
             "nome_lista": nome_lista_final,
             "loja": loja_final,
+            "store_id": store_id_cadastro,
             "status": status_importacao,
             "created_at": agora_iso,
             "updated_at": agora_iso,

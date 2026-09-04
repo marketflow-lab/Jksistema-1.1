@@ -58,9 +58,9 @@ const htmlFiles = [
   path.join('static', 'pesquisa_mercado.html'),
 ];
 for (const file of htmlFiles) {
-  assert.match(read(file), /\/ia-sidebar\.js\?v=20260817-black-jhon-manual-only-v1/, `${file} precisa do cache-buster novo`);
+  assert.match(read(file), /\/ia-sidebar\.js\?v=20260828-cadastro-fotos-lojas-v1/, `${file} precisa do cache-buster novo`);
 }
-assert.match(loader, /const VERSION = '20260817-black-jhon-manual-only-v1'/);
+assert.match(loader, /const VERSION = '20260828-cadastro-fotos-lojas-v1'/);
 
 const start = lojas.indexOf('function aprovacaoEhPosVenda');
 const end = lojas.indexOf('async function carregarAprovacoesPendentes', start);

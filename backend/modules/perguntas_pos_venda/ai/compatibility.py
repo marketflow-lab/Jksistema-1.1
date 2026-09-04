@@ -608,18 +608,22 @@ def _compatibility_bind_fields(bruto: dict, analise: dict, classification_bound:
     for campo in ("product_interface", "target_interface", "condition", "reason"):
         if bruto.get(campo) not in (None, ""):
             analise[campo] = re.sub(r"\s+", " ", str(bruto.get(campo) or "")).strip()[:1200]
-    alvo = (analise.get("target_item") or analise.get("target_vehicle")) if classification_bound else (
-        bruto.get("target_item") or bruto.get("target_vehicle") or analise.get("target_item") or analise.get("target_vehicle")
+    alvo = (
+        bruto.get("target_item")
+        or bruto.get("target_vehicle")
+        or analise.get("target_item")
+        or analise.get("target_vehicle")
     )
     analise["target_item"] = re.sub(r"\s+", " ", str(alvo or "")).strip()[:300]
     analise["target_vehicle"] = analise["target_item"]
+    default_type = normalize_target_type(analise.get("target_type"), "generic")
+    analise["target_type"] = normalize_target_type(bruto.get("target_type"), default_type)
+    analise["compatibility_profile"] = normalize_profile(
+        bruto.get("compatibility_profile") or analise.get("compatibility_profile"),
+        analise["target_type"],
+    )
     if classification_bound:
-        analise["target_type"] = str(analise.get("target_type") or "")
-        analise["compatibility_profile"] = str(analise.get("compatibility_profile") or "")
-    else:
-        default_type = normalize_target_type(analise.get("target_type"), "generic")
-        analise["target_type"] = normalize_target_type(bruto.get("target_type"), default_type)
-        analise["compatibility_profile"] = normalize_profile(bruto.get("compatibility_profile") or analise.get("compatibility_profile"), analise["target_type"])
+        analise["classification_reference_advisory"] = True
     raw_comparisons = bruto.get("comparison_attributes")
     if not isinstance(raw_comparisons, list):
         raw_comparisons = analise.get("comparison_attributes")
@@ -633,8 +637,6 @@ def _compatibility_bind_fields(bruto: dict, analise: dict, classification_bound:
     analise["decision"] = aliases.get(decision, "insufficient")
     missing = bruto.get("missing_fields") if isinstance(bruto.get("missing_fields"), list) else analise.get("missing_fields") or []
     analise["missing_fields"] = list(dict.fromkeys(str(item or "").strip()[:160] for item in missing if str(item or "").strip()))[:12]
-    if analise["decision"] != "insufficient":
-        analise["missing_fields"] = []
     raw_evidence = bruto.get("evidence") or analise.get("evidence")
     analise["evidence"] = _perguntas_ia_v2_evidencias_normalizar(raw_evidence, grounding=grounding)
     return raw_evidence
@@ -720,31 +722,31 @@ def _compatibility_validate_decision(analise: dict) -> None:
     interfaces_complete = all(str(analise.get(field) or "").strip() for field in ("product_interface", "target_item", "target_interface"))
     both_sides = bool(product and target)
     technical_target = any(_favoritos_normalizar_sem_acentos(str(item.get("authority") or "")) not in {"marketplace", "marketplace_hint"} for item in target)
-    original_decision = analise["decision"]
     explicit_equivalence = _perguntas_ia_v2_equivalencia_explicita(analise["decision"], product, target, equivalence)
     complete_condition = analise["decision"] != "conditional" or bool(str(analise.get("condition") or "").strip())
     decisive = [item for item in analise["comparison_attributes"] if item.get("decisive")]
     comparison_results = {str(item.get("result") or "") for item in decisive}
     coherent = bool(decisive) and ((analise["decision"] in {"yes", "conditional"} and "match" in comparison_results and "conflict" not in comparison_results) or (analise["decision"] == "no" and "conflict" in comparison_results))
-    if analise["decision"] not in {"yes", "no", "conditional"} or all((interfaces_complete, both_sides, technical_target, explicit_equivalence, complete_condition, coherent, not marketplace_only)):
-        return
-    analise["decision"] = "insufficient"
-    analise["confidence"] = min(analise["confidence"], 0.49)
-    checks = (
-        (not analise.get("product_interface"), "product_interface"), (not analise.get("target_item"), "target_item"),
-        (not analise.get("target_interface"), "target_interface"), (not product, "product_evidence"),
-        (not target, "target_vehicle_evidence"), (bool(target) and not technical_target, "non_marketplace_target_evidence"),
-        (not complete_condition, "condition"), (marketplace_only, "authoritative_technical_evidence"),
-    )
-    analise["missing_fields"].extend(name for failed, name in checks if failed)
-    if not analise.get("target_item"):
-        analise["missing_fields"].append("target_vehicle")
-    if not explicit_equivalence:
-        analise["missing_fields"].append("explicit_incompatibility_evidence" if original_decision == "no" else "explicit_equivalence_evidence")
-    if not coherent:
-        analise["missing_fields"].append("comparison_conflict" if "conflict" in comparison_results and original_decision != "no" else "comparison_attributes")
-    analise["missing_fields"] = list(dict.fromkeys(analise["missing_fields"]))[:12]
-    analise["reason"] = "compatibility_decision_without_sufficient_evidence"
+    checks = {
+        "interfaces_complete": interfaces_complete,
+        "both_sides_present": both_sides,
+        "technical_target_present": technical_target,
+        "explicit_equivalence_present": explicit_equivalence,
+        "condition_complete": complete_condition,
+        "comparison_coherent": coherent,
+        "not_marketplace_only": not marketplace_only,
+    }
+    warnings = [name for name, passed in checks.items() if not passed]
+    if marketplace_only:
+        warnings.append("marketplace_only")
+    analise["decision_diagnostics"] = {
+        "policy": "jk_black_jhon_factual_discretion_v1",
+        "advisory_only": True,
+        "model_decision_preserved": True,
+        "decision": analise["decision"],
+        "checks": checks,
+        "warnings": list(dict.fromkeys(warnings))[:12],
+    }
 
 
 def _perguntas_ia_v2_compatibilidade_normalizar(

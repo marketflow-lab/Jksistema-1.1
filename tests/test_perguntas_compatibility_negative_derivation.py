@@ -282,35 +282,31 @@ def test_question_web_tool_and_prepare_grounding_preserve_only_verified_target_c
     assert analysis["decision"] == "no"
 
 
-def test_mt510_non_decisive_conflict_remains_insufficient() -> None:
+def test_mt510_non_decisive_conflict_does_not_derive_but_preserves_model_decision() -> None:
     analysis = _mt510_analysis(decisive=False)
 
-    assert analysis["decision"] == "insufficient"
-    assert "explicit_incompatibility_evidence" in analysis["missing_fields"]
+    assert analysis["decision"] == "no"
     assert not any(item.get("source_type") == _DERIVED_SOURCE_TYPE for item in analysis["evidence"]["equivalence"])
 
 
-def test_mt510_self_attested_grounding_without_server_binding_fails_closed() -> None:
+def test_mt510_self_attested_grounding_is_not_derived_but_does_not_rewrite_model() -> None:
     analysis = _mt510_analysis(server_grounding=False)
 
-    assert analysis["decision"] == "insufficient"
-    assert "explicit_incompatibility_evidence" in analysis["missing_fields"]
+    assert analysis["decision"] == "no"
     assert not any(item.get("source_type") == _DERIVED_SOURCE_TYPE for item in analysis["evidence"]["equivalence"])
 
 
-def test_mt510_single_non_official_technical_source_remains_insufficient() -> None:
+def test_mt510_single_non_official_source_is_not_derived_but_model_decision_survives() -> None:
     analysis = _mt510_analysis(technical_quorum=False, official_target=False)
 
-    assert analysis["decision"] == "insufficient"
-    assert "explicit_incompatibility_evidence" in analysis["missing_fields"]
+    assert analysis["decision"] == "no"
     assert not any(item.get("source_type") == _DERIVED_SOURCE_TYPE for item in analysis["evidence"]["equivalence"])
 
 
-def test_mt510_marketplace_only_target_remains_insufficient() -> None:
+def test_mt510_marketplace_only_target_is_not_derived_but_model_decision_survives() -> None:
     analysis = _mt510_analysis(target_url=_MARKETPLACE_URL)
 
-    assert analysis["decision"] == "insufficient"
-    assert "target_vehicle_evidence" in analysis["missing_fields"]
+    assert analysis["decision"] == "no"
     assert analysis["evidence"]["target_vehicle"] == []
     assert not any(item.get("source_type") == _DERIVED_SOURCE_TYPE for item in analysis["evidence"]["equivalence"])
 
@@ -330,12 +326,12 @@ def test_mt510_two_independent_technical_sources_can_bind_target() -> None:
         {"official_target": False, "duplicate_origin": True},
     ],
 )
-def test_mt510_unbound_identity_or_non_independent_quorum_fails_closed(
+def test_mt510_unbound_identity_or_non_independent_quorum_does_not_derive(
     grounding_override: dict,
 ) -> None:
     analysis = _mt510_analysis(**grounding_override)
 
-    assert analysis["decision"] == "insufficient"
+    assert analysis["decision"] == "no"
     assert not any(item.get("source_type") == _DERIVED_SOURCE_TYPE for item in analysis["evidence"]["equivalence"])
 
 
@@ -356,6 +352,172 @@ def test_raw_target_web_context_never_becomes_target_evidence() -> None:
 
     assert grounding["target_vehicle"] == []
     assert _TARGET_REFERENCE not in str(grounding)
+
+
+def test_research_view_keeps_all_states_but_sanitizes_pii_and_drops_scope_overrides() -> None:
+    raw_vin = "8AD2MKFWXCG035615"
+    raw_email = "comprador@example.com"
+    raw_phone = "+55 11 99999-8888"
+    raw_result = {
+        "function": "web_search_question_context",
+        "arguments": {
+            "queries": [{"query": f"VIN {raw_vin} email {raw_email}"}],
+            "tenant_id": "tenant-b",
+        },
+        "result": {
+            "found": True,
+            "tenant_id": "tenant-b",
+            "store": "Outra Loja",
+            "context": (
+                "CONTEXT_CANARY "
+                f"VIN {raw_vin}; email {raw_email}; telefone {raw_phone}."
+            ),
+            "product_research_evidence": [
+                {
+                    "field_name": "Compatibility.Application",
+                    "scope": "application",
+                    "value": f"STATE_CANARY candidate VIN {raw_vin}",
+                    "state": "candidate",
+                    "sources": [{
+                        "source_type": "technical_independent",
+                        "authority": "technical_independent",
+                        "url": "https://catalogo.example/candidate",
+                        "domain": "catalogo.example",
+                        "section_ref": f"Contato {raw_email}",
+                    }],
+                },
+                {
+                    "field_name": "electrical.voltage",
+                    "scope": "product",
+                    "value": "12 V",
+                    "state": "conflict",
+                    "conflict_group": "voltage-1",
+                    "sources": [{
+                        "source_type": "official_manufacturer",
+                        "authority": "official_manufacturer",
+                        "url": "https://maker.example/conflict",
+                        "domain": "maker.example",
+                    }],
+                },
+                {
+                    "field_name": "physical.weight",
+                    "scope": "product",
+                    "value": "1 kg",
+                    "state": "expired",
+                    "sources": [{
+                        "source_type": "official_listing",
+                        "authority": "official_listing",
+                        "url": "https://produto.mercadolivre.com.br/MLB-1",
+                        "domain": "produto.mercadolivre.com.br",
+                    }],
+                },
+            ],
+            "secret": "must-not-cross",
+        },
+    }
+
+    research_view = evidence._perguntas_ia_research_view(raw_result)
+    rendered = str(research_view)
+    projected = research_view["result"]
+
+    assert research_view["arguments"] == {}
+    assert projected["scope"] == "sanitized_research_agent_discretion"
+    assert projected["found"] is True
+    assert "CONTEXT_CANARY" in projected["context"]
+    assert {item["state"] for item in projected["product_research_evidence"]} == {
+        "candidate", "conflict", "expired",
+    }
+    assert projected["product_research_evidence"][0]["field_name"] == "compatibility.application"
+    assert raw_vin not in rendered
+    assert raw_email not in rendered
+    assert raw_phone not in rendered
+    assert "[CHASSI_PROTEGIDO]" in rendered
+    assert "[EMAIL_PROTEGIDO]" in rendered
+    assert "[TELEFONE_PROTEGIDO]" in rendered
+    assert "tenant-b" not in rendered
+    assert "Outra Loja" not in rendered
+    assert "must-not-cross" not in rendered
+
+
+def test_prompt_views_redact_unlabelled_all_letter_vin_from_source_metadata() -> None:
+    raw_vin = "ABCDEFGHJKLMNPRST"
+    contaminated_url = f"https://maker.example/{raw_vin}/manual"
+    safe_url = "https://maker.example/catalog/manual"
+    raw_result = {
+        "function": "web_search_question_context",
+        "result": {
+            "found": True,
+            "context": f"URL: {contaminated_url}",
+            "verified_product_evidence": [{
+                "field_name": "electrical.power",
+                "scope": "product",
+                "value": "22",
+                "unit": "W",
+                "state": "verified",
+                "source_authorities": [raw_vin],
+                "sources": [{
+                    "source_type": "official_manufacturer",
+                    "authority": "official_manufacturer",
+                    "url": safe_url,
+                    "domain": "maker.example",
+                    "section_ref": f"codigo {raw_vin}",
+                }],
+            }],
+            "verified_target_evidence": [{
+                "scope": "target",
+                "target_identity": "Peugeot 207 XR 1.4 2010",
+                "field_name": "interface.fixation_geometry",
+                "value": "three_point_mount",
+                "unit": raw_vin,
+                "activation_policy": raw_vin,
+                "sources": [
+                    {
+                        "authority": "official_manufacturer",
+                        "url": contaminated_url,
+                        "origin_key": "maker.example",
+                        "copy_fingerprint": "copy-a",
+                    },
+                    {
+                        "authority": "official_manufacturer",
+                        "url": safe_url,
+                        "origin_key": f"publisher-{raw_vin}",
+                        "copy_fingerprint": f"copy-{raw_vin}",
+                    },
+                ],
+            }],
+            "product_research_evidence": [{
+                "field_name": "electrical.power",
+                "scope": "product",
+                "value": "22",
+                "unit": "W",
+                "state": "candidate",
+                "sources": [{
+                    "source_type": "technical_independent",
+                    "authority": "technical_independent",
+                    "url": safe_url,
+                    "domain": "maker.example",
+                    "section_ref": f"codigo {raw_vin}",
+                }],
+            }, {
+                "field_name": raw_vin,
+                "scope": "product",
+                "value": "safe-value",
+                "state": "candidate",
+                "sources": [],
+            }],
+            "research_metrics": {
+                "stop_reason": f"done-{raw_vin}",
+                raw_vin: 1,
+            },
+        },
+    }
+
+    verified_view = evidence._perguntas_ia_verified_research_view(raw_result)
+    research_view = evidence._perguntas_ia_research_view(raw_result)
+
+    assert raw_vin not in str(verified_view)
+    assert raw_vin not in str(research_view)
+    assert contaminated_url not in research_view["result"]["research_sources"]
 
 
 @pytest.mark.parametrize(
@@ -412,7 +574,7 @@ def test_equal_or_overlapping_exact_values_do_not_derive_false_incompatibility(
         target_reference=target_reference,
     )
 
-    assert analysis["decision"] == "insufficient"
+    assert analysis["decision"] == "no"
     assert not any(item.get("source_type") == _DERIVED_SOURCE_TYPE for item in analysis["evidence"]["equivalence"])
 
 
@@ -446,7 +608,7 @@ def test_model_selected_partial_product_value_never_derives_incompatibility(
         target_reference=target_reference,
     )
 
-    assert analysis["decision"] == "insufficient"
+    assert analysis["decision"] == "no"
     assert not any(
         item.get("source_type") == _DERIVED_SOURCE_TYPE
         for item in analysis["evidence"]["equivalence"]
@@ -484,7 +646,7 @@ def test_negated_product_value_never_derives_incompatibility(
         target_reference="Connector type: USB-C.",
     )
 
-    assert analysis["decision"] == "insufficient"
+    assert analysis["decision"] == "no"
     assert not any(
         item.get("source_type") == _DERIVED_SOURCE_TYPE
         for item in analysis["evidence"]["equivalence"]
@@ -530,9 +692,8 @@ def test_disjoint_allowlisted_exact_values_derive_incompatibility(
 
 
 @pytest.mark.parametrize("attribute", ["outside_diameter", "voltage", "tolerance"])
-def test_mt510_non_allowlisted_conflict_remains_insufficient(attribute: str) -> None:
+def test_mt510_non_allowlisted_conflict_does_not_derive_but_preserves_model_decision(attribute: str) -> None:
     analysis = _mt510_analysis(attribute=attribute)
 
-    assert analysis["decision"] == "insufficient"
-    assert "explicit_incompatibility_evidence" in analysis["missing_fields"]
+    assert analysis["decision"] == "no"
     assert not any(item.get("source_type") == _DERIVED_SOURCE_TYPE for item in analysis["evidence"]["equivalence"])

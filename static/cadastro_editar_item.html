@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Editar Item do Cadastro - JK Sistema</title>
-    <link rel="stylesheet" href="/cadastro/styles/editar-item.css?v=20260821-cadastro-modular-v1">
-    <script src="/auth.js?v=20260618-persist-login"></script>
+    <link rel="stylesheet" href="/cadastro/styles/editar-item.css?v=20260831-cadastro-ml-api-v1">
+    <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </head>
 <body>
 <div class="container">
@@ -13,12 +13,18 @@
         <h1> Edição de SKU</h1>
         <div class="header-actions">
             <a class="back-btn" href="/dashboard.html">🏠 Home</a>
-            <a class="back-btn" href="/cadastro_editar.html">Voltar</a>
+            <a id="voltarCadastroLink" class="back-btn" href="/cadastro_editar.html">Voltar</a>
         </div>
     </div>
     <p class="subtitle">Atualize os campos do produto e confirme em Salvar alterações.</p>
 
     <div id="status" class="status"></div>
+
+    <div class="store-scope" aria-label="Loja do cadastro">
+        <label for="cadastroLojaSelect">Loja</label>
+        <select id="cadastroLojaSelect"></select>
+        <span id="cadastroLojaAviso" class="store-scope-hint"></span>
+    </div>
 
     <div class="card">
         <h2 class="section-title">Imagem</h2>
@@ -34,6 +40,10 @@
 
         <h2 class="section-title">Dados do Produto</h2>
         <form id="formEditarItem">
+            <div class="ml-import-actions">
+                <button id="btnBuscarMercadoLivre" class="btn btn-ml" type="button">Trazer dados do Mercado Livre</button>
+                <span>Consulta a conta da loja e preenche a tela. Revise antes de salvar.</span>
+            </div>
             <div id="formGrid" class="form-grid"></div>
             <div class="actions">
                 <button class="btn btn-primary" type="submit">Salvar alterações</button>
@@ -42,8 +52,11 @@
     </div>
 </div>
 
-<script src="/cadastro/form/00-core.js?v=20260821-cadastro-modular-v1"></script>
-<script src="/cadastro/editar-item.js?v=20260826-cadastro-photo-tenant-v1"></script>
+<script src="/cadastro/form/00-core.js?v=20260831-cadastro-ml-api-v1"></script>
+<script src="/cadastro/form/01-mercado-livre.js?v=20260831-cadastro-ml-api-v1"></script>
+<script src="/cadastro/form/02-mlb-editor.js?v=20260902-cadastro-editor-layout-v1"></script>
+<script src="/cadastro/editar-item-layout.js?v=20260902-cadastro-editor-layout-v1"></script>
+<script src="/cadastro/editar-item.js?v=20260902-cadastro-editor-layout-v1"></script>
 <script src="/ia-sidebar.js"></script>
 </body>
 </html>

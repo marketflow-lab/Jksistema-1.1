@@ -7,6 +7,61 @@
 
     const { elements, state, constants } = cadastro.runtime;
     const core = cadastro.core;
+    const storeTools = global.JKCadastroStore;
+    const fotosTabelaAtivas = new Set();
+    let fotosTabelaSeq = 0;
+
+    function authHeaders(extra) {
+        if (typeof global.obterAuthHeaders !== 'function') throw new Error('Autenticação indisponível.');
+        return global.obterAuthHeaders(extra);
+    }
+
+    function revogarFotosTabela() {
+        fotosTabelaSeq += 1;
+        fotosTabelaAtivas.forEach(foto => storeTools.revogarFotoCarregada(foto));
+        fotosTabelaAtivas.clear();
+    }
+
+    function exibirMiniaturaFoto(container, foto) {
+        const link = document.createElement('a');
+        link.className = 'foto-link';
+        link.href = foto.url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        const image = document.createElement('img');
+        image.className = 'foto-thumb';
+        image.src = foto.url;
+        image.alt = 'Foto do SKU';
+        link.appendChild(image);
+        container.innerHTML = '';
+        container.removeAttribute('data-foto-url');
+        container.appendChild(link);
+    }
+
+    async function hidratarFotoTabela(container, requestSeq) {
+        const url = String(container && container.dataset && container.dataset.fotoUrl || '').trim();
+        if (!url) return;
+        try {
+            const foto = await storeTools.carregarFotoAutenticada(url, authHeaders);
+            if (requestSeq !== fotosTabelaSeq || !elements.tBody.contains(container)) {
+                storeTools.revogarFotoCarregada(foto);
+                return;
+            }
+            fotosTabelaAtivas.add(foto);
+            exibirMiniaturaFoto(container, foto);
+        } catch (_error) {
+            if (requestSeq !== fotosTabelaSeq || !elements.tBody.contains(container)) return;
+            container.innerHTML = '<span class="foto-empty">Foto indisponível</span>';
+            container.removeAttribute('data-foto-url');
+        }
+    }
+
+    function hidratarFotosTabela() {
+        const requestSeq = fotosTabelaSeq;
+        elements.tBody.querySelectorAll('[data-foto-url]').forEach(container => {
+            void hidratarFotoTabela(container, requestSeq);
+        });
+    }
 
     function obterLarguraColuna(coluna) {
         const largura = parseInt(state.largurasColunas[coluna], 10);
@@ -157,6 +212,7 @@
     }
 
     function renderTabela(resetarPagina = true) {
+        revogarFotosTabela();
         const listaCompleta = filtrarProdutos();
         if (resetarPagina) state.paginaAtual = 1;
         const inicio = (state.paginaAtual - 1) * constants.itensPorPagina;
@@ -178,25 +234,30 @@
         const fragment = document.createDocumentFragment();
         lista.forEach(item => {
             const row = document.createElement('tr');
-            row.className = 'produto-row-editavel';
+            row.className = state.storeIdSelecionado ? 'produto-row-editavel' : '';
             row.dataset.sku = String(item.sku || '').trim();
-            row.title = row.dataset.sku ? `Editar SKU ${core.formatarSkuExibicao(row.dataset.sku)}` : '';
+            row.dataset.storeId = String(item.store_id || state.storeIdSelecionado || '').trim();
+            row.title = state.storeIdSelecionado && row.dataset.sku ? `Editar SKU ${core.formatarSkuExibicao(row.dataset.sku)}` : '';
             row.innerHTML = state.colunasTabela.map(coluna =>
                 `<td class="${coluna === 'foto' ? 'foto-td' : ''}">${core.renderConteudoCelula(coluna, item)}</td>`
             ).join('');
             fragment.appendChild(row);
         });
         elements.tBody.appendChild(fragment);
+        hidratarFotosTabela();
         state.colunasTabela.forEach((coluna, indice) => aplicarLarguraColuna(indice, coluna, obterLarguraColuna(coluna)));
         renderPaginacao(listaCompleta.length);
     }
 
     function produtoPorLinha(row) {
         const sku = String(row && row.dataset && row.dataset.sku || '');
-        return state.produtos.find(item => String(item && item.sku || '') === sku) || null;
+        const storeId = String(row && row.dataset && row.dataset.storeId || '');
+        return state.produtos.find(item => String(item && item.sku || '') === sku
+            && String(item && item.store_id || state.storeIdSelecionado || '') === storeId) || null;
     }
 
     function tratarCliqueTabela(event) {
+        if (!state.storeIdSelecionado) return;
         const link = event.target.closest && event.target.closest('.sku-edit-link');
         if (link) {
             const row = link.closest('tr[data-sku]');
@@ -217,6 +278,10 @@
         elements.tBody.addEventListener('click', tratarCliqueTabela);
     }
 
-    cadastro.produtosTabela = Object.freeze({ compararSku, renderTabela, tratarCliqueTabela, vincularNavegacaoLinhas });
+    if (typeof global.addEventListener === 'function') global.addEventListener('beforeunload', revogarFotosTabela);
+
+    cadastro.produtosTabela = Object.freeze({
+        compararSku, hidratarFotosTabela, renderTabela, revogarFotosTabela, tratarCliqueTabela, vincularNavegacaoLinhas,
+    });
     cadastro.components.add('produtos');
 })(window);

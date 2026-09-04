@@ -18,9 +18,29 @@ function obterNomeProdutoCadastro(item) {
 function obterFotoProdutoCadastro(item) {
     const foto = String((item || {}).foto || (item || {}).imagem || '').trim();
     if (!foto) return '';
-    if (/^(https?:\/\/|\/api\/|\/img\/)/i.test(foto)) return foto;
-    const nomeArquivo = foto.split(/[\\/]/).pop();
-    return nomeArquivo ? `/api/cadastro/foto-arquivo/${encodeURIComponent(nomeArquivo)}` : '';
+    const helper = globalThis.JKAuthenticatedMedia;
+    if (helper && typeof helper.normalizarUrlFotoCadastro === 'function') {
+        const normalizada = helper.normalizarUrlFotoCadastro(foto);
+        if (normalizada) return normalizada;
+        if (/^(?:cadastro_fotos\/|\/api\/cadastro\/(?:foto-arquivo\/|foto\/))/i.test(foto)) return '';
+    }
+    if (/^(?:https?:)?\/\//i.test(foto) || /^(\/api\/|\/img\/)/i.test(foto)) return foto;
+    return '';
+}
+
+function ehUrlFotoCadastroProtegida(url) {
+    const helper = globalThis.JKAuthenticatedMedia;
+    if (helper && typeof helper.ehUrlProtegidaCadastro === 'function') {
+        return helper.ehUrlProtegidaCadastro(url);
+    }
+    return /^(\/api\/cadastro\/foto-arquivo\/|\/api\/cadastro\/foto\/)/i.test(String(url || '').trim());
+}
+
+function atributoSrcFotoCadastro(url) {
+    const foto = escapeHtml(url);
+    return ehUrlFotoCadastroProtegida(url)
+        ? `data-jk-auth-src="${foto}"`
+        : `src="${foto}"`;
 }
 
 function produtoTreinamentoSelecionado() {
@@ -41,7 +61,7 @@ function renderizarSkuTreinamentoInfo() {
     const sku = formatarSkuExibicao(produto.sku);
     const foto = obterFotoProdutoCadastro(produto);
     const fotoHtml = foto
-        ? `<img src="${escapeHtml(foto)}" alt="${escapeHtml(nome)}" loading="lazy">`
+        ? `<img ${atributoSrcFotoCadastro(foto)} alt="${escapeHtml(nome)}" loading="lazy">`
         : '<span>Sem foto</span>';
     const meta = [
         produto.categoria ? `Categoria ${produto.categoria}` : '',
@@ -212,11 +232,21 @@ function montarSeletorSkusTreinamento() {
 }
 
 async function carregarSkusTreinamentoAI() {
-    if (state.produtosTreinamentoCarregados) return;
+    const lojaEscopo = String(lojaEscopoTreinamento() || '').trim();
+    if (
+        state.produtosTreinamentoCarregados
+        && state.produtosTreinamentoEscopo === lojaEscopo
+    ) return;
     aiTrainingSku.disabled = true;
     aiTrainingSku.innerHTML = '<option value="">Carregando SKUs...</option>';
     try {
-        const response = await fetch('/api/mercadolivre/ia-treinamento/skus', {
+        const params = new URLSearchParams();
+        if (lojaEscopo) {
+            params.set('store_id', lojaEscopo);
+            params.set('loja', nomeLojaEscopoTreinamento());
+        }
+        const url = `/api/mercadolivre/ia-treinamento/skus${params.toString() ? `?${params.toString()}` : ''}`;
+        const response = await fetch(url, {
             headers: obterAuthHeaders(),
             cache: 'no-store'
         });
@@ -225,6 +255,7 @@ async function carregarSkusTreinamentoAI() {
         const produtos = Array.isArray(data.produtos) ? data.produtos : [];
         state.produtosTreinamento = produtos.filter((item) => String((item || {}).sku || '').trim());
         state.produtosTreinamentoCarregados = true;
+        state.produtosTreinamentoEscopo = lojaEscopo;
         montarSeletorSkusTreinamento();
     } catch (error) {
         aiTrainingSku.innerHTML = '<option value="">Erro ao carregar SKUs</option>';
@@ -337,7 +368,10 @@ async function carregarTreinamentoAI(forcar = false) {
     montarSeletorEscopoTreinamento();
     const lojaEscopo = lojaEscopoTreinamento();
     const params = new URLSearchParams();
-    if (lojaEscopo) params.set('loja', lojaEscopo);
+    if (lojaEscopo) {
+        params.set('store_id', lojaEscopo);
+        params.set('loja', nomeLojaEscopoTreinamento());
+    }
     const url = `/api/mercadolivre/ia-treinamento${params.toString() ? `?${params.toString()}` : ''}`;
     aiTrainingStatus.textContent = `Carregando orientacoes (${rotuloEscopoTreinamento()})...`;
     try {
@@ -392,7 +426,8 @@ async function salvarTreinamentoAI() {
             },
             body: JSON.stringify({
                 tipo: tipoAtual,
-                loja: lojaEscopo,
+                loja: nomeLojaEscopoTreinamento(),
+                store_id: lojaEscopo,
                 orientacoes: aiTrainingOrientacoes.value || '',
                 contexto_loja: state.treinamentoContexto.contexto_loja || '',
                 compatibilidade_autopecas: state.treinamentoContexto.compatibilidade_autopecas || '',
@@ -497,7 +532,8 @@ async function simularTreinamentoAI() {
             body: JSON.stringify({
                 pergunta,
                 tipo: state.treinamentoTipo,
-                loja: lojaEscopoTreinamento(),
+                loja: nomeLojaEscopoTreinamento(),
+                store_id: lojaEscopoTreinamento(),
                 sku: aiTrainingSku.value || '',
                 contexto: aiTrainingContexto.value || ''
             })

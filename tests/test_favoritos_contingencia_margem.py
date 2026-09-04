@@ -179,8 +179,8 @@ def test_multiget_resolve_itens_em_lojas_sucessivas_sem_perder_fallback(monkeypa
         favoritos_ml,
         "carregar_lojas",
         lambda _client: [
-            {"nome": "Loja 1", "integracoes": {"mercadolivre": {"access_token": "token-1"}}},
-            {"nome": "Loja 2", "integracoes": {"mercadolivre": {"access_token": "token-2"}}},
+            {"store_id": "store-1", "nome": "Loja 1", "integracoes": {"mercadolivre": {"access_token": "token-1"}}},
+            {"store_id": "store-2", "nome": "Loja 2", "integracoes": {"mercadolivre": {"access_token": "token-2"}}},
         ],
         raising=False,
     )
@@ -228,7 +228,7 @@ def test_multiget_consulta_lojas_em_paralelo_sem_perder_prioridade(monkeypatch):
         favoritos_ml,
         "carregar_lojas",
         lambda _client: [
-            {"nome": f"Loja {indice}", "integracoes": {"mercadolivre": {"access_token": f"token-{indice}"}}}
+            {"store_id": f"store-{indice}", "nome": f"Loja {indice}", "integracoes": {"mercadolivre": {"access_token": f"token-{indice}"}}}
             for indice in range(1, 5)
         ],
         raising=False,
@@ -431,7 +431,7 @@ def test_visitas_consulta_lojas_em_paralelo_e_preserva_prioridade(monkeypatch):
         favoritos_ml,
         "carregar_lojas",
         lambda _client: [
-            {"nome": f"Loja {indice}", "integracoes": {"mercadolivre": {"access_token": f"token-{indice}"}}}
+            {"store_id": f"store-{indice}", "nome": f"Loja {indice}", "integracoes": {"mercadolivre": {"access_token": f"token-{indice}"}}}
             for indice in range(1, 5)
         ],
         raising=False,

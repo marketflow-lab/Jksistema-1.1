@@ -63,6 +63,7 @@ def _scope_bundle(scope: str, arquivos: list[tuple[str, bytes]]) -> bytes:
         "schema": 2,
         "scope": scope,
         "file_count": len(manifest_files),
+        "snapshot_hash": shared_sync_bundle._shared_sync_snapshot_hash(manifest_files),
         "files": manifest_files,
     }
     buffer = io.BytesIO()
@@ -401,7 +402,7 @@ def test_pacote_v2_criptografa_credenciais_sem_texto_legivel(
         "_shared_sync_coletar_arquivos",
         lambda *args, **kwargs: ([_entry("lojas_config.json", credentials)], []),
     )
-    bundle, manifest, _ = shared_sync_bundle._shared_sync_montar_pacote(
+    bundle, manifest, _ = shared_sync_bundle._shared_sync_montar_pacote_locked(
         "000002", "lojas_integracoes", "operador", user_only=True,
     )
     assert manifest["schema"] == 2
@@ -479,10 +480,10 @@ def test_oauth_draft_transitorio_nao_altera_fingerprint_nem_pacote(
         "_shared_sync_coletar_arquivos_delta",
         lambda *_args, **_kwargs: ([_entry("lojas_config.json", raw_draft)], [], []),
     )
-    full_bundle, full_manifest, _ = shared_sync_bundle._shared_sync_montar_pacote(
+    full_bundle, full_manifest, _ = shared_sync_bundle._shared_sync_montar_pacote_locked(
         "000002", "lojas_integracoes", "operador", user_only=True,
     )
-    delta_bundle, delta_manifest, _ = shared_sync_bundle._shared_sync_montar_pacote(
+    delta_bundle, delta_manifest, _ = shared_sync_bundle._shared_sync_montar_pacote_locked(
         "000002", "lojas_integracoes", "operador", user_only=True, known_keys=set(),
     )
     assert full_manifest["snapshot_hash"] == hash_base["lojas_integracoes"]
@@ -547,6 +548,7 @@ def test_oauth_transitorio_persistido_nao_altera_fingerprint_nem_pacote(
             }
         ],
     )
+    store_id = integracoes.carregar_lojas("000002")[0]["store_id"]
     lojas_path = info / "000002" / "lojas_config.json"
 
     def coletar(*_args, **_kwargs):
@@ -585,6 +587,7 @@ def test_oauth_transitorio_persistido_nao_altera_fingerprint_nem_pacote(
         "Loja",
         servico,
         transitorio,
+        store_id=store_id,
         require_existing=True,
     )
     depois = capturar()
@@ -679,7 +682,8 @@ def test_pacote_lojas_recupera_backup_antes_de_congelar_snapshot(
 
     with zipfile.ZipFile(io.BytesIO(bundle), "r") as arquivo:
         lojas = json.loads(arquivo.read("files/lojas_config.json"))
-    assert lojas[0]["store_id"] == store_id
+    assert lojas[0]["store_id"]
+    assert lojas[0]["store_id"] != store_id
     assert lojas[0]["integracoes"]["bling"]["access_token"] == "access-recuperado"
     assert json.loads((tenant / "lojas_config.json").read_text(encoding="utf-8")) == lojas
 
@@ -713,7 +717,11 @@ def test_pacote_lojas_materializa_migracao_global_antes_da_coleta(
     )
 
     def coletar(*_args, **_kwargs):
-        data = (tenant / "lojas_config.json").read_bytes()
+        data = (
+            (tenant / "lojas_config.json").read_bytes()
+            if (tenant / "lojas_config.json").exists()
+            else b"[]"
+        )
         return [_entry("lojas_config.json", data)], []
 
     monkeypatch.setattr(shared_sync_bundle, "_shared_sync_coletar_arquivos", coletar)
@@ -726,9 +734,8 @@ def test_pacote_lojas_materializa_migracao_global_antes_da_coleta(
 
     with zipfile.ZipFile(io.BytesIO(bundle), "r") as arquivo:
         lojas = json.loads(arquivo.read("files/lojas_config.json"))
-    assert lojas[0]["store_id"] == store_id
-    assert lojas[0]["integracoes"]["mercadolivre"]["access_token"] == "access-local"
-    assert not (info / "lojas_config.json").exists()
+    assert lojas == []
+    assert (info / "lojas_config.json").exists()
 
 
 def test_coleta_integracoes_exclui_temporarios_oauth(tmp_path, monkeypatch):
@@ -1090,11 +1097,17 @@ def test_importacao_manual_mescla_integracoes_sem_remover_lojas_locais(tmp_path,
         },
     }]
     raw = json.dumps(source).encode("utf-8")
-    monkeypatch.setattr(integracoes, "carregar_lojas", lambda _client_id: [])
+    tombstone_raw = b"[]"
     monkeypatch.setattr(
         shared_sync_bundle,
         "_shared_sync_coletar_arquivos",
-        lambda *args, **kwargs: ([_entry("lojas_config.json", raw)], []),
+        lambda *args, **kwargs: (
+            [
+                _entry("lojas_config.json", raw),
+                _entry("lojas_sync_tombstones.json", tombstone_raw),
+            ],
+            [],
+        ),
     )
     bundle, _, _ = shared_sync_bundle._shared_sync_montar_pacote(
         "000008", "lojas_integracoes", "origem", user_only=True,
@@ -1103,7 +1116,7 @@ def test_importacao_manual_mescla_integracoes_sem_remover_lojas_locais(tmp_path,
         "000002", "lojas_integracoes", bundle, "destino", {"user_share": True},
     )
     saved = json.loads((info / "000002" / "lojas_config.json").read_text(encoding="utf-8"))
-    assert result["file_count"] == 1
+    assert result["file_count"] == 2
     assert result["stores_count"] == 2
     assert [item["nome"] for item in saved] == ["Antiga", "Nova"]
     assert saved[0]["store_id"] == "store-local"
@@ -1245,7 +1258,7 @@ def test_pacote_lojas_restaura_todos_os_arquivos_se_ultima_escrita_falha(tmp_pat
     assert {path.name: path.read_bytes() for path in targets} == before
 
 
-def test_merge_lojas_bloqueia_nomes_homonimos_mesmo_com_store_ids_distintos(tmp_path):
+def test_merge_lojas_preserva_nomes_homonimos_com_store_ids_distintos(tmp_path):
     target = tmp_path / "lojas_config.json"
     target.write_text(
         json.dumps([
@@ -1265,14 +1278,17 @@ def test_merge_lojas_bloqueia_nomes_homonimos_mesmo_com_store_ids_distintos(tmp_
         }
     ]).encode("utf-8")
 
-    with pytest.raises(HTTPException) as exc_info:
+    merged = json.loads(
         shared_sync._shared_sync_merge_lojas_integracoes_bytes(
             str(target),
             remoto,
         )
+    )
 
-    assert exc_info.value.status_code == 409
-    assert "nomes de loja duplicados" in str(exc_info.value.detail)
+    assert {loja["store_id"] for loja in merged} == {
+        "store-local",
+        "store-remoto",
+    }
 
 
 def test_merge_lojas_usa_store_id_para_unir_loja_renomeada(tmp_path):
@@ -1412,10 +1428,6 @@ def test_merge_bling_preserva_bloco_local_diante_de_oauth_divergente():
                 "store_id": "store-a",
                 "integracoes": {"ML": {}, "mercadolivre": {}},
             },
-        ],
-        [
-            {"nome": "Legada", "integracoes": {}},
-            {"nome": "Légada", "store_id": "store-a", "integracoes": {}},
         ],
     ],
 )
@@ -2014,7 +2026,7 @@ def test_push_aceita_exclusao_somente_com_base_causal_e_tombstone_ativo(
 
 @pytest.mark.parametrize("tipo", ["store", "integration"])
 @pytest.mark.parametrize("com_base", [True, False])
-def test_push_exclusao_de_snapshot_legado_deriva_store_id_do_tenant(
+def test_push_exclusao_de_snapshot_legado_sem_id_falha_fechado(
     monkeypatch,
     tipo,
     com_base,
@@ -2065,21 +2077,14 @@ def test_push_exclusao_de_snapshot_legado_deriva_store_id_do_tenant(
         ],
     )
 
-    if com_base:
-        assert shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
             "bundle-lojas",
             local,
-            base_snapshot_id="snapshot-remoto",
+            base_snapshot_id="snapshot-remoto" if com_base else "",
             client_id=client_id,
-        ) == "snapshot-remoto"
-    else:
-        with pytest.raises(HTTPException) as bloqueado:
-            shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
-                "bundle-lojas",
-                local,
-                client_id=client_id,
-            )
-        assert bloqueado.value.status_code == 409
+        )
+    assert bloqueado.value.status_code == 409
 
 
 @pytest.mark.parametrize("tipo", ["store", "integration"])
@@ -2956,6 +2961,113 @@ def test_importacao_automatica_de_maquina_ainda_pode_pular_snapshot_ja_atual(mon
     assert result["reason"] == "already_current"
 
 
+def test_importacao_de_maquina_recupera_base_v2_para_estado_legado_com_apenas_hash(monkeypatch):
+    sessao = {"username": "operador", "client_id": "000002"}
+    hash_base = "a" * 64
+    hash_atual = "b" * 64
+    meta = {
+        "id": "bundle-lojas",
+        "pointer_id": "bundle-lojas",
+        "snapshot_id": "snapshot-atual",
+        "snapshot_hash": hash_atual,
+        "schema": 2,
+        "encrypted": True,
+        "updated_at": "2026-09-03T12:15:21Z",
+    }
+    aplicacoes = []
+    recuperacoes = []
+
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_machine_doc_id", lambda *args: "bundle-lojas")
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_remote_meta_by_id", lambda _bundle_id: dict(meta))
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_pull_already_current", lambda *args: False)
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_snapshot_id", lambda *args: "")
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_snapshot_hash", lambda *args: hash_base)
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (b"snapshot-atual", dict(meta)),
+    )
+
+    def recuperar(bundle_id, snapshot_hash, **kwargs):
+        recuperacoes.append((bundle_id, snapshot_hash, kwargs))
+        return b"snapshot-base", {"snapshot_id": "snapshot-base"}
+
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_obter_base_causal_por_hash",
+        recuperar,
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_aplicar_pacote",
+        lambda *args, **kwargs: aplicacoes.append((args, kwargs)) or {"file_count": 2, "stores_count": 11},
+    )
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_update", lambda *args, **kwargs: None)
+
+    result = shared_sync_machine._shared_sync_machine_pull_scope(
+        sessao,
+        "lojas_integracoes",
+        force=True,
+    )
+
+    assert result["success"] is True
+    assert result["stores_count"] == 11
+    assert recuperacoes == [(
+        "bundle-lojas",
+        hash_base,
+        {
+            "expected_client_id": "000002",
+            "expected_scope": "lojas_integracoes",
+            "key_context": {"sessao": sessao, "machine_id": ""},
+        },
+    )]
+    assert aplicacoes[0][0][-1]["base_bundle"] == b"snapshot-base"
+    assert aplicacoes[0][0][-1]["strict_oauth_conflicts"] is True
+
+
+def test_importacao_de_maquina_sem_base_legada_confiavel_continua_fechada(monkeypatch):
+    sessao = {"username": "operador", "client_id": "000002"}
+    meta = {
+        "id": "bundle-lojas",
+        "pointer_id": "bundle-lojas",
+        "snapshot_id": "snapshot-atual",
+        "snapshot_hash": "b" * 64,
+        "schema": 2,
+        "encrypted": True,
+    }
+    configuracoes = []
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_machine_doc_id", lambda *args: "bundle-lojas")
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_remote_meta_by_id", lambda _bundle_id: dict(meta))
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_pull_already_current", lambda *args: False)
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_snapshot_id", lambda *args: "")
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_snapshot_hash", lambda *args: "a" * 64)
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (b"snapshot-atual", dict(meta)),
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_obter_base_causal_por_hash",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_aplicar_pacote",
+        lambda *args, **kwargs: configuracoes.append(args[-1]) or {"file_count": 2},
+    )
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_update", lambda *args, **kwargs: None)
+
+    shared_sync_machine._shared_sync_machine_pull_scope(
+        sessao,
+        "lojas_integracoes",
+        force=True,
+    )
+
+    assert configuracoes[0]["base_bundle"] is None
+    assert configuracoes[0]["strict_oauth_conflicts"] is True
+
+
 def test_endpoint_de_importacao_manual_forca_reaplicacao(monkeypatch):
     sessao = {"username": "operador", "client_id": "000002"}
     chamadas = []
@@ -3254,6 +3366,110 @@ class _FakeFirestore:
 
     def collection(self, name):
         return self.collections.setdefault(name, _FakeCollection())
+
+
+def test_base_causal_por_hash_escolhe_apenas_snapshot_v2_completo_do_mesmo_ponteiro(monkeypatch):
+    db = _FakeFirestore()
+    coll = db.collection("shared_sync")
+    hash_base = "a" * 64
+    base = {
+        "id": "bundle-lojas",
+        "pointer_id": "bundle-lojas",
+        "schema": 2,
+        "encrypted": True,
+        "status": "complete",
+        "snapshot_hash": hash_base,
+        "client_id": "000002",
+        "scope": "lojas_integracoes",
+    }
+    coll.data["snapshot-antigo"] = {
+        **base,
+        "snapshot_id": "snapshot-antigo",
+        "updated_ts": 10,
+    }
+    coll.data["snapshot-recente"] = {
+        **base,
+        "snapshot_id": "snapshot-recente",
+        "updated_ts": 20,
+    }
+    coll.data["snapshot-uploading"] = {
+        **base,
+        "snapshot_id": "snapshot-uploading",
+        "status": "uploading",
+        "updated_ts": 30,
+    }
+    coll.data["snapshot-outro-tenant"] = {
+        **base,
+        "snapshot_id": "snapshot-outro-tenant",
+        "client_id": "000003",
+        "updated_ts": 40,
+    }
+    coll.data["snapshot-outro-ponteiro"] = {
+        **base,
+        "pointer_id": "bundle-outro",
+        "snapshot_id": "snapshot-outro-ponteiro",
+        "updated_ts": 50,
+    }
+    monkeypatch.setattr(shared_sync_remote, "_shared_sync_firestore_required", lambda: db)
+    monkeypatch.setattr(shared_sync_remote, "_firebase_shared_sync_collection_name", lambda: "shared_sync")
+
+    meta = shared_sync_remote._shared_sync_remote_snapshot_meta_by_hash(
+        "bundle-lojas",
+        hash_base,
+        expected_client_id="000002",
+        expected_scope="lojas_integracoes",
+    )
+
+    assert meta is not None
+    assert meta["snapshot_id"] == "snapshot-recente"
+    assert meta["_guard_pointer_id"] == "snapshot-recente"
+    assert shared_sync_remote._shared_sync_remote_snapshot_meta_by_hash(
+        "bundle-lojas",
+        "hash-invalido",
+        expected_client_id="000002",
+        expected_scope="lojas_integracoes",
+    ) is None
+
+
+def test_base_causal_por_hash_revalida_manifest_antes_de_usar_snapshot(monkeypatch):
+    bundle = _scope_bundle(
+        "lojas_integracoes",
+        [("lojas_config.json", b"[]")],
+    )
+    manifest = shared_sync_remote._shared_sync_manifest_from_bundle(bundle)
+    snapshot_hash = str(manifest["snapshot_hash"])
+    meta = {
+        "snapshot_id": "snapshot-base",
+        "snapshot_hash": snapshot_hash,
+        "scope": "lojas_integracoes",
+    }
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_remote_snapshot_meta_by_hash",
+        lambda *args, **kwargs: dict(meta),
+    )
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_por_id",
+        lambda *args, **kwargs: (bundle, dict(meta)),
+    )
+
+    recovered = shared_sync_remote._shared_sync_obter_base_causal_por_hash(
+        "bundle-lojas",
+        snapshot_hash,
+        expected_client_id="000002",
+        expected_scope="lojas_integracoes",
+    )
+    rejected = shared_sync_remote._shared_sync_obter_base_causal_por_hash(
+        "bundle-lojas",
+        "f" * 64,
+        expected_client_id="000002",
+        expected_scope="lojas_integracoes",
+    )
+
+    assert recovered is not None
+    assert recovered[0] == bundle
+    assert rejected is None
 
 
 def test_pointer_v2_autoritativo_isola_writer_legado_e_mantem_cas(monkeypatch):
@@ -4261,7 +4477,13 @@ def test_escritas_concorrentes_de_lojas_permanecem_json_atomico(tmp_path):
 
     def save(index):
         lojas = [
-            {"nome": f"Loja {index}-{item}", "integracoes": {"mercadolivre": {"access_token": f"token-{index}-{item}"}}}
+            {
+                "store_id": f"store-{item}",
+                "nome": f"Loja {index}-{item}",
+                "integracoes": {
+                    "mercadolivre": {"access_token": f"token-{index}-{item}"}
+                },
+            }
             for item in range(4)
         ]
         integracoes.salvar_lojas("000002", lojas)
@@ -4308,14 +4530,21 @@ def test_desconexao_cria_tombstone_sem_remover_registro(tmp_path):
     integracoes.configure_integracoes_context(
         pasta_info=str(info), get_tenant_path=tenant_path, normalizar_integracao_conectada=lambda _s, data: data,
     )
-    integracoes.salvar_lojas("000002", [{"nome": "Loja", "integracoes": {"bling": {"access_token": "token", "connected": True}}}])
-    integracoes.desconectar_api_loja("000002", "Loja", "bling")
+    lojas = [{"nome": "Loja", "integracoes": {"bling": {"access_token": "token", "connected": True}}}]
+    integracoes.salvar_lojas("000002", lojas)
+    integracoes.desconectar_api_loja(
+        "000002",
+        "Loja",
+        "bling",
+        store_id=lojas[0]["store_id"],
+    )
     lojas = json.loads((info / "000002" / "lojas_config.json").read_text(encoding="utf-8"))
     tombstones = json.loads((info / "000002" / "lojas_sync_tombstones.json").read_text(encoding="utf-8"))
     assert lojas[0]["store_id"]
     assert lojas[0]["integracoes"]["bling"]["connected"] is False
     assert tombstones[-1]["type"] == "integration"
     assert tombstones[-1]["store_id"] == lojas[0]["store_id"]
+    assert tombstones[-1]["version"] == lojas[0]["integracoes"]["bling"]["_sync_version"]
 
 
 def test_pull_machine_serializa_aplicacao_e_estado_causal(monkeypatch):
@@ -4640,19 +4869,21 @@ def test_recriacao_explicita_supera_tombstone_sem_apaga_loja_futura(tmp_path):
         [],
         permitir_reducao_confirmada=True,
     )
-    integracoes.atualizar_api_loja(
-        "000002",
-        "Loja",
-        "criacao",
-        {"data": "2026-09-02"},
-    )
+    nova = integracoes.criar_loja("000002", "Loja")
 
     tombstones = json.loads(
         (info / "000002" / "lojas_sync_tombstones.json").read_text(
             encoding="utf-8"
         )
     )
-    assert tombstones[-1]["restored_at"]
+    tombstone_antigo = next(
+        item
+        for item in tombstones
+        if item.get("type") == "store"
+        and item.get("store_id") == loja["store_id"]
+    )
+    assert tombstone_antigo["deleted_at"]
+    assert not tombstone_antigo.get("restored_at")
     remoto = json.dumps([{
         "nome": "Loja",
         "store_id": loja["store_id"],
@@ -4660,6 +4891,7 @@ def test_recriacao_explicita_supera_tombstone_sem_apaga_loja_futura(tmp_path):
     }]).encode("utf-8")
     target_vazio = tmp_path / "destino" / "lojas_config.json"
     target_vazio.parent.mkdir()
+    target_vazio.write_text(json.dumps([nova]), encoding="utf-8")
     merged = json.loads(
         shared_sync_merge_integracoes._shared_sync_merge_lojas_integracoes_bytes(
             str(target_vazio),
@@ -4667,7 +4899,7 @@ def test_recriacao_explicita_supera_tombstone_sem_apaga_loja_futura(tmp_path):
             local_tombstones_bytes=json.dumps(tombstones).encode("utf-8"),
         )
     )
-    assert [item["store_id"] for item in merged] == [loja["store_id"]]
+    assert [item["store_id"] for item in merged] == [nova["store_id"]]
 
 
 def test_push_rejeita_hash_local_diferente_da_previa_antes_do_upload(monkeypatch):
@@ -4918,7 +5150,7 @@ def test_pull_migra_snapshot_v1_parcial_sem_perder_loja_local(tmp_path, monkeypa
     assert leituras_meta == ["bundle-lojas"]
 
 
-def test_apply_materializa_loja_legada_antes_de_criar_arquivo_tenant(tmp_path):
+def test_apply_ignora_loja_global_em_tenant_nao_default(tmp_path):
     info = tmp_path / "info"
     info.mkdir()
 
@@ -4969,15 +5201,12 @@ def test_apply_materializa_loja_legada_antes_de_criar_arquivo_tenant(tmp_path):
     )
 
     lojas = integracoes.carregar_lojas("000002")
-    assert result["stores_count"] == 2
-    assert {loja["store_id"] for loja in lojas} == {
-        store_id_local,
-        "store-remota",
-    }
-    assert lojas[0]["integracoes"]["bling"]["access_token"] == "access-local"
+    assert result["stores_count"] == 1
+    assert {loja["store_id"] for loja in lojas} == {"store-remota"}
+    assert (info / "lojas_config.json").exists()
 
 
-def test_apply_recupera_legado_quando_tenant_ja_foi_criado_pelo_bug(tmp_path):
+def test_apply_nao_recupera_global_quando_tenant_nao_default_ja_existe(tmp_path):
     info = tmp_path / "info"
     tenant = info / "000002"
     tenant.mkdir(parents=True)
@@ -5035,14 +5264,13 @@ def test_apply_recupera_legado_quando_tenant_ja_foi_criado_pelo_bug(tmp_path):
     )
 
     lojas = integracoes.carregar_lojas("000002")
-    assert result["stores_count"] == 3
+    assert result["stores_count"] == 2
     assert {loja["store_id"] for loja in lojas} == {
-        store_id_legado,
         "store-remota-antiga",
         "store-remota-nova",
     }
-    assert not (info / "lojas_config.json").exists()
-    assert (backup_dir / "legacy_root_lojas_config.json").exists()
+    assert (info / "lojas_config.json").exists()
+    assert not (backup_dir / "legacy_root_lojas_config.json").exists()
 
 
 def test_apply_recupera_backup_imediato_sem_ressuscitar_integracao_excluida(
@@ -5178,7 +5406,7 @@ def test_apply_recupera_backup_imediato_sem_ressuscitar_integracao_excluida(
     ],
     ids=["sem-store-id", "outro-cliente", "payload-misto"],
 )
-def test_apply_bloqueia_recuperacao_global_sem_ownership_comprovado(
+def test_apply_ignora_recuperacao_global_sem_ownership_comprovado(
     tmp_path,
     legado,
 ):
@@ -5202,22 +5430,24 @@ def test_apply_bloqueia_recuperacao_global_sem_ownership_comprovado(
     legacy_path.write_bytes(legacy_original)
     tenant_path.write_bytes(tenant_original)
 
-    with pytest.raises(HTTPException) as bloqueado:
-        shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
-            "000002",
-            [(
-                "lojas_config.json",
-                b'[{"nome":"Remota","store_id":"remote","integracoes":{}}]',
-            )],
-            str(tenant),
-            str(tmp_path / "backup"),
-            strict_oauth_conflicts=True,
-        )
+    result = shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+        "000002",
+        [(
+            "lojas_config.json",
+            b'[{"nome":"Remota","store_id":"remote","integracoes":{}}]',
+        )],
+        str(tenant),
+        str(tmp_path / "backup"),
+        strict_oauth_conflicts=True,
+    )
 
-    assert bloqueado.value.status_code == 409
+    assert result["stores_count"] == 2
     assert legacy_path.read_bytes() == legacy_original
-    assert tenant_path.read_bytes() == tenant_original
-    assert not (tmp_path / "backup").exists()
+    persistidas = json.loads(tenant_path.read_text(encoding="utf-8"))
+    assert {loja["store_id"] for loja in persistidas} == {
+        "store-tenant",
+        "remote",
+    }
 
 
 def test_apply_cancela_se_migracao_legada_nao_puder_ser_materializada(
@@ -5276,7 +5506,7 @@ def test_apply_cancela_se_migracao_legada_nao_puder_ser_materializada(
     assert not (tenant / "lojas_config.json").exists()
 
 
-def test_apply_bloqueia_migracao_global_sem_owner_antes_de_criar_tenant(
+def test_apply_ignora_global_sem_owner_antes_de_criar_tenant(
     tmp_path,
 ):
     info = tmp_path / "info"
@@ -5299,22 +5529,23 @@ def test_apply_bloqueia_migracao_global_sem_owner_antes_de_criar_tenant(
     legacy_path = info / "lojas_config.json"
     legacy_path.write_bytes(legacy_original)
 
-    with pytest.raises(HTTPException) as bloqueado:
-        shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
-            "000002",
-            [(
-                "lojas_config.json",
-                b'[{"nome":"Remota","store_id":"remote","integracoes":{}}]',
-            )],
-            tenant_path("000002"),
-            str(tmp_path / "backup"),
-            strict_oauth_conflicts=True,
-        )
+    result = shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+        "000002",
+        [(
+            "lojas_config.json",
+            b'[{"nome":"Remota","store_id":"remote","integracoes":{}}]',
+        )],
+        tenant_path("000002"),
+        str(tmp_path / "backup"),
+        strict_oauth_conflicts=True,
+    )
 
-    assert bloqueado.value.status_code == 409
+    assert result["stores_count"] == 1
     assert legacy_path.read_bytes() == legacy_original
-    assert not (tenant / "lojas_config.json").exists()
-    assert not (tmp_path / "backup").exists()
+    persistidas = json.loads(
+        (tenant / "lojas_config.json").read_text(encoding="utf-8")
+    )
+    assert [loja["store_id"] for loja in persistidas] == ["remote"]
 
 
 def test_pull_bloqueia_se_pointer_muda_entre_meta_e_download(monkeypatch):
@@ -5424,20 +5655,18 @@ def test_apply_backup_legado_sem_store_id_respeita_tombstone(tmp_path, tipo):
         encoding="utf-8",
     )
 
-    shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
-        "000002",
-        [("lojas_config.json", b"[]")],
-        str(tenant),
-        str(tmp_path / "backup-operacao"),
-        strict_oauth_conflicts=True,
-    )
+    main_antes = (tenant / "lojas_config.json").read_bytes()
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+            "000002",
+            [("lojas_config.json", b"[]")],
+            str(tenant),
+            str(tmp_path / "backup-operacao"),
+            strict_oauth_conflicts=True,
+        )
 
-    lojas = json.loads((tenant / "lojas_config.json").read_text(encoding="utf-8"))
-    if tipo == "store":
-        assert lojas == []
-    else:
-        assert len(lojas) == 1
-        assert "mercadolivre" not in lojas[0]["integracoes"]
+    assert bloqueado.value.status_code == 409
+    assert (tenant / "lojas_config.json").read_bytes() == main_antes
 
 
 def test_apply_backup_legado_com_nome_ambiguo_falha_sem_alterar_bytes(tmp_path):
@@ -5502,20 +5731,18 @@ def test_apply_snapshot_v1_sem_store_id_respeita_tombstone_local(tmp_path, tipo)
         encoding="utf-8",
     )
 
-    shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
-        "000002",
-        [("lojas_config.json", json.dumps(remoto).encode("utf-8"))],
-        str(tenant),
-        str(tmp_path / "backup-operacao"),
-        strict_oauth_conflicts=True,
-    )
+    main_antes = (tenant / "lojas_config.json").read_bytes()
+    with pytest.raises(HTTPException) as bloqueado:
+        shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+            "000002",
+            [("lojas_config.json", json.dumps(remoto).encode("utf-8"))],
+            str(tenant),
+            str(tmp_path / "backup-operacao"),
+            strict_oauth_conflicts=True,
+        )
 
-    lojas = json.loads((tenant / "lojas_config.json").read_text(encoding="utf-8"))
-    if tipo == "store":
-        assert lojas == []
-    else:
-        assert len(lojas) == 1
-        assert "mercadolivre" not in lojas[0]["integracoes"]
+    assert bloqueado.value.status_code == 409
+    assert (tenant / "lojas_config.json").read_bytes() == main_antes
 
 
 @pytest.mark.parametrize("tipo", ["store", "integration"])
@@ -5639,7 +5866,7 @@ def test_bundle_bloqueia_main_conectado_com_tombstone_ativo(tmp_path, monkeypatc
     assert (tenant / "lojas_sync_tombstones.json").read_bytes() == tombstones
 
 
-def test_bundle_recupera_root_coexistente_antes_de_publicar(tmp_path, monkeypatch):
+def test_bundle_ignora_root_coexistente_de_tenant_nao_default(tmp_path, monkeypatch):
     info, tenant = _configure_integracoes_sync_test(tmp_path)
     nome = "Loja coexistente"
     store_id = integracoes._integracoes_store_id("000002", {"nome": nome})
@@ -5666,8 +5893,8 @@ def test_bundle_recupera_root_coexistente_antes_de_publicar(tmp_path, monkeypatc
 
     with zipfile.ZipFile(io.BytesIO(bundle), "r") as arquivo:
         lojas = json.loads(arquivo.read("files/lojas_config.json"))
-    assert lojas[0]["store_id"] == store_id
-    assert lojas[0]["integracoes"]["bling"]["access_token"] == "root-only"
+    assert lojas == []
+    assert (info / "lojas_config.json").exists()
 
 
 def test_apply_rejeita_tombstone_remoto_malformado_sem_escrever(tmp_path):
@@ -6097,22 +6324,18 @@ def test_recriar_loja_nao_ressuscita_integracoes_antigas_do_snapshot(tmp_path):
     integracoes.salvar_lojas("000002", original)
 
     asyncio.run(
-        integracoes_api.delete_loja("Loja recriada", client_id="000002")
+        integracoes_api.delete_loja(
+            "Loja recriada",
+            store_id=store_id,
+            client_id="000002",
+        )
     )
-    integracoes.atualizar_api_loja(
-        "000002",
-        "Loja recriada",
-        "criacao",
-        {"data": "recriada"},
-    )
+    nova = integracoes.criar_loja("000002", "Loja recriada")
     tombstones_path = tenant / "lojas_sync_tombstones.json"
     tombstones = json.loads(tombstones_path.read_text(encoding="utf-8"))
     por_chave = {item["key"]: item for item in tombstones}
-    assert por_chave[f"store:{store_id}:"]["restored_at"]
-    for servico in ("mercadolivre", "bling", "mercadoturbo"):
-        assert not por_chave[
-            f"integration:{store_id}:{servico}"
-        ].get("restored_at")
+    assert por_chave[f"store:{store_id}:"]["deleted_at"]
+    assert not por_chave[f"store:{store_id}:"].get("restored_at")
 
     merged = shared_sync_merge_integracoes._shared_sync_merge_lojas_integracoes_bytes(
         str(tenant / "lojas_config.json"),
@@ -6136,14 +6359,10 @@ def test_recriar_loja_nao_ressuscita_integracoes_antigas_do_snapshot(tmp_path):
             "user_id": "seller-novo",
             "connected": True,
         },
+        store_id=nova["store_id"],
         require_existing=True,
     )
-    atual = integracoes.carregar_lojas("000002")
-    remoto_stale = json.loads(json.dumps(atual))
-    remoto_stale[0]["integracoes"].update({
-        "bling": {"api_key": "bling-antigo", "connected": True},
-        "mercadoturbo": {"token": "turbo-antigo", "connected": True},
-    })
+    remoto_stale = json.loads(json.dumps(original))
     merged_reconectado = (
         shared_sync_merge_integracoes._shared_sync_merge_lojas_integracoes_bytes(
             str(tenant / "lojas_config.json"),
@@ -6163,7 +6382,7 @@ def test_versoes_fonte_e_electron_estao_alinhadas_com_a_release():
     root_package = json.loads(open("package.json", "r", encoding="utf-8").read())
     electron_package = json.loads(open("electron_app/package.json", "r", encoding="utf-8").read())
     backend_source = open("backend_api.py", "r", encoding="utf-8-sig").read()
-    assert root_package["version"] == "1.0.130"
+    assert root_package["version"] == "1.0.131"
     assert electron_package["version"] == root_package["version"]
     # O minimo do backend pode permanecer anterior para nao derrubar clientes
     # durante o rollout em duas ondas.

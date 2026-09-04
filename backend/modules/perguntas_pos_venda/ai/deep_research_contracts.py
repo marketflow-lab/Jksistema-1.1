@@ -12,8 +12,14 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
-PRODUCT_EVIDENCE_POLICY = "jk_product_evidence_v1"
-PUBLIC_RESEARCH_POLICY = "jk_public_product_research_v1"
+from backend.services.vin_transient import (
+    contains_vin_like_identifier,
+    is_valid_vin,
+    sanitize_vin_like_text,
+)
+
+PRODUCT_EVIDENCE_POLICY = "jk_product_evidence_v2"
+PUBLIC_RESEARCH_POLICY = "jk_black_jhon_research_v2"
 
 PUBLIC_RESEARCH_MAX_QUERIES = 12
 PUBLIC_RESEARCH_MAX_PAGES = 50
@@ -21,6 +27,14 @@ PUBLIC_RESEARCH_MAX_DOMAINS = 10
 PUBLIC_RESEARCH_MAX_PAGES_PER_DOMAIN = 5
 PUBLIC_RESEARCH_MAX_READERS = 4
 PUBLIC_RESEARCH_MAX_SECONDS = 300.0
+PUBLIC_RESEARCH_INITIAL_MAX_QUERIES = 8
+PUBLIC_RESEARCH_INITIAL_MAX_PAGES = 35
+PUBLIC_RESEARCH_INITIAL_MAX_SECONDS = 225.0
+PUBLIC_RESEARCH_GAP_MAX_QUERIES = 4
+PUBLIC_RESEARCH_GAP_MAX_PAGES = 15
+PUBLIC_RESEARCH_GAP_MAX_SECONDS = 75.0
+PUBLIC_RESEARCH_MAX_PASSAGES = 32
+PUBLIC_RESEARCH_MAX_PASSAGE_CHARS = 1200
 PUBLIC_RESEARCH_MAX_DECOMPRESSED_BYTES = 600_000
 PUBLIC_RESEARCH_STREAM_CHUNK_BYTES = 16 * 1024
 
@@ -84,240 +98,87 @@ def closing_research_response(
             timer.cancel()
         safe_close()
 
-
-_DISTRIBUTOR_HOST_PARTS = (
-    "catalog",
-    "distrib",
-    "autopec",
-    "autopart",
-    "parts",
-    "pecas",
-)
-_CURATED_TECHNICAL_DISTRIBUTOR_DOMAINS = frozenset(
-    {
-        "autodoc.eu",
-        "bike-components.de",
-        "bike-discount.de",
-        "digikey.com",
-        "grainger.com",
-        "mister-auto.com",
-        "mouser.com",
-        "oscaro.com",
-        "rockauto.com",
-        "rs-online.com",
-        "summitracing.com",
-    }
-)
-_CURATED_TECHNICAL_INDEPENDENT_DOMAINS = frozenset(
-    {
-        "allaboutcircuits.com",
-        "engineeringtoolbox.com",
-        "repairpal.com",
-        "underhoodservice.com",
-    }
-)
-_IDENTITY_STOPWORDS = frozenset(
-    {
-        "para",
-        "com",
-        "sem",
-        "produto",
-        "peca",
-        "peça",
-        "novo",
-        "nova",
-        "original",
-        "modelo",
-        "universal",
-        "kit",
-        "unidade",
-        "mercado",
-        "livre",
-    }
-)
-_OEM_LABEL_METADATA = frozenset({"63q", "level", "oper", "serial"})
-_MISSING_FACT_VALUES = frozenset(
-    {
-        "unknown",
-        "unavailable",
-        "notavailable",
-        "notinformed",
-        "naoinformado",
-        "naodisponivel",
-        "naoaplicavel",
-        "semcodigo",
-        "nenhum",
-        "null",
-    }
-)
-_COMMON_TWO_LABEL_PUBLIC_SUFFIXES = frozenset(
-    {
-        "co.jp",
-        "co.nz",
-        "co.uk",
-        "com.ar",
-        "com.au",
-        "com.br",
-        "com.cn",
-        "com.mx",
-        "net.br",
-        "org.br",
-        "org.uk",
-    }
-)
-_VIN_ANYWHERE_RE = re.compile(r"(?<![A-Z0-9])([A-Z0-9]{17})(?![A-Z0-9])", re.IGNORECASE)
-_VIN_LABELLED_TAIL_RE = re.compile(
-    r"\b(?:chassi|chassis|vin)\b([^.!?;\r\n]{0,96})",
-    re.IGNORECASE,
-)
-_VIN_GROUPED_ANYWHERE_RE = re.compile(
-    r"(?<![A-Z0-9])((?:[A-Z0-9]{1,5}[ -]+){2,20}[A-Z0-9]{1,5})(?![A-Z0-9])",
-    re.IGNORECASE,
-)
-_EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
-_CPF_CNPJ_RE = re.compile(r"(?<!\d)(?:\d{3}[.\s-]?\d{3}[.\s-]?\d{3}[-\s]?\d{2}|\d{2}[.\s-]?\d{3}[.\s-]?\d{3}[/\s-]?\d{4}[-\s]?\d{2})(?!\d)")
-_PHONE_RE = re.compile(
-    r"(?<!\d)(?:\+?55[\s.-]?)?(?:\(\d{2}\)|\d{2}[\s.-])"
-    r"[\s.-]?(?:9\d{4}|\d{4})[\s.-]?\d{4}(?!\d)"
-)
-_PHONE_BR_COMPACT_RE = re.compile(
-    r"(?<!\d)55[1-9]\d(?:9\d{8}|\d{8})(?!\d)"
-)
-_PHONE_LABEL_RE = re.compile(
-    r"\b(?:telefone|tel|whatsapp|celular|fone|phone|contact|contacto|"
-    r"call|mobile|m[oó]vil|tel[eé]fono|ligue)\s*[:=\-]?\s*"
-    r"(?:\+?\d[\d\s().-]{7,}\d)",
-    re.IGNORECASE,
-)
-_PHONE_INTL_RE = re.compile(
-    r"(?<![\w+])\+\d{1,3}(?:[\s().-]*\d){7,14}(?!\d)"
-)
-_PHONE_NANP_RE = re.compile(
-    r"(?<!\d)(?:\([2-9]\d{2}\)|[2-9]\d{2}[\s.-])"
-    r"[\s.-]?[2-9]\d{2}[\s.-]\d{4}(?!\d)"
-)
-_PROTECTED_VIN_MARKER = "[CHASSI_PROTEGIDO]"
-
-
-def _plain(value: object) -> str:
-    normalized = unicodedata.normalize("NFKD", str(value or ""))
-    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
-    return re.sub(r"\s+", " ", normalized).strip().casefold()
-
-
-_NEGATED_TECHNICAL_PREFIX = re.compile(
-    r"(?:"
-    r"\b(?:nunca|jamais|never|sem|without)\b(?:\s+[a-z0-9_./'-]+){0,8}|"
-    r"\bnao\s+(?:possui|tem|usa|utiliza|inclui|e|aceita|suporta|adota|emprega|"
-    r"oferece|dispoe|equipa|fornece|apresenta)\b(?:\s+[a-z0-9_./'-]+){0,8}|"
-    r"\b(?:nao|not)\s+compativel\s+com\b(?:\s+[a-z0-9_./'-]+){0,8}|"
-    r"\bnot\s+compatible\s+with\b(?:\s+[a-z0-9_./'-]+){0,8}|"
-    r"\b(?:does\s+not|doesn't|isn't|can't|cannot)\b(?:\s+[a-z0-9_./'-]+){0,8}|"
-    r"\b(?:incompativel\s+com|incompatible\s+with)\b(?:\s+[a-z0-9_./'-]+){0,8}|"
-    r"\b(?:nao|not)\b"
-    r")\s*$"
-)
-_NEGATED_TECHNICAL_INSIDE = re.compile(
-    r"(?:[:=\-]\s*|\b)(?:nao|sem|not|without|never|nunca|jamais)\b"
-)
-_NEGATED_TECHNICAL_SUFFIX = re.compile(
-    r"\s*[,:\-]?\s*(?:"
-    r"nao\s+(?:suportad[oa]s?|disponivel|compativel|incluid[oa]s?|utilizad[oa]s?|se\s+aplica)|"
-    r"nao\s+e\s+compativel|is\s+not\s+compatible|sem\s+suporte|lacks\s+support|"
-    r"nunca|jamais|incompativel|incompatible|unsupported|unavailable|"
-    r"not\s+(?:supported|available|compatible|included)|"
-    r"isn't\s+(?:supported|available|compatible)|can't\s+be\s+used"
-    r")\b"
+from .deep_research_sanitization import (
+    _COMMON_TWO_LABEL_PUBLIC_SUFFIXES,
+    _CPF_CNPJ_RE,
+    _CURATED_TECHNICAL_DISTRIBUTOR_DOMAINS,
+    _CURATED_TECHNICAL_INDEPENDENT_DOMAINS,
+    _DISTRIBUTOR_HOST_PARTS,
+    _EMAIL_RE,
+    _IDENTITY_STOPWORDS,
+    _MISSING_FACT_VALUES,
+    _OEM_LABEL_METADATA,
+    _PHONE_BR_COMPACT_RE,
+    _PHONE_INTL_RE,
+    _PHONE_LABEL_RE,
+    _PHONE_NANP_RE,
+    _PHONE_RE,
+    _PROTECTED_VIN_MARKER,
+    _VIN_ANYWHERE_RE,
+    _VIN_GROUPED_ANYWHERE_RE,
+    _VIN_LABELLED_TAIL_RE,
+    _label_metadata_code,
+    _missing_fact_value,
+    _percent_decode_fixed,
+    _plain,
+    _safe_text,
+    safe_agent_product_research_evidence,
+    safe_agent_research_metadata,
+    safe_agent_research_metrics,
+    sanitize_public_research_text,
+    technical_assertion_occurrence_is_positive,
 )
 
 
-def technical_assertion_occurrence_is_positive(text: str, start: int, end: int) -> bool:
-    """Return false when a technical value is denied in its own clause."""
+def safe_agent_research_passages(values: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Project bounded technical excerpts; full page bodies remain process-local."""
 
-    source = str(text or "").casefold()
-    bounded_start = max(0, min(int(start), len(source)))
-    bounded_end = max(bounded_start, min(int(end), len(source)))
-    delimiters = ".;\n|"
-    clause_start = max(source.rfind(delimiter, 0, bounded_start) for delimiter in delimiters) + 1
-    following = [
-        position for delimiter in delimiters
-        if (position := source.find(delimiter, bounded_end)) >= 0
-    ]
-    clause_end = min(following) if following else len(source)
-    prefix = source[clause_start:bounded_start][-160:]
-    matched = source[bounded_start:bounded_end]
-    suffix = source[bounded_end:clause_end][:120]
-    return not bool(
-        _NEGATED_TECHNICAL_PREFIX.search(prefix)
-        or _NEGATED_TECHNICAL_INSIDE.search(matched)
-        or _NEGATED_TECHNICAL_SUFFIX.match(suffix)
-    )
-
-
-def _label_metadata_code(value: object) -> bool:
-    normalized = re.sub(r"[^a-z0-9]", "", _plain(value))
-    return normalized in _OEM_LABEL_METADATA or any(
-        normalized.startswith(prefix)
-        for prefix in ("level", "oper", "serial")
-    )
-
-
-def _missing_fact_value(value: object) -> bool:
-    normalized = re.sub(r"[^a-z0-9]", "", _plain(value))
-    return not normalized or normalized in _MISSING_FACT_VALUES
-
-
-def _safe_text(value: object, maximum: int = 4000) -> str:
-    return re.sub(r"\s+", " ", str(value or "")).strip()[:maximum]
-
-
-def _percent_decode_fixed(value: object, *, rounds: int = 8) -> tuple[str, bool]:
-    """Decode bounded nesting; callers must reject/redact an unfinished value."""
-
-    current = str(value or "")
-    for _attempt in range(max(1, int(rounds))):
-        decoded = unquote(current)
-        if decoded == current:
-            return current, True
-        current = decoded
-    return current, unquote(current) == current
-
-
-def sanitize_public_research_text(value: object, maximum: int = 600_000) -> str:
-    """Remove VIN and contact/identity PII from untrusted web text."""
-
-    source, decoding_complete = _percent_decode_fixed(value)
-    if not decoding_complete:
-        return "[CONTEUDO_CODIFICADO_PROTEGIDO]"[: max(0, int(maximum))]
-
-    def replace_compact(match: re.Match[str]) -> str:
-        candidate = match.group(1)
-        return (
-            _PROTECTED_VIN_MARKER
-            if sum(character.isdigit() for character in candidate) >= 2
-            else candidate
+    safe: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    allowed_types = {"code_context", "section", "table"}
+    for raw in values:
+        if len(safe) >= PUBLIC_RESEARCH_MAX_PASSAGES or not isinstance(raw, Mapping):
+            break
+        passage_type = re.sub(
+            r"[^a-z_]", "", safe_agent_research_metadata(raw.get("passage_type"), 32).lower()
         )
-
-    def replace_grouped(match: re.Match[str]) -> str:
-        candidate = match.group(1)
-        compact = re.sub(r"[ -]+", "", candidate)
-        return (
-            _PROTECTED_VIN_MARKER
-            if len(compact) == 17
-            and sum(character.isdigit() for character in compact) >= 2
-            else candidate
-        )
-
-    sanitized = _VIN_ANYWHERE_RE.sub(replace_compact, source)
-    sanitized = _VIN_GROUPED_ANYWHERE_RE.sub(replace_grouped, sanitized)
-    sanitized = _EMAIL_RE.sub("[EMAIL_PROTEGIDO]", sanitized)
-    sanitized = _CPF_CNPJ_RE.sub("[DOCUMENTO_PROTEGIDO]", sanitized)
-    sanitized = _PHONE_LABEL_RE.sub("[TELEFONE_PROTEGIDO]", sanitized)
-    sanitized = _PHONE_INTL_RE.sub("[TELEFONE_PROTEGIDO]", sanitized)
-    sanitized = _PHONE_NANP_RE.sub("[TELEFONE_PROTEGIDO]", sanitized)
-    sanitized = _PHONE_RE.sub("[TELEFONE_PROTEGIDO]", sanitized)
-    sanitized = _PHONE_BR_COMPACT_RE.sub("[TELEFONE_PROTEGIDO]", sanitized)
-    return sanitized[: max(0, int(maximum))]
+        if passage_type not in allowed_types:
+            continue
+        text = re.sub(
+            r"\s+",
+            " ",
+            sanitize_public_research_text(raw.get("text"), PUBLIC_RESEARCH_MAX_PASSAGE_CHARS),
+        ).strip()[:PUBLIC_RESEARCH_MAX_PASSAGE_CHARS]
+        if not text or contains_vin_like_identifier(text) or "_PROTEGIDO]" in text.upper():
+            continue
+        url = safe_agent_research_metadata(raw.get("url"), 800)
+        if url and not canonical_research_url(url):
+            url = ""
+        section_ref = re.sub(
+            r"\s+", " ", sanitize_public_research_text(raw.get("section_ref"), 180)
+        ).strip()[:180]
+        codes: list[str] = []
+        for value in (raw.get("codes") or [])[:12]:
+            code = re.sub(
+                r"[^A-Za-z0-9./-]", "", sanitize_public_research_text(value, 48)
+            ).strip("./-")[:48]
+            if code and not contains_vin_like_identifier(code) and code not in codes:
+                codes.append(code)
+        signature = (passage_type, url, text.casefold())
+        if signature in seen:
+            continue
+        seen.add(signature)
+        safe.append({
+            "passage_type": passage_type,
+            "text": text,
+            "section_ref": section_ref,
+            "codes": codes,
+            "url": url,
+            "title": safe_agent_research_metadata(raw.get("title"), 240),
+            "query_type": safe_agent_research_metadata(raw.get("query_type"), 80),
+            "source_type": safe_agent_research_metadata(raw.get("source_type"), 40),
+        })
+    return safe
 
 
 def sanitize_public_research_item(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -386,13 +247,17 @@ def _safe_public_query(value: object) -> str:
     compact_identifiers = [
         match.group(1).upper()
         for match in _VIN_ANYWHERE_RE.finditer(inspected)
-        if sum(character.isdigit() for character in match.group(1)) >= 2
+        if is_valid_vin(match.group(1))
+        or sum(character.isdigit() for character in match.group(1)) >= 2
     ]
     grouped_identifiers = [
         re.sub(r"[ -]+", "", match.group(1)).upper()
         for match in _VIN_GROUPED_ANYWHERE_RE.finditer(inspected)
         if len(re.sub(r"[ -]+", "", match.group(1))) == 17
-        and sum(character.isdigit() for character in match.group(1)) >= 2
+        and (
+            is_valid_vin(re.sub(r"[ -]+", "", match.group(1)))
+            or sum(character.isdigit() for character in match.group(1)) >= 2
+        )
     ]
     labelled_identifiers: list[str] = []
     for match in _VIN_LABELLED_TAIL_RE.finditer(inspected):
@@ -401,7 +266,10 @@ def _safe_public_query(value: object) -> str:
             joined = ""
             for chunk in chunks[start : start + 24]:
                 joined += chunk
-                if len(joined) == 17 and sum(character.isdigit() for character in joined) >= 2:
+                if len(joined) == 17 and (
+                    is_valid_vin(joined)
+                    or sum(character.isdigit() for character in joined) >= 2
+                ):
                     labelled_identifiers.append(joined.upper())
                     break
                 if len(joined) > 17:
@@ -532,6 +400,8 @@ class ResearchSessionV1:
     pages_used: int = 0
     domains: dict[str, int] = field(default_factory=dict)
     page_urls: set[str] = field(default_factory=set)
+    query_phase_counts: dict[str, int] = field(default_factory=dict)
+    page_phase_counts: dict[str, int] = field(default_factory=dict)
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     @property
@@ -541,6 +411,22 @@ class ResearchSessionV1:
     def remaining_seconds(self) -> float:
         return max(0.0, self.deadline_monotonic - time.monotonic())
 
+    @staticmethod
+    def _budget_phase(value: object) -> str:
+        return "gap" if str(value or "").strip().lower() == "gap" else "initial"
+
+    def phase_deadline_monotonic(self, phase: object) -> float:
+        bucket = self._budget_phase(phase)
+        if bucket == "gap":
+            return min(
+                self.deadline_monotonic,
+                time.monotonic() + PUBLIC_RESEARCH_GAP_MAX_SECONDS,
+            )
+        return min(
+            self.deadline_monotonic,
+            self.started_monotonic + PUBLIC_RESEARCH_INITIAL_MAX_SECONDS,
+        )
+
     def reserve_queries(self, queries: Iterable[Mapping[str, Any]]) -> list[dict[str, str]]:
         accepted: list[dict[str, str]] = []
         with self.lock:
@@ -549,25 +435,51 @@ class ResearchSessionV1:
             for query in queries:
                 text = _safe_public_query(query.get("query"))
                 kind = _safe_text(query.get("type") or "web", 80)
+                requested_phase = _safe_text(query.get("research_phase") or "initial", 16).lower()
+                budget_phase = self._budget_phase(requested_phase)
+                semantic_phase = (
+                    requested_phase
+                    if requested_phase in {"plan", "gap", "fallback", "identity", "initial"}
+                    else budget_phase
+                )
                 normalized = _plain(text)
                 if not normalized or normalized in self.queries_used:
                     continue
                 if len(self.queries_used) >= PUBLIC_RESEARCH_MAX_QUERIES:
                     break
+                phase_limit = (
+                    PUBLIC_RESEARCH_GAP_MAX_QUERIES
+                    if budget_phase == "gap"
+                    else PUBLIC_RESEARCH_INITIAL_MAX_QUERIES
+                )
+                if self.query_phase_counts.get(budget_phase, 0) >= phase_limit:
+                    continue
                 self.queries_used.add(normalized)
-                accepted.append({"query": text, "type": kind})
+                self.query_phase_counts[budget_phase] = self.query_phase_counts.get(budget_phase, 0) + 1
+                accepted.append({
+                    "query": text,
+                    "type": kind,
+                    "research_phase": semantic_phase,
+                })
         return accepted
 
-    def reserve_page(self, url: object) -> bool:
+    def reserve_page(self, url: object, *, research_phase: object = "initial") -> bool:
         host = _registrable_domain(_domain(url))
         canonical = canonical_research_url(url)
+        budget_phase = self._budget_phase(research_phase)
         with self.lock:
+            phase_limit = (
+                PUBLIC_RESEARCH_GAP_MAX_PAGES
+                if budget_phase == "gap"
+                else PUBLIC_RESEARCH_INITIAL_MAX_PAGES
+            )
             if (
                 self.remaining_seconds() <= 0
                 or not host
                 or not canonical
                 or canonical in self.page_urls
                 or self.pages_used >= PUBLIC_RESEARCH_MAX_PAGES
+                or self.page_phase_counts.get(budget_phase, 0) >= phase_limit
             ):
                 return False
             if host not in self.domains and len(self.domains) >= PUBLIC_RESEARCH_MAX_DOMAINS:
@@ -577,6 +489,7 @@ class ResearchSessionV1:
             self.pages_used += 1
             self.domains[host] = self.domains.get(host, 0) + 1
             self.page_urls.add(canonical)
+            self.page_phase_counts[budget_phase] = self.page_phase_counts.get(budget_phase, 0) + 1
             return True
 
 
@@ -585,12 +498,22 @@ def research_session(agent_input: Mapping[str, Any]) -> ResearchSessionV1:
 
     now = time.monotonic()
     job_id = _safe_text(agent_input.get("_codex_job_id"), 128)
+    transient_key = re.sub(
+        r"[^A-Za-z0-9_.-]", "", _safe_text(agent_input.get("_research_session_key"), 128)
+    )[:128]
     identity = (
         agent_input.get("product_evidence_identity")
         if isinstance(agent_input.get("product_evidence_identity"), Mapping)
         else {}
     )
-    if job_id:
+    question = agent_input.get("question") if isinstance(agent_input.get("question"), Mapping) else {}
+    item = agent_input.get("item") if isinstance(agent_input.get("item"), Mapping) else {}
+    stable_question_key = "\x1f".join(
+        _safe_text(value, 160)
+        for value in (question.get("id"), question.get("item_id"), item.get("id"))
+        if _safe_text(value, 160)
+    )
+    if job_id or transient_key or stable_question_key:
         key_material = "\x1f".join(
             _safe_text(value, 160)
             for value in (
@@ -598,7 +521,7 @@ def research_session(agent_input: Mapping[str, Any]) -> ResearchSessionV1:
                 agent_input.get("store"),
                 identity.get("seller_id"),
                 identity.get("site_id"),
-                job_id,
+                job_id or transient_key or stable_question_key,
             )
         )
         key = hashlib.sha256(key_material.encode("utf-8", errors="ignore")).hexdigest()
@@ -622,6 +545,9 @@ def research_session(agent_input: Mapping[str, Any]) -> ResearchSessionV1:
                     normalized = _plain(_safe_public_query(query))
                     if normalized:
                         session.queries_used.add(normalized)
+                        session.query_phase_counts["initial"] = (
+                            session.query_phase_counts.get("initial", 0) + 1
+                        )
             _SESSIONS[key] = session
         else:
             session.expires_monotonic = now + _SESSION_TTL_SECONDS
@@ -641,6 +567,16 @@ class TechnicalClaimV1:
 
 
 @dataclass(frozen=True)
+class ResearchPassageV1:
+    """Ephemeral bounded excerpt centered on a technical code or document structure."""
+
+    passage_type: str
+    text: str
+    section_ref: str = ""
+    codes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ResearchDocumentV1:
     url: str
     title: str
@@ -655,3 +591,8 @@ class ResearchDocumentV1:
     # product identity could not be proven.  Such leads must never contribute
     # claims, coverage or public facts.
     claim_eligible: bool = True
+    passages: tuple[ResearchPassageV1, ...] = ()
+    # Set only by the constructors after exact-product structural scoping. It
+    # prevents a second scoping pass from discarding directed relations while
+    # keeping ad-hoc/manual ResearchDocumentV1 instances fail-closed.
+    claim_text_scoped: bool = False

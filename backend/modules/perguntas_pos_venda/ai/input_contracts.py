@@ -22,8 +22,8 @@ CONTEXT_COLLECTION_PIPELINE = (
     ),
     (
         7,
-        "verified_product_evidence",
-        "Reutilizar somente afirmacoes verified, vigentes e da identidade exata de tenant, loja, seller, site, SKU, item e variacao.",
+        "compiled_product_research",
+        "Reutilizar todas as afirmacoes compiladas e sanitizadas da identidade exata de tenant, loja, seller, site, SKU, item e variacao; estado, autoridade, validade e conflito sao metadados consultivos para decisao do Black Jhon.",
     ),
     (
         8,
@@ -86,7 +86,8 @@ def build_input_operational_contract(
             "do_not_invent_links_or_compatibility": True,
             "internet_product_research_required": use_web_search,
             "vehicle_identity_policy": "jk_public_vin_decode_v1",
-            "product_evidence_policy": "jk_product_evidence_v1",
+            "product_evidence_policy": "jk_product_evidence_v2",
+            "evidence_usage_policy": "jk_black_jhon_factual_discretion_v1",
         },
         "allowed_tools": list(allowed),
         "tool_policy": {

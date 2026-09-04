@@ -39,6 +39,7 @@ from fastapi import Depends, File, Form, Header, HTTPException, Request, UploadF
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
+from backend.services.mercadolivre_legacy_api import _ml_atualizar_api_loja_exata
 from backend.services.vendas_sync_progress import _corrigir_texto_mojibake
 from backend.modules.perguntas_pos_venda.ai import providers as perguntas_agent_providers
 from backend.modules.perguntas_pos_venda.ai import api as perguntas_agent_api
@@ -851,7 +852,7 @@ def _ml_pos_venda_resolver_site_id(client_id: str, loja: str, cfg: dict, seller_
             if re.match(r"^ML[A-Z]$", site_id):
                 try:
                     cfg["site_id"] = site_id
-                    atualizar_api_loja(client_id, loja, "mercadolivre", cfg)
+                    _ml_atualizar_api_loja_exata(client_id, loja, cfg)
                 except Exception:
                     pass
                 return site_id, cfg

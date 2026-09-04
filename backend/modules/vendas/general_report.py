@@ -13,6 +13,8 @@ from decimal import Decimal
 from typing import Any
 from xml.sax.saxutils import escape as xml_escape
 
+from backend.services.estoque_historico import _estoque_historico_ambiguidade
+
 from .errors import VendasDomainError
 from .legacy import _listar_bancos_vendas_tenant
 from .performance import (
@@ -161,7 +163,8 @@ def _read_current_local_stock(
     client_id: str,
     store: str,
 ) -> dict[str, Any]:
-    db_path = os.path.join(get_tenant_path(client_id), "estoque_historico.db")
+    tenant_path = get_tenant_path(client_id)
+    db_path = os.path.join(tenant_path, "estoque_historico.db")
     base = {
         "available": False,
         "source": None,
@@ -172,6 +175,15 @@ def _read_current_local_stock(
         "errors": [],
         "db_path": db_path,
     }
+    ambiguidade = _estoque_historico_ambiguidade(
+        client_id,
+        store,
+        tenant_path=tenant_path,
+    )
+    if ambiguidade:
+        base["error_code"] = ambiguidade["code"]
+        base["errors"].append(ambiguidade["message"])
+        return base
     if not os.path.isfile(db_path):
         base["errors"].append("Histórico de estoque não encontrado.")
         return base

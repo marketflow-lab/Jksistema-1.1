@@ -9,10 +9,28 @@ import pytest
 from backend.services import estoque_historico, estoque_lancamentos, estoque_sync
 
 
+@pytest.fixture(autouse=True)
+def _loja_unica_para_rotas_de_historico(monkeypatch):
+    monkeypatch.setattr(
+        estoque_lancamentos,
+        "_carregar_lojas_historico",
+        lambda _client_id: [{"store_id": "store-a", "nome": "Loja A"}],
+    )
+
+
 def _configurar_tenant(monkeypatch, tmp_path):
     def tenant_path(client_id):
         path = tmp_path / str(client_id)
         path.mkdir(parents=True, exist_ok=True)
+        config = path / "lojas_config.json"
+        if not config.exists():
+            config.write_text(
+                json.dumps([
+                    {"store_id": "store-a", "nome": "Loja A"},
+                    {"store_id": "store-b", "nome": "Loja B"},
+                ]),
+                encoding="utf-8",
+            )
         return str(path)
 
     monkeypatch.setattr(estoque_historico, "get_tenant_path", tenant_path)
@@ -245,11 +263,13 @@ def test_leitura_recupera_pending_publicado_sem_reusar_event_id(monkeypatch, tmp
         raise RuntimeError("falha controlada na confirmacao")
 
     monkeypatch.setattr(estoque_sync, "_confirmar_evento_historico_estoque", falhar_confirmacao)
-    with pytest.raises(RuntimeError, match="confirmacao"):
+    with pytest.raises(estoque_sync._EstoquePublicacaoInconclusiva) as incerta:
         estoque_sync._publicar_csv_estoque_apos_historico(
             "cliente-retry", "Loja A", registros, df_saida,
             str(arquivo_cliente), "evento-retry",
         )
+    assert isinstance(incerta.value.__cause__, RuntimeError)
+    assert "confirmacao" in str(incerta.value.__cause__)
 
     db_path = tmp_path / "cliente-retry" / "estoque_historico.db"
     conn = sqlite3.connect(db_path)
@@ -361,6 +381,7 @@ def test_series_usam_eventos_por_atualizacao_sku_loja_e_preservam_lacuna(monkeyp
 
     por_atualizacao = asyncio.run(estoque_lancamentos.estoque_serie_retroativa(
         loja="Loja A",
+        store_id="store-a",
         intervalo="atualizacao",
         sku="A",
         data_inicio="2026-07-23",
@@ -373,6 +394,7 @@ def test_series_usam_eventos_por_atualizacao_sku_loja_e_preservam_lacuna(monkeyp
 
     diaria = asyncio.run(estoque_lancamentos.estoque_serie_retroativa(
         loja="Loja A",
+        store_id="store-a",
         intervalo="dia",
         data_inicio="2026-07-23",
         data_fim="2026-07-23",
@@ -557,6 +579,7 @@ def test_migracao_aditiva_combina_legado_anterior_com_evento_novo(monkeypatch, t
     )
     serie = asyncio.run(estoque_lancamentos.estoque_serie_retroativa(
         loja="Loja A",
+        store_id="store-a",
         intervalo="dia",
         sku="A",
         data_inicio="2026-07-20",
@@ -626,9 +649,9 @@ def test_fallback_legado_e_isolamento_por_cliente(monkeypatch, tmp_path):
         conn.commit()
     finally:
         conn.close()
-
     legado = asyncio.run(estoque_lancamentos.estoque_serie_retroativa(
         loja="Loja A",
+        store_id="store-a",
         intervalo="dia",
         data_inicio="2026-07-20",
         data_fim="2026-07-20",
@@ -653,3 +676,59 @@ def test_fallback_legado_e_isolamento_por_cliente(monkeypatch, tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM estoque_sync_eventos").fetchone()[0] == eventos_legados_antes
     finally:
         conn.close()
+
+
+def test_vendas_omite_historico_de_lojas_homonimas(monkeypatch, tmp_path):
+    tenant_path = _configurar_tenant(monkeypatch, tmp_path)
+    caminho_config = Path(tenant_path("cliente-a")) / "lojas_config.json"
+    caminho_config.write_text(
+        json.dumps([
+            {"store_id": "store-a", "nome": "Loja Homonima"},
+            {"store_id": "store-b", "nome": "loja homonima"},
+        ]),
+        encoding="utf-8",
+    )
+
+    for loja in ("Loja Homonima", "__todas"):
+        serie = estoque_historico._vendas_series_estoque_historico(
+            "cliente-a",
+            loja,
+            "dia",
+            datetime.fromisoformat("2026-07-20"),
+            datetime.fromisoformat("2026-07-21"),
+            ["2026-07-20", "2026-07-21"],
+            True,
+            False,
+            None,
+        )
+        assert serie["estoque_geral"] == [None, None]
+        assert serie["estoque_meta"]["success"] is False
+        assert serie["estoque_meta"]["code"] == "estoque_historico_loja_ambigua"
+        assert serie["estoque_meta"]["store_ids"] == ["store-a", "store-b"]
+
+
+def test_vendas_omite_historico_sem_configuracao_de_identidade(monkeypatch, tmp_path):
+    tenant_path = _configurar_tenant(monkeypatch, tmp_path)
+    tenant_dir = Path(tenant_path("cliente-a"))
+    (tenant_dir / "lojas_config.json").unlink()
+    monkeypatch.setattr(
+        estoque_historico,
+        "get_tenant_path",
+        lambda _client_id: str(tenant_dir),
+    )
+
+    serie = estoque_historico._vendas_series_estoque_historico(
+        "cliente-a",
+        "Loja A",
+        "dia",
+        datetime.fromisoformat("2026-07-20"),
+        datetime.fromisoformat("2026-07-21"),
+        ["2026-07-20", "2026-07-21"],
+        True,
+        False,
+        None,
+    )
+
+    assert serie["estoque_geral"] == [None, None]
+    assert serie["estoque_meta"]["success"] is False
+    assert serie["estoque_meta"]["code"] == "estoque_historico_identidade_indisponivel"

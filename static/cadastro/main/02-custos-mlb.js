@@ -155,19 +155,36 @@
         elements.skuSelect.appendChild(padrao);
         [...state.produtos].sort((a, b) => String(a.sku || '').localeCompare(String(b.sku || ''))).forEach(item => {
             const option = document.createElement('option');
-            option.value = String(item.sku || '');
-            option.textContent = `${core.formatarSkuExibicao(item.sku)} - ${core.obterNomeProdutoCadastro(item)}`;
+            const sku = String(item.sku || '');
+            const storeId = String(item.store_id || state.storeIdSelecionado || '');
+            option.value = state.storeIdSelecionado ? sku : `store:${encodeURIComponent(storeId)}:${encodeURIComponent(sku)}`;
+            const loja = state.storeIdSelecionado ? '' : `${obterLojaProduto(item)} | `;
+            option.textContent = `${loja}${core.formatarSkuExibicao(item.sku)} - ${core.obterNomeProdutoCadastro(item)}`;
             elements.skuSelect.appendChild(option);
         });
     }
 
-    function renderDetalhesMlbPorSku(sku) {
+    function resolverSelecaoSku(valor) {
+        const texto = String(valor || '');
+        if (state.storeIdSelecionado || !texto.startsWith('store:')) return { storeId: state.storeIdSelecionado, sku: texto };
+        const match = /^store:([^:]*):(.*)$/.exec(texto);
+        if (!match) return { storeId: '', sku: texto };
+        try {
+            return { storeId: decodeURIComponent(match[1]), sku: decodeURIComponent(match[2]) };
+        } catch (_error) {
+            return { storeId: '', sku: '' };
+        }
+    }
+
+    function renderDetalhesMlbPorSku(valor) {
         elements.tBodyMlb.innerHTML = '';
-        if (!sku) {
+        if (!valor) {
             elements.tBodyMlb.innerHTML = '<tr><td class="muted-cell" colspan="4">Selecione um SKU para visualizar os MLBs.</td></tr>';
             return;
         }
-        const item = state.produtos.find(produto => String(produto.sku || '') === String(sku));
+        const selecao = resolverSelecaoSku(valor);
+        const item = state.produtos.find(produto => String(produto.sku || '') === selecao.sku
+            && String(produto.store_id || state.storeIdSelecionado || '') === selecao.storeId);
         if (!item) {
             elements.tBodyMlb.innerHTML = '<tr><td class="muted-cell" colspan="4">SKU não encontrado.</td></tr>';
             return;
@@ -191,6 +208,6 @@
         elements.tBodyMlb.appendChild(fragment);
     }
 
-    cadastro.custosMlb = Object.freeze({ atualizarFiltroLojasCustos, montarSeletorSku, renderCustos, renderDetalhesMlbPorSku, trocarAba });
+    cadastro.custosMlb = Object.freeze({ atualizarFiltroLojasCustos, montarSeletorSku, renderCustos, renderDetalhesMlbPorSku, resolverSelecaoSku, trocarAba });
     cadastro.components.add('custos-mlb');
 })(window);

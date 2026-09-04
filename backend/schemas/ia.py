@@ -34,6 +34,7 @@ class IATreinamentoPerguntasPosVendaRequest(BaseModel):
     orientacoes: str = ""
     tipo: Optional[str] = "perguntas_anuncio"
     loja: Optional[str] = ""
+    store_id: Optional[str] = ""
     contexto_loja: Optional[str] = ""
     compatibilidade_autopecas: Optional[str] = ""
     proibicoes: Optional[str] = ""
@@ -48,6 +49,7 @@ class IATreinamentoPerguntasPosVendaSimularRequest(BaseModel):
     sku: Optional[str] = ""
     tipo: Optional[str] = "perguntas_anuncio"
     loja: Optional[str] = ""
+    store_id: Optional[str] = ""
     model: Optional[str] = None
 
 

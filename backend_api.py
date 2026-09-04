@@ -119,7 +119,6 @@ from selenium.webdriver.chrome.service import Service
 from backend.routers import (
     ConfiguracoesRouterConfig,
     FinancialComparisonRouterConfig,
-    FirebaseProvisioningRouterConfig,
     FrontendRouterConfig,
     create_admin_usuarios_router,
     create_cadastro_router,
@@ -131,7 +130,6 @@ from backend.routers import (
     create_etiquetas_router,
     create_favoritos_router,
     create_financial_comparison_router,
-    create_firebase_provisioning_router,
     create_frontend_router,
     FullRouterConfig,
     create_full_router,
@@ -1919,12 +1917,6 @@ USER_CHAT_REMOTE_HISTORY_CHECK_CACHE: dict[str, int] = {}
 
 _admin_usuarios_module.configure_admin_usuarios_runtime(sys.modules[__name__])
 app.include_router(create_admin_usuarios_router())
-app.include_router(create_firebase_provisioning_router(FirebaseProvisioningRouterConfig(
-    base_dir=BASE_DIR,
-    info_dir=PASTA_INFO,
-    authorize_recovery=_authorize_full_admin_firebase_provisioning,
-    authorize_status=_authorize_admin_firebase_provisioning_status,
-)))
 
 # WhatsApp Cloud API bridge: the public gateway stays at Cloudflare, while all
 # Joao Pretinho processing remains on this authenticated local runtime.
@@ -2109,26 +2101,19 @@ configure_favoritos_context(
 
 
 def _migrar_arquivo_legado_para_tenant(client_id: str, nome_arquivo: str, caminho_legado: str):
-    """Move arquivo legado da raiz info/ para info/<client_id>/ quando necessÃƒÂ¡rio."""
-    tenant_path = get_tenant_path(client_id)
-    destino = os.path.join(tenant_path, nome_arquivo)
-    if os.path.exists(destino):
-        return destino
-    if not (caminho_legado and os.path.exists(caminho_legado)):
-        return destino
+    """Move legado global somente para o tenant historico ``default``."""
 
-    try:
-        os.makedirs(os.path.dirname(destino), exist_ok=True)
-        shutil.move(caminho_legado, destino)
-        logger.info(f"[MIGRACAO] {nome_arquivo} movido para tenant {client_id}")
-    except Exception as e:
-        # Fallback seguro para ambientes com lock no arquivo legado.
-        try:
-            shutil.copy2(caminho_legado, destino)
-            logger.warning(f"[MIGRACAO] {nome_arquivo} copiado para tenant {client_id} (origem preservada): {e}")
-        except Exception as e2:
-            logger.warning(f"[MIGRACAO] Falha ao migrar {nome_arquivo} para tenant {client_id}: {e2}")
-    return destino
+    from backend.services.legacy_tenant_migration import (
+        migrar_arquivo_legado_para_tenant_seguro,
+    )
+
+    return migrar_arquivo_legado_para_tenant_seguro(
+        client_id,
+        nome_arquivo,
+        caminho_legado,
+        get_tenant_path=get_tenant_path,
+        logger=logger,
+    )
 
 
 # Integracoes service/router wiring. Legacy public helpers are imported from backend.services.integracoes.

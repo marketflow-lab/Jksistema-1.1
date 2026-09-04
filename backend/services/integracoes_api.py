@@ -8,7 +8,6 @@ import inspect
 import logging
 import secrets
 import time
-from datetime import datetime
 from typing import Callable, Optional
 from urllib.parse import urlencode
 
@@ -30,9 +29,11 @@ from backend.services.integracoes import (
     buscar_loja,
     carregar_lojas,
     consumir_temp_auth,
+    criar_loja as criar_loja_identidade,
+    criar_temp_auth_loja,
     desconectar_api_loja,
+    excluir_loja,
     ler_temp_auth,
-    salvar_lojas,
     salvar_temp_auth,
 )
 
@@ -100,13 +101,23 @@ def _oauth_result_redirect(status: str, reason: str = "") -> RedirectResponse:
     return response
 
 
-def _buscar_loja_oauth_exata(client_id: str, nome_loja: str) -> dict | None:
+def _buscar_loja_oauth_exata(
+    client_id: str,
+    nome_loja: str,
+    store_id: str,
+) -> dict | None:
     """OAuth nunca pode escolher uma loja equivalente nem recriar uma loja removida."""
     nome_exato = str(nome_loja or "").strip()
-    loja = buscar_loja(client_id, nome_exato)
+    store_id_exato = str(store_id or "").strip()
+    if not store_id_exato:
+        return None
+    loja = buscar_loja(client_id, nome_exato, store_id=store_id_exato)
     if not isinstance(loja, dict):
         return None
-    if str(loja.get("nome") or "").strip() != nome_exato:
+    if (
+        str(loja.get("store_id") or "").strip() != store_id_exato
+        or str(loja.get("nome") or "").strip() != nome_exato
+    ):
         return None
     return loja
 
@@ -114,11 +125,12 @@ def _buscar_loja_oauth_exata(client_id: str, nome_loja: str) -> dict | None:
 def _ml_oauth_config_do_fluxo(
     client_id: str,
     nome_loja: str,
+    store_id: str,
     state: str,
     app_id: str,
     client_secret: str,
 ) -> dict | None:
-    loja = _buscar_loja_oauth_exata(client_id, nome_loja)
+    loja = _buscar_loja_oauth_exata(client_id, nome_loja, store_id)
     if not loja:
         return None
     integracoes = loja.get("integracoes")
@@ -143,9 +155,10 @@ def _ml_oauth_config_do_fluxo(
 def _bling_oauth_config_do_fluxo(
     client_id: str,
     nome_loja: str,
+    store_id: str,
     state: str,
 ) -> dict | None:
-    loja = _buscar_loja_oauth_exata(client_id, nome_loja)
+    loja = _buscar_loja_oauth_exata(client_id, nome_loja, store_id)
     if not loja:
         return None
     integracoes = loja.get("integracoes")
@@ -321,74 +334,84 @@ async def get_lojas(client_id: str = Depends(get_tenant_id)):
     return carregar_lojas(client_id)
 
 
-async def get_loja(nome_loja: str, client_id: str = Depends(get_tenant_id)):
-    loja = buscar_loja(client_id, nome_loja)
+def _store_id_mutacao_exato(store_id: object) -> str:
+    identidade = str(store_id or "").strip()
+    if not identidade:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "store_id_required",
+                "message": "Informe o store_id exato para alterar a loja.",
+            },
+        )
+    return identidade
+
+
+async def get_loja(
+    nome_loja: str,
+    store_id: Optional[str] = None,
+    client_id: str = Depends(get_tenant_id),
+):
+    loja = buscar_loja(client_id, nome_loja, store_id=store_id)
     if not loja:
         raise HTTPException(status_code=404, detail="Loja nao encontrada")
     return loja
 
 
 async def create_loja(store_request: StoreRequest, client_id: str = Depends(get_tenant_id)):
-    lojas = carregar_lojas(client_id)
-    if any(loja["nome"] == store_request.nome for loja in lojas):
-        raise HTTPException(status_code=400, detail="Loja com este nome ja existe.")
-    atualizar_api_loja(client_id, store_request.nome, "criacao", {"data": str(datetime.now())})
-    return {"success": True, "loja": buscar_loja(client_id, store_request.nome)}
+    loja = criar_loja_identidade(client_id, store_request.nome)
+    return {"success": True, "store_id": loja["store_id"], "loja": loja}
 
 
-async def delete_loja(nome_loja: str, client_id: str = Depends(get_tenant_id)):
-    # Exclusao, tombstone e save formam uma unica operacao read-modify-write.
-    # Assim um callback OAuth ou pull concorrente nao perde atualizacoes feitas
-    # depois da leitura inicial.
-    with _LOJAS_CONFIG_LOCK:
-        lojas = carregar_lojas(client_id)
-        lojas_filtradas = [loja for loja in lojas if loja["nome"] != nome_loja]
-        if len(lojas) == len(lojas_filtradas):
-            raise HTTPException(status_code=404, detail="Loja nao encontrada para deletar.")
-        removida = next((loja for loja in lojas if loja.get("nome") == nome_loja), {})
-        tombstones = _integracoes_atualizar_tombstone_payload(
-            client_id,
-            _integracoes_ler_tombstones_estrito(client_id),
-            loja=removida,
-            tipo="store",
+async def delete_loja(
+    nome_loja: str,
+    store_id: Optional[str] = None,
+    client_id: str = Depends(get_tenant_id),
+):
+    store_id_exato = _store_id_mutacao_exato(store_id)
+    removida = excluir_loja(
+        client_id,
+        nome_loja,
+        store_id=store_id_exato,
+    )
+    return {"success": True, "store_id": removida.get("store_id")}
+
+
+async def save_turbo_token(
+    loja_nome: str,
+    token_req: TokenRequest,
+    store_id: Optional[str] = None,
+    client_id: str = Depends(get_tenant_id),
+):
+    store_id_exato = _store_id_mutacao_exato(store_id)
+    loja = buscar_loja(client_id, loja_nome, store_id=store_id_exato)
+    if not isinstance(loja, dict):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "store_config_changed",
+                "message": "A identidade da loja nao existe mais.",
+                "store_id": store_id_exato,
+            },
         )
-        integracoes_removidas = (
-            removida.get("integracoes")
-            if isinstance(removida.get("integracoes"), dict)
-            else {}
-        )
-        for servico in integracoes_removidas:
-            servico_key = _integracoes_servico_key(servico)
-            if not servico_key or servico_key == "criacao":
-                continue
-            # Recriar o mesmo nome cancela somente a exclusao da loja. Cada
-            # conta/API anterior continua apagada ate ser reconectada de forma
-            # explicita, impedindo que um snapshot antigo a ressuscite.
-            tombstones = _integracoes_atualizar_tombstone_payload(
-                client_id,
-                tombstones,
-                loja=removida,
-                servico=servico_key,
-                tipo="integration",
-            )
-        _integracoes_commit_lojas_tombstones(
-            client_id,
-            lojas_filtradas,
-            tombstones,
-            permitir_reducao_confirmada=True,
-        )
-    return {"success": True}
-
-
-async def save_turbo_token(loja_nome: str, token_req: TokenRequest, client_id: str = Depends(get_tenant_id)):
-    if not buscar_loja(client_id, loja_nome):
-        raise HTTPException(status_code=404, detail="Loja nao encontrada.")
     is_connected = bool(token_req.token and token_req.token.strip())
-    atualizar_api_loja(client_id, loja_nome, "mercadoturbo", {"token": token_req.token, "connected": is_connected})
+    atualizar_api_loja(
+        client_id,
+        loja_nome,
+        "mercadoturbo",
+        {"token": token_req.token, "connected": is_connected},
+        store_id=store_id_exato,
+    )
     return {"success": True}
 
 
-async def disconnect_integracao(loja_nome: str, servico_nome: str, client_id: str = Depends(get_tenant_id)):
+async def disconnect_integracao(
+    loja_nome: str,
+    servico_nome: str,
+    store_id: Optional[str] = None,
+    client_id: str = Depends(get_tenant_id),
+):
+    store_id_exato = _store_id_mutacao_exato(store_id)
     servico = str(servico_nome or "").strip().lower()
     mapa_servicos = {
         "bling": "bling",
@@ -400,32 +423,47 @@ async def disconnect_integracao(loja_nome: str, servico_nome: str, client_id: st
     api_nome = mapa_servicos.get(servico)
     if not api_nome:
         raise HTTPException(status_code=400, detail="Integracao desconhecida.")
-    loja = desconectar_api_loja(client_id, loja_nome, api_nome)
+    loja = desconectar_api_loja(
+        client_id,
+        loja_nome,
+        api_nome,
+        store_id=store_id_exato,
+    )
     return {"success": True, "loja": loja_nome, "servico": api_nome, "dados": loja.get("integracoes", {}).get(api_nome) or {}}
 
 
 async def save_temp_auth_endpoint(temp_data: dict, client_id: str = Depends(get_tenant_id)):
     """Salva dados temporarios para OAuth antes do redirecionamento."""
-    payload = dict(temp_data or {})
-    payload["client_id"] = str(client_id or "").strip()
-    if not payload["client_id"]:
-        raise HTTPException(status_code=400, detail="Cliente OAuth invalido.")
-    state = salvar_temp_auth(payload)
-    return {"success": True, "state": state}
+    registro = dict(temp_data or {})
+    store_id = str(registro.get("store_id") or "").strip()
+    if not store_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Store_id exato e obrigatorio para OAuth.",
+        )
+    fluxo = criar_temp_auth_loja(client_id, store_id, registro)
+    return {"success": True, "state": fluxo["state"], "store_id": fluxo["store_id"]}
 
 
 async def start_bling_auth(auth_req: AuthRequest, request: Request, client_id: str = Depends(get_tenant_id)):
     client_id = str(client_id or "").strip()
     if not client_id:
         raise HTTPException(status_code=400, detail="Cliente OAuth invalido.")
-    loja = buscar_loja(client_id, auth_req.loja)
-    if not isinstance(loja, dict):
-        raise HTTPException(status_code=404, detail="Loja nao encontrada.")
-    loja_nome = str(loja.get("nome") or "").strip()
     app_id = str(auth_req.client_id or "").strip()
     client_secret = str(auth_req.client_secret or "").strip()
-    if not loja_nome or not app_id or not client_secret:
+    if not app_id or not client_secret:
         raise HTTPException(status_code=400, detail="App ID e Client Secret sao obrigatorios.")
+    store_id_exato = _store_id_mutacao_exato(auth_req.store_id)
+    loja_alvo = buscar_loja(
+        client_id,
+        auth_req.loja,
+        store_id=store_id_exato,
+    )
+    if not isinstance(loja_alvo, dict):
+        raise HTTPException(status_code=409, detail="A identidade da loja nao existe mais.")
+    loja_nome = str(loja_alvo.get("nome") or "").strip()
+    if not loja_nome:
+        raise HTTPException(status_code=409, detail="A identidade da loja nao existe mais.")
     state = secrets.token_urlsafe(24)
     redirect_uri = _resolver_redirect_uri_bling(request=request)
     atualizar_api_loja(
@@ -433,11 +471,13 @@ async def start_bling_auth(auth_req: AuthRequest, request: Request, client_id: s
         loja_nome,
         "bling",
         {"oauth_pending_state": state},
+        store_id=store_id_exato,
         require_existing=True,
     )
     salvar_temp_auth({
         "client_id": client_id,
         "loja": loja_nome,
+        "store_id": store_id_exato,
         "servico": "bling",
         "id": app_id,
         "secret": client_secret,
@@ -456,14 +496,21 @@ async def start_mercadolivre_auth(auth_req: AuthRequest, request: Request, clien
     client_id = str(client_id or "").strip()
     if not client_id:
         raise HTTPException(status_code=400, detail="Cliente OAuth invalido.")
-    loja = buscar_loja(client_id, auth_req.loja)
-    if not isinstance(loja, dict):
-        raise HTTPException(status_code=404, detail="Loja nao encontrada.")
-    loja_nome = str(loja.get("nome") or "").strip()
     app_id = str(auth_req.client_id or "").strip()
     client_secret = str(auth_req.client_secret or "").strip()
-    if not loja_nome or not app_id or not client_secret:
+    if not app_id or not client_secret:
         raise HTTPException(status_code=400, detail="App ID e Client Secret sao obrigatorios.")
+    store_id_exato = _store_id_mutacao_exato(auth_req.store_id)
+    loja_alvo = buscar_loja(
+        client_id,
+        auth_req.loja,
+        store_id=store_id_exato,
+    )
+    if not isinstance(loja_alvo, dict):
+        raise HTTPException(status_code=409, detail="A identidade da loja nao existe mais.")
+    loja_nome = str(loja_alvo.get("nome") or "").strip()
+    if not loja_nome:
+        raise HTTPException(status_code=409, detail="A identidade da loja nao existe mais.")
     state = secrets.token_urlsafe(24)
     redirect_uri = _resolver_redirect_uri_publica(request=request)
     atualizar_api_loja(client_id, loja_nome, "mercadolivre", {
@@ -473,10 +520,11 @@ async def start_mercadolivre_auth(auth_req: AuthRequest, request: Request, clien
             "client_secret": client_secret,
             "saved_at": str(time.time()),
         },
-    }, require_existing=True)
+    }, store_id=store_id_exato, require_existing=True)
     salvar_temp_auth({
         "client_id": client_id,
         "loja": loja_nome,
+        "store_id": store_id_exato,
         "servico": "mercadolivre",
         "id": app_id,
         "secret": client_secret,
@@ -509,13 +557,14 @@ async def integracoes_auth_callback(request: Request, code: Optional[str] = None
 
     servico = str(temp.get("servico") or "").strip().lower()
     loja = str(temp.get("loja") or "").strip()
+    store_id = str(temp.get("store_id") or "").strip()
     client_id = str(temp.get("client_id") or "").strip()
     app_id = str(temp.get("id") or "").strip()
     secret = str(temp.get("secret") or "").strip()
     redirect_uri = str(temp.get("redirect_uri") or "").strip() or None
     code_recebido = str(code or "").strip()
 
-    if not all((code_recebido, loja, client_id, app_id, secret)) or servico not in {"bling", "mercadolivre"}:
+    if not all((code_recebido, loja, store_id, client_id, app_id, secret)) or servico not in {"bling", "mercadolivre"}:
         return _oauth_result_redirect("error", "incomplete_data")
 
     if servico == "bling":
@@ -523,6 +572,7 @@ async def integracoes_auth_callback(request: Request, code: Optional[str] = None
             cfg_atual = _bling_oauth_config_do_fluxo(
                 client_id,
                 loja,
+                store_id,
                 state_recebido,
             )
         except Exception:
@@ -536,12 +586,14 @@ async def integracoes_auth_callback(request: Request, code: Optional[str] = None
         refresh_token = str(result.get("refresh_token") or "").strip()
         if not access_token or not refresh_token:
             return _oauth_result_redirect("error", "incomplete_tokens")
+        oauth_connection_id = secrets.token_urlsafe(24)
         try:
             atualizar_api_loja(client_id, loja, "bling", {
                 "id": app_id,
                 "secret": secret,
                 "access_token": access_token,
                 "refresh_token": refresh_token,
+                "oauth_connection_id": oauth_connection_id,
                 "connected": True,
                 "status": "conectado",
                 "motivo": "",
@@ -549,7 +601,7 @@ async def integracoes_auth_callback(request: Request, code: Optional[str] = None
                 "shared_without_oauth_tokens": False,
                 "oauth_pending_state": None,
                 "updated_at": str(time.time()),
-            }, require_existing=True, expected_oauth_state=state_recebido)
+            }, store_id=store_id, require_existing=True, expected_oauth_state=state_recebido)
         except HTTPException as exc:
             if exc.status_code == 409:
                 return _oauth_result_redirect("error", "store_changed")
@@ -557,7 +609,7 @@ async def integracoes_auth_callback(request: Request, code: Optional[str] = None
         except Exception:
             return _oauth_result_redirect("error", "persistence_failed")
         try:
-            loja_persistida = _buscar_loja_oauth_exata(client_id, loja) or {}
+            loja_persistida = _buscar_loja_oauth_exata(client_id, loja, store_id) or {}
         except Exception:
             return _oauth_result_redirect("error", "persistence_failed")
         integracoes_persistidas = loja_persistida.get("integracoes") or {}
@@ -569,6 +621,10 @@ async def integracoes_auth_callback(request: Request, code: Optional[str] = None
             and not cfg_persistida.get("oauth_pending_state")
             and secrets.compare_digest(str(cfg_persistida.get("access_token") or "").strip(), access_token)
             and secrets.compare_digest(str(cfg_persistida.get("refresh_token") or "").strip(), refresh_token)
+            and secrets.compare_digest(
+                str(cfg_persistida.get("oauth_connection_id") or "").strip(),
+                oauth_connection_id,
+            )
         ):
             return _oauth_result_redirect("error", "persistence_failed")
     else:
@@ -576,6 +632,7 @@ async def integracoes_auth_callback(request: Request, code: Optional[str] = None
             cfg_atual = _ml_oauth_config_do_fluxo(
                 client_id,
                 loja,
+                store_id,
                 state_recebido,
                 app_id,
                 secret,
@@ -639,7 +696,7 @@ async def integracoes_auth_callback(request: Request, code: Optional[str] = None
                 "scope": scope_retorno,
                 "oauth_draft": None,
                 "updated_at": str(time.time()),
-            }, require_existing=True, expected_oauth_state=state_recebido)
+            }, store_id=store_id, require_existing=True, expected_oauth_state=state_recebido)
         except HTTPException as exc:
             if exc.status_code == 409:
                 return _oauth_result_redirect("error", "store_changed")
@@ -648,7 +705,7 @@ async def integracoes_auth_callback(request: Request, code: Optional[str] = None
             return _oauth_result_redirect("error", "persistence_failed")
 
         try:
-            loja_persistida = _buscar_loja_oauth_exata(client_id, loja) or {}
+            loja_persistida = _buscar_loja_oauth_exata(client_id, loja, store_id) or {}
         except Exception:
             return _oauth_result_redirect("error", "persistence_failed")
         integracoes_persistidas = loja_persistida.get("integracoes") or {}

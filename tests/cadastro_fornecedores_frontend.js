@@ -50,13 +50,15 @@ const context = {
     return { ok: true, status: 200, async json() { return { success: true }; } };
   },
   localStorage: { getItem() { return null; } },
-  location: { href: '' },
+  location: { href: '', pathname: '/cadastro.html', search: '' },
   obterAuthHeaders(extra = {}) { return { Authorization: 'Bearer test', ...extra }; },
+  URLSearchParams,
 };
 context.window = context;
 vm.createContext(context);
 
 for (const sourcePath of [
+  'static/cadastro/form/00-core.js',
   'static/cadastro/00-runtime.js',
   'static/cadastro/01-core.js',
   'static/cadastro/main/05-fornecedores.js',
@@ -66,6 +68,7 @@ for (const sourcePath of [
 
 (async () => {
   const fornecedores = context.JKCadastro.fornecedores;
+  context.JKCadastro.runtime.state.storeIdSelecionado = 'store-a';
   assert.strictEqual(await fornecedores.carregar(), true);
   assert.strictEqual(context.JKCadastro.runtime.state.fornecedores.length, 1);
   assert.match(elements.get('listaFornecedores').innerHTML, /Fornecedor Exemplo Ltd\./);
@@ -86,6 +89,20 @@ for (const sourcePath of [
   const deletion = calls.find(call => call.options.method === 'DELETE');
   assert(deletion, 'exclusão deve usar DELETE');
   assert.strictEqual(deletion.url, '/api/cadastro/fornecedores/fornecedor-1');
+
+  context.JKCadastro.runtime.state.storeIdSelecionado = '';
+  fornecedores.atualizarEstadoMutacoes();
+  assert.strictEqual(elements.get('btnSalvarFornecedor').disabled, true);
+  assert.strictEqual(elements.get('fornecedorNomeEmpresa').disabled, true);
+  assert.doesNotMatch(elements.get('listaFornecedores').innerHTML, /data-action="editar"/);
+  assert.doesNotMatch(elements.get('listaFornecedores').innerHTML, /data-action="excluir"/);
+  assert.match(elements.get('fornecedorStatus').textContent, /Visualização consolidada/);
+
+  const chamadasAntesDoBloqueio = calls.length;
+  assert.strictEqual(fornecedores.editar('fornecedor-1'), false);
+  assert.strictEqual(await fornecedores.salvar({ preventDefault() {} }), false);
+  assert.strictEqual(await fornecedores.excluir('fornecedor-1'), false);
+  assert.strictEqual(calls.length, chamadasAntesDoBloqueio, 'modo consolidado não pode disparar mutações');
 
   console.log('cadastro fornecedores frontend: OK');
 })().catch(error => {

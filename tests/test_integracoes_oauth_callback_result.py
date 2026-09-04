@@ -19,6 +19,7 @@ from backend.services import shared_sync_bundle
 
 TENANT = "tenant-test"
 STORE = "Loja Teste"
+STORE_ID = "store-test-id"
 CALLBACK_URL = "https://callback.example/auth/callback"
 
 
@@ -47,6 +48,7 @@ def _seed_store(config=None):
         TENANT,
         [
             {
+                "store_id": STORE_ID,
                 "nome": STORE,
                 "integracoes": {
                     "mercadolivre": config
@@ -59,7 +61,7 @@ def _seed_store(config=None):
 
 
 def _ml_config():
-    loja = integracoes_service.buscar_loja(TENANT, STORE)
+    loja = integracoes_service.buscar_loja(TENANT, STORE, store_id=STORE_ID)
     assert isinstance(loja, dict)
     return loja["integracoes"]["mercadolivre"]
 
@@ -67,7 +69,12 @@ def _ml_config():
 def _start_ml(*, app_id="app-id-test", secret="client-secret-test"):
     result = asyncio.run(
         integracoes_api.start_mercadolivre_auth(
-            AuthRequest(loja=STORE, client_id=app_id, client_secret=secret),
+            AuthRequest(
+                loja=STORE,
+                client_id=app_id,
+                client_secret=secret,
+                store_id=STORE_ID,
+            ),
             object(),
             client_id=TENANT,
         )
@@ -91,10 +98,16 @@ def isolated_integracoes(tmp_path, monkeypatch):
         "ARQUIVO_TEMP_AUTH",
         str(info_dir / "temp_integracao.json"),
     )
+
+    def tenant_path(client_id):
+        caminho = info_dir / str(client_id)
+        caminho.mkdir(parents=False, exist_ok=True)
+        return str(caminho)
+
     monkeypatch.setattr(
         integracoes_service,
         "_get_tenant_path",
-        lambda client_id: str(info_dir / client_id),
+        tenant_path,
     )
     monkeypatch.setattr(
         integracoes_service,
@@ -142,6 +155,7 @@ def test_start_ml_saves_normalized_credentials_and_state_before_browser(
     assert cfg["oauth_draft"]["saved_at"]
     assert temp["client_id"] == TENANT
     assert temp["loja"] == STORE
+    assert temp["store_id"] == STORE_ID
     assert temp["id"] == "app-id-test"
     assert temp["secret"] == "client-secret-test"
     assert state in result["url"]
@@ -304,6 +318,7 @@ def test_missing_tenant_in_temp_flow_fails_closed(
         {
             "state": state,
             "loja": STORE,
+            "store_id": STORE_ID,
             "servico": "mercadolivre",
             "id": "app-id-test",
             "secret": "client-secret-test",
@@ -526,7 +541,12 @@ def test_bling_new_attempt_invalidates_old_callback_and_success_clears_pending_s
 ):
     async def start_bling(app_id, secret):
         return await integracoes_api.start_bling_auth(
-            AuthRequest(loja=STORE, client_id=app_id, client_secret=secret),
+            AuthRequest(
+                loja=STORE,
+                client_id=app_id,
+                client_secret=secret,
+                store_id=STORE_ID,
+            ),
             object(),
             client_id=TENANT,
         )
@@ -554,14 +574,36 @@ def test_bling_new_attempt_invalidates_old_callback_and_success_clears_pending_s
     new_response = _run_callback(code="new-code", state=new_state)
     _, _, new_query = _redirect_parts(new_response)
     _assert_signed_result_query(new_query, status="success")
-    cfg = integracoes_service.buscar_loja(TENANT, STORE)["integracoes"]["bling"]
+    cfg = integracoes_service.buscar_loja(
+        TENANT,
+        STORE,
+        store_id=STORE_ID,
+    )["integracoes"]["bling"]
     assert cfg["connected"] is True
     assert cfg["oauth_invalid"] is False
     assert cfg["shared_without_oauth_tokens"] is False
     assert cfg.get("oauth_pending_state") is None
     assert cfg["access_token"] == "bling-access"
     assert cfg["refresh_token"] == "bling-refresh"
-    assert exchanges == [True]
+    primeira_conexao = cfg["oauth_connection_id"]
+    assert primeira_conexao
+
+    asyncio.run(start_bling("reconnected-bling-app", "reconnected-bling-secret"))
+    reconnect_state = integracoes_service.ler_temp_auth()["state"]
+    reconnect_response = _run_callback(
+        code="reconnect-code",
+        state=reconnect_state,
+    )
+    _, _, reconnect_query = _redirect_parts(reconnect_response)
+    _assert_signed_result_query(reconnect_query, status="success")
+    reconectada = integracoes_service.buscar_loja(
+        TENANT,
+        STORE,
+        store_id=STORE_ID,
+    )["integracoes"]["bling"]
+    assert reconectada["oauth_connection_id"]
+    assert reconectada["oauth_connection_id"] != primeira_conexao
+    assert exchanges == [True, True]
 
 
 def test_newer_attempt_invalidates_old_callback_without_consuming_new_flow(
@@ -594,9 +636,20 @@ def test_callback_after_disconnect_or_delete_never_reconnects_or_recreates_store
 ):
     _, state = _start_ml()
     if change == "disconnect":
-        integracoes_service.desconectar_api_loja(TENANT, STORE, "mercadolivre")
+        integracoes_service.desconectar_api_loja(
+            TENANT,
+            STORE,
+            "mercadolivre",
+            store_id=STORE_ID,
+        )
     else:
-        asyncio.run(integracoes_api.delete_loja(STORE, client_id=TENANT))
+        asyncio.run(
+            integracoes_api.delete_loja(
+                STORE,
+                store_id=STORE_ID,
+                client_id=TENANT,
+            )
+        )
     exchanges = []
     monkeypatch.setattr(
         integracoes_api,
@@ -609,7 +662,7 @@ def test_callback_after_disconnect_or_delete_never_reconnects_or_recreates_store
 
     _assert_signed_result_query(query, status="error", reason="store_changed")
     assert exchanges == []
-    loja = integracoes_service.buscar_loja(TENANT, STORE)
+    loja = integracoes_service.buscar_loja(TENANT, STORE, store_id=STORE_ID)
     if change == "disconnect":
         cfg = loja["integracoes"]["mercadolivre"]
         assert cfg["connected"] is False
@@ -630,6 +683,7 @@ def test_oauth_so_restaura_tombstone_depois_do_callback_bem_sucedido(
     mudanca,
     resultado,
 ):
+    current_store_id = STORE_ID
     credenciais = {
         "access_token": f"{servico}-access-antigo",
         "refresh_token": f"{servico}-refresh-antigo",
@@ -651,25 +705,44 @@ def test_oauth_so_restaura_tombstone_depois_do_callback_bem_sucedido(
         STORE,
         servico,
         credenciais,
+        store_id=current_store_id,
         require_existing=True,
     )
 
     if mudanca == "disconnect":
-        integracoes_service.desconectar_api_loja(TENANT, STORE, servico)
+        integracoes_service.desconectar_api_loja(
+            TENANT,
+            STORE,
+            servico,
+            store_id=current_store_id,
+        )
     else:
-        asyncio.run(integracoes_api.delete_loja(STORE, client_id=TENANT))
         asyncio.run(
+            integracoes_api.delete_loja(
+                STORE,
+                store_id=current_store_id,
+                client_id=TENANT,
+            )
+        )
+        criada = asyncio.run(
             integracoes_api.create_loja(
                 StoreRequest(nome=STORE),
                 client_id=TENANT,
             )
         )
+        current_store_id = criada["store_id"]
 
     tombstones_antes = integracoes_service._integracoes_ler_tombstones_estrito(TENANT)
+    tipo_exclusao = "integration" if mudanca == "disconnect" else "store"
     exclusao_antes = next(
         item
         for item in tombstones_antes
-        if item.get("type") == "integration" and item.get("service") == servico
+        if item.get("type") == tipo_exclusao
+        and (
+            tipo_exclusao == "store"
+            or item.get("service") == servico
+        )
+        and item.get("store_id") == STORE_ID
     )
     assert exclusao_antes.get("deleted_at")
     assert not exclusao_antes.get("restored_at")
@@ -681,12 +754,17 @@ def test_oauth_so_restaura_tombstone_depois_do_callback_bem_sucedido(
                     loja=STORE,
                     client_id="ml-app-novo",
                     client_secret="ml-secret-novo",
+                    store_id=current_store_id,
                 ),
                 object(),
                 client_id=TENANT,
             )
         )
-        cfg = _ml_config()
+        cfg = integracoes_service.buscar_loja(
+            TENANT,
+            STORE,
+            store_id=current_store_id,
+        )["integracoes"]["mercadolivre"]
         assert cfg["oauth_draft"]["app_id"] == "ml-app-novo"
         oauth_state = cfg["oauth_draft"]["state"]
     else:
@@ -696,12 +774,17 @@ def test_oauth_so_restaura_tombstone_depois_do_callback_bem_sucedido(
                     loja=STORE,
                     client_id="bling-app-novo",
                     client_secret="bling-secret-novo",
+                    store_id=current_store_id,
                 ),
                 object(),
                 client_id=TENANT,
             )
         )
-        cfg = integracoes_service.buscar_loja(TENANT, STORE)["integracoes"]["bling"]
+        cfg = integracoes_service.buscar_loja(
+            TENANT,
+            STORE,
+            store_id=current_store_id,
+        )["integracoes"]["bling"]
         assert cfg.get("oauth_pending_state")
         oauth_state = cfg["oauth_pending_state"]
 
@@ -709,7 +792,12 @@ def test_oauth_so_restaura_tombstone_depois_do_callback_bem_sucedido(
     exclusao_depois = next(
         item
         for item in tombstones_depois
-        if item.get("type") == "integration" and item.get("service") == servico
+        if item.get("type") == tipo_exclusao
+        and (
+            tipo_exclusao == "store"
+            or item.get("service") == servico
+        )
+        and item.get("store_id") == STORE_ID
     )
     assert exclusao_depois == exclusao_antes
 
@@ -757,12 +845,33 @@ def test_oauth_so_restaura_tombstone_depois_do_callback_bem_sucedido(
     exclusao_final = next(
         item
         for item in tombstones_finais
-        if item.get("type") == "integration" and item.get("service") == servico
+        if item.get("type") == tipo_exclusao
+        and (
+            tipo_exclusao == "store"
+            or item.get("service") == servico
+        )
+        and item.get("store_id") == STORE_ID
     )
     if resultado == "success":
-        assert exclusao_final.get("restored_at")
-        assert not exclusao_final.get("deleted_at")
-        cfg_final = integracoes_service.buscar_loja(TENANT, STORE)["integracoes"][servico]
+        if mudanca == "disconnect":
+            assert exclusao_final.get("restored_at")
+            assert not exclusao_final.get("deleted_at")
+        else:
+            assert exclusao_final == exclusao_antes
+            restauracao_nova = next(
+                item
+                for item in tombstones_finais
+                if item.get("type") == "integration"
+                and item.get("service") == servico
+                and item.get("store_id") == current_store_id
+            )
+            assert restauracao_nova.get("restored_at")
+            assert not restauracao_nova.get("deleted_at")
+        cfg_final = integracoes_service.buscar_loja(
+            TENANT,
+            STORE,
+            store_id=current_store_id,
+        )["integracoes"][servico]
         assert cfg_final["connected"] is True
         token_esperado = (
             "ml-access-novo" if servico == "mercadolivre" else "bling-access-novo"
@@ -791,6 +900,7 @@ def test_cas_blocks_draft_replacement_during_token_exchange(
                     "saved_at": str(time.time()),
                 }
             },
+            store_id=STORE_ID,
             require_existing=True,
         )
         return True, {
@@ -835,19 +945,40 @@ def test_temp_auth_endpoint_binds_flow_to_authenticated_tenant(monkeypatch):
     captured = []
     monkeypatch.setattr(
         integracoes_api,
-        "salvar_temp_auth",
-        lambda payload: captured.append(payload) or "generated-state",
+        "criar_temp_auth_loja",
+        lambda client_id, store_id, payload: captured.append(
+            (client_id, store_id, payload)
+        )
+        or {"state": "generated-state", "store_id": store_id},
     )
 
     result = asyncio.run(
         integracoes_api.save_temp_auth_endpoint(
-            {"client_id": "other-tenant", "state": "requested-state"},
+            {
+                "client_id": "other-tenant",
+                "store_id": STORE_ID,
+                "state": "requested-state",
+            },
             client_id=TENANT,
         )
     )
 
-    assert captured[0]["client_id"] == TENANT
-    assert result == {"success": True, "state": "generated-state"}
+    assert captured == [
+        (
+            TENANT,
+            STORE_ID,
+            {
+                "client_id": "other-tenant",
+                "store_id": STORE_ID,
+                "state": "requested-state",
+            },
+        )
+    ]
+    assert result == {
+        "success": True,
+        "state": "generated-state",
+        "store_id": STORE_ID,
+    }
 
 
 def test_oauth_draft_is_never_included_in_shared_sync_snapshot():

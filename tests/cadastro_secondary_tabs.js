@@ -31,6 +31,7 @@ const elements = new Map();
 const context = {
   console,
   document: {
+    addEventListener() {},
     createDocumentFragment() { return genericElement(); },
     createElement() { return genericElement(); },
     getElementById(id) {
@@ -39,11 +40,14 @@ const context = {
     },
   },
   localStorage: { getItem() { return null; } },
+  location: { pathname: '/cadastro.html', search: '' },
+  URLSearchParams,
 };
 context.window = context;
 vm.createContext(context);
 
 for (const sourcePath of [
+  'static/cadastro/form/00-core.js',
   'static/cadastro/00-runtime.js',
   'static/cadastro/01-core.js',
   'static/cadastro/main/01-produtos.js',
@@ -51,6 +55,28 @@ for (const sourcePath of [
 ]) {
   vm.runInContext(read(sourcePath), context, { filename: sourcePath });
 }
+
+const colunasComJsonManual = context.JKCadastro.core.construirColunas([{
+  sku: 'SKU-JSON',
+  dados_tecnicos_json: '{"manual":true}',
+  observacao_bling: 'manual',
+  codigo_ml: 'manual',
+  taxa_mlb: 'manual',
+  atributos_ml_json: '[]',
+  imagens_ml_json: '[]',
+  imagens_user_product_ml_json: '[]',
+  catalog_product_id_user_product_ml: 'MLB123',
+  estoques_bling_json: '{}',
+}]);
+assert(colunasComJsonManual.includes('dados_tecnicos_json'), 'JSON manual deve continuar visivel na tabela principal');
+assert(colunasComJsonManual.includes('observacao_bling'), 'sufixo Bling manual deve continuar visivel');
+assert(colunasComJsonManual.includes('codigo_ml'), 'sufixo ML manual deve continuar visivel');
+assert(colunasComJsonManual.includes('taxa_mlb'), 'sufixo MLB manual deve continuar visivel');
+assert(!colunasComJsonManual.includes('atributos_ml_json'), 'JSON do Mercado Livre deve ficar nos detalhes');
+assert(!colunasComJsonManual.includes('imagens_ml_json'), 'imagens do Mercado Livre devem ficar nos detalhes');
+assert(!colunasComJsonManual.includes('imagens_user_product_ml_json'), 'imagens do User Product devem ficar nos detalhes');
+assert(!colunasComJsonManual.includes('catalog_product_id_user_product_ml'), 'identidade do User Product deve ficar nos detalhes');
+assert(!colunasComJsonManual.includes('estoques_bling_json'), 'JSON da Bling deve ficar nos detalhes');
 
 const tabs = {
   produtos: ['tabProdutos', 'painelProdutos'],
@@ -71,6 +97,9 @@ function assertAbaAtiva(nomeAtivo) {
 }
 
 const secondary = context.JKCadastro.custosMlb;
+const selecaoComposta = secondary.resolverSelecaoSku('store:store-a:SKU%201%2F2');
+assert.strictEqual(selecaoComposta.storeId, 'store-a');
+assert.strictEqual(selecaoComposta.sku, 'SKU 1/2');
 secondary.trocarAba('fornecedores');
 assertAbaAtiva('fornecedores');
 
@@ -84,12 +113,16 @@ context.JKCadastro.actions = {
   atualizarCustosImpostosPorSku() {},
   carregarProdutos() {},
   importarColunasPorSku() {},
+  async inicializarLojas() { return false; },
   inicializarNcm() {},
+  selecionarLoja() {},
   sincronizarNcmBackground() {},
 };
 context.JKCadastro.components.add('actions');
 context.JKCadastro.fornecedores = { init() {} };
 context.JKCadastro.components.add('fornecedores');
+context.JKCadastro.importacoesCatalogos = { abrir() {}, init() {} };
+context.JKCadastro.components.add('importacoes-catalogos');
 vm.runInContext(read('static/cadastro/main/04-init.js'), context, { filename: 'static/cadastro/main/04-init.js' });
 
 elements.get('tabFornecedores').click();

@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Incluir SKU - JK Sistema</title>
-    <link rel="stylesheet" href="/cadastro/styles/incluir-item.css?v=20260821-cadastro-modular-v1">
-    <script src="/auth.js?v=20260618-persist-login"></script>
+    <link rel="stylesheet" href="/cadastro/styles/incluir-item.css?v=20260831-cadastro-ml-api-v1">
+    <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </head>
 <body>
 <div class="container">
@@ -13,16 +13,26 @@
         <h1>? Incluir Novo SKU</h1>
         <div class="header-actions">
             <a class="back-btn" href="/dashboard.html">🏠 Home</a>
-            <a class="back-btn" href="/cadastro.html">Voltar</a>
+            <a id="voltarCadastroLink" class="back-btn" href="/cadastro.html">Voltar</a>
         </div>
     </div>
     <p class="subtitle">Preencha os dados do produto e finalize em Cadastrar SKU.</p>
 
     <div id="status" class="status"></div>
 
+    <div class="store-scope" aria-label="Loja do cadastro">
+        <label for="cadastroLojaSelect">Loja</label>
+        <select id="cadastroLojaSelect"></select>
+        <span id="cadastroLojaAviso" class="store-scope-hint"></span>
+    </div>
+
     <div class="card">
         <h2 class="section-title">Dados do Novo Produto</h2>
         <form id="formIncluir">
+            <div class="ml-import-actions">
+                <button id="btnBuscarMercadoLivre" class="btn btn-ml" type="button">Trazer dados do Mercado Livre</button>
+                <span>Usa o SKU e a conta da loja selecionada. Os dados só serão gravados ao cadastrar.</span>
+            </div>
             <div id="formGrid" class="form-grid"></div>
             <div class="foto-block">
                 <h3 class="foto-heading">Imagem do Produto (Opcional)</h3>
@@ -41,8 +51,10 @@
     </div>
 </div>
 
-<script src="/cadastro/form/00-core.js?v=20260821-cadastro-modular-v1"></script>
-<script src="/cadastro/incluir-item.js?v=20260821-cadastro-modular-v1"></script>
+<script src="/cadastro/form/00-core.js?v=20260831-cadastro-ml-api-v1"></script>
+<script src="/cadastro/form/01-mercado-livre.js?v=20260831-cadastro-ml-api-v1"></script>
+<script src="/cadastro/form/02-mlb-editor.js?v=20260902-cadastro-editor-layout-v1"></script>
+<script src="/cadastro/incluir-item.js?v=20260831-cadastro-ml-api-v1"></script>
 <script src="/ia-sidebar.js"></script>
 </body>
 </html>

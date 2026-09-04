@@ -57,6 +57,7 @@
                 const params = new URLSearchParams();
                 if (lojaSelecionada && lojaSelecionada !== '__todas') {
                     params.set('loja', lojaSelecionada);
+                    params.set('store_id', String(storeIdSelecionado || ''));
                 }
                 const resp = await fetch('/api/medias-compras/listas-pedidos' + (params.toString() ? '?' + params.toString() : ''), {
                     method: 'GET',
@@ -340,7 +341,7 @@
         function preencherSelectLojaListaPedido(select, lista) {
             if (!select) return;
             const lojaAtual = String((lista && lista.loja) || '').trim();
-            const valorAtual = lojaAtual && lojaAtual !== '__todas' ? lojaAtual : '';
+            let valorAtual = String((lista && lista.store_id) || '').trim();
             select.innerHTML = '';
 
             const placeholder = document.createElement('option');
@@ -350,29 +351,41 @@
             placeholder.selected = !valorAtual;
             select.appendChild(placeholder);
 
-            const lojas = Array.isArray(lojasDisponiveis) ? lojasDisponiveis : [];
-            const nomes = [];
-            lojas.forEach((loja) => {
-                const nome = String((loja && loja.nome) || '').trim();
-                if (nome && !nomes.includes(nome)) nomes.push(nome);
-            });
-            if (valorAtual && !nomes.includes(valorAtual)) {
-                nomes.unshift(valorAtual);
+            const lojas = (Array.isArray(lojasDisponiveis) ? lojasDisponiveis : []).filter((loja) => (
+                String((loja && loja.store_id) || '').trim()
+                && String((loja && loja.nome) || '').trim()
+            ));
+            if (!valorAtual && lojaAtual && lojaAtual !== '__todas') {
+                const normalizarNome = (valor) => String(valor || '').trim().toLocaleLowerCase();
+                const chaveAtual = normalizarNome(lojaAtual);
+                const candidatas = lojas.filter((loja) => {
+                    const aliases = [loja.nome, ...(Array.isArray(loja.nomes_anteriores) ? loja.nomes_anteriores : [])];
+                    return aliases.some((alias) => normalizarNome(alias) === chaveAtual);
+                });
+                if (candidatas.length === 1) valorAtual = String(candidatas[0].store_id || '').trim();
             }
 
-            nomes.forEach((nome) => {
+            lojas.forEach((loja) => {
+                const nome = String((loja && loja.nome) || '').trim();
+                const storeId = String((loja && loja.store_id) || '').trim();
                 const opt = document.createElement('option');
-                opt.value = nome;
+                opt.value = storeId;
+                opt.dataset.nomeLoja = nome;
                 opt.textContent = nome;
-                opt.selected = nome === valorAtual;
+                opt.selected = storeId === valorAtual;
                 select.appendChild(opt);
             });
         }
 
         function obterLojaListaPedidoSelecionada() {
             const select = document.getElementById('lojaListaPedidoEdit');
-            const loja = String((select && select.value) || '').trim();
-            return loja && loja !== '__todas' ? loja : '';
+            const option = select && select.selectedOptions && select.selectedOptions[0];
+            return String((option && option.dataset && option.dataset.nomeLoja) || '').trim();
+        }
+
+        function obterStoreIdListaPedidoSelecionado() {
+            const select = document.getElementById('lojaListaPedidoEdit');
+            return String((select && select.value) || '').trim();
         }
 
         return {
@@ -389,7 +402,8 @@
             excluirListaPedido,
             abrirListaPedidoPorId,
             preencherSelectLojaListaPedido,
-            obterLojaListaPedidoSelecionada
+            obterLojaListaPedidoSelecionada,
+            obterStoreIdListaPedidoSelecionado
         };
     });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

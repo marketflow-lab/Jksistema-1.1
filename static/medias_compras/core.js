@@ -202,10 +202,26 @@
     function obterUrlFoto(valor) {
         const foto = String(valor || '').trim();
         if (!foto) return '';
-        if (ehUrlAbsoluta(foto)) return foto;
-        const nomeArquivo = foto.split('/').pop();
-        if (!nomeArquivo) return '';
-        return '/api/cadastro/foto-arquivo/' + encodeURIComponent(nomeArquivo);
+        const helper = global.JKAuthenticatedMedia;
+        if (helper && typeof helper.normalizarUrlFotoCadastro === 'function') {
+            return helper.normalizarUrlFotoCadastro(foto);
+        }
+        return /^(?:https?:)?\/\//i.test(foto) ? foto : '';
+    }
+
+    function ehUrlFotoCadastroProtegida(url) {
+        const helper = global.JKAuthenticatedMedia;
+        if (helper && typeof helper.ehUrlProtegidaCadastro === 'function') {
+            return helper.ehUrlProtegidaCadastro(url);
+        }
+        return /^(\/api\/cadastro\/foto-arquivo\/|\/api\/cadastro\/foto\/)/i.test(String(url || '').trim());
+    }
+
+    function atributoSrcFotoCadastro(url) {
+        const foto = escaparHtml(url);
+        return ehUrlFotoCadastroProtegida(url)
+            ? 'data-jk-auth-src="' + foto + '"'
+            : 'src="' + foto + '"';
     }
 
     function obterCorLoja(valor, indice) {
@@ -282,6 +298,8 @@
         escaparHtml,
         ehUrlAbsoluta,
         obterUrlFoto,
+        ehUrlFotoCadastroProtegida,
+        atributoSrcFotoCadastro,
         obterCorLoja,
         normalizarSku,
         normalizarQuantidadeCompraSugerida,

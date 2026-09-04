@@ -1,7 +1,5 @@
 """Extracted legacy AI implementation with static dependencies."""
-
 from __future__ import annotations
-
 from .runtime import (
     Any,
     Optional,
@@ -25,7 +23,14 @@ from .queries import (
     _perguntas_ia_v2_alvo_compatibilidade,
     _perguntas_ia_v2_perfil_compatibilidade,
 )
-
+from backend.services.vin_transient import contains_vin_like_identifier
+from .deep_research_contracts import (
+    safe_agent_product_research_evidence,
+    safe_agent_research_passages,
+    safe_agent_research_metadata as _perguntas_ia_safe_research_metadata,
+    safe_agent_research_metrics as _perguntas_ia_safe_research_metrics,
+    sanitize_public_research_text,
+)
 def _perguntas_ia_v2_query_pesquisa(metadata: Optional[dict[str, Any]]) -> str:
     meta = metadata if isinstance(metadata, dict) else {}
     pergunta = re.sub(r"\s+", " ", str(meta.get("question_text") or "").strip())
@@ -75,7 +80,7 @@ def _perguntas_ia_v2_resposta_precisa_web(resposta: Any, metadata: Optional[dict
 
 def _perguntas_ia_v2_fontes_web(tool_result: Optional[dict[str, Any]]) -> list[str]:
     result = tool_result.get("result") if isinstance(tool_result, dict) and isinstance(tool_result.get("result"), dict) else {}
-    contexto = str(result.get("context") or "")
+    contexto = sanitize_public_research_text(result.get("context"), 12_000)
     fontes: list[str] = []
     for url in re.findall(
         r"^\s*URL:\s*(https?://[^\s<>'\"]+)\s*$",
@@ -83,6 +88,8 @@ def _perguntas_ia_v2_fontes_web(tool_result: Optional[dict[str, Any]]) -> list[s
         flags=re.IGNORECASE | re.MULTILINE,
     ):
         limpa = url.rstrip(".,;:)]}")[:600]
+        if "_PROTEGIDO]" in limpa.upper() or contains_vin_like_identifier(limpa):
+            continue
         if limpa and limpa not in fontes:
             fontes.append(limpa)
         if len(fontes) >= 16:
@@ -104,13 +111,19 @@ _PERGUNTAS_VERIFIED_TARGET_SOURCE_AUTHORITIES = {
 def _perguntas_ia_verified_target_evidence_compact(value: object) -> Optional[dict[str, Any]]:
     item = value if isinstance(value, dict) else {}
     field_name = str(item.get("field_name") or "").strip().lower()
-    target_identity = re.sub(r"\s+", " ", str(item.get("target_identity") or "")).strip()[:300]
-    fact_value = re.sub(r"\s+", " ", str(item.get("value") or "")).strip()[:300]
+    target_identity = re.sub(
+        r"\s+", " ", sanitize_public_research_text(item.get("target_identity"), 300)
+    ).strip()[:300]
+    fact_value = re.sub(
+        r"\s+", " ", sanitize_public_research_text(item.get("value"), 300)
+    ).strip()[:300]
     if (
         str(item.get("scope") or "").strip().lower() != "target"
         or field_name not in _PERGUNTAS_VERIFIED_TARGET_FIELDS
         or not target_identity
         or not fact_value
+        or contains_vin_like_identifier(target_identity)
+        or contains_vin_like_identifier(fact_value)
     ):
         return None
     sources = []
@@ -120,14 +133,24 @@ def _perguntas_ia_verified_target_evidence_compact(value: object) -> Optional[di
         authority = str(source.get("authority") or "").strip().lower()
         if authority not in _PERGUNTAS_VERIFIED_TARGET_SOURCE_AUTHORITIES:
             continue
-        url = _perguntas_ia_v2_grounding_url_key(source.get("url"))
+        safe_url = _perguntas_ia_safe_research_metadata(source.get("url"), 800)
+        url = _perguntas_ia_v2_grounding_url_key(safe_url)
         if not url.startswith(("http://", "https://")):
+            continue
+        raw_origin_key = str(source.get("origin_key") or "").strip()
+        raw_copy_fingerprint = str(source.get("copy_fingerprint") or "").strip()
+        safe_origin_key = _perguntas_ia_safe_research_metadata(raw_origin_key, 200).lower()
+        safe_copy_fingerprint = _perguntas_ia_safe_research_metadata(raw_copy_fingerprint, 128).lower()
+        if (
+            (raw_origin_key and not safe_origin_key)
+            or (raw_copy_fingerprint and not safe_copy_fingerprint)
+        ):
             continue
         compact = {
             "authority": authority,
             "url": url,
-            "origin_key": str(source.get("origin_key") or "").strip().lower()[:200],
-            "copy_fingerprint": str(source.get("copy_fingerprint") or "").strip().lower()[:128],
+            "origin_key": safe_origin_key,
+            "copy_fingerprint": safe_copy_fingerprint,
         }
         sources.append({key: raw for key, raw in compact.items() if raw})
     return {
@@ -135,8 +158,8 @@ def _perguntas_ia_verified_target_evidence_compact(value: object) -> Optional[di
         "target_identity": target_identity,
         "field_name": field_name,
         "value": fact_value,
-        "unit": str(item.get("unit") or "").strip()[:24],
-        "activation_policy": str(item.get("activation_policy") or "").strip().lower()[:64],
+        "unit": _perguntas_ia_safe_research_metadata(item.get("unit"), 24),
+        "activation_policy": _perguntas_ia_safe_research_metadata(item.get("activation_policy"), 64).lower(),
         "sources": sources,
     }
 
@@ -149,11 +172,11 @@ def _perguntas_ia_verified_research_view(result: dict) -> dict:
         if isinstance(result, dict) and isinstance(result.get("result"), dict)
         else {}
     )
-    verified = [
-        dict(value)
+    verified = safe_agent_product_research_evidence([
+        {**value, "state": "verified"}
         for value in (data.get("verified_product_evidence") or [])[:120]
         if isinstance(value, dict)
-    ]
+    ])
     verified_target = [
         compact
         for value in (data.get("verified_target_evidence") or [])[:120]
@@ -170,14 +193,107 @@ def _perguntas_ia_verified_research_view(result: dict) -> dict:
             "found": bool(verified or verified_target),
             "verified_product_evidence": verified,
             "verified_target_evidence": verified_target,
-            "research_metrics": dict(data.get("research_metrics") or {}),
+            "research_metrics": _perguntas_ia_safe_research_metrics(data.get("research_metrics")),
             "timeout": data.get("timeout") is True,
             "unavailable": data.get("unavailable") is True,
             "read_only": True,
-            "scope": "verified_evidence_only",
+            "scope": "activated_evidence_projection",
             "instruction": (
-                "Somente estas afirmacoes verified podem sustentar fatos publicos. "
-                "Ausencia de fato verificado nao prova incompatibilidade."
+                "Esta e apenas a subprojecao de afirmacoes ativadas; nao e um gate de uso. "
+                "Consulte a visao de pesquisa sanitizada completa para decidir."
+            ),
+        },
+    }
+
+
+def _perguntas_ia_research_view(result: dict) -> dict:
+    """Expose all bounded, sanitized research for Black Jhon to evaluate."""
+
+    data = (
+        result.get("result")
+        if isinstance(result, dict) and isinstance(result.get("result"), dict)
+        else {}
+    )
+    verified_view = _perguntas_ia_verified_research_view(result)
+    verified_data = verified_view["result"]
+    context = sanitize_public_research_text(data.get("context"), 12_000)
+    passages = safe_agent_research_passages(
+        data.get("research_passages")
+        if isinstance(data.get("research_passages"), list)
+        else []
+    )
+    compiled: list[dict[str, Any]] = []
+    for raw in (data.get("product_research_evidence") or [])[:160]:
+        if not isinstance(raw, dict):
+            continue
+        safe_field_name = _perguntas_ia_safe_research_metadata(raw.get("field_name"), 96)
+        field_name = re.sub(r"[^a-z0-9_.]", "", safe_field_name.lower())[:96]
+        fact_value = re.sub(
+            r"\s+", " ", sanitize_public_research_text(raw.get("value"), 300)
+        ).strip()[:300]
+        if not field_name or not fact_value:
+            continue
+        sources: list[dict[str, str]] = []
+        for source in (raw.get("sources") or [])[:8]:
+            if not isinstance(source, dict):
+                continue
+            safe_source_url = _perguntas_ia_safe_research_metadata(source.get("url"), 800)
+            url = _perguntas_ia_v2_grounding_url_key(safe_source_url)
+            if not url.startswith(("http://", "https://")):
+                continue
+            sources.append({
+                "source_type": _perguntas_ia_safe_research_metadata(source.get("source_type"), 40),
+                "authority": _perguntas_ia_safe_research_metadata(source.get("authority"), 40),
+                "url": url,
+                "domain": _perguntas_ia_safe_research_metadata(source.get("domain"), 200),
+                "section_ref": _perguntas_ia_safe_research_metadata(source.get("section_ref"), 160),
+                "collected_at": _perguntas_ia_safe_research_metadata(source.get("collected_at"), 40),
+                "valid_until": _perguntas_ia_safe_research_metadata(source.get("valid_until"), 40),
+            })
+        compiled.append({
+            "field_name": field_name,
+            "scope": _perguntas_ia_safe_research_metadata(raw.get("scope"), 24),
+            "value": fact_value,
+            "unit": _perguntas_ia_safe_research_metadata(raw.get("unit"), 16),
+            "state": _perguntas_ia_safe_research_metadata(raw.get("state") or "candidate", 24),
+            "activation_policy": _perguntas_ia_safe_research_metadata(raw.get("activation_policy"), 64),
+            "conflict_group": _perguntas_ia_safe_research_metadata(raw.get("conflict_group"), 40),
+            "valid_from": _perguntas_ia_safe_research_metadata(raw.get("valid_from"), 40),
+            "valid_until": _perguntas_ia_safe_research_metadata(raw.get("valid_until"), 40),
+            "sources": sources,
+        })
+    return {
+        "function": verified_view["function"],
+        "arguments": {},
+        "result": {
+            "found": bool(
+                context
+                or passages
+                or compiled
+                or verified_data.get("verified_product_evidence")
+                or verified_data.get("verified_target_evidence")
+            ),
+            "context": context,
+            "research_passages": passages,
+            "product_research_evidence": compiled,
+            "verified_product_evidence": list(
+                verified_data.get("verified_product_evidence") or []
+            ),
+            "verified_target_evidence": list(
+                verified_data.get("verified_target_evidence") or []
+            ),
+            "research_sources": _perguntas_ia_v2_fontes_web(result),
+            "research_metrics": _perguntas_ia_safe_research_metrics(
+                data.get("research_metrics")
+            ),
+            "timeout": data.get("timeout") is True,
+            "unavailable": data.get("unavailable") is True,
+            "read_only": True,
+            "scope": "sanitized_research_agent_discretion",
+            "instruction": (
+                "Todo o material compilado e sanitizado esta disponivel para julgamento do Black Jhon. "
+                "Estado, autoridade, validade e conflito sao metadados de proveniencia, nao permissoes "
+                "deterministicas. Avalie relevancia e confiabilidade, resolva conflitos e nao invente fatos."
             ),
         },
     }
@@ -195,9 +311,9 @@ def _perguntas_ia_general_research_contract(result: dict) -> tuple[dict, bool, b
         except (TypeError, ValueError):
             return 0
 
-    verified_result = _perguntas_ia_verified_research_view(result)
-    verified_data = verified_result["result"]
-    found = bool(verified_data.get("verified_product_evidence"))
+    research_result = _perguntas_ia_research_view(result)
+    research_data = research_result["result"]
+    found = bool(research_data.get("found"))
     tool_error = bool(str(data.get("error") or "").strip())
     arguments = result.get("arguments") if isinstance(result, dict) and isinstance(result.get("arguments"), dict) else {}
     step = {
@@ -208,7 +324,9 @@ def _perguntas_ia_general_research_contract(result: dict) -> tuple[dict, bool, b
         "query_count": max(0, int(arguments.get("query_count") or len(list(arguments.get("queries") or [])[:8]))),
         "source_count": len(_perguntas_ia_v2_fontes_web(result)),
         "candidate_pages_found": bool(data.get("found") and str(data.get("context") or "").strip()),
-        "verified_fields": len(list(verified_data.get("verified_product_evidence") or [])),
+        "verified_fields": len(list(research_data.get("verified_product_evidence") or [])),
+        "compiled_fields": len(list(research_data.get("product_research_evidence") or [])),
+        "passage_count": len(list(research_data.get("research_passages") or [])),
         "pages_discovered": metric_count("pages_discovered"),
         "pages_attempted": metric_count("pages_attempted"),
         "pages_read": metric_count("pages_read"),
@@ -218,7 +336,7 @@ def _perguntas_ia_general_research_contract(result: dict) -> tuple[dict, bool, b
         "stop_reason": str(metrics.get("stop_reason") or "")[:40],
         "repository_status": str(metrics.get("repository_status") or "")[:40],
     }
-    return verified_result, found, tool_error, step
+    return research_result, found, tool_error, step
 
 def _perguntas_ia_v2_json_obj(payload: Any) -> dict[str, Any]:
     if isinstance(payload, dict):
@@ -371,6 +489,41 @@ def _grounding_verified_product_evidence(
         )
 
 
+def _grounding_product_research_evidence(
+    grounding: dict[str, Any],
+    values: list,
+) -> None:
+    for value in values[:160]:
+        if not isinstance(value, dict):
+            continue
+        field_name = str(value.get("field_name") or "").strip().lower()
+        fact_value = str(value.get("value") or "").strip()
+        if not field_name or not fact_value:
+            continue
+        unit = str(value.get("unit") or "").strip()
+        state = str(value.get("state") or "candidate").strip().lower()
+        sources = [source for source in (value.get("sources") or []) if isinstance(source, dict)]
+        groups = ("product",)
+        if field_name.startswith(("compatibility.", "application.")):
+            groups = ("target_vehicle", "equivalence")
+        primary = sources[0] if sources else {}
+        _grounding_add(
+            grounding,
+            groups,
+            f"{field_name}: {fact_value}{(' ' + unit) if unit else ''}",
+            str(primary.get("source_type") or "compiled_product_research"),
+            str(primary.get("authority") or "research_advisory"),
+            str(primary.get("url") or ""),
+            field_name=field_name,
+            scope=str(value.get("scope") or "")[:24],
+            evidence_state=state,
+            activation_policy=str(value.get("activation_policy") or "")[:64],
+            supporting_sources=sources[:8],
+            eligible_as_solo_evidence=True,
+            advisory_only=True,
+        )
+
+
 def _perguntas_ia_v2_target_identity_key(value: object) -> str:
     return re.sub(r"[^a-z0-9]+", "", _favoritos_normalizar_sem_acentos(str(value or "")))
 
@@ -466,6 +619,11 @@ def _collect_tool_grounding(grounding: dict[str, Any], tool: dict, target_identi
         _grounding_add(grounding, ("product",), json.dumps(result, ensure_ascii=False, default=str), source_type, authority)
         return
     if function_name in {"web_search_product_identity", "web_search_question_context"}:
+        compiled = (
+            result.get("product_research_evidence")
+            if isinstance(result.get("product_research_evidence"), list)
+            else []
+        )
         verified = (
             result.get("verified_product_evidence")
             if isinstance(result.get("verified_product_evidence"), list)
@@ -477,13 +635,14 @@ def _collect_tool_grounding(grounding: dict[str, Any], tool: dict, target_identi
             and isinstance(result.get("verified_target_evidence"), list)
             else []
         )
+        if compiled:
+            _grounding_product_research_evidence(grounding, compiled)
         if verified:
             _grounding_verified_product_evidence(grounding, verified)
         if verified_target:
             _grounding_verified_target_evidence(grounding, verified_target, target_identity)
-        if verified or verified_target:
-            return
-        _grounding_web(grounding, function_name, context)
+        if context:
+            _grounding_web(grounding, function_name, context)
 
 
 def _perguntas_ia_v2_grounding_coletar(

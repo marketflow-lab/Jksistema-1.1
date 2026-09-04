@@ -101,8 +101,23 @@ class LegacyBlingVendasAdapter:
     def buscar_loja(self, client_id: str, nome_loja: str):
         return self.call("buscar_loja", client_id, nome_loja)
 
-    def atualizar_api_loja(self, client_id: str, nome_loja: str, api_nome: str, dados_api: dict):
-        return self.call("atualizar_api_loja", client_id, nome_loja, api_nome, dados_api)
+    def atualizar_api_loja(
+        self,
+        client_id: str,
+        nome_loja: str,
+        api_nome: str,
+        dados_api: dict,
+        *,
+        store_id: str,
+    ):
+        return self.call(
+            "atualizar_api_loja",
+            client_id,
+            nome_loja,
+            api_nome,
+            dados_api,
+            store_id=store_id,
+        )
 
     def normalizar_sku_estoque(self, value: Any) -> str:
         return self.call("_normalizar_sku_estoque", value)

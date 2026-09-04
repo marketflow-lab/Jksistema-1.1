@@ -110,6 +110,83 @@ def _verified_fact(field_name: str, value: str, *, scope: str = "product") -> di
     }
 
 
+def _v16_structured_model(
+    client,
+    *,
+    decision: str,
+    body: str,
+    missing_fields: tuple[str, ...] = (),
+    bridge_stage: str = "",
+):
+    """Closed v16 stage double used by legacy Context Hub workflow tests."""
+
+    captured: dict[str, AIAnswer] = {}
+
+    def call(prompt, metadata, *, stage, tool_results=None, **_kwargs):
+        if stage == "technical_question_plan":
+            return {
+                "schema": "jk_ml_technical_question_plan_v1",
+                "requirements": [{
+                    "id": "q1", "essential": True, "kind": "specification",
+                    "question": "Responder ao ponto técnico classificado",
+                    "subject": {"kind": "product", "name": "produto", "identifiers": []},
+                    "target": {"kind": "application", "name": "uso informado", "identifiers": []},
+                    "relation": "has_property", "required_fields": [], "search_terms": [],
+                }],
+                "queries": [],
+            }
+        if stage == "technical_evidence_graph":
+            return {
+                "schema": "jk_ml_evidence_graph_v2", "entities": [], "claims": [],
+                "passages": [], "relations": [], "unresolved_requirement_ids": [],
+            }
+        if stage in {"technical_resolution_round_1", "technical_resolution_final"}:
+            resolved_decision = decision
+            resolved_body = body
+            resolved_missing = list(missing_fields)
+            if bridge_stage and "assessment" not in captured:
+                captured["assessment"] = client._call_model(
+                    prompt, metadata, stage=bridge_stage, tool_results=tool_results,
+                )
+            if "assessment" in captured:
+                assessment = captured["assessment"]
+                analysis = dict(getattr(client, "compatibility_analysis", {}) or {})
+                resolved_decision = str(analysis.get("decision") or decision)
+                resolved_body = str(assessment.answer)
+                resolved_missing = list(analysis.get("missing_fields") or missing_fields)
+                confidence = float(analysis.get("confidence") or assessment.confidence or 0.4)
+            else:
+                analysis = {"decision": resolved_decision, "missing_fields": resolved_missing}
+                confidence = 0.92 if resolved_decision == "yes" else 0.4
+            state = {
+                "yes": "fits", "no": "incompatible", "conditional": "partial",
+                "insufficient": "insufficient", "not_applicable": "not_applicable",
+            }.get(resolved_decision, "insufficient")
+            is_final = stage == "technical_resolution_final"
+            analysis.update({"decision": resolved_decision, "confidence": confidence})
+            return {
+                "schema": "jk_ml_technical_resolution_v1", "round": 2 if is_final else 1,
+                "final": is_final,
+                "requirements": [{
+                    "id": "q1", "decision": resolved_decision, "conclusion": resolved_body,
+                    "condition": "", "commercial_impact": "satisfies" if resolved_decision == "yes" else "unknown",
+                    "facts": [], "missing_fields": resolved_missing, "confidence": confidence,
+                }],
+                "reference_relations": [], "overall_decision": resolved_decision,
+                "commercial_state": state, "confidence": confidence,
+                "reason": "v16_context_hub_test", "gap_queries": [],
+                "contingency_answer_body": resolved_body, "compatibility_analysis": analysis,
+            }
+        if stage == "factual_critic":
+            return {
+                "schema": "jk_ml_factual_review_v1", "verdict": "pass", "issues": [],
+                "revision_instructions": [], "confidence": 1.0,
+            }
+        raise AssertionError(f"unexpected structured v16 stage: {stage}")
+
+    return call
+
+
 def test_context_hub_search_binds_server_tenant_and_allowlists_untrusted_rows(monkeypatch):
     from backend.modules.context_hub import dlp as context_hub_dlp
     from backend.modules.context_hub import retrieval as context_hub_retrieval
@@ -627,6 +704,10 @@ def test_compatibility_pipeline_orders_internal_hub_legacy_then_web():
         requires_human_review=True,
         reason="missing_listing_evidence",
     )
+    structured = _v16_structured_model(
+        client, decision="insufficient", body=answer.answer,
+        missing_fields=("interface",),
+    )
     with patch.object(agent_clients, "marketplace_listing_query", return_value=api_tool("get_mercado_livre_listing")), \
          patch.object(agent_clients, "_ia_tool_get_product_data", return_value=api_tool("get_product_data")), \
          patch.object(agent_clients, "_ia_tool_get_bling_product", return_value=api_tool("get_bling_product")), \
@@ -634,7 +715,8 @@ def test_compatibility_pipeline_orders_internal_hub_legacy_then_web():
          patch.object(agent_clients, "_perguntas_ia_memoria_bloco_prompt", return_value="Memoria aprovada"), \
          patch.object(agent_clients, "_ia_agent_perguntas_product_identity_web_tool", return_value=web_identity), \
          patch.object(agent_clients, "_ia_agent_perguntas_web_tool", return_value=web_final), \
-         patch.object(client, "_call_model", return_value=answer):
+         patch.object(client, "_call_model", return_value=answer), \
+         patch.object(client, "_call_structured_model", side_effect=structured):
         client._generate_compatibility("prompt", {
             "category": "compatibility",
             "question_text": "Serve na BMW R1300GS?",
@@ -648,9 +730,17 @@ def test_compatibility_pipeline_orders_internal_hub_legacy_then_web():
         "internal_product_registry",
         "bling_product",
         "context_hub_sku_reference",
+        "technical_question_plan_v1",
         "approved_sku_memory_and_legacy_rules",
         "product_interface_research",
         "official_technical_research",
+        "product_document_vision",
+        "product_document_vision",
+        "technical_gap_web_research",
+        "technical_evidence_graph",
+        "technical_resolution_round_1",
+        "technical_evidence_graph_final",
+        "technical_resolution_final",
         "compatibility_public_generation",
     ]
 
@@ -660,23 +750,17 @@ def test_canonical_context_hub_answer_does_not_short_circuit_mandatory_web():
     agent_input["intent"] = _structured_intent("product_feature", web=True)
     agent_input["question"]["text"] = "Qual tipo de conector acompanha?"
     client = agent_clients._PerguntasVertexGeminiV2Client("000002", "JK Pecas", "codex:gpt-5.5", agent_input)
-    respostas = [
-        AIAnswer(
-            answer="Nao consta no anuncio.",
-            confidence=0.3,
-            requires_human_review=True,
-            reason="missing_listing_evidence",
-        ),
-        AIAnswer(
-            answer="O produto usa conector USB-C.",
-            confidence=0.92,
-            requires_human_review=False,
-            reason="context_hub_canonical_reference",
-        ),
-    ]
+    resposta = AIAnswer(
+        answer="O produto usa conector USB-C.",
+        confidence=0.92,
+        requires_human_review=False,
+        reason="context_hub_canonical_reference",
+    )
+    structured = _v16_structured_model(client, decision="yes", body=resposta.answer)
     with patch.object(agent_clients, "_perguntas_ia_context_hub_tool", return_value=_hub_result(snippet="SKU 001 usa conector USB-C.")), \
          patch.object(agent_clients, "_ia_agent_perguntas_web_tool", return_value=None) as web_call, \
-         patch.object(client, "_call_model", side_effect=respostas):
+         patch.object(client, "_call_model", return_value=resposta), \
+         patch.object(client, "_call_structured_model", side_effect=structured):
         result = client.generate("prompt", {
             "category": "product_feature",
             "question_text": "Qual tipo de conector acompanha?",
@@ -690,11 +774,18 @@ def test_canonical_context_hub_answer_does_not_short_circuit_mandatory_web():
         "buyer_question_and_history",
         "listing_product_analysis",
         "context_hub_sku_reference",
+        "technical_question_plan_v1",
         "question_focused_web_research",
+        "product_document_vision",
+        "technical_evidence_graph",
+        "technical_resolution_round_1",
+        "technical_evidence_graph_final",
+        "technical_resolution_final",
         "commercial_fit_evaluation",
         "same_store_technically_verified_alternative",
         "seller_behavior_profile_v2",
         "commercial_final_generation",
+        "factual_critic",
     ]
     research_step = next(
         stage for stage in client.context_pipeline
@@ -715,20 +806,13 @@ def test_high_confidence_insufficient_hub_answer_is_enriched_by_mandatory_web():
     client = agent_clients._PerguntasVertexGeminiV2Client(
         "000002", "Uai Mineirinho", "codex:gpt-5.5", agent_input
     )
-    responses = [
-        AIAnswer(
-            answer="Este cebolao aciona a ventoinha aproximadamente aos 93 °C.",
-            confidence=0.90,
-            requires_human_review=False,
-            reason="external_technical_sources",
-        ),
-        AIAnswer(
-            answer="Este cebolao aciona a ventoinha aproximadamente aos 93 °C.",
-            confidence=0.90,
-            requires_human_review=False,
-            reason="external_technical_sources",
-        ),
-    ]
+    response = AIAnswer(
+        answer="Este cebolao aciona a ventoinha aproximadamente aos 93 °C.",
+        confidence=0.90,
+        requires_human_review=False,
+        reason="external_technical_sources",
+    )
+    structured = _v16_structured_model(client, decision="yes", body=response.answer)
     web_result = {
         "function": "web_search_question_context",
         "arguments": {
@@ -759,7 +843,9 @@ def test_high_confidence_insufficient_hub_answer_is_enriched_by_mandatory_web():
         agent_clients,
         "_ia_agent_perguntas_web_tool",
         return_value=web_result,
-    ) as web_call, patch.object(client, "_call_model", side_effect=responses):
+    ) as web_call, patch.object(client, "_call_model", return_value=response), patch.object(
+        client, "_call_structured_model", side_effect=structured,
+    ):
         result = client.generate("prompt", {
             "category": "product_feature",
             "question_text": "A ventoinha aciona com quantos graus?",
@@ -867,12 +953,18 @@ def test_general_public_flow_queries_internal_sources_first_and_exposes_only_san
             client.compatibility_analysis = {"decision": "insufficient"}
         return AIAnswer(answer="Informacao ainda insuficiente.", confidence=0.4, requires_human_review=True)
 
+    structured = _v16_structured_model(
+        client, decision="insufficient", body="Informacao ainda insuficiente.",
+        bridge_stage="commercial_fit_evaluation",
+    )
+
     with patch.object(agent_clients, "marketplace_listing_query", side_effect=listing), \
          patch.object(agent_clients, "_ia_tool_get_product_data", side_effect=product), \
          patch.object(agent_clients, "_ia_tool_get_bling_product", side_effect=bling), \
          patch.object(agent_clients, "_perguntas_ia_context_hub_tool", side_effect=hub), \
          patch.object(agent_clients, "_ia_agent_perguntas_web_tool", side_effect=web), \
-         patch.object(client, "_call_model", side_effect=call_model):
+         patch.object(client, "_call_model", side_effect=call_model), \
+         patch.object(client, "_call_structured_model", side_effect=structured):
         client.generate("prompt", {
             "category": "product_feature", "question_text": "Qual a voltagem?",
             "item_id": "MLB1", "listing_title": "Produto 12 V",

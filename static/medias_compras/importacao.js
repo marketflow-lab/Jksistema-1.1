@@ -119,6 +119,7 @@
                     const fd = new FormData();
                     fd.append('file', file);
                     fd.append('loja', lojaSelecionada || '__todas');
+                    fd.append('store_id', storeIdSelecionado || '');
 
                     setStatusListaPedido('Importando lista por Excel...');
                     const resp = await fetch('/api/medias-compras/listas-pedidos/importar-excel', {
@@ -219,6 +220,7 @@
                 }
                 payload.hidden_skus = Array.from(skusOcultosSet);
                 payload.loja = lojaSelecionada || '__todas';
+                payload.store_id = storeIdSelecionado || '';
                 payload.periodo_meses = Number(periodoAtual || 12);
                 payload.quantidades_sugeridas = obterQuantidadesSugeridasEditadas();
                 let resp = await fetch('/api/medias-compras/gerar-lista-compra', {
@@ -241,6 +243,7 @@
                     }
                     params.set('nome_lista', payload.nome_lista);
                     params.set('loja', String(payload.loja || '__todas'));
+                    params.set('store_id', String(payload.store_id || ''));
                     params.set('periodo_meses', String(Number(payload.periodo_meses || 12)));
                     if (Object.keys(payload.quantidades_sugeridas || {}).length) {
                         params.set('quantidades_sugeridas', JSON.stringify(payload.quantidades_sugeridas));
@@ -281,6 +284,7 @@
             const params = new URLSearchParams();
             if (lojaSelecionada && lojaSelecionada !== '__todas') {
                 params.set('loja', lojaSelecionada);
+                params.set('store_id', String(storeIdSelecionado || ''));
             }
             window.location.href = '/produtos_sem_venda.html' + (params.toString() ? '?' + params.toString() : '');
         }
@@ -294,6 +298,7 @@
                 const params = new URLSearchParams();
                 params.set('meses', String(Number(periodoAtual || 12)));
                 params.set('loja', String(lojaSelecionada || '__todas'));
+                params.set('store_id', String(storeIdSelecionado || ''));
                 const quantidadesSugeridas = obterQuantidadesSugeridasEditadas();
                 if (Object.keys(quantidadesSugeridas).length) {
                     params.set('quantidades_sugeridas', JSON.stringify(quantidadesSugeridas));

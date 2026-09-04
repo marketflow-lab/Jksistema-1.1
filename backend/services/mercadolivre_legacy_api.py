@@ -57,6 +57,57 @@ def configure_mercadolivre_legacy_api_runtime(runtime_module=None, peers=None):
 configure_mercadolivre_legacy_api_runtime()
 
 
+_ML_STORE_ID_CONTEXT_FIELD = "_store_id_context"
+
+
+def _ml_store_id_context(cfg: dict | None) -> str:
+    return str((cfg or {}).get(_ML_STORE_ID_CONTEXT_FIELD) or "").strip()
+
+
+def _ml_cfg_com_store_id_context(
+    cfg: dict | None,
+    store_id: str,
+) -> dict:
+    """Anexa a identidade apenas ao snapshot de runtime da integracao ML."""
+    store_id_exato = str(store_id or "").strip()
+    if not store_id_exato:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "store_id_required",
+                "message": "A identidade exata da loja nao esta disponivel.",
+            },
+        )
+    contextualizado = dict(cfg or {})
+    contextualizado[_ML_STORE_ID_CONTEXT_FIELD] = store_id_exato
+    return contextualizado
+
+
+def _ml_atualizar_api_loja_exata(
+    client_id: str,
+    nome_loja: str,
+    cfg: dict,
+) -> None:
+    store_id = _ml_store_id_context(cfg)
+    if not store_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "store_id_required",
+                "message": "A identidade exata da loja nao esta disponivel.",
+            },
+        )
+    persistivel = dict(cfg or {})
+    persistivel.pop(_ML_STORE_ID_CONTEXT_FIELD, None)
+    atualizar_api_loja(
+        client_id,
+        nome_loja,
+        "mercadolivre",
+        persistivel,
+        store_id=store_id,
+    )
+
+
 def _ml_refresh_token(client_id: str, nome_loja: str, cfg: dict):
     app_id = cfg.get("app_id") or cfg.get("client_id")
     client_secret = cfg.get("client_secret")
@@ -94,7 +145,7 @@ def _ml_refresh_token(client_id: str, nome_loja: str, cfg: dict):
             cfg["access_token"] = result.get("access_token", cfg.get("access_token"))
             cfg["refresh_token"] = novo_refresh_token
             cfg["updated_at"] = str(time.time())
-            atualizar_api_loja(client_id, nome_loja, 'mercadolivre', cfg)
+            _ml_atualizar_api_loja_exata(client_id, nome_loja, cfg)
             if str(novo_refresh_token or "") != str(refresh_token or ""):
                 _ml_http_invalidar_session(client_id, nome_loja, session_token, verify_ssl)
             logger.info(f"[ML REFRESH] Ã¢Å“â€¦ Token renovado com sucesso para {nome_loja}")
@@ -185,7 +236,7 @@ def _ml_normalizar_oauth_compartilhado(client_id: str, nome_loja: str, cfg: dict
         mudou = True
     if mudou:
         cfg["updated_at"] = str(time.time())
-        atualizar_api_loja(client_id, nome_loja, "mercadolivre", cfg)
+        _ml_atualizar_api_loja_exata(client_id, nome_loja, cfg)
     return cfg
 
 
@@ -230,7 +281,7 @@ def _ml_descobrir_user_id_oauth(client_id: str, nome_loja: str, cfg: dict) -> di
     cfg["motivo"] = ""
     cfg["shared_without_oauth_tokens"] = False
     cfg["updated_at"] = str(time.time())
-    atualizar_api_loja(client_id, nome_loja, "mercadolivre", cfg)
+    _ml_atualizar_api_loja_exata(client_id, nome_loja, cfg)
     _cache_invalidar_loja(client_id, nome_loja)
     logger.info("[ML OAUTH] user_id %s recuperado automaticamente para loja %s", user_id, nome_loja)
     return cfg
@@ -253,6 +304,10 @@ def _obter_cfg_ml(client_id: str, nome_loja: str) -> dict:
     if not cfg.get("access_token"):
         raise HTTPException(status_code=401, detail="Token do Mercado Livre ausente. RefaÃƒÂ§a a autenticaÃƒÂ§ÃƒÂ£o OAuth.")
 
+    store_id_exato = str(loja.get("store_id") or "").strip()
+    if not store_id_exato:
+        raise HTTPException(status_code=409, detail="Loja sem store_id persistido.")
+    cfg = _ml_cfg_com_store_id_context(cfg, store_id_exato)
     cfg = _ml_normalizar_oauth_compartilhado(client_id, nome_loja, cfg)
     cfg = _ml_descobrir_user_id_oauth(client_id, nome_loja, cfg)
     return cfg
@@ -437,7 +492,7 @@ def _ml_favoritos_api_request(client_id: str, loja: str, cfg: dict, method: str,
         timeout=timeout,
     )
 
-PEER_EXPORTS = ['_ml_refresh_token', '_headers_ml', '_ml_oauth_status', '_ml_oauth_config_completa', '_ml_normalizar_oauth_compartilhado', '_ml_descobrir_user_id_oauth', '_obter_cfg_ml', '_ml_api_request', '_ml_api_request_com_retry', '_ml_parse_error_detail', '_ml_response_eh_rate_limit', '_ml_favoritos_api_request']
+PEER_EXPORTS = ['_ml_store_id_context', '_ml_cfg_com_store_id_context', '_ml_atualizar_api_loja_exata', '_ml_refresh_token', '_headers_ml', '_ml_oauth_status', '_ml_oauth_config_completa', '_ml_normalizar_oauth_compartilhado', '_ml_descobrir_user_id_oauth', '_obter_cfg_ml', '_ml_api_request', '_ml_api_request_com_retry', '_ml_parse_error_detail', '_ml_response_eh_rate_limit', '_ml_favoritos_api_request']
 __all__ = PEER_EXPORTS + ["configure_mercadolivre_legacy_api_runtime"]
 
 configure_mercadolivre_legacy_api_runtime()

@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Cadastro de Produtos - JK Sistema</title>
-    <link rel="stylesheet" href="/cadastro/styles/main.css?v=20260826-cadastro-fornecedores-v1">
-    <script src="/auth.js?v=20260618-persist-login"></script>
+    <link rel="stylesheet" href="/cadastro/styles/main.css?v=20260901-cadastro-catalog-imports-v1">
+    <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
     <script src="/ncm-sync.js"></script>
 </head>
 <body>
@@ -19,6 +19,12 @@
     </div>
 
     <div id="statusNcmGlobal" class="status-bar status-ncm-global"></div>
+
+    <div class="store-scope">
+        <div id="cadastroLojaBotoes" class="loja-group" role="group" aria-label="Selecionar loja do cadastro"></div>
+        <select id="cadastroLojaSelect" hidden aria-hidden="true" tabindex="-1"></select>
+        <span id="cadastroLojaAviso" class="store-scope-hint" aria-live="polite"></span>
+    </div>
 
     <div class="layout">
         <div class="card">
@@ -39,6 +45,8 @@
                     <button id="btnEditarCadastro" class="btn btn-secondary" type="button">Editar</button>
                     <button id="btnIncluirCadastro" class="btn btn-secondary" type="button">Incluir</button>
                     <button id="btnImportarColunas" class="btn btn-secondary" type="button">Importar colunas (Excel/CSV)</button>
+                    <button id="btnImportarBling" class="btn btn-secondary btn-provider btn-provider-bling" type="button" disabled>Trazer da Bling</button>
+                    <button id="btnImportarMercadoLivre" class="btn btn-secondary btn-provider btn-provider-mercadolivre" type="button" disabled>Trazer do Mercado Livre</button>
                     <input id="inputImportarColunas" class="file-input-hidden" type="file" accept=".xlsx,.xls,.csv">
                     <input id="filtro" type="text" placeholder="Filtrar por SKU, nome, categoria ou marca">
                 </div>
@@ -152,13 +160,54 @@
     </div>
 </div>
 
-<script src="/cadastro/00-runtime.js?v=20260826-cadastro-fornecedores-v1"></script>
-<script src="/cadastro/01-core.js?v=20260826-cadastro-photo-tenant-v1"></script>
-<script src="/cadastro/main/01-produtos.js?v=20260821-cadastro-modular-v1"></script>
-<script src="/cadastro/main/02-custos-mlb.js?v=20260826-cadastro-secondary-tabs-v1"></script>
-<script src="/cadastro/main/03-actions.js?v=20260821-cadastro-modular-v1"></script>
-<script src="/cadastro/main/05-fornecedores.js?v=20260826-cadastro-fornecedores-v1"></script>
-<script src="/cadastro/main/04-init.js?v=20260826-cadastro-fornecedores-v1"></script>
+<div id="modalImportacaoCatalogo" class="catalog-import-modal" role="dialog" aria-modal="true" aria-labelledby="importacaoCatalogoTitulo" aria-describedby="importacaoCatalogoDescricao" hidden>
+    <section id="importacaoCatalogoDialog" class="catalog-import-dialog" tabindex="-1">
+        <header class="catalog-import-header">
+            <div>
+                <h2 id="importacaoCatalogoTitulo">Importar catálogo</h2>
+                <p id="importacaoCatalogoDescricao">Revise as diferenças antes de aplicar. Fechar esta janela não cancela uma consulta em andamento.</p>
+            </div>
+            <button id="btnFecharImportacaoCatalogo" class="catalog-import-close" type="button" aria-label="Fechar sem cancelar a consulta" title="Fechar sem cancelar a consulta">×</button>
+        </header>
+        <p class="catalog-import-store">Loja: <strong id="importacaoCatalogoLoja"></strong></p>
+        <div id="importacaoCatalogoStatus" class="status-bar" role="status" aria-live="polite"></div>
+        <div class="catalog-import-progress-row">
+            <progress id="importacaoCatalogoProgress" max="100" value="0"></progress>
+            <span id="importacaoCatalogoProgressText">0%</span>
+        </div>
+        <dl class="catalog-import-summary" aria-label="Resumo da importação">
+            <div><dt>Novos</dt><dd id="importacaoCatalogoNovos">0</dd></div>
+            <div><dt>Preencher</dt><dd id="importacaoCatalogoPreencher">0</dd></div>
+            <div><dt>Inalterados</dt><dd id="importacaoCatalogoInalterados">0</dd></div>
+            <div><dt>Conflitos</dt><dd id="importacaoCatalogoConflitosTotal">0</dd></div>
+            <div><dt>Ignorados</dt><dd id="importacaoCatalogoIgnorados">0</dd></div>
+        </dl>
+        <section id="importacaoCatalogoConflitos" class="catalog-import-conflicts" aria-labelledby="importacaoCatalogoConflitosTitulo" hidden>
+            <h3 id="importacaoCatalogoConflitosTitulo">Conflitos que exigem revisão</h3>
+            <ul id="importacaoCatalogoConflitosLista"></ul>
+        </section>
+        <div class="table-wrap catalog-import-table-wrap">
+            <table aria-label="Prévia das diferenças do catálogo">
+                <thead><tr><th>SKU</th><th>Ação</th><th>Campo</th><th>Valor atual</th><th>Valor da fonte</th><th>Observação</th></tr></thead>
+                <tbody id="tBodyImportacaoCatalogo"></tbody>
+            </table>
+        </div>
+        <footer class="catalog-import-actions">
+            <button id="btnCancelarImportacaoCatalogo" class="btn btn-secondary" type="button" disabled>Cancelar consulta</button>
+            <button id="btnAplicarImportacaoCatalogo" class="btn btn-primary" type="button" disabled>Aplicar ao cadastro</button>
+        </footer>
+    </section>
+</div>
+
+<script src="/cadastro/form/00-core.js?v=20260828-cadastro-photo-auth-v1"></script>
+<script src="/cadastro/00-runtime.js?v=20260901-cadastro-catalog-imports-v1"></script>
+<script src="/cadastro/01-core.js?v=20260901-cadastro-catalog-imports-v1"></script>
+<script src="/cadastro/main/01-produtos.js?v=20260828-cadastro-photo-auth-v1"></script>
+<script src="/cadastro/main/02-custos-mlb.js?v=20260828-cadastro-store-scope-v1"></script>
+<script src="/cadastro/main/03-actions.js?v=20260901-cadastro-catalog-imports-v1"></script>
+<script src="/cadastro/main/05-fornecedores.js?v=20260828-cadastro-store-scope-v1"></script>
+<script src="/cadastro/main/06-importacoes-catalogos.js?v=20260901-cadastro-catalog-imports-v1"></script>
+<script src="/cadastro/main/04-init.js?v=20260901-cadastro-catalog-imports-v1"></script>
 <script src="/table_columns.js"></script>
 <script src="/ia-sidebar.js"></script>
 </body>

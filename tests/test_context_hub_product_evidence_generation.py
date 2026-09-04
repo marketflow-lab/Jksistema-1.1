@@ -215,7 +215,7 @@ def test_verified_research_is_projected_and_searchable_after_manual_publish(
     assert len(evidence_docs) == 1
     assert evidence_docs[0]["valid_from"] < evidence_docs[0]["valid_to"]
     assert len(attestation["snapshot_hash"]) == 64
-    assert attestation["policy_version"] == "jk_product_evidence_v1"
+    assert attestation["policy_version"] == "jk_product_evidence_v2"
 
     published = context_hub.publish_generation(
         CLIENT_ID,

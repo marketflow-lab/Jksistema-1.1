@@ -1,6 +1,6 @@
 {
   "name": "jk-sistema-desktop",
-  "version": "1.0.130",
+  "version": "1.0.131",
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
   "packageManager": "npm@11.6.2",
@@ -83,6 +83,7 @@
           "requirements.txt",
           "runtime-versions.json",
           "scripts/provision_python_runtime.py",
+          "scripts/repair_legacy_tenant_root.py",
           "*.html",
           "*.js",
           "electron_app/main/modules/**",

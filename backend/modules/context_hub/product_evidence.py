@@ -14,6 +14,9 @@ from backend.modules.context_hub.product_evidence_repository import (
     create_product_evidence_batch,
     list_verified_product_evidence,
 )
+from backend.modules.context_hub.product_evidence_research_repository import (
+    list_product_research_evidence,
+)
 
 
 __all__ = [
@@ -25,6 +28,7 @@ __all__ = [
     "add_product_evidence_source",
     "complete_product_evidence_batch",
     "create_product_evidence_batch",
+    "list_product_research_evidence",
     "list_verified_product_evidence",
     "normalize_product_evidence_value",
 ]

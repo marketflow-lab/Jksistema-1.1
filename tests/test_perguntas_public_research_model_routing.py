@@ -66,6 +66,12 @@ def _capture_model_call(monkeypatch):
         "compatibility_analysis",
         "compatibility_public_answer",
         "external_research_final",
+        "technical_question_plan",
+        "technical_evidence_graph",
+        "technical_resolution_round_1",
+        "technical_resolution_final",
+        "factual_critic",
+        "factual_revision",
     ),
 )
 def test_public_technical_research_stages_use_sol_high(monkeypatch, stage):
@@ -78,7 +84,7 @@ def test_public_technical_research_stages_use_sol_high(monkeypatch, stage):
         reasoning_effort="low",
     )
 
-    client._call_model("Analise tecnica", {"category": "compatibility"}, stage=stage)
+    client._invoke_stage_model("Analise tecnica", {"category": "compatibility"}, stage=stage)
 
     call = captured[0]
     assert call["model_req"] == "codex:gpt-5.6-sol"
@@ -103,6 +109,56 @@ def test_public_listing_generation_keeps_configured_model_and_effort(monkeypatch
     assert call["model_req"] == "codex:gpt-5.5"
     assert call["payload"].model == "codex:gpt-5.5"
     assert call["payload"].context["_codex_reasoning_effort"] == "low"
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ("technical_resolution_final", "factual_critic", "factual_revision"),
+)
+def test_v16_independent_stages_do_not_reuse_operational_thread(monkeypatch, stage):
+    captured = _capture_model_call(monkeypatch)
+    data = _agent_input("Onde esta peça é instalada?")
+    data.update({"_codex_thread_id": "thread-old", "_codex_job_id": "job-1"})
+    client = clients._PerguntasVertexGeminiV2Client(
+        "tenant-test", "Loja Teste", "codex:gpt-5.5", data,
+    )
+    client.codex_thread_id = "thread-old"
+
+    client._invoke_stage_model(
+        "Adjudique de forma independente",
+        {"category": "compatibility"},
+        stage=stage,
+        isolated=True,
+    )
+
+    context = captured[0]["payload"].context
+    assert context["_codex_thread_id"] == ""
+    assert context["_codex_persist_thread"] is False
+    assert context["_codex_active_turn_key"] == ""
+    assert context["_codex_conversation_key"] == ""
+
+
+def test_multimodal_evidence_graph_is_always_ephemeral_even_without_caller_flag(monkeypatch):
+    captured = _capture_model_call(monkeypatch)
+    data = _agent_input("Onde esta peça é instalada?")
+    data.update({"_codex_thread_id": "thread-old", "_codex_job_id": "job-1"})
+    client = clients._PerguntasVertexGeminiV2Client(
+        "tenant-test", "Loja Teste", "codex:gpt-5.5", data,
+    )
+    client.codex_thread_id = "thread-old"
+
+    client._invoke_stage_model(
+        "Extraia o grafo das imagens",
+        {"category": "compatibility"},
+        stage="technical_evidence_graph",
+    )
+
+    context = captured[0]["payload"].context
+    assert context["_codex_thread_id"] == ""
+    assert context["_codex_persist_thread"] is False
+    assert context["_codex_active_turn_key"] == ""
+    assert context["_codex_conversation_key"] == ""
+    assert client.codex_thread_id == "thread-old"
 
 
 def test_post_sale_never_uses_public_technical_research_override(monkeypatch):

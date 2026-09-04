@@ -408,12 +408,14 @@ def test_compatibility_uses_only_structured_target_profile_focus_and_missing_fie
     assert not hasattr(agent_facade, "_perguntas_ia_v2_resposta_segura_compatibilidade")
 
 
-def test_response_policy_v6_applies_rvc_only_when_commercial_state_allows_it() -> None:
-    assert agent_runtime._PERGUNTAS_IA_RESPONSE_POLICY_VERSION == "jk_ppv_response_policy_v6"
+def test_response_policy_v7_applies_rvc_only_when_commercial_state_allows_it() -> None:
+    assert agent_runtime._PERGUNTAS_IA_RESPONSE_POLICY_VERSION == "jk_ppv_response_policy_v8"
     assert agent_runtime._PERGUNTAS_IA_SELLER_METHOD_VERSION == "seller-conversion-v1"
     policy = agent_runtime._PERGUNTAS_IA_RESPONSE_POLICY["perguntas_anuncio"]
-    assert "evidencias dos dois lados" in policy
-    assert "busca vazia" in policy
+    assert "todo o material compilado e sanitizado" in policy
+    assert "nao liberadores deterministas" in policy
+    assert "nunca substitui a decisao factual do modelo" in policy
+    assert "busca vazia" in policy.lower()
     assert "Responder, Valorizar e Conduzir" in policy
     assert "pergunta composta" in policy
     assert "API oficial ou do anuncio atual" in policy
@@ -424,14 +426,14 @@ def test_response_policy_v6_applies_rvc_only_when_commercial_state_allows_it() -
     assert agent_runtime._PERGUNTAS_IA_COMMERCIAL_STATE_POLICY["incompatible"]["cta"] == "verified_same_store_alternative_only"
 
 
-def test_codex_prompt_v14_hash_includes_vehicle_and_evidence_policies() -> None:
+def test_codex_prompt_v15_hash_includes_vehicle_and_evidence_policies() -> None:
     from backend.services import perguntas_pos_venda_codex as codex
 
-    assert codex.PROMPT_VERSION == "jk_ml_customer_reply_codex_v14"
+    assert codex.PROMPT_VERSION == "jk_ml_customer_reply_codex_v16"
     assert codex.QUEUE_POLICY_VERSION == "jk_ppv_queue_v3"
     assert codex.SCHEMA_VERSION == "5.2"
     assert codex.VEHICLE_IDENTITY_POLICY == "jk_public_vin_decode_v1"
-    assert codex.PRODUCT_EVIDENCE_POLICY == "jk_product_evidence_v1"
+    assert codex.PRODUCT_EVIDENCE_POLICY == "jk_product_evidence_v2"
     assert len(codex.PROMPT_HASH) == 64
     assert codex.PROMPT_HASH != "7a428cbbd56eb76cd0672bff81d7a8c932195d5b0cc1a8c373b4809c3548a6d6"
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import parse_qs, urlsplit
 
 from backend.modules.context_hub.product_evidence import (
     PRODUCT_EVIDENCE_SOURCE_TYPES,
@@ -11,6 +13,7 @@ from backend.modules.context_hub.product_evidence import (
     add_product_evidence_source,
     complete_product_evidence_batch,
     create_product_evidence_batch,
+    list_product_research_evidence,
     list_verified_product_evidence,
 )
 
@@ -29,15 +32,32 @@ from .deep_research_fingerprints import (
     _technical_copy_fingerprint,
 )
 from .deep_research_contracts import (
+    PUBLIC_RESEARCH_MAX_PASSAGES,
     PUBLIC_RESEARCH_POLICY,
     ResearchDocumentV1,
+    ResearchPassageV1,
     TechnicalClaimV1,
     _domain,
     _registrable_domain,
     _safe_page_text,
     _safe_text,
     canonical_research_url,
+    safe_agent_research_passages,
+    safe_agent_research_metadata,
     sanitize_public_research_text,
+)
+from .deep_research_scoping import _identity_terms
+
+from .deep_research_passages import (
+    _bounded_research_passage,
+    _extract_research_passages,
+    _research_document_section_ref,
+    _research_page_ref,
+    _research_passage_codes,
+    _research_passage_coordinate,
+    _research_passage_heading,
+    _research_passage_projection,
+    _research_passage_target_codes,
 )
 
 def make_research_document(
@@ -69,7 +89,26 @@ def make_research_document(
             source_type=source_type,
         )
     )
-    retained_body = scoped_body if claim_eligible else body
+    passages = _extract_research_passages(body)
+    if claim_eligible:
+        scoped_parts = [scoped_body]
+        seen_parts = {re.sub(r"\s+", " ", scoped_body).strip().casefold()}
+        target_codes = _research_passage_target_codes(agent_input)
+        for passage in passages:
+            passage_codes = {
+                re.sub(r"[^a-z0-9]", "", code.casefold())
+                for code in passage.codes
+            }
+            if not target_codes or not (passage_codes & target_codes):
+                continue
+            normalized = re.sub(r"\s+", " ", passage.text).strip().casefold()
+            if not normalized or normalized in seen_parts:
+                continue
+            seen_parts.add(normalized)
+            scoped_parts.append(passage.text)
+        retained_body = "\n".join(scoped_parts)[:120_000]
+    else:
+        retained_body = body
     content_hash = _technical_content_hash(retained_body)
     return ResearchDocumentV1(
         url=canonical,
@@ -82,6 +121,8 @@ def make_research_document(
         origin_key=_registrable_domain(_domain(canonical)),
         copy_fingerprint=_technical_copy_fingerprint(retained_body),
         claim_eligible=claim_eligible,
+        passages=passages,
+        claim_text_scoped=claim_eligible,
     )
 
 
@@ -200,6 +241,8 @@ def listing_document(agent_input: Mapping[str, Any]) -> ResearchDocumentV1 | Non
         source_type="official_listing",
         origin_key=_registrable_domain(_domain(url)),
         copy_fingerprint=_technical_copy_fingerprint(body),
+        passages=_extract_research_passages(body),
+        claim_text_scoped=True,
     )
 
 
@@ -262,6 +305,76 @@ def load_verified_product_evidence(
     except Exception:
         return []
     return compact_verified_evidence(values)
+
+
+def compact_product_research_evidence(
+    values: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Project all compiled states as sanitized advisory context."""
+
+    compact: list[dict[str, Any]] = []
+    for raw in values[:160]:
+        if not isinstance(raw, Mapping):
+            continue
+        value = _safe_text(sanitize_public_research_text(raw.get("value"), 256), 256)
+        field_name = _safe_text(raw.get("field_name"), 96)
+        if not field_name or not value:
+            continue
+        sources: list[dict[str, str]] = []
+        for source in (raw.get("sources") or [])[:8]:
+            if not isinstance(source, Mapping):
+                continue
+            url = canonical_research_url(source.get("url"))
+            if not url:
+                continue
+            sources.append(
+                {
+                    "source_type": _safe_text(source.get("source_type"), 40),
+                    "authority": _safe_text(source.get("authority"), 40),
+                    "url": url,
+                    "domain": _safe_text(source.get("domain"), 200),
+                    "section_ref": _safe_text(
+                        sanitize_public_research_text(source.get("section_ref"), 160),
+                        160,
+                    ),
+                    "collected_at": _safe_text(source.get("collected_at"), 40),
+                    "valid_until": _safe_text(source.get("valid_until"), 40),
+                }
+            )
+        compact.append(
+            {
+                "field_name": field_name,
+                "scope": _safe_text(raw.get("scope"), 24),
+                "value": value,
+                "unit": _safe_text(raw.get("unit"), 16),
+                "state": _safe_text(raw.get("state"), 24),
+                "activation_policy": _safe_text(raw.get("activation_policy"), 64),
+                "conflict_group": _safe_text(raw.get("conflict_group"), 40),
+                "valid_from": _safe_text(raw.get("valid_from"), 40),
+                "valid_until": _safe_text(raw.get("valid_until"), 40),
+                "sources": sources,
+            }
+        )
+    return compact
+
+
+def load_product_research_evidence(
+    client_id: str,
+    identity: Mapping[str, str],
+    *,
+    recalculate: bool = True,
+) -> list[dict[str, Any]]:
+    if not _identity_complete(identity):
+        return []
+    try:
+        values = list_product_research_evidence(
+            client_id,
+            **dict(identity),
+            recalculate=recalculate,
+        )
+    except Exception:
+        return []
+    return compact_product_research_evidence(values)
 
 
 def _field_is_covered(expected: str, verified_fields: set[str]) -> bool:
@@ -355,15 +468,16 @@ def _persist_document_claims(
     ] = {}
     for document in documents:
         claim_eligible = bool(getattr(document, "claim_eligible", True))
-        scoped_text = (
-            scope_research_text_to_product(
+        if claim_eligible and bool(getattr(document, "claim_text_scoped", False)):
+            scoped_text = _safe_page_text(document.text, 120_000)
+        elif claim_eligible:
+            scoped_text = scope_research_text_to_product(
                 document.text,
                 agent_input,
                 source_type=document.source_type,
             )
-            if claim_eligible
-            else ""
-        )
+        else:
+            scoped_text = ""
         if claim_eligible and scoped_text:
             scoped_document = replace(
                 document,
@@ -384,7 +498,7 @@ def _persist_document_claims(
             content_hash=scoped_document.content_hash,
             copy_fingerprint=scoped_document.copy_fingerprint,
             origin_key=scoped_document.origin_key,
-            section_ref=scoped_document.query_type,
+            section_ref=_research_document_section_ref(scoped_document, agent_input),
         )
         source_id = str(source.get("source_id") or "")
         if not source_id:
@@ -522,6 +636,50 @@ def persist_research_documents(
         aggregate["coverage_complete"] = False
         aggregate["repository_status"] = "unavailable"
         return load_verified_product_evidence(client_id, identity), aggregate
+
+
+def finalize_research_evidence_result(
+    client_id: str,
+    agent_input: Mapping[str, Any],
+    documents: Sequence[ResearchDocumentV1],
+    context_lines: Sequence[str],
+    metrics: Mapping[str, Any],
+    verified_target: Sequence[Mapping[str, Any]],
+    *,
+    persist: Callable[..., tuple[list[dict[str, Any]], dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    """Persist once and return activated plus advisory research projections."""
+
+    persist_fn = persist or persist_research_documents
+    passages = _research_passage_projection(documents)
+    verified, finalized_metrics = persist_fn(
+        client_id, agent_input, documents, metrics=metrics,
+    )
+    research_identity = agent_input.get("product_evidence_identity")
+    compiled = load_product_research_evidence(
+        client_id,
+        research_identity if isinstance(research_identity, Mapping) else {},
+        recalculate=False,
+    )
+    activated = [
+        "Evidencias tecnicas ativadas pelo dossie (subconjunto de alta confianca):",
+        *[
+            "- {field} [{scope}]: {value}{unit} ({policy})".format(
+                field=value.get("field_name") or "campo", scope=value.get("scope") or "product",
+                value=value.get("value") or "", unit=(" " + str(value.get("unit") or "")).rstrip(),
+                policy=value.get("activation_policy") or "",
+            )
+            for value in verified[:60]
+        ],
+    ] if verified else []
+    return {
+        "context": "\n\n".join([*activated, *context_lines])[:12_000],
+        "verified_product_evidence": verified,
+        "product_research_evidence": compiled,
+        "verified_target_evidence": list(verified_target),
+        "research_passages": passages,
+        "research_metrics": finalized_metrics,
+    }
 
 
 def apparent_coverage_complete(

@@ -136,7 +136,7 @@ assert(machineAutoSource.includes("document.visibilityState === 'hidden'"), 'aut
 assert(machineAutoSource.includes("'jk:machine-sync-updated'"), 'auto-pull nao notifica a tela apos recebimento');
 assert(!machineAutoSource.includes('/api/shared-sync/machine-sync/push'), 'boot nao pode habilitar auto-push');
 const authLoader = read('static/auth.js');
-assert(authLoader.includes("VERSION = '20260720-machine-auto-pull'"), 'cache-buster do auth loader nao foi atualizado');
+assert(authLoader.includes("VERSION = '20260828-cadastro-fotos-lojas-v1'"), 'cache-buster do auth loader nao foi atualizado');
 assert.strictEqual(authLoader, read('auth.js'), 'auth.js divergiu do espelho oficial');
 
 console.log('shared_sync_ui_regression: ok');

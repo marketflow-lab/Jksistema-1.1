@@ -117,8 +117,17 @@ def _ia_treinamento_ppv_loja_key(loja: str | None = None) -> str:
     return _chave_loja_favoritos(str(loja or "").strip())
 
 
-def _ia_treinamento_ppv_payload_vazio(loja: str = "", loja_key: str = "") -> dict:
-    escopo = "store" if str(loja_key or "").strip() else "global"
+def _ia_treinamento_ppv_store_key(store_id: str | None = None) -> str:
+    identidade = str(store_id or "").strip()
+    return f"store_id:{identidade}" if identidade else ""
+
+
+def _ia_treinamento_ppv_payload_vazio(
+    loja: str = "",
+    loja_key: str = "",
+    store_id: str = "",
+) -> dict:
+    escopo = "store" if str(store_id or loja_key or "").strip() else "global"
     return {
         "orientacoes": "",
         "orientacoes_perguntas": "",
@@ -133,6 +142,7 @@ def _ia_treinamento_ppv_payload_vazio(loja: str = "", loja_key: str = "") -> dic
         "updated_at_pos_venda": None,
         "loja": str(loja or "").strip(),
         "loja_key": str(loja_key or "").strip(),
+        "store_id": str(store_id or "").strip(),
         "method_version": _IA_TREINAMENTO_PPV_METHOD_VERSION,
         "profile_version": _IA_TREINAMENTO_PPV_PROFILE_VERSION,
         "profile_active": True,
@@ -158,7 +168,12 @@ def _ia_treinamento_ppv_normalizar_notas_sku(valor) -> dict:
     return notas_sku_norm
 
 
-def _ia_treinamento_ppv_normalizar_payload(data, loja: str = "", loja_key: str = "") -> dict:
+def _ia_treinamento_ppv_normalizar_payload(
+    data,
+    loja: str = "",
+    loja_key: str = "",
+    store_id: str = "",
+) -> dict:
     data = data if isinstance(data, dict) else {}
     orientacoes_legado = str(data.get("orientacoes") or "")[:12000]
     orientacoes_perguntas = str(data.get("orientacoes_perguntas") or data.get("perguntas_anuncio") or orientacoes_legado)[:12000]
@@ -169,6 +184,7 @@ def _ia_treinamento_ppv_normalizar_payload(data, loja: str = "", loja_key: str =
     payload = _ia_treinamento_ppv_payload_vazio(
         str(data.get("loja") or loja or "").strip(),
         str(data.get("loja_key") or loja_key or "").strip(),
+        str(data.get("store_id") or store_id or "").strip(),
     )
     payload.update({
         "orientacoes": orientacoes_perguntas,
@@ -187,7 +203,7 @@ def _ia_treinamento_ppv_normalizar_payload(data, loja: str = "", loja_key: str =
         "method_version": _IA_TREINAMENTO_PPV_METHOD_VERSION,
         "profile_version": _IA_TREINAMENTO_PPV_PROFILE_VERSION,
         "profile_active": True,
-        "profile_scope": "store" if payload.get("loja_key") else "global",
+        "profile_scope": "store" if payload.get("store_id") or payload.get("loja_key") else "global",
     })
     return payload
 
@@ -206,15 +222,161 @@ def _ia_treinamento_ppv_carregar(client_id: str) -> dict:
             if not isinstance(item_raw, dict):
                 continue
             nome_loja = str(item_raw.get("loja") or chave_raw or "").strip()
-            loja_key = _ia_treinamento_ppv_loja_key(nome_loja) or _ia_treinamento_ppv_loja_key(chave_raw)
+            store_id = str(item_raw.get("store_id") or "").strip()
+            loja_key = (
+                _ia_treinamento_ppv_store_key(store_id)
+                or _ia_treinamento_ppv_loja_key(nome_loja)
+                or _ia_treinamento_ppv_loja_key(chave_raw)
+            )
             if not loja_key:
                 continue
-            por_loja[loja_key] = _ia_treinamento_ppv_normalizar_payload(item_raw, nome_loja, loja_key)
+            item = _ia_treinamento_ppv_normalizar_payload(
+                item_raw,
+                nome_loja,
+                loja_key,
+                store_id,
+            )
+            item["loja_key"] = loja_key
+            item["store_id"] = store_id
+            por_loja[loja_key] = item
         payload["por_loja"] = por_loja
         return payload
     except Exception as exc:
         logger.warning("[IA TREINO PPV] evento=carregar_treinamento status=erro tipo=%s", type(exc).__name__)
         return {**_ia_treinamento_ppv_payload_vazio(), "por_loja": {}}
+
+
+def _ia_treinamento_ppv_resolver_identidade_loja(
+    client_id: str,
+    loja: str = "",
+    store_id: str = "",
+) -> dict:
+    loja_texto = str(loja or "").strip()
+    store_id_texto = str(store_id or "").strip()
+    if not loja_texto and not store_id_texto:
+        return {
+            "resolver_disponivel": True,
+            "loja_resolvida": False,
+            "loja": "",
+            "store_id": "",
+        }
+    try:
+        from backend.services.cadastro_compatibilidade import (
+            resolver_loja_ativa_para_leitura,
+        )
+
+        identidade = resolver_loja_ativa_para_leitura(
+            client_id,
+            loja_texto,
+            store_id_texto,
+        )
+    except (ImportError, RuntimeError, NameError, AttributeError):
+        return {
+            "resolver_disponivel": False,
+            "loja_resolvida": False,
+            "loja": loja_texto,
+            "store_id": store_id_texto,
+        }
+    return {
+        "resolver_disponivel": True,
+        "loja_resolvida": bool(identidade.get("loja_resolvida")),
+        "loja": str(identidade.get("loja") or "").strip(),
+        "store_id": str(identidade.get("store_id") or "").strip(),
+    }
+
+
+def _ia_treinamento_ppv_perfil_legado_unico(
+    client_id: str,
+    por_loja: dict,
+    store_id: str,
+) -> tuple[str, dict | None]:
+    """Resolve uma chave por nome somente quando o alias aponta a uma loja."""
+
+    store_id_alvo = str(store_id or "").strip()
+    if not store_id_alvo or not isinstance(por_loja, dict):
+        return "", None
+    candidatos: list[tuple[str, dict]] = []
+    for chave, item in por_loja.items():
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("store_id") or "").strip() or str(chave).startswith("store_id:"):
+            continue
+        nome_legado = str(item.get("loja") or chave or "").strip()
+        identidade = _ia_treinamento_ppv_resolver_identidade_loja(
+            client_id,
+            nome_legado,
+            "",
+        )
+        if (
+            identidade.get("resolver_disponivel")
+            and identidade.get("loja_resolvida")
+            and identidade.get("store_id") == store_id_alvo
+        ):
+            candidatos.append((str(chave), item))
+    return candidatos[0] if len(candidatos) == 1 else ("", None)
+
+
+def _ia_treinamento_ppv_selecionar_perfil_loja(
+    client_id: str,
+    payload: dict,
+    loja: str = "",
+    store_id: str = "",
+) -> dict:
+    loja_texto = str(loja or "").strip()
+    store_id_texto = str(store_id or "").strip()
+    por_loja = payload.get("por_loja") if isinstance(payload.get("por_loja"), dict) else {}
+    identidade = _ia_treinamento_ppv_resolver_identidade_loja(
+        client_id,
+        loja_texto,
+        store_id_texto,
+    )
+    if identidade.get("loja_resolvida"):
+        store_id_resolvido = str(identidade.get("store_id") or "").strip()
+        loja_resolvida = str(identidade.get("loja") or loja_texto).strip()
+        loja_key = _ia_treinamento_ppv_store_key(store_id_resolvido)
+        item = por_loja.get(loja_key)
+        chave_legada = ""
+        if not isinstance(item, dict):
+            chave_legada, item = _ia_treinamento_ppv_perfil_legado_unico(
+                client_id,
+                por_loja,
+                store_id_resolvido,
+            )
+        return {
+            "resolver_disponivel": True,
+            "loja_resolvida": True,
+            "loja": loja_resolvida,
+            "store_id": store_id_resolvido,
+            "loja_key": loja_key,
+            "chave_legada": chave_legada,
+            "item": item if isinstance(item, dict) else None,
+        }
+
+    # Compatibilidade para runtimes antigos que ainda nao oferecem autoridade
+    # de lojas. Quando a autoridade existe e rejeita o nome (homonimo, removido
+    # ou estrangeiro), nao consultamos a chave nominal.
+    if loja_texto and not store_id_texto and not identidade.get("resolver_disponivel"):
+        loja_key = _ia_treinamento_ppv_loja_key(loja_texto)
+        item = por_loja.get(loja_key)
+        return {
+            "resolver_disponivel": False,
+            "loja_resolvida": bool(loja_key),
+            "loja": loja_texto,
+            "store_id": "",
+            "loja_key": loja_key,
+            "chave_legada": loja_key if isinstance(item, dict) else "",
+            "item": item if isinstance(item, dict) else None,
+        }
+
+    return {
+        "resolver_disponivel": bool(identidade.get("resolver_disponivel")),
+        "loja_resolvida": False,
+        "loja": loja_texto,
+        "store_id": store_id_texto,
+        "loja_key": _ia_treinamento_ppv_store_key(store_id_texto),
+        "chave_legada": "",
+        "item": None,
+    }
 
 
 def _ia_treinamento_ppv_sem_outros_escopos(payload) -> dict:
@@ -235,17 +397,46 @@ def _ia_treinamento_ppv_salvar(
     sku: str | None = None,
     notas_sku: str | None = None,
     exemplos: list[dict] | None = None,
+    store_id: str | None = None,
 ) -> dict:
     tipo_norm = _ia_treinamento_ppv_tipo_normalizar(tipo)
     texto = str(orientacoes or "").strip()[:12000]
     payload_raiz = _ia_treinamento_ppv_carregar(client_id)
     loja_nome = str(loja or "").strip()
-    loja_key = _ia_treinamento_ppv_loja_key(loja_nome)
-    if loja_key:
+    store_id_texto = str(store_id or "").strip()
+    loja_key = ""
+    store_id_resolvido = ""
+    if loja_nome or store_id_texto:
+        selecao = _ia_treinamento_ppv_selecionar_perfil_loja(
+            client_id,
+            payload_raiz,
+            loja_nome,
+            store_id_texto,
+        )
+        if not selecao.get("loja_resolvida"):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "store_scope_unresolved",
+                    "message": "Loja ambigua, inexistente ou inativa; informe o store_id exato.",
+                },
+            )
+        loja_nome = str(selecao.get("loja") or loja_nome).strip()
+        store_id_resolvido = str(selecao.get("store_id") or "").strip()
+        loja_key = str(selecao.get("loja_key") or "").strip()
         por_loja = payload_raiz.setdefault("por_loja", {})
-        payload = _ia_treinamento_ppv_normalizar_payload(por_loja.get(loja_key), loja_nome, loja_key)
+        payload = _ia_treinamento_ppv_normalizar_payload(
+            selecao.get("item"),
+            loja_nome,
+            loja_key,
+            store_id_resolvido,
+        )
         payload["loja"] = loja_nome
         payload["loja_key"] = loja_key
+        payload["store_id"] = store_id_resolvido
+        chave_legada = str(selecao.get("chave_legada") or "").strip()
+        if chave_legada and chave_legada != loja_key:
+            por_loja.pop(chave_legada, None)
     else:
         payload = payload_raiz
     agora = dt.datetime.now().isoformat(timespec="seconds")
@@ -282,6 +473,7 @@ def _ia_treinamento_ppv_salvar(
     payload["profile_active"] = True
     payload["profile_scope"] = "store" if loja_key else "global"
     if loja_key:
+        payload["store_id"] = store_id_resolvido
         payload_raiz.setdefault("por_loja", {})[loja_key] = payload
     else:
         payload_raiz = payload
@@ -300,24 +492,39 @@ def _ia_treinamento_ppv_resolver(
     client_id: str,
     loja: str | None = None,
     *,
+    store_id: str | None = None,
     include_inherited: bool = True,
 ) -> dict:
     payload = _ia_treinamento_ppv_carregar(client_id)
     base_global = _ia_treinamento_ppv_sem_outros_escopos(payload)
     loja_nome = str(loja or "").strip()
-    loja_key = _ia_treinamento_ppv_loja_key(loja_nome)
-    if loja_key:
-        item = (payload.get("por_loja") or {}).get(loja_key)
+    store_id_texto = str(store_id or "").strip()
+    if loja_nome or store_id_texto:
+        selecao = _ia_treinamento_ppv_selecionar_perfil_loja(
+            client_id,
+            payload,
+            loja_nome,
+            store_id_texto,
+        )
+        loja_nome = str(selecao.get("loja") or loja_nome).strip()
+        store_id_resolvido = str(selecao.get("store_id") or "").strip()
+        loja_key = str(selecao.get("loja_key") or "").strip()
+        item = selecao.get("item") if selecao.get("loja_resolvida") else None
         if not include_inherited:
             selected = (
                 _ia_treinamento_ppv_sem_outros_escopos(item)
                 if isinstance(item, dict)
-                else _ia_treinamento_ppv_payload_vazio(loja_nome, loja_key)
+                else _ia_treinamento_ppv_payload_vazio(
+                    loja_nome,
+                    loja_key,
+                    store_id_resolvido,
+                )
             )
             return {
                 **selected,
-                "loja": str(selected.get("loja") or loja_nome),
+                "loja": str(loja_nome or selected.get("loja") or ""),
                 "loja_key": loja_key,
+                "store_id": store_id_resolvido,
                 "method_version": _IA_TREINAMENTO_PPV_METHOD_VERSION,
                 "profile_version": _IA_TREINAMENTO_PPV_PROFILE_VERSION,
                 "profile_active": True,
@@ -335,8 +542,9 @@ def _ia_treinamento_ppv_resolver(
                     combinado[chave] = valor
             return {
                 **combinado,
-                "loja": item.get("loja") or loja_nome,
+                "loja": loja_nome or item.get("loja") or "",
                 "loja_key": loja_key,
+                "store_id": store_id_resolvido,
                 "method_version": _IA_TREINAMENTO_PPV_METHOD_VERSION,
                 "profile_version": _IA_TREINAMENTO_PPV_PROFILE_VERSION,
                 "profile_active": True,
@@ -346,6 +554,7 @@ def _ia_treinamento_ppv_resolver(
             **base_global,
             "loja": loja_nome,
             "loja_key": loja_key,
+            "store_id": store_id_resolvido,
             "method_version": _IA_TREINAMENTO_PPV_METHOD_VERSION,
             "profile_version": _IA_TREINAMENTO_PPV_PROFILE_VERSION,
             "profile_active": True,
@@ -410,6 +619,24 @@ def _ia_treinamento_ppv_loja_contexto(context: Optional[dict]) -> str:
     return ""
 
 
+def _ia_treinamento_ppv_store_id_contexto(context: Optional[dict]) -> str:
+    contexto = context if isinstance(context, dict) else {}
+    produto = contexto.get("produto") if isinstance(contexto.get("produto"), dict) else {}
+    conversa = contexto.get("conversa") if isinstance(contexto.get("conversa"), dict) else {}
+    for candidato in (
+        contexto.get("store_id"),
+        contexto.get("storeId"),
+        produto.get("store_id"),
+        produto.get("storeId"),
+        conversa.get("store_id"),
+        conversa.get("storeId"),
+    ):
+        texto = str(candidato or "").strip()
+        if texto:
+            return texto
+    return ""
+
+
 def _ia_treinamento_ppv_profile_v2_layer(data: dict, scope: str, tipo: str, sku: str) -> dict:
     data = data if isinstance(data, dict) else {}
     chave_orientacoes = "orientacoes_pos_venda" if tipo == "pos_venda" else "orientacoes_perguntas"
@@ -461,11 +688,15 @@ def _ia_treinamento_ppv_profile_v2_resolver(
     client_id: str,
     loja: str | None = None,
     contexto: Optional[dict] = None,
+    *,
+    store_id: str | None = None,
 ) -> dict:
     """Resolve a personalizacao v2 sem misturar tenant, loja ou fatos de exemplos."""
     contexto_dict = contexto if isinstance(contexto, dict) else {}
     loja_nome = str(loja or _ia_treinamento_ppv_loja_contexto(contexto_dict) or "").strip()
-    loja_key = _ia_treinamento_ppv_loja_key(loja_nome)
+    store_id_texto = str(
+        store_id or _ia_treinamento_ppv_store_id_contexto(contexto_dict) or ""
+    ).strip()
     tipo = _ia_treinamento_ppv_tipo_contexto(contexto_dict)
     produto_ctx = contexto_dict.get("produto") if isinstance(contexto_dict.get("produto"), dict) else {}
     sku = _normalizar_sku_mes(
@@ -486,7 +717,15 @@ def _ia_treinamento_ppv_profile_v2_resolver(
     payload = _ia_treinamento_ppv_carregar(client_id)
     global_data = {chave: valor for chave, valor in payload.items() if chave != "por_loja"}
     layers = [_ia_treinamento_ppv_profile_v2_layer(global_data, "global", tipo, sku)]
-    store_data = (payload.get("por_loja") or {}).get(loja_key) if loja_key else None
+    selecao = _ia_treinamento_ppv_selecionar_perfil_loja(
+        client_id,
+        payload,
+        loja_nome,
+        store_id_texto,
+    ) if loja_nome or store_id_texto else {}
+    loja_key = str(selecao.get("loja_key") or "").strip()
+    store_id_resolvido = str(selecao.get("store_id") or "").strip()
+    store_data = selecao.get("item") if selecao.get("loja_resolvida") else None
     if isinstance(store_data, dict):
         layers.append(_ia_treinamento_ppv_profile_v2_layer(store_data, "store", tipo, sku))
 
@@ -515,8 +754,9 @@ def _ia_treinamento_ppv_profile_v2_resolver(
         "customization_present": customization_present,
         "selection": {
             "response_type": tipo,
-            "store_bound": bool(loja_key),
+            "store_bound": bool(selecao.get("loja_resolvida")),
             "store_profile_found": isinstance(store_data, dict),
+            "store_id": store_id_resolvido,
             "sku": sku,
         },
         "precedence": [
@@ -558,30 +798,55 @@ def _ia_treinamento_ppv_bloco_prompt(client_id: str, page: Optional[str], contex
     if not _ia_treinamento_ppv_deve_aplicar(page, context):
         return ""
     loja_ctx = _ia_treinamento_ppv_loja_contexto(context)
-    profile = _ia_treinamento_ppv_profile_v2_resolver(client_id, loja_ctx, context)
+    store_id_ctx = _ia_treinamento_ppv_store_id_contexto(context)
+    profile = _ia_treinamento_ppv_profile_v2_resolver(
+        client_id,
+        loja_ctx,
+        context,
+        store_id=store_id_ctx,
+    )
     return _ia_treinamento_ppv_profile_v2_bloco_prompt(profile)
 
 
-def _ia_treinamento_ppv_produto_por_sku(client_id: str, sku: str) -> dict:
+def _ia_treinamento_ppv_produto_por_sku(
+    client_id: str,
+    sku: str,
+    loja: str = "",
+) -> dict:
     sku_norm = _normalizar_sku_mes(str(sku or "").strip())
     if not sku_norm:
         return {}
     arquivo = _migrar_arquivo_legado_para_tenant(client_id, "cadastro_produtos.csv", ARQUIVO_DB_CADASTRO_PRODUTOS)
-    if not arquivo or not os.path.exists(arquivo):
-        return {"sku": sku_norm}
     try:
-        df = pd.read_csv(arquivo, dtype=str).fillna("")
-        df.columns = [str(c).strip().lower() for c in df.columns]
-        df = df.loc[:, ~df.columns.duplicated()]
-        if "sku" not in df.columns:
-            return {"sku": sku_norm}
-        df["sku"] = df["sku"].astype(str).apply(_normalizar_sku_mes)
-        df, _ = _consolidar_cadastro_por_sku(df)
-        mask = df["sku"].astype(str).str.strip().str.lower() == sku_norm.lower()
-        if not mask.any():
-            return {"sku": sku_norm}
+        produtos_legados = []
+        if arquivo and os.path.exists(arquivo):
+            df = pd.read_csv(arquivo, dtype=str).fillna("")
+            df.columns = [str(c).strip().lower() for c in df.columns]
+            df = df.loc[:, ~df.columns.duplicated()]
+            if "sku" in df.columns:
+                df["sku"] = df["sku"].astype(str).apply(_normalizar_sku_mes)
+                df, _ = _consolidar_cadastro_por_sku(df)
+                produtos_legados = df.to_dict(orient="records")
+        from backend.services.cadastro_compatibilidade import (
+            mesclar_produtos_legados_com_contexto_loja,
+        )
 
-        linha = df.loc[mask].iloc[0].to_dict()
+        visao = mesclar_produtos_legados_com_contexto_loja(
+            client_id,
+            produtos_legados,
+            loja,
+        )
+        linha = next(
+            (
+                dict(item)
+                for item in visao.get("produtos") or []
+                if _normalizar_sku_mes(str(item.get("sku") or "")).casefold()
+                == sku_norm.casefold()
+            ),
+            None,
+        )
+        if linha is None:
+            return {"sku": sku_norm}
         campos = [
             "sku", "nome", "produto", "produto_bling", "categoria", "marca", "preco",
             "descricao", "mlb_ids", "titulos_anuncios_mlb", "foto",
@@ -604,24 +869,37 @@ def _ia_treinamento_ppv_produto_por_sku(client_id: str, sku: str) -> dict:
         return {"sku": sku_norm}
 
 
-def _ia_treinamento_ppv_listar_skus(client_id: str) -> list[dict]:
+def _ia_treinamento_ppv_listar_skus(
+    client_id: str,
+    loja: str = "",
+) -> list[dict]:
     arquivo = _migrar_arquivo_legado_para_tenant(client_id, "cadastro_produtos.csv", ARQUIVO_DB_CADASTRO_PRODUTOS)
-    if not arquivo or not os.path.exists(arquivo):
-        return []
     try:
-        df = pd.read_csv(arquivo, dtype=str).fillna("")
-        df.columns = [str(c).strip().lower() for c in df.columns]
-        df = df.loc[:, ~df.columns.duplicated()]
-        if "sku" not in df.columns:
-            return []
-        df["sku"] = df["sku"].astype(str).apply(_normalizar_sku_mes)
-        df = df[df["sku"].astype(str).str.strip() != ""].copy()
-        if df.empty:
-            return []
-        df, _ = _consolidar_cadastro_por_sku(df)
+        produtos_legados = []
+        if arquivo and os.path.exists(arquivo):
+            df = pd.read_csv(arquivo, dtype=str).fillna("")
+            df.columns = [str(c).strip().lower() for c in df.columns]
+            df = df.loc[:, ~df.columns.duplicated()]
+            if "sku" in df.columns:
+                df["sku"] = df["sku"].astype(str).apply(_normalizar_sku_mes)
+                df = df[df["sku"].astype(str).str.strip() != ""].copy()
+                if not df.empty:
+                    df, _ = _consolidar_cadastro_por_sku(df)
+                    produtos_legados = df.to_dict(orient="records")
+        from backend.services.cadastro_compatibilidade import (
+            mesclar_produtos_legados_com_contexto_loja,
+        )
+
+        visao = mesclar_produtos_legados_com_contexto_loja(
+            client_id,
+            produtos_legados,
+            loja,
+        )
         campos = ["sku", "nome", "produto", "produto_bling", "categoria", "marca", "foto", "mlb_ids"]
         produtos = []
-        for row in df.to_dict(orient="records"):
+        for row in visao.get("produtos") or []:
+            if not isinstance(row, dict):
+                continue
             item = {}
             for campo in campos:
                 valor = row.get(campo, "")

@@ -13,9 +13,10 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 from backend.modules.context_hub.contracts import ContextHubValidationError
 from backend.modules.context_hub.runtime import _utc_now
+from backend.services.vin_transient import contains_vin_like_identifier
 
 
-PRODUCT_EVIDENCE_POLICY = "jk_product_evidence_v1"
+PRODUCT_EVIDENCE_POLICY = "jk_product_evidence_v2"
 PRODUCT_EVIDENCE_SCOPES = frozenset(
     {"product", "package", "kit", "variation", "application"}
 )
@@ -62,11 +63,6 @@ _TECHNICAL_SOURCE_TYPES = frozenset(
 _FIELD_RE = re.compile(r"^[a-z][a-z0-9_.]{0,95}$")
 _OPAQUE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_VIN_RE = re.compile(r"(?<![A-Z0-9])([A-Z0-9]{17})(?![A-Z0-9])", re.IGNORECASE)
-_VIN_GROUPED_RE = re.compile(
-    r"(?<![A-Z0-9])((?:[A-Z0-9]{1,5}[ -]+){2,20}[A-Z0-9]{1,5})(?![A-Z0-9])",
-    re.IGNORECASE,
-)
 _EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 _CPF_CNPJ_RE = re.compile(
     r"(?<!\d)(?:\d{3}[.\s-]?\d{3}[.\s-]?\d{3}[-\s]?\d{2}|"
@@ -166,18 +162,8 @@ def _normalize_text(value: object, *, label: str, maximum: int, required: bool =
 
 
 def _reject_sensitive(value: str, *, label: str) -> None:
-    vin_like = any(
-        sum(character.isdigit() for character in match.group(1)) >= 2
-        for match in _VIN_RE.finditer(value)
-    )
-    grouped_vin_like = any(
-        len(re.sub(r"[ -]+", "", match.group(1))) == 17
-        and sum(character.isdigit() for character in match.group(1)) >= 2
-        for match in _VIN_GROUPED_RE.finditer(value)
-    )
     if (
-        vin_like
-        or grouped_vin_like
+        contains_vin_like_identifier(value)
         or _EMAIL_RE.search(value)
         or _CPF_CNPJ_RE.search(value)
         or _LABELLED_PHONE_RE.search(value)

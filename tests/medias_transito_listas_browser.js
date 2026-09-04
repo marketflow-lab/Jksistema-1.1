@@ -36,7 +36,7 @@ assert.strictEqual(html, staticHtml, 'As copias root/static de medias_compras.ht
         return;
       }
       if (url.pathname === '/api/lojas') {
-        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ nome: 'JK Pecas' }]) });
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ nome: 'JK Pecas', store_id: 'store-jk' }]) });
         return;
       }
       if (url.pathname === '/api/medias-compras/preferencias-skus-ocultos') {
@@ -124,7 +124,9 @@ assert.strictEqual(html, staticHtml, 'As copias root/static de medias_compras.ht
     await requisicaoTodasRecebida;
     const respostaJk = page.waitForResponse((response) => {
       const url = new URL(response.url());
-      return url.pathname === '/api/medias-compras/visao' && url.searchParams.get('loja') === 'JK Pecas';
+      return url.pathname === '/api/medias-compras/visao'
+        && url.searchParams.get('loja') === 'JK Pecas'
+        && url.searchParams.get('store_id') === 'store-jk';
     });
     await page.getByRole('button', { name: /JK Pecas/i }).click();
     await respostaJk;

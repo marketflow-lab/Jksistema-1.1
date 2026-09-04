@@ -41,7 +41,7 @@ const android = read(path.join('android_app', 'app', 'src', 'main', 'java', 'br'
 const vendasAssistant = read(path.join('static', 'vendas', 'assistente.js'));
 const mercadoLivreSymbol = read(path.join('static', 'assets', 'mercado-livre-symbol.svg'));
 
-assert.match(loader, /20260817-black-jhon-manual-only/);
+assert.match(loader, /20260828-cadastro-fotos-lojas-v1/);
 assert.match(loader, /Abrir Black Jhon/);
 assert.match(loader, /params\.get\('embed'\) === 'share'/);
 

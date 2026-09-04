@@ -335,7 +335,11 @@ def resolve_guidance(
         try:
             from backend.services import ia_treinamento_ppv
 
-            legacy = ia_treinamento_ppv._ia_treinamento_ppv_resolver(client_id, str(context.get("store") or ""))
+            legacy = ia_treinamento_ppv._ia_treinamento_ppv_resolver(
+                client_id,
+                str(context.get("store_name") or context.get("loja") or context.get("store") or ""),
+                store_id=str(context.get("store_id") or ""),
+            )
         except Exception:
             legacy = {}
         if isinstance(legacy, dict):

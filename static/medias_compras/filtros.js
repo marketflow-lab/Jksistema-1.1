@@ -20,10 +20,12 @@
             if (!box) return;
             box.innerHTML = '';
 
-            const criarBotao = (texto, valor, indice = 0) => {
+            const criarBotao = (texto, valor, storeId = '', indice = 0) => {
                 const btn = document.createElement('button');
                 btn.type = 'button';
-                const selecionada = lojaSelecionada === valor;
+                const selecionada = valor === '__todas'
+                    ? lojaSelecionada === '__todas' && !storeIdSelecionado
+                    : !!storeId && storeIdSelecionado === storeId;
                 const cor = obterCorLoja(valor, indice);
                 btn.className = 'loja-btn' + (selecionada ? ' active' : '');
                 btn.style.setProperty('--loja-accent-rgb', cor.accent);
@@ -43,8 +45,10 @@
                     '<span class="loja-arrow">Ver dados →</span>';
                 btn.onclick = () => {
                     const lojaAnterior = lojaSelecionada;
+                    const storeIdAnterior = storeIdSelecionado;
                     lojaSelecionada = valor;
-                    if (lojaAnterior !== lojaSelecionada) {
+                    storeIdSelecionado = valor === '__todas' ? '' : storeId;
+                    if (lojaAnterior !== lojaSelecionada || storeIdAnterior !== storeIdSelecionado) {
                         listaPedidoAtual = null;
                     }
                     renderBotoesLojas(lojasDisponiveis || []);
@@ -56,11 +60,12 @@
                 box.appendChild(btn);
             };
 
-            criarBotao('Todas as lojas', '__todas', 0);
+            criarBotao('Todas as lojas', '__todas', '', 0);
             (Array.isArray(lojas) ? lojas : []).forEach((loja, indice) => {
                 const nome = String((loja && loja.nome) || '').trim();
-                if (!nome) return;
-                criarBotao(nome, nome, indice + 1);
+                const storeId = String((loja && loja.store_id) || '').trim();
+                if (!nome || !storeId) return;
+                criarBotao(nome, nome, storeId, indice + 1);
             });
         }
 
@@ -75,13 +80,18 @@
                 }
                 const lojas = await resp.json();
                 lojasDisponiveis = Array.isArray(lojas) ? lojas : [];
-                if (lojaSelecionada !== '__todas' && !lojasDisponiveis.some(l => String((l && l.nome) || '').trim() === lojaSelecionada)) {
+                const selecionada = lojasDisponiveis.find(l => String((l && l.store_id) || '').trim() === storeIdSelecionado);
+                if (storeIdSelecionado && selecionada) {
+                    lojaSelecionada = String(selecionada.nome || '').trim();
+                } else if (lojaSelecionada !== '__todas') {
                     lojaSelecionada = '__todas';
+                    storeIdSelecionado = '';
                 }
                 renderBotoesLojas(lojasDisponiveis);
             } catch (_e) {
                 lojasDisponiveis = [];
                 lojaSelecionada = '__todas';
+                storeIdSelecionado = '';
                 renderBotoesLojas([]);
             }
         }
@@ -92,7 +102,7 @@
 
         function lojaEspecificaSelecionada() {
             const loja = String(lojaSelecionada || '').trim();
-            return !!loja && loja !== '__todas';
+            return !!loja && loja !== '__todas' && !!String(storeIdSelecionado || '').trim();
         }
 
         function exigirLojaEspecificaParaLista(statusFn) {

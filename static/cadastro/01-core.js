@@ -6,15 +6,51 @@
     if (cadastro.components.has('core')) return;
 
     const { elements, state, constants } = cadastro.runtime;
+    const storeTools = global.JKCadastroStore;
+    if (!storeTools) throw new Error('Escopo de loja do Cadastro não inicializado.');
     const colunasFixasPrimeiro = [
-        'sku', 'foto', 'produto_bling', 'nome', 'produto', 'ncm', 'ncm_validade', 'monofasico',
+        'sku', 'loja_sync', 'foto', 'produto_bling', 'nome', 'produto', 'ncm', 'ncm_validade', 'monofasico',
         'monofasico_confianca', 'cest', 'categoria', 'custo', 'preco', 'descricao', 'imposto', 'updated_at'
     ];
     const colunasOcultas = new Set([
         'marca', 'mlb_principal', 'mlb_ids', 'qtd_anuncios_mlb', 'titulos_anuncios_mlb',
         'custos_frete_mlb', 'modalidades_mlb', 'gtins_mlb', 'monofasico_status',
         'monofasico_fundamento', 'monofasico_fonte', 'monofasico_motivo', 'monofasico_verificado_em',
-        'ncm_fonte_auditoria', 'ncm_descricao_oficial', 'ncm_verificado_em'
+        'ncm_fonte_auditoria', 'ncm_descricao_oficial', 'ncm_verificado_em', 'store_id', 'sku_normalizado',
+        'row_version', 'updated_at_utc', 'deleted_at_utc', 'scope_source'
+    ]);
+    const colunasDetalheProvedor = new Set([
+        'id_bling', 'id_produto_pai_bling', 'nome_bling', 'situacao_bling', 'tipo_bling', 'formato_bling',
+        'data_validade_bling', 'tipo_producao_bling', 'condicao_bling', 'frete_gratis_bling',
+        'action_estoque_bling', 'linha_produto_bling', 'artigo_perigoso_bling', 'duns_bling', 'ncm_bling',
+        'cest_bling', 'categoria_id_bling', 'categoria_bling', 'marca_bling', 'gtin_bling',
+        'gtin_embalagem_bling', 'preco_bling', 'custo_bling', 'estoque_fisico_bling',
+        'estoque_virtual_bling', 'estoques_bling_json', 'unidade_bling', 'estoque_minimo_bling',
+        'estoque_maximo_bling', 'localizacao_bling', 'cross_docking_bling', 'crossdocking_bling',
+        'peso_liquido_bling', 'peso_bruto_bling', 'largura_bling', 'altura_bling', 'profundidade_bling',
+        'volumes_bling', 'itens_por_caixa_bling', 'descricao_curta_bling', 'descricao_bling',
+        'descricao_complementar_bling', 'descricao_embalagem_discreta_bling', 'observacoes_bling',
+        'link_externo_bling', 'imagem_url_bling', 'imagens_bling_json', 'imagens_bling', 'video_bling',
+        'fornecedor_bling_json', 'tributacao_bling_json', 'tributacao_bling', 'variacoes_bling_json',
+        'variacoes_bling', 'componentes_bling_json', 'estrutura_bling', 'campos_customizados_bling_json',
+        'campos_customizados_bling', 'unidade_medida_dimensoes_bling', 'dimensoes_bling',
+        'consultado_em_utc_bling', 'mlb_principal', 'mlb_ids', 'qtd_anuncios_mlb', 'titulos_anuncios_mlb',
+        'categoria_id_mlb', 'gtins_mlb', 'preco_ml', 'moeda_ml', 'preco_base_ml', 'preco_original_ml',
+        'estoque_disponivel_ml', 'vendidos_acumulados_ml', 'termos_venda_ml_json', 'envio_ml_json',
+        'condicao_ml', 'condicao_nome_ml', 'garantia_ml', 'criado_em_ml', 'atualizado_em_ml',
+        'canais_ml_json', 'tags_ml_json', 'familia_nome_ml', 'familia_id_ml', 'familia_ids_ml',
+        'dominio_id_ml', 'site_id_ml', 'user_product_nome_ml', 'site_id_user_product_ml',
+        'catalog_product_id_user_product_ml', 'catalog_product_ids_user_product_ml',
+        'criado_em_user_product_ml', 'atualizado_em_user_product_ml',
+        'atributos_user_product_ml_json', 'imagens_user_product_ml_json',
+        'miniatura_user_product_ml_json', 'miniatura_url_user_product_ml', 'tags_user_product_ml_json',
+        'bundle_user_product_ml_json', 'estoque_user_product_total_ml', 'estoque_localizacoes_ml_json',
+        'estoque_multiorigem_ml', 'anuncio_catalogo_ml', 'modo_compra_ml', 'status_ml',
+        'variacao_id_ml', 'variacao_ids_ml',
+        'listing_type_ml', 'catalog_product_id_ml', 'catalog_product_ids_ml', 'user_product_id_ml',
+        'user_product_ids_ml', 'inventory_id_ml', 'inventory_ids_ml', 'link_ml', 'foto_url_ml',
+        'imagens_ml_json',
+        'atributos_ml_json', 'anuncios_ml_json', 'consultado_em_utc'
     ]);
 
     function salvarLarguras() {
@@ -37,13 +73,13 @@
             || normalizada === 'imposto attr';
     }
 
+    function colunaEhDetalheProvedor(coluna) {
+        const key = String(coluna || '').trim().toLowerCase();
+        return colunasDetalheProvedor.has(key);
+    }
+
     function obterClientId() {
-        try {
-            const user = JSON.parse(global.localStorage.getItem('user_data') || 'null');
-            return user && user.client_id ? user.client_id : null;
-        } catch (_error) {
-            return null;
-        }
+        return storeTools.obterClientId() || null;
     }
 
     function setStatus(msg, cls) {
@@ -77,11 +113,12 @@
 
     function normalizarLegendaColuna(coluna) {
         const mapa = {
-            sku: 'SKU', nome: 'Nome', mlb_principal: 'MLB Principal', mlb_ids: 'MLBs',
+            sku: 'SKU', loja_sync: 'Loja', nome: 'Nome', mlb_principal: 'MLB Principal', mlb_ids: 'MLBs',
             qtd_anuncios_mlb: 'Anúncios MLB', produto: 'Produto', categoria: 'Para que serve',
             marca: 'Marca', foto: 'Foto', ncm: 'NCM', ncm_validade: 'Validade NCM', cest: 'CEST',
             monofasico: 'Monofásico', monofasico_confianca: 'Confiança', produto_bling: 'Produto Bling',
-            custo: 'Custo', preco: 'Preço', descricao: 'Descrição', imposto: 'Imposto', updated_at: 'Atualizado em'
+            titulo_ml: 'Título Mercado Livre', custo: 'Custo', preco: 'Preço', descricao: 'Descrição',
+            imposto: 'Imposto', updated_at: 'Atualizado em'
         };
         return mapa[coluna] || String(coluna || '').replace(/^cg_/i, '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
     }
@@ -91,34 +128,24 @@
             .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
-    function obterUrlFoto(valor) {
-        const foto = String(valor || '').trim();
-        if (!foto) return '';
-        if (/^https?:\/\//i.test(foto)) return foto;
-        const nomeArquivo = foto.split('/').pop();
-        const clientId = String(obterClientId() || 'default').trim() || 'default';
-        return nomeArquivo
-            ? `/api/cadastro/foto/${encodeURIComponent(clientId)}/${encodeURIComponent(nomeArquivo)}`
-            : '';
+    function obterUrlFoto(valor, storeId) {
+        return storeTools.urlFoto(obterClientId(), storeId || state.storeIdSelecionado, valor);
     }
 
-    function urlEdicaoSku(sku) {
-        return `/cadastro_editar_item.html?sku=${encodeURIComponent(String(sku || '').trim())}`;
+    function urlEdicaoSku(sku, storeId) {
+        return storeTools.urlPagina('/cadastro_editar_item.html', storeId || state.storeIdSelecionado, { sku: String(sku || '').trim() });
     }
 
     function salvarProdutoParaEdicao(item) {
         const sku = String(item && item.sku || '').trim();
-        if (!sku) return false;
-        try {
-            global.localStorage.setItem('cadastro_editar_sku', sku);
-            global.localStorage.setItem('cadastro_editar_item', JSON.stringify(item || {}));
-        } catch (_error) {}
-        return true;
+        const storeId = String(item && item.store_id || state.storeIdSelecionado || '').trim();
+        if (!sku || !storeId || !state.clientId) return false;
+        return storeTools.salvarCacheEdicao(state.clientId, storeId, item);
     }
 
     function abrirProdutoParaEdicao(item) {
         if (!salvarProdutoParaEdicao(item)) return false;
-        global.location.href = urlEdicaoSku(item.sku);
+        global.location.href = urlEdicaoSku(item.sku, item.store_id || state.storeIdSelecionado);
         return true;
     }
 
@@ -126,14 +153,15 @@
         if (coluna === 'custo' || coluna === 'preco') return escaparHtml(formatarNumero(item[coluna]));
         if (coluna === 'sku') {
             const sku = String(item[coluna] || '').trim();
-            const href = urlEdicaoSku(sku);
+            if (!state.storeIdSelecionado) return escaparHtml(formatarSkuExibicao(sku));
+            const href = urlEdicaoSku(sku, item.store_id || state.storeIdSelecionado);
             return `<a class="sku-edit-link" href="${escaparHtml(href)}" data-sku="${escaparHtml(sku)}">${escaparHtml(formatarSkuExibicao(sku))}</a>`;
         }
         if (coluna === 'foto') {
-            const fotoUrl = obterUrlFoto(item[coluna]);
+            const fotoUrl = obterUrlFoto(item[coluna], item.store_id);
             if (!fotoUrl) return '<span class="foto-empty">Sem foto</span>';
             const segura = escaparHtml(fotoUrl);
-            return `<div class="foto-cell"><a class="foto-link" href="${segura}" target="_blank" rel="noopener noreferrer"><img class="foto-thumb" src="${segura}" alt="Foto do SKU"></a></div>`;
+            return `<div class="foto-cell" data-foto-url="${segura}"><span class="foto-empty">Carregando foto...</span></div>`;
         }
         return escaparHtml(String(item[coluna] || ''));
     }
@@ -144,7 +172,8 @@
         lista.forEach(item => Object.keys(item || {}).forEach(chave => presentes.add(chave)));
         const fixas = [...colunasFixasPrimeiro];
         const extras = Array.from(presentes)
-            .filter(coluna => !fixas.includes(coluna) && !colunasOcultas.has(coluna) && !colunaEhIndesejada(coluna))
+            .filter(coluna => !fixas.includes(coluna) && !colunasOcultas.has(coluna)
+                && !colunaEhIndesejada(coluna) && !colunaEhDetalheProvedor(coluna))
             .sort((a, b) => a.localeCompare(b));
         return [...fixas, ...extras];
     }
@@ -159,7 +188,8 @@
     }
 
     function obterNomeProdutoCadastro(item) {
-        for (const candidato of [item && item.nome, item && item.produto, item && item.produto_bling, item && item.titulo]) {
+        for (const candidato of [item && item.nome, item && item.produto, item && item.produto_bling,
+            item && item.titulo_ml, item && item.titulo]) {
             const texto = String(candidato === undefined || candidato === null ? '' : candidato).trim();
             if (texto && !textoProdutoSuspeito(texto)) return texto;
         }

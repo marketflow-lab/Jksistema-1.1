@@ -20,7 +20,7 @@ assert.ok(estoqueStart >= 0 && paretoStart > estoqueStart && nextFunction > pare
 assert.doesNotMatch(source.slice(estoqueStart, paretoStart), /paretoTotal/);
 assert.match(source.slice(paretoStart, nextFunction), /paretoTotal/);
 assert.match(htmlStatic, /SKUs com estoque e Pareto 80%/);
-assert.match(htmlStatic, /20260819-vendas-meses-completos-v1/);
+assert.match(htmlStatic, /20260831-vendas-lojas-visiveis-v1/);
 assert.strictEqual(htmlRoot, htmlStatic);
 
 console.log('vendas_skus_pareto_line: ok');

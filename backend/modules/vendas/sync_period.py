@@ -752,6 +752,12 @@ async def _sincronizar_vendas_periodo_impl(
     loja = buscar_loja(client_id, req.loja)
     if not loja:
         raise HTTPException(status_code=404, detail="Loja não encontrada para o cliente.")
+    store_id = str(loja.get("store_id") or "").strip()
+    if not store_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Loja sem store_id persistido; recarregue a configuração.",
+        )
     bling_cfg = loja.get("integracoes", {}).get("bling")
     if not bling_cfg:
         raise HTTPException(status_code=400, detail="Loja não possui integração Bling conectada.")
@@ -789,6 +795,7 @@ async def _sincronizar_vendas_periodo_impl(
             client_id,
             _criar_progresso("Bling", 0, 0, 8, "Renovando token da Bling..."),
         ),
+        store_id=store_id,
     )
     _raise_for_bling_status(status_vendas, "listagem de vendas")
     registros = copy.deepcopy(_require_list(registros, "listagem de vendas"))
@@ -809,6 +816,7 @@ async def _sincronizar_vendas_periodo_impl(
         on_refresh=lambda: _sync_log(
             client_id, "[SYNC] Renovando token para consultar NF-e de saída..."
         ),
+        store_id=store_id,
     )
     if _coerce_status_code(status_nf_saida) == 403:
         _sync_log(
@@ -867,6 +875,7 @@ async def _sincronizar_vendas_periodo_impl(
                 on_refresh=lambda: _sync_log(
                     client_id, "[SYNC] Renovando token para enriquecer número de NF..."
                 ),
+                store_id=store_id,
             )
         except HTTPException as exc:
             _sync_log(
@@ -911,6 +920,7 @@ async def _sincronizar_vendas_periodo_impl(
         bling_cfg,
         _bling_listar_naturezas,
         on_refresh=lambda: _sync_log(client_id, "[SYNC] Renovando token para naturezas..."),
+        store_id=store_id,
     )
     _raise_for_bling_status(status_naturezas, "listagem de naturezas")
     if not isinstance(natureza_map, dict):
@@ -932,6 +942,7 @@ async def _sincronizar_vendas_periodo_impl(
         bling_cfg,
         _listar_notas,
         on_refresh=lambda: _sync_log(client_id, "[SYNC] Renovando token para notas de entrada..."),
+        store_id=store_id,
     )
     _raise_for_bling_status(status_notas, "listagem de notas de entrada")
     if not isinstance(notas_e_itens, (tuple, list)) or len(notas_e_itens) != 2:
@@ -973,6 +984,7 @@ async def _sincronizar_vendas_periodo_impl(
             on_refresh=lambda: _sync_log(
                 client_id, "[SYNC] Renovando token para detalhe de nota..."
             ),
+            store_id=store_id,
         )
         _raise_for_bling_status(status_detalhe, "detalhe obrigatório de nota")
         if not isinstance(detalhe, dict) or not detalhe:

@@ -7,10 +7,13 @@ from pydantic import BaseModel
 
 class EstoqueSyncRequest(BaseModel):
     loja: str
+    store_id: Optional[str] = None
+    todas_lojas: bool = False
 
 
 class EstoqueLancamentosSyncRequest(BaseModel):
     loja: str
+    store_id: Optional[str] = None
     sku: str
     data_inicio: str | None = None
     data_fim: str | None = None
@@ -18,6 +21,7 @@ class EstoqueLancamentosSyncRequest(BaseModel):
 
 class EstoqueLancamentosSyncLoteRequest(BaseModel):
     loja: str
+    store_id: Optional[str] = None
     data_inicio: str | None = None
     data_fim: str | None = None
 

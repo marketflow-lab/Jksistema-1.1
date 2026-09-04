@@ -585,6 +585,82 @@ def _verified_claims(
     ).fetchall()
 
 
+def _all_research_claims(
+    connection: sqlite3.Connection,
+    identity: tuple[str, str, str, str, str, str],
+) -> list[sqlite3.Row]:
+    """Return the newest compiled value per exact signature, bounded for prompts.
+
+    State and authority remain attached as provenance for the answer agent, but
+    they are not an application-level permission gate.  Exact tenant/product
+    scoping is still enforced by the repository identity.
+    """
+
+    return connection.execute(
+        """
+        WITH ranked AS (
+            SELECT c.*,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY c.field_name, c.scope, c.normalized_key, c.unit, c.state
+                       ORDER BY c.updated_at DESC, c.claim_id DESC
+                   ) AS research_rank
+              FROM product_evidence_claims c
+              JOIN product_evidence_batches b ON b.batch_id=c.batch_id
+             WHERE b.store_ref=? AND b.seller_id=? AND b.site_id=? AND b.sku=?
+               AND b.item_id=? AND b.variation_id=? AND b.status='completed'
+        )
+        SELECT * FROM ranked
+         WHERE research_rank=1
+         ORDER BY updated_at DESC, field_name, scope, claim_id
+         LIMIT 160
+        """,
+        identity,
+    ).fetchall()
+
+
+def _claim_sources_by_signatures(
+    connection: sqlite3.Connection,
+    identity: tuple[str, str, str, str, str, str],
+    signatures: Sequence[tuple[str, str, str, str, str]],
+) -> dict[tuple[str, str, str, str, str], list[sqlite3.Row]]:
+    selected = list(dict.fromkeys(signatures))[:160]
+    if not selected:
+        return {}
+    placeholders = ",".join("(?,?,?,?,?)" for _value in selected)
+    query = f"""
+        WITH selected(field_name, scope, normalized_key, unit, state) AS (
+            VALUES {placeholders}
+        )
+        SELECT linked.field_name, linked.scope, linked.normalized_key, linked.unit, linked.state,
+               s.source_type, s.authority, s.canonical_url, s.domain,
+               s.section_ref, s.collected_at, s.valid_until,
+               s.content_hash, s.copy_fingerprint
+          FROM product_evidence_sources s
+          JOIN product_evidence_claim_sources cs ON cs.source_id=s.source_id
+          JOIN product_evidence_claims linked ON linked.claim_id=cs.claim_id
+          JOIN product_evidence_batches b ON b.batch_id=linked.batch_id
+          JOIN selected ON selected.field_name=linked.field_name
+                       AND selected.scope=linked.scope
+                       AND selected.normalized_key=linked.normalized_key
+                       AND selected.unit=linked.unit AND selected.state=linked.state
+         WHERE b.store_ref=? AND b.seller_id=? AND b.site_id=? AND b.sku=?
+           AND b.item_id=? AND b.variation_id=? AND b.status='completed'
+         ORDER BY linked.field_name, linked.scope, linked.normalized_key, linked.unit, linked.state,
+                  s.collected_at DESC, s.authority, s.domain, s.canonical_url
+        """
+    parameters = tuple(part for signature in selected for part in signature) + identity
+    rows = connection.execute(query, parameters).fetchall()
+    grouped: dict[tuple[str, str, str, str, str], list[sqlite3.Row]] = {
+        signature: [] for signature in selected
+    }
+    for row in rows:
+        signature = tuple(str(row[field]) for field in (
+            "field_name", "scope", "normalized_key", "unit", "state",
+        ))
+        grouped.setdefault(signature, []).append(row)
+    return grouped
+
+
 def _claim_sources(
     connection: sqlite3.Connection,
     identity: tuple[str, str, str, str, str, str],

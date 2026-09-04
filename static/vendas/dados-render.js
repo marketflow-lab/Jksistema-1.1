@@ -200,21 +200,42 @@ async function filtrar() {
     }
 }
 
-async function carregarLojas() {
-    try {
-        clientId = obterClientId();
-        if (!clientId) {
-            window.location.href = '/frontend_index.html';
-            return;
+async function carregarLojas(opcoes = {}) {
+    const silencioso = opcoes.silencioso === true;
+
+    if (carregarLojasPromise) return carregarLojasPromise;
+
+    const promessaAtual = (async () => {
+        try {
+            clientId = obterClientId();
+            if (!clientId) {
+                window.location.href = '/frontend_index.html';
+                return false;
+            }
+            const resp = await fetchComTimeout('/api/lojas', {
+                headers: obterAuthHeaders(),
+                cache: 'no-store'
+            });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const lojas = await resp.json();
+            if (!Array.isArray(lojas)) throw new Error('Resposta inválida ao carregar lojas.');
+            lojasDisponiveis = lojas;
+            renderBotoesLojas(lojasDisponiveis);
+            return true;
+        } catch (e) {
+            if (!silencioso) {
+                statusEl.className = 'status-bar error';
+                statusEl.textContent = `Erro ao carregar lojas: ${e.name === 'AbortError' ? 'tempo de resposta excedido' : e.message}`;
+            }
+            return false;
         }
-        const resp = await fetchComTimeout('/api/lojas', { headers: obterAuthHeaders() });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const lojas = await resp.json();
-        lojasDisponiveis = Array.isArray(lojas) ? lojas : [];
-        renderBotoesLojas(lojas);
-    } catch (e) {
-        statusEl.className = 'status-bar error';
-        statusEl.textContent = `Erro ao carregar lojas: ${e.name === 'AbortError' ? 'tempo de resposta excedido' : e.message}`;
+    })();
+
+    carregarLojasPromise = promessaAtual;
+    try {
+        return await promessaAtual;
+    } finally {
+        if (carregarLojasPromise === promessaAtual) carregarLojasPromise = null;
     }
 }
 

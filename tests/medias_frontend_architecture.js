@@ -29,7 +29,10 @@ const moduleFiles = [
 
 assert.strictEqual(mirror, canonical, 'o HTML da raiz deve espelhar a fonte oficial em static');
 assert(!/<style(?:\s|>)/i.test(canonical), 'o HTML não pode conter CSS embutido');
-assert(canonical.includes('/medias_compras/styles.css'), 'o stylesheet modular deve ser carregado');
+assert(
+  canonical.includes('/medias_compras/styles.css?v=20260901-medias-responsive-width-v1'),
+  'o stylesheet responsivo deve ser carregado com cache-bust atualizado',
+);
 assert(!/\son(?:click|input|change|mouseover|mouseout)=/i.test(canonical), 'o HTML não pode conter handlers inline');
 
 const inlineScripts = [...canonical.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)]
@@ -60,6 +63,7 @@ const context = {
     getItem(key) {
       if (key === 'access_token') return 'test-token';
       if (key === 'permissions') return '{}';
+      if (key === 'user_data') return JSON.stringify({ client_id: 'tenant-arquitetura', username: 'operador' });
       return null;
     },
     setItem() {},
@@ -82,6 +86,53 @@ assert(context.JKMedias, 'namespace JKMedias ausente');
 assert(context.JKMedias.state, 'estado central de Médias ausente');
 assert.strictEqual(context.JKMedias.state.lojaSelecionada, '__todas');
 assert.strictEqual(context.JKMedias.state.periodoAtual, 12);
+assert.match(context.JKMedias.state.LS_COL_WIDTHS_KEY, /^medias_compras_larguras_colunas_v3_[0-9a-f]{16}$/);
+assert(!context.JKMedias.state.LS_COL_WIDTHS_KEY.includes('tenant-arquitetura'), 'a chave de preferencia nao deve expor o cliente');
+assert(!context.JKMedias.state.LS_COL_WIDTHS_KEY.includes('operador'), 'a chave de preferencia nao deve expor o usuario');
+assert.strictEqual(context.JKMedias.state.temEscopoPersistenciaLarguras, true);
+assert.strictEqual(context.JKMedias.state.PERFIL_LARGURAS_COLUNAS_SCHEMA, 'jk.medias.column-widths.v3');
+assert.strictEqual(context.JKMedias.state.LARGURAS_MINIMAS_COLUNAS.mes, 52);
+assert.strictEqual(context.JKMedias.modules['tabela-colunas'].normalizarLarguraColuna('mes_2026-09', 8), 52);
+assert.strictEqual(context.JKMedias.modules['tabela-colunas'].normalizarLarguraColuna('saldo_estoque', 12), 80);
+assert.strictEqual(context.JKMedias.modules['tabela-colunas'].normalizarLarguraColuna('posicao_estoque', 120), 120);
+assert.strictEqual(context.JKMedias.modules['tabela-colunas'].normalizarLarguraColuna('titulo_anuncio', 'invalida'), 220);
+assert.strictEqual(context.JKMedias.modules['tabela-colunas'].normalizarLarguraColuna('titulo_anuncio', 999999), 1200);
+assert.strictEqual(
+  context.JKMedias.modules['tabela-colunas'].obterChaveLargurasColunas(6),
+  context.JKMedias.state.LS_COL_WIDTHS_KEY + '_6m',
+);
+assert.strictEqual(
+  context.JKMedias.modules['tabela-colunas'].obterChaveLargurasColunas(12),
+  context.JKMedias.state.LS_COL_WIDTHS_KEY + '_12m',
+);
+
+function carregarEstadoParaUsuario(userData) {
+  const isolated = {
+    console,
+    document: { getElementById: () => null },
+    localStorage: {
+      getItem(key) {
+        return key === 'user_data' ? JSON.stringify(userData) : null;
+      },
+      setItem() {},
+    },
+  };
+  isolated.globalThis = isolated;
+  isolated.window = isolated;
+  vm.createContext(isolated);
+  for (const file of ['core.js', 'state.js']) {
+    vm.runInContext(fs.readFileSync(path.join(moduleDirectory, file), 'utf8'), isolated, { filename: file });
+  }
+  return isolated.JKMedias.state;
+}
+
+const estadoOutroUsuario = carregarEstadoParaUsuario({ client_id: 'tenant-arquitetura', username: 'outro-operador' });
+const estadoOutroCliente = carregarEstadoParaUsuario({ client_id: 'outro-tenant', username: 'operador' });
+const estadoSemUsuario = carregarEstadoParaUsuario({ client_id: 'tenant-arquitetura' });
+assert.notStrictEqual(estadoOutroUsuario.LS_COL_WIDTHS_KEY, context.JKMedias.state.LS_COL_WIDTHS_KEY, 'usuarios do mesmo cliente devem ter perfis distintos');
+assert.notStrictEqual(estadoOutroCliente.LS_COL_WIDTHS_KEY, context.JKMedias.state.LS_COL_WIDTHS_KEY, 'o mesmo usuario em clientes distintos deve ter perfis distintos');
+assert.strictEqual(estadoSemUsuario.temEscopoPersistenciaLarguras, false, 'identidade incompleta deve desativar persistencia');
+assert.strictEqual(estadoSemUsuario.LS_COL_WIDTHS_KEY, '', 'identidade incompleta nao pode cair em perfil compartilhado');
 assert.strictEqual(typeof context.JKMedias.modules.api.requestLatest, 'function', 'API deve controlar respostas atrasadas');
 assert.strictEqual(typeof context.JKMedias.modules.api.cancelarRequisicao, 'function', 'API deve permitir cancelamento explícito');
 assert(context.JKMedias.assertReady(), 'dependências dos módulos não foram satisfeitas');

@@ -21,7 +21,10 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from backend.schemas import ListaCompraRequest
 from backend.services import medias_compras_common as medias_common
 from backend.services.medias_compras_common import *
-from backend.services.medias_compras_excel import _gerar_excel_lista_pedido_bytes
+from backend.services.medias_compras_excel import (
+    _gerar_excel_lista_pedido_bytes,
+    _resolver_caminho_foto_cadastro_seguro,
+)
 from backend.services.medias_compras_fiscal import *
 from backend.services.medias_compras_visao import api_medias_compras_visao
 from backend.services.runtime_bridge import bind_runtime_globals
@@ -157,7 +160,14 @@ async def api_medias_compras_gerar_lista_compra(
         if not nome_lista:
             raise HTTPException(status_code=400, detail="Informe o nome da lista antes de gerar o pedido")
 
-        loja_sel = _exigir_loja_especifica_para_lista(req.loja)
+        escopo_loja = _resolver_escopo_loja_medias(
+            client_id,
+            req.loja,
+            req.store_id,
+            exigir_especifica=True,
+        )
+        loja_sel = escopo_loja["loja"]
+        store_id_escopo = escopo_loja["store_id"]
         loja_sel_norm = loja_sel.lower()
         periodo_meses = int(req.periodo_meses or 6)
         if periodo_meses not in (3, 6, 12):
@@ -300,41 +310,67 @@ async def api_medias_compras_gerar_lista_compra(
         # Cadastro por SKU para foto, tÃƒÂ­tulo em inglÃƒÂªs, OEM e link.
         cadastro_por_sku = {}
         arquivo_cadastro = _migrar_arquivo_legado_para_tenant(client_id, "cadastro_produtos.csv", ARQUIVO_DB_CADASTRO_PRODUTOS)
+        linhas_cadastro_legado = []
         if arquivo_cadastro and os.path.exists(arquivo_cadastro):
             try:
                 df_cad = pd.read_csv(arquivo_cadastro, dtype=str).fillna("")
                 if not df_cad.empty:
                     df_cad.columns = [str(c).strip().lower() for c in df_cad.columns]
-                    if "sku" in df_cad.columns:
-                        for _, row in df_cad.iterrows():
-                            sku_raw = str(row.get("sku", "") or "").strip()
-                            if not sku_raw:
-                                continue
-                            sku = _normalizar_sku_mes(sku_raw)
-                            row_dict = {k: ("" if pd.isna(v) else str(v)) for k, v in row.to_dict().items()}
-
-                            titulo_ingles = _pick_valor(row_dict, [
-                                "titulo em ingles", "titulo ingles", "title english", "english title", "nome em ingles", "nome ingles", "nome ingles",
-                                "product name", "product description", "description"
-                            ])
-                            if not titulo_ingles:
-                                titulo_ingles = _pick_valor(row_dict, ["titulos anuncios mlb", "nome", "produto", "cg product name"])
-
-                            oem = _pick_valor(row_dict, ["oem", "codigo oem", "part number", "partnumber", "oem model", "oem model"])
-                            cor_lado = _pick_valor(row_dict, ["color side", "color/side", "cor lado", "cor/lado", "lado cor", "lado/cor", "lado", "cor", "color", "side"])
-                            link = _pick_valor(row_dict, ["link", "url", "url produto", "link produto", "product link", "link aliexpress", "aliexpress"])
-                            foto = _pick_valor(row_dict, ["foto", "imagem", "image", "url foto", "foto produto"])
-                            foto = _resolver_foto_cadastro_sku(client_id, sku, foto)
-
-                            cadastro_por_sku[sku] = {
-                                "foto": foto,
-                                "titulo_ingles": titulo_ingles,
-                                "oem": oem,
-                                "cor_lado": cor_lado,
-                                "link": link,
-                            }
+                    linhas_cadastro_legado = df_cad.to_dict(orient="records")
             except Exception:
-                cadastro_por_sku = cadastro_por_sku or {}
+                linhas_cadastro_legado = []
+
+        from backend.services.cadastro_compatibilidade import (
+            mesclar_produtos_legados_com_contexto_loja,
+        )
+
+        try:
+            contexto_cadastro = mesclar_produtos_legados_com_contexto_loja(
+                client_id,
+                linhas_cadastro_legado,
+                store_id_escopo,
+            )
+        except RuntimeError:
+            contexto_cadastro = {
+                "produtos": [],
+                "store_id": "",
+                "loja_resolvida": False,
+                "scope": "unavailable",
+            }
+        store_id_cadastro = (
+            str(contexto_cadastro.get("store_id") or "").strip()
+            or store_id_escopo
+        )
+        for row_dict in contexto_cadastro.get("produtos") or []:
+            if not isinstance(row_dict, dict):
+                continue
+            sku_raw = str(row_dict.get("sku", "") or "").strip()
+            if not sku_raw:
+                continue
+            sku = _normalizar_sku_mes(sku_raw)
+            titulo_ingles = _pick_valor(row_dict, [
+                "titulo em ingles", "titulo ingles", "title english", "english title", "nome em ingles", "nome ingles",
+                "product name", "product description", "description"
+            ])
+            if not titulo_ingles:
+                titulo_ingles = _pick_valor(row_dict, ["titulos anuncios mlb", "nome", "produto", "cg product name"])
+            oem = _pick_valor(row_dict, ["oem", "codigo oem", "part number", "partnumber", "oem model"])
+            cor_lado = _pick_valor(row_dict, ["color side", "color/side", "cor lado", "cor/lado", "lado cor", "lado/cor", "lado", "cor", "color", "side"])
+            link = _pick_valor(row_dict, ["link", "url", "url produto", "link produto", "product link", "link aliexpress", "aliexpress"])
+            foto = _pick_valor(row_dict, ["foto", "imagem", "image", "url foto", "foto produto"])
+            foto = _resolver_foto_cadastro_sku(
+                client_id,
+                sku,
+                foto,
+                store_id_cadastro or None,
+            )
+            cadastro_por_sku[sku] = {
+                "foto": foto,
+                "titulo_ingles": titulo_ingles,
+                "oem": oem,
+                "cor_lado": cor_lado,
+                "link": link,
+            }
 
         todos_skus = set(vendas_total_periodo.keys()) | set(saldo_por_sku.keys())
         itens_lista = []
@@ -383,39 +419,18 @@ async def api_medias_compras_gerar_lista_compra(
                 "Valor total": "",
             })
 
-        def _resolver_caminho_foto_excel(foto_ref: str) -> str | None:
-            foto_txt = str(foto_ref or "").replace("\\", "/").strip()
-            if not foto_txt:
+        def _resolver_caminho_foto_excel(foto_ref: str, sku: str) -> str | None:
+            # Esta exportacao historicamente so tenta incorporar uma referencia
+            # explicita. Evita acionar o runtime de fotos quando a celula esta
+            # vazia e preserva o fallback textual do XLSX.
+            if not str(foto_ref or "").strip():
                 return None
-
-            # Se vier caminho absoluto valido, usa diretamente.
-            if os.path.isabs(foto_txt) and os.path.exists(foto_txt):
-                return foto_txt
-
-            # Normaliza para apenas o nome do arquivo.
-            nome = foto_txt
-            if nome.lower().startswith("cadastro_fotos/"):
-                nome = nome.split("/", 1)[1]
-            nome = os.path.basename(nome)
-            if not nome:
-                return None
-
-            candidatos = [
-                os.path.join(get_tenant_path(client_id), "cadastro_fotos", nome),
-                os.path.join(PASTA_INFO, "default", "cadastro_fotos", nome),
-            ]
-
-            # Fallback em todos os tenants.
-            try:
-                for pasta in os.listdir(PASTA_INFO):
-                    tenant_dir = os.path.join(PASTA_INFO, pasta)
-                    if not os.path.isdir(tenant_dir):
-                        continue
-                    candidatos.append(os.path.join(tenant_dir, "cadastro_fotos", nome))
-            except Exception:
-                pass
-
-            return next((p for p in candidatos if os.path.exists(p)), None)
+            return _resolver_caminho_foto_cadastro_seguro(
+                client_id,
+                foto_ref,
+                sku,
+                store_id_cadastro or None,
+            )
 
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -486,7 +501,10 @@ async def api_medias_compras_gerar_lista_compra(
                 cel_link.alignment = Alignment(vertical="center", horizontal="left")
 
             # Insere a foto real do produto na coluna B quando o arquivo existir.
-            caminho_foto = _resolver_caminho_foto_excel(item.get("Foto", ""))
+            caminho_foto = _resolver_caminho_foto_excel(
+                item.get("Foto", ""),
+                item.get("SKU", ""),
+            )
             if caminho_foto:
                 try:
                     img = XLImage(caminho_foto)
@@ -555,13 +573,23 @@ async def api_medias_compras_gerar_lista_compra(
         lista_id = str(uuid.uuid4())
         agora_iso = datetime.now().isoformat(timespec="seconds")
         listas_salvas = _carregar_listas_pedidos(client_id)
-        itens_lista_norm = _recalcular_frete_internacional_itens_lista(client_id, itens_lista)
-        file_bytes = _gerar_excel_lista_pedido_bytes(nome_lista, itens_lista_norm, client_id=client_id)
+        itens_lista_norm = _recalcular_frete_internacional_itens_lista(
+            client_id,
+            itens_lista,
+            loja=store_id_cadastro,
+        )
+        file_bytes = _gerar_excel_lista_pedido_bytes(
+            nome_lista,
+            itens_lista_norm,
+            client_id=client_id,
+            loja=store_id_cadastro,
+        )
 
         listas_salvas.insert(0, {
             "id": lista_id,
             "nome_lista": nome_lista,
             "loja": loja_sel,
+            "store_id": store_id_cadastro,
             "status": "Lista gerada",
             "created_at": agora_iso,
             "updated_at": agora_iso,
@@ -607,6 +635,7 @@ async def api_medias_compras_gerar_lista_compra_get(
     hidden_skus: str = "",
     nome_lista: str = "",
     loja: str = "__todas",
+    store_id: str = "",
     periodo_meses: int = 6,
     quantidades_sugeridas: str = "",
     client_id: str = Depends(medias_common.get_tenant_id)
@@ -617,6 +646,7 @@ async def api_medias_compras_gerar_lista_compra_get(
         hidden_skus=[s for s in (hidden_skus or "").split(",") if str(s).strip()],
         nome_lista=nome_lista,
         loja=loja,
+        store_id=store_id,
         periodo_meses=periodo_meses,
         quantidades_sugeridas=_normalizar_quantidades_sugeridas(quantidades_sugeridas),
     )
@@ -626,11 +656,24 @@ async def api_medias_compras_gerar_lista_compra_get(
 async def api_medias_compras_gerar_lista_sugestao(
     meses: int = 12,
     loja: str = "__todas",
+    store_id: str = "",
     quantidades_sugeridas: str = "",
     client_id: str = Depends(medias_common.get_tenant_id)
 ):
-    loja = _exigir_loja_especifica_para_lista(loja)
-    data = await api_medias_compras_visao(meses=meses, loja=loja, client_id=client_id)
+    escopo_loja = _resolver_escopo_loja_medias(
+        client_id,
+        loja,
+        store_id,
+        exigir_especifica=True,
+    )
+    loja = escopo_loja["loja"]
+    store_id = escopo_loja["store_id"]
+    data = await api_medias_compras_visao(
+        meses=meses,
+        loja=loja,
+        store_id=store_id,
+        client_id=client_id,
+    )
     quantidades_ajustadas = _normalizar_quantidades_sugeridas(quantidades_sugeridas)
     quantidades_ajustadas_aplicadas = set()
     itens = []
@@ -647,7 +690,7 @@ async def api_medias_compras_gerar_lista_sugestao(
     itens_lista = [
         _normalizar_item_lista_pedido({
             "SKU": str(item.get("sku", "") or ""),
-            "Foto": _resolver_foto_cadastro_sku(client_id, str(item.get("sku", "") or ""), str(item.get("foto", "") or "")),
+            "Foto": str(item.get("foto", "") or ""),
             TITULO_PRODUTO_INGLES_KEY: str(item.get("titulo_anuncio", "") or ""),
             "OEM": str(item.get("oem", "") or ""),
             COR_LADO_LISTA_PEDIDO_KEY: str(item.get(COR_LADO_LISTA_PEDIDO_KEY, item.get("color_side", "")) or ""),
@@ -658,7 +701,11 @@ async def api_medias_compras_gerar_lista_sugestao(
         })
         for item in itens
     ]
-    itens_lista = _recalcular_frete_internacional_itens_lista(client_id, itens_lista)
+    itens_lista = _recalcular_frete_internacional_itens_lista(
+        client_id,
+        itens_lista,
+        loja=store_id,
+    )
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -696,7 +743,12 @@ async def api_medias_compras_gerar_lista_sugestao(
     buffer = io.BytesIO()
     wb.save(buffer)
     file_bytes = buffer.getvalue()
-    file_bytes = _gerar_excel_lista_pedido_bytes("sugestao_compra", itens_lista, client_id=client_id)
+    file_bytes = _gerar_excel_lista_pedido_bytes(
+        "sugestao_compra",
+        itens_lista,
+        client_id=client_id,
+        loja=store_id,
+    )
     file_id = str(uuid.uuid4())
     filename = f"sugestao_compra_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     TEMP_FILES_STORAGE[file_id] = file_bytes
@@ -710,7 +762,8 @@ async def api_medias_compras_gerar_lista_sugestao(
         "file_id": file_id,
         "filename": filename,
         "total_itens": len(itens),
-        "loja": loja,
+        "loja": str(data.get("loja") or loja),
+        "store_id": store_id,
         "periodo_meses": meses,
         "total_quantidades_ajustadas": len(quantidades_ajustadas_aplicadas),
     }
@@ -720,6 +773,7 @@ async def api_medias_compras_produtos_sem_venda(
     faixa: str = "3m",
     order: str = "desc",
     loja: str = "__todas",
+    store_id: str = "",
     client_id: str = Depends(medias_common.get_tenant_id)
 ):
     faixa_sel = str(faixa or "3m").strip().lower()
@@ -727,7 +781,12 @@ async def api_medias_compras_produtos_sem_venda(
         faixa_sel = "3m"
 
     order_sel = "asc" if str(order or "desc").strip().lower() == "asc" else "desc"
-    data = await api_medias_compras_visao(meses=12, loja=loja, client_id=client_id)
+    data = await api_medias_compras_visao(
+        meses=12,
+        loja=loja,
+        store_id=store_id,
+        client_id=client_id,
+    )
 
     itens_base = []
     count_3m = 0
@@ -781,7 +840,8 @@ async def api_medias_compras_produtos_sem_venda(
         "success": True,
         "faixa": faixa_sel,
         "order": order_sel,
-        "loja": loja,
+        "loja": str(data.get("loja") or loja),
+        "store_id": str(data.get("store_id") or ""),
         "items": itens_base,
         "resumo": {
             "total": len(itens_base),

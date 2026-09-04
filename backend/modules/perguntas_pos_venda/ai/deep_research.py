@@ -68,9 +68,12 @@ from .deep_research_documents import (
     _identity_complete,
     apparent_coverage_complete,
     compact_verified_evidence,
+    compact_product_research_evidence,
     evidence_identity,
+    finalize_research_evidence_result,
     listing_document,
     load_verified_product_evidence,
+    load_product_research_evidence,
     make_research_document,
     persist_research_documents,
 )

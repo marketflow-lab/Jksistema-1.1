@@ -27,8 +27,10 @@
             background-color: rgba(96, 165, 250, 0.58);
         }
         .container {
-            max-width: 1400px;
-            margin: 0 auto;
+            width: 100%;
+            max-width: none;
+            min-width: 0;
+            margin: 0;
         }
         .topbar {
             display: flex;
@@ -548,7 +550,12 @@
             min-height: 18px;
         }
         .table-wrap {
-            overflow: visible;
+            width: 100%;
+            max-width: 100%;
+            min-width: 0;
+            max-height: calc(100vh - 96px);
+            overflow: auto;
+            overscroll-behavior-inline: contain;
         }
         table {
             width: 100%;
@@ -657,6 +664,16 @@
             word-break: normal;
             line-height: 1.1;
         }
+        #tblResultado thead th {
+            overflow-wrap: normal;
+            word-break: normal;
+            hyphens: none;
+        }
+        #tblResultado .cabecalho-coluna-label {
+            display: block;
+            overflow-wrap: normal;
+            word-break: normal;
+        }
         th.th-mes {
             font-size: 0.75rem;
             text-align: center;
@@ -669,11 +686,13 @@
             display: block;
             font-weight: 800;
             color: #9bd1ff;
+            white-space: nowrap;
         }
         .mes-nome-base {
             display: block;
             font-weight: 700;
             color: #e5e5e5;
+            white-space: nowrap;
         }
         th.resizable {
             position: sticky;
@@ -889,7 +908,6 @@
             font-size: 0.8rem;
         }
         .titulo-anuncio {
-            max-width: 380px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: normal;

@@ -644,6 +644,135 @@ def _shared_sync_remote_meta_by_id(bundle_id: str) -> Optional[dict]:
         logger.warning("[SHARED-SYNC] Falha ao ler metadados remotos: %s", exc)
         return None
 
+
+def _shared_sync_remote_snapshot_meta_by_hash(
+    bundle_id: str,
+    snapshot_hash: str,
+    *,
+    expected_client_id: str = "",
+    expected_scope: str = "",
+) -> Optional[dict]:
+    """Resolve uma base v2 imutavel para estados legados que guardavam so o hash.
+
+    O ponteiro atual e os documentos v1 sao deliberadamente ignorados. A busca
+    apenas seleciona snapshots completos, cifrados e vinculados ao mesmo
+    pointer_id. Duplicatas do mesmo conteudo sao validas; a mais recente e
+    escolhida de forma deterministica e o bundle ainda sera revalidado antes de
+    receber autoridade causal.
+    """
+    logical_id = str(bundle_id or "").strip()
+    expected_hash = str(snapshot_hash or "").strip().lower()
+    if not logical_id or not re.fullmatch(r"[a-f0-9]{64}", expected_hash):
+        return None
+    client_id = str(expected_client_id or "").strip()
+    scope = str(expected_scope or "").strip()
+    try:
+        db = _shared_sync_firestore_required()
+    except HTTPException:
+        return None
+    try:
+        coll = db.collection(_firebase_shared_sync_collection_name())
+        candidates: list[tuple[tuple[int, str, str, str], dict]] = []
+        for snap in coll.where("pointer_id", "==", logical_id).stream():
+            data = snap.to_dict() or {}
+            if not isinstance(data, dict):
+                continue
+            try:
+                schema = int(data.get("schema") or 0)
+            except (TypeError, ValueError):
+                schema = 0
+            snapshot_id = str(data.get("snapshot_id") or "").strip()
+            if (
+                snap.id == logical_id
+                or snap.id == _shared_sync_v2_authority_id(logical_id)
+                or snapshot_id != snap.id
+                or str(data.get("pointer_id") or "").strip() != logical_id
+                or schema != 2
+                or not bool(data.get("encrypted"))
+                or str(data.get("status") or "").strip().lower() != "complete"
+                or str(data.get("snapshot_hash") or "").strip().lower() != expected_hash
+                or (client_id and str(data.get("client_id") or "").strip() != client_id)
+                or (scope and str(data.get("scope") or "").strip() != scope)
+            ):
+                continue
+            try:
+                updated_ts = int(data.get("updated_ts") or 0)
+            except (TypeError, ValueError):
+                updated_ts = 0
+            meta = dict(data)
+            meta["_guard_pointer_id"] = snap.id
+            candidates.append((
+                (
+                    updated_ts,
+                    str(data.get("committed_at") or ""),
+                    str(data.get("updated_at") or ""),
+                    snap.id,
+                ),
+                meta,
+            ))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+    except Exception as exc:
+        logger.warning(
+            "[SHARED-SYNC] Falha ao localizar base causal legada por hash: %s",
+            type(exc).__name__,
+        )
+        return None
+
+
+def _shared_sync_obter_base_causal_por_hash(
+    bundle_id: str,
+    snapshot_hash: str,
+    *,
+    expected_client_id: str = "",
+    expected_scope: str = "",
+    key_context: Optional[dict] = None,
+) -> Optional[tuple[bytes, dict]]:
+    """Baixa e valida integralmente uma base imutavel identificada por hash."""
+    expected_hash = str(snapshot_hash or "").strip().lower()
+    meta = _shared_sync_remote_snapshot_meta_by_hash(
+        bundle_id,
+        expected_hash,
+        expected_client_id=expected_client_id,
+        expected_scope=expected_scope,
+    )
+    if not meta:
+        return None
+    try:
+        snapshot_id = str(meta.get("snapshot_id") or "").strip()
+        bundle, loaded_meta = _shared_sync_obter_bundle_por_id(
+            snapshot_id,
+            meta,
+            key_context=key_context,
+        )
+        from backend.services.shared_sync_apply_scope import (
+            _shared_sync_read_validated_bundle,
+        )
+        from backend.services.shared_sync_bundle import _shared_sync_snapshot_hash
+
+        manifest, _ = _shared_sync_read_validated_bundle(
+            bundle,
+            str(expected_scope or meta.get("scope") or ""),
+        )
+        manifest_hash = str(manifest.get("snapshot_hash") or "").strip().lower()
+        manifest_files = manifest.get("files")
+        if (
+            not isinstance(manifest_files, list)
+            or not re.fullmatch(r"[a-f0-9]{64}", manifest_hash)
+            or manifest_hash != expected_hash
+            or _shared_sync_snapshot_hash(manifest_files) != expected_hash
+        ):
+            return None
+        return bundle, loaded_meta
+    except Exception as exc:
+        logger.warning(
+            "[SHARED-SYNC] Base causal legada por hash foi rejeitada: %s",
+            type(exc).__name__,
+        )
+        return None
+
 def _shared_sync_obter_bundle_remoto(client_id: str, scope: str) -> tuple[bytes, dict]:
     return _shared_sync_obter_bundle_por_id(_shared_sync_doc_id(client_id, scope))
 
@@ -852,6 +981,8 @@ __all__ = [
     "_shared_sync_push_scope",
     "_shared_sync_remote_meta",
     "_shared_sync_remote_meta_by_id",
+    "_shared_sync_remote_snapshot_meta_by_hash",
+    "_shared_sync_obter_base_causal_por_hash",
     "_shared_sync_obter_bundle_remoto",
     "_shared_sync_obter_bundle_remoto_para_guard",
     "_shared_sync_obter_bundle_por_id",

@@ -12,10 +12,6 @@ from .financial_comparison import (
     FinancialComparisonRouterConfig,
     create_financial_comparison_router,
 )
-from .firebase_provisioning import (
-    FirebaseProvisioningRouterConfig,
-    create_firebase_provisioning_router,
-)
 from .frontend import FrontendRouterConfig, create_frontend_router, mount_static_assets
 from .full import FullRouterConfig, create_full_router
 from .ia import create_ia_router
@@ -42,7 +38,6 @@ def create_shared_sync_router():
 __all__ = [
     "FrontendRouterConfig",
     "FinancialComparisonRouterConfig",
-    "FirebaseProvisioningRouterConfig",
     "ConfiguracoesRouterConfig",
     "FullRouterConfig",
     "InfraRouterConfig",
@@ -59,7 +54,6 @@ __all__ = [
     "create_etiquetas_router",
     "create_favoritos_router",
     "create_financial_comparison_router",
-    "create_firebase_provisioning_router",
     "create_frontend_router",
     "create_full_router",
     "create_ia_router",

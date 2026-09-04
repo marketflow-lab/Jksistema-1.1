@@ -5,7 +5,15 @@
     const buscaSku = document.getElementById('buscaSku');
     const listaSkusEl = document.getElementById('listaSkus');
     const listaPaginacaoEl = document.getElementById('listaPaginacao');
+    const lojaSelect = document.getElementById('cadastroLojaSelect');
+    const lojaAviso = document.getElementById('cadastroLojaAviso');
+    const storeTools = global.JKCadastroStore;
+    if (!storeTools) throw new Error('Escopo de loja do Cadastro não inicializado.');
     let produtos = [];
+    let lojas = [];
+    let clientId = '';
+    let storeIdSelecionado = '';
+    let carregamentoSeq = 0;
     let paginaSkuAtual = 1;
     const SKUS_POR_PAGINA = 50;
 
@@ -37,7 +45,7 @@
     }
 
     function obterNomeProdutoLista(item) {
-        const candidatos = [item?.nome, item?.produto, item?.produto_bling, item?.titulo];
+        const candidatos = [item?.nome, item?.produto, item?.produto_bling, item?.titulo_ml, item?.titulo];
         for (const candidato of candidatos) {
             const texto = skuTextoSegura(candidato);
             if (!texto) continue;
@@ -121,18 +129,14 @@
         paginaItens.forEach(p => {
             const item = document.createElement('div');
             item.className = 'sku-item';
-            item.innerHTML = `<strong>${p.sku || ''}</strong> - ${obterNomeProdutoLista(p)}`;
+            const sku = document.createElement('strong');
+            sku.textContent = String(p.sku || '');
+            item.append(sku, document.createTextNode(` - ${obterNomeProdutoLista(p)}`));
             item.addEventListener('click', () => {
-                const sku = String(p.sku || '').trim();
-                if (!sku) return;
-                try {
-                    localStorage.setItem('cadastro_editar_sku', sku);
-                    localStorage.setItem('cadastro_editar_item', JSON.stringify(p || {}));
-                    localStorage.setItem('cadastro_editar_lista', JSON.stringify(produtos || []));
-                } catch (_e) {
-                    // Ignora falhas de armazenamento local.
-                }
-                window.location.href = `/cadastro_editar_item.html?sku=${encodeURIComponent(sku)}`;
+                const skuSelecionado = String(p.sku || '').trim();
+                if (!skuSelecionado || !storeIdSelecionado) return;
+                storeTools.salvarCacheEdicao(clientId, storeIdSelecionado, p);
+                window.location.href = storeTools.urlPagina('/cadastro_editar_item.html', storeIdSelecionado, { sku: skuSelecionado });
             });
             frag.appendChild(item);
         });
@@ -141,16 +145,71 @@
     }
 
     async function carregarListaSkus() {
+        const requestSeq = ++carregamentoSeq;
+        if (!storeIdSelecionado) {
+            produtos = [];
+            renderListaSkus();
+            setStatus('Selecione uma loja específica para editar SKUs.', 'error');
+            return;
+        }
         setStatus('Carregando SKUs...', 'loading');
         try {
-            const resp = await fetch('/api/cadastro/produtos', { headers: obterAuthHeaders() });
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            produtos = await resp.json();
+            const resp = await fetch(storeTools.apiLoja(storeIdSelecionado, 'produtos'), { headers: obterAuthHeaders() });
+            const payload = await resp.json();
+            if (!resp.ok) throw new Error(payload && payload.detail || `HTTP ${resp.status}`);
+            if (requestSeq !== carregamentoSeq) return;
+            const lista = Array.isArray(payload) ? payload : payload && Array.isArray(payload.produtos) ? payload.produtos : [];
+            produtos = lista.map(item => ({ ...item, store_id: storeIdSelecionado }));
             paginaSkuAtual = 1;
             renderListaSkus();
             setStatus(`SKUs disponíveis: ${produtos.length}`, 'success');
         } catch (e) {
+            if (requestSeq !== carregamentoSeq) return;
+            produtos = [];
+            renderListaSkus();
             setStatus(`Erro ao carregar lista de SKUs: ${e.message}`, 'error');
+        }
+    }
+
+    function atualizarAvisoLoja() {
+        const loja = lojas.find(item => item.store_id === storeIdSelecionado);
+        lojaAviso.textContent = loja ? `Edição limitada a ${loja.nome}.` : 'Selecione uma loja para habilitar a edição.';
+        buscaSku.disabled = !loja;
+    }
+
+    async function selecionarLoja(storeId) {
+        const valor = String(storeId || '').trim();
+        if (!storeTools.lojaExiste(lojas, valor)) {
+            storeIdSelecionado = '';
+            atualizarAvisoLoja();
+            await carregarListaSkus();
+            return;
+        }
+        storeIdSelecionado = valor;
+        storeTools.salvarPreferencia(clientId, valor, lojas);
+        storeTools.atualizarUrl(valor);
+        atualizarAvisoLoja();
+        await carregarListaSkus();
+    }
+
+    async function iniciar() {
+        clientId = storeTools.obterClientId();
+        if (!clientId) {
+            global.location.href = '/frontend_index.html';
+            return;
+        }
+        setStatus('Carregando lojas...', 'loading');
+        try {
+            lojas = await storeTools.carregarLojas(() => obterAuthHeaders());
+            storeIdSelecionado = storeTools.resolverStoreId(lojas, { clientId });
+            storeTools.preencherSeletor(lojaSelect, lojas, { permitirTodas: false, storeId: storeIdSelecionado });
+            atualizarAvisoLoja();
+            await carregarListaSkus();
+        } catch (error) {
+            storeTools.preencherSeletor(lojaSelect, lojas, { permitirTodas: false });
+            storeIdSelecionado = '';
+            atualizarAvisoLoja();
+            setStatus(`Erro ao carregar lojas: ${error.message}`, 'error');
         }
     }
 
@@ -158,8 +217,9 @@
         paginaSkuAtual = 1;
         renderListaSkus();
     });
+    lojaSelect.addEventListener('change', () => selecionarLoja(lojaSelect.value));
 
     if (global.verificarSessao()) {
-        carregarListaSkus();
+        iniciar();
     }
 })(window);

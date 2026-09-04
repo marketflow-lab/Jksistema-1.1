@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 import openpyxl
 import pandas as pd
-from fastapi import Header, Request
+from fastapi import Header, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from openpyxl.cell.cell import MergedCell
 from openpyxl.drawing.image import Image as XLImage
@@ -58,6 +58,53 @@ C54_HEADERS_LISTA_PEDIDO = (
     "Estimed Weigh",
     "Individual packaging",
 )
+
+
+def _resolver_escopo_loja_medias(
+    client_id: str,
+    loja: Any = "__todas",
+    store_id: Any = "",
+    *,
+    exigir_especifica: bool = False,
+) -> dict[str, str]:
+    """Resolve loja por identidade exata e mantem nome apenas como legado unico."""
+
+    loja_texto = str(loja or "").strip()
+    store_id_texto = str(store_id or "").strip()
+    loja_norm = re.sub(r"\s+", " ", loja_texto.casefold()).strip()
+    if not store_id_texto and loja_norm in {"", "__todas", "todas", "todas as lojas"}:
+        if exigir_especifica:
+            raise HTTPException(
+                status_code=400,
+                detail="Selecione uma loja especifica para continuar.",
+            )
+        return {"loja": "__todas", "store_id": "", "scope": "global"}
+
+    from backend.services.cadastro_compatibilidade import (
+        resolver_loja_ativa_para_leitura,
+    )
+
+    identidade = resolver_loja_ativa_para_leitura(
+        client_id,
+        loja_texto,
+        store_id_texto,
+    )
+    if not identidade.get("loja_resolvida"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "store_scope_unresolved",
+                "message": (
+                    "A loja nao existe neste cliente ou o nome e ambiguo. "
+                    "Informe o store_id exato."
+                ),
+            },
+        )
+    return {
+        "loja": str(identidade.get("loja") or "").strip(),
+        "store_id": str(identidade.get("store_id") or "").strip(),
+        "scope": "store",
+    }
 
 
 def _sku_lookup_keys_sync_ncm(sku_val: str) -> tuple[str, str, str]:
@@ -553,13 +600,46 @@ def _primeiro_texto_item(item: dict, chaves: list[str] | tuple[str, ...]) -> str
     return ""
 
 
-def _resolver_foto_cadastro_sku(client_id: str | None, sku: str, foto_ref: str = "") -> str:
+def _resolver_foto_cadastro_sku(
+    client_id: str | None,
+    sku: str,
+    foto_ref: str = "",
+    store_id: str | None = None,
+) -> str:
+    from backend.services.cadastro_fotos import (
+        _cadastro_foto_referencia_local_cadastro,
+        _cadastro_foto_referencias_invalidas_loja,
+        _cadastro_fotos_escopo_estrito,
+        _cadastro_mapa_fotos_locais,
+        _cadastro_resolver_foto_local,
+    )
+
     foto_txt = str(foto_ref or "").replace("\\", "/").strip()
     if foto_txt:
+        if client_id and store_id and _cadastro_foto_referencias_invalidas_loja(
+            client_id,
+            store_id,
+            {"foto": foto_txt},
+        ):
+            return ""
+        if (
+            client_id
+            and not store_id
+            and _cadastro_fotos_escopo_estrito(client_id)
+            and _cadastro_foto_referencia_local_cadastro(foto_txt)
+        ):
+            return ""
         return foto_txt
 
     sku_txt = str(sku or "").strip()
     if not sku_txt:
+        return ""
+    if client_id and store_id:
+        return _cadastro_resolver_foto_local(
+            _cadastro_mapa_fotos_locais(client_id, store_id),
+            sku_txt,
+        )
+    if client_id and _cadastro_fotos_escopo_estrito(client_id):
         return ""
 
     bases = [sku_txt, sku_txt.upper()]
@@ -691,6 +771,7 @@ def _resumo_lista_pedido(lista: dict, m3_lookup: dict | None = None) -> dict:
         "id": str(lista.get("id", "") or ""),
         "nome_lista": str(lista.get("nome_lista", "") or ""),
         "loja": str(lista.get("loja", "") or "").strip() or "__todas",
+        "store_id": str(lista.get("store_id", "") or "").strip(),
         "status": _normalizar_status_lista_pedido(lista.get("status")),
         "created_at": str(lista.get("created_at", "") or ""),
         "updated_at": str(lista.get("updated_at", "") or ""),
@@ -745,6 +826,7 @@ COMMON_EXPORTS = [
     "_normalizar_sku_mes",
     "_sku_lookup_keys_sync_ncm",
     "_normalizar_codigo_fiscal",
+    "_resolver_escopo_loja_medias",
     "_arquivo_listas_pedidos",
     "_arquivo_preferencias_colunas_importacoes",
     "_carregar_preferencias_colunas_importacoes",

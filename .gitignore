@@ -126,6 +126,8 @@ electron_app/dist-client-setup-next/
 electron_app/dist-client-setup.zip
 electron_app/dist-private/
 dist-private/
+electron_app/private_build/
+private-release/
 *.blockmap
 .venv.blocked-backup-*/
 relatorios/

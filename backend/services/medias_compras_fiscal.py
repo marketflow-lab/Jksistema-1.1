@@ -156,13 +156,20 @@ def _caminhos_cadastros_meta(client_id: str) -> list[str]:
     return caminhos
 
 
-def _meta_payload_cadastro(client_id: str, sku: str, row_dict: dict, permitir_descricao: bool = False) -> dict:
+def _meta_payload_cadastro(
+    client_id: str,
+    sku: str,
+    row_dict: dict,
+    permitir_descricao: bool = False,
+    store_id: str | None = None,
+) -> dict:
     titulo_cands = _META_TITULO_CANDIDATOS_FALLBACK if permitir_descricao else _META_TITULO_CANDIDATOS_FORTES
     return {
         "Foto": _resolver_foto_cadastro_sku(
             client_id,
             sku,
             _pick_cadastro_meta(row_dict, _META_FOTO_CANDIDATOS),
+            store_id,
         ),
         TITULO_PRODUTO_INGLES_KEY: _pick_cadastro_meta(row_dict, titulo_cands),
         "OEM": _pick_cadastro_meta(row_dict, _META_OEM_CANDIDATOS),
@@ -224,12 +231,22 @@ def _merge_fiscal_sku_payload(destino: dict[str, dict], chave: str, payload: dic
         atual["m3_individual"] = m3_novo
 
 
-def _recalcular_frete_internacional_itens_lista(client_id: str, itens: list[dict]) -> list[dict]:
+def _recalcular_frete_internacional_itens_lista(
+    client_id: str,
+    itens: list[dict],
+    *,
+    loja: str = "",
+) -> list[dict]:
     itens_norm = [_normalizar_item_lista_pedido(i) for i in (itens or [])]
     if not itens_norm:
         return []
 
-    itens_enriquecidos = _enriquecer_itens_lista_pedido_com_impostos(client_id, itens_norm, incluir_impostos=True)
+    itens_enriquecidos = _enriquecer_itens_lista_pedido_com_impostos(
+        client_id,
+        itens_norm,
+        incluir_impostos=True,
+        loja=loja,
+    )
 
     total_usd = 0.0
     total_m3 = 0.0
@@ -254,7 +271,8 @@ def _recalcular_frete_internacional_itens_lista(client_id: str, itens: list[dict
 
     for idx, item in enumerate(itens_norm):
         enr = itens_enriquecidos[idx] if idx < len(itens_enriquecidos) else {}
-        for chave_meta in ("Foto", TITULO_PRODUTO_INGLES_KEY, "OEM", COR_LADO_LISTA_PEDIDO_KEY, "Link"):
+        item["Foto"] = str(enr.get("Foto", "") or "").strip()
+        for chave_meta in (TITULO_PRODUTO_INGLES_KEY, "OEM", COR_LADO_LISTA_PEDIDO_KEY, "Link"):
             if not str(item.get(chave_meta, "") or "").strip() and str(enr.get(chave_meta, "") or "").strip():
                 item[chave_meta] = str(enr.get(chave_meta, "") or "").strip()
 
@@ -326,7 +344,13 @@ def _indice_ncm_referencia_aliquotas(client_id: str) -> dict[str, dict]:
         conn.close()
 
 
-def _enriquecer_itens_lista_pedido_com_impostos(client_id: str, itens: list[dict], incluir_impostos: bool = True) -> list[dict]:
+def _enriquecer_itens_lista_pedido_com_impostos(
+    client_id: str,
+    itens: list[dict],
+    incluir_impostos: bool = True,
+    *,
+    loja: str = "",
+) -> list[dict]:
     lista_itens = itens if isinstance(itens, list) else []
     if not lista_itens:
         return []
@@ -347,6 +371,38 @@ def _enriquecer_itens_lista_pedido_com_impostos(client_id: str, itens: list[dict
     sku_para_fiscal: dict[str, dict] = {}
     sku_para_meta: dict[str, dict] = {}
     sku_para_meta_fallback: dict[str, dict] = {}
+    from backend.services.cadastro_compatibilidade import (
+        visao_produtos_cadastro_contexto_loja,
+    )
+
+    try:
+        contexto_cadastro = visao_produtos_cadastro_contexto_loja(
+            client_id,
+            loja,
+        )
+    except RuntimeError:
+        contexto_cadastro = {
+            "produtos": [],
+            "store_id": "",
+            "loja_resolvida": False,
+            "scope": "unavailable",
+        }
+    store_id_cadastro = str(contexto_cadastro.get("store_id") or "").strip()
+    contexto_fotos_indisponivel = (
+        str(contexto_cadastro.get("scope") or "").strip() == "unavailable"
+    )
+    skus_controlados_contexto: set[str] = set()
+    for sku_controlado in contexto_cadastro.get("skus_controlados") or set():
+        for chave_sku in _sku_lookup_keys_sync_ncm(sku_controlado):
+            if chave_sku:
+                skus_controlados_contexto.add(chave_sku)
+    foto_contextual_por_sku: dict[str, str] = {}
+
+    def _sku_controlado(k1: str, k2: str, k3: str) -> bool:
+        return any(
+            chave and chave in skus_controlados_contexto
+            for chave in (k1, k2, k3)
+        )
 
     if not df_cad.empty:
         def _norm_col_name(v: str) -> str:
@@ -390,7 +446,14 @@ def _enriquecer_itens_lista_pedido_com_impostos(client_id: str, itens: list[dict
                 _merge_fiscal_sku_payload(sku_para_fiscal, k, payload)
 
             titulo_cad = _pick_cadastro(row_dict, _META_TITULO_CANDIDATOS_FORTES)
-            foto_cad = _resolver_foto_cadastro_sku(client_id, sku, _pick_cadastro(row_dict, _META_FOTO_CANDIDATOS))
+            foto_cad = ""
+            if not contexto_fotos_indisponivel and not _sku_controlado(k1, k2, k3):
+                foto_cad = _resolver_foto_cadastro_sku(
+                    client_id,
+                    sku,
+                    _pick_cadastro(row_dict, _META_FOTO_CANDIDATOS),
+                    store_id_cadastro or None,
+                )
             oem_cad = _pick_cadastro(row_dict, _META_OEM_CANDIDATOS)
             cor_lado_cad = _pick_cadastro(row_dict, _META_COR_LADO_CANDIDATOS)
             link_cad = _pick_cadastro(row_dict, _META_LINK_CANDIDATOS)
@@ -402,7 +465,15 @@ def _enriquecer_itens_lista_pedido_com_impostos(client_id: str, itens: list[dict
                 COR_LADO_LISTA_PEDIDO_KEY: cor_lado_cad,
                 "Link": link_cad,
             }
-            meta_payload_fallback = _meta_payload_cadastro(client_id, sku, row_dict, permitir_descricao=True)
+            meta_payload_fallback = _meta_payload_cadastro(
+                client_id,
+                sku,
+                row_dict,
+                permitir_descricao=True,
+                store_id=store_id_cadastro or None,
+            )
+            if contexto_fotos_indisponivel or _sku_controlado(k1, k2, k3):
+                meta_payload_fallback["Foto"] = ""
             for k in (k1, k2, k3):
                 _merge_meta_sku(sku_para_meta, k, meta_payload)
                 _merge_meta_sku(sku_para_meta_fallback, k, meta_payload_fallback)
@@ -430,12 +501,52 @@ def _enriquecer_itens_lista_pedido_com_impostos(client_id: str, itens: list[dict
                 continue
             row_dict = row.to_dict() if hasattr(row, "to_dict") else {}
             payload = _payload_fiscal_cadastro_row(row)
-            meta_payload = _meta_payload_cadastro(client_id, sku, row_dict, permitir_descricao=False)
-            meta_payload_fallback = _meta_payload_cadastro(client_id, sku, row_dict, permitir_descricao=True)
+            meta_payload = _meta_payload_cadastro(
+                client_id,
+                sku,
+                row_dict,
+                permitir_descricao=False,
+                store_id=store_id_cadastro or None,
+            )
+            meta_payload_fallback = _meta_payload_cadastro(
+                client_id,
+                sku,
+                row_dict,
+                permitir_descricao=True,
+                store_id=store_id_cadastro or None,
+            )
+            if contexto_fotos_indisponivel or _sku_controlado(k1, k2, k3):
+                meta_payload["Foto"] = ""
+                meta_payload_fallback["Foto"] = ""
             for k in (k1, k2, k3):
                 _merge_fiscal_sku_payload(sku_para_fiscal, k, payload)
                 _merge_meta_sku(sku_para_meta, k, meta_payload)
                 _merge_meta_sku(sku_para_meta_fallback, k, meta_payload_fallback)
+
+    for row_dict in contexto_cadastro.get("produtos") or []:
+        if not isinstance(row_dict, dict):
+            continue
+        sku = str(row_dict.get("sku") or "").strip()
+        if not sku:
+            continue
+        k1, k2, k3 = _sku_lookup_keys_sync_ncm(sku)
+        if not _sku_interessa(k1, k2, k3):
+            continue
+        foto_contextual = _resolver_foto_cadastro_sku(
+            client_id,
+            sku,
+            _pick_cadastro_meta(row_dict, _META_FOTO_CANDIDATOS),
+            store_id_cadastro or None,
+        )
+        for k in (k1, k2, k3):
+            if not k:
+                continue
+            foto_contextual_por_sku[k] = foto_contextual
+            meta_atual = sku_para_meta.setdefault(k, {})
+            if foto_contextual:
+                meta_atual["Foto"] = foto_contextual
+            else:
+                meta_atual.pop("Foto", None)
 
     for k, payload in sku_para_meta_fallback.items():
         atual = sku_para_meta.setdefault(k, {})
@@ -457,8 +568,24 @@ def _enriquecer_itens_lista_pedido_com_impostos(client_id: str, itens: list[dict
         fiscal_cad = sku_para_fiscal.get(k1) or sku_para_fiscal.get(k2) or sku_para_fiscal.get(k3) or {}
         meta_cad = sku_para_meta.get(k1) or sku_para_meta.get(k2) or sku_para_meta.get(k3) or {}
 
-        if not str(novo.get("Foto", "") or "").strip() and str(meta_cad.get("Foto", "") or "").strip():
-            novo["Foto"] = str(meta_cad.get("Foto", "") or "").strip()
+        if contexto_fotos_indisponivel or _sku_controlado(k1, k2, k3):
+            foto_contextual = ""
+            for chave_sku in (k1, k2, k3):
+                if chave_sku in foto_contextual_por_sku:
+                    foto_contextual = str(
+                        foto_contextual_por_sku[chave_sku] or ""
+                    ).strip()
+                    break
+            novo["Foto"] = foto_contextual
+        else:
+            novo["Foto"] = _resolver_foto_cadastro_sku(
+                client_id,
+                sku_item,
+                str(novo.get("Foto", "") or ""),
+                store_id_cadastro or None,
+            )
+            if not str(novo.get("Foto", "") or "").strip() and str(meta_cad.get("Foto", "") or "").strip():
+                novo["Foto"] = str(meta_cad.get("Foto", "") or "").strip()
         titulo_atual = ""
         for chave_titulo in TITULO_PRODUTO_INGLES_KEYS_LEGADO:
             titulo_atual = str(novo.get(chave_titulo, "") or "").strip()

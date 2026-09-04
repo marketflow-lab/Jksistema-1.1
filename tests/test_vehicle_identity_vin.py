@@ -19,6 +19,10 @@ from backend.services.vehicle_identity_vpic import (
 )
 from backend.services import perguntas_pos_venda_codex as codex_orchestrator
 from backend.modules.perguntas_pos_venda.ai import inputs as agent_inputs
+from backend.modules.perguntas_pos_venda.ai.deep_research_contracts import (
+    safe_agent_product_research_evidence,
+    sanitize_public_research_text,
+)
 from backend.modules.perguntas_pos_venda.ai.client_workflows import _compatibility_prompt
 from backend.services.vin_transient import (
     VIN_MARKER,
@@ -287,6 +291,43 @@ def test_mapping_keys_and_operational_identifiers_cannot_leak_vin():
     assert contains_vin_like_identifier(f"question-VIN-{VIN}") is True
     assert contains_vin_like_identifier("VIN 8 A D 2 M K F W X C G 0 3 5 6 1 5") is True
     assert contains_vin_like_identifier("question-13647783836") is False
+
+
+def test_labelled_all_letter_vin_is_detected_and_redacted_before_research_prompt():
+    labelled_vin = "ABCDEFGHJKLMNPRST"
+    embedded_url = f"https://maker.example/{labelled_vin}/manual"
+
+    assert is_valid_vin(labelled_vin) is True
+    assert contains_vin_like_identifier(labelled_vin) is True
+    assert contains_vin_like_identifier(f"VIN: {labelled_vin}") is True
+    assert contains_vin_like_identifier(embedded_url) is True
+    sanitized = sanitize_public_research_text(f"Catalogo tecnico. VIN: {labelled_vin}.")
+    assert labelled_vin not in sanitized
+    assert VIN_MARKER in sanitized
+    sanitized_url = sanitize_public_research_text(embedded_url)
+    assert labelled_vin not in sanitized_url
+    assert VIN_MARKER in sanitized_url
+    assert safe_agent_product_research_evidence([{
+        "field_name": "reference.part_number",
+        "value": labelled_vin,
+        "state": "verified",
+    }]) == []
+
+    projected = safe_agent_product_research_evidence([{
+        "field_name": "electrical.power",
+        "value": "22",
+        "unit": "W",
+        "state": "verified",
+        "source_authorities": [labelled_vin],
+        "sources": [{
+            "source_type": "official_manufacturer",
+            "authority": "official_manufacturer",
+            "url": embedded_url,
+            "domain": "maker.example",
+            "section_ref": f"codigo {labelled_vin}",
+        }],
+    }])
+    assert labelled_vin not in str(projected)
 
 
 def test_recursive_payload_capture_sanitizes_every_copy_and_binds_by_job():
@@ -573,6 +614,22 @@ def test_prompt_contract_drops_vin_shaped_values_even_with_valid_decoder_metadat
     ]
 
 
+def test_prompt_contract_redacts_all_letter_vin_from_evidence_metadata():
+    raw_vin = "ABCDEFGHJKLMNPRST"
+    evidence = agent_inputs._perguntas_ia_verified_product_evidence_segura({
+        "_verified_product_evidence": [{
+            "field_name": raw_vin,
+            "scope": raw_vin,
+            "value": "22",
+            "unit": "W",
+            "activation_policy": raw_vin,
+            "source_authorities": [raw_vin],
+        }],
+    })
+
+    assert raw_vin not in str(evidence)
+
+
 def test_compatibility_prompt_includes_allowlisted_vehicle_identity_without_vin():
     vehicle_identity = VehicleIdentityFactsV1(
         status="confirmed",
@@ -603,6 +660,7 @@ def test_compatibility_prompt_includes_allowlisted_vehicle_identity_without_vin(
         {},
         {},
         ({}, {}),
+        {},
     )
 
     assert '"make": "PEUGEOT"' in generated_prompt

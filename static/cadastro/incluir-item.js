@@ -2,7 +2,9 @@
     'use strict';
 
     const formTools = global.JKCadastroForm;
-    if (!formTools) throw new Error('Núcleo de formulários do Cadastro não inicializado.');
+    const storeTools = global.JKCadastroStore;
+    const mlTools = global.JKCadastroMercadoLivre;
+    if (!formTools || !storeTools || !mlTools) throw new Error('Núcleo de formulários do Cadastro não inicializado.');
 
     const elements = {
         status: document.getElementById('status'),
@@ -12,12 +14,25 @@
         fotoInput: document.getElementById('fotoInput'),
         btnUploadFoto: document.getElementById('btnUploadFoto'),
         btnPasteFoto: document.getElementById('btnPasteFoto'),
+        btnBuscarMercadoLivre: document.getElementById('btnBuscarMercadoLivre'),
         fotoPreview: document.getElementById('fotoPreview'),
+        lojaSelect: document.getElementById('cadastroLojaSelect'),
+        lojaAviso: document.getElementById('cadastroLojaAviso'),
+        voltarCadastroLink: document.getElementById('voltarCadastroLink'),
     };
-    const state = { colunas: [], fotoDataUrl: '', fotoFilename: '' };
+    const state = {
+        colunas: [], fotoDataUrl: '', fotoFilename: '', clientId: '', lojas: [],
+        storeIdSelecionado: '', lojaValidada: false, fotoCarregada: null,
+    };
+    let fotoPreviewSeq = 0;
+    const camposControleLoja = new Set([
+        'store_id', 'loja_sync', 'sku_normalizado', 'row_version', 'updated_at_utc', 'deleted_at_utc', 'scope_source',
+    ]);
+    let carregamentoColunasSeq = 0;
+    let consultaMercadoLivreSeq = 0;
     const prioridadeCampos = [
-        'sku', 'nome', 'categoria', 'marca', formTools.campoM3Individual,
-        'ncm', 'cest', 'custo', 'imposto', 'preco', 'descricao', 'updated_at'
+        'sku', 'nome', 'titulo_ml', 'categoria', 'categoria_id_mlb', 'marca', 'modelo', 'gtins_mlb',
+        formTools.campoM3Individual, 'ncm', 'cest', 'custo', 'imposto', 'preco', 'descricao', 'updated_at'
     ];
 
     function setStatus(message, className) {
@@ -29,10 +44,68 @@
         return global.obterAuthHeaders(extra);
     }
 
-    function atualizarPreviewFoto() {
-        elements.fotoPreview.innerHTML = state.fotoDataUrl
-            ? `<img src="${state.fotoDataUrl}" alt="Prévia da imagem pendente"><div class="foto-pending-note">Imagem<br>pendente</div>`
-            : '<span class="foto-muted">Sem imagem vinculada.</span>';
+    function habilitarFormulario(habilitado) {
+        elements.form.querySelectorAll('input, textarea, button').forEach(element => { element.disabled = !habilitado; });
+        elements.lojaSelect.disabled = false;
+    }
+
+    function atualizarContextoLoja() {
+        const loja = state.lojas.find(item => item.store_id === state.storeIdSelecionado);
+        elements.lojaAviso.textContent = loja ? `Inclusão limitada a ${loja.nome}.` : 'Selecione uma loja específica para incluir.';
+        elements.voltarCadastroLink.href = storeTools.urlPagina('/cadastro.html', state.storeIdSelecionado);
+    }
+
+    function revogarPreviewFotoAtual() {
+        if (!state.fotoCarregada) return;
+        storeTools.revogarFotoCarregada(state.fotoCarregada);
+        state.fotoCarregada = null;
+    }
+
+    async function atualizarPreviewFoto() {
+        const requestSeq = ++fotoPreviewSeq;
+        revogarPreviewFotoAtual();
+        elements.fotoPreview.textContent = '';
+        const inputFoto = elements.formGrid.querySelector('[name="foto"]');
+        const url = state.fotoDataUrl || storeTools.urlFoto(
+            state.clientId,
+            state.storeIdSelecionado,
+            inputFoto && inputFoto.value,
+        );
+        if (!url) {
+            const empty = document.createElement('span');
+            empty.className = 'foto-muted';
+            empty.textContent = 'Sem imagem vinculada.';
+            elements.fotoPreview.appendChild(empty);
+            return;
+        }
+        const loading = document.createElement('span');
+        loading.className = 'foto-muted';
+        loading.textContent = 'Carregando imagem...';
+        elements.fotoPreview.appendChild(loading);
+        try {
+            const foto = await storeTools.carregarFotoAutenticada(url, authHeaders);
+            if (requestSeq !== fotoPreviewSeq) {
+                storeTools.revogarFotoCarregada(foto);
+                return;
+            }
+            state.fotoCarregada = foto;
+            const image = document.createElement('img');
+            image.src = foto.url;
+            image.alt = 'Prévia da imagem pendente';
+            elements.fotoPreview.textContent = '';
+            elements.fotoPreview.appendChild(image);
+            const note = document.createElement('div');
+            note.className = 'foto-pending-note';
+            note.textContent = 'Imagem pendente';
+            elements.fotoPreview.appendChild(note);
+        } catch (_error) {
+            if (requestSeq !== fotoPreviewSeq) return;
+            elements.fotoPreview.textContent = '';
+            const erro = document.createElement('span');
+            erro.className = 'foto-muted';
+            erro.textContent = 'Não foi possível carregar a imagem.';
+            elements.fotoPreview.appendChild(erro);
+        }
     }
 
     async function prepararImagemPendente(fileOrBlob, nomeArquivo) {
@@ -85,20 +158,69 @@
             if (campo === 'custos_frete_mlb') return;
             elements.formGrid.appendChild(campo === 'mlb_ids' ? formTools.criarEditorMlb() : criarCampo(campo));
         });
+        atualizarPreviewFoto();
+    }
+
+    async function buscarDadosMercadoLivre() {
+        const skuInput = elements.formGrid.querySelector('[name="sku"]');
+        const sku = String(skuInput && skuInput.value || '').trim();
+        const requestSeq = ++consultaMercadoLivreSeq;
+        setStatus('Consultando o Mercado Livre da loja selecionada...', 'loading');
+        habilitarFormulario(false);
+        try {
+            const payload = await mlTools.consultar({
+                storeTools,
+                storeId: state.storeIdSelecionado,
+                sku,
+                authHeaders,
+            });
+            if (requestSeq !== consultaMercadoLivreSeq) return;
+            habilitarFormulario(state.lojaValidada);
+            const applied = mlTools.aplicarCampos(elements.formGrid, payload.campos);
+            const photo = mlTools.foto(payload);
+            const inputFoto = elements.formGrid.querySelector('[name="foto"]');
+            if (photo.dataUrl) {
+                state.fotoDataUrl = photo.dataUrl;
+                state.fotoFilename = photo.filename;
+                if (inputFoto && photo.url) inputFoto.value = photo.url;
+            }
+            atualizarPreviewFoto();
+            setStatus(mlTools.resumo(payload, applied), 'success');
+        } catch (error) {
+            if (requestSeq !== consultaMercadoLivreSeq) return;
+            setStatus(`Erro ao trazer dados do Mercado Livre: ${error.message}`, 'error');
+        } finally {
+            if (requestSeq === consultaMercadoLivreSeq) habilitarFormulario(state.lojaValidada);
+        }
     }
 
     async function carregarColunas() {
+        const requestSeq = ++carregamentoColunasSeq;
+        if (!state.storeIdSelecionado) {
+            state.lojaValidada = false;
+            habilitarFormulario(false);
+            setStatus('Selecione uma loja específica para incluir um SKU.', 'error');
+            return;
+        }
         setStatus('Carregando colunas do cadastro...', 'loading');
+        state.lojaValidada = false;
+        habilitarFormulario(false);
         try {
-            const response = await global.fetch('/api/cadastro/colunas', { headers: authHeaders() });
+            const response = await global.fetch(storeTools.apiLoja(state.storeIdSelecionado, 'colunas'), { headers: authHeaders() });
             const payload = await response.json();
             if (!response.ok) throw new Error(payload && payload.detail || `HTTP ${response.status}`);
-            state.colunas = Array.isArray(payload.colunas) ? payload.colunas : [];
+            if (requestSeq !== carregamentoColunasSeq) return;
+            const colunas = Array.isArray(payload.colunas) ? payload.colunas.filter(campo => !camposControleLoja.has(campo)) : [];
+            state.colunas = formTools.garantirCamposProduto(colunas);
             if (!state.colunas.includes('sku')) state.colunas.unshift('sku');
             if (!state.colunas.includes(formTools.campoM3Individual)) state.colunas.push(formTools.campoM3Individual);
             montarFormulario();
+            state.lojaValidada = true;
+            habilitarFormulario(true);
             setStatus('Preencha os dados para incluir um novo SKU.', 'success');
         } catch (error) {
+            if (requestSeq !== carregamentoColunasSeq) return;
+            habilitarFormulario(false);
             setStatus(`Erro ao carregar colunas: ${error.message}`, 'error');
         }
     }
@@ -120,13 +242,17 @@
     async function incluirSku(event) {
         event.preventDefault();
         const data = montarPayload();
+        if (!state.storeIdSelecionado || !state.lojaValidada) {
+            setStatus('Selecione uma loja válida antes de cadastrar.', 'error');
+            return;
+        }
         if (!String(data.sku || '').trim()) {
             setStatus('Informe o SKU para cadastrar.', 'error');
             return;
         }
         setStatus('Incluindo SKU...', 'loading');
         try {
-            const response = await global.fetch('/api/cadastro/produto', {
+            const response = await global.fetch(storeTools.apiLoja(state.storeIdSelecionado, 'produtos'), {
                 method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(data)
             });
             const payload = await response.json();
@@ -142,12 +268,14 @@
     }
 
     elements.btnLimpar.addEventListener('click', () => {
+        consultaMercadoLivreSeq += 1;
         elements.form.reset();
         state.fotoDataUrl = '';
         state.fotoFilename = '';
         atualizarPreviewFoto();
     });
     elements.form.addEventListener('submit', incluirSku);
+    elements.btnBuscarMercadoLivre.addEventListener('click', buscarDadosMercadoLivre);
     elements.btnUploadFoto.addEventListener('click', () => elements.fotoInput.click());
     elements.fotoInput.addEventListener('change', event => {
         const file = event.target.files && event.target.files[0];
@@ -176,5 +304,52 @@
             return;
         }
     });
-    if (global.verificarSessao()) carregarColunas();
+    async function selecionarLoja(storeId) {
+        consultaMercadoLivreSeq += 1;
+        state.fotoDataUrl = '';
+        state.fotoFilename = '';
+        const valor = String(storeId || '').trim();
+        if (!storeTools.lojaExiste(state.lojas, valor)) {
+            state.storeIdSelecionado = '';
+            atualizarContextoLoja();
+            await carregarColunas();
+            return;
+        }
+        state.storeIdSelecionado = valor;
+        storeTools.salvarPreferencia(state.clientId, valor, state.lojas);
+        storeTools.atualizarUrl(valor);
+        atualizarContextoLoja();
+        await carregarColunas();
+    }
+
+    async function iniciar() {
+        state.clientId = storeTools.obterClientId();
+        if (!state.clientId) {
+            global.location.href = '/frontend_index.html';
+            return;
+        }
+        habilitarFormulario(false);
+        setStatus('Carregando lojas...', 'loading');
+        try {
+            state.lojas = await storeTools.carregarLojas(authHeaders);
+            state.storeIdSelecionado = storeTools.resolverStoreId(state.lojas, { clientId: state.clientId });
+            storeTools.preencherSeletor(elements.lojaSelect, state.lojas, { permitirTodas: false, storeId: state.storeIdSelecionado });
+            atualizarContextoLoja();
+            await carregarColunas();
+        } catch (error) {
+            storeTools.preencherSeletor(elements.lojaSelect, state.lojas, { permitirTodas: false });
+            state.storeIdSelecionado = '';
+            atualizarContextoLoja();
+            setStatus(`Erro ao carregar lojas: ${error.message}`, 'error');
+        }
+    }
+
+    elements.lojaSelect.addEventListener('change', () => selecionarLoja(elements.lojaSelect.value));
+    if (typeof global.addEventListener === 'function') {
+        global.addEventListener('beforeunload', () => {
+            fotoPreviewSeq += 1;
+            revogarPreviewFotoAtual();
+        });
+    }
+    if (global.verificarSessao()) iniciar();
 })(window);

@@ -72,21 +72,40 @@ function formatarMarkdownBasicoAssistenteVendas(texto) {
         let src = String(url || '').trim();
         if (!src) return '';
         src = src.replace(/^["'`]+|["'`]+$/g, '');
-        if (/^cadastro_fotos\//i.test(src)) src = src.split('/').pop();
-        if (/^[^\/\\]+\.(?:png|jpe?g|gif|webp|bmp)$/i.test(src)) {
-            src = `/api/cadastro/foto-arquivo/${encodeURIComponent(src)}`;
+        const helper = globalThis.JKAuthenticatedMedia;
+        const normalizada = helper && typeof helper.normalizarUrlFotoCadastro === 'function'
+            ? helper.normalizarUrlFotoCadastro(src)
+            : '';
+        if (normalizada) {
+            src = normalizada;
+        } else if (
+            /^(?:cadastro_fotos\/|\/api\/cadastro\/(?:foto-arquivo\/|foto\/))/i.test(src)
+            || /^[^\/\\]+\.(?:png|jpe?g|gif|webp|bmp)$/i.test(src)
+        ) {
+            return '';
         }
-        if (/^(https?:\/\/|\/api\/cadastro\/foto-arquivo\/|\/api\/cadastro\/foto\/|\/api\/ia\/imagens\/|\/img\/)/i.test(src)) {
+        if (/^(https?:\/\/|\/\/|\/api\/cadastro\/foto-arquivo\/|\/api\/cadastro\/foto\/|\/api\/ia\/imagens\/|\/img\/)/i.test(src)) {
             return escaparHtmlAssistenteVendas(src).replace(/"/g, '&quot;');
         }
         return '';
+    }
+
+    function ehUrlFotoCadastroProtegida(url) {
+        const helper = globalThis.JKAuthenticatedMedia;
+        if (helper && typeof helper.ehUrlProtegidaCadastro === 'function') {
+            return helper.ehUrlProtegidaCadastro(url);
+        }
+        return /^(\/api\/cadastro\/foto-arquivo\/|\/api\/cadastro\/foto\/)/i.test(String(url || '').trim());
     }
 
     function renderImagemAssistente(alt, url) {
         const src = normalizarUrlImagemAssistente(url);
         if (!src) return '';
         const altSeguro = escaparHtmlAssistenteVendas(alt || 'Imagem do SKU');
-        return `<a class="sidebar-ai-img-link" href="${src}" target="_blank" rel="noopener noreferrer"><img class="sidebar-ai-img" src="${src}" alt="${altSeguro}" loading="lazy"></a>`;
+        const protegida = ehUrlFotoCadastroProtegida(src);
+        const atributoLink = protegida ? `data-jk-auth-link="${src}"` : `href="${src}"`;
+        const atributoImagem = protegida ? `data-jk-auth-src="${src}"` : `src="${src}"`;
+        return `<a class="sidebar-ai-img-link" ${atributoLink} target="_blank" rel="noopener noreferrer"><img class="sidebar-ai-img" ${atributoImagem} alt="${altSeguro}" loading="lazy"></a>`;
     }
 
     function obterExtensaoArquivoAssistente(url) {
@@ -127,11 +146,11 @@ function formatarMarkdownBasicoAssistenteVendas(texto) {
         });
         s = s.replace(/!\[([^\]\n]*)\]\(([^)\s]+)\)/g, (_, alt, url) => renderImagemAssistente(alt, url) || '');
         s = s.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (_, label, url) => renderImagemAssistente(label, url) || renderArquivoAssistente(label, url) || renderLink(label, url));
-        s = s.replace(/(^|[\s>])((?:cadastro_fotos\/)?[^\/\\\s<]+\.(?:png|jpe?g|gif|webp|bmp))/gi, (_, prefix, url) => {
+        s = s.replace(/(^|[\s>])((?:cadastro_fotos\/[^\\\s<]+|lojas\/[^\\\s<]+|[^\/\\\s<]+)\.(?:png|jpe?g|gif|webp|bmp))/gi, (_, prefix, url) => {
             const imagem = renderImagemAssistente('Imagem do SKU', url);
             return imagem ? `${prefix}${imagem}` : `${prefix}${url}`;
         });
-        s = s.replace(/(^|[\s>])((?:\/api\/cadastro\/foto-arquivo\/|\/api\/cadastro\/foto\/|\/api\/ia\/imagens\/|\/img\/|https?:\/\/)[^\s<]+\.(?:png|jpe?g|gif|webp|bmp)(?:\?[^\s<]+)?)/gi, (_, prefix, url) => {
+        s = s.replace(/(^|[\s>])((?:\/api\/cadastro\/foto-arquivo\/|\/api\/cadastro\/foto\/|\/api\/ia\/imagens\/|\/img\/|https?:\/\/|\/\/)[^\s<]+\.(?:png|jpe?g|gif|webp|bmp)(?:\?[^\s<]+)?)/gi, (_, prefix, url) => {
             const imagem = renderImagemAssistente('Imagem do SKU', url);
             return imagem ? `${prefix}${imagem}` : `${prefix}${url}`;
         });
@@ -146,13 +165,34 @@ function formatarMarkdownBasicoAssistenteVendas(texto) {
         return s;
     }
 
+    function referenciasScopedValidasLinhaAssistente(linha) {
+        const texto = String(linha || '').trim();
+        const padrao = /(?:cadastro_fotos\/lojas|lojas|\/api\/cadastro\/foto-arquivo\/lojas|\/api\/cadastro\/foto\/[^\/\\\s<>()]+\/lojas)\/[^\/\\\s<>()]+\/[^\\\s<>()]+\.(?:png|jpe?g|gif|webp|bmp)(?:\?[^\s<>()]+)?/gi;
+        const referencias = [];
+        for (const match of texto.matchAll(padrao)) {
+            const original = String(match[0] || '').trim();
+            const normalizada = normalizarUrlImagemAssistente(original);
+            if (
+                normalizada
+                && ehUrlFotoCadastroProtegida(normalizada)
+                && /\/lojas\//i.test(normalizada)
+            ) referencias.push({ original, normalizada });
+        }
+        return referencias;
+    }
+
     function renderLinhaMidiaAssistente(linha) {
         const texto = String(linha || '').trim();
+        const scoped = referenciasScopedValidasLinhaAssistente(texto);
+        if (scoped.length !== 1) return '';
         let match = texto.match(/^!\[([^\]\n]*)\]\(([^)\s]+)\)$/);
         if (match) return renderImagemAssistente(match[1], match[2]);
         match = texto.match(/^\[([^\]\n]+)\]\(([^)\s]+)\)$/);
         if (match) return renderImagemAssistente(match[1], match[2]) || renderArquivoAssistente(match[1], match[2]);
-        return renderImagemAssistente('Imagem gerada', texto) || renderArquivoAssistente(texto.split('/').pop(), texto);
+        if (scoped[0].original === texto) {
+            return renderImagemAssistente('Imagem gerada', scoped[0].normalizada);
+        }
+        return '';
     }
 
     function splitPipeRow(line) {

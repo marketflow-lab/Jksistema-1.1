@@ -15,10 +15,12 @@ const json = (route, body, status = 200) => route.fulfill({
 
 (async () => {
   const browser = await chromium.launch({ headless: true });
+  const storeId = 'store-jk';
   const listas = [{
     id: 'lista-1',
     nome_lista: 'Pedido inicial',
     loja: 'JK Pecas',
+    store_id: storeId,
     status: 'Lista gerada',
     created_at: '2026-08-26T10:00:00Z',
     updated_at: '2026-08-26T10:00:00Z',
@@ -66,7 +68,7 @@ const json = (route, body, status = 200) => route.fulfill({
         return;
       }
       if (url.pathname === '/api/lojas') {
-        await json(route, [{ nome: 'JK Pecas' }]);
+        await json(route, [{ nome: 'JK Pecas', store_id: storeId }]);
         return;
       }
       if (url.pathname === '/api/medias-compras/preferencias-skus-ocultos') {
@@ -93,6 +95,7 @@ const json = (route, body, status = 200) => route.fulfill({
           id: 'lista-2',
           nome_lista: 'Pedido importado',
           loja: 'JK Pecas',
+          store_id: storeId,
           status: 'Lista gerada',
           created_at: '2026-08-26T11:00:00Z',
           updated_at: '2026-08-26T11:00:00Z',
@@ -143,6 +146,7 @@ const json = (route, body, status = 200) => route.fulfill({
             id: lista.id,
             nome_lista: lista.nome_lista,
             loja: lista.loja,
+            store_id: lista.store_id,
             status: lista.status,
             created_at: lista.created_at,
             updated_at: lista.updated_at,
@@ -206,9 +210,6 @@ const json = (route, body, status = 200) => route.fulfill({
     await page.locator('#addSkuValorInput').fill('5');
     await page.locator('#btnConfirmarAdicionarSku').click();
     await page.locator('#statusListaPedido', { hasText: 'Salvo com sucesso.' }).waitFor();
-    await page.waitForFunction(() => (
-      document.querySelector('#tblListaPedidoItens input[data-kind="sku"]')?.value === '002'
-    ));
     assert.strictEqual(await page.locator('#tblListaPedidoItens input[data-kind="sku"]').inputValue(), '002');
     assert.deepStrictEqual(errosPagina, []);
 

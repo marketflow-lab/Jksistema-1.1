@@ -299,6 +299,14 @@
 
   function _novoId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 
+  function _ehUrlFotoCadastroProtegida(url) {
+    const helper = globalThis.JKAuthenticatedMedia;
+    if (helper && typeof helper.ehUrlProtegidaCadastro === 'function') {
+      return helper.ehUrlProtegidaCadastro(url);
+    }
+    return /^(\/api\/cadastro\/foto-arquivo\/|\/api\/cadastro\/foto\/)/i.test(String(url || '').trim());
+  }
+
   /* ── Render de texto para HTML ── */
   function _renderTexto(txt) {
     const escapeHtml = (v) => String(v || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -322,15 +330,24 @@
       if (!src) return '';
       src = src.replace(/^["'`]+|["'`]+$/g, '');
       src = src.replace(/^http:\/\/(http[0-9]*\.mlstatic\.com\/)/i, 'https://$1');
-      if (/^cadastro_fotos\//i.test(src)) src = src.split('/').pop();
-      if (/^[^\/\\]+\.(?:png|jpe?g|gif|webp|bmp)$/i.test(src)) {
-        src = `/api/cadastro/foto-arquivo/${encodeURIComponent(src)}`;
+      const helper = globalThis.JKAuthenticatedMedia;
+      const normalizada = helper && typeof helper.normalizarUrlFotoCadastro === 'function'
+        ? helper.normalizarUrlFotoCadastro(src)
+        : '';
+      if (normalizada) {
+        src = normalizada;
+      } else if (
+        /^(?:cadastro_fotos\/|\/api\/cadastro\/(?:foto-arquivo\/|foto\/))/i.test(src)
+        || /^[^\/\\]+\.(?:png|jpe?g|gif|webp|bmp)$/i.test(src)
+      ) {
+        return '';
       }
       const caminho = src.split('?')[0].split('#')[0];
       const ehImagemPorExtensao = /\.(?:png|jpe?g|gif|webp|bmp)$/i.test(caminho);
       const ehEndpointImagem = /^(\/api\/cadastro\/foto-arquivo\/|\/api\/cadastro\/foto\/|\/api\/ia\/imagens\/|\/img\/)/i.test(src);
       const ehImagemMl = /^https?:\/\/http[0-9]*\.mlstatic\.com\//i.test(src);
-      if (ehImagemPorExtensao || ehEndpointImagem || ehImagemMl) {
+      const ehImagemExterna = /^(?:https?:)?\/\//i.test(src);
+      if (ehEndpointImagem || ehImagemMl || (ehImagemExterna && ehImagemPorExtensao)) {
         return escapeHtml(src).replace(/"/g, '&quot;');
       }
       return '';
@@ -340,7 +357,10 @@
       const src = normalizarUrlImagem(url);
       if (!src) return '';
       const altSeguro = escapeHtml(alt || 'Imagem do SKU');
-      return `<a class="jk-ia-img-link" href="${src}" target="_blank" rel="noopener noreferrer"><img class="jk-ia-img" src="${src}" data-jk-src="${src}" alt="${altSeguro}" loading="lazy"><span class="jk-ia-img-fallback">${altSeguro}</span></a>`;
+      const protegida = _ehUrlFotoCadastroProtegida(src);
+      const atributoLink = protegida ? `data-jk-auth-link="${src}"` : `href="${src}"`;
+      const atributoImagem = protegida ? `data-jk-auth-src="${src}"` : `src="${src}"`;
+      return `<a class="jk-ia-img-link" ${atributoLink} target="_blank" rel="noopener noreferrer"><img class="jk-ia-img" ${atributoImagem} data-jk-src="${src}" alt="${altSeguro}" loading="lazy"><span class="jk-ia-img-fallback">${altSeguro}</span></a>`;
     }
 
     function obterExtensaoArquivo(url) {
@@ -381,11 +401,11 @@
       });
       s = s.replace(/!\[([^\]\n]*)\]\(([^)\s]+)\)/g, (_, alt, url) => renderImagem(alt, url) || renderLink(alt || url, url));
       s = s.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (_, label, url) => renderImagem(label, url) || renderArquivo(label, url) || renderLink(label, url));
-      s = s.replace(/(^|[\s>])((?:cadastro_fotos\/)?[^\/\\\s<]+\.(?:png|jpe?g|gif|webp|bmp))/gi, (_, prefix, url) => {
+      s = s.replace(/(^|[\s>])((?:cadastro_fotos\/[^\\\s<]+|lojas\/[^\\\s<]+|[^\/\\\s<]+)\.(?:png|jpe?g|gif|webp|bmp))/gi, (_, prefix, url) => {
         const imagem = renderImagem('Imagem do SKU', url);
         return imagem ? `${prefix}${imagem}` : `${prefix}${url}`;
       });
-      s = s.replace(/(^|[\s>])((?:\/api\/cadastro\/foto-arquivo\/|\/api\/cadastro\/foto\/|\/api\/ia\/imagens\/|\/img\/|https?:\/\/)[^\s<]+\.(?:png|jpe?g|gif|webp|bmp)(?:\?[^\s<]+)?)/gi, (_, prefix, url) => {
+      s = s.replace(/(^|[\s>])((?:\/api\/cadastro\/foto-arquivo\/|\/api\/cadastro\/foto\/|\/api\/ia\/imagens\/|\/img\/|https?:\/\/|\/\/)[^\s<]+\.(?:png|jpe?g|gif|webp|bmp)(?:\?[^\s<]+)?)/gi, (_, prefix, url) => {
         const imagem = renderImagem('Imagem do SKU', url);
         return imagem ? `${prefix}${imagem}` : `${prefix}${url}`;
       });
@@ -400,13 +420,34 @@
       return s;
     }
 
+    function referenciasScopedValidasLinha(linha) {
+      const texto = String(linha || '').trim();
+      const padrao = /(?:cadastro_fotos\/lojas|lojas|\/api\/cadastro\/foto-arquivo\/lojas|\/api\/cadastro\/foto\/[^\/\\\s<>()]+\/lojas)\/[^\/\\\s<>()]+\/[^\\\s<>()]+\.(?:png|jpe?g|gif|webp|bmp)(?:\?[^\s<>()]+)?/gi;
+      const referencias = [];
+      for (const match of texto.matchAll(padrao)) {
+        const original = String(match[0] || '').trim();
+        const normalizada = normalizarUrlImagem(original);
+        if (
+          normalizada
+          && _ehUrlFotoCadastroProtegida(normalizada)
+          && /\/lojas\//i.test(normalizada)
+        ) referencias.push({ original, normalizada });
+      }
+      return referencias;
+    }
+
     function renderLinhaMidia(linha) {
       const texto = String(linha || '').trim();
+      const scoped = referenciasScopedValidasLinha(texto);
+      if (scoped.length !== 1) return '';
       let match = texto.match(/^!\[([^\]\n]*)\]\(([^)\s]+)\)$/);
       if (match) return renderImagem(match[1], match[2]) || renderLink(escapeHtml(match[1] || match[2]), match[2]);
       match = texto.match(/^\[([^\]\n]+)\]\(([^)\s]+)\)$/);
       if (match) return renderImagem(match[1], match[2]) || renderArquivo(match[1], match[2]) || renderLink(escapeHtml(match[1]), match[2]);
-      return renderImagem('Imagem gerada', texto) || renderArquivo(texto.split('/').pop(), texto);
+      if (scoped[0].original === texto) {
+        return renderImagem('Imagem gerada', scoped[0].normalizada);
+      }
+      return '';
     }
 
     function splitPipeCells(line) {
@@ -585,6 +626,7 @@
   function _imagemAlternativasChat(srcOriginal) {
     const raw = String(srcOriginal || '').trim();
     if (!raw) return [];
+    if (_ehUrlFotoCadastroProtegida(raw)) return [];
     const urls = [];
     const add = (url) => { if (url) urls.push(url); };
     const addPath = (path) => {
@@ -605,15 +647,6 @@
       addPath(path);
     }
 
-    const caminhoSemQuery = String(parsed ? parsed.pathname : raw).split('?')[0];
-    const matchArquivo = caminhoSemQuery.match(/^\/api\/cadastro\/foto-arquivo\/(.+)$/i);
-    if (matchArquivo) {
-      const arquivo = matchArquivo[1];
-      const tenant = encodeURIComponent(_clientId() || 'default');
-      addPath(`/api/cadastro/foto/${tenant}/${arquivo}`);
-      addPath(`/api/cadastro/foto/default/${arquivo}`);
-    }
-
     return _uniqueList(urls);
   }
 
@@ -621,13 +654,16 @@
     if (!container || !container.querySelectorAll) return;
     container.querySelectorAll('img.jk-ia-img').forEach(img => {
       if (img.dataset.jkImgFallbackReady === '1') return;
-      const alternativas = _imagemAlternativasChat(img.dataset.jkSrc || img.getAttribute('src') || '');
+      const srcOriginal = img.dataset.jkSrc || img.getAttribute('src') || '';
+      if (_ehUrlFotoCadastroProtegida(srcOriginal)) return;
+      const alternativas = _imagemAlternativasChat(srcOriginal);
       if (!alternativas.length) return;
       img.dataset.jkImgFallbackReady = '1';
       img.dataset.jkImgFallbacks = JSON.stringify(alternativas);
       img.dataset.jkImgFallbackIndex = '0';
 
       const atualizarLink = (url) => {
+        if (_ehUrlFotoCadastroProtegida(url)) return;
         const link = img.closest('a.jk-ia-img-link');
         if (link && url) link.href = url;
       };
@@ -641,7 +677,7 @@
           idx += 1;
           const proxima = lista[idx];
           img.dataset.jkImgFallbackIndex = String(idx);
-          if (proxima && proxima !== img.src && proxima !== img.getAttribute('src')) {
+          if (proxima && !_ehUrlFotoCadastroProtegida(proxima) && proxima !== img.src && proxima !== img.getAttribute('src')) {
             img.classList.remove('jk-ia-img-error');
             img.src = proxima;
             atualizarLink(proxima);

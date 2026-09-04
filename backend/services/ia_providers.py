@@ -13,14 +13,18 @@ import json
 import math
 import os
 import re
+import shutil
 import sqlite3
+import tempfile
 import threading
 import time
 import unicodedata
 import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from contextlib import contextmanager
 from datetime import datetime, timedelta
-from typing import Any, Callable, Optional
+from pathlib import Path
+from typing import Any, Callable, Iterator, Optional
 from urllib.parse import parse_qs, quote, quote_plus, unquote, urlencode, urlparse
 
 import numpy as np
@@ -47,6 +51,168 @@ from backend.services.ia_state import *
 
 _CODEX_PERSISTENT_TURNS_LOCK = threading.RLock()
 _CODEX_PERSISTENT_TURNS: dict[str, Any] = {}
+
+_CODEX_LOCAL_IMAGE_MIME_ALIASES = {
+    "image/jpg": "image/jpeg",
+    "image/pjpeg": "image/jpeg",
+}
+_CODEX_LOCAL_IMAGE_SUFFIXES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+_CODEX_LOCAL_IMAGE_DIR_PREFIX = ".jk-codex-input-"
+_CODEX_LOCAL_IMAGE_ORPHAN_TTL_SECONDS = 60 * 60
+
+
+def _codex_path_is_link(path: Path) -> bool:
+    try:
+        return bool(path.is_symlink() or (
+            hasattr(path, "is_junction") and path.is_junction()
+        ))
+    except OSError:
+        return True
+
+
+def _codex_cleanup_orphaned_image_dirs(
+    cwd_path: Path,
+    *,
+    now_epoch: float | None = None,
+    ttl_seconds: float = _CODEX_LOCAL_IMAGE_ORPHAN_TTL_SECONDS,
+) -> int:
+    """Remove only stale generated image directories in this tenant/user scope."""
+
+    try:
+        cwd_resolved = cwd_path.resolve(strict=True)
+        scope_root = cwd_resolved.parent.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return 0
+    session_dirs = [cwd_resolved]
+    try:
+        for value in list(scope_root.iterdir())[:512]:
+            if value == cwd_resolved or not value.is_dir() or _codex_path_is_link(value):
+                continue
+            resolved = value.resolve(strict=True)
+            resolved.relative_to(scope_root)
+            session_dirs.append(resolved)
+    except (OSError, RuntimeError, ValueError):
+        pass
+    now = float(time.time() if now_epoch is None else now_epoch)
+    ttl = max(60.0, float(ttl_seconds))
+    removed = 0
+    inspected = 0
+    for session_dir in session_dirs:
+        try:
+            candidates = list(session_dir.iterdir())[:64]
+        except OSError:
+            continue
+        for candidate in candidates:
+            inspected += 1
+            if inspected > 2048:
+                return removed
+            if (
+                not re.fullmatch(r"\.jk-codex-input-[A-Za-z0-9_-]{4,80}", candidate.name)
+                or not candidate.is_dir()
+                or _codex_path_is_link(candidate)
+            ):
+                continue
+            try:
+                resolved = candidate.resolve(strict=True)
+                resolved.relative_to(scope_root)
+                age = now - float(candidate.stat().st_mtime)
+                if age < ttl:
+                    continue
+                shutil.rmtree(resolved)
+                removed += 1
+            except (OSError, RuntimeError, ValueError):
+                continue
+    return removed
+
+
+def _codex_local_image_mime(conteudo: bytes) -> str:
+    """Detect only the image formats accepted by the Codex multimodal input."""
+
+    assinatura = bytes(conteudo or b"")[:12]
+    if assinatura.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if assinatura.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if assinatura.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if assinatura.startswith(b"RIFF") and assinatura[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+def _codex_local_image_spec(anexo: dict[str, Any]) -> tuple[bytes, str] | None:
+    """Validate declared type against magic bytes and choose a generated suffix."""
+
+    conteudo = anexo.get("bytes") or b""
+    if not isinstance(conteudo, (bytes, bytearray)) or not conteudo:
+        return None
+    mime_detectado = _codex_local_image_mime(bytes(conteudo))
+    if not mime_detectado:
+        return None
+    mime_declarado = str(anexo.get("mime_type") or "").strip().lower()
+    mime_declarado = _CODEX_LOCAL_IMAGE_MIME_ALIASES.get(mime_declarado, mime_declarado)
+    if mime_declarado.startswith("image/") and mime_declarado != mime_detectado:
+        return None
+    if mime_declarado and mime_declarado not in {
+        "application/octet-stream",
+        "binary/octet-stream",
+        mime_detectado,
+    }:
+        return None
+    return bytes(conteudo), _CODEX_LOCAL_IMAGE_SUFFIXES[mime_detectado]
+
+
+@contextmanager
+def _codex_local_image_files(
+    imagens: list[tuple[bytes, str]],
+    cwd: str,
+) -> Iterator[tuple[list[str], int]]:
+    """Materialize generated, turn-scoped image files inside the read-only cwd."""
+
+    if not imagens:
+        yield [], 0
+        return
+
+    cwd_path = Path(cwd).resolve(strict=True)
+    _codex_cleanup_orphaned_image_dirs(cwd_path)
+    with tempfile.TemporaryDirectory(prefix=_CODEX_LOCAL_IMAGE_DIR_PREFIX, dir=str(cwd_path)) as temp_dir:
+        temp_path = Path(temp_dir).resolve(strict=True)
+        try:
+            temp_path.relative_to(cwd_path)
+        except ValueError as exc:
+            raise RuntimeError("Diretorio temporario de imagem fora do escopo permitido.") from exc
+
+        paths: list[str] = []
+        failures = 0
+        # The caller-side attachment normalizer keeps generic chat at four and
+        # permits eight only for the allowlisted technical evidence-graph
+        # stage.  Retain that bounded stage-specific allowance here.
+        for indice, (conteudo, suffix) in enumerate(imagens[:8], start=1):
+            destino = temp_path / f"input-{indice:02d}{suffix}"
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_BINARY"):
+                flags |= os.O_BINARY
+            try:
+                descriptor = os.open(str(destino), flags, 0o600)
+                with os.fdopen(descriptor, "wb") as arquivo:
+                    arquivo.write(conteudo)
+                    arquivo.flush()
+                paths.append(str(destino))
+            except OSError:
+                failures += 1
+        yield paths, failures
+
+
+def _codex_prompt_com_imagem_indisponivel(prompt: str) -> str:
+    aviso = "Uma imagem anexada nao ficou disponivel; nao presuma seu conteudo."
+    limite = 52000
+    prefixo = str(prompt or "")[: max(0, limite - len(aviso) - 2)].rstrip()
+    return f"{prefixo}\n\n{aviso}" if prefixo else aviso
 
 
 def cancel_codex_persistent_turn(active_turn_key: str) -> bool:
@@ -808,6 +974,7 @@ def _chamar_codex_chat_com_thread(
     active_turn_key: str = "",
     reasoning_effort: str | None = None,
     on_thread_ready: Callable[[str], None] | None = None,
+    output_schema: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Execute Codex in read-only mode and optionally resume an operational thread."""
     from backend.services.codex.console import execution as console_execution
@@ -831,14 +998,25 @@ def _chamar_codex_chat_com_thread(
         blocos.append(contexto_planejado)
 
     anexos_texto = []
+    imagens: list[tuple[bytes, str]] = []
+    imagens_indisponiveis = 0
     for anexo in _ia_chat_normalizar_anexos(payload):
+        mime_declarado = str(anexo.get("mime_type") or "").strip().lower()
+        imagem = _codex_local_image_spec(anexo)
+        if mime_declarado.startswith("image/"):
+            if imagem is not None:
+                imagens.append(imagem)
+            else:
+                imagens_indisponiveis += 1
+            continue
+        if imagem is not None:
+            imagens.append(imagem)
+            continue
         texto = _ia_chat_extrair_texto_anexo(anexo)
         if texto:
             anexos_texto.append(f"Arquivo {anexo.get('name') or 'anexo'}:\n{texto[:12000]}")
-        elif str(anexo.get("mime_type") or "").startswith("image/"):
-            anexos_texto.append(
-                f"Imagem {anexo.get('name') or 'anexo'} anexada; esta integracao configurada do Codex aceita somente texto."
-            )
+    if imagens_indisponiveis:
+        anexos_texto.append("Uma imagem anexada nao ficou disponivel; nao presuma seu conteudo.")
     if anexos_texto:
         blocos.append("\n\n".join(anexos_texto)[:18000])
 
@@ -858,72 +1036,94 @@ def _chamar_codex_chat_com_thread(
         from openai_codex import ApprovalMode, Codex, CodexConfig
         from openai_codex.generated.v2_all import ReasoningEffort, ReasoningSummary
 
-        with Codex(
-            CodexConfig(
-                codex_bin=console_execution.runtime_bin(),
-                env=console_execution.sdk_env(),
-                cwd=cwd,
-                config_overrides=console_execution.readonly_config_overrides(),
+        with _codex_local_image_files(imagens, cwd) as (image_paths, image_file_failures):
+            turn_prompt = (
+                _codex_prompt_com_imagem_indisponivel(prompt)
+                if image_file_failures
+                else prompt
             )
-        ) as codex:
-            thread_kwargs = {
-                "cwd": cwd,
-                "model": model,
-                "approval_mode": ApprovalMode.deny_all,
-                "ephemeral": not bool(persist_thread),
-                "developer_instructions": (
-                    "Voce e o nucleo de raciocinio Codex do orquestrador do JK Sistema. "
-                    "Responda em portugues do Brasil, somente em texto, usando apenas o contexto fornecido. "
-                    "As ferramentas e fontes sao executadas pelo backend; nao use shell, arquivos ou rede por conta propria. "
-                    "Nao publique, envie ou alegue executar alteracoes."
-                ),
-            }
-            if str(thread_id or "").strip():
-                try:
-                    resume_kwargs = dict(thread_kwargs)
-                    resume_kwargs.pop("ephemeral", None)
-                    thread = codex.thread_resume(str(thread_id).strip(), **resume_kwargs)
-                except Exception as exc:
-                    if logger is not None:
-                        logger.warning("[IA CODEX] Thread operacional indisponivel; iniciando outra: %s", exc)
+            if image_paths:
+                from openai_codex import LocalImageInput, TextInput
+
+                turn_input: Any = [
+                    TextInput(turn_prompt),
+                    *(LocalImageInput(path) for path in image_paths),
+                ]
+            else:
+                # Preserve the legacy wire shape for every text-only call.
+                turn_input = turn_prompt
+
+            with Codex(
+                CodexConfig(
+                    codex_bin=console_execution.runtime_bin(),
+                    env=console_execution.sdk_env(),
+                    cwd=cwd,
+                    config_overrides=console_execution.readonly_config_overrides(),
+                )
+            ) as codex:
+                thread_kwargs = {
+                    "cwd": cwd,
+                    "model": model,
+                    "approval_mode": ApprovalMode.deny_all,
+                    "ephemeral": not bool(persist_thread),
+                    "developer_instructions": (
+                        "Voce e o nucleo de raciocinio Codex do orquestrador do JK Sistema. "
+                        "Responda em portugues do Brasil, somente em texto, usando apenas o contexto fornecido. "
+                        "As ferramentas e fontes sao executadas pelo backend; nao use shell, arquivos ou rede por conta propria. "
+                        "Nao publique, envie ou alegue executar alteracoes."
+                    ),
+                }
+                if str(thread_id or "").strip():
+                    try:
+                        resume_kwargs = dict(thread_kwargs)
+                        resume_kwargs.pop("ephemeral", None)
+                        thread = codex.thread_resume(str(thread_id).strip(), **resume_kwargs)
+                    except Exception as exc:
+                        if logger is not None:
+                            logger.warning(
+                                "[IA CODEX] Thread operacional indisponivel; iniciando outra (%s).",
+                                type(exc).__name__,
+                            )
+                        thread = codex.thread_start(**thread_kwargs)
+                else:
                     thread = codex.thread_start(**thread_kwargs)
-            else:
-                thread = codex.thread_start(**thread_kwargs)
-            resolved_thread_id = str(getattr(thread, "id", "") or thread_id or "").strip()
-            if resolved_thread_id and callable(on_thread_ready):
-                on_thread_ready(resolved_thread_id)
-            turn_kwargs = {
-                "cwd": cwd,
-                "model": model,
-                "approval_mode": ApprovalMode.deny_all,
-                "effort": getattr(ReasoningEffort, reasoning_effort_name, ReasoningEffort.medium),
-                "summary": ReasoningSummary.model_validate("auto"),
-            }
-            create_turn = getattr(thread, "turn", None)
-            if callable(create_turn):
-                turn = create_turn(prompt, **turn_kwargs)
-                with _CODEX_PERSISTENT_TURNS_LOCK:
-                    _CODEX_PERSISTENT_TURNS[registry_key] = turn
-                try:
-                    resultado = turn.run()
-                finally:
+                resolved_thread_id = str(getattr(thread, "id", "") or thread_id or "").strip()
+                if resolved_thread_id and callable(on_thread_ready):
+                    on_thread_ready(resolved_thread_id)
+                turn_kwargs = {
+                    "cwd": cwd,
+                    "model": model,
+                    "approval_mode": ApprovalMode.deny_all,
+                    "effort": getattr(ReasoningEffort, reasoning_effort_name, ReasoningEffort.medium),
+                    "summary": ReasoningSummary.model_validate("auto"),
+                }
+                if output_schema is not None:
+                    if not isinstance(output_schema, dict):
+                        raise TypeError("output_schema deve ser um objeto JSON Schema.")
+                    turn_kwargs["output_schema"] = output_schema
+                create_turn = getattr(thread, "turn", None)
+                if callable(create_turn):
+                    turn = create_turn(turn_input, **turn_kwargs)
                     with _CODEX_PERSISTENT_TURNS_LOCK:
-                        if _CODEX_PERSISTENT_TURNS.get(registry_key) is turn:
-                            _CODEX_PERSISTENT_TURNS.pop(registry_key, None)
-            else:
-                resultado = thread.run(prompt, **turn_kwargs)
+                        _CODEX_PERSISTENT_TURNS[registry_key] = turn
+                    try:
+                        resultado = turn.run()
+                    finally:
+                        with _CODEX_PERSISTENT_TURNS_LOCK:
+                            if _CODEX_PERSISTENT_TURNS.get(registry_key) is turn:
+                                _CODEX_PERSISTENT_TURNS.pop(registry_key, None)
+                else:
+                    resultado = thread.run(turn_input, **turn_kwargs)
     except HTTPException:
         raise
     except Exception as exc:
         if logger is not None:
-            logger.warning("[IA CODEX] Falha ao gerar resposta: %s", exc)
-        raise HTTPException(status_code=503, detail=f"Codex indisponivel: {exc}") from exc
+            logger.warning("[IA CODEX] Falha ao gerar resposta (%s).", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Codex indisponivel para gerar a resposta.") from exc
 
     status = str(getattr(getattr(resultado, "status", None), "value", getattr(resultado, "status", "")) or "")
     if status == "failed":
-        erro = getattr(resultado, "error", None)
-        detalhe = str(getattr(erro, "message", "") or "Codex falhou ao gerar a resposta.")
-        raise HTTPException(status_code=503, detail=detalhe)
+        raise HTTPException(status_code=503, detail="Codex falhou ao gerar a resposta.")
     resposta = getattr(resultado, "final_response", "")
     if not isinstance(resposta, str) or not resposta.strip():
         raise HTTPException(status_code=502, detail="Codex concluiu sem resposta final.")
@@ -935,6 +1135,7 @@ def _chamar_codex_chat(
     client_id: str,
     *,
     reasoning_effort: str | None = None,
+    output_schema: dict[str, Any] | None = None,
 ) -> str:
     """Executa o modelo Codex configurado sem expor ferramentas ou o workspace."""
 
@@ -942,6 +1143,7 @@ def _chamar_codex_chat(
         payload,
         client_id,
         reasoning_effort=reasoning_effort,
+        output_schema=output_schema,
     )
     return resposta
 

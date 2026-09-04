@@ -92,6 +92,15 @@ def test_transito_todas_as_lojas_agrega_listas_de_todas_as_lojas(monkeypatch):
 
 
 def test_visao_expoe_total_e_composicao_do_transito(monkeypatch):
+    monkeypatch.setattr(
+        visao,
+        "_resolver_escopo_loja_medias",
+        lambda *_args, **_kwargs: {
+            "loja": "JK Pecas",
+            "store_id": "store-jk",
+            "scope": "store",
+        },
+    )
     monkeypatch.setattr(visao, "_listar_bancos_vendas_tenant", lambda *_args: [], raising=False)
     monkeypatch.setattr(visao, "_migrar_arquivo_legado_para_tenant", lambda *_args: "", raising=False)
     monkeypatch.setattr(visao, "_cadastro_mapa_fotos_locais", lambda *_args: {}, raising=False)
@@ -113,7 +122,14 @@ def test_visao_expoe_total_e_composicao_do_transito(monkeypatch):
         },
     )
 
-    resposta = asyncio.run(visao.api_medias_compras_visao(meses=3, loja="JK Pecas", client_id="tenant-a"))
+    resposta = asyncio.run(
+        visao.api_medias_compras_visao(
+            meses=3,
+            loja="JK Pecas",
+            store_id="store-jk",
+            client_id="tenant-a",
+        )
+    )
 
     assert len(resposta["itens"]) == 1
     item = resposta["itens"][0]

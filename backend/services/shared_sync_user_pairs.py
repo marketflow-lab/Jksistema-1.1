@@ -427,6 +427,16 @@ def _shared_sync_pull_pair_scope_serialized(
             target_sessao.get("username") or "",
             state_scope,
         )
+        base_snapshot_hash = ""
+        if immutable_current_snapshot_id and not base_snapshot_id:
+            try:
+                base_snapshot_hash = _shared_sync_state_snapshot_hash(
+                    target_sessao.get("client_id"),
+                    target_sessao.get("username") or "",
+                    state_scope,
+                )
+            except Exception:
+                base_snapshot_hash = ""
         if (
             immutable_current_snapshot_id
             and base_snapshot_id == immutable_current_snapshot_id
@@ -442,6 +452,20 @@ def _shared_sync_pull_pair_scope_serialized(
                     )
             except Exception:
                 base_bundle = None
+        elif immutable_current_snapshot_id and base_snapshot_hash:
+            current_hash = str(meta.get("snapshot_hash") or "").strip().lower()
+            legacy_hash = str(base_snapshot_hash or "").strip().lower()
+            if re.fullmatch(r"[a-f0-9]{64}", legacy_hash) and legacy_hash == current_hash:
+                base_bundle = bundle
+            else:
+                recovered = _shared_sync_obter_base_causal_por_hash(
+                    bundle_id,
+                    legacy_hash,
+                    expected_client_id=str(target_sessao.get("client_id") or ""),
+                    expected_scope=scope,
+                )
+                if recovered is not None:
+                    base_bundle, _ = recovered
     scope_config = {
         "user_share": True,
         "share_between_users": True,

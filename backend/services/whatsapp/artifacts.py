@@ -92,6 +92,32 @@ def _whatsapp_image_roots(client_id: Any) -> list[Path]:
     # become a generic local-file exfiltration primitive.
     return [(_info_dir() / safe_client / "cadastro_fotos").resolve()]
 
+
+def _whatsapp_store_photo_segment_active(
+    path: Path,
+    tenant_photos: Path,
+    client_id: Any,
+) -> bool:
+    """Reject orphan store folders even when they are physically in the tenant."""
+
+    try:
+        relative = path.relative_to(tenant_photos)
+    except ValueError:
+        return False
+    parts = relative.parts
+    if not parts or str(parts[0]).casefold() != "lojas":
+        return True
+    if len(parts) != 3:
+        return False
+    from backend.services.cadastro_fotos import _cadastro_store_id_por_segmento_foto
+
+    return bool(
+        _cadastro_store_id_por_segmento_foto(
+            str(client_id or ""),
+            str(parts[1] or ""),
+        )
+    )
+
 def _whatsapp_resolve_image_reference(reference: Any, client_id: Any) -> Optional[Path]:
     raw = unquote(str(reference or "").strip().strip("<>\"'"))
     if not raw or re.match(r"^https?://", raw, re.IGNORECASE):
@@ -103,21 +129,61 @@ def _whatsapp_resolve_image_reference(reference: Any, client_id: Any) -> Optiona
     tenant_photos = roots[0]
     candidates: list[Path] = []
     if raw_path.lower().startswith("/api/cadastro/foto-arquivo/"):
-        candidates.append(tenant_photos / Path(raw_path).name)
+        relativo = raw_path[len("/api/cadastro/foto-arquivo/"):].lstrip("/")
+        if relativo.lower().startswith("cadastro_fotos/"):
+            relativo = relativo.split("/", 1)[1]
+        partes = relativo.split("/")
+        if partes and partes[0].lower() == "lojas":
+            if len(partes) == 3:
+                candidates.append(tenant_photos.joinpath(*partes))
+        elif len(partes) == 1 and partes[0]:
+            candidates.append(tenant_photos / partes[0])
     elif raw_path.lower().startswith("/api/cadastro/foto/"):
-        candidates.append(tenant_photos / Path(raw_path).name)
+        relativo = raw_path[len("/api/cadastro/foto/"):].lstrip("/")
+        partes = relativo.split("/")
+        safe_client = console_attachments.safe_id(str(client_id or ""), "default")
+        client_referencia = (
+            console_attachments.safe_id(partes[0], "default") if partes else ""
+        )
+        if client_referencia != safe_client:
+            return None
+        caminho_tenant = partes[1:]
+        if (
+            len(caminho_tenant) == 3
+            and caminho_tenant[0].lower() == "lojas"
+        ):
+            candidates.append(tenant_photos.joinpath(*caminho_tenant))
+        elif len(caminho_tenant) == 1 and caminho_tenant[0]:
+            # Contrato legado: /foto/<client_id>/<basename>.
+            candidates.append(tenant_photos / caminho_tenant[0])
     elif raw_path.lower().startswith("cadastro_fotos/"):
-        candidates.append(tenant_photos / Path(raw_path).name)
+        relativo = raw_path.split("/", 1)[1]
+        partes = relativo.split("/")
+        if partes and partes[0].lower() == "lojas":
+            if len(partes) == 3:
+                candidates.append(tenant_photos.joinpath(*partes))
+        elif len(partes) == 1 and partes[0]:
+            candidates.append(tenant_photos / partes[0])
     else:
         candidate = Path(raw_path)
         if candidate.is_absolute():
             candidates.append(candidate)
-        else:
+        elif len(candidate.parts) == 3 and candidate.parts[0].lower() == "lojas":
+            candidates.append(tenant_photos.joinpath(*candidate.parts))
+        elif len(candidate.parts) == 1 and candidate.name:
             candidates.append(tenant_photos / candidate.name)
     for candidate in candidates:
         try:
             resolved = candidate.resolve()
-            if resolved.is_file() and _whatsapp_path_within(resolved, roots):
+            if (
+                resolved.is_file()
+                and _whatsapp_path_within(resolved, roots)
+                and _whatsapp_store_photo_segment_active(
+                    resolved,
+                    tenant_photos,
+                    client_id,
+                )
+            ):
                 return resolved
         except OSError:
             continue

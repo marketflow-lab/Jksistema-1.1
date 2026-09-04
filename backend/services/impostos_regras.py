@@ -31,6 +31,7 @@ from backend.schemas import (
 )
 from backend.services.impostos_common import *
 from backend.services.impostos_context import get_tenant_id, get_tenant_path
+from backend.services.path_coordination import path_lock_for
 
 logger = None
 
@@ -419,7 +420,7 @@ async def simular_impostos(req: ImpostosSimulacaoRequest, client_id: str = Depen
     return _montar_simulacao_impostos(client_id, req.reserva_percentual)
 
 
-async def aplicar_impostos_no_cadastro(client_id: str = Depends(get_tenant_id)):
+async def _aplicar_impostos_no_cadastro_sem_lock(client_id: str):
     df, arquivo = _carregar_cadastro_para_impostos(client_id)
     if df.empty or not arquivo or not os.path.exists(arquivo):
         raise HTTPException(status_code=404, detail="Cadastro nÃ£o encontrado para aplicar impostos.")
@@ -456,6 +457,48 @@ async def aplicar_impostos_no_cadastro(client_id: str = Depends(get_tenant_id)):
         preservados,
     )
     return {"success": True, "atualizados": atualizados, "preservados": preservados, "qtd_regras": len(regras)}
+
+
+async def aplicar_impostos_no_cadastro(
+    client_id: str = Depends(get_tenant_id),
+):
+    # Materialize candidates independently, then re-read under the canonical
+    # store lock.  A scoped SKU created between both reads is therefore seen
+    # before any global fiscal value can be persisted.
+    preview, arquivo = _carregar_cadastro_para_impostos(client_id)
+    if preview.empty or not arquivo or not os.path.exists(arquivo):
+        raise HTTPException(
+            status_code=404,
+            detail="Cadastro nÃ£o encontrado para aplicar impostos.",
+        )
+    skus_preview = preview["sku"].astype(str).tolist() if "sku" in preview.columns else []
+    from backend.services.cadastro_compatibilidade import (
+        bloquear_mutacao_legada_sem_sku_controlado,
+        exigir_mutacao_legada_sem_sku_controlado,
+    )
+
+    with bloquear_mutacao_legada_sem_sku_controlado(client_id, skus_preview):
+        with path_lock_for(arquivo):
+            atual, arquivo_atual = _carregar_cadastro_para_impostos(client_id)
+            if (
+                atual.empty
+                or not arquivo_atual
+                or os.path.realpath(arquivo_atual) != os.path.realpath(arquivo)
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "legacy_catalog_changed",
+                        "message": "O cadastro global mudou antes da aplicacao dos impostos.",
+                    },
+                )
+            exigir_mutacao_legada_sem_sku_controlado(
+                client_id,
+                atual["sku"].astype(str).tolist()
+                if "sku" in atual.columns
+                else [],
+            )
+            return await _aplicar_impostos_no_cadastro_sem_lock(client_id)
 
 
 configure_impostos_regras_runtime()

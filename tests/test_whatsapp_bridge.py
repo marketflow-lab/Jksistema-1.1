@@ -2911,6 +2911,50 @@ def test_whatsapp_product_photo_request_is_explicit_and_resolved_per_tenant(tmp_
     assert whatsapp_bridge._whatsapp_find_image_by_sku("manda a foto do SKU 001", "", "000002") == client_b.resolve()
 
 
+def test_whatsapp_rejeita_segmento_de_loja_que_nao_esta_ativo_no_tenant(
+    tmp_path, monkeypatch
+):
+    from backend.services import cadastro_fotos
+
+    monkeypatch.setattr(whatsapp_bridge, "_info_dir", lambda: tmp_path / "info")
+    segmento_ativo = "sid-" + ("a" * 64)
+    segmento_orfao = "sid-" + ("b" * 64)
+    foto_ativa = (
+        tmp_path
+        / "info"
+        / "000002"
+        / "cadastro_fotos"
+        / "lojas"
+        / segmento_ativo
+        / "001.png"
+    )
+    foto_orfa = foto_ativa.parent.parent / segmento_orfao / "001.png"
+    _write_test_png(foto_ativa)
+    _write_test_png(foto_orfa)
+    monkeypatch.setattr(
+        cadastro_fotos,
+        "_cadastro_store_id_por_segmento_foto",
+        lambda client_id, segmento: (
+            "store-ativo"
+            if client_id == "000002" and segmento == segmento_ativo
+            else ""
+        ),
+    )
+
+    assert whatsapp_bridge._whatsapp_resolve_image_reference(
+        f"/api/cadastro/foto-arquivo/lojas/{segmento_ativo}/001.png",
+        "000002",
+    ) == foto_ativa.resolve()
+    assert whatsapp_bridge._whatsapp_resolve_image_reference(
+        f"/api/cadastro/foto-arquivo/lojas/{segmento_orfao}/001.png",
+        "000002",
+    ) is None
+    assert whatsapp_bridge._whatsapp_resolve_image_reference(
+        str(foto_orfa),
+        "000002",
+    ) is None
+
+
 def test_whatsapp_requested_product_photo_is_sent_as_media_and_internal_link_is_removed(tmp_path, monkeypatch):
     monkeypatch.setattr(whatsapp_bridge, "_info_dir", lambda: tmp_path / "info")
     image = tmp_path / "info" / "000002" / "cadastro_fotos" / "001.png"

@@ -38,31 +38,84 @@ _vertex_ai_modelo_padrao = runtime_adapter("_vertex_ai_modelo_padrao")
 _vertex_modelo_nome_curto = runtime_adapter("_vertex_modelo_nome_curto")
 
 
-def ml_ia_treinamento_obter(loja: Optional[str] = None, client_id: str = Depends(get_tenant_id)):
+def _resolver_escopo_loja_treinamento(
+    client_id: str,
+    loja: Optional[str] = None,
+    store_id: Optional[str] = None,
+) -> tuple[str, str]:
+    loja_texto = str(loja or "").strip()
+    store_id_texto = str(store_id or "").strip()
+    if not loja_texto and not store_id_texto:
+        return "", ""
+    from backend.services.cadastro_compatibilidade import (
+        resolver_loja_ativa_para_leitura,
+    )
+
+    identidade = resolver_loja_ativa_para_leitura(
+        client_id,
+        loja_texto,
+        store_id_texto,
+    )
+    if not identidade.get("loja_resolvida"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "store_scope_unresolved",
+                "message": "Nome de loja ambiguo ou inexistente; informe o store_id exato.",
+            },
+        )
+    return (
+        str(identidade.get("loja") or "").strip(),
+        str(identidade.get("store_id") or "").strip(),
+    )
+
+
+def ml_ia_treinamento_obter(
+    loja: Optional[str] = None,
+    store_id: Optional[str] = None,
+    client_id: str = Depends(get_tenant_id),
+):
     # A tela edita uma camada por vez. Herdar o global aqui faria um salvamento
     # rapido materializar/copiar a camada global dentro do perfil da loja.
-    data = _ia_treinamento_ppv_resolver(client_id, loja, include_inherited=False)
-    return {"success": True, **data}
+    loja, store_id = _resolver_escopo_loja_treinamento(client_id, loja, store_id)
+    data = _ia_treinamento_ppv_resolver(
+        client_id,
+        loja,
+        store_id=store_id,
+        include_inherited=False,
+    )
+    return {"success": True, **data, "store_id": store_id}
 
 
 def ml_ia_treinamento_salvar(req: IATreinamentoPerguntasPosVendaRequest, client_id: str = Depends(get_tenant_id)):
+    loja, store_id = _resolver_escopo_loja_treinamento(client_id, req.loja, req.store_id)
     data = _ia_treinamento_ppv_salvar(
         client_id,
         req.orientacoes,
         req.tipo,
-        loja=req.loja,
+        loja=loja,
         contexto_loja=req.contexto_loja,
         compatibilidade_autopecas=req.compatibilidade_autopecas,
         proibicoes=req.proibicoes,
         sku=req.sku,
         notas_sku=req.notas_sku,
         exemplos=req.exemplos,
+        store_id=store_id,
     )
-    return {"success": True, **data}
+    return {"success": True, **data, "store_id": store_id}
 
 
-def ml_ia_treinamento_listar_skus(client_id: str = Depends(get_tenant_id)):
-    return {"success": True, "produtos": _ia_treinamento_ppv_listar_skus(client_id)}
+def ml_ia_treinamento_listar_skus(
+    loja: Optional[str] = None,
+    store_id: Optional[str] = None,
+    client_id: str = Depends(get_tenant_id),
+):
+    loja, store_id = _resolver_escopo_loja_treinamento(client_id, loja, store_id)
+    return {
+        "success": True,
+        "store_id": store_id,
+        "produtos": _ia_treinamento_ppv_listar_skus(client_id, store_id or loja),
+    }
 
 
 def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest, client_id: str = Depends(get_tenant_id)):
@@ -78,7 +131,7 @@ def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest,
         else ML_RESPOSTA_PERGUNTA_MAX_CHARS
     )
     contexto_extra = str(req.contexto or "").strip()
-    loja = str(req.loja or "").strip()
+    loja, store_id = _resolver_escopo_loja_treinamento(client_id, req.loja, req.store_id)
     assinatura_loja = _perguntas_ia_assinatura_loja(loja)
     metodo = (
         "O Metodo RVC comercial fica desativado neste pos-venda: acolha, responda o confirmado e oriente o proximo passo sem chamada de compra. "
@@ -111,7 +164,11 @@ def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest,
         {"text": pergunta},
     )
     sku_selecionado = _normalizar_sku_mes(str(req.sku or "").strip())
-    produto_sku = _ia_treinamento_ppv_produto_por_sku(client_id, sku_selecionado) if sku_selecionado else {}
+    produto_sku = (
+        _ia_treinamento_ppv_produto_por_sku(client_id, sku_selecionado, store_id or loja)
+        if sku_selecionado
+        else {}
+    )
     if produto_sku:
         mensagem += "\n\n" + _untrusted_json_block(
             "produto_cadastro_nao_confiavel",
@@ -131,6 +188,7 @@ def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest,
             "tipo": "treinamento_ia",
             "tipo_treinamento": tipo_treinamento,
             "loja": loja,
+            "store_id": store_id,
             "sku": sku_selecionado,
             "produto": produto_sku,
         },
@@ -161,7 +219,12 @@ def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest,
     # A simulacao exibe literalmente o texto nao vazio produzido pelo modelo.
     # Politica, assinatura e estilo sao resolvidos antes da geracao, nunca por
     # um redator ou compactador posterior.
-    return {"success": True, "model": model_usado, "resposta": resposta_texto}
+    return {
+        "success": True,
+        "model": model_usado,
+        "resposta": resposta_texto,
+        "store_id": store_id,
+    }
 
 
 __all__ = [

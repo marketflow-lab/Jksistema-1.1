@@ -39,6 +39,7 @@ from fastapi import Depends, File, Form, Header, HTTPException, Request, UploadF
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from backend.services.favoritos_margem import margem_calcular_anuncio
+from backend.services.mercadolivre_legacy_api import _ml_cfg_com_store_id_context
 from backend.services.runtime_bridge import bind_runtime_globals
 
 
@@ -3592,8 +3593,12 @@ def _ml_api_items_multiget_tenant(client_id: str | None, item_ids: list[str] | t
         cfg = dict(integracoes.get("mercadolivre") or {})
         if not nome_loja or not cfg.get("access_token"):
             continue
+        store_id = str((loja or {}).get("store_id") or "").strip()
+        if not store_id:
+            continue
         cfg["app_id"] = cfg.get("app_id") or cfg.get("id") or cfg.get("client_id")
         cfg["client_secret"] = cfg.get("client_secret") or cfg.get("secret")
+        cfg = _ml_cfg_com_store_id_context(cfg, store_id)
         lojas_oauth.append((nome_loja, cfg))
 
     def _itens_payload(payload):
@@ -3705,8 +3710,12 @@ def _ml_api_item_com_oauth_tenant(client_id: str | None, item_id: str):
         cfg = dict(integracoes.get("mercadolivre") or {})
         if not nome_loja or not cfg.get("access_token"):
             continue
+        store_id = str((loja or {}).get("store_id") or "").strip()
+        if not store_id:
+            continue
         cfg["app_id"] = cfg.get("app_id") or cfg.get("id") or cfg.get("client_id")
         cfg["client_secret"] = cfg.get("client_secret") or cfg.get("secret")
+        cfg = _ml_cfg_com_store_id_context(cfg, store_id)
         try:
             resp, _cfg = _ml_api_request(
                 client_id,
@@ -3747,8 +3756,12 @@ def _ml_api_user_com_oauth_tenant(client_id: str | None, user_id: str | None):
         cfg = dict(integracoes.get("mercadolivre") or {})
         if not nome_loja or not cfg.get("access_token"):
             continue
+        store_id = str((loja or {}).get("store_id") or "").strip()
+        if not store_id:
+            continue
         cfg["app_id"] = cfg.get("app_id") or cfg.get("id") or cfg.get("client_id")
         cfg["client_secret"] = cfg.get("client_secret") or cfg.get("secret")
+        cfg = _ml_cfg_com_store_id_context(cfg, store_id)
         try:
             resp, _cfg = _ml_api_request(
                 client_id,
@@ -3811,8 +3824,12 @@ def _ml_api_visitas_com_oauth_tenant(client_id: str | None, item_id: str | None,
         cfg = dict(integracoes.get("mercadolivre") or {})
         if not nome_loja or not cfg.get("access_token"):
             continue
+        store_id = str((loja or {}).get("store_id") or "").strip()
+        if not store_id:
+            continue
         cfg["app_id"] = cfg.get("app_id") or cfg.get("id") or cfg.get("client_id")
         cfg["client_secret"] = cfg.get("client_secret") or cfg.get("secret")
+        cfg = _ml_cfg_com_store_id_context(cfg, store_id)
         lojas_oauth.append((nome_loja, cfg))
 
     def _consultar_visitas_loja(nome_loja, cfg):

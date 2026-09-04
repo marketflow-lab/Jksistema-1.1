@@ -23,9 +23,17 @@
       "btnAtualizar",
       "btnAtualizarCustosImpostos",
       "btnEditarCadastro",
+      "btnFecharImportacaoCatalogo",
+      "btnAplicarImportacaoCatalogo",
+      "btnCancelarImportacaoCatalogo",
+      "btnImportarBling",
       "btnImportarColunas",
+      "btnImportarMercadoLivre",
       "btnIncluirCadastro",
       "btnSyncNcm",
+      "cadastroLojaAviso",
+      "cadastroLojaBotoes",
+      "cadastroLojaSelect",
       "filtro",
       "filtroCustos",
       "fornecedorBancoBeneficiario",
@@ -50,8 +58,22 @@
       "fornecedorTelefone",
       "inputAtualizarCustosImpostos",
       "inputImportarColunas",
+      "importacaoCatalogoConflitos",
+      "importacaoCatalogoConflitosLista",
+      "importacaoCatalogoConflitosTotal",
+      "importacaoCatalogoDescricao",
+      "importacaoCatalogoIgnorados",
+      "importacaoCatalogoInalterados",
+      "importacaoCatalogoLoja",
+      "importacaoCatalogoNovos",
+      "importacaoCatalogoPreencher",
+      "importacaoCatalogoProgress",
+      "importacaoCatalogoProgressText",
+      "importacaoCatalogoStatus",
+      "importacaoCatalogoTitulo",
       "lojaCustosSelect",
       "listaFornecedores",
+      "modalImportacaoCatalogo",
       "paginacao",
       "paginacaoCustos",
       "painelCustos",
@@ -71,33 +93,44 @@
       "tBody",
       "tBodyCustos",
       "tBodyMlb",
+      "tBodyImportacaoCatalogo",
       "tCols",
       "tHead"
     ],
     "static/cadastro_editar.html": [
       "buscaSku",
+      "cadastroLojaAviso",
+      "cadastroLojaSelect",
       "listaPaginacao",
       "listaSkus",
       "status"
     ],
     "static/cadastro_editar_item.html": [
+      "btnBuscarMercadoLivre",
       "btnEnviarFoto",
+      "cadastroLojaAviso",
+      "cadastroLojaSelect",
       "formEditarItem",
       "formGrid",
       "fotoFile",
       "fotoPaste",
       "fotoPreview",
-      "status"
+      "status",
+      "voltarCadastroLink"
     ],
     "static/cadastro_incluir.html": [
+      "btnBuscarMercadoLivre",
       "btnLimpar",
       "btnPasteFoto",
       "btnUploadFoto",
+      "cadastroLojaAviso",
+      "cadastroLojaSelect",
       "formGrid",
       "formIncluir",
       "fotoInput",
       "fotoPreview",
-      "status"
+      "status",
+      "voltarCadastroLink"
     ]
   },
   "budgets": {
@@ -109,23 +142,31 @@
   },
   "scripts_by_page": {
     "static/cadastro.html": [
+      "static/cadastro/form/00-core.js",
       "static/cadastro/00-runtime.js",
       "static/cadastro/01-core.js",
       "static/cadastro/main/01-produtos.js",
       "static/cadastro/main/02-custos-mlb.js",
       "static/cadastro/main/03-actions.js",
       "static/cadastro/main/05-fornecedores.js",
+      "static/cadastro/main/06-importacoes-catalogos.js",
       "static/cadastro/main/04-init.js"
     ],
     "static/cadastro_editar.html": [
+      "static/cadastro/form/00-core.js",
       "static/cadastro/seletor-edicao.js"
     ],
     "static/cadastro_editar_item.html": [
       "static/cadastro/form/00-core.js",
+      "static/cadastro/form/01-mercado-livre.js",
+      "static/cadastro/form/02-mlb-editor.js",
+      "static/cadastro/editar-item-layout.js",
       "static/cadastro/editar-item.js"
     ],
     "static/cadastro_incluir.html": [
       "static/cadastro/form/00-core.js",
+      "static/cadastro/form/01-mercado-livre.js",
+      "static/cadastro/form/02-mlb-editor.js",
       "static/cadastro/incluir-item.js"
     ]
   }

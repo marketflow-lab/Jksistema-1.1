@@ -6,6 +6,10 @@ import pytest
 from fastapi import HTTPException
 
 from backend.services import integracoes
+from backend.services.cadastro_fotos_coordenacao import (
+    CadastroFotosCoordenacaoErro,
+    bloquear_transicao_fotos_tenant,
+)
 
 
 def _configure(tmp_path):
@@ -60,6 +64,306 @@ def _bling_lojas():
     ]
 
 
+def test_salvar_lojas_espera_transicao_de_fotos_do_tenant(tmp_path):
+    arquivo = _configure(tmp_path)
+    integracoes.salvar_lojas(
+        "000002",
+        [{"store_id": "store-a", "nome": "Loja A", "integracoes": {}}],
+    )
+    tenant = arquivo.parent
+    iniciou = threading.Event()
+    terminou = threading.Event()
+    falhas = []
+
+    def salvar_em_paralelo():
+        iniciou.set()
+        try:
+            integracoes.salvar_lojas(
+                "000002",
+                [
+                    {
+                        "store_id": "store-a",
+                        "nome": "Loja A renomeada",
+                        "integracoes": {},
+                    }
+                ],
+            )
+        except BaseException as exc:  # pragma: no cover - evidencia diagnostica
+            falhas.append(exc)
+        finally:
+            terminou.set()
+
+    with bloquear_transicao_fotos_tenant(tenant, timeout_seconds=0):
+        worker = threading.Thread(target=salvar_em_paralelo, daemon=True)
+        worker.start()
+        assert iniciou.wait(1)
+        assert not terminou.wait(0.2)
+
+    worker.join(timeout=3)
+    assert terminou.is_set()
+    assert falhas == []
+    persistidas = json.loads(arquivo.read_text(encoding="utf-8"))
+    assert persistidas[0]["nome"] == "Loja A renomeada"
+
+
+@pytest.mark.parametrize(
+    ("error_code", "expected_code"),
+    [
+        ("locked", "cadastro_photo_transition_busy"),
+        ("unsafe_tenant", "cadastro_photo_transition_unavailable"),
+        ("lock_unsafe", "cadastro_photo_transition_unavailable"),
+        ("lock_unavailable", "cadastro_photo_transition_unavailable"),
+    ],
+)
+def test_falha_de_coordenacao_distingue_contenda_de_indisponibilidade(
+    monkeypatch,
+    tmp_path,
+    error_code,
+    expected_code,
+):
+    arquivo = _configure(tmp_path)
+    integracoes.salvar_lojas(
+        "000002",
+        [{"store_id": "store-a", "nome": "Loja A", "integracoes": {}}],
+    )
+    antes = arquivo.read_bytes()
+
+    class _FalhaCoordenacao:
+        def __enter__(self):
+            raise CadastroFotosCoordenacaoErro(
+                error_code,
+                "Falha de coordenacao simulada.",
+            )
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(
+        integracoes,
+        "bloquear_transicao_fotos_tenant",
+        lambda *_args, **_kwargs: _FalhaCoordenacao(),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        integracoes.salvar_lojas(
+            "000002",
+            [
+                {
+                    "store_id": "store-a",
+                    "nome": "Nao deve gravar",
+                    "integracoes": {},
+                }
+            ],
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == expected_code
+    assert arquivo.read_bytes() == antes
+
+
+def test_lojas_homonimas_sem_id_recebem_identidades_distintas(tmp_path):
+    arquivo = _configure(tmp_path)
+    lojas = [
+        {"nome": "Loja Igual", "integracoes": {}},
+        {"nome": "Loja Igual", "integracoes": {}},
+    ]
+
+    integracoes.salvar_lojas("000002", lojas)
+
+    persistidas = json.loads(arquivo.read_text(encoding="utf-8"))
+    ids = [item["store_id"] for item in persistidas]
+    assert all(ids)
+    assert len(set(ids)) == 2
+
+
+def test_migracao_legada_ignora_nome_ou_alias_ambiguo(monkeypatch, tmp_path):
+    _configure(tmp_path)
+    lojas = [
+        {
+            "store_id": "loja-a",
+            "nome": "Loja Igual",
+            "nomes_anteriores": ["Alias Compartilhado"],
+            "integracoes": {},
+        },
+        {
+            "store_id": "loja-b",
+            "nome": " loja igual ",
+            "nomes_anteriores": [" alias compartilhado "],
+            "integracoes": {},
+        },
+    ]
+    monkeypatch.setattr(
+        integracoes,
+        "_integracoes_coletar_legadas",
+        lambda: {
+            "LOJA IGUAL": {"bling": {"access_token": "nao-migrar"}},
+            "ALIAS COMPARTILHADO": {
+                "mercadolivre": {"access_token": "tambem-nao-migrar"}
+            },
+        },
+    )
+
+    resultado, mudou = integracoes._integracoes_mesclar_legadas(
+        "default",
+        lojas,
+        bootstrap_virgem=True,
+    )
+
+    assert mudou is False
+    assert all(not loja["integracoes"] for loja in resultado)
+
+
+def test_migracao_legada_por_alias_exato_exige_identidade_unica(monkeypatch, tmp_path):
+    _configure(tmp_path)
+    lojas = [
+        {
+            "store_id": "loja-a",
+            "nome": "Nome Atual",
+            "nomes_anteriores": ["Nome Legado"],
+            "integracoes": {},
+        },
+        {"store_id": "loja-b", "nome": "Outra", "integracoes": {}},
+    ]
+    monkeypatch.setattr(
+        integracoes,
+        "_integracoes_coletar_legadas",
+        lambda: {" nome legado ": {"bling": {"access_token": "migrado"}}},
+    )
+
+    resultado, mudou = integracoes._integracoes_mesclar_legadas(
+        "default",
+        lojas,
+        bootstrap_virgem=True,
+    )
+
+    assert mudou is True
+    assert resultado[0]["integracoes"]["bling"]["access_token"] == "migrado"
+    assert resultado[1]["integracoes"] == {}
+
+
+def test_carregar_loja_legada_persiste_store_id_estavel_com_sync_metadata(tmp_path):
+    arquivo = _configure(tmp_path)
+    arquivo.parent.mkdir(parents=True, exist_ok=True)
+    arquivo.write_text(
+        json.dumps(
+            [
+                {
+                    "nome": "Loja Legada",
+                    "integracoes": {},
+                    "_sync_version": 1,
+                    "_sync_updated_at": "2026-08-28T12:00:00Z",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    primeira = integracoes.carregar_lojas("000002")
+    store_id = primeira[0]["store_id"]
+    persistida = json.loads(arquivo.read_text(encoding="utf-8"))
+    segunda = integracoes.carregar_lojas("000002")
+
+    assert store_id
+    assert persistida[0]["store_id"] == store_id
+    assert segunda[0]["store_id"] == store_id
+
+
+def test_store_id_duplicado_e_rejeitado_sem_alterar_arquivo(tmp_path):
+    arquivo = _configure(tmp_path)
+    integracoes.salvar_lojas("000002", [{"nome": "Original", "integracoes": {}}])
+    antes = arquivo.read_bytes()
+
+    with pytest.raises(HTTPException) as exc_info:
+        integracoes.salvar_lojas(
+            "000002",
+            [
+                {"store_id": "duplicado", "nome": "A", "integracoes": {}},
+                {"store_id": "duplicado", "nome": "B", "integracoes": {}},
+            ],
+        )
+
+    assert exc_info.value.status_code == 409
+    assert arquivo.read_bytes() == antes
+
+
+def test_renome_preserva_store_id_fornecido(tmp_path):
+    arquivo = _configure(tmp_path)
+    lojas = [{"nome": "Antes", "integracoes": {}}]
+    integracoes.salvar_lojas("000002", lojas)
+    store_id = lojas[0]["store_id"]
+
+    integracoes.salvar_lojas(
+        "000002",
+        [{"store_id": store_id, "nome": "Depois", "integracoes": {}}],
+    )
+
+    persistida = json.loads(arquivo.read_text(encoding="utf-8"))[0]
+    assert persistida["store_id"] == store_id
+    assert persistida["nome"] == "Depois"
+
+
+def test_store_ids_case_only_sao_identidades_distintas(tmp_path):
+    arquivo = _configure(tmp_path)
+    integracoes.salvar_lojas(
+        "000002",
+        [
+            {"store_id": "StoreA", "nome": "Loja", "integracoes": {}},
+            {"store_id": "storea", "nome": "Loja", "integracoes": {}},
+        ],
+    )
+
+    persistidas = json.loads(arquivo.read_text(encoding="utf-8"))
+    assert [item["store_id"] for item in persistidas] == ["StoreA", "storea"]
+
+
+def test_refresh_bling_com_store_id_nao_atualiza_homonima(monkeypatch, tmp_path):
+    _configure(tmp_path)
+    lojas = [
+        {
+            "store_id": "store-a",
+            "nome": "Loja Igual",
+            "integracoes": {"bling": {
+                "id": "client-a",
+                "secret": "secret-a",
+                "access_token": "access-a",
+                "refresh_token": "refresh-a",
+            }},
+        },
+        {
+            "store_id": "store-b",
+            "nome": "Loja Igual",
+            "integracoes": {"bling": {
+                "id": "client-b",
+                "secret": "secret-b",
+                "access_token": "access-b",
+                "refresh_token": "refresh-b",
+            }},
+        },
+    ]
+    integracoes.salvar_lojas("000002", lojas)
+    monkeypatch.setattr(
+        integracoes,
+        "exchange_bling_refresh_token",
+        lambda client_id, _secret, refresh: {
+            "access_token": f"novo-{client_id}",
+            "refresh_token": f"novo-{refresh}",
+        },
+    )
+
+    renovado = integracoes.renovar_token_bling_loja(
+        "000002",
+        "Loja Igual",
+        lojas[1]["integracoes"]["bling"],
+        store_id="store-b",
+    )
+
+    persistidas = integracoes.carregar_lojas("000002")
+    por_id = {item["store_id"]: item for item in persistidas}
+    assert renovado["access_token"] == "novo-client-b"
+    assert por_id["store-a"]["integracoes"]["bling"]["access_token"] == "access-a"
+    assert por_id["store-b"]["integracoes"]["bling"]["access_token"] == "novo-client-b"
+
+
 def test_salvar_lojas_bloqueia_snapshot_regressivo(tmp_path):
     arquivo = _configure(tmp_path)
     boas = _lojas(4)
@@ -96,7 +400,7 @@ def test_carregar_lojas_restaurar_backup_imediato_quando_arquivo_fica_vazio(tmp_
 
 
 @pytest.mark.parametrize("owner", [None, "cliente-a"])
-def test_carregar_lojas_bloqueia_legado_global_sem_owner_do_tenant(
+def test_carregar_lojas_ignora_legado_global_de_outro_tenant(
     tmp_path,
     owner,
 ):
@@ -127,15 +431,12 @@ def test_carregar_lojas_bloqueia_legado_global_sem_owner_do_tenant(
     global_path = info_dir / "lojas_config.json"
     global_path.write_bytes(original)
 
-    with pytest.raises(HTTPException) as bloqueado:
-        integracoes.carregar_lojas("cliente-b")
-
-    assert bloqueado.value.status_code == 409
+    assert integracoes.carregar_lojas("cliente-b") == []
     assert global_path.read_bytes() == original
     assert not (info_dir / "cliente-b" / "lojas_config.json").exists()
 
 
-def test_carregar_lojas_migra_legado_com_owner_deterministico_do_tenant(tmp_path):
+def test_carregar_lojas_nao_infere_owner_de_store_id_opaco(tmp_path):
     info_dir = tmp_path / "info"
     info_dir.mkdir()
 
@@ -165,9 +466,9 @@ def test_carregar_lojas_migra_legado_com_owner_deterministico_do_tenant(tmp_path
 
     lojas = integracoes.carregar_lojas("cliente-b")
 
-    assert [loja["store_id"] for loja in lojas] == [store_id]
-    assert lojas[0]["integracoes"]["bling"]["access_token"] == "seguro"
-    assert not (info_dir / "lojas_config.json").exists()
+    assert lojas == []
+    assert (info_dir / "lojas_config.json").exists()
+    assert not (info_dir / "cliente-b" / "lojas_config.json").exists()
 
 
 def test_carregar_lojas_recupera_backup_rico_antes_de_normalizar(tmp_path):
@@ -285,8 +586,8 @@ def test_credenciais_globais_legadas_continuam_permitidas_no_default(tmp_path):
     assert lojas[0]["integracoes"]["bling"]["access_token"] == "token-default"
 
 
-@pytest.mark.parametrize("misto", [False, True], ids=["outro-tenant", "misto"])
-def test_default_bloqueia_lojas_globais_identificadas_para_outro_tenant(
+@pytest.mark.parametrize("misto", [False, True], ids=["com-id", "misto"])
+def test_default_assume_exclusivamente_o_legado_global_sem_inferir_owner_por_id(
     tmp_path,
     misto,
 ):
@@ -318,12 +619,16 @@ def test_default_bloqueia_lojas_globais_identificadas_para_outro_tenant(
     global_path = info_dir / "lojas_config.json"
     global_path.write_bytes(original)
 
-    with pytest.raises(HTTPException) as bloqueado:
-        integracoes.carregar_lojas("default")
+    lojas = integracoes.carregar_lojas("default")
 
-    assert bloqueado.value.status_code == 409
-    assert global_path.read_bytes() == original
-    assert not (info_dir / "default" / "lojas_config.json").exists()
+    assert {loja["nome"] for loja in lojas} == {
+        "Loja de outro tenant",
+        *({"Loja sem ID"} if misto else set()),
+    }
+    assert lojas[0]["store_id"] == payload[0]["store_id"]
+    assert all(str(loja.get("store_id") or "").strip() for loja in lojas)
+    assert not global_path.exists()
+    assert (info_dir / "default" / "lojas_config.json").exists()
 
 
 def test_default_bloqueia_nomes_ambiguos_entre_fontes_legadas(tmp_path):
@@ -410,11 +715,9 @@ def test_default_importa_todas_lojas_legadas_nao_excluidas(tmp_path):
 
     lojas = integracoes.carregar_lojas("default")
 
-    assert {loja["nome"] for loja in lojas} == {
-        "Ja existente",
-        "Legada 1",
-        "Legada 2",
-    }
+    assert {loja["nome"] for loja in lojas} == {"Ja existente"}
+    assert lojas[0]["integracoes"] == {}
+    assert (info_dir / "integracoes.json").exists()
 
 
 @pytest.mark.parametrize("com_tombstone", [False, True])
@@ -523,7 +826,7 @@ def test_default_bloqueia_bling_conflitante_entre_fontes_globais(tmp_path):
     assert not (info_dir / "default" / "lojas_config.json").exists()
 
 
-def test_carregar_lojas_falha_fechado_se_migracao_global_nao_materializa(
+def test_carregar_lojas_nao_materializa_legado_global_em_tenant_nao_default(
     tmp_path,
     monkeypatch,
 ):
@@ -564,10 +867,7 @@ def test_carregar_lojas_falha_fechado_se_migracao_global_nao_materializa(
         falhar_materializacao,
     )
 
-    with pytest.raises(HTTPException) as bloqueado:
-        integracoes.carregar_lojas("000002")
-
-    assert bloqueado.value.status_code == 500
+    assert integracoes.carregar_lojas("000002") == []
     assert global_path.read_bytes() == original
     assert not (info_dir / "000002" / "lojas_config.json").exists()
 
@@ -649,7 +949,7 @@ def test_backup_restaurado_de_primario_corrompido_respeita_tombstone(
     ) == lojas
 
 
-def test_carregar_lojas_recupera_root_coexistente_e_preserva_backup_final(tmp_path):
+def test_carregar_lojas_ignora_root_coexistente_de_tenant_nao_default(tmp_path):
     info_dir = tmp_path / "info"
     tenant = info_dir / "000002"
     tenant.mkdir(parents=True)
@@ -669,17 +969,15 @@ def test_carregar_lojas_recupera_root_coexistente_e_preserva_backup_final(tmp_pa
 
     lojas = integracoes.carregar_lojas("000002")
 
-    assert lojas[0]["integracoes"]["bling"]["access_token"] == "root-seguro"
-    assert not (info_dir / "lojas_config.json").exists()
+    assert lojas == []
+    assert (info_dir / "lojas_config.json").exists()
     assert json.loads(
-        (tenant / "lojas_config.json.bak").read_text(encoding="utf-8")
-    ) == lojas
-    (tenant / "lojas_config.json").write_text("{invalido", encoding="utf-8")
-    restauradas = integracoes.carregar_lojas("000002")
-    assert restauradas[0]["integracoes"]["bling"]["access_token"] == "root-seguro"
+        (tenant / "lojas_config.json").read_text(encoding="utf-8")
+    ) == []
+    assert not (tenant / "lojas_config.json.bak").exists()
 
 
-def test_migracao_root_excluida_nao_fica_viva_no_backup(tmp_path):
+def test_root_de_outro_tenant_nao_ressuscita_loja_tombstonada(tmp_path):
     info_dir = tmp_path / "info"
     tenant = info_dir / "000002"
     tenant.mkdir(parents=True)
@@ -710,11 +1008,9 @@ def test_migracao_root_excluida_nao_fica_viva_no_backup(tmp_path):
     )
 
     assert integracoes.carregar_lojas("000002") == []
-    assert json.loads(
-        (tenant / "lojas_config.json.bak").read_text(encoding="utf-8")
-    ) == []
-    (tenant / "lojas_config.json").write_text("{invalido", encoding="utf-8")
-    assert integracoes.carregar_lojas("000002") == []
+    assert (info_dir / "lojas_config.json").exists()
+    assert not (tenant / "lojas_config.json").exists()
+    assert not (tenant / "lojas_config.json.bak").exists()
 
 
 def test_migracao_root_bloqueia_tombstone_sem_evento_antes_de_gravar(tmp_path):
@@ -759,7 +1055,7 @@ def test_migracao_root_bloqueia_tombstone_sem_evento_antes_de_gravar(tmp_path):
     assert not (tenant / "_shared_sync_backups").exists()
 
 
-def test_default_bloqueia_nome_global_ambiguo_com_loja_tenant(tmp_path):
+def test_default_nao_mistura_credencial_por_nome_apenas_parecido(tmp_path):
     info_dir = tmp_path / "info"
     tenant = info_dir / "default"
     tenant.mkdir(parents=True)
@@ -784,12 +1080,14 @@ def test_default_bloqueia_nome_global_ambiguo_com_loja_tenant(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(HTTPException) as bloqueado:
-        integracoes.carregar_lojas("default")
-    assert bloqueado.value.status_code == 409
+    lojas = integracoes.carregar_lojas("default")
+    assert len(lojas) == 1
+    assert lojas[0]["nome"] == "Loja A"
+    assert lojas[0]["integracoes"]["mercadolivre"]["app_id"] == "local"
+    assert "bling" not in lojas[0]["integracoes"]
 
 
-def test_carregar_lojas_bloqueia_nomes_normalizados_duplicados_no_tenant(tmp_path):
+def test_carregar_lojas_preserva_homonimas_com_store_ids_distintos(tmp_path):
     arquivo = _configure(tmp_path)
     arquivo.parent.mkdir(parents=True, exist_ok=True)
     arquivo.write_text(
@@ -800,9 +1098,10 @@ def test_carregar_lojas_bloqueia_nomes_normalizados_duplicados_no_tenant(tmp_pat
         encoding="utf-8",
     )
 
-    with pytest.raises(HTTPException) as bloqueado:
-        integracoes.carregar_lojas("000002")
-    assert bloqueado.value.status_code == 409
+    lojas = integracoes.carregar_lojas("000002")
+    assert {loja["store_id"] for loja in lojas} == {"store-a", "store-b"}
+    assert integracoes.buscar_loja("000002", "Loja A")["store_id"] == "store-a"
+    assert integracoes.buscar_loja("000002", "Loja-A")["store_id"] == "store-b"
 
 
 def test_default_converte_aliases_operacionais_bling_legado(tmp_path):
@@ -1011,6 +1310,7 @@ def test_backup_oauth_mais_forte_sobrevive_a_update_nao_relacionado(tmp_path):
         "Loja B",
         "mercadoturbo",
         {"token": "turbo-b", "connected": True},
+        store_id="store-b",
         require_existing=True,
     )
 
@@ -1255,6 +1555,7 @@ def test_journal_concluido_nao_reverte_update_posterior_se_remove_falhar(
         "Loja journal",
         "mercadoturbo",
         {"token": "token-a", "connected": True},
+        store_id="store-journal",
         require_existing=True,
     )
     assert json.loads(journal.read_text(encoding="utf-8"))["committed"] is True
@@ -1313,6 +1614,62 @@ def test_backup_nao_promove_oauth_antigo_sem_prova_da_mesma_conta(tmp_path):
     assert "refresh_token" not in backup_final[0]["integracoes"]["bling"]
 
 
+def test_refresh_bling_semeia_e_preserva_oauth_connection_id(
+    tmp_path,
+    monkeypatch,
+):
+    _configure(tmp_path)
+    lojas = _bling_lojas()
+    integracoes.salvar_lojas("000002", lojas)
+    store_id = lojas[0]["store_id"]
+    gerados = []
+
+    def gerar_connection_id(_bytes):
+        gerados.append(True)
+        return "connection-semeada"
+
+    tokens = iter(
+        [
+            {"access_token": "access-a-1", "refresh_token": "refresh-a-1"},
+            {"access_token": "access-a-2", "refresh_token": "refresh-a-2"},
+        ]
+    )
+    monkeypatch.setattr(integracoes.secrets, "token_urlsafe", gerar_connection_id)
+    monkeypatch.setattr(
+        integracoes,
+        "exchange_bling_refresh_token",
+        lambda *_args: next(tokens),
+    )
+
+    primeira = integracoes.renovar_token_bling_loja(
+        "000002",
+        "Loja A",
+        dict(lojas[0]["integracoes"]["bling"]),
+        store_id=store_id,
+    )
+    assert primeira["oauth_connection_id"] == "connection-semeada"
+    persistida = integracoes.buscar_loja(
+        "000002",
+        "Loja A",
+        store_id=store_id,
+    )["integracoes"]["bling"]
+    assert persistida["oauth_connection_id"] == "connection-semeada"
+
+    segunda = integracoes.renovar_token_bling_loja(
+        "000002",
+        "Loja A",
+        dict(persistida),
+        store_id=store_id,
+    )
+    assert segunda["oauth_connection_id"] == "connection-semeada"
+    assert gerados == [True]
+    assert integracoes.buscar_loja(
+        "000002",
+        "Loja A",
+        store_id=store_id,
+    )["integracoes"]["bling"]["oauth_connection_id"] == "connection-semeada"
+
+
 def test_refresh_single_flight_mesma_loja_faz_um_post(tmp_path, monkeypatch):
     _configure(tmp_path)
     lojas = _bling_lojas()
@@ -1331,13 +1688,23 @@ def test_refresh_single_flight_mesma_loja_faz_um_post(tmp_path, monkeypatch):
     with ThreadPoolExecutor(max_workers=2) as executor:
         resultados = list(
             executor.map(
-                lambda _: integracoes.renovar_token_bling_loja("000002", "Loja A", snapshot),
+                lambda _: integracoes.renovar_token_bling_loja(
+                    "000002",
+                    "Loja A",
+                    snapshot,
+                    store_id=lojas[0]["store_id"],
+                    return_disposition=True,
+                ),
                 range(2),
             )
         )
 
     assert chamadas == 1
-    assert {item["access_token"] for item in resultados} == {"access-a-new"}
+    assert {item[0]["access_token"] for item in resultados} == {"access-a-new"}
+    assert {item[1] for item in resultados} == {
+        "committed_by_caller",
+        "reused_concurrent",
+    }
     assert integracoes.buscar_loja("000002", "Loja A")["integracoes"]["bling"]["refresh_token"] == "refresh-a-new"
 
 
@@ -1357,7 +1724,12 @@ def test_refresh_single_flight_sem_rotacao_do_refresh_token(tmp_path, monkeypatc
     with ThreadPoolExecutor(max_workers=2) as executor:
         resultados = list(
             executor.map(
-                lambda _: integracoes.renovar_token_bling_loja("000002", "Loja A", snapshot),
+                lambda _: integracoes.renovar_token_bling_loja(
+                    "000002",
+                    "Loja A",
+                    snapshot,
+                    store_id=lojas[0]["store_id"],
+                ),
                 range(2),
             )
         )
@@ -1385,8 +1757,14 @@ def test_refresh_concorrente_de_duas_lojas_preserva_ambos_tokens(tmp_path, monke
     monkeypatch.setattr(integracoes, "exchange_bling_refresh_token", exchange)
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [
-            executor.submit(integracoes.renovar_token_bling_loja, "000002", nome, snapshots[nome])
-            for nome in ("Loja A", "Loja B")
+            executor.submit(
+                integracoes.renovar_token_bling_loja,
+                "000002",
+                loja["nome"],
+                snapshots[loja["nome"]],
+                store_id=loja["store_id"],
+            )
+            for loja in lojas
         ]
         [future.result(timeout=5) for future in futures]
 
@@ -1410,12 +1788,20 @@ def test_resultado_antigo_nao_sobrescreve_reconexao(tmp_path, monkeypatch):
                 "refresh_token": "refresh-reconnected",
                 "connected": True,
             },
+            store_id=lojas[0]["store_id"],
         )
         return {"access_token": "access-stale", "refresh_token": "refresh-stale"}
 
     monkeypatch.setattr(integracoes, "exchange_bling_refresh_token", exchange)
-    resultado = integracoes.renovar_token_bling_loja("000002", "Loja A", snapshot)
+    resultado, disposition = integracoes.renovar_token_bling_loja(
+        "000002",
+        "Loja A",
+        snapshot,
+        store_id=lojas[0]["store_id"],
+        return_disposition=True,
+    )
 
+    assert disposition == "cas_lost"
     assert resultado["access_token"] == "access-reconnected"
     persistido = integracoes.buscar_loja("000002", "Loja A")["integracoes"]["bling"]
     assert persistido["refresh_token"] == "refresh-reconnected"
@@ -1439,11 +1825,17 @@ def test_resultado_antigo_nao_sobrescreve_reconexao_com_mesmo_refresh(tmp_path, 
                 "connected": True,
                 "updated_at": "reconnected-now",
             },
+            store_id=lojas[0]["store_id"],
         )
         return {"access_token": "access-stale", "refresh_token": refresh_token}
 
     monkeypatch.setattr(integracoes, "exchange_bling_refresh_token", exchange)
-    resultado = integracoes.renovar_token_bling_loja("000002", "Loja A", snapshot)
+    resultado = integracoes.renovar_token_bling_loja(
+        "000002",
+        "Loja A",
+        snapshot,
+        store_id=lojas[0]["store_id"],
+    )
 
     assert resultado["access_token"] == "access-reconnected"
     assert integracoes.buscar_loja("000002", "Loja A")["integracoes"]["bling"]["access_token"] == "access-reconnected"
@@ -1466,11 +1858,17 @@ def test_invalid_grant_obsoleto_nao_invalida_token_reconectado(tmp_path, monkeyp
                 "connected": True,
                 "oauth_invalid": False,
             },
+            store_id=lojas[0]["store_id"],
         )
         raise HTTPException(status_code=401, detail="invalid_grant")
 
     monkeypatch.setattr(integracoes, "exchange_bling_refresh_token", exchange)
-    resultado = integracoes.renovar_token_bling_loja("000002", "Loja A", snapshot)
+    resultado = integracoes.renovar_token_bling_loja(
+        "000002",
+        "Loja A",
+        snapshot,
+        store_id=lojas[0]["store_id"],
+    )
 
     assert resultado["refresh_token"] == "refresh-reconnected"
     assert resultado["connected"] is True

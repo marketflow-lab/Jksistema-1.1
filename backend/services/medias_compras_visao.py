@@ -54,6 +54,7 @@ async def api_medias_compras_calcular(req: MediasComprasRequest):
 async def api_medias_compras_visao(
     meses: int = 12,
     loja: str = "__todas",
+    store_id: str = "",
     client_id: str = Depends(medias_common.get_tenant_id)
 ):
     try:
@@ -135,7 +136,13 @@ async def api_medias_compras_visao(
         inicio_periodo = f"{meses_ref[0]}-01"
         fim_periodo = datetime.now().strftime("%Y-%m-%d")
 
-        loja_sel = str(loja or "").strip() or "__todas"
+        escopo_loja = _resolver_escopo_loja_medias(
+            client_id,
+            loja,
+            store_id,
+        )
+        loja_sel = escopo_loja["loja"]
+        store_id_escopo = escopo_loja["store_id"]
         loja_sel_norm = loja_sel.lower()
 
         # Vendas por SKU e por mÃƒÂªs (somatÃƒÂ³rio de quantidade), consolidando todos os bancos do tenant.
@@ -287,7 +294,6 @@ async def api_medias_compras_visao(
         # Dados do cadastro por SKU (foto e tÃƒÂ­tulo do anuncio).
         cadastro_por_sku = {}
         cadastro_fallback_por_sku = {}
-        mapa_fotos_cadastro = _cadastro_mapa_fotos_locais(client_id)
         arquivo_cadastro = _migrar_arquivo_legado_para_tenant(client_id, "cadastro_produtos.csv", ARQUIVO_DB_CADASTRO_PRODUTOS)
         caminhos_cadastro = []
         for caminho_cad in (
@@ -298,53 +304,76 @@ async def api_medias_compras_visao(
             if caminho_cad and os.path.exists(caminho_cad) and caminho_cad not in caminhos_cadastro:
                 caminhos_cadastro.append(caminho_cad)
 
-        for idx_cadastro, caminho_cadastro in enumerate(caminhos_cadastro):
-            alvo_cadastro = cadastro_por_sku if idx_cadastro == 0 else cadastro_fallback_por_sku
+        linhas_cadastro_legado = []
+        for caminho_cadastro in caminhos_cadastro:
             try:
                 df_cad = pd.read_csv(caminho_cadastro, dtype=str).fillna("")
                 if not df_cad.empty:
                     df_cad.columns = [str(c).strip().lower() for c in df_cad.columns]
-                    mapa_colunas_cad = {_normalizar_chave_cadastro(c): c for c in df_cad.columns}
-                    col_sku_cad = mapa_colunas_cad.get("sku")
-                    if col_sku_cad:
-                        for _, row in df_cad.iterrows():
-                            sku_raw = str(row.get(col_sku_cad, "") or "").strip()
-                            if not sku_raw:
-                                continue
-                            sku_norm = _normalizar_sku_mes(sku_raw)
-                            if not sku_norm:
-                                continue
-
-                            foto = str(row.get("foto", "") or "").strip()
-                            if not foto:
-                                foto = _cadastro_resolver_foto_local(mapa_fotos_cadastro, sku_norm)
-
-                            titulos_mlb = _pick_cadastro_valor(row, mapa_colunas_cad, [
-                                "titulos_anuncios_mlb", "titulos anuncios mlb", "titulo anuncio", "titulo do anuncio",
-                                "titulo do anúncio", "titulo mlb", "title", "titulo",
-                            ])
-                            titulo_anuncio = _primeiro_titulo_lista(titulos_mlb)
-                            titulo_cadastro = _pick_cadastro_valor(row, mapa_colunas_cad, [
-                                "produto bling", "produtos bling", "produto_bling", "nome_bling",
-                                "titulo do produto em ingles", "titulo em ingles", "titulo ingles",
-                                "cg product name", "product name", "nome", "produto",
-                                "cg tradução ptbr ou nome na bling", "cg denominacao do produto",
-                                "cg denominação do produto",
-                            ])
-
-                            atual = alvo_cadastro.setdefault(sku_norm, {"foto": "", "titulo_anuncio": "", "titulo_cadastro": ""})
-                            if not atual.get("foto") and foto:
-                                atual["foto"] = foto
-                            if not atual.get("titulo_anuncio") and titulo_anuncio:
-                                atual["titulo_anuncio"] = titulo_anuncio
-                            if not atual.get("titulo_cadastro") and titulo_cadastro:
-                                atual["titulo_cadastro"] = titulo_cadastro
+                    linhas_cadastro_legado.extend(df_cad.to_dict(orient="records"))
             except Exception:
-                # Se cadastro estiver invalido, segue sem quebrar a tela.
-                if idx_cadastro == 0:
-                    cadastro_por_sku = cadastro_por_sku or {}
-                else:
-                    cadastro_fallback_por_sku = cadastro_fallback_por_sku or {}
+                continue
+
+        from backend.services.cadastro_compatibilidade import (
+            mesclar_produtos_legados_com_contexto_loja,
+        )
+
+        try:
+            contexto_cadastro = mesclar_produtos_legados_com_contexto_loja(
+                client_id,
+                linhas_cadastro_legado,
+                store_id_escopo or loja_sel,
+            )
+        except RuntimeError:
+            contexto_cadastro = {
+                "produtos": [],
+                "store_id": "",
+                "loja_resolvida": False,
+                "scope": "unavailable",
+            }
+        store_id_cadastro = str(contexto_cadastro.get("store_id") or "").strip()
+        mapa_fotos_cadastro = _cadastro_mapa_fotos_locais(
+            client_id,
+            store_id_cadastro or None,
+        )
+        for row in contexto_cadastro.get("produtos") or []:
+            if not isinstance(row, dict):
+                continue
+            mapa_colunas_cad = {
+                _normalizar_chave_cadastro(c): c
+                for c in row
+            }
+            col_sku_cad = mapa_colunas_cad.get("sku")
+            sku_raw = str(row.get(col_sku_cad, "") or "").strip() if col_sku_cad else ""
+            sku_norm = _normalizar_sku_mes(sku_raw)
+            if not sku_norm:
+                continue
+
+            foto = str(row.get("foto", "") or "").strip()
+            if not foto:
+                foto = _cadastro_resolver_foto_local(mapa_fotos_cadastro, sku_norm)
+            titulos_mlb = _pick_cadastro_valor(row, mapa_colunas_cad, [
+                "titulos_anuncios_mlb", "titulos anuncios mlb", "titulo anuncio", "titulo do anuncio",
+                "titulo do anúncio", "titulo mlb", "title", "titulo",
+            ])
+            titulo_anuncio = _primeiro_titulo_lista(titulos_mlb)
+            titulo_cadastro = _pick_cadastro_valor(row, mapa_colunas_cad, [
+                "produto bling", "produtos bling", "produto_bling", "nome_bling",
+                "titulo do produto em ingles", "titulo em ingles", "titulo ingles",
+                "cg product name", "product name", "nome", "produto",
+                "cg tradução ptbr ou nome na bling", "cg denominacao do produto",
+                "cg denominação do produto",
+            ])
+            atual = cadastro_por_sku.setdefault(
+                sku_norm,
+                {"foto": "", "titulo_anuncio": "", "titulo_cadastro": ""},
+            )
+            if not atual.get("foto") and foto:
+                atual["foto"] = foto
+            if not atual.get("titulo_anuncio") and titulo_anuncio:
+                atual["titulo_anuncio"] = titulo_anuncio
+            if not atual.get("titulo_cadastro") and titulo_cadastro:
+                atual["titulo_cadastro"] = titulo_cadastro
 
         todos_skus = set(vendas_por_sku.keys()) | set(saldo_por_sku.keys()) | set(cadastro_por_sku.keys()) | set(transito_por_sku.keys()) | set(ultima_venda_por_sku.keys())
         itens = []
@@ -417,6 +446,7 @@ async def api_medias_compras_visao(
             "success": True,
             "periodo_meses": meses,
             "loja": loja_sel,
+            "store_id": store_id_cadastro or store_id_escopo,
             "colunas_meses": colunas_meses,
             "itens": itens,
             "resumo": {

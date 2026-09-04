@@ -28,38 +28,40 @@ for (const [relativePath, ids] of Object.entries(fixture.dom_ids)) {
 
 const main = pages['static/cadastro.html'].combined;
 for (const snippet of [
-  '/api/cadastro/produtos',
-  '/api/cadastro/importar-colunas',
+  '/api/lojas',
+  '/api/cadastro/lojas/',
+  'importar-colunas',
   '/api/cadastro/fornecedores',
   'NCM_SYNC.init',
   'cadastro_larguras_colunas',
   'carregarProdutos',
+  'storeIdSelecionado',
 ]) {
   assert(main.includes(snippet), `cadastro principal perdeu o contrato: ${snippet}`);
 }
 assert.match(
   main,
-  /\/api\/cadastro\/foto\/\$\{encodeURIComponent\(clientId\)\}\/\$\{encodeURIComponent\(nomeArquivo\)\}/,
-  'a miniatura do cadastro deve identificar o cliente atual',
+  /\/api\/cadastro\/foto\/\$\{encodeURIComponent\(clientId\)\}\/lojas\/\$\{segmento\}\/\$\{encodeURIComponent\(nome\)\}\?store_id=\$\{encodeURIComponent\(storeExata\)\}/,
+  'a miniatura deve usar segmento opaco e enviar a identidade exata da loja para validacao',
 );
 
 const selector = pages['static/cadastro_editar.html'].combined;
 for (const snippet of [
-  '/api/cadastro/produtos',
+  '/api/cadastro/lojas/',
+  'storeIdSelecionado',
   'cadastro_editar_sku',
   'cadastro_editar_item',
   'cadastro_editar_lista',
-  '/cadastro_editar_item.html?sku=',
+  "urlPagina('/cadastro_editar_item.html'",
 ]) {
   assert(selector.includes(snippet), `seletor de edição perdeu o contrato: ${snippet}`);
 }
 
 const editor = pages['static/cadastro_editar_item.html'].combined;
 for (const snippet of [
-  '/api/cadastro/colunas',
-  '/api/cadastro/produtos',
-  '/api/cadastro/produto?sku=',
-  '/api/cadastro/produto?sku_original=',
+  '/api/cadastro/lojas/',
+  "apiLoja(state.storeIdSelecionado, 'colunas')",
+  'produtos/${encodeURIComponent(state.skuOriginal)}',
   "method: 'PUT'",
   'cadastro_editar_sku',
   'cadastro_editar_item',
@@ -69,17 +71,22 @@ for (const snippet of [
 }
 assert.match(
   editor,
-  /\/api\/cadastro\/foto\/\$\{encodeURIComponent\(obterClientId\(\)\)\}\/\$\{encodeURIComponent\(nomeArquivo\)\}/,
-  'a prévia da edição deve identificar o cliente atual',
+  /storeTools\.urlFoto\(obterClientId\(\), state\.storeIdSelecionado, valor\)/,
+  'a prévia da edição deve identificar cliente e loja atuais',
 );
 
 const inclusion = pages['static/cadastro_incluir.html'].combined;
 for (const snippet of [
-  '/api/cadastro/colunas',
-  '/api/cadastro/produto',
+  '/api/cadastro/lojas/',
+  "apiLoja(state.storeIdSelecionado, 'colunas')",
+  "apiLoja(state.storeIdSelecionado, 'produtos')",
   "method: 'POST'",
 ]) {
   assert(inclusion.includes(snippet), `inclusão de item perdeu o contrato: ${snippet}`);
+}
+
+for (const [name, source] of [['principal', main], ['seletor', selector], ['editor', editor], ['inclusão', inclusion]]) {
+  assert.doesNotMatch(source, /fetch\(['"]\/api\/cadastro\/(?:produtos|produto|colunas|importar-colunas)/, `${name}: chamada legada sem loja`);
 }
 
 const globalStatus = read('static/global-status.js');

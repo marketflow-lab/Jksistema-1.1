@@ -120,6 +120,7 @@ let vendasResumoMeta = null;
 let clientId = null;
 let lojaSelecionada = '__todas';
 let lojasDisponiveis = [];
+let carregarLojasPromise = null;
 let missingPromptShown = false;
 let missingPromptKey = '';
 let syncController = null;

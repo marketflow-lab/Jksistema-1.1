@@ -444,7 +444,7 @@
             width: 150px;
             min-width: 150px;
         }
-        .loja-group { display:flex; flex-wrap:nowrap; gap:6px; align-items:center; overflow:hidden; min-width:0; }
+        .loja-group { display:flex; flex-wrap:wrap; gap:6px; align-items:center; overflow:visible; min-width:0; }
         .loja-btn {
             min-height: 32px;
             padding: 6px 10px;

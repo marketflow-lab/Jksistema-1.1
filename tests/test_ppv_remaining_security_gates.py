@@ -1,8 +1,43 @@
 from __future__ import annotations
 
-from backend.modules.perguntas_pos_venda.ai import inputs
+import pytest
+
+from backend.modules.perguntas_pos_venda.ai import inputs, validation
 from backend.modules.perguntas_pos_venda.endpoints import training
 from backend.schemas import IATreinamentoPerguntasPosVendaSimularRequest
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Fale conosco no WhatsApp (11) 99999-9999.",
+        "Envie e-mail para vendas@example.com.",
+        "Pague por PIX fora do Mercado Livre.",
+    ],
+)
+def test_public_reply_records_external_contact_or_payment_as_diagnostic(answer: str, monkeypatch) -> None:
+    monkeypatch.setattr(
+        validation,
+        "_perguntas_ia_intencao_agent",
+        lambda _agent_input: {"fluxo": "pre_venda"},
+    )
+    monkeypatch.setattr(
+        validation,
+        "_perguntas_ia_categoria_classificada",
+        lambda _agent_input: "compatibility",
+    )
+    issues = validation._ia_agent_perguntas_violacoes_resposta(
+        {
+            "store": "JK Pecas",
+            "question": {"text": "Este produto serve?", "history": []},
+            "item": {"title": "Produto tecnico"},
+            "intent": {"fluxo": "pre_venda", "categoria": "compatibility"},
+            "classification": {"category": "compatibility"},
+        },
+        answer,
+    )
+
+    assert "incluiu contato ou pagamento externo ao Mercado Livre" in issues
 
 
 def test_cloud_response_extractor_preserves_one_complete_nonempty_answer(monkeypatch):
@@ -60,12 +95,17 @@ def test_training_simulation_encapsulates_all_user_controlled_prompt_data(monkey
     )
     monkeypatch.setattr(training, "_perguntas_ia_assinatura_loja", lambda loja: f"Equipe {loja} agradece!")
     monkeypatch.setattr(training, "_normalizar_sku_mes", lambda sku: str(sku or "").strip())
+    monkeypatch.setattr(
+        training,
+        "_resolver_escopo_loja_treinamento",
+        lambda _client_id, loja, _store_id=None: (str(loja or "").strip(), "store-test"),
+    )
     monkeypatch.setattr(training, "_ia_treinamento_ppv_tipo_normalizar", lambda _tipo: "perguntas_anuncio")
     monkeypatch.setattr(training, "_ia_treinamento_ppv_tipo_label", lambda _tipo: "perguntas de anuncio")
     monkeypatch.setattr(
         training,
         "_ia_treinamento_ppv_produto_por_sku",
-        lambda _client_id, sku: {"sku": sku, "descricao": injection},
+        lambda _client_id, sku, _loja="": {"sku": sku, "descricao": injection},
     )
 
     training.ml_ia_treinamento_simular(

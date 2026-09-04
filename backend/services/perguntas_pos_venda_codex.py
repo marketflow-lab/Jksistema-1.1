@@ -35,6 +35,7 @@ from backend.services.codex_turn_context import (
 from backend.modules.perguntas_pos_venda.ai.contracts import PerguntasIARespostaPoliticaInvalida
 from backend.modules.perguntas_pos_venda.ai.deep_research import (
     evidence_identity,
+    load_product_research_evidence,
     load_verified_product_evidence,
 )
 from backend.services.vehicle_identity import empty_vehicle_identity
@@ -73,26 +74,42 @@ PUBLIC_SUBQUESTION_INTENTS = frozenset({
     "warranty",
     "warranty_originality",
     "product_feature",
+    "installation_location",
     "other_product",
     "general",
     "post_sale",
 })
-PROMPT_VERSION = "jk_ml_customer_reply_codex_v14"
+PROMPT_VERSION = "jk_ml_customer_reply_codex_v16"
 SCHEMA_VERSION = "5.2"
 QUEUE_POLICY_VERSION = "jk_ppv_queue_v3"
 VEHICLE_IDENTITY_POLICY = "jk_public_vin_decode_v1"
-PRODUCT_EVIDENCE_POLICY = "jk_product_evidence_v1"
+PRODUCT_EVIDENCE_POLICY = "jk_product_evidence_v2"
+TECHNICAL_QUESTION_PLAN_VERSION = "jk_ml_technical_question_plan_v1"
+TECHNICAL_EVIDENCE_GRAPH_VERSION = "jk_ml_evidence_graph_v2"
+TECHNICAL_RESOLUTION_VERSION = "jk_ml_technical_resolution_v1"
+FACTUAL_REVIEW_VERSION = "jk_ml_factual_review_v1"
+FACTUAL_CRITIC_POLICY = "jk_black_jhon_factual_critic_v1"
+PRODUCT_DOCUMENT_VISION_POLICY = "jk_product_document_vision_v1"
+PUBLIC_RESEARCH_POLICY = "jk_black_jhon_research_v2"
 PROMPT_HASH = hashlib.sha256(
     (
         "codex-native|public-question-by-item-buyer|post-sale-by-pack|"
         "evidence-envelope-v3|bounded-public-research|ai-only-subquestions|"
         "classification-contract-v3|continuity-repair-v1|typed-provider-failures|"
-        "contextual-fallback-v1|response-policy-v6|compatibility-coverage-v1|"
+        "contextual-fallback-v1|response-policy-v8|compatibility-coverage-advisory-v1|"
         "compatibility-interface-evidence|seller-conversion-v1|seller-profile-v2|priority-queue-v3|"
         "public-technical-research-sol-high-v1|public-research-resilience-v2|"
         f"vehicle-identity-policy:{VEHICLE_IDENTITY_POLICY}|"
         f"product-evidence-policy:{PRODUCT_EVIDENCE_POLICY}|"
-        "product-evidence-editorial-candidates-v1|"
+        "product-evidence-editorial-candidates-v1|black-jhon-factual-discretion-v1|"
+        f"technical-question-plan:{TECHNICAL_QUESTION_PLAN_VERSION}|"
+        f"technical-evidence-graph:{TECHNICAL_EVIDENCE_GRAPH_VERSION}|"
+        f"technical-resolution:{TECHNICAL_RESOLUTION_VERSION}|"
+        f"factual-review:{FACTUAL_REVIEW_VERSION}|"
+        f"factual-critic:{FACTUAL_CRITIC_POLICY}|"
+        f"document-vision:{PRODUCT_DOCUMENT_VISION_POLICY}|"
+        f"public-research-policy:{PUBLIC_RESEARCH_POLICY}|"
+        "six-stage-sol-high|two-round-gap-research|directed-reference-relations|"
         "nonempty-ai-draft-preserved|public-signature-append-only-v1|oversize-manual-edit-v1|"
         "human-approval-required|no-direct-publish"
     ).encode("utf-8")
@@ -101,7 +118,7 @@ THREAD_IDLE_TTL_SECONDS = 30 * 24 * 60 * 60
 TERMINAL_STATUSES = {"completed", "cancelled"}
 ACTIVE_STATUSES = {"queued", "running", "waiting_retry"}
 MAX_GLOBAL_JOBS = 2
-MAX_SECONDS = 330.0
+MAX_SECONDS = 15 * 60.0
 PUBLIC_RESEARCH_DEADLINE_SECONDS = 15 * 60.0
 PUBLIC_DEEP_RESEARCH_MAX_SECONDS = 5 * 60.0
 POST_SALE_DEADLINE_SECONDS = 180.0
@@ -275,6 +292,14 @@ def _thread_reuse_decision(
         return "", "schema_version_changed", False
     if str(latest.get("prompt_hash") or "") != PROMPT_HASH:
         return "", "prompt_hash_changed", False
+    verification = latest.get("verification") if isinstance(latest.get("verification"), dict) else {}
+    result = latest.get("result") if isinstance(latest.get("result"), dict) else {}
+    if not verification and isinstance(result.get("verification"), dict):
+        verification = result.get("verification") or {}
+    if str(verification.get("status") or "").strip().lower() == "rejected":
+        return "", "previous_draft_rejected", False
+    if _previous_job_has_zero_research_facts(latest):
+        return "", "zero_research_facts", False
     last_activity = _created_at_epoch(latest)
     if not last_activity or (time.time() - last_activity) > THREAD_IDLE_TTL_SECONDS:
         return "", "thread_expired", False
@@ -286,6 +311,81 @@ def _thread_reuse_decision(
             if current_value and previous_value and current_value != previous_value:
                 return "", f"{field}_changed", False
     return thread_id, "", True
+
+
+def _research_payload_has_any_fact(roots: list[Any]) -> bool:
+    """Count candidate, verified and conflicting facts without reading raw documents."""
+
+    fact_list_keys = {
+        "product_research_evidence", "verified_product_evidence",
+        "verified_target_evidence", "claims",
+    }
+    pending: list[tuple[Any, int]] = [(value, 0) for value in roots if value is not None]
+    seen = 0
+    while pending and seen < 600:
+        value, depth = pending.pop()
+        seen += 1
+        if depth > 8:
+            continue
+        if isinstance(value, dict):
+            for key in fact_list_keys:
+                facts = value.get(key)
+                if isinstance(facts, list) and any(isinstance(item, dict) for item in facts):
+                    return True
+            metrics = value.get("research_metrics")
+            if isinstance(metrics, dict):
+                for key in ("fields_candidate", "fields_conflict", "fields_confirmed"):
+                    try:
+                        if int(metrics.get(key) or 0) > 0:
+                            return True
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+            pending.extend((item, depth + 1) for item in value.values())
+        elif isinstance(value, (list, tuple)):
+            pending.extend((item, depth + 1) for item in value)
+    return False
+
+
+def _previous_job_has_zero_research_facts(latest: dict[str, Any]) -> bool:
+    """Detect a completed research attempt that yielded no facts in any state."""
+
+    result = latest.get("result") if isinstance(latest.get("result"), dict) else {}
+    roots: list[Any] = [latest.get("research_summary"), result, result.get("contexto")]
+    if _research_payload_has_any_fact(roots):
+        return False
+    pending: list[tuple[Any, int]] = [(value, 0) for value in roots if value is not None]
+    seen = 0
+    while pending and seen < 600:
+        value, depth = pending.pop()
+        seen += 1
+        if depth > 8:
+            continue
+        if isinstance(value, dict):
+            metrics = value.get("research_metrics")
+            if isinstance(metrics, dict):
+                has_count = "fields_confirmed" in metrics
+                try:
+                    confirmed = int(metrics.get("fields_confirmed") or 0)
+                except (TypeError, ValueError, OverflowError):
+                    confirmed = -1
+                stop_reason = str(metrics.get("stop_reason") or "").strip().lower()
+                if (
+                    has_count
+                    and confirmed == 0
+                    and metrics.get("coverage_complete") is False
+                    and stop_reason in {
+                        "no_new_facts",
+                        "provider_unavailable",
+                        "deadline",
+                        "page_limit",
+                        "query_limit",
+                    }
+                ):
+                    return True
+            pending.extend((item, depth + 1) for item in value.values())
+        elif isinstance(value, (list, tuple)):
+            pending.extend((item, depth + 1) for item in value)
+    return False
 
 
 def _job_deadline_epoch(job: dict[str, Any]) -> float:
@@ -4197,15 +4297,22 @@ def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         request=request,
     )
     verified_product_evidence = load_verified_product_evidence(client_id, product_identity)
+    product_research_evidence = load_product_research_evidence(
+        client_id,
+        product_identity,
+        recalculate=False,
+    )
     question["_vehicle_identity"] = dict(vehicle_identity) if vehicle_identity else {}
     question["_product_evidence_identity"] = product_identity
     question["_verified_product_evidence"] = verified_product_evidence
+    question["_product_research_evidence"] = product_research_evidence
     answer, _cfg, context = runtime._perguntas_ia_gerar_resposta(client_id, store, cfg, question, item or {})
     context = context if isinstance(context, dict) else {}
     context.setdefault("loja", store)
     if vehicle_identity:
         context.setdefault("vehicle_identity", vehicle_identity)
     context.setdefault("verified_product_evidence", verified_product_evidence)
+    context.setdefault("product_research_evidence", product_research_evidence)
     context.setdefault("product_evidence_policy", PRODUCT_EVIDENCE_POLICY)
     context.setdefault("vehicle_identity_policy", VEHICLE_IDENTITY_POLICY)
     context.setdefault("pergunta", {

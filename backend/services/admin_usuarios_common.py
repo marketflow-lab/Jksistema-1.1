@@ -36,6 +36,15 @@ def configure_admin_usuarios_common_runtime(runtime_module=None):
 
 configure_admin_usuarios_common_runtime()
 
+CADASTRO_PHOTO_READ_PERMISSIONS = (
+    "cadastro",
+    "medias_compras",
+    "vendas",
+    "importacoes",
+    "perguntas_pos_venda",
+)
+
+
 def _permissao_exigida_por_rota(path: str, method: str = "GET") -> Optional[Any]:
     """Mapeia cada grupo de rotas ao mÃƒÂ³dulo correspondente da planilha de usuÃƒÂ¡rios."""
     rota = str(path or "").lower()
@@ -61,6 +70,13 @@ def _permissao_exigida_por_rota(path: str, method: str = "GET") -> Optional[Any]
         return "integracao"
     if rota.startswith("/api/lojas") and metodo in {"POST", "PUT", "PATCH", "DELETE"}:
         return "integracao"
+    if metodo in {"GET", "HEAD"} and (
+        rota.startswith("/api/cadastro/foto/")
+        or rota.startswith("/api/cadastro/foto-arquivo/")
+    ):
+        # Fotos do cadastro sao um recurso autenticado compartilhado por estas
+        # telas. O proprio endpoint continua validando o tenant da sessao.
+        return CADASTRO_PHOTO_READ_PERMISSIONS
     if rota.startswith("/api/cadastro/"):
         return "cadastro"
     if rota.startswith("/api/impostos/"):

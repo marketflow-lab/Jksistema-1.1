@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Editar Cadastro - JK Sistema</title>
-    <link rel="stylesheet" href="/cadastro/styles/seletor-edicao.css?v=20260821-cadastro-modular-v1">
-    <script src="/auth.js?v=20260618-persist-login"></script>
+    <link rel="stylesheet" href="/cadastro/styles/seletor-edicao.css?v=20260828-cadastro-store-scope-v1">
+    <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </head>
 <body>
 <div class="container">
@@ -20,6 +20,11 @@
     <div id="status" class="status"></div>
 
     <div class="card">
+        <div class="store-scope" aria-label="Loja do cadastro">
+            <label for="cadastroLojaSelect">Loja</label>
+            <select id="cadastroLojaSelect"></select>
+            <span id="cadastroLojaAviso" class="store-scope-hint"></span>
+        </div>
         <div class="toolbar">
             <input id="buscaSku" type="text" placeholder="Pesquisar SKU">
         </div>
@@ -30,7 +35,8 @@
     </div>
 </div>
 
-<script src="/cadastro/seletor-edicao.js?v=20260821-cadastro-modular-v1"></script>
+<script src="/cadastro/form/00-core.js?v=20260828-cadastro-store-scope-v1"></script>
+<script src="/cadastro/seletor-edicao.js?v=20260901-cadastro-catalog-imports-v1"></script>
 <script src="/ia-sidebar.js"></script>
 </body>
 </html>

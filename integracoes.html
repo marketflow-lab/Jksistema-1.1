@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Central de Integrações - JK Sistema</title>
-    <script src="/auth.js?v=20260618-persist-login"></script>
+    <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
         .container { max-width: 1200px; margin: auto; display: flex; gap: 20px; }
@@ -218,11 +218,14 @@
             };
 
             window.jkIntegracoesReloadStores = async () => {
-                const nomeSelecionado = selectedStore && selectedStore.nome ? selectedStore.nome : '';
+                const storeIdSelecionado = selectedStore && selectedStore.store_id ? selectedStore.store_id : '';
                 await loadStores({ cache: 'no-store' });
-                if (nomeSelecionado && stores.some(store => store.nome === nomeSelecionado)) {
-                    await selectStore(nomeSelecionado);
-                } else if (nomeSelecionado) {
+                const lojaAtual = storeIdSelecionado
+                    ? stores.find(store => store.store_id === storeIdSelecionado)
+                    : null;
+                if (lojaAtual) {
+                    await selectStore(lojaAtual);
+                } else if (storeIdSelecionado) {
                     await selectStore(null);
                 }
                 return stores.length;
@@ -268,7 +271,10 @@
                     let errorDetail = `Erro na API (${response.status})`;
                     try {
                         const errJson = await response.json();
-                        errorDetail = errJson.detail || JSON.stringify(errJson);
+                        const detalhe = errJson.detail || errJson;
+                        errorDetail = typeof detalhe === 'object'
+                            ? (detalhe.message || JSON.stringify(detalhe))
+                            : detalhe;
                     } catch (e) {
                     }
                     throw new Error(errorDetail);
@@ -351,17 +357,22 @@
 
             const api = {
                 getStores: (options = {}) => apiFetch('/api/lojas', options),
-                getStore: (name) => apiFetch(`/api/lojas/${name}`),
+                getStore: (store) => apiFetch(
+                    `/api/lojas/${encodeURIComponent(store.nome)}?store_id=${encodeURIComponent(store.store_id)}`
+                ),
                 createStore: (name) => apiFetch('/api/lojas', {
                     method: 'POST',
                     body: JSON.stringify({ nome: name })
                 }),
-                deleteStore: (name) => apiFetch(`/api/lojas/${name}`, { method: 'DELETE' }),
-                saveTurbo: (loja, token) => apiFetch(`/api/integracoes/${loja}/turbo`, {
+                deleteStore: (store) => apiFetch(
+                    `/api/lojas/${encodeURIComponent(store.nome)}?store_id=${encodeURIComponent(store.store_id)}`,
+                    { method: 'DELETE' }
+                ),
+                saveTurbo: (store, token) => apiFetch(`/api/integracoes/${encodeURIComponent(store.nome)}/turbo?store_id=${encodeURIComponent(store.store_id)}`, {
                     method: 'POST',
                     body: JSON.stringify({ token: token })
                 }),
-                disconnectIntegration: (loja, servico) => apiFetch(`/api/integracoes/${encodeURIComponent(loja)}/${encodeURIComponent(servico)}`, {
+                disconnectIntegration: (store, servico) => apiFetch(`/api/integracoes/${encodeURIComponent(store.nome)}/${encodeURIComponent(servico)}?store_id=${encodeURIComponent(store.store_id)}`, {
                     method: 'DELETE'
                 })
             };
@@ -371,7 +382,8 @@
                 stores.forEach(store => {
                     const li = document.createElement('li');
                     li.dataset.storeName = store.nome;
-                    if (selectedStore && selectedStore.nome === store.nome) {
+                    li.dataset.storeId = store.store_id;
+                    if (selectedStore && selectedStore.store_id === store.store_id) {
                         li.classList.add('selected');
                     }
                     
@@ -382,6 +394,7 @@
                     deleteBtn.textContent = 'X';
                     deleteBtn.classList.add('delete-btn');
                     deleteBtn.dataset.storeName = store.nome;
+                    deleteBtn.dataset.storeId = store.store_id;
                     
                     li.appendChild(storeNameSpan);
                     li.appendChild(deleteBtn);
@@ -420,8 +433,8 @@
                 });
             }
 
-            async function selectStore(name) {
-                if (!name) {
+            async function selectStore(store) {
+                if (!store || !store.store_id) {
                     selectedStore = null;
                     storeTitle.textContent = 'Selecione uma loja';
                     integrationsPanel.classList.add('hidden');
@@ -430,7 +443,7 @@
                 }
 
                 try {
-                    const storeData = await api.getStore(name);
+                    const storeData = await api.getStore(store);
                     selectedStore = storeData;
                     storeTitle.textContent = `Configurando: ${selectedStore.nome}`;
                     integrationsPanel.classList.remove('hidden');
@@ -492,11 +505,13 @@
 
             storeList.addEventListener('click', (e) => {
                 if (e.target.closest('li')) {
-                    const storeName = e.target.closest('li').dataset.storeName;
+                    const storeId = e.target.closest('li').dataset.storeId;
+                    const store = stores.find(item => item.store_id === storeId);
+                    if (!store) return;
                     if(e.target.classList.contains('delete-btn')) {
-                        handleDeleteStore(storeName);
+                        handleDeleteStore(store);
                     } else {
-                        selectStore(storeName);
+                        selectStore(store);
                     }
                 }
             });
@@ -509,7 +524,10 @@
                         if (result.success) {
                             newStoreInput.value = '';
                             await loadStores();
-                            selectStore(newName);
+                            const criada = result.loja && result.loja.store_id
+                                ? stores.find(store => store.store_id === result.loja.store_id)
+                                : null;
+                            if (criada) selectStore(criada);
                         } else {
                             alert(`Erro: ${result.detail}`);
                         }
@@ -519,13 +537,13 @@
                 }
             });
             
-            async function handleDeleteStore(name) {
-                if (confirm(`Tem certeza que deseja excluir a loja "${name}"?`)) {
+            async function handleDeleteStore(store) {
+                if (confirm(`Tem certeza que deseja excluir a loja "${store.nome}"?`)) {
                     try {
-                        const result = await api.deleteStore(name);
+                        const result = await api.deleteStore(store);
                         if (result.success) {
                             await loadStores();
-                            if (selectedStore && selectedStore.nome === name) {
+                            if (selectedStore && selectedStore.store_id === store.store_id) {
                                 selectStore(null);
                             } else {
                                 renderStores();
@@ -534,7 +552,7 @@
                             alert(`Erro: ${result.detail}`);
                         }
                     } catch (error) {
-                        alert('Erro ao excluir loja.');
+                        alert(`Erro ao excluir loja: ${error.message || error}`);
                     }
                 }
             }
@@ -548,10 +566,10 @@
                     return;
                 }
                 try {
-                    const result = await api.disconnectIntegration(selectedStore.nome, servico);
+                    const result = await api.disconnectIntegration(selectedStore, servico);
                     if (result && result.success) {
                         alert(`${label} desconectado com sucesso.`);
-                        await selectStore(selectedStore.nome);
+                        await selectStore(selectedStore);
                     } else {
                         alert('Nao foi possivel desconectar a integracao.');
                     }
@@ -585,6 +603,7 @@
                 }
                 const payload = {
                     loja: selectedStore.nome,
+                    store_id: selectedStore.store_id,
                     client_id: clientId,
                     client_secret: clientSecret
                 };
@@ -614,6 +633,7 @@
                 }
                 const payload = {
                     loja: selectedStore.nome,
+                    store_id: selectedStore.store_id,
                     client_id: appId,
                     client_secret: clientSecret
                 };
@@ -641,10 +661,10 @@
                 e.preventDefault();
                 const token = document.getElementById('turbo-token').value;
                  try {
-                    const result = await api.saveTurbo(selectedStore.nome, token);
+                    const result = await api.saveTurbo(selectedStore, token);
                     if(result.success) {
                         alert('Token do Mercado Turbo salvo com sucesso!');
-                        await selectStore(selectedStore.nome);
+                        await selectStore(selectedStore);
                     } else {
                         alert(`Erro ao salvar: ${result.detail}`);
                     }

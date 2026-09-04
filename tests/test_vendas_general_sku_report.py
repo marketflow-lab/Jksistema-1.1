@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import sqlite3
 from pathlib import Path
 
@@ -106,6 +107,13 @@ def general_sources(tmp_path: Path, monkeypatch):
     stock_db = tenant / "estoque_historico.db"
     _create_sales_db(sales_db)
     _create_stock_db(stock_db)
+    (tenant / "lojas_config.json").write_text(
+        json.dumps([
+            {"store_id": "store-jk", "nome": "JK Peças"},
+            {"store_id": "store-carlos", "nome": "Carlos José"},
+        ]),
+        encoding="utf-8",
+    )
 
     monkeypatch.setattr(reports, "_listar_bancos_vendas_tenant", lambda *_args: [str(sales_db)])
     monkeypatch.setattr(general_report, "_listar_bancos_vendas_tenant", lambda *_args: [str(sales_db)])
@@ -209,6 +217,30 @@ def test_account_isolation_all_store_block_and_top_20_limit(general_sources) -> 
         general_report.generate_general_sku_report.__wrapped__(
             client_id="tenant-general", loja="__todas", periodo="12m"
         )
+
+
+def test_homonymous_store_omits_local_stock_before_database(general_sources, monkeypatch) -> None:
+    tenant, _sales_db, _stock_db = general_sources
+    (tenant / "lojas_config.json").write_text(
+        json.dumps([
+            {"store_id": "store-a", "nome": "JK Peças"},
+            {"store_id": "store-b", "nome": "jk peças"},
+        ]),
+        encoding="utf-8",
+    )
+    aberturas = []
+    monkeypatch.setattr(
+        general_report,
+        "open_vendas_readonly",
+        lambda *_args, **_kwargs: aberturas.append("db"),
+    )
+
+    snapshot = general_report._read_current_local_stock("tenant-general", "JK Peças")
+
+    assert snapshot["available"] is False
+    assert snapshot["error_code"] == "estoque_historico_loja_ambigua"
+    assert "lojas homônimas" in snapshot["errors"][0]
+    assert aberturas == []
 
 
 def test_xlsx_pdf_and_export_contract(general_sources) -> None:

@@ -485,7 +485,21 @@ def _call_store(
     callback: Callable[[str], tuple[Any, int]],
 ) -> tuple[Any, int, dict[str, Any]]:
     try:
-        return _bling_executar_com_refresh(client_id, loja, cfg, callback)
+        store_id = str(cfg.get("_store_id_context") or "").strip()
+        if not store_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Loja sem store_id persistido.",
+            )
+        cfg_runtime = dict(cfg)
+        cfg_runtime.pop("_store_id_context", None)
+        return _bling_executar_com_refresh(
+            client_id,
+            loja,
+            cfg_runtime,
+            callback,
+            store_id=store_id,
+        )
     except HTTPException as exc:
         return {"error": str(exc.detail or exc)}, int(exc.status_code or 500), cfg
     except Exception as exc:
@@ -527,13 +541,13 @@ def _connected_stores(
             return [], [f"Nao foi possivel carregar lojas Bling: {str(exc)[:180]}"]
 
     conectadas: list[str] = []
-    by_norm: dict[str, dict[str, Any]] = {}
+    by_norm: dict[str, list[dict[str, Any]]] = {}
     for loja_cfg in lojas_cfg:
         nome = str(loja_cfg.get("nome") or "").strip()
         integracoes = loja_cfg.get("integracoes") if isinstance(loja_cfg.get("integracoes"), dict) else {}
         cfg = integracoes.get("bling") if isinstance(integracoes, dict) else {}
         if nome:
-            by_norm[_norm(nome)] = loja_cfg
+            by_norm.setdefault(_norm(nome), []).append(loja_cfg)
         if nome and isinstance(cfg, dict) and str(cfg.get("access_token") or "").strip():
             conectadas.append(nome)
     loja_txt = str(loja or "").strip()
@@ -558,9 +572,15 @@ def _connected_stores(
         return [], ["Nenhuma loja com Bling conectado foi encontrada para o escopo solicitado."]
     for nome in nomes:
         try:
-            loja_cfg = by_norm.get(_norm(nome))
-            if not loja_cfg:
+            candidatas = by_norm.get(_norm(nome)) or []
+            if len(candidatas) != 1:
+                if candidatas:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Nome de loja ambiguo; selecione uma identidade unica.",
+                    )
                 raise HTTPException(status_code=404, detail="Loja nao encontrada")
+            loja_cfg = candidatas[0]
             integracoes = loja_cfg.get("integracoes") if isinstance(loja_cfg.get("integracoes"), dict) else {}
             cfg = dict(integracoes.get("bling") or {})
             if not cfg:
@@ -569,6 +589,10 @@ def _connected_stores(
             cfg["secret"] = cfg.get("secret") or cfg.get("client_secret")
             if not cfg.get("access_token"):
                 raise HTTPException(status_code=401, detail="Token Bling ausente. Refaca a autenticacao OAuth.")
+            store_id = str(loja_cfg.get("store_id") or "").strip()
+            if not store_id:
+                raise HTTPException(status_code=409, detail="Loja sem store_id persistido.")
+            cfg["_store_id_context"] = store_id
         except HTTPException as exc:
             warnings.append(f"{nome}: {exc.detail}")
             continue

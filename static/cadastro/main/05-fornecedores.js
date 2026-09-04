@@ -57,11 +57,34 @@
         return conta.length <= 4 ? conta : `•••• ${conta.slice(-4)}`;
     }
 
+    function somenteLeituraConsolidada() {
+        return !String(state.storeIdSelecionado || '').trim();
+    }
+
+    function atualizarEstadoMutacoes() {
+        const somenteLeitura = somenteLeituraConsolidada();
+        campos.forEach(([, elementName]) => { elements[elementName].disabled = somenteLeitura; });
+        elements.btnSalvarFornecedor.disabled = somenteLeitura;
+        elements.btnLimparFornecedor.disabled = somenteLeitura;
+        elements.fornecedorForm.setAttribute('aria-disabled', String(somenteLeitura));
+        renderLista();
+        if (somenteLeitura) {
+            setStatus('Visualização consolidada. Selecione uma loja para alterar fornecedores.', '');
+        }
+    }
+
+    function bloquearMutacaoConsolidada() {
+        if (!somenteLeituraConsolidada()) return false;
+        atualizarEstadoMutacoes();
+        return true;
+    }
+
     function renderLista() {
         if (!state.fornecedores.length) {
             elements.listaFornecedores.innerHTML = '<div class="tab-empty-state"><p>Nenhum fornecedor cadastrado.</p></div>';
             return;
         }
+        const somenteLeitura = somenteLeituraConsolidada();
         elements.listaFornecedores.innerHTML = state.fornecedores.map(item => {
             const id = core.escaparHtml(item.id || '');
             const contato = core.escaparHtml(item.nome_contato || 'Contato não informado');
@@ -69,13 +92,14 @@
             const banco = core.escaparHtml(item.banco_beneficiario || 'Banco não informado');
             const moeda = core.escaparHtml(item.moeda_pagamento || '-');
             const conta = core.escaparHtml(contaMascarada(item.conta_beneficiario));
+            const acoes = somenteLeitura ? '' : `<div class="fornecedor-item-actions">
+                        <button class="btn btn-secondary" type="button" data-action="editar" data-id="${id}">Editar</button>
+                        <button class="btn btn-danger" type="button" data-action="excluir" data-id="${id}">Excluir</button>
+                    </div>`;
             return `<article class="fornecedor-item" data-id="${id}">
                 <div class="fornecedor-item-header">
                     <h4>${core.escaparHtml(item.nome_empresa || '')}</h4>
-                    <div class="fornecedor-item-actions">
-                        <button class="btn btn-secondary" type="button" data-action="editar" data-id="${id}">Editar</button>
-                        <button class="btn btn-danger" type="button" data-action="excluir" data-id="${id}">Excluir</button>
-                    </div>
+                    ${acoes}
                 </div>
                 <p class="fornecedor-meta">${contato} · ${email}</p>
                 <p class="fornecedor-meta">${banco} · ${moeda}${conta ? ` · Conta ${conta}` : ''}</p>
@@ -91,7 +115,8 @@
             const payload = await lerResposta(response);
             state.fornecedores = Array.isArray(payload) ? payload : [];
             renderLista();
-            setStatus('', '');
+            if (somenteLeituraConsolidada()) atualizarEstadoMutacoes();
+            else setStatus('', '');
             return true;
         } catch (error) {
             setStatus(`Erro ao carregar fornecedores: ${error.message}`, 'error');
@@ -109,6 +134,7 @@
     }
 
     function editar(fornecedorId) {
+        if (bloquearMutacaoConsolidada()) return false;
         const item = state.fornecedores.find(registro => String(registro.id || '') === String(fornecedorId || ''));
         if (!item) return false;
         elements.fornecedorId.value = String(item.id || '');
@@ -121,6 +147,7 @@
 
     async function salvar(event) {
         if (event) event.preventDefault();
+        if (bloquearMutacaoConsolidada()) return false;
         const fornecedorId = String(elements.fornecedorId.value || '').trim();
         const url = fornecedorId
             ? `/api/cadastro/fornecedores/${encodeURIComponent(fornecedorId)}`
@@ -142,11 +169,12 @@
             setStatus(`Erro ao salvar fornecedor: ${error.message}`, 'error');
             return false;
         } finally {
-            elements.btnSalvarFornecedor.disabled = false;
+            atualizarEstadoMutacoes();
         }
     }
 
     async function excluir(fornecedorId) {
+        if (bloquearMutacaoConsolidada()) return false;
         const item = state.fornecedores.find(registro => String(registro.id || '') === String(fornecedorId || ''));
         if (!item || !global.confirm(`Excluir o fornecedor ${item.nome_empresa}?`)) return false;
         setStatus('Excluindo fornecedor...', 'loading');
@@ -180,9 +208,12 @@
         elements.btnLimparFornecedor.addEventListener('click', limparFormulario);
         elements.btnAtualizarFornecedores.addEventListener('click', carregar);
         elements.listaFornecedores.addEventListener('click', tratarCliqueLista);
+        atualizarEstadoMutacoes();
         carregar();
     }
 
-    cadastro.fornecedores = Object.freeze({ carregar, editar, excluir, init, limparFormulario, salvar });
+    cadastro.fornecedores = Object.freeze({
+        atualizarEstadoMutacoes, carregar, editar, excluir, init, limparFormulario, salvar,
+    });
     cadastro.components.add('fornecedores');
 })(window);

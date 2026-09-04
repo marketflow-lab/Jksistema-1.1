@@ -68,7 +68,6 @@ def _shared_sync_loja_key(nome: Any) -> str:
     texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
     return re.sub(r"[^a-z0-9]+", "", texto.lower())
 
-
 def _shared_sync_loja_store_id(loja: Any) -> str:
     if not isinstance(loja, dict):
         return ""
@@ -76,13 +75,9 @@ def _shared_sync_loja_store_id(loja: Any) -> str:
 
 
 def _shared_sync_store_id_deterministico(client_id: str, nome: Any) -> str:
-    client_norm = str(client_id or "").strip().lower()
-    nome_key = _shared_sync_loja_key(nome)
-    if not client_norm or not nome_key:
-        return ""
-    return hashlib.sha256(
-        f"{client_norm}|{nome_key}".encode("utf-8")
-    ).hexdigest()[:24]
+    # Compatibilidade de chamada: IDs atuais sao opacos e nunca podem ser
+    # derivados do tenant ou do nome da loja.
+    return ""
 
 
 def _shared_sync_materializar_store_ids_legados(
@@ -106,33 +101,11 @@ def _shared_sync_validar_nomes_legados_entre_fontes(
     client_id: str,
     *fontes: list[dict],
 ) -> None:
-    identidades: dict[str, list[tuple[str, bool]]] = {}
-    for lojas in fontes:
-        for loja in lojas if isinstance(lojas, list) else []:
-            if not isinstance(loja, dict):
-                continue
-            nome = str(loja.get("nome") or "").strip()
-            store_id = _shared_sync_loja_store_id(loja)
-            explicito = bool(store_id)
-            identidade = store_id or _shared_sync_store_id_deterministico(
-                client_id,
-                nome,
-            )
-            if not identidade:
-                nome_key = _shared_sync_loja_key(nome)
-                identidade = f"legacy:{nome_key}" if nome_key else ""
-            if identidade:
-                identidades.setdefault(identidade, []).append((nome, explicito))
-    for valores in identidades.values():
-        nomes = {nome for nome, _explicito in valores}
-        if len(nomes) > 1 and any(not explicito for _nome, explicito in valores):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Snapshots antigos usam nomes diferentes para a mesma "
-                    "identidade derivada de loja. A sincronizacao foi bloqueada."
-                ),
-            )
+    # IDs atuais sao opacos e registros legados so podem casar pela chave de
+    # nome normalizada. Variacoes de acento/pontuacao dessa mesma chave nao sao
+    # uma divergencia de identidade; a ambiguidade dentro de cada snapshot ja
+    # e bloqueada por ``_shared_sync_validar_identidades_lojas``.
+    _ = client_id, fontes
 
 
 def _shared_sync_loja_identity_key(loja: Any) -> str:
@@ -140,7 +113,37 @@ def _shared_sync_loja_identity_key(loja: Any) -> str:
     if store_id:
         return f"store_id:{store_id}"
     nome_key = _shared_sync_loja_key((loja or {}).get("nome") if isinstance(loja, dict) else "")
-    return f"legacy_name:{nome_key}" if nome_key else ""
+    # Keep the historical manifest key for legacy rows so existing peers do
+    # not resend them merely because durable identities were introduced.
+    return nome_key
+
+def _shared_sync_sync_version(valor: Any) -> int:
+    try:
+        return max(0, int(valor or 0))
+    except (TypeError, ValueError):
+        return 0
+
+def _shared_sync_remote_store_is_newer(atual: dict, remoto: dict) -> bool:
+    atual_version = _shared_sync_sync_version((atual or {}).get("_sync_version"))
+    remoto_version = _shared_sync_sync_version((remoto or {}).get("_sync_version"))
+    if remoto_version != atual_version:
+        return remoto_version > atual_version
+    atual_updated = str((atual or {}).get("_sync_updated_at") or "").strip()
+    remoto_updated = str((remoto or {}).get("_sync_updated_at") or "").strip()
+    return bool(remoto_updated and remoto_updated > atual_updated)
+
+def _shared_sync_remote_integration_is_newer(atual: dict, remoto: dict) -> bool:
+    atual_version = _shared_sync_sync_version((atual or {}).get("_sync_version"))
+    remoto_version = _shared_sync_sync_version((remoto or {}).get("_sync_version"))
+    if remoto_version != atual_version:
+        return remoto_version > atual_version
+    atual_updated = str((atual or {}).get("_sync_updated_at") or "").strip()
+    remoto_updated = str((remoto or {}).get("_sync_updated_at") or "").strip()
+    if remoto_updated != atual_updated:
+        return bool(remoto_updated and remoto_updated > atual_updated)
+    return _shared_sync_timestamp((remoto or {}).get("updated_at")) > _shared_sync_timestamp(
+        (atual or {}).get("updated_at")
+    )
 
 def _shared_sync_servico_key(servico: Any) -> str:
     chave = _shared_sync_loja_key(servico)
@@ -374,7 +377,7 @@ def _shared_sync_validar_identidades_lojas(
     status_code: int,
 ) -> None:
     store_ids: set[str] = set()
-    nomes: set[str] = set()
+    nomes_legados: set[str] = set()
     for loja in lojas:
         if not isinstance(loja, dict):
             raise HTTPException(
@@ -393,15 +396,6 @@ def _shared_sync_validar_identidades_lojas(
                 status_code=status_code,
                 detail=f"{origem} contem integracoes de loja em formato invalido.",
             )
-        if nome_key in nomes:
-            raise HTTPException(
-                status_code=status_code,
-                detail=(
-                    f"{origem} contem nomes de loja duplicados; "
-                    "sincronizacao bloqueada."
-                ),
-            )
-        nomes.add(nome_key)
         if store_id:
             if store_id in store_ids:
                 raise HTTPException(
@@ -409,6 +403,20 @@ def _shared_sync_validar_identidades_lojas(
                     detail=f"{origem} contem store_id duplicado; sincronizacao bloqueada.",
                 )
             store_ids.add(store_id)
+        else:
+            # Nomes sao apenas uma ponte para registros realmente legados.
+            # Duas identidades duraveis podem ter o mesmo nome de exibicao;
+            # somente duas linhas sem store_id seriam impossiveis de resolver
+            # de forma deterministica durante o merge.
+            if nome_key in nomes_legados:
+                raise HTTPException(
+                    status_code=status_code,
+                    detail=(
+                        f"{origem} contem lojas legadas homonimas; "
+                        "sincronizacao bloqueada."
+                    ),
+                )
+            nomes_legados.add(nome_key)
         integracoes = (
             loja.get("integracoes")
             if isinstance(loja.get("integracoes"), dict)
@@ -830,7 +838,7 @@ def _shared_sync_merge_integracao_loja(
             merged[chave] = bool(atual_valor) or bool(valor)
             continue
         if chave == "updated_at":
-            if remoto_ts > atual_ts:
+            if remoto_mais_novo:
                 merged[chave] = valor
             elif "updated_at" not in merged and _shared_sync_valor_preenchido(valor):
                 merged[chave] = valor
@@ -1296,6 +1304,38 @@ def _shared_sync_merge_tombstones_integracoes_bytes(
     return json.dumps(merged, ensure_ascii=False, indent=4).encode("utf-8")
 
 
+def _shared_sync_merge_nomes_anteriores_loja(
+    atual: dict,
+    remoto: dict,
+    nome_atual: Any,
+) -> list[str]:
+    """Preserve the stable alias history for one durable store identity."""
+
+    candidatos: list[Any] = []
+    for loja in (atual or {}, remoto or {}):
+        aliases = loja.get("nomes_anteriores")
+        if isinstance(aliases, (list, tuple)):
+            candidatos.extend(aliases)
+        elif _shared_sync_valor_preenchido(aliases):
+            candidatos.append(aliases)
+
+    # Whichever side loses the current-name decision still contributes its
+    # previous name.  This is essential when a newer remote rename wins.
+    candidatos.extend(((atual or {}).get("nome"), (remoto or {}).get("nome")))
+
+    nome_atual_key = str(nome_atual or "").strip().casefold()
+    vistos: set[str] = set()
+    aliases_unidos: list[str] = []
+    for candidato in candidatos:
+        alias = str(candidato or "").strip()
+        alias_key = alias.casefold()
+        if not alias or alias_key == nome_atual_key or alias_key in vistos:
+            continue
+        vistos.add(alias_key)
+        aliases_unidos.append(alias)
+    return aliases_unidos
+
+
 def _shared_sync_merge_loja_integracoes(
     atual: dict,
     remoto: dict,
@@ -1305,10 +1345,16 @@ def _shared_sync_merge_loja_integracoes(
     strict_oauth_conflicts: bool = False,
 ) -> dict:
     merged = dict(_shared_sync_json_clone(atual or {}))
+    atual_store_id = _shared_sync_loja_store_id(atual)
+    remoto_store_id = _shared_sync_loja_store_id(remoto)
+    mesma_identidade_duravel = bool(atual_store_id and remoto_store_id and atual_store_id == remoto_store_id)
+    remoto_mais_novo = mesma_identidade_duravel and _shared_sync_remote_store_is_newer(atual, remoto)
     for chave, valor in (remoto or {}).items():
         if chave == "integracoes":
             continue
-        if chave == "store_id" and _shared_sync_valor_preenchido(merged.get(chave)):
+        if chave == "store_id":
+            if not atual_store_id and remoto_store_id:
+                merged[chave] = remoto_store_id
             continue
         if (
             isinstance(base, dict)
@@ -1346,8 +1392,30 @@ def _shared_sync_merge_loja_integracoes(
                     "Revise a loja antes de sincronizar novamente."
                 ),
             )
-        if not _shared_sync_valor_preenchido(merged.get(chave)) and _shared_sync_valor_preenchido(valor):
+        if chave == "nome" and mesma_identidade_duravel and _shared_sync_valor_preenchido(valor):
+            if remoto_mais_novo:
+                merged[chave] = valor
+            continue
+        if chave in {"_sync_version", "_sync_updated_at"} and remoto_mais_novo:
             merged[chave] = valor
+            continue
+        if (
+            not add_only
+            and remoto_mais_novo
+            and _shared_sync_valor_preenchido(valor)
+        ):
+            merged[chave] = valor
+        elif not _shared_sync_valor_preenchido(merged.get(chave)) and _shared_sync_valor_preenchido(valor):
+            merged[chave] = valor
+
+    if mesma_identidade_duravel:
+        aliases_unidos = _shared_sync_merge_nomes_anteriores_loja(
+            atual,
+            remoto,
+            merged.get("nome"),
+        )
+        if aliases_unidos or "nomes_anteriores" in merged or "nomes_anteriores" in (remoto or {}):
+            merged["nomes_anteriores"] = aliases_unidos
 
     integracoes = merged.setdefault("integracoes", {})
     if not isinstance(integracoes, dict):
@@ -1391,22 +1459,90 @@ def _shared_sync_merge_loja_integracoes(
         integracoes[servico_key] = merged_integracao
     return merged
 
+def _shared_sync_merge_loja_integracoes_authoritative(atual: dict, remoto: dict) -> dict:
+    """Apply a snapshot without allowing an older durable clock to regress it."""
+
+    remoto_tem_clock = any(
+        chave in (remoto or {})
+        for chave in ("_sync_version", "_sync_updated_at")
+    )
+    remoto_loja_vence = (
+        not remoto_tem_clock
+        or _shared_sync_remote_store_is_newer(atual, remoto)
+    )
+    merged = _shared_sync_json_clone(remoto if remoto_loja_vence else atual)
+    aliases = _shared_sync_merge_nomes_anteriores_loja(
+        atual,
+        remoto,
+        merged.get("nome"),
+    )
+    if aliases or "nomes_anteriores" in atual or "nomes_anteriores" in remoto:
+        merged["nomes_anteriores"] = aliases
+
+    atuais_integracoes = (
+        atual.get("integracoes")
+        if isinstance(atual.get("integracoes"), dict)
+        else {}
+    )
+    remotas_integracoes = (
+        remoto.get("integracoes")
+        if isinstance(remoto.get("integracoes"), dict)
+        else {}
+    )
+    # Store and integration clocks are independent.  A newer rename must not
+    # erase an OAuth connection merely because that service was omitted from
+    # the store snapshot.  Exact integration tombstones own disconnection.
+    integracoes = _shared_sync_json_clone(atuais_integracoes)
+    for servico, dados_remotos in remotas_integracoes.items():
+        servico_key = _shared_sync_servico_key(servico)
+        dados_atuais = atuais_integracoes.get(servico_key)
+        if not isinstance(dados_atuais, dict):
+            dados_atuais = atuais_integracoes.get(servico)
+        if not isinstance(dados_remotos, dict):
+            continue
+        remoto_integracao_tem_clock = any(
+            chave in dados_remotos
+            for chave in ("_sync_version", "_sync_updated_at")
+        )
+        remoto_integracao_vence = (
+            not isinstance(dados_atuais, dict)
+            or (
+                remoto_integracao_tem_clock
+                and isinstance(dados_atuais, dict)
+                and _shared_sync_remote_integration_is_newer(
+                    dados_atuais,
+                    dados_remotos,
+                )
+            )
+        )
+        if remoto_integracao_vence:
+            integracoes[servico_key] = _shared_sync_normalizar_integracao_conectada(
+                servico_key,
+                _shared_sync_json_clone(dados_remotos),
+            )
+        elif isinstance(dados_atuais, dict):
+            integracoes[servico_key] = _shared_sync_json_clone(dados_atuais)
+        if servico_key != servico:
+            integracoes.pop(servico, None)
+    merged["integracoes"] = integracoes
+    return merged
+
 def _shared_sync_resumo_lojas_integracoes(lojas: list[dict]) -> dict:
-    nomes = set()
+    identidades = set()
     conectadas = set()
     for loja in lojas or []:
         if not isinstance(loja, dict):
             continue
         loja_key = _shared_sync_loja_identity_key(loja)
         if loja_key:
-            nomes.add(loja_key)
+            identidades.add(loja_key)
         integracoes = loja.get("integracoes") if isinstance(loja.get("integracoes"), dict) else {}
         for servico, dados in (integracoes or {}).items():
             if not isinstance(dados, dict) or not dados.get("connected"):
                 continue
             servico_key = _shared_sync_servico_key(servico)
             conectadas.add(f"{loja_key}:{servico_key}" if loja_key else servico_key)
-    return {"lojas": nomes, "conectadas": conectadas}
+    return {"lojas": identidades, "conectadas": conectadas}
 
 
 def _shared_sync_loja_equivalente_para_push(remota: dict, locais: list[dict]) -> Optional[dict]:
@@ -2154,6 +2290,18 @@ def _shared_sync_merge_lojas_integracoes_bytes(
         and _shared_sync_servico_key(item.get("service"))
         and not str(item.get("restored_at") or "").strip()
     }
+    if (
+        (tombstones_lojas_ativos or tombstones_integracoes_ativos)
+        and any(not _shared_sync_loja_store_id(loja) for loja in remoto_lojas)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Snapshot legado sem store_id nao pode ser conciliado com "
+                "exclusoes atuais. A sincronizacao foi bloqueada para impedir "
+                "ressurreicao ou troca de identidade de loja."
+            ),
+        )
 
     def filtrar_tombstones(lojas: list[dict]) -> list[dict]:
         filtradas: list[dict] = []
@@ -2375,51 +2523,29 @@ def _shared_sync_merge_lojas_integracoes_bytes(
             for idx, loja in enumerate(merged)
             if isinstance(loja, dict) and _shared_sync_loja_store_id(loja)
         }
-        indices_nome: dict[str, list[int]] = {}
+        indices_legado_nome: dict[str, list[int]] = {}
         for idx, loja in enumerate(merged):
-            if not isinstance(loja, dict):
+            if not isinstance(loja, dict) or _shared_sync_loja_store_id(loja):
                 continue
-            nome_key = _shared_sync_loja_key(loja.get("nome"))
-            if nome_key:
-                indices_nome.setdefault(nome_key, []).append(idx)
+            chave_nome = _shared_sync_loja_key(loja.get("nome"))
+            if chave_nome:
+                indices_legado_nome.setdefault(chave_nome, []).append(idx)
 
-        for remoto_pos, loja_remota in enumerate(remoto_lojas):
+        for loja_remota in remoto_lojas:
             remoto_store_id = _shared_sync_loja_store_id(loja_remota)
-            nome_key = _shared_sync_loja_key(loja_remota.get("nome"))
-            idx = indice_store_id.get(remoto_store_id) if remoto_store_id else None
+            chave_nome = _shared_sync_loja_key(loja_remota.get("nome"))
+            if remoto_store_id:
+                # Once a durable identity exists, names never participate in
+                # matching.  This preserves homonymous stores and renames.
+                idx = indice_store_id.get(remoto_store_id)
+            else:
+                # Name fallback is intentionally limited to unambiguous
+                # legacy records on both sides, and it is always exact after
+                # normalization (never substring/fuzzy matching).
+                candidatos = indices_legado_nome.get(chave_nome, []) if chave_nome else []
+                idx = candidatos[0] if len(candidatos) == 1 else None
             if idx is None:
-                candidatos = []
-                for pos in indices_nome.get(nome_key, []) if nome_key else []:
-                    atual_store_id = _shared_sync_loja_store_id(merged[pos])
-                    # Nomes sao apenas compatibilidade para registros legados.
-                    # Duas identidades duraveis diferentes nunca podem colapsar.
-                    if remoto_store_id and atual_store_id and remoto_store_id != atual_store_id:
-                        continue
-                    candidatos.append(pos)
-                if len(candidatos) == 1:
-                    idx = candidatos[0]
-            remoto_tinha_store_id = bool(
-                _shared_sync_loja_store_id(remoto_payload[remoto_pos])
-            )
-            if (
-                idx is not None
-                and not remoto_tinha_store_id
-                and str(merged[idx].get("nome") or "").strip()
-                != str(loja_remota.get("nome") or "").strip()
-            ):
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "Um snapshot antigo usa nome ambiguo para uma loja local. "
-                        "A sincronizacao foi bloqueada para preservar as contas."
-                    ),
-                )
-            if idx is None:
-                bloqueada_por_exclusao_local = bool(
-                    remoto_store_id
-                    and remoto_store_id in tombstones_lojas_ativos
-                )
-                if bloqueada_por_exclusao_local:
+                if remoto_store_id and remoto_store_id in tombstones_lojas_ativos:
                     logger.warning(
                         "[SHARED-SYNC] Loja remota ignorada por exclusao local mais nova."
                     )
@@ -2442,8 +2568,8 @@ def _shared_sync_merge_lojas_integracoes_bytes(
                 novo_idx = len(merged) - 1
                 if remoto_store_id:
                     indice_store_id.setdefault(remoto_store_id, novo_idx)
-                if nome_key:
-                    indices_nome.setdefault(nome_key, []).append(novo_idx)
+                elif chave_nome:
+                    indices_legado_nome.setdefault(chave_nome, []).append(novo_idx)
                 continue
             loja_remota_filtrada = _shared_sync_json_clone(loja_remota)
             store_id_tombstone = remoto_store_id or _shared_sync_loja_store_id(
@@ -2546,6 +2672,18 @@ def _shared_sync_recuperar_backup_lojas_integracoes_bytes(
         and _shared_sync_servico_key(item.get("service"))
         and not str(item.get("restored_at") or "").strip()
     }
+    if (
+        (stores_excluidas or integracoes_excluidas)
+        and any(not _shared_sync_loja_store_id(loja) for loja in backup)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Backup legado sem store_id nao pode ser conciliado com "
+                "exclusoes atuais. A recuperacao foi bloqueada para impedir "
+                "ressurreicao ou troca de identidade de loja."
+            ),
+        )
 
     merged = [_shared_sync_json_clone(loja) for loja in atual]
     indice_store_id = {
@@ -2657,6 +2795,9 @@ __all__ = [
     "_shared_sync_loja_key",
     "_shared_sync_loja_store_id",
     "_shared_sync_loja_identity_key",
+    "_shared_sync_sync_version",
+    "_shared_sync_remote_store_is_newer",
+    "_shared_sync_remote_integration_is_newer",
     "_shared_sync_servico_key",
     "_shared_sync_timestamp",
     "_shared_sync_integracao_revisao",
@@ -2673,7 +2814,9 @@ __all__ = [
     "_shared_sync_tombstone_key",
     "_shared_sync_validar_tombstones",
     "_shared_sync_merge_tombstones_integracoes_bytes",
+    "_shared_sync_merge_nomes_anteriores_loja",
     "_shared_sync_merge_loja_integracoes",
+    "_shared_sync_merge_loja_integracoes_authoritative",
     "_shared_sync_resumo_lojas_integracoes",
     "_shared_sync_loja_equivalente_para_push",
     "_shared_sync_integracao_remota_presente",

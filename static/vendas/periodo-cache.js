@@ -13,8 +13,11 @@ function ocultarCarregamentoSku() {
 
 
 
-window.addEventListener('pageshow', () => {
+window.addEventListener('pageshow', (event) => {
     ocultarCarregamentoSku();
+    if (event.persisted && typeof carregarLojas === 'function') {
+        void carregarLojas({ silencioso: true });
+    }
 });
 
 

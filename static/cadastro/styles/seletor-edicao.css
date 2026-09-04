@@ -9,6 +9,10 @@
         .error { color:#ff6b6b; }
         .success { color:#80ed99; }
         .card { background:#1c1f2b; border:1px solid #222; border-radius:10px; padding:14px; }
+        .store-scope { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px; padding:10px; border:1px solid #34425f; border-radius:8px; background:#161925; }
+        .store-scope label { color:#9bd1ff; font-weight:700; }
+        .store-scope select { min-width:260px; }
+        .store-scope-hint { color:#9aa7be; font-size:0.9rem; }
         .toolbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
         input, textarea { padding:9px; border-radius:6px; border:1px solid #333; background:#101422; color:#e5e5e5; }
         input { min-width:260px; }

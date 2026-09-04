@@ -193,7 +193,7 @@
         }
 
         async function persistirNovoItemListaPedido(dados) {
-            const { skuCadastro, quantidade, valorUnidade, nomeLista, lojaLista, novoItem } = dados;
+            const { skuCadastro, quantidade, valorUnidade, nomeLista, lojaLista, storeIdLista, novoItem } = dados;
             const itensAtuais = Array.isArray(listaPedidoAtual.itens) ? [...listaPedidoAtual.itens] : [];
             const idxExistente = itensAtuais.findIndex((i) => normalizarSku(i && i.SKU) === skuCadastro);
             let msgAcao = '';
@@ -229,7 +229,7 @@
                 const respPut = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaPedidoAtual.id)), {
                     method: 'PUT',
                     headers,
-                    body: JSON.stringify({ nome_lista: nomeLista, loja: lojaLista || undefined, itens: itensAtuais })
+                    body: JSON.stringify({ nome_lista: nomeLista, loja: lojaLista || undefined, store_id: storeIdLista || undefined, itens: itensAtuais })
                 });
                 if (!respPut.ok) {
                     const errPut = await respPut.json().catch(() => ({}));
@@ -258,7 +258,7 @@
                 const respForcado = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaPedidoAtual.id)), {
                     method: 'PUT',
                     headers,
-                    body: JSON.stringify({ nome_lista: nomeLista, loja: lojaLista || undefined, itens: itensForcados })
+                    body: JSON.stringify({ nome_lista: nomeLista, loja: lojaLista || undefined, store_id: storeIdLista || undefined, itens: itensForcados })
                 });
                 if (!respForcado.ok) {
                     const errForcado = await respForcado.json().catch(() => ({}));
@@ -291,6 +291,7 @@
 
             const skuDigitado = String(inputSku.value || '').trim();
             const lojaLista = obterLojaListaPedidoSelecionada();
+            const storeIdLista = obterStoreIdListaPedidoSelecionado();
             const qtdNumero = toNumeroPrompt(inputQtd.value || '');
             const quantidade = Math.max(0, Math.round(Number.isFinite(qtdNumero) ? qtdNumero : 0));
             const valorNumero = toNumeroPrompt(inputValor.value || '');
@@ -362,6 +363,7 @@
                     valorUnidade,
                     nomeLista,
                     lojaLista,
+                    storeIdLista,
                     novoItem,
                 });
 

@@ -1360,13 +1360,14 @@ function ensureLocalBackendStarted() {
         const inspection = inspectBundledLocalBackendMaterialization();
         const localAppDir = inspection.runtimeDir;
         const bundledSourceDir = inspection.bundledDir;
+        const privateBootstrap = await ensurePrivateCredentialBootstrap(localAppDir, mainWindow);
         const firebaseEnv = getLocalBackendFirebaseEnv(localAppDir);
         const remoteAuthEnv = getLocalBackendRemoteAuthEnv();
 
         const launcherPrepared = consumeCanonicalLauncherPreparedServers();
         if (launcherPrepared && await isTcpPortOpen(JK_LOCAL_BACKEND_PORT)) {
             const health = await fetchLocalBackendJson('/health');
-            if (localBackendHealthCompatible(health, firebaseEnv) && !inspection.required) {
+            if (localBackendHealthCompatible(health, firebaseEnv) && !inspection.required && !privateBootstrap.firstUnlock) {
                 logElectronLifecycle('local-backend-prestarted-by-canonical-launcher', {
                     port: JK_LOCAL_BACKEND_PORT,
                     health

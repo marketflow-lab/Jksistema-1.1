@@ -97,8 +97,11 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result == {
-        "routes": 440,
-        "pairs": 438,
+        # O Cadastro por loja adiciona treze rotas autenticadas e substitui as
+        # tres rotas antigas de provisionamento Firebase, sem alterar os
+        # contratos isolados de Vendas cobertos pelo hash abaixo.
+        "routes": 450,
+        "pairs": 448,
         "duplicates": [],
         "openapi": "4592ad7b7431ffb069c65eca1874b0f26010549fab41b2836d740e8cc037d0f1",
     }
@@ -136,14 +139,17 @@ def test_legacy_facades_delegate_to_the_explicit_default_module(tmp_path: Path) 
     assert module.state.max_active_sync == 2
 
 
-def test_app_paths_migrates_legacy_file_into_tenant(tmp_path: Path) -> None:
+def test_app_paths_never_moves_global_legacy_file_into_non_default_tenant(
+    tmp_path: Path,
+) -> None:
     logger = logging.getLogger("test-vendas-paths")
     paths = AppPaths.create(base_dir=tmp_path, info_dir=tmp_path / "info", logger=logger)
     legacy = tmp_path / "produtos_compilado.csv"
     legacy.write_text("sku,estoque\nA,1\n", encoding="utf-8")
     destination = Path(paths.migrate_legacy_file("000002", legacy.name, legacy))
     assert destination == tmp_path / "info" / "000002" / legacy.name
-    assert destination.read_text(encoding="utf-8") == "sku,estoque\nA,1\n"
+    assert not destination.exists()
+    assert legacy.read_text(encoding="utf-8") == "sku,estoque\nA,1\n"
 
 
 def test_sync_preserves_already_running_two_account_limit_and_cancel(monkeypatch) -> None:

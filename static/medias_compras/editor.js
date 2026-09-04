@@ -122,7 +122,7 @@
                 tr.dataset.skuCmp = normalizarSkuComparacaoLocal(sku);
                 tr.innerHTML =
                     '<td><input class="sku-edit-input" data-kind="sku" data-idx="' + idx + '" data-original-sku="' + escaparHtml(sku) + '" type="text" value="' + escaparHtml(sku) + '" autocomplete="off" spellcheck="false" title="Altere o SKU e saia do campo para buscar os dados no cadastro"></td>' +
-                    '<td>' + (fotoUrl ? '<img class="foto-sku" src="' + escaparHtml(fotoUrl) + '" alt="Foto ' + escaparHtml(sku) + '" loading="lazy">' : '<span class="foto-empty">Sem foto</span>') + '</td>' +
+                    '<td>' + (fotoUrl ? '<img class="foto-sku" ' + atributoSrcFotoCadastro(fotoUrl) + ' alt="Foto ' + escaparHtml(sku) + '" loading="lazy">' : '<span class="foto-empty">Sem foto</span>') + '</td>' +
                     '<td title="' + escaparHtml(titulo) + '">' + escaparHtml(titulo) + '</td>' +
                     '<td>' + escaparHtml(oem) + '</td>' +
                     '<td>' + escaparHtml(corLado) + '</td>' +
@@ -367,7 +367,8 @@
                 return;
             }
             const lojaLista = obterLojaListaPedidoSelecionada();
-            if (!lojaLista) {
+            const storeIdLista = obterStoreIdListaPedidoSelecionado();
+            if (!lojaLista || !storeIdLista) {
                 setStatusListaPedido('Selecione a loja da lista.');
                 if (selectLoja) selectLoja.focus();
                 return;
@@ -402,7 +403,7 @@
                         'Content-Type': 'application/json',
                         ...obterAuthHeaders()
                     },
-                    body: JSON.stringify({ nome_lista: nomeLista, loja: lojaLista, itens })
+                    body: JSON.stringify({ nome_lista: nomeLista, loja: lojaLista, store_id: storeIdLista, itens })
                 });
                 if (!resp.ok) {
                     const err = await resp.json().catch(() => ({}));

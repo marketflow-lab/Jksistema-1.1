@@ -127,6 +127,26 @@ def _verified(
     )
 
 
+def _research(
+    info_root: Path,
+    *,
+    tenant: str = "tenant-a",
+    variation_id: str = "var-1",
+    as_of: datetime = BASE_TIME,
+) -> list[dict]:
+    return product_evidence.list_product_research_evidence(
+        tenant,
+        store_ref="store-a",
+        seller_id="seller-a",
+        site_id="MLB",
+        sku="SKU-10",
+        item_id="MLB100",
+        variation_id=variation_id,
+        as_of=as_of,
+        info_root=info_root,
+    )
+
+
 def _complete(
     info_root: Path,
     batch_id: str,
@@ -290,6 +310,158 @@ def test_tenant_databases_are_isolated(evidence_env: Path) -> None:
     assert _verified(evidence_env, tenant="tenant-b") == []
     assert (evidence_env / "tenant-a" / "context_hub" / "context_hub.db").is_file()
     assert (evidence_env / "tenant-b" / "context_hub" / "context_hub.db").is_file()
+
+
+def test_compiled_research_lists_candidate_conflict_and_expired_only_for_exact_tenant_identity(
+    evidence_env: Path,
+) -> None:
+    batch_id = _batch(evidence_env, tenant="tenant-a", variation_id="var-1")
+    technical = _source(
+        evidence_env,
+        batch_id,
+        "technical-material",
+        tenant="tenant-a",
+        source_type="technical_independent",
+        domain="technical.example",
+    )
+    maker_a = _source(
+        evidence_env,
+        batch_id,
+        "maker-voltage-a",
+        tenant="tenant-a",
+        domain="maker-a.example",
+    )
+    maker_b = _source(
+        evidence_env,
+        batch_id,
+        "maker-voltage-b",
+        tenant="tenant-a",
+        domain="maker-b.example",
+    )
+    listing = _source(
+        evidence_env,
+        batch_id,
+        "listing-weight",
+        tenant="tenant-a",
+        source_type="official_listing",
+        domain="produto.mercadolivre.com.br",
+    )
+    _claim(
+        evidence_env,
+        batch_id,
+        [technical],
+        tenant="tenant-a",
+        field_name="physical.material",
+        value="aluminio",
+        unit=None,
+    )
+    _claim(
+        evidence_env,
+        batch_id,
+        [maker_a],
+        tenant="tenant-a",
+        field_name="electrical.voltage",
+        value="12 V",
+        unit=None,
+    )
+    _claim(
+        evidence_env,
+        batch_id,
+        [maker_b],
+        tenant="tenant-a",
+        field_name="electrical.voltage",
+        value="24 V",
+        unit=None,
+    )
+    _claim(
+        evidence_env,
+        batch_id,
+        [listing],
+        tenant="tenant-a",
+        field_name="physical.weight",
+        value="1 kg",
+        unit=None,
+    )
+    _complete(evidence_env, batch_id, tenant="tenant-a")
+
+    compiled = _research(
+        evidence_env,
+        tenant="tenant-a",
+        variation_id="var-1",
+        as_of=BASE_TIME + timedelta(hours=25),
+    )
+    state_by_field = {
+        (item["field_name"], item["value"]): item["state"]
+        for item in compiled
+    }
+
+    assert state_by_field[("physical.material", "aluminio")] == "candidate"
+    assert state_by_field[("electrical.voltage", "12")] == "conflict"
+    assert state_by_field[("electrical.voltage", "24")] == "conflict"
+    assert state_by_field[("physical.weight", "1000")] == "expired"
+    assert all(item["sources"] for item in compiled)
+    assert all("content_hash" in source for item in compiled for source in item["sources"])
+    assert _research(evidence_env, tenant="tenant-b", variation_id="var-1") == []
+    assert _research(evidence_env, tenant="tenant-a", variation_id="var-2") == []
+    assert product_evidence.list_product_research_evidence(
+        "tenant-a",
+        store_ref="store-b",
+        seller_id="seller-a",
+        site_id="MLB",
+        sku="SKU-10",
+        item_id="MLB100",
+        variation_id="var-1",
+        as_of=BASE_TIME + timedelta(hours=25),
+        info_root=evidence_env,
+    ) == []
+
+
+def test_compiled_research_keeps_all_independent_sources_across_batches(
+    evidence_env: Path,
+) -> None:
+    first_batch = _batch(evidence_env)
+    first_source = _source(
+        evidence_env,
+        first_batch,
+        "material-source-a",
+        source_type="technical_independent",
+        domain="technical-a.example",
+    )
+    _claim(
+        evidence_env,
+        first_batch,
+        [first_source],
+        field_name="physical.material",
+        value="aluminio",
+        unit=None,
+    )
+    _complete(evidence_env, first_batch)
+
+    second_batch = _batch(evidence_env)
+    second_source = _source(
+        evidence_env,
+        second_batch,
+        "material-source-b",
+        source_type="technical_independent",
+        domain="technical-b.example",
+    )
+    _claim(
+        evidence_env,
+        second_batch,
+        [second_source],
+        field_name="physical.material",
+        value="aluminio",
+        unit=None,
+    )
+    _complete(evidence_env, second_batch)
+
+    compiled = _research(evidence_env)
+    material = next(item for item in compiled if item["field_name"] == "physical.material")
+
+    assert material["state"] == "verified"
+    assert {source["domain"] for source in material["sources"]} == {
+        "technical-a.example", "technical-b.example",
+    }
 
 
 def test_collecting_and_failed_batches_never_affect_public_activation(
@@ -894,5 +1066,23 @@ def test_rejects_sensitive_or_raw_fields(evidence_env: Path) -> None:
             [source_id],
             field_name="installation.requirement.contact",
             value="WhatsApp: +55 11 99999-9999",
+            unit=None,
+        )
+    with pytest.raises(ContextHubValidationError, match="dado pessoal"):
+        _claim(
+            evidence_env,
+            batch_id,
+            [source_id],
+            field_name="reference.part_number",
+            value="VIN: ABCDEFGHJKLMNPRST",
+            unit=None,
+        )
+    with pytest.raises(ContextHubValidationError, match="dado pessoal"):
+        _claim(
+            evidence_env,
+            batch_id,
+            [source_id],
+            field_name="reference.part_number",
+            value="ABCDEFGHJKLMNPRST",
             unit=None,
         )

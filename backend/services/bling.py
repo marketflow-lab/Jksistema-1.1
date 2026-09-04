@@ -25,6 +25,40 @@ def _get_bling_session():
 
 
 BLING_SESSION = _get_bling_session()
+BLING_ACCOUNT_MIN_INTERVAL_SECONDS = 0.35
+_BLING_ACCOUNT_LIMIT_LOCK = threading.Lock()
+_BLING_ACCOUNT_NEXT_CALL: dict[str, float] = {}
+
+
+def _bling_wait_account_turn(
+    _headers: dict | None,
+    *,
+    cancel_callback: Callable[[], object] | None = None,
+    deadline: float | None = None,
+) -> None:
+    """Serialize every Bling GET start under a conservative process-wide limit.
+
+    The official quota is account-wide and OAuth tokens rotate. The desktop
+    runtime does not have a trustworthy immutable Bling account id before a
+    request, so a single bucket is deliberately stricter than the provider's
+    per-account quota and cannot split one account across token generations.
+    """
+
+    key = "bling-process-wide"
+    now = time.monotonic()
+    with _BLING_ACCOUNT_LIMIT_LOCK:
+        target = max(now, _BLING_ACCOUNT_NEXT_CALL.get(key, now))
+        _BLING_ACCOUNT_NEXT_CALL[key] = target + BLING_ACCOUNT_MIN_INTERVAL_SECONDS
+        if len(_BLING_ACCOUNT_NEXT_CALL) > 256:
+            stale_before = now - 5 * 60
+            for stale_key, next_call in list(_BLING_ACCOUNT_NEXT_CALL.items()):
+                if next_call < stale_before:
+                    _BLING_ACCOUNT_NEXT_CALL.pop(stale_key, None)
+    _bling_cancelable_sleep(
+        max(0.0, target - now),
+        cancel_callback=cancel_callback,
+        deadline=deadline,
+    )
 
 
 def _bling_retry_after_seconds(resp) -> float:
@@ -247,6 +281,11 @@ def _bling_get_with_adaptive_limit(
         if time.monotonic() >= deadline:
             break
         limiter.wait_turn(cancel_callback=cancel_callback, deadline=deadline)
+        _bling_wait_account_turn(
+            headers,
+            cancel_callback=cancel_callback,
+            deadline=deadline,
+        )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break

@@ -18,6 +18,7 @@ from .deep_research import (
     apparent_coverage_complete,
     canonical_research_url,
     extract_technical_claims,
+    finalize_research_evidence_result,
     make_research_document,
     persist_research_documents,
     research_session,
@@ -25,6 +26,10 @@ from .deep_research import (
 from .queries import _ia_agent_perguntas_relaxar_query_web
 from .runtime import _normalizar_texto
 from .deep_research_contracts import (
+    PUBLIC_RESEARCH_GAP_MAX_PAGES,
+    PUBLIC_RESEARCH_GAP_MAX_SECONDS,
+    PUBLIC_RESEARCH_INITIAL_MAX_PAGES,
+    PUBLIC_RESEARCH_INITIAL_MAX_SECONDS,
     sanitize_public_research_text,
     technical_assertion_occurrence_is_positive,
 )
@@ -32,63 +37,141 @@ from .deep_research_fingerprints import research_document_rank
 from .official_source_registry import is_reviewed_official_domain, official_domains_for_target_identity
 
 
-ResearchEntry = tuple[dict, str, str, str]
-ResearchGroup = tuple[str, str, list, list[dict]]
-
-_TARGET_SOURCE_AUTHORITIES = {
-    "official_manufacturer", "official_oem", "technical_distributor", "technical_independent",
-}
-_TARGET_OFFICIAL_AUTHORITIES = {"official_manufacturer", "official_oem"}
-_TARGET_TECHNICAL_AUTHORITIES = {"technical_distributor", "technical_independent"}
-_COMPATIBILITY_CRITICAL_QUERY_TYPES = {
-    "target_interface_official", "target_interface_technical", "product_interface_technical",
-    "interface_equivalence",
-}
-
-
-@dataclass(frozen=True)
-class DeepResearchCallbacks:
-    """Source-layer operations kept injectable to preserve the legacy facade."""
-
-    reserve_queries: Callable[..., tuple[object, list[dict[str, str]], dict[str, list[str]]]]
-    prefetch_web: Callable[..., dict[str, list[dict[str, Any]]]]
-    select_items: Callable[[dict, dict, set[str]], tuple[str, str, list]]
-    read_batch: Callable[..., tuple[dict[str, str], dict[str, int], bool]]
-    discover_links: Callable[[str, str], list[str]]
-    render_results: Callable[[list, str, str, dict], list[str]]
-    render_listings: Callable[[list[dict]], list[str]]
+from .deep_research_target import (
+    _COMPATIBILITY_CRITICAL_QUERY_TYPES,
+    _TARGET_SOURCE_AUTHORITIES,
+    DeepResearchCallbacks,
+    ResearchEntry,
+    ResearchGroup,
+    _render_research_context,
+    _target_identity_from_input,
+    _target_identity_is_specific,
+    _target_identity_pattern,
+    _target_interface_claims,
+    _target_scoped_text,
+    _target_source_authority,
+    _verified_target_evidence,
+)
 
 
 def reserve_research_queries(
     agent_input: dict,
     queries: list[dict],
 ) -> tuple[object, list[dict[str, str]], dict[str, list[str]]]:
-    """Reserve every actual provider query, including relaxed variants."""
+    """Reserve original queries in planner/gap/fallback order.
+
+    Relaxed variants are deliberately absent here: the collector may reserve
+    one only after the provider returned zero results for its original query.
+    """
 
     session = research_session(agent_input)
-    expanded: list[dict[str, str]] = []
+    originals: list[dict[str, str]] = []
     variants_by_original: dict[str, list[str]] = {}
-    for query in queries[:12]:
+    phase_order = {"plan": 0, "gap": 1, "initial": 2, "identity": 2, "fallback": 3}
+    ordered = sorted(
+        enumerate(queries[:24]),
+        key=lambda pair: (
+            phase_order.get(str((pair[1] or {}).get("research_phase") or "fallback").lower(), 3)
+            if isinstance(pair[1], dict)
+            else 3,
+            pair[0],
+        ),
+    )
+    for _index, query in ordered:
         if not isinstance(query, dict):
             continue
         original = str(query.get("query") or "").strip()[:260]
         query_type = str(query.get("type") or "web").strip()[:80]
+        research_phase = str(query.get("research_phase") or "fallback").strip().lower()[:16]
+        if research_phase not in phase_order:
+            research_phase = "fallback"
         if not original:
             continue
-        variants = [original]
-        relaxed = _ia_agent_perguntas_relaxar_query_web(original)
-        if relaxed and _normalizar_texto(relaxed) != _normalizar_texto(original):
-            variants.append(relaxed[:260])
-        variants_by_original[original] = variants
-        expanded.extend({"query": value, "type": query_type} for value in variants)
-    accepted = session.reserve_queries(expanded)
+        variants_by_original[original] = [original]
+        originals.append({
+            "query": original,
+            "type": query_type,
+            "research_phase": research_phase,
+        })
+    accepted = session.reserve_queries(originals)
     accepted_texts = {str(value.get("query") or "") for value in accepted}
     variants_by_original = {
-        original: [variant for variant in variants if variant in accepted_texts]
-        for original, variants in variants_by_original.items()
-        if any(variant in accepted_texts for variant in variants)
+        original: [original]
+        for original in variants_by_original
+        if original in accepted_texts
     }
     return session, accepted, variants_by_original
+
+
+def _prefetch_reserved_queries(
+    client_id: str,
+    accepted: list[dict[str, str]],
+    variants_by_original: dict[str, list[str]],
+    *,
+    session: object,
+    search: Callable[..., list[dict]],
+    callbacks: DeepResearchCallbacks,
+    deadline_monotonic: float,
+) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, str]], int]:
+    """Search phases serially and relax only an original with zero provider hits."""
+
+    phase_order = ("plan", "gap", "identity", "initial", "fallback")
+    prefetch: dict[str, list[dict[str, Any]]] = {}
+    all_accepted = list(accepted)
+    relaxed_count = 0
+    for phase in phase_order:
+        phase_queries = [
+            value for value in accepted
+            if str(value.get("research_phase") or "initial").strip().lower() == phase
+        ]
+        if not phase_queries or time.monotonic() >= deadline_monotonic:
+            continue
+        originals = [str(value.get("query") or "") for value in phase_queries]
+        original_results = callbacks.prefetch_web(
+            client_id,
+            originals,
+            search,
+            deadline_monotonic=deadline_monotonic,
+        )
+        if isinstance(original_results, dict):
+            prefetch.update(original_results)
+        relaxed_requests: list[dict[str, str]] = []
+        relaxed_owners: dict[str, str] = {}
+        for value in phase_queries:
+            original = str(value.get("query") or "")
+            if prefetch.get(original):
+                continue
+            relaxed = _ia_agent_perguntas_relaxar_query_web(original)[:260]
+            if not relaxed or _normalizar_texto(relaxed) == _normalizar_texto(original):
+                continue
+            relaxed_requests.append({
+                "query": relaxed,
+                "type": str(value.get("type") or "web"),
+                "research_phase": phase,
+            })
+            relaxed_owners[relaxed] = original
+        reserve = getattr(session, "reserve_queries", None)
+        newly_accepted = reserve(relaxed_requests) if callable(reserve) else []
+        if not newly_accepted:
+            continue
+        relaxed_texts = [str(value.get("query") or "") for value in newly_accepted]
+        relaxed_results = callbacks.prefetch_web(
+            client_id,
+            relaxed_texts,
+            search,
+            deadline_monotonic=deadline_monotonic,
+        )
+        if isinstance(relaxed_results, dict):
+            prefetch.update(relaxed_results)
+        for value in newly_accepted:
+            relaxed = str(value.get("query") or "")
+            original = relaxed_owners.get(relaxed)
+            if not original:
+                continue
+            variants_by_original.setdefault(original, [original]).append(relaxed)
+            all_accepted.append(value)
+            relaxed_count += 1
+    return prefetch, all_accepted, relaxed_count
 
 
 def read_deep_batch(
@@ -234,7 +317,17 @@ def _collect_groups(
     groups: list[ResearchGroup] = []
     discovered_urls: set[str] = set()
     seen_urls: set[str] = set()
-    for query in queries[:12]:
+    phase_order = {"plan": 0, "gap": 1, "identity": 2, "initial": 2, "fallback": 3}
+    ordered_queries = sorted(
+        enumerate(queries[:24]),
+        key=lambda pair: (
+            phase_order.get(str((pair[1] or {}).get("research_phase") or "initial").lower(), 2)
+            if isinstance(pair[1], dict)
+            else 3,
+            pair[0],
+        ),
+    )
+    for _index, query in ordered_queries:
         if not isinstance(query, dict):
             continue
         original = str(query.get("query") or "").strip()[:260]
@@ -253,6 +346,7 @@ def _select_pages(
     query: str,
     query_type: str,
     *,
+    research_phase: str,
     page_count: int,
     page_limit: int,
 ) -> tuple[list[ResearchEntry], int]:
@@ -260,7 +354,11 @@ def _select_pages(
     for item, url in items:
         if page_count >= page_limit:
             break
-        if not session.reserve_page(url):
+        try:
+            reserved = session.reserve_page(url, research_phase=research_phase)
+        except TypeError:
+            reserved = session.reserve_page(url)
+        if not reserved:
             continue
         selected.append((item, url, query, query_type))
         page_count += 1
@@ -274,6 +372,7 @@ def _select_linked_pages(
     discover_links: Callable[[str, str], list[str]],
     discovered_urls: set[str],
     *,
+    research_phase: str,
     page_count: int,
     page_limit: int,
 ) -> tuple[list[ResearchEntry], int]:
@@ -282,7 +381,13 @@ def _select_linked_pages(
         key = canonical_research_url(url) or str(url or "").lower()
         for linked_url in discover_links(url, str(readings.get(key) or "")):
             discovered_urls.add(linked_url)
-            if page_count >= page_limit or not session.reserve_page(linked_url):
+            if page_count >= page_limit:
+                continue
+            try:
+                reserved = session.reserve_page(linked_url, research_phase=research_phase)
+            except TypeError:
+                reserved = session.reserve_page(linked_url)
+            if not reserved:
                 continue
             linked.append((item, linked_url, query, f"{query_type}_linked_technical"))
             page_count += 1
@@ -355,306 +460,6 @@ def _append_documents(
     return new_facts
 
 
-def _target_identity_from_input(agent_input: dict) -> str:
-    intent = agent_input.get("intent") if isinstance(agent_input.get("intent"), dict) else {}
-    compatibility = (
-        intent.get("compatibilidade")
-        if isinstance(intent.get("compatibilidade"), dict)
-        else {}
-    )
-    value = compatibility.get("target_item") or compatibility.get("target_vehicle") or ""
-    safe = sanitize_public_research_text(value, 300).strip()
-    return "" if "PROTEGIDO]" in safe else safe
-
-
-def _target_identity_pattern(target_identity: str) -> re.Pattern | None:
-    normalized = _normalizar_texto(target_identity).casefold()
-    parts = re.findall(r"[a-z]+|\d+", normalized)
-    if len("".join(parts)) < 4:
-        return None
-    separator = r"[\s._/\-]*"
-    return re.compile(
-        r"(?<![a-z0-9])" + separator.join(re.escape(part) for part in parts) + r"(?![a-z0-9])",
-        flags=re.IGNORECASE,
-    )
-
-
-def _target_identity_is_specific(target_identity: str) -> bool:
-    """Reject brand/model-only targets before they can activate interface facts."""
-
-    normalized = _normalizar_texto(target_identity).casefold()
-    tokens = re.findall(r"[a-z]+|\d+(?:[.,]\d+)?", normalized)
-    numeric = [token for token in tokens if re.fullmatch(r"\d+(?:[.,]\d+)?", token)]
-    non_year = [
-        token for token in numeric
-        if not (token.isdigit() and len(token) == 4 and 1900 <= int(token) <= 2099)
-    ]
-    if not non_year:
-        return False
-    if re.search(r"\b(?=[a-z0-9-]{4,}\b)(?=[a-z0-9-]*[a-z])(?=[a-z0-9-]*\d)[a-z0-9]+(?:-[a-z0-9]+)*\b", normalized):
-        return True
-    if len(non_year) >= 2 or any(len(re.sub(r"\D", "", token)) >= 5 for token in non_year):
-        return True
-    for index, token in enumerate(tokens[:-1]):
-        if token.isalpha() and 1 < len(token) <= 4 and tokens[index + 1] in non_year:
-            return True
-    return bool(re.search(r"\b\d+[.,]\d+\b", normalized))
-
-
-def _target_scoped_text(
-    document: ResearchDocumentV1, pattern: re.Pattern,
-) -> str:
-    matches = lambda value: bool(pattern.search(_normalizar_texto(value).casefold()))
-    if not matches(document.text):
-        return ""
-    lines = document.text.splitlines() or [document.text]
-    interface_line = re.compile(
-        r"\b(?:bcd|pcd|bolt|furacao|fixacao|montagem|mounting|simetr|assimetr|symmetr|asymmetr|"
-        r"bracos?|arms?|furos?|holes?|parafusos?|conector|connector)\b",
-        flags=re.IGNORECASE,
-    )
-    model_code = re.compile(
-        r"\b(?=[A-Z0-9-]{4,30}\b)(?=[A-Z0-9-]*[A-Z])(?=[A-Z0-9-]*\d{3})"
-        r"[A-Z0-9]+(?:-[A-Z0-9]+)*\b",
-        flags=re.IGNORECASE,
-    )
-    blocks: list[str] = []
-    for index, line in enumerate(lines):
-        if not matches(line):
-            continue
-        target_heading = re.match(r"^\s*(#{1,6})\s+", line)
-        selected = [line.strip()]
-        for candidate in lines[index + 1 : index + 13]:
-            normalized = _normalizar_texto(candidate)
-            heading = re.match(r"^\s*(#{1,6})\s+", candidate)
-            if re.match(r"^\s*(?:-{3,}|={3,})\s*$", candidate):
-                break
-            if model_code.search(normalized) and not matches(candidate):
-                break
-            if heading and target_heading and len(heading.group(1)) <= len(target_heading.group(1)):
-                break
-            if interface_line.search(normalized):
-                selected.append(candidate.strip())
-        blocks.append("\n".join(value for value in selected if value))
-    return "\n".join(dict.fromkeys(value for value in blocks if value))[:12_000]
-
-
-def _target_source_authority(
-    document: ResearchDocumentV1, target_identity: str,
-) -> str:
-    authority = str(document.source_type or "").strip().lower()
-    host = str(urlparse(document.url).hostname or "").strip(".").lower()
-    target_roots = official_domains_for_target_identity(target_identity)
-    if any(host == root or host.endswith("." + root) for root in target_roots):
-        return authority if authority in _TARGET_OFFICIAL_AUTHORITIES else "official_manufacturer"
-    if authority in _TARGET_OFFICIAL_AUTHORITIES or is_reviewed_official_domain(host):
-        return "technical_independent"
-    if authority in _TARGET_TECHNICAL_AUTHORITIES:
-        return authority
-    return ""
-
-
-def _target_interface_claims(text: str) -> list[tuple[str, str, str]]:
-    normalized = _normalizar_texto(text).casefold()
-    claims: set[tuple[str, str, str]] = set()
-    symmetry_values: set[str] = set()
-    for value, pattern in (
-        ("asymmetric", re.compile(r"\b(?:assimetr(?:ico|ica)|asymmetr(?:ic|ical))\b")),
-        ("symmetric", re.compile(r"\b(?:simetr(?:ico|ica)|symmetr(?:ic|ical))\b")),
-    ):
-        if any(
-            technical_assertion_occurrence_is_positive(
-                normalized, match.start(), match.end(),
-            )
-            for match in pattern.finditer(normalized)
-        ):
-            symmetry_values.add(value)
-    if len(symmetry_values) == 1:
-        claims.add(("interface.symmetry", next(iter(symmetry_values)), ""))
-    bolt_pattern = re.compile(
-        r"\b(?:bcd|pcd)(?:\s*/\s*(?:bcd|pcd))?\b\s*[:=\-]?\s*"
-        r"(?:\d{1,2}\s*[x×]\s*)?(\d{2,4}(?:[.,]\d+)?(?:\s*/\s*\d{2,4}(?:[.,]\d+)?)?)\s*mm\b",
-        flags=re.IGNORECASE,
-    )
-    for match in bolt_pattern.finditer(normalized):
-        if not technical_assertion_occurrence_is_positive(
-            normalized, match.start(), match.end(),
-        ):
-            continue
-        value = re.sub(r"\s+", "", match.group(1)).replace(",", ".")
-        claims.add(("interface.bolt_pattern", value, "mm"))
-    geometry = re.compile(
-        r"\b(\d{1,2})\s*(bracos?|arms?|furos?|holes?|parafusos?|bolts?)\b",
-        flags=re.IGNORECASE,
-    )
-    for match in geometry.finditer(normalized):
-        if not technical_assertion_occurrence_is_positive(
-            normalized, match.start(), match.end(),
-        ):
-            continue
-        kind = "arm" if match.group(2).startswith(("braco", "arm")) else "hole"
-        claims.add(("interface.fixation_geometry", f"{int(match.group(1))}-{kind}", ""))
-    connector = re.compile(
-        r"\b(?:tipo\s+de\s+conector|connector\s+type|conector|connector)\s*[:=\-]\s*"
-        r"([a-z0-9][a-z0-9+._ /\-]{1,40})",
-        flags=re.IGNORECASE,
-    )
-    for match in connector.finditer(normalized):
-        if not technical_assertion_occurrence_is_positive(
-            normalized, match.start(), match.end(),
-        ):
-            continue
-        value = re.split(r"[;|,.]", match.group(1), maxsplit=1)[0].strip()
-        if value:
-            claims.add(("interface.connector_type", value[:40], ""))
-    return sorted(claims)
-
-
-def _target_claim_copy_fingerprint(
-    text: str,
-    pattern: re.Pattern,
-    target_identity: str,
-    claim: tuple[str, str, str],
-) -> str:
-    """Fingerprint only the assertion that supports one target claim."""
-
-    assertions: set[str] = set()
-    for segment in re.split(r"[\r\n|]+|(?<=[.!?;])\s+", str(text or "")):
-        if claim not in _target_interface_claims(segment):
-            continue
-        normalized = re.sub(
-            r"\s+", " ", _normalizar_texto(re.sub(r"https?://\S+", " ", segment)).casefold(),
-        ).strip(" .,:;|-")
-        identity_match = pattern.search(normalized)
-        if identity_match:
-            normalized = normalized[identity_match.start():]
-        else:
-            anchors = {
-                "interface.symmetry": r"\b(?:fixacao|montagem|simetr|assimetr|symmetr|asymmetr)",
-                "interface.bolt_pattern": r"\b(?:bcd|pcd|bolt|furacao)",
-                "interface.fixation_geometry": r"\b(?:fixacao|montagem|furacao|\d+\s*(?:bracos?|arms?|furos?|holes?))",
-                "interface.connector_type": r"\b(?:tipo\s+de\s+conector|connector\s+type|conector|connector)",
-            }
-            anchor_match = re.search(anchors.get(claim[0], r"$^"), normalized)
-            if anchor_match:
-                normalized = normalized[anchor_match.start():]
-        if normalized:
-            assertions.add(normalized)
-    payload = "\n".join([
-        "target-claim-copy-v1",
-        _normalizar_texto(target_identity).casefold(),
-        "|".join(claim),
-        *sorted(assertions),
-    ])
-    return hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()
-
-
-def _verified_target_evidence(
-    agent_input: dict, documents: list[ResearchDocumentV1],
-) -> list[dict[str, Any]]:
-    target_identity = _target_identity_from_input(agent_input)
-    pattern = _target_identity_pattern(target_identity)
-    if not target_identity or pattern is None or not _target_identity_is_specific(target_identity):
-        return []
-    grouped: dict[tuple[str, str, str], list[dict[str, str]]] = {}
-    for document in documents:
-        if not str(document.query_type or "").startswith("target_"):
-            continue
-        scoped_text = _target_scoped_text(document, pattern)
-        authority = _target_source_authority(document, target_identity) if scoped_text else ""
-        if authority not in _TARGET_SOURCE_AUTHORITIES:
-            continue
-        for claim in _target_interface_claims(scoped_text):
-            source = {
-                "authority": authority,
-                "url": document.url,
-                "origin_key": document.origin_key,
-                "copy_fingerprint": _target_claim_copy_fingerprint(
-                    scoped_text, pattern, target_identity, claim,
-                ),
-            }
-            values = grouped.setdefault(claim, [])
-            if not any(value["url"] == source["url"] for value in values):
-                values.append(source)
-    verified: list[dict[str, Any]] = []
-    for (field_name, value, unit), sources in sorted(grouped.items()):
-        official = [source for source in sources if source["authority"] in _TARGET_OFFICIAL_AUTHORITIES]
-        technical = [source for source in sources if source["authority"] in _TARGET_TECHNICAL_AUTHORITIES]
-        technical_origins = {source["origin_key"] for source in technical if source["origin_key"]}
-        technical_copies = {source["copy_fingerprint"] for source in technical if source["copy_fingerprint"]}
-        if not official and not (len(technical_origins) >= 2 and len(technical_copies) >= 2):
-            continue
-        verified.append({
-            "scope": "target",
-            "target_identity": target_identity,
-            "field_name": field_name,
-            "value": value,
-            "unit": unit,
-            "activation_policy": "official_or_two_independent_sources",
-            "sources": [*official, *technical][:8],
-        })
-    conflicting_fields = {
-        field_name
-        for field_name in {value["field_name"] for value in verified}
-        if len({
-            (value["value"].casefold(), value["unit"].casefold())
-            for value in verified if value["field_name"] == field_name
-        }) > 1
-    }
-    return [value for value in verified if value["field_name"] not in conflicting_fields]
-
-
-def _research_result(
-    context: str, verified: list[dict], verified_target: list[dict], metrics: dict,
-) -> dict[str, Any]:
-    return {
-        "context": context[:12_000],
-        "verified_product_evidence": verified,
-        "verified_target_evidence": verified_target,
-        "research_metrics": metrics,
-    }
-
-
-def _render_research_context(
-    groups: list[ResearchGroup],
-    preloaded: dict[str, str],
-    pages_read: int,
-    callbacks: DeepResearchCallbacks,
-) -> list[str]:
-    state = {
-        "tentadas": pages_read,
-        "confirmada": False,
-        "preloaded": preloaded,
-        "disable_live_reads": True,
-    }
-    lines: list[str] = []
-    for used_query, query_type, items, listings in groups:
-        if not items and not listings:
-            continue
-        lines.append(f"Busca {len(lines) + 1} ({query_type}): {used_query}")
-        lines.extend(callbacks.render_results(items[:6], used_query, query_type, state))
-        lines.extend(callbacks.render_listings(listings))
-        if sum(len(value) for value in lines) >= 12_000:
-            break
-    return lines
-
-
-def _verified_evidence_lines(verified: list[dict]) -> list[str]:
-    if not verified:
-        return []
-    return [
-        "Evidencias tecnicas ativadas pelo dossie (somente fatos verified):",
-        *[
-            "- {field} [{scope}]: {value}{unit} ({policy})".format(
-                field=value.get("field_name") or "campo",
-                scope=value.get("scope") or "product",
-                value=value.get("value") or "",
-                unit=(" " + str(value.get("unit") or "")).rstrip(),
-                policy=value.get("activation_policy") or "",
-            )
-            for value in verified[:60]
-        ],
-    ]
 
 
 _READ_METRIC_KEYS = (
@@ -675,37 +480,13 @@ def _accumulate_read_metrics(
     return batch_pages_read
 
 
-def collect_deep_research_context(
-    client_id: str, queries: list[dict], agent_input: dict,
-    *,
-    phase: str,
-    search: Callable[..., list[dict]],
+def _crawl_reserved_groups(
+    queries: list[dict], accepted: list[dict[str, str]],
+    variants: dict[str, list[str]], groups: list[ResearchGroup],
+    discovered_urls: set[str], agent_input: dict, session: object,
+    budget_phase: str, deadline: float, page_limit: int,
     callbacks: DeepResearchCallbacks,
-) -> dict[str, Any]:
-    """Collect a bounded dossier while keeping page bodies process-local."""
-
-    started = time.monotonic()
-    session, accepted, variants = callbacks.reserve_queries(agent_input, queries)
-    page_limit = 10 if phase == "identity" else 40
-    phase_seconds = 55.0 if phase == "identity" else 230.0
-    deadline = min(session.deadline_monotonic, started + phase_seconds)
-    accepted_texts = [str(value.get("query") or "") for value in accepted]
-    prefetch = (
-        callbacks.prefetch_web(
-            client_id,
-            accepted_texts,
-            search,
-            deadline_monotonic=deadline,
-        )
-        if accepted_texts and session.remaining_seconds() > 0
-        else {}
-    )
-    groups, discovered_urls = _collect_groups(
-        queries,
-        variants,
-        prefetch,
-        callbacks.select_items,
-    )
+) -> tuple[list[ResearchDocumentV1], dict[str, str], dict[str, int], str]:
     documents: list[ResearchDocumentV1] = []
     document_hashes: set[str] = set()
     fact_signatures: set[tuple[str, str, str, str]] = set()
@@ -713,12 +494,35 @@ def collect_deep_research_context(
     read_totals = {key: 0 for key in _READ_METRIC_KEYS}
     page_count = no_new_fact_rounds = 0
     stop_reason = "no_new_facts"
+    query_phase_by_text = {
+        str(value.get("query") or ""): str(value.get("research_phase") or budget_phase).lower()
+        for value in accepted
+    }
+    priority_query_texts = {
+        variant
+        for original, query_variants in variants.items()
+        if next(
+            (
+                str(query.get("research_phase") or "").lower()
+                for query in queries
+                if isinstance(query, dict) and str(query.get("query") or "") == original
+            ),
+            "",
+        ) in {"plan", "gap"}
+        for variant in query_variants
+    }
     for group_index, (used_query, query_type, items, _listings) in enumerate(groups):
         if time.monotonic() >= deadline:
             stop_reason = "deadline"
             break
+        group_phase = (
+            "gap"
+            if query_phase_by_text.get(used_query) == "gap" or budget_phase == "gap"
+            else "initial"
+        )
         selected, page_count = _select_pages(
             session, items, used_query, query_type,
+            research_phase=group_phase,
             page_count=page_count, page_limit=page_limit,
         )
         readings, read_metrics, deadline_exhausted = callbacks.read_batch(
@@ -729,6 +533,7 @@ def collect_deep_research_context(
         if not deadline_exhausted and time.monotonic() < deadline:
             linked, page_count = _select_linked_pages(
                 session, selected, readings, callbacks.discover_links, discovered_urls,
+                research_phase=group_phase,
                 page_count=page_count, page_limit=page_limit,
             )
         linked_readings, linked_metrics, linked_deadline_exhausted = callbacks.read_batch(
@@ -746,16 +551,22 @@ def collect_deep_research_context(
                 for key, value in readings.items()
             }
         )
+        document_count_before = len(documents)
         new_facts = _append_documents(
             selected, readings, agent_input, documents, document_hashes, fact_signatures,
         )
-        if new_facts:
+        new_documents = max(0, len(documents) - document_count_before)
+        if new_facts or new_documents:
             no_new_fact_rounds = 0
         elif batch_pages_read:
             no_new_fact_rounds += 1
         compatibility_query_pending = any(str(group[1] or "") in _COMPATIBILITY_CRITICAL_QUERY_TYPES
                                           for group in groups[group_index + 1 :])
-        if not compatibility_query_pending and apparent_coverage_complete(
+        priority_query_pending = any(
+            str(group[0] or "") in priority_query_texts
+            for group in groups[group_index + 1 :]
+        )
+        if not compatibility_query_pending and not priority_query_pending and apparent_coverage_complete(
             agent_input, documents,
         ):
             stop_reason = "coverage_complete"
@@ -766,12 +577,66 @@ def collect_deep_research_context(
         ):
             stop_reason = "deadline"
             break
-        if no_new_fact_rounds >= 2 and not compatibility_query_pending:
+        if no_new_fact_rounds >= 2 and not compatibility_query_pending and not priority_query_pending:
             stop_reason = "no_new_facts"
             break
         if page_count >= page_limit or session.pages_used >= PUBLIC_RESEARCH_MAX_PAGES:
             stop_reason = "page_limit"
             break
+    return documents, preloaded, read_totals, stop_reason
+
+
+def collect_deep_research_context(
+    client_id: str, queries: list[dict], agent_input: dict,
+    *,
+    phase: str,
+    search: Callable[..., list[dict]],
+    callbacks: DeepResearchCallbacks,
+) -> dict[str, Any]:
+    """Collect a bounded dossier while keeping page bodies process-local."""
+    started = time.monotonic()
+    session, accepted, variants = callbacks.reserve_queries(agent_input, queries)
+    budget_phase = "gap" if str(phase or "").strip().lower() == "gap" else "initial"
+    page_limit = (
+        PUBLIC_RESEARCH_GAP_MAX_PAGES
+        if budget_phase == "gap"
+        else PUBLIC_RESEARCH_INITIAL_MAX_PAGES
+    )
+    phase_seconds = (
+        PUBLIC_RESEARCH_GAP_MAX_SECONDS
+        if budget_phase == "gap"
+        else PUBLIC_RESEARCH_INITIAL_MAX_SECONDS
+    )
+    phase_deadline = getattr(session, "phase_deadline_monotonic", None)
+    deadline = (
+        phase_deadline(budget_phase)
+        if callable(phase_deadline)
+        else min(session.deadline_monotonic, started + phase_seconds)
+    )
+    accepted_texts = [str(value.get("query") or "") for value in accepted]
+    if accepted_texts and session.remaining_seconds() > 0:
+        prefetch, accepted, relaxed_query_count = _prefetch_reserved_queries(
+            client_id,
+            accepted,
+            variants,
+            session=session,
+            search=search,
+            callbacks=callbacks,
+            deadline_monotonic=deadline,
+        )
+    else:
+        prefetch, relaxed_query_count = {}, 0
+    accepted_texts = [str(value.get("query") or "") for value in accepted]
+    groups, discovered_urls = _collect_groups(
+        queries,
+        variants,
+        prefetch,
+        callbacks.select_items,
+    )
+    documents, preloaded, read_totals, stop_reason = _crawl_reserved_groups(
+        queries, accepted, variants, groups, discovered_urls, agent_input, session,
+        budget_phase, deadline, page_limit, callbacks,
+    )
     if time.monotonic() >= deadline:
         stop_reason = "deadline"
     elif read_totals["pages_attempted"] and not read_totals["pages_read"]:
@@ -787,11 +652,13 @@ def collect_deep_research_context(
         "duration_ms": int(max(0.0, time.monotonic() - started) * 1000),
         "stop_reason": stop_reason,
         "coverage_complete": stop_reason == "coverage_complete",
+        "queries_used": len(accepted_texts),
+        "relaxed_queries_used": relaxed_query_count,
+        "research_phase": budget_phase,
     }
     metrics["pages_read"] = min(metrics["pages_read"], len(discovered_urls))
     verified_target = _verified_target_evidence(agent_input, documents)
-    verified, metrics = persist_research_documents(
-        client_id, agent_input, documents, metrics=metrics,
+    return finalize_research_evidence_result(
+        client_id, agent_input, documents, lines, metrics, verified_target,
+        persist=persist_research_documents,
     )
-    context = "\n\n".join([*_verified_evidence_lines(verified), *lines])
-    return _research_result(context, verified, verified_target, metrics)
