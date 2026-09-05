@@ -97,10 +97,10 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result == {
-        # O Cadastro por loja adiciona oito rotas autenticadas sem alterar os
-        # contratos isolados de Vendas cobertos pelo hash abaixo.
-        "routes": 444,
-        "pairs": 442,
+        # A importacao seletiva do Cadastro adiciona seis rotas autenticadas
+        # sem alterar os contratos isolados de Vendas cobertos pelo hash abaixo.
+        "routes": 450,
+        "pairs": 448,
         "duplicates": [],
         "openapi": "4592ad7b7431ffb069c65eca1874b0f26010549fab41b2836d740e8cc037d0f1",
     }

@@ -174,6 +174,8 @@ def test_copia_verificada_suporta_nome_legado_terminado_em_ponto(tmp_path, monke
     legacy = repair._io_path(source / "arquivo-legado.")
     legacy.write_bytes(b"conteudo-legado")
     target_legacy = repair._io_path(tenant / "arquivo-legado.")
+    assert legacy.name.endswith(".")
+    assert not (source / "arquivo-legado").exists()
     monkeypatch.setattr(repair, "_assert_runtime_stopped", lambda: None)
     try:
         plan = repair.inspect_legacy_tenant_roots(runtime, "000002")["tenants"][0]
@@ -190,6 +192,27 @@ def test_copia_verificada_suporta_nome_legado_terminado_em_ponto(tmp_path, monke
         target_legacy.unlink(missing_ok=True)
         legacy.unlink(missing_ok=True)
         _remove_test_link(tenant)
+
+
+def test_gravacao_atomica_repete_replace_bloqueado_transitoriamente(tmp_path, monkeypatch):
+    output = tmp_path / "status.json"
+    real_replace = repair.os.replace
+    attempts = []
+
+    def flaky_replace(source, target):
+        attempts.append((source, target))
+        if len(attempts) < 3:
+            raise PermissionError(5, "arquivo temporariamente ocupado")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(repair.os, "replace", flaky_replace)
+    monkeypatch.setattr(repair.time, "sleep", lambda _seconds: None)
+
+    repair._atomic_write_json(output, {"state": "copying"})
+
+    assert len(attempts) == 3
+    assert json.loads(output.read_text(encoding="utf-8")) == {"state": "copying"}
+    assert not list(tmp_path.glob(".status.json.*.tmp"))
 
 
 def test_reparador_offline_esta_incluido_no_contrato_do_instalador():

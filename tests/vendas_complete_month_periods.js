@@ -336,6 +336,16 @@ const skuAplicarPeriodoSource = skuHtmlStatic.slice(skuAplicarPeriodoStart, skuA
 assert.ok(skuAplicarPeriodoStart >= 0 && skuAplicarPeriodoEnd > skuAplicarPeriodoStart);
 
 async function testarCliqueConcorrenteAposMax() {
+    const DataFixa = class extends Date {
+        constructor(...args) {
+            if (args.length) {
+                super(...args);
+            } else {
+                super(2026, 7, 19, 12, 0, 0);
+            }
+        }
+    };
+
     function criarCenario() {
         let resolverLimitesMax;
         const limitesMaxPendentes = new Promise(resolve => {
@@ -347,6 +357,7 @@ async function testarCliqueConcorrenteAposMax() {
         const periodosConfirmadosNaUi = [];
         const criarHarness = new Function(
             'window',
+            'Date',
             'limitesMaxPendentes',
             'registrarPeriodo',
             'registrarPreferencia',
@@ -409,6 +420,7 @@ async function testarCliqueConcorrenteAposMax() {
         return {
             harness: criarHarness(
                 janela,
+                DataFixa,
                 limitesMaxPendentes,
                 (inicio, fim) => periodosAplicados.push({ inicio, fim }),
                 preferencia => preferenciasSalvas.push(preferencia),
@@ -641,6 +653,16 @@ async function testarRestauracaoPreferenciaLegada() {
 }
 
 async function testarAplicacaoPeriodoSku() {
+    const DataFixa = class extends Date {
+        constructor(...args) {
+            if (args.length) {
+                super(...args);
+            } else {
+                super(2026, 7, 19, 12, 0, 0);
+            }
+        }
+    };
+
     function criarCenario() {
         let resolverLimites;
         const limitesPendentes = new Promise(resolve => {
@@ -651,6 +673,7 @@ async function testarAplicacaoPeriodoSku() {
         const periodosConfirmadosNaUi = [];
         const criarHarness = new Function(
             'window',
+            'Date',
             'limitesPendentes',
             'registrarPeriodo',
             'registrarUrl',
@@ -697,6 +720,7 @@ async function testarAplicacaoPeriodoSku() {
         return {
             harness: criarHarness(
                 { JKVendasPeriodosCompletos: helpers },
+                DataFixa,
                 limitesPendentes,
                 (inicio, fim) => periodosAplicados.push({ inicio, fim }),
                 periodo => periodosUrl.push(periodo),
