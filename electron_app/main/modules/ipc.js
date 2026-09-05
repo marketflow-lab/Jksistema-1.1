@@ -132,6 +132,13 @@ var importacoesTrackingBrowserModule = require(path.join(
     'modules',
     'importacoes-tracking-browser.js'
 ));
+var etiquetasPdfOpeningModule = require(path.join(
+    __dirname,
+    'electron_app',
+    'main',
+    'modules',
+    'etiquetas-pdf-opening.js'
+));
 
 function normalizeContextVaultFilePath(value) {
     const normalized = path.normalize(path.resolve(String(value || '')));
@@ -177,6 +184,25 @@ function contextVaultFrameBelongsToSender(senderFrame, sender) {
     } catch (_err) {
         return false;
     }
+}
+
+function assertTrustedEtiquetasPdfIpcSender(event) {
+    const sender = event && event.sender;
+    const senderFrame = event && event.senderFrame;
+    if (!sender || !mainWindow || mainWindow.isDestroyed() || sender !== mainWindow.webContents) {
+        throw new Error('Origem nao autorizada para abrir PDF de etiquetas.');
+    }
+    if (!contextVaultFrameBelongsToSender(senderFrame, sender)) {
+        throw new Error('Frame nao autorizado para abrir PDF de etiquetas.');
+    }
+    try {
+        const parsed = new URL(String(senderFrame && senderFrame.url || ''));
+        const localHost = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost';
+        const localPort = String(parsed.port || '') === String(JK_LOCAL_BACKEND_PORT);
+        const etiquetasPage = /\/(?:static\/)?frontend_etiquetas\.html$/i.test(parsed.pathname || '');
+        if (parsed.protocol === 'http:' && localHost && localPort && etiquetasPage) return;
+    } catch (_err) {}
+    throw new Error('Pagina nao autorizada para abrir PDF de etiquetas.');
 }
 
 function contextVaultFrameUrlForLog(frameUrl) {
@@ -1639,6 +1665,14 @@ app.whenReady().then(async () => {
             console.error('Falha ao abrir URL no Chrome:', err);
             throw err;
         }
+    });
+
+    ipcMain.handle('open-etiquetas-pdf-in-chrome', async (event, pdfBytes, filename = '') => {
+        assertTrustedEtiquetasPdfIpcSender(event);
+        return etiquetasPdfOpeningModule.openPdfBytesInGoogleChrome(pdfBytes, {
+            filename,
+            tryOpenChrome: tryOpenUrlInGoogleChrome,
+        });
     });
 
     ipcMain.handle('extract-ml-search-results', async (event, targetUrl) => {

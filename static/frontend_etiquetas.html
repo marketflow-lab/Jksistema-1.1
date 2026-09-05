@@ -62,6 +62,10 @@
         .qrcode-preview-wrap { margin: 0 auto 18px; max-width: 980px; border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc; overflow: hidden; }
         .qrcode-preview-head { padding: 10px 14px; background: #eef6ff; color: #1e3a8a; font-weight: 900; border-bottom: 1px solid #cbd5e1; }
         .qrcode-preview-frame { width: 100%; max-height: min(68vh, 680px); object-fit: contain; background: #fff; display: block; }
+        .avulsa-preview-navigation { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 12px; border-top: 1px solid #cbd5e1; }
+        .avulsa-preview-navigation button { min-height: 38px; padding: 7px 13px; border: 1px solid #93c5fd; border-radius: 6px; background: #eff6ff; color: #1d4ed8; font-weight: 800; cursor: pointer; }
+        .avulsa-preview-navigation button:disabled { color: #94a3b8; border-color: #cbd5e1; background: #f1f5f9; }
+        .avulsa-preview-page { min-width: 120px; text-align: center; color: #334155; font-weight: 800; }
         .format-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 18px; }
         .format-option { display: flex; align-items: center; gap: 10px; background: #f9f9f9; border: 1px solid #d1d5db; border-radius: 8px; padding: 14px; font-weight: 800; cursor: pointer; }
         .format-option input { transform: scale(1.15); }
@@ -190,7 +194,20 @@
         <div class="loader" id="loader-avulsa">Gerando PDF... aguarde...</div>
         <p class="error-msg" id="error-avulsa"></p>
         <p class="success-msg" id="success-avulsa"></p>
-        <div class="result-section" id="result-avulsa"></div>
+        <div class="result-section" id="result-avulsa">
+            <div class="qrcode-preview-wrap">
+                <div class="qrcode-preview-head">Pré-visualização interna do PDF</div>
+                <img class="qrcode-preview-frame" id="avulsa-preview-frame" alt="Pré-visualização da etiqueta avulsa">
+                <div class="avulsa-preview-navigation">
+                    <button type="button" id="btn-avulsa-preview-anterior" onclick="navegarPreviewAvulsa(-1)">Anterior</button>
+                    <span class="avulsa-preview-page" id="avulsa-preview-page">Página 1 de 1</span>
+                    <button type="button" id="btn-avulsa-preview-proxima" onclick="navegarPreviewAvulsa(1)">Próxima</button>
+                </div>
+            </div>
+            <div class="actions">
+                <a href="#" class="btn-download" id="btn-download-avulsa">Baixar PDF</a>
+            </div>
+        </div>
         <div class="editor-toolbar" id="editor-toolbar">
             <select id="editor-font" onmousedown="salvarSelecaoEditor()" onchange="aplicarComandoEditor('fontName', this.value)">
                 <option value="Arial">Arial</option>
@@ -318,6 +335,10 @@
     let arrasteSelecaoAvulsa = null;
     let etiquetaVisualAtiva = null;
     let selecaoEditorAvulsa = null;
+    let avulsaPreviewUrl = null;
+    let avulsaPreviewFileId = null;
+    let avulsaPreviewPage = 0;
+    let avulsaPreviewPageCount = 1;
     let qrcodePreviewUrl = null;
     let qrcodePreviewFileId = null;
     const colunasGradeAvulsa = ['Sequencia', 'SKU', 'Quantidade', 'Caixa', 'Torre', 'Paletes', 'Corredor', 'Conta'];
@@ -440,6 +461,7 @@
     }
 
     function limparEntradasAvulsas() {
+        limparPreviewAvulsa();
         document.getElementById('result-avulsa').style.display = 'none';
         document.getElementById('error-avulsa').style.display = 'none';
         document.getElementById('success-avulsa').style.display = 'none';
@@ -904,10 +926,10 @@
         return await resp.blob();
     }
 
-    async function obterPreviewProtegidoBlob(fileId) {
+    async function obterPreviewProtegidoBlob(fileId, page = 0) {
         const token = localStorage.getItem('access_token');
         const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
-        const resp = await fetch(`/api/etiquetas/preview/${fileId}`, { headers });
+        const resp = await fetch(`/api/etiquetas/preview/${fileId}?page=${Math.max(0, Number(page) || 0)}`, { headers });
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({}));
             throw new Error(err.detail || 'Erro ao gerar pré-visualização.');
@@ -927,11 +949,67 @@
         window.URL.revokeObjectURL(url);
     }
 
-    async function abrirPdfProtegido(fileId) {
+    function limparPreviewAvulsa() {
+        if (avulsaPreviewUrl) {
+            window.URL.revokeObjectURL(avulsaPreviewUrl);
+            avulsaPreviewUrl = null;
+        }
+        avulsaPreviewFileId = null;
+        avulsaPreviewPage = 0;
+        avulsaPreviewPageCount = 1;
+        document.getElementById('avulsa-preview-frame')?.removeAttribute('src');
+    }
+
+    async function carregarPaginaPreviewAvulsa() {
+        if (!avulsaPreviewFileId) return;
+        if (avulsaPreviewUrl) window.URL.revokeObjectURL(avulsaPreviewUrl);
+        const blob = await obterPreviewProtegidoBlob(avulsaPreviewFileId, avulsaPreviewPage);
+        avulsaPreviewUrl = window.URL.createObjectURL(blob);
+        document.getElementById('avulsa-preview-frame').src = avulsaPreviewUrl;
+        document.getElementById('avulsa-preview-page').textContent = `Página ${avulsaPreviewPage + 1} de ${avulsaPreviewPageCount}`;
+        document.getElementById('btn-avulsa-preview-anterior').disabled = avulsaPreviewPage <= 0;
+        document.getElementById('btn-avulsa-preview-proxima').disabled = avulsaPreviewPage >= avulsaPreviewPageCount - 1;
+    }
+
+    async function mostrarPreviewAvulsa(fileId, pageCount = 1) {
+        limparPreviewAvulsa();
+        avulsaPreviewFileId = fileId;
+        avulsaPreviewPageCount = Math.max(1, Number(pageCount) || 1);
+        const btnDownload = document.getElementById('btn-download-avulsa');
+        btnDownload.onclick = async (ev) => {
+            ev.preventDefault();
+            await baixarArquivoProtegido(avulsaPreviewFileId || fileId, 'etiquetas_avulsas.pdf');
+        };
+        await carregarPaginaPreviewAvulsa();
+        document.getElementById('result-avulsa').style.display = 'block';
+    }
+
+    async function navegarPreviewAvulsa(delta) {
+        const target = Math.max(0, Math.min(avulsaPreviewPageCount - 1, avulsaPreviewPage + Number(delta || 0)));
+        if (target === avulsaPreviewPage) return;
+        avulsaPreviewPage = target;
+        try {
+            await carregarPaginaPreviewAvulsa();
+        } catch (e) {
+            const errorMsg = document.getElementById('error-avulsa');
+            errorMsg.textContent = 'Erro ao carregar a página da pré-visualização: ' + e.message;
+            errorMsg.style.display = 'block';
+        }
+    }
+
+    async function abrirPdfProtegido(fileId, pageCount = 1) {
         const blob = await obterArquivoProtegidoBlob(fileId);
-        const url = window.URL.createObjectURL(blob);
-        window.open(url, '_blank', 'noopener');
-        setTimeout(() => window.URL.revokeObjectURL(url), 60000);
+        const abrirNoChrome = window.electronAPI && window.electronAPI.openEtiquetasPdfInChrome;
+        if (typeof abrirNoChrome === 'function') {
+            try {
+                const result = await abrirNoChrome(await blob.arrayBuffer(), 'etiquetas_avulsas.pdf');
+                if (result && result.success === true) return { mode: 'chrome' };
+            } catch (e) {
+                console.warn('Falha ao abrir PDF de etiquetas no Google Chrome:', e && e.message ? e.message : e);
+            }
+        }
+        await mostrarPreviewAvulsa(fileId, pageCount);
+        return { mode: 'preview' };
     }
 
     async function processarEtiquetas() {
@@ -1001,6 +1079,7 @@
         if (!formatoPdf) return;
         errorMsg.style.display = 'none';
         successMsg.style.display = 'none';
+        limparPreviewAvulsa();
         resultSection.style.display = 'none';
         if (!itens.length) return alert('Informe pelo menos um item para imprimir.');
         btn.disabled = true;
@@ -1021,8 +1100,13 @@
             });
             const data = await response.json();
             if (!response.ok || !data.success) throw new Error(data.detail || data.message || 'Erro ao gerar PDF avulso.');
-            await abrirPdfProtegido(data.id_etiquetas);
-            successMsg.textContent = 'PDF avulso aberto em uma nova aba.';
+            const pageCount = formatoPdf === 'pequena'
+                ? Math.max(1, Math.ceil(Number(data.qtd || 1) / 2))
+                : Math.max(1, Number(data.qtd || 1));
+            const abertura = await abrirPdfProtegido(data.id_etiquetas, pageCount);
+            successMsg.textContent = abertura.mode === 'chrome'
+                ? 'PDF avulso aberto no Google Chrome.'
+                : 'Google Chrome indisponível. Pré-visualização interna exibida abaixo.';
             successMsg.style.display = 'block';
         } catch (e) {
             console.error(e);

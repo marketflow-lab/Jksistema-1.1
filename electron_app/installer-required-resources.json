@@ -398,6 +398,7 @@
     "local_app/auth.js",
     "local_app/electron_app/main/modules/backend.js",
     "local_app/electron_app/main/modules/window.js",
+    "local_app/electron_app/main/modules/etiquetas-pdf-opening.js",
     "local_app/ml_questions_gemini/__init__.py",
     "local_app/dashboard.html",
     "local_app/static/dashboard.html",
