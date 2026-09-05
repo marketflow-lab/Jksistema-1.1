@@ -35,7 +35,7 @@ def _classification(*, category: str, compatibility: dict, web: bool = False) ->
     }
 
 
-def test_product_feature_keeps_ai_category_and_can_use_public_web() -> None:
+def test_product_feature_keeps_ai_category_and_defers_public_web_until_context() -> None:
     intent = _classification(
         category="product_feature",
         compatibility={
@@ -56,13 +56,10 @@ def test_product_feature_keeps_ai_category_and_can_use_public_web() -> None:
 
     assert agent_inputs._perguntas_ia_categoria_classificada(payload) == "product_feature"
     with patch.object(agent_queries, "_ia_web_busca_ativa", return_value=True):
-        assert agent_queries._ia_agent_perguntas_precisa_web(payload) is True
+        assert agent_queries._ia_agent_perguntas_precisa_web(payload) is False
     assert agent_inputs._perguntas_ia_allowed_tools_classificadas(payload) == [
         "get_product_data",
         "context_hub_search",
-        "web_search",
-        "web_search_product_identity",
-        "web_search_question_context",
     ]
     assert agent_queries._perguntas_ia_v2_alvo_compatibilidade(payload) == ""
     assert agent_queries._perguntas_ia_v2_perfil_compatibilidade(payload) == {
@@ -86,20 +83,21 @@ def test_product_feature_keeps_ai_category_and_can_use_public_web() -> None:
         "prohibited_contact",
     ],
 )
-def test_every_public_question_category_uses_external_research(category: str) -> None:
+def test_public_question_categories_expose_external_research_only_when_mandatory(category: str) -> None:
     payload = {
         "intent": _classification(category=category, compatibility={}, web=False),
         "question": {"id": "Q-PUBLICA", "text": "Pode informar mais detalhes?"},
         "item": {"id": "MLB1", "title": "Produto"},
     }
 
+    mandatory = category in {"compatibility", "warranty_originality"}
     with patch.object(agent_queries, "_ia_web_busca_ativa", return_value=True):
-        assert agent_queries._ia_agent_perguntas_precisa_web(payload) is True
-    assert {
-        "web_search",
-        "web_search_product_identity",
-        "web_search_question_context",
-    } <= set(agent_inputs._perguntas_ia_allowed_tools_classificadas(payload))
+        assert agent_queries._ia_agent_perguntas_precisa_web(payload) is mandatory
+    web_tools = {
+        tool for tool in agent_inputs._perguntas_ia_allowed_tools_classificadas(payload)
+        if tool.startswith("web_search")
+    }
+    assert bool(web_tools) is mandatory
 
 
 @pytest.mark.parametrize("category", ["post_sale", "regulated_product", "unknown"])
@@ -429,7 +427,7 @@ def test_response_policy_v7_applies_rvc_only_when_commercial_state_allows_it() -
 def test_codex_prompt_v15_hash_includes_vehicle_and_evidence_policies() -> None:
     from backend.services import perguntas_pos_venda_codex as codex
 
-    assert codex.PROMPT_VERSION == "jk_ml_customer_reply_codex_v16"
+    assert codex.PROMPT_VERSION == "jk_ml_customer_reply_codex_v17"
     assert codex.QUEUE_POLICY_VERSION == "jk_ppv_queue_v3"
     assert codex.SCHEMA_VERSION == "5.2"
     assert codex.VEHICLE_IDENTITY_POLICY == "jk_public_vin_decode_v1"

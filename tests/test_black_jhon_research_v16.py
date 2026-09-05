@@ -125,15 +125,19 @@ def test_v16_all_nonregulated_public_categories_plan_vision_and_resolve(
     )
 
     assert answer.answer == "Resposta final literal."
-    assert events == ["plan", "web", "vision:initial", "resolver", "external_research_final"]
-    assert client.agent_input["question_plan"] == plan_payload
+    if category == "other_product":
+        assert events == ["adaptive_simple_public_answer"]
+        assert "question_plan" not in client.agent_input
+    else:
+        assert events == ["plan", "web", "vision:initial", "resolver", "external_research_final"]
+        assert client.agent_input["question_plan"] == plan_payload
 
 
 def test_v16_policy_and_honda_fit_plan_reach_search_before_fallback(
     honda_fit_fixture: dict,
 ) -> None:
     assert PRODUCT_EVIDENCE_POLICY == "jk_product_evidence_v2"
-    assert PUBLIC_RESEARCH_POLICY == "jk_black_jhon_research_v2"
+    assert PUBLIC_RESEARCH_POLICY == "jk_black_jhon_research_v3"
     agent_input = deepcopy(honda_fit_fixture["agent_input"])
     agent_input["gap_queries"] = []
     agent_input["research_attempt"] = 1

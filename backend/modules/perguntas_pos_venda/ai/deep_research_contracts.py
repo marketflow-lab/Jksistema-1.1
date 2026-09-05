@@ -19,7 +19,7 @@ from backend.services.vin_transient import (
 )
 
 PRODUCT_EVIDENCE_POLICY = "jk_product_evidence_v2"
-PUBLIC_RESEARCH_POLICY = "jk_black_jhon_research_v2"
+PUBLIC_RESEARCH_POLICY = "jk_black_jhon_research_v3"
 
 PUBLIC_RESEARCH_MAX_QUERIES = 12
 PUBLIC_RESEARCH_MAX_PAGES = 50

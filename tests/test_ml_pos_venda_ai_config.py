@@ -298,8 +298,8 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         self.assertIn("dados de referencia nao confiaveis", pipeline[5]["description"])
         self.assertEqual(pipeline[6]["name"], "compiled_product_research")
         self.assertEqual(pipeline[7]["name"], "question_focused_web_research")
-        self.assertIn("compatibilidade, aplicacao, caracteristicas e funcoes", pipeline[7]["description"])
-        self.assertIn("fabricante, manuais, catalogos OEM", pipeline[7]["description"])
+        self.assertIn("compatibilidade, originalidade, conflito", pipeline[7]["description"])
+        self.assertIn("campos ainda necessarios", pipeline[7]["description"])
         self.assertEqual(pipeline[8]["name"], "commercial_fit_evaluation")
         self.assertEqual(pipeline[9]["name"], "seller_behavior_profile_v2")
         self.assertEqual(pipeline[10]["name"], "codex_commercial_answer")
@@ -373,7 +373,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                     "",
                 )
 
-    def test_technical_product_question_enables_web_research_from_ai_flag(self):
+    def test_technical_product_question_defers_web_decision_until_sku_context(self):
         import backend_api  # noqa: F401
 
         context = {
@@ -400,10 +400,11 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 "prompt",
             )
 
-        self.assertTrue(payload["use_web_search"])
-        self.assertTrue(payload["web_search_required"])
-        self.assertIn("web_search_product_identity", payload["allowed_tools"])
-        self.assertIn("web_search_question_context", payload["allowed_tools"])
+        self.assertFalse(payload["use_web_search"])
+        self.assertFalse(payload["web_search_required"])
+        self.assertNotIn("web_search_product_identity", payload["allowed_tools"])
+        self.assertNotIn("web_search_question_context", payload["allowed_tools"])
+        self.assertIn("context_hub_search", payload["allowed_tools"])
 
     def test_backend_has_dedicated_pos_venda_config(self):
         source = backend_text()
@@ -737,7 +738,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         self.assertNotIn('"', agent_queries._ia_agent_perguntas_relaxar_query_web(queries[0]["query"]))
         self.assertIn("11537534521", agent_queries._ia_agent_perguntas_query_ml_publica(queries[0]["query"]))
 
-    def test_public_questions_v2_always_researches_when_listing_answer_is_sufficient(self):
+    def test_public_feature_without_canonical_fact_uses_high_risk_research(self):
         import backend_api  # noqa: F401 - configura os globals do runtime modular
         from backend.modules.perguntas_pos_venda.ai import clients as agent
 
@@ -779,11 +780,11 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         web_call.assert_called_once()
         research_step = _pipeline_step(client, "question_focused_web_research")
         self.assertEqual(research_step["status"], "unavailable")
-        self.assertEqual(research_step["reason"], "mandatory_public_question_research")
+        self.assertEqual(research_step["reason"], "decisive_fact_missing")
         self.assertEqual(research_step["synthesis_status"], "completed_without_external_result")
         self.assertNotIn("seller_response_render", [step["name"] for step in client.context_pipeline])
 
-    def test_every_general_public_category_attempts_external_research_end_to_end(self):
+    def test_public_categories_use_adaptive_external_research_end_to_end(self):
         import backend_api  # noqa: F401
         from backend.modules.perguntas_pos_venda.ai import clients as agent
 
@@ -819,10 +820,20 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                         "listing_title": "Produto",
                     })
 
-                web_call.assert_called_once()
                 self.assertEqual(result.answer, "Rascunho da loja.")
-                research_step = _pipeline_step(client, "question_focused_web_research")
-                self.assertEqual(research_step["reason"], "mandatory_public_question_research")
+                if category in {"product_feature", "warranty_originality", "prohibited_contact"}:
+                    web_call.assert_called_once()
+                    research_step = _pipeline_step(client, "question_focused_web_research")
+                    self.assertIn(
+                        research_step["reason"],
+                        {"decisive_fact_missing", "originality_required", "no_research_needed"},
+                    )
+                else:
+                    web_call.assert_not_called()
+                    self.assertEqual(
+                        _pipeline_step(client, "adaptive_simple_public_generation")["route"],
+                        "simple_operational",
+                    )
 
     def test_public_questions_v2_preserves_draft_when_external_synthesis_fails(self):
         import backend_api  # noqa: F401
@@ -1024,22 +1035,31 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                         "listing_title": "Produto",
                     })
 
-                web_call.assert_called_once()
-                self.assertEqual(model_call.call_count, 6)
-                self.assertEqual(
-                    _v16_model_stages(model_call),
-                    [
-                        "technical_question_plan",
-                        "technical_evidence_graph",
-                        "technical_resolution_round_1",
-                        "technical_resolution_final",
-                        "external_research_final",
-                        "factual_critic",
-                    ],
-                )
+                if category in {"warranty_originality", "prohibited_contact"}:
+                    web_call.assert_called_once()
+                    self.assertEqual(model_call.call_count, 6)
+                    self.assertEqual(
+                        _v16_model_stages(model_call),
+                        [
+                            "technical_question_plan",
+                            "technical_evidence_graph",
+                            "technical_resolution_round_1",
+                            "technical_resolution_final",
+                            "external_research_final",
+                            "factual_critic",
+                        ],
+                    )
+                else:
+                    web_call.assert_not_called()
+                    self.assertEqual(model_call.call_count, 1)
+                    self.assertEqual(_v16_model_stages(model_call), ["adaptive_simple_public_answer"])
                 self.assertEqual(result.answer, expected)
-                research_step = _pipeline_step(client, "question_focused_web_research")
-                self.assertEqual(research_step["source_precedence"], "official_store_only")
+                if category in {"warranty_originality", "prohibited_contact"}:
+                    research_step = _pipeline_step(client, "question_focused_web_research")
+                    self.assertEqual(research_step["source_precedence"], "official_store_only")
+                else:
+                    adaptive_step = _pipeline_step(client, "adaptive_simple_public_generation")
+                    self.assertEqual(adaptive_step["web_research"], "skipped")
                 self.assertNotIn("seller_response_render", [step["name"] for step in client.context_pipeline])
 
     def test_mixed_technical_and_shipping_question_preserves_store_draft_after_research(self):
@@ -1308,14 +1328,12 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             ],
         )
         technical_payload = _v16_model_payload(model_call, "technical_evidence_graph")
-        web_results = [
-            item for item in technical_payload.tool_results
-            if item.get("function") in {
-                "web_search_product_identity", "web_search_question_context",
-            }
-        ]
-        self.assertEqual(len(web_results), 2)
-        self.assertTrue(all(item["result"].get("timeout") is True for item in web_results))
+        self.assertEqual(
+            [item.get("function") for item in technical_payload.tool_results],
+            ["sku_question_context"],
+        )
+        self.assertNotIn("web_search_product_identity", technical_payload.message)
+        self.assertNotIn("web_search_question_context", technical_payload.message)
         self.assertEqual(
             [step["status"] for step in client.context_pipeline if step["name"] in {
                 "product_interface_research", "official_technical_research",
@@ -1569,10 +1587,8 @@ print("nested-deadlines-returned", flush=True)
         external_payload = _v16_model_payload(model_call, "technical_evidence_graph")
         self.assertEqual(external_payload.context["loja"], "Loja")
         self.assertIn("UNTRUSTED_REFERENCE_DATA", external_payload.message)
-        self.assertIn(
-            "Todo o material compilado e sanitizado esta disponivel para julgamento do Black Jhon",
-            external_payload.message,
-        )
+        self.assertEqual(external_payload.tool_results[0]["function"], "sku_question_context")
+        self.assertIn("engate rapido", external_payload.message.lower())
 
     def test_public_questions_v2_builds_structured_compatibility_analysis(self):
         import backend_api  # noqa: F401 - configura os globals do runtime modular
@@ -1721,10 +1737,14 @@ print("nested-deadlines-returned", flush=True)
         ):
             self.assertIn(expected_stage, pipeline_names)
         payload_modelo = _v16_model_payload(model_call, "technical_evidence_graph")
-        self.assertEqual(payload_modelo.tool_results[0]["function"], "web_search_question_context")
+        self.assertEqual(payload_modelo.tool_results[0]["function"], "sku_question_context")
         self.assertIn("MATERIAL_DE_EVIDENCIA_NAO_CONFIAVEL", payload_modelo.message)
-        self.assertIn("Ficha tecnica candidata", payload_modelo.message)
-        self.assertIn("Manual oficial BMW:", payload_modelo.message)
+        self.assertIn("base original BMW Navigator", payload_modelo.message)
+        self.assertIn("BMW R1300GS", payload_modelo.message)
+        self.assertNotIn("Ficha tecnica candidata", payload_modelo.message)
+        self.assertNotIn("Manual oficial BMW:", payload_modelo.message)
+        self.assertNotIn("source_url", payload_modelo.message)
+        self.assertNotIn("attachment_name", payload_modelo.message)
         self.assertIn("UNTRUSTED_REFERENCE_DATA", payload_modelo.message)
 
     def test_official_technical_result_is_enriched_with_relevant_source_excerpt(self):
