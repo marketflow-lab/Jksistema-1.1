@@ -1095,22 +1095,55 @@ function chromeExecutableCandidates() {
     ].filter(Boolean);
 }
 
-async function openUrlInGoogleChrome(targetUrl) {
-    const url = normalizeTargetUrl(targetUrl);
-    for (const candidate of chromeExecutableCandidates()) {
-        try {
-            if (path.isAbsolute(candidate) && candidate.toLowerCase().endsWith('.exe') && !fs.existsSync(candidate)) {
-                continue;
+function spawnDetachedAndWait(executable, args) {
+    return new Promise((resolve) => {
+        let child = null;
+        let settled = false;
+        const finish = (success) => {
+            if (settled) return;
+            settled = true;
+            if (child) {
+                child.removeAllListeners('spawn');
+                if (success) {
+                    child.unref();
+                } else {
+                    child.removeAllListeners('error');
+                }
             }
-            const child = spawn(candidate, [url], {
+            resolve(success);
+        };
+        try {
+            child = spawn(executable, args, {
                 detached: true,
                 stdio: 'ignore',
                 windowsHide: false,
             });
-            child.unref();
+            child.once('spawn', () => finish(true));
+            child.once('error', () => finish(false));
+        } catch (_err) {
+            finish(false);
+        }
+    });
+}
+
+async function tryOpenUrlInGoogleChrome(targetUrl) {
+    const url = String(targetUrl || '').trim();
+    if (!url) return { success: false, reason: 'url-vazia' };
+    for (const candidate of chromeExecutableCandidates()) {
+        if (path.isAbsolute(candidate) && candidate.toLowerCase().endsWith('.exe') && !fs.existsSync(candidate)) {
+            continue;
+        }
+        if (await spawnDetachedAndWait(candidate, [url])) {
             return { success: true, url, browser: 'chrome', executable: candidate };
-        } catch (_err) {}
+        }
     }
+    return { success: false, reason: 'chrome-nao-encontrado' };
+}
+
+async function openUrlInGoogleChrome(targetUrl) {
+    const url = normalizeTargetUrl(targetUrl);
+    const chromeResult = await tryOpenUrlInGoogleChrome(url);
+    if (chromeResult.success) return chromeResult;
     await shell.openExternal(url);
     return { success: true, url, browser: 'default' };
 }

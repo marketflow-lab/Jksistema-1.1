@@ -13,4 +13,3 @@ class GatewayUnavailable(RuntimeError):
 
 
 __all__ = ["AuthRejected", "GatewayUnavailable"]
-

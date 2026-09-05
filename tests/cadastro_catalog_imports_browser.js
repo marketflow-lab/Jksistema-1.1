@@ -132,7 +132,7 @@ function contentType(filePath) {
             job_id: 'job-optional-incomplete', source, store_id: storeId, status: 'ready',
             sku_coverage_complete: true, coverage_complete: false, can_apply: true,
             summary: { novos: 2, preencher: 1, inalterados: 0, conflitos: 0, ignorados: 4 },
-            ignored: [{ reason: 'missing_sku', mlb: 'MLB-SEM-SKU' }],
+            ignored: [{ reason: 'missing_sku', external_ids: { id_bling: 'sem-sku' } }],
             ignored_total: 7,
             warnings: ['stock_balance_incomplete', 'category_detail_missing'],
           });
@@ -166,14 +166,6 @@ function contentType(filePath) {
             job_id: 'job-noop', source, store_id: storeId, status: 'ready',
             coverage_complete: true, can_apply: false,
             summary: { novos: 0, preencher: 0, inalterados: 12, conflitos: 0, ignorados: 0 },
-          });
-          return;
-        }
-        if (previewMode === 'applied-photo-warning') {
-          await json(route, {
-            job_id: 'job-photo-warning', source, store_id: storeId, status: 'applied',
-            coverage_complete: true, can_apply: false,
-            apply_result: { fotos_salvas: 3, fotos_ignoradas: 1 },
           });
           return;
         }
@@ -276,10 +268,7 @@ function contentType(filePath) {
           return;
         }
         await new Promise(resolve => setTimeout(resolve, 500));
-        await json(route, {
-          job_id: 'job-ready', source: 'bling', store_id: 'store-a', status: 'applied', can_apply: false,
-          apply_result: { fotos_salvas: 2, fotos_ignoradas: 0 },
-        });
+        await json(route, { job_id: 'job-ready', source: 'bling', store_id: 'store-a', status: 'applied', can_apply: false });
         return;
       }
       await route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"not found"}' });
@@ -365,7 +354,7 @@ function contentType(filePath) {
     await page.locator('#btnFecharImportacaoCatalogo').click();
 
     previewMode = 'optional-incomplete';
-    await page.locator('#btnImportarMercadoLivre').click();
+    await page.locator('#btnImportarBling').click();
     await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('dados opcionais incompletos'));
     assert.strictEqual(await page.locator('#btnAplicarImportacaoCatalogo').isEnabled(), true, 'dados opcionais incompletos não devem bloquear quando a cobertura de SKU e can_apply permitem');
     assert.match(await page.locator('#importacaoCatalogoStatus').getAttribute('class'), /warning/);
@@ -405,13 +394,6 @@ function contentType(filePath) {
     assert.doesNotMatch(await page.locator('#importacaoCatalogoStatus').getAttribute('class'), /error/);
     await page.locator('#btnFecharImportacaoCatalogo').click();
     assert.deepStrictEqual(cancelRequests, [{}], 'Fechar pelo X não deve cancelar o trabalho');
-
-    previewMode = 'applied-photo-warning';
-    await page.locator('#btnImportarMercadoLivre').click();
-    await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('1 não puderam ser baixadas'));
-    assert.match(await page.locator('#importacaoCatalogoStatus').innerText(), /3 capa\(s\) comprimidas foram salvas/);
-    assert.match(await page.locator('#importacaoCatalogoStatus').getAttribute('class'), /warning/);
-    await page.locator('#btnFecharImportacaoCatalogo').click();
 
     previewMode = 'poll';
     cancelMode = 'applied';
@@ -474,7 +456,6 @@ function contentType(filePath) {
     assert.strictEqual(await page.evaluate(() => window.JKCadastro.runtime.state.storeIdSelecionado), 'store-a');
     await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('aplicada com sucesso'));
     assert.deepStrictEqual(applyRequests, [{}], 'Aplicar deve emitir um único POST com JSON vazio');
-    assert.match(await page.locator('#importacaoCatalogoStatus').innerText(), /2 capa\(s\) comprimidas.*salvas no cadastro/);
     assert.strictEqual(await page.locator('#cadastroLojaBotoes .loja-btn').first().isEnabled(), true, 'troca de loja deve ser liberada após Apply');
 
     await page.locator('#btnFecharImportacaoCatalogo').click();
@@ -509,9 +490,8 @@ function contentType(filePath) {
       'store-a:mercadolivre', 'store-a:mercadolivre', 'store-a:bling',
       'store-a:mercadolivre', 'store-a:mercadolivre', 'store-a:mercadolivre',
       'store-a:mercadolivre',
-      'store-a:mercadolivre', 'store-a:bling', 'store-a:mercadolivre',
+      'store-a:bling', 'store-a:bling', 'store-a:mercadolivre',
       'store-a:mercadolivre', 'store-a:mercadolivre', 'store-a:mercadolivre',
-      'store-a:mercadolivre',
       'store-a:bling', 'store-a:bling', 'store-a:bling',
       'store-a:bling', 'store-a:bling', 'store-a:bling',
     ]);

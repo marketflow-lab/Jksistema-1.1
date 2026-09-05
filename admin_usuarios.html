@@ -141,6 +141,11 @@
         button {
             border: none; border-radius: 10px; padding: 10px 14px; cursor: pointer; font-weight: 700;
         }
+        button:disabled {
+            cursor: not-allowed;
+            filter: grayscale(0.35);
+            opacity: 0.52;
+        }
         .btn-primary { background: var(--accent); color: #04213f; }
         .btn-muted { background: #22344b; color: #fff; }
         .btn-danger { background: var(--danger); color: #fff; }
@@ -335,6 +340,49 @@
         .machine-sync-keyring-status.is-error { color: #ffb1b1; }
         .machine-sync-keyring-status.is-success { color: #b9f8d1; }
         .machine-sync-keyring-status.is-warning { color: #ffd28a; }
+        .machine-sync-firebase-notice {
+            border: 1px solid rgba(255, 184, 77, 0.52);
+            background: rgba(255, 184, 77, 0.10);
+            border-radius: 12px;
+            color: #ffe0a8;
+            font-size: 13px;
+            line-height: 1.45;
+            margin: 10px 0;
+            padding: 10px 12px;
+        }
+        .firebase-provisioning-panel {
+            border: 1px solid rgba(79, 172, 254, 0.38);
+            background: rgba(12, 22, 37, 0.82);
+            border-radius: 12px;
+            margin: 10px 0 12px;
+            padding: 12px;
+        }
+        .firebase-provisioning-panel h4 {
+            color: #d8ecff;
+            margin: 0 0 5px;
+        }
+        .firebase-provisioning-help,
+        .firebase-provisioning-privacy {
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.45;
+        }
+        .firebase-provisioning-file-state {
+            color: #bfe4ff;
+            font-size: 12px;
+            margin-top: 8px;
+            min-height: 17px;
+        }
+        .firebase-provisioning-status {
+            color: #bfe4ff;
+            font-size: 12px;
+            line-height: 1.45;
+            margin-top: 9px;
+            min-height: 18px;
+        }
+        .firebase-provisioning-status.is-error { color: #ffb1b1; }
+        .firebase-provisioning-status.is-success { color: #b9f8d1; }
+        .firebase-provisioning-status.is-warning { color: #ffd28a; }
         .user-share-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -855,6 +903,37 @@
                         </div>
                         <button class="btn-muted" onclick="carregarSincronizacaoMinhasMaquinas()">Atualizar status</button>
                     </div>
+                    <div id="machineSyncFirebaseNotice" class="machine-sync-firebase-notice" role="status" aria-live="polite">
+                        Conferindo se o Firebase está pronto nesta máquina...
+                    </div>
+                    <div id="firebaseProvisioningPanel" class="firebase-provisioning-panel" hidden>
+                        <h4>Configurar Firebase nesta máquina</h4>
+                        <div id="firebaseProvisioningImportArea">
+                            <div class="firebase-provisioning-help">
+                                Selecione o arquivo JSON de credencial fornecido pelo administrador. O JK Sistema validará o arquivo no servidor local antes de salvá-lo no local padronizado desta máquina.
+                            </div>
+                            <input
+                                id="firebaseProvisioningFile"
+                                type="file"
+                                accept=".json,application/json"
+                                onchange="arquivoProvisionamentoFirebaseSelecionado()"
+                                hidden
+                            >
+                            <div class="form-actions">
+                                <button id="firebaseProvisioningSelectButton" class="btn-muted" onclick="selecionarArquivoProvisionamentoFirebase()">Selecionar arquivo JSON</button>
+                                <button id="firebaseProvisioningImportButton" class="btn-primary" onclick="validarEImportarProvisionamentoFirebase()" disabled>Validar e importar</button>
+                            </div>
+                            <div id="firebaseProvisioningFileState" class="firebase-provisioning-file-state" aria-live="polite"></div>
+                        </div>
+                        <div class="form-actions">
+                            <button id="firebaseProvisioningMigrateButton" class="btn-warning" onclick="migrarCredencialFirebaseLegada()" hidden>Migrar credencial existente</button>
+                            <button id="firebaseProvisioningRefreshButton" class="btn-muted" onclick="atualizarStatusProvisionamentoFirebase()">Atualizar status</button>
+                        </div>
+                        <div id="firebaseProvisioningStatus" class="firebase-provisioning-status" role="status" aria-live="polite"></div>
+                        <div class="firebase-provisioning-privacy">
+                            Por segurança, o sistema não mostra nem registra o nome, o caminho ou o conteúdo da credencial nesta tela.
+                        </div>
+                    </div>
                     <label class="check-item">
                         <input id="machineSyncEnabled" type="checkbox">
                         <span>Receber automaticamente nesta máquina os dados enviados pelas outras máquinas em que estou logado</span>
@@ -864,9 +943,9 @@
                             <label>Dados para sincronizar</label>
                             <div id="machineSyncScopes" class="user-share-scopes"></div>
                             <div class="form-actions">
-                                <button class="btn-primary" onclick="salvarSincronizacaoMinhasMaquinas()">Salvar opção</button>
-                                <button class="btn-success" onclick="executarSincronizacaoMinhasMaquinas('push')">Enviar agora</button>
-                                <button class="btn-warning" onclick="executarSincronizacaoMinhasMaquinas('pull')">Importar agora</button>
+                                <button id="machineSyncSaveButton" class="btn-primary" onclick="salvarSincronizacaoMinhasMaquinas()">Salvar opção</button>
+                                <button id="machineSyncPushButton" class="btn-success" onclick="executarSincronizacaoMinhasMaquinas('push')" disabled>Enviar agora</button>
+                                <button id="machineSyncPullButton" class="btn-warning" onclick="executarSincronizacaoMinhasMaquinas('pull')" disabled>Importar agora</button>
                             </div>
                         </div>
                         <div>
@@ -1003,6 +1082,17 @@
     let usuariosCompartilhamentoCache = [];
     let compartilhamentoUsuariosCache = null;
     let sincronizacaoMaquinasCache = null;
+    let firebaseProvisioningStatus = {
+        loaded: false,
+        unavailable: false,
+        configured: false,
+        ready: false,
+        code: '',
+        restart_required: false,
+        can_migrate: false,
+        replacement_required: false
+    };
+    let firebaseProvisioningBusy = false;
     let sincronizacaoUsuariosAutomaticaRodando = false;
     let compartilhamentoUsuariosCarregando = false;
     let compartilhamentoUsuariosTimer = null;
@@ -2315,8 +2405,8 @@
                     </td>
                     <td>
                         <div class="share-row-actions">
-                        <button class="btn-success" onclick="enviarVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Enviar agora</button>
-                        <button class="btn-warning" onclick="receberVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Importar agora</button>
+                        <button class="btn-success" data-firebase-sync-action onclick="enviarVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Enviar agora</button>
+                        <button class="btn-warning" data-firebase-sync-action onclick="receberVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Importar agora</button>
                         <button class="btn-muted" onclick="pausarVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Pausar</button>
                         </div>
                     </td>
@@ -2356,6 +2446,7 @@
         renderConvitesCompartilhamentoUsuario(payload);
         renderVinculosCompartilhamentoUsuario(payload);
         atualizarBalaoStatusCompartilhamento(payload);
+        atualizarInterfaceProvisionamentoFirebase();
     }
 
     function removerConviteCompartilhamentoUsuarioDaTela(inviteId) {
@@ -2411,6 +2502,297 @@
     function limparConviteCompartilhamentoUsuario() {
         const msg = document.getElementById('userShareMessage');
         if (msg) msg.value = '';
+    }
+
+    function normalizarStatusProvisionamentoFirebase(payload = {}, loaded = true, unavailable = false) {
+        return {
+            loaded: !!loaded,
+            unavailable: !!unavailable,
+            configured: payload && payload.configured === true,
+            ready: payload && payload.ready === true,
+            code: String((payload && payload.code) || '').trim().toLowerCase().slice(0, 80),
+            restart_required: payload && payload.restart_required === true,
+            can_migrate: payload && payload.can_migrate === true,
+            replacement_required: payload && payload.replacement_required === true
+        };
+    }
+
+    function mensagemSeguraProvisionamentoFirebase(status = firebaseProvisioningStatus, httpStatus = 0) {
+        const code = String((status && status.code) || '').toLowerCase();
+        const mensagens = {
+            ready: 'Firebase pronto para a sincronização nesta máquina.',
+            legacy_detected: 'Foi encontrada uma credencial antiga válida. Migre-a para o local padronizado desta máquina.',
+            not_configured: 'O Firebase ainda não foi configurado nesta máquina.',
+            invalid_canonical: 'A credencial salva no local padronizado não é válida. Selecione um novo arquivo JSON para substituí-la.',
+            restart_required: 'A credencial foi salva somente nesta máquina. Feche completamente o JK Sistema, abra novamente e atualize o status.',
+            imported: 'Credencial validada e salva somente nesta máquina.',
+            migrated: 'Credencial existente migrada para o local padronizado desta máquina.',
+            already_configured: 'Esta máquina já possui uma credencial no local padronizado.',
+            already_canonical: 'A credencial já está salva no local padronizado desta máquina.',
+            replacement_required: 'Já existe uma credencial nesta máquina. Confirme a substituição para continuar.',
+            oversize: 'O arquivo selecionado excede o tamanho permitido.',
+            invalid_json: 'O arquivo selecionado não contém um JSON válido.',
+            invalid_service_account: 'O JSON selecionado não é uma credencial Firebase válida.',
+            wrong_project: 'A credencial pertence a outro projeto Firebase e não pode ser usada neste sistema.',
+            firebase_test_failed: 'A credencial não passou no teste seguro de conexão com o Firebase.',
+            firebase_permissions_insufficient: 'A credencial não possui todas as permissões necessárias para ler, enviar, atualizar e excluir dados da sincronização.',
+            firebase_permissions_test_failed: 'Não foi possível confirmar as permissões da credencial no Firebase. Verifique a conexão e tente novamente.',
+            firebase_admin_unavailable: 'O componente local do Firebase não está disponível. Feche e abra o JK Sistema e tente novamente.',
+            write_failed: 'Não foi possível salvar a credencial nesta máquina.',
+            read_failed: 'Não foi possível validar a credencial existente nesta máquina.',
+            unsafe_destination: 'O local padronizado da credencial não está disponível nesta máquina.',
+            expected_project_unavailable: 'A configuração do projeto Firebase não está disponível nesta instalação.',
+            project_configuration_invalid: 'A configuração do projeto Firebase desta instalação não é válida.',
+            project_configuration_conflict: 'A instalação possui configurações conflitantes do projeto Firebase.',
+            legacy_not_found: 'Nenhuma credencial antiga válida foi encontrada para migração.',
+            local_only: 'Esta configuração só pode ser feita pelo JK Sistema aberto neste computador.'
+        };
+        if (mensagens[code]) return mensagens[code];
+        if (httpStatus === 401 || httpStatus === 403) return 'Somente o administrador pode configurar o Firebase no JK Sistema aberto neste computador.';
+        if (httpStatus === 413) return mensagens.oversize;
+        if (httpStatus === 503) return mensagens.firebase_test_failed;
+        return 'Não foi possível concluir a configuração segura do Firebase. Atualize o status e tente novamente.';
+    }
+
+    function setFirebaseProvisioningStatus(message, tone = '') {
+        const box = document.getElementById('firebaseProvisioningStatus');
+        if (!box) return;
+        box.textContent = String(message || '');
+        box.classList.remove('is-error', 'is-success', 'is-warning');
+        if (tone === 'error') box.classList.add('is-error');
+        if (tone === 'success') box.classList.add('is-success');
+        if (tone === 'warning') box.classList.add('is-warning');
+    }
+
+    function resolverProntidaoSincronizacaoFirebase(backend, status = {}, conferirStatusAdministrativo = false) {
+        if (backend !== 'firebase') return false;
+        if (!conferirStatusAdministrativo) return true;
+        if (status.unavailable === true) return true;
+        return status.loaded === true
+            && status.ready === true
+            && status.restart_required !== true;
+    }
+
+    function sincronizacaoFirebasePronta() {
+        return resolverProntidaoSincronizacaoFirebase(
+            String((sincronizacaoMaquinasCache && sincronizacaoMaquinasCache.backend) || ''),
+            firebaseProvisioningStatus,
+            usuarioAdmin
+        );
+    }
+
+    function atualizarInterfaceProvisionamentoFirebase() {
+        const pronto = sincronizacaoFirebasePronta();
+        const notice = document.getElementById('machineSyncFirebaseNotice');
+        const panel = document.getElementById('firebaseProvisioningPanel');
+        const importArea = document.getElementById('firebaseProvisioningImportArea');
+        const input = document.getElementById('firebaseProvisioningFile');
+        const fileState = document.getElementById('firebaseProvisioningFileState');
+        if ((pronto || firebaseProvisioningStatus.ready) && input) input.value = '';
+        const selected = !!(input && input.files && input.files.length);
+
+        if (notice) {
+            notice.hidden = pronto;
+            if (!pronto) {
+                if (!usuarioPodeGerenciarUsuarios) {
+                    notice.textContent = 'Esta máquina está usando somente o armazenamento local. Peça ao administrador para configurar o Firebase antes de enviar ou importar dados entre computadores.';
+                } else if (firebaseProvisioningStatus.restart_required) {
+                    notice.textContent = 'A credencial foi salva somente nesta máquina, mas o Firebase ainda não está ativo. Feche completamente o JK Sistema, abra novamente e atualize o status.';
+                } else if (firebaseProvisioningStatus.can_migrate) {
+                    notice.textContent = 'Esta máquina encontrou uma credencial antiga. Migre-a para o local padronizado antes de sincronizar.';
+                } else if (firebaseProvisioningStatus.ready) {
+                    notice.textContent = 'A credencial está validada, mas este servidor ainda opera localmente. Feche completamente o JK Sistema, abra novamente e atualize o status.';
+                } else if (firebaseProvisioningStatus.configured) {
+                    notice.textContent = 'Há uma configuração Firebase nesta máquina, mas ela ainda não está pronta. Valide uma nova credencial ou atualize o status.';
+                } else {
+                    notice.textContent = 'Esta máquina está usando somente o armazenamento local. Configure o Firebase para enviar ou importar dados entre computadores.';
+                }
+            }
+        }
+
+        if (panel) panel.hidden = !usuarioPodeGerenciarUsuarios || (pronto && !firebaseProvisioningStatus.can_migrate);
+        if (importArea) importArea.hidden = firebaseProvisioningStatus.loaded && firebaseProvisioningStatus.ready;
+        const selectButton = document.getElementById('firebaseProvisioningSelectButton');
+        const importButton = document.getElementById('firebaseProvisioningImportButton');
+        const migrateButton = document.getElementById('firebaseProvisioningMigrateButton');
+        const refreshButton = document.getElementById('firebaseProvisioningRefreshButton');
+        if (selectButton) selectButton.disabled = firebaseProvisioningBusy;
+        if (importButton) importButton.disabled = firebaseProvisioningBusy || !selected;
+        if (migrateButton) {
+            migrateButton.hidden = !firebaseProvisioningStatus.can_migrate;
+            migrateButton.disabled = firebaseProvisioningBusy;
+        }
+        if (refreshButton) refreshButton.disabled = firebaseProvisioningBusy;
+        if (input) input.disabled = firebaseProvisioningBusy;
+        if (fileState) {
+            fileState.textContent = selected
+                ? 'Arquivo JSON selecionado nesta sessão e pronto para validação.'
+                : 'Nenhum arquivo selecionado.';
+        }
+
+        for (const id of ['machineSyncPushButton', 'machineSyncPullButton']) {
+            const button = document.getElementById(id);
+            if (!button) continue;
+            button.disabled = !pronto;
+            button.title = pronto ? '' : 'Configure e ative o Firebase nesta máquina antes de sincronizar.';
+        }
+        document.querySelectorAll('[data-firebase-sync-action]').forEach(button => {
+            button.disabled = !pronto;
+            button.title = pronto ? '' : 'Configure e ative o Firebase nesta máquina antes de sincronizar.';
+        });
+    }
+
+    function selecionarArquivoProvisionamentoFirebase() {
+        if (!usuarioPodeGerenciarUsuarios || firebaseProvisioningBusy) return;
+        const input = document.getElementById('firebaseProvisioningFile');
+        if (!input) return;
+        input.value = '';
+        atualizarInterfaceProvisionamentoFirebase();
+        input.click();
+    }
+
+    function arquivoProvisionamentoFirebaseSelecionado() {
+        if (!usuarioPodeGerenciarUsuarios) return;
+        setFirebaseProvisioningStatus(
+            document.getElementById('firebaseProvisioningFile')?.files?.length
+                ? 'Clique em Validar e importar para conferir a credencial com segurança.'
+                : '',
+            ''
+        );
+        atualizarInterfaceProvisionamentoFirebase();
+    }
+
+    function limparArquivoProvisionamentoFirebase() {
+        const input = document.getElementById('firebaseProvisioningFile');
+        if (input) input.value = '';
+    }
+
+    async function carregarStatusProvisionamentoFirebase(opcoes = {}) {
+        if (!usuarioAdmin) {
+            atualizarInterfaceProvisionamentoFirebase();
+            return false;
+        }
+        const silencioso = !!(opcoes && opcoes.silencioso);
+        if (!silencioso) setFirebaseProvisioningStatus('Conferindo a configuração segura do Firebase...');
+        try {
+            const resp = await fetch('/api/admin/firebase-provisioning/status', {
+                headers: obterAuthHeaders(),
+                cache: 'no-store'
+            });
+            const data = await resp.json().catch(() => ({}));
+            firebaseProvisioningStatus = normalizarStatusProvisionamentoFirebase(data, resp.ok, resp.status === 404);
+            if (!resp.ok || data.success === false) {
+                setFirebaseProvisioningStatus(mensagemSeguraProvisionamentoFirebase(firebaseProvisioningStatus, resp.status), 'error');
+                return false;
+            }
+            const tone = firebaseProvisioningStatus.can_migrate || firebaseProvisioningStatus.restart_required
+                ? 'warning'
+                : (firebaseProvisioningStatus.ready ? 'success' : '');
+            setFirebaseProvisioningStatus(mensagemSeguraProvisionamentoFirebase(firebaseProvisioningStatus, resp.status), tone);
+            return true;
+        } catch (_error) {
+            firebaseProvisioningStatus = normalizarStatusProvisionamentoFirebase({}, false);
+            setFirebaseProvisioningStatus('Não foi possível consultar a configuração segura do Firebase. Tente atualizar o status.', 'error');
+            return false;
+        } finally {
+            atualizarInterfaceProvisionamentoFirebase();
+        }
+    }
+
+    async function enviarArquivoProvisionamentoFirebase(arquivo, substituir) {
+        const formData = new FormData();
+        formData.append('file', arquivo, 'credencial-firebase.json');
+        const resp = await fetch('/api/admin/firebase-provisioning/import?replace=' + (substituir ? 'true' : 'false'), {
+            method: 'POST',
+            headers: obterAuthHeaders(),
+            body: formData
+        });
+        const data = await resp.json().catch(() => ({}));
+        const status = normalizarStatusProvisionamentoFirebase(data, true);
+        const exigeSubstituicao = resp.status === 409
+            && (status.replacement_required || status.code === 'replacement_required');
+        if (exigeSubstituicao && !substituir) {
+            const confirmou = confirm('Já existe uma credencial Firebase nesta máquina. Deseja substituí-la somente após a validação segura do novo arquivo?');
+            if (!confirmou) {
+                setFirebaseProvisioningStatus('Substituição cancelada. A credencial atual foi preservada.', 'warning');
+                return false;
+            }
+            return enviarArquivoProvisionamentoFirebase(arquivo, true);
+        }
+        firebaseProvisioningStatus = status;
+        if (!resp.ok || data.success === false) {
+            setFirebaseProvisioningStatus(mensagemSeguraProvisionamentoFirebase(status, resp.status), 'error');
+            return false;
+        }
+        const concluido = status.restart_required
+            ? 'Credencial validada e salva somente nesta máquina. Feche completamente o JK Sistema, abra novamente e clique em Atualizar status.'
+            : 'Credencial validada e salva somente nesta máquina. Clique em Atualizar status para confirmar a sincronização.';
+        setFirebaseProvisioningStatus(concluido, status.restart_required ? 'warning' : 'success');
+        setMachineSyncStatus(concluido, false);
+        return true;
+    }
+
+    async function validarEImportarProvisionamentoFirebase() {
+        if (!usuarioPodeGerenciarUsuarios || firebaseProvisioningBusy) return;
+        const input = document.getElementById('firebaseProvisioningFile');
+        const arquivo = input && input.files ? input.files[0] : null;
+        if (!arquivo) {
+            setFirebaseProvisioningStatus('Selecione um arquivo JSON para validar.', 'error');
+            atualizarInterfaceProvisionamentoFirebase();
+            return;
+        }
+        firebaseProvisioningBusy = true;
+        setFirebaseProvisioningStatus('Validando a credencial e testando a conexão segura...');
+        atualizarInterfaceProvisionamentoFirebase();
+        try {
+            const concluido = await enviarArquivoProvisionamentoFirebase(arquivo, false);
+            if (concluido && !firebaseProvisioningStatus.restart_required) {
+                await carregarSincronizacaoMinhasMaquinas({ silencioso: true });
+            }
+        } catch (_error) {
+            setFirebaseProvisioningStatus('Não foi possível enviar a credencial ao servidor local. Tente novamente.', 'error');
+        } finally {
+            firebaseProvisioningBusy = false;
+            limparArquivoProvisionamentoFirebase();
+            atualizarInterfaceProvisionamentoFirebase();
+        }
+    }
+
+    async function migrarCredencialFirebaseLegada() {
+        if (!usuarioPodeGerenciarUsuarios || firebaseProvisioningBusy || !firebaseProvisioningStatus.can_migrate) return;
+        firebaseProvisioningBusy = true;
+        setFirebaseProvisioningStatus('Validando e salvando a credencial existente no local padronizado...');
+        atualizarInterfaceProvisionamentoFirebase();
+        try {
+            const resp = await fetch('/api/admin/firebase-provisioning/migrate-legacy', {
+                method: 'POST',
+                headers: obterAuthHeaders()
+            });
+            const data = await resp.json().catch(() => ({}));
+            firebaseProvisioningStatus = normalizarStatusProvisionamentoFirebase(data, true);
+            if (!resp.ok || data.success === false) {
+                setFirebaseProvisioningStatus(mensagemSeguraProvisionamentoFirebase(firebaseProvisioningStatus, resp.status), 'error');
+                return;
+            }
+            const concluido = firebaseProvisioningStatus.restart_required
+                ? 'Credencial existente validada e salva no local padronizado desta máquina. Feche completamente o JK Sistema, abra novamente e clique em Atualizar status.'
+                : 'Credencial existente validada e salva no local padronizado desta máquina. Clique em Atualizar status para confirmar a sincronização.';
+            setFirebaseProvisioningStatus(concluido, firebaseProvisioningStatus.restart_required ? 'warning' : 'success');
+            setMachineSyncStatus(concluido, false);
+            if (!firebaseProvisioningStatus.restart_required) {
+                await carregarSincronizacaoMinhasMaquinas({ silencioso: true });
+            }
+        } catch (_error) {
+            setFirebaseProvisioningStatus('Não foi possível migrar a credencial no servidor local. Tente novamente.', 'error');
+        } finally {
+            firebaseProvisioningBusy = false;
+            atualizarInterfaceProvisionamentoFirebase();
+        }
+    }
+
+    async function atualizarStatusProvisionamentoFirebase() {
+        if (!usuarioPodeGerenciarUsuarios || firebaseProvisioningBusy) return;
+        await carregarSincronizacaoMinhasMaquinas({ silencioso: true });
     }
 
     function renderSincronizacaoMinhasMaquinas(payload) {
@@ -2510,6 +2892,7 @@
                 }).join('');
             }
         }
+        atualizarInterfaceProvisionamentoFirebase();
     }
 
     function scopesSelecionadosSincronizacaoMinhasMaquinas() {
@@ -2555,6 +2938,11 @@
                 const data = await resp.json().catch(() => ({}));
                 if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao carregar sincronização.');
                 renderSincronizacaoMinhasMaquinas(data);
+                if (usuarioAdmin) {
+                    await carregarStatusProvisionamentoFirebase({ silencioso: true });
+                } else {
+                    atualizarInterfaceProvisionamentoFirebase();
+                }
                 return true;
             } catch (error) {
                 sincronizacaoMaquinasCache = null;
@@ -2563,6 +2951,11 @@
                 const machinesEl = document.getElementById('machineSyncMachines');
                 if (grid) grid.innerHTML = '<div class="machine-sync-empty">Status indisponível. Atualize novamente antes de sincronizar.</div>';
                 if (machinesEl) machinesEl.innerHTML = '<div class="machine-sync-empty">Não foi possível conferir as máquinas agora.</div>';
+                if (usuarioAdmin) {
+                    await carregarStatusProvisionamentoFirebase({ silencioso: true });
+                } else {
+                    atualizarInterfaceProvisionamentoFirebase();
+                }
                 return false;
             }
         })();
@@ -2642,6 +3035,11 @@
     }
 
     async function executarSincronizacaoMinhasMaquinas(direcao) {
+        if (!sincronizacaoFirebasePronta()) {
+            setMachineSyncStatus('Configure e ative o Firebase nesta máquina antes de enviar ou importar dados entre computadores.', true);
+            atualizarInterfaceProvisionamentoFirebase();
+            return;
+        }
         const enviando = direcao === 'push';
         atualizarBalaoSincronizacaoMaquinas(
             true,
@@ -2908,6 +3306,11 @@
     }
 
     async function executarVinculoCompartilhamentoUsuario(linkId, direcao) {
+        if (!sincronizacaoFirebasePronta()) {
+            setUserShareStatus('Configure e ative o Firebase nesta máquina antes de enviar ou importar dados entre usuários.', true);
+            atualizarInterfaceProvisionamentoFirebase();
+            return;
+        }
         const endpoint = direcao === 'push' ? 'push' : 'pull';
         const nomeProcesso = direcao === 'push' ? 'Envio do vínculo' : 'Recebimento do vínculo';
         setUserShareProcesso(nomeProcesso, 0, direcao === 'push' ? 'Preparando novidades locais.' : 'Buscando novidades remotas.');

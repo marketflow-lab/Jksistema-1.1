@@ -124,4 +124,3 @@ __all__ = [
     "UNAVAILABLE_MESSAGE",
     "load_remote_auth_configuration",
 ]
-

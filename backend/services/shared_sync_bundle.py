@@ -465,11 +465,10 @@ def _shared_sync_montar_pacote_locked(
                 )
                 arquivos_sensiveis_obrigatorios = {
                     rel
-                    for rel in (
-                        "lojas_config.json",
-                        "integracoes.json",
-                        "lojas_sync_tombstones.json",
-                    )
+                        for rel in (
+                            "lojas_config.json",
+                            "integracoes.json",
+                        )
                     if os.path.exists(os.path.join(tenant_abs, rel))
                 }
         if known_keys is None:
@@ -489,8 +488,16 @@ def _shared_sync_montar_pacote_locked(
             )
         # Mantem o conjunto de arquivos, bytes, hash e tamanho no mesmo
         # instante. Antes, um tombstone podia nascer entre a coleta e o ZIP.
-        materializadas = []
         if scope == "lojas_integracoes":
+            # Tombstones representam exclusoes estritamente locais. Mesmo que
+            # um coletor legado os retorne, eles nunca devem sair da maquina.
+            entries = [
+                item
+                for item in entries
+                if str(item.get("relative_path") or "").strip().casefold()
+                != "lojas_sync_tombstones.json"
+            ]
+            materializadas = []
             for item in entries:
                 data = (
                     item.get("data")
@@ -525,20 +532,56 @@ def _shared_sync_montar_pacote_locked(
                     for rel in (
                         "lojas_config.json",
                         "integracoes.json",
-                        "lojas_sync_tombstones.json",
                     )
                     if os.path.exists(os.path.join(tenant_abs, rel))
                 )
+                arquivos_sensiveis_faltantes: list[str] = []
                 for rel_canonico in arquivos_sensiveis_obrigatorios:
-                    if rel_canonico not in rels_materializados:
+                    if rel_canonico in rels_materializados:
+                        continue
+                    rel_abs = os.path.join(tenant_abs, rel_canonico)
+                    if not os.path.exists(rel_abs):
+                        arquivos_sensiveis_faltantes.append(rel_canonico)
+                        continue
+                    try:
+                        data = _shared_sync_ler_arquivo_pacote(rel_abs)
+                        mtime = os.path.getmtime(rel_abs)
+                    except HTTPException:
+                        raise
+                    except OSError as exc:
                         raise HTTPException(
                             status_code=409,
                             detail=(
-                                "Um arquivo local essencial de lojas e integracoes "
-                                "nao pôde ser incluido no pacote. O envio foi "
-                                "cancelado para preservar as contas."
+                                "Falha ao reler um arquivo essencial de lojas "
+                                "e integracoes durante a montagem do pacote."
                             ),
+                        ) from exc
+                    except Exception as exc:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                "Falha ao reler um arquivo essencial de lojas "
+                                "e integracoes durante a montagem do pacote."
+                            ),
+                        ) from exc
+                    entries.append(
+                        _shared_sync_entry_from_bytes(
+                            rel_canonico,
+                            data,
+                            mtime,
+                            [],
                         )
+                    )
+                    rels_materializados.add(rel_canonico)
+                if arquivos_sensiveis_faltantes:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "Arquivo(s) essenciais nao encontrados para o pacote de "
+                            "lojas e integracoes: "
+                            + ", ".join(sorted(arquivos_sensiveis_faltantes))
+                        ),
+                    )
     if sanitize_user_share_oauth and scope == "lojas_integracoes":
         sanitizadas = []
         for item in entries:

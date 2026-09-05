@@ -32,6 +32,7 @@ from .shared_sync import (
     SharedSyncUserLinkRunRequest,
     SharedSyncUserLinkCreateRequest,
 )
+from .firebase_provisioning import FirebaseProvisioningResponse
 from .ia import (
     IAChatAttachment,
     IAChatRequest,
@@ -187,6 +188,7 @@ __all__ = [
     "SharedSyncUserLinkUpdateRequest",
     "SharedSyncUserLinkRunRequest",
     "SharedSyncUserLinkCreateRequest",
+    "FirebaseProvisioningResponse",
     "IAChatAttachment",
     "IAChatRequest",
     "IAAgentQueryRequest",

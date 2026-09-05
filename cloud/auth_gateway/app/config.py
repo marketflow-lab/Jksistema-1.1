@@ -96,4 +96,3 @@ class GatewaySettings:
 
 
 __all__ = ["GatewayConfigurationError", "GatewaySettings"]
-

@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getMlBrowserItemInfo: (itemId, url) => ipcRenderer.invoke('ml-browser-item-info', itemId, url),
     openInternalBrowser: (url) => ipcRenderer.invoke('open-internal-browser', url),
     openExternalChrome: (url) => ipcRenderer.invoke('open-external-chrome', url),
+    openEtiquetasPdfInChrome: (pdfBytes, filename) => ipcRenderer.invoke('open-etiquetas-pdf-in-chrome', pdfBytes, filename || ''),
     extractMlSearchResults: (url) => ipcRenderer.invoke('extract-ml-search-results', url),
     startFavoritosJobBrowserBackground: (url) => ipcRenderer.invoke('favoritos-job-browser-start', url || ''),
     stopFavoritosJobBrowserBackground: () => ipcRenderer.invoke('favoritos-job-browser-stop'),

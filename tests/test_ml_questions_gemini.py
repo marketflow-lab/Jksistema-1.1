@@ -847,9 +847,9 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         self.assertIn("Nunca se apresente como IA", prompt)
         self.assertIn("PERGUNTA_DO_COMPRADOR", prompt)
         self.assertIn("PRODUTO_DO_ANUNCIO", prompt)
-        self.assertIn("PESQUISA_TECNICA_AUTOMATICA_OBRIGATORIA", prompt)
-        self.assertIn("O orquestrador sempre tentara pesquisar", prompt)
-        self.assertIn("compatibilidade, aplicacao, caracteristicas e funcoes", prompt)
+        self.assertIn("PESQUISA_TECNICA_ADAPTATIVA", prompt)
+        self.assertIn("pesquisara fontes tecnicas publicas somente", prompt)
+        self.assertIn("compatibilidade, originalidade, conflito", prompt)
         self.assertIn("fabricante, manual, catalogo OEM", prompt)
         self.assertIn("REGRAS_DO_APP", prompt)
         self.assertIn("HISTORICO_DE_PERGUNTAS", prompt)
@@ -857,8 +857,8 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         self.assertIn("https://produto.mercadolivre.com.br/MLB-1-produto", prompt)
         self.assertLess(prompt.index("\nPERGUNTA_DO_COMPRADOR:"), prompt.index("\nHISTORICO_DE_PERGUNTAS:"))
         self.assertLess(prompt.index("\nHISTORICO_DE_PERGUNTAS:"), prompt.index("\nPRODUTO_DO_ANUNCIO:"))
-        self.assertLess(prompt.index("\nPRODUTO_DO_ANUNCIO:"), prompt.index("\nPESQUISA_TECNICA_AUTOMATICA_OBRIGATORIA:"))
-        self.assertLess(prompt.index("\nPESQUISA_TECNICA_AUTOMATICA_OBRIGATORIA:"), prompt.index("\nREGRAS_DO_APP:"))
+        self.assertLess(prompt.index("\nPRODUTO_DO_ANUNCIO:"), prompt.index("\nPESQUISA_TECNICA_ADAPTATIVA:"))
+        self.assertLess(prompt.index("\nPESQUISA_TECNICA_ADAPTATIVA:"), prompt.index("\nREGRAS_DO_APP:"))
         self.assertLess(prompt.index("\nREGRAS_DO_APP:"), prompt.index("\nCONTEXTO_MINIMO_ENVIADO_A_IA"))
 
     def test_prompt_context_is_minimal_for_ai(self):

@@ -286,9 +286,9 @@ class PromptBuilder:
             "PRODUTO_DO_ANUNCIO:\n"
             + _untrusted_json_block("produto_anuncio_nao_confiavel", _listing_payload(listing))
             + "\n\n"
-            "PESQUISA_TECNICA_AUTOMATICA_OBRIGATORIA:\n"
-            "O orquestrador sempre tentara pesquisar o produto e comparar a pergunta dos blocos nao confiaveis com fontes tecnicas publicas. "
-            "A pesquisa deve cobrir compatibilidade, aplicacao, caracteristicas, materiais, medidas, conexoes, funcoes e itens inclusos conforme o assunto perguntado. "
+            "PESQUISA_TECNICA_ADAPTATIVA:\n"
+            "O orquestrador pesquisara fontes tecnicas publicas somente para compatibilidade, originalidade, conflito, evidencia vencida ou campo tecnico decisivo ausente. "
+            "A pesquisa deve limitar-se aos campos ainda necessarios e priorizar fabricante, manual, catalogo OEM e documentacao oficial. "
             "Resultado vazio ou falha de pesquisa nunca prova incompatibilidade nem ausencia da caracteristica.\n\n"
             "REGRAS_DO_APP:\n"
             + _safe_json(trusted_app_rules)

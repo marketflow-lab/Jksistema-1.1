@@ -185,8 +185,8 @@
         elements.btnAplicarImportacaoCatalogo.disabled = !podeAplicar(payload, status) || flow.applying || flow.cancelling;
         elements.btnFecharImportacaoCatalogo.disabled = busy;
         elements.btnCancelarImportacaoCatalogo.disabled = busy || !flow.jobId || !CANCELLABLE.has(status);
-        const applyResult = payload && payload.apply_result && typeof payload.apply_result === 'object' ? payload.apply_result : {}; const fotosSalvas = numeroResumo(applyResult.fotos_salvas); const fotosIgnoradas = numeroResumo(applyResult.fotos_ignoradas);
-        if (status === 'applied' && payload.refresh_failed) setStatus('Importação aplicada com sucesso, mas a lista não pôde ser atualizada. Use Atualizar.', 'warning'); else if (status === 'applied' && fotosIgnoradas > 0) setStatus(`Importação aplicada. ${fotosSalvas} capa(s) comprimidas foram salvas e ${fotosIgnoradas} não puderam ser baixadas; os demais dados foram mantidos.`, 'warning'); else if (status === 'applied' && fotosSalvas > 0) setStatus(`Importação aplicada com sucesso. ${fotosSalvas} capa(s) comprimidas do Mercado Livre foram salvas no cadastro.`, 'success'); else if (status === 'applied') setStatus('Importação aplicada com sucesso.', 'success');
+        if (status === 'applied' && payload.refresh_failed) setStatus('Importação aplicada com sucesso, mas a lista não pôde ser atualizada. Use Atualizar.', 'warning');
+        else if (status === 'applied') setStatus('Importação aplicada com sucesso.', 'success');
         else if (status === 'cancelled') setStatus('Consulta cancelada. Nenhuma nova alteração será aplicada por este trabalho.', 'success');
         else if (TERMINAL_ERRORS.has(status)) setStatus(erroPayload(payload, 'A consulta não pôde ser concluída.'), 'error');
         else if (status === 'ready' && skuCoverage !== true) setStatus(`Prévia concluída sem cobertura completa de SKU. Nenhuma alteração pode ser aplicada. ${reviewDetails}`, 'error');

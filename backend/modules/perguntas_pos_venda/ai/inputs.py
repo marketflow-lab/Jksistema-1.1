@@ -63,6 +63,7 @@ _PERGUNTAS_IA_RESEARCH_INPUT_FIELDS = frozenset({
     "research_gaps", "research_history", "store", "subquestions", "task", "tenant_id",
     "use_web_search", "vehicle_identity", "verified_product_evidence", "product_research_evidence", "web_search_required",
     "product_evidence_identity", "technical_question_plan", "technical_gap_queries",
+    "sku_question_context", "adaptive_route", "web_research_reason",
 })
 
 
@@ -75,6 +76,20 @@ def _perguntas_ia_research_input(agent_input: Optional[dict[str, Any]]) -> dict[
         for key in _PERGUNTAS_IA_RESEARCH_INPUT_FIELDS
         if key in source
     }
+    sku_packet = projected.get("sku_question_context")
+    if isinstance(sku_packet, dict):
+        # V17 transports the bounded, SKU-bound packet instead of the full
+        # listing/context to research tools. Keep only lookup identity fields.
+        item = projected.get("item") if isinstance(projected.get("item"), dict) else {}
+        projected["item"] = {
+            key: item.get(key)
+            for key in ("id", "title", "seller_sku", "catalog_product_id")
+            if item.get(key) not in (None, "")
+        }
+        projected["question"] = dict(sku_packet.get("question") or {})
+        projected["context"] = {
+            "sku": (sku_packet.get("identity") or {}).get("sku"),
+        }
     if "technical_question_plan" in projected:
         projected["technical_question_plan"] = _perguntas_ia_technical_question_plan_seguro(
             projected.get("technical_question_plan")
@@ -321,15 +336,28 @@ _PERGUNTAS_IA_CATEGORIAS_SEM_PESQUISA_EXTERNA = {
     QuestionCategory.UNKNOWN.value,
 }
 
+_PERGUNTAS_IA_CATEGORIAS_PESQUISA_EXTERNA_OBRIGATORIA = {
+    QuestionCategory.COMPATIBILITY.value,
+    QuestionCategory.WARRANTY_ORIGINALITY.value,
+}
+
 def _perguntas_ia_deve_buscar_web_publica(agent_input: Optional[dict[str, Any]]) -> bool:
     classificacao = _perguntas_ia_classificacao_agent(agent_input)
     fluxo = str(classificacao.get("fluxo") or "").strip()
     categoria = _perguntas_ia_categoria_classificada(agent_input)
-    return bool(
-        fluxo == "perguntas_anuncio"
-        and categoria
-        and categoria not in _PERGUNTAS_IA_CATEGORIAS_SEM_PESQUISA_EXTERNA
-    )
+    entrada = agent_input if isinstance(agent_input, dict) else {}
+    packet = entrada.get("sku_question_context")
+    packet = packet if isinstance(packet, dict) else {}
+    packet_web = packet.get("web") if isinstance(packet.get("web"), dict) else {}
+    if fluxo != "perguntas_anuncio" or not categoria:
+        return False
+    if categoria in _PERGUNTAS_IA_CATEGORIAS_SEM_PESQUISA_EXTERNA:
+        return False
+    if packet:
+        return bool(packet_web.get("required"))
+    if entrada.get("force_external_research") is True:
+        return True
+    return categoria in _PERGUNTAS_IA_CATEGORIAS_PESQUISA_EXTERNA_OBRIGATORIA
 
 def _perguntas_ia_allowed_tools_classificadas(agent_input: Optional[dict[str, Any]]) -> list[str]:
     classificacao = _perguntas_ia_classificacao_agent(agent_input)

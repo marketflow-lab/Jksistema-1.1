@@ -36,6 +36,10 @@ function getUpdateUnavailableReason() {
     if (!app.isPackaged) {
         return 'Atualizacao automatica funciona apenas no app instalado.';
     }
+    const privateBundle = privateCredentialBundlePath();
+    if (privateBundle && fs.existsSync(privateBundle)) {
+        return 'Este instalador privado usa atualizacoes privadas manuais para preservar o cofre de credenciais.';
+    }
     if (!getAppUpdateConfigPath()) {
         const feed = getBundledUpdateFeedConfig();
         if (!feed || !feed.provider || !feed.owner || !feed.repo) {

@@ -140,7 +140,7 @@ def test_rvc_v7_versions_and_complete_commercial_state_map_are_frozen() -> None:
     assert agent_runtime._PERGUNTAS_IA_RESPONSE_POLICY_VERSION == "jk_ppv_response_policy_v8"
     assert agent_runtime._PERGUNTAS_IA_SELLER_METHOD_VERSION == "seller-conversion-v1"
     assert agent_runtime._PERGUNTAS_IA_COMMERCIAL_STATE_POLICY == EXPECTED_COMMERCIAL_STATE_POLICY
-    assert codex.PROMPT_VERSION == "jk_ml_customer_reply_codex_v16"
+    assert codex.PROMPT_VERSION == "jk_ml_customer_reply_codex_v17"
     assert codex.SCHEMA_VERSION == "5.2"
     assert codex.QUEUE_POLICY_VERSION == "jk_ppv_queue_v3"
     assert ia_treinamento_ppv._IA_TREINAMENTO_PPV_PROFILE_SCHEMA == "seller_behavior_profile_v2"

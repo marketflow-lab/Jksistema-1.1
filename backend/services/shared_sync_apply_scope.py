@@ -116,13 +116,21 @@ def _shared_sync_read_validated_bundle(bundle: bytes, scope: str) -> tuple[dict,
                     raise HTTPException(status_code=502, detail="Entrada invalida no manifesto do Shared Sync.")
                 rel = _shared_sync_relativo_seguro(item.get("relative_path"))
                 rel_key = rel.lower()
+                tombstone_local_only = (
+                    scope == "lojas_integracoes"
+                    and rel_key == "lojas_sync_tombstones.json"
+                )
                 if rel_key in seen_rels:
                     raise HTTPException(status_code=502, detail=f"Arquivo duplicado no manifesto: {rel}")
                 seen_rels.add(rel_key)
                 if _shared_sync_path_permanently_excluded(rel):
                     raise HTTPException(status_code=400, detail="Arquivo permanentemente excluido do Shared Sync.")
                 legacy_state = scope == "vendas" and rel_key == "vendas_sync_state.json"
-                if not legacy_state and not _shared_sync_scope_match(scope, rel):
+                if (
+                    not legacy_state
+                    and not tombstone_local_only
+                    and not _shared_sync_scope_match(scope, rel)
+                ):
                     raise HTTPException(status_code=400, detail=f"Arquivo fora do escopo: {rel}")
                 if scope == "lojas_integracoes":
                     canonical = {
@@ -160,7 +168,7 @@ def _shared_sync_read_validated_bundle(bundle: bytes, scope: str) -> tuple[dict,
                     raise HTTPException(status_code=502, detail=f"Hash divergente no pacote: {rel}")
                 if rel_key.endswith((".db", ".sqlite", ".sqlite3")):
                     _shared_sync_validate_sqlite_payload(rel, data)
-                if not legacy_state:
+                if not legacy_state and not tombstone_local_only:
                     fontes.append((rel, data))
             return manifest, fontes
     except HTTPException:
@@ -1616,6 +1624,20 @@ def _shared_sync_aplicar_lojas_integracoes(
         _shared_sync_merge_tombstones_integracoes_bytes,
     )
 
+    # Pacotes antigos podem conter tombstones. Valide o payload para manter o
+    # contrato de seguranca, mas descarte o resultado: exclusoes sao locais e
+    # nunca podem remover loja ou integracao desta maquina.
+    remote_tombstones_bytes = por_rel.pop("lojas_sync_tombstones.json", None)
+    if remote_tombstones_bytes is not None:
+        _shared_sync_merge_tombstones_integracoes_bytes(
+            _shared_sync_resolve_tenant_path(
+                tenant_abs,
+                "lojas_sync_tombstones.json",
+            ),
+            remote_tombstones_bytes,
+            base_bytes=base_tombstones_bytes,
+        )
+
     try:
         lojas_remotas = json.loads(
             por_rel["lojas_config.json"].decode("utf-8-sig")
@@ -1878,6 +1900,18 @@ def _shared_sync_aplicar_lojas_integracoes(
                 lojas,
                 tombstones_finais,
             )
+            # O commit canonico grava lojas e tombstones em conjunto. Como os
+            # tombstones sao estritamente locais, restaure sua representacao
+            # original antes de concluir o pull para que um pacote remoto nao
+            # crie, reformate ou altere esse arquivo.
+            if local_tombstones_bytes is None:
+                if os.path.exists(local_tombstones_path):
+                    os.remove(local_tombstones_path)
+            else:
+                _shared_sync_atomic_write(
+                    local_tombstones_path,
+                    local_tombstones_bytes,
+                )
             for rel in rels:
                 if rel not in {
                     "lojas_config.json",

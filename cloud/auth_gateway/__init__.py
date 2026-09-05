@@ -1,2 +1,1 @@
 """Remote authentication gateway package."""
-

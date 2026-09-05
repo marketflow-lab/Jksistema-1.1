@@ -23,6 +23,15 @@ from .general_commercial import (
 )
 from .inputs import _perguntas_ia_allowed_tools_classificadas, _perguntas_ia_research_input
 from .runtime import AIAnswer, logger
+from .sku_question_context import (
+    ROUTE_HIGH_RISK,
+    ROUTE_SIMPLE_FACTUAL,
+    ROUTE_SIMPLE_OPERATIONAL,
+    bind_client_sku_question_context,
+    packet_tool_result,
+    with_document_references,
+)
+from .sku_question_prompts import simple_public_prompt
 
 
 def initialize_general_context_pipeline(client, metadata: dict) -> None:
@@ -214,6 +223,18 @@ def _prepare_general_research(
     verified_result, found, tool_error, research_step = (
         _perguntas_ia_general_research_contract(result)
     )
+    bind_client_sku_question_context(
+        client,
+        metadata,
+        internal_sources=internal_sources or [],
+        context_hub=hub,
+        external_sources=[result],
+        force_high_risk=True,
+    )
+    research_step["reason"] = str(
+        (client.sku_question_context.get("web") or {}).get("reason")
+        or "decisive_fact_missing"
+    )
     research_step["step"] = hooks.next_pipeline_step(client, 4)
     client.context_pipeline.append(research_step)
     if not regulated:
@@ -283,13 +304,18 @@ def _general_gap_callback(
             "reason": "technical_resolution_round_1_gaps",
         })
         client.context_pipeline.append(gap_step)
+        bind_client_sku_question_context(
+            client,
+            metadata,
+            external_sources=[gap_result],
+            force_high_risk=True,
+        )
         gap_vision_refs = hooks.prepare_document_vision(
             client, metadata, [gap_result], phase="gap",
         )
-        updated_context = deepcopy(dict(current_context))
-        updated_context["gap_research"] = verified_gap
+        updated_context = deepcopy(dict(getattr(client, "sku_question_context", {}) or current_context))
         if gap_vision_refs:
-            updated_context["document_vision_page_refs"] = gap_vision_refs
+            updated_context = with_document_references(updated_context, gap_vision_refs)
         return (
             updated_context,
             [*list(current_results), verified_gap],
@@ -368,6 +394,11 @@ def _synthesize_general_answer(
         alternative,
         regulated=state.regulated,
         internal_sources=internal_sources,
+        sku_context=(
+            client.sku_question_context
+            if isinstance(getattr(client, "sku_question_context", None), dict)
+            else None
+        ),
     )
     try:
         answer = hooks.preserve_technical_state(
@@ -468,6 +499,52 @@ def run_general(
         })
     if post_sale:
         return parsed
+    packet = bind_client_sku_question_context(
+        client,
+        metadata,
+        internal_sources=internal_sources,
+        context_hub=hub,
+    )
+    route = str(packet.get("route") or ROUTE_HIGH_RISK)
+    if route in {ROUTE_SIMPLE_OPERATIONAL, ROUTE_SIMPLE_FACTUAL}:
+        behavior_profile = _behavior_profile(client)
+        candidate = client._call_model(
+            simple_public_prompt(packet, behavior_profile),
+            metadata,
+            stage="adaptive_simple_public_answer",
+            tool_results=[packet_tool_result(packet)],
+        )
+        client.context_pipeline.append({
+            "step": hooks.next_pipeline_step(client, 3),
+            "name": "adaptive_simple_public_generation",
+            "status": "completed" if str(getattr(candidate, "answer", "") or "").strip() else "unavailable",
+            "route": route,
+            "web_research": "skipped",
+            "web_reason": str((packet.get("web") or {}).get("reason") or "no_research_needed"),
+        })
+        if route == ROUTE_SIMPLE_OPERATIONAL:
+            client._candidate_reviewed_in_workflow = True
+            return candidate
+        client._candidate_reviewed_in_workflow = True
+        reviewed = client._review_public_candidate(candidate, metadata)
+        if not client._adaptive_escalation_required:
+            return reviewed
+        client._candidate_reviewed_in_workflow = False
+        client.manual_review_required = False
+        packet = bind_client_sku_question_context(
+            client,
+            metadata,
+            internal_sources=internal_sources,
+            context_hub=hub,
+            force_high_risk=True,
+        )
+        client.context_pipeline.append({
+            "step": hooks.next_pipeline_step(client, 4),
+            "name": "adaptive_high_risk_escalation",
+            "status": "required",
+            "reason": "factual_critic_escalation",
+        })
+        parsed = reviewed
     return web_fallback(
         client, prompt, metadata, hub, parsed, bindings, hooks, internal_sources,
     )

@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import ntpath
 import os
 from pathlib import Path
 import shutil
@@ -38,19 +37,8 @@ class TenantRootMigrationError(RuntimeError):
 
 def _io_path(path: Path) -> Path:
     """Use Win32 extended paths so legacy names ending in dots are preserved."""
-    raw = os.fspath(path)
-    if os.name != "nt":
-        return Path(os.path.abspath(raw))
-    if raw.startswith("\\\\?\\"):
-        return Path(raw)
-    # os.path.abspath() delegates to GetFullPathNameW on Windows, which strips
-    # trailing dots/spaces before the extended-path prefix can protect them.
-    # Compose and normalize lexically first so legacy directory entries keep
-    # their exact Win32 name during inventory, copy and verification.
-    absolute = ntpath.normpath(
-        raw if ntpath.isabs(raw) else ntpath.join(os.getcwd(), raw)
-    )
-    if absolute.startswith("\\\\?\\"):
+    absolute = os.path.abspath(path)
+    if os.name != "nt" or absolute.startswith("\\\\?\\"):
         return Path(absolute)
     if absolute.startswith("\\\\"):
         return Path("\\\\?\\UNC\\" + absolute.lstrip("\\"))
@@ -128,17 +116,7 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        for attempt in range(8):
-            try:
-                os.replace(temporary, path)
-                break
-            except PermissionError:
-                if attempt == 7:
-                    raise
-                # Windows can briefly deny an atomic replace while an
-                # antivirus/indexer or a status reader still has the previous
-                # file open. Retry the same already-flushed temporary file.
-                time.sleep(min(0.05 * (attempt + 1), 0.25))
+        os.replace(temporary, path)
     finally:
         try:
             temporary.unlink(missing_ok=True)
@@ -741,4 +719,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

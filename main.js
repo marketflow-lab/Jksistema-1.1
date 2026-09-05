@@ -4,6 +4,7 @@ const vm = require('vm');
 
 const MAIN_MODULES = [
     path.join(__dirname, 'electron_app', 'main', 'modules', 'local-app-paths.js'),
+    path.join(__dirname, 'electron_app', 'main', 'modules', 'private-credential-bootstrap.js'),
     path.join(__dirname, 'electron_app', 'main', 'modules', 'updater.js'),
     path.join(__dirname, 'electron_app', 'main', 'modules', 'backend.js'),
     path.join(__dirname, 'electron_app', 'main', 'modules', 'window.js'),

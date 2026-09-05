@@ -336,16 +336,6 @@ const skuAplicarPeriodoSource = skuHtmlStatic.slice(skuAplicarPeriodoStart, skuA
 assert.ok(skuAplicarPeriodoStart >= 0 && skuAplicarPeriodoEnd > skuAplicarPeriodoStart);
 
 async function testarCliqueConcorrenteAposMax() {
-    const DataFixa = class extends Date {
-        constructor(...args) {
-            if (args.length) {
-                super(...args);
-            } else {
-                super(2026, 7, 19, 12, 0, 0);
-            }
-        }
-    };
-
     function criarCenario() {
         let resolverLimitesMax;
         const limitesMaxPendentes = new Promise(resolve => {
@@ -355,6 +345,15 @@ async function testarCliqueConcorrenteAposMax() {
         const preferenciasSalvas = [];
         const urlsAtualizadas = [];
         const periodosConfirmadosNaUi = [];
+        const DataFixa = class extends Date {
+            constructor(...args) {
+                if (args.length) {
+                    super(...args);
+                } else {
+                    super(2026, 7, 19, 12, 0, 0);
+                }
+            }
+        };
         const criarHarness = new Function(
             'window',
             'Date',
@@ -653,16 +652,6 @@ async function testarRestauracaoPreferenciaLegada() {
 }
 
 async function testarAplicacaoPeriodoSku() {
-    const DataFixa = class extends Date {
-        constructor(...args) {
-            if (args.length) {
-                super(...args);
-            } else {
-                super(2026, 7, 19, 12, 0, 0);
-            }
-        }
-    };
-
     function criarCenario() {
         let resolverLimites;
         const limitesPendentes = new Promise(resolve => {
@@ -671,6 +660,15 @@ async function testarAplicacaoPeriodoSku() {
         const periodosAplicados = [];
         const periodosUrl = [];
         const periodosConfirmadosNaUi = [];
+        const DataFixa = class extends Date {
+            constructor(...args) {
+                if (args.length) {
+                    super(...args);
+                } else {
+                    super(2026, 7, 19, 12, 0, 0);
+                }
+            }
+        };
         const criarHarness = new Function(
             'window',
             'Date',
