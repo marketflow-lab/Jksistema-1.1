@@ -79,6 +79,15 @@ from .factual_critic import (
     normalize_factual_review,
 )
 from .technical_evidence_persistence import persist_technical_evidence_graph
+from .sku_question_context import (
+    ROUTE_SIMPLE_FACTUAL,
+    packet_tool_result,
+)
+from .sku_question_prompts import (
+    bounded_stage_prompt,
+    record_model_prompt_metrics,
+    stage_prompt_limit,
+)
 
 
 _PUBLIC_TECHNICAL_RESEARCH_STAGES = frozenset({
@@ -170,6 +179,11 @@ class _PerguntasVertexGeminiV2Client:
         self._technical_legacy_answer: Any = None
         self.factual_review: dict[str, Any] = {}
         self.manual_review_required = False
+        self.sku_question_context: dict[str, Any] = {}
+        self.sku_question_context_metrics: dict[str, Any] = {}
+        self.adaptive_route = ""
+        self._adaptive_escalation_required = False
+        self._candidate_reviewed_in_workflow = False
 
     def _persist_technical_graph(
         self,
@@ -204,7 +218,7 @@ class _PerguntasVertexGeminiV2Client:
         # resume or update the job's persistent operational thread.
         isolated_turn = bool(isolated or stage == "technical_evidence_graph")
         subquestions = self.agent_input.get("subquestions") if isinstance(self.agent_input.get("subquestions"), list) else []
-        if subquestions:
+        if subquestions and not self.sku_question_context:
             prompt = (
                 prompt
                 + "\n\nSUBPERGUNTAS OBRIGATORIAS IDENTIFICADAS PELO ORQUESTRADOR:\n"
@@ -214,7 +228,7 @@ class _PerguntasVertexGeminiV2Client:
             )
         research_attempt = max(1, int(self.agent_input.get("research_attempt") or 1))
         research_history = self.agent_input.get("research_history") if isinstance(self.agent_input.get("research_history"), list) else []
-        if research_attempt > 1 or self.agent_input.get("force_external_research"):
+        if (research_attempt > 1 or self.agent_input.get("force_external_research")) and not self.sku_question_context:
             prompt += (
                 f"\n\nNOVA TENTATIVA DE PESQUISA TECNICA: {research_attempt}. "
                 "Use todos os achados compilados e sanitizados das tentativas anteriores, mas nao repita apenas as mesmas consultas ou as mesmas fontes inconclusivas. "
@@ -226,6 +240,22 @@ class _PerguntasVertexGeminiV2Client:
                 )
                 + "\nHISTORICO_COMPACTO_DAS_TENTATIVAS:\n"
                 + _untrusted_compact_block("historico_pesquisa_nao_confiavel", research_history[-6:], 7000)
+            )
+        effective_tool_results = list(tool_results or [])
+        prompt_was_capped = False
+        if not fluxo_pos_venda and self.sku_question_context:
+            prompt, prompt_was_capped = bounded_stage_prompt(
+                prompt,
+                self.sku_question_context,
+                stage=stage,
+                limit=stage_prompt_limit(self.adaptive_route),
+            )
+            effective_tool_results = [packet_tool_result(self.sku_question_context)]
+            record_model_prompt_metrics(
+                self,
+                stage=stage,
+                prompt_chars=len(prompt),
+                capped=prompt_was_capped,
             )
         payload = IAChatRequest(
             message=prompt,
@@ -258,7 +288,7 @@ class _PerguntasVertexGeminiV2Client:
                 "_codex_reasoning_effort": stage_reasoning_effort,
             },
             model=stage_model,
-            tool_results=list(tool_results or []),
+            tool_results=effective_tool_results,
             attachments=(
                 list(self._document_vision_attachments[:8])
                 if stage == "technical_evidence_graph"
@@ -415,6 +445,11 @@ class _PerguntasVertexGeminiV2Client:
             if isinstance(self._technical_research_context, dict)
             else {}
         )
+        critic_internal_sources = list(self.evidence_records[:20])
+        sku_question_context = getattr(self, "sku_question_context", {})
+        if sku_question_context:
+            research = {"sku_question_context": copy.deepcopy(sku_question_context)}
+            critic_internal_sources = []
         subquestions = (
             list(self.agent_input.get("subquestions") or [])[:8]
             if isinstance(self.agent_input.get("subquestions"), list)
@@ -428,7 +463,7 @@ class _PerguntasVertexGeminiV2Client:
                         candidate_body=str(getattr(current, "answer", "") or ""),
                         technical_resolution=technical_resolution,
                         research=research,
-                        internal_sources=list(self.evidence_records[:20]),
+                        internal_sources=critic_internal_sources,
                         subquestions=subquestions,
                     ),
                     {**metadata, "category": "factual_review"},
@@ -452,6 +487,13 @@ class _PerguntasVertexGeminiV2Client:
             )
             if verdict == "pass":
                 return current
+            if getattr(self, "adaptive_route", "") == ROUTE_SIMPLE_FACTUAL:
+                self._adaptive_escalation_required = True
+                self.manual_review_required = True
+                return self._preserve_candidate_for_manual_review(
+                    current,
+                    "adaptive_high_risk_escalation_required",
+                )
             if verdict != "revise" or revision_count >= MAX_FACTUAL_REVISION_CYCLES:
                 self.manual_review_required = True
                 return self._preserve_candidate_for_manual_review(
@@ -717,6 +759,8 @@ class _PerguntasVertexGeminiV2Client:
             bling_tool=resolve_runtime_adapter("tools", "bling_product", _ia_tool_get_bling_product),
         )
         candidate = run_general(self, prompt, metadata_dict, bindings)
+        if self._candidate_reviewed_in_workflow:
+            return candidate
         return self._review_public_candidate(candidate, metadata_dict)
 
 

@@ -79,7 +79,7 @@ PUBLIC_SUBQUESTION_INTENTS = frozenset({
     "general",
     "post_sale",
 })
-PROMPT_VERSION = "jk_ml_customer_reply_codex_v16"
+PROMPT_VERSION = "jk_ml_customer_reply_codex_v17"
 SCHEMA_VERSION = "5.2"
 QUEUE_POLICY_VERSION = "jk_ppv_queue_v3"
 VEHICLE_IDENTITY_POLICY = "jk_public_vin_decode_v1"
@@ -90,7 +90,7 @@ TECHNICAL_RESOLUTION_VERSION = "jk_ml_technical_resolution_v1"
 FACTUAL_REVIEW_VERSION = "jk_ml_factual_review_v1"
 FACTUAL_CRITIC_POLICY = "jk_black_jhon_factual_critic_v1"
 PRODUCT_DOCUMENT_VISION_POLICY = "jk_product_document_vision_v1"
-PUBLIC_RESEARCH_POLICY = "jk_black_jhon_research_v2"
+PUBLIC_RESEARCH_POLICY = "jk_black_jhon_research_v3"
 PROMPT_HASH = hashlib.sha256(
     (
         "codex-native|public-question-by-item-buyer|post-sale-by-pack|"
@@ -109,6 +109,9 @@ PROMPT_HASH = hashlib.sha256(
         f"factual-critic:{FACTUAL_CRITIC_POLICY}|"
         f"document-vision:{PRODUCT_DOCUMENT_VISION_POLICY}|"
         f"public-research-policy:{PUBLIC_RESEARCH_POLICY}|"
+        "sku-question-context-v1|adaptive-public-flow-v1|"
+        "sku-context-max:8000|simple-prompt-max:12000|high-risk-stage-max:24000|"
+        "conditional-public-web-v1|"
         "six-stage-sol-high|two-round-gap-research|directed-reference-relations|"
         "nonempty-ai-draft-preserved|public-signature-append-only-v1|oversize-manual-edit-v1|"
         "human-approval-required|no-direct-publish"

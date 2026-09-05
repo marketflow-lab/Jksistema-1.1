@@ -28,7 +28,7 @@ CONTEXT_COLLECTION_PIPELINE = (
     (
         8,
         "question_focused_web_research",
-        "Sempre tentar identificar o produto e pesquisar na internet compatibilidade, aplicacao, caracteristicas e funcoes; priorizar fabricante, manuais, catalogos OEM e documentacao oficial.",
+        "Pesquisar somente quando houver compatibilidade, originalidade, conflito, evidencia vencida ou campo tecnico decisivo ausente; limitar a busca aos campos ainda necessarios.",
     ),
     (
         9,
@@ -85,6 +85,7 @@ def build_input_operational_contract(
             "no_markdown": True,
             "do_not_invent_links_or_compatibility": True,
             "internet_product_research_required": use_web_search,
+            "public_research_policy": "jk_black_jhon_research_v3",
             "vehicle_identity_policy": "jk_public_vin_decode_v1",
             "product_evidence_policy": "jk_product_evidence_v2",
             "evidence_usage_policy": "jk_black_jhon_factual_discretion_v1",

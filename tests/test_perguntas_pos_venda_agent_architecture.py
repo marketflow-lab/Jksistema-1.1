@@ -39,16 +39,17 @@ CONTRACT_HASHES = {
     "aliases": "f149aa04a166eacd3f942889d2495dc5a23be9bb3317160d97e247ae834aa68e",
     "schema": "500b7ccbcedc02d3a254e8114e974355be5635d2f01bd7dc929b212643cb254a",
     "policy": "c0f16148cf07452b5cfef3a48088485055cc7ca7f52382b96ecc95085529894a",
-    "prompts": "8e263682f2b03c32d589709348701518768342088575797446268055a1d5efa6",
+    "prompts": "cebc63e0ff3c2d6230f32bae4ccf2c38acda143b4a1a47adaf9a367161513abe",
     "exports": "fbd5bf89bb3a7d13d32c55dda0a0b89996c3c6a4828f94a250c94c5f18b74550",
 }
 LAYERS = {
     "contracts": 0, "attachments": 0, "telemetry_core": 0,
     "deep_research_contracts": 0, "deep_research_prefetch": 0, "deep_research_scoping": 0,
     "deep_research_sanitization": 0, "input_contracts": 0, "input_sanitization": 0,
-    "official_source_registry": 0,
+    "official_source_registry": 0, "sku_question_context": 0,
     "technical_planning": 0, "technical_evidence_persistence": 0, "factual_critic": 0,
     "runtime": 1, "deep_research_analysis": 1, "deep_research_claims": 1,
+    "sku_question_prompts": 1,
     "research_url_security": 1,
     "technical_resolution": 1,
     "inputs": 2, "provider_transport": 2, "deep_research_fingerprints": 2,
@@ -240,15 +241,21 @@ def test_ppv_facade_and_components_respect_budgets() -> None:
                 assert not any(alias.name == "*" for alias in node.names), path.name
 
 
-def test_ppv_prefetch_component_is_pinned_in_installer_manifest() -> None:
+def test_ppv_runtime_components_are_pinned_in_installer_manifest() -> None:
     manifest = json.loads(
         (ROOT / "electron_app" / "installer-required-resources.json").read_text(encoding="utf-8")
     )
-    source = "backend/modules/perguntas_pos_venda/ai/deep_research_prefetch.py"
+    sources = {
+        "backend/modules/perguntas_pos_venda/ai/deep_research_prefetch.py",
+        "backend/modules/perguntas_pos_venda/ai/sku_question_context.py",
+        "backend/modules/perguntas_pos_venda/ai/sku_question_prompts.py",
+    }
 
-    assert source in set(manifest.get("requiredSourceFiles") or [])
-    assert source in set(manifest.get("requiredPackagedSourceParity") or [])
-    assert f"local_app/{source}" in set(manifest.get("requiredPackagedFiles") or [])
+    assert sources <= set(manifest.get("requiredSourceFiles") or [])
+    assert sources <= set(manifest.get("requiredPackagedSourceParity") or [])
+    assert {f"local_app/{source}" for source in sources} <= set(
+        manifest.get("requiredPackagedFiles") or []
+    )
 
 
 def test_ppv_dependency_direction_has_no_cycles_or_legacy_imports() -> None:

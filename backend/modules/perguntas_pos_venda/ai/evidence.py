@@ -320,7 +320,7 @@ def _perguntas_ia_general_research_contract(result: dict) -> tuple[dict, bool, b
         "step": 4,
         "name": "question_focused_web_research",
         "status": "error" if tool_error else ("completed" if found else "unavailable"),
-        "reason": "mandatory_public_question_research",
+        "reason": "decisive_fact_missing",
         "query_count": max(0, int(arguments.get("query_count") or len(list(arguments.get("queries") or [])[:8]))),
         "source_count": len(_perguntas_ia_v2_fontes_web(result)),
         "candidate_pages_found": bool(data.get("found") and str(data.get("context") or "").strip()),

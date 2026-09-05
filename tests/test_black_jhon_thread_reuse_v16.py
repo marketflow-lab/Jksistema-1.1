@@ -104,12 +104,12 @@ def test_candidate_or_conflict_research_fact_keeps_healthy_thread_continuity():
         assert result == ("thread-current", "", True)
 
 
-def test_v16_contract_changes_prompt_hash_and_keeps_public_schema():
-    assert orchestrator.PROMPT_VERSION == "jk_ml_customer_reply_codex_v16"
+def test_v17_contract_changes_prompt_hash_and_keeps_public_schema():
+    assert orchestrator.PROMPT_VERSION == "jk_ml_customer_reply_codex_v17"
     assert orchestrator.SCHEMA_VERSION == "5.2"
     assert orchestrator.PRODUCT_EVIDENCE_POLICY == "jk_product_evidence_v2"
     assert orchestrator.TECHNICAL_EVIDENCE_GRAPH_VERSION == "jk_ml_evidence_graph_v2"
     assert orchestrator.FACTUAL_REVIEW_VERSION == "jk_ml_factual_review_v1"
     assert orchestrator.FACTUAL_CRITIC_POLICY == "jk_black_jhon_factual_critic_v1"
-    assert orchestrator.PUBLIC_RESEARCH_POLICY == "jk_black_jhon_research_v2"
+    assert orchestrator.PUBLIC_RESEARCH_POLICY == "jk_black_jhon_research_v3"
     assert orchestrator.MAX_SECONDS == orchestrator.PUBLIC_RESEARCH_DEADLINE_SECONDS

@@ -197,6 +197,7 @@ def _perguntas_ia_context_hub_sanitize_rows(
             continue
         chunk_id = str(row.get("chunk_id") or "").strip()[:240]
         snippet = re.sub(r"\s+", " ", str(row.get("snippet") or "").strip())[:1800]
+        title = re.sub(r"\s+", " ", str(row.get("title") or "").strip())[:240]
         if not doc_id or not chunk_id or not snippet:
             continue
         truth_class = str(row.get("truth_class") or "legacy_unverified").strip().lower()[:80]
@@ -214,7 +215,7 @@ def _perguntas_ia_context_hub_sanitize_rows(
             if coverage and response_generation and row_generation != response_generation:
                 coverage = {}
         if scan_dlp(
-            {"snippet": snippet, "reference": reference, "compatibility_coverage": coverage},
+            {"title": title, "snippet": snippet, "reference": reference, "compatibility_coverage": coverage},
             source_ref="context_hub_retrieval",
         ):
             blocked += 1
@@ -226,6 +227,7 @@ def _perguntas_ia_context_hub_sanitize_rows(
         factual = truth_class in _PERGUNTAS_CONTEXT_HUB_TRUTH_CLASSES_FACTUAIS
         sanitized = {
             "doc_id": doc_id,
+            "title": title,
             "chunk_id": chunk_id,
             "snippet": snippet,
             "reference": reference,
@@ -235,6 +237,8 @@ def _perguntas_ia_context_hub_sanitize_rows(
             "generation_id": row_generation,
             "type": row_type,
             "module": str(row.get("module") or "").strip()[:100],
+            "valid_from": str(row.get("valid_from") or "").strip()[:64],
+            "valid_to": str(row.get("valid_to") or "").strip()[:64],
             "score": score,
             "content_role": "untrusted_reference_data",
             "eligible_as_factual_evidence": factual,

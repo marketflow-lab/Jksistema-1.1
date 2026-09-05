@@ -745,7 +745,7 @@ def test_compatibility_pipeline_orders_internal_hub_legacy_then_web():
     ]
 
 
-def test_canonical_context_hub_answer_does_not_short_circuit_mandatory_web():
+def test_canonical_context_hub_answer_uses_compact_simple_factual_route_without_web():
     agent_input = _compatibility_input()
     agent_input["intent"] = _structured_intent("product_feature", web=True)
     agent_input["question"]["text"] = "Qual tipo de conector acompanha?"
@@ -769,30 +769,18 @@ def test_canonical_context_hub_answer_does_not_short_circuit_mandatory_web():
         })
 
     assert result.answer == "O produto usa conector USB-C."
-    web_call.assert_called_once()
+    web_call.assert_not_called()
     assert [stage["name"] for stage in client.context_pipeline] == [
         "buyer_question_and_history",
         "listing_product_analysis",
         "context_hub_sku_reference",
-        "technical_question_plan_v1",
-        "question_focused_web_research",
-        "product_document_vision",
-        "technical_evidence_graph",
-        "technical_resolution_round_1",
-        "technical_evidence_graph_final",
-        "technical_resolution_final",
-        "commercial_fit_evaluation",
-        "same_store_technically_verified_alternative",
-        "seller_behavior_profile_v2",
-        "commercial_final_generation",
+        "adaptive_simple_public_generation",
         "factual_critic",
     ]
-    research_step = next(
-        stage for stage in client.context_pipeline
-        if stage["name"] == "question_focused_web_research"
-    )
-    assert research_step["reason"] == "mandatory_public_question_research"
-    assert research_step["status"] == "unavailable"
+    context_metrics = client.sku_question_context_metrics
+    assert context_metrics["route"] == "simple_factual"
+    assert context_metrics["packet_chars"] <= 8000
+    assert context_metrics["model_call_count"] == 0  # patched model boundaries bypass transport telemetry
 
 
 def test_high_confidence_insufficient_hub_answer_is_enriched_by_mandatory_web():
@@ -861,7 +849,7 @@ def test_high_confidence_insufficient_hub_answer_is_enriched_by_mandatory_web():
     )
     assert research_step["status"] == "completed"
     assert research_step["synthesis_status"] == "completed"
-    assert research_step["reason"] == "mandatory_public_question_research"
+    assert research_step["reason"] == "decisive_fact_missing"
     assert "seller_response_render" not in [step["name"] for step in client.context_pipeline]
 
 
