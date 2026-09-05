@@ -1,0 +1,18 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Only the new central collections are declared here. Server SDKs use IAM.
+    match /jk_central_v1_stores/{document=**} {
+      allow read, write: if false;
+    }
+    match /jk_central_v1_connections/{document=**} {
+      allow read, write: if false;
+    }
+    match /jk_central_v1_oauth/{document=**} {
+      allow read, write: if false;
+    }
+    match /jk_central_v1_operations/{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

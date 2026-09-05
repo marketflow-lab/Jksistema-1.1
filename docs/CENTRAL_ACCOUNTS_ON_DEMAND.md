@@ -53,6 +53,10 @@ necessário. Não copiar tokens de máquinas antigas silenciosamente.
    Conservar essa chave; sua troca exige migração dos documentos cifrados.
 4. Definir `JK_CENTRAL_PUBLIC_ORIGIN` como a origem HTTPS do gateway, sem caminho,
    e `JK_CENTRAL_ENABLED=1`. Sem a flag, permanece o gateway de login anterior.
+   Manter `JK_CENTRAL_REQUIRE_ENROLLMENT=1`: somente cadastros com o campo
+   `central_accounts_enabled: true` recebem a modalidade central. Retirar esse
+   campo ou definir `false` revoga também as sessões centrais já abertas.
+   Publicar `/api/central/**` e `/api/auth/**` na mesma revisão do serviço.
 5. Cadastrar nas aplicações Mercado Livre/Bling o callback exato
    `<origem>/api/central/v1/oauth/callback`. Conectar as contas em Lojas e APIs.
    Bling deve permitir a consulta de Empresas / dados básicos para identificar
@@ -62,7 +66,8 @@ necessário. Não copiar tokens de máquinas antigas silenciosamente.
    Habilitar TTL no campo timestamp `delete_after` de `oauth` e `operations`.
 7. Homologar a revisão com contas de teste e duas máquinas antes da liberação:
    login, concessão, revogação, catálogo, vendas, estoque e reconexão.
-   A implantação e o instalador dependem de autorização separada.
+   A publicação foi autorizada. A conexão real de cada provedor ainda exige
+   concluir o consentimento OAuth na conta correspondente.
 
 ## Comportamento implementado e limites
 
@@ -95,6 +100,30 @@ na homologação e na escolha dos usuários que receberão a modalidade central.
 Contrato do Bling verificado em 05/09/2026: `/empresas/me/dados-basicos`, campo
 `data.id`, na [referência oficial](https://developer.bling.com.br/referencia).
 Nenhum teste usou contas reais. A documentação de ativação não executa implantação.
+
+## Publicação autorizada em 05/09/2026
+
+- Versão preparada: 1.0.134, integrada à melhoria de SKU existente no checkout.
+- Chave gerada diretamente no Secret Manager, versão fixa 1, com acesso somente
+  para a identidade de serviço do gateway. Nenhuma chave foi incluída no pacote.
+- Cloud Run mantém mínimo zero e máximo duas instâncias. Hosting encaminha
+  autenticação e central para a revisão homologada.
+- Regras Firestore declaram somente as quatro coleções novas da central. A
+  consulta anterior confirmou ausência de um ruleset Firestore publicado.
+  A proposta inicial de regra global foi descartada na revisão de aprovação.
+- TTL configurado para estados OAuth e registros temporários de operações.
+  URLs de requisição do gateway são excluídas do armazenamento de logs para
+  não persistir códigos OAuth que venham no callback.
+- Prova integrada com usuários sintéticos: login legado, extensão assinada,
+  duas identificações de máquina, concessão entre tenants, revogação e negação
+  de acesso direto às quatro coleções usando Firebase ID token de cliente.
+  Todos os documentos de teste foram removidos ao concluir.
+- A ativação dos usuários reais exige indicar os logins que receberão o modo
+  central e conectar as lojas. A instalação da atualização, por si só, não
+  migra nem duplica tokens OAuth locais.
+- Regressão ampliada: 1.080 testes Python aprovados, dois cenários de junction
+  ignorados por limitação de permissão; 117 arquivos Node aprovados, incluindo
+  as repetições direcionadas e o teste de atualização preservando dados locais.
 
 ## Validação da entrega
 
