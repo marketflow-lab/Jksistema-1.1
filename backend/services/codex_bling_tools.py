@@ -318,7 +318,9 @@ def _get_json(
     for attempt in range(2):
         limiter.wait_turn()
         try:
-            resp = requests.get(
+            from backend.services.central_accounts_client import is_marker, provider_request
+            request_get = (lambda url, **kwargs: provider_request(access_token, "GET", url, **kwargs)) if is_marker(access_token) else requests.get
+            resp = request_get(
                 _resource_url(path),
                 headers=headers,
                 params=params,

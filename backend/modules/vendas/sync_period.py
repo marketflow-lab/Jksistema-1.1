@@ -763,8 +763,7 @@ async def _sincronizar_vendas_periodo_impl(
         raise HTTPException(status_code=400, detail="Loja não possui integração Bling conectada.")
     if not (
         bling_cfg.get("access_token")
-        and bling_cfg.get("id")
-        and bling_cfg.get("secret")
+        and (bling_cfg.get("central") or (bling_cfg.get("id") and bling_cfg.get("secret")))
     ):
         raise HTTPException(status_code=400, detail="Credenciais Bling incompletas para esta loja.")
 

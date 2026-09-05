@@ -111,6 +111,25 @@
                 <a class="back-btn" href="/dashboard.html">Voltar</a>
             </div>
             <h1>Central de Integrações</h1>
+            <section id="central-account-controls" hidden>
+                <p>As conexões ficam na central. A lista de lojas foi carregada no login.
+                   Para consultar alterações de acesso ou novas conexões, clique em Atualizar lojas.
+                   Produtos, vendas e estoque são atualizados pelos comandos de cada módulo.</p>
+                <button id="central-refresh" type="button">Atualizar lojas</button>
+                <p id="central-feedback" role="status" aria-live="polite"></p>
+                <form id="central-grant-form">
+                    <p>Compartilhe o acesso à loja selecionada com um usuário já cadastrado.</p>
+                    <label for="central-grant-user">Usuário</label>
+                    <input id="central-grant-user" maxlength="128" required autocomplete="off">
+                    <label for="central-grant-access">Acesso</label>
+                    <select id="central-grant-access">
+                        <option value="read">Somente consultas</option>
+                        <option value="write">Consultar e alterar</option>
+                        <option value="revoke">Remover acesso</option>
+                    </select>
+                    <button type="submit">Salvar acesso</button>
+                </form>
+            </section>
 
             <div class="tabs main-tabs">
                 <button class="tab-button active" data-main-tab="lojas">Lojas e APIs</button>
@@ -174,7 +193,7 @@
                 <iframe
                     id="user-share-frame"
                     class="share-frame"
-                    src="/admin_usuarios.html?embed=share"
+                    data-src="/admin_usuarios.html?embed=share"
                     title="Compartilhar entre usuários"
                 ></iframe>
             </div>
@@ -415,7 +434,7 @@
 
             function updateOauthStatus(elementId, cfg) {
                 const dados = cfg || {};
-                const temOAuth = !!(dados.access_token && dados.refresh_token);
+                const temOAuth = !!dados.central || !!(dados.access_token && dados.refresh_token);
                 const conectado = !!dados.connected && temOAuth;
                 updateStatus(elementId, conectado);
                 const el = document.getElementById(elementId);
@@ -426,7 +445,11 @@
             }
 
             function activateMainTab(nome) {
-                const alvo = nome === 'compartilhar' ? 'compartilhar' : 'lojas';
+                const alvo = nome === 'compartilhar' && !window.jkCentralManualMode?.() ? 'compartilhar' : 'lojas';
+                if (alvo === 'compartilhar') {
+                    const iframe = document.querySelector('#main-tab-compartilhar iframe');
+                    if (iframe && !iframe.getAttribute('src')) iframe.src = iframe.dataset.src;
+                }
                 mainTabs.forEach(tab => tab.classList.toggle('active', tab.dataset.mainTab === alvo));
                 mainTabContents.forEach(content => {
                     content.classList.toggle('active', content.id === `main-tab-${alvo}`);
@@ -445,6 +468,9 @@
                 try {
                     const storeData = await api.getStore(store);
                     selectedStore = storeData;
+                    if (window.jkCentralManualMode?.()) {
+                        document.getElementById('central-grant-form').hidden = selectedStore.access !== 'owner';
+                    }
                     storeTitle.textContent = `Configurando: ${selectedStore.nome}`;
                     integrationsPanel.classList.remove('hidden');
 
@@ -477,7 +503,7 @@
                     if (!(mlCfg.secret || mlCfg.client_secret)) mlCamposFaltando.push('client_secret');
                     if (!mlCfg.access_token) mlCamposFaltando.push('access_token');
                     if (!mlCfg.refresh_token) mlCamposFaltando.push('refresh_token');
-                    const mlOAuthCompleto = mlCamposFaltando.length === 0;
+                    const mlOAuthCompleto = !!mlCfg.central || mlCamposFaltando.length === 0;
                     const mlConectado = !!mlCfg.connected && mlOAuthCompleto && !mlCfg.oauth_invalid;
                     updateStatus('ml-status', mlConectado);
                     if (mlDraftCompleto) {
@@ -700,6 +726,46 @@
                 if (tabParam === 'compartilhar') activateMainTab('compartilhar');
             }
 
+            if (window.jkCentralManualMode?.()) {
+                document.getElementById('central-account-controls').hidden = false;
+                document.querySelector('[data-main-tab="compartilhar"]').hidden = true;
+                const iframe = document.querySelector('#main-tab-compartilhar iframe');
+                if (iframe) iframe.remove();
+                document.querySelector('[data-tab="mercadoturbo"]').hidden = true;
+                const feedback = document.getElementById('central-feedback');
+                async function centralAction(path, method, body) {
+                    const response = await fetch(path, { method, headers: obterAuthHeaders({'Content-Type': 'application/json'}),
+                        body: body ? JSON.stringify(body) : undefined });
+                    const value = await response.json();
+                    if (!response.ok) throw new Error(typeof value.detail === 'string' ? value.detail : 'A central não concluiu a solicitação.');
+                    return value;
+                }
+                document.getElementById('central-refresh').addEventListener('click', async (event) => {
+                    event.currentTarget.disabled = true;
+                    feedback.textContent = 'Atualizando lojas e permissões…';
+                    try {
+                        await centralAction('/api/central/refresh', 'POST');
+                        await loadStores();
+                        if (selectedStore) await selectStore(stores.find(row => row.store_id === selectedStore.store_id));
+                        feedback.textContent = 'Lojas atualizadas. Dados operacionais não foram sincronizados.';
+                    } catch (error) { feedback.textContent = error.message; }
+                    finally { document.getElementById('central-refresh').disabled = false; }
+                });
+                document.getElementById('central-grant-form').addEventListener('submit', async (event) => {
+                    event.preventDefault();
+                    if (!selectedStore) { feedback.textContent = 'Selecione uma loja primeiro.'; return; }
+                    const button = event.currentTarget.querySelector('button');
+                    button.disabled = true;
+                    try {
+                        await centralAction(`/api/central/stores/${encodeURIComponent(selectedStore.store_id)}/grant`, 'PUT', {
+                            username: document.getElementById('central-grant-user').value.trim(),
+                            access: document.getElementById('central-grant-access').value
+                        });
+                        feedback.textContent = 'Acesso atualizado. O usuário verá a loja no próximo login ou ao atualizar a lista.';
+                    } catch (error) { feedback.textContent = error.message; }
+                    finally { button.disabled = false; }
+                });
+            }
             void loadStores().catch(() => {});
             checkUrlParams();
         });

@@ -173,6 +173,9 @@ def _ml_http_request(
     timeout: int = 15,
     verify_ssl: bool = True,
 ) -> requests.Response:
+    from backend.services.central_accounts_client import is_marker, provider_request
+    if is_marker(token):
+        return provider_request(token, method, url, headers=headers, params=params, json=json, data=data)
     if verify_ssl is False:
         logger.warning("[ML HTTP] Tentativa de desabilitar TLS foi bloqueada para loja=%s.", loja)
     verification = _ml_http_verify_setting()

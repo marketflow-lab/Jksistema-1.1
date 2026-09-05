@@ -1,6 +1,7 @@
 """Mercado Livre campaign operations for Renovacao."""
 
 from __future__ import annotations
+from backend.services.central_accounts_client import with_request_context
 
 import datetime as dt
 import json
@@ -826,7 +827,7 @@ def _renovacao_sincronizar_promocao_iniciar_payload(client_id: str, req: Renovac
         error="",
     )
     thread = threading.Thread(
-        target=_renovacao_sincronizar_promocao_worker,
+            target=with_request_context(_renovacao_sincronizar_promocao_worker),
         args=(client_id, job_id, payload),
         daemon=True,
         name=f"renovacao-sync-{job_id[:8]}",

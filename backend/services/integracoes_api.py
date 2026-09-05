@@ -331,6 +331,10 @@ async def get_tenant_id(request: Request, authorization: Optional[str] = Header(
 
 
 async def get_lojas(client_id: str = Depends(get_tenant_id)):
+    from backend.services.central_accounts_client import current
+    central = current(client_id)
+    if central:
+        return central.public_stores()
     return carregar_lojas(client_id)
 
 
@@ -352,6 +356,13 @@ async def get_loja(
     store_id: Optional[str] = None,
     client_id: str = Depends(get_tenant_id),
 ):
+    from backend.services.central_accounts_client import current
+    central = current(client_id)
+    if central:
+        rows = [row for row in central.public_stores() if row["store_id"] == store_id]
+        if len(rows) != 1:
+            raise HTTPException(404, "Loja não encontrada na sessão.")
+        return rows[0]
     loja = buscar_loja(client_id, nome_loja, store_id=store_id)
     if not loja:
         raise HTTPException(status_code=404, detail="Loja nao encontrada")
@@ -359,6 +370,12 @@ async def get_loja(
 
 
 async def create_loja(store_request: StoreRequest, client_id: str = Depends(get_tenant_id)):
+    from backend.services.central_accounts_client import current
+    central = current(client_id)
+    if central:
+        loja = central.call("POST", "/stores", {"name": store_request.nome, "request_id": secrets.token_hex(16)})
+        central.refresh_stores()
+        return {"success": True, "store_id": loja["store_id"], "loja": loja}
     loja = criar_loja_identidade(client_id, store_request.nome)
     return {"success": True, "store_id": loja["store_id"], "loja": loja}
 
@@ -369,6 +386,12 @@ async def delete_loja(
     client_id: str = Depends(get_tenant_id),
 ):
     store_id_exato = _store_id_mutacao_exato(store_id)
+    from backend.services.central_accounts_client import current
+    central = current(client_id)
+    if central:
+        result = central.call("DELETE", f"/stores/{store_id_exato}")
+        central.refresh_stores()
+        return result
     removida = excluir_loja(
         client_id,
         nome_loja,
@@ -383,6 +406,9 @@ async def save_turbo_token(
     store_id: Optional[str] = None,
     client_id: str = Depends(get_tenant_id),
 ):
+    from backend.services.central_accounts_client import current
+    if current(client_id):
+        raise HTTPException(409, "A central suporta conexões Mercado Livre e Bling. Turbo não está habilitado nesta modalidade.")
     store_id_exato = _store_id_mutacao_exato(store_id)
     loja = buscar_loja(client_id, loja_nome, store_id=store_id_exato)
     if not isinstance(loja, dict):
@@ -411,6 +437,15 @@ async def disconnect_integracao(
     store_id: Optional[str] = None,
     client_id: str = Depends(get_tenant_id),
 ):
+    from backend.services.central_accounts_client import current
+    central = current(client_id)
+    if central:
+        provider = "mercadolivre" if servico_nome == "ml" else servico_nome
+        if provider not in ("mercadolivre", "bling"):
+            raise HTTPException(400, "Integração não suportada pela central.")
+        result = central.call("POST", f"/stores/{_store_id_mutacao_exato(store_id)}/disconnect", {"provider": provider})
+        central.refresh_stores()
+        return result
     store_id_exato = _store_id_mutacao_exato(store_id)
     servico = str(servico_nome or "").strip().lower()
     mapa_servicos = {
@@ -434,6 +469,9 @@ async def disconnect_integracao(
 
 async def save_temp_auth_endpoint(temp_data: dict, client_id: str = Depends(get_tenant_id)):
     """Salva dados temporarios para OAuth antes do redirecionamento."""
+    from backend.services.central_accounts_client import current
+    if current(client_id):
+        raise HTTPException(409, "Inicie a conexão pela central em Lojas e APIs.")
     registro = dict(temp_data or {})
     store_id = str(registro.get("store_id") or "").strip()
     if not store_id:
@@ -446,6 +484,11 @@ async def save_temp_auth_endpoint(temp_data: dict, client_id: str = Depends(get_
 
 
 async def start_bling_auth(auth_req: AuthRequest, request: Request, client_id: str = Depends(get_tenant_id)):
+    from backend.services.central_accounts_client import current
+    central = current(client_id)
+    if central:
+        return central.call("POST", f"/stores/{_store_id_mutacao_exato(auth_req.store_id)}/connect", {
+            "provider": "bling", "app_id": auth_req.client_id, "app_secret": auth_req.client_secret})
     client_id = str(client_id or "").strip()
     if not client_id:
         raise HTTPException(status_code=400, detail="Cliente OAuth invalido.")
@@ -493,6 +536,11 @@ async def start_bling_auth(auth_req: AuthRequest, request: Request, client_id: s
 
 
 async def start_mercadolivre_auth(auth_req: AuthRequest, request: Request, client_id: str = Depends(get_tenant_id)):
+    from backend.services.central_accounts_client import current
+    central = current(client_id)
+    if central:
+        return central.call("POST", f"/stores/{_store_id_mutacao_exato(auth_req.store_id)}/connect", {
+            "provider": "mercadolivre", "app_id": auth_req.client_id, "app_secret": auth_req.client_secret})
     client_id = str(client_id or "").strip()
     if not client_id:
         raise HTTPException(status_code=400, detail="Cliente OAuth invalido.")

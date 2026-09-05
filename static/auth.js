@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '20260828-cadastro-fotos-lojas-v1';
+  const VERSION = '20260905-central-manual-v1';
   const CHUNKS = [
     "session.js",
     "navigation.js",

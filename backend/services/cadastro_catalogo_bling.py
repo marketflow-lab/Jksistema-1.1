@@ -1077,6 +1077,9 @@ def _preparar_credencial_coleta(
     cfg: dict[str, Any],
 ) -> dict[str, Any]:
     """Start a potentially long scan with a fresh, CAS-owned OAuth token."""
+    if cfg.get("central"):
+        # The server renews its own token before each requested provider call.
+        return dict(cfg)
 
     if not str(cfg.get("refresh_token") or "").strip():
         raise HTTPException(

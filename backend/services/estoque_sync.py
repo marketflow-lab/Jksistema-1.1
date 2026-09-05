@@ -1,6 +1,7 @@
 """Compiled stock synchronization for Estoque."""
 
 from __future__ import annotations
+from backend.services.central_accounts_client import with_request_context
 
 import asyncio
 import hashlib
@@ -787,7 +788,7 @@ async def sincronizar_estoque(req: EstoqueSyncRequest, client_id: str = Depends(
         )
 
         t = threading.Thread(
-            target=_sincronizar_estoque_thread_worker,
+            target=with_request_context(_sincronizar_estoque_thread_worker),
             args=(req, client_id, snapshots, job_id),
             daemon=True,
         )
@@ -1023,7 +1024,7 @@ async def _sincronizar_estoque_loja_impl(
     sec = bling_cfg.get("secret")
     identidade_bling_inicial = _estoque_bling_fingerprint(bling_cfg)[:2]
 
-    if not (access_token and cid and sec):
+    if not (access_token and (bling_cfg.get("central") or (cid and sec))):
         raise HTTPException(status_code=400, detail="Credenciais Bling incompletas para esta loja.")
 
     def definir_progresso(data: dict[str, Any]) -> None:

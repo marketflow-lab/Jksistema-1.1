@@ -1,4 +1,5 @@
 (function initIaSecretsProvisioning() {
+    if (window.jkCentralManualMode?.()) return;
     if (window.__jkIaSecretsProvisioningInit) return;
     window.__jkIaSecretsProvisioningInit = true;
 
@@ -82,6 +83,7 @@
 })();
 
 (function initMachinePresenceHeartbeat() {
+    if (window.jkCentralManualMode?.()) return;
     if (window.__jkMachinePresenceInit) return;
     window.__jkMachinePresenceInit = true;
 
@@ -967,6 +969,7 @@
 })();
 
 (function initDriveBackupAutomatico() {
+    if (window.jkCentralManualMode?.()) return;
     if (window.__jkDriveBackupAutoInit) return;
     window.__jkDriveBackupAutoInit = true;
 
@@ -1003,6 +1006,7 @@
 })();
 
 (function initSharedSyncAutoPull() {
+    if (window.jkCentralManualMode?.()) return;
     if (window.__jkSharedSyncAutoPullInit) return;
     window.__jkSharedSyncAutoPullInit = true;
 
@@ -1281,6 +1285,7 @@
 })();
 
 (function initMachineSharedSyncAuto() {
+    if (window.jkCentralManualMode?.()) return;
     if (window.__jkMachineSharedSyncAutoInit) return;
     window.__jkMachineSharedSyncAutoInit = true;
 

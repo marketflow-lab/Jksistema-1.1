@@ -1,6 +1,7 @@
 """Common imports and runtime glue for Vendas endpoint modules."""
 
 from __future__ import annotations
+from backend.services.central_accounts_client import with_request_context
 
 import asyncio
 import copy
@@ -163,7 +164,7 @@ def sincronizar_vendas(req: VendasSyncRequest, client_id: str):
 
     # Iniciar em thread de background — não bloqueia o servidor nem o cliente
     t = threading.Thread(
-        target=_sincronizar_vendas_thread_worker,
+        target=with_request_context(_sincronizar_vendas_thread_worker),
         args=(req, client_id, job_id),
         daemon=True
     )

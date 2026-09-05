@@ -369,6 +369,19 @@ async def login_endpoint(payload: LoginRequest, request: Request):
             logger.error("[REMOTE-AUTH] Falha ao preparar perfil local autenticado: %s", type(exc).__name__)
             return LoginResponse(success=False, message="Nao foi possivel preparar a sessao local. Tente novamente.")
 
+        if remote_attempt.central:
+            from backend.services.central_accounts_client import register_login
+            usuario_remoto["central"] = True
+            response = _montar_resposta_login_sucesso(username, usuario_remoto, remote_attempt.permissions,
+                                                     client_id, machine_final)
+            try:
+                register_login(response.access_token, remote_attempt)
+            except Exception:
+                return LoginResponse(success=False, message="Não foi possível preparar a conexão com a central.")
+            response.user_data["central"] = {"protocol": 1, "sync_mode": "manual",
+                                             "expires_at": remote_attempt.central["expires_at"]}
+            return response
+
         try:
             _registrar_login_maquina(username, client_id, machine_final, request)
         except Exception as exc:

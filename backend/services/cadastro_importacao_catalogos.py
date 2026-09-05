@@ -8,6 +8,7 @@ NCM and CEST fields are refreshed, while every other existing value is kept.
 """
 
 from __future__ import annotations
+from backend.services.central_accounts_client import with_request_context
 
 import asyncio
 import copy
@@ -1368,7 +1369,7 @@ async def iniciar_preview_importacao_catalogo(
         }
         CATALOG_IMPORT_JOBS[job_id] = job
     thread = threading.Thread(
-        target=_catalog_import_worker,
+            target=with_request_context(_catalog_import_worker),
         args=(job_id,),
         name=f"cadastro-catalog-{fonte}",
         daemon=True,

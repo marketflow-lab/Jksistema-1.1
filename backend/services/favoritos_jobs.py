@@ -1,6 +1,7 @@
 """Background jobs for the Favoritos ranking workflow."""
 
 from __future__ import annotations
+from backend.services.central_accounts_client import with_request_context
 
 import asyncio
 import copy
@@ -861,7 +862,7 @@ def favoritos_jobs_start(
         _job_log(job_id, "Job criado para coleta visual pelo navegador interno.")
         return {**_job_public(job), "started": True, "browser_collection": True}
 
-    thread = threading.Thread(target=_processar_job, args=(job_id,), daemon=True, name=f"favoritos-job-{job_id[:8]}")
+    thread = threading.Thread(target=with_request_context(_processar_job), args=(job_id,), daemon=True, name=f"favoritos-job-{job_id[:8]}")
     thread.start()
     return {**_job_public(job), "started": True}
 

@@ -20,6 +20,7 @@ from .domain import (
     LoginRateLimiter,
 )
 from .firebase_adapter import FirebaseIdentityTokenIssuer, FirestoreUserRepository
+from .central_http import build_central, install_central_routes
 
 
 logger = logging.getLogger("jk.auth_gateway")
@@ -36,6 +37,7 @@ def create_app(
     *,
     service: AuthenticationService | None = None,
     settings: GatewaySettings | None = None,
+    central=None,
 ) -> FastAPI:
     application = FastAPI(
         title="JK Sistema Authentication Gateway",
@@ -44,6 +46,12 @@ def create_app(
         openapi_url=None,
     )
     state_lock = threading.RLock()
+
+    def resolve_central():
+        with state_lock:
+            if not hasattr(application.state, "central_service"):
+                application.state.central_service = central if central is not None else build_central(resolve_settings())
+            return application.state.central_service
 
     def resolve_settings() -> GatewaySettings:
         configured = getattr(application.state, "settings", None)
@@ -68,6 +76,7 @@ def create_app(
                     FirestoreUserRepository(gateway_settings),
                     FirebaseIdentityTokenIssuer(gateway_settings),
                     gateway_settings.minimum_app_version,
+                    central=resolve_central(),
                 )
                 application.state.auth_service = configured
             return configured
@@ -89,7 +98,11 @@ def create_app(
 
     @application.middleware("http")
     async def add_security_headers(request: Request, call_next):
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception:
+            # Never log exceptions containing provider request data or vault contents.
+            response = JSONResponse(status_code=503, content={"success": False, "code": "central_unavailable"})
         response.headers["Cache-Control"] = "no-store"
         response.headers["Pragma"] = "no-cache"
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -118,6 +131,8 @@ def create_app(
             limiter = resolve_limiter()
             if not limiter.consume(payload.username, _client_address(request)):
                 raise AuthRejected("rate_limited", 429)
+            if request.headers.get("x-jk-central-protocol") == "1":
+                return resolve_service().authenticate(payload, central_protocol=True)
             return resolve_service().authenticate(payload)
         except AuthRejected as exc:
             return JSONResponse(
@@ -155,6 +170,8 @@ def create_app(
             limiter = resolve_limiter()
             if not limiter.consume(payload.username, _client_address(request)):
                 raise AuthRejected("rate_limited", 429)
+            if request.headers.get("x-jk-central-protocol") == "1":
+                return resolve_service().change_password(payload, central_protocol=True)
             return resolve_service().change_password(payload)
         except AuthRejected as exc:
             return JSONResponse(
@@ -189,6 +206,7 @@ def create_app(
         application.state.settings = settings
     if service is not None:
         application.state.auth_service = service
+    install_central_routes(application, resolve_central)
     return application
 
 

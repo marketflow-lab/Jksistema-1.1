@@ -84,7 +84,21 @@ def validate_success_payload(
     if isinstance(max_machines, bool) or not isinstance(max_machines, int) or not 0 <= max_machines <= 1000:
         raise ValueError("invalid_remote_policy")
 
+    extension = {}
+    if "central" in payload:
+        central = payload["central"]
+        if (not isinstance(central, dict)
+                or set(central) != {"protocol", "sync_mode", "session", "expires_at", "stores"}
+                or central["protocol"] != 1 or central["sync_mode"] != "manual"
+                or not isinstance(central["session"], str) or not 100 <= len(central["session"]) <= 8192
+                or not isinstance(central["expires_at"], int) or isinstance(central["expires_at"], bool)
+                or not isinstance(central["stores"], list) or len(central["stores"]) > 100):
+            raise ValueError("invalid_central_bootstrap")
+        from backend.services.central_accounts_client import validate_public_stores
+        validate_public_stores(central["stores"])
+        extension["central"] = central
     return {
+        **extension,
         "identity_token": identity_token,
         "user_data": {
             "username": username,
@@ -141,6 +155,10 @@ def verify_signed_response(
         "policy": validated["policy"],
         "request_nonce": validated["request_nonce"],
     }
+    if "central" in validated:
+        signed_payload["central"] = validated["central"]
+        if not now < validated["central"]["expires_at"] <= now + 9 * 3600:
+            raise ValueError("invalid_central_session_expiry")
     if str(claims.get("jk_response_hash") or "") != canonical_hash(signed_payload):
         raise ValueError("invalid_response_claim")
     firebase_claim = claims.get("firebase")

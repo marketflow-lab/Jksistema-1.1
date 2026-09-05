@@ -14,7 +14,8 @@ from backend.services.env_config import _env_bool
 
 
 def _get_bling_session():
-    session = requests.Session()
+    from backend.services.central_accounts_client import CentralAwareSession
+    session = CentralAwareSession()
     session.verify = _env_bool("BLING_VERIFY_SSL", True)
     # A politica de retry da Bling pertence exclusivamente ao helper GET
     # abaixo. Em especial, POSTs OAuth nunca podem ser repetidos pelo adapter.

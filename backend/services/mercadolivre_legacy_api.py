@@ -109,6 +109,9 @@ def _ml_atualizar_api_loja_exata(
 
 
 def _ml_refresh_token(client_id: str, nome_loja: str, cfg: dict):
+    from backend.services.central_accounts_client import is_marker
+    if is_marker(cfg.get("access_token")):
+        raise HTTPException(409, "A renovação desta conexão é controlada pela central.")
     app_id = cfg.get("app_id") or cfg.get("client_id")
     client_secret = cfg.get("client_secret")
     refresh_token = cfg.get("refresh_token")
@@ -170,6 +173,8 @@ def _headers_ml(access_token: str) -> dict:
 
 def _ml_oauth_status(cfg: dict | None) -> dict:
     cfg = cfg if isinstance(cfg, dict) else {}
+    if cfg.get("central") and cfg.get("connected"):
+        return {"conectado": True, "status": "conectado", "motivo": "", "faltando": []}
     app_id = str(cfg.get("app_id") or cfg.get("id") or cfg.get("client_id") or "").strip()
     client_secret = str(cfg.get("client_secret") or cfg.get("secret") or "").strip()
     access_token = str(cfg.get("access_token") or "").strip()
@@ -208,6 +213,8 @@ def _ml_oauth_status(cfg: dict | None) -> dict:
 
 def _ml_oauth_config_completa(cfg: dict | None) -> bool:
     cfg = cfg if isinstance(cfg, dict) else {}
+    if cfg.get("central"):
+        return bool(cfg.get("connected") and cfg.get("access_token"))
     return bool(
         str(cfg.get("access_token") or "").strip()
         and str(cfg.get("refresh_token") or "").strip()
@@ -218,6 +225,8 @@ def _ml_oauth_config_completa(cfg: dict | None) -> bool:
 
 def _ml_normalizar_oauth_compartilhado(client_id: str, nome_loja: str, cfg: dict) -> dict:
     cfg = dict(cfg or {})
+    if cfg.get("central"):
+        return cfg
     if not _ml_oauth_config_completa(cfg):
         return cfg
 
@@ -308,6 +317,8 @@ def _obter_cfg_ml(client_id: str, nome_loja: str) -> dict:
     if not store_id_exato:
         raise HTTPException(status_code=409, detail="Loja sem store_id persistido.")
     cfg = _ml_cfg_com_store_id_context(cfg, store_id_exato)
+    if cfg.get("central"):
+        return cfg
     cfg = _ml_normalizar_oauth_compartilhado(client_id, nome_loja, cfg)
     cfg = _ml_descobrir_user_id_oauth(client_id, nome_loja, cfg)
     return cfg

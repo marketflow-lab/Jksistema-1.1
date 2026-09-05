@@ -50,6 +50,7 @@ class RemoteAuthAttempt:
     user_data: dict[str, Any] = field(default_factory=dict)
     permissions: dict[str, bool] = field(default_factory=dict)
     policy: dict[str, Any] = field(default_factory=dict)
+    central: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @property
     def success(self) -> bool:

@@ -5,6 +5,13 @@ function obterToken() {
     return localStorage.getItem('access_token') || null;
 }
 
+function jkCentralManualMode() {
+    try {
+        return JSON.parse(localStorage.getItem('user_data') || '{}').central?.sync_mode === 'manual';
+    } catch (_err) { return false; }
+}
+window.jkCentralManualMode = jkCentralManualMode;
+
 function _jwtPayloadLocal(token) {
     try {
         const partes = String(token || '').split('.');

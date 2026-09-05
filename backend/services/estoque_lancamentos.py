@@ -1,6 +1,7 @@
 """Bling stock movement synchronization for Estoque."""
 
 from __future__ import annotations
+from backend.services.central_accounts_client import with_request_context
 
 import asyncio
 import json
@@ -658,7 +659,7 @@ def _sincronizar_lancamentos_estoque_sku_api(
     cid = bling_cfg.get("id")
     sec = bling_cfg.get("secret")
     refresh_tok = bling_cfg.get("refresh_token")
-    if not (access_token and cid and sec):
+    if not (access_token and (bling_cfg.get("central") or (cid and sec))):
         raise HTTPException(status_code=400, detail="Credenciais Bling incompletas para buscar lançamentos.")
 
     id_bling_sku = _resolver_id_bling_por_sku_snapshot(client_id, loja_nome, sku, data_fim)
@@ -789,7 +790,7 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
     sec = bling_cfg.get("secret")
     refresh_tok = bling_cfg.get("refresh_token")
 
-    if not (access_token and cid and sec):
+    if not (access_token and (bling_cfg.get("central") or (cid and sec))):
         raise HTTPException(status_code=400, detail="Credenciais Bling incompletas para buscar notas fiscais.")
 
     data_fim_str = data_fim_ref.strftime("%Y-%m-%d")
@@ -1077,7 +1078,7 @@ async def sincronizar_lancamentos_estoque_lote_api(
     }
 
     t = threading.Thread(
-        target=_sincronizar_lancamentos_estoque_lote_thread_worker,
+            target=with_request_context(_sincronizar_lancamentos_estoque_lote_thread_worker),
         args=(req_materializado, client_id),
         daemon=True,
     )

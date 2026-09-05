@@ -1,6 +1,7 @@
 """Cadastro NCM/CEST synchronization jobs."""
 
 from __future__ import annotations
+from backend.services.central_accounts_client import with_request_context
 
 import logging
 from typing import Optional
@@ -899,7 +900,7 @@ def _sync_ncm_cadastro_worker(client_id: str, job_id: str, store_id: str | None 
                 cid_ncm = _sync_ncm_bling_valor(cfg_loja, "id", "client_id")
                 sec_ncm = _sync_ncm_bling_valor(cfg_loja, "secret", "client_secret")
                 refresh_ncm = cfg_loja.get("refresh_token")
-                if not (access_token_ncm and cid_ncm and sec_ncm):
+                if not (access_token_ncm and (cfg_loja.get("central") or (cid_ncm and sec_ncm))):
                     cache_ncm_cest[chave_cache] = {"ncm": "", "cest": ""}
                     continue
 
@@ -1190,7 +1191,7 @@ async def iniciar_sync_ncm_cadastro(
         "updated_at": time.time(),
     }
     t = threading.Thread(
-        target=_sync_ncm_cadastro_worker,
+            target=with_request_context(_sync_ncm_cadastro_worker),
         args=(client_id, job_id, store_id_norm or None),
         daemon=True,
     )

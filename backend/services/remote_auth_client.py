@@ -73,7 +73,8 @@ def _attempt_remote_request(
             response = request_session.post(
                 request_url,
                 json=request_body,
-                headers={"User-Agent": f"JK-Sistema/{str(app_version or 'unknown').strip() or 'unknown'}"},
+                headers={"User-Agent": f"JK-Sistema/{str(app_version or 'unknown').strip() or 'unknown'}",
+                         "X-JK-Central-Protocol": "1"},
                 timeout=(3.05, configuration.timeout_seconds),
                 allow_redirects=False,
             )
@@ -121,6 +122,7 @@ def _attempt_remote_request(
             user_data=validated["user_data"],
             permissions=validated["permissions"],
             policy=validated["policy"],
+            central=validated.get("central", {}),
         )
     finally:
         if owns_session:

@@ -60,10 +60,12 @@ class AuthenticationService:
         repository: UserRepository,
         token_issuer: IdentityTokenIssuer,
         minimum_app_version: str,
+        central=None,
     ) -> None:
         self._repository = repository
         self._token_issuer = token_issuer
         self._minimum_app_version = minimum_app_version
+        self._central = central
 
     def _signed_response(
         self,
@@ -73,6 +75,7 @@ class AuthenticationService:
         request_nonce: str,
         *,
         code: str,
+        central_protocol: bool = False,
     ) -> dict[str, Any]:
         expiry = assert_access_allowed(current)
         permissions = normalize_permissions(current.get("permissions") or current.get("permissoes"))
@@ -101,6 +104,8 @@ class AuthenticationService:
             "policy": policy,
             "request_nonce": request_nonce,
         }
+        if central_protocol and self._central is not None and self._central.enabled_for(current):
+            signed_payload["central"] = self._central.bootstrap_session(current, username, machine_id)
         claims = {
             "jk_auth_v": AUTH_PROTOCOL_VERSION,
             "jk_username": username,
@@ -118,7 +123,7 @@ class AuthenticationService:
             "registered_machines": len(machine_ids),
         }
 
-    def authenticate(self, request: GatewayLoginRequest) -> dict[str, Any]:
+    def authenticate(self, request: GatewayLoginRequest, *, central_protocol=False) -> dict[str, Any]:
         assert_supported_version(request.app_version, self._minimum_app_version)
         username = request.username
         supplied_password = request.password.get_secret_value()
@@ -138,9 +143,10 @@ class AuthenticationService:
             request.machine_id,
             request.request_nonce,
             code="authenticated",
+            central_protocol=central_protocol,
         )
 
-    def change_password(self, request: GatewayChangePasswordRequest) -> dict[str, Any]:
+    def change_password(self, request: GatewayChangePasswordRequest, *, central_protocol=False) -> dict[str, Any]:
         assert_supported_version(request.app_version, self._minimum_app_version)
         username = request.username
         current_password = request.current_password.get_secret_value()
@@ -172,6 +178,7 @@ class AuthenticationService:
             request.machine_id,
             request.request_nonce,
             code="password_changed",
+            central_protocol=central_protocol,
         )
 
 

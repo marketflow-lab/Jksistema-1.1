@@ -2031,6 +2031,10 @@ def _integracoes_arquivar_legado_global_coexistente(
 
 def carregar_lojas(client_id: str):
     """Carrega as lojas do cliente do arquivo JSON."""
+    from backend.services.central_accounts_client import current
+    central = current(client_id)
+    if central is not None:
+        return central.stores()
     with _integracoes_bloquear_rmw_lojas(client_id):
         _integracoes_recuperar_transacao_pendente(client_id)
         destino_esperado = os.path.join(
@@ -2181,6 +2185,11 @@ def salvar_lojas(
     _preservar_sync_metadata_validada: bool = False,
 ):
     """Salva as lojas do cliente no arquivo JSON."""
+    from backend.services.central_accounts_client import current, is_marker
+    if current(client_id) or any(is_marker((cfg or {}).get("access_token"))
+                                  for row in lojas for cfg in (row.get("integracoes") or {}).values()
+                                  if isinstance(cfg, dict)):
+        raise HTTPException(409, "Conexões centrais devem ser alteradas pela central.")
     tenant_path = _tenant_path(client_id)
     arquivo_lojas = os.path.join(tenant_path, "lojas_config.json")
 
@@ -2990,6 +2999,9 @@ def renovar_token_bling_loja(
     return_disposition: bool = False,
 ) -> dict | tuple[dict, str]:
     """Single-flight por tenant/loja com releitura e persistencia CAS."""
+    from backend.services.central_accounts_client import is_marker
+    if is_marker((cfg or {}).get("access_token")):
+        raise HTTPException(409, "A renovação desta conexão é controlada pela central.")
 
     def resultado(config: dict, disposition: str):
         payload = dict(config or {})

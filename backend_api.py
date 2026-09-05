@@ -663,6 +663,16 @@ def _validar_versao_minima_app_ou_426(app_version: Optional[Any]) -> str:
 
 
 app = FastAPI(title="JK Sistema API")
+
+
+@app.middleware("http")
+async def central_request_context(request: Request, call_next):
+    from backend.services.central_accounts_client import _current
+    context_token = _current.set(None)
+    try:
+        return await call_next(request)
+    finally:
+        _current.reset(context_token)
 include_feature_routers(app)
 
 # ConfiguraÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o CORS (Permite que o Frontend acesse o Backend)
@@ -747,10 +757,13 @@ JWT_SECRET = _carregar_ou_gerar_jwt_secret()
 JWT_ALGORITHM = "HS256"
 JWT_DECODE_OPTIONS = {"verify_exp": False}
 
-def criar_access_token(username: str, client_id: str, machine_id: Optional[str] = None) -> str:
+def criar_access_token(username: str, client_id: str, machine_id: Optional[str] = None, *, central=False) -> str:
     payload = {"sub": username, "client_id": client_id}
     if machine_id:
         payload["machine_id"] = str(machine_id).strip()
+    if central:
+        import secrets
+        payload.update(jk_central=1, jti=secrets.token_hex(16))
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
@@ -883,9 +896,13 @@ async def get_tenant_id(request: Request, authorization: Optional[str] = Header(
         if not username:
             raise HTTPException(status_code=401, detail="Token invalido: usuÃƒÂ¡rio ausente.")
 
+        from backend.services.central_accounts_client import bind_request, assert_manual_path
+        central_client = bind_request(token, payload)
+        assert_manual_path(getattr(request.url, "path", ""))
         permissao_necessaria = _permissao_exigida_por_rota(getattr(request.url, "path", ""), request.method)
         if permissao_necessaria:
-            permissoes = await asyncio.to_thread(_carregar_permissoes_usuario, username, client_id)
+            permissoes = (central_client.permissions if central_client else
+                          await asyncio.to_thread(_carregar_permissoes_usuario, username, client_id))
             if not _permissoes_autorizam_rota(permissoes, permissao_necessaria):
                 permissoes_rotulo = " ou ".join(_normalizar_permissoes_exigidas(permissao_necessaria))
                 logger.warning(f"[AUTH] Acesso negado para usuÃƒÂ¡rio='{username}' em rota='{request.url.path}' (permissÃƒÂ£o requerida: {permissoes_rotulo})")
@@ -894,13 +911,11 @@ async def get_tenant_id(request: Request, authorization: Optional[str] = Header(
                     detail=f"Acesso negado: usuÃƒÂ¡rio sem permissÃƒÂ£o para o mÃƒÂ³dulo '{permissoes_rotulo}'."
                 )
 
-        await asyncio.to_thread(
-            _machine_presence_auto_touch,
-            username,
-            client_id,
-            request,
-            str(payload.get("machine_id") or "").strip(),
-        )
+        if central_client is None:
+            await asyncio.to_thread(
+                _machine_presence_auto_touch, username, client_id, request,
+                str(payload.get("machine_id") or "").strip(),
+            )
         request.state.username = username
         request.state.client_id = client_id
         request.state.auth_payload = dict(payload)
@@ -2133,6 +2148,8 @@ app.include_router(create_integracoes_router(IntegracoesRouterConfig(
     resolver_redirect_uri_bling=_resolver_redirect_uri_bling,
     shared_sync_propagar_lojas_integracoes_cliente=lambda client_id, machine_id: _shared_sync_propagar_lojas_integracoes_cliente(client_id, machine_id),
 )))
+from backend.routers.central_accounts import create_central_accounts_router
+app.include_router(create_central_accounts_router(get_tenant_id))
 
 
 
