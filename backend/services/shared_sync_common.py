@@ -306,8 +306,9 @@ SHARED_SYNC_SCOPES = {
     "lojas_integracoes": {
         "label": "Lojas e integracoes",
         "description": "Configuracoes de lojas e credenciais de integracao.",
-        # temp_integracao.json, state e codigos/callbacks OAuth nunca entram no pacote.
-        "patterns": ["lojas_config.json", "integracoes.json", "lojas_sync_tombstones.json"],
+        # temp_integracao.json, state, callbacks OAuth e tombstones locais nunca
+        # entram no pacote. Exclusoes de lojas e integracoes nao sao propagadas.
+        "patterns": ["lojas_config.json", "integracoes.json"],
         "user_scoped": False,
         "sensitive": True,
     },

@@ -597,7 +597,7 @@ def test_oauth_transitorio_persistido_nao_altera_fingerprint_nem_pacote(
     assert b"state-transitorio" not in depois[2]
 
 
-def test_pacote_lojas_materializa_json_uma_vez_para_hash_e_zip(tmp_path, monkeypatch):
+def test_pacote_lojas_nao_exporta_tombstones_locais(tmp_path, monkeypatch):
     _info, tenant = _configure_integracoes_sync_test(tmp_path)
     monkeypatch.setattr(integracoes, "carregar_lojas", lambda _client_id: [])
     monkeypatch.setattr(
@@ -610,33 +610,39 @@ def test_pacote_lojas_materializa_json_uma_vez_para_hash_e_zip(tmp_path, monkeyp
         "_integracoes_validar_tombstones_contra_lojas_para_envio",
         lambda _client_id, _lojas: None,
     )
-    target = tenant / "lojas_sync_tombstones.json"
-    antigo = b'[{"key":"store:antiga:","version":1}]'
-    novo = b'[{"key":"store:nova:","version":2}]'
-    target.write_bytes(antigo)
-    entry = {
+    lojas_target = tenant / "lojas_config.json"
+    lojas_bytes = b"[]"
+    lojas_target.write_bytes(lojas_bytes)
+    tombstone_target = tenant / "lojas_sync_tombstones.json"
+    tombstone_bytes = b'[{"key":"store:local:","version":1}]'
+    tombstone_target.write_bytes(tombstone_bytes)
+    tombstone_entry = {
         "relative_path": "lojas_sync_tombstones.json",
-        "abs_path": str(target),
+        "abs_path": str(tombstone_target),
         "mtime": 1,
-        "size": len(antigo),
-        "sha256": hashlib.sha256(antigo).hexdigest(),
+        "size": len(tombstone_bytes),
+        "sha256": hashlib.sha256(tombstone_bytes).hexdigest(),
         "item_keys": [],
     }
 
     def coletar(*_args, **_kwargs):
-        target.write_bytes(novo)
-        return [dict(entry)], []
+        return [
+            _entry("lojas_config.json", lojas_bytes),
+            dict(tombstone_entry),
+        ], []
 
     monkeypatch.setattr(shared_sync_bundle, "_shared_sync_coletar_arquivos", coletar)
     bundle, manifest, _warnings = shared_sync_bundle._shared_sync_montar_pacote(
         "000002", "lojas_integracoes", "operador",
     )
     with zipfile.ZipFile(io.BytesIO(bundle), "r") as arquivo:
-        persisted = arquivo.read("files/lojas_sync_tombstones.json")
+        nomes = arquivo.namelist()
 
-    assert persisted == novo
-    assert manifest["files"][0]["size"] == len(novo)
-    assert manifest["files"][0]["sha256"] == hashlib.sha256(novo).hexdigest()
+    assert "files/lojas_config.json" in nomes
+    assert "files/lojas_sync_tombstones.json" not in nomes
+    assert [item["relative_path"] for item in manifest["files"]] == [
+        "lojas_config.json"
+    ]
 
 
 def test_pacote_lojas_recupera_backup_antes_de_congelar_snapshot(
@@ -1116,7 +1122,7 @@ def test_importacao_manual_mescla_integracoes_sem_remover_lojas_locais(tmp_path,
         "000002", "lojas_integracoes", bundle, "destino", {"user_share": True},
     )
     saved = json.loads((info / "000002" / "lojas_config.json").read_text(encoding="utf-8"))
-    assert result["file_count"] == 2
+    assert result["file_count"] == 1
     assert result["stores_count"] == 2
     assert [item["nome"] for item in saved] == ["Antiga", "Nova"]
     assert saved[0]["store_id"] == "store-local"
@@ -5746,7 +5752,7 @@ def test_apply_snapshot_v1_sem_store_id_respeita_tombstone_local(tmp_path, tipo)
 
 
 @pytest.mark.parametrize("tipo", ["store", "integration"])
-def test_apply_tombstone_remoto_filtra_loja_do_mesmo_bundle(tmp_path, tipo):
+def test_apply_tombstone_remoto_nao_exclui_loja_do_mesmo_bundle(tmp_path, tipo):
     _info, tenant = _configure_integracoes_sync_test(tmp_path)
     nome = "Loja remota apagada"
     store_id = "store-remota"
@@ -5778,14 +5784,13 @@ def test_apply_tombstone_remoto_filtra_loja_do_mesmo_bundle(tmp_path, tipo):
     )
 
     lojas = json.loads((tenant / "lojas_config.json").read_text(encoding="utf-8"))
-    if tipo == "store":
-        assert lojas == []
-    else:
-        assert len(lojas) == 1
-        assert lojas[0]["integracoes"] == {}
+    assert len(lojas) == 1
+    assert lojas[0]["store_id"] == store_id
+    assert "mercadolivre" in lojas[0]["integracoes"]
+    assert not (tenant / "lojas_sync_tombstones.json").exists()
 
 
-def test_apply_tombstone_remoto_conflitante_preserva_conta_local(tmp_path):
+def test_apply_tombstone_remoto_conflitante_e_ignorado_localmente(tmp_path):
     _info, tenant = _configure_integracoes_sync_test(tmp_path)
     local = [{
         "nome": "Loja local",
@@ -5811,20 +5816,23 @@ def test_apply_tombstone_remoto_conflitante_preserva_conta_local(tmp_path):
         "deleted_at": "2026-09-02T12:00:00Z",
     }]
 
-    with pytest.raises(HTTPException) as bloqueado:
-        shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
-            "000002",
-            [
-                ("lojas_config.json", b"[]"),
-                ("lojas_sync_tombstones.json", json.dumps(tombstone).encode("utf-8")),
-            ],
-            str(tenant),
-            str(tmp_path / "backup-operacao"),
-            strict_oauth_conflicts=True,
-        )
+    shared_sync_apply_scope._shared_sync_aplicar_lojas_integracoes(
+        "000002",
+        [
+            ("lojas_config.json", b"[]"),
+            ("lojas_sync_tombstones.json", json.dumps(tombstone).encode("utf-8")),
+        ],
+        str(tenant),
+        str(tmp_path / "backup-operacao"),
+        strict_oauth_conflicts=True,
+    )
 
-    assert bloqueado.value.status_code == 409
-    assert (tenant / "lojas_config.json").read_bytes() == main
+    preservada = json.loads(
+        (tenant / "lojas_config.json").read_text(encoding="utf-8")
+    )
+    assert preservada[0]["store_id"] == "store-local"
+    assert preservada[0]["integracoes"]["mercadolivre"]["connected"] is True
+    assert preservada[0]["integracoes"]["mercadolivre"]["access_token"] == "local-novo"
     assert not (tenant / "lojas_sync_tombstones.json").exists()
 
 
@@ -6127,7 +6135,7 @@ def test_apply_preserva_backup_oauth_mais_forte_em_pull_nao_relacionado(tmp_path
 
 
 @pytest.mark.parametrize("tipo", ["store", "integration"])
-def test_apply_exclusao_remota_com_base_causal_converge(tmp_path, tipo):
+def test_apply_exclusao_remota_com_base_causal_preserva_estado_local(tmp_path, tipo):
     _info, tenant = _configure_integracoes_sync_test(tmp_path)
     base = [{
         "nome": "Loja causal",
@@ -6178,14 +6186,13 @@ def test_apply_exclusao_remota_com_base_causal_converge(tmp_path, tipo):
     )
 
     main = json.loads((tenant / "lojas_config.json").read_text(encoding="utf-8"))
-    if tipo == "store":
-        assert main == []
-    else:
-        assert len(main) == 1
-        assert main[0]["integracoes"] == {}
+    assert len(main) == 1
+    assert main[0]["store_id"] == "store-causal"
+    assert main[0]["integracoes"]["mercadolivre"]["connected"] is True
+    assert main[0]["integracoes"]["mercadolivre"]["access_token"] == "access"
 
 
-def test_bundle_bloqueia_tombstone_omitido_ou_removido_durante_coleta(
+def test_bundle_ignora_tombstone_local_removido_durante_coleta(
     tmp_path,
     monkeypatch,
 ):
@@ -6214,13 +6221,17 @@ def test_bundle_bloqueia_tombstone_omitido_ou_removido_durante_coleta(
         ], []
 
     monkeypatch.setattr(shared_sync_bundle, "_shared_sync_coletar_arquivos", coletar)
-    with pytest.raises(HTTPException) as bloqueado:
-        shared_sync_bundle._shared_sync_montar_pacote(
-            "000002",
-            "lojas_integracoes",
-            "operador",
-        )
-    assert bloqueado.value.status_code == 409
+    bundle, manifest, _warnings = shared_sync_bundle._shared_sync_montar_pacote(
+        "000002",
+        "lojas_integracoes",
+        "operador",
+    )
+    with zipfile.ZipFile(io.BytesIO(bundle), "r") as arquivo:
+        assert "files/lojas_sync_tombstones.json" not in arquivo.namelist()
+    assert all(
+        item["relative_path"] != "lojas_sync_tombstones.json"
+        for item in manifest["files"]
+    )
 
 
 def test_apply_rejeita_tombstone_com_chave_e_identidade_contraditorias(
