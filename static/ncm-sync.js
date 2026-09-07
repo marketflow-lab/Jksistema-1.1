@@ -25,12 +25,18 @@ const NCM_SYNC = {
         // Listener para mudanças em outras abas
         window.addEventListener('storage', (e) => {
             if (e.key === this.LOCAL_STORAGE_KEY) {
-                const novoJob = e.newValue ? JSON.parse(e.newValue) : null;
+                const novoJob = this._parseStoredJob(e.newValue);
+                if (!novoJob) {
+                    this._discardJob(false);
+                    return;
+                }
                 if (novoJob && novoJob.jobId && novoJob.clientId === this._getClientId()) {
                     this.jobId = novoJob.jobId;
                     this.storeId = novoJob.storeId || null;
                     console.log('[NCM-SYNC] Job detectado de outra aba:', this.jobId);
                     this.startMonitoring();
+                } else {
+                    this._discardJob(false);
                 }
             }
         });
@@ -38,12 +44,16 @@ const NCM_SYNC = {
         // Recuperar job anterior se existir
         const stored = localStorage.getItem(this.LOCAL_STORAGE_KEY);
         if (stored) {
-            const data = JSON.parse(stored);
-            if (data.jobId && data.status === 'running' && data.clientId === this._getClientId()) {
+            const data = this._parseStoredJob(stored);
+            if (data && data.jobId && data.status === 'running' && data.clientId === this._getClientId()) {
                 this.jobId = data.jobId;
                 this.storeId = data.storeId || null;
                 console.log('[NCM-SYNC] Recuperando job anterior:', this.jobId);
                 this.startMonitoring();
+            } else if (!data || !data.clientId || data.clientId === this._getClientId()) {
+                // Jobs legados, concluidos ou invalidos nao podem permanecer
+                // visiveis depois que o backend que os mantinha em memoria reinicia.
+                this._discardJob();
             }
         }
     },
@@ -136,6 +146,11 @@ const NCM_SYNC = {
             });
             
             if (!resp.ok) {
+                if (resp.status === 403 || resp.status === 404 || resp.status === 410) {
+                    console.warn('[NCM-SYNC] Job anterior nao esta mais disponivel:', resp.status);
+                    this._discardJob();
+                    return;
+                }
                 console.error('[NCM-SYNC] Erro ao buscar progresso:', resp.status);
                 return;
             }
@@ -209,6 +224,24 @@ const NCM_SYNC = {
         if (!this.statusCallback) return;
         this.statusCallback(`❌ Erro: ${message}`, 'error');
     },
+
+    _parseStoredJob(raw) {
+        if (!raw) return null;
+        try {
+            const data = JSON.parse(raw);
+            return data && typeof data === 'object' ? data : null;
+        } catch (_error) {
+            return null;
+        }
+    },
+
+    _discardJob(removeStored = true) {
+        this.stopMonitoring();
+        this.jobId = null;
+        this.storeId = null;
+        if (removeStored) localStorage.removeItem(this.LOCAL_STORAGE_KEY);
+        if (this.statusCallback) this.statusCallback('', '');
+    },
     
     /**
      * Verifica se sincronização está em andamento
@@ -217,7 +250,8 @@ const NCM_SYNC = {
         if (!this.jobId) return false;
         const stored = localStorage.getItem(this.LOCAL_STORAGE_KEY);
         if (!stored) return false;
-        const data = JSON.parse(stored);
+        const data = this._parseStoredJob(stored);
+        if (!data) return false;
         return data.status === 'running'
             && data.clientId === this._getClientId()
             && (!this.storeId || data.storeId === this.storeId);
