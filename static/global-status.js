@@ -130,8 +130,8 @@
                 // Se teve sincronização anterior, recuperar e mostrar
                 const stored = localStorage.getItem('ncm_sync_job');
                 if (stored) {
-                    const data = JSON.parse(stored);
-                    if (data.status === 'running' && data.progress) {
+                    const data = NCM_SYNC._parseStoredJob(stored);
+                    if (data && data.jobId === NCM_SYNC.jobId && NCM_SYNC.isRunning() && data.progress) {
                         // Renderizar progresso imediatamente
                         const p = data.progress;
                         const total = p.total || 0;
