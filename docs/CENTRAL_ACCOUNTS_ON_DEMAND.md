@@ -1,6 +1,6 @@
 # Central de contas e primeiro acesso
 
-## Migração explícita de contas legadas na versão 1.0.135
+## Migração explícita de contas legadas na versão combinada 1.0.136
 
 Usuários ainda não migrados, em clientes 1.0.135 ou superiores, recebem no login
 uma autorização assinada de 30 minutos vinculada ao próprio usuário, tenant e

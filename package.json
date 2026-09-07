@@ -1,6 +1,6 @@
 {
   "name": "jk-sistema-desktop",
-  "version": "1.0.135",
+  "version": "1.0.136",
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
   "packageManager": "npm@11.6.2",
