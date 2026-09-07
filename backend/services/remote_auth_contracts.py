@@ -51,6 +51,7 @@ class RemoteAuthAttempt:
     permissions: dict[str, bool] = field(default_factory=dict)
     policy: dict[str, Any] = field(default_factory=dict)
     central: dict[str, Any] = field(default_factory=dict, repr=False)
+    central_migration: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @property
     def success(self) -> bool:

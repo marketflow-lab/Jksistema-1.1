@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .central_accounts import CentralAccounts, CentralError
-from .central_contracts import ConnectRequest, DisconnectRequest, ProviderRequest, StoreCreate, StoreGrant
+from .central_contracts import (ConnectRequest, DisconnectRequest, LegacyAdoptionRequest,
+                                ProviderRequest, StoreCreate, StoreGrant)
 from .central_provider import ProviderTransport
 from .central_store import FirestoreDocuments, Vault
 from .errors import GatewayUnavailable
@@ -48,9 +49,19 @@ def install_central_routes(app, resolve_central):
             raise CentralError("central_session_required", 401)
         return service().authenticate(authorization[7:], request.headers.get("x-jk-machine", ""))
 
+    def migration_principal(request: Request):
+        authorization = request.headers.get("authorization", "")
+        if not authorization.startswith("Bearer ") or len(authorization) > 8192:
+            raise CentralError("central_migration_session_required", 401)
+        return service().authenticate_migration(
+            authorization[7:], request.headers.get("x-jk-machine", ""))
+
     @app.exception_handler(CentralError)
     async def central_error(_request, exc):
-        return JSONResponse(status_code=exc.status, content={"success": False, "code": exc.code})
+        details = {key: value for key, value in exc.details.items()
+                   if key in {"store_id", "provider"} and isinstance(value, str)}
+        return JSONResponse(status_code=exc.status,
+                            content={"success": False, "code": exc.code, **details})
 
     @app.exception_handler(GatewayUnavailable)
     async def central_unavailable(_request, _exc):
@@ -65,9 +76,19 @@ def install_central_routes(app, resolve_central):
         return service().create_store(actor, payload)
 
     def store_id(value):
-        if not re.fullmatch(r"[a-f0-9]{32}", value):
+        if not re.fullmatch(r"(?:[a-f0-9]{24}|[a-f0-9]{32})", value):
             raise CentralError("central_store_invalid", 400)
         return value
+
+    @router.post("/migrations/legacy")
+    def adopt_legacy(payload: LegacyAdoptionRequest, actor=Depends(migration_principal)):
+        return service().adopt_legacy(actor, payload)
+
+    @router.get("/migrations/legacy/{operation_id}")
+    def migration_status(operation_id: str, actor=Depends(migration_principal)):
+        if not re.fullmatch(r"[a-f0-9]{32}", operation_id):
+            raise CentralError("central_migration_invalid", 400)
+        return service().migration_status(actor, operation_id)
 
     @router.delete("/stores/{identity}")
     def remove(identity: str, actor=Depends(principal)):

@@ -123,6 +123,7 @@ def _attempt_remote_request(
             permissions=validated["permissions"],
             policy=validated["policy"],
             central=validated.get("central", {}),
+            central_migration=validated.get("central_migration", {}),
         )
     finally:
         if owns_session:

@@ -111,6 +111,13 @@
                 <a class="back-btn" href="/dashboard.html">Voltar</a>
             </div>
             <h1>Central de Integrações</h1>
+            <section id="central-migration-controls" hidden style="border:1px solid #2f855a;border-radius:12px;padding:16px;margin-bottom:18px;background:#10251c;">
+                <h2 style="margin-top:0;">Migrar minhas lojas para a central</h2>
+                <p>Esta ação envia somente as conexões Mercado Livre e Bling para o cofre central. Produtos, vendas, estoque e Mercado Turbo não são sincronizados.</p>
+                <div id="central-migration-preview" role="status" aria-live="polite">Carregando prévia sem credenciais…</div>
+                <button id="central-migration-run" type="button" disabled>Migrar minhas lojas para a central</button>
+                <p id="central-migration-feedback" role="status" aria-live="polite"></p>
+            </section>
             <section id="central-account-controls" hidden>
                 <p>As conexões ficam na central. A lista de lojas foi carregada no login.
                    Para consultar alterações de acesso ou novas conexões, clique em Atualizar lojas.
@@ -177,6 +184,7 @@
 
                 <div id="tab-mercadoturbo" class="tab-content">
                     <h3>Configuração Mercado Turbo <span id="turbo-status" class="status"></span></h3>
+                    <p>O Mercado Turbo fica somente nesta máquina e não é enviado para a Central de Contas.</p>
                     <form id="form-turbo">
                         <label for="turbo-token">Token Turbo</label>
                         <input type="password" id="turbo-token" name="token">
@@ -731,7 +739,6 @@
                 document.querySelector('[data-main-tab="compartilhar"]').hidden = true;
                 const iframe = document.querySelector('#main-tab-compartilhar iframe');
                 if (iframe) iframe.remove();
-                document.querySelector('[data-tab="mercadoturbo"]').hidden = true;
                 const feedback = document.getElementById('central-feedback');
                 async function centralAction(path, method, body) {
                     const response = await fetch(path, { method, headers: obterAuthHeaders({'Content-Type': 'application/json'}),
@@ -765,6 +772,68 @@
                     } catch (error) { feedback.textContent = error.message; }
                     finally { button.disabled = false; }
                 });
+            }
+            if (window.jkCentralMigrationMode?.()) {
+                const panel = document.getElementById('central-migration-controls');
+                const previewElement = document.getElementById('central-migration-preview');
+                const feedback = document.getElementById('central-migration-feedback');
+                const button = document.getElementById('central-migration-run');
+                let migrationPreview = null;
+                panel.hidden = false;
+
+                async function loadMigrationPreview() {
+                    button.disabled = true;
+                    feedback.textContent = '';
+                    try {
+                        const response = await fetch('/api/central/migration/preview', {
+                            headers: obterAuthHeaders(), cache: 'no-store'
+                        });
+                        const value = await response.json().catch(() => ({}));
+                        if (!response.ok) throw new Error(typeof value.detail === 'string'
+                            ? value.detail : (value.detail?.message || 'Não foi possível preparar a prévia.'));
+                        migrationPreview = value;
+                        const names = (value.stores || []).map(store => store.name).join(', ');
+                        previewElement.textContent = `${value.stores_total} loja(s), ${value.connections_total} conexão(ões) Mercado Livre/Bling. `
+                            + `${value.turbo_local_total} configuração(ões) Turbo permanecerão locais. Lojas: ${names}.`;
+                        button.disabled = false;
+                    } catch (error) {
+                        previewElement.textContent = error.message || 'Não foi possível preparar a prévia.';
+                    }
+                }
+
+                button.addEventListener('click', async () => {
+                    if (!migrationPreview) return;
+                    const accepted = confirm(`Migrar ${migrationPreview.stores_total} loja(s) e ${migrationPreview.connections_total} conexão(ões) para a central?\n\nO sistema validará cada conta, criará um backup seguro por 30 dias e encerrará esta sessão após concluir.`);
+                    if (!accepted) return;
+                    button.disabled = true;
+                    feedback.textContent = 'Validando, renovando quando necessário e criando o backup seguro…';
+                    try {
+                        const bytes = new Uint8Array(16);
+                        crypto.getRandomValues(bytes);
+                        const operationId = Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
+                        const response = await fetch('/api/central/migration/execute', {
+                            method: 'POST', headers: obterAuthHeaders({'Content-Type': 'application/json'}),
+                            body: JSON.stringify({operation_id: operationId,
+                                preview_fingerprint: migrationPreview.preview_fingerprint, confirmed: true})
+                        });
+                        const value = await response.json().catch(() => ({}));
+                        if (!response.ok) {
+                            const detail = value.detail || {};
+                            const where = detail.store_id
+                                ? ` Loja ${detail.store_id}${detail.provider ? ` (${detail.provider})` : ''}.` : '';
+                            throw new Error((typeof detail === 'string' ? detail : (detail.message || 'Migração não concluída.')) + where);
+                        }
+                        feedback.textContent = 'Migração concluída. Faça um novo login no JK Sistema.';
+                        localStorage.removeItem('access_token');
+                        localStorage.removeItem('user_data');
+                        localStorage.removeItem('permissions');
+                        setTimeout(() => navegarComTransicao('/frontend_index.html'), 500);
+                    } catch (error) {
+                        feedback.textContent = error.message || 'Migração não concluída.';
+                        button.disabled = false;
+                    }
+                });
+                void loadMigrationPreview();
             }
             void loadStores().catch(() => {});
             checkUrlParams();

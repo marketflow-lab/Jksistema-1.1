@@ -138,17 +138,30 @@ class ProviderTransport:
     def exchange(self, draft, code):
         creds = self._token(draft["provider"], draft["app_id"], draft["app_secret"], {
             "grant_type": "authorization_code", "code": code, "redirect_uri": draft["redirect_uri"]})
-        endpoint = "/users/me" if draft["provider"] == "mercadolivre" else "/empresas/me/dados-basicos"
-        status, _, raw = self._http("GET", BASES[draft["provider"]] + endpoint,
-                                    headers={"Authorization": "Bearer " + creds["access_token"]})
+        return {**creds, **self.identify(creds)}
+
+    def identify(self, credentials):
+        provider = credentials["provider"]
+        endpoint = "/users/me" if provider == "mercadolivre" else "/empresas/me/dados-basicos"
+        status, _, raw = self._http("GET", BASES[provider] + endpoint,
+                                    headers={"Authorization": "Bearer " + credentials["access_token"]})
         if status != 200:
-            raise CentralError("central_account_identity_unavailable", 502)
-        value = json.loads(raw)
-        account = value if draft["provider"] == "mercadolivre" else value.get("data", {})
+            raise CentralError("central_reconnect_required" if status in (400, 401, 403)
+                               else "central_account_identity_unavailable", 409 if status in (400, 401, 403) else 502)
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError):
+            raise CentralError("central_account_identity_invalid", 502) from None
+        account = value if provider == "mercadolivre" else value.get("data", {})
+        if not isinstance(account, dict):
+            raise CentralError("central_account_identity_invalid", 502)
         seller = str(account.get("id") or "")
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", seller):
             raise CentralError("central_account_identity_invalid", 502)
-        return {**creds, "seller_id": seller, "site_id": str(account.get("site_id") or "")}
+        site_id = str(account.get("site_id") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{0,20}", site_id):
+            raise CentralError("central_account_identity_invalid", 502)
+        return {"seller_id": seller, "site_id": site_id}
 
     def refresh(self, credentials):
         updated = self._token(credentials["provider"], credentials["app_id"], credentials["app_secret"],

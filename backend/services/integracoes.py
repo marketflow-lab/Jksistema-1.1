@@ -2029,12 +2029,73 @@ def _integracoes_arquivar_legado_global_coexistente(
         )
 
 
+def mesclar_turbo_local(client_id: str, lojas_centrais: list, *, incluir_token: bool = True) -> list:
+    """Attach only this machine's Turbo config to exact central store identities."""
+    rows = copy.deepcopy(lojas_centrais or [])
+    try:
+        path = os.path.join(_tenant_path(client_id), "lojas_config.json")
+    except RuntimeError:
+        return rows
+    try:
+        locais = _integracoes_ler_lojas_config_arquivo(path) if os.path.exists(path) else []
+    except Exception:
+        locais = []
+    turbo_by_id = {}
+    for local in locais:
+        store_id = str((local or {}).get("store_id") or "").strip()
+        cfg = (((local or {}).get("integracoes") or {}).get("mercadoturbo") or {})
+        if store_id and isinstance(cfg, dict) and str(cfg.get("token") or "").strip():
+            turbo_by_id[store_id] = dict(cfg)
+    for row in rows:
+        store_id = str((row or {}).get("store_id") or "").strip()
+        cfg = turbo_by_id.get(store_id)
+        if not cfg:
+            continue
+        if not incluir_token:
+            cfg = {"connected": True, "local_only": True}
+        else:
+            cfg.update(connected=True, local_only=True)
+        row.setdefault("integracoes", {})["mercadoturbo"] = cfg
+    return rows
+
+
+def salvar_turbo_local_central(client_id: str, lojas_centrais: list, store_id: str, token: str) -> None:
+    identidade = str(store_id or "").strip()
+    centrais = [row for row in lojas_centrais or [] if str((row or {}).get("store_id") or "").strip() == identidade]
+    if len(centrais) != 1:
+        raise HTTPException(404, "Loja não encontrada na sessão central.")
+    path = os.path.join(_tenant_path(client_id), "lojas_config.json")
+    with _LOJAS_CONFIG_LOCK:
+        try:
+            locais = _integracoes_ler_lojas_config_arquivo(path) if os.path.exists(path) else []
+        except Exception:
+            raise HTTPException(409, "A configuração local do Turbo não pôde ser validada.") from None
+        matches = [row for row in locais if str((row or {}).get("store_id") or "").strip() == identidade]
+        if len(matches) > 1:
+            raise HTTPException(409, "Há identidades locais duplicadas para esta loja.")
+        if matches:
+            target = matches[0]
+        else:
+            target = {"store_id": identidade, "nome": str(centrais[0].get("nome") or "").strip(),
+                      "integracoes": {}}
+            locais.append(target)
+        integrations = target.setdefault("integracoes", {})
+        value = str(token or "").strip()
+        if value:
+            integrations["mercadoturbo"] = {"token": value, "connected": True, "local_only": True}
+        else:
+            integrations.pop("mercadoturbo", None)
+        _integracoes_validar_lojas_config(locais, "configuração local do Turbo")
+        _integracoes_validar_identidades_lojas_local(locais)
+        _integracoes_escrever_lojas_config_atomico(path, locais)
+
+
 def carregar_lojas(client_id: str):
     """Carrega as lojas do cliente do arquivo JSON."""
     from backend.services.central_accounts_client import current
     central = current(client_id)
     if central is not None:
-        return central.stores()
+        return mesclar_turbo_local(client_id, central.stores(), incluir_token=True)
     with _integracoes_bloquear_rmw_lojas(client_id):
         _integracoes_recuperar_transacao_pendente(client_id)
         destino_esperado = os.path.join(

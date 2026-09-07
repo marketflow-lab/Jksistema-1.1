@@ -612,9 +612,11 @@ def _shared_sync_push_scope(
 def _shared_sync_remote_meta(client_id: str, scope: str) -> Optional[dict]:
     return _shared_sync_remote_meta_by_id(_shared_sync_doc_id(client_id, scope))
 
-def _shared_sync_remote_meta_by_id(bundle_id: str) -> Optional[dict]:
+def _shared_sync_remote_meta_by_id(bundle_id: str, *, strict: bool = False) -> Optional[dict]:
     db = _firebase_db() if _firebase_deve_usar() else None
     if db is None:
+        if strict:
+            raise HTTPException(status_code=503, detail="Não foi possível consultar o Firebase nesta máquina.")
         return None
     try:
         coll = db.collection(_firebase_shared_sync_collection_name())
@@ -641,7 +643,9 @@ def _shared_sync_remote_meta_by_id(bundle_id: str) -> Optional[dict]:
             data["snapshot_id"] = ""
         return data
     except Exception as exc:
-        logger.warning("[SHARED-SYNC] Falha ao ler metadados remotos: %s", exc)
+        logger.warning("[SHARED-SYNC] Falha ao ler metadados remotos: %s", type(exc).__name__)
+        if strict:
+            raise HTTPException(status_code=503, detail="Falha ao consultar o Firebase; o snapshot remoto não pôde ser verificado.") from None
         return None
 
 

@@ -11,7 +11,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cloud.auth_gateway.app.central_accounts import CentralAccounts, CentralError, Principal, key_for
-from cloud.auth_gateway.app.central_contracts import ConnectRequest, ProviderRequest, StoreCreate, StoreGrant
+from cloud.auth_gateway.app.central_contracts import (ConnectRequest, LegacyAdoptionRequest,
+                                                       ProviderRequest, StoreCreate, StoreGrant)
 from cloud.auth_gateway.app.central_provider import ProviderTransport
 from cloud.auth_gateway.app.central_store import MemoryDocuments, Vault
 from cloud.auth_gateway.app.domain import AuthenticationService
@@ -35,6 +36,14 @@ class Users:
         return copy.deepcopy(self.rows.get(username))
 
     def claim_machine(self, username, password, machine):
+        return self.get_user(username)
+
+    def enable_central_accounts(self, username, expected_client_id, machine, expected_password_epoch):
+        row = self.rows[username]
+        assert row["client_id"] == expected_client_id
+        assert machine in row["machine_ids"]
+        assert expected_password_epoch == key_for(row["password_hash"])
+        row["central_accounts_enabled"] = True
         return self.get_user(username)
 
 
@@ -67,6 +76,13 @@ class Provider:
         self.requests.append((credentials["access_token"], payload.path))
         return {"status": self.status, "headers": {"Content-Type": "application/json"},
                 "body_base64": base64.b64encode(b'{"data":[]}').decode()}
+
+    def identify(self, credentials):
+        if credentials.get("access_token") == "invalid":
+            raise CentralError("central_reconnect_required", 409)
+        suffix = credentials["app_id"].split("-")[-1]
+        return {"seller_id": "account-" + suffix,
+                "site_id": "MLB" if credentials["provider"] == "mercadolivre" else ""}
 
 
 @pytest.fixture
@@ -296,11 +312,110 @@ def test_unenrolled_login_keeps_legacy_signed_contract(central):
     from tests.test_auth_gateway_domain import FakeIssuer
     central.enrollment_required = True
     auth = AuthenticationService(central.users, FakeIssuer(), '1.0.124', central=central)
+    old_payload = GatewayLoginRequest(username='owner', password='password', machine_id='machine-a',
+                                      app_version='1.0.134', request_nonce='n' * 43)
+    assert 'central_migration' not in auth.authenticate(old_payload, central_protocol=True)
     payload = GatewayLoginRequest(username='owner', password='password', machine_id='machine-a',
-                                  app_version='1.0.134', request_nonce='n' * 43)
-    assert 'central' not in auth.authenticate(payload, central_protocol=True)
+                                  app_version='1.0.135', request_nonce='n' * 43)
+    result = auth.authenticate(payload, central_protocol=True)
+    assert 'central' not in result
+    assert result['central_migration']['mode'] == 'legacy_adoption'
     central.users.rows['owner']['central_accounts_enabled'] = True
     assert auth.authenticate(payload, central_protocol=True)['central']['sync_mode'] == 'manual'
+
+
+def legacy_request(count=11, *, invalid_at=None, expected_mismatch_at=None):
+    stores = []
+    for index in range(count):
+        store_id = f"{index + 1:024x}" if index < count - 1 else f"{index + 1:032x}"
+        connections = []
+        for provider in ("mercadolivre", "bling"):
+            app_id = f"app-{provider}-{index}"
+            account = "wrong-account" if expected_mismatch_at == (index, provider) else f"account-{index}"
+            connections.append({
+                "provider": provider, "app_id": app_id, "app_secret": f"secret-{provider}-{index}",
+                "access_token": "invalid" if invalid_at == (index, provider) else f"access-{provider}-{index}",
+                "refresh_token": f"refresh-{provider}-{index}", "expires_at": NOW + 3600,
+                "expected_account_id": account,
+                "expected_site_id": "MLB" if provider == "mercadolivre" else "",
+            })
+        stores.append({"store_id": store_id, "name": f"Store {index + 1}", "connections": connections})
+    return LegacyAdoptionRequest(operation_id="c" * 32, stores=stores)
+
+
+def test_legacy_adoption_migrates_11_stores_and_22_connections_atomically(central):
+    central.enrollment_required = True
+    user = central.users.get_user("owner")
+    capability = central.migration_session(user, "owner", "machine-a")
+    actor = central.authenticate_migration(capability["session"], "machine-a")
+    result = central.adopt_legacy(actor, legacy_request())
+    assert result == {"success": True, "operation_id": "c" * 32, "status": "completed",
+                      "stores_total": 11, "connections_total": 22,
+                      "completed_at": NOW, "failure": None}
+    assert central.users.rows["owner"]["central_accounts_enabled"] is True
+    bootstrap = central.bootstrap_session(central.users.get_user("owner"), "owner", "machine-b")
+    assert len(bootstrap["stores"]) == 11
+    assert sum(len(store["integracoes"]) for store in bootstrap["stores"]) == 22
+    assert all(len(store["store_id"]) in (24, 32) for store in bootstrap["stores"])
+    public = json.dumps({"result": result, "bootstrap": bootstrap})
+    assert "access-" not in public and "refresh-" not in public and "secret-" not in public
+    assert central.list_stores(principal(central, "reader")) == []
+
+
+def test_legacy_adoption_is_idempotent_and_rejects_changed_content(central):
+    central.enrollment_required = True
+    capability = central.migration_session(central.users.get_user("owner"), "owner", "machine-a")
+    actor = central.authenticate_migration(capability["session"], "machine-a")
+    request_value = legacy_request(1)
+    first = central.adopt_legacy(actor, request_value)
+    assert central.adopt_legacy(actor, request_value) == first
+    changed = request_value.model_copy(deep=True)
+    changed.stores[0].name = "Changed"
+    with pytest.raises(CentralError) as error:
+        central.adopt_legacy(actor, changed)
+    assert error.value.code == "central_migration_conflict"
+
+
+@pytest.mark.parametrize("failure", ["token", "identity", "tenant"])
+def test_legacy_adoption_failure_never_enables_user_or_publishes_store(central, failure):
+    central.enrollment_required = True
+    request_value = legacy_request(
+        2,
+        invalid_at=(1, "bling") if failure == "token" else None,
+        expected_mismatch_at=(1, "bling") if failure == "identity" else None,
+    )
+    if failure == "tenant":
+        connection = request_value.stores[1].connections[1]
+        identity = central.provider.identify({"app_id": connection.app_id,
+                                              "provider": connection.provider,
+                                              "access_token": connection.access_token.get_secret_value()})
+        connection_id = key_for(connection.provider, connection.app_id, identity["seller_id"])
+        central.documents.change("connections", connection_id, lambda _: {"tenant": "tenant-b"})
+    capability = central.migration_session(central.users.get_user("owner"), "owner", "machine-a")
+    actor = central.authenticate_migration(capability["session"], "machine-a")
+    with pytest.raises(CentralError) as error:
+        central.adopt_legacy(actor, request_value)
+    assert error.value.details["store_id"] == request_value.stores[1].store_id
+    assert error.value.details["provider"] == "bling"
+    assert central.users.rows["owner"].get("central_accounts_enabled") is not True
+    assert central.list_stores(actor) == []
+
+
+@pytest.mark.parametrize("change", ["expired", "machine", "revoked", "tenant"])
+def test_migration_capability_is_short_lived_and_bound_to_user_tenant_machine(central, change):
+    central.enrollment_required = True
+    capability = central.migration_session(central.users.get_user("owner"), "owner", "machine-a")
+    machine = "machine-a"
+    if change == "expired":
+        central.clock = lambda: NOW + 1801
+    elif change == "machine":
+        machine = "machine-b"
+    elif change == "revoked":
+        central.users.rows["owner"]["machine_ids"] = ["machine-b"]
+    else:
+        central.users.rows["owner"]["client_id"] = "tenant-b"
+    with pytest.raises(CentralError):
+        central.authenticate_migration(capability["session"], machine)
 
 
 def test_hosting_routes_central_and_auth_to_same_pinned_service():

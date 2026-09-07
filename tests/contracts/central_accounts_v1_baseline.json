@@ -1,15 +1,15 @@
 {
-  "base_commit": "4b323be8eab154e2b12f0057c90ef043ea40a7d5",
-  "base_release": "v1.0.133",
+  "base_commit": "0e3a965b2b8891513db45b7e5ed624d03912fb55",
+  "base_release": "v1.0.134",
   "legacy_contract_files": {
     "cloud/auth_gateway/app/contracts.py": "c89c385a33fe7ad08f1d3ebb43b63a97041b7e634e3a698e8083ef5bdbca5610",
-    "cloud/auth_gateway/app/domain.py": "8a1eee5f2fc0e6485fd350a650a2c5d9e94a0fa4d068bb4ebaf57b52ff93e78f",
-    "backend/services/remote_auth_contracts.py": "5105f7008210fbca625471d91f1cb18624457d8c936031928417be635f361a13",
-    "backend/services/remote_auth_verification.py": "e86275a223df42a526674f3c5b20b5c21ed1a1ec6212666760f48c36fc35fad0",
+    "cloud/auth_gateway/app/domain.py": "bbed923a68f07045091f509fce03a42585444f113c89bffdb4848e2e10282bed",
+    "backend/services/remote_auth_contracts.py": "72654d032046df93e2280c28f192620c7bc8f2a0fa1698d8aac01f845981aa27",
+    "backend/services/remote_auth_verification.py": "228c460cdab198e8160af4dbc8af0b606325ad7ae39750b419e76f6bc2904699",
     "backend/schemas/auth.py": "3c9d7ac85e7c4bfcfd9b1b26d2e51005677f969eca0c9659ad19ff11582927db",
     "backend/routers/integracoes.py": "89ba8809f6c0502d58de55accca2c7ea6148f0fb2591ebffa97126e9610d22f1",
     "backend/routers/shared_sync.py": "afc85a11a3e5a2c94d91c12f335608f4b7985d78096cb20aab6004d040f687e9"
   },
-  "compatibility": "Keep all existing routes and legacy login response valid when central mode is not advertised; central extension is explicitly signed and versioned.",
+  "compatibility": "Keep all existing routes and legacy login response valid; central and central_migration extensions are explicitly signed and versioned.",
   "central_protocol": 1
 }

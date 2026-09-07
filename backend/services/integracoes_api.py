@@ -334,7 +334,8 @@ async def get_lojas(client_id: str = Depends(get_tenant_id)):
     from backend.services.central_accounts_client import current
     central = current(client_id)
     if central:
-        return central.public_stores()
+        from backend.services.integracoes import mesclar_turbo_local
+        return mesclar_turbo_local(client_id, central.public_stores(), incluir_token=False)
     return carregar_lojas(client_id)
 
 
@@ -359,7 +360,9 @@ async def get_loja(
     from backend.services.central_accounts_client import current
     central = current(client_id)
     if central:
-        rows = [row for row in central.public_stores() if row["store_id"] == store_id]
+        from backend.services.integracoes import mesclar_turbo_local
+        rows = [row for row in mesclar_turbo_local(client_id, central.public_stores(), incluir_token=False)
+                if row["store_id"] == store_id]
         if len(rows) != 1:
             raise HTTPException(404, "Loja não encontrada na sessão.")
         return rows[0]
@@ -407,9 +410,12 @@ async def save_turbo_token(
     client_id: str = Depends(get_tenant_id),
 ):
     from backend.services.central_accounts_client import current
-    if current(client_id):
-        raise HTTPException(409, "A central suporta conexões Mercado Livre e Bling. Turbo não está habilitado nesta modalidade.")
+    central = current(client_id)
     store_id_exato = _store_id_mutacao_exato(store_id)
+    if central:
+        from backend.services.integracoes import salvar_turbo_local_central
+        salvar_turbo_local_central(client_id, central.public_stores(), store_id_exato, token_req.token)
+        return {"success": True, "local_only": True}
     loja = buscar_loja(client_id, loja_nome, store_id=store_id_exato)
     if not isinstance(loja, dict):
         raise HTTPException(
@@ -441,6 +447,12 @@ async def disconnect_integracao(
     central = current(client_id)
     if central:
         provider = "mercadolivre" if servico_nome == "ml" else servico_nome
+        if provider in ("turbo", "mercadoturbo"):
+            from backend.services.integracoes import salvar_turbo_local_central
+            store_id_exato = _store_id_mutacao_exato(store_id)
+            salvar_turbo_local_central(client_id, central.public_stores(), store_id_exato, "")
+            return {"success": True, "loja": loja_nome, "servico": "mercadoturbo",
+                    "dados": {}, "local_only": True}
         if provider not in ("mercadolivre", "bling"):
             raise HTTPException(400, "Integração não suportada pela central.")
         result = central.call("POST", f"/stores/{_store_id_mutacao_exato(store_id)}/disconnect", {"provider": provider})

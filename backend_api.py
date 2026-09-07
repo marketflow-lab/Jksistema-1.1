@@ -757,13 +757,16 @@ JWT_SECRET = _carregar_ou_gerar_jwt_secret()
 JWT_ALGORITHM = "HS256"
 JWT_DECODE_OPTIONS = {"verify_exp": False}
 
-def criar_access_token(username: str, client_id: str, machine_id: Optional[str] = None, *, central=False) -> str:
+def criar_access_token(username: str, client_id: str, machine_id: Optional[str] = None, *, central=False, central_migration=False) -> str:
     payload = {"sub": username, "client_id": client_id}
     if machine_id:
         payload["machine_id"] = str(machine_id).strip()
     if central:
         import secrets
         payload.update(jk_central=1, jti=secrets.token_hex(16))
+    if central_migration:
+        import secrets
+        payload.update(jk_central_migration=1, jti=secrets.token_hex(16))
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 

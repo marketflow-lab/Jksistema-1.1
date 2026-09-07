@@ -113,7 +113,7 @@ def create_app(
     async def validation_error_handler(_request: Request, _exc: RequestValidationError):
         return JSONResponse(
             status_code=422,
-            content={"success": False, "code": "invalid_request", "message": "Dados de login invalidos."},
+            content={"success": False, "code": "invalid_request", "message": "Dados enviados invalidos."},
         )
 
     @application.get("/health")

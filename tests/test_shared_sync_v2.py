@@ -355,7 +355,7 @@ def test_machine_status_expoe_recebimento_pendente_e_ultimo_pull(monkeypatch):
     monkeypatch.setattr(
         shared_sync_machine,
         "_shared_sync_machine_remote_meta",
-        lambda _sessao, scope: (
+        lambda _sessao, scope, **_kwargs: (
             {"snapshot_hash": "hash-novo", "machine_id": "pc:origem", "updated_at": "2026-07-20T11:00:00Z"}
             if scope == "cadastro" else None
         ),
@@ -376,6 +376,53 @@ def test_machine_status_expoe_recebimento_pendente_e_ultimo_pull(monkeypatch):
     assert cadastro["last_received_at"] == "2026-07-20T10:00:00Z"
     assert cadastro["synced_at"] == "2026-07-20T10:00:00Z"
     assert cadastro["remote"]["snapshot_hash"] == "hash-novo"
+
+
+def test_machine_config_save_returns_status_bound_to_current_machine(monkeypatch):
+    from backend.schemas.shared_sync import SharedSyncMachineConfigRequest
+    session = {"username": "operador", "client_id": "000002"}
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_session", lambda *args: session)
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_machine_config_save", lambda *args: {})
+    received = []
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_machine_status_payload",
+                        lambda _session, machine_id: received.append(machine_id) or {"success": True})
+    payload = SharedSyncMachineConfigRequest(enabled=True, scopes=["cadastro"], machine_id="pc:atual")
+    result = shared_sync_machine_endpoints.shared_sync_machine_salvar_config(
+        payload, authorization="Bearer fixture", client_id="000002")
+    assert result["success"] is True
+    assert received == ["pc:atual"]
+
+
+def test_machine_preview_distinguishes_missing_snapshot_from_firebase_failure(monkeypatch):
+    from backend.schemas.shared_sync import SharedSyncPreviewRequest
+    session = {"username": "operador", "client_id": "000002"}
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_session", lambda *args: session)
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_machine_resolver_scopes",
+                        lambda *args, **kwargs: ["cadastro"])
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_machine_bundle_ids",
+                        lambda *args: {"cadastro": "bundle"})
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_remote_meta_by_id",
+                        lambda *_args, **_kwargs: None)
+    with pytest.raises(HTTPException) as missing:
+        shared_sync_machine_endpoints.shared_sync_machine_preview(
+            SharedSyncPreviewRequest(direction="pull", scopes=["cadastro"], machine_id="pc:atual"),
+            authorization="Bearer fixture", client_id="000002")
+    assert missing.value.status_code == 404
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_remote_meta_by_id",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                            HTTPException(503, "Falha ao consultar o Firebase; o snapshot remoto não pôde ser verificado.")))
+    with pytest.raises(HTTPException) as unavailable:
+        shared_sync_machine_endpoints.shared_sync_machine_preview(
+            SharedSyncPreviewRequest(direction="pull", scopes=["cadastro"], machine_id="pc:atual"),
+            authorization="Bearer fixture", client_id="000002")
+    assert unavailable.value.status_code == 503
+    assert "Firebase" in str(unavailable.value.detail)
+
+
+def test_legacy_firebase_import_label_does_not_claim_to_activate_central():
+    source = open("static/admin_usuarios.html", "r", encoding="utf-8-sig").read()
+    assert "Importar cópia legada do Firebase" in source
+    assert "não ativa a Central de Contas" in source
 
 
 def test_pacote_v2_criptografa_credenciais_sem_texto_legivel(
@@ -6393,7 +6440,7 @@ def test_versoes_fonte_e_electron_estao_alinhadas_com_a_release():
     root_package = json.loads(open("package.json", "r", encoding="utf-8").read())
     electron_package = json.loads(open("electron_app/package.json", "r", encoding="utf-8").read())
     backend_source = open("backend_api.py", "r", encoding="utf-8-sig").read()
-    assert root_package["version"] == "1.0.134"
+    assert root_package["version"] == "1.0.135"
     assert electron_package["version"] == root_package["version"]
     # O minimo do backend pode permanecer anterior para nao derrubar clientes
     # durante o rollout em duas ondas.

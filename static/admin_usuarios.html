@@ -945,7 +945,8 @@
                             <div class="form-actions">
                                 <button id="machineSyncSaveButton" class="btn-primary" onclick="salvarSincronizacaoMinhasMaquinas()">Salvar opção</button>
                                 <button id="machineSyncPushButton" class="btn-success" onclick="executarSincronizacaoMinhasMaquinas('push')" disabled>Enviar agora</button>
-                                <button id="machineSyncPullButton" class="btn-warning" onclick="executarSincronizacaoMinhasMaquinas('pull')" disabled>Importar agora</button>
+                                <button id="machineSyncPullButton" class="btn-warning" onclick="executarSincronizacaoMinhasMaquinas('pull')" disabled>Importar cópia legada do Firebase</button>
+                                <div class="muted-line">Esta importação recebe uma cópia legada do Firebase e não ativa a Central de Contas.</div>
                             </div>
                         </div>
                         <div>
@@ -2907,7 +2908,8 @@
             enabled,
             scopes: scopesSelecionadosSincronizacaoMinhasMaquinas(),
             auto_pull: enabled,
-            auto_push: false
+            auto_push: false,
+            machine_id: machineIdAtual()
         };
     }
 
@@ -3030,7 +3032,7 @@
             `${Number(total.credentials || 0)} credencial(is)`,
             `${Number(total.stores || 0)} loja(s) no snapshot`
         ].join(', ');
-        const acao = direcao === 'pull' ? 'Importar agora' : 'Enviar agora';
+        const acao = direcao === 'pull' ? 'Importar cópia legada do Firebase' : 'Enviar agora';
         return confirm(`Prévia: ${resumo}.\n\n"Presente apenas no destino" é uma comparação de arquivos e não significa exclusão de lojas. O snapshot anterior é preservado.\n\n${acao}?`) ? data.operation_id : '';
     }
 

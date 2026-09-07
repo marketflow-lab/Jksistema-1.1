@@ -12,6 +12,13 @@ function jkCentralManualMode() {
 }
 window.jkCentralManualMode = jkCentralManualMode;
 
+function jkCentralMigrationMode() {
+    try {
+        return JSON.parse(localStorage.getItem('user_data') || '{}').central_migration?.available === true;
+    } catch (_err) { return false; }
+}
+window.jkCentralMigrationMode = jkCentralMigrationMode;
+
 function _jwtPayloadLocal(token) {
     try {
         const partes = String(token || '').split('.');

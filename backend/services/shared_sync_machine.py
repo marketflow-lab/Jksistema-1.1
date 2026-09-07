@@ -49,8 +49,11 @@ def configure_shared_sync_machine_runtime(runtime_module=None, peer_globals: dic
 def _shared_sync_machine_state_scope(scope: str) -> str:
     return f"machine-sync:{scope}"
 
-def _shared_sync_machine_remote_meta(sessao: dict, scope: str) -> Optional[dict]:
-    return _shared_sync_remote_meta_by_id(_shared_sync_machine_doc_id(sessao.get("client_id"), sessao.get("username"), scope))
+def _shared_sync_machine_remote_meta(sessao: dict, scope: str, *, strict: bool = False) -> Optional[dict]:
+    return _shared_sync_remote_meta_by_id(
+        _shared_sync_machine_doc_id(sessao.get("client_id"), sessao.get("username"), scope),
+        strict=strict,
+    )
 
 def _shared_sync_machine_push_scope(
     sessao: dict,
@@ -262,7 +265,7 @@ def _shared_sync_machine_status_payload(sessao: dict, machine_id: str = "") -> d
     state_scopes = state.get("scopes") if isinstance(state.get("scopes"), dict) else {}
     scopes = {}
     for scope in SHARED_SYNC_SCOPES:
-        meta = _shared_sync_machine_remote_meta(sessao, scope) or {}
+        meta = _shared_sync_machine_remote_meta(sessao, scope, strict=True) or {}
         state_key = _shared_sync_machine_state_scope(scope)
         scope_state = state_scopes.get(state_key) or {}
         remote_hash = str(meta.get("snapshot_hash") or "")
