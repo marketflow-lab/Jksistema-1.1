@@ -34,7 +34,6 @@ from backend.services.codex_turn_context import (
 )
 from backend.modules.perguntas_pos_venda.ai.contracts import PerguntasIARespostaPoliticaInvalida
 from backend.modules.perguntas_pos_venda.ai.deep_research import (
-    evidence_identity,
     load_product_research_evidence,
     load_verified_product_evidence,
 )
@@ -79,7 +78,7 @@ PUBLIC_SUBQUESTION_INTENTS = frozenset({
     "general",
     "post_sale",
 })
-PROMPT_VERSION = "jk_ml_customer_reply_codex_v17"
+PROMPT_VERSION = "jk_ml_customer_reply_codex_v18"
 SCHEMA_VERSION = "5.2"
 QUEUE_POLICY_VERSION = "jk_ppv_queue_v3"
 VEHICLE_IDENTITY_POLICY = "jk_public_vin_decode_v1"
@@ -109,8 +108,13 @@ PROMPT_HASH = hashlib.sha256(
         f"factual-critic:{FACTUAL_CRITIC_POLICY}|"
         f"document-vision:{PRODUCT_DOCUMENT_VISION_POLICY}|"
         f"public-research-policy:{PUBLIC_RESEARCH_POLICY}|"
-        "sku-question-context-v1|adaptive-public-flow-v1|"
-        "sku-context-max:8000|simple-prompt-max:12000|high-risk-stage-max:24000|"
+        "store-sku-binding:jk_context_store_sku_binding_v1|"
+        "store-sku-question-context:jk_ml_store_sku_question_context_v1|"
+        "store-sku-migration:jk_context_store_sku_migration_v1|"
+        "adaptive-public-flow-v1|curation-schema:3|integral-context-no-truncation-v1|"
+        "canonical-document-max:24000|guidance-max:4000|operational-max:2000|"
+        "question-history-max:1500|integral-envelope-max:32000|"
+        "simple-prompt-max:40000|high-risk-stage-max:48000|global-transport-max:52000|"
         "conditional-public-web-v1|"
         "six-stage-sol-high|two-round-gap-research|directed-reference-relations|"
         "nonempty-ai-draft-preserved|public-signature-append-only-v1|oversize-manual-edit-v1|"
@@ -4154,6 +4158,15 @@ def _product_evidence_identity(
     item: dict[str, Any],
     request: dict[str, Any],
 ) -> dict[str, str]:
+    from backend.services.cadastro_compatibilidade import (
+        resolver_loja_ativa_para_leitura,
+    )
+
+    store_identity = resolver_loja_ativa_para_leitura(
+        str(question.get("_tenant_id") or request.get("client_id") or ""),
+        store,
+    ) if str(question.get("_tenant_id") or request.get("client_id") or "").strip() else {}
+    store_ref = str(store_identity.get("store_id") or "").strip()
     seller = item.get("seller") if isinstance(item.get("seller"), dict) else {}
     item_id = str(item.get("id") or question.get("item_id") or request.get("item_id") or "").strip()
     site_id = str(item.get("site_id") or cfg.get("site_id") or "").strip()
@@ -4174,7 +4187,7 @@ def _product_evidence_identity(
         variation_state,
     )
     raw_identity = {
-        "store_ref": store,
+        "store_ref": store_ref,
         "seller_id": str(
             item.get("seller_id")
             or seller.get("id")
@@ -4187,14 +4200,12 @@ def _product_evidence_identity(
         "item_id": item_id,
         "variation_id": variation_id,
     }
-    return evidence_identity({
-        "store": store,
-        "item": {
-            "id": raw_identity["item_id"],
-            "seller_sku": raw_identity["sku"],
-        },
-        "product_evidence_identity": raw_identity,
-    })
+    # Public V18 must fail closed when the opaque store identity is unresolved;
+    # never replace it with the human-readable store name.
+    return {
+        key: str(value or "").strip()[:180]
+        for key, value in raw_identity.items()
+    }
 
 
 def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -4230,6 +4241,7 @@ def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     question["_codex_on_thread_ready"] = lambda thread_id: _persist_thread_ready(job, thread_id)
     question["_codex_operational_failure_count"] = max(0, int(job.get("operational_failure_count") or 0))
     question["_codex_prompt_version"] = str(job.get("prompt_version") or PROMPT_VERSION)
+    question["_tenant_id"] = client_id
     question["_codex_schema_version"] = str(job.get("schema_version") or SCHEMA_VERSION)
     question["_agent_subquestions"] = list(job.get("subquestions") or [])
     question["_research_attempt"] = max(1, int(job.get("attempt_count") or 0) + 1)

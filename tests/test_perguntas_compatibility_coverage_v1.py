@@ -340,11 +340,16 @@ def test_canonical_coverage_is_model_context_and_never_overwrites_its_decision()
     for sku in ("241", "241-1"):
         coverage = _bound(dossier, sku=sku)
         hub_result = {
-            "function": "context_hub_search",
+            "function": "context_hub_store_sku_read",
             "result": {
                 "found": True,
                 "generation_id": "g-active",
-                "results": [{"compatibility_coverage": coverage}],
+                "generation_hash": "hash-active",
+                "canonical_document": {"compatibility_coverage": coverage},
+                "guidance": {"general": {}, "sku": {}},
+                "hashes": {"canonical_sku": "hash-coverage"},
+                "conflicts": [],
+                "gaps": [],
             },
         }
         agent_input = {
@@ -388,11 +393,12 @@ def test_canonical_coverage_is_model_context_and_never_overwrites_its_decision()
             reason="untrusted_external_conflict",
         )
         stage_prompts: dict[str, str] = {}
+        stage_tools: dict[str, list[dict]] = {}
         technical_candidate: dict[str, AIAnswer] = {}
 
         def model_answer(_prompt, _metadata, *, stage, tool_results=None):
-            del tool_results
             stage_prompts[stage] = _prompt
+            stage_tools[stage] = list(tool_results or [])
             if stage == "compatibility_analysis":
                 client.compatibility_analysis.update({
                     "decision": "insufficient",
@@ -471,7 +477,10 @@ def test_canonical_coverage_is_model_context_and_never_overwrites_its_decision()
         identity_call.assert_called_once()
         assert web_call.call_count == 2
         assert "research_skipped" not in client.compatibility_analysis
-        assert "qualquer celular do mercado" in stage_prompts["compatibility_analysis"]
+        assert "qualquer celular do mercado" not in stage_prompts["compatibility_analysis"]
+        assert "qualquer celular do mercado" in json.dumps(
+            stage_tools["compatibility_analysis"], ensure_ascii=False,
+        )
         assert client.compatibility_analysis["decision"] == "insufficient"
         assert client.compatibility_analysis["reason"] == "untrusted_external_conflict"
         assert [step["status"] for step in client.context_pipeline if step["name"] in {

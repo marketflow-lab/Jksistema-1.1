@@ -50,8 +50,8 @@ def _structured_intent(
     }
 
 
-def _compatibility_input(*, tenant_id: str = "outro-tenant") -> dict:
-    return {
+def _compatibility_input(*, tenant_id: str = "outro-tenant", exact_identity: bool = False) -> dict:
+    payload = {
         "tenant_id": tenant_id,
         "store": "JK Pecas",
         "question": {"id": "Q1", "text": "Serve na BMW R1300GS?"},
@@ -65,22 +65,58 @@ def _compatibility_input(*, tenant_id: str = "outro-tenant") -> dict:
         "intent": _structured_intent("compatibility", web=True),
         "app_guidance": "Responda com cordialidade.",
     }
+    if exact_identity:
+        payload["product_evidence_identity"] = {
+            "store_ref": "b1e5a6efb16c0db69bba1836",
+            "seller_id": "588182191",
+            "site_id": "MLB",
+            "sku": "001",
+            "item_id": "MLB1",
+            "variation_id": "",
+        }
+    return payload
 
 
-def _hub_result(*, truth_class: str = "canonical", snippet: str = "SKU 001 usa base Navigator IV, V e VI.") -> dict:
+def _hub_result(
+    *,
+    truth_class: str = "canonical",
+    snippet: str = "SKU 001 usa base Navigator IV, V e VI.",
+    gaps: list[str] | None = None,
+) -> dict:
     factual = truth_class in {"canonical", "source", "generated_verified", "versioned_technical"}
     return {
-        "function": "context_hub_search",
-        "arguments": {"query_hash": "abc", "limit": 6},
+        "function": "context_hub_store_sku_read",
+        "arguments": {"query_hash": "abc", "identity_bound": True},
         "result": {
             "found": True,
             "count": 1,
             "authoritative_count": 1 if factual else 0,
+            "generation_id": "g1",
+            "generation_hash": "f" * 64,
+            "generation_version": 1,
+            "canonical_document": {
+                "schema_version": 2,
+                "sku": "001",
+                "nome_produto": "Adaptador BMW Navigator",
+                "conteudo_tecnico_integral": snippet,
+            },
+            "guidance": {
+                "general": {"orientacoes_perguntas": "Responda com cordialidade."},
+                "sku": {"notas": "Use somente fatos comprovados."},
+            },
+            "hashes": {
+                "canonical_sku": "a" * 64,
+                "store_guidance": "b" * 64,
+                "sku_guidance": "c" * 64,
+            },
+            "binding": {"binding_hash": "d" * 64},
+            "conflicts": [],
+            "gaps": list(gaps or []),
             "results": [{
                 "doc_id": "jk:sku:001",
                 "chunk_id": "jk:sku:001#0",
                 "snippet": snippet,
-                "reference": "SKU/001.json",
+                "reference": "jk:store-sku:001",
                 "truth_class": truth_class,
                 "source_version": "1.0.101",
                 "source_hash": "a" * 64,
@@ -260,6 +296,57 @@ def test_context_hub_search_binds_server_tenant_and_allowlists_untrusted_rows(mo
     assert legacy["eligible_as_factual_evidence"] is False
     assert legacy["eligible_as_solo_evidence"] is False
     assert "jk:sku:002" not in json.dumps(result, ensure_ascii=False)
+
+
+def test_v18_public_context_uses_exact_store_sku_reader_without_global_fallback(monkeypatch):
+    from backend.modules.context_hub import retrieval as context_hub_retrieval
+    from backend.modules.context_hub import store_sku_repository
+
+    calls = []
+    payload = _compatibility_input(exact_identity=True)
+    payload["task"] = "mercado_livre_public_question_draft"
+
+    def exact_reader(client_id, identity):
+        calls.append((client_id, dict(identity)))
+        return _hub_result()["result"]
+
+    monkeypatch.setattr(store_sku_repository, "load_store_sku_knowledge", exact_reader)
+    monkeypatch.setattr(
+        context_hub_retrieval,
+        "search_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("busca global proibida")),
+    )
+
+    result = agent_context._perguntas_ia_context_hub_tool("000002", payload)
+
+    assert result["function"] == "context_hub_store_sku_read"
+    assert result["result"]["found"] is True
+    assert calls == [("000002", payload["product_evidence_identity"])]
+
+
+def test_v18_public_context_fails_closed_when_exact_identity_is_incomplete(monkeypatch):
+    from backend.modules.context_hub import retrieval as context_hub_retrieval
+    from backend.modules.context_hub import store_sku_repository
+
+    payload = _compatibility_input(exact_identity=True)
+    payload["task"] = "mercado_livre_public_question_draft"
+    payload["product_evidence_identity"].pop("seller_id")
+    monkeypatch.setattr(
+        store_sku_repository,
+        "load_store_sku_knowledge",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("identidade incompleta")),
+    )
+    monkeypatch.setattr(
+        context_hub_retrieval,
+        "search_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("fallback global proibido")),
+    )
+
+    result = agent_context._perguntas_ia_context_hub_tool("000002", payload)
+
+    assert result["function"] == "context_hub_store_sku_read"
+    assert result["result"]["found"] is False
+    assert result["result"]["reason_code"] == "exact_identity_incomplete"
 
 
 def test_context_hub_product_evidence_requires_exact_identity_and_deduplicates_without_coverage(monkeypatch):
@@ -677,8 +764,8 @@ def test_marketplace_description_cannot_inject_collector_lines():
     assert grounding["sources"] == [collected_url]
 
 
-def test_compatibility_pipeline_orders_internal_hub_legacy_then_web():
-    agent_input = _compatibility_input()
+def test_compatibility_pipeline_orders_internal_hub_integral_guidance_then_web():
+    agent_input = _compatibility_input(exact_identity=True)
     client = agent_clients._PerguntasVertexGeminiV2Client("000002", "JK Pecas", "codex:gpt-5.5", agent_input)
 
     def api_tool(function_name):
@@ -712,7 +799,7 @@ def test_compatibility_pipeline_orders_internal_hub_legacy_then_web():
          patch.object(agent_clients, "_ia_tool_get_product_data", return_value=api_tool("get_product_data")), \
          patch.object(agent_clients, "_ia_tool_get_bling_product", return_value=api_tool("get_bling_product")), \
          patch.object(agent_clients, "_perguntas_ia_context_hub_tool", return_value=_hub_result()), \
-         patch.object(agent_clients, "_perguntas_ia_memoria_bloco_prompt", return_value="Memoria aprovada"), \
+         patch.object(agent_clients, "_perguntas_ia_memoria_bloco_prompt", side_effect=AssertionError("JSON legado nao pode ser lido")) as legacy_memory, \
          patch.object(agent_clients, "_ia_agent_perguntas_product_identity_web_tool", return_value=web_identity), \
          patch.object(agent_clients, "_ia_agent_perguntas_web_tool", return_value=web_final), \
          patch.object(client, "_call_model", return_value=answer), \
@@ -731,7 +818,7 @@ def test_compatibility_pipeline_orders_internal_hub_legacy_then_web():
         "bling_product",
         "context_hub_sku_reference",
         "technical_question_plan_v1",
-        "approved_sku_memory_and_legacy_rules",
+        "integral_store_sku_guidance",
         "product_interface_research",
         "official_technical_research",
         "product_document_vision",
@@ -743,10 +830,11 @@ def test_compatibility_pipeline_orders_internal_hub_legacy_then_web():
         "technical_resolution_final",
         "compatibility_public_generation",
     ]
+    legacy_memory.assert_not_called()
 
 
 def test_canonical_context_hub_answer_uses_compact_simple_factual_route_without_web():
-    agent_input = _compatibility_input()
+    agent_input = _compatibility_input(exact_identity=True)
     agent_input["intent"] = _structured_intent("product_feature", web=True)
     agent_input["question"]["text"] = "Qual tipo de conector acompanha?"
     client = agent_clients._PerguntasVertexGeminiV2Client("000002", "JK Pecas", "codex:gpt-5.5", agent_input)
@@ -784,7 +872,7 @@ def test_canonical_context_hub_answer_uses_compact_simple_factual_route_without_
 
 
 def test_high_confidence_insufficient_hub_answer_is_enriched_by_mandatory_web():
-    agent_input = _compatibility_input()
+    agent_input = _compatibility_input(exact_identity=True)
     agent_input["intent"] = _structured_intent("product_feature", web=False)
     agent_input["question"]["text"] = "A ventoinha aciona com quantos graus?"
     agent_input["item"].update({
@@ -826,7 +914,10 @@ def test_high_confidence_insufficient_hub_answer_is_enriched_by_mandatory_web():
     with patch.object(
         agent_clients,
         "_perguntas_ia_context_hub_tool",
-        return_value=_hub_result(snippet="SKU 001: sensor termico de dois terminais."),
+        return_value=_hub_result(
+            snippet="SKU 001: sensor termico de dois terminais.",
+            gaps=["decisive_fact_missing"],
+        ),
     ), patch.object(
         agent_clients,
         "_ia_agent_perguntas_web_tool",
@@ -863,7 +954,7 @@ def test_general_public_flow_queries_internal_sources_first_and_exposes_only_san
     events: list[str] = []
     queries: list[str] = []
     captured: dict[str, object] = {}
-    agent_input = _compatibility_input()
+    agent_input = _compatibility_input(exact_identity=True)
     agent_input["intent"] = _structured_intent("product_feature", web=True)
     agent_input["question"]["text"] = f"Qual a voltagem? VIN {vin}; {email}; {phone}"
     client = agent_clients._PerguntasVertexGeminiV2Client(
@@ -925,7 +1016,7 @@ def test_general_public_flow_queries_internal_sources_first_and_exposes_only_san
 
     def hub(*_args, **_kwargs):
         events.append("hub")
-        return _hub_result()
+        return _hub_result(gaps=["decisive_fact_missing"])
 
     def web(_client_id, _research_input, tool_results):
         events.append("web")

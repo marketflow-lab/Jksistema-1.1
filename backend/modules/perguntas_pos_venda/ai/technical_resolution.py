@@ -8,6 +8,9 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Mapping, Sequence
 
 from ml_questions_gemini.prompt_builder import _untrusted_json_block
+from backend.modules.context_hub.store_sku_contracts import (
+    STORE_SKU_QUESTION_CONTEXT_SCHEMA,
+)
 
 from .technical_planning import (
     TECHNICAL_EVIDENCE_GRAPH_SCHEMA,
@@ -339,8 +342,35 @@ def _fallback_questions(context: Mapping[str, Any]) -> list[object]:
     return [text] if _text(text, 600) else []
 
 
+def _integral_context_v18(context: Mapping[str, Any]) -> bool:
+    return _text(context.get("schema"), 100) == STORE_SKU_QUESTION_CONTEXT_SCHEMA
+
+
+def _technical_material_prompt_block(context: Mapping[str, Any]) -> str:
+    if not _integral_context_v18(context):
+        return (
+            "\n\nMATERIAL_TECNICO_NAO_CONFIAVEL:\n"
+            + _untrusted_json_block("material_tecnico", _safe_prompt_value(dict(context)))
+        )
+    supplemental = {
+        key: context[key]
+        for key in ("technical_evidence_graph", "technical_references")
+        if key in context
+    }
+    block = (
+        "\n\nUse integralmente o resultado tipado store_sku_question_context desta etapa; "
+        "ele e o mesmo envelope imutavel de loja/SKU usado nas demais etapas."
+    )
+    if supplemental:
+        block += (
+            "\n\nARTEFATOS_TECNICOS_DERIVADOS_NAO_CONFIAVEIS:\n"
+            + _untrusted_json_block("artefatos_tecnicos", _safe_prompt_value(supplemental))
+        )
+    return block
+
+
 def technical_question_plan_prompt(context: Mapping[str, Any]) -> str:
-    return (
+    prompt = (
         "ETAPA INTERNA DE PLANEJAMENTO TECNICO. Identifique todas as necessidades e subperguntas tecnicas do comprador "
         "antes da pesquisa e da decisao. Corrija silenciosamente uma classificacao inicial imprecisa quando a pergunta "
         "mostrar assunto mais especifico, incluindo local de instalacao, funcao da peca, aplicacao, compatibilidade, "
@@ -349,7 +379,15 @@ def technical_question_plan_prompt(context: Mapping[str, Any]) -> str:
         "dados pessoais ou identificadores do comprador em consultas. Responda exclusivamente em JSON no contrato "
         f"{TECHNICAL_QUESTION_PLAN_SCHEMA}, com requirements e queries; para cada identificador, preencha identifier_origins "
         "com value, origin e source_ref, sem inferir procedencia; use no maximo oito requirements e quatro queries.\n\n"
-        "CONTEXTO_TECNICO_NAO_CONFIAVEL:\n"
+    )
+    if _integral_context_v18(context):
+        return prompt + (
+            "Use integralmente o resultado tipado store_sku_question_context desta etapa; "
+            "nao solicite nem reconstrua outro contexto."
+        )
+    return (
+        prompt
+        + "CONTEXTO_TECNICO_NAO_CONFIAVEL:\n"
         + _untrusted_json_block("contexto_planejamento_tecnico", _safe_prompt_value(dict(context)))
     )
 
@@ -390,8 +428,7 @@ def technical_resolution_prompt(
         "reference_relations, overall_decision, commercial_state, confidence, reason, gap_queries, contingency_answer_body e "
         "compatibility_analysis.\n\nPLANO_TECNICO_NAO_CONFIAVEL:\n"
         + _untrusted_json_block("plano_tecnico", _safe_prompt_value(plan.to_dict()))
-        + "\n\nMATERIAL_TECNICO_NAO_CONFIAVEL:\n"
-        + _untrusted_json_block("material_tecnico", _safe_prompt_value(dict(context)))
+        + _technical_material_prompt_block(context)
         + previous_block
     )
 

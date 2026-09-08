@@ -279,7 +279,70 @@ def _perguntas_ia_context_hub_merge_rows(
         depth += 1
     return results
 
-def _search_context_hub(client_id: str, entrada: dict, query: str, query_hash: str) -> dict:
+def _read_public_store_sku_context(client_id: str, entrada: dict, query_hash: str) -> dict:
+    arguments = {
+        "query_hash": query_hash,
+        "contract": "jk_ml_store_sku_question_context_v1",
+        "identity_bound": True,
+    }
+    try:
+        from backend.modules.context_hub.store_sku_repository import (
+            load_store_sku_knowledge,
+        )
+
+        identity = _perguntas_ia_context_hub_product_evidence_identity(entrada)
+        loaded = load_store_sku_knowledge(client_id, identity) if identity else {
+            "found": False,
+            "reason_code": "exact_identity_incomplete",
+            "canonical_document": {},
+            "guidance": {"general": {}, "sku": {}},
+            "conflicts": [],
+            "gaps": ["exact_identity_incomplete"],
+            "read_only": True,
+        }
+        found = bool(loaded.get("found"))
+        result = {
+            **loaded,
+            "results": ([{
+                "doc_id": "jk:store-sku:exact",
+                "type": "store_sku_canonical",
+                "truth_class": "canonical",
+                "source_hash": str((loaded.get("hashes") or {}).get("canonical_sku") or "")[:128],
+                "generation_id": str(loaded.get("generation_id") or "")[:160],
+                "eligible_as_factual_evidence": True,
+                "eligible_as_solo_evidence": True,
+                "content_role": "untrusted_reference_data",
+            }] if found else []),
+            "count": 1 if found else 0,
+            "authoritative_count": 1 if found else 0,
+            "legacy_unverified_count": 0,
+            "tenant_binding": "server_client_id",
+        }
+        return {"function": "context_hub_store_sku_read", "arguments": arguments, "result": result}
+    except Exception as exc:
+        logger.warning(
+            "[PERGUNTAS CONTEXT HUB] Leitura store-SKU indisponivel tenant_hash=%s erro=%s",
+            hashlib.sha256(str(client_id or "").encode("utf-8", errors="ignore")).hexdigest()[:12],
+            type(exc).__name__,
+        )
+        return {
+            "function": "context_hub_store_sku_read",
+            "arguments": arguments,
+            "result": {
+                "found": False,
+                "results": [],
+                "count": 0,
+                "authoritative_count": 0,
+                "unavailable": True,
+                "reason_code": "store_sku_context_unavailable",
+                "gaps": ["store_sku_context_unavailable"],
+                "read_only": True,
+                "tenant_binding": "server_client_id",
+            },
+        }
+
+
+def _search_legacy_context_hub(client_id: str, entrada: dict, query: str, query_hash: str) -> dict:
     try:
         from backend.modules.context_hub import dlp as context_hub_dlp
         from backend.modules.context_hub import retrieval as context_hub_retrieval
@@ -377,6 +440,12 @@ def _search_context_hub(client_id: str, entrada: dict, query: str, query_hash: s
                 "tenant_binding": "server_client_id",
             },
         }
+
+
+def _search_context_hub(client_id: str, entrada: dict, query: str, query_hash: str) -> dict:
+    if str(entrada.get("task") or "").strip() == "mercado_livre_public_question_draft":
+        return _read_public_store_sku_context(client_id, entrada, query_hash)
+    return _search_legacy_context_hub(client_id, entrada, query, query_hash)
 
 def _perguntas_ia_context_hub_tool(client_id: str, agent_input: Optional[dict[str, Any]]) -> dict:
     """Consulta o tenant ligado pelo servidor e devolve somente referencia allowlisted.

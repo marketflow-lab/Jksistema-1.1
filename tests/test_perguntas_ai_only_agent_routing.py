@@ -427,7 +427,7 @@ def test_response_policy_v7_applies_rvc_only_when_commercial_state_allows_it() -
 def test_codex_prompt_v15_hash_includes_vehicle_and_evidence_policies() -> None:
     from backend.services import perguntas_pos_venda_codex as codex
 
-    assert codex.PROMPT_VERSION == "jk_ml_customer_reply_codex_v17"
+    assert codex.PROMPT_VERSION == "jk_ml_customer_reply_codex_v18"
     assert codex.QUEUE_POLICY_VERSION == "jk_ppv_queue_v3"
     assert codex.SCHEMA_VERSION == "5.2"
     assert codex.VEHICLE_IDENTITY_POLICY == "jk_public_vin_decode_v1"

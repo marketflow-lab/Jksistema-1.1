@@ -239,7 +239,7 @@ def test_retry_persists_operational_failure_count(tmp_path, monkeypatch):
     assert saved["operational_failure_count"] == 1
 
 
-def test_public_web_follows_ai_flags_and_category_not_question_text():
+def test_public_web_is_deferred_to_integral_envelope_except_mandatory_categories():
     with patch.object(agent_inputs, "_perguntas_ia_legacy_guidance_metadata", return_value=(False, "")):
         technical_text_without_ai_web = agent_inputs._perguntas_ia_agent_input(
             "cliente",
@@ -265,10 +265,10 @@ def test_public_web_follows_ai_flags_and_category_not_question_text():
             {"intencao_atendimento": _structured_intent("compatibility", web=False)},
             "",
         )
-    assert technical_text_without_ai_web["use_web_search"] is True
-    assert "web_search" in technical_text_without_ai_web["allowed_tools"]
-    assert simple_text_with_ai_web["use_web_search"] is True
-    assert "web_search" in simple_text_with_ai_web["allowed_tools"]
+    assert technical_text_without_ai_web["use_web_search"] is False
+    assert "web_search" not in technical_text_without_ai_web["allowed_tools"]
+    assert simple_text_with_ai_web["use_web_search"] is False
+    assert "web_search" not in simple_text_with_ai_web["allowed_tools"]
     assert compatibility_without_flag["use_web_search"] is True
     assert "web_search" in compatibility_without_flag["allowed_tools"]
 

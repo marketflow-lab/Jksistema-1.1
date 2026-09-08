@@ -113,6 +113,15 @@ class CuratedPublishRequest(BaseModel):
     force: bool = False
 
 
+class StoreSkuScopeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    store_ref: str = Field(min_length=1, max_length=96, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
+    store_name: str = Field(default="", max_length=160)
+    seller_id: str = Field(min_length=1, max_length=32, pattern=r"^[0-9]{1,32}$")
+    site_id: Literal["MLB"] = "MLB"
+
+
 def _require_full_admin(request: Request, authorization: Optional[str]) -> dict[str, Any]:
     # Late import avoids coupling this module's import to backend_api composition.
     from backend.services.codex.console import security as console_security
@@ -378,6 +387,49 @@ def context_hub_curated_publish(
         raise _translate_error(error) from error
 
 
+def context_hub_store_sku_publish(
+    payload: StoreSkuScopeRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Publish only approved guidance into the exact active store generation."""
+
+    session = _require_full_admin(request, authorization)
+    try:
+        return context_hub_api.publish_approved_store_guidance(
+            _client_id_from_session(session),
+            {
+                **payload.model_dump(),
+                "surface": "mercado_livre_public_questions",
+            },
+            actor=_actor_from_session(session),
+        )
+    except Exception as error:
+        raise _translate_error(error) from error
+
+
+def context_hub_store_sku_rollback(
+    generation_id: str,
+    payload: StoreSkuScopeRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Roll back one exact store without changing any other store pointer."""
+
+    session = _require_full_admin(request, authorization)
+    try:
+        return context_hub_api.rollback_store_sku_generation(
+            _client_id_from_session(session),
+            {
+                **payload.model_dump(),
+                "surface": "mercado_livre_public_questions",
+            },
+            generation_id,
+        )
+    except Exception as error:
+        raise _translate_error(error) from error
+
+
 def context_hub_curated_backups(
     request: Request,
     authorization: Optional[str] = Header(default=None),
@@ -430,6 +482,7 @@ __all__ = [
     "ContextHubSearchFilters",
     "ContextHubSearchRequest",
     "ContextHubSettingsRequest",
+    "StoreSkuScopeRequest",
     "context_hub_generation_get",
     "context_hub_generation_publish",
     "context_hub_generation_rollback",
@@ -448,4 +501,6 @@ __all__ = [
     "context_hub_curated_note_validate",
     "context_hub_curated_notes",
     "context_hub_curated_publish",
+    "context_hub_store_sku_publish",
+    "context_hub_store_sku_rollback",
 ]

@@ -5,13 +5,19 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 
 from backend.modules.perguntas_pos_venda.endpoints.runtime import runtime_adapter
 from backend.modules.perguntas_pos_venda.endpoints.security import get_tenant_id
 from backend.schemas import IAChatRequest, IATreinamentoPerguntasPosVendaRequest, IATreinamentoPerguntasPosVendaSimularRequest
 from backend.services.perguntas_pos_venda_state import ML_POS_VENDA_LIMITE_SEGURO, ML_RESPOSTA_PERGUNTA_MAX_CHARS
 from ml_questions_gemini.prompt_builder import _untrusted_json_block
+
+from backend.modules.context_hub.store_sku_contracts import STORE_SKU_PUBLIC_SURFACE
+from backend.modules.context_hub.store_sku_repository import (
+    create_store_guidance_draft,
+    load_store_guidance,
+)
 
 _chamar_codex_chat = runtime_adapter("_chamar_codex_chat")
 _chamar_deepseek_chat = runtime_adapter("_chamar_deepseek_chat")
@@ -70,6 +76,70 @@ def _resolver_escopo_loja_treinamento(
     )
 
 
+def _resolver_context_hub_scope(client_id: str, loja: str, store_id: str) -> dict[str, str]:
+    from backend.services import integracoes
+
+    matches = [
+        dict(value)
+        for value in (integracoes.carregar_lojas(client_id) or [])
+        if isinstance(value, dict)
+        and str(value.get("store_id") or "").strip() == str(store_id or "").strip()
+    ]
+    if len(matches) != 1:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "store_scope_unresolved",
+                "message": "A identidade exata da loja nao pode ser comprovada.",
+            },
+        )
+    integrations = (
+        matches[0].get("integracoes")
+        if isinstance(matches[0].get("integracoes"), dict)
+        else {}
+    )
+    ml = integrations.get("mercadolivre") if isinstance(integrations.get("mercadolivre"), dict) else {}
+    seller_id = str(ml.get("user_id") or ml.get("seller_id") or "").strip()
+    site_id = str(ml.get("site_id") or "").strip().upper()
+    if not seller_id or site_id != "MLB":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "store_marketplace_identity_incomplete",
+                "message": "A loja precisa ter seller e site MLB confirmados.",
+            },
+        )
+    return {
+        "tenant_scope": f"tenant:{client_id}",
+        "store_ref": store_id,
+        "store_name": loja,
+        "seller_id": seller_id,
+        "site_id": site_id,
+        "surface": STORE_SKU_PUBLIC_SURFACE,
+    }
+
+
+def _public_guidance_payload(req: IATreinamentoPerguntasPosVendaRequest) -> dict:
+    payload = {
+        "orientacoes_perguntas": str(req.orientacoes or "").strip(),
+        "contexto_loja": str(req.contexto_loja or "").strip(),
+        "compatibilidade_autopecas": str(req.compatibilidade_autopecas or "").strip(),
+        "proibicoes": str(req.proibicoes or "").strip(),
+        "exemplos_perguntas": list(req.exemplos or []),
+    }
+    return {key: value for key, value in payload.items() if value not in ("", [], {})}
+
+
+def _request_actor(request: Request) -> str:
+    auth_payload = getattr(request.state, "auth_payload", {})
+    auth_payload = auth_payload if isinstance(auth_payload, dict) else {}
+    return str(
+        getattr(request.state, "username", "")
+        or auth_payload.get("user_id")
+        or "questions-ui-user"
+    )
+
+
 def ml_ia_treinamento_obter(
     loja: Optional[str] = None,
     store_id: Optional[str] = None,
@@ -84,11 +154,107 @@ def ml_ia_treinamento_obter(
         store_id=store_id,
         include_inherited=False,
     )
+    # Keep post-sale fields from the unchanged legacy flow, but public guidance
+    # is read only from the active store generation.
+    data["orientacoes"] = ""
+    data["orientacoes_perguntas"] = ""
+    data["notas_sku"] = {}
+    data["exemplos"] = {
+        **(data.get("exemplos") if isinstance(data.get("exemplos"), dict) else {}),
+        "perguntas_anuncio": [],
+    }
+    if store_id:
+        scope = _resolver_context_hub_scope(client_id, loja, store_id)
+        active = load_store_guidance(client_id, scope)
+        general = (
+            (active.get("guidance") or {}).get("general")
+            if isinstance(active.get("guidance"), dict)
+            else {}
+        )
+        general = general if isinstance(general, dict) else {}
+        data["orientacoes"] = str(general.get("orientacoes_perguntas") or "")
+        data["orientacoes_perguntas"] = data["orientacoes"]
+        data["contexto_loja"] = str(general.get("contexto_loja") or "")
+        data["compatibilidade_autopecas"] = str(general.get("compatibilidade_autopecas") or "")
+        data["proibicoes"] = str(general.get("proibicoes") or "")
+        data["exemplos"]["perguntas_anuncio"] = list(general.get("exemplos_perguntas") or [])
+        data["notas_sku"] = {
+            str(sku): str(value.get("notas") or value.get("texto") or "").strip()
+            for sku, value in (active.get("sku_guidance") or {}).items()
+            if isinstance(value, dict)
+            and str(value.get("notas") or value.get("texto") or "").strip()
+        }
+        data["context_generation_id"] = str(active.get("generation_id") or "")
+    data["public_guidance_storage"] = "context_hub_store_sku_v18"
     return {"success": True, **data, "store_id": store_id}
 
 
-def ml_ia_treinamento_salvar(req: IATreinamentoPerguntasPosVendaRequest, client_id: str = Depends(get_tenant_id)):
+def ml_ia_treinamento_salvar(
+    req: IATreinamentoPerguntasPosVendaRequest,
+    request: Request,
+    client_id: str = Depends(get_tenant_id),
+):
     loja, store_id = _resolver_escopo_loja_treinamento(client_id, req.loja, req.store_id)
+    if _ia_treinamento_ppv_tipo_normalizar(req.tipo) != "pos_venda":
+        if not store_id:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "store_scope_required",
+                    "message": "Informe o store_id exato para salvar orientacoes publicas.",
+                },
+            )
+        scope = _resolver_context_hub_scope(client_id, loja, store_id)
+        actor = _request_actor(request)
+        general = _public_guidance_payload(req)
+        sku = str(req.sku or "").strip()
+        active = load_store_guidance(client_id, scope, sku=sku)
+        active_guidance = (
+            active.get("guidance") if isinstance(active.get("guidance"), dict) else {}
+        )
+        current_general = (
+            active_guidance.get("general")
+            if isinstance(active_guidance.get("general"), dict)
+            else {}
+        )
+        general_note = None
+        if not active.get("found") or general != current_general:
+            general_note = create_store_guidance_draft(
+                client_id,
+                scope,
+                guidance=general,
+                actor=actor,
+            )
+        sku_note = None
+        requested_sku_guidance = {"notas": str(req.notas_sku or "").strip()}
+        requested_sku_guidance = {
+            key: value for key, value in requested_sku_guidance.items() if value
+        }
+        current_sku = (
+            active_guidance.get("sku")
+            if isinstance(active_guidance.get("sku"), dict)
+            else {}
+        )
+        if sku and requested_sku_guidance != current_sku:
+            sku_note = create_store_guidance_draft(
+                client_id,
+                scope,
+                guidance=requested_sku_guidance,
+                sku=sku,
+                actor=actor,
+            )
+        requires_review = bool(general_note or sku_note)
+        return {
+            "success": True,
+            "tipo": "perguntas_anuncio",
+            "loja": loja,
+            "store_id": store_id,
+            "orientacoes": str(req.orientacoes or "").strip(),
+            "storage": "obsidian_context_hub_draft",
+            "requires_review": requires_review,
+            "note_id": str(((general_note or {}).get("note") or {}).get("note_id") or ""),
+            "sku_note_id": str(((sku_note or {}).get("note") or {}).get("note_id") or ""),
+        }
     data = _ia_treinamento_ppv_salvar(
         client_id,
         req.orientacoes,
@@ -118,6 +284,21 @@ def ml_ia_treinamento_listar_skus(
     }
 
 
+def _simulation_public_guidance(
+    client_id: str,
+    tipo_treinamento: str,
+    loja: str,
+    store_id: str,
+    sku: str,
+) -> dict:
+    if tipo_treinamento == "pos_venda" or not store_id:
+        return {}
+    scope = _resolver_context_hub_scope(client_id, loja, store_id)
+    loaded = load_store_guidance(client_id, scope, sku=str(sku or "").strip())
+    guidance = loaded.get("guidance")
+    return guidance if isinstance(guidance, dict) else {}
+
+
 def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest, client_id: str = Depends(get_tenant_id)):
     pergunta = str(req.pergunta or "").strip()
     if not pergunta:
@@ -132,6 +313,13 @@ def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest,
     )
     contexto_extra = str(req.contexto or "").strip()
     loja, store_id = _resolver_escopo_loja_treinamento(client_id, req.loja, req.store_id)
+    public_guidance = _simulation_public_guidance(
+        client_id,
+        tipo_treinamento,
+        loja,
+        store_id,
+        str(req.sku or "").strip(),
+    )
     assinatura_loja = _perguntas_ia_assinatura_loja(loja)
     metodo = (
         "O Metodo RVC comercial fica desativado neste pos-venda: acolha, responda o confirmado e oriente o proximo passo sem chamada de compra. "
@@ -163,6 +351,11 @@ def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest,
         "pergunta_comprador_nao_confiavel",
         {"text": pergunta},
     )
+    if public_guidance:
+        mensagem += "\n\n" + _untrusted_json_block(
+            "orientacoes_context_hub_loja_sku_nao_confiaveis",
+            public_guidance,
+        )
     sku_selecionado = _normalizar_sku_mes(str(req.sku or "").strip())
     produto_sku = (
         _ia_treinamento_ppv_produto_por_sku(client_id, sku_selecionado, store_id or loja)

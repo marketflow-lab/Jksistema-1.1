@@ -657,7 +657,7 @@ def _ia_agent_perguntas_tool_error(function_name: str, erro: object, timeout: bo
         result["matches"] = []
     if function_name in {"web_search_product_identity", "web_search_question_context"}:
         result["context"] = ""
-    if function_name == "context_hub_search":
+    if function_name in {"context_hub_search", "context_hub_store_sku_read"}:
         result["results"] = []
         result["count"] = 0
     return {

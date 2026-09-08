@@ -124,6 +124,18 @@ def create_context_hub_router(
         name="context_hub_curated_publish",
     )
     router.add_api_route(
+        "/api/admin/context-hub/store-sku/publish",
+        context_hub_endpoints.context_hub_store_sku_publish,
+        methods=["POST"],
+        name="context_hub_store_sku_publish",
+    )
+    router.add_api_route(
+        "/api/admin/context-hub/store-sku/generations/{generation_id}/rollback",
+        context_hub_endpoints.context_hub_store_sku_rollback,
+        methods=["POST"],
+        name="context_hub_store_sku_rollback",
+    )
+    router.add_api_route(
         "/api/admin/context-hub/curation/backups",
         context_hub_endpoints.context_hub_curated_backups,
         methods=["GET"],

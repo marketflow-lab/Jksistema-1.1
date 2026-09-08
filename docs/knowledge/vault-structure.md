@@ -11,11 +11,24 @@ O publicador cria a estrutura abaixo sem substituir arquivos humanos:
   Contratos/
   Operacao/
   Produtos/
+  Lojas/
+    <store_id--loja>/
+      SKUs/
+        <sku>/
+          Contexto.md
 80_Curadoria/
   ADRs/
   Regras/
   Notas/
+  Lojas/
+    <store_id--loja>/
+      Orientacoes-Gerais.md
+      SKUs/
+        <sku>/
+          Orientacoes.md
 90_Arquivo/
+  Quarentena/
+    SKUs-sem-identidade/
 ```
 
 `70_Gerado` é substituído apenas por publicação atômica de uma geração
@@ -31,3 +44,8 @@ preservado byte a byte, mesmo que não contenha todos os grupos gerenciados ou
 tenha JSON inválido. Grupos ausentes devem ser configurados pela interface do
 Obsidian. O `workspace.json` nunca é alterado.
 `80_Curadoria` e `90_Arquivo` nunca são apagados ou sobrescritos pelo gerador.
+
+Para perguntas públicas do Mercado Livre, `70_Gerado/Lojas` representa uma
+geração ativa independente por loja. O leitor exige tenant, `store_id`, seller,
+site, item, variação (quando houver) e SKU exatos; ele não consulta a geração
+global como fallback. Arquivos em quarentena têm `ai_usage: denied`.

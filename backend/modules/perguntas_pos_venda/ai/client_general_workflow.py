@@ -505,6 +505,28 @@ def run_general(
         internal_sources=internal_sources,
         context_hub=hub,
     )
+    # Public-question guidance is carried only inside the exact store/SKU
+    # envelope. The legacy JSON profile remains available to post-sale only.
+    client.agent_input["seller_behavior_profile"] = {
+        "schema": "jk_seller_behavior_profile_v2",
+        "source": "context_hub_store_sku_v18",
+        "legacy_json_used": False,
+    }
+    if packet.get("automation_blocked"):
+        client.manual_review_required = True
+        client._candidate_reviewed_in_workflow = True
+        client.context_pipeline.append({
+            "step": hooks.next_pipeline_step(client, 3),
+            "name": "integral_store_sku_context_validation",
+            "status": "blocked",
+            "reason": "integral_context_validation_failed",
+        })
+        return AIAnswer(
+            answer="",
+            confidence=0.0,
+            requires_human_review=True,
+            reason="integral_context_validation_failed",
+        )
     route = str(packet.get("route") or ROUTE_HIGH_RISK)
     if route in {ROUTE_SIMPLE_OPERATIONAL, ROUTE_SIMPLE_FACTUAL}:
         behavior_profile = _behavior_profile(client)

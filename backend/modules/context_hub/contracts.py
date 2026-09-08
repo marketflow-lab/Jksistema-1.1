@@ -25,7 +25,7 @@ CONTEXT_RETRIEVAL_V3 = "jk.context-hub.retrieval.v3"
 CONTEXT_RETRIEVAL_AUTHORITY_POLICY = "jk.context-hub.authority.v1"
 
 
-CURATION_SCHEMA_VERSION = 2
+CURATION_SCHEMA_VERSION = 3
 
 
 CURATION_STATES = {"draft", "reviewed", "approved", "rejected"}
@@ -67,11 +67,14 @@ VAULT_DIRECTORIES = (
     "70_Gerado/Contratos",
     "70_Gerado/Operacao",
     "70_Gerado/Produtos",
+    "70_Gerado/Lojas",
     "80_Curadoria/ADRs",
     "80_Curadoria/Regras",
     "80_Curadoria/Notas",
     "80_Curadoria/Black-Jhon",
+    "80_Curadoria/Lojas",
     "90_Arquivo",
+    "90_Arquivo/Quarentena/SKUs-sem-identidade",
 )
 
 

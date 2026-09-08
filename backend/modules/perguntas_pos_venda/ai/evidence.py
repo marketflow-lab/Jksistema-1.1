@@ -603,7 +603,7 @@ def _collect_tool_grounding(grounding: dict[str, Any], tool: dict, target_identi
     status_text = _perguntas_ia_v2_grounding_texto(json.dumps(result, ensure_ascii=False, default=str)[:3000])
     if result.get("error") or not found or any(marker in status_text for marker in ("http 403", "http status 403", "status code 403")):
         return
-    if function_name == "context_hub_search":
+    if function_name in {"context_hub_search", "context_hub_store_sku_read"}:
         _grounding_context_hub(grounding, result.get("results") if isinstance(result.get("results"), list) else [])
         return
     if function_name == "local_memory_and_rules":
