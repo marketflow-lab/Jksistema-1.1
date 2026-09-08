@@ -1,10 +1,13 @@
 import asyncio
+import base64
+import io
 import threading
 import time
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from PIL import Image
 
 from backend.services import cadastro_importacao_catalogos as catalogos
 from backend.services import cadastro_catalogo_common
@@ -14,6 +17,25 @@ _FINGERPRINT_INITIAL = "a" * 64
 _FINGERPRINT_REFRESHED = "b" * 64
 _FINGERPRINT_CONCURRENT = "c" * 64
 _FINGERPRINT_RECONNECTED = "d" * 64
+
+
+def _test_image_data_url(
+    size: tuple[int, int] = (96, 72),
+    *,
+    noisy: bool = False,
+) -> tuple[str, bytes]:
+    image = (
+        Image.effect_noise(size, 100).convert("RGB")
+        if noisy
+        else Image.new("RGB", size, (40, 120, 200))
+    )
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    content = output.getvalue()
+    return (
+        "data:image/png;base64," + base64.b64encode(content).decode("ascii"),
+        content,
+    )
 
 
 def _request(username="operador-a"):
@@ -262,6 +284,115 @@ def test_preview_cria_ausentes_preenche_vazios_e_preserva_conflitos():
         "candidates": ["SKU-A", "SKU-B"],
     }]
     assert "nao-publicar" not in str(result)
+
+
+def test_preview_ml_planeja_capa_confiavel_sem_expor_dados_da_imagem():
+    photo_url = "https://http2.mlstatic.com/D_NQ_NP_123-MLB999-F.jpg"
+    result = catalogos._construir_preview(
+        "mercadolivre",
+        {
+            "coverage_complete": True,
+            "items": [{
+                "sku": "FOTO-1",
+                "fields": {
+                    "mlb_principal": "MLB999",
+                    "foto_url_ml": photo_url,
+                    "titulo_ml": "Produto com capa",
+                },
+            }],
+        },
+        [],
+    )
+
+    assert result["can_apply"] is True
+    assert result["apply_rows"][0]["photo_plan"] == {
+        "url": photo_url,
+        "item_id": "MLB999",
+    }
+    assert any(
+        change["field"] == "foto" and change["action"] == "fill"
+        for change in result["items"][0]["changes"]
+    )
+    public = catalogos._public_job(_job_ready(preview=result, can_apply=True))
+    assert "photo_plan" not in str(public)
+    assert "data:image" not in str(public)
+
+
+def test_preview_ml_preserva_foto_local_existente():
+    result = catalogos._construir_preview(
+        "mercadolivre",
+        {
+            "coverage_complete": True,
+            "items": [{
+                "sku": "FOTO-LOCAL",
+                "fields": {
+                    "mlb_principal": "MLB123",
+                    "foto_url_ml": "https://http2.mlstatic.com/capa.jpg",
+                },
+            }],
+        },
+        [{
+            "sku": "FOTO-LOCAL",
+            "row_version": 3,
+            "scope_source": "store_file",
+            "foto": "cadastro_fotos/lojas/store-a/FOTO-LOCAL.png",
+        }],
+    )
+
+    assert "photo_plan" not in result["apply_rows"][0]
+    assert all(change["field"] != "foto" for change in result["items"][0]["changes"])
+
+
+def test_preview_ml_sem_foto_local_pode_tentar_novamente_a_capa():
+    photo_url = "https://http2.mlstatic.com/capa-atual.jpg"
+    result = catalogos._construir_preview(
+        "mercadolivre",
+        {
+            "coverage_complete": False,
+            "sku_coverage_complete": True,
+            "items": [{
+                "sku": "RETRY-FOTO",
+                "fields": {
+                    "mlb_principal": "MLB456",
+                    "foto_url_ml": photo_url,
+                },
+            }],
+        },
+        [{
+            "sku": "RETRY-FOTO",
+            "row_version": 8,
+            "scope_source": "store_file",
+            "foto": "",
+            "mlb_principal": "MLB456",
+            "foto_url_ml": photo_url,
+        }],
+    )
+
+    assert result["coverage_complete"] is False
+    assert result["sku_coverage_complete"] is True
+    assert result["can_apply"] is True
+    assert result["apply_rows"][0]["fields"] == {}
+    assert result["apply_rows"][0]["photo_plan"]["item_id"] == "MLB456"
+
+
+def test_preview_ml_rejeita_url_de_capa_fora_do_host_confiavel():
+    result = catalogos._construir_preview(
+        "mercadolivre",
+        {
+            "coverage_complete": True,
+            "items": [{
+                "sku": "FOTO-SSRF",
+                "fields": {
+                    "mlb_principal": "MLB789",
+                    "foto_url_ml": "https://example.invalid/segredo.jpg",
+                },
+            }],
+        },
+        [],
+    )
+
+    assert "photo_plan" not in result["apply_rows"][0]
+    assert any("capa confiavel" in warning for warning in result["warnings"])
 
 
 def test_preview_incompleta_nunca_pode_ser_aplicada():
@@ -981,6 +1112,152 @@ def test_apply_revalida_fingerprint_e_envia_somente_snapshot(monkeypatch):
     assert chamadas[0][3]["campos_derivados_permitidos"] == catalogos._PRIVILEGED_DERIVED_FIELDS["bling"]
     assert response["status"] == "applied"
     assert response_retry["apply_result"] == {"incluidos": 1, "atualizados": 0, "total": 1}
+
+
+def test_apply_ml_baixa_comprime_e_entrega_capa_ao_writer_atomico(monkeypatch):
+    photo_url = "https://http2.mlstatic.com/capa-segura.jpg"
+    job = _job_ready(source="mercadolivre")
+    job["preview"]["apply_rows"] = [{
+        "sku": "FOTO-1",
+        "sku_normalizado": "FOTO-1",
+        "row_version": 0,
+        "expected_scope": "absent",
+        "fields": {"mlb_principal": "MLB123", "foto_url_ml": photo_url},
+        "photo_plan": {"url": photo_url, "item_id": "MLB123"},
+    }]
+    catalogos.CATALOG_IMPORT_JOBS[job["job_id"]] = job
+    monkeypatch.setattr(
+        catalogos,
+        "_configuracao_aplicacao_fingerprint",
+        lambda *_args: _FINGERPRINT_INITIAL,
+    )
+    source_data_url, source_bytes = _test_image_data_url(size=(1400, 1000), noisy=True)
+    monkeypatch.setattr(
+        catalogos.cadastro_ml,
+        "_download_photo_data_url",
+        lambda *_args: {"data_url": source_data_url, "filename": "MLB123.png"},
+    )
+    saved = []
+
+    def salvar(client_id, store_id, payloads, **kwargs):
+        saved.append((client_id, store_id, payloads, kwargs))
+        kwargs["precommit_validator"]({"store_id": store_id, "nome": "Loja A"})
+        return {"incluidos": 1, "atualizados": 0, "total": 1}
+
+    monkeypatch.setattr(catalogos, "salvar_produtos_loja_em_lote", salvar)
+    response = asyncio.run(
+        catalogos.aplicar_importacao_catalogo(
+            "store-a", "job-seguro", _request(), "cliente-a"
+        )
+    )
+
+    payload = saved[0][2][0]
+    assert payload["__foto_filename"] == "MLB123.jpg"
+    assert payload["__foto_data_url"].startswith("data:image/jpeg;base64,")
+    compressed_bytes = base64.b64decode(payload["__foto_data_url"].split(",", 1)[1])
+    assert len(compressed_bytes) < len(source_bytes)
+    assert len(compressed_bytes) <= catalogos.CATALOG_IMPORT_PHOTO_MAX_COMPRESSED_BYTES
+    with Image.open(io.BytesIO(compressed_bytes)) as compressed:
+        assert compressed.format == "JPEG"
+        assert max(compressed.size) <= catalogos.CATALOG_IMPORT_PHOTO_MAX_EDGE_PX
+    assert response["apply_result"]["fotos_salvas"] == 1
+    assert response["apply_result"]["fotos_ignoradas"] == 0
+
+
+def test_apply_ml_falha_de_download_nao_impede_salvar_metadados(monkeypatch):
+    photo_url = "https://http2.mlstatic.com/capa-indisponivel.jpg"
+    job = _job_ready(source="mercadolivre")
+    job["preview"]["apply_rows"] = [{
+        "sku": "FOTO-2",
+        "sku_normalizado": "FOTO-2",
+        "row_version": 0,
+        "expected_scope": "absent",
+        "fields": {"mlb_principal": "MLB456", "foto_url_ml": photo_url},
+        "photo_plan": {"url": photo_url, "item_id": "MLB456"},
+    }]
+    catalogos.CATALOG_IMPORT_JOBS[job["job_id"]] = job
+    monkeypatch.setattr(
+        catalogos,
+        "_configuracao_aplicacao_fingerprint",
+        lambda *_args: _FINGERPRINT_INITIAL,
+    )
+    monkeypatch.setattr(
+        catalogos.cadastro_ml,
+        "_download_photo_data_url",
+        lambda *_args: (_ for _ in ()).throw(ValueError("url-secreta")),
+    )
+    saved = []
+    monkeypatch.setattr(
+        catalogos,
+        "salvar_produtos_loja_em_lote",
+        lambda _client, _store, payloads, **_kwargs: (
+            saved.extend(payloads)
+            or {"incluidos": 1, "atualizados": 0, "total": 1}
+        ),
+    )
+
+    response = asyncio.run(
+        catalogos.aplicar_importacao_catalogo(
+            "store-a", "job-seguro", _request(), "cliente-a"
+        )
+    )
+
+    assert "__foto_data_url" not in saved[0]
+    assert saved[0]["mlb_principal"] == "MLB456"
+    assert response["status"] == "applied"
+    assert response["apply_result"]["fotos_salvas"] == 0
+    assert response["apply_result"]["fotos_ignoradas"] == 1
+    assert "url-secreta" not in str(response)
+
+
+def test_compressao_ml_rejeita_imagem_corrompida():
+    corrupt = "data:image/png;base64," + base64.b64encode(b"not-an-image").decode("ascii")
+
+    with pytest.raises(ValueError, match="invalid_photo_content"):
+        catalogos._comprimir_foto_catalogo_ml(
+            {"data_url": corrupt, "filename": "MLB333.png"},
+            "MLB333",
+        )
+
+
+def test_apply_ml_revalida_plano_privado_e_nao_acessa_host_forgado(monkeypatch):
+    job = _job_ready(source="mercadolivre")
+    job["preview"]["apply_rows"] = [{
+        "sku": "FOTO-3",
+        "sku_normalizado": "FOTO-3",
+        "row_version": 0,
+        "expected_scope": "absent",
+        "fields": {"mlb_principal": "MLB789"},
+        "photo_plan": {
+            "url": "https://example.invalid/foto.jpg",
+            "item_id": "MLB789",
+        },
+    }]
+    catalogos.CATALOG_IMPORT_JOBS[job["job_id"]] = job
+    monkeypatch.setattr(
+        catalogos,
+        "_configuracao_aplicacao_fingerprint",
+        lambda *_args: _FINGERPRINT_INITIAL,
+    )
+    monkeypatch.setattr(
+        catalogos.cadastro_ml,
+        "_download_photo_data_url",
+        lambda *_args: pytest.fail("host nao confiavel nao pode ser acessado"),
+    )
+    monkeypatch.setattr(
+        catalogos,
+        "salvar_produtos_loja_em_lote",
+        lambda *_args, **_kwargs: {"incluidos": 1, "atualizados": 0, "total": 1},
+    )
+
+    response = asyncio.run(
+        catalogos.aplicar_importacao_catalogo(
+            "store-a", "job-seguro", _request(), "cliente-a"
+        )
+    )
+
+    assert response["status"] == "applied"
+    assert response["apply_result"]["fotos_ignoradas"] == 1
 
 
 @pytest.mark.parametrize("sku_coverage", [False, "false", None])

@@ -8,11 +8,13 @@ NCM and CEST fields are refreshed, while every other existing value is kept.
 """
 
 from __future__ import annotations
-from backend.services.central_accounts_client import with_request_context
 
 import asyncio
+import base64
+import binascii
 import copy
 import hashlib
+import io
 import json
 import math
 import secrets
@@ -21,9 +23,13 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
+import requests
 from fastapi import Depends, Header, HTTPException, Request
+from PIL import Image, ImageOps, UnidentifiedImageError
 
+from backend.services import cadastro_mercadolivre as cadastro_ml
 from backend.services import integracoes
+from backend.services.central_accounts_client import with_request_context
 from backend.services.cadastro_catalogo_common import (
     configuracao_catalogo_aplicacao_fingerprint,
     configuracao_catalogo_fingerprint,
@@ -90,6 +96,15 @@ CATALOG_IMPORT_MAX_ACTIVE_JOBS_PER_TENANT = 2
 CATALOG_IMPORT_MAX_ACTIVE_BLING_JOBS = 1
 CATALOG_IMPORT_MAX_PROVIDER_ITEMS = 25_000
 CATALOG_IMPORT_PREVIEW_MAX_ROWS = 500
+# Catalog cover downloads are prepared in memory before the existing atomic
+# batch writer starts. Keep a bounded aggregate so a very large catalog can
+# still import its metadata without exhausting the desktop process.
+CATALOG_IMPORT_PHOTO_APPLY_TIMEOUT_SECONDS = 30 * 60
+CATALOG_IMPORT_PHOTO_MAX_DATA_URL_CHARS = 96 * 1024 * 1024
+CATALOG_IMPORT_PHOTO_MAX_PIXELS = 24_000_000
+CATALOG_IMPORT_PHOTO_MAX_EDGE_PX = 720
+CATALOG_IMPORT_PHOTO_JPEG_QUALITY = 50
+CATALOG_IMPORT_PHOTO_MAX_COMPRESSED_BYTES = 350 * 1024
 _CATALOG_IMPORT_JOBS_LOCK = threading.RLock()
 _ACTIVE_JOB_STATUSES = {"queued", "running", "applying"}
 
@@ -547,6 +562,95 @@ def _normalizar_fields(source: str, fields: Any) -> dict[str, Any]:
     return result
 
 
+def _normalizar_plano_foto_ml(value: Any) -> dict[str, str]:
+    """Validate the private cover plan again before it can reach persistence."""
+
+    if not isinstance(value, dict):
+        return {}
+    url = str(value.get("url") or "").strip()
+    item_id = cadastro_ml._normalizar_item_id(value.get("item_id"))
+    if not item_id or not cadastro_ml._photo_url_allowed(url):
+        return {}
+    return {"url": url, "item_id": item_id}
+
+
+def _comprimir_foto_catalogo_ml(
+    downloaded: dict[str, Any],
+    item_id: str,
+) -> dict[str, str]:
+    """Convert one trusted ML cover into a bounded, store-local JPEG."""
+
+    data_url = str(downloaded.get("data_url") or "").strip()
+    header, separator, encoded = data_url.partition(",")
+    if (
+        separator != ","
+        or not header.lower().startswith("data:image/")
+        or ";base64" not in header.lower()
+    ):
+        raise ValueError("invalid_photo_payload")
+    try:
+        source_bytes = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("invalid_photo_payload") from exc
+    if not source_bytes or len(source_bytes) > cadastro_ml.ML_PHOTO_MAX_BYTES:
+        raise ValueError("invalid_photo_payload")
+
+    try:
+        with Image.open(io.BytesIO(source_bytes)) as source:
+            width, height = source.size
+            if (
+                width <= 0
+                or height <= 0
+                or width * height > CATALOG_IMPORT_PHOTO_MAX_PIXELS
+            ):
+                raise ValueError("photo_pixel_limit_exceeded")
+            source.seek(0)
+            source.load()
+            oriented = ImageOps.exif_transpose(source)
+            has_alpha = "A" in oriented.getbands() or "transparency" in oriented.info
+            if has_alpha:
+                rgba = oriented.convert("RGBA")
+                rgb = Image.new("RGB", rgba.size, "white")
+                rgb.paste(rgba, mask=rgba.getchannel("A"))
+            else:
+                rgb = oriented.convert("RGB")
+    except ValueError:
+        raise
+    except (Image.DecompressionBombError, UnidentifiedImageError, OSError) as exc:
+        raise ValueError("invalid_photo_content") from exc
+
+    compressed = b""
+    profiles = (
+        (CATALOG_IMPORT_PHOTO_MAX_EDGE_PX, CATALOG_IMPORT_PHOTO_JPEG_QUALITY),
+        (600, 42),
+        (480, 35),
+    )
+    for max_edge, quality in profiles:
+        candidate = rgb.copy()
+        candidate.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+        output = io.BytesIO()
+        candidate.save(
+            output,
+            format="JPEG",
+            quality=quality,
+            optimize=True,
+            progressive=True,
+            subsampling=2,
+        )
+        compressed = output.getvalue()
+        if compressed and len(compressed) <= CATALOG_IMPORT_PHOTO_MAX_COMPRESSED_BYTES:
+            break
+    if not compressed or len(compressed) > CATALOG_IMPORT_PHOTO_MAX_COMPRESSED_BYTES:
+        raise ValueError("photo_compression_limit_exceeded")
+
+    safe_item_id = cadastro_ml._normalizar_item_id(item_id) or "mercado-livre"
+    return {
+        "data_url": "data:image/jpeg;base64,"
+        + base64.b64encode(compressed).decode("ascii"),
+        "filename": f"{safe_item_id}.jpg",
+    }
+
+
 def _consolidar_campos_duplicados_bling(
     entries: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], set[str]]:
@@ -698,6 +802,7 @@ def _construir_preview(
             public_items.append(item)
 
     apply_rows: list[dict[str, Any]] = []
+    fotos_ml_sem_capa = 0
     summary = {
         "encontrados": len(grupos),
         "novos": 0,
@@ -873,10 +978,32 @@ def _construir_preview(
                             }
                         )
 
+        photo_plan: dict[str, str] = {}
+        if fonte == "mercadolivre" and not _valor_preenchido(
+            (existente or {}).get("foto")
+        ):
+            photo_plan = _normalizar_plano_foto_ml(
+                {
+                    "url": fields.get("foto_url_ml"),
+                    "item_id": fields.get("mlb_principal"),
+                }
+            )
+            if photo_plan:
+                changes.append(
+                    {
+                        "field": "foto",
+                        "current": "",
+                        "incoming": "Capa do Mercado Livre",
+                        "action": "fill",
+                    }
+                )
+            else:
+                fotos_ml_sem_capa += 1
+
         if existente is None:
             status = "novo"
             summary["novos"] += 1
-        elif fields_apply or materializar_sombra:
+        elif fields_apply or materializar_sombra or photo_plan:
             status = "preencher"
             summary["preencher"] += 1
         elif row_conflicts:
@@ -888,7 +1015,12 @@ def _construir_preview(
             status = "conflito"
             summary["conflitos"] += 1
 
-        actionable = existente is None or materializar_sombra or bool(fields_apply)
+        actionable = (
+            existente is None
+            or materializar_sombra
+            or bool(fields_apply)
+            or bool(photo_plan)
+        )
         if actionable:
             row_version = int(str((existente or {}).get("row_version") or "0"))
             expected_scope = (
@@ -910,6 +1042,8 @@ def _construir_preview(
                 "expected_scope": expected_scope,
                 "fields": fields_apply,
             }
+            if photo_plan:
+                apply_row["photo_plan"] = photo_plan
             if materializar_sombra:
                 apply_row["legacy_snapshot_hash"] = str(
                     existente.get("__legacy_snapshot_hash")
@@ -917,7 +1051,7 @@ def _construir_preview(
                 )
             apply_rows.append(apply_row)
             summary["aplicaveis"] += 1
-            summary["campos"] += len(fields_apply)
+            summary["campos"] += len(fields_apply) + (1 if photo_plan else 0)
 
         adicionar_item_publico(
             {
@@ -956,6 +1090,11 @@ def _construir_preview(
     ]
     if sku_identity_mismatch:
         preview_warnings.append("provider_sku_identity_mismatch")
+    if fotos_ml_sem_capa:
+        preview_warnings.append(
+            f"{fotos_ml_sem_capa} produto(s) sem foto local nao possuem uma capa "
+            "confiavel disponivel no Mercado Livre."
+        )
     return {
         "coverage_complete": coverage_complete,
         "sku_coverage_complete": sku_coverage_complete,
@@ -1007,6 +1146,119 @@ async def _executar_commit_sem_abandono(
         return commit_task.result(), cancellation
     except asyncio.CancelledError as exc:
         raise RuntimeError("O commit atomico foi cancelado internamente.") from exc
+
+
+def _salvar_payloads_importacao_catalogo(
+    client_id: str,
+    store_id: str,
+    source: str,
+    payloads: list[dict[str, Any]],
+    *,
+    campos_derivados_permitidos: set[str],
+    precommit_validator: Callable[[dict[str, str]], None],
+    photo_progress_callback: Callable[[int, int], None] | None = None,
+) -> dict[str, Any]:
+    """Download trusted ML covers and commit metadata plus photos atomically."""
+
+    fonte = _fonte_valida(source)
+    seguros: list[dict[str, Any]] = []
+    planos_total = sum(
+        1
+        for payload in payloads
+        if isinstance(payload, dict) and payload.get("__catalog_photo_plan")
+    )
+    fotos_salvas = 0
+    fotos_ignoradas = 0
+    limite_atingido = False
+    total_data_url_chars = 0
+    deadline = time.monotonic() + max(
+        0.01, float(CATALOG_IMPORT_PHOTO_APPLY_TIMEOUT_SECONDS)
+    )
+    cache: dict[tuple[str, str], dict[str, str] | None] = {}
+
+    for payload in payloads:
+        seguro = dict(payload)
+        raw_plan = seguro.pop("__catalog_photo_plan", None)
+        if fonte != "mercadolivre" or not raw_plan:
+            seguros.append(seguro)
+            continue
+
+        plan = _normalizar_plano_foto_ml(raw_plan)
+        if not plan or limite_atingido or time.monotonic() >= deadline:
+            fotos_ignoradas += 1
+            limite_atingido = limite_atingido or time.monotonic() >= deadline
+        else:
+            cache_key = (plan["url"], plan["item_id"])
+            photo = cache.get(cache_key)
+            if cache_key not in cache:
+                try:
+                    downloaded = cadastro_ml._download_photo_data_url(
+                        plan["url"], plan["item_id"], deadline
+                    )
+                    optimized = _comprimir_foto_catalogo_ml(
+                        downloaded,
+                        plan["item_id"],
+                    )
+                    data_url = str(optimized.get("data_url") or "").strip()
+                    filename = str(optimized.get("filename") or "").strip()
+                    if not (
+                        data_url.startswith("data:image/")
+                        and ";base64," in data_url
+                        and filename
+                    ):
+                        raise ValueError("invalid_photo_payload")
+                    photo = {"data_url": data_url, "filename": filename}
+                except (
+                    HTTPException,
+                    OSError,
+                    ValueError,
+                    requests.RequestException,
+                ):
+                    photo = None
+                cache[cache_key] = photo
+
+            data_url = str((photo or {}).get("data_url") or "")
+            if photo and (
+                total_data_url_chars + len(data_url)
+                <= CATALOG_IMPORT_PHOTO_MAX_DATA_URL_CHARS
+            ):
+                seguro["__foto_data_url"] = data_url
+                seguro["__foto_filename"] = str(photo["filename"])
+                total_data_url_chars += len(data_url)
+                fotos_salvas += 1
+            else:
+                fotos_ignoradas += 1
+                if photo:
+                    limite_atingido = True
+
+        if photo_progress_callback is not None:
+            photo_progress_callback(fotos_salvas + fotos_ignoradas, planos_total)
+        seguros.append(seguro)
+
+    result = salvar_produtos_loja_em_lote(
+        client_id,
+        store_id,
+        seguros,
+        campos_derivados_permitidos=campos_derivados_permitidos,
+        precommit_validator=precommit_validator,
+    )
+    if fonte != "mercadolivre":
+        return result
+
+    result = dict(result)
+    result.update(
+        fotos_planejadas=planos_total,
+        fotos_salvas=fotos_salvas,
+        fotos_ignoradas=fotos_ignoradas,
+    )
+    if fotos_ignoradas:
+        result["avisos_fotos"] = [
+            (
+                f"{fotos_ignoradas} capa(s) do Mercado Livre nao puderam ser salvas; "
+                "os demais dados do cadastro foram mantidos."
+            )
+        ]
+    return result
 
 
 def _catalog_import_worker(job_id: str) -> None:
@@ -1504,6 +1756,13 @@ async def aplicar_importacao_catalogo(
             )
         job["status"] = "applying"
         job["can_apply"] = False
+        job["progress"] = {
+            "stage": "applying",
+            "current": 0,
+            "total": len(apply_rows),
+            "percent": 0.0,
+            "message": "Preparando dados e capas para salvar no Cadastro.",
+        }
         job["updated_ts"] = time.time()
         source = str(job["source"])
         expected_fingerprint = str(job.get("apply_config_fingerprint") or "")
@@ -1557,6 +1816,8 @@ async def aplicar_importacao_catalogo(
             legacy_snapshot_hash = str(row.get("legacy_snapshot_hash") or "").strip()
             if legacy_snapshot_hash:
                 payload["__legacy_snapshot_hash"] = legacy_snapshot_hash
+            if source == "mercadolivre" and row.get("photo_plan"):
+                payload["__catalog_photo_plan"] = copy.deepcopy(row["photo_plan"])
             payloads.append(payload)
 
         def precommit_validator(_loja: dict[str, str]) -> None:
@@ -1571,19 +1832,45 @@ async def aplicar_importacao_catalogo(
                     },
                 )
 
+        def photo_progress(current: int, total: int) -> None:
+            percent = round((max(0, current) / max(1, total)) * 90.0, 2)
+            _atualizar_job(
+                job_id,
+                progress={
+                    "stage": "photos",
+                    "current": max(0, current),
+                    "total": max(0, total),
+                    "percent": percent,
+                    "message": "Baixando capas confiaveis do Mercado Livre.",
+                },
+            )
+
         result, cancellation = await _executar_commit_sem_abandono(
-            salvar_produtos_loja_em_lote,
+            _salvar_payloads_importacao_catalogo,
             client_id,
             store_id,
+            source,
             payloads,
             campos_derivados_permitidos=_PRIVILEGED_DERIVED_FIELDS[source],
             precommit_validator=precommit_validator,
+            photo_progress_callback=photo_progress,
         )
         apply_result = {
             "incluidos": int(result.get("incluidos") or 0),
             "atualizados": int(result.get("atualizados") or 0),
             "total": int(result.get("total") or 0),
         }
+        if source == "mercadolivre":
+            apply_result.update(
+                fotos_planejadas=int(result.get("fotos_planejadas") or 0),
+                fotos_salvas=int(result.get("fotos_salvas") or 0),
+                fotos_ignoradas=int(result.get("fotos_ignoradas") or 0),
+                avisos_fotos=[
+                    str(value)[:300]
+                    for value in (result.get("avisos_fotos") or [])
+                    if str(value).strip()
+                ][:10],
+            )
         _atualizar_job(
             job_id,
             status="applied",

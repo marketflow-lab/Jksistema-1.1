@@ -268,7 +268,10 @@ function contentType(filePath) {
           return;
         }
         await new Promise(resolve => setTimeout(resolve, 500));
-        await json(route, { job_id: 'job-ready', source: 'bling', store_id: 'store-a', status: 'applied', can_apply: false });
+        await json(route, {
+          job_id: 'job-ready', source: 'bling', store_id: 'store-a', status: 'applied', can_apply: false,
+          apply_result: { fotos_salvas: 2, fotos_ignoradas: 0 },
+        });
         return;
       }
       await route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"not found"}' });
@@ -456,6 +459,7 @@ function contentType(filePath) {
     assert.strictEqual(await page.evaluate(() => window.JKCadastro.runtime.state.storeIdSelecionado), 'store-a');
     await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('aplicada com sucesso'));
     assert.deepStrictEqual(applyRequests, [{}], 'Aplicar deve emitir um único POST com JSON vazio');
+    assert.match(await page.locator('#importacaoCatalogoStatus').innerText(), /2 capa\(s\).*salvas no cadastro/);
     assert.strictEqual(await page.locator('#cadastroLojaBotoes .loja-btn').first().isEnabled(), true, 'troca de loja deve ser liberada após Apply');
 
     await page.locator('#btnFecharImportacaoCatalogo').click();

@@ -1,9 +1,18 @@
+import base64
+import io
 from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+from PIL import Image
 
-from backend.services import cadastro_custos, cadastro_fotos, cadastro_lojas_produtos, integracoes
+from backend.services import (
+    cadastro_custos,
+    cadastro_fotos,
+    cadastro_importacao_catalogos,
+    cadastro_lojas_produtos,
+    integracoes,
+)
 
 
 @pytest.fixture
@@ -52,6 +61,56 @@ def test_derived_bling_fields_require_privileged_batch_allowlist(cadastro_runtim
     )
     assert persisted["id_bling"] == "123"
     assert persisted["produto_bling"] == "Produto Bling"
+
+
+def test_catalogo_ml_salva_capa_comprimida_e_descricao_na_pasta_da_loja(
+    cadastro_runtime,
+    monkeypatch,
+):
+    info_root, _stores = cadastro_runtime
+    source_image = Image.effect_noise((1400, 1000), 100).convert("RGB")
+    source_buffer = io.BytesIO()
+    source_image.save(source_buffer, format="PNG")
+    image_bytes = source_buffer.getvalue()
+    data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+    monkeypatch.setattr(
+        cadastro_importacao_catalogos.cadastro_ml,
+        "_download_photo_data_url",
+        lambda *_args: {"data_url": data_url, "filename": "MLB123.png"},
+    )
+
+    result = cadastro_importacao_catalogos._salvar_payloads_importacao_catalogo(
+        "cliente-a",
+        "store-a",
+        "mercadolivre",
+        [{
+            "sku": "CAPA-ML",
+            "row_version": 0,
+            "__expected_scope": "absent",
+            "mlb_principal": "MLB123",
+            "descricao": "Descricao completa do anuncio no Mercado Livre.",
+            "foto_url_ml": "https://http2.mlstatic.com/capa.png",
+            "__catalog_photo_plan": {
+                "url": "https://http2.mlstatic.com/capa.png",
+                "item_id": "MLB123",
+            },
+        }],
+        campos_derivados_permitidos=set(),
+        precommit_validator=lambda _store: None,
+    )
+
+    produto = cadastro_lojas_produtos._obter_produto_loja_sync(
+        "cliente-a", "store-a", "CAPA-ML"
+    )
+    assert result["fotos_salvas"] == 1
+    assert produto["mlb_principal"] == "MLB123"
+    assert produto["descricao"] == "Descricao completa do anuncio no Mercado Livre."
+    assert produto["foto"].startswith("cadastro_fotos/lojas/")
+    saved_bytes = (Path(info_root) / "cliente-a" / produto["foto"]).read_bytes()
+    assert len(saved_bytes) < len(image_bytes)
+    with Image.open(io.BytesIO(saved_bytes)) as saved_image:
+        assert saved_image.format == "JPEG"
+        assert max(saved_image.size) <= cadastro_importacao_catalogos.CATALOG_IMPORT_PHOTO_MAX_EDGE_PX
 
 
 def test_persisted_bling_tax_fields_are_read_as_safe_generic_aliases(cadastro_runtime):

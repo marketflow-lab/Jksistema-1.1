@@ -1103,7 +1103,8 @@ def test_variations_without_unique_explicit_sku_are_never_invented(monkeypatch: 
     _install_transport(monkeypatch, handler)
     result = service.coletar_catalogo_mercadolivre("tenant-a", "store-a")
 
-    assert result["coverage_complete"] is True
+    assert result["coverage_complete"] is False
+    assert result["sku_coverage_complete"] is False
     assert [item["sku"] for item in result["items"]] == ["LEGACY-301"]
     assert result["stats"]["missing_sku"] == 0
     assert result["stats"]["ambiguous_sku"] == 1
@@ -1688,10 +1689,72 @@ def test_listing_without_description_is_complete_and_warned(monkeypatch: pytest.
     result = service.coletar_catalogo_mercadolivre("tenant-a", "store-a")
 
     assert result["coverage_complete"] is True
+    assert result["sku_coverage_complete"] is True
     assert result["stats"]["descriptions_absent"] == 1
     assert result["stats"]["description_failures"] == 0
     assert "descricao" not in result["items"][0]["fields"]
     assert any("nao possui descricao" in warning for warning in result["warnings"])
+
+
+def test_description_failure_keeps_confirmed_skus_applicable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    detail = _base_item("MLB601")
+
+    def handler(client_id, store_name, cfg, method, url, *, params=None, timeout=None):
+        if url.endswith("/users/me"):
+            return _response({"id": 111}, cfg)
+        if url.endswith("/users/111/items/search"):
+            return _response({"results": ["MLB601"], "paging": {"total": 1}}, cfg)
+        if url.endswith("/items/bulk"):
+            return _response([{"id": "MLB601", "status_code": 200, "body": detail}], cfg)
+        if url.endswith("/items/MLB601/description"):
+            return _response({"message": "description unavailable"}, cfg, status=403)
+        raise AssertionError(f"consulta inesperada: {url}")
+
+    _install_transport(monkeypatch, handler)
+    result = service.coletar_catalogo_mercadolivre("tenant-a", "store-a")
+
+    assert result["coverage_complete"] is False
+    assert result["sku_coverage_complete"] is True
+    assert result["stats"]["description_failures"] == 1
+    assert [item["sku"] for item in result["items"]] == ["SKU-1"]
+    assert "descricao" not in result["items"][0]["fields"]
+
+
+def test_listing_without_sku_is_ignored_without_blocking_confirmed_skus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    valid = _base_item("MLB610", sku="SKU-VALIDO")
+    without_sku = _base_item("MLB611", sku=None)
+
+    def handler(client_id, store_name, cfg, method, url, *, params=None, timeout=None):
+        if url.endswith("/users/me"):
+            return _response({"id": 111}, cfg)
+        if url.endswith("/users/111/items/search"):
+            return _response(
+                {"results": ["MLB610", "MLB611"], "paging": {"total": 2}}, cfg
+            )
+        if url.endswith("/items/bulk"):
+            return _response(
+                [
+                    {"id": "MLB610", "status_code": 200, "body": valid},
+                    {"id": "MLB611", "status_code": 200, "body": without_sku},
+                ],
+                cfg,
+            )
+        if url.endswith("/description"):
+            return _response({"plain_text": "Descricao disponivel"}, cfg)
+        raise AssertionError(f"consulta inesperada: {url}")
+
+    _install_transport(monkeypatch, handler)
+    result = service.coletar_catalogo_mercadolivre("tenant-a", "store-a")
+
+    assert result["coverage_complete"] is True
+    assert result["sku_coverage_complete"] is True
+    assert result["stats"]["missing_sku"] == 1
+    assert [item["sku"] for item in result["items"]] == ["SKU-VALIDO"]
+    assert any(entry.get("reason") == "sku_missing" for entry in result["skipped"])
 
 
 def test_cancellation_before_preflight_makes_no_network_request(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1707,6 +1770,7 @@ def test_cancellation_before_preflight_makes_no_network_request(monkeypatch: pyt
     )
 
     assert result["coverage_complete"] is False
+    assert result["sku_coverage_complete"] is False
     assert result["cancelled"] is True
     assert result["items"] == []
     assert result["stats"]["pages_fetched"] == 0

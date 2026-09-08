@@ -261,6 +261,9 @@ def _base_result(store: dict[str, str], seller_id: str) -> dict[str, Any]:
         "store_name": store["store_name"],
         "seller_id": str(seller_id or ""),
         "coverage_complete": True,
+        # Optional enrichment may be partial without invalidating SKU identities.
+        # Keep this decision separate so proven SKUs remain safely importable.
+        "sku_coverage_complete": True,
         "cancelled": False,
         "items": [],
         "skipped": [],
@@ -2057,6 +2060,7 @@ def coletar_catalogo_mercadolivre(
     result["started_config_fingerprint"] = started_config_fingerprint
     if _cancelled(cancel_event):
         result["coverage_complete"] = False
+        result["sku_coverage_complete"] = False
         result["cancelled"] = True
         result["warnings"].append("Coleta do Mercado Livre cancelada antes da consulta.")
         result["config_fingerprint"] = _revalidate_configuration(
@@ -2082,6 +2086,7 @@ def coletar_catalogo_mercadolivre(
     result["stats"]["warehouse_management"] = warehouse_management
     if _cancelled(cancel_event):
         result["coverage_complete"] = False
+        result["sku_coverage_complete"] = False
         result["cancelled"] = True
         result["warnings"].append("Coleta do Mercado Livre cancelada apos confirmar a conta.")
         result["config_fingerprint"] = _revalidate_configuration(
@@ -2107,6 +2112,7 @@ def coletar_catalogo_mercadolivre(
     result["stats"]["listed_ids"] = len(item_ids)
     result["warnings"].extend(listing_warnings)
     result["coverage_complete"] = bool(listing_complete)
+    result["sku_coverage_complete"] = bool(listing_complete)
     if _cancelled(cancel_event):
         result["cancelled"] = True
 
@@ -2120,6 +2126,9 @@ def coletar_catalogo_mercadolivre(
         deadline,
     )
     result["coverage_complete"] = bool(result["coverage_complete"] and details_complete)
+    result["sku_coverage_complete"] = bool(
+        result["sku_coverage_complete"] and details_complete
+    )
     result["warnings"].extend(detail_warnings)
     result["skipped"].extend(skipped)
     result["stats"]["missing_details"] += sum(
@@ -2132,6 +2141,7 @@ def coletar_catalogo_mercadolivre(
         _check_catalog_limits(cancel_event, deadline)
         if _cancelled(cancel_event):
             result["coverage_complete"] = False
+            result["sku_coverage_complete"] = False
             result["cancelled"] = True
             result["warnings"].append("Coleta do Mercado Livre cancelada durante a validacao.")
             break
@@ -2140,6 +2150,7 @@ def coletar_catalogo_mercadolivre(
         missing_fields = _listing_detail_missing_fields(item)
         if missing_fields:
             result["coverage_complete"] = False
+            result["sku_coverage_complete"] = False
             result["stats"]["incomplete_details"] += 1
             result["skipped"].append({
                 "reason": "listing_detail_incomplete",
@@ -2150,6 +2161,7 @@ def coletar_catalogo_mercadolivre(
         observed_seller = str(item.get("seller_id") or "").strip()
         if observed_seller != configured_seller:
             result["coverage_complete"] = False
+            result["sku_coverage_complete"] = False
             result["stats"]["owner_mismatch"] += 1
             result["skipped"].append({"reason": "seller_mismatch", "mlb": item_id})
             continue
@@ -2163,11 +2175,13 @@ def coletar_catalogo_mercadolivre(
         )
         if _cancelled(cancel_event):
             result["coverage_complete"] = False
+            result["sku_coverage_complete"] = False
             result["cancelled"] = True
             result["warnings"].append("Coleta do Mercado Livre cancelada durante o detalhamento de variacoes.")
             break
         if not variations_complete:
             result["coverage_complete"] = False
+            result["sku_coverage_complete"] = False
             result["stats"]["variation_detail_failures"] += 1
             result["warnings"].append(f"As variacoes do anuncio {item_id} nao puderam ser comprovadas integralmente.")
             result["skipped"].append({"reason": "variation_details_incomplete", "mlb": item_id})
@@ -2187,6 +2201,7 @@ def coletar_catalogo_mercadolivre(
         )
         if _cancelled(cancel_event):
             result["coverage_complete"] = False
+            result["sku_coverage_complete"] = False
             result["cancelled"] = True
             result["warnings"].append("Coleta do Mercado Livre cancelada durante o detalhamento de descricoes.")
             break
@@ -2237,6 +2252,15 @@ def coletar_catalogo_mercadolivre(
     result["stats"]["user_product_stocks_complete"] = user_product_stats["stocks"]
     result["stats"]["user_product_stocks_absent"] = user_product_stats["stocks_absent"]
     result["stats"]["user_product_failures"] = user_product_stats["failures"]
+    # User Product details may contribute the explicit SELLER_SKU. Stock is
+    # optional for SKU identity, so stock-only failure does not block an
+    # otherwise safe description/photo import.
+    user_product_details_complete = (
+        user_product_stats["details"] == len(requested_user_products)
+    )
+    result["sku_coverage_complete"] = bool(
+        result["sku_coverage_complete"] and user_product_details_complete
+    )
     warehouse_detected_from_stock = any(
             str(location.get("type") or "") == "seller_warehouse"
             for stock in user_product_stocks.values()
@@ -2276,6 +2300,7 @@ def coletar_catalogo_mercadolivre(
     result["warnings"].extend(category_warnings)
     if _cancelled(cancel_event):
         result["cancelled"] = True
+        result["sku_coverage_complete"] = False
     _check_catalog_limits(cancel_event, deadline)
     occurrences, identity_skipped, identity_counts, row_limit_exceeded = _collect_occurrences(
         verified,
@@ -2293,8 +2318,18 @@ def coletar_catalogo_mercadolivre(
         "user_product_sku_conflicts",
     ):
         result["stats"][key] += int(identity_counts.get(key) or 0)
+    ambiguous_sku_count = int(identity_counts.get("ambiguous_sku") or 0)
+    duplicate_within_listing_count = int(identity_counts.get("duplicate_sku") or 0)
+    if ambiguous_sku_count or duplicate_within_listing_count:
+        result["sku_coverage_complete"] = False
+        result["coverage_complete"] = False
+        result["warnings"].append(
+            "Ha anuncio com identidade de SKU ambigua ou repetida entre variacoes; "
+            "a aplicacao foi bloqueada."
+        )
     if result["stats"]["user_product_sku_conflicts"]:
         result["coverage_complete"] = False
+        result["sku_coverage_complete"] = False
         result["warnings"].append(
             "SKU divergente entre anuncio e User Product; a aplicacao foi bloqueada."
         )
@@ -2304,6 +2339,7 @@ def coletar_catalogo_mercadolivre(
     )
     if result["stats"]["user_product_identity_conflicts"]:
         result["coverage_complete"] = False
+        result["sku_coverage_complete"] = False
         result["warnings"].append(
             "Identidade divergente entre anuncio e User Product; a aplicacao foi bloqueada."
         )
@@ -2316,6 +2352,7 @@ def coletar_catalogo_mercadolivre(
     )
     if row_limit_exceeded or len(catalog_items) > ML_CATALOG_MAX_ROWS:
         result["coverage_complete"] = False
+        result["sku_coverage_complete"] = False
         result["warnings"].append(_catalog_limit_warning("linhas agregadas"))
         catalog_items = catalog_items[:ML_CATALOG_MAX_ROWS]
     result["stats"]["duplicate_sku"] += duplicate_groups
