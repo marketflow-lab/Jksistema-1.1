@@ -311,6 +311,12 @@
 })();
 
 (function initGlobalVendasSyncMonitor() {
+    function deveExibirStatusGlobalNesteDocumento(search = window.location.search) {
+        return !new URLSearchParams(search || '').has('embed');
+    }
+
+    // Conteudos embutidos pertencem ao modulo hospedeiro, que ja exibe o status global.
+    if (!deveExibirStatusGlobalNesteDocumento()) return;
     if (window.__jkSyncMonitorInit) return;
     window.__jkSyncMonitorInit = true;
 

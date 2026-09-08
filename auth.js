@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '20260907-central-migration-v1';
+  const VERSION = '20260908-global-sales-status-v1';
   const CHUNKS = [
     "session.js",
     "navigation.js",
