@@ -62,6 +62,7 @@ const executarTimeout = async (id) => {
 };
 
 const indicador = { textContent: '', dateTime: '', title: '' };
+const indicadorChecagem = { textContent: '', dateTime: '', title: '' };
 const resumoTodas = { textContent: '', dataset: {} };
 let recargas = 0;
 let recargasContadores = 0;
@@ -152,6 +153,7 @@ const context = {
             return selector === '[data-automation-summary]' ? [resumoTodas] : [];
         },
         getElementById(id) {
+            if (id === 'perguntas-ultima-checagem') return indicadorChecagem;
             if (id === 'aba-perguntas') return { classList: { contains: () => perguntasAtiva } };
             if (id === 'aba-pos-venda') return { classList: { contains: () => false } };
             return null;
@@ -180,7 +182,7 @@ context.carregarContadoresNotificacoes = async () => { recargasContadores += 1; 
     assert.strictEqual(timeouts.size, 0, 'checagem sem novidade deve permanecer silenciosa');
     assert.strictEqual(recargas, 0, 'lista principal deve permanecer intacta sem pergunta nova');
     assert.strictEqual(recargasContadores, 0, 'contadores nao precisam ser recarregados sem novidade');
-    assert.strictEqual(indicador.textContent, 'Checado agora', 'poll real deve atualizar o indicador');
+    assert.strictEqual(indicadorChecagem.textContent, 'Última checagem automática: agora', 'poll real deve atualizar o indicador');
 
     fetchImpl = async (url) => {
         chamadas.push(String(url));
@@ -546,73 +548,8 @@ context.carregarContadoresNotificacoes = async () => { recargasContadores += 1; 
     assert.strictEqual(detalhe.scrollTop, 71);
     assert.deepStrictEqual(scrollRestaurado, [11, 29]);
 
-    let resolverFetchPerguntas;
-    let rascunhoDuranteFetch = 'rascunho inicial';
-    let snapshotRestauradoAposFetch = null;
-    let capturasDuranteFetch = 0;
-    const refreshState = {
-        lojaSelecionada: 'Loja A',
-        carregandoPerguntas: false,
-        paginaPerguntas: 1,
-        tamanhoPaginaPerguntas: 25,
-        perguntas: [],
-        totalPerguntas: 0,
-        perguntaSelecionadaKey: 'Loja A::q-1'
-    };
-    const refreshContext = {
-        state: refreshState,
-        URLSearchParams,
-        Number,
-        Array,
-        String,
-        Error,
-        btnRecarregar: { disabled: false },
-        perguntasSummary: { classList: { add: () => {} } },
-        perguntasList: { innerHTML: '' },
-        perguntasPagination: { innerHTML: '', classList: { add: () => {} } },
-        perguntasStatus: { textContent: '' },
-        statusFiltro: { value: '' },
-        document: {
-            getElementById: () => ({ classList: { contains: () => true } })
-        },
-        todasAsLojasSelecionadas: () => false,
-        obterAuthHeaders: () => ({}),
-        ordenarPerguntasRecentes: (perguntas) => perguntas,
-        renderizarResumo: () => {},
-        renderizarPerguntas: () => {},
-        registrarUltimaAtualizacaoPerguntas: () => {},
-        mensagemErro: (error) => String(error && error.message ? error.message : error || ''),
-        capturarInteracaoPerguntas: () => {
-            capturasDuranteFetch += 1;
-            return {
-                perguntaSelecionadaKey: refreshState.perguntaSelecionadaKey,
-                resposta: rascunhoDuranteFetch,
-                checkboxMarcado: false
-            };
-        },
-        restaurarInteracaoPerguntas: (snapshot) => { snapshotRestauradoAposFetch = snapshot; },
-        fetch: () => new Promise((resolve) => { resolverFetchPerguntas = resolve; })
-    };
-    vm.createContext(refreshContext);
-    vm.runInContext(questionsSource.slice(carregarPerguntasStart), refreshContext);
-    const carregamentoBackground = refreshContext.carregarPerguntas(1, {
-        background: true,
-        preservarInteracao: true
-    });
-    await Promise.resolve();
-    assert.strictEqual(typeof resolverFetchPerguntas, 'function', 'fetch em segundo plano deve estar pendente');
-    rascunhoDuranteFetch = 'texto digitado enquanto buscava';
-    resolverFetchPerguntas({
-        ok: true,
-        json: async () => ({ questions: [{ id: 'q-1' }], total: 1 })
-    });
-    assert.strictEqual(await carregamentoBackground, true);
-    assert(capturasDuranteFetch >= 2, 'interacao deve ser recapturada imediatamente antes do render');
-    assert.strictEqual(
-        snapshotRestauradoAposFetch.resposta,
-        'texto digitado enquanto buscava',
-        'digitacao feita durante a rede nao pode ser substituida pelo snapshot inicial'
-    );
+    // Corridas de rede e digitacao durante refresh agora passam pelo loader
+    // progressivo real em perguntas_loading_browser.js, sem simular o loader antigo.
 
     console.log('OK: token por loja, refresh seletivo, estado da tela e cleanup validados.');
 })().catch((error) => {

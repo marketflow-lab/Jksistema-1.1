@@ -1,9 +1,9 @@
 document.querySelectorAll('.tab-button').forEach((button) => {
     button.addEventListener('click', () => ativarAba(button.dataset.tab));
 });
-statusFiltro.addEventListener('change', carregarPerguntas);
+statusFiltro.addEventListener('change', () => carregarPerguntas(1));
 btnRecarregar.addEventListener('click', async () => {
-    await carregarPerguntas();
+    await carregarPerguntas(state.paginaPerguntas || 1, { forcar: true });
     carregarContadoresNotificacoes(true);
 });
 posVendaDias.addEventListener('change', () => {

@@ -28,21 +28,22 @@ function atualizarIndicadorUltimaAtualizacaoPerguntas() {
     if (!perguntasUltimaAtualizacao) return;
     const checagemEm = normalizarTimestampAutomacaoPerguntas(state.ultimaChecagemAutomacaoPerguntasEm);
     const atualizacaoEm = normalizarTimestampAutomacaoPerguntas(state.ultimaAtualizacaoPerguntasEm);
-    const timestamp = checagemEm || atualizacaoEm;
+    const timestamp = atualizacaoEm || checagemEm;
     if (!timestamp) return;
     const atualizadoEm = new Date(timestamp);
     const tempo = formatarTempoDesdeAtualizacaoPerguntas(timestamp);
-    perguntasUltimaAtualizacao.textContent = checagemEm
-        ? tempo.replace(/^Atualizado/, 'Checado')
-        : tempo;
+    perguntasUltimaAtualizacao.textContent = atualizacaoEm
+        ? `Lista ${tempo.replace(/^Atualizado/, 'atualizada')}` : 'Lista aguardando atualização';
     perguntasUltimaAtualizacao.dateTime = atualizadoEm.toISOString();
-    perguntasUltimaAtualizacao.title = checagemEm
-        ? `Última checagem automática: ${atualizadoEm.toLocaleString('pt-BR')}`
-        : `Última atualização da lista: ${atualizadoEm.toLocaleString('pt-BR')}`;
+    perguntasUltimaAtualizacao.title = `Última atualização da lista: ${atualizadoEm.toLocaleString('pt-BR')}`;
+    const checagem = document.getElementById('perguntas-ultima-checagem');
+    if (!checagem) return;
+    checagem.textContent = checagemEm ? `Última checagem automática: ${formatarTempoDesdeAtualizacaoPerguntas(checagemEm).replace(/^Atualizado /, '')}` : '';
+    if (checagemEm) checagem.dateTime = new Date(checagemEm).toISOString();
 }
 
-function registrarUltimaAtualizacaoPerguntas() {
-    state.ultimaAtualizacaoPerguntasEm = Date.now();
+function registrarUltimaAtualizacaoPerguntas(timestamp = Date.now()) {
+    state.ultimaAtualizacaoPerguntasEm = timestamp;
     atualizarIndicadorUltimaAtualizacaoPerguntas();
     if (!state.ultimaAtualizacaoPerguntasTimer) {
         state.ultimaAtualizacaoPerguntasTimer = window.setInterval(
@@ -165,7 +166,7 @@ function renderizarPaginacaoPerguntas(total) {
 }
 
 function chavePerguntaAtendimento(pergunta) {
-    return `${lojaOrigemItem(pergunta) || ''}::${String(pergunta && pergunta.id || '').trim()}`;
+    return `${pergunta?.store_id || lojaOrigemItem(pergunta) || ''}::${String(pergunta && pergunta.id || '').trim()}`;
 }
 
 function resumoTextoPergunta(texto, limite = 92) {
@@ -195,7 +196,7 @@ function renderizarLinhaPerguntaAtendimento(pergunta, selecionada) {
     const titulo = pergunta.item_title || pergunta.item_id || 'Anuncio';
     const foto = pergunta.item_thumbnail
         ? `<img src="${escapeHtml(pergunta.item_thumbnail)}" alt="${escapeHtml(titulo)}" loading="lazy" referrerpolicy="no-referrer">`
-        : '<span>Sem foto</span>';
+        : `<span>${pergunta._itemReady ? 'Sem foto' : 'Carregando...'}</span>`;
     const lojaBadge = lojaOrigem ? `<span class="badge ok">${escapeHtml(lojaOrigem)}</span>` : '';
     const dataKey = chavePerguntaAtendimento(pergunta);
     return `
@@ -247,7 +248,7 @@ function renderizarDetalhePerguntaAtendimento(pergunta) {
                 <span>Salva pergunta, resposta, loja e SKU no treinamento.</span>
             </div>
             <div class="question-answer-actions">
-                <button class="action-btn secondary question-ai-answer-btn" type="button" data-action="gerar-ia">Gerar IA</button>
+                <button class="action-btn secondary question-ai-answer-btn" type="button" data-action="gerar-ia" ${pergunta._itemReady && pergunta._detailReady ? '' : 'disabled title="Aguardando dados do anúncio e histórico"'}>Gerar IA</button>
                 <button class="action-btn secondary question-ai-cancel-btn hidden" type="button" data-action="cancelar-pesquisa">Cancelar pesquisa</button>
                 <button class="action-btn secondary question-save-example-btn" type="button" data-action="salvar-exemplo" disabled>Salvar exemplo</button>
                 <button class="action-btn secondary question-send-save-example-btn" type="button" data-action="enviar-salvar-exemplo" disabled>Responder e salvar exemplo</button>
@@ -339,12 +340,15 @@ function renderizarPerguntas() {
         .join('');
     perguntasList.querySelectorAll('[data-question-select]').forEach((button) => {
         button.addEventListener('click', () => {
+            window.JKPerguntasLoading?.salvarRascunho();
             state.perguntaSelecionadaKey = button.dataset.questionSelect || '';
             renderizarPerguntas();
+            window.JKPerguntasLoading?.restaurarRascunho();
         });
     });
     renderizarDetalhePerguntaAtendimento(perguntaSelecionada);
     configurarAcoesRespostaPerguntas();
+    window.JKPerguntasLoading?.detalhe(perguntaSelecionada);
     renderizarPaginacaoPerguntas(state.totalPerguntas || perguntas.length);
     return;
 
@@ -359,7 +363,7 @@ function renderizarPerguntas() {
             : escapeHtml(titulo);
         const foto = pergunta.item_thumbnail
             ? `<img src="${escapeHtml(pergunta.item_thumbnail)}" alt="${escapeHtml(titulo)}" loading="lazy" referrerpolicy="no-referrer">`
-            : '<span>Sem foto</span>';
+            : `<span>${pergunta._itemReady ? 'Sem foto' : 'Carregando...'}</span>`;
         const sku = pergunta.item_sku || '-';
         const comprador = pergunta.buyer_name || pergunta.buyer_nickname || pergunta.from_id || '-';
         const answer = pergunta.answer && pergunta.answer.text
@@ -692,6 +696,8 @@ function configurarAcoesRespostaPerguntas() {
             btnCancelarPesquisa.addEventListener('click', () => cancelarPesquisaAtendimentoCodex(questionKey));
         }
         aplicarEstadoJobAtendimentoCodex(questionKey);
+        const contexto = obterPerguntaPorId(questionId, questionLoja);
+        if (btnGerar && (!contexto?._itemReady || !contexto?._detailReady)) btnGerar.disabled = true;
         const jobState = obterEstadoJobAtendimentoCodex(questionKey);
         if (jobState && jobState.polling_active && jobState.job_id) {
             garantirPollingJobAtendimentoCodex(questionKey).catch(() => {});
@@ -1122,6 +1128,11 @@ window.aguardarJobAtendimentoCodex = aguardarJobAtendimentoCodex;
 window.cancelarPesquisaAtendimentoCodex = cancelarPesquisaAtendimentoCodex;
 
 async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, btnGerar, btnCancelarPesquisa, status) {
+    const contexto = obterPerguntaPorId(questionId, loja);
+    if (!contexto?._itemReady || !contexto?._detailReady) {
+        setStatusRespostaPergunta(status, 'Aguarde os dados do anúncio e o histórico antes de gerar a resposta.');
+        return;
+    }
     const pergunta = obterPerguntaPorId(questionId, loja);
     const lojaResposta = lojaOrigemItem(pergunta) || (todasAsLojasSelecionadas() ? '' : state.lojaSelecionada);
     if (!pergunta || !lojaResposta) return;
@@ -1214,13 +1225,19 @@ async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnvia
             date_created: new Date().toISOString()
         };
         pergunta.status = 'ANSWERED';
+        try { window.JKPerguntasLoading?.invalidar(lojaResposta, pergunta); } catch (_) { /* Envio já confirmado. */ }
         delete textarea.dataset.codexProposalId;
         delete textarea.dataset.codexProposalVersion;
         delete textarea.dataset.codexProposalHash;
         if (opcoes.salvarExemplo) {
-            await salvarTreinamentoAtendimentoPergunta(pergunta, {
-                exemplo: montarExemploRespostaPergunta(pergunta, texto)
-            });
+            try {
+                await salvarTreinamentoAtendimentoPergunta(pergunta, { exemplo: montarExemploRespostaPergunta(pergunta, texto) });
+            } catch (_) {
+                perguntasStatus.textContent = 'Resposta enviada. Não foi possível salvar o exemplo da IA.';
+                renderizarPerguntas();
+                carregarContadoresNotificacoes(true);
+                return;
+            }
         }
         perguntasStatus.textContent = opcoes.salvarExemplo
             ? `Resposta enviada ao Mercado Livre pela loja ${lojaResposta} e salva como exemplo da IA.`
@@ -1236,6 +1253,7 @@ async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnvia
 }
 
 async function carregarLojas() {
+    window.JKPerguntasLoading?.verificarSessao();
     lojasStatus.textContent = 'Carregando lojas...';
     try {
         const response = await fetch('/api/mercadolivre/perguntas/lojas', {
@@ -1278,10 +1296,12 @@ async function carregarLojas() {
     }
 }
 
-async function selecionarLoja(nome) {
-    if (!nome || (state.carregandoPerguntas && !treinamentoVisivel())) return;
+async function selecionarLoja(nome, storeId = '') {
+    if (!nome) return;
+    window.JKPerguntasLoading?.salvarRascunho();
     guardarEdicaoTreinamento();
     state.lojaSelecionada = nome;
+    state.lojaSelecionadaStoreId = String(storeId || '');
     sincronizarLojaTreinamento();
     state.lojaConfiguracaoPerguntas = todasAsLojasSelecionadas() ? TODAS_LOJAS_VALUE : nome;
     resetarPaginacaoPosVenda();
@@ -1300,162 +1320,14 @@ async function selecionarLoja(nome) {
         }
         await carregarMediacoes(true);
     } else {
-        await carregarPerguntas();
+        await carregarPerguntas(1, { background: false });
     }
 }
 
 async function carregarPerguntasTodasLojas() {
-    const lojas = lojasMercadoLivreConectadas();
-    if (!lojas.length) {
-        return {
-            questions: [],
-            total: 0,
-            retornadas: 0,
-            status_resumo: {},
-            lojas_consultadas: 0,
-            erros: []
-        };
-    }
-    const limitePorLoja = Math.min(
-        100,
-        Math.max(state.tamanhoPaginaPerguntas, state.paginaPerguntas * state.tamanhoPaginaPerguntas)
-    );
-    const resultados = await Promise.all(lojas.map(async (loja) => {
-        const nomeLoja = String(loja.nome || '').trim();
-        try {
-            const params = new URLSearchParams({
-                loja: nomeLoja,
-                carregar_todas: 'false',
-                offset: '0',
-                limit: String(limitePorLoja)
-            });
-            if (statusFiltro.value) params.set('status', statusFiltro.value);
-            const response = await fetch(`/api/mercadolivre/perguntas?${params.toString()}`, {
-                headers: obterAuthHeaders(),
-                cache: 'no-store'
-            });
-            const data = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(data.detail || `Erro ao carregar perguntas de ${nomeLoja}.`);
-            return { loja: nomeLoja, data };
-        } catch (error) {
-            return { loja: nomeLoja, error };
-        }
-    }));
-    const sucessos = resultados.filter((resultado) => resultado.data);
-    const erros = resultados
-        .filter((resultado) => resultado.error)
-        .map((resultado) => ({ loja: resultado.loja, erro: mensagemErro(resultado.error) }));
-    const todasPerguntas = ordenarPerguntasRecentes(sucessos.flatMap((resultado) => {
-        const perguntas = Array.isArray(resultado.data.questions) ? resultado.data.questions : [];
-        return perguntas.map((pergunta) => anexarLojaOrigem(pergunta, resultado.loja));
-    }));
-    const inicio = (state.paginaPerguntas - 1) * state.tamanhoPaginaPerguntas;
-    const fim = inicio + state.tamanhoPaginaPerguntas;
-    const pagina = todasPerguntas.slice(inicio, fim);
-    const hasNext = sucessos.some((resultado) => (
-        resultado.data &&
-        resultado.data.next_offset !== null &&
-        resultado.data.next_offset !== undefined
-    ));
-    return {
-        questions: pagina,
-        total_carregado: todasPerguntas.length,
-        total_paginacao: Math.max(todasPerguntas.length, fim + (hasNext ? 1 : 0)),
-        total: sucessos.reduce((acc, resultado) => acc + Number(resultado.data.total || 0), 0),
-        retornadas: todasPerguntas.length,
-        status_resumo: somarStatusResumoPerguntas(sucessos),
-        lojas_consultadas: sucessos.length,
-        lojas_total: lojas.length,
-        erros,
-        has_next: hasNext,
-        interrompido: sucessos.some((resultado) => resultado.data && resultado.data.interrompido),
-        modo_todas: true
-    };
+    return window.JKPerguntasLoading.carregar(state.paginaPerguntas || 1);
 }
 
 async function carregarPerguntas(pagina = 1, opcoes = {}) {
-    if (!state.lojaSelecionada) return;
-    const background = opcoes && opcoes.background === true;
-    const preservarInteracao = background && opcoes.preservarInteracao !== false;
-    const snapshotInteracaoInicial = preservarInteracao
-        ? capturarInteracaoPerguntas()
-        : null;
-    const capturarInteracaoAntesDoRender = () => {
-        if (!preservarInteracao) return null;
-        const snapshotAtual = capturarInteracaoPerguntas();
-        const mesmaPergunta = snapshotAtual
-            && snapshotAtual.perguntaSelecionadaKey === snapshotInteracaoInicial?.perguntaSelecionadaKey;
-        const interacaoAindaMontada = snapshotAtual
-            && (snapshotAtual.resposta !== null || snapshotAtual.checkboxMarcado !== null);
-        return mesmaPergunta && interacaoAindaMontada ? snapshotAtual : snapshotInteracaoInicial;
-    };
-    state.carregandoPerguntas = true;
-    btnRecarregar.disabled = true;
-    if (!background) {
-        perguntasSummary.classList.add('hidden');
-        perguntasList.innerHTML = '';
-        perguntasPagination.classList.add('hidden');
-        perguntasPagination.innerHTML = '';
-        state.perguntas = [];
-        state.totalPerguntas = 0;
-    }
-    state.paginaPerguntas = Math.max(1, Number(pagina) || 1);
-    if (!background) {
-        perguntasStatus.textContent = todasAsLojasSelecionadas()
-            ? `Carregando ${lojasMercadoLivreConectadas().length} conta(s)...`
-            : `Carregando perguntas de ${state.lojaSelecionada}...`;
-    }
-
-    try {
-        if (todasAsLojasSelecionadas()) {
-            const dataTodas = await carregarPerguntasTodasLojas();
-            if (background && !document.getElementById('aba-perguntas').classList.contains('active')) return false;
-            const perguntasTodas = ordenarPerguntasRecentes(Array.isArray(dataTodas.questions) ? dataTodas.questions : []);
-            state.perguntas = perguntasTodas;
-            state.totalPerguntas = Number(dataTodas.total_paginacao || dataTodas.total_carregado || perguntasTodas.length || 0);
-            perguntasStatus.textContent = '';
-            renderizarResumo(dataTodas);
-            const snapshotInteracao = capturarInteracaoAntesDoRender();
-            renderizarPerguntas();
-            restaurarInteracaoPerguntas(snapshotInteracao);
-            if (Number(dataTodas.lojas_consultadas || 0) > 0) registrarUltimaAtualizacaoPerguntas();
-            return true;
-        }
-        const offset = (state.paginaPerguntas - 1) * state.tamanhoPaginaPerguntas;
-        const params = new URLSearchParams({
-            loja: state.lojaSelecionada,
-            carregar_todas: 'false',
-            offset: String(offset),
-            limit: String(state.tamanhoPaginaPerguntas)
-        });
-        if (statusFiltro.value) params.set('status', statusFiltro.value);
-        const response = await fetch(`/api/mercadolivre/perguntas?${params.toString()}`, {
-            headers: obterAuthHeaders(),
-            cache: 'no-store'
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.detail || 'Erro ao carregar perguntas.');
-        if (background && !document.getElementById('aba-perguntas').classList.contains('active')) return false;
-        const perguntas = ordenarPerguntasRecentes(Array.isArray(data.questions) ? data.questions : []);
-        state.perguntas = perguntas;
-        state.totalPerguntas = Number(data.total || perguntas.length || 0);
-        perguntasStatus.textContent = data.interrompido ? 'Busca limitada pelo ML.' : '';
-        renderizarResumo(data);
-        const snapshotInteracao = capturarInteracaoAntesDoRender();
-        renderizarPerguntas();
-        restaurarInteracaoPerguntas(snapshotInteracao);
-        registrarUltimaAtualizacaoPerguntas();
-        return true;
-    } catch (error) {
-        perguntasStatus.textContent = `Erro ao carregar perguntas: ${mensagemErro(error)}`;
-        if (!background) {
-            perguntasList.innerHTML = '';
-            perguntasPagination.classList.add('hidden');
-            perguntasPagination.innerHTML = '';
-        }
-        return false;
-    } finally {
-        state.carregandoPerguntas = false;
-        btnRecarregar.disabled = false;
-    }
+    return window.JKPerguntasLoading.carregar(pagina, opcoes);
 }

@@ -214,7 +214,7 @@ function dadosNotificacaoVazios() {
     };
 }
 
-function dadosNotificacaoLoja(nome) {
+function dadosNotificacaoLoja(nome, storeId = '') {
     if (nome === TODAS_LOJAS_VALUE) {
         const totais = state.notificacoes.totais || {};
         return {
@@ -223,18 +223,22 @@ function dadosNotificacaoLoja(nome) {
             erro: ''
         };
     }
-    return state.notificacoes.lojas[chaveLojaCronometro(nome)] || dadosNotificacaoVazios();
+    const matches = lojasMercadoLivreConectadas().filter(loja => loja.nome === nome);
+    const canonical = String(storeId || (matches.length === 1 ? matches[0].store_id : '') || '');
+    if (!canonical) return dadosNotificacaoVazios();
+    return state.notificacoes.lojas[canonical] || (matches.length === 1 ? state.notificacoes.lojas[chaveLojaCronometro(nome)] : null) || dadosNotificacaoVazios();
 }
 
 function formatarContadorNotificacao(valor, parcial = false) {
+    if (valor === null) return '?';
     const numero = Math.max(0, Number(valor || 0));
     if (numero <= 0) return '';
     const base = numero > 999 ? '999+' : String(numero);
     return parcial && !base.endsWith('+') ? `${base}+` : base;
 }
 
-function htmlNotificacoesLoja(nome) {
-    const dados = dadosNotificacaoLoja(nome);
+function htmlNotificacoesLoja(nome, storeId = '') {
+    const dados = dadosNotificacaoLoja(nome, storeId);
     const perguntas = formatarContadorNotificacao(dados.perguntas, dados.perguntasParcial);
     const partes = [];
     if (perguntas) {
@@ -255,7 +259,7 @@ function renderizarNotificacoes() {
     atualizarBadgeAba(tabPerguntasNotificacao, totais.perguntas, totais.perguntasParcial);
     document.querySelectorAll('[data-store-notifications]').forEach((elemento) => {
         const nome = elemento.dataset.storeNotifications || '';
-        elemento.innerHTML = htmlNotificacoesLoja(nome);
+        elemento.innerHTML = htmlNotificacoesLoja(nome, elemento.dataset.storeId || '');
     });
 }
 
@@ -489,83 +493,42 @@ function ativarAba(nome) {
 }
 
 async function buscarContadorPerguntasNaoRespondidas(nomeLoja) {
-    const params = new URLSearchParams({
-        loja: nomeLoja,
-        status: 'UNANSWERED',
-        carregar_todas: 'false',
-        offset: '0',
-        limit: '1'
-    });
-    const response = await fetch(`/api/mercadolivre/perguntas?${params.toString()}`, {
-        headers: obterAuthHeaders(),
-        cache: 'no-store'
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.detail || `Erro ao contar perguntas de ${nomeLoja}.`);
-    return {
-        total: Number(data.total || data.status_resumo?.UNANSWERED || data.retornadas || 0),
-        parcial: false
-    };
+    const loja = lojasMercadoLivreConectadas().find(item => item.nome === nomeLoja);
+    const data = await window.JKPerguntasLoading.request('resumo', { store_id: loja?.store_id || '', metricas: 'false' });
+    const resumo = (data.lojas || [])[0];
+    if (!resumo || resumo.perguntas == null) throw new Error(resumo?.erro || 'Contador indisponível');
+    return { total: Number(resumo.perguntas), parcial: Boolean(resumo.partial || resumo.stale) };
 }
 
-async function carregarContadoresNotificacoes(forcar = false) {
+async function carregarContadoresNotificacoes(forcar = false, nomesLojas = []) {
     const lojas = lojasMercadoLivreConectadas();
-    if (!lojas.length) {
-        state.notificacoes = {
-            carregando: false,
-            atualizadoEm: Date.now(),
-            lojas: {},
-            totais: { perguntas: 0 },
-            erros: {}
-        };
-        renderizarNotificacoes();
-        return;
-    }
-    const agora = Date.now();
-    if (!forcar && state.notificacoes.atualizadoEm && agora - state.notificacoes.atualizadoEm < 60000) {
-        renderizarNotificacoes();
-        return;
-    }
-    if (state.notificacoes.carregando) return;
+    if (!lojas.length || state.notificacoes.carregando) return;
+    if (!forcar && Date.now() - Number(state.notificacoes.atualizadoEm || 0) < 60000) return;
     state.notificacoes.carregando = true;
-    renderizarNotificacoes();
-    const resultados = await Promise.all(lojas.map(async (loja) => {
-        const nomeLoja = String(loja.nome || '').trim();
-        try {
-            const perguntas = await buscarContadorPerguntasNaoRespondidas(nomeLoja);
-            return { nomeLoja, perguntas };
-        } catch (error) {
-            return { nomeLoja, error };
+    const selecionadas = nomesLojas.length ? lojas.filter(loja => nomesLojas.includes(chaveLojaCronometro(loja.nome))) : lojas;
+    try {
+        const data = await window.JKPerguntasLoading.request('resumo', { store_ids: selecionadas.map(loja => loja.store_id).join(','), forcar: String(forcar), metricas: 'false' });
+        const porLoja = { ...(state.notificacoes.lojas || {}) }, erros = { ...(state.notificacoes.erros || {}) };
+        for (const loja of selecionadas) {
+            const key = String(loja.store_id);
+            const resumo = (data.lojas || []).find(item => String(item.store_id) === String(loja.store_id));
+            if (!resumo || resumo.perguntas == null || resumo.erro) {
+                erros[key] = resumo?.erro || 'Contador indisponível';
+                porLoja[key] = { ...(porLoja[key] || {}), perguntas: porLoja[key]?.perguntas ?? null, perguntasParcial: true, erro: erros[key] };
+            } else {
+                delete erros[key];
+                porLoja[key] = { perguntas: Number(resumo.perguntas), perguntasParcial: Boolean(resumo.partial || resumo.stale), erro: '' };
+            }
         }
-    }));
-    const porLoja = {};
-    const erros = {};
-    const totais = { perguntas: 0, perguntasParcial: false };
-    resultados.forEach((resultado) => {
-        const chave = chaveLojaCronometro(resultado.nomeLoja);
-        if (!chave) return;
-        if (resultado.error) {
-            erros[chave] = mensagemErro(resultado.error);
-            porLoja[chave] = dadosNotificacaoVazios();
-            return;
+        state.notificacoes = { carregando: false, atualizadoEm: Date.now(), lojas: porLoja, erros,
+            totais: { perguntas: Object.values(porLoja).reduce((sum, item) => sum + Number(item.perguntas || 0), 0), perguntasParcial: Object.values(porLoja).some(item => item.perguntasParcial) } };
+    } catch (error) {
+        if (error.status === 401 || error.status === 403) state.notificacoes = { lojas: {}, totais: {}, erros: {} };
+        else {
+            state.notificacoes.totais.perguntasParcial = true;
+            selecionadas.forEach(loja => { const key = String(loja.store_id); state.notificacoes.lojas[key] = { ...(state.notificacoes.lojas[key] || {}), perguntas: state.notificacoes.lojas[key]?.perguntas ?? null, perguntasParcial: true, erro: 'Contador indisponível' }; });
         }
-        const dados = {
-            perguntas: Number(resultado.perguntas?.total || 0),
-            perguntasParcial: Boolean(resultado.perguntas?.parcial),
-            erro: ''
-        };
-        porLoja[chave] = dados;
-        totais.perguntas += dados.perguntas;
-        totais.perguntasParcial = totais.perguntasParcial || dados.perguntasParcial;
-    });
-    state.notificacoes = {
-        carregando: false,
-        atualizadoEm: Date.now(),
-        lojas: porLoja,
-        totais,
-        erros
-    };
-    renderizarNotificacoes();
+    } finally { state.notificacoes.carregando = false; renderizarNotificacoes(); }
 }
 
 function renderizarLojas() {
@@ -600,11 +563,11 @@ function renderizarLojas() {
         const badgeTexto = precisaReconectar ? 'Reconectar ML' : 'Conectar ML';
         const dotClasse = conectado ? '' : (precisaReconectar ? 'danger' : 'warn');
         const dotTitulo = conectado ? 'Mercado Livre conectado' : badgeTexto;
-        const active = nome === state.lojaSelecionada;
+        const active = state.lojaSelecionadaStoreId ? state.lojaSelecionadaStoreId === String(loja.store_id) : nome === state.lojaSelecionada;
         const config = loja.config_perguntas || {};
         const intervaloMinutos = Math.max(0.25, Math.min(1440, Number(config.intervalo_minutos || 10) || 10));
         return `
-            <div class="store-card ${active ? 'active' : ''} ${conectado ? '' : 'disabled'}" data-loja="${escapeHtml(nome)}" tabindex="${conectado ? '0' : '-1'}" aria-disabled="${conectado ? 'false' : 'true'}">
+            <div class="store-card ${active ? 'active' : ''} ${conectado ? '' : 'disabled'}" data-loja="${escapeHtml(nome)}" data-store-id="${escapeHtml(loja.store_id || '')}" tabindex="${conectado ? '0' : '-1'}" aria-disabled="${conectado ? 'false' : 'true'}">
                 <span class="store-card-heading">
                     <span class="store-name">${escapeHtml(nome)}</span>
                     <span class="store-connection-dot ${dotClasse}" title="${escapeHtml(dotTitulo)}" aria-label="${escapeHtml(dotTitulo)}"></span>
@@ -612,7 +575,7 @@ function renderizarLojas() {
                 <span class="store-meta">
                     ${conectado ? '' : `<span class="badge ${badgeClasse}" title="${escapeHtml(mlMotivo)}">${badgeTexto}</span>`}
                 </span>
-                <span class="store-notifications" data-store-notifications="${escapeHtml(nome)}">${htmlNotificacoesLoja(nome)}</span>
+                <span class="store-notifications" data-store-notifications="${escapeHtml(nome)}" data-store-id="${escapeHtml(loja.store_id || '')}">${htmlNotificacoesLoja(nome, loja.store_id)}</span>
                 <span class="store-options">
                     <label class="store-option">
                         <input class="store-config-checkbox" type="checkbox" data-config="responder_automaticamente" ${config.responder_automaticamente ? 'checked' : ''}>
@@ -652,14 +615,14 @@ function vincularEventosLojas(container) {
         card.addEventListener('click', (event) => {
             if (event.target.closest('.store-option')) return;
             if (card.classList.contains('disabled')) return;
-            selecionarLoja(card.dataset.loja || '');
+            selecionarLoja(card.dataset.loja || '', card.dataset.storeId || '');
         });
         card.addEventListener('keydown', (event) => {
             if (!['Enter', ' '].includes(event.key)) return;
             if (event.target.closest('.store-option')) return;
             if (card.classList.contains('disabled')) return;
             event.preventDefault();
-            selecionarLoja(card.dataset.loja || '');
+            selecionarLoja(card.dataset.loja || '', card.dataset.storeId || '');
         });
         card.querySelectorAll('.store-config-checkbox').forEach((input) => {
             input.addEventListener('click', (event) => event.stopPropagation());
@@ -897,9 +860,10 @@ function agendarRecarregamentoPerguntasAposPoll(nomeLoja = '', delay = AUTOMACAO
         }
 
         state.automacaoPerguntasRefreshPendente = false;
-        const tarefas = [Promise.resolve().then(() => carregarContadoresNotificacoes(true))];
-        const abaPerguntas = document.getElementById('aba-perguntas');
         const lojasPendentes = Array.from(state.automacaoPerguntasRefreshLojas || []);
+        lojasMercadoLivreConectadas().filter(loja => lojasPendentes.includes(chaveLojaCronometro(loja.nome))).forEach(loja => window.JKPerguntasLoading?.invalidar(loja.store_id));
+        const tarefas = [Promise.resolve().then(() => carregarContadoresNotificacoes(true, lojasPendentes))];
+        const abaPerguntas = document.getElementById('aba-perguntas');
         const afetaSelecao = lojasPendentes.some((loja) => lojaComNovidadeAfetaSelecaoPerguntas(loja));
         if (afetaSelecao && abaPerguntas && abaPerguntas.classList.contains('active')) {
             tarefas.push(Promise.resolve()

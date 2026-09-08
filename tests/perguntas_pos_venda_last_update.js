@@ -36,6 +36,7 @@ const state = {
     ultimaAtualizacaoPerguntasTimer: null
 };
 const indicador = { textContent: '', dateTime: '', title: '' };
+const checagem = { textContent: '', dateTime: '', title: '' };
 let intervalosCriados = 0;
 let atualizarIntervalo = null;
 const windowMock = {
@@ -51,11 +52,13 @@ const helpers = new Function(
     'perguntasUltimaAtualizacao',
     'window',
     'Date',
+    'document',
     `${source.slice(helpersStart, helpersEnd)}; return {
         formatarTempoDesdeAtualizacaoPerguntas,
-        registrarUltimaAtualizacaoPerguntas
+        registrarUltimaAtualizacaoPerguntas,
+        registrarUltimaChecagemAutomacaoPerguntas
     };`
-)(state, indicador, windowMock, FakeDate);
+)(state, indicador, windowMock, FakeDate, { getElementById: () => checagem });
 
 assert.strictEqual(helpers.formatarTempoDesdeAtualizacaoPerguntas(100000, 100000), 'Atualizado agora');
 assert.strictEqual(helpers.formatarTempoDesdeAtualizacaoPerguntas(100000, 112000), 'Atualizado há 12 s');
@@ -65,35 +68,26 @@ assert.strictEqual(helpers.formatarTempoDesdeAtualizacaoPerguntas(100000, 865000
 assert.strictEqual(helpers.formatarTempoDesdeAtualizacaoPerguntas(100000, 172900000), 'Atualizado há 2 dias');
 
 helpers.registrarUltimaAtualizacaoPerguntas();
-assert.strictEqual(indicador.textContent, 'Atualizado agora');
+assert.strictEqual(indicador.textContent, 'Lista atualizada agora');
 assert.strictEqual(intervalosCriados, 1, 'a primeira atualização deve iniciar um único relógio');
 
 agora = 112000;
 atualizarIntervalo();
-assert.strictEqual(indicador.textContent, 'Atualizado há 12 s');
+assert.strictEqual(indicador.textContent, 'Lista atualizada há 12 s');
 
 agora = 161000;
 helpers.registrarUltimaAtualizacaoPerguntas();
-assert.strictEqual(indicador.textContent, 'Atualizado agora');
+assert.strictEqual(indicador.textContent, 'Lista atualizada agora');
 assert.strictEqual(intervalosCriados, 1, 'novas atualizações não devem duplicar o relógio');
 
-const carregarStart = source.indexOf('async function carregarPerguntas(pagina');
-const carregarSource = source.slice(carregarStart);
-const catchStart = carregarSource.indexOf('} catch (error) {');
-assert(carregarStart >= 0 && catchStart > 0, 'o fluxo de carregamento deve existir');
-assert.strictEqual(
-    (carregarSource.slice(0, catchStart).match(/registrarUltimaAtualizacaoPerguntas\(\)/g) || []).length,
-    2,
-    'os dois fluxos de sucesso devem registrar a atualização'
-);
-assert.strictEqual(
-    (carregarSource.slice(catchStart).match(/registrarUltimaAtualizacaoPerguntas\(\)/g) || []).length,
-    0,
-    'o fluxo de erro não deve redefinir o horário'
-);
-assert(
-    carregarSource.includes('if (Number(dataTodas.lojas_consultadas || 0) > 0) registrarUltimaAtualizacaoPerguntas();'),
-    'falha total de todas as contas deve preservar o horário anterior'
-);
+// A checagem automatica tem relogio proprio e nao altera a idade da lista.
+agora = 221000;
+helpers.registrarUltimaChecagemAutomacaoPerguntas();
+assert.strictEqual(state.ultimaAtualizacaoPerguntasEm, 161000);
+assert.strictEqual(indicador.textContent, 'Lista atualizada há 1 min');
+assert.strictEqual(checagem.textContent, 'Última checagem automática: agora');
+assert.strictEqual(intervalosCriados, 1);
+// Idade do cache e preservacao em falhas sao exercitadas com a pagina real
+// em perguntas_loading_browser.js.
 
 console.log('OK: indicador de ultima atualizacao das perguntas validado.');
