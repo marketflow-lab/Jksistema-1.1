@@ -102,6 +102,15 @@ def test_v16_all_nonregulated_public_categories_plan_vision_and_resolve(
         loja="Loja Fixture",
         agent_input={
             "question": {"text": "Pergunta publica de pre-venda"},
+            "item": {"id": "MLB-FIXTURE", "seller_sku": "SKU-FIXTURE"},
+            "product_evidence_identity": {
+                "store_ref": "store-fixture",
+                "seller_id": "seller-fixture",
+                "site_id": "MLB",
+                "sku": "SKU-FIXTURE",
+                "item_id": "MLB-FIXTURE",
+                "variation_id": "",
+            },
             "intent": {"categoria": category, "categorias": [category]},
         },
         context_pipeline=[],
