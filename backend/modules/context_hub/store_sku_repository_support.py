@@ -507,8 +507,8 @@ def _guidance_value_from_body(body: str) -> dict[str, Any]:
         decoded = _safe_json_load(match.group(1), code="store_guidance_json_invalid")
         if isinstance(decoded, Mapping):
             return dict(decoded)
-    text = str(body or "").strip()
-    return {"orientacoes": text} if text else {}
+    text = str(body or "")
+    return {"orientacoes": text} if text.strip() else {}
 
 
 def _approved_guidance_file(
@@ -559,7 +559,33 @@ def _approved_guidance_file(
         or not record["valid"]
     ):
         return None
-    return _guidance_value_from_body(str(record.get("body") or ""))
+    value = _guidance_value_from_body(str(record.get("body") or ""))
+    # Plain Markdown and the legacy editorial key must reach the same fields
+    # used by both the editor and the active store generation.
+    if "orientacoes" in value:
+        field = "notas" if role == "sku_guidance" else "orientacoes_perguntas"
+        value.setdefault(field, value.pop("orientacoes"))
+    if role == "sku_guidance" and "texto" in value:
+        value.setdefault("notas", value.pop("texto"))
+    return value
+
+
+def _assert_editorial_skus_publishable(
+    paths: Any,
+    connection: sqlite3.Connection,
+    scope: StoreSkuScope,
+    canonical: Mapping[str, Any],
+    editorial_paths: Mapping[str, list[Path]],
+) -> None:
+    for sku in set(editorial_paths) - set(canonical) - {""}:
+        if _approved_guidance_file(
+            paths, connection, editorial_paths[sku][0],
+            scope=scope, role="sku_guidance", sku=sku,
+        ) is not None:
+            raise ContextHubValidationError(
+                "Sincronize o cadastro na base de conhecimento desta loja "
+                "antes de publicar orientacoes de novos SKUs."
+            )
 
 
 def _generation_knowledge(

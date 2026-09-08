@@ -2298,3 +2298,11 @@
             }
             .question-date { white-space: normal; }
         }
+
+.training-conflict { border: 1px solid #e5aa43; border-radius: 8px; padding: 12px; margin: 10px 0; }
+.training-conflict-versions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 10px 0; }
+.training-conflict pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 230px; overflow: auto; font: inherit; }
+.training-conflict button { margin: 4px; }
+@media (max-width: 600px) { .training-conflict-versions { grid-template-columns: 1fr; } }
+
+.training-obsidian-source pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; font: inherit; }

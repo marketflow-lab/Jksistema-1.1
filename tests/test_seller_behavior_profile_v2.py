@@ -397,6 +397,7 @@ def test_training_simulation_preserves_nonempty_model_text(monkeypatch):
     monkeypatch.setattr(training, "_ia_treinamento_ppv_tipo_normalizar", lambda _tipo: "perguntas_anuncio")
     monkeypatch.setattr(training, "_ia_treinamento_ppv_tipo_label", lambda _tipo: "perguntas de anuncio")
     monkeypatch.setattr(training, "_ia_treinamento_ppv_produto_prompt", lambda _produto: "")
+    monkeypatch.setattr(training, "_simulation_public_guidance", lambda *_args: {})
 
     result = training.ml_ia_treinamento_simular(
         IATreinamentoPerguntasPosVendaSimularRequest(

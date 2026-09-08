@@ -201,7 +201,7 @@ def test_ppv_propaga_store_id_exato_e_rejeita_nome_homonimo(
     monkeypatch.setattr(
         training,
         "_ia_treinamento_ppv_listar_skus",
-        lambda _client_id, escopo: escopos.append(escopo) or [],
+        lambda _client_id, escopo, strict=False: escopos.append(escopo) or [],
     )
 
     resposta = training.ml_ia_treinamento_listar_skus(

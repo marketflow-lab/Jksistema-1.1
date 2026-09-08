@@ -38,9 +38,17 @@ const productsByStore = {
     { sku: '002', nome: 'Produto Alpha 2', marca: 'Marca A' },
     { sku: '003', nome: 'Produto Alpha 3', marca: 'Marca B' },
   ],
-  'store-beta': [{ sku: '901', nome: 'Produto exclusivo Beta', marca: 'Marca B' }],
+  'store-beta': [{ sku: '001', nome: 'Produto exclusivo Beta', marca: 'Marca B' }],
 };
 
+let revision = 1;
+let failCatalog = false;
+let conflictOnSave = false;
+let delayedAlpha = null;
+function snapshot(storeId) {
+  const content = trainingByStore[storeId] || {};
+  return { success: true, store_id: storeId, ...content, context_generation_id: 'gen-1', editorial: { revision: `${storeId}-${revision}`, general: { status: content.generalStatus || 'published', hash: `general-${revision}`, source_body: content.orientacoes_perguntas }, skus: Object.fromEntries(Object.keys(content.notas_sku || {}).map(sku => [sku, { status: 'draft', hash: `sku-${revision}`, requires_catalog_sync: content.pendingCatalogSku === sku }])) } };
+}
 function json(route, payload, status = 200) {
   return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(payload) });
 }
@@ -57,6 +65,7 @@ function contentType(filePath) {
   const pageErrors = [];
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    page.setDefaultTimeout(12000);
     page.on('pageerror', error => pageErrors.push(error.message));
     await page.addInitScript(() => {
       localStorage.setItem('permissions', JSON.stringify({ perguntas_pos_venda: true }));
@@ -96,25 +105,40 @@ function contentType(filePath) {
       }
       if (url.pathname === '/api/mercadolivre/ia-treinamento/skus') {
         const storeId = url.searchParams.get('store_id');
-        await json(route, { success: true, store_id: storeId, produtos: productsByStore[storeId] || [] });
+        await json(route, failCatalog ? { detail: 'Catálogo indisponível' } : { success: true, store_id: storeId, produtos: productsByStore[storeId] || [] }, failCatalog ? 503 : 200);
         return;
       }
       if (url.pathname === '/api/mercadolivre/ia-treinamento' && request.method() === 'GET') {
         const storeId = url.searchParams.get('store_id');
-        await json(route, { success: true, store_id: storeId, ...(trainingByStore[storeId] || {}) });
+        const result = snapshot(storeId);
+        if (storeId === 'store-alpha' && delayedAlpha) { const wait = delayedAlpha; delayedAlpha = null; await wait; }
+        await json(route, result);
         return;
       }
       if (url.pathname === '/api/mercadolivre/ia-treinamento' && request.method() === 'POST') {
         const payload = request.postDataJSON();
-        assert.strictEqual(payload.store_id, 'store-alpha');
-        assert.strictEqual(payload.sku, '002');
-        assert.strictEqual(payload.notas_sku, 'Orientação nova e isolada do SKU 002.');
-        await json(route, {
-          success: true,
-          storage: 'obsidian_context_hub_draft',
-          requires_review: true,
-          sku_note_id: 'draft-sku-002',
-        });
+        assert(['store-alpha', 'store-beta'].includes(payload.store_id));
+        assert(['general', 'sku'].includes(payload.edit_target));
+        assert(payload.expected_revision, 'gravação exige versão conhecida');
+        if (conflictOnSave) {
+          conflictOnSave = false;
+          trainingByStore[payload.store_id].orientacoes_perguntas = 'Nova edição concorrente no Obsidian';
+          revision++;
+        }
+        if (payload.expected_revision !== `${payload.store_id}-${revision}`) {
+          await json(route, { detail: { code: 'editorial_revision_conflict', message: 'O Obsidian mudou.' } }, 409);
+          return;
+        }
+        const data = trainingByStore[payload.store_id];
+        if (payload.edit_target === 'sku') {
+          assert(!('orientacoes' in payload), 'gravar SKU não pode enviar orientações gerais');
+          data.notas_sku[payload.sku] = payload.notas_sku;
+        } else {
+          assert.strictEqual(payload.sku, '', 'gravar geral não pode gravar SKU aberto');
+          Object.assign(data, { orientacoes_perguntas: payload.orientacoes, contexto_loja: payload.contexto_loja, compatibilidade_autopecas: payload.compatibilidade_autopecas, proibicoes: payload.proibicoes, exemplos: { perguntas_anuncio: payload.exemplos }, generalStatus: 'draft' });
+        }
+        revision++;
+        await json(route, { ...snapshot(payload.store_id), storage: 'obsidian_context_hub_draft', requires_review: true });
         return;
       }
       if (url.pathname === '/api/mercadolivre/perguntas/automacao/status') {
@@ -130,6 +154,9 @@ function contentType(filePath) {
 
     await page.goto('http://jk.local/perguntas_pos_venda.html', { waitUntil: 'load' });
     await page.getByRole('tab', { name: 'Treinar IA' }).click();
+    assert.strictEqual(await page.locator('#ai-training-scope').inputValue(), '', 'Todas as contas não deve escolher a primeira loja');
+    assert.match(await page.locator('#ai-training-sku-list').innerText(), /Selecione uma loja/);
+    await page.locator('#lojas-grid .store-card[data-loja="Loja Alpha"]').click();
     await page.locator('#ai-training-sku-count').filter({ hasText: '3 SKU(s)' }).waitFor();
 
     assert.strictEqual(await page.locator('#ai-training-scope').inputValue(), 'store-alpha');
@@ -158,7 +185,146 @@ function contentType(filePath) {
     await page.locator('#ai-training-sku-count').filter({ hasText: '1 SKU(s)' }).waitFor();
     assert.match(await page.locator('#ai-training-general-summary').innerText(), /saudação da Loja Beta/);
     assert.match(await page.locator('#ai-training-sku-list').innerText(), /Produto exclusivo Beta/);
+    assert(await page.locator('#lojas-grid .store-card[data-loja="Loja Beta"]').evaluate(el => el.classList.contains('active')));
     assert(!await page.locator('#ai-training-sku-list').innerText().then(text => text.includes('Produto Alpha')));
+
+    // Same SKU in two stores never inherits the other store's guidance.
+    await page.locator('[data-training-sku="001"]').click();
+    assert.match(await page.locator('#ai-training-sku-guidance-view').innerText(), /ainda não possui/);
+    await page.getByRole('button', { name: 'Fechar orientações do SKU' }).click();
+
+    // A real polling cycle reflects external text verbatim, including whitespace and markup.
+    const external = '  Texto do Obsidian\n\n- lista com espaços  \n<script>window.injected = true</script>  ';
+    trainingByStore['store-beta'].orientacoes_perguntas = external;
+    revision++;
+    await page.waitForFunction(expected => document.querySelector('#ai-training-orientacoes').value === expected, external);
+    assert.strictEqual(await page.locator('#ai-training-general-summary p').first().textContent(), external);
+    assert.strictEqual(await page.evaluate(() => window.injected), undefined);
+    assert.strictEqual(await page.locator('#ai-training-general-source pre').textContent(), external);
+
+    // Dirty forms survive background synchronization and account changes.
+    await page.getByRole('button', { name: 'Editar orientações', exact: true }).click();
+    const localEdit = '  Minha edição local\ncom quebra e espaços  ';
+    await page.locator('#ai-training-orientacoes').fill(localEdit);
+    trainingByStore['store-beta'].orientacoes_perguntas = 'Alteração externa depois de começar a editar';
+    revision++;
+    await page.locator('#ai-training-general-conflict').waitFor({ state: 'visible' });
+    assert.strictEqual(await page.locator('#ai-training-orientacoes').inputValue(), localEdit);
+    if (process.env.JK_CAPTURE_TEST_SCREENSHOT === '1') {
+      const outputDir = path.join(root, 'test-results', 'perguntas-training-store-sku');
+      fs.mkdirSync(outputDir, { recursive: true });
+      await page.screenshot({ path: path.join(outputDir, 'obsidian-conflict-preserved.png'), fullPage: true });
+    }
+    assert.match(await page.locator('#ai-training-general-conflict').innerText(), /Alteração externa depois/);
+    await page.locator('#lojas-grid .store-card[data-loja="Loja Alpha"]').click();
+    await page.waitForFunction(() => document.querySelector('#ai-training-orientacoes').value.includes('cordial'));
+    await page.locator('#ai-training-scope').selectOption('store-beta');
+    await page.waitForFunction(expected => document.querySelector('#ai-training-orientacoes').value === expected, localEdit);
+    await page.locator('#ai-training-general-conflict').getByRole('button', { name: 'Continuar com minha edição após comparar' }).click();
+    await page.getByRole('button', { name: 'Salvar orientações gerais' }).click();
+    await page.waitForFunction(expected => document.querySelector('#ai-training-general-summary p')?.textContent === expected, localEdit);
+    assert.strictEqual(trainingByStore['store-beta'].orientacoes_perguntas, localEdit);
+
+    // Saving an unrelated general field must preserve every existing model verbatim.
+    const manyModels = Array.from({ length: 61 }, (_, index) => ({ pergunta: `  Pergunta ${index}  `, resposta: ` Resposta ${index}\n `, sku: '', observacao: '  Nota  ', custom_metadata: { retain: index } }));
+    trainingByStore['store-beta'].exemplos = { perguntas_anuncio: manyModels };
+    revision++;
+    await page.evaluate(() => carregarTreinamentoAI(true));
+    await page.waitForFunction(() => document.querySelectorAll('.training-example-item').length === 61);
+    await page.getByRole('button', { name: 'Editar orientações', exact: true }).click();
+    await page.locator('#ai-training-contexto-loja').fill('Política revisada');
+    await page.getByRole('button', { name: 'Salvar orientações gerais' }).click();
+    await page.locator('#ai-training-general-editor').waitFor({ state: 'hidden' });
+    assert.deepStrictEqual(trainingByStore['store-beta'].exemplos.perguntas_anuncio, manyModels);
+
+    // Server-side 409 between read and save retains local text and offers the latest version.
+    await page.getByRole('button', { name: 'Editar orientações', exact: true }).click();
+    await page.locator('#ai-training-orientacoes').fill('Edição durante corrida');
+    conflictOnSave = true;
+    await page.getByRole('button', { name: 'Salvar orientações gerais' }).click();
+    await page.locator('#ai-training-general-conflict').filter({ hasText: 'Nova edição concorrente' }).waitFor();
+    assert.strictEqual(await page.locator('#ai-training-orientacoes').inputValue(), 'Edição durante corrida');
+    await page.locator('#ai-training-general-conflict').getByRole('button', { name: 'Usar versão do Obsidian' }).click();
+    assert.strictEqual(await page.locator('#ai-training-orientacoes').inputValue(), 'Nova edição concorrente no Obsidian');
+    await page.locator('#btn-ai-training-cancelar-gerais').click();
+
+    // SKU edits also survive conflict and account switching.
+    await page.locator('[data-training-sku="001"]').click();
+    await page.locator('#btn-ai-training-editar-sku').click();
+    await page.locator('#ai-training-notas-sku').fill('Rascunho SKU Beta');
+    trainingByStore['store-beta'].notas_sku['001'] = 'SKU Beta editado no Obsidian';
+    revision++;
+    await page.locator('#ai-training-sku-conflict').waitFor({ state: 'visible' });
+    assert.strictEqual(await page.locator('#ai-training-notas-sku').inputValue(), 'Rascunho SKU Beta');
+    await page.locator('#btn-ai-training-fechar-sku').click();
+    await page.locator('#lojas-grid .store-card[data-loja="Loja Alpha"]').click();
+    await page.locator('#ai-training-sku-count').filter({ hasText: '3 SKU(s)' }).waitFor();
+    await page.locator('#ai-training-scope').selectOption('store-beta');
+    await page.locator('#ai-training-sku-count').filter({ hasText: '1 SKU(s)' }).waitFor();
+    await page.locator('[data-training-sku="001"]').click();
+    assert.strictEqual(await page.locator('#ai-training-notas-sku').inputValue(), 'Rascunho SKU Beta');
+    await page.locator('#ai-training-sku-conflict').getByRole('button', { name: 'Usar versão do Obsidian' }).click();
+    await page.locator('#btn-ai-training-fechar-sku').click();
+
+    // Deletion removes stale content, and API failures are distinct from an empty catalog.
+    trainingByStore['store-beta'].orientacoes_perguntas = '';
+    trainingByStore['store-beta'].contexto_loja = '';
+    trainingByStore['store-beta'].exemplos = { perguntas_anuncio: [] };
+    trainingByStore['store-beta'].generalStatus = 'deleted';
+    trainingByStore['store-beta'].notas_sku = {};
+    revision++;
+    await page.locator('#ai-training-status').filter({ hasText: 'Arquivo excluído' }).waitFor();
+    assert.match(await page.locator('#ai-training-general-summary').innerText(), /ainda não possui/);
+    failCatalog = true;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await page.locator('#ai-training-sku-count').filter({ hasText: 'Falha ao carregar' }).waitFor();
+    await page.evaluate(() => carregarTreinamentoAI(true));
+    assert.strictEqual(await page.locator('#ai-training-sku-count').innerText(), 'Falha ao carregar');
+    failCatalog = false;
+
+    // Late response from an old selection cannot flash another store's content.
+    let releaseAlpha;
+    delayedAlpha = new Promise(resolve => { releaseAlpha = resolve; });
+    await page.locator('#lojas-grid .store-card[data-loja="Loja Alpha"]').click();
+    await page.locator('#ai-training-scope').selectOption('store-beta');
+    await page.locator('#ai-training-status').filter({ hasText: 'Arquivo excluído' }).waitFor();
+    releaseAlpha();
+    await page.evaluate(() => carregarTreinamentoAI(true));
+    assert.strictEqual(await page.locator('#ai-training-scope').inputValue(), 'store-beta');
+    assert(!await page.locator('#ai-training-general-summary').innerText().then(text => text.includes('cordial')));
+
+    // Hidden tabs stop polling. Returning to training refreshes the current note.
+    await page.getByRole('tab', { name: 'Perguntas', exact: true }).click();
+    const beforeHidden = requests.filter(item => item.method === 'GET' && item.pathname === '/api/mercadolivre/ia-treinamento').length;
+    await page.waitForTimeout(5200);
+    assert.strictEqual(requests.filter(item => item.method === 'GET' && item.pathname === '/api/mercadolivre/ia-treinamento').length, beforeHidden);
+    trainingByStore['store-beta'].orientacoes_perguntas = 'Recuperado após reabrir aba';
+    trainingByStore['store-beta'].generalStatus = 'published';
+    revision++;
+    await page.getByRole('tab', { name: 'Treinar IA' }).click();
+    await page.waitForFunction(() => document.querySelector('#ai-training-orientacoes').value === 'Recuperado após reabrir aba');
+
+    for (const [status, label] of [['validated', 'Pendente de publicação'], ['rejected', 'Revisão reprovada'], ['future-status', 'Estado de publicação indisponível']]) {
+      trainingByStore['store-beta'].generalStatus = status;
+      revision++;
+      await page.evaluate(() => carregarTreinamentoAI(true));
+      await page.locator('#ai-training-status').filter({ hasText: label }).waitFor();
+      assert.strictEqual(await page.locator('#ai-training-general-sync').innerText(), label);
+    }
+
+    // An individual SKU awaiting the canonical catalog must not appear ready for publication.
+    trainingByStore['store-beta'].generalStatus = 'published';
+    trainingByStore['store-beta'].notas_sku = { '001': 'Orientação preservada aguardando o cadastro' };
+    trainingByStore['store-beta'].pendingCatalogSku = '001';
+    revision++;
+    await page.evaluate(() => carregarTreinamentoAI(true));
+    await page.locator('#ai-training-status').filter({ hasText: 'Pendente de sincronização do cadastro' }).waitFor();
+    assert.match(await page.locator('[data-training-sku="001"]').innerText(), /Pendente de sincronização do cadastro/);
+    assert.strictEqual(await page.locator('#ai-training-general-sync').innerText(), 'Sincronizado');
+    await page.locator('[data-training-sku="001"]').click();
+    assert.match(await page.locator('#ai-training-sku-sync').innerText(), /A orientação está salva no Obsidian. Sincronize a base de conhecimento desta loja antes de publicar/);
+    assert.match(await page.locator('#ai-training-sku-guidance-view').innerText(), /Orientação preservada aguardando o cadastro/);
+    await page.locator('#btn-ai-training-fechar-sku').click();
 
     const trainingGets = requests.filter(item => item.method === 'GET' && item.pathname === '/api/mercadolivre/ia-treinamento');
     assert(trainingGets.every(item => /store_id=store-(alpha|beta)/.test(item.search)), 'treinamento nunca pode consultar escopo global');
