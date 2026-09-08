@@ -212,14 +212,35 @@ def _prepare_general_research(
             "requirement_count": len(question_plan.requirements),
             "query_count": len(question_plan.queries),
         })
-    result = hooks.mandatory_web_tool(
-        "web_search_question_context",
-        lambda: binding.web_tool(
-            client.client_id,
-            _perguntas_ia_research_input(client.agent_input),
-            [*(internal_sources or []), hub],
-        ),
+    research_required = bool(
+        client.agent_input.get("web_search_required")
+        or client.agent_input.get("use_web_search")
+        or client.agent_input.get("force_external_research")
+        or categories & {"prohibited_contact", "regulated_product"}
     )
+    if research_required:
+        result = hooks.mandatory_web_tool(
+            "web_search_question_context",
+            lambda: binding.web_tool(
+                client.client_id,
+                _perguntas_ia_research_input(client.agent_input),
+                [*(internal_sources or []), hub],
+            ),
+        )
+    else:
+        result = {
+            "function": "web_search_question_context",
+            "arguments": {},
+            "result": {
+                "found": False,
+                "skipped": True,
+                "reason_code": str(
+                    client.agent_input.get("web_research_reason")
+                    or "no_research_needed"
+                ),
+                "read_only": True,
+            },
+        }
     verified_result, found, tool_error, research_step = (
         _perguntas_ia_general_research_contract(result)
     )
