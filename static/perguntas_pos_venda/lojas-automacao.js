@@ -483,8 +483,8 @@ function ativarAba(nome) {
         mediacaoStatus.textContent = 'Selecione uma loja especifica para consultar mediacoes.';
     }
     if (nome === 'treinar-ai') {
-        carregarTreinamentoAI();
-        carregarSkusTreinamentoAI();
+        sincronizarLojaTreinamento();
+        atualizarTreinamentoVisivel(true);
     }
 }
 

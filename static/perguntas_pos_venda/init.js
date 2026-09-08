@@ -62,18 +62,8 @@ btnMediacaoRecarregar.addEventListener('click', () => {
 });
 if (aiTrainingScope) {
     aiTrainingScope.addEventListener('change', () => {
-        state.treinamentoEscopoLoja = String(aiTrainingScope.value || '').trim();
-        state.treinamentoCarregado = false;
-        state.produtosTreinamento = [];
-        state.produtosTreinamentoCarregados = false;
-        state.produtosTreinamentoEscopo = null;
-        aiTrainingSku.value = '';
-        if (aiTrainingSkuSearch) aiTrainingSkuSearch.value = '';
-        fecharBalaoSkuTreinamento();
-        fecharEditorOrientacoesGerais(false);
-        limparChatTreinamento();
-        carregarTreinamentoAI(true);
-        carregarSkusTreinamentoAI();
+        const loja = lojasMercadoLivreConectadas().find((item) => String(item.store_id || '') === aiTrainingScope.value);
+        if (loja) selecionarLoja(loja.nome);
     });
 }
 aiTrainingSku.addEventListener('change', () => {
@@ -89,7 +79,7 @@ btnAiTrainingEditarGerais?.addEventListener('click', abrirEditorOrientacoesGerai
 btnAiTrainingCancelarGerais?.addEventListener('click', () => fecharEditorOrientacoesGerais(true));
 btnAiTrainingSalvarGerais?.addEventListener('click', salvarOrientacoesGeraisTreinamento);
 btnAiTrainingFecharSku?.addEventListener('click', fecharBalaoSkuTreinamento);
-btnAiTrainingCancelarSku?.addEventListener('click', exibirLeituraOrientacaoSku);
+btnAiTrainingCancelarSku?.addEventListener('click', () => descartarEdicaoTreinamento('sku'));
 btnAiTrainingEditarSku?.addEventListener('click', editarOrientacaoSkuTreinamento);
 btnAiTrainingSalvarSku?.addEventListener('click', salvarOrientacaoSkuTreinamento);
 aiTrainingSkuPopover?.addEventListener('click', (event) => {
@@ -113,4 +103,5 @@ aiTrainingPergunta.addEventListener('keydown', (event) => {
     }
 });
 
+iniciarSincronizacaoTreinamento();
 carregarLojas();

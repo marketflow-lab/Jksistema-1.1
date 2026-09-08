@@ -1,6 +1,6 @@
 """Pydantic schemas for ia."""
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -40,6 +40,8 @@ class IATreinamentoPerguntasPosVendaRequest(BaseModel):
     proibicoes: Optional[str] = ""
     sku: Optional[str] = ""
     notas_sku: Optional[str] = ""
+    edit_target: Optional[Literal["general", "sku"]] = None
+    expected_revision: Optional[str] = None
     exemplos: Optional[list[dict]] = None
 
 

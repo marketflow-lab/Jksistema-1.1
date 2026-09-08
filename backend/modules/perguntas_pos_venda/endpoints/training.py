@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from typing import Optional
 
 from fastapi import Depends, HTTPException, Request
@@ -15,9 +16,15 @@ from ml_questions_gemini.prompt_builder import _untrusted_json_block
 
 from backend.modules.context_hub.store_sku_contracts import STORE_SKU_PUBLIC_SURFACE
 from backend.modules.context_hub.store_sku_repository import (
-    create_store_guidance_draft,
     load_store_guidance,
 )
+
+from backend.modules.context_hub.store_sku_editor import (
+    StoreGuidanceEditorConflict,
+    load_store_guidance_editor,
+    save_store_guidance_editor,
+)
+from backend.modules.context_hub.contracts import ContextHubConflictError, ContextHubValidationError
 
 _chamar_codex_chat = runtime_adapter("_chamar_codex_chat")
 _chamar_deepseek_chat = runtime_adapter("_chamar_deepseek_chat")
@@ -121,13 +128,13 @@ def _resolver_context_hub_scope(client_id: str, loja: str, store_id: str) -> dic
 
 def _public_guidance_payload(req: IATreinamentoPerguntasPosVendaRequest) -> dict:
     payload = {
-        "orientacoes_perguntas": str(req.orientacoes or "").strip(),
-        "contexto_loja": str(req.contexto_loja or "").strip(),
-        "compatibilidade_autopecas": str(req.compatibilidade_autopecas or "").strip(),
-        "proibicoes": str(req.proibicoes or "").strip(),
+        "orientacoes_perguntas": str(req.orientacoes or ""),
+        "contexto_loja": str(req.contexto_loja or ""),
+        "compatibilidade_autopecas": str(req.compatibilidade_autopecas or ""),
+        "proibicoes": str(req.proibicoes or ""),
         "exemplos_perguntas": list(req.exemplos or []),
     }
-    return {key: value for key, value in payload.items() if value not in ("", [], {})}
+    return payload
 
 
 def _request_actor(request: Request) -> str:
@@ -154,39 +161,41 @@ def ml_ia_treinamento_obter(
         store_id=store_id,
         include_inherited=False,
     )
-    # Keep post-sale fields from the unchanged legacy flow, but public guidance
-    # is read only from the active store generation.
-    data["orientacoes"] = ""
-    data["orientacoes_perguntas"] = ""
-    data["notas_sku"] = {}
-    data["exemplos"] = {
-        **(data.get("exemplos") if isinstance(data.get("exemplos"), dict) else {}),
-        "perguntas_anuncio": [],
-    }
+    editor = None
     if store_id:
         scope = _resolver_context_hub_scope(client_id, loja, store_id)
-        active = load_store_guidance(client_id, scope)
-        general = (
-            (active.get("guidance") or {}).get("general")
-            if isinstance(active.get("guidance"), dict)
-            else {}
-        )
-        general = general if isinstance(general, dict) else {}
-        data["orientacoes"] = str(general.get("orientacoes_perguntas") or "")
-        data["orientacoes_perguntas"] = data["orientacoes"]
-        data["contexto_loja"] = str(general.get("contexto_loja") or "")
-        data["compatibilidade_autopecas"] = str(general.get("compatibilidade_autopecas") or "")
-        data["proibicoes"] = str(general.get("proibicoes") or "")
-        data["exemplos"]["perguntas_anuncio"] = list(general.get("exemplos_perguntas") or [])
-        data["notas_sku"] = {
-            str(sku): str(value.get("notas") or value.get("texto") or "").strip()
-            for sku, value in (active.get("sku_guidance") or {}).items()
-            if isinstance(value, dict)
-            and str(value.get("notas") or value.get("texto") or "").strip()
-        }
-        data["context_generation_id"] = str(active.get("generation_id") or "")
+        try:
+            editor = load_store_guidance_editor(client_id, scope)
+        except (OSError, sqlite3.Error, ContextHubConflictError, ContextHubValidationError) as exc:
+            raise HTTPException(status_code=503, detail={
+                "code": "editorial_read_failed",
+                "message": "Nao foi possivel ler as orientacoes do Obsidian.",
+            }) from exc
+    return _editor_response(data, editor or {}, loja, store_id)
+
+
+def _editor_response(data: dict, editor: dict, loja: str, store_id: str) -> dict:
+    # The editing view uses the current note; simulation keeps published knowledge.
+    general = (editor.get("guidance") or {}).get("general") or {}
+    data = dict(data)
+    data["orientacoes"] = str(general.get("orientacoes_perguntas") or "")
+    data["orientacoes_perguntas"] = data["orientacoes"]
+    for field in ("contexto_loja", "compatibilidade_autopecas", "proibicoes"):
+        data[field] = str(general.get(field) or "")
+    data["exemplos"] = {
+        **(data.get("exemplos") if isinstance(data.get("exemplos"), dict) else {}),
+        "perguntas_anuncio": list(general.get("exemplos_perguntas") or []),
+    }
+    data["notas_sku"] = {
+        str(sku): str(value.get("notas", value.get("texto")) or "")
+        for sku, value in (editor.get("sku_guidance") or {}).items()
+        if isinstance(value, dict)
+    }
+    data["context_generation_id"] = str(editor.get("generation_id") or "")
+    data["editorial"] = editor.get("editorial") or {}
+    data["published_guidance"] = editor.get("published_guidance") or {}
     data["public_guidance_storage"] = "context_hub_store_sku_v18"
-    return {"success": True, **data, "store_id": store_id}
+    return {"success": True, **data, "loja": loja, "store_id": store_id}
 
 
 def ml_ia_treinamento_salvar(
@@ -205,55 +214,60 @@ def ml_ia_treinamento_salvar(
                 },
             )
         scope = _resolver_context_hub_scope(client_id, loja, store_id)
-        actor = _request_actor(request)
-        general = _public_guidance_payload(req)
-        sku = str(req.sku or "").strip()
-        active = load_store_guidance(client_id, scope, sku=sku)
-        active_guidance = (
-            active.get("guidance") if isinstance(active.get("guidance"), dict) else {}
+        if not req.expected_revision:
+            raise HTTPException(status_code=428, detail={
+                "code": "editorial_revision_required",
+                "message": "Recarregue as orientacoes antes de salvar.",
+            })
+        if req.edit_target not in {"general", "sku"}:
+            raise HTTPException(status_code=422, detail={
+                "code": "editorial_target_required",
+                "message": "Informe se a alteracao pertence a loja ou ao SKU.",
+            })
+        sku = str(req.sku or "").strip() if req.edit_target == "sku" else ""
+        if req.edit_target == "sku":
+            products = _list_store_products(client_id, store_id)
+            if not sku or not any(str(item.get("sku") or "") == sku for item in products):
+                raise HTTPException(status_code=409, detail={
+                    "code": "sku_store_scope_unresolved",
+                    "message": "O SKU nao pertence ao cadastro desta loja.",
+                })
+        guidance = (
+            {"notas": str(req.notas_sku or "")} if sku
+            else _public_guidance_payload(req)
         )
-        current_general = (
-            active_guidance.get("general")
-            if isinstance(active_guidance.get("general"), dict)
-            else {}
-        )
-        general_note = None
-        if not active.get("found") or general != current_general:
-            general_note = create_store_guidance_draft(
-                client_id,
-                scope,
-                guidance=general,
-                actor=actor,
+        try:
+            editor = save_store_guidance_editor(
+                client_id, scope, guidance=guidance, sku=sku,
+                expected_revision=req.expected_revision, actor=_request_actor(request),
             )
-        sku_note = None
-        requested_sku_guidance = {"notas": str(req.notas_sku or "").strip()}
-        requested_sku_guidance = {
-            key: value for key, value in requested_sku_guidance.items() if value
-        }
-        current_sku = (
-            active_guidance.get("sku")
-            if isinstance(active_guidance.get("sku"), dict)
-            else {}
+        except StoreGuidanceEditorConflict as exc:
+            raise HTTPException(status_code=409, detail={
+                "code": "editorial_revision_conflict",
+                "message": "O Obsidian foi alterado. Preserve sua edicao e compare a versao atual.",
+            }) from exc
+        except ContextHubValidationError as exc:
+            raise HTTPException(status_code=422, detail={
+                "code": "editorial_validation_failed",
+                "message": "A orientacao possui conteudo ou identidade invalida; confira a nota no Obsidian.",
+            }) from exc
+        except (OSError, sqlite3.Error, ContextHubConflictError) as exc:
+            raise HTTPException(status_code=503, detail={
+                "code": "editorial_write_failed",
+                "message": "Nao foi possivel confirmar a gravacao no Obsidian.",
+            }) from exc
+        data = _ia_treinamento_ppv_resolver(
+            client_id, loja, store_id=store_id, include_inherited=False,
         )
-        if sku and requested_sku_guidance != current_sku:
-            sku_note = create_store_guidance_draft(
-                client_id,
-                scope,
-                guidance=requested_sku_guidance,
-                sku=sku,
-                actor=actor,
-            )
-        requires_review = bool(general_note or sku_note)
+        result = _editor_response(data, editor, loja, store_id)
+        target = ((editor.get("editorial") or {}).get("skus") or {}).get(sku, {}) if sku else (
+            (editor.get("editorial") or {}).get("general") or {}
+        )
         return {
-            "success": True,
-            "tipo": "perguntas_anuncio",
-            "loja": loja,
-            "store_id": store_id,
-            "orientacoes": str(req.orientacoes or "").strip(),
-            "storage": "obsidian_context_hub_draft",
-            "requires_review": requires_review,
-            "note_id": str(((general_note or {}).get("note") or {}).get("note_id") or ""),
-            "sku_note_id": str(((sku_note or {}).get("note") or {}).get("note_id") or ""),
+            **result, "tipo": "perguntas_anuncio", "storage": "obsidian_context_hub_draft",
+            "requires_review": target.get("status") != "published",
+            "note_id": target.get("note_id", "") if not sku else "",
+            "sku_note_id": target.get("note_id", "") if sku else "",
         }
     data = _ia_treinamento_ppv_salvar(
         client_id,
@@ -280,8 +294,18 @@ def ml_ia_treinamento_listar_skus(
     return {
         "success": True,
         "store_id": store_id,
-        "produtos": _ia_treinamento_ppv_listar_skus(client_id, store_id or loja),
+        "produtos": _list_store_products(client_id, store_id) if store_id else [],
     }
+
+
+def _list_store_products(client_id: str, store_id: str) -> list[dict]:
+    try:
+        return _ia_treinamento_ppv_listar_skus(client_id, store_id, strict=True)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "store_catalog_read_failed",
+            "message": "Nao foi possivel carregar o cadastro de SKUs desta loja.",
+        }) from exc
 
 
 def _simulation_public_guidance(

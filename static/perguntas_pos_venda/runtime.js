@@ -301,7 +301,6 @@ function lojasMercadoLivreConectadas() {
 
 function montarSeletorEscopoTreinamento() {
     if (!aiTrainingScope) return;
-    const valorAtual = String(state.treinamentoEscopoLoja || aiTrainingScope.value || '').trim();
     aiTrainingScope.innerHTML = '';
 
     const optSelecione = document.createElement('option');
@@ -322,13 +321,11 @@ function montarSeletorEscopoTreinamento() {
         aiTrainingScope.appendChild(option);
     });
 
-    const valorExiste = valorAtual && Array.from(aiTrainingScope.options).some((option) => option.value === valorAtual);
     const lojaSelecionada = lojasConectadas.find((loja) => (
         String(loja && loja.nome || '').trim() === String(state.lojaSelecionada || '').trim()
     ));
     const storeIdSelecionado = String((lojaSelecionada && lojaSelecionada.store_id) || '').trim();
-    const primeiroStoreId = String((lojasConectadas[0] && lojasConectadas[0].store_id) || '').trim();
-    state.treinamentoEscopoLoja = valorExiste ? valorAtual : (storeIdSelecionado || primeiroStoreId);
+    state.treinamentoEscopoLoja = storeIdSelecionado;
     aiTrainingScope.value = state.treinamentoEscopoLoja;
 }
 

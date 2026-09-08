@@ -41,6 +41,7 @@ def ml_perguntas_listar_lojas(client_id: str = Depends(get_tenant_id)):
         conectado = bool(ml_status.get("conectado"))
         lojas.append({
             "nome": nome,
+            "store_id": str(loja.get("store_id") or "").strip(),
             "mercadolivre_conectado": conectado,
             "mercadolivre_status": ml_status.get("status") or ("conectado" if conectado else "pendente"),
             "mercadolivre_motivo": ml_status.get("motivo") or "",
@@ -58,6 +59,7 @@ def ml_perguntas_listar_lojas(client_id: str = Depends(get_tenant_id)):
         lojas_index.add(nome_norm)
         lojas.append({
             "nome": nome,
+            "store_id": "",
             "mercadolivre_conectado": False,
             "mercadolivre_status": "reautenticar",
             "mercadolivre_motivo": "Loja tinha configuracao em Perguntas e pos-venda, mas nao esta mais autenticada em Integracoes.",

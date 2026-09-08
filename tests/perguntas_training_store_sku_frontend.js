@@ -33,14 +33,14 @@ for (const id of [
 assert.doesNotMatch(canonicalHtml, /Padrao para todas as contas|O escopo global só pode ser escolhido/);
 assert.match(canonicalHtml, /Cada loja possui sua própria base/);
 assert.match(runtime, /optSelecione\.disabled = true/);
-assert.match(runtime, /storeIdSelecionado \|\| primeiroStoreId/);
+assert.match(runtime, /state\.treinamentoEscopoLoja = storeIdSelecionado/);
 assert.match(training, /renderizarListaSkusTreinamento/);
 assert.match(training, /data-training-sku=/);
 assert.match(training, /abrirBalaoSkuTreinamento/);
 assert.match(training, /params\.set\('store_id', lojaEscopo\)/);
-assert((training.match(/if \(lojaEscopo !== lojaEscopoTreinamento\(\)\) return;/g) || []).length >= 2,
+assert((training.match(/lojaEscopo !== lojaEscopoTreinamento\(\)/g) || []).length >= 2,
   'respostas atrasadas de outra loja não podem sobrescrever o escopo atual');
-assert.match(training, /Rascunho de[\s\S]*salvo no Obsidian[\s\S]*Revise e publique/);
+assert.match(training, /Pendente de publicação[\s\S]*salvo no Obsidian[\s\S]*Revise e publique/);
 assert.match(init, /aiTrainingSkuSearch\.addEventListener\('input', renderizarListaSkusTreinamento\)/);
 assert.match(init, /btnAiTrainingSalvarSku\?\.addEventListener\('click', salvarOrientacaoSkuTreinamento\)/);
 assert.match(styles, /\.training-sku-list[\s\S]*grid-template-columns: repeat\(2/);

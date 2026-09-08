@@ -271,16 +271,76 @@ def test_guidance_editor_loads_all_sku_notes_from_only_the_selected_store(hub_ro
     }
 
 
+@pytest.mark.parametrize("sku", ["", "160-K"])
+def test_publish_markdown_from_moved_note_after_store_rename(hub_root: Path, sku: str):
+    from backend.modules.context_hub.metadata import _dump_frontmatter, _parse_frontmatter
+    from backend.modules.context_hub.curation_records import _curated_note_id
+
+    _publish(hub_root, STORE_A, sku="160-K", item="MLB100", marker="A")
+    paths = _tenant_paths("tenant-a", info_root=hub_root)
+    note = create_store_guidance_draft(
+        "tenant-a", STORE_A, sku=sku,
+        guidance={"notas" if sku else "orientacoes_perguntas": "Inicial"}, info_root=hub_root,
+    )["note"]
+    original = paths.curated_dir / note["relative_path"]
+    metadata, _ = _parse_frontmatter(original.read_text(encoding="utf-8"))
+    body = "# Orientacoes da loja\n\n- Preservar a lista.\n- Confirmar a aplicacao."
+    moved = paths.curated_dir / "Notas" / ("sku.md" if sku else "gerais.md")
+    moved.parent.mkdir(exist_ok=True)
+    moved.write_text(_dump_frontmatter(metadata, body), encoding="utf-8")
+    original.unlink()
+    note_id = _curated_note_id(moved.relative_to(paths.curated_dir).as_posix())
+    context_hub.validate_curated_note("tenant-a", note_id, actor="validator", info_root=hub_root)
+    context_hub.review_curated_note("tenant-a", note_id, actor="reviewer", info_root=hub_root)
+    context_hub.approve_curated_note("tenant-a", note_id, actor="approver", info_root=hub_root)
+    preserved = moved.read_bytes()
+    renamed = {**STORE_A, "store_name": "Loja Renomeada"}
+    publish_approved_store_guidance("tenant-a", renamed, info_root=hub_root)
+    loaded = load_store_guidance("tenant-a", renamed, sku=sku, info_root=hub_root)
+    actual = loaded["guidance"]["sku" if sku else "general"]
+    assert actual["notas" if sku else "orientacoes_perguntas"] == body
+    assert moved.read_bytes() == preserved
+    repeated = publish_approved_store_guidance("tenant-a", renamed, info_root=hub_root)
+    assert repeated["changed"] is False
+
+
+def test_publish_never_silently_ignores_approved_new_sku(hub_root: Path):
+    from backend.modules.context_hub.store_sku_editor import load_store_guidance_editor, save_store_guidance_editor
+
+    first = _publish(hub_root, STORE_A, sku="160-K", item="MLB100", marker="A")
+    before = load_store_guidance_editor("tenant-a", STORE_A, info_root=hub_root)
+    edited = save_store_guidance_editor(
+        "tenant-a", STORE_A, sku="NEW", guidance={"notas": "Orientacao do novo produto"},
+        expected_revision=before["editorial"]["revision"], info_root=hub_root,
+    )
+    note_id = edited["editorial"]["skus"]["NEW"]["note_id"]
+    context_hub.validate_curated_note("tenant-a", note_id, actor="validator", info_root=hub_root)
+    context_hub.review_curated_note("tenant-a", note_id, actor="reviewer", info_root=hub_root)
+    context_hub.approve_curated_note("tenant-a", note_id, actor="approver", info_root=hub_root)
+    with pytest.raises(context_hub.ContextHubValidationError, match="Sincronize o cadastro"):
+        publish_approved_store_guidance("tenant-a", STORE_A, info_root=hub_root)
+    after = load_store_guidance_editor("tenant-a", STORE_A, info_root=hub_root)
+    assert after["generation_id"] == first["generation_id"]
+    assert after["sku_guidance"]["NEW"]["notas"] == "Orientacao do novo produto"
+
+
 def test_store_rollback_switches_database_and_materialized_vault_only_for_that_store(hub_root: Path):
     first = _publish(hub_root, STORE_A, sku="160-K", item="MLB100", marker="A1")
     _publish(hub_root, STORE_B, sku="160-K", item="MLB200", marker="B")
     second = _publish(hub_root, STORE_A, sku="160-K", item="MLB100", marker="A2")
     assert second["previous_generation_id"] == first["generation_id"]
+    draft = create_store_guidance_draft(
+        "tenant-a", STORE_A, guidance={"orientacoes_perguntas": "Edicao ainda em revisao"},
+        info_root=hub_root,
+    )
+    draft_path = hub_root / "tenant-a" / "ContextVault" / "80_Curadoria" / draft["note"]["relative_path"]
+    draft_bytes = draft_path.read_bytes()
 
     rolled_back = rollback_store_sku_generation(
         "tenant-a", STORE_A, first["generation_id"], info_root=hub_root,
     )
     assert rolled_back["changed"] is True
+    assert draft_path.read_bytes() == draft_bytes, "Rollback deve preservar a curadoria atual"
     loaded_a = load_store_sku_knowledge(
         "tenant-a", _identity(STORE_A, sku="160-K", item="MLB100"), info_root=hub_root,
     )

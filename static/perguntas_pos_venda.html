@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Perguntas e pós venda - JK Sistema</title>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
-    <link rel="stylesheet" href="/perguntas_pos_venda/styles.css?v=20260908-store-sku-guidance-v1">
+    <link rel="stylesheet" href="/perguntas_pos_venda/styles.css?v=20260908-obsidian-sync-v2">
 </head>
 <body>
     <div class="container">
@@ -172,6 +172,9 @@
                             <button id="btn-ai-training-adicionar-geral" class="action-btn" type="button">Adicionar orientação</button>
                             <button id="btn-ai-training-editar-gerais" class="action-btn secondary" type="button">Editar orientações</button>
                         </div>
+                        <p id="ai-training-general-sync" class="status-line" aria-live="polite"></p>
+                        <details id="ai-training-general-source" class="training-obsidian-source hidden"><summary>Conteúdo da nota no Obsidian</summary><pre></pre></details>
+                        <div id="ai-training-general-conflict" class="training-conflict hidden" role="status"></div>
                         <div id="ai-training-general-summary" class="training-guidance-summary" aria-live="polite"></div>
                         <div id="ai-training-general-editor" class="training-general-editor hidden">
                             <label class="training-field">
@@ -223,6 +226,9 @@
                                     <button id="btn-ai-training-fechar-sku" class="training-close-btn" type="button" aria-label="Fechar orientações do SKU">×</button>
                                 </div>
                                 <div id="ai-training-sku-info" class="training-sku-info hidden"></div>
+                                <p id="ai-training-sku-sync" class="status-line" aria-live="polite"></p>
+                                <details id="ai-training-sku-source" class="training-obsidian-source hidden"><summary>Conteúdo da nota no Obsidian</summary><pre></pre></details>
+                        <div id="ai-training-sku-conflict" class="training-conflict hidden" role="status"></div>
                                 <div id="ai-training-sku-guidance-view" class="training-guidance-summary"></div>
                                 <div id="ai-training-sku-editor" class="hidden">
                                     <label class="training-field">
@@ -289,13 +295,13 @@
         </main>
     </div>
 
-    <script src="/perguntas_pos_venda/runtime.js?v=20260720-pos-venda-manual"></script>
-    <script src="/perguntas_pos_venda/lojas-automacao.js?v=20260720-pos-venda-manual"></script>
-    <script src="/perguntas_pos_venda/perguntas.js?v=20260825-seller-profile-v2"></script>
-    <script src="/perguntas_pos_venda/pos-venda.js?v=20260720-pos-venda-manual"></script>
-    <script src="/perguntas_pos_venda/mediacao.js?v=20260720-pos-venda-manual"></script>
-    <script src="/perguntas_pos_venda/treinamento-ia.js?v=20260908-store-sku-guidance-v1"></script>
-    <script src="/perguntas_pos_venda/init.js?v=20260908-store-sku-guidance-v1"></script>
+    <script src="/perguntas_pos_venda/runtime.js?v=20260908-obsidian-sync-v2"></script>
+    <script src="/perguntas_pos_venda/lojas-automacao.js?v=20260908-obsidian-sync-v2"></script>
+    <script src="/perguntas_pos_venda/perguntas.js?v=20260908-obsidian-sync-v2"></script>
+    <script src="/perguntas_pos_venda/pos-venda.js?v=20260908-obsidian-sync-v2"></script>
+    <script src="/perguntas_pos_venda/mediacao.js?v=20260908-obsidian-sync-v2"></script>
+    <script src="/perguntas_pos_venda/treinamento-ia.js?v=20260908-obsidian-sync-v2"></script>
+    <script src="/perguntas_pos_venda/init.js?v=20260908-obsidian-sync-v2"></script>
     <script src="/ia-sidebar.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </body>
 </html>

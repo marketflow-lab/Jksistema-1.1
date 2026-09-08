@@ -1279,15 +1279,19 @@ async function carregarLojas() {
 }
 
 async function selecionarLoja(nome) {
-    if (!nome || state.carregandoPerguntas) return;
+    if (!nome || (state.carregandoPerguntas && !treinamentoVisivel())) return;
+    guardarEdicaoTreinamento();
     state.lojaSelecionada = nome;
+    sincronizarLojaTreinamento();
     state.lojaConfiguracaoPerguntas = todasAsLojasSelecionadas() ? TODAS_LOJAS_VALUE : nome;
     resetarPaginacaoPosVenda();
     resetarMediacoes();
     renderizarLojas();
     atualizarCabecalhoPosVenda();
     atualizarCabecalhoMediacao();
-    if (document.getElementById('aba-pos-venda').classList.contains('active')) {
+    if (treinamentoVisivel()) {
+        await Promise.all([carregarTreinamentoAI(true), carregarSkusTreinamentoAI()]);
+    } else if (document.getElementById('aba-pos-venda').classList.contains('active')) {
         await carregarPosVenda();
     } else if (document.getElementById('aba-mediacao').classList.contains('active')) {
         if (todasAsLojasSelecionadas()) {

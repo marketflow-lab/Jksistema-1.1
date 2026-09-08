@@ -39,6 +39,7 @@ from backend.modules.context_hub.store_sku_contracts import (
 
 from backend.modules.context_hub.store_sku_repository_support import (
     _approved_guidance_file,
+    _assert_editorial_skus_publishable,
     _generation_knowledge,
     _guidance_body,
     _guidance_frontmatter,
@@ -362,6 +363,13 @@ def publish_approved_store_guidance(
     scope = _scope_for_paths(paths, scope_value)
     store_dir = store_directory_name(scope.store_ref, scope.store_name)
     with _tenant_thread_lock(paths), _exclusive_file_lock(paths):
+        # Resolve editorial files by immutable identity, including renamed stores
+        # and notes moved inside the curated vault.
+        from backend.modules.context_hub.store_sku_editor import find_editor_note_paths
+
+        editorial_paths = find_editor_note_paths(paths, scope)
+        if any(len(candidates) != 1 for candidates in editorial_paths.values()):
+            raise ContextHubValidationError("Mais de uma nota para a mesma loja e SKU.")
         with _connect(paths) as connection:
             active = connection.execute(
                 """
@@ -403,6 +411,7 @@ def publish_approved_store_guidance(
                 elif role == "sku_guidance" and isinstance(value, Mapping):
                     current_sku[str(row["sku"])] = dict(value)
             general_file = paths.curated_dir / "Lojas" / store_dir / "Orientacoes-Gerais.md"
+            general_file = next(iter(editorial_paths.get("", [])), general_file)
             approved_general = _approved_guidance_file(
                 paths,
                 connection,
@@ -412,11 +421,13 @@ def publish_approved_store_guidance(
             )
             next_general = approved_general if approved_general is not None else current_general
             next_sku = dict(current_sku)
+            _assert_editorial_skus_publishable(paths, connection, scope, canonical, editorial_paths)
             for sku in canonical:
                 target = (
                     paths.curated_dir / "Lojas" / store_dir / "SKUs"
                     / _sku_path_component(sku) / "Orientacoes.md"
                 )
+                target = next(iter(editorial_paths.get(sku, [])), target)
                 approved = _approved_guidance_file(
                     paths,
                     connection,
@@ -516,6 +527,7 @@ def rollback_store_sku_generation(
                         sku_guidance=sku_guidance,
                         actor=safe_actor,
                         now=now,
+                        include_curated=False,
                     ),
                     scope=effective_scope,
                     actor=safe_actor,

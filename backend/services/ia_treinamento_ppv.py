@@ -872,9 +872,13 @@ def _ia_treinamento_ppv_produto_por_sku(
 def _ia_treinamento_ppv_listar_skus(
     client_id: str,
     loja: str = "",
+    *,
+    strict: bool = False,
 ) -> list[dict]:
-    arquivo = _migrar_arquivo_legado_para_tenant(client_id, "cadastro_produtos.csv", ARQUIVO_DB_CADASTRO_PRODUTOS)
     try:
+        arquivo = None if loja else _migrar_arquivo_legado_para_tenant(
+            client_id, "cadastro_produtos.csv", ARQUIVO_DB_CADASTRO_PRODUTOS,
+        )
         produtos_legados = []
         if arquivo and os.path.exists(arquivo):
             df = pd.read_csv(arquivo, dtype=str).fillna("")
@@ -895,6 +899,8 @@ def _ia_treinamento_ppv_listar_skus(
             produtos_legados,
             loja,
         )
+        if strict and (visao.get("scope") != "store" or visao.get("store_id") != loja):
+            raise ValueError("store_catalog_scope_unresolved")
         campos = ["sku", "nome", "produto", "produto_bling", "categoria", "marca", "foto", "mlb_ids"]
         produtos = []
         for row in visao.get("produtos") or []:
@@ -913,6 +919,8 @@ def _ia_treinamento_ppv_listar_skus(
                 produtos.append(item)
         return sorted(produtos, key=lambda item: str(item.get("sku") or ""))
     except Exception as exc:
+        if strict:
+            raise
         logger.warning("[IA TREINO PPV] evento=listar_skus status=erro tipo=%s", type(exc).__name__)
         return []
 
