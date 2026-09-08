@@ -37,7 +37,8 @@ function valorGeralFormularioTreinamento() {
 function valorSnapshotTreinamento(data, key) {
     return key === 'general' ? valorGeralSnapshotTreinamento(data) : {
         notas: normalizarNotasTreinamento(data?.notas_sku)[key.slice(4)] || '',
-        exemplos: exemplosDoSkuTreinamento(data?.exemplos?.perguntas_anuncio, key.slice(4))
+        exemplos: exemplosDoSkuTreinamento(data?.exemplos?.perguntas_anuncio, key.slice(4)),
+        caracteristicas: data?.caracteristicas_sku?.[key.slice(4)] || {}
     };
 }
 
@@ -56,7 +57,8 @@ function guardarEdicaoTreinamento() {
         valores[key] = {
             notas: item === sku ? (aiTrainingNotasSku.value || '') :
                 (sessao.drafts[key]?.value.notas ?? valorSnapshotTreinamento(sessao.snapshot, key).notas),
-            exemplos: exemplosDoSkuTreinamento(exemplos, item)
+            exemplos: exemplosDoSkuTreinamento(exemplos, item),
+            caracteristicas: sessao.drafts[key]?.value.caracteristicas ?? valorSnapshotTreinamento(sessao.snapshot, key).caracteristicas
         };
     });
     Object.entries(valores).forEach(([key, value]) => {
@@ -101,13 +103,25 @@ function receberSnapshotTreinamento(data) {
     const anterior = sessao.snapshot;
     Object.entries(sessao.drafts).forEach(([key, draft]) => {
         const atual = valorSnapshotTreinamento(data, key);
-        if (!iguaisTreinamento(atual, draft.base)) draft.conflict = true;
+        const caracteristicasAlteradas = key.startsWith('sku:') && !iguaisTreinamento(draft.value.caracteristicas, draft.base.caracteristicas);
+        const fonteAlterada = caracteristicasAlteradas && anterior?.context_generation_id !== data.context_generation_id;
+        if (fonteAlterada) draft.sourceConflict = true;
+        if (!iguaisTreinamento(atual, draft.base) || fonteAlterada) draft.conflict = true;
         else if (!draft.conflict) draft.revision = data.editorial?.revision;
     });
     sessao.snapshot = data;
+    if (data.sku_details_error) sessao.detailsError = typeof data.sku_details_error === 'string'
+        ? data.sku_details_error : (data.sku_details_error.message || 'Informações salvas; não foi possível atualizar a ficha.');
+    if (data.sku_details?.sku) {
+        sessao.detailsError = '';
+        sessao.skuDetails ??= {};
+        sessao.skuDetails[data.sku_details.sku] = data.sku_details;
+    }
     sessao.error = '';
     aplicarSnapshotTreinamento();
     if (anterior && anterior.context_generation_id !== data.context_generation_id) carregarSkusTreinamentoAI(true);
+    if (!data.sku_details && anterior?.editorial?.revision !== data.editorial?.revision
+        && aiTrainingSku.value && !aiTrainingSkuPopover?.classList.contains('hidden')) carregarDetalhesSkuTreinamento();
 }
 
 function aplicarSnapshotTreinamento() {
@@ -138,6 +152,7 @@ function aplicarSnapshotTreinamento() {
     atualizarEstadoSincronizacaoTreinamento();
     renderizarConflitosTreinamento();
     renderizarFonteObsidianTreinamento();
+    renderizarDetalhesSkuTreinamento();
 }
 
 function renderizarFonteObsidianTreinamento() {
@@ -190,7 +205,7 @@ function atualizarEstadoSincronizacaoTreinamento() {
 
 function textoComparacaoTreinamento(value) {
     if (typeof value === 'string') return value || '(Sem orientação)';
-    if ('notas' in value) return `Orientações do SKU\n${value.notas || '(Vazio)'}\n\nModelos\n${(value.exemplos || []).map(e => `${e.pergunta}\n${e.resposta}`).join('\n\n') || '(Vazio)'}`;
+    if ('notas' in value) return `Orientações do SKU\n${value.notas || '(Vazio)'}\n\nCaracterísticas editadas\n${textoComparacaoCaracteristicasTreinamento(value.caracteristicas)}\n\nModelos\n${(value.exemplos || []).map(e => `${e.pergunta}\n${e.resposta}`).join('\n\n') || '(Vazio)'}`;
     return [ ['Orientações para perguntas', value.orientacoes], ['Base de conhecimento da loja', value.contexto_loja], ['Compatibilidade e autopeças', value.compatibilidade_autopecas], ['O que a IA nunca deve afirmar', value.proibicoes], ['Modelos', (value.exemplos || []).map(e => `${e.pergunta}\n${e.resposta}`).join('\n\n')] ]
         .map(([label, text]) => `${label}\n${text || '(Vazio)'}`).join('\n\n');
 }
@@ -205,7 +220,9 @@ function renderizarConflitosTreinamento() {
         panel.classList.toggle('hidden', !draft?.conflict);
         if (!draft?.conflict) { panel.replaceChildren(); continue; }
         const title = document.createElement('strong');
-        title.textContent = 'Conflito: o Obsidian mudou durante sua edição.';
+        title.textContent = draft.sourceConflict
+            ? 'Conflito: as informações de origem do SKU mudaram durante sua edição. Confira a ficha atual antes de continuar.'
+            : 'Conflito: o Obsidian mudou durante sua edição.';
         const versions = document.createElement('div');
         versions.className = 'training-conflict-versions';
         for (const [label, value] of [['Sua edição preservada', draft.value], ['Versão atual do Obsidian', valorSnapshotTreinamento(sessao.snapshot, key)]]) {
@@ -223,6 +240,7 @@ function renderizarConflitosTreinamento() {
             draft.base = valorSnapshotTreinamento(sessao.snapshot, key);
             draft.revision = sessao.snapshot.editorial?.revision;
             draft.conflict = false;
+            draft.sourceConflict = false;
             aplicarSnapshotTreinamento();
             if (target === 'general') abrirEditorOrientacoesGerais(); else editarOrientacaoSkuTreinamento();
         });
@@ -248,7 +266,8 @@ function controlesSalvarTreinamento(disabled) {
 
 function atualizarTreinamentoVisivel(atualizarCatalogo = false) {
     if (!treinamentoVisivel()) return;
-    carregarTreinamentoAI(true);
+    if (atualizarCatalogo && aiTrainingSku.value && !aiTrainingSkuPopover?.classList.contains('hidden')) carregarDetalhesSkuTreinamento();
+    else carregarTreinamentoAI(true);
     carregarSkusTreinamentoAI(atualizarCatalogo);
 }
 
@@ -533,6 +552,7 @@ function exibirLeituraOrientacaoSku() {
     if (btnAiTrainingEditarSku) {
         btnAiTrainingEditarSku.textContent = orientacao ? 'Editar orientação' : 'Adicionar orientação';
     }
+    renderizarDetalhesSkuTreinamento(true);
 }
 
 function editarOrientacaoSkuTreinamento() {
@@ -564,6 +584,7 @@ function abrirBalaoSkuTreinamento(sku) {
     if (sessaoTreinamento()?.drafts[`sku:${valor}`]) editarOrientacaoSkuTreinamento();
     renderizarConflitosTreinamento();
     btnAiTrainingFecharSku?.focus();
+    carregarDetalhesSkuTreinamento(true);
 }
 
 function fecharBalaoSkuTreinamento() {
@@ -863,7 +884,7 @@ async function carregarTreinamentoAI(forcar = false) {
         return;
     }
     const sessao = sessaoTreinamento();
-    if (sessao.loading || sessao.saving || (!forcar && state.treinamentoCarregado)) return;
+    if (sessao.loading || sessao.detailsLoading || sessao.saving || (!forcar && state.treinamentoCarregado)) return;
     const requestId = ++treinamentoSync.requestId;
     sessao.loading = true;
     if (!sessao.snapshot) aiTrainingStatus.textContent = `Carregando orientações (${rotuloEscopoTreinamento()})...`;
@@ -906,15 +927,20 @@ async function salvarTreinamentoAI(editTarget = 'general', targetSku = aiTrainin
     }
     const revision = draft?.revision || sessao.snapshot.editorial?.revision;
     const general = valorGeralFormularioTreinamento();
+    const characteristicEdits = editTarget === 'sku'
+        ? draft?.value.caracteristicas ?? valorSnapshotTreinamento(sessao.snapshot, key).caracteristicas : {};
+    const characteristicsChanged = editTarget === 'sku' && !iguaisTreinamento(
+        characteristicEdits, valorSnapshotTreinamento(sessao.snapshot, key).caracteristicas);
     const payload = {
         tipo: state.treinamentoTipo, loja: nomeLojaEscopoTreinamento(), store_id: lojaEscopo,
         edit_target: editTarget, expected_revision: revision, sku,
         ...(editTarget === 'sku' ? {
             notas_sku: draft?.value.notas ?? valorSnapshotTreinamento(sessao.snapshot, key).notas,
-            exemplos: exemplosDoSkuTreinamento(state.treinamentoDados.perguntas_anuncio?.exemplos, sku)
+            exemplos: exemplosDoSkuTreinamento(state.treinamentoDados.perguntas_anuncio?.exemplos, sku),
+            ...(characteristicsChanged ? { caracteristicas_sku: characteristicEdits } : {})
         } : general)
     };
-    const savedValue = editTarget === 'sku' ? { notas: payload.notas_sku, exemplos: payload.exemplos } : general;
+    const savedValue = editTarget === 'sku' ? { notas: payload.notas_sku, exemplos: payload.exemplos, caracteristicas: characteristicEdits } : general;
     sessao.saving = true;
     sessao.saveError = '';
     treinamentoSync.requestId++;

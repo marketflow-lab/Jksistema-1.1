@@ -46,9 +46,29 @@ let failCatalog = false;
 let conflictOnSave = false;
 let conflictModelOnSave = false;
 let delayedAlpha = null;
-function snapshot(storeId) {
+let failDetails = false;
+let delayedDetails = null;
+let conflictCharacteristicOnSave = false;
+let generation = 'gen-1';
+let failSavedDetails = false;
+function skuDetails(storeId, sku) {
+  const overrides = trainingByStore[storeId]?.caracteristicas_sku?.[sku] || {};
+  const product = (productsByStore[storeId] || []).find(item => item.sku === sku);
+  const base = { marca: product?.marca || '', tensao: storeId === 'store-alpha' ? '12 V' : '24 V' };
+  return {
+    sku,
+    canonical_document: { sku, title: product?.nome, marca: base.marca, tensao: base.tensao, description: `Cadastro completo ${storeId}/${sku}` },
+    evidence: [{ fact: `Evidência exclusiva ${storeId}/${sku}` }],
+    guidance: { notas: trainingByStore[storeId]?.notas_sku?.[sku] || '' },
+    source_body: `# ${product?.nome}\n\nCadastro completo ${storeId}/${sku}\nDescrição preservada\n<script>window.skuInjected = true</script>`,
+    characteristics: Object.entries(base).map(([key, value]) => ({ key, label: key === 'marca' ? 'Marca' : 'Tensão', value: overrides[key] ?? value, source: 'Obsidian', original_value: value, edited: key in overrides })),
+    documents: [{ title: `Evidências de ${sku}`, relative_path: `lojas/${storeId}/evidencias/${sku}.md`, body: `Evidência exclusiva ${storeId}/${sku}\nCompatibilidade confirmada para o produto ${sku}.\n<script>window.skuInjected = true</script>` }],
+    revision: `${storeId}-${revision}`,
+  };
+}
+function snapshot(storeId, sku = '') {
   const content = trainingByStore[storeId] || {};
-  return { success: true, store_id: storeId, ...content, context_generation_id: 'gen-1', editorial: { revision: `${storeId}-${revision}`, general: { status: content.generalStatus || 'published', hash: `general-${revision}`, source_body: content.orientacoes_perguntas }, skus: Object.fromEntries(Object.keys(content.notas_sku || {}).map(sku => [sku, { status: 'draft', hash: `sku-${revision}`, requires_catalog_sync: content.pendingCatalogSku === sku }])) } };
+  return { success: true, store_id: storeId, ...content, caracteristicas_sku: content.caracteristicas_sku || {}, ...(sku ? { sku_details: skuDetails(storeId, sku) } : {}), context_generation_id: generation, editorial: { revision: `${storeId}-${revision}`, general: { status: content.generalStatus || 'published', hash: `general-${revision}`, source_body: content.orientacoes_perguntas }, skus: Object.fromEntries(Object.keys(content.notas_sku || {}).map(sku => [sku, { status: 'draft', hash: `sku-${revision}`, requires_catalog_sync: content.pendingCatalogSku === sku }])) } };
 }
 function json(route, payload, status = 200) {
   return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(payload) });
@@ -111,7 +131,15 @@ function contentType(filePath) {
       }
       if (url.pathname === '/api/mercadolivre/ia-treinamento' && request.method() === 'GET') {
         const storeId = url.searchParams.get('store_id');
-        const result = snapshot(storeId);
+        const sku = url.searchParams.get('sku') || '';
+        if (sku && failDetails) { await json(route, { detail: 'Detalhes do Obsidian indisponíveis' }, 503); return; }
+        const result = snapshot(storeId, sku);
+        if (sku && delayedDetails?.storeId === storeId && delayedDetails?.sku === sku) {
+          const delayed = delayedDetails;
+          delayedDetails = null;
+          delayed.requested();
+          await delayed.wait;
+        }
         if (storeId === 'store-alpha' && delayedAlpha) { const wait = delayedAlpha; delayedAlpha = null; await wait; }
         await json(route, result);
         return;
@@ -131,6 +159,11 @@ function contentType(filePath) {
           trainingByStore[payload.store_id].exemplos.perguntas_anuncio[0].resposta = 'Alterado no Obsidian';
           revision++;
         }
+        if (conflictCharacteristicOnSave) {
+          conflictCharacteristicOnSave = false;
+          trainingByStore[payload.store_id].caracteristicas_sku[payload.sku].tensao = 'Tensão externa durante salvamento';
+          revision++;
+        }
         if (payload.expected_revision !== `${payload.store_id}-${revision}`) {
           await json(route, { detail: { code: 'editorial_revision_conflict', message: 'O Obsidian mudou.' } }, 409);
           return;
@@ -139,6 +172,12 @@ function contentType(filePath) {
         if (payload.edit_target === 'sku') {
           assert(!('orientacoes' in payload), 'gravar SKU não pode enviar orientações gerais');
           data.notas_sku[payload.sku] = payload.notas_sku;
+          if (payload.caracteristicas_sku) {
+            assert.strictEqual(typeof payload.caracteristicas_sku, 'object');
+            assert(Object.values(payload.caracteristicas_sku).every(value => typeof value === 'string'));
+            data.caracteristicas_sku ||= {};
+            data.caracteristicas_sku[payload.sku] = { ...payload.caracteristicas_sku };
+          }
           assert(payload.exemplos.every(item => item.sku === payload.sku));
           data.exemplos.perguntas_anuncio = [
             ...data.exemplos.perguntas_anuncio.filter(item => item.sku !== payload.sku), ...payload.exemplos
@@ -150,7 +189,13 @@ function contentType(filePath) {
           Object.assign(data, { orientacoes_perguntas: payload.orientacoes, contexto_loja: payload.contexto_loja, compatibilidade_autopecas: payload.compatibilidade_autopecas, proibicoes: payload.proibicoes, exemplos: { perguntas_anuncio: [...payload.exemplos, ...retained] }, generalStatus: 'draft' });
         }
         revision++;
-        await json(route, { ...snapshot(payload.store_id), storage: 'obsidian_context_hub_draft', requires_review: true });
+        const saved = { ...snapshot(payload.store_id, payload.edit_target === 'sku' ? payload.sku : ''), storage: 'obsidian_context_hub_draft', requires_review: true };
+        if (failSavedDetails && payload.edit_target === 'sku') {
+          failSavedDetails = false;
+          delete saved.sku_details;
+          saved.sku_details_error = 'A ficha não pôde ser relida após salvar.';
+        }
+        await json(route, saved);
         return;
       }
       if (url.pathname === '/api/mercadolivre/perguntas/automacao/status') {
@@ -193,6 +238,136 @@ function contentType(filePath) {
     }
 
     await page.getByRole('button', { name: 'Fechar orientações do SKU' }).click();
+
+    // An SKU without guidance still exposes its complete Obsidian content safely.
+    await page.locator('[data-training-sku="003"]').click();
+    const details = page.locator('#ai-training-sku-details');
+    await details.filter({ hasText: 'Cadastro completo store-alpha/003' }).waitFor();
+    assert.match(await page.locator('#ai-training-sku-guidance-view').innerText(), /ainda não possui orientação específica/);
+    assert.match(await details.textContent(), /Evidência exclusiva store-alpha\/003/);
+    assert.match(await details.textContent(), /<script>window.skuInjected = true<\/script>/);
+    assert.strictEqual(await page.evaluate(() => window.skuInjected), undefined);
+    if (process.env.JK_CAPTURE_TEST_SCREENSHOT === '1') {
+      const outputDir = path.join(root, 'test-results', 'perguntas-training-store-sku');
+      fs.mkdirSync(outputDir, { recursive: true });
+      await page.getByRole('dialog').screenshot({ path: path.join(outputDir, 'sku-complete-details.png') });
+    }
+    const tensionValue = () => page.locator('[data-sku-characteristic="tensao"] .training-characteristic-value');
+    const tensionInput = () => page.locator('textarea[data-sku-characteristic-input="tensao"]');
+    assert.strictEqual(await tensionValue().innerText(), '12 V');
+    await tensionValue().click();
+    assert.strictEqual(await tensionInput().count(), 0, 'um clique somente seleciona a característica');
+    await tensionValue().dblclick();
+    await tensionInput().fill('  12 V e 24 V\nConferir aplicação  ');
+    await page.locator('#btn-ai-training-cancelar-sku').click();
+    assert.strictEqual(await tensionValue().innerText(), '12 V', 'cancelar descarta a alteração de característica');
+    assert.strictEqual(trainingByStore['store-alpha'].caracteristicas_sku?.['003'], undefined);
+    await tensionValue().dblclick();
+    const savedTension = '  12 V e 24 V\nConferir aplicação  ';
+    await tensionInput().fill(savedTension);
+    await page.locator('#btn-ai-training-salvar-sku').click();
+    await page.locator('#ai-training-sku-editor').waitFor({ state: 'hidden' });
+    assert.strictEqual(trainingByStore['store-alpha'].caracteristicas_sku['003'].tensao, savedTension);
+    assert.strictEqual(trainingByStore['store-alpha'].notas_sku['003'], '', 'editar característica não inventa orientação');
+    await page.locator('#btn-ai-training-fechar-sku').click();
+    await page.locator('[data-training-sku="003"]').click();
+    await page.waitForFunction(expected => document.querySelector('[data-sku-characteristic="tensao"] .training-characteristic-value')?.textContent === expected, savedTension);
+
+    // Concurrent edits preserve typed text and expose both values before retrying.
+    await tensionValue().dblclick();
+    await tensionInput().fill('Tensão local em conflito');
+    trainingByStore['store-alpha'].caracteristicas_sku['003'].tensao = 'Tensão externa no Obsidian';
+    revision++;
+    await page.evaluate(() => carregarTreinamentoAI(true));
+    await page.locator('#ai-training-sku-conflict').filter({ hasText: 'Tensão externa no Obsidian' }).waitFor();
+    assert.strictEqual(await tensionInput().inputValue(), 'Tensão local em conflito');
+    await page.locator('#ai-training-sku-conflict').getByRole('button', { name: 'Continuar com minha edição após comparar' }).click();
+    conflictCharacteristicOnSave = true;
+    await page.locator('#btn-ai-training-salvar-sku').click();
+    await page.locator('#ai-training-sku-conflict').filter({ hasText: 'Tensão externa durante salvamento' }).waitFor();
+    assert.strictEqual(await tensionInput().inputValue(), 'Tensão local em conflito', '409 preserva a característica digitada');
+    await page.locator('#ai-training-sku-conflict').getByRole('button', { name: 'Usar versão do Obsidian' }).click();
+    assert.strictEqual(await tensionValue().textContent(), 'Tensão externa durante salvamento');
+
+    // A canonical generation change also protects a pending characteristic edit.
+    await tensionValue().dblclick();
+    await tensionInput().fill('Rascunho durante atualização da base');
+    generation = 'gen-2';
+    revision++;
+    await page.evaluate(() => carregarTreinamentoAI(true));
+    await page.locator('#ai-training-sku-conflict').filter({ hasText: 'informações de origem do SKU mudaram' }).waitFor();
+    assert.strictEqual(await tensionInput().inputValue(), 'Rascunho durante atualização da base');
+    await page.locator('#ai-training-sku-conflict').getByRole('button', { name: 'Usar versão do Obsidian' }).click();
+
+    // A successful write followed by an unavailable details read remains a saved edit.
+    await tensionValue().dblclick();
+    await tensionInput().fill('Valor confirmado antes da falha de releitura');
+    failSavedDetails = true;
+    await page.locator('#btn-ai-training-salvar-sku').click();
+    await page.locator('#ai-training-sku-editor').waitFor({ state: 'hidden' });
+    assert.strictEqual(trainingByStore['store-alpha'].caracteristicas_sku['003'].tensao, 'Valor confirmado antes da falha de releitura');
+    await page.locator('#btn-ai-training-retry-details').waitFor({ state: 'visible' });
+    await page.locator('#btn-ai-training-retry-details').click();
+    await tensionValue().filter({ hasText: 'Valor confirmado antes da falha de releitura' }).waitFor();
+    await page.locator('#btn-ai-training-fechar-sku').click();
+
+    // A failed details request is recoverable and cannot masquerade as absent guidance.
+    failDetails = true;
+    await page.locator('[data-training-sku="003"]').click();
+    await page.locator('#btn-ai-training-retry-details').waitFor({ state: 'visible' });
+    assert.match(await details.innerText(), /indispon|Falha|carregar/i);
+    failDetails = false;
+    await page.locator('#btn-ai-training-retry-details').click();
+    await details.filter({ hasText: 'Cadastro completo store-alpha/003' }).waitFor();
+    await page.locator('#btn-ai-training-fechar-sku').click();
+
+    // Responses from a previous SKU or store must never replace the current details.
+    async function delaySkuDetails(storeId, sku) {
+      let release;
+      let requested;
+      const requestSeen = new Promise(resolve => { requested = resolve; });
+      const wait = new Promise(resolve => { release = resolve; });
+      delayedDetails = { storeId, sku, requested, wait };
+      return { release, requestSeen };
+    }
+    const oldSku = await delaySkuDetails('store-alpha', '003');
+    await page.locator('[data-training-sku="003"]').click();
+    await oldSku.requestSeen;
+    await page.evaluate(() => abrirBalaoSkuTreinamento('001'));
+    await details.filter({ hasText: 'Cadastro completo store-alpha/001' }).waitFor();
+    const oldSkuResponse = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).searchParams.get('sku') === '003');
+    oldSku.release();
+    await oldSkuResponse;
+    await page.evaluate(() => carregarTreinamentoAI(true));
+    assert.match(await details.textContent(), /Cadastro completo store-alpha\/001/);
+    assert(!await details.textContent().then(text => text.includes('Cadastro completo store-alpha/003')));
+    await page.locator('#btn-ai-training-fechar-sku').click();
+    const oldStore = await delaySkuDetails('store-alpha', '003');
+    await page.locator('[data-training-sku="003"]').click();
+    await oldStore.requestSeen;
+    await page.evaluate(() => { aiTrainingScope.value = 'store-beta'; aiTrainingScope.dispatchEvent(new Event('change')); });
+    await page.locator('#ai-training-sku-count').filter({ hasText: '1 SKU(s)' }).waitFor();
+    await page.locator('[data-training-sku="001"]').click();
+    await details.filter({ hasText: 'Cadastro completo store-beta/001' }).waitFor();
+    const oldStoreResponse = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).searchParams.get('store_id') === 'store-alpha' && new URL(response.url()).searchParams.get('sku') === '003');
+    oldStore.release();
+    await oldStoreResponse;
+    await page.evaluate(() => carregarTreinamentoAI(true));
+    assert.match(await details.textContent(), /Cadastro completo store-beta\/001/);
+    assert.strictEqual(await tensionValue().innerText(), '24 V');
+    await tensionValue().dblclick();
+    await tensionInput().fill('48 V somente Loja Beta');
+    await page.locator('#btn-ai-training-salvar-sku').click();
+    await page.locator('#ai-training-sku-editor').waitFor({ state: 'hidden' });
+    assert.strictEqual(trainingByStore['store-beta'].caracteristicas_sku['001'].tensao, '48 V somente Loja Beta');
+    assert.strictEqual(trainingByStore['store-alpha'].caracteristicas_sku['001'], undefined, 'SKU 001 mantém o isolamento entre lojas');
+    assert.strictEqual(trainingByStore['store-beta'].caracteristicas_sku['1'], undefined, 'o SKU preserva os zeros iniciais');
+    await page.locator('#btn-ai-training-fechar-sku').click();
+    await page.locator('#ai-training-scope').selectOption('store-alpha');
+    await page.locator('#ai-training-sku-count').filter({ hasText: '3 SKU(s)' }).waitFor();
+    await page.locator('[data-training-sku="002"]').click();
+    await details.filter({ hasText: 'Cadastro completo store-alpha/002' }).waitFor();
+    await page.locator('#btn-ai-training-fechar-sku').click();
 
     // Models target their exact note, preserve other SKU drafts, and retain leading zeroes.
     await page.evaluate(async () => {

@@ -1841,7 +1841,7 @@
             position: relative;
             display: grid;
             gap: 13px;
-            width: min(620px, 100%);
+            width: min(820px, 100%);
             max-height: min(720px, calc(100vh - 44px));
             overflow-y: auto;
             border: 1px solid rgba(56, 212, 255, 0.46);
@@ -1870,6 +1870,50 @@
             justify-content: space-between;
             gap: 12px;
         }
+
+        .training-sku-details {
+            display: grid;
+            gap: 10px;
+            min-width: 0;
+        }
+
+        .training-sku-details h4 { margin: 8px 0 0; }
+
+        .training-characteristics-hint,
+        .training-characteristic small {
+            color: #9fb3cc;
+            font-size: 0.8rem;
+            margin: 0;
+            overflow-wrap: anywhere;
+        }
+
+        .training-characteristic {
+            display: grid;
+            gap: 6px;
+            min-width: 0;
+            padding: 10px;
+            border: 1px solid rgba(157, 231, 255, 0.18);
+            border-radius: 9px;
+        }
+
+        .training-characteristic-value,
+        .training-characteristic textarea {
+            width: 100%;
+            box-sizing: border-box;
+            background: rgba(255, 255, 255, 0.035);
+            color: #edf5ff;
+            border: 1px solid transparent;
+            border-radius: 5px;
+            padding: 8px;
+            font: inherit;
+            text-align: left;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+
+        .training-characteristic-value { cursor: text; }
+        .training-characteristic textarea { resize: vertical; border-color: #38d4ff; }
+        .training-characteristic-value:focus-visible { outline: 2px solid #38d4ff; }
 
         .training-sku-bubble-head h4 {
             margin: 3px 0 0;

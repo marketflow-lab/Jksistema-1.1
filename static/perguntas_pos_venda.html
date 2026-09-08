@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Perguntas e pós venda - JK Sistema</title>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
-    <link rel="stylesheet" href="/perguntas_pos_venda/styles.css?v=20260908-loading-v1">
+    <link rel="stylesheet" href="/perguntas_pos_venda/styles.css?v=20260908-sku-details-v1">
 </head>
 <body>
     <div class="container">
@@ -221,13 +221,14 @@
                             <div class="training-sku-bubble" role="dialog" aria-modal="true" aria-labelledby="ai-training-sku-popover-title">
                                 <div class="training-sku-bubble-head">
                                     <div>
-                                        <span class="training-bubble-eyebrow">Orientação específica</span>
+                                        <span class="training-bubble-eyebrow">Conhecimento do SKU</span>
                                         <h4 id="ai-training-sku-popover-title">SKU</h4>
                                     </div>
                                     <button id="btn-ai-training-fechar-sku" class="training-close-btn" type="button" aria-label="Fechar orientações do SKU">×</button>
                                 </div>
                                 <div id="ai-training-sku-info" class="training-sku-info hidden"></div>
                                 <p id="ai-training-sku-sync" class="status-line" aria-live="polite"></p>
+                                <div id="ai-training-sku-details" class="training-sku-details"></div>
                                 <details id="ai-training-sku-source" class="training-obsidian-source hidden"><summary>Conteúdo da nota no Obsidian</summary><pre></pre></details>
                         <div id="ai-training-sku-conflict" class="training-conflict hidden" role="status"></div>
                                 <div id="ai-training-sku-guidance-view" class="training-guidance-summary"></div>
@@ -301,7 +302,8 @@
     <script src="/perguntas_pos_venda/perguntas.js?v=20260908-loading-v1"></script>
     <script src="/perguntas_pos_venda/pos-venda.js?v=20260908-loading-v1"></script>
     <script src="/perguntas_pos_venda/mediacao.js?v=20260908-loading-v1"></script>
-    <script src="/perguntas_pos_venda/treinamento-ia.js?v=20260908-loading-v1"></script>
+    <script src="/perguntas_pos_venda/treinamento-ia.js?v=20260908-sku-details-v1"></script>
+    <script src="/perguntas_pos_venda/treinamento-sku-details.js?v=20260908-sku-details-v1"></script>
     <script src="/perguntas_pos_venda/loading.js?v=20260908-loading-v1"></script>
     <script src="/perguntas_pos_venda/init.js?v=20260908-loading-v1"></script>
     <script src="/ia-sidebar.js?v=20260828-cadastro-fotos-lojas-v1"></script>

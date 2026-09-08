@@ -40,6 +40,7 @@ class IATreinamentoPerguntasPosVendaRequest(BaseModel):
     proibicoes: Optional[str] = ""
     sku: Optional[str] = ""
     notas_sku: Optional[str] = ""
+    caracteristicas_sku: Optional[dict[str, str]] = None
     edit_target: Optional[Literal["general", "sku"]] = None
     expected_revision: Optional[str] = None
     exemplos: Optional[list[dict]] = None

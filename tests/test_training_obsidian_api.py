@@ -203,3 +203,157 @@ def test_external_obsidian_edit_is_visible_and_stale_save_is_rejected(editor_api
     assert cleared.status_code == 200, cleared.text
     assert cleared.json()["orientacoes"] == ""
     assert cleared.json()["contexto_loja"] == "Contexto mantido"
+
+
+def _publish_details_fixture(info, *, tenant="tenant-a", store="store-a", seller="100", items=None):
+    from backend.modules.context_hub.store_sku_repository import publish_store_sku_generation
+    return publish_store_sku_generation(
+        tenant, {"store_ref": store, "store_name": store, "seller_id": seller, "site_id": "MLB"},
+        canonical_documents={"001": {"sku": "001", "nome_produto": "Sensor", "caracteristicas_tecnicas": {
+            "itens": items or ["12 V", "Rosca M10"]}}},
+        store_guidance={}, sku_guidance={}, bindings=[{"item_id": "MLB100", "sku": "001"}],
+        preserve_curated_files=True, info_root=info,
+    )
+
+
+def test_sku_details_without_guidance_shows_canonical_and_exact_documents(editor_api):
+    from pathlib import Path
+    client, info, _stores = editor_api
+    _publish_details_fixture(info)
+    _publish_details_fixture(info, tenant="tenant-b", items=["Outra pessoa"])
+    details = client.get("/training", params={"store_id": "store-a", "sku": "001"}).json()["sku_details"]
+    assert details["canonical_document"]["nome_produto"] == "Sensor"
+    assert details["guidance"] == {}
+    assert any(row["value"] == "12 V" for row in details["characteristics"])
+    assert details["documents"]
+    assert "Outra pessoa" not in str(details)
+    original = info / "tenant-a" / "ContextVault" / details["documents"][0]["relative_path"]
+    raw = original.read_text(encoding="utf-8")
+    for name, content in {
+        "other-store.md": raw.replace("store_ref: store-a", "store_ref: store-b"),
+        "other-surface.md": raw.replace("surface: mercado_livre_public_questions", "surface: private"),
+        "sensitive.md": raw + "\nContact private.person@example.com\n",
+    }.items():
+        (original.parent / name).write_text(content, encoding="utf-8")
+    current = client.get("/training", params={"store_id": "store-a", "sku": "001"}).json()["sku_details"]
+    assert len(current["documents"]) == len(details["documents"])
+    other = client.get("/training", params={"store_id": "store-b", "sku": "001"}).json()["sku_details"]
+    assert other["canonical_document"] == {} and other["documents"] == []
+    assert client.get("/training", params={"store_id": "store-a", "sku": "1"}).status_code == 409
+    assert client.get("/training", params={"sku": "001"}).status_code == 409
+
+
+def test_sku_characteristics_roundtrip_preserves_sources_and_reorder_does_not_retarget(editor_api):
+    client, info, _stores = editor_api
+    published = _publish_details_fixture(info)
+    before = client.get("/training", params={"store_id": "store-a", "sku": "001"}).json()
+    field = next(row for row in before["sku_details"]["characteristics"] if row["value"] == "12 V")
+    payload = {"store_id": "store-a", "edit_target": "sku", "sku": "001",
+               "expected_revision": before["editorial"]["revision"], "notas_sku": "Nota mantida",
+               "caracteristicas_sku": {field["key"]: " 24 V\n"},
+               "exemplos": [{"sku": "001", "pergunta": "Tensão?", "resposta": "Confira a ficha"}]}
+    response = client.post("/training", json=payload)
+    assert response.status_code == 200, response.text
+    saved = response.json()
+    assert saved["caracteristicas_sku"]["001"][field["key"]] == " 24 V\n"
+    edited = next(row for row in saved["sku_details"]["characteristics"] if row["key"] == field["key"])
+    assert edited["edited"] and edited["original_value"] == "12 V"
+    assert saved["context_generation_id"] == published["generation_id"]
+    note = info / "tenant-a" / "ContextVault" / "80_Curadoria" / saved["editorial"]["skus"]["001"]["relative_path"]
+    raw = note.read_text(encoding="utf-8")
+    assert "caracteristicas_fontes" in raw and "24 V" in raw and "Nota mantida" in raw
+    note.write_text(raw + "\nComentario externo preservado\n", encoding="utf-8")
+    payload["expected_revision"] = saved["editorial"]["revision"]
+    assert client.post("/training", json=payload).status_code == 409
+    _publish_details_fixture(info, items=["Rosca M10", "12 V"])
+    current = client.get("/training", params={"store_id": "store-a", "sku": "001"}).json()
+    rows = current["sku_details"]["characteristics"]
+    assert next(row for row in rows if row["original_value"] == "Rosca M10")["value"] == "Rosca M10"
+    orphan = next(row for row in rows if row["key"] == field["key"])
+    assert orphan["source_missing"] and orphan["value"] == " 24 V\n"
+    payload.update(expected_revision=current["editorial"]["revision"], caracteristicas_sku={})
+    cleared = client.post("/training", json=payload)
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["caracteristicas_sku"]["001"] == {}
+    assert "Comentario externo preservado" in note.read_text(encoding="utf-8")
+
+
+def test_unknown_or_wrong_target_characteristics_are_rejected(editor_api):
+    client, info, _stores = editor_api
+    _publish_details_fixture(info)
+    state = client.get("/training", params={"store_id": "store-a"}).json()
+    payload = {"store_id": "store-a", "edit_target": "sku", "sku": "001",
+               "expected_revision": state["editorial"]["revision"],
+               "caracteristicas_sku": {"canonical:" + "a" * 32: "Unknown"}}
+    assert client.post("/training", json=payload).status_code == 422
+    payload.update(edit_target="general", caracteristicas_sku={})
+    assert client.post("/training", json=payload).status_code == 422
+
+
+def test_preview_failure_after_saving_reports_success_and_can_be_retried(editor_api, monkeypatch):
+    client, _info, _stores = editor_api
+    state = client.get("/training", params={"store_id": "store-a"}).json()
+    def fail(*_args, **_kwargs):
+        raise OSError("temporarily unavailable")
+    monkeypatch.setattr(training, "load_store_sku_details", fail)
+    response = client.post("/training", json={"store_id": "store-a", "edit_target": "sku", "sku": "001",
+        "expected_revision": state["editorial"]["revision"], "notas_sku": "Saved"})
+    assert response.status_code == 200, response.text
+    assert response.json()["success"]
+    assert response.json()["sku_details_error"]["code"] == "sku_details_read_failed"
+    assert client.get("/training", params={"store_id": "store-a"}).json()["notas_sku"]["001"] == "Saved"
+
+
+def test_disappearing_document_does_not_hide_other_sku_information(editor_api, monkeypatch):
+    from pathlib import Path
+    client, info, _stores = editor_api
+    _publish_details_fixture(info)
+    read_text = Path.read_text
+    def read(path, *args, **kwargs):
+        if path.name == "vanishing.md":
+            raise FileNotFoundError("removed concurrently")
+        return read_text(path, *args, **kwargs)
+    target = info / "tenant-a" / "ContextVault" / "70_Gerado" / "vanishing.md"
+    target.write_text("gone", encoding="utf-8")
+    monkeypatch.setattr(Path, "read_text", read)
+    response = client.get("/training", params={"store_id": "store-a", "sku": "001"})
+    assert response.status_code == 200, response.text
+    assert response.json()["sku_details"]["canonical_document"]["sku"] == "001"
+
+
+def test_equal_values_in_distinct_list_attributes_do_not_share_keys_after_reorder():
+    from backend.modules.context_hub.store_sku_details import _canonical_characteristics
+    attrs = [{"id": "current", "value": 12}, {"id": "voltage", "value": 12}]
+    before = _canonical_characteristics({"attributes": attrs})
+    after = _canonical_characteristics({"attributes": list(reversed(attrs))})
+    old = next(row for row in before if row["label"] == "attributes / 1 / value")
+    new = next(row for row in after if row["label"] == "attributes / 1 / value")
+    assert old["key"] != new["key"]
+
+
+def test_research_evidence_preserves_sources_and_does_not_cross_store(editor_api):
+    from backend.modules.context_hub import product_evidence
+    client, info, _stores = editor_api
+    for store, seller, value in [("store-a", "100", 12), ("store-b", "200", 48)]:
+        batch = product_evidence.create_product_evidence_batch(
+            "tenant-a", store_ref=store, seller_id=seller, site_id="MLB", sku="001", info_root=info)
+        source = product_evidence.add_product_evidence_source(
+            "tenant-a", batch["batch_id"], url="https://manufacturer.example/specification",
+            source_type="official_manufacturer", content_hash="a" * 64, info_root=info)
+        product_evidence.add_product_evidence_claim(
+            "tenant-a", batch["batch_id"], field_name="electrical.voltage", scope="product",
+            value=value, unit="V", source_ids=[source["source_id"]], info_root=info)
+        product_evidence.complete_product_evidence_batch(
+            "tenant-a", batch["batch_id"], coverage_complete=True, stop_reason="coverage_complete", info_root=info)
+    response = client.get("/training", params={"store_id": "store-a", "sku": "001"})
+    assert response.status_code == 200, response.text
+    details = response.json()["sku_details"]
+    assert len(details["evidence"]) == 1
+    assert details["evidence"][0]["value"] == "12"
+    assert details["evidence"][0]["sources"][0]["url"] == "https://manufacturer.example/specification"
+    field = next(row for row in details["characteristics"] if row["source"] == "evidence")
+    saved = client.post("/training", json={"store_id": "store-a", "edit_target": "sku", "sku": "001",
+        "expected_revision": response.json()["editorial"]["revision"], "caracteristicas_sku": {field["key"]: "24 V"}})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["sku_details"]["evidence"] == details["evidence"]
+    assert saved.json()["sku_details"]["characteristics"][0]["value"] == "24 V"

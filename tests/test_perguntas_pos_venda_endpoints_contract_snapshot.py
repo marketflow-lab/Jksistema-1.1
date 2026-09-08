@@ -35,9 +35,9 @@ CONTRACT_HASHES = {
     # Four additive read endpoints; all legacy exports, signatures and schemas remain frozen.
     "routes": "c8168de81d0cf383e8a631ef457ac9fe7f8fb5ed6c22cdaf34f70c27902230c1",
     "exports": "df0113be39e4824acefe0f41818ad35128010e58124b2f74afac3dd7be97fb0c",
-    "signatures": "21f09c1e6714a385533ec6890799b510c56b92aef59af053545b7a658fba098b",
-    # Additive editor CAS fields; public edits now require revision and target.
-    "schemas": "d7d403aeab996cca5539c5344f4b9100d515e9f36597d1fa0d7be9f144250271",
+    # Optional SKU detail read and scoped human characteristic edits are additive.
+    "signatures": "3d2a43c5dd90068efd230e6aadafb4d97018593a11e76459b94fa1c339a67acd",
+    "schemas": "0da1b3650cabddbe19c7de2f4f9e8239972661bb6c3a8602d118db11611f3e84",
     "http_status_codes": "c06ceb69456b4923815b0461ddeef6f9c90b6fcf5c0568dd79b3fdbc888a4546",
     "governance": "397babf72ba67a71b0d09d49bbb87bf01be0d04cee90dd595bd4fedbbbded76d",
 }

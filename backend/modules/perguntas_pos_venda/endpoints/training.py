@@ -25,6 +25,9 @@ from backend.modules.context_hub.store_sku_editor import (
     save_store_guidance_editor,
 )
 from backend.modules.context_hub.contracts import ContextHubConflictError, ContextHubValidationError
+from backend.modules.context_hub.store_sku_details import (
+    characteristic_edit_payload, load_store_sku_details,
+)
 
 _chamar_codex_chat = runtime_adapter("_chamar_codex_chat")
 _chamar_deepseek_chat = runtime_adapter("_chamar_deepseek_chat")
@@ -162,6 +165,7 @@ def ml_ia_treinamento_obter(
     loja: Optional[str] = None,
     store_id: Optional[str] = None,
     client_id: str = Depends(get_tenant_id),
+    sku: Optional[str] = None,
 ):
     # A tela edita uma camada por vez. Herdar o global aqui faria um salvamento
     # rapido materializar/copiar a camada global dentro do perfil da loja.
@@ -182,7 +186,27 @@ def ml_ia_treinamento_obter(
                 "code": "editorial_read_failed",
                 "message": "Nao foi possivel ler as orientacoes do Obsidian.",
             }) from exc
-    return _editor_response(data, editor or {}, loja, store_id)
+    result = _editor_response(data, editor or {}, loja, store_id)
+    if sku:
+        _require_store_sku(client_id, store_id, sku)
+        result["sku_details"] = _sku_details_response(client_id, scope, sku, editor)
+    return result
+
+
+def _require_store_sku(client_id: str, store_id: str, sku: str) -> None:
+    if not store_id or not any(str(item.get("sku") or "") == sku for item in _list_store_products(client_id, store_id)):
+        raise HTTPException(status_code=409, detail={
+            "code": "sku_store_scope_unresolved", "message": "O SKU nao pertence ao cadastro desta loja.",
+        })
+
+
+def _sku_details_response(client_id: str, scope: dict, sku: str, editor: dict) -> dict:
+    try:
+        return load_store_sku_details(client_id, scope, sku, editor)
+    except (OSError, sqlite3.Error, ContextHubConflictError, ContextHubValidationError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "sku_details_read_failed", "message": "Nao foi possivel ler a ficha do SKU no Obsidian.",
+        }) from exc
 
 
 def _editor_response(data: dict, editor: dict, loja: str, store_id: str) -> dict:
@@ -209,6 +233,11 @@ def _editor_response(data: dict, editor: dict, loja: str, store_id: str) -> dict
     }
     data["notas_sku"] = {
         str(sku): str(value.get("notas", value.get("texto")) or "")
+        for sku, value in (editor.get("sku_guidance") or {}).items()
+        if isinstance(value, dict)
+    }
+    data["caracteristicas_sku"] = {
+        str(sku): value.get("caracteristicas") or {}
         for sku, value in (editor.get("sku_guidance") or {}).items()
         if isinstance(value, dict)
     }
@@ -246,6 +275,10 @@ def ml_ia_treinamento_salvar(
                 "message": "Informe se a alteracao pertence a loja ou ao SKU.",
             })
         sku = str(req.sku or "").strip() if req.edit_target == "sku" else ""
+        if req.caracteristicas_sku is not None and req.edit_target != "sku":
+            raise HTTPException(status_code=422, detail={
+                "code": "characteristics_sku_required", "message": "Caracteristicas pertencem ao SKU exato.",
+            })
         if req.edit_target == "sku":
             products = _list_store_products(client_id, store_id)
             if not sku or not any(str(item.get("sku") or "") == sku for item in products):
@@ -262,6 +295,12 @@ def ml_ia_treinamento_salvar(
         else:
             guidance = _public_guidance_payload(req)
         try:
+            if sku and req.caracteristicas_sku is not None:
+                current = load_store_guidance_editor(client_id, scope)
+                if current["editorial"]["revision"] != req.expected_revision:
+                    raise StoreGuidanceEditorConflict("As orientacoes mudaram.")
+                details = load_store_sku_details(client_id, scope, sku, current)
+                guidance.update(characteristic_edit_payload(req.caracteristicas_sku, details))
             editor = save_store_guidance_editor(
                 client_id, scope, guidance=guidance, sku=sku,
                 expected_revision=req.expected_revision, actor=_request_actor(request),
@@ -285,6 +324,14 @@ def ml_ia_treinamento_salvar(
             client_id, loja, store_id=store_id, include_inherited=False,
         )
         result = _editor_response(data, editor, loja, store_id)
+        if sku:
+            try:
+                result["sku_details"] = _sku_details_response(client_id, scope, sku, editor)
+            except HTTPException as exc:
+                if exc.status_code != 503:
+                    raise
+                # The note is already durably saved; a failed preview is retriable.
+                result["sku_details_error"] = exc.detail
         target = ((editor.get("editorial") or {}).get("skus") or {}).get(sku, {}) if sku else (
             (editor.get("editorial") or {}).get("general") or {}
         )
