@@ -462,6 +462,42 @@ def test_compiler_requires_complete_catalog_and_copies_notes_only_to_confirmed_s
             legacy_sku_guidance={},
         )
 
+    partial = compile_store_sku_knowledge(
+        "tenant-a",
+        STORE_A,
+        {
+            **catalog,
+            "coverage_complete": False,
+            "warnings": ["provider gap"],
+            "skipped": [{"reason": "listing_details_missing"}],
+        },
+        canonical_documents={"160-K": _canonical("160-K", "A")},
+        store_guidance={},
+        legacy_sku_guidance={},
+        allow_partial_catalog=True,
+    )
+    assert partial.report["coverage_complete"] is False
+    assert partial.report["partial_catalog"] is True
+    assert partial.report["catalog_warning_count"] == 1
+    assert partial.report["catalog_skipped_count"] == 1
+    assert partial.bindings == [{
+        "schema": "jk_context_store_sku_binding_v1",
+        "item_id": "MLB100",
+        "variation_id": "",
+        "sku": "160-K",
+    }]
+
+    with pytest.raises(context_hub.ContextHubValidationError, match="incompleto"):
+        compile_store_sku_knowledge(
+            "tenant-a",
+            STORE_A,
+            {**catalog, "coverage_complete": False, "cancelled": True},
+            canonical_documents={"160-K": _canonical("160-K", "A")},
+            store_guidance={},
+            legacy_sku_guidance={},
+            allow_partial_catalog=True,
+        )
+
     with pytest.raises(context_hub.ContextHubValidationError, match="seller_id"):
         compile_store_sku_knowledge(
             "tenant-a",
@@ -587,6 +623,53 @@ def test_migration_preview_is_read_only_and_apply_is_restartable(hub_root: Path)
         tenant / "ContextVault" / "90_Arquivo" / "Quarentena"
         / "SKUs-sem-identidade" / "1599.md"
     ).is_file()
+
+
+def test_migration_partial_catalog_requires_explicit_opt_in(hub_root: Path):
+    tenant = hub_root / "tenant-a"
+    sku_dir = tenant / "SKU"
+    sku_dir.mkdir(parents=True)
+    (sku_dir / "160-K.json").write_text(
+        json.dumps(_canonical("160-K", "A"), ensure_ascii=False), encoding="utf-8",
+    )
+
+    def collector(_client: str, _store: str):
+        return {
+            "store_id": STORE_A["store_ref"],
+            "seller_id": STORE_A["seller_id"],
+            "coverage_complete": False,
+            "cancelled": False,
+            "warnings": ["one missing page"],
+            "skipped": [{"reason": "listing_details_missing"}],
+            "items": [{
+                "sku": "160-K",
+                "fields": {"site_id_ml": "MLB"},
+                "listings": [{"mlb": "MLB100"}],
+            }],
+        }
+
+    blocked = migrate_store_sku_knowledge(
+        "tenant-a", targets=[STORE_A], catalog_collector=collector,
+        apply=False, info_root=hub_root,
+    )
+    assert blocked["ready_count"] == 0
+    assert blocked["errors"][0]["reason_code"] == "catalog_incomplete"
+
+    preview = migrate_store_sku_knowledge(
+        "tenant-a", targets=[STORE_A], catalog_collector=collector,
+        allow_partial_catalog=True, apply=False, info_root=hub_root,
+    )
+    assert preview["ready_count"] == 1
+    assert preview["partial_catalog_allowed"] is True
+    assert preview["stores"][0]["partial_catalog"] is True
+    assert not (tenant / "context_hub" / "context_hub.db").exists()
+
+    applied = migrate_store_sku_knowledge(
+        "tenant-a", targets=[STORE_A], catalog_collector=collector,
+        allow_partial_catalog=True, apply=True, info_root=hub_root,
+    )
+    assert applied["applied_count"] == 1
+    assert applied["stores"][0]["coverage_complete"] is False
 
 
 def test_migration_preview_reports_safe_site_divergence_code(hub_root: Path):

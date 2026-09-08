@@ -88,12 +88,15 @@ Orientações salvas pela interface entram como rascunho schema 3 no Obsidian.
 Elas só substituem a orientação ativa depois de validação, revisão, aprovação e
 publicação explícita. O JSON legado é somente uma fonte de migração.
 
-A migração possui modo de prévia sem escrita, valida catálogo completo e
-variações, calcula hashes, publica cada loja em transação própria, permite
-reexecução idempotente e registra a geração anterior para rollback por loja.
-Seller/site divergente, associação ambígua, catálogo incompleto ou SKU sem
-binding bloqueiam a associação. A aplicação sobre dados reais exige autorização
-separada.
+A migração possui modo de prévia sem escrita, valida catálogo e variações,
+calcula hashes, publica cada loja em transação própria, permite reexecução
+idempotente e registra a geração anterior para rollback por loja. Por padrão,
+catálogo incompleto bloqueia a loja. Com autorização explícita, o modo parcial
+publica somente anúncios e variações cuja identidade individual foi comprovada,
+registra `partial_catalog` e as lacunas por contagem e não cria vínculo para os
+itens ausentes ou inválidos. Seller/site divergente, associação ambígua, coleta
+cancelada ou SKU sem binding continuam bloqueando a associação. A aplicação
+sobre dados reais exige autorização separada.
 
 ## Versionamento e empacotamento
 

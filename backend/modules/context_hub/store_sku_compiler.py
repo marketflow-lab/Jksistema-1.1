@@ -298,6 +298,7 @@ def compile_store_sku_knowledge(
     store_guidance: Mapping[str, Any],
     legacy_sku_guidance: Mapping[str, Mapping[str, Any]],
     quarantined_legacy: Mapping[str, Mapping[str, Any]] | None = None,
+    allow_partial_catalog: bool = False,
 ) -> CompiledStoreSkuKnowledge:
     scope = StoreSkuScope.from_mapping(scope_value, tenant_scope=f"tenant:{client_id}")
     if scope.tenant_scope != f"tenant:{client_id}":
@@ -309,7 +310,10 @@ def compile_store_sku_knowledge(
     catalog_site_id = str(catalog.get("site_id") or "").strip().upper()
     if catalog_site_id and catalog_site_id != scope.site_id:
         raise ContextHubValidationError("Catalogo Mercado Livre diverge do site_id solicitado.")
-    if catalog.get("coverage_complete") is not True or catalog.get("cancelled") is True:
+    coverage_complete = catalog.get("coverage_complete") is True
+    if catalog.get("cancelled") is True or (
+        not coverage_complete and not allow_partial_catalog
+    ):
         raise ContextHubValidationError("Catalogo Mercado Livre incompleto; publicacao bloqueada.")
     source_by_sku = {
         normalize_sku(key): dict(value) for key, value in canonical_documents.items()
@@ -327,7 +331,10 @@ def compile_store_sku_knowledge(
         raise ContextHubValidationError("Nenhum SKU teve identidade completa no catalogo atual.")
     bindings = _deduplicate_catalog_bindings(binding_objects)
     report = {
-        "coverage_complete": True,
+        "coverage_complete": coverage_complete,
+        "partial_catalog": not coverage_complete,
+        "catalog_warning_count": len(catalog.get("warnings") or []),
+        "catalog_skipped_count": len(catalog.get("skipped") or []),
         "catalog_sku_count": len(catalog_skus),
         "published_sku_count": len(selected),
         "binding_count": len(bindings),
