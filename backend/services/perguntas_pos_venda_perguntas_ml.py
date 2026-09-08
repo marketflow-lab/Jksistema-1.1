@@ -1788,6 +1788,15 @@ def _perguntas_ia_enviar_resposta_ml(
     )
     if resp.status_code not in {200, 201}:
         raise HTTPException(status_code=resp.status_code, detail=_ml_parse_error_detail(resp, "Erro ao responder pergunta no Mercado Livre"))
+    # Publication is already confirmed. Cache maintenance must never turn it
+    # into an apparent send failure or encourage a duplicate POST.
+    try:
+        from backend.services.perguntas_loading_cache import invalidate_store
+        store_id = str(cfg.get("_store_id_context") or "").strip()
+        if store_id:
+            invalidate_store(client_id, store_id)
+    except Exception:
+        logging.getLogger(__name__).warning("[ML PERGUNTAS] evento=invalidar_cache status=erro")
     try:
         data = resp.json() or {}
     except Exception:
@@ -1986,9 +1995,7 @@ def _ml_perguntas_normalizar(pergunta: dict, item_por_id: dict[str, dict], usuar
     comprador = pergunta.get("from") if isinstance(pergunta.get("from"), dict) else {}
     from_id = str(comprador.get("id") or "").strip() if comprador else ""
     usuario = (usuario_por_id or {}).get(from_id) or {}
-    variation_id = _ml_perguntas_variacao_id(pergunta, item) if item else str(
-        pergunta.get("variation_id") or pergunta.get("item_variation_id") or ""
-    ).strip()
+    variation_id = _ml_perguntas_variacao_id(pergunta, item)
     item_sku = _ml_perguntas_sku_variacao(item, variation_id) if item else ""
     return {
         "id": pergunta.get("id"),

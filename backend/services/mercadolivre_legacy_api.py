@@ -158,6 +158,11 @@ def _ml_refresh_token(client_id: str, nome_loja: str, cfg: dict):
         raise HTTPException(status_code=401, detail="NÃƒÂ£o foi possÃƒÂ­vel renovar o token. RefaÃƒÂ§a a autenticaÃƒÂ§ÃƒÂ£o OAuth.")
     except HTTPException:
         raise
+    except requests.Timeout:
+        from backend.services.perguntas_loading_transport import remaining
+        if remaining() is not None:
+            raise HTTPException(status_code=504, detail="Tempo de consulta das perguntas esgotado.") from None
+        raise HTTPException(status_code=401, detail="Erro ao renovar token. Refaça a autenticação OAuth.") from None
     except Exception as e:
         logger.exception(f"[ML REFRESH] Ã¢ÂÅ’ Exception ao renovar token: {e}")
         raise HTTPException(status_code=401, detail="Erro ao renovar token. RefaÃƒÂ§a a autenticaÃƒÂ§ÃƒÂ£o OAuth.")
@@ -296,9 +301,9 @@ def _ml_descobrir_user_id_oauth(client_id: str, nome_loja: str, cfg: dict) -> di
     return cfg
 
 
-def _obter_cfg_ml(client_id: str, nome_loja: str) -> dict:
+def _obter_cfg_ml(client_id: str, nome_loja: str, store_id: str | None = None) -> dict:
     """ObtÃƒÂ©m e normaliza a configuraÃƒÂ§ÃƒÂ£o do Mercado Livre da loja."""
-    loja = buscar_loja(client_id, nome_loja)
+    loja = buscar_loja(client_id, nome_loja, store_id=store_id) if store_id else buscar_loja(client_id, nome_loja)
     if not loja:
         raise HTTPException(status_code=404, detail="Loja nÃ£o encontrada")
 

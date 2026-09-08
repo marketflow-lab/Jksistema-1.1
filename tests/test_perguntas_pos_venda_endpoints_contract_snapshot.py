@@ -32,7 +32,8 @@ MODEL_TYPES = (
     ia.IATreinamentoPerguntasPosVendaSimularRequest,
 )
 CONTRACT_HASHES = {
-    "routes": "dc6cb53458cb92d7a76a72b148a26e7d4b658cfdbb829e2841a2f3c59eb95a39",
+    # Four additive read endpoints; all legacy exports, signatures and schemas remain frozen.
+    "routes": "c8168de81d0cf383e8a631ef457ac9fe7f8fb5ed6c22cdaf34f70c27902230c1",
     "exports": "df0113be39e4824acefe0f41818ad35128010e58124b2f74afac3dd7be97fb0c",
     "signatures": "21f09c1e6714a385533ec6890799b510c56b92aef59af053545b7a658fba098b",
     # Additive editor CAS fields; public edits now require revision and target.
@@ -151,7 +152,29 @@ def _snapshot() -> dict[str, object]:
 
 def test_perguntas_pos_venda_endpoints_contract_snapshot() -> None:
     snapshot = _snapshot()
-    assert len(snapshot["routes"]) == 31
+    assert len(snapshot["routes"]) == 35
     assert len(snapshot["exports"]) == 33
     assert len(snapshot["schemas"]) == 12
     assert {name: _digest(value) for name, value in snapshot.items()} == CONTRACT_HASHES
+
+
+def test_progressive_question_routes_have_authenticated_read_contracts() -> None:
+    from backend.routers.perguntas_pos_venda import PERGUNTAS_LOADING_ROUTES
+    routes = {route.path: route for route in create_perguntas_pos_venda_router().routes}
+    assert {spec.path.rsplit("/", 1)[-1] for spec in PERGUNTAS_LOADING_ROUTES} == {
+        "lista", "itens", "detalhe", "resumo",
+    }
+    expected = {
+        "lista": {"request", "store_id", "loja", "status", "offset", "limit", "forcar", "client_id"},
+        "itens": {"request", "store_id", "item_ids", "forcar", "client_id"},
+        "detalhe": {"request", "store_id", "question_id", "forcar", "client_id"},
+        "resumo": {"request", "store_ids", "store_id", "metricas", "forcar", "client_id"},
+    }
+    for spec in PERGUNTAS_LOADING_ROUTES:
+        route = routes[spec.path]
+        signature = inspect.signature(route.endpoint)
+        assert route.methods == {"GET"}
+        assert set(signature.parameters) == expected[spec.path.rsplit("/", 1)[-1]]
+        tenant = signature.parameters["client_id"].default
+        assert isinstance(tenant, Depends) and tenant.dependency.__name__ == "get_tenant_id"
+        assert signature.parameters["forcar"].default is False

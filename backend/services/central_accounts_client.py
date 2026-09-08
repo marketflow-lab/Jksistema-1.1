@@ -89,6 +89,8 @@ class CentralClient:
         self.refreshed_at = int(time.time())
 
     def call(self, method, path, body=None):
+        from backend.services.perguntas_loading_transport import check_budget, request_timeout
+        check_budget()
         if self.expires_at <= time.time():
             raise session_expired()
         if not path.startswith("/") or ".." in path or "?" in path:
@@ -98,7 +100,8 @@ class CentralClient:
         try:
             response = session.request(method, self._origin + "/api/central/v1" + path,
                 json=body, headers={"Authorization": "Bearer " + self._credential, "X-JK-Machine": self.machine},
-                timeout=(3.05, 35), allow_redirects=False)
+                timeout=request_timeout((3.05, 35)), allow_redirects=False)
+            check_budget()
             if len(response.content) > 12 * 1024 * 1024:
                 raise HTTPException(502, "Resposta da central excedeu o limite.")
             if response.status_code == 401:

@@ -30,6 +30,12 @@ from backend.modules.perguntas_pos_venda.endpoints.question_automation import (
     ml_perguntas_automacao_poll,
 )
 from backend.modules.perguntas_pos_venda.endpoints.questions_listing import ml_listar_perguntas
+from backend.modules.perguntas_pos_venda.endpoints.questions_loading import (
+    ml_perguntas_lista_rapida,
+    ml_perguntas_itens_rapidos,
+    ml_perguntas_detalhe_rapido,
+    ml_perguntas_resumo_rapido,
+)
 from backend.modules.perguntas_pos_venda.endpoints.questions_v2 import (
     ml_questions_v2_audit_question,
     ml_questions_v2_metrics,
@@ -54,6 +60,10 @@ from backend.modules.perguntas_pos_venda.endpoints.training import (
 
 
 __all__ = [
+    "ml_perguntas_lista_rapida",
+    "ml_perguntas_itens_rapidos",
+    "ml_perguntas_detalhe_rapido",
+    "ml_perguntas_resumo_rapido",
     "ml_perguntas_listar_lojas",
     "ml_perguntas_salvar_config_loja",
     "ml_perguntas_salvar_config_lojas_lote",

@@ -35,7 +35,7 @@ PUBLIC_EXPORTS = [
     "validate_post_sale_response",
 ]
 CONTRACT_HASHES = {
-    "routes": "dc6cb53458cb92d7a76a72b148a26e7d4b658cfdbb829e2841a2f3c59eb95a39",
+    "routes": "c8168de81d0cf383e8a631ef457ac9fe7f8fb5ed6c22cdaf34f70c27902230c1",
     "aliases": "f149aa04a166eacd3f942889d2495dc5a23be9bb3317160d97e247ae834aa68e",
     "schema": "500b7ccbcedc02d3a254e8114e974355be5635d2f01bd7dc929b212643cb254a",
     "policy": "c0f16148cf07452b5cfef3a48088485055cc7ca7f52382b96ecc95085529894a",
@@ -155,7 +155,7 @@ def _contract_snapshot() -> dict[str, object]:
 
 def test_ppv_public_contract_snapshot() -> None:
     snapshot = _contract_snapshot()
-    assert len(snapshot["routes"]) == 31
+    assert len(snapshot["routes"]) == 35
     assert len(snapshot["aliases"]) == 2
     assert len(snapshot["policy"]["allowed_tools"]) == 7
     assert snapshot["exports"] == PUBLIC_EXPORTS

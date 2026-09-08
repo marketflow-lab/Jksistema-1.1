@@ -174,19 +174,25 @@ def _ml_http_request(
     verify_ssl: bool = True,
 ) -> requests.Response:
     from backend.services.central_accounts_client import is_marker, provider_request
+    from backend.services.perguntas_loading_transport import check_budget, request_timeout
+    check_budget()
     if is_marker(token):
-        return provider_request(token, method, url, headers=headers, params=params, json=json, data=data)
+        response = provider_request(token, method, url, headers=headers, params=params, json=json, data=data)
+        check_budget()
+        return response
     if verify_ssl is False:
         logger.warning("[ML HTTP] Tentativa de desabilitar TLS foi bloqueada para loja=%s.", loja)
     verification = _ml_http_verify_setting()
     session = _ml_http_obter_session(client_id, loja, token, verification)
-    return session.request(
+    response = session.request(
         method,
         url,
         headers=headers,
         params=params,
         json=json,
         data=data,
-        timeout=timeout,
+        timeout=request_timeout(timeout),
         verify=verification,
     )
+    check_budget()
+    return response
