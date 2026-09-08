@@ -625,7 +625,8 @@ def _buscar_usuario_por_email_google(usuarios: dict, email: str) -> tuple[Option
 
 def _montar_resposta_login_sucesso(username: str, usuario: dict, permissoes: dict, client_id: str, machine_final: str) -> LoginResponse:
     token = (criar_access_token(username, client_id, machine_final, central=True) if usuario.get("central")
-             else criar_access_token(username, client_id, machine_final))
+             else criar_access_token(username, client_id, machine_final,
+                                     central_migration=bool(usuario.get("central_migration"))))
     user_data = {
         "username": username,
         "name": str(usuario.get("name") or username),

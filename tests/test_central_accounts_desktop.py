@@ -43,11 +43,15 @@ class Transport:
 @pytest.fixture(autouse=True)
 def clean_context():
     token = desktop._current.set(None)
+    migration_token = desktop._migration_current.set(None)
     desktop._sessions.clear()
+    desktop._migration_sessions.clear()
     desktop._references.clear()
     yield
     desktop._current.reset(token)
+    desktop._migration_current.reset(migration_token)
     desktop._sessions.clear()
+    desktop._migration_sessions.clear()
     desktop._references.clear()
 
 
@@ -81,6 +85,47 @@ def test_bootstrap_extension_is_signed_and_tampering_is_rejected():
     changed["central"]["stores"][0]["integracoes"]["mercadolivre"]["access_token"] = "must-not-pass"
     with pytest.raises(ValueError):
         verify(changed)
+
+
+def test_migration_extension_is_signed_private_and_short_lived():
+    payload = success_payload()
+    payload["central_migration"] = {"protocol": 1, "mode": "legacy_adoption",
+                                    "session": "m" * 200, "expires_at": NOW + 1800}
+    claims = token_claims(payload)
+    claims["jk_response_hash"] = remote_auth_client._canonical_hash({
+        key: payload[key] for key in ("user_data", "permissions", "policy", "request_nonce", "central_migration")})
+    config = load_remote_auth_configuration(ENV)
+    validated = validate_success_payload(payload, "usuario", "pc:maquina-1", NONCE, "authenticated")
+    verify_signed_response(validated, config, requests.Session(), verifier=lambda *a, **k: claims, now=NOW)
+    changed = copy.deepcopy(payload)
+    changed["central_migration"]["expires_at"] += 1
+    changed_validated = validate_success_payload(changed, "usuario", "pc:maquina-1", NONCE, "authenticated")
+    with pytest.raises(ValueError, match="invalid_response_claim"):
+        verify_signed_response(changed_validated, config, requests.Session(),
+                               verifier=lambda *a, **k: claims, now=NOW)
+
+
+def test_migration_client_is_memory_only_and_bound_to_local_jwt():
+    attempt = RemoteAuthAttempt(
+        RemoteAuthState.SUCCESS,
+        user_data={"username": "owner", "client_id": "tenant-a", "machine_id": "machine-a"},
+        permissions={"integracao": True}, policy={"active": True, "max_machines": 2},
+        central_migration={"protocol": 1, "mode": "legacy_adoption", "session": "private-migration",
+                           "expires_at": int(time.time()) + 300},
+    )
+    transport = Transport()
+    migration_client = desktop.MigrationClient(
+        attempt.central_migration, attempt.user_data, attempt.permissions,
+        configuration=load_remote_auth_configuration(ENV), transport=transport)
+    desktop._migration_sessions[desktop.session_key("local-jwt")] = migration_client
+    bound = desktop.bind_request("local-jwt", {"jk_central_migration": 1,
+                                                "sub": "owner", "client_id": "tenant-a",
+                                                "machine_id": "machine-a"})
+    assert bound is None
+    assert desktop.current_migration("tenant-a") is migration_client
+    with pytest.raises(HTTPException):
+        desktop.bind_request("local-jwt", {"jk_central_migration": 1, "sub": "owner",
+                                           "client_id": "tenant-a", "machine_id": "machine-b"})
 
 
 def test_minimal_login_never_calls_local_firebase_or_exports_private_session(monkeypatch):

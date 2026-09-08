@@ -62,7 +62,7 @@ def shared_sync_machine_salvar_config(
 ):
     sessao = _shared_sync_session(authorization, client_id)
     config = _shared_sync_machine_config_save(sessao, payload.model_dump() if hasattr(payload, "model_dump") else payload.dict())
-    return _shared_sync_machine_status_payload(sessao, "")
+    return _shared_sync_machine_status_payload(sessao, payload.machine_id or "")
 
 
 def _shared_sync_machine_bundle_ids(sessao: dict, scopes: list[str]) -> dict[str, str]:
@@ -103,7 +103,8 @@ def shared_sync_machine_preview(
     scopes = _shared_sync_machine_resolver_scopes(sessao, payload.scopes, require_enabled=True)
     bundle_ids = _shared_sync_machine_bundle_ids(sessao, scopes)
     if direction == "pull":
-        missing = [scope for scope, bundle_id in bundle_ids.items() if not _shared_sync_remote_meta_by_id(bundle_id)]
+        missing = [scope for scope, bundle_id in bundle_ids.items()
+                   if not _shared_sync_remote_meta_by_id(bundle_id, strict=True)]
         if missing:
             raise HTTPException(status_code=404, detail="Ainda nao existe snapshot remoto para todos os modulos selecionados.")
     return _shared_sync_create_preview(

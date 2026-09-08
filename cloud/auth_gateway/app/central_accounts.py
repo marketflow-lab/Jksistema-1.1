@@ -14,8 +14,9 @@ from .policy import (assert_access_allowed, assert_registered_machine, canonical
 
 
 class CentralError(Exception):
-    def __init__(self, code, status=409):
+    def __init__(self, code, status=409, details=None):
         self.code, self.status = code, status
+        self.details = dict(details or {})
         super().__init__(code)
 
 
@@ -29,6 +30,7 @@ class Principal:
     tenant: str
     machine: str
     permissions: dict = field(repr=False)
+    password_epoch: str = field(default="", repr=False)
 
     @property
     def key(self):
@@ -44,6 +46,20 @@ class CentralAccounts:
 
     def enabled_for(self, user):
         return not self.enrollment_required or user.get("central_accounts_enabled") is True
+
+    def migration_session(self, user, username, machine):
+        if self.enabled_for(user):
+            raise CentralError("central_already_enabled", 409)
+        tenant = user_client_id(user)
+        principal = Principal(username, tenant, machine,
+                              normalize_permissions(user.get("permissions") or user.get("permissoes")))
+        self._can_manage(principal)
+        expires = int(self.clock()) + 30 * 60
+        session = self.vault.seal("migration-session-v1", {
+            "username": username, "tenant": tenant, "machine": machine, "expires": expires,
+            "password_epoch": key_for(password_value(user)), "nonce": secrets.token_hex(16)})
+        return {"protocol": 1, "mode": "legacy_adoption", "session": session,
+                "expires_at": expires}
 
     def bootstrap_session(self, user, username, machine):
         if not self.enabled_for(user):
@@ -76,6 +92,191 @@ class CentralAccounts:
             raise CentralError("central_access_revoked", 403) from None
         except (KeyError, ValueError):
             raise CentralError("central_session_expired", 401) from None
+
+    def authenticate_migration(self, token, machine):
+        try:
+            data = self.vault.open("migration-session-v1", token)
+            if data["expires"] <= self.clock() or not secrets.compare_digest(data["machine"], machine):
+                raise ValueError()
+            user = self.users.get_user(data["username"])
+            if not user or user_client_id(user) != data["tenant"]:
+                raise ValueError()
+            assert_access_allowed(user)
+            assert_registered_machine(user, machine)
+            if not secrets.compare_digest(data["password_epoch"], key_for(password_value(user))):
+                raise ValueError()
+            principal = Principal(data["username"], data["tenant"], machine,
+                                  normalize_permissions(user.get("permissions") or user.get("permissoes")),
+                                  data["password_epoch"])
+            self._can_manage(principal)
+            return principal
+        except AuthRejected:
+            raise CentralError("central_migration_revoked", 403) from None
+        except (KeyError, ValueError):
+            raise CentralError("central_migration_expired", 401) from None
+
+    @staticmethod
+    def _legacy_credentials(connection):
+        return {
+            "provider": connection.provider,
+            "app_id": connection.app_id,
+            "app_secret": connection.app_secret.get_secret_value(),
+            "access_token": connection.access_token.get_secret_value(),
+            "refresh_token": connection.refresh_token.get_secret_value(),
+            "expires_at": connection.expires_at,
+        }
+
+    @staticmethod
+    def _migration_public(row):
+        return {
+            "success": row.get("status") == "completed",
+            "operation_id": row["operation_id"],
+            "status": row["status"],
+            "stores_total": int(row.get("stores_total") or 0),
+            "connections_total": int(row.get("connections_total") or 0),
+            "completed_at": row.get("completed_at"),
+            "failure": row.get("failure"),
+        }
+
+    def migration_status(self, principal, operation_id):
+        row = self.documents.get("operations", key_for("legacy-adoption", principal.key, operation_id))
+        if not row or row.get("kind") != "legacy-adoption" or row.get("principal") != principal.key:
+            raise CentralError("central_migration_not_found", 404)
+        return self._migration_public(row)
+
+    def adopt_legacy(self, principal, payload):
+        providers_expected = {"mercadolivre", "bling"}
+        store_ids = [store.store_id for store in payload.stores]
+        if len(set(store_ids)) != len(store_ids):
+            raise CentralError("central_migration_duplicate_store", 400)
+        normalized = []
+        for store in payload.stores:
+            providers = [connection.provider for connection in store.connections]
+            if set(providers) != providers_expected or len(set(providers)) != 2:
+                raise CentralError("central_migration_connections_incomplete", 400,
+                                   {"store_id": store.store_id})
+            normalized.append({
+                "store_id": store.store_id,
+                "name": store.name,
+                "connections": [{
+                    **self._legacy_credentials(connection),
+                    "expected_account_id": connection.expected_account_id,
+                    "expected_site_id": connection.expected_site_id,
+                } for connection in store.connections],
+            })
+        fingerprint = key_for(normalized)
+        operation_key = key_for("legacy-adoption", principal.key, payload.operation_id)
+
+        def start(old):
+            if old:
+                if old.get("fingerprint") != fingerprint or old.get("principal") != principal.key:
+                    raise CentralError("central_migration_conflict", 409)
+                return old
+            return {
+                "kind": "legacy-adoption", "operation_id": payload.operation_id,
+                "principal": principal.key, "tenant": principal.tenant,
+                "fingerprint": fingerprint, "status": "validating",
+                "stores_total": len(normalized),
+                "connections_total": sum(len(store["connections"]) for store in normalized),
+                "created_at": int(self.clock()),
+                "delete_after": datetime.fromtimestamp(self.clock() + 7 * 86400, timezone.utc),
+            }
+
+        operation = self.documents.change("operations", operation_key, start)
+        if operation.get("status") == "completed":
+            return self._migration_public(operation)
+
+        verified = []
+        try:
+            for store in normalized:
+                current_store = self.documents.get("stores", key_for("store", store["store_id"]))
+                if current_store and (current_store.get("tenant") != principal.tenant
+                                      or current_store.get("owner") != principal.key):
+                    raise CentralError("central_store_identity_conflict", 409,
+                                       {"store_id": store["store_id"]})
+                verified_connections = {}
+                for connection in store["connections"]:
+                    try:
+                        identity = self.provider.identify(connection)
+                    except CentralError as exc:
+                        raise CentralError(exc.code, exc.status, {
+                            "store_id": store["store_id"], "provider": connection["provider"]}) from None
+                    seller_id = str(identity.get("seller_id") or "")
+                    site_id = str(identity.get("site_id") or "")
+                    if (connection["expected_account_id"]
+                            and not secrets.compare_digest(connection["expected_account_id"], seller_id)):
+                        raise CentralError("central_identity_mismatch", 409, {
+                            "store_id": store["store_id"], "provider": connection["provider"]})
+                    if (connection["expected_site_id"]
+                            and not secrets.compare_digest(connection["expected_site_id"], site_id)):
+                        raise CentralError("central_identity_mismatch", 409, {
+                            "store_id": store["store_id"], "provider": connection["provider"]})
+                    credentials = {**connection, "seller_id": seller_id, "site_id": site_id}
+                    credentials.pop("expected_account_id", None)
+                    credentials.pop("expected_site_id", None)
+                    connection_id = key_for(connection["provider"], connection["app_id"], seller_id)
+                    existing = self.documents.get("connections", connection_id)
+                    if existing and existing.get("tenant") != principal.tenant:
+                        raise CentralError("central_account_already_owned", 409, {
+                            "store_id": store["store_id"], "provider": connection["provider"]})
+                    attached = (current_store or {}).get("connections", {}).get(connection["provider"], {})
+                    if attached and str(attached.get("seller_id") or "") != seller_id:
+                        raise CentralError("central_identity_mismatch", 409, {
+                            "store_id": store["store_id"], "provider": connection["provider"]})
+                    verified_connections[connection["provider"]] = {
+                        "id": connection_id, "seller_id": seller_id, "site_id": site_id,
+                        "credentials": credentials,
+                    }
+                verified.append({**store, "connections": verified_connections})
+
+            for store in verified:
+                for connection in store["connections"].values():
+                    connection_id = connection["id"]
+                    credentials = connection["credentials"]
+
+                    def save_connection(old, *, connection_id=connection_id, credentials=credentials):
+                        if old and old.get("tenant") != principal.tenant:
+                            raise CentralError("central_account_already_owned", 409)
+                        return {"tenant": principal.tenant,
+                                "version": int((old or {}).get("version", 0)) + 1,
+                                "sealed": self.vault.seal("connection:" + connection_id, credentials),
+                                "status": "ready", "lease_until": 0}
+
+                    self.documents.change("connections", connection_id, save_connection)
+
+            for store in verified:
+                public_connections = {provider: {key: value[key] for key in ("id", "seller_id", "site_id")}
+                                      for provider, value in store["connections"].items()}
+
+                def save_store(old, *, store=store, public_connections=public_connections):
+                    if old and (old.get("tenant") != principal.tenant or old.get("owner") != principal.key):
+                        raise CentralError("central_store_identity_conflict", 409)
+                    return {"store_id": store["store_id"], "tenant": principal.tenant,
+                            "owner": principal.key, "name": store["name"],
+                            "connections": public_connections,
+                            "grants": {principal.key: "owner"}, "access_keys": [principal.key]}
+
+                self.documents.change("stores", key_for("store", store["store_id"]), save_store)
+
+            self.users.enable_central_accounts(
+                principal.username, principal.tenant, principal.machine, principal.password_epoch)
+            completed_at = int(self.clock())
+            operation = self.documents.change("operations", operation_key, lambda old: {
+                **old, "status": "completed", "completed_at": completed_at, "failure": None})
+            return self._migration_public(operation)
+        except CentralError as exc:
+            failure = {"code": exc.code, **exc.details}
+            self.documents.change("operations", operation_key, lambda old: {
+                **old, "status": "failed", "failure": failure})
+            raise
+        except Exception:
+            try:
+                self.documents.change("operations", operation_key, lambda old: {
+                    **old, "status": "failed",
+                    "failure": {"code": "central_migration_unavailable"}})
+            except Exception:
+                pass
+            raise CentralError("central_migration_unavailable", 503) from None
 
     @staticmethod
     def _can_manage(principal):

@@ -97,6 +97,17 @@ def validate_success_payload(
         from backend.services.central_accounts_client import validate_public_stores
         validate_public_stores(central["stores"])
         extension["central"] = central
+    if "central_migration" in payload:
+        migration = payload["central_migration"]
+        if (not isinstance(migration, dict)
+                or set(migration) != {"protocol", "mode", "session", "expires_at"}
+                or migration["protocol"] != 1 or migration["mode"] != "legacy_adoption"
+                or not isinstance(migration["session"], str)
+                or not 100 <= len(migration["session"]) <= 8192
+                or not isinstance(migration["expires_at"], int)
+                or isinstance(migration["expires_at"], bool)):
+            raise ValueError("invalid_central_migration")
+        extension["central_migration"] = migration
     return {
         **extension,
         "identity_token": identity_token,
@@ -159,6 +170,10 @@ def verify_signed_response(
         signed_payload["central"] = validated["central"]
         if not now < validated["central"]["expires_at"] <= now + 9 * 3600:
             raise ValueError("invalid_central_session_expiry")
+    if "central_migration" in validated:
+        signed_payload["central_migration"] = validated["central_migration"]
+        if not now < validated["central_migration"]["expires_at"] <= now + 31 * 60:
+            raise ValueError("invalid_central_migration_expiry")
     if str(claims.get("jk_response_hash") or "") != canonical_hash(signed_payload):
         raise ValueError("invalid_response_claim")
     firebase_claim = claims.get("firebase")

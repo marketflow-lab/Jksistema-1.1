@@ -121,6 +121,47 @@ class FirestoreUserRepository:
         except Exception as exc:
             raise GatewayUnavailable("firestore_password_update_failed") from exc
 
+    def enable_central_accounts(
+        self,
+        username: str,
+        expected_client_id: str,
+        machine_id: str,
+        expected_password_epoch: str,
+    ) -> dict[str, Any]:
+        document_ref = self._collection.document(self._document_id(username))
+        transaction = self._client.transaction(max_attempts=3)
+
+        @firestore.transactional
+        def enable(current_transaction):
+            snapshot = document_ref.get(transaction=current_transaction)
+            if not snapshot.exists:
+                raise AuthRejected("invalid_credentials", 401)
+            current = snapshot.to_dict() or {}
+            assert_access_allowed(current)
+            assert_registered_machine(current, machine_id)
+            from .policy import canonical_hash, user_client_id
+            if user_client_id(current) != expected_client_id:
+                raise AuthRejected("invalid_credentials", 401)
+            if not secrets.compare_digest(canonical_hash([password_value(current)]), expected_password_epoch):
+                raise AuthRejected("invalid_credentials", 401)
+            if current.get("central_accounts_enabled") is True:
+                return current
+            updates = {
+                "central_accounts_enabled": True,
+                "central_accounts_enabled_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+            current_transaction.update(document_ref, updates)
+            current.update(updates)
+            return current
+
+        try:
+            return enable(transaction)
+        except AuthRejected:
+            raise
+        except Exception as exc:
+            raise GatewayUnavailable("firestore_central_enable_failed") from exc
+
 
 class FirebaseIdentityTokenIssuer:
     def __init__(self, settings: GatewaySettings) -> None:

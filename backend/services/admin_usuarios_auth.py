@@ -375,12 +375,34 @@ async def login_endpoint(payload: LoginRequest, request: Request):
             response = _montar_resposta_login_sucesso(username, usuario_remoto, remote_attempt.permissions,
                                                      client_id, machine_final)
             try:
-                register_login(response.access_token, remote_attempt)
+                central_client = register_login(response.access_token, remote_attempt)
             except Exception:
                 return LoginResponse(success=False, message="Não foi possível preparar a conexão com a central.")
+            try:
+                from backend.services.central_accounts_migration import finalize_after_central_login
+                finalize_after_central_login(client_id, central_client.public_stores())
+            except Exception as exc:
+                runtime_logger = globals().get("logger")
+                if runtime_logger is not None:
+                    runtime_logger.warning("[CENTRAL] Limpeza local pendente apos ativacao: %s", type(exc).__name__)
             response.user_data["central"] = {"protocol": 1, "sync_mode": "manual",
                                              "expires_at": remote_attempt.central["expires_at"]}
             return response
+
+        migration_response = None
+        if remote_attempt.central_migration:
+            from backend.services.central_accounts_client import register_migration_login
+            usuario_remoto["central_migration"] = True
+            migration_response = _montar_resposta_login_sucesso(
+                username, usuario_remoto, remote_attempt.permissions, client_id, machine_final)
+            try:
+                register_migration_login(migration_response.access_token, remote_attempt)
+            except Exception:
+                return LoginResponse(success=False, message="Não foi possível preparar a migração para a central.")
+            migration_response.user_data["central_migration"] = {
+                "available": True,
+                "expires_at": remote_attempt.central_migration["expires_at"],
+            }
 
         try:
             _registrar_login_maquina(username, client_id, machine_final, request)
@@ -392,6 +414,8 @@ async def login_endpoint(payload: LoginRequest, request: Request):
             )
         except Exception as exc:
             logger.warning("[LOGIN] Nao foi possivel registrar presenca inicial remota: %s", type(exc).__name__)
+        if migration_response is not None:
+            return migration_response
         return _montar_resposta_login_sucesso(
             username,
             usuario_remoto,

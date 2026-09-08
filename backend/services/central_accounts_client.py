@@ -25,7 +25,9 @@ from .transport_security import configure_requests_session
 
 
 _current = contextvars.ContextVar("jk_central_session", default=None)
+_migration_current = contextvars.ContextVar("jk_central_migration_session", default=None)
 _sessions = {}
+_migration_sessions = {}
 _references = {}
 _lock = threading.RLock()
 PREFIX = "jk-central:"
@@ -37,7 +39,7 @@ def validate_public_stores(stores):
         raise ValueError("invalid_central_stores")
     for row in stores:
         if (not isinstance(row, dict) or set(row) != {"store_id", "nome", "owner_client_id", "access", "integracoes"}
-                or not re.fullmatch(r"[a-f0-9]{32}", str(row.get("store_id", "")))
+                or not re.fullmatch(r"(?:[a-f0-9]{24}|[a-f0-9]{32})", str(row.get("store_id", "")))
                 or row["store_id"] in identities or row["access"] not in ("owner", "read", "write")
                 or not isinstance(row["nome"], str) or not 1 <= len(row["nome"]) <= 100
                 or not isinstance(row["owner_client_id"], str) or not 1 <= len(row["owner_client_id"]) <= 128
@@ -59,6 +61,11 @@ def session_key(token):
 
 def session_expired():
     return HTTPException(401, "Sessão da central expirada. Faça o login novamente.",
+                         headers={"WWW-Authenticate": "Bearer"})
+
+
+def migration_session_expired():
+    return HTTPException(401, "Autorização de migração expirada. Faça o login novamente.",
                          headers={"WWW-Authenticate": "Bearer"})
 
 
@@ -144,6 +151,75 @@ class CentralClient:
         return rows
 
 
+class MigrationClient:
+    def __init__(self, extension, user_data, permissions, *, configuration=None, transport=None):
+        self.configuration = configuration or load_remote_auth_configuration(os.environ)
+        if self.configuration is None:
+            raise ValueError("central_configuration_missing")
+        self._credential = extension["session"]
+        self.expires_at = extension["expires_at"]
+        self.tenant = user_data["client_id"]
+        self.username = user_data["username"]
+        self.machine = user_data["machine_id"]
+        self.permissions = dict(permissions)
+        self._transport = transport
+        parsed = urlsplit(self.configuration.url)
+        self._origin = parsed.scheme + "://" + parsed.netloc
+
+    def call(self, method, path, body=None):
+        if self.expires_at <= time.time():
+            raise migration_session_expired()
+        if not path.startswith("/migrations/legacy") or ".." in path or "?" in path:
+            raise ValueError("central_migration_path_invalid")
+        owns_session = self._transport is None
+        session = self._transport or configure_requests_session(requests.Session(), os.environ)
+        try:
+            response = session.request(
+                method, self._origin + "/api/central/v1" + path, json=body,
+                headers={"Authorization": "Bearer " + self._credential,
+                         "X-JK-Machine": self.machine},
+                timeout=(3.05, 90), allow_redirects=False)
+            if len(response.content) > 256 * 1024:
+                raise HTTPException(502, "Resposta de migração excedeu o limite.")
+            if response.status_code == 401:
+                raise migration_session_expired()
+            if not 200 <= response.status_code < 300:
+                try:
+                    error = response.json()
+                except (ValueError, AttributeError):
+                    error = {}
+                code = str(error.get("code") or "central_unavailable")
+                store_id = str(error.get("store_id") or "")
+                provider = str(error.get("provider") or "")
+                messages = {
+                    "central_reconnect_required": "A conexão precisa de uma nova autorização.",
+                    "central_identity_mismatch": "A conta retornada pela plataforma diverge da configuração local.",
+                    "central_account_already_owned": "A conta já pertence a outra empresa na central.",
+                    "central_store_identity_conflict": "O identificador da loja já pertence a outro cadastro.",
+                    "central_migration_conflict": "Esta operação já existe com outro conteúdo.",
+                    "central_migration_revoked": "Esta máquina ou usuário não está mais autorizado a migrar.",
+                }
+                detail = {"code": code, "message": messages.get(
+                    code, "A central não conseguiu concluir a migração.")}
+                if store_id:
+                    detail["store_id"] = store_id
+                if provider in {"mercadolivre", "bling"}:
+                    detail["provider"] = provider
+                raise HTTPException(response.status_code if response.status_code in (400, 403, 404, 409, 413, 429) else 503,
+                                    detail)
+            result = response.json()
+            if not isinstance(result, dict):
+                raise ValueError("central_migration_response_invalid")
+            return result
+        except HTTPException:
+            raise
+        except (requests.RequestException, ValueError):
+            raise HTTPException(503, "Não foi possível consultar a central. Tente novamente.") from None
+        finally:
+            if owns_session:
+                session.close()
+
+
 def register_login(local_token, attempt):
     client = CentralClient(attempt.central, attempt.user_data, attempt.permissions)
     with _lock:
@@ -157,15 +233,39 @@ def register_login(local_token, attempt):
     return client
 
 
+def register_migration_login(local_token, attempt):
+    client = MigrationClient(attempt.central_migration, attempt.user_data, attempt.permissions)
+    with _lock:
+        stale = [key for key, value in _migration_sessions.items() if value.expires_at <= time.time()]
+        for key in stale:
+            _migration_sessions.pop(key, None)
+        _migration_sessions[session_key(local_token)] = client
+    return client
+
+
+def end_migration_login(local_token):
+    with _lock:
+        _migration_sessions.pop(session_key(local_token), None)
+    _migration_current.set(None)
+
+
 def bind_request(local_token, payload):
     with _lock:
         client = _sessions.get(session_key(local_token)) if payload.get("jk_central") == 1 else None
+        migration = (_migration_sessions.get(session_key(local_token))
+                     if payload.get("jk_central_migration") == 1 else None)
     if payload.get("jk_central") == 1:
         if (client is None or client.expires_at <= time.time()
                 or client.tenant != payload.get("client_id") or client.username != payload.get("sub")
                 or client.machine != payload.get("machine_id")):
             raise session_expired()
+    if payload.get("jk_central_migration") == 1:
+        if (migration is None or migration.expires_at <= time.time()
+                or migration.tenant != payload.get("client_id") or migration.username != payload.get("sub")
+                or migration.machine != payload.get("machine_id")):
+            raise migration_session_expired()
     _current.set(client)
+    _migration_current.set(migration)
     return client
 
 
@@ -173,6 +273,13 @@ def current(client_id=None):
     client = _current.get()
     if client is not None and client_id is not None and client.tenant != client_id:
         raise HTTPException(403, "A sessão não autoriza outra empresa.")
+    return client
+
+
+def current_migration(client_id=None):
+    client = _migration_current.get()
+    if client is not None and client_id is not None and client.tenant != client_id:
+        raise HTTPException(403, "A migração não autoriza outra empresa.")
     return client
 
 

@@ -35,6 +35,7 @@ class SharedSyncMachineConfigRequest(BaseModel):
     scopes: Optional[list[str]] = None
     auto_pull: bool = False
     auto_push: bool = False
+    machine_id: Optional[str] = None
 
 
 class SharedSyncUserInviteCreateRequest(BaseModel):

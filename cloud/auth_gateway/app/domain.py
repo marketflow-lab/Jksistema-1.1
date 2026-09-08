@@ -25,6 +25,7 @@ from .policy import (
     uid_for_username,
     user_can_use_unlimited_devices,
     user_client_id,
+    version_key,
 )
 
 
@@ -47,6 +48,14 @@ class UserRepository(Protocol):
         expected_password_value: str,
         new_password_hash: str,
         machine_id: str,
+    ) -> dict[str, Any]: ...
+
+    def enable_central_accounts(
+        self,
+        username: str,
+        expected_client_id: str,
+        machine_id: str,
+        expected_password_epoch: str,
     ) -> dict[str, Any]: ...
 
 
@@ -76,6 +85,7 @@ class AuthenticationService:
         *,
         code: str,
         central_protocol: bool = False,
+        app_version: str = "",
     ) -> dict[str, Any]:
         expiry = assert_access_allowed(current)
         permissions = normalize_permissions(current.get("permissions") or current.get("permissoes"))
@@ -104,8 +114,17 @@ class AuthenticationService:
             "policy": policy,
             "request_nonce": request_nonce,
         }
-        if central_protocol and self._central is not None and self._central.enabled_for(current):
-            signed_payload["central"] = self._central.bootstrap_session(current, username, machine_id)
+        if central_protocol and self._central is not None:
+            if self._central.enabled_for(current):
+                signed_payload["central"] = self._central.bootstrap_session(current, username, machine_id)
+            elif version_key(app_version) >= version_key("1.0.135"):
+                try:
+                    signed_payload["central_migration"] = self._central.migration_session(
+                        current, username, machine_id)
+                except Exception as exc:
+                    from .central_accounts import CentralError
+                    if not isinstance(exc, CentralError) or exc.code != "central_permission_denied":
+                        raise
         claims = {
             "jk_auth_v": AUTH_PROTOCOL_VERSION,
             "jk_username": username,
@@ -144,6 +163,7 @@ class AuthenticationService:
             request.request_nonce,
             code="authenticated",
             central_protocol=central_protocol,
+            app_version=request.app_version,
         )
 
     def change_password(self, request: GatewayChangePasswordRequest, *, central_protocol=False) -> dict[str, Any]:
@@ -179,6 +199,7 @@ class AuthenticationService:
             request.request_nonce,
             code="password_changed",
             central_protocol=central_protocol,
+            app_version=request.app_version,
         )
 
 

@@ -1,5 +1,27 @@
 # Central de contas e primeiro acesso
 
+## Migração explícita de contas legadas na versão combinada 1.0.136
+
+Usuários ainda não migrados, em clientes 1.0.135 ou superiores, recebem no login
+uma autorização assinada de 30 minutos vinculada ao próprio usuário, tenant e
+máquina. A tela Lojas e APIs apresenta uma prévia sem credenciais e só inicia a
+migração por comando explícito.
+
+A execução valida todas as lojas e as conexões Mercado Livre/Bling, renova e
+persiste localmente os tokens que não têm validade segura conhecida, consulta a
+identidade real de cada conta e cria um backup congelado por 30 dias no Gerenciador
+de Credenciais do Windows. A central aceita `store_id` hexadecimal legado de 24
+caracteres e o formato novo de 32 caracteres. A adoção é idempotente e retomável;
+o usuário só recebe `central_accounts_enabled` depois que todas as conexões foram
+validadas e armazenadas no cofre central.
+
+Após a confirmação da central, os segredos Mercado Livre/Bling são removidos do
+arquivo local e a sessão é encerrada. O Mercado Turbo permanece local, associado
+ao mesmo `store_id`, e não aparece em outra máquina. Uma falha anterior à
+confirmação mantém o modo legado e as credenciais locais. A importação antiga do
+Shared Sync passa a se chamar “Importar cópia legada do Firebase” para deixar claro
+que ela não ativa a Central de Contas.
+
 Implementação autorizada em 05/09/2026. Base limpa: v1.0.133,
 commit 4b323be8eab154e2b12f0057c90ef043ea40a7d5. A aprovação inicial cobriu implementação e testes no Worktree. Em seguida,
 o usuário aprovou integração, publicação, implantação e atualização instalada.
