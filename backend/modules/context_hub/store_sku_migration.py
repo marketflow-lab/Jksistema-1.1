@@ -206,6 +206,7 @@ def prepare_store_sku_migration(
     *,
     targets: Sequence[Mapping[str, Any]] = INITIAL_STORE_SKU_MIGRATION_TARGETS,
     catalog_collector: Callable[[str, str], Mapping[str, Any]] | None = None,
+    allow_partial_catalog: bool = False,
     info_root: os.PathLike[str] | str | None = None,
 ) -> tuple[list[CompiledStoreSkuKnowledge], dict[str, Any]]:
     """Build a read-only preview. No vault, database pointer, or catalog is changed."""
@@ -239,6 +240,7 @@ def prepare_store_sku_migration(
                 store_guidance=general,
                 legacy_sku_guidance=sku_notes,
                 quarantined_legacy=quarantine,
+                allow_partial_catalog=allow_partial_catalog,
             )
             _validate_quarantined_legacy(plan.quarantined_legacy)
             plans.append(plan)
@@ -257,6 +259,7 @@ def prepare_store_sku_migration(
         "blocked_count": len(errors),
         "stores": [_migration_report(plan) for plan in plans],
         "errors": errors,
+        "partial_catalog_allowed": bool(allow_partial_catalog),
         "apply": False,
     }
     return plans, preview
@@ -269,6 +272,7 @@ def migrate_store_sku_knowledge(
     catalog_collector: Callable[[str, str], Mapping[str, Any]] | None = None,
     actor: object = "migration-v18",
     apply: bool = False,
+    allow_partial_catalog: bool = False,
     info_root: os.PathLike[str] | str | None = None,
 ) -> dict[str, Any]:
     """Preview or apply each store independently; reruns are content-idempotent."""
@@ -277,6 +281,7 @@ def migrate_store_sku_knowledge(
         client_id,
         targets=targets,
         catalog_collector=catalog_collector,
+        allow_partial_catalog=allow_partial_catalog,
         info_root=info_root,
     )
     if not apply:
