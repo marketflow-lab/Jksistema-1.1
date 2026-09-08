@@ -112,7 +112,7 @@ PROMPT_HASH = hashlib.sha256(
         "store-sku-question-context:jk_ml_store_sku_question_context_v1|"
         "store-sku-migration:jk_context_store_sku_migration_v1|"
         "adaptive-public-flow-v1|curation-schema:3|integral-context-no-truncation-v1|"
-        "canonical-document-max:24000|guidance-max:4000|operational-max:2000|"
+        "canonical-document-max:24000|guidance-max:8000|operational-max:2000|"
         "question-history-max:1500|integral-envelope-max:32000|"
         "simple-prompt-max:40000|high-risk-stage-max:48000|global-transport-max:52000|"
         "conditional-public-web-v1|"

@@ -69,7 +69,7 @@ Os limites validam o conteúdo e nunca o cortam:
 | Parte | Limite de caracteres |
 | --- | ---: |
 | Documento canônico | 24.000 |
-| Orientações aplicáveis | 4.000 |
+| Orientações aplicáveis | 8.000 |
 | Dados operacionais | 2.000 |
 | Pergunta e histórico relevante | 1.500 |
 | Envelope integral | 32.000 |

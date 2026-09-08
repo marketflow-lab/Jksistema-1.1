@@ -799,7 +799,15 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             with self.subTest(category=category):
                 client = agent._PerguntasVertexGeminiV2Client("cliente", "Loja", "codex:gpt-5.5", {
                     "question": {"text": "Pode informar?"},
-                    "item": {"id": "MLB1", "title": "Produto"},
+                    "item": {"id": "MLB1", "seller_sku": "SKU-001", "title": "Produto"},
+                    "product_evidence_identity": {
+                        "store_ref": "store-test",
+                        "seller_id": "588182191",
+                        "site_id": "MLB",
+                        "sku": "SKU-001",
+                        "item_id": "MLB1",
+                        "variation_id": "",
+                    },
                     "intent": ai_classification("Pode informar?", category=category),
                 })
                 with patch.object(
@@ -836,6 +844,45 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                         _pipeline_step(client, "adaptive_simple_public_generation")["route"],
                         "simple_operational",
                     )
+
+    def test_incomplete_operational_identity_escalates_without_unneeded_public_research(self):
+        import backend_api  # noqa: F401
+        from backend.modules.perguntas_pos_venda.ai import clients as agent
+
+        draft = '{"answer":"Rascunho seguro.","confidence":0.9,"requires_human_review":true,"reason":"identity_incomplete"}'
+        client = agent._PerguntasVertexGeminiV2Client("cliente", "Loja", "codex:gpt-5.5", {
+            "question": {"text": "Tem estoque?"},
+            "item": {"id": "MLB1", "seller_sku": "SKU-001", "title": "Produto"},
+            "intent": ai_classification("Tem estoque?", category="stock"),
+        })
+        with patch.object(
+            agent,
+            "_ia_agent_perguntas_chamar_modelo",
+            side_effect=_v16_model_responder(draft),
+        ), patch.object(
+            agent,
+            "_perguntas_ia_context_hub_tool",
+            return_value=None,
+        ), patch.object(
+            agent,
+            "_ia_agent_perguntas_web_tool",
+            return_value=None,
+        ) as web_call:
+            result = client.generate("prompt com anuncio", {
+                "category": "stock",
+                "question_text": "Tem estoque?",
+                "item_id": "MLB1",
+                "listing_title": "Produto",
+            })
+
+        self.assertEqual(result.answer, "Rascunho seguro.")
+        self.assertEqual(client.adaptive_route, "high_risk")
+        self.assertIn("identity_incomplete", client.sku_question_context["route_reasons"])
+        web_call.assert_not_called()
+        research_step = _pipeline_step(client, "question_focused_web_research")
+        self.assertEqual(research_step["status"], "unavailable")
+        self.assertEqual(research_step["reason"], "no_research_needed")
+        self.assertEqual(research_step["synthesis_status"], "completed_without_external_result")
 
     def test_public_questions_v2_preserves_draft_when_external_synthesis_fails(self):
         import backend_api  # noqa: F401
@@ -1019,6 +1066,15 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
                 client = agent._PerguntasVertexGeminiV2Client("cliente", "Loja", "codex:gpt-5.5", {
                     "question": {"text": "Pergunta operacional"},
+                    "item": {"id": "MLB1", "seller_sku": "SKU-001", "title": "Produto"},
+                    "product_evidence_identity": {
+                        "store_ref": "store-test",
+                        "seller_id": "588182191",
+                        "site_id": "MLB",
+                        "sku": "SKU-001",
+                        "item_id": "MLB1",
+                        "variation_id": "",
+                    },
                     "intent": ai_classification("Pergunta operacional", category=category),
                 })
                 with patch.object(

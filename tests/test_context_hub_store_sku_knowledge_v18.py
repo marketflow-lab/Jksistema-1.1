@@ -10,6 +10,7 @@ import pytest
 from backend.modules.context_hub import api as context_hub
 from backend.modules.context_hub.store_sku_compiler import compile_store_sku_knowledge
 from backend.modules.context_hub.store_sku_contracts import (
+    APPLICABLE_GUIDANCE_MAX_CHARS,
     CANONICAL_DOCUMENT_MAX_CHARS,
     STORE_SKU_MIGRATION_SCHEMA,
 )
@@ -396,6 +397,38 @@ def test_publication_is_idempotent_and_rejects_legacy_1599_or_oversize(hub_root:
             store_guidance={},
             sku_guidance={},
             bindings=[{"item_id": "MLB201", "sku": "BIG"}],
+            info_root=hub_root,
+        )
+
+
+def test_publication_preserves_approved_guidance_between_four_and_eight_thousand_chars(
+    hub_root: Path,
+):
+    guidance = {"orientacoes_perguntas": "g" * 6_200}
+    published = publish_store_sku_generation(
+        "tenant-a",
+        STORE_A,
+        canonical_documents={"160-K": _canonical("160-K", "A")},
+        store_guidance=guidance,
+        sku_guidance={},
+        bindings=[{"item_id": "MLB100", "sku": "160-K"}],
+        info_root=hub_root,
+    )
+    assert published["changed"] is True
+    loaded = load_store_sku_knowledge(
+        "tenant-a", _identity(STORE_A, sku="160-K", item="MLB100"),
+        info_root=hub_root,
+    )
+    assert loaded["guidance"]["general"] == guidance
+
+    with pytest.raises(context_hub.ContextHubValidationError, match="applicable_guidance_too_large"):
+        publish_store_sku_generation(
+            "tenant-a",
+            STORE_B,
+            canonical_documents={"BIG": _canonical("BIG", "B")},
+            store_guidance={"orientacoes_perguntas": "g" * APPLICABLE_GUIDANCE_MAX_CHARS},
+            sku_guidance={},
+            bindings=[{"item_id": "MLB200", "sku": "BIG"}],
             info_root=hub_root,
         )
 
