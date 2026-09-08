@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+import pytest
+import requests
+
 import backend_api  # noqa: F401 - configura os adapters do runtime modular
 from backend.modules.perguntas_pos_venda.ai import clients as agent_clients
 from backend.modules.perguntas_pos_venda.ai import context as agent_context
@@ -10,6 +13,39 @@ from backend.modules.perguntas_pos_venda.ai import evidence as agent_evidence
 from backend.modules.perguntas_pos_venda.ai import execution as agent_execution
 from backend.modules.perguntas_pos_venda.ai import sources as agent_sources
 from ml_questions_gemini import AIAnswer
+
+
+@pytest.fixture
+def isolated_hub_internal_sources(monkeypatch):
+    """Keep this Hub/web routing case independent of installed tenant data.
+
+    Real listing adapters may return coverage_complete=False, legitimately asking
+    for another research pass. That is a different scenario from this test's
+    complete, empty internal sources followed by one mandatory Hub-gap search.
+    """
+    calls = []
+    network_attempts = []
+    adapters = (
+        ("marketplace_listing_query", "get_mercado_livre_listing"),
+        ("_ia_tool_get_product_data", "get_product_data"),
+        ("_ia_tool_get_bling_product", "get_bling_product"),
+    )
+    for attribute, function in adapters:
+        def empty_source(*_args, _function=function, **_kwargs):
+            calls.append(_function)
+            return {"function": _function, "arguments": {}, "result": {
+                "found": False, "matches": [], "coverage_complete": True,
+            }}
+        monkeypatch.setattr(agent_clients, attribute, empty_source)
+    monkeypatch.setattr(agent_clients, "_ia_raciocinio_perguntas_configurado", lambda: "medium")
+
+    def unexpected_network(*_args, **_kwargs):
+        network_attempts.append(True)
+        raise AssertionError("This unit test must not access the network.")
+
+    monkeypatch.setattr(requests.sessions.Session, "request", unexpected_network)
+    yield calls
+    assert not network_attempts, "A real network adapter escaped the test doubles."
 
 
 def _structured_intent(
@@ -871,7 +907,7 @@ def test_canonical_context_hub_answer_uses_compact_simple_factual_route_without_
     assert context_metrics["model_call_count"] == 0  # patched model boundaries bypass transport telemetry
 
 
-def test_high_confidence_insufficient_hub_answer_is_enriched_by_mandatory_web():
+def test_high_confidence_insufficient_hub_answer_is_enriched_by_mandatory_web(isolated_hub_internal_sources):
     agent_input = _compatibility_input(exact_identity=True)
     agent_input["intent"] = _structured_intent("product_feature", web=False)
     agent_input["question"]["text"] = "A ventoinha aciona com quantos graus?"
@@ -933,6 +969,9 @@ def test_high_confidence_insufficient_hub_answer_is_enriched_by_mandatory_web():
         })
 
     web_call.assert_called_once()
+    assert isolated_hub_internal_sources == [
+        "get_mercado_livre_listing", "get_product_data", "get_bling_product",
+    ]
     assert "93" in result.answer
     research_step = next(
         stage for stage in client.context_pipeline
