@@ -54,12 +54,17 @@ def capture_generation_materialization(root: Path) -> dict[str, Any]:
         raise ContextHubValidationError("Snapshot materializado indisponivel.") from error
     for entry in entries:
         _assert_path_chain_safe(entry, root)
+        relative = entry.relative_to(root)
         if _is_link_or_junction(entry):
             raise ContextHubValidationError("Snapshot materializado contem redirecionamento.")
+        if relative.parts and relative.parts[0] == "Lojas":
+            # Store/SKU notes have independent active pointers and content
+            # hashes; they are not part of the global generation attestation.
+            continue
         if entry.is_dir():
             continue
         digest, size = _stable_file_hash(entry)
-        manifest.append([entry.relative_to(root).as_posix(), digest, size])
+        manifest.append([relative.as_posix(), digest, size])
     rendered = _json_canonical(manifest)
     return {
         "root_hash": hashlib.sha256(rendered.encode("utf-8")).hexdigest(),

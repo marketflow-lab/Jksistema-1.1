@@ -2,8 +2,8 @@
   "files": [
     {
       "path": "docs/knowledge/README.md",
-      "sha256": "6c62535b44eeab2f0da61d6cc2660644ff080087f76b13282a6477a747e849b0",
-      "size": 1657
+      "sha256": "687b5b09f51f73dd7979e2bf185d9bc41390a13bdd4788846b6fd73d36515fbf",
+      "size": 1838
     },
     {
       "path": "docs/knowledge/curation-governance-v2.md",
@@ -31,6 +31,11 @@
       "size": 3011
     },
     {
+      "path": "docs/knowledge/store-sku-knowledge-v18.md",
+      "sha256": "9fce7d55adf514c1e62d882d0e3b6537544de3651f322eeb79ce8ef2c1b204df",
+      "size": 4636
+    },
+    {
       "path": "docs/knowledge/templates/curated-note.md",
       "sha256": "01c890f2c0f2536c834ebbb7d7511f1baac47b599d12612524650c5a58c35ffc",
       "size": 512
@@ -42,8 +47,8 @@
     },
     {
       "path": "docs/knowledge/vault-structure.md",
-      "sha256": "6a72db55883709312dd7e4123f2fe1c2c0924b073c3829f81df27ec1ec67f071",
-      "size": 1254
+      "sha256": "a627d1409b907233accfeeae837e755ea568a9f3220b51700d3a9388bd2492d9",
+      "size": 1796
     },
     {
       "path": "docs/knowledge/whatsapp-ai-context-policy.md",

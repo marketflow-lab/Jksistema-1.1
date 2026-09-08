@@ -104,8 +104,8 @@ def test_candidate_or_conflict_research_fact_keeps_healthy_thread_continuity():
         assert result == ("thread-current", "", True)
 
 
-def test_v17_contract_changes_prompt_hash_and_keeps_public_schema():
-    assert orchestrator.PROMPT_VERSION == "jk_ml_customer_reply_codex_v17"
+def test_v18_contract_changes_prompt_hash_and_keeps_public_schema():
+    assert orchestrator.PROMPT_VERSION == "jk_ml_customer_reply_codex_v18"
     assert orchestrator.SCHEMA_VERSION == "5.2"
     assert orchestrator.PRODUCT_EVIDENCE_POLICY == "jk_product_evidence_v2"
     assert orchestrator.TECHNICAL_EVIDENCE_GRAPH_VERSION == "jk_ml_evidence_graph_v2"

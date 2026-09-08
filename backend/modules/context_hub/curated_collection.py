@@ -104,8 +104,17 @@ def _collect_curated_notes(paths: ContextHubPaths) -> tuple[list[dict[str, Any]]
                 "content": _dump_frontmatter({key: metadata[key] for key in FRONTMATTER_REQUIRED} | {
                     "title": str(metadata.get("title") or candidate.stem),
                     "module": str(metadata.get("module") or "curadoria"),
-                    "context_schema": CURATION_SCHEMA_VERSION,
+                    "context_schema": int(metadata.get("context_schema") or 2),
                     "authority": "advisory",
+                    **{
+                        key: metadata[key]
+                        for key in (
+                            "scope_kind", "store_ref", "seller_id", "site_id", "sku",
+                            "knowledge_role", "content_hash", "created_by", "reviewed_by",
+                            "approved_by",
+                        )
+                        if key in metadata
+                    },
                 }, body),
                 "body": body,
                 # Internal publication attestation.  This value is persisted

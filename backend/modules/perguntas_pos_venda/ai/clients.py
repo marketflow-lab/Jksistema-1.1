@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-
 from ml_questions_gemini.prompt_builder import _untrusted_json_block
+from backend.modules.context_hub.store_sku_contracts import canonical_json
 
 from .runtime import (
     AIAnswer,
@@ -85,7 +85,7 @@ from .sku_question_context import (
 )
 from .sku_question_prompts import (
     bounded_stage_prompt,
-    record_model_prompt_metrics,
+    record_stage_transport,
     stage_prompt_limit,
 )
 
@@ -134,6 +134,33 @@ class LegacyVertexBindings:
     context_hub: Any = _perguntas_ia_context_hub_tool
     memory_prompt: Any = _perguntas_ia_memoria_bloco_prompt
     question_web: Any = _ia_agent_perguntas_web_tool
+
+
+def _v18_effective_tool_results(
+    packet: dict[str, Any],
+    tool_results: Optional[list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    internal_replaced = {
+        "sku_question_context", "store_sku_question_context",
+        "context_hub_search", "context_hub_store_sku_read",
+        "get_mercado_livre_listing", "get_product_data",
+        "get_bling_product", "local_memory_and_rules",
+    }
+    selected = [packet_tool_result(packet)]
+    seen: set[str] = set()
+    for tool_result in list(tool_results or []):
+        if not isinstance(tool_result, dict):
+            continue
+        function_name = str(tool_result.get("function") or "").strip()
+        if not function_name or function_name in internal_replaced:
+            continue
+        fingerprint = canonical_json(tool_result)
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        selected.append(tool_result)
+    return selected
+
 
 class _PerguntasVertexGeminiV2Client:
     def __init__(
@@ -242,20 +269,20 @@ class _PerguntasVertexGeminiV2Client:
                 + _untrusted_compact_block("historico_pesquisa_nao_confiavel", research_history[-6:], 7000)
             )
         effective_tool_results = list(tool_results or [])
-        prompt_was_capped = False
         if not fluxo_pos_venda and self.sku_question_context:
-            prompt, prompt_was_capped = bounded_stage_prompt(
+            prompt, _ = bounded_stage_prompt(
                 prompt,
                 self.sku_question_context,
                 stage=stage,
                 limit=stage_prompt_limit(self.adaptive_route),
             )
-            effective_tool_results = [packet_tool_result(self.sku_question_context)]
-            record_model_prompt_metrics(
-                self,
+            effective_tool_results = _v18_effective_tool_results(
+                self.sku_question_context, tool_results,
+            )
+            record_stage_transport(
+                self, prompt, effective_tool_results,
                 stage=stage,
-                prompt_chars=len(prompt),
-                capped=prompt_was_capped,
+                limit=stage_prompt_limit(self.adaptive_route),
             )
         payload = IAChatRequest(
             message=prompt,
@@ -448,7 +475,9 @@ class _PerguntasVertexGeminiV2Client:
         critic_internal_sources = list(self.evidence_records[:20])
         sku_question_context = getattr(self, "sku_question_context", {})
         if sku_question_context:
-            research = {"sku_question_context": copy.deepcopy(sku_question_context)}
+            # The exact immutable envelope is attached once as a typed tool
+            # result by _provider_call; do not duplicate or compact it here.
+            research = {}
             critic_internal_sources = []
         subquestions = (
             list(self.agent_input.get("subquestions") or [])[:8]

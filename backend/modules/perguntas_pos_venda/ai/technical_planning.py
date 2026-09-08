@@ -13,6 +13,9 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ml_questions_gemini.prompt_builder import _untrusted_json_block
+from backend.modules.context_hub.store_sku_contracts import (
+    STORE_SKU_QUESTION_CONTEXT_SCHEMA,
+)
 
 from backend.services.vin_transient import contains_vin_like_identifier, sanitize_vin_like_text
 
@@ -550,6 +553,14 @@ def technical_evidence_graph_prompt(
         if previous is not None
         else ""
     )
+    integral_v18 = _text(context.get("schema"), 100) == STORE_SKU_QUESTION_CONTEXT_SCHEMA
+    material_block = (
+        "\n\nUse integralmente o resultado tipado store_sku_question_context desta etapa; "
+        "ele e o envelope imutavel da loja/SKU."
+        if integral_v18 else
+        "\n\nMATERIAL_DE_EVIDENCIA_NAO_CONFIAVEL:\n"
+        + _untrusted_json_block("material_grafo", _safe_prompt_value(dict(context)))
+    )
     return (
         "ETAPA INTERNA DE GRAFO DE EVIDENCIAS TECNICAS. Associe entidades, codigos, afirmacoes, passagens e relacoes "
         "direcionais antes de decidir a resposta. Preserve a direcao exata de mounted_on, installed_in, part_of, "
@@ -559,8 +570,7 @@ def technical_evidence_graph_prompt(
         f"Responda exclusivamente no JSON fechado {TECHNICAL_EVIDENCE_GRAPH_SCHEMA} com entities, claims, passages, "
         "relations e unresolved_requirement_ids.\n\nPLANO_TECNICO_NAO_CONFIAVEL:\n"
         + _untrusted_json_block("plano_grafo", _safe_prompt_value(plan.to_dict()))
-        + "\n\nMATERIAL_DE_EVIDENCIA_NAO_CONFIAVEL:\n"
-        + _untrusted_json_block("material_grafo", _safe_prompt_value(dict(context)))
+        + material_block
         + previous_block
     )
 

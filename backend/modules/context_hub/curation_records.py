@@ -16,12 +16,19 @@ from typing import (
 
 
 from backend.modules.context_hub.contracts import (
+    CURATION_SCHEMA_VERSION,
     CURATION_DASHBOARD_RELATIVE_PATH,
     ContextHubError,
     ContextHubNotFoundError,
     ContextHubPaths,
     ContextHubValidationError,
     FRONTMATTER_REQUIRED,
+)
+
+from backend.modules.context_hub.store_sku_contracts import (
+    STORE_SKU_PUBLIC_SURFACE,
+    StoreSkuScope,
+    normalize_sku,
 )
 
 from backend.modules.context_hub.dlp import (
@@ -119,7 +126,7 @@ def _validate_curated_content(
 ) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     schema = metadata.get("context_schema", metadata.get("schema_version", 1))
-    if schema not in {1, 2, "1", "2"}:
+    if schema not in {1, 2, 3, "1", "2", "3"}:
         findings.append(_finding("curated_schema_unsupported", category="curation", source_ref=source_ref))
     missing = [field for field in FRONTMATTER_REQUIRED if field not in metadata]
     if missing:
@@ -133,6 +140,46 @@ def _validate_curated_content(
         )
     if metadata.get("managed") not in {False, "false", 0}:
         findings.append(_finding("curated_note_managed_invalid", category="curation", source_ref=source_ref))
+    try:
+        schema_number = int(schema)
+    except (TypeError, ValueError):
+        schema_number = 0
+    if schema_number == CURATION_SCHEMA_VERSION:
+        scoped_required = (
+            "scope_kind", "store_ref", "seller_id", "site_id", "sku",
+            "knowledge_role", "content_hash",
+        )
+        if any(field not in metadata for field in scoped_required):
+            findings.append(
+                _finding("curated_store_scope_incomplete", category="curation", source_ref=source_ref)
+            )
+        else:
+            scope_kind = str(metadata.get("scope_kind") or "").strip()
+            role = str(metadata.get("knowledge_role") or "").strip()
+            sku = str(metadata.get("sku") or "").strip()
+            try:
+                StoreSkuScope.from_mapping(
+                    metadata,
+                    tenant_scope=metadata.get("tenant_scope"),
+                )
+                if scope_kind not in {"store", "store_sku"}:
+                    raise ValueError("scope_kind")
+                if role not in {"store_guidance", "sku_guidance"}:
+                    raise ValueError("knowledge_role")
+                if scope_kind == "store_sku":
+                    normalize_sku(sku)
+                    if role != "sku_guidance":
+                        raise ValueError("knowledge_role")
+                elif sku or role != "store_guidance":
+                    raise ValueError("store_guidance")
+                if str(metadata.get("surface") or "") != STORE_SKU_PUBLIC_SURFACE:
+                    raise ValueError("surface")
+                if not re.fullmatch(r"[a-f0-9]{64}", str(metadata.get("content_hash") or "")):
+                    raise ValueError("content_hash")
+            except (ContextHubValidationError, ValueError):
+                findings.append(
+                    _finding("curated_store_scope_invalid", category="curation", source_ref=source_ref)
+                )
     doc_id = _safe_identifier(metadata.get("id"), fallback="")
     if not isinstance(metadata.get("id"), str) or not doc_id:
         findings.append(_finding("curated_id_invalid", category="curation", source_ref=source_ref))

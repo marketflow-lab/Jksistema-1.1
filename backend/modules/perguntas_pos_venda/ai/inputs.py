@@ -78,8 +78,8 @@ def _perguntas_ia_research_input(agent_input: Optional[dict[str, Any]]) -> dict[
     }
     sku_packet = projected.get("sku_question_context")
     if isinstance(sku_packet, dict):
-        # V17 transports the bounded, SKU-bound packet instead of the full
-        # listing/context to research tools. Keep only lookup identity fields.
+        # V18 transports the immutable, store/SKU-bound integral envelope.
+        # Research tools still receive only the lookup identity fields.
         item = projected.get("item") if isinstance(projected.get("item"), dict) else {}
         projected["item"] = {
             key: item.get(key)
@@ -676,13 +676,18 @@ def _perguntas_ia_agent_input(
     )
     prompt_loader = training_prompt_fn or _ia_treinamento_ppv_bloco_prompt
     metadata_loader = legacy_metadata_fn or _perguntas_ia_legacy_guidance_metadata
-    legacy_available, legacy_hash = metadata_loader(
-        client_id,
-        loja,
-        contexto_dict,
-        tipo_treinamento,
-        training_prompt_fn=prompt_loader,
-    )
+    if tipo_treinamento == "pos_venda":
+        legacy_available, legacy_hash = metadata_loader(
+            client_id,
+            loja,
+            contexto_dict,
+            tipo_treinamento,
+            training_prompt_fn=prompt_loader,
+        )
+    else:
+        # V18 retires the legacy JSON from public-question responses. It is
+        # read only by the explicit migration service.
+        legacy_available, legacy_hash = False, ""
     app_guidance = _PERGUNTAS_IA_RESPONSE_POLICY[tipo_treinamento]
     profile_context = _perguntas_ia_contexto_treinamento(loja, contexto_dict, tipo_treinamento)
     profile_product = dict(profile_context.get("produto") or {})
@@ -690,8 +695,15 @@ def _perguntas_ia_agent_input(
         if not profile_product.get(key) and (item or {}).get(key):
             profile_product[key] = (item or {}).get(key)
     profile_context["produto"] = profile_product
-    profile_resolver = profile_resolver_fn or _ia_treinamento_ppv_profile_v2_resolver
-    seller_profile = profile_resolver(client_id, loja, profile_context)
+    if tipo_treinamento == "pos_venda":
+        profile_resolver = profile_resolver_fn or _ia_treinamento_ppv_profile_v2_resolver
+        seller_profile = profile_resolver(client_id, loja, profile_context)
+    else:
+        seller_profile = {
+            "schema": "jk_seller_behavior_profile_v2",
+            "source": "context_hub_store_sku_v18_pending",
+            "legacy_json_used": False,
+        }
     return _build_agent_payload(
         client_id, loja, pergunta, item, contexto_dict, prompt, intencao_atendimento,
         fluxo_intencao, classification_input, allowed_tools, usar_busca_web,

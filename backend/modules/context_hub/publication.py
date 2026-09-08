@@ -78,6 +78,9 @@ from backend.modules.context_hub.settings import (
 from backend.modules.context_hub.storage import (
     _connect,
 )
+from backend.modules.context_hub.store_sku_repository_db import (
+    materialize_active_store_sku_generated,
+)
 
 
 def _copy_publish_candidate(paths: ContextHubPaths, generation_id: str) -> tuple[Path, Path]:
@@ -90,6 +93,7 @@ def _copy_publish_candidate(paths: ContextHubPaths, generation_id: str) -> tuple
     _safe_remove_tree(temporary, paths.vault_dir)
     _safe_remove_tree(backup, paths.vault_dir)
     shutil.copytree(snapshot, temporary, copy_function=shutil.copy2)
+    materialize_active_store_sku_generated(paths, temporary)
     return temporary, backup
 
 

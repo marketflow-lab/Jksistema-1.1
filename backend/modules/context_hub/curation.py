@@ -107,6 +107,13 @@ def _safe_actor(actor: object) -> str:
     return value
 
 
+def _opaque_actor(actor: object) -> str:
+    """Return a stable identifier that never persists the schema-3 user's identity."""
+
+    value = str(actor or "admin").strip() or "admin"
+    return "actor-" + _sha256_text(value)[:16]
+
+
 def create_curated_note(
     client_id: object,
     *,
@@ -147,7 +154,9 @@ def create_curated_note(
         "source_refs": [f"80_Curadoria/{relative_path}"],
         "source_hash": _sha256_text(safe_body),
         "generated_at": now,
-        "context_schema": CURATION_SCHEMA_VERSION,
+        # Generic curation remains readable under the legacy contract. Schema
+        # 3 is reserved for the closed store/SKU paths created by the V18 API.
+        "context_schema": 2,
         "title": safe_title,
         "module": "curadoria",
         "authority": "advisory",
@@ -189,6 +198,13 @@ def _curation_transition(
     safe_actor = _safe_actor(actor)
     with _tenant_thread_lock(paths), _exclusive_file_lock(paths):
         _, record = _find_curated_note(paths, note_id)
+        metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+        try:
+            context_schema = int(metadata.get("context_schema") or 0)
+        except (TypeError, ValueError):
+            context_schema = 0
+        if context_schema == CURATION_SCHEMA_VERSION:
+            safe_actor = _opaque_actor(actor)
         with _connect(paths) as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = _ensure_curation_row(

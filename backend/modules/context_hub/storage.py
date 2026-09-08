@@ -274,6 +274,99 @@ CREATE TABLE IF NOT EXISTS context_hub_generation_materialization (
 """
 
 
+_STORE_SKU_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS context_hub_store_sku_generations (
+    generation_id TEXT PRIMARY KEY,
+    store_ref TEXT NOT NULL,
+    store_name TEXT NOT NULL DEFAULT '',
+    seller_id TEXT NOT NULL,
+    site_id TEXT NOT NULL,
+    surface TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN (
+        'staging','active','superseded','failed','rolled_back'
+    )),
+    source_hash TEXT NOT NULL CHECK(length(source_hash) = 64),
+    migration_id TEXT NOT NULL DEFAULT '',
+    stats_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    published_at TEXT,
+    superseded_at TEXT,
+    rolled_back_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_context_hub_store_sku_generations_scope
+    ON context_hub_store_sku_generations(
+        store_ref, seller_id, site_id, surface, created_at DESC
+    );
+CREATE INDEX IF NOT EXISTS idx_context_hub_store_sku_generations_source
+    ON context_hub_store_sku_generations(
+        store_ref, seller_id, site_id, surface, source_hash
+    );
+CREATE TABLE IF NOT EXISTS context_hub_store_sku_active_generations (
+    store_ref TEXT NOT NULL,
+    seller_id TEXT NOT NULL,
+    site_id TEXT NOT NULL,
+    surface TEXT NOT NULL,
+    generation_id TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (store_ref, seller_id, site_id, surface),
+    FOREIGN KEY (generation_id)
+        REFERENCES context_hub_store_sku_generations(generation_id)
+);
+CREATE TABLE IF NOT EXISTS context_hub_store_sku_documents (
+    generation_id TEXT NOT NULL,
+    document_id TEXT NOT NULL,
+    knowledge_role TEXT NOT NULL CHECK(knowledge_role IN (
+        'canonical_sku','store_guidance','sku_guidance'
+    )),
+    sku TEXT NOT NULL DEFAULT '',
+    content_json TEXT NOT NULL,
+    content_hash TEXT NOT NULL CHECK(length(content_hash) = 64),
+    source_hash TEXT NOT NULL CHECK(length(source_hash) = 64),
+    approval_state TEXT NOT NULL CHECK(approval_state = 'approved'),
+    approved_by TEXT NOT NULL DEFAULT '',
+    approved_at TEXT NOT NULL,
+    PRIMARY KEY (generation_id, document_id),
+    UNIQUE (generation_id, knowledge_role, sku),
+    FOREIGN KEY (generation_id)
+        REFERENCES context_hub_store_sku_generations(generation_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_context_hub_store_sku_documents_lookup
+    ON context_hub_store_sku_documents(generation_id, sku, knowledge_role);
+CREATE TABLE IF NOT EXISTS context_hub_store_sku_bindings (
+    generation_id TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    variation_id TEXT NOT NULL DEFAULT '',
+    sku TEXT NOT NULL,
+    binding_hash TEXT NOT NULL CHECK(length(binding_hash) = 64),
+    PRIMARY KEY (generation_id, item_id, variation_id),
+    FOREIGN KEY (generation_id)
+        REFERENCES context_hub_store_sku_generations(generation_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_context_hub_store_sku_bindings_sku
+    ON context_hub_store_sku_bindings(generation_id, sku, item_id, variation_id);
+CREATE TABLE IF NOT EXISTS context_hub_store_sku_migrations (
+    migration_id TEXT PRIMARY KEY,
+    contract_version TEXT NOT NULL,
+    store_ref TEXT NOT NULL,
+    seller_id TEXT NOT NULL,
+    site_id TEXT NOT NULL,
+    source_hash TEXT NOT NULL CHECK(length(source_hash) = 64),
+    status TEXT NOT NULL CHECK(status IN (
+        'preview','applying','applied','failed','rolled_back'
+    )),
+    generation_id TEXT NOT NULL DEFAULT '',
+    report_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_context_hub_store_sku_migrations_scope
+    ON context_hub_store_sku_migrations(
+        store_ref, seller_id, site_id, created_at DESC
+    );
+"""
+
+
 def _migrate_product_evidence_schema(connection: sqlite3.Connection) -> None:
     columns = {
         str(row[1])
@@ -325,6 +418,7 @@ def _migrate_product_evidence_sync_schema(connection: sqlite3.Connection) -> Non
 def _create_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(_CORE_SCHEMA_SQL)
     connection.executescript(_PRODUCT_EVIDENCE_SCHEMA_SQL)
+    connection.executescript(_STORE_SKU_SCHEMA_SQL)
     _migrate_product_evidence_schema(connection)
     _migrate_product_evidence_sync_schema(connection)
     try:
