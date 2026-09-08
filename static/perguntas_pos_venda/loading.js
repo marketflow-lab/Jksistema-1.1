@@ -274,7 +274,7 @@
         const variationId = question.variation_id || question.item_variation_id;
         const sku = variationId
             ? (variation ? variation.seller_custom_field || attrs.find(a => a.id === 'SELLER_SKU')?.value_name || '' : question.item_sku || '')
-            : item.item_sku || item.seller_custom_field || attrs.find(a => a.id === 'SELLER_SKU')?.value_name || ''; 
+            : item.item_sku || item.seller_custom_field || attrs.find(a => a.id === 'SELLER_SKU')?.value_name || '';
         return { item_title: item.title || item.item_title, item_thumbnail: item.secure_thumbnail || item.thumbnail || item.item_thumbnail,
             item_permalink: item.permalink || item.item_permalink, item_sku: sku, _itemReady: true };
     }
