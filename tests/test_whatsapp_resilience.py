@@ -256,7 +256,13 @@ def test_wait_notices_occur_only_at_15_45_105_and_then_every_60(monkeypatch):
         "_post_proactive",
         lambda _config, payload: messages.append(payload["text"]) or {"success": True, "status": "sent"},
     )
-    monkeypatch.setattr(whatsapp_bridge, "_save_pending", lambda _state, _message_id, pending: saved.append(dict(pending)))
+    monkeypatch.setattr(
+        whatsapp_bridge,
+        "_save_pending",
+        lambda _state, message_id, value: (
+            saved.append(dict(value)) if message_id == "wamid.1" else None
+        ),
+    )
     monkeypatch.setattr(whatsapp_bridge, "_update_pending_codex_tasks", lambda *_args, **_kwargs: None)
     pending = {"created_at_epoch": 1000.0, "subject_id": "subject", "job_group_id": "job"}
     task = {"task_id": "task", "status": "running"}
