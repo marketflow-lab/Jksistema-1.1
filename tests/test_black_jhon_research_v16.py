@@ -103,6 +103,14 @@ def test_v16_all_nonregulated_public_categories_plan_vision_and_resolve(
         agent_input={
             "question": {"text": "Pergunta publica de pre-venda"},
             "intent": {"categoria": category, "categorias": [category]},
+            "product_evidence_identity": {
+                "store_ref": "store-fixture",
+                "seller_id": "seller-fixture",
+                "site_id": "MLB",
+                "sku": "SKU-FIXTURE",
+                "item_id": "MLB-FIXTURE",
+            },
+            "item": {"id": "MLB-FIXTURE", "seller_sku": "SKU-FIXTURE"},
         },
         context_pipeline=[],
         compatibility_analysis={"decision": "insufficient"},
