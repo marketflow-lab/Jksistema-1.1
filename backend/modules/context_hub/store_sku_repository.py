@@ -297,6 +297,8 @@ def create_store_guidance_draft(
                 "SKU nao pertence a geracao ativa exata desta loja."
             )
     value = dict(guidance) if isinstance(guidance, Mapping) else {}
+    from .guidance_examples import validate_guidance_examples
+    validate_guidance_examples(value, normalized_sku)
     _validate_no_dlp(value, source_ref="store_guidance_draft")
     validate_integral_size(
         value,
@@ -512,6 +514,8 @@ def rollback_store_sku_generation(
                     connection.rollback()
                     return {"success": True, "changed": False, "generation_id": target}
                 canonical, general, sku_guidance = _generation_knowledge(connection, target)
+                # A rollback cannot reintroduce SKU examples into store-wide guidance.
+                _validate_documents(canonical, general, sku_guidance)
                 effective_scope = StoreSkuScope.from_mapping(
                     {**scope.as_dict(), "store_name": str(row["store_name"] or scope.store_name)},
                     tenant_scope=scope.tenant_scope,

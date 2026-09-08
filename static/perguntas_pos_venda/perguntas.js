@@ -722,34 +722,42 @@ async function salvarTreinamentoAtendimentoPergunta(pergunta, opcoes = {}) {
     if (!lojaReal) {
         throw new Error('Não foi possível identificar a loja real desta pergunta para salvar o treinamento.');
     }
+    const candidatas = lojasMercadoLivreConectadas().filter(item =>
+        pergunta?.store_id ? String(item.store_id || '') === String(pergunta.store_id) : String(item.nome || '') === lojaReal);
+    const storeId = candidatas.length === 1 ? String(candidatas[0].store_id || '').trim() : '';
+    if (!storeId) throw new Error('Não foi possível comprovar a loja exata desta pergunta para salvar o treinamento.');
     const sku = skuRealPergunta(pergunta);
     if (!sku) {
-        throw new Error('Não foi possível identificar o SKU real desta pergunta para salvar o treinamento.');
+        throw new Error('Não foi possível identificar o SKU real desta pergunta. Identifique o SKU antes de salvar o modelo.');
     }
     const params = new URLSearchParams({ loja: lojaReal });
+    params.set('store_id', storeId);
     const responseAtual = await fetch(`/api/mercadolivre/ia-treinamento?${params.toString()}`, {
         headers: obterAuthHeaders(),
         cache: 'no-store'
     });
     const treinamentoAtual = await responseAtual.json().catch(() => ({}));
-    if (!responseAtual.ok) throw new Error(treinamentoAtual.detail || 'Erro ao carregar o treinamento da loja da pergunta.');
+    if (!responseAtual.ok) throw new Error(erroRespostaTreinamento(treinamentoAtual, 'Erro ao carregar o treinamento da loja da pergunta.'));
+    if (treinamentoAtual.store_id !== storeId || !treinamentoAtual.editorial?.revision) {
+        throw new Error('Não foi possível confirmar a revisão das orientações da loja da pergunta.');
+    }
 
-    const exemplos = normalizarExemplosTreinamento(((treinamentoAtual.exemplos || {})[tipo]) || []);
+    const exemplos = exemplosDoSkuTreinamento(((treinamentoAtual.exemplos || {})[tipo]) || [], sku);
     if (opcoes.exemplo) {
         exemplos.unshift({ ...opcoes.exemplo, sku });
     }
     const payload = {
         tipo,
         loja: lojaReal,
-        orientacoes: treinamentoAtual.orientacoes_perguntas || treinamentoAtual.orientacoes || '',
-        contexto_loja: treinamentoAtual.contexto_loja || '',
-        compatibilidade_autopecas: treinamentoAtual.compatibilidade_autopecas || '',
-        proibicoes: treinamentoAtual.proibicoes || '',
-        exemplos: normalizarExemplosTreinamento(exemplos).slice(0, 60)
+        store_id: storeId,
+        edit_target: 'sku',
+        sku,
+        expected_revision: treinamentoAtual.editorial.revision,
+        ...(opcoes.exemplo ? { exemplos } : {})
     };
     if (sku && Object.prototype.hasOwnProperty.call(opcoes, 'notasSku')) {
         payload.sku = sku;
-        payload.notas_sku = String(opcoes.notasSku || '').trim();
+        payload.notas_sku = String(opcoes.notasSku || '');
     }
     const response = await fetch('/api/mercadolivre/ia-treinamento', {
         method: 'POST',
@@ -760,24 +768,10 @@ async function salvarTreinamentoAtendimentoPergunta(pergunta, opcoes = {}) {
         body: JSON.stringify(payload)
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.detail || 'Erro ao salvar treinamento da IA.');
-    if (String(lojaEscopoTreinamento() || '').trim() === lojaReal) {
-        state.treinamentoCarregado = true;
-        state.treinamentoDados[tipo] = {
-            orientacoes: payload.orientacoes,
-            updated_at: data.updated_at || new Date().toISOString(),
-            exemplos: normalizarExemplosTreinamento(((data.exemplos || {})[tipo]) || payload.exemplos)
-        };
-        state.treinamentoContexto = {
-            contexto_loja: typeof data.contexto_loja === 'string' ? data.contexto_loja : payload.contexto_loja,
-            compatibilidade_autopecas: typeof data.compatibilidade_autopecas === 'string' ? data.compatibilidade_autopecas : payload.compatibilidade_autopecas,
-            proibicoes: typeof data.proibicoes === 'string' ? data.proibicoes : payload.proibicoes,
-            notas_sku: normalizarNotasTreinamento(data.notas_sku || treinamentoAtual.notas_sku)
-        };
-        atualizarIndicadorPerfilTreinamento(data);
-        renderizarNotasSkuTreinamento();
-        renderizarExemplosTreinamento();
-        atualizarStatusTreinamentoTipo();
+    if (!response.ok) throw new Error(erroRespostaTreinamento(data, 'Erro ao salvar treinamento da IA.'));
+    if (String(lojaEscopoTreinamento() || '').trim() === storeId) {
+        guardarEdicaoTreinamento();
+        receberSnapshotTreinamento(data);
     }
     return data;
 }

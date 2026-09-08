@@ -128,13 +128,24 @@ def _resolver_context_hub_scope(client_id: str, loja: str, store_id: str) -> dic
 
 def _public_guidance_payload(req: IATreinamentoPerguntasPosVendaRequest) -> dict:
     payload = {
-        "orientacoes_perguntas": str(req.orientacoes or ""),
-        "contexto_loja": str(req.contexto_loja or ""),
-        "compatibilidade_autopecas": str(req.compatibilidade_autopecas or ""),
-        "proibicoes": str(req.proibicoes or ""),
-        "exemplos_perguntas": list(req.exemplos or []),
+        target: str(getattr(req, source) or "")
+        for source, target in (
+            ("orientacoes", "orientacoes_perguntas"), ("contexto_loja", "contexto_loja"),
+            ("compatibilidade_autopecas", "compatibilidade_autopecas"), ("proibicoes", "proibicoes"),
+        ) if source in req.model_fields_set
     }
+    if req.exemplos is not None:
+        payload["exemplos_perguntas"] = _examples_for_target(req.exemplos, "")
     return payload
+
+
+def _examples_for_target(examples: list[dict], sku: str) -> list[dict]:
+    if any(str(example.get("sku") or "").strip() != sku for example in examples):
+        raise HTTPException(status_code=422, detail={
+            "code": "example_scope_mismatch",
+            "message": "Salve cada modelo na loja e no SKU exatos; modelos gerais nao podem conter SKU.",
+        })
+    return list(examples)
 
 
 def _request_actor(request: Request) -> str:
@@ -182,9 +193,19 @@ def _editor_response(data: dict, editor: dict, loja: str, store_id: str) -> dict
     data["orientacoes_perguntas"] = data["orientacoes"]
     for field in ("contexto_loja", "compatibilidade_autopecas", "proibicoes"):
         data[field] = str(general.get(field) or "")
+    sku_examples = [
+        {**example, "sku": str(sku)}
+        for sku, value in (editor.get("sku_guidance") or {}).items()
+        if isinstance(value, dict)
+        for example in (value.get("exemplos_perguntas") or [])
+        if isinstance(example, dict)
+    ]
     data["exemplos"] = {
         **(data.get("exemplos") if isinstance(data.get("exemplos"), dict) else {}),
-        "perguntas_anuncio": list(general.get("exemplos_perguntas") or []),
+        "perguntas_anuncio": [
+            example for example in (general.get("exemplos_perguntas") or [])
+            if isinstance(example, dict) and not str(example.get("sku") or "").strip()
+        ] + sku_examples,
     }
     data["notas_sku"] = {
         str(sku): str(value.get("notas", value.get("texto")) or "")
@@ -232,10 +253,14 @@ def ml_ia_treinamento_salvar(
                     "code": "sku_store_scope_unresolved",
                     "message": "O SKU nao pertence ao cadastro desta loja.",
                 })
-        guidance = (
-            {"notas": str(req.notas_sku or "")} if sku
-            else _public_guidance_payload(req)
-        )
+        if sku:
+            guidance = {}
+            if "notas_sku" in req.model_fields_set:
+                guidance["notas"] = str(req.notas_sku or "")
+            if req.exemplos is not None:
+                guidance["exemplos_perguntas"] = _examples_for_target(req.exemplos, sku)
+        else:
+            guidance = _public_guidance_payload(req)
         try:
             editor = save_store_guidance_editor(
                 client_id, scope, guidance=guidance, sku=sku,

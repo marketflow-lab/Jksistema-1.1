@@ -19,6 +19,7 @@ from backend.modules.context_hub.contracts import ContextHubConflictError, Conte
 from backend.modules.context_hub.curation_records import _ensure_curation_row, _read_curated_note, _validate_curated_content
 from backend.modules.context_hub.filesystem import _write_text_atomic
 from backend.modules.context_hub.findings import _has_blocker
+from backend.modules.context_hub.guidance_examples import validate_guidance_examples
 from backend.modules.context_hub.locking import _exclusive_file_lock, _tenant_thread_lock
 from backend.modules.context_hub.metadata import _dump_frontmatter, _parse_frontmatter
 from backend.modules.context_hub.path_safety import _assert_path_chain_safe
@@ -213,6 +214,7 @@ def _updated_content(raw: str, value: Mapping[str, Any], sku: str) -> str:
     blocks = list(_JSON_BLOCK.finditer(body))
     if blocks:
         merged = {**_read_payload(body, sku), **value}
+        validate_guidance_examples(merged, sku)
         block = blocks[0]
         body = body[:block.start(1)] + json.dumps(merged, ensure_ascii=False, sort_keys=True, indent=2) + body[block.end(1):]
     else:
@@ -252,6 +254,7 @@ def save_store_guidance_editor(
     if not isinstance(guidance, Mapping):
         raise ContextHubValidationError("Orientacoes devem ser um objeto.")
     value = dict(guidance)
+    validate_guidance_examples(value, normalized_sku)
     _validate_no_dlp(value, source_ref="store_guidance_editor")
     validate_integral_size(value, APPLICABLE_GUIDANCE_MAX_CHARS, code="applicable_guidance_too_large")
     with _tenant_thread_lock(paths), _exclusive_file_lock(paths):

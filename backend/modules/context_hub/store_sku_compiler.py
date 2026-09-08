@@ -139,23 +139,20 @@ def load_legacy_public_guidance(
         raise ContextHubValidationError("JSON legado de orientacoes invalido.") from exc
     if not isinstance(payload, dict):
         raise ContextHubValidationError("JSON legado de orientacoes invalido.")
-    store_layer: dict[str, Any] = {}
     per_store = payload.get("por_loja") if isinstance(payload.get("por_loja"), Mapping) else {}
     exact = per_store.get(f"store_id:{store_ref}") if isinstance(per_store, Mapping) else None
-    if isinstance(exact, Mapping):
-        store_layer = dict(exact)
+    # The tenant-level legacy profile has no proven store ownership. A matching
+    # SKU, store name or signature in an example cannot establish that scope.
+    if not isinstance(exact, Mapping):
+        return {}, {}, {}
+    store_layer = dict(exact)
 
     def choose(field: str, fallback: str = "") -> Any:
-        if field in store_layer:
-            return store_layer.get(field)
-        return payload.get(field, fallback)
+        return store_layer.get(field, fallback)
 
     examples = choose("exemplos", {})
-    public_examples = (
-        list(examples.get("perguntas_anuncio") or [])
-        if isinstance(examples, Mapping)
-        else []
-    )
+    public_examples = examples.get("perguntas_anuncio") if isinstance(examples, Mapping) else []
+    public_examples = public_examples if isinstance(public_examples, list) else []
     guidance = {
         "orientacoes_perguntas": str(
             choose("orientacoes_perguntas", choose("orientacoes", "")) or ""
@@ -165,13 +162,11 @@ def load_legacy_public_guidance(
             choose("compatibilidade_autopecas", "") or ""
         ).strip(),
         "proibicoes": str(choose("proibicoes", "") or "").strip(),
-        "exemplos_perguntas": public_examples,
     }
     guidance = {key: value for key, value in guidance.items() if value not in ("", [], {})}
     raw_notes: dict[str, Any] = {}
-    for source in (payload.get("notas_sku"), store_layer.get("notas_sku")):
-        if not isinstance(source, Mapping):
-            continue
+    source = store_layer.get("notas_sku")
+    if isinstance(source, Mapping):
         for raw_sku, raw_note in source.items():
             try:
                 raw_notes[normalize_sku(raw_sku)] = raw_note
@@ -195,6 +190,32 @@ def load_legacy_public_guidance(
             quarantine[sku] = note
         else:
             notes[sku] = note
+    general_examples: list[dict[str, Any]] = []
+    for raw_example in public_examples:
+        if not isinstance(raw_example, Mapping):
+            continue
+        example = dict(raw_example)
+        raw_sku = example.get("sku")
+        if raw_sku is None or (isinstance(raw_sku, str) and not raw_sku.strip()):
+            general_examples.append(example)
+            continue
+        # Malformed SKU identity must not turn a product example into general
+        # guidance, where it would become applicable to every product.
+        if isinstance(raw_sku, bool) or not isinstance(raw_sku, (str, int)):
+            continue
+        try:
+            sku = normalize_sku(raw_sku)
+        except ContextHubValidationError:
+            continue
+        target = quarantine if sku == "1599" else notes
+        note = target.setdefault(sku, {})
+        existing = note.get("exemplos_perguntas")
+        sku_examples = list(existing) if isinstance(existing, list) else []
+        if example not in sku_examples:
+            sku_examples.append(example)
+        note["exemplos_perguntas"] = sku_examples
+    if general_examples:
+        guidance["exemplos_perguntas"] = general_examples
     return guidance, notes, quarantine
 
 

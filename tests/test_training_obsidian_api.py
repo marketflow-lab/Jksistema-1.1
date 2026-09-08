@@ -96,6 +96,53 @@ def test_public_writes_require_revision_and_exact_catalog_membership(editor_api)
     assert client.get("/training", params={"store_id": "another-tenant-store"}).status_code == 409
 
 
+def test_examples_live_in_exact_sku_note_and_partial_edits_preserve_them(editor_api):
+    client, info, _stores = editor_api
+    state = client.get("/training", params={"store_id": "store-a"}).json()
+
+    def save(target, **fields):
+        nonlocal state
+        response = client.post("/training", json={"store_id": "store-a", "edit_target": target,
+            "expected_revision": state["editorial"]["revision"], **fields})
+        assert response.status_code == 200, response.text
+        state = response.json()
+
+    general = {"pergunta": "Atendimento?", "resposta": "Bom dia", "sku": ""}
+    specific = {"pergunta": "  Tensão?  ", "resposta": "12 V\n", "sku": "001", "metadata": {"retain": True}}
+    save("general", orientacoes="Regra da loja", exemplos=[general])
+    save("sku", sku="001", notas_sku="  Nota existente  ")
+    save("sku", sku="001", exemplos=[specific])
+    assert state["notas_sku"]["001"] == "  Nota existente  "
+    assert state["exemplos"]["perguntas_anuncio"] == [general, specific]
+    vault = info / "tenant-a" / "ContextVault" / "80_Curadoria"
+    general_note = vault / state["editorial"]["general"]["relative_path"]
+    sku_note = vault / state["editorial"]["skus"]["001"]["relative_path"]
+    assert "Tensão" not in general_note.read_text(encoding="utf-8")
+    assert "Tensão" in sku_note.read_text(encoding="utf-8")
+    save("general", orientacoes="Regra alterada")
+    save("sku", sku="001", notas_sku="Nota alterada")
+    assert state["exemplos"]["perguntas_anuncio"] == [general, specific]
+    save("general", exemplos=[])
+    assert state["exemplos"]["perguntas_anuncio"] == [specific]
+    save("sku", sku="001", exemplos=[])
+    assert state["exemplos"]["perguntas_anuncio"] == []
+    assert state["notas_sku"]["001"] == "Nota alterada"
+    assert client.get("/training", params={"store_id": "store-b"}).json()["exemplos"]["perguntas_anuncio"] == []
+
+
+@pytest.mark.parametrize("target,sku,example_sku", [("general", "", "001"), ("sku", "001", "002"), ("sku", "001", "")])
+def test_examples_cannot_cross_note_scope(editor_api, target, sku, example_sku):
+    client, _info, _stores = editor_api
+    before = client.get("/training", params={"store_id": "store-a"}).json()
+    response = client.post("/training", json={"store_id": "store-a", "edit_target": target,
+        "sku": sku, "expected_revision": before["editorial"]["revision"],
+        "exemplos": [{"pergunta": "Pergunta", "resposta": "Resposta", "sku": example_sku}]})
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "example_scope_mismatch"
+    after = client.get("/training", params={"store_id": "store-a"}).json()
+    assert after["editorial"]["revision"] == before["editorial"]["revision"]
+
+
 def test_catalog_failure_is_not_successful_empty_result(editor_api, monkeypatch):
     client, _info, _stores = editor_api
     def fail(*_args, **_kwargs):

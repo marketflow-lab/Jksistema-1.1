@@ -95,8 +95,9 @@ def _validate_documents(
         canonical[sku] = document
     if not canonical:
         raise ContextHubValidationError("Nenhum documento canonico elegivel para a loja.")
-
+    from .guidance_examples import validate_guidance_examples
     general = dict(store_guidance) if isinstance(store_guidance, Mapping) else {}
+    validate_guidance_examples(general)
     normalized_sku_guidance: dict[str, dict[str, Any]] = {}
     for raw_sku, raw_guidance in sku_guidance.items():
         sku = normalize_sku(raw_sku)
@@ -107,6 +108,7 @@ def _validate_documents(
         )
     _validate_no_dlp(general, source_ref="store_guidance")
     for sku, guidance in normalized_sku_guidance.items():
+        validate_guidance_examples(guidance, sku)
         _validate_no_dlp(guidance, source_ref=f"sku_guidance:{content_sha256(sku)[:12]}")
     for sku in canonical:
         validate_integral_size(

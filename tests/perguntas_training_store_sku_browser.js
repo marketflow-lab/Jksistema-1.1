@@ -44,6 +44,7 @@ const productsByStore = {
 let revision = 1;
 let failCatalog = false;
 let conflictOnSave = false;
+let conflictModelOnSave = false;
 let delayedAlpha = null;
 function snapshot(storeId) {
   const content = trainingByStore[storeId] || {};
@@ -60,7 +61,7 @@ function contentType(filePath) {
 }
 
 (async () => {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ headless: true, ...(process.env.JK_TEST_BROWSER_PATH ? { executablePath: process.env.JK_TEST_BROWSER_PATH } : {}) });
   const requests = [];
   const pageErrors = [];
   try {
@@ -125,6 +126,11 @@ function contentType(filePath) {
           trainingByStore[payload.store_id].orientacoes_perguntas = 'Nova edição concorrente no Obsidian';
           revision++;
         }
+        if (conflictModelOnSave) {
+          conflictModelOnSave = false;
+          trainingByStore[payload.store_id].exemplos.perguntas_anuncio[0].resposta = 'Alterado no Obsidian';
+          revision++;
+        }
         if (payload.expected_revision !== `${payload.store_id}-${revision}`) {
           await json(route, { detail: { code: 'editorial_revision_conflict', message: 'O Obsidian mudou.' } }, 409);
           return;
@@ -133,9 +139,15 @@ function contentType(filePath) {
         if (payload.edit_target === 'sku') {
           assert(!('orientacoes' in payload), 'gravar SKU não pode enviar orientações gerais');
           data.notas_sku[payload.sku] = payload.notas_sku;
+          assert(payload.exemplos.every(item => item.sku === payload.sku));
+          data.exemplos.perguntas_anuncio = [
+            ...data.exemplos.perguntas_anuncio.filter(item => item.sku !== payload.sku), ...payload.exemplos
+          ];
         } else {
           assert.strictEqual(payload.sku, '', 'gravar geral não pode gravar SKU aberto');
-          Object.assign(data, { orientacoes_perguntas: payload.orientacoes, contexto_loja: payload.contexto_loja, compatibilidade_autopecas: payload.compatibilidade_autopecas, proibicoes: payload.proibicoes, exemplos: { perguntas_anuncio: payload.exemplos }, generalStatus: 'draft' });
+          assert(payload.exemplos.every(item => !item.sku));
+          const retained = data.exemplos.perguntas_anuncio.filter(item => item.sku);
+          Object.assign(data, { orientacoes_perguntas: payload.orientacoes, contexto_loja: payload.contexto_loja, compatibilidade_autopecas: payload.compatibilidade_autopecas, proibicoes: payload.proibicoes, exemplos: { perguntas_anuncio: [...payload.exemplos, ...retained] }, generalStatus: 'draft' });
         }
         revision++;
         await json(route, { ...snapshot(payload.store_id), storage: 'obsidian_context_hub_draft', requires_review: true });
@@ -181,6 +193,46 @@ function contentType(filePath) {
     }
 
     await page.getByRole('button', { name: 'Fechar orientações do SKU' }).click();
+
+    // Models target their exact note, preserve other SKU drafts, and retain leading zeroes.
+    await page.evaluate(async () => {
+      aiTrainingExemploEscopo.value = 'sku';
+      aiTrainingExemploPergunta.value = 'Tensão do produto 002?';
+      aiTrainingExemploResposta.value = '12 V';
+      await adicionarExemploTreinamento();
+    });
+    assert.strictEqual(trainingByStore['store-alpha'].exemplos.perguntas_anuncio[0].sku, '002');
+    assert.strictEqual(trainingByStore['store-alpha'].notas_sku['002'], 'Orientação nova e isolada do SKU 002.');
+    conflictModelOnSave = true;
+    await page.evaluate(async () => {
+      aiTrainingExemploPergunta.value = 'Modelo em conflito';
+      aiTrainingExemploResposta.value = 'Rascunho preservado';
+      await adicionarExemploTreinamento();
+    });
+    await page.waitForFunction(() => sessaoTreinamento().snapshot.exemplos.perguntas_anuncio[0].resposta === 'Alterado no Obsidian');
+    assert.strictEqual(trainingByStore['store-alpha'].exemplos.perguntas_anuncio.length, 1);
+    assert.strictEqual(trainingByStore['store-alpha'].orientacoes_perguntas, 'Responder de forma cordial e objetiva.');
+    assert(await page.evaluate(() => sessaoTreinamento().drafts['sku:002'].value.exemplos.some(item => item.resposta === 'Rascunho preservado')));
+    await page.evaluate(() => abrirBalaoSkuTreinamento('002'));
+    await page.locator('#ai-training-sku-conflict').getByRole('button', { name: 'Usar versão do Obsidian' }).click();
+    await page.locator('#btn-ai-training-fechar-sku').click();
+    await page.evaluate(async () => {
+      aiTrainingExemploEscopo.value = 'geral';
+      aiTrainingExemploPergunta.value = 'Horário de atendimento?';
+      aiTrainingExemploResposta.value = 'Dias úteis';
+      await adicionarExemploTreinamento();
+    });
+    assert.strictEqual(trainingByStore['store-alpha'].exemplos.perguntas_anuncio.length, 2);
+    await page.evaluate(() => abrirBalaoSkuTreinamento('001'));
+    await page.locator('#btn-ai-training-fechar-sku').click();
+    const removed = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes('/ia-treinamento'));
+    await page.locator('.training-example-item').filter({ hasText: 'Tensão do produto 002?' }).getByRole('button', { name: 'Remover' }).click();
+    await removed;
+    await page.waitForFunction(() => !sessaoTreinamento().saving);
+    assert.strictEqual(trainingByStore['store-alpha'].exemplos.perguntas_anuncio.length, 1);
+    assert.strictEqual(trainingByStore['store-alpha'].exemplos.perguntas_anuncio[0].sku, '');
+    assert.strictEqual(trainingByStore['store-alpha'].notas_sku['002'], 'Orientação nova e isolada do SKU 002.');
+
     await page.locator('#ai-training-scope').selectOption('store-beta');
     await page.locator('#ai-training-sku-count').filter({ hasText: '1 SKU(s)' }).waitFor();
     assert.match(await page.locator('#ai-training-general-summary').innerText(), /saudação da Loja Beta/);

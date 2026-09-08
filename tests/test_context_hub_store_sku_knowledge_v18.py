@@ -669,11 +669,16 @@ def test_migration_preview_is_read_only_and_apply_is_restartable(hub_root: Path)
     )
     (tenant / "ia_treinamento_perguntas_pos_venda.json").write_text(
         json.dumps({
-            "orientacoes_perguntas": "Orientacao aprovada",
-            "notas_sku": {
-                "160-K": {"notas": "Nota aprovada"},
-                "1599": {"notas": "Registro orfao"},
-            },
+            "por_loja": {f"store_id:{STORE_A['store_ref']}": {
+                "orientacoes_perguntas": "Orientacao aprovada",
+                "notas_sku": {
+                    "160-K": {"notas": "Nota aprovada"},
+                    "1599": {"notas": "Registro orfao"},
+                },
+                "exemplos": {"perguntas_anuncio": [{
+                    "sku": "160-K", "pergunta": "Aplicacao?", "resposta": "Aplicacao A",
+                }]},
+            }},
         }, ensure_ascii=False),
         encoding="utf-8",
     )
@@ -712,6 +717,16 @@ def test_migration_preview_is_read_only_and_apply_is_restartable(hub_root: Path)
     assert first["applied_count"] == 1
     assert first["results"][0]["changed"] is True
     assert second["results"][0]["idempotent"] is True
+    loaded = load_store_sku_knowledge(
+        "tenant-a", _identity(STORE_A, sku="160-K", item="MLB100"), info_root=hub_root,
+    )
+    assert loaded["guidance"]["general"] == {"orientacoes_perguntas": "Orientacao aprovada"}
+    assert loaded["guidance"]["sku"] == {
+        "notas": "Nota aprovada",
+        "exemplos_perguntas": [{
+            "sku": "160-K", "pergunta": "Aplicacao?", "resposta": "Aplicacao A",
+        }],
+    }
     assert (
         tenant / "ContextVault" / "90_Arquivo" / "Quarentena"
         / "SKUs-sem-identidade" / "1599.md"
@@ -808,7 +823,9 @@ def test_migration_validates_quarantine_dlp_before_apply(hub_root: Path):
         encoding="utf-8",
     )
     (tenant / "ia_treinamento_perguntas_pos_venda.json").write_text(
-        json.dumps({"notas_sku": {"1599": {"notas": "api_key:abcdef123456"}}}),
+        json.dumps({"por_loja": {f"store_id:{STORE_A['store_ref']}": {
+            "notas_sku": {"1599": {"notas": "api_key:abcdef123456"}},
+        }}}),
         encoding="utf-8",
     )
 

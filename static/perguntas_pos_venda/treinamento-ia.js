@@ -20,7 +20,7 @@ function valorGeralSnapshotTreinamento(data = {}) {
         contexto_loja: data.contexto_loja || '',
         compatibilidade_autopecas: data.compatibilidade_autopecas || '',
         proibicoes: data.proibicoes || '',
-        exemplos: normalizarExemplosTreinamento(data.exemplos?.perguntas_anuncio || [])
+        exemplos: exemplosDoSkuTreinamento(data.exemplos?.perguntas_anuncio, '')
     };
 }
 
@@ -30,12 +30,15 @@ function valorGeralFormularioTreinamento() {
         contexto_loja: aiTrainingContextoLoja.value || '',
         compatibilidade_autopecas: aiTrainingCompatibilidade.value || '',
         proibicoes: aiTrainingProibicoes.value || '',
-        exemplos: normalizarExemplosTreinamento(state.treinamentoDados.perguntas_anuncio?.exemplos || [])
+        exemplos: exemplosDoSkuTreinamento(state.treinamentoDados.perguntas_anuncio?.exemplos, '')
     };
 }
 
 function valorSnapshotTreinamento(data, key) {
-    return key === 'general' ? valorGeralSnapshotTreinamento(data) : (normalizarNotasTreinamento(data?.notas_sku)[key.slice(4)] || '');
+    return key === 'general' ? valorGeralSnapshotTreinamento(data) : {
+        notas: normalizarNotasTreinamento(data?.notas_sku)[key.slice(4)] || '',
+        exemplos: exemplosDoSkuTreinamento(data?.exemplos?.perguntas_anuncio, key.slice(4))
+    };
 }
 
 function guardarEdicaoTreinamento() {
@@ -43,7 +46,19 @@ function guardarEdicaoTreinamento() {
     if (!sessao?.snapshot || !state.treinamentoCarregado) return;
     const valores = { general: valorGeralFormularioTreinamento() };
     const sku = String(state.treinamentoSkuNotasAtual || '');
-    if (sku) valores[`sku:${sku}`] = aiTrainingNotasSku.value || '';
+    const exemplos = state.treinamentoDados.perguntas_anuncio?.exemplos || [];
+    const skus = new Set([sku, ...exemplos.map(item => String(item.sku || '').trim()),
+        ...(sessao.snapshot.exemplos?.perguntas_anuncio || []).map(item => String(item.sku || '').trim()),
+        ...Object.keys(sessao.drafts).filter(key => key.startsWith('sku:')).map(key => key.slice(4))]);
+    skus.forEach(item => {
+        if (!item) return;
+        const key = `sku:${item}`;
+        valores[key] = {
+            notas: item === sku ? (aiTrainingNotasSku.value || '') :
+                (sessao.drafts[key]?.value.notas ?? valorSnapshotTreinamento(sessao.snapshot, key).notas),
+            exemplos: exemplosDoSkuTreinamento(exemplos, item)
+        };
+    });
     Object.entries(valores).forEach(([key, value]) => {
         const existente = sessao.drafts[key];
         const base = existente ? existente.base : valorSnapshotTreinamento(sessao.snapshot, key);
@@ -100,7 +115,15 @@ function aplicarSnapshotTreinamento() {
     if (!sessao?.snapshot) return;
     const data = sessao.snapshot;
     const general = sessao.drafts.general?.value || valorGeralSnapshotTreinamento(data);
-    state.treinamentoDados.perguntas_anuncio = { orientacoes: general.orientacoes, exemplos: general.exemplos, updated_at: data.updated_at_perguntas || data.updated_at };
+    const skus = new Set([
+        ...(data.exemplos?.perguntas_anuncio || []).map(item => String(item.sku || '').trim()),
+        ...Object.keys(sessao.drafts).filter(key => key.startsWith('sku:')).map(key => key.slice(4))
+    ]);
+    const exemplos = [...general.exemplos];
+    skus.forEach(sku => {
+        if (sku) exemplos.push(...(sessao.drafts[`sku:${sku}`]?.value.exemplos ?? exemplosDoSkuTreinamento(data.exemplos?.perguntas_anuncio, sku)));
+    });
+    state.treinamentoDados.perguntas_anuncio = { orientacoes: general.orientacoes, exemplos, updated_at: data.updated_at_perguntas || data.updated_at };
     state.treinamentoDados.pos_venda = { orientacoes: data.orientacoes_pos_venda || '', exemplos: normalizarExemplosTreinamento(data.exemplos?.pos_venda || []) };
     state.treinamentoContexto = { ...general, notas_sku: normalizarNotasTreinamento(data.notas_sku) };
     aiTrainingContextoLoja.value = general.contexto_loja;
@@ -167,6 +190,7 @@ function atualizarEstadoSincronizacaoTreinamento() {
 
 function textoComparacaoTreinamento(value) {
     if (typeof value === 'string') return value || '(Sem orientação)';
+    if ('notas' in value) return `Orientações do SKU\n${value.notas || '(Vazio)'}\n\nModelos\n${(value.exemplos || []).map(e => `${e.pergunta}\n${e.resposta}`).join('\n\n') || '(Vazio)'}`;
     return [ ['Orientações para perguntas', value.orientacoes], ['Base de conhecimento da loja', value.contexto_loja], ['Compatibilidade e autopeças', value.compatibilidade_autopecas], ['O que a IA nunca deve afirmar', value.proibicoes], ['Modelos', (value.exemplos || []).map(e => `${e.pergunta}\n${e.resposta}`).join('\n\n')] ]
         .map(([label, text]) => `${label}\n${text || '(Vazio)'}`).join('\n\n');
 }
@@ -355,7 +379,7 @@ function renderizarNotasSkuTreinamento() {
     const sku = String(aiTrainingSku.value || '').trim();
     state.treinamentoSkuNotasAtual = sku;
     aiTrainingNotasSku.disabled = !sku;
-    aiTrainingNotasSku.value = sku ? (sessaoTreinamento()?.drafts[`sku:${sku}`]?.value ?? state.treinamentoContexto.notas_sku[sku] ?? '') : '';
+    aiTrainingNotasSku.value = sku ? (sessaoTreinamento()?.drafts[`sku:${sku}`]?.value.notas ?? state.treinamentoContexto.notas_sku[sku] ?? '') : '';
     renderizarConflitosTreinamento();
     aiTrainingNotasSku.placeholder = sku
         ? 'Aplicações confirmadas, códigos, variações, exceções e cuidados para este SKU.'
@@ -554,6 +578,10 @@ function normalizarExemplosTreinamento(exemplos) {
     return Array.isArray(exemplos) ? exemplos.map(item => ({ ...item })) : [];
 }
 
+function exemplosDoSkuTreinamento(exemplos, sku) {
+    return normalizarExemplosTreinamento(exemplos).filter(item => String(item.sku || '').trim() === sku);
+}
+
 function renderizarExemplosTreinamento() {
     if (!aiTrainingExamplesList) return;
     const tipo = state.treinamentoTipo === 'pos_venda' ? 'pos_venda' : 'perguntas_anuncio';
@@ -583,21 +611,25 @@ function renderizarExemplosTreinamento() {
     }).join('');
 
     aiTrainingExamplesList.querySelectorAll('[data-remove-training-example]').forEach((button) => {
-        button.addEventListener('click', () => {
+        button.addEventListener('click', async () => {
+            if (sessaoTreinamento()?.saving) return;
             const idx = Number(button.dataset.removeTrainingExample);
             const listaAtual = normalizarExemplosTreinamento((state.treinamentoDados[tipo] || {}).exemplos || []);
-            listaAtual.splice(idx, 1);
+            const [removido] = listaAtual.splice(idx, 1);
             state.treinamentoDados[tipo] = {
                 ...(state.treinamentoDados[tipo] || {}),
                 exemplos: listaAtual
             };
             guardarEdicaoTreinamento();
             renderizarExemplosTreinamento();
+            try { await salvarTreinamentoAI(removido?.sku ? 'sku' : 'general', String(removido?.sku || '')); }
+            catch (_error) { /* O salvamento preserva o rascunho e exibe a falha. */ }
         });
     });
 }
 
-function adicionarExemploTreinamento() {
+async function adicionarExemploTreinamento() {
+    if (sessaoTreinamento()?.saving) return;
     if (!state.treinamentoCarregado) {
         aiTrainingStatus.textContent = 'Selecione uma loja e aguarde as orientações antes de adicionar modelos.';
         return;
@@ -632,9 +664,8 @@ function adicionarExemploTreinamento() {
     aiTrainingExemploPergunta.value = '';
     aiTrainingExemploResposta.value = '';
     renderizarExemplosTreinamento();
-    aiTrainingStatus.textContent = skuModelo
-        ? `Modelo do SKU ${formatarSkuExibicao(skuModelo)} adicionado. Clique em salvar para manter no servidor.`
-        : 'Modelo geral adicionado. Clique em salvar para manter no servidor.';
+    try { await salvarTreinamentoAI(skuModelo ? 'sku' : 'general', skuModelo); }
+    catch (_error) { /* O modelo continua no rascunho para comparar ou tentar novamente. */ }
 }
 
 function montarSeletorSkusTreinamento(skuAnterior = aiTrainingSku.value) {
@@ -857,11 +888,11 @@ async function carregarTreinamentoAI(forcar = false) {
     }
 }
 
-async function salvarTreinamentoAI(editTarget = 'general') {
+async function salvarTreinamentoAI(editTarget = 'general', targetSku = aiTrainingSku.value) {
     guardarEdicaoTreinamento();
     const lojaEscopo = lojaEscopoTreinamento();
     const sessao = sessaoTreinamento();
-    const sku = editTarget === 'sku' ? String(aiTrainingSku.value || '') : '';
+    const sku = editTarget === 'sku' ? String(targetSku || '') : '';
     const key = editTarget === 'sku' ? `sku:${sku}` : 'general';
     if (!lojaEscopo || !sessao?.snapshot || (editTarget === 'sku' && !sku)) {
         aiTrainingStatus.textContent = 'Aguarde as orientações da loja antes de salvar.';
@@ -878,9 +909,12 @@ async function salvarTreinamentoAI(editTarget = 'general') {
     const payload = {
         tipo: state.treinamentoTipo, loja: nomeLojaEscopoTreinamento(), store_id: lojaEscopo,
         edit_target: editTarget, expected_revision: revision, sku,
-        ...(editTarget === 'sku' ? { notas_sku: aiTrainingNotasSku.value || '' } : general)
+        ...(editTarget === 'sku' ? {
+            notas_sku: draft?.value.notas ?? valorSnapshotTreinamento(sessao.snapshot, key).notas,
+            exemplos: exemplosDoSkuTreinamento(state.treinamentoDados.perguntas_anuncio?.exemplos, sku)
+        } : general)
     };
-    const savedValue = editTarget === 'sku' ? payload.notas_sku : general;
+    const savedValue = editTarget === 'sku' ? { notas: payload.notas_sku, exemplos: payload.exemplos } : general;
     sessao.saving = true;
     sessao.saveError = '';
     treinamentoSync.requestId++;
