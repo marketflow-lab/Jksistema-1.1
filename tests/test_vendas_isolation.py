@@ -98,9 +98,10 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result == {
         # A central adiciona status, atualizacao manual de lojas e concessao
-        # de acesso. O contrato isolado de Vendas mantem o hash congelado.
-        "routes": 455,
-        "pairs": 453,
+        # de acesso. O treinamento por loja adiciona leitura, gravacao e lista
+        # de SKUs. O contrato isolado de Vendas mantem o hash congelado.
+        "routes": 458,
+        "pairs": 456,
         "duplicates": [],
         "openapi": "4592ad7b7431ffb069c65eca1874b0f26010549fab41b2836d740e8cc037d0f1",
     }
