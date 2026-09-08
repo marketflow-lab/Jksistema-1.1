@@ -305,6 +305,54 @@ def test_machine_auto_continua_outros_scopes_quando_um_pull_falha(monkeypatch):
     }]
 
 
+def test_machine_auto_aplica_lojas_antes_do_cadastro(monkeypatch):
+    sessao = {"username": "operador", "client_id": "000002"}
+    scopes = ["cadastro", "lojas_integracoes"]
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_machine_config_read",
+        lambda _sessao: {
+            "enabled": True,
+            "scopes": scopes,
+            "auto_pull": True,
+            "auto_push": False,
+        },
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_machine_resolver_scopes",
+        lambda *args, **kwargs: list(scopes),
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_state_read",
+        lambda *args: {"scopes": {}},
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_machine_remote_meta",
+        lambda _sessao, scope: {
+            "snapshot_hash": f"hash-{scope}",
+            "machine_id": "pc:origem",
+        },
+    )
+    pulls = []
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_machine_pull_scope",
+        lambda _sessao, scope, **_kwargs: pulls.append(scope)
+        or {"scope": scope, "success": True, "direction": "pull"},
+    )
+
+    result = shared_sync_machine._shared_sync_machine_auto_run(
+        sessao,
+        "pc:destino",
+    )
+
+    assert pulls == ["lojas_integracoes", "cadastro"]
+    assert [item["scope"] for item in result["results"]] == pulls
+
+
 def test_machine_auto_run_sem_opt_in_nao_le_remoto_nem_transfere(monkeypatch):
     sessao = {"username": "operador", "client_id": "000002"}
     monkeypatch.setattr(
@@ -2002,6 +2050,56 @@ def test_push_lojas_bloqueia_qualquer_perda_do_snapshot_remoto(monkeypatch):
     assert unavailable_exc.value.status_code == 503
 
 
+def test_push_lojas_aceita_snapshot_antigo_com_tombstones_remotos(monkeypatch):
+    loja = {
+        "nome": "Loja A",
+        "store_id": "store-a",
+        "integracoes": {
+            "bling": {
+                "access_token": "access",
+                "refresh_token": "refresh",
+                "connected": True,
+            }
+        },
+    }
+    remoto = _scope_bundle(
+        "lojas_integracoes",
+        [
+            ("lojas_config.json", json.dumps([loja]).encode("utf-8")),
+            (
+                "lojas_sync_tombstones.json",
+                json.dumps(
+                    [
+                        {
+                            "key": "store:store-antiga:",
+                            "type": "store",
+                            "store_id": "store-antiga",
+                            "service": "",
+                            "version": 1,
+                            "deleted_at": "2026-09-01T10:00:00Z",
+                        }
+                    ]
+                ).encode("utf-8"),
+            ),
+        ],
+    )
+    local = _scope_bundle(
+        "lojas_integracoes",
+        [("lojas_config.json", json.dumps([loja]).encode("utf-8"))],
+    )
+    monkeypatch.setattr(
+        shared_sync_remote,
+        "_shared_sync_obter_bundle_remoto_para_guard",
+        lambda *args, **kwargs: (remoto, {"snapshot_id": "snapshot-remoto"}),
+    )
+
+    assert shared_sync_merge_integracoes._shared_sync_validar_push_lojas_integracoes(
+        "bundle-lojas",
+        local,
+        base_snapshot_id="snapshot-remoto",
+    ) == "snapshot-remoto"
+
+
 @pytest.mark.parametrize("tipo", ["store", "integration"])
 @pytest.mark.parametrize(
     ("base_snapshot_id", "com_tombstone", "permitido"),
@@ -2996,6 +3094,58 @@ def test_importacao_manual_de_maquina_reaplica_snapshot_mesmo_com_estado_ja_atua
     assert len(atualizacoes) == 1
 
 
+def test_importacao_de_cadastro_por_maquina_habilita_bootstrap_legado(monkeypatch):
+    sessao = {"username": "operador", "client_id": "000002"}
+    meta = {
+        "id": "bundle-cadastro",
+        "snapshot_hash": "hash-cadastro",
+        "updated_at": "2026-09-08T10:00:00Z",
+        "machine_id": "pc:origem",
+    }
+    configuracoes = []
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_machine_doc_id",
+        lambda *args: "bundle-cadastro",
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_remote_meta_by_id",
+        lambda _bundle_id: dict(meta),
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_pull_already_current",
+        lambda *args: False,
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_obter_bundle_por_id",
+        lambda *args, **kwargs: (b"pacote-cadastro", dict(meta)),
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_aplicar_pacote",
+        lambda *args, **kwargs: configuracoes.append(args[-1])
+        or {"file_count": 2},
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_state_update",
+        lambda *args, **kwargs: None,
+    )
+
+    result = shared_sync_machine._shared_sync_machine_pull_scope(
+        sessao,
+        "cadastro",
+        force=True,
+        machine_id="pc:destino",
+    )
+
+    assert result["success"] is True
+    assert configuracoes[0]["allow_legacy_cadastro_bootstrap"] is True
+
+
 def test_importacao_automatica_de_maquina_ainda_pode_pular_snapshot_ja_atual(monkeypatch):
     sessao = {"username": "operador", "client_id": "000002"}
     meta = {"snapshot_hash": "snapshot-remoto"}
@@ -3175,6 +3325,47 @@ def test_endpoint_de_importacao_manual_forca_reaplicacao(monkeypatch):
     )]
 
 
+def test_previa_de_importacao_ordena_lojas_antes_do_cadastro(monkeypatch):
+    from backend.schemas.shared_sync import SharedSyncPreviewRequest
+
+    sessao = {"username": "operador", "client_id": "000002"}
+    captured = []
+    monkeypatch.setattr(
+        shared_sync_machine_endpoints,
+        "_shared_sync_session",
+        lambda *args: sessao,
+    )
+    monkeypatch.setattr(
+        shared_sync_machine_endpoints,
+        "_shared_sync_machine_resolver_scopes",
+        lambda *args, **kwargs: ["cadastro", "lojas_integracoes"],
+    )
+    monkeypatch.setattr(
+        shared_sync_machine_endpoints,
+        "_shared_sync_remote_meta_by_id",
+        lambda *args, **kwargs: {"snapshot_hash": "hash"},
+    )
+    monkeypatch.setattr(
+        shared_sync_machine_endpoints,
+        "_shared_sync_create_preview",
+        lambda *args, **kwargs: captured.append(kwargs) or {"operation_id": "op"},
+    )
+
+    result = shared_sync_machine_endpoints.shared_sync_machine_preview(
+        SharedSyncPreviewRequest(
+            direction="pull",
+            scopes=["cadastro", "lojas_integracoes"],
+            machine_id="pc:destino",
+        ),
+        authorization="Bearer teste",
+        client_id="000002",
+    )
+
+    assert result["operation_id"] == "op"
+    assert captured[0]["scopes"] == ["lojas_integracoes", "cadastro"]
+    assert list(captured[0]["bundle_ids"]) == ["lojas_integracoes", "cadastro"]
+
+
 def test_endpoint_marca_importacao_com_quantidade_de_lojas_divergente(monkeypatch):
     sessao = {"username": "operador", "client_id": "000002"}
     monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_session", lambda *args: sessao)
@@ -3219,7 +3410,7 @@ def test_endpoint_marca_importacao_com_quantidade_de_lojas_divergente(monkeypatc
     assert "previa continha 4 loja(s), mas o pacote recebido continha 3" in result["results"][0]["message"]
 
 
-def test_falha_em_cadastro_nao_impede_importacao_das_lojas(monkeypatch):
+def test_importacao_aplica_lojas_antes_do_cadastro(monkeypatch):
     sessao = {"username": "operador", "client_id": "000002"}
     chamadas = []
     monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_session", lambda *args: sessao)
@@ -3268,13 +3459,13 @@ def test_falha_em_cadastro_nao_impede_importacao_das_lojas(monkeypatch):
         client_id="000002",
     )
 
-    assert chamadas == [("cadastro", True), ("lojas_integracoes", True)]
+    assert chamadas == [("lojas_integracoes", True), ("cadastro", True)]
     assert result["success"] is False
     assert result["partial"] is True
-    assert result["results"][0]["success"] is False
-    assert result["results"][0]["status_code"] == 423
-    assert result["results"][1]["success"] is True
-    assert result["results"][1]["stores_count"] == 4
+    assert result["results"][0]["success"] is True
+    assert result["results"][0]["stores_count"] == 4
+    assert result["results"][1]["success"] is False
+    assert result["results"][1]["status_code"] == 423
 
 
 def test_tela_de_sincronizacao_exibe_balao_central_e_recarrega_lojas():
@@ -6440,7 +6631,7 @@ def test_versoes_fonte_e_electron_estao_alinhadas_com_a_release():
     root_package = json.loads(open("package.json", "r", encoding="utf-8").read())
     electron_package = json.loads(open("electron_app/package.json", "r", encoding="utf-8").read())
     backend_source = open("backend_api.py", "r", encoding="utf-8-sig").read()
-    assert root_package["version"] == "1.0.136"
+    assert root_package["version"] == "1.0.137"
     assert electron_package["version"] == root_package["version"]
     # O minimo do backend pode permanecer anterior para nao derrubar clientes
     # durante o rollout em duas ondas.

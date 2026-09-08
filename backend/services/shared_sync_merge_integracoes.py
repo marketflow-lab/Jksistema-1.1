@@ -2167,17 +2167,18 @@ def _shared_sync_validar_push_lojas_integracoes(
             permitir_atualizacao=base_causal_atual,
         )
     )
-    regressao_tombstones = not _shared_sync_tombstones_preservados(
-        tombstones_locais,
-        tombstones_remotos,
-        permitir_atualizacao=base_causal_atual,
-    )
+    # Desde a politica que mantem exclusoes apenas na maquina que as criou,
+    # pacotes novos omitem ``lojas_sync_tombstones.json`` por contrato. Um
+    # snapshot remoto produzido antes dessa politica ainda pode conter o
+    # arquivo. Exigir que o pacote novo o replique cria um bloqueio impossivel
+    # de resolver: o pull ignora os tombstones remotos e o push volta a omiti-los.
+    # A protecao continua comparando lojas, conexoes, OAuth e o legado; apenas o
+    # historico de exclusao remoto deixa de ser uma exigencia de exportacao.
     if (
         contradicao_tombstone_local
         or regressao_lojas
         or regressao_conexoes
         or regressao_legado
-        or regressao_tombstones
     ):
         raise HTTPException(
             status_code=409,

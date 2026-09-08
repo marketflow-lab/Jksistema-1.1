@@ -101,6 +101,11 @@ def shared_sync_machine_preview(
     sessao = _shared_sync_session(authorization, client_id)
     direction = _shared_sync_operation_direction(payload.direction)
     scopes = _shared_sync_machine_resolver_scopes(sessao, payload.scopes, require_enabled=True)
+    if direction == "pull" and "lojas_integracoes" in scopes:
+        scopes = [
+            "lojas_integracoes",
+            *(scope for scope in scopes if scope != "lojas_integracoes"),
+        ]
     bundle_ids = _shared_sync_machine_bundle_ids(sessao, scopes)
     if direction == "pull":
         missing = [scope for scope, bundle_id in bundle_ids.items()
@@ -154,6 +159,11 @@ def shared_sync_machine_pull(
 ):
     sessao = _shared_sync_session(authorization, client_id)
     scopes = _shared_sync_machine_resolver_scopes(sessao, payload.scopes, require_enabled=True)
+    if "lojas_integracoes" in scopes:
+        scopes = [
+            "lojas_integracoes",
+            *(scope for scope in scopes if scope != "lojas_integracoes"),
+        ]
     bundle_ids = _shared_sync_machine_bundle_ids(sessao, scopes)
     operation = _shared_sync_require_operation(
         payload.operation_id, sessao, kind="machine", resource_id="self",

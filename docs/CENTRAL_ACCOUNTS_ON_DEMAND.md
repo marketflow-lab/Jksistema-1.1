@@ -22,6 +22,15 @@ confirmação mantém o modo legado e as credenciais locais. A importação anti
 Shared Sync passa a se chamar “Importar cópia legada do Firebase” para deixar claro
 que ela não ativa a Central de Contas.
 
+## Compatibilidade da sincronização entre máquinas na versão 1.0.137
+
+A importação aplica Lojas e integrações antes do Cadastro de produtos. Entre
+máquinas da mesma conta, snapshots de cadastro produzidos no modo legado podem
+manter fotos globais quando ainda não existe a configuração de fotos por loja.
+Compartilhamentos entre usuários continuam exigindo essa configuração. Snapshots
+antigos que contêm tombstones remotos deixam de bloquear um novo envio, pois as
+exclusões de lojas permanecem locais por contrato.
+
 Implementação autorizada em 05/09/2026. Base limpa: v1.0.133,
 commit 4b323be8eab154e2b12f0057c90ef043ea40a7d5. A aprovação inicial cobriu implementação e testes no Worktree. Em seguida,
 o usuário aprovou integração, publicação, implantação e atualização instalada.

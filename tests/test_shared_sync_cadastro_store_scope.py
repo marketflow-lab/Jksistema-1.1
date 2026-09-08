@@ -2416,6 +2416,125 @@ def test_shared_sync_peer_novo_instala_config_antes_do_csv_e_fanout(
     assert result["files"][0] == cadastro_fotos.CADASTRO_FOTOS_CONFIG_ARQUIVO
 
 
+def test_machine_sync_peer_novo_aceita_cadastro_e_fotos_legados_sem_config(
+    tmp_path,
+    monkeypatch,
+):
+    tenant = tmp_path / "000002"
+    tenant.mkdir()
+    _write_store_config(tenant, "store-a")
+    monkeypatch.setattr(
+        shared_sync_apply_scope,
+        "get_tenant_path",
+        lambda _client_id: str(tenant),
+        raising=False,
+    )
+    from backend.services import cadastro_lojas_produtos
+
+    monkeypatch.setattr(
+        cadastro_lojas_produtos,
+        "get_tenant_path",
+        lambda _client_id: str(tenant),
+        raising=False,
+    )
+    remote = _csv_bytes(
+        [
+            {
+                **_row("store-a", "001", "Produto legado", 1, "2026-09-08T10:00:00Z"),
+                "foto": "cadastro_fotos/001.jpg",
+            }
+        ],
+        [
+            "store_id",
+            "sku",
+            "nome",
+            "foto",
+            "row_version",
+            "updated_at_utc",
+            "deleted_at_utc",
+        ],
+    )
+    remote_cost = _cost_csv_bytes(
+        [
+            {
+                "store_id": "",
+                "loja_sync": "Loja store-a",
+                "sku": "001",
+                "produto": "Produto legado",
+                "custo": "10.00",
+                "preco": "20.00",
+                "imposto": "0",
+                "updated_at": "2026-09-08T10:00:00Z",
+            }
+        ]
+    )
+    remote_legacy_products = _csv_bytes(
+        [
+            {
+                "sku": "001",
+                "produto": "Produto legado",
+                "loja_sync": "Loja store-a",
+                "foto": "cadastro_fotos/001.jpg",
+            }
+        ],
+        ["sku", "produto", "loja_sync", "foto"],
+    )
+    result = shared_sync_apply_scope._shared_sync_aplicar_pacote(
+        "000002",
+        "cadastro",
+        _bundle(
+            "cadastro",
+            [
+                (REL, remote),
+                (COST_REL, remote_cost),
+                ("cadastro_produtos.csv", remote_legacy_products),
+                ("cadastro_fotos/001.jpg", b"foto-legada"),
+            ],
+        ),
+        "operador",
+        {"allow_legacy_cadastro_bootstrap": True},
+    )
+
+    assert (tenant / "cadastro_fotos" / "001.jpg").read_bytes() == b"foto-legada"
+    assert _read_rows(tenant / REL)[0]["foto"] == "cadastro_fotos/001.jpg"
+    assert _read_rows(tenant / COST_REL)[0]["sku"] == "001"
+    assert _read_rows(tenant / "cadastro_produtos.csv")[0]["loja_sync"] == (
+        "Loja store-a"
+    )
+    assert not (tenant / cadastro_fotos.CADASTRO_FOTOS_CONFIG_ARQUIVO).exists()
+    assert REL in result["files"]
+
+
+def test_user_share_peer_novo_continua_exigindo_config_de_fotos(
+    tmp_path,
+    monkeypatch,
+):
+    tenant = tmp_path / "000002"
+    tenant.mkdir()
+    _write_store_config(tenant, "store-a")
+    monkeypatch.setattr(
+        shared_sync_apply_scope,
+        "get_tenant_path",
+        lambda _client_id: str(tenant),
+        raising=False,
+    )
+    remote = _csv_bytes(
+        [_row("store-a", "001", "Produto", 1, "2026-09-08T10:00:00Z")]
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        shared_sync_apply_scope._shared_sync_aplicar_pacote(
+            "000002",
+            "cadastro",
+            _bundle("cadastro", [(REL, remote)]),
+            "operador",
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "cadastro_photo_config_required"
+    assert not (tenant / REL).exists()
+
+
 def test_shared_sync_config_antes_das_lojas_falha_sem_efeitos(tmp_path, monkeypatch):
     tenant = tmp_path / "000002"
     tenant.mkdir()

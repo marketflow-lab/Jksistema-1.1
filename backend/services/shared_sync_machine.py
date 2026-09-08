@@ -241,6 +241,10 @@ def _shared_sync_machine_pull_scope_serialized(
         "share_between_users": bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped")),
         "base_bundle": base_bundle,
         "strict_oauth_conflicts": scope == "lojas_integracoes",
+        # Uma copia entre maquinas da mesma conta pode preservar o modo legado
+        # de fotos quando o produtor ainda nao executou a migracao por loja.
+        # Pacotes com fotos ja escopadas continuam exigindo a configuracao.
+        "allow_legacy_cadastro_bootstrap": scope == "cadastro",
     }
     result = _shared_sync_aplicar_pacote(sessao.get("client_id"), scope, bundle, sessao.get("username") or "", scope_config)
     _shared_sync_state_update(sessao.get("client_id"), sessao.get("username") or "", state_scope, meta, "pull")
@@ -329,6 +333,11 @@ def _shared_sync_machine_auto_run(sessao: dict, machine_id: str = "", requested:
     if not config.get("enabled"):
         return {"success": True, "direction": "machine-auto", "results": [], "skipped": [{"reason": "disabled"}]}
     scopes = _shared_sync_machine_resolver_scopes(sessao, requested, require_enabled=True)
+    if "lojas_integracoes" in scopes:
+        scopes = [
+            "lojas_integracoes",
+            *(scope for scope in scopes if scope != "lojas_integracoes"),
+        ]
     state = _shared_sync_state_read(sessao.get("client_id"), sessao.get("username") or "")
     state_scopes = state.get("scopes") if isinstance(state.get("scopes"), dict) else {}
     results = []

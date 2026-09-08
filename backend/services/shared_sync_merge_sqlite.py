@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 import zipfile
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 from urllib.parse import unquote, urlsplit
@@ -420,6 +420,8 @@ def _shared_sync_guard_legacy_cadastro_csv_locked(
     client_id: str,
     target_abs: str,
     remoto_bytes: bytes,
+    *,
+    allow_store_owned_legacy: bool = False,
 ):
     """Acquire canonical Cadastro before target and revalidate current rows."""
 
@@ -430,21 +432,32 @@ def _shared_sync_guard_legacy_cadastro_csv_locked(
     )
 
     remoto_df = _shared_sync_csv_read_bytes(remoto_bytes)
-    exigir_mutacao_legada_sem_campos_loja(remoto_df.columns)
+    if not allow_store_owned_legacy:
+        exigir_mutacao_legada_sem_campos_loja(remoto_df.columns)
     skus_remotos = _shared_sync_csv_skus(remoto_bytes)
     tenant_abs = os.path.dirname(os.path.abspath(target_abs))
+    store_scope_guard = (
+        nullcontext()
+        if allow_store_owned_legacy
+        else bloquear_mutacao_legada_sem_sku_controlado(client_id, skus_remotos)
+    )
     with _shared_sync_bloquear_writer_store_id(client_id, tenant_abs):
-        with bloquear_mutacao_legada_sem_sku_controlado(client_id, skus_remotos):
-            _shared_sync_exigir_fotos_legadas_sem_referencia_local_locked(
-                client_id,
-                remoto_df,
-            )
+        with store_scope_guard:
+            if not allow_store_owned_legacy:
+                _shared_sync_exigir_fotos_legadas_sem_referencia_local_locked(
+                    client_id,
+                    remoto_df,
+                )
             with _shared_sync_path_lock_for(target_abs):
                 skus_atuais: list[str] = []
                 if os.path.exists(target_abs):
                     with open(target_abs, "rb") as file:
                         skus_atuais = _shared_sync_csv_skus(file.read())
-                exigir_mutacao_legada_sem_sku_controlado(client_id, skus_atuais)
+                if not allow_store_owned_legacy:
+                    exigir_mutacao_legada_sem_sku_controlado(
+                        client_id,
+                        skus_atuais,
+                    )
                 yield
 
 
@@ -524,6 +537,8 @@ def _shared_sync_guard_legacy_photo_locked(
     tenant_abs: str,
     target_abs: str,
     rel: str,
+    *,
+    allow_store_owned_legacy: bool = False,
 ):
     """Protect filename fallback and arbitrary scoped references together."""
 
@@ -531,29 +546,49 @@ def _shared_sync_guard_legacy_photo_locked(
         bloquear_mutacao_legada_sem_sku_controlado,
         exigir_mutacao_legada_sem_sku_controlado,
     )
-    from backend.services.cadastro_lojas_produtos import _ler_registros_persistidos
     from backend.services.cadastro_fotos import (
-        _cadastro_foto_coluna_candidata,
         _cadastro_fotos_bloquear_mutacao_global,
     )
 
     stem = _shared_sync_legacy_photo_sku(rel)
+    store_scope_guard = (
+        nullcontext()
+        if allow_store_owned_legacy
+        else bloquear_mutacao_legada_sem_sku_controlado(client_id, [stem])
+    )
     with (
-        bloquear_mutacao_legada_sem_sku_controlado(client_id, [stem]),
+        store_scope_guard,
         _cadastro_fotos_bloquear_mutacao_global(client_id, tenant_abs),
     ):
-        registros, _colunas = _ler_registros_persistidos(client_id)
-        skus_referenciados = [
-            str(item.get("sku_normalizado") or item.get("sku") or "").strip()
-            for item in registros
-            if any(
-                _shared_sync_photo_referencia_local_equivale(valor, rel, client_id)
-                for campo, valor in item.items()
-                if _cadastro_foto_coluna_candidata(campo)
+        if not allow_store_owned_legacy:
+            from backend.services.cadastro_fotos import (
+                _cadastro_foto_coluna_candidata,
             )
-            and str(item.get("sku_normalizado") or item.get("sku") or "").strip()
-        ]
-        exigir_mutacao_legada_sem_sku_controlado(client_id, skus_referenciados)
+            from backend.services.cadastro_lojas_produtos import (
+                _ler_registros_persistidos,
+            )
+
+            registros, _colunas = _ler_registros_persistidos(client_id)
+            skus_referenciados = [
+                str(item.get("sku_normalizado") or item.get("sku") or "").strip()
+                for item in registros
+                if any(
+                    _shared_sync_photo_referencia_local_equivale(
+                        valor,
+                        rel,
+                        client_id,
+                    )
+                    for campo, valor in item.items()
+                    if _cadastro_foto_coluna_candidata(campo)
+                )
+                and str(
+                    item.get("sku_normalizado") or item.get("sku") or ""
+                ).strip()
+            ]
+            exigir_mutacao_legada_sem_sku_controlado(
+                client_id,
+                skus_referenciados,
+            )
         with _shared_sync_path_lock_for(target_abs):
             yield
 
@@ -1358,6 +1393,7 @@ def _shared_sync_merge_cadastro_custos_versioned(
     remoto_bytes: bytes,
     *,
     validar_store_ids: bool = False,
+    exigir_store_id: bool = True,
 ) -> dict:
     # The canonical cost service owns this lock.  Holding it for the complete
     # read/merge/replace cycle prevents an import or inline cost edit from being
@@ -1376,7 +1412,7 @@ def _shared_sync_merge_cadastro_custos_versioned(
                     os.path.dirname(os.path.abspath(target_abs)),
                     remote_df,
                     _SHARED_SYNC_CADASTRO_CUSTOS_REL,
-                    exigir_store_id=True,
+                    exigir_store_id=exigir_store_id,
                 )
                 return _shared_sync_merge_cadastro_custos_versioned_locked(
                     target_abs,

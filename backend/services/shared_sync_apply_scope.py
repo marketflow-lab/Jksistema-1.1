@@ -1392,6 +1392,7 @@ def _shared_sync_aplicar_cadastro_lojas_fotos_transacional(
     target_abs: str,
     store_photo_fontes: list[tuple[str, bytes]],
     photo_config_data: bytes | None = None,
+    allow_legacy_photo_bootstrap: bool = False,
 ) -> tuple[dict[str, Any], list[str]]:
     """Apply config, CSV, fan-out and photo bytes as one reversible unit."""
 
@@ -1405,7 +1406,7 @@ def _shared_sync_aplicar_cadastro_lojas_fotos_transacional(
         tenant_abs,
         photo_config_data,
     )
-    if config["action"] == "missing":
+    if config["action"] == "missing" and not allow_legacy_photo_bootstrap:
         raise HTTPException(
             status_code=409,
             detail={
@@ -2141,6 +2142,9 @@ def _shared_sync_aplicar_pacote(
             },
         )
     photo_config_data = photo_config_fontes[0][1] if photo_config_fontes else None
+    legacy_cadastro_bootstrap = bool(
+        (scope_config or {}).get("allow_legacy_cadastro_bootstrap")
+    ) and photo_config_data is None and not store_photo_fontes
     if cadastro_lojas_fontes:
         rel, data = cadastro_lojas_fontes[0]
         target_abs = _shared_sync_resolve_tenant_path(tenant_abs, rel)
@@ -2160,6 +2164,7 @@ def _shared_sync_aplicar_pacote(
                     target_abs,
                     store_photo_fontes,
                     photo_config_data,
+                    allow_legacy_photo_bootstrap=legacy_cadastro_bootstrap,
                 )
             )
             conflicts += int(merge_info.get("conflicts") or 0)
@@ -2198,6 +2203,7 @@ def _shared_sync_aplicar_pacote(
                     target_abs,
                     data,
                     validar_store_ids=True,
+                    exigir_store_id=not legacy_cadastro_bootstrap,
                 )
             conflicts += int(merge_info.get("conflicts") or 0)
             if merge_info.get("merged"):
@@ -2228,6 +2234,7 @@ def _shared_sync_aplicar_pacote(
                 client_id,
                 target_abs,
                 data,
+                allow_store_owned_legacy=legacy_cadastro_bootstrap,
             ):
                 _shared_sync_backup_target(tenant_abs, backup_dir, rel, target_abs)
                 _shared_sync_atomic_write(target_abs, data)
@@ -2240,6 +2247,7 @@ def _shared_sync_aplicar_pacote(
                     tenant_abs,
                     target_abs,
                     rel,
+                    allow_store_owned_legacy=legacy_cadastro_bootstrap,
                 ):
                     _shared_sync_aplicar_foto_legada_atomica(
                         client_id,
@@ -2257,6 +2265,7 @@ def _shared_sync_aplicar_pacote(
                     exigir_store_id=(
                         rel_lower == "produtos_compilado.csv"
                         and scope in {"cadastro", "vendas"}
+                        and not legacy_cadastro_bootstrap
                     ),
                 )
                 if (
