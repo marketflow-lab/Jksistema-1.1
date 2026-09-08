@@ -1901,7 +1901,12 @@
             const lojas = item.scope === 'lojas_integracoes'
                 ? `, ${Number(item.stores_count || 0)} loja(s)`
                 : '';
-            return `${nome}: ${item.file_count || 0} arquivo(s)${lojas}`;
+            const conexoes = Number(item.connection_conflicts || 0)
+                ? `; ${Number(item.connection_conflicts)} conexão(ões) divergente(s), preservadas nesta máquina`
+                : item.connections_preserved ? '; conexões locais preservadas' : '';
+            const confirmacao = item.receipt && item.receipt.state === 'confirmation_pending'
+                ? '; confirmação para a origem pendente' : '';
+            return `${nome}: ${item.file_count || 0} arquivo(s)${lojas}${conexoes}${confirmacao}`;
         }).join(' | ');
     }
 
@@ -2859,6 +2864,11 @@
                         || state.last_received_at
                         || (state.direction === 'pull' ? state.synced_at : '')
                         || '';
+                    const delivery = item.delivery || {};
+                    const deliveryText = delivery.state === 'received'
+                        ? `Recebimento confirmado em ${(delivery.machines || []).length} outra(s) máquina(s).${(delivery.machines || []).some(machine => Number(machine.connection_conflicts || 0) > 0) ? " Há conexões divergentes preservadas no destino." : ""}`
+                        : delivery.state === 'awaiting_receipt' ? 'Enviado; aguardando confirmação de outra máquina.'
+                        : delivery.state === 'unavailable' ? 'Confirmação de recebimento indisponível.' : '';
                     const remoteText = remote.exists
                         ? `Último envio: ${remote.updated_at || 'sem data'}${remote.machine_id ? ' | ' + remote.machine_id : ''}`
                         : 'Ainda não enviado.';
@@ -2870,7 +2880,7 @@
                     return `
                         <label class="check-item" title="${escaparHtml(item.description || '')}">
                             <input type="checkbox" data-machine-sync-scope="${escaparHtml(scope)}" ${selected.has(scope) ? 'checked' : ''}>
-                            <span>${escaparHtml(item.label || scope)}<span class="muted-line">${escaparHtml(remoteText)}</span><span class="muted-line">${escaparHtml(receiveText)}</span></span>
+                            <span>${escaparHtml(item.label || scope)}<span class="muted-line">${escaparHtml(remoteText)} ${escaparHtml(deliveryText)}</span><span class="muted-line">${escaparHtml(receiveText)}</span></span>
                         </label>
                     `;
                 }).join('');
@@ -3090,6 +3100,10 @@
             if (!enviando) {
                 const scopesConcluidosLista = Array.from(scopesConcluidos);
                 await atualizarCacheHistoricoFavoritosSincronizado(resultadosConcluidos, scopesConcluidosLista);
+                const detail = { received_scopes: scopesConcluidosLista, results: resultadosConcluidos };
+                window.dispatchEvent(new CustomEvent('jk:machine-sync-updated', { detail }));
+                try { if (window.parent !== window) window.parent.dispatchEvent(new window.parent.CustomEvent('jk:machine-sync-updated', { detail })); } catch (_error) {}
+
                 const resultadoLojas = resultados.find(item => item && item.scope === 'lojas_integracoes' && item.success !== false);
                 if (resultadoLojas) {
                     const lojasCarregadas = await recarregarLojasAposSincronizacao(['lojas_integracoes']);
@@ -3111,7 +3125,7 @@
                 const titulo = confirmados.length ? 'Sincronização parcial.' : 'Sincronização não concluída.';
                 throw new Error(`${titulo}${resumoConfirmados}${resumoFalhas}${resumoAusentes}`.trim());
             }
-            setMachineSyncStatus((enviando ? 'Dados enviados. ' : 'Dados importados. ') + resumoResultadosSync(resultados));
+            setMachineSyncStatus((enviando ? 'Dados enviados. O recebimento será confirmado separadamente. ' : 'Dados importados. ') + resumoResultadosSync(resultados));
         } catch (error) {
             setMachineSyncStatus(error.message || 'Erro ao sincronizar minhas máquinas.', true);
         } finally {

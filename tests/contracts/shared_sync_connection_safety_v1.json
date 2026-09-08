@@ -1,0 +1,9 @@
+{
+  "base_commit": "484e5090f6956b018e7fb846904e7d3f8631feb2",
+  "protocol": 1,
+  "unchanged_contracts": {
+    "backend/routers/shared_sync.py": "cfa772f6ce876f5bb69bcaeaf202fa4e978a9e1627d005494736b0035859e4e1",
+    "backend/schemas/shared_sync.py": "77cd15f9a5a712feecb20b85ac87c7a7f5c4f2f8d579f6f96b8f88dab1e93b82"
+  },
+  "behavior": "Machine sync preserves existing local connection blocks. Receipt means applied data, never OAuth validation."
+}

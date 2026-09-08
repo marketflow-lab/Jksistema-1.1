@@ -215,6 +215,8 @@
         revogarFotosTabela();
         const listaCompleta = filtrarProdutos();
         if (resetarPagina) state.paginaAtual = 1;
+        state.paginaAtual = Math.max(1, Math.min(state.paginaAtual, Math.ceil(listaCompleta.length / constants.itensPorPagina) || 1));
+        renderPaginacao(listaCompleta.length);
         const inicio = (state.paginaAtual - 1) * constants.itensPorPagina;
         const lista = listaCompleta.slice(inicio, inicio + constants.itensPorPagina);
         const novasColunas = core.construirColunas(lista.length ? lista : listaCompleta);

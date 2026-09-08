@@ -1598,6 +1598,7 @@ def _shared_sync_aplicar_lojas_integracoes(
     base_integracoes_bytes: Optional[bytes] = None,
     base_tombstones_bytes: Optional[bytes] = None,
     strict_oauth_conflicts: bool = False,
+    preserve_local_connections: bool = False,
 ) -> dict:
     """Mescla e grava o escopo inteiro sem expor estado parcialmente aplicado."""
     canonical_order = (
@@ -1619,6 +1620,8 @@ def _shared_sync_aplicar_lojas_integracoes(
 
     from backend.services import integracoes as integracoes_service
     from backend.services.shared_sync_merge_integracoes import (
+        _shared_sync_preserve_connection_blocks,
+        _shared_sync_connection_conflicts,
         _shared_sync_merge_integracoes_legacy_bytes,
         _shared_sync_merge_lojas_integracoes_bytes,
         _shared_sync_recuperar_backup_lojas_integracoes_bytes,
@@ -1851,9 +1854,16 @@ def _shared_sync_aplicar_lojas_integracoes(
                     ),
                     base_tombstones_bytes=base_tombstones_bytes,
                     strict_oauth_conflicts=strict_oauth_conflicts,
+                    preserve_local_connections=preserve_local_connections,
                     client_id=client_id,
                 )
             elif rel == "integracoes.json":
+                if preserve_local_connections:
+                    # The canonical store snapshot already carries new stores.
+                    # Never let a legacy file reimport old credentials over it.
+                    prepared[rel] = preimages.get(rel) or b"{}"
+                    continue
+
                 prepared[rel] = _shared_sync_merge_integracoes_legacy_bytes(
                     target_abs,
                     por_rel[rel],
@@ -1866,6 +1876,16 @@ def _shared_sync_aplicar_lojas_integracoes(
                         target_abs,
                         por_rel[rel],
                     )
+
+        connection_conflicts = 0
+        if preserve_local_connections:
+            original_connections = preimages.get("lojas_config.json") or b"[]"
+            connection_conflicts = _shared_sync_connection_conflicts(
+                original_connections, por_rel["lojas_config.json"],
+            )
+            prepared["lojas_config.json"] = _shared_sync_preserve_connection_blocks(
+                original_connections, prepared["lojas_config.json"],
+            )
 
         try:
             lojas = json.loads(prepared["lojas_config.json"].decode("utf-8"))
@@ -1919,6 +1939,25 @@ def _shared_sync_aplicar_lojas_integracoes(
                     "lojas_sync_tombstones.json",
                 }:
                     _shared_sync_atomic_write(targets[rel], prepared[rel])
+            # Verify the canonical write under the same lock and rollback scope.
+            if preserve_local_connections:
+                with open(tenant_lojas_path, "rb") as saved:
+                    persisted = saved.read()
+                expected = json.loads(_shared_sync_preserve_connection_blocks(original_connections, persisted))
+                actual = json.loads(persisted)
+                def connection_values(stores):
+                    return [{**store, "integracoes": {
+                        service: {key: value for key, value in config.items()
+                                  if key not in {"_sync_version", "_sync_updated_at"}}
+                        if isinstance(config, dict) else config
+                        for service, config in (store.get("integracoes") or {}).items()
+                    }} for store in stores]
+                if connection_values(expected) != connection_values(actual):
+                    raise HTTPException(409, detail={
+                        "code": "sync_connection_preservation_failed",
+                        "message": "A verificacao das conexoes falhou; o estado anterior foi restaurado.",
+                    })
+
             # Depois que todo o escopo foi confirmado, o backup imediato deve
             # refletir a uniao final. Manter nele a preimage reduzida faria uma
             # restauracao posterior perder novamente as contas recuperadas.
@@ -1998,6 +2037,10 @@ def _shared_sync_aplicar_lojas_integracoes(
         "backup_dir": backup_dir,
         "stores_count": len(lojas),
         "snapshot_stores_count": len(lojas_remotas),
+        "connection_conflicts": connection_conflicts,
+        "connections_preserved": preserve_local_connections,
+        "connection_verification": "not_performed",
+
     }
 
 
@@ -2093,6 +2136,9 @@ def _shared_sync_aplicar_pacote(
             base_lojas_bytes=base_lojas_bytes,
             base_integracoes_bytes=base_integracoes_bytes,
             base_tombstones_bytes=base_tombstones_bytes,
+            preserve_local_connections=bool(
+                (scope_config or {}).get("preserve_local_connections")
+            ),
             strict_oauth_conflicts=bool(
                 (scope_config or {}).get("strict_oauth_conflicts")
             ),

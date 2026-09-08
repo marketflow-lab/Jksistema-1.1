@@ -83,12 +83,13 @@ def _shared_sync_machine_pull_failure(scope: str, exc: Exception) -> dict:
     else:
         status_code = 500
         message = "Falha interna ao importar este dado. Os demais dados continuaram sendo processados."
-        logger.exception("[SHARED-SYNC] Falha no pull manual do escopo %s", scope)
+        logger.warning("[SHARED-SYNC] Falha de importacao no escopo %s", scope)
     return {
         "scope": scope,
         "success": False,
         "reason": "pull_failed",
         "status_code": status_code,
+        "error_code": str(exc.detail.get("code") or "") if isinstance(exc, HTTPException) and isinstance(exc.detail, dict) else "",
         "message": message,
     }
 

@@ -1290,6 +1290,30 @@
     window.__jkMachineSharedSyncAutoInit = true;
 
     let executando = false;
+    let falhasConsecutivas = 0;
+    let bloqueadoPorConflito = false;
+    let proximaTentativa = 0;
+    function mostrarPendenciaSync(message) {
+        let panel = document.getElementById('jkMachineSyncNotice');
+        if (!panel) {
+            panel = document.createElement('div');
+            panel.id = 'jkMachineSyncNotice';
+            panel.setAttribute('role', 'status');
+            panel.style.cssText = 'position:fixed;bottom:16px;right:16px;max-width:420px;padding:14px;background:#252a38;color:#fff;border:1px solid #d3a641;border-radius:8px;z-index:10050';
+            document.body.appendChild(panel);
+        }
+        panel.replaceChildren();
+        if (!message) { panel.hidden = true; return; }
+        panel.hidden = false;
+        const text = document.createElement('span');
+        text.textContent = message;
+        panel.appendChild(text);
+        const retry = document.createElement('button');
+        retry.textContent = 'Tentar receber novamente';
+        retry.style.marginLeft = '8px';
+        retry.onclick = () => { void executarMachineSync('manual'); };
+        panel.appendChild(retry);
+    }
     let ultimaExecucao = 0;
     let machineSyncInitialTimer = null;
     let machineSyncIntervalTimer = null;
@@ -1307,7 +1331,7 @@
 
     function telaSeguraParaSincronizar() {
         const path = String(window.location.pathname || '').toLowerCase();
-        return !path || path === '/' || /dashboard\.html$|configuracoes\.html$|admin_usuarios\.html$/.test(path);
+        return !path || path === '/' || /dashboard\.html$|configuracoes\.html$|admin_usuarios\.html$|cadastro\.html$|integracoes\.html$/.test(path);
     }
 
     function machineIdAtualSync() {
@@ -1350,6 +1374,9 @@
         if (executando || !obterToken() || tokenSessaoExpirado()) return null;
         if (/frontend_index\.html$/i.test(window.location.pathname || '')) return null;
         if (!telaSeguraParaSincronizar()) return null;
+        if (window.jkCadastroPodeReceberSync && !window.jkCadastroPodeReceberSync()) return null;
+        if (motivo === 'manual') { bloqueadoPorConflito = false; falhasConsecutivas = 0; proximaTentativa = 0; }
+        if (motivo !== 'manual' && (bloqueadoPorConflito || falhasConsecutivas >= 3 || Date.now() < proximaTentativa)) return null;
         if (motivo !== 'manual' && !liderMachineSync()) return null;
         if (motivo !== 'manual' && document.visibilityState === 'hidden') return null;
         const agora = Date.now();
@@ -1363,17 +1390,30 @@
                 body: JSON.stringify({ machine_id: machineIdAtualSync() })
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || data.success === false) {
+            if (!resp.ok) {
                 throw new Error(data.detail || data.message || 'Erro ao receber dados das outras maquinas.');
             }
             const pullResults = resultadosPullAplicados(data.results);
             if (pullResults.length) {
-                console.info('[Machine Sync] Dados recebidos das outras maquinas:', pullResults);
                 dispararAtualizacaoMachineSync(data, pullResults);
             }
+            const failures = [...(data.results || []), ...(data.skipped || [])]
+                .filter(item => item && (item.success === false || item.reason === 'pull_failed'));
+            if (failures.length || data.success === false) {
+                bloqueadoPorConflito = failures.some(item => [400, 401, 403, 409, 422].includes(Number(item.status_code)));
+                throw new Error(failures.map(item => `${item.scope}: ${item.message || 'recebimento pendente'}`).join(' / ') || 'Recebimento não concluído.');
+            }
+            falhasConsecutivas = 0;
+            proximaTentativa = 0;
+            const conflicts = pullResults.reduce((total, item) => total + Number(item.connection_conflicts || 0), 0);
+            const pendingReceipt = pullResults.some(item => item.receipt && item.receipt.state === 'confirmation_pending');
+            if (pullResults.length) mostrarPendenciaSync(conflicts ? `${conflicts} conexão(ões) divergente(s). As conexões locais foram preservadas. Confira em Integrações.`
+                : pendingReceipt ? 'Dados aplicados. A confirmação para a outra máquina está pendente.' : '');
             return data;
         } catch (err) {
-            console.warn('[Machine Sync]', err);
+            falhasConsecutivas += 1;
+            proximaTentativa = Date.now() + MACHINE_SHARED_SYNC_AUTO_INTERVAL_MS * (2 ** Math.min(falhasConsecutivas, 3));
+            mostrarPendenciaSync(`Recebimento pendente. ${String(err.message || 'Falha de comunicação.').slice(0, 500)}`);
             return null;
         } finally {
             executando = false;

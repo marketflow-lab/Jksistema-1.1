@@ -602,6 +602,50 @@ def _shared_sync_normalizar_integracao_conectada(servico_key: str, dados: Any) -
         saida["shared_without_oauth_tokens"] = False
     return saida
 
+def _shared_sync_preserve_connection_blocks(local_bytes: bytes, merged_bytes: bytes) -> bytes:
+    """Keep every pre-existing connection verbatim; never resurrect or delete one."""
+    local = _shared_sync_lojas_from_payload(_shared_sync_json_from_bytes(local_bytes, "local"))
+    merged = _shared_sync_lojas_from_payload(_shared_sync_json_from_bytes(merged_bytes, "merged"))
+    for store in local:
+        target = _shared_sync_loja_equivalente_para_push(store, merged)
+        if target is None:
+            raise HTTPException(409, detail={"code": "sync_connection_preservation_failed",
+                "message": "A importacao removeria uma loja local; nenhuma conexao foi alterada."})
+        target_integrations = target.setdefault("integracoes", {})
+        for service, config in (store.get("integracoes") or {}).items():
+            if not isinstance(config, dict) or not config:
+                continue
+            canonical = _shared_sync_servico_key(service)
+            for alias in list(target_integrations):
+                if _shared_sync_servico_key(alias) == canonical:
+                    target_integrations.pop(alias)
+            target_integrations[service] = _shared_sync_json_clone(config)
+    return json.dumps(merged, ensure_ascii=False).encode("utf-8")
+
+
+def _shared_sync_connection_conflicts(local_bytes: bytes, remote_bytes: bytes) -> int:
+    local = _shared_sync_lojas_from_payload(_shared_sync_json_from_bytes(local_bytes, "local"))
+    remote = _shared_sync_lojas_from_payload(_shared_sync_json_from_bytes(remote_bytes, "remote"))
+    count = 0
+    for store in local:
+        other = _shared_sync_loja_equivalente_para_push(store, remote)
+        if other is None:
+            continue
+        remote_configs = {_shared_sync_servico_key(k): v for k, v in (other.get("integracoes") or {}).items()}
+        for service, config in (store.get("integracoes") or {}).items():
+            if not isinstance(config, dict) or not config:
+                continue
+            other_config = remote_configs.get(_shared_sync_servico_key(service))
+            if other_config is None:
+                continue
+            def comparable(value):
+                return {k: v for k, v in (value or {}).items()
+                        if k not in {"updated_at", "_sync_version", "_sync_updated_at"}}
+            if comparable(config) != comparable(other_config):
+                count += 1
+    return count
+
+
 def _shared_sync_merge_integracao_loja(
     atual: Any,
     remoto: Any,
@@ -610,7 +654,13 @@ def _shared_sync_merge_integracao_loja(
     *,
     base: Any = None,
     strict_oauth_conflicts: bool = False,
+    preserve_local_connections: bool = False,
 ) -> Any:
+    # Synchronization is not an OAuth authority. Preserve the complete local
+    # block, including pending consent and explicit disconnects, without even
+    # normalizing its status. No provider call or token rotation occurs here.
+    if preserve_local_connections and isinstance(atual, dict) and atual:
+        return _shared_sync_json_clone(atual)
     if not isinstance(remoto, dict):
         return atual if _shared_sync_valor_preenchido(atual) else remoto
     if not isinstance(atual, dict):
@@ -1343,6 +1393,7 @@ def _shared_sync_merge_loja_integracoes(
     *,
     base: Optional[dict] = None,
     strict_oauth_conflicts: bool = False,
+    preserve_local_connections: bool = False,
 ) -> dict:
     merged = dict(_shared_sync_json_clone(atual or {}))
     atual_store_id = _shared_sync_loja_store_id(atual)
@@ -1453,6 +1504,7 @@ def _shared_sync_merge_loja_integracoes(
             servico_key=servico_key,
             base=base_dados,
             strict_oauth_conflicts=strict_oauth_conflicts,
+            preserve_local_connections=preserve_local_connections,
         )
         if chave_local is not None and chave_local != servico_key:
             integracoes.pop(chave_local, None)
@@ -2204,6 +2256,7 @@ def _shared_sync_merge_lojas_integracoes_bytes(
     incoming_tombstones_bytes: Optional[bytes] = None,
     base_tombstones_bytes: Optional[bytes] = None,
     strict_oauth_conflicts: bool = False,
+    preserve_local_connections: bool = False,
     client_id: str = "",
 ) -> bytes:
     remoto_payload = _shared_sync_json_from_bytes(remoto_bytes, "lojas_config.json")
@@ -2599,6 +2652,7 @@ def _shared_sync_merge_lojas_integracoes_bytes(
                 add_only=add_only,
                 base=loja_base,
                 strict_oauth_conflicts=strict_oauth_conflicts,
+                preserve_local_connections=preserve_local_connections,
             )
             merged_store_id = _shared_sync_loja_store_id(merged[idx])
             if merged_store_id:

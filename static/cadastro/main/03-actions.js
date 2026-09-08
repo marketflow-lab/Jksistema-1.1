@@ -260,6 +260,7 @@
         elements.btnSyncNcm.disabled = true;
         elements.btnImportarColunas.disabled = true;
         setSeletorLojaDisabled(true);
+        state.sincronizacaoArquivoAtiva = true;
         try {
             const storeId = validarLojaEspecifica();
             if (!storeId) return;
@@ -277,6 +278,8 @@
         } catch (error) {
             core.setStatus(`Erro ao importar colunas: ${error.message}`, 'error');
         } finally {
+            state.sincronizacaoArquivoAtiva = false;
+            global.dispatchEvent(new CustomEvent('jk:cadastro-operation-finished'));
             elements.inputImportarColunas.value = '';
             elements.btnAtualizar.disabled = false;
             setSeletorLojaDisabled(false);
@@ -289,6 +292,7 @@
         core.setStatus('Atualizando custo e imposto por SKU...', 'loading');
         elements.btnAtualizarCustosImpostos.disabled = true;
         setSeletorLojaDisabled(true);
+        state.sincronizacaoArquivoAtiva = true;
         try {
             const storeId = validarLojaEspecifica();
             if (!storeId) return;
@@ -312,6 +316,8 @@
         } catch (error) {
             core.setStatus(`Erro ao atualizar custos/impostos: ${error.message}`, 'error');
         } finally {
+            state.sincronizacaoArquivoAtiva = false;
+            global.dispatchEvent(new CustomEvent('jk:cadastro-operation-finished'));
             elements.inputAtualizarCustosImpostos.value = '';
             setSeletorLojaDisabled(false);
             atualizarEstadoMutacoes();

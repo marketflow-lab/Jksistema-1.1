@@ -172,6 +172,21 @@ function contentType(filePath) {
       && document.querySelector('#status').textContent.includes('Produtos carregados: 1'));
     assert.strictEqual(new URL(page.url()).searchParams.get('store_id'), 'store-rcl', 'seleção válida deve substituir a URL obsoleta');
 
+    await page.evaluate(() => {
+      const state = window.JKCadastro.runtime.state;
+      state.produtos = Array.from({ length: 120 }, (_, i) => ({ sku: String(i), store_id: state.storeIdSelecionado, nome: 'Synthetic' }));
+      window.JKCadastro.produtosTabela.renderTabela();
+    });
+    assert((await page.locator('#paginacao button').count()) > 0);
+    await page.evaluate(() => {
+      window.JKCadastro.runtime.state.produtos = [];
+      window.JKCadastro.produtosTabela.renderTabela();
+    });
+    assert.strictEqual(await page.locator('#paginacao button').count(), 0, 'lista vazia deve limpar paginação');
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('jk:machine-sync-updated', { detail: { received_scopes: ['cadastro'] } })));
+    await page.waitForFunction(() => window.JKCadastro.runtime.state.produtos.length === 1);
+    assert.match(await page.locator('#tBody').innerText(), /Produto store-rcl/);
+
     assert.deepStrictEqual(pageErrors, [], 'a tela não deve emitir erros JavaScript');
     assert.strictEqual(requests.some(item => ['POST', 'PUT', 'PATCH', 'DELETE'].includes(item.method)), false, 'trocar loja deve ser somente leitura');
     console.log('cadastro store buttons browser: OK');

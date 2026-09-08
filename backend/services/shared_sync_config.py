@@ -278,6 +278,17 @@ def _shared_sync_state_update(client_id: str, username: str, scope: str, meta: d
             "direction": direction,
             "synced_at": _shared_sync_now_iso(),
         })
+        if direction == "pull" and "local_content_stamp" in (meta or {}):
+            entry["local_content_stamp"] = str(meta.get("local_content_stamp") or "")
+        elif direction == "push":
+            entry.pop("local_content_stamp", None)
+        if direction == "pull":
+            for key in ("receipt_pending", "connection_conflicts"):
+                if key in (meta or {}):
+                    entry[key] = meta[key]
+        else:
+            entry.pop("receipt_pending", None)
+            entry.pop("connection_conflicts", None)
         scopes[scope] = entry
         _shared_sync_state_write(client_id, username, state)
 

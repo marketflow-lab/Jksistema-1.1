@@ -259,10 +259,9 @@ def test_machine_auto_run_puxa_apenas_hash_novo_de_outra_maquina_e_nunca_envia(m
 
     result = shared_sync_machine._shared_sync_machine_auto_run(sessao, "pc:destino")
 
-    assert pulls == ["cadastro"]
-    assert result["results"] == [{"scope": "cadastro", "success": True, "direction": "pull"}]
+    assert pulls == ["lojas_integracoes", "cadastro"]
+    assert result["results"] == [{"scope": scope, "success": True, "direction": "pull"} for scope in pulls]
     assert {item["scope"]: item["reason"] for item in result["skipped"]} == {
-        "lojas_integracoes": "already_current",
         "vendas": "same_machine",
         "favoritos_historico": "remote_missing",
     }
@@ -301,9 +300,14 @@ def test_machine_auto_continua_outros_scopes_quando_um_pull_falha(monkeypatch):
         "scope": "cadastro",
         "reason": "pull_failed",
         "status_code": 502,
+        "success": False,
+        "error_code": "",
         "message": "snapshot de cadastro invalido",
     }]
 
+
+    assert result["success"] is False
+    assert result["partial"] is True
 
 def test_machine_auto_aplica_lojas_antes_do_cadastro(monkeypatch):
     sessao = {"username": "operador", "client_id": "000002"}
@@ -3158,6 +3162,8 @@ def test_importacao_automatica_de_maquina_ainda_pode_pular_snapshot_ja_atual(mon
         lambda *args, **kwargs: pytest.fail("o pacote automatico ja atual nao deveria ser baixado"),
     )
 
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_machine_local_stamp", lambda *a: "local-stamp")
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_read", lambda *a: {"scopes": {"machine-sync:lojas_integracoes": {"local_content_stamp": "local-stamp"}}})
     result = shared_sync_machine._shared_sync_machine_pull_scope(sessao, "lojas_integracoes")
 
     assert result["skipped"] is True

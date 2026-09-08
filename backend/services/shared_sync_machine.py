@@ -46,6 +46,64 @@ def configure_shared_sync_machine_runtime(runtime_module=None, peer_globals: dic
     return runtime
 
 
+def _shared_sync_machine_receipt_identity(sessao: dict, machine_id: str) -> str:
+    import hashlib
+    actual = str(sessao.get("machine_id") or "").strip()
+    if not actual or actual != str(machine_id or "").strip():
+        raise HTTPException(403, detail="A confirmacao exige a maquina da sessao autenticada.")
+    return hashlib.sha256(actual.encode("utf-8")).hexdigest()
+
+
+def _shared_sync_machine_receipt(sessao: dict, scope: str, machine_id: str, meta: dict,
+                                 *, publish: bool = False, conflicts: int = 0) -> dict:
+    """Per-snapshot, per-device acknowledgement. Contains no credentials or user data."""
+    from backend.services.shared_sync_config import _firebase_shared_sync_collection_name
+    from backend.services.shared_sync_remote import _shared_sync_firestore_required
+    try:
+        member = _shared_sync_machine_receipt_identity(sessao, machine_id)
+        pointer = _shared_sync_machine_doc_id(sessao.get("client_id"), sessao.get("username"), scope)
+        fingerprint = str(meta.get("snapshot_hash") or "")
+        snapshot = str(meta.get("snapshot_id") or meta.get("id") or pointer)
+        if not re.fullmatch(r"[a-f0-9]{64}", fingerprint):
+            raise ValueError("invalid_receipt_snapshot")
+        db = _shared_sync_firestore_required()
+        receipts = db.collection(_firebase_shared_sync_collection_name()).document(pointer).collection("receipts")
+        if publish:
+            receipts.document(member).set({"protocol": 1, "snapshot_hash": fingerprint,
+                "snapshot_id": snapshot, "applied_at": _shared_sync_now_iso(),
+                "connection_conflicts": max(0, int(conflicts)), "connection_verification": "not_performed"}, timeout=5, retry=None)
+            return {"state": "confirmed", "protocol": 1}
+        matched = []
+        for item in receipts.limit(100).stream(timeout=5, retry=None):
+            value = item.to_dict() or {}
+            if item.id != member and value.get("protocol") == 1 and value.get("snapshot_hash") == fingerprint and value.get("snapshot_id") == snapshot:
+                matched.append({"machine_ref": item.id, "applied_at": str(value.get("applied_at") or ""),
+                                "connection_conflicts": int(value.get("connection_conflicts") or 0)})
+        return {"state": "received" if matched else "awaiting_receipt", "machines": matched, "protocol": 1}
+    except Exception:
+        # An acknowledgement outage must not roll back applied data or secrets.
+        return {"state": "confirmation_pending" if publish else "unavailable", "protocol": 1}
+
+
+def _shared_sync_machine_local_stamp(sessao: dict, scope: str) -> str:
+    """Detect replaced/deleted local files even if the remote snapshot is unchanged."""
+    import hashlib
+    try:
+        root = get_tenant_path(sessao.get("client_id"))
+        entries = []
+        for parent, dirs, files in os.walk(root, followlinks=False):
+            dirs[:] = [d for d in dirs if not d.startswith((".", "_")) and not os.path.islink(os.path.join(parent, d))]
+            for name in files:
+                path = os.path.join(parent, name)
+                rel = os.path.relpath(path, root).replace("\\", "/")
+                if _shared_sync_scope_match(scope, rel) and not os.path.islink(path):
+                    stat = os.stat(path)
+                    entries.append((rel, stat.st_size, stat.st_mtime_ns))
+        return hashlib.sha256(json.dumps(sorted(entries)).encode()).hexdigest()
+    except (OSError, NameError):
+        return ""
+
+
 def _shared_sync_machine_state_scope(scope: str) -> str:
     return f"machine-sync:{scope}"
 
@@ -146,8 +204,22 @@ def _shared_sync_machine_pull_scope_serialized(
     already_current = _shared_sync_pull_already_current(
         sessao.get("client_id"), sessao.get("username") or "", state_scope, meta,
     )
-    if not force and already_current:
-        return _shared_sync_pull_skip_payload(scope, meta)
+    local_stamp = _shared_sync_machine_local_stamp(sessao, scope)
+    local_verified = False
+    saved_scope = {}
+    if not force and already_current and local_stamp:
+        saved_state = _shared_sync_state_read(sessao.get("client_id"), sessao.get("username") or "")
+        saved_scope = (saved_state.get("scopes") or {}).get(state_scope) or {}
+        local_verified = local_stamp == saved_scope.get("local_content_stamp")
+    if not force and already_current and (scope not in {"cadastro", "lojas_integracoes"} or local_verified):
+        receipt = None
+        if saved_scope.get("receipt_pending"):
+            receipt = _shared_sync_machine_receipt(sessao, scope, machine_id, meta, publish=True,
+                conflicts=int(saved_scope.get("connection_conflicts") or 0))
+            _shared_sync_state_update(sessao.get("client_id"), sessao.get("username") or "", state_scope,
+                {**meta, "local_content_stamp": local_stamp, "receipt_pending": receipt["state"] != "confirmed",
+                 "connection_conflicts": int(saved_scope.get("connection_conflicts") or 0)}, "pull")
+        return _shared_sync_pull_skip_payload(scope, meta, extra={"receipt": receipt} if receipt else None)
     if scope == "lojas_integracoes":
         remoto = _shared_sync_obter_bundle_remoto_para_guard(
             bundle_id,
@@ -241,13 +313,19 @@ def _shared_sync_machine_pull_scope_serialized(
         "share_between_users": bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped")),
         "base_bundle": base_bundle,
         "strict_oauth_conflicts": scope == "lojas_integracoes",
+        "preserve_local_connections": scope == "lojas_integracoes",
         # Uma copia entre maquinas da mesma conta pode preservar o modo legado
         # de fotos quando o produtor ainda nao executou a migracao por loja.
         # Pacotes com fotos ja escopadas continuam exigindo a configuracao.
         "allow_legacy_cadastro_bootstrap": scope == "cadastro",
     }
     result = _shared_sync_aplicar_pacote(sessao.get("client_id"), scope, bundle, sessao.get("username") or "", scope_config)
-    _shared_sync_state_update(sessao.get("client_id"), sessao.get("username") or "", state_scope, meta, "pull")
+    receipt = _shared_sync_machine_receipt(sessao, scope, machine_id, meta, publish=True,
+                                         conflicts=int(result.get("connection_conflicts") or 0))
+    local_meta = {**meta, "local_content_stamp": _shared_sync_machine_local_stamp(sessao, scope),
+                  "receipt_pending": receipt["state"] != "confirmed",
+                  "connection_conflicts": int(result.get("connection_conflicts") or 0)}
+    _shared_sync_state_update(sessao.get("client_id"), sessao.get("username") or "", state_scope, local_meta, "pull")
     return {
         "scope": scope,
         "success": True,
@@ -255,6 +333,12 @@ def _shared_sync_machine_pull_scope_serialized(
         "file_count": result.get("file_count") or 0,
         "stores_count": int(result.get("stores_count") or 0),
         "snapshot_stores_count": int(result.get("snapshot_stores_count") or 0),
+        "connection_conflicts": int(result.get("connection_conflicts") or 0),
+        "connections_preserved": bool(result.get("connections_preserved")),
+        "connection_verification": "not_performed",
+        "delivery_state": "applied",
+        "receipt": receipt,
+
         "backup_dir": result.get("backup_dir") or "",
         "snapshot_hash": meta.get("snapshot_hash") or "",
         "remote_updated_at": meta.get("updated_at") or "",
@@ -296,6 +380,7 @@ def _shared_sync_machine_status_payload(sessao: dict, machine_id: str = "") -> d
                 )
                 and remote_machine != current_machine
             ),
+            "delivery": _shared_sync_machine_receipt(sessao, scope, machine_id, meta) if meta and scope in config.get("scopes", []) else {"state": "not_sent"},
             "synced_at": synced_at,
             "last_received_at": synced_at if str(scope_state.get("direction") or "") == "pull" else "",
             "remote": {
@@ -364,6 +449,8 @@ def _shared_sync_machine_auto_run(sessao: dict, machine_id: str = "", requested:
         state_snapshot_id = str(state_scope.get("snapshot_id") or "").strip()
         if (
             state_hash == remote_hash
+            and not state_scope.get("receipt_pending")
+            and (scope not in {"cadastro", "lojas_integracoes"} or (state_scope.get("local_content_stamp") and state_scope.get("local_content_stamp") == _shared_sync_machine_local_stamp(sessao, scope)))
             and (not remote_snapshot_id or state_snapshot_id == remote_snapshot_id)
         ):
             skipped.append({"scope": scope, "reason": "already_current", "snapshot_hash": remote_hash})
@@ -373,22 +460,12 @@ def _shared_sync_machine_auto_run(sessao: dict, machine_id: str = "", requested:
             continue
         try:
             results.append(_shared_sync_machine_pull_scope(sessao, scope, machine_id=machine_id))
-        except HTTPException as exc:
-            skipped.append({
-                "scope": scope,
-                "reason": "pull_failed",
-                "status_code": int(exc.status_code or 500),
-                "message": str(exc.detail or "Falha ao receber este dado."),
-            })
         except Exception as exc:
-            logger.warning("[SHARED-SYNC] Falha no auto-pull do escopo %s: %s", scope, exc)
-            skipped.append({
-                "scope": scope,
-                "reason": "pull_failed",
-                "status_code": 500,
-                "message": "Falha interna ao receber este dado; uma nova tentativa sera feita.",
-            })
-    return {"success": True, "direction": "machine-auto", "results": results, "skipped": skipped}
+            from backend.services.shared_sync_machine_endpoints import _shared_sync_machine_pull_failure
+            skipped.append(_shared_sync_machine_pull_failure(scope, exc))
+    failures = [item for item in skipped if item.get("reason") == "pull_failed"]
+    return {"success": not failures, "partial": bool(failures) and bool(results),
+            "direction": "machine-auto", "results": results, "skipped": skipped}
 
 def _shared_sync_status_payload(client_id: str, config: Optional[dict] = None) -> dict:
     cfg = config or _shared_sync_config_read(client_id)

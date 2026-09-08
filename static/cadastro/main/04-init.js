@@ -52,6 +52,37 @@
         const arquivo = elements.inputAtualizarCustosImpostos.files && elements.inputAtualizarCustosImpostos.files[0];
         if (arquivo) actions.atualizarCustosImpostosPorSku(arquivo);
     });
+    let syncPendente = false;
+    let recarregandoSync = false;
+    global.jkCadastroPodeReceberSync = () => {
+        const state = cadastro.runtime.state;
+        const active = document.activeElement;
+        return !state.carregandoProdutos && !state.importacaoCatalogoAtiva
+            && !state.importacaoCatalogoAplicando && !state.importacaoCatalogoCancelando
+            && !state.sincronizacaoArquivoAtiva
+            && !(active && (active.isContentEditable || active.closest?.('#fornecedorForm')));
+    };
+    async function atualizarCadastroRecebido() {
+        if (!syncPendente || recarregandoSync || !global.jkCadastroPodeReceberSync()) return;
+        syncPendente = false;
+        recarregandoSync = true;
+        try {
+            if (await actions.inicializarLojas()) await actions.carregarProdutos();
+        } catch (_error) {
+            syncPendente = true;
+            cadastro.core.setStatus('Dados recebidos. Atualize a lista para conferir o cadastro.', 'error');
+        } finally { recarregandoSync = false; }
+    }
+    global.addEventListener('jk:machine-sync-updated', event => {
+        const scopes = event.detail && event.detail.received_scopes || [];
+        if (!scopes.some(scope => ['cadastro', 'lojas_integracoes'].includes(scope))) return;
+        syncPendente = true;
+        void atualizarCadastroRecebido();
+    });
+    global.addEventListener('focus', () => { void atualizarCadastroRecebido(); });
+    document.addEventListener('focusout', () => { setTimeout(atualizarCadastroRecebido, 0); });
+    global.addEventListener('jk:cadastro-operation-finished', () => { void atualizarCadastroRecebido(); });
+
     async function iniciar() {
         actions.inicializarNcm();
         fornecedores.init();

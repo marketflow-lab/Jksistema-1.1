@@ -313,6 +313,8 @@ def _shared_sync_audit(sessao: dict, *, record: dict, results: list[dict], link_
                 "success": item.get("success") is not False,
                 "reason": str(item.get("reason") or ""),
                 "status_code": int(item.get("status_code") or 0),
+                "error_code": str(item.get("error_code") or ""),
+                "connection_conflicts": int(item.get("connection_conflicts") or 0),
             }
             for item in (results or []) if isinstance(item, dict)
         ],
