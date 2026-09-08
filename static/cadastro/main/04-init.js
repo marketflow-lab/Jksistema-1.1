@@ -73,15 +73,15 @@
             cadastro.core.setStatus('Dados recebidos. Atualize a lista para conferir o cadastro.', 'error');
         } finally { recarregandoSync = false; }
     }
-    global.addEventListener('jk:machine-sync-updated', event => {
+    global.addEventListener?.('jk:machine-sync-updated', event => {
         const scopes = event.detail && event.detail.received_scopes || [];
         if (!scopes.some(scope => ['cadastro', 'lojas_integracoes'].includes(scope))) return;
         syncPendente = true;
         void atualizarCadastroRecebido();
     });
-    global.addEventListener('focus', () => { void atualizarCadastroRecebido(); });
+    global.addEventListener?.('focus', () => { void atualizarCadastroRecebido(); });
     document.addEventListener('focusout', () => { setTimeout(atualizarCadastroRecebido, 0); });
-    global.addEventListener('jk:cadastro-operation-finished', () => { void atualizarCadastroRecebido(); });
+    global.addEventListener?.('jk:cadastro-operation-finished', () => { void atualizarCadastroRecebido(); });
 
     async function iniciar() {
         actions.inicializarNcm();

@@ -3,14 +3,9 @@
     const cadastro = global.JKCadastro;
     if (!cadastro || !cadastro.components.has('actions')) throw new Error('Ações do Cadastro não inicializadas.');
     if (cadastro.components.has('importacoes-catalogos')) return;
-    const { elements, state } = cadastro.runtime;
-    const actions = cadastro.actions;
-    const storeTools = global.JKCadastroStore;
-    const POLL_INTERVAL_MS = 750, MAX_PREVIEW_ROWS = 500, MAX_CONFLICTS = 50;
-    const SOURCES = Object.freeze({ bling: 'Bling', mercadolivre: 'Mercado Livre' });
-    const POLLABLE = new Set(['queued', 'pending', 'running', 'collecting', 'applying']);
-    const CANCELLABLE = new Set(['queued', 'pending', 'running', 'collecting', 'ready']);
-    const TERMINAL_ERRORS = new Set(['error', 'failed', 'stale']);
+    const { elements, state } = cadastro.runtime, actions = cadastro.actions, storeTools = global.JKCadastroStore;
+    const POLL_INTERVAL_MS = 750, MAX_PREVIEW_ROWS = 500, MAX_CONFLICTS = 50, SOURCES = Object.freeze({ bling: 'Bling', mercadolivre: 'Mercado Livre' });
+    const POLLABLE = new Set(['queued', 'pending', 'running', 'collecting', 'applying']), CANCELLABLE = new Set(['queued', 'pending', 'running', 'collecting', 'ready']), TERMINAL_ERRORS = new Set(['error', 'failed', 'stale']);
     const flow = { applying: false, cancelling: false, jobId: '', lastFocus: null, lastPayload: null, opened: false, requestSeq: 0, source: '', storeId: '' };
     function authHeaders(extra) { if (typeof global.obterAuthHeaders !== 'function') throw new Error('Autenticação indisponível.'); return global.obterAuthHeaders(extra); }
     function apiImportacao(storeId, suffix) { return `${storeTools.apiLoja(storeId, 'importacoes')}/${suffix}`; }
