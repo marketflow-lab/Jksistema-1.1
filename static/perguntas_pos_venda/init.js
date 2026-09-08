@@ -64,21 +64,47 @@ if (aiTrainingScope) {
     aiTrainingScope.addEventListener('change', () => {
         state.treinamentoEscopoLoja = String(aiTrainingScope.value || '').trim();
         state.treinamentoCarregado = false;
+        state.produtosTreinamento = [];
+        state.produtosTreinamentoCarregados = false;
+        state.produtosTreinamentoEscopo = null;
+        aiTrainingSku.value = '';
+        if (aiTrainingSkuSearch) aiTrainingSkuSearch.value = '';
+        fecharBalaoSkuTreinamento();
+        fecharEditorOrientacoesGerais(false);
         limparChatTreinamento();
         carregarTreinamentoAI(true);
         carregarSkusTreinamentoAI();
     });
 }
 aiTrainingSku.addEventListener('change', () => {
-    salvarNotasSkuTreinamentoAtual();
     renderizarSkuTreinamentoInfo();
     renderizarNotasSkuTreinamento();
+    renderizarListaSkusTreinamento();
+});
+if (aiTrainingSkuSearch) {
+    aiTrainingSkuSearch.addEventListener('input', renderizarListaSkusTreinamento);
+}
+btnAiTrainingAdicionarGeral?.addEventListener('click', abrirEditorOrientacoesGerais);
+btnAiTrainingEditarGerais?.addEventListener('click', abrirEditorOrientacoesGerais);
+btnAiTrainingCancelarGerais?.addEventListener('click', () => fecharEditorOrientacoesGerais(true));
+btnAiTrainingSalvarGerais?.addEventListener('click', salvarOrientacoesGeraisTreinamento);
+btnAiTrainingFecharSku?.addEventListener('click', fecharBalaoSkuTreinamento);
+btnAiTrainingCancelarSku?.addEventListener('click', exibirLeituraOrientacaoSku);
+btnAiTrainingEditarSku?.addEventListener('click', editarOrientacaoSkuTreinamento);
+btnAiTrainingSalvarSku?.addEventListener('click', salvarOrientacaoSkuTreinamento);
+aiTrainingSkuPopover?.addEventListener('click', (event) => {
+    if (event.target === aiTrainingSkuPopover) fecharBalaoSkuTreinamento();
+});
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !aiTrainingSkuPopover?.classList.contains('hidden')) {
+        fecharBalaoSkuTreinamento();
+    }
 });
 aiTrainingTypeTabs.forEach((button) => {
     button.addEventListener('click', () => trocarTipoTreinamento(button.dataset.trainingType));
 });
 btnAiTrainingAdicionarExemplo.addEventListener('click', adicionarExemploTreinamento);
-btnAiTrainingSalvar.addEventListener('click', salvarTreinamentoAI);
+btnAiTrainingSalvar.addEventListener('click', () => salvarTreinamentoAI().catch(() => {}));
 btnAiTrainingSimular.addEventListener('click', simularTreinamentoAI);
 aiTrainingPergunta.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !event.shiftKey) {

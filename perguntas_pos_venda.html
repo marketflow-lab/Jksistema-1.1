@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Perguntas e pós venda - JK Sistema</title>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
-    <link rel="stylesheet" href="/perguntas_pos_venda/styles.css?v=20260718-last-update">
+    <link rel="stylesheet" href="/perguntas_pos_venda/styles.css?v=20260908-store-sku-guidance-v1">
 </head>
 <body>
     <div class="container">
@@ -30,7 +30,7 @@
                 <button id="tab-perguntas" class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="aba-perguntas" data-tab="perguntas">Perguntas <span id="tab-perguntas-notificacao" class="notification-pill tab-notification hidden" title="Perguntas não respondidas">0</span></button>
                 <button id="tab-pos-venda" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-pos-venda" data-tab="pos-venda">Pós venda</button>
                 <button id="tab-mediacao" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-mediacao" data-tab="mediacao">Mediação</button>
-                <button id="tab-treinar-ai" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-treinar-ai" data-tab="treinar-ai">Treinar AI</button>
+                <button id="tab-treinar-ai" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-treinar-ai" data-tab="treinar-ai">Treinar IA</button>
             </div>
 
                 <div id="perguntas-automation-controls" class="automation-controls"></div>
@@ -138,8 +138,8 @@
             <section id="aba-treinar-ai" class="tab-content" role="tabpanel" aria-labelledby="tab-treinar-ai">
                 <div class="section-head">
                     <div>
-                        <h2>Treinar AI</h2>
-                        <p>Personalize o vendedor sem alterar as regras de segurança, pesquisa e veracidade do Mercado Livre.</p>
+                        <h2>Treinar IA por loja</h2>
+                        <p>Consulte e mantenha as orientações gerais da loja e as orientações específicas de cada SKU.</p>
                     </div>
                     <span id="ai-training-status" class="status-line">Carregando orientações...</span>
                 </div>
@@ -158,54 +158,91 @@
                 <div class="training-grid">
                     <div class="training-card training-stack">
                         <div class="training-card-title">
-                            <h3>1. Regras gerais</h3>
-                            <p>Valem para perguntas de anúncio.</p>
+                            <h3>1. Orientações gerais da loja</h3>
+                            <p>Valem para as perguntas de anúncio somente da loja selecionada.</p>
                         </div>
                         <label class="training-field">
-                            <span>Escopo do treinamento</span>
-                            <select id="ai-training-scope" data-contract="lojaEscopoTreinamento" data-bulk-config-endpoint="/api/mercadolivre/perguntas/lojas/config-lote" data-all-accounts-label="Todas as contas conectadas">
-                                <option value="">Padrao para todas as contas</option>
+                            <span>Loja</span>
+                            <select id="ai-training-scope" data-contract="lojaEscopoTreinamento">
+                                <option value="">Selecione uma loja</option>
                             </select>
-                            <small>O escopo global só pode ser escolhido nesta tela. Escolha uma conta para criar políticas próprias sem afetar as demais lojas.</small>
+                            <small>Cada loja possui sua própria base. Orientações e SKUs não são compartilhados com outras contas.</small>
                         </label>
-                        <label class="training-field">
-                            <span id="ai-training-orientacoes-label">Orientações para perguntas de anúncio</span>
-                            <textarea id="ai-training-orientacoes" rows="5" placeholder="Ex.: responder sempre com tom cordial, não prometer prazo sem confirmação, pedir modelo/ano quando a aplicação do produto for incerta..."></textarea>
-                            <small>Altera tom, estrutura e abordagem comercial; não altera ferramentas, pesquisa, assinatura, fatos confirmados ou políticas superiores.</small>
-                        </label>
-                        <label class="training-field">
-                            <span>Base de conhecimento da loja</span>
-                            <textarea id="ai-training-contexto-loja" rows="4" placeholder="Ex.: política de garantia, prazo de postagem, como falar sobre compatibilidade, estoque, troca, emissão de nota e atendimento."></textarea>
-                            <small>Registre políticas editoriais e fatos estáveis da loja. Dados atuais do anúncio e das APIs sempre têm prioridade.</small>
-                        </label>
-                        <label class="training-field">
-                            <span>Compatibilidade e autopeças</span>
-                            <textarea id="ai-training-compatibilidade" rows="4" placeholder="Ex.: sempre comparar peça, lado, dianteiro/traseiro, marca, modelo, motor e ano. Se faltar informação, pedir código e versão ou motorização."></textarea>
-                        </label>
-                        <label class="training-field">
-                            <span>O que a IA nunca deve afirmar</span>
-                            <textarea id="ai-training-proibicoes" rows="3" placeholder="Ex.: não garantir compatibilidade sem dados suficientes, não prometer prazo fora do Mercado Livre, não inventar código OEM."></textarea>
-                        </label>
+                        <div class="training-section-actions">
+                            <button id="btn-ai-training-adicionar-geral" class="action-btn" type="button">Adicionar orientação</button>
+                            <button id="btn-ai-training-editar-gerais" class="action-btn secondary" type="button">Editar orientações</button>
+                        </div>
+                        <div id="ai-training-general-summary" class="training-guidance-summary" aria-live="polite"></div>
+                        <div id="ai-training-general-editor" class="training-general-editor hidden">
+                            <label class="training-field">
+                                <span id="ai-training-orientacoes-label">Orientações para perguntas de anúncio</span>
+                                <textarea id="ai-training-orientacoes" rows="5" placeholder="Ex.: responder sempre com tom cordial, não prometer prazo sem confirmação, pedir modelo/ano quando a aplicação do produto for incerta..."></textarea>
+                                <small>Altera tom, estrutura e abordagem comercial; não altera ferramentas, pesquisa, assinatura, fatos confirmados ou políticas superiores.</small>
+                            </label>
+                            <label class="training-field">
+                                <span>Base de conhecimento da loja</span>
+                                <textarea id="ai-training-contexto-loja" rows="4" placeholder="Ex.: política de garantia, prazo de postagem, como falar sobre compatibilidade, estoque, troca, emissão de nota e atendimento."></textarea>
+                                <small>Registre políticas editoriais e fatos estáveis da loja. Dados atuais do anúncio e das APIs sempre têm prioridade.</small>
+                            </label>
+                            <label class="training-field">
+                                <span>Compatibilidade e autopeças</span>
+                                <textarea id="ai-training-compatibilidade" rows="4" placeholder="Ex.: sempre comparar peça, lado, dianteiro/traseiro, marca, modelo, motor e ano. Se faltar informação, pedir código e versão ou motorização."></textarea>
+                            </label>
+                            <label class="training-field">
+                                <span>O que a IA nunca deve afirmar</span>
+                                <textarea id="ai-training-proibicoes" rows="3" placeholder="Ex.: não garantir compatibilidade sem dados suficientes, não prometer prazo fora do Mercado Livre, não inventar código OEM."></textarea>
+                            </label>
+                            <div class="training-actions">
+                                <button id="btn-ai-training-cancelar-gerais" class="action-btn secondary" type="button">Cancelar</button>
+                                <button id="btn-ai-training-salvar-gerais" class="action-btn" type="button">Salvar orientações gerais</button>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="training-card chat-card">
                         <div class="training-card-title">
-                            <h3>2. SKU, modelos e simulação</h3>
-                            <p>Escolha um SKU para notas próprias ou salve modelos gerais que servem para todos os produtos.</p>
+                            <h3>2. Orientações específicas por SKU</h3>
+                            <p>Todos os SKUs cadastrados na loja. Clique em um produto para abrir suas orientações.</p>
                         </div>
-                        <label class="training-field">
-                            <span>SKU para notas específicas e modelos</span>
-                            <select id="ai-training-sku">
-                                <option value="">Carregando SKUs...</option>
-                            </select>
-                            <small>Deixe sem SKU para cadastrar modelos gerais.</small>
-                        </label>
-                        <div id="ai-training-sku-info" class="training-sku-info hidden"></div>
-                        <label class="training-field">
-                            <span>Notas específicas deste SKU</span>
-                            <textarea id="ai-training-notas-sku" rows="3" placeholder="Aplicações confirmadas, códigos, variações, exceções e cuidados para este SKU."></textarea>
-                            <small>Podem fornecer fatos apenas para este SKU, mas perdem para cadastro, anúncio e APIs oficiais atuais.</small>
-                        </label>
+                        <select id="ai-training-sku" class="hidden" aria-hidden="true" tabindex="-1">
+                            <option value="">Nenhum SKU selecionado</option>
+                        </select>
+                        <div class="training-sku-toolbar">
+                            <input id="ai-training-sku-search" type="search" placeholder="Buscar por SKU, produto, marca ou MLB" aria-label="Buscar SKU">
+                            <span id="ai-training-sku-count" class="training-sku-count">Carregando SKUs...</span>
+                        </div>
+                        <div id="ai-training-sku-list" class="training-sku-list" aria-live="polite"></div>
+
+                        <div id="ai-training-sku-popover" class="training-sku-popover hidden" aria-hidden="true">
+                            <div class="training-sku-bubble" role="dialog" aria-modal="true" aria-labelledby="ai-training-sku-popover-title">
+                                <div class="training-sku-bubble-head">
+                                    <div>
+                                        <span class="training-bubble-eyebrow">Orientação específica</span>
+                                        <h4 id="ai-training-sku-popover-title">SKU</h4>
+                                    </div>
+                                    <button id="btn-ai-training-fechar-sku" class="training-close-btn" type="button" aria-label="Fechar orientações do SKU">×</button>
+                                </div>
+                                <div id="ai-training-sku-info" class="training-sku-info hidden"></div>
+                                <div id="ai-training-sku-guidance-view" class="training-guidance-summary"></div>
+                                <div id="ai-training-sku-editor" class="hidden">
+                                    <label class="training-field">
+                                        <span>Orientações específicas deste SKU</span>
+                                        <textarea id="ai-training-notas-sku" rows="5" placeholder="Aplicações confirmadas, códigos, variações, exceções e cuidados para este SKU."></textarea>
+                                        <small>Estas orientações ficam isoladas neste SKU e nesta loja. Cadastro, anúncio e APIs oficiais atuais sempre têm prioridade.</small>
+                                    </label>
+                                </div>
+                                <div class="training-actions">
+                                    <button id="btn-ai-training-cancelar-sku" class="action-btn secondary hidden" type="button">Cancelar</button>
+                                    <button id="btn-ai-training-editar-sku" class="action-btn secondary" type="button">Editar</button>
+                                    <button id="btn-ai-training-salvar-sku" class="action-btn hidden" type="button">Salvar orientação do SKU</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="training-card-title training-subsection-title">
+                            <h3>3. Modelos e simulação</h3>
+                            <p>O SKU aberto acima também será usado nos modelos específicos e na simulação.</p>
+                        </div>
                         <div class="training-examples">
                             <div class="training-examples-head">
                                 <span>Modelos de pergunta e resposta</span>
@@ -244,7 +281,7 @@
                             </div>
                         </div>
                         <div class="training-actions">
-                            <button id="btn-ai-training-salvar" class="action-btn secondary" type="button">Salvar treinamento da IA</button>
+                            <button id="btn-ai-training-salvar" class="action-btn secondary" type="button">Salvar modelos e alterações</button>
                         </div>
                     </div>
                 </div>
@@ -257,8 +294,8 @@
     <script src="/perguntas_pos_venda/perguntas.js?v=20260825-seller-profile-v2"></script>
     <script src="/perguntas_pos_venda/pos-venda.js?v=20260720-pos-venda-manual"></script>
     <script src="/perguntas_pos_venda/mediacao.js?v=20260720-pos-venda-manual"></script>
-    <script src="/perguntas_pos_venda/treinamento-ia.js?v=20260828-cadastro-fotos-lojas-v1"></script>
-    <script src="/perguntas_pos_venda/init.js?v=20260720-pos-venda-manual"></script>
+    <script src="/perguntas_pos_venda/treinamento-ia.js?v=20260908-store-sku-guidance-v1"></script>
+    <script src="/perguntas_pos_venda/init.js?v=20260908-store-sku-guidance-v1"></script>
     <script src="/ia-sidebar.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </body>
 </html>

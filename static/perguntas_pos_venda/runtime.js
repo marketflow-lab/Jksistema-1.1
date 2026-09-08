@@ -131,9 +131,26 @@ const aiTrainingScope = document.getElementById('ai-training-scope');
 const aiTrainingContextoLoja = document.getElementById('ai-training-contexto-loja');
 const aiTrainingCompatibilidade = document.getElementById('ai-training-compatibilidade');
 const aiTrainingProibicoes = document.getElementById('ai-training-proibicoes');
+const aiTrainingGeneralSummary = document.getElementById('ai-training-general-summary');
+const aiTrainingGeneralEditor = document.getElementById('ai-training-general-editor');
+const btnAiTrainingAdicionarGeral = document.getElementById('btn-ai-training-adicionar-geral');
+const btnAiTrainingEditarGerais = document.getElementById('btn-ai-training-editar-gerais');
+const btnAiTrainingCancelarGerais = document.getElementById('btn-ai-training-cancelar-gerais');
+const btnAiTrainingSalvarGerais = document.getElementById('btn-ai-training-salvar-gerais');
 const aiTrainingSku = document.getElementById('ai-training-sku');
 const aiTrainingSkuInfo = document.getElementById('ai-training-sku-info');
 const aiTrainingNotasSku = document.getElementById('ai-training-notas-sku');
+const aiTrainingSkuSearch = document.getElementById('ai-training-sku-search');
+const aiTrainingSkuCount = document.getElementById('ai-training-sku-count');
+const aiTrainingSkuList = document.getElementById('ai-training-sku-list');
+const aiTrainingSkuPopover = document.getElementById('ai-training-sku-popover');
+const aiTrainingSkuPopoverTitle = document.getElementById('ai-training-sku-popover-title');
+const aiTrainingSkuGuidanceView = document.getElementById('ai-training-sku-guidance-view');
+const aiTrainingSkuEditor = document.getElementById('ai-training-sku-editor');
+const btnAiTrainingFecharSku = document.getElementById('btn-ai-training-fechar-sku');
+const btnAiTrainingCancelarSku = document.getElementById('btn-ai-training-cancelar-sku');
+const btnAiTrainingEditarSku = document.getElementById('btn-ai-training-editar-sku');
+const btnAiTrainingSalvarSku = document.getElementById('btn-ai-training-salvar-sku');
 const aiTrainingExemploPergunta = document.getElementById('ai-training-exemplo-pergunta');
 const aiTrainingExemploResposta = document.getElementById('ai-training-exemplo-resposta');
 const aiTrainingExemploEscopo = document.getElementById('ai-training-exemplo-escopo');
@@ -287,12 +304,14 @@ function montarSeletorEscopoTreinamento() {
     const valorAtual = String(state.treinamentoEscopoLoja || aiTrainingScope.value || '').trim();
     aiTrainingScope.innerHTML = '';
 
-    const optGlobal = document.createElement('option');
-    optGlobal.value = '';
-    optGlobal.textContent = 'Padrao para todas as contas';
-    aiTrainingScope.appendChild(optGlobal);
+    const optSelecione = document.createElement('option');
+    optSelecione.value = '';
+    optSelecione.textContent = 'Selecione uma loja';
+    optSelecione.disabled = true;
+    aiTrainingScope.appendChild(optSelecione);
 
-    lojasMercadoLivreConectadas().forEach((loja) => {
+    const lojasConectadas = lojasMercadoLivreConectadas();
+    lojasConectadas.forEach((loja) => {
         const nome = String(loja && loja.nome || '').trim();
         const storeId = String(loja && loja.store_id || '').trim();
         if (!nome || !storeId) return;
@@ -303,8 +322,13 @@ function montarSeletorEscopoTreinamento() {
         aiTrainingScope.appendChild(option);
     });
 
-    const valorExiste = !valorAtual || Array.from(aiTrainingScope.options).some((option) => option.value === valorAtual);
-    state.treinamentoEscopoLoja = valorExiste ? valorAtual : '';
+    const valorExiste = valorAtual && Array.from(aiTrainingScope.options).some((option) => option.value === valorAtual);
+    const lojaSelecionada = lojasConectadas.find((loja) => (
+        String(loja && loja.nome || '').trim() === String(state.lojaSelecionada || '').trim()
+    ));
+    const storeIdSelecionado = String((lojaSelecionada && lojaSelecionada.store_id) || '').trim();
+    const primeiroStoreId = String((lojasConectadas[0] && lojasConectadas[0].store_id) || '').trim();
+    state.treinamentoEscopoLoja = valorExiste ? valorAtual : (storeIdSelecionado || primeiroStoreId);
     aiTrainingScope.value = state.treinamentoEscopoLoja;
 }
 
@@ -319,5 +343,5 @@ function nomeLojaEscopoTreinamento() {
 }
 
 function rotuloEscopoTreinamento() {
-    return nomeLojaEscopoTreinamento() || 'padrao de todas as contas';
+    return nomeLojaEscopoTreinamento() || 'loja não selecionada';
 }

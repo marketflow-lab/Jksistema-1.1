@@ -70,6 +70,9 @@ function renderizarSkuTreinamentoInfo() {
     ].filter(Boolean).join(' · ');
 
     aiTrainingSkuInfo.classList.remove('hidden');
+    if (aiTrainingSkuPopoverTitle) {
+        aiTrainingSkuPopoverTitle.textContent = `SKU ${sku} · ${nome}`;
+    }
     aiTrainingSkuInfo.innerHTML = `
         <div class="training-sku-thumb">${fotoHtml}</div>
         <div>
@@ -114,6 +117,171 @@ function renderizarNotasSkuTreinamento() {
     aiTrainingNotasSku.placeholder = sku
         ? 'Aplicações confirmadas, códigos, variações, exceções e cuidados para este SKU.'
         : 'Selecione um SKU para salvar notas específicas.';
+}
+
+function orientacoesGeraisTreinamento() {
+    return [
+        ['Orientações para perguntas', aiTrainingOrientacoes?.value || ''],
+        ['Base de conhecimento da loja', aiTrainingContextoLoja?.value || ''],
+        ['Compatibilidade e autopeças', aiTrainingCompatibilidade?.value || ''],
+        ['O que a IA nunca deve afirmar', aiTrainingProibicoes?.value || '']
+    ];
+}
+
+function renderizarOrientacoesGeraisTreinamento() {
+    if (!aiTrainingGeneralSummary) return;
+    const preenchidas = orientacoesGeraisTreinamento()
+        .map(([rotulo, texto]) => [rotulo, String(texto || '').trim()])
+        .filter(([, texto]) => texto);
+    if (!lojaEscopoTreinamento()) {
+        aiTrainingGeneralSummary.innerHTML = '<div class="training-guidance-empty">Selecione uma loja para consultar suas orientações gerais.</div>';
+        return;
+    }
+    if (!preenchidas.length) {
+        aiTrainingGeneralSummary.innerHTML = '<div class="training-guidance-empty">Esta loja ainda não possui orientações gerais publicadas. Use “Adicionar orientação” para criar um rascunho.</div>';
+        return;
+    }
+    aiTrainingGeneralSummary.innerHTML = preenchidas.map(([rotulo, texto]) => `
+        <article class="training-guidance-item">
+            <strong>${escapeHtml(rotulo)}</strong>
+            <p>${escapeHtml(texto)}</p>
+        </article>
+    `).join('');
+}
+
+function abrirEditorOrientacoesGerais() {
+    if (!lojaEscopoTreinamento()) {
+        aiTrainingStatus.textContent = 'Selecione uma loja antes de adicionar ou editar orientações.';
+        aiTrainingScope?.focus();
+        return;
+    }
+    aiTrainingGeneralEditor?.classList.remove('hidden');
+    aiTrainingGeneralSummary?.classList.add('hidden');
+    btnAiTrainingAdicionarGeral?.classList.add('hidden');
+    btnAiTrainingEditarGerais?.classList.add('hidden');
+    aiTrainingOrientacoes?.focus();
+}
+
+function fecharEditorOrientacoesGerais(restaurar = false) {
+    if (restaurar) {
+        const dados = state.treinamentoDados[state.treinamentoTipo] || {};
+        aiTrainingOrientacoes.value = dados.orientacoes || '';
+        aiTrainingContextoLoja.value = state.treinamentoContexto.contexto_loja || '';
+        aiTrainingCompatibilidade.value = state.treinamentoContexto.compatibilidade_autopecas || '';
+        aiTrainingProibicoes.value = state.treinamentoContexto.proibicoes || '';
+    }
+    aiTrainingGeneralEditor?.classList.add('hidden');
+    aiTrainingGeneralSummary?.classList.remove('hidden');
+    btnAiTrainingAdicionarGeral?.classList.remove('hidden');
+    btnAiTrainingEditarGerais?.classList.remove('hidden');
+    renderizarOrientacoesGeraisTreinamento();
+}
+
+function textoBuscaSkuTreinamento(item) {
+    return [
+        item?.sku,
+        obterNomeProdutoCadastro(item),
+        item?.marca,
+        item?.categoria,
+        item?.mlb_ids
+    ].map((valor) => String(valor || '').toLocaleLowerCase('pt-BR')).join(' ');
+}
+
+function renderizarListaSkusTreinamento() {
+    if (!aiTrainingSkuList) return;
+    const termo = String(aiTrainingSkuSearch?.value || '').trim().toLocaleLowerCase('pt-BR');
+    const produtos = [...state.produtosTreinamento]
+        .filter((item) => !termo || textoBuscaSkuTreinamento(item).includes(termo))
+        .sort((a, b) => String(a.sku || '').localeCompare(String(b.sku || ''), undefined, {
+            numeric: true,
+            sensitivity: 'base'
+        }));
+    const total = state.produtosTreinamento.length;
+    if (aiTrainingSkuCount) {
+        aiTrainingSkuCount.textContent = termo
+            ? `${produtos.length} de ${total} SKU(s)`
+            : `${total} SKU(s)`;
+    }
+    if (!lojaEscopoTreinamento()) {
+        aiTrainingSkuList.innerHTML = '<div class="training-guidance-empty">Selecione uma loja para listar os SKUs.</div>';
+        return;
+    }
+    if (!produtos.length) {
+        aiTrainingSkuList.innerHTML = `<div class="training-guidance-empty">${termo ? 'Nenhum SKU encontrado nesta busca.' : 'Nenhum SKU cadastrado nesta loja.'}</div>`;
+        return;
+    }
+    const selecionado = String(aiTrainingSku.value || '').trim();
+    aiTrainingSkuList.innerHTML = produtos.map((item) => {
+        const skuOriginal = String(item.sku || '').trim();
+        const sku = formatarSkuExibicao(skuOriginal);
+        const nome = obterNomeProdutoCadastro(item);
+        const foto = obterFotoProdutoCadastro(item);
+        const fotoHtml = foto
+            ? `<img ${atributoSrcFotoCadastro(foto)} alt="${escapeHtml(nome)}" loading="lazy">`
+            : '<span>Sem foto</span>';
+        const possuiOrientacao = Boolean(String(state.treinamentoContexto.notas_sku[skuOriginal] || '').trim());
+        return `
+            <button class="training-sku-card${selecionado === skuOriginal ? ' selected' : ''}" type="button" data-training-sku="${escapeHtml(skuOriginal)}">
+                <span class="training-sku-thumb">${fotoHtml}</span>
+                <span class="training-sku-card-copy">
+                    <strong>SKU ${escapeHtml(sku)}</strong>
+                    <span>${escapeHtml(nome)}</span>
+                    <em class="training-guidance-badge${possuiOrientacao ? ' configured' : ''}">${possuiOrientacao ? 'Com orientação' : 'Adicionar orientação'}</em>
+                </span>
+            </button>
+        `;
+    }).join('');
+    aiTrainingSkuList.querySelectorAll('[data-training-sku]').forEach((button) => {
+        button.addEventListener('click', () => abrirBalaoSkuTreinamento(button.dataset.trainingSku));
+    });
+}
+
+function exibirLeituraOrientacaoSku() {
+    const sku = String(aiTrainingSku.value || '').trim();
+    const orientacao = String(state.treinamentoContexto.notas_sku[sku] || '').trim();
+    if (aiTrainingSkuGuidanceView) {
+        aiTrainingSkuGuidanceView.innerHTML = orientacao
+            ? `<article class="training-guidance-item"><strong>Orientação cadastrada</strong><p>${escapeHtml(orientacao)}</p></article>`
+            : '<div class="training-guidance-empty">Este SKU ainda não possui orientação específica publicada.</div>';
+    }
+    aiTrainingSkuEditor?.classList.add('hidden');
+    aiTrainingSkuGuidanceView?.classList.remove('hidden');
+    btnAiTrainingCancelarSku?.classList.add('hidden');
+    btnAiTrainingSalvarSku?.classList.add('hidden');
+    btnAiTrainingEditarSku?.classList.remove('hidden');
+    if (btnAiTrainingEditarSku) {
+        btnAiTrainingEditarSku.textContent = orientacao ? 'Editar orientação' : 'Adicionar orientação';
+    }
+}
+
+function editarOrientacaoSkuTreinamento() {
+    if (!aiTrainingSku.value) return;
+    renderizarNotasSkuTreinamento();
+    aiTrainingSkuEditor?.classList.remove('hidden');
+    aiTrainingSkuGuidanceView?.classList.add('hidden');
+    btnAiTrainingCancelarSku?.classList.remove('hidden');
+    btnAiTrainingSalvarSku?.classList.remove('hidden');
+    btnAiTrainingEditarSku?.classList.add('hidden');
+    aiTrainingNotasSku?.focus();
+}
+
+function abrirBalaoSkuTreinamento(sku) {
+    const valor = String(sku || '').trim();
+    if (!valor || !Array.from(aiTrainingSku.options).some((option) => option.value === valor)) return;
+    aiTrainingSku.value = valor;
+    renderizarSkuTreinamentoInfo();
+    renderizarNotasSkuTreinamento();
+    exibirLeituraOrientacaoSku();
+    renderizarListaSkusTreinamento();
+    aiTrainingSkuPopover?.classList.remove('hidden');
+    aiTrainingSkuPopover?.setAttribute('aria-hidden', 'false');
+    btnAiTrainingFecharSku?.focus();
+}
+
+function fecharBalaoSkuTreinamento() {
+    aiTrainingSkuPopover?.classList.add('hidden');
+    aiTrainingSkuPopover?.setAttribute('aria-hidden', 'true');
+    exibirLeituraOrientacaoSku();
 }
 
 function normalizarExemplosTreinamento(exemplos) {
@@ -207,12 +375,11 @@ function adicionarExemploTreinamento() {
 }
 
 function montarSeletorSkusTreinamento() {
+    const skuAtual = String(aiTrainingSku.value || '').trim();
     aiTrainingSku.innerHTML = '';
     const optDefault = document.createElement('option');
     optDefault.value = '';
-    optDefault.textContent = state.produtosTreinamento.length
-        ? 'Sem SKU selecionado'
-        : 'Nenhum SKU cadastrado';
+    optDefault.textContent = 'Nenhum SKU selecionado';
     aiTrainingSku.appendChild(optDefault);
 
     const ordenados = [...state.produtosTreinamento].sort((a, b) => (
@@ -226,9 +393,12 @@ function montarSeletorSkusTreinamento() {
         option.textContent = `${formatarSkuExibicao(sku)} - ${obterNomeProdutoCadastro(item)}`;
         aiTrainingSku.appendChild(option);
     });
-    aiTrainingSku.disabled = !state.produtosTreinamento.length;
+    aiTrainingSku.value = Array.from(aiTrainingSku.options).some((option) => option.value === skuAtual)
+        ? skuAtual
+        : '';
     renderizarSkuTreinamentoInfo();
     renderizarNotasSkuTreinamento();
+    renderizarListaSkusTreinamento();
 }
 
 async function carregarSkusTreinamentoAI() {
@@ -236,9 +406,20 @@ async function carregarSkusTreinamentoAI() {
     if (
         state.produtosTreinamentoCarregados
         && state.produtosTreinamentoEscopo === lojaEscopo
-    ) return;
-    aiTrainingSku.disabled = true;
+    ) {
+        renderizarListaSkusTreinamento();
+        return;
+    }
+    if (!lojaEscopo) {
+        state.produtosTreinamento = [];
+        state.produtosTreinamentoCarregados = false;
+        state.produtosTreinamentoEscopo = null;
+        montarSeletorSkusTreinamento();
+        return;
+    }
     aiTrainingSku.innerHTML = '<option value="">Carregando SKUs...</option>';
+    if (aiTrainingSkuCount) aiTrainingSkuCount.textContent = 'Carregando SKUs...';
+    if (aiTrainingSkuList) aiTrainingSkuList.innerHTML = '<div class="training-guidance-empty">Carregando SKUs da loja...</div>';
     try {
         const params = new URLSearchParams();
         if (lojaEscopo) {
@@ -252,16 +433,19 @@ async function carregarSkusTreinamentoAI() {
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.detail || 'Erro ao carregar SKUs.');
+        if (lojaEscopo !== lojaEscopoTreinamento()) return;
         const produtos = Array.isArray(data.produtos) ? data.produtos : [];
         state.produtosTreinamento = produtos.filter((item) => String((item || {}).sku || '').trim());
         state.produtosTreinamentoCarregados = true;
         state.produtosTreinamentoEscopo = lojaEscopo;
         montarSeletorSkusTreinamento();
     } catch (error) {
+        if (lojaEscopo !== lojaEscopoTreinamento()) return;
         aiTrainingSku.innerHTML = '<option value="">Erro ao carregar SKUs</option>';
-        aiTrainingSku.disabled = true;
         aiTrainingSkuInfo.classList.add('hidden');
         aiTrainingSkuInfo.innerHTML = '';
+        if (aiTrainingSkuCount) aiTrainingSkuCount.textContent = 'Falha ao carregar';
+        if (aiTrainingSkuList) aiTrainingSkuList.innerHTML = `<div class="training-guidance-empty">${escapeHtml(mensagemErro(error))}</div>`;
         aiTrainingStatus.textContent = `Erro ao carregar SKUs: ${mensagemErro(error)}`;
     }
 }
@@ -351,6 +535,7 @@ function renderizarTipoTreinamento(limparChat = false) {
     }
     aiTrainingOrientacoes.value = dados.orientacoes || '';
     renderizarExemplosTreinamento();
+    renderizarOrientacoesGeraisTreinamento();
     atualizarStatusTreinamentoTipo();
     if (limparChat) limparChatTreinamento();
 }
@@ -367,6 +552,12 @@ async function carregarTreinamentoAI(forcar = false) {
     if (!forcar && state.treinamentoCarregado) return;
     montarSeletorEscopoTreinamento();
     const lojaEscopo = lojaEscopoTreinamento();
+    if (!lojaEscopo) {
+        aiTrainingStatus.textContent = 'Selecione uma loja para consultar as orientações.';
+        renderizarOrientacoesGeraisTreinamento();
+        renderizarListaSkusTreinamento();
+        return;
+    }
     const params = new URLSearchParams();
     if (lojaEscopo) {
         params.set('store_id', lojaEscopo);
@@ -381,6 +572,7 @@ async function carregarTreinamentoAI(forcar = false) {
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.detail || 'Erro ao carregar orientações.');
+        if (lojaEscopo !== lojaEscopoTreinamento()) return;
 
         state.treinamentoDados.perguntas_anuncio = {
             orientacoes: data.orientacoes_perguntas || data.orientacoes || '',
@@ -405,7 +597,10 @@ async function carregarTreinamentoAI(forcar = false) {
         state.treinamentoCarregado = true;
         renderizarNotasSkuTreinamento();
         renderizarTipoTreinamento(false);
+        renderizarListaSkusTreinamento();
+        fecharEditorOrientacoesGerais(false);
     } catch (error) {
+        if (lojaEscopo !== lojaEscopoTreinamento()) return;
         aiTrainingStatus.textContent = `Erro ao carregar orientações: ${mensagemErro(error)}`;
     }
 }
@@ -414,8 +609,16 @@ async function salvarTreinamentoAI() {
     sincronizarOrientacoesTreinamentoAtual();
     const tipoAtual = state.treinamentoTipo === 'pos_venda' ? 'pos_venda' : 'perguntas_anuncio';
     const lojaEscopo = lojaEscopoTreinamento();
+    if (!lojaEscopo) {
+        aiTrainingStatus.textContent = 'Selecione uma loja antes de salvar orientações.';
+        aiTrainingScope?.focus();
+        throw new Error('Loja não selecionada.');
+    }
     btnAiTrainingSalvar.disabled = true;
     btnAiTrainingSimular.disabled = true;
+    if (aiTrainingScope) aiTrainingScope.disabled = true;
+    if (btnAiTrainingSalvarGerais) btnAiTrainingSalvarGerais.disabled = true;
+    if (btnAiTrainingSalvarSku) btnAiTrainingSalvarSku.disabled = true;
     aiTrainingStatus.textContent = `Salvando orientacoes (${rotuloEscopoTreinamento()})...`;
     try {
         const response = await fetch('/api/mercadolivre/ia-treinamento', {
@@ -455,7 +658,17 @@ async function salvarTreinamentoAI() {
         atualizarIndicadorPerfilTreinamento(data);
         renderizarNotasSkuTreinamento();
         renderizarExemplosTreinamento();
+        renderizarOrientacoesGeraisTreinamento();
+        renderizarListaSkusTreinamento();
         atualizarStatusTreinamentoTipo();
+        if (data.requires_review) {
+            const skuRascunho = String(data.sku_note_id || '').trim();
+            const geralRascunho = String(data.note_id || '').trim();
+            const partes = [geralRascunho ? 'orientações gerais' : '', skuRascunho ? 'orientação do SKU' : ''].filter(Boolean);
+            aiTrainingStatus.textContent = `Rascunho de ${partes.join(' e ') || 'orientações'} salvo no Obsidian. Revise e publique para ativar na IA.`;
+        } else {
+            aiTrainingStatus.textContent = `Nenhuma mudança nova em ${rotuloEscopoTreinamento()}.`;
+        }
         return data;
     } catch (error) {
         aiTrainingStatus.textContent = `Erro ao salvar orientações: ${mensagemErro(error)}`;
@@ -463,6 +676,33 @@ async function salvarTreinamentoAI() {
     } finally {
         btnAiTrainingSalvar.disabled = false;
         btnAiTrainingSimular.disabled = false;
+        if (aiTrainingScope) aiTrainingScope.disabled = false;
+        if (btnAiTrainingSalvarGerais) btnAiTrainingSalvarGerais.disabled = false;
+        if (btnAiTrainingSalvarSku) btnAiTrainingSalvarSku.disabled = false;
+    }
+}
+
+async function salvarOrientacoesGeraisTreinamento() {
+    try {
+        await salvarTreinamentoAI();
+        fecharEditorOrientacoesGerais(false);
+    } catch (_error) {
+        // O status detalhado já foi exibido por salvarTreinamentoAI.
+    }
+}
+
+async function salvarOrientacaoSkuTreinamento() {
+    const sku = String(aiTrainingSku.value || '').trim();
+    if (!sku) {
+        aiTrainingStatus.textContent = 'Abra um SKU antes de salvar sua orientação.';
+        return;
+    }
+    try {
+        await salvarTreinamentoAI();
+        exibirLeituraOrientacaoSku();
+        renderizarListaSkusTreinamento();
+    } catch (_error) {
+        // O status detalhado já foi exibido por salvarTreinamentoAI.
     }
 }
 

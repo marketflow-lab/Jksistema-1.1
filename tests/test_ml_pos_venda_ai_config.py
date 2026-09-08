@@ -474,7 +474,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 self.assertIn("ia_modelo_pos_venda", source)
                 self.assertIn("ia_modo_pos_venda", source)
 
-    def test_pos_venda_all_accounts_interval_and_ai_scope_are_exposed(self):
+    def test_pos_venda_all_accounts_interval_and_store_isolated_ai_scope_are_exposed(self):
         source = backend_text()
         self.assertIn("class PerguntasLojasConfigLoteRequest", source)
         self.assertIn('"/api/mercadolivre/perguntas/lojas/config-lote"', source)
@@ -487,10 +487,12 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             with self.subTest(path=path.name):
                 html = path.read_text(encoding="utf-8")
                 self.assertIn("ai-training-scope", html)
-                self.assertIn("Padrao para todas as contas", html)
+                self.assertIn("Selecione uma loja", html)
                 self.assertIn("lojaEscopoTreinamento", html)
-                self.assertIn("config-lote", html)
-                self.assertIn("Todas as contas conectadas", html)
+                self.assertIn("Cada loja possui sua própria base", html)
+                self.assertIn("ai-training-sku-list", html)
+                self.assertIn("ai-training-sku-popover", html)
+                self.assertNotIn("Padrao para todas as contas", html)
 
     def test_whatsapp_question_approval_option_is_persisted_and_exposed(self):
         source = backend_text()
