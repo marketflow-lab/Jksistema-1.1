@@ -100,6 +100,19 @@ def test_training_simulation_encapsulates_all_user_controlled_prompt_data(monkey
         "_resolver_escopo_loja_treinamento",
         lambda _client_id, loja, _store_id=None: (str(loja or "").strip(), "store-test"),
     )
+    monkeypatch.setattr(
+        training,
+        "_resolver_context_hub_scope",
+        lambda client_id, loja, store_id: {
+            "tenant_scope": f"tenant:{client_id}",
+            "store_ref": store_id,
+            "store_name": loja,
+            "seller_id": "seller-test",
+            "site_id": "MLB",
+            "surface": "mercado_livre_public_questions",
+        },
+    )
+    monkeypatch.setattr(training, "load_store_guidance", lambda *_args, **_kwargs: {"guidance": {}})
     monkeypatch.setattr(training, "_ia_treinamento_ppv_tipo_normalizar", lambda _tipo: "perguntas_anuncio")
     monkeypatch.setattr(training, "_ia_treinamento_ppv_tipo_label", lambda _tipo: "perguntas de anuncio")
     monkeypatch.setattr(

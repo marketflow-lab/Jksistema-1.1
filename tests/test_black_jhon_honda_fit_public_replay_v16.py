@@ -250,7 +250,7 @@ def test_honda_fit_v16_public_job_replays_all_six_stages_without_publishing(
     vision_phases: list[str] = []
     normalized_bodies: dict[int, str] = {}
     generated_candidates: list[str] = []
-    evidence_graph_prompts: list[str] = []
+    evidence_graph_transports: list[str] = []
     graph_calls = 0
 
     def fake_model(_client_id, payload, model):
@@ -269,7 +269,9 @@ def test_honda_fit_v16_public_job_replays_all_six_stages_without_publishing(
             value = _question_plan()
         elif stage == "technical_evidence_graph":
             graph_calls += 1
-            evidence_graph_prompts.append(str(payload.message))
+            evidence_graph_transports.append(json.dumps(
+                payload.tool_results or [], ensure_ascii=False, sort_keys=True,
+            ))
             assert len(payload.attachments or []) == 1
             value = _evidence_graph(resolved=graph_calls == 2)
         elif stage == "technical_resolution_round_1":
@@ -567,7 +569,8 @@ def test_honda_fit_v16_public_job_replays_all_six_stages_without_publishing(
 
     assert vision_phases == ["initial", "gap"]
     assert len(web_calls) == 2
-    assert any("37760-PWA-J01" in prompt for prompt in evidence_graph_prompts)
+    assert all("store_sku_question_context" in value for value in evidence_graph_transports)
+    assert any("37760-PWA-J01" in value for value in evidence_graph_transports)
     assert "37760-PWA-J01" not in captured["candidate"]
     assert "37760-P00-003" in captured["candidate"]
     assert [call["stage"] for call in stage_calls] == [
