@@ -168,6 +168,9 @@ def _ensure_customer_reply_schema(conn: sqlite3.Connection) -> None:
             task_type TEXT NOT NULL,
             subject_key TEXT NOT NULL,
             store TEXT,
+            store_id TEXT NOT NULL DEFAULT '',
+            seller_id TEXT NOT NULL DEFAULT '',
+            site_id TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL,
             agent_state TEXT NOT NULL,
             idempotency_key TEXT,
@@ -209,6 +212,11 @@ def _ensure_customer_reply_schema(conn: sqlite3.Connection) -> None:
             "ALTER TABLE assistant_customer_reply_jobs "
             "ADD COLUMN queue_policy_version TEXT NOT NULL DEFAULT ''"
         )
+    for identity_column in ("store_id", "seller_id", "site_id"):
+        if identity_column not in customer_reply_columns:
+            conn.execute(
+                f"ALTER TABLE assistant_customer_reply_jobs ADD COLUMN {identity_column} TEXT NOT NULL DEFAULT ''"
+            )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_customer_reply_jobs_queue "
         "ON assistant_customer_reply_jobs(status, lease_expires_ts, created_at)"
@@ -225,13 +233,17 @@ def _ensure_customer_reply_schema(conn: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_reply_jobs_idempotency "
         "ON assistant_customer_reply_jobs(idempotency_key) WHERE idempotency_key <> ''"
     )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_customer_reply_jobs_store_activity "
+        "ON assistant_customer_reply_jobs(store_id, status, updated_at DESC, job_id DESC)"
+    )
 
 def _migrate_customer_reply_payloads(conn: sqlite3.Connection) -> None:
     migration_key = "customer_reply_payload_allowlist_v1"
     if _meta_get(conn, migration_key) != "1":
         linked_plan_ids: set[str] = set()
         legacy_rows = conn.execute(
-            "SELECT job_id, profile, task_type, subject_key, store, status, agent_state, "
+            "SELECT job_id, profile, task_type, subject_key, store, store_id, seller_id, site_id, status, agent_state, "
             "idempotency_key, thread_id, lease_owner, lease_expires_ts, lease_generation, "
             "cancel_requested, created_at, updated_at, payload_json "
             "FROM assistant_customer_reply_jobs"
@@ -250,6 +262,9 @@ def _migrate_customer_reply_payloads(conn: sqlite3.Connection) -> None:
                     "task_type": str(row["task_type"] or ""),
                     "subject_key": str(row["subject_key"] or ""),
                     "store": str(row["store"] or ""),
+                    "store_id": str(row["store_id"] or ""),
+                    "seller_id": str(row["seller_id"] or ""),
+                    "site_id": str(row["site_id"] or ""),
                     "status": str(row["status"] or ""),
                     "agent_state": str(row["agent_state"] or ""),
                     "idempotency_key": str(row["idempotency_key"] or ""),

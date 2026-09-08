@@ -15,7 +15,7 @@ assert.match(source, /next_retry_at_epoch|next_retry_in_seconds|Nova tentativa/)
 assert.match(source, /\/api\/mercadolivre\/assistant\/jobs\/\$\{encodeURIComponent\(jobId\)\}\/cancel/);
 assert.match(source, /question-ai-cancel-btn[\s\S]*Cancelar pesquisa/);
 assert.match(source, /cancelarPesquisaAtendimentoCodex\(questionKey\)/);
-assert.match(html, /perguntas\.js\?v=20260908-loading-v1/);
+assert.match(html, /perguntas\.js\?v=20260908-solicitacoes-v1/);
 assert.doesNotMatch(source, /A pesquisa terminou sem rascunho/);
 assert.match(source, /Rascunho gerado com as informacoes disponiveis/);
 assert.match(source, /const resposta = String\(result\.resposta \?\? data\.resposta \?\? ''\);/);

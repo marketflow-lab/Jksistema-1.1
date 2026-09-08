@@ -254,17 +254,20 @@ def _customer_reply_upsert(
     conn.execute(
         """
         INSERT INTO assistant_customer_reply_jobs(
-            job_id, profile, task_type, subject_key, store, status,
+            job_id, profile, task_type, subject_key, store, store_id, seller_id, site_id, status,
             agent_state, idempotency_key, thread_id,
             queue_origin, queue_priority, queue_policy_version, lease_owner,
             lease_expires_ts, lease_generation, cancel_requested, created_at, updated_at,
             payload_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(job_id) DO UPDATE SET
             profile=excluded.profile,
             task_type=excluded.task_type,
             subject_key=excluded.subject_key,
             store=excluded.store,
+            store_id=excluded.store_id,
+            seller_id=excluded.seller_id,
+            site_id=excluded.site_id,
             status=excluded.status,
             agent_state=excluded.agent_state,
             idempotency_key=excluded.idempotency_key,
@@ -285,6 +288,9 @@ def _customer_reply_upsert(
             str(durable.get("task_type") or "question"),
             str(durable.get("subject_key") or ""),
             str(durable.get("store") or ""),
+            str(durable.get("store_id") or ""),
+            str(durable.get("seller_id") or ""),
+            str(durable.get("site_id") or ""),
             str(durable.get("status") or "queued"),
             str(durable.get("agent_state") or "entendendo"),
             str(durable.get("idempotency_key") or ""),
@@ -421,21 +427,30 @@ def codex_assistant_customer_reply_job_latest(
     task_type: str,
     store: str,
     subject_key: str,
+    store_id: str = "",
 ) -> Optional[dict[str, Any]]:
     db_path = codex_assistant_state_db_path(info_base, client_id)
     lock = _lock_for(db_path)
     with lock:
         with _connection(db_path) as conn:
             _ensure_state_schema(conn)
-            row = conn.execute(
-                """
-                SELECT payload_json FROM assistant_customer_reply_jobs
-                WHERE profile = 'mercado_livre_customer_reply'
-                  AND task_type = ? AND store = ? AND subject_key = ?
-                ORDER BY created_at DESC LIMIT 1
-                """,
-                (str(task_type or ""), str(store or ""), str(subject_key or "")),
-            ).fetchone()
+            exact_store_id = str(store_id or "").strip()
+            if exact_store_id:
+                row = conn.execute(
+                    "SELECT payload_json FROM assistant_customer_reply_jobs "
+                    "WHERE profile = 'mercado_livre_customer_reply' "
+                    "AND task_type = ? AND store_id = ? AND subject_key = ? "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (str(task_type or ""), exact_store_id, str(subject_key or "")),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT payload_json FROM assistant_customer_reply_jobs "
+                    "WHERE profile = 'mercado_livre_customer_reply' "
+                    "AND task_type = ? AND store = ? AND subject_key = ? "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (str(task_type or ""), str(store or ""), str(subject_key or "")),
+                ).fetchone()
     payload = _json_loads(row["payload_json"] if row else "", None)
     return _customer_reply_transient_merge(db_path, payload) if isinstance(payload, dict) else None
 

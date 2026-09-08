@@ -475,6 +475,9 @@ function ativarAba(nome) {
     if (nome === 'perguntas' && state.automacaoPerguntasRefreshLojas.size) {
         agendarRecarregamentoPerguntasAposPoll('', 0);
     }
+    if (nome === 'solicitacao') {
+        window.JKSolicitacoes?.carregar(1);
+    }
     if (nome === 'pos-venda' && state.lojaSelecionada) {
         carregarPosVenda();
     }

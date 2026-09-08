@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Perguntas e pós venda - JK Sistema</title>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
-    <link rel="stylesheet" href="/perguntas_pos_venda/styles.css?v=20260908-sku-details-v1">
+    <link rel="stylesheet" href="/perguntas_pos_venda/styles.css?v=20260908-solicitacoes-v1">
 </head>
 <body>
     <div class="container">
@@ -28,6 +28,7 @@
             <div class="tab-control-row">
             <div class="tabs" role="tablist" aria-label="Perguntas e pós venda">
                 <button id="tab-perguntas" class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="aba-perguntas" data-tab="perguntas">Perguntas <span id="tab-perguntas-notificacao" class="notification-pill tab-notification hidden" title="Perguntas não respondidas">0</span></button>
+                <button id="tab-solicitacao" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-solicitacao" data-tab="solicitacao">Solicitação</button>
                 <button id="tab-pos-venda" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-pos-venda" data-tab="pos-venda">Pós venda</button>
                 <button id="tab-mediacao" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-mediacao" data-tab="mediacao">Mediação</button>
                 <button id="tab-treinar-ai" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-treinar-ai" data-tab="treinar-ai">Treinar IA</button>
@@ -64,6 +65,37 @@
                         <div class="empty-state"><div><h2>Selecione uma pergunta</h2><p>A resposta, o contexto e as orientações de IA aparecem aqui.</p></div></div>
                     </section>
                 </div>
+            </section>
+
+            <section id="aba-solicitacao" class="tab-content" role="tabpanel" aria-labelledby="tab-solicitacao">
+                <div class="section-head solicitacoes-head">
+                    <div>
+                        <h2>Solicitações da IA</h2>
+                        <p>Acompanhe o processamento, as evidências e as conclusões de cada solicitação na loja selecionada.</p>
+                    </div>
+                    <span id="solicitacoes-loja-status" class="status-line">Escolha uma loja conectada.</span>
+                </div>
+
+                <div class="toolbar solicitacoes-toolbar">
+                    <div class="filters">
+                        <label for="solicitacoes-status-filtro">Status</label>
+                        <select id="solicitacoes-status-filtro">
+                            <option value="">Todos</option>
+                            <option value="queued">Na fila</option>
+                            <option value="running">Em andamento</option>
+                            <option value="waiting_retry">Nova tentativa</option>
+                            <option value="completed">Concluídas</option>
+                            <option value="cancelled">Canceladas</option>
+                            <option value="failed">Com falha</option>
+                        </select>
+                    </div>
+                    <button id="btn-solicitacoes-recarregar" class="action-btn secondary" type="button">Atualizar solicitações</button>
+                </div>
+
+                <div id="solicitacoes-status" class="status-line" aria-live="polite">Aguardando loja selecionada.</div>
+                <div id="solicitacoes-summary" class="summary solicitacoes-summary hidden"></div>
+                <div id="solicitacoes-list" class="solicitacoes-list" aria-live="polite"></div>
+                <div id="solicitacoes-pagination" class="pagination hidden"></div>
             </section>
 
             <section id="aba-pos-venda" class="tab-content" role="tabpanel" aria-labelledby="tab-pos-venda">
@@ -297,9 +329,10 @@
         </main>
     </div>
 
-    <script src="/perguntas_pos_venda/runtime.js?v=20260908-loading-v1"></script>
-    <script src="/perguntas_pos_venda/lojas-automacao.js?v=20260908-loading-v1"></script>
-    <script src="/perguntas_pos_venda/perguntas.js?v=20260908-loading-v1"></script>
+    <script src="/perguntas_pos_venda/runtime.js?v=20260908-solicitacoes-v1"></script>
+    <script src="/perguntas_pos_venda/lojas-automacao.js?v=20260908-solicitacoes-v1"></script>
+    <script src="/perguntas_pos_venda/perguntas.js?v=20260908-solicitacoes-v1"></script>
+    <script src="/perguntas_pos_venda/solicitacoes.js?v=20260908-solicitacoes-v1"></script>
     <script src="/perguntas_pos_venda/pos-venda.js?v=20260908-loading-v1"></script>
     <script src="/perguntas_pos_venda/mediacao.js?v=20260908-loading-v1"></script>
     <script src="/perguntas_pos_venda/treinamento-ia.js?v=20260908-sku-details-v1"></script>

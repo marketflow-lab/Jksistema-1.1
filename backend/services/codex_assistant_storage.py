@@ -108,6 +108,10 @@ from backend.services.codex.storage.customer_replies import (
     codex_assistant_customer_reply_job_request_cancel,
 )
 
+from backend.services.codex.storage.solicitacoes import (
+    codex_assistant_customer_reply_solicitacoes_list,
+)
+
 from backend.services.codex.storage.actions import (
     codex_assistant_action_proposal_save,
     codex_assistant_action_proposal_get,
@@ -147,6 +151,7 @@ __all__ = [
     "codex_assistant_customer_reply_job_get",
     "codex_assistant_customer_reply_job_latest",
     "codex_assistant_customer_reply_jobs_list",
+    "codex_assistant_customer_reply_solicitacoes_list",
     "codex_assistant_customer_reply_queue_metrics",
     "codex_assistant_customer_reply_job_claim",
     "codex_assistant_customer_reply_job_heartbeat",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 
 from backend.modules.perguntas_pos_venda.endpoints.runtime import runtime_adapter
@@ -14,6 +14,8 @@ from backend.services.perguntas_pos_venda_state import ML_RESPOSTA_PERGUNTA_MAX_
 from backend.modules.perguntas_pos_venda.endpoints.jobs import (
     _customer_reply_wait_or_raise,
 )
+from backend.modules.perguntas_pos_venda.endpoints.questions_loading_support import resolve_scope
+from backend.services.cadastro_compatibilidade import resolver_loja_ativa_para_leitura
 
 _ml_api_item = runtime_adapter("_ml_api_item")
 _ml_api_item_com_oauth_tenant = runtime_adapter("_ml_api_item_com_oauth_tenant")
@@ -31,10 +33,37 @@ _perguntas_ia_state_salvar = runtime_adapter("_perguntas_ia_state_salvar")
 logger = runtime_adapter("logger")
 
 
+def _manual_generation_scope(
+    request: Request | None,
+    client_id: str,
+    store_id: str,
+    store_name: str,
+):
+    if request is None:
+        return None
+    exact_store_id = str(store_id or "").strip()
+    if not exact_store_id:
+        exact_store_id = str(
+            resolver_loja_ativa_para_leitura(client_id, store_name).get("store_id") or ""
+        ).strip()
+    if not exact_store_id:
+        raise HTTPException(status_code=400, detail="Informe o store_id exato da loja.")
+    scope = resolve_scope(request, client_id, exact_store_id)
+    if scope.name != store_name:
+        raise HTTPException(status_code=409, detail="A loja selecionada mudou. Atualize a lista de lojas.")
+    return scope
+
+
 def ml_perguntas_gerar_resposta_manual(
     req: PerguntasGerarRespostaRequest,
+    request: Request,
     client_id: str = Depends(get_tenant_id),
 ):
+    # Compatibility for both historical direct-call orders used internally.
+    if isinstance(req, Request):
+        req, request = request, req
+    elif isinstance(request, str):
+        client_id, request = request, None
     loja = str(req.loja or "").strip()
     pergunta = req.pergunta if isinstance(req.pergunta, dict) else {}
     resposta_atual = str(req.resposta_atual or "")
@@ -49,6 +78,7 @@ def ml_perguntas_gerar_resposta_manual(
         raise HTTPException(status_code=400, detail="Informe a pergunta.")
 
     if perguntas_pos_venda_codex.enabled():
+        scope = _manual_generation_scope(request, client_id, str(req.store_id or ""), loja)
         job = perguntas_pos_venda_codex.create_job(
             client_id=client_id,
             task_type="question",
@@ -61,6 +91,9 @@ def ml_perguntas_gerar_resposta_manual(
                 "orientacao_usuario": orientacao_usuario,
                 "sku": str(pergunta.get("item_sku") or pergunta.get("sku") or ""),
             },
+            store_id=scope.store_id if scope is not None else "",
+            seller_id=scope.seller_id if scope is not None else "",
+            site_id=scope.site_id if scope is not None else "",
             channel="app",
         )
         if req.async_mode:

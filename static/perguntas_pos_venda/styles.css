@@ -527,6 +527,7 @@
         .badge.ok { color: #caffea; border-color: rgba(72, 224, 164, 0.35); background: rgba(72, 224, 164, 0.13); }
         .badge.warn { color: #fff0bc; border-color: rgba(255, 211, 107, 0.35); background: rgba(255, 211, 107, 0.13); }
         .badge.danger { color: #ffd7d7; border-color: rgba(255, 118, 118, 0.35); background: rgba(255, 118, 118, 0.13); }
+        .badge.running { color: #ccefff; border-color: rgba(56, 212, 255, 0.4); background: rgba(56, 212, 255, 0.13); }
 
         .toolbar {
             display: flex;
@@ -2218,6 +2219,246 @@
             overflow-wrap: anywhere;
         }
 
+        .solicitacoes-head {
+            align-items: flex-start;
+        }
+
+        .solicitacoes-head .status-line {
+            max-width: 360px;
+            text-align: right;
+        }
+
+        .solicitacoes-toolbar {
+            margin-bottom: 12px;
+        }
+
+        .solicitacoes-summary {
+            margin-top: 12px;
+        }
+
+        .solicitacoes-list,
+        .solicitacoes-store-items {
+            display: grid;
+            gap: 14px;
+            margin-top: 14px;
+        }
+
+        .solicitacoes-store-group {
+            border: 1px solid rgba(104, 168, 255, 0.24);
+            border-radius: 12px;
+            background: rgba(4, 10, 21, 0.42);
+            padding: 14px;
+        }
+
+        .solicitacoes-store-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            padding: 0 2px 12px;
+            border-bottom: 1px solid rgba(104, 168, 255, 0.18);
+        }
+
+        .solicitacoes-store-head span,
+        .solicitacao-eyebrow {
+            color: #9de7ff;
+            font-size: 0.72rem;
+            font-weight: 900;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        .solicitacoes-store-head h3 {
+            margin: 2px 0 0;
+            color: #fff;
+            font-size: 1.1rem;
+        }
+
+        .solicitacoes-store-head p {
+            margin: 0;
+            color: var(--muted);
+            font-size: 0.78rem;
+            font-weight: 700;
+            text-align: right;
+        }
+
+        .solicitacoes-store-items {
+            margin-top: 14px;
+        }
+
+        .solicitacao-card {
+            overflow: hidden;
+            border: 1px solid rgba(104, 168, 255, 0.3);
+            border-radius: 10px;
+            background: linear-gradient(145deg, rgba(17, 34, 57, 0.94), rgba(7, 15, 28, 0.96));
+            box-shadow: inset 0 1px 0 rgba(185, 226, 255, 0.06), 0 10px 26px rgba(0, 0, 0, 0.22);
+        }
+
+        .solicitacao-card-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 14px;
+            padding: 16px 18px 12px;
+            border-bottom: 1px solid rgba(104, 168, 255, 0.16);
+        }
+
+        .solicitacao-card-head h3 {
+            margin: 4px 0 0;
+            color: #fff;
+            font-size: 1.08rem;
+            line-height: 1.35;
+        }
+
+        .solicitacao-card-badges {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            flex-wrap: wrap;
+            gap: 7px;
+        }
+
+        .solicitacao-store-badge {
+            text-transform: none;
+        }
+
+        .solicitacao-identifiers {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 16px;
+            padding: 10px 18px;
+            background: rgba(255, 255, 255, 0.025);
+            color: var(--muted);
+            font-size: 0.78rem;
+            overflow-wrap: anywhere;
+        }
+
+        .solicitacao-identifiers strong,
+        .solicitacao-card-times strong {
+            color: #dff6ff;
+        }
+
+        .solicitacao-overview,
+        .solicitacao-details-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+            padding: 12px 18px 0;
+        }
+
+        .solicitacao-details-grid {
+            padding-top: 10px;
+        }
+
+        .solicitacao-info-block {
+            min-width: 0;
+            border: 1px solid rgba(104, 168, 255, 0.18);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.035);
+            padding: 12px;
+        }
+
+        .solicitacao-info-block h4 {
+            margin: 0 0 8px;
+            color: #9de7ff;
+            font-size: 0.78rem;
+            font-weight: 900;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .solicitacao-info-block p,
+        .solicitacao-info-block li,
+        .solicitacao-info-block dd {
+            color: #dbeeff;
+            line-height: 1.48;
+            overflow-wrap: anywhere;
+            white-space: pre-wrap;
+        }
+
+        .solicitacao-info-block p {
+            margin: 0;
+        }
+
+        .solicitacao-info-block dl {
+            display: grid;
+            gap: 7px;
+            margin: 0;
+        }
+
+        .solicitacao-info-block dl div {
+            display: grid;
+            grid-template-columns: minmax(96px, 0.4fr) minmax(0, 1fr);
+            gap: 10px;
+        }
+
+        .solicitacao-info-block dt {
+            color: var(--muted);
+            font-size: 0.78rem;
+            font-weight: 700;
+        }
+
+        .solicitacao-info-block dd {
+            margin: 0;
+            font-weight: 700;
+        }
+
+        .solicitacao-info-block ul,
+        .solicitacao-timeline {
+            margin: 0;
+            padding-left: 19px;
+        }
+
+        .solicitacao-info-block li + li {
+            margin-top: 6px;
+        }
+
+        .solicitacao-info-block.conclusion {
+            border-left: 3px solid rgba(72, 224, 164, 0.74);
+            background: rgba(72, 224, 164, 0.07);
+        }
+
+        .solicitacao-info-block.pending-action,
+        .solicitacao-info-block.warnings {
+            border-left: 3px solid rgba(255, 211, 107, 0.74);
+            background: rgba(255, 211, 107, 0.07);
+        }
+
+        .solicitacao-info-block.evidences {
+            border-left: 3px solid rgba(56, 212, 255, 0.7);
+        }
+
+        .solicitacao-timeline li {
+            padding-left: 3px;
+        }
+
+        .solicitacao-timeline li::marker {
+            color: var(--accent);
+        }
+
+        .solicitacao-timeline span,
+        .solicitacao-timeline time {
+            display: block;
+        }
+
+        .solicitacao-timeline time {
+            margin-top: 2px;
+            color: var(--muted);
+            font-size: 0.74rem;
+            font-weight: 700;
+        }
+
+        .solicitacao-card-times {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 16px;
+            margin-top: 12px;
+            padding: 11px 18px 14px;
+            border-top: 1px solid rgba(104, 168, 255, 0.14);
+            color: var(--muted);
+            font-size: 0.75rem;
+        }
+
         .empty-state {
             display: grid;
             place-items: center;
@@ -2341,6 +2582,23 @@
                 text-align: left;
             }
             .question-date { white-space: normal; }
+            .solicitacoes-head .status-line,
+            .solicitacoes-store-head p {
+                max-width: none;
+                text-align: left;
+            }
+            .solicitacoes-store-head,
+            .solicitacao-card-head {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+            .solicitacao-card-badges {
+                justify-content: flex-start;
+            }
+            .solicitacao-overview,
+            .solicitacao-details-grid {
+                grid-template-columns: 1fr;
+            }
         }
 
 .training-conflict { border: 1px solid #e5aa43; border-radius: 8px; padding: 12px; margin: 10px 0; }

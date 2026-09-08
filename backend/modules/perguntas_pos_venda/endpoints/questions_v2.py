@@ -22,6 +22,8 @@ from backend.modules.perguntas_pos_venda.endpoints.approvals import (
 from backend.modules.perguntas_pos_venda.endpoints.jobs import (
     _customer_reply_wait_or_raise,
 )
+from backend.modules.perguntas_pos_venda.endpoints.questions_loading_support import resolve_scope
+from backend.services.cadastro_compatibilidade import resolver_loja_ativa_para_leitura
 
 MercadoLivreWebhookReceiver = runtime_adapter("MercadoLivreWebhookReceiver")
 _ml_questions_v2_webhook_events_path = runtime_adapter("_ml_questions_v2_webhook_events_path")
@@ -58,7 +60,7 @@ async def ml_questions_v2_webhook(request: Request, client_id: str = Depends(get
     return {"success": True, "event": event, "processed": False}
 
 
-def ml_questions_v2_process(question_id: str, req: MLQuestionsV2ProcessRequest, client_id: str = Depends(get_tenant_id)):
+def ml_questions_v2_process(request: Request, question_id: str, req: MLQuestionsV2ProcessRequest, client_id: str = Depends(get_tenant_id)):
     loja = str(req.loja or "").strip()
     if not loja:
         raise HTTPException(status_code=400, detail="Informe a loja.")
@@ -72,6 +74,16 @@ def ml_questions_v2_process(question_id: str, req: MLQuestionsV2ProcessRequest, 
         raise HTTPException(status_code=400, detail="Informe o texto da pergunta.")
     item = req.item if isinstance(req.item, dict) else {}
     if perguntas_pos_venda_codex.enabled():
+        exact_store_id = str(req.store_id or "").strip()
+        if not exact_store_id:
+            exact_store_id = str(
+                resolver_loja_ativa_para_leitura(client_id, loja).get("store_id") or ""
+            ).strip()
+        if not exact_store_id:
+            raise HTTPException(status_code=400, detail="Informe o store_id exato da loja.")
+        scope = resolve_scope(request, client_id, exact_store_id)
+        if scope is not None and scope.name != loja:
+            raise HTTPException(status_code=409, detail="A loja selecionada mudou. Atualize a lista de lojas.")
         job = perguntas_pos_venda_codex.create_job(
             client_id=client_id,
             task_type="question",
@@ -84,6 +96,9 @@ def ml_questions_v2_process(question_id: str, req: MLQuestionsV2ProcessRequest, 
                 "resposta_atual": str(req.resposta_atual or ""),
                 "sku": str(pergunta.get("item_sku") or pergunta.get("sku") or ""),
             },
+            store_id=scope.store_id if scope is not None else "",
+            seller_id=scope.seller_id if scope is not None else "",
+            site_id=scope.site_id if scope is not None else "",
             channel="app",
         )
         job = _customer_reply_wait_or_raise(client_id, job)

@@ -1143,6 +1143,7 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
             },
             body: JSON.stringify({
                 loja: lojaResposta,
+                store_id: String(pergunta.store_id || ''),
                 pergunta,
                 resposta_atual: String(textarea.value || ''),
                 async: true
@@ -1303,8 +1304,12 @@ async function selecionarLoja(nome, storeId = '') {
     renderizarLojas();
     atualizarCabecalhoPosVenda();
     atualizarCabecalhoMediacao();
+    window.JKSolicitacoes?.atualizarCabecalho();
     if (treinamentoVisivel()) {
         await Promise.all([carregarTreinamentoAI(true), carregarSkusTreinamentoAI()]);
+    } else if (window.JKSolicitacoes?.estaVisivel()) {
+        window.JKSolicitacoes.resetar();
+        await window.JKSolicitacoes.carregar(1);
     } else if (document.getElementById('aba-pos-venda').classList.contains('active')) {
         await carregarPosVenda();
     } else if (document.getElementById('aba-mediacao').classList.contains('active')) {

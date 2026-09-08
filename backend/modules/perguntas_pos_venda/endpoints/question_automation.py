@@ -158,6 +158,9 @@ def _question_poll_process_candidate(
     poll: _QuestionPoll,
     *,
     store: str,
+    store_id: str,
+    seller_id: str,
+    site_id: str,
     cfg: dict,
     question: dict,
     item: dict,
@@ -196,6 +199,7 @@ def _question_poll_process_candidate(
             job = perguntas_pos_venda_codex.create_job(
                 client_id=poll.client_id, task_type="question", store=store,
                 subject_key=question_id, request=request, channel="app",
+                store_id=store_id, seller_id=seller_id, site_id=site_id,
                 created_by="perguntas_automacao",
             )
             if job.get("queue_saturated") or str(job.get("status") or "") == "deferred":
@@ -227,6 +231,7 @@ def _question_poll_store(
     poll: _QuestionPoll,
     *,
     store: str,
+    store_id: str,
     cfg: dict,
     seller_id: str,
     questions: list[dict],
@@ -246,7 +251,9 @@ def _question_poll_store(
                 return
             item = item_by_id.get(str(question.get("item_id") or "").strip()) or {}
             cfg, increment, stop = _question_poll_process_candidate(
-                poll, store=store, cfg=cfg, question=question, item=item
+                poll, store=store, store_id=store_id, seller_id=seller_id,
+                site_id=str(cfg.get("site_id") or "").strip(), cfg=cfg,
+                question=question, item=item
             )
             processed += increment
             if stop:
@@ -301,7 +308,9 @@ def ml_perguntas_automacao_poll(
             snapshot["question_ids"] = _perguntas_automacao_question_ids(questions)
             snapshot["question_snapshot_complete"] = True
             _question_poll_store(
-                poll, store=store, cfg=cfg, seller_id=seller_id, questions=questions
+                poll, store=store,
+                store_id=str(store_config.get("store_id") or "").strip(),
+                cfg=cfg, seller_id=seller_id, questions=questions
             )
         except HTTPException as exc:
             poll.errors.append({"loja": store, "erro": exc.detail})

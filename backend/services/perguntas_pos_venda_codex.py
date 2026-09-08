@@ -222,6 +222,57 @@ def _canonical_task_type(task_type: Any) -> str:
     return TASK_TYPE_ALIASES.get(normalized, normalized)
 
 
+def _resolve_job_store_identity(
+    client_id: str,
+    store: str,
+    *,
+    store_id: str = "",
+    seller_id: str = "",
+    site_id: str = "",
+) -> dict[str, str]:
+    """Resolve durable store identity without trusting a display name alone."""
+
+    from backend.services.cadastro_compatibilidade import (
+        resolver_loja_ativa_para_leitura,
+    )
+
+    try:
+        resolved = resolver_loja_ativa_para_leitura(client_id, store, store_id)
+    except (OSError, RuntimeError):
+        if str(store_id or "").strip():
+            raise ValueError("A identidade exata da loja nao foi confirmada.")
+        return {"store_id": "", "seller_id": "", "site_id": ""}
+    resolved_store_id = str(resolved.get("store_id") or "").strip()
+    if not resolved_store_id:
+        if str(store_id or "").strip():
+            raise ValueError("A identidade exata da loja nao foi confirmada.")
+        return {"store_id": "", "seller_id": "", "site_id": ""}
+    runtime = _require_runtime()
+    loader = getattr(runtime, "carregar_lojas", None)
+    rows = loader(client_id) if callable(loader) else []
+    matches = [
+        row for row in (rows or [])
+        if isinstance(row, dict) and str(row.get("store_id") or "").strip() == resolved_store_id
+    ]
+    if len(matches) != 1:
+        if str(store_id or "").strip():
+            raise ValueError("A configuracao da loja exata nao foi confirmada.")
+        return {"store_id": resolved_store_id, "seller_id": "", "site_id": ""}
+    row = matches[0]
+    cfg = (row.get("integracoes") or {}).get("mercadolivre") or {}
+    resolved_seller_id = str(cfg.get("user_id") or cfg.get("seller_id") or "").strip()
+    resolved_site_id = str(cfg.get("site_id") or row.get("site_id") or "").strip()
+    if str(seller_id or "").strip() and str(seller_id).strip() != resolved_seller_id:
+        raise PermissionError("O seller_id nao pertence a loja informada.")
+    if str(site_id or "").strip() and str(site_id).strip() != resolved_site_id:
+        raise PermissionError("O site_id nao pertence a loja informada.")
+    return {
+        "store_id": resolved_store_id,
+        "seller_id": resolved_seller_id,
+        "site_id": resolved_site_id,
+    }
+
+
 def _task_retry_policy(task_type: Any) -> str:
     return "bounded"
 
@@ -2659,6 +2710,9 @@ def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, An
         "profile": PROFILE,
         "task_type": str(job.get("task_type") or ""),
         "store": str(job.get("store") or ""),
+        "store_id": str(job.get("store_id") or ""),
+        "seller_id": str(job.get("seller_id") or ""),
+        "site_id": str(job.get("site_id") or ""),
         "subject_key": str(job.get("event_subject_key") or job.get("subject_key") or ""),
         "conversation_subject_key": str(job.get("subject_key") or ""),
         "conversation_id": str(job.get("conversation_id") or ""),
@@ -3056,6 +3110,9 @@ def _create_job_unserialized(
     store: str,
     subject_key: str,
     request: dict[str, Any],
+    store_id: str = "",
+    seller_id: str = "",
+    site_id: str = "",
     channel: str = "app",
     created_by: str = "module_user",
 ) -> dict[str, Any]:
@@ -3098,6 +3155,13 @@ def _create_job_unserialized(
         else {}
     )
     vin_capture_status = str(vin_capture.status or "absent")
+    store_identity = _resolve_job_store_identity(
+        client_id,
+        str(store),
+        store_id=store_id,
+        seller_id=seller_id,
+        site_id=site_id,
+    )
     vehicle_identity = _vehicle_identity_from_capture(
         job_id,
         vin_capture_status,
@@ -3119,6 +3183,7 @@ def _create_job_unserialized(
             task_type=task_type,
             store=str(store),
             subject_key=conversation_subject_key,
+            store_id=store_identity["store_id"],
         )
         if not isinstance(latest, dict) and task_type == TASK_TYPE_PUBLIC_QUESTION:
             # V1 compatibility reader: old jobs used task_type=question and the event id as subject.
@@ -3128,6 +3193,7 @@ def _create_job_unserialized(
                 task_type="question",
                 store=str(store),
                 subject_key=event_subject_key,
+                store_id=store_identity["store_id"],
             )
     except Exception:
         _discard_vin_envelope_family(job_id)
@@ -3246,11 +3312,12 @@ def _create_job_unserialized(
                     str(latest.get("job_id") or ""),
                 ),
             )
+    store_scope_key = store_identity["store_id"] or store
     idempotency_key = _hash(
         {
             "client": client_id,
             "type": task_type,
-            "store": store,
+            "store": store_scope_key,
             "subject": event_subject_key,
             "request": request,
             "origin": queue_origin,
@@ -3273,7 +3340,9 @@ def _create_job_unserialized(
     item = request.get("item") if isinstance(request.get("item"), dict) else {}
     item_id = str(question.get("item_id") or item.get("id") or "").strip()
     subquestions = _initial_subquestions(task_type)
-    conversation_id = _subject_conversation_id(client_id, task_type, store, conversation_subject_key)
+    conversation_id = _subject_conversation_id(
+        client_id, task_type, store_scope_key, conversation_subject_key
+    )
     guidance = codex_agent_runtime.resolve_guidance(
         info_base,
         client_id,
@@ -3311,6 +3380,9 @@ def _create_job_unserialized(
         "item_id": item_id,
         "scope_verifiers": scope_verifiers,
         "store": str(store),
+        "store_id": store_identity["store_id"],
+        "seller_id": store_identity["seller_id"],
+        "site_id": store_identity["site_id"],
         "client_id": str(client_id),
         "channel": str(channel or "app"),
         "created_by": str(created_by or "module_user"),
@@ -3427,6 +3499,7 @@ def _subject_has_persisted_job(
     store: str,
     subject_key: str,
     request: dict[str, Any],
+    store_id: str = "",
 ) -> bool:
     """Read the durable subject lane without retaining or decoding a VIN."""
 
@@ -3448,6 +3521,7 @@ def _subject_has_persisted_job(
         task_type=task_type,
         store=str(store),
         subject_key=conversation_subject_key,
+        store_id=store_id,
     )
     if not isinstance(latest, dict) and task_type == TASK_TYPE_PUBLIC_QUESTION:
         latest = codex_assistant_storage.codex_assistant_customer_reply_job_latest(
@@ -3456,6 +3530,7 @@ def _subject_has_persisted_job(
             task_type="question",
             store=str(store),
             subject_key=event_subject_key,
+            store_id=store_id,
         )
     return isinstance(latest, dict)
 
@@ -3553,6 +3628,9 @@ def create_job(
     store: str,
     subject_key: str,
     request: dict[str, Any],
+    store_id: str = "",
+    seller_id: str = "",
+    site_id: str = "",
     channel: str = "app",
     created_by: str = "module_user",
 ) -> dict[str, Any]:
@@ -3565,10 +3643,15 @@ def create_job(
         "store": store,
         "subject_key": subject_key,
         "request": request,
+        "store_id": store_id,
+        "seller_id": seller_id,
+        "site_id": site_id,
         "channel": channel,
         "created_by": created_by,
     }
-    operational_values = (client_id, store, subject_key, channel, created_by)
+    operational_values = (
+        client_id, store, store_id, seller_id, site_id, subject_key, channel, created_by,
+    )
     if (
         canonical_task not in TASK_TYPES
         or canonical_task == TASK_TYPE_POST_SALE
@@ -3579,13 +3662,14 @@ def create_job(
             store,
             subject_key,
             request,
+            store_id=store_id,
         )
     ):
         return _create_job_unserialized(**call)
     key = (
         str(client_id or ""),
         canonical_task,
-        str(store or ""),
+        str(store_id or store or ""),
         str(subject_key or ""),
     )
     lock = _acquire_initial_creation_lock(key)
@@ -3767,6 +3851,26 @@ def resume_incomplete_job(client_id: str, job_id: str, reason: str = "evidencia_
             _schedule(job)
         return _public_job(job, queue_position=_queue_position(info_base, client_id, job_id))
     return _public_job(job)
+
+
+def list_solicitacoes(
+    client_id: str,
+    *,
+    store_scopes: list[tuple[str, str, str]],
+    status: str = "",
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Read only the durable, public-safe journal for authorized stores."""
+
+    return codex_assistant_storage.codex_assistant_customer_reply_solicitacoes_list(
+        _runtime_info_base(),
+        client_id,
+        store_scopes=store_scopes,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
 
 
 def wait_job(client_id: str, job_id: str, timeout: float = MAX_SECONDS) -> dict[str, Any]:

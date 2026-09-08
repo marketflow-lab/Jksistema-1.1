@@ -30,6 +30,7 @@ class PerguntasAprovacaoRequest(BaseModel):
 
 class PerguntasGerarRespostaRequest(BaseModel):
     loja: str
+    store_id: Optional[str] = ""
     pergunta: dict
     resposta_atual: Optional[str] = ""
     orientacao_usuario: Optional[str] = ""
@@ -50,6 +51,7 @@ class PerguntasEnviarRespostaRequest(BaseModel):
 
 class MLQuestionsV2ProcessRequest(BaseModel):
     loja: str
+    store_id: Optional[str] = ""
     pergunta: Optional[dict] = None
     item: Optional[dict] = None
     resposta_atual: Optional[str] = ""

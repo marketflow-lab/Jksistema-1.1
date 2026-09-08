@@ -31,7 +31,8 @@ _CUSTOMER_REPLY_TERMINAL_ROW_TTL_DAYS = 7
 # VIN-free VehicleIdentityFactsV1 result joins the durable scheduler/lease journal.
 _CUSTOMER_REPLY_DURABLE_FIELDS = frozenset({
     "job_id", "profile", "task_type", "subject_key", "event_subject_key",
-    "question_id", "item_id", "store", "client_id", "channel", "status",
+    "question_id", "item_id", "store", "store_id", "seller_id", "site_id",
+    "client_id", "channel", "status",
     "agent_state", "current_step", "idempotency_key", "request_hash",
     "thread_id", "thread_reused", "thread_restart_reason", "prompt_version",
     "prompt_hash", "schema_version", "conversation_id", "previous_job_id",
@@ -58,6 +59,29 @@ _CUSTOMER_REPLY_SCOPE_ID_FIELDS = frozenset({
 })
 
 
+def _customer_reply_safe_warnings(values: Any) -> list[str]:
+    """Map internal diagnostics to a small operator-safe vocabulary."""
+
+    result: list[str] = []
+    rules = (
+        (("evidencia", "coverage"), "Ainda faltam evidencias confiaveis para uma conclusao completa."),
+        (("compatibilidade",), "A compatibilidade nao teve confirmacao tecnica completa."),
+        (("rascunho", "informacoes disponiveis"), "A conclusao usa somente as informacoes disponiveis."),
+        (("orientacao",), "A orientacao do operador mudou durante o processamento."),
+        (("indispon", "timeout", "429", "connection"), "Um servico ficou temporariamente indisponivel."),
+        (("reinicializa",), "O resultado anterior deixou de estar disponivel apos a reinicializacao."),
+    )
+    for value in values if isinstance(values, list) else []:
+        normalized = str(value or "").strip().casefold()
+        message = next(
+            (safe for markers, safe in rules if any(marker in normalized for marker in markers)),
+            "",
+        )
+        if message and message not in result:
+            result.append(message)
+    return result[:12]
+
+
 def _customer_reply_cache_key(db_path: str, job_id: str) -> tuple[str, str]:
     return (os.path.abspath(db_path), _safe_id(job_id, ""))
 
@@ -73,6 +97,22 @@ def _customer_reply_durable_payload(payload: dict[str, Any]) -> tuple[dict[str, 
     }
     if durable_scope:
         durable["scope_verifiers"] = durable_scope
+    warnings = _customer_reply_safe_warnings(source.get("warnings"))
+    if warnings:
+        durable["warnings"] = [
+            value for value in warnings
+        ]
+    evidence = source.get("evidence_status") if isinstance(source.get("evidence_status"), list) else []
+    if evidence:
+        durable["evidence_status"] = [
+            {
+                key: row.get(key)
+                for key in ("id", "intent", "status", "confidence")
+                if key in row
+            }
+            for row in evidence[:12]
+            if isinstance(row, dict)
+        ]
     result = source.get("result") if isinstance(source.get("result"), dict) else {}
     for key in (
         "proposal_id", "proposal_version", "proposal_hash", "data_sufficient",
@@ -81,6 +121,22 @@ def _customer_reply_durable_payload(payload: dict[str, Any]) -> tuple[dict[str, 
     ):
         if key in result and key not in durable:
             durable[key] = result.get(key)
+    result_warnings = _customer_reply_safe_warnings(result.get("warnings"))
+    if result_warnings:
+        durable["warnings"] = [
+            value for value in result_warnings
+        ]
+    result_evidence = result.get("evidence_status") if isinstance(result.get("evidence_status"), list) else []
+    if result_evidence:
+        durable["evidence_status"] = [
+            {
+                key: row.get(key)
+                for key in ("id", "intent", "status", "confidence")
+                if key in row
+            }
+            for row in result_evidence[:12]
+            if isinstance(row, dict)
+        ]
     steps = source.get("agent_steps") if isinstance(source.get("agent_steps"), list) else []
     if steps:
         durable["agent_steps"] = [

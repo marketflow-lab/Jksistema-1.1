@@ -32,14 +32,14 @@ MODEL_TYPES = (
     ia.IATreinamentoPerguntasPosVendaSimularRequest,
 )
 CONTRACT_HASHES = {
-    # Four additive read endpoints; all legacy exports, signatures and schemas remain frozen.
-    "routes": "c8168de81d0cf383e8a631ef457ac9fe7f8fb5ed6c22cdaf34f70c27902230c1",
-    "exports": "df0113be39e4824acefe0f41818ad35128010e58124b2f74afac3dd7be97fb0c",
+    # Five additive read endpoints; all legacy exports and contracts remain explicit.
+    "routes": "db194f1c965f5b8b31fb3ec085801621335081ad6ab582bcfea7e2abb926025e",
+    "exports": "3f87143501cb75287c5c4c45b74e0944415bd7c61996c3e2c94412509e748558",
     # Optional SKU detail read and scoped human characteristic edits are additive.
-    "signatures": "3d2a43c5dd90068efd230e6aadafb4d97018593a11e76459b94fa1c339a67acd",
-    "schemas": "0da1b3650cabddbe19c7de2f4f9e8239972661bb6c3a8602d118db11611f3e84",
+    "signatures": "fe84b6a77c840537698804a23fe51118202c49aa527658044a435a154332b984",
+    "schemas": "c999535e3d69b41296fca00a96e119d04066e6efa1beb83a44e3312c36727347",
     "http_status_codes": "c06ceb69456b4923815b0461ddeef6f9c90b6fcf5c0568dd79b3fdbc888a4546",
-    "governance": "397babf72ba67a71b0d09d49bbb87bf01be0d04cee90dd595bd4fedbbbded76d",
+    "governance": "39ff5cece6b46177fc8ff30abc56133f38a780e3fd5f76db665367df9f2e3b3f",
 }
 GOVERNANCE_NAMES = (
     "_ML_POS_VENDA_RECENT_DAYS",
@@ -152,8 +152,8 @@ def _snapshot() -> dict[str, object]:
 
 def test_perguntas_pos_venda_endpoints_contract_snapshot() -> None:
     snapshot = _snapshot()
-    assert len(snapshot["routes"]) == 35
-    assert len(snapshot["exports"]) == 33
+    assert len(snapshot["routes"]) == 36
+    assert len(snapshot["exports"]) == 34
     assert len(snapshot["schemas"]) == 12
     assert {name: _digest(value) for name, value in snapshot.items()} == CONTRACT_HASHES
 

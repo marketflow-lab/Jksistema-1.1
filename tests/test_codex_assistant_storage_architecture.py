@@ -45,6 +45,7 @@ EXPECTED_PUBLIC_EXPORTS = (
     "codex_assistant_customer_reply_job_get",
     "codex_assistant_customer_reply_job_latest",
     "codex_assistant_customer_reply_jobs_list",
+    "codex_assistant_customer_reply_solicitacoes_list",
     "codex_assistant_customer_reply_queue_metrics",
     "codex_assistant_customer_reply_job_claim",
     "codex_assistant_customer_reply_job_heartbeat",
@@ -60,8 +61,8 @@ EXPECTED_PUBLIC_EXPORTS = (
     "codex_assistant_agent_audit_add",
     "codex_assistant_agent_audit_list",
 )
-EXPECTED_SIGNATURES_SHA256 = "7e3109bd2bf54a3ca674c9bf9d67de667240a267d4a47598327945e5e29be776"
-EXPECTED_STATE_SCHEMA_SHA256 = "80ed7be4e2b27f8866f38f726ca41a9e546450f02c2e9ee00cb174a036654f5b"
+EXPECTED_SIGNATURES_SHA256 = "4e03ef7e4561129dda589a79ebe9a9efece0aa9451e2f1d8ceff1fdf5a0641de"
+EXPECTED_STATE_SCHEMA_SHA256 = "e7c414b53abf9879cf02311481f90bec8791cd59e5ceae15ac44a2353829009a"
 
 
 def _parse(path: Path) -> ast.Module:
