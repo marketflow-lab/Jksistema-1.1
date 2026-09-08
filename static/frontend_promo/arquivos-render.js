@@ -151,6 +151,42 @@ async function processarArquivos() {
     }
 }
 
+function renderEmptyAnalysisState(data) {
+    const notice = document.getElementById('analysisEmptyState');
+    if (!notice) return;
+    notice.textContent = '';
+    notice.style.display = 'none';
+    if (Array.isArray(data) && data.length > 0) return;
+
+    const analise = Array.isArray(apiAnalisesPorCampanha)
+        ? apiAnalisesPorCampanha[apiAnaliseAtiva]
+        : null;
+    const motivo = typeof analise?.motivo_sem_resultados === 'string'
+        ? analise.motivo_sem_resultados.trim()
+        : '';
+    const mensagem = document.createElement('p');
+    mensagem.style.margin = '0';
+    const erro = typeof analise?.error === 'string' ? analise.error.trim() : '';
+    mensagem.textContent = motivo || erro || 'Análise concluída sem anúncios para exibir.';
+    notice.appendChild(mensagem);
+
+    const diagnostico = analise?.diagnostico;
+    const contagens = [
+        ['candidatos', 'Anúncios encontrados'],
+        ['linhas_montadas', 'Anúncios processados'],
+        ['excluidos_status', 'Excluídos pelo status'],
+        ['excluidos_pct_fixa', 'Excluídos pelo filtro de % Fixa da Promoção 1'],
+    ].filter(([key]) => Number.isSafeInteger(diagnostico?.[key]) && diagnostico[key] >= 0)
+        .map(([key, label]) => `${label}: ${diagnostico[key]}`);
+    if (contagens.length) {
+        const detalhes = document.createElement('p');
+        detalhes.style.margin = '8px 0 0';
+        detalhes.textContent = contagens.join(' · ');
+        notice.appendChild(detalhes);
+    }
+    notice.style.display = 'block';
+}
+
 function renderTable(data) {
     const table = document.getElementById('tabelaAnalise');
     table.setAttribute('data-table-key', `tabelaAnalise__${getCurrentUserPrefScope()}`);
@@ -161,6 +197,7 @@ function renderTable(data) {
     tbody.innerHTML = '';
 
     const totalRows = Array.isArray(data) ? data.length : 0;
+    renderEmptyAnalysisState(data);
     renderPaginationControls(totalRows);
     savePagePrefs();
 

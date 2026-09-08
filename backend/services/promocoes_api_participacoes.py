@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from __future__ import annotations
 import asyncio
+from backend.services.promocoes_validacao import validar_promocoes_por_anuncio
 import inspect
 import json
 import logging
@@ -404,6 +405,7 @@ def _aplicar_participacoes_promocoes_payload(
     if not promocoes:
         raise HTTPException(status_code=400, detail="Nenhuma promocao enviada para aplicar.")
 
+    validar_promocoes_por_anuncio(promocoes=promocoes)
     cfg = _obter_cfg_ml(client_id, loja)
     resumo = []
     detalhes = []
@@ -629,6 +631,7 @@ def aplicar_participacoes_promocoes_start(req: PromoAplicarParticipacaoRequest, 
         raise HTTPException(status_code=400, detail="Informe a loja.")
     if total_itens <= 0:
         raise HTTPException(status_code=400, detail="Nenhuma promocao enviada para aplicar.")
+    validar_promocoes_por_anuncio(promocoes=promocoes)
     job_id = uuid.uuid4().hex
     _promo_job_set(
         job_id,

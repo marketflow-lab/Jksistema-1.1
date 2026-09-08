@@ -144,6 +144,7 @@ function apiAutoPrefsFromServerConfig(config) {
         lastJobStatus: String(cfg.last_job_status || ''),
         lastJobMessage: String(cfg.last_job_message || ''),
         lastError: String(cfg.last_error || ''),
+        promoAType: String(cfg.promocao_a_type || ''),
         updatedAt: Number(cfg.updated_at || 0),
         due: cfg.due === true,
         promoBSelectedIds: extractApiPromoBIdsFromMeta(cfg.promocoes_b_meta),
@@ -180,6 +181,12 @@ function montarPayloadApiAutoServidor() {
 }
 
 function aplicarApiAutoPrefsTela(prefs) {
+    const selectPromoA = document.getElementById('apiPromoASelect');
+    if (selectPromoA && isApiPurchaseCoupon(prefs.promoAType) && selectPromoA.dataset.couponBlocked !== '0') {
+        selectPromoA.value = '';
+        selectPromoA.dataset.couponBlocked = '1';
+        mostrarApiPromoCompatibilityError(getApiPromoACompatibilityError());
+    }
     const enabledEl = document.getElementById('apiAutoWorkEnabled');
     const approvalEl = document.getElementById('apiAutoApprovalRequired');
     if (enabledEl) enabledEl.checked = !!prefs.enabled;
@@ -221,10 +228,17 @@ async function carregarApiAutoPrefsServidor() {
 }
 
 async function salvarApiAutoPrefsServidor() {
+    const config = montarPayloadApiAutoServidor();
+    const incompatibilidade = config.enabled ? getApiPromoACompatibilityError() : '';
+    if (incompatibilidade) {
+        mostrarApiPromoCompatibilityError(incompatibilidade);
+        atualizarStatusAutomacaoPromo(incompatibilidade);
+        throw new Error(incompatibilidade);
+    }
     const resp = await fetch('/api/promo/automacao', {
         method: 'PUT',
         headers: getAuthHeadersWithClient({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify(montarPayloadApiAutoServidor()),
+        body: JSON.stringify(config),
     });
     const payload = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(buildApiErrorMessage(resp, payload, 'Erro ao salvar automacao'));
@@ -375,6 +389,7 @@ function inicializarAutomacaoPromoApi() {
         salvarServidor();
     });
     document.getElementById('apiPromoASelect')?.addEventListener('change', () => {
+        getApiPromoACompatibilityError();
         if (enabledEl.checked) salvarServidor();
     });
     toleranciaEl?.addEventListener('change', () => {

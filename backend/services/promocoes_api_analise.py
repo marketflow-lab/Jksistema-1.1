@@ -62,6 +62,7 @@ from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.promocoes_common import *
 from backend.services.promocoes_core import *
+from backend.services.promocoes_validacao import validar_promocoes_por_anuncio
 
 _PROMOCOES_RUNTIME_GET_TENANT_ID = None
 
@@ -1301,6 +1302,9 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
     Compara duas promocoes/campanhas existentes do Mercado Livre
     usando dados da API e custo do produto no cadastro local.
     """
+    validar_promocoes_por_anuncio(req.promocao_a_type, [
+        {"type": tipo} for tipo in (req.promocao_b_types or [req.promocao_b_type])
+    ])
     promo_a = str(req.promocao_a_id or "").strip()
     promo_a_type = str(req.promocao_a_type or "").strip()
     if promo_a_type in {"-", "None", "null"}:
@@ -1343,6 +1347,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         max_items=5000,
         buscar_detalhes=False,
     )
+    validar_promocoes_por_anuncio(promocoes=list(raw_a.values()) if isinstance(raw_a, dict) else [])
     ids_a = {str(x.get("id") or "").strip() for x in (itens_a_refs or []) if str(x.get("id") or "").strip()}
 
     promocoes_b_info = []
@@ -1357,6 +1362,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             promotion_type=promo_b_type,
             buscar_detalhes=False,
         )
+        validar_promocoes_por_anuncio(promocoes=list(raw_b.values()) if isinstance(raw_b, dict) else [])
         ids_b = {str(x.get("id") or "").strip() for x in (itens_b_refs or []) if str(x.get("id") or "").strip()}
         ids_intersecao = sorted(ids_a & ids_b)
         ids_intersecao_global.update(ids_intersecao)
@@ -1864,6 +1870,36 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
     }
 
 
+def _promo_filtrar_resultado_com_diagnostico(linhas: list[dict], candidatos: int):
+    """Explica a selecao existente sem alterar valores, decisoes ou ordem."""
+    status_ok = [row for row in linhas if _promo_linha_status_ativo_ou_programado(row)]
+    selecionadas = [row for row in status_ok if _promo_linha_pct_fixa_maior_que_zero(row)]
+    diagnostico = {
+        "candidatos": candidatos,
+        "linhas_montadas": len(linhas),
+        "status_ok": len(status_ok),
+        "pct_fixa_ok": sum(1 for row in linhas if _promo_linha_pct_fixa_maior_que_zero(row)),
+        "excluidos_status": len(linhas) - len(status_ok),
+        "excluidos_pct_fixa": len(status_ok) - len(selecionadas),
+        "total_exibido": len(selecionadas),
+    }
+    motivo = ""
+    if not selecionadas:
+        if not candidatos:
+            motivo = "Nenhum anuncio foi encontrado para comparar nesta campanha."
+        elif not linhas:
+            motivo = "Nao foi possivel montar os dados dos anuncios para esta comparacao. Tente analisar novamente."
+        elif not status_ok:
+            motivo = "Os anuncios consultados nao atendem ao criterio de status da Promocao 1."
+        else:
+            motivo = (
+                f"{len(status_ok)} anuncio(s) passaram pelo criterio de status, mas foram excluidos "
+                "porque o desconto calculado em % Fixa da Promocao 1 ficou zerado. "
+                "Verifique os precos e descontos da Promocao 1 antes de analisar novamente."
+            )
+    return selecionadas, diagnostico, motivo
+
+
 async def analisar_promo_via_api_sem_arquivos(
     loja: str,
     promocao_a_id: str,
@@ -1874,6 +1910,7 @@ async def analisar_promo_via_api_sem_arquivos(
     client_id: str = "default",
     progress_hook: Optional[Callable[[dict], None]] = None,
 ):
+    validar_promocoes_por_anuncio(promocao_a_type, promocoes_b_meta)
     inicio = time.time()
 
     def _emit_progress(progress: int, message: str, phase: str = "running", details: Optional[dict] = None):
@@ -1947,6 +1984,7 @@ async def analisar_promo_via_api_sem_arquivos(
         buscar_detalhes=False,
         progress_callback=lambda msg: _emit_progress(24, msg, details={"promo": promo_a}),
     )
+    validar_promocoes_por_anuncio(promocoes=list(raw_a.values()) if isinstance(raw_a, dict) else [])
     ids_a = {str(x.get("id") or "").strip() for x in (itens_a_refs or []) if str(x.get("id") or "").strip()}
     _emit_progress(32, f"Promocao 1 carregada com {len(ids_a)} anuncio(s).")
 
@@ -2428,6 +2466,7 @@ async def analisar_promo_via_api_sem_arquivos(
                 "error": erro_txt,
             })
             continue
+        validar_promocoes_por_anuncio(promocoes=list(raw_b.values()) if isinstance(raw_b, dict) else [])
         ids_b = [
             str(x.get("id") or "").strip()
             for x in (itens_b_refs or [])
@@ -2508,11 +2547,7 @@ async def analisar_promo_via_api_sem_arquivos(
         total_montadas = len(linhas)
         total_status_ok = sum(1 for row in linhas if _promo_linha_status_ativo_ou_programado(row))
         total_pct_ok = sum(1 for row in linhas if _promo_linha_pct_fixa_maior_que_zero(row))
-        linhas = [
-            row for row in linhas
-            if _promo_linha_status_ativo_ou_programado(row)
-            and _promo_linha_pct_fixa_maior_que_zero(row)
-        ]
+        linhas, diagnostico, motivo_sem_resultados = _promo_filtrar_resultado_com_diagnostico(linhas, len(item_pairs))
         logger.info(
             "[PROMO API SEM ARQUIVOS] %s: candidatos=%s, linhas_montadas=%s, status_ok=%s, pct_fixa_ok=%s, final=%s",
             promo_meta["promo_b"],
@@ -2593,6 +2628,8 @@ async def analisar_promo_via_api_sem_arquivos(
             "planilha_gerada": planilha_nome,
             "data": dados_payload,
             "origem": "api",
+            "diagnostico": diagnostico,
+            "motivo_sem_resultados": motivo_sem_resultados,
         })
 
     _emit_progress(98, "Finalizando resultado da analise via API...")
@@ -2620,6 +2657,7 @@ async def analisar_promo_via_api_com_arquivos(
     client_id: str = Depends(get_tenant_id),
     progress_hook: Any = None,
 ):
+    validar_promocoes_por_anuncio(promocao_a_type, promocoes_b_meta)
     inicio = time.time()
 
     def _emit_progress(progress: int, message: str, phase: str = "running", details: Optional[dict] = None):
@@ -2707,6 +2745,7 @@ async def analisar_promo_via_api_com_arquivos(
         buscar_detalhes=False,
         progress_callback=lambda msg: _emit_progress(28, msg, details={"promo": promo_a}),
     )
+    validar_promocoes_por_anuncio(promocoes=list(raw_a.values()) if isinstance(raw_a, dict) else [])
     ids_a = {str(x.get("id") or "").strip() for x in (itens_a_refs or []) if str(x.get("id") or "").strip()}
     _emit_progress(32, f"Promocao 1 carregada com {len(ids_a)} anuncio(s).")
 
@@ -3225,11 +3264,7 @@ async def analisar_promo_via_api_com_arquivos(
                     except Exception as e:
                         logger.warning(f"[PROMO API ARQUIVOS] Falha ao montar item {item_id}: {e}")
                 linhas = [linhas_por_id[item_id] for item_id, _ in item_pairs if item_id in linhas_por_id]
-        linhas = [
-            row for row in linhas
-            if _promo_linha_status_ativo_ou_programado(row)
-            and _promo_linha_pct_fixa_maior_que_zero(row)
-        ]
+        linhas, diagnostico, motivo_sem_resultados = _promo_filtrar_resultado_com_diagnostico(linhas, len(item_pairs))
 
         planilha_nome = _salvar_planilha_analise_promo(
             client_id,
@@ -3297,6 +3332,8 @@ async def analisar_promo_via_api_com_arquivos(
             "arquivo_nome": promo_meta["arquivo_nome"],
             "tab_label": promo_meta["promo_texto"] or promo_meta["arquivo_nome"],
             "total": len(dados_payload),
+            "diagnostico": diagnostico,
+            "motivo_sem_resultados": motivo_sem_resultados,
             "planilha_gerada": planilha_nome,
             "data": dados_payload,
         })

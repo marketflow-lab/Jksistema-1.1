@@ -577,9 +577,30 @@ function getApiPromoBSelectedIdSet() {
         .filter(Boolean));
 }
 
+function isApiPurchaseCoupon(promoType) {
+    return String(promoType || '').trim().toUpperCase() === 'SELLER_COUPON_CAMPAIGN';
+}
+
+function getApiPromoACompatibilityError() {
+    const select = document.getElementById('apiPromoASelect');
+    const tipo = select?.selectedOptions?.[0]?.dataset?.promoType;
+    if (select?.value && !isApiPurchaseCoupon(tipo)) select.dataset.couponBlocked = '0';
+    if (!isApiPurchaseCoupon(tipo) && !(select?.dataset?.couponBlocked === '1' && !select.value)) return '';
+    return 'A Promoção 1 selecionada é um cupom por compra. Esta análise compara preços por anúncio. Selecione uma campanha com preço promocional por anúncio.';
+}
+
+function mostrarApiPromoCompatibilityError(message) {
+    const errorMsg = document.getElementById('apiErrorMsg');
+    if (errorMsg) {
+        errorMsg.textContent = message;
+        errorMsg.style.display = 'block';
+    }
+}
+
 function getApiPromoBSelections() {
     const selectedIds = getApiPromoBSelectedIdSet();
     return Array.isArray(apiPromoBCampaigns) ? apiPromoBCampaigns
+        .filter((campanha) => !isApiPurchaseCoupon(campanha?.type || campanha?.promotion_type))
         .map((campanha) => buildApiPromoBSelectionInfo(campanha))
         .filter((item) => item.value && selectedIds.has(item.value)) : [];
 }
@@ -781,7 +802,8 @@ function limparSelecaoApiPromoB() {
 function renderApiPromoBButtons(campanhas) {
     const wrap = document.getElementById('apiPromoBSelect');
     if (!wrap) return;
-    const lista = Array.isArray(campanhas) ? campanhas.filter((campanha) => campanha && campanha.id) : [];
+    const lista = Array.isArray(campanhas) ? campanhas.filter((campanha) => campanha && campanha.id
+        && !isApiPurchaseCoupon(campanha.type || campanha.promotion_type)) : [];
     apiPromoBCampaigns = lista;
     if (!lista.length) {
         apiPromoBCampaigns = [];
@@ -1293,6 +1315,8 @@ async function carregarPromocoesApi() {
     const selectA = document.getElementById('apiPromoASelect');
     const selectB = document.getElementById('apiPromoBSelect');
     if (!selectA || !selectB) return;
+    const selecaoAnteriorEraCupom = isApiPurchaseCoupon(selectA.selectedOptions?.[0]?.dataset?.promoType)
+        || (selectA.dataset.couponBlocked === '1' && !selectA.value);
     selectA.innerHTML = '<option value="">Carregando...</option>';
     selectB.innerHTML = '<div class="api-promo-empty">Carregando...</div>';
     apiPromoBCampaigns = [];
@@ -1315,8 +1339,9 @@ async function carregarPromocoesApi() {
         const campanhas = Array.isArray(data.campaigns) ? data.campaigns : [];
         const campanhasEnriquecidas = campanhas.map((campanha) => applyPromoCounts(campanha));
         selectA.innerHTML = '';
-        const campanhasA = campanhasEnriquecidas.filter((campanha) => promoSelectionGroup(campanha) === 'usuario');
-        const campanhasB = campanhasEnriquecidas.filter((campanha) => isCampanhaMercadoLivre(campanha));
+        const campanhasCompativeis = campanhasEnriquecidas.filter((campanha) => !isApiPurchaseCoupon(campanha.type || campanha.promotion_type));
+        const campanhasA = campanhasCompativeis.filter((campanha) => promoSelectionGroup(campanha) === 'usuario');
+        const campanhasB = campanhasCompativeis.filter((campanha) => isCampanhaMercadoLivre(campanha));
         campanhasA.forEach((campanha) => {
             if (!campanha || !campanha.id) return;
             const optA = document.createElement('option');
@@ -1328,6 +1353,11 @@ async function carregarPromocoesApi() {
         });
         if (!campanhasA.length) {
             selectA.innerHTML = '<option value="">Nenhuma promoção do usuário</option>';
+        }
+        if (selecaoAnteriorEraCupom) {
+            selectA.value = '';
+            selectA.dataset.couponBlocked = '1';
+            mostrarApiPromoCompatibilityError(getApiPromoACompatibilityError());
         }
         renderApiPromoBButtons(campanhasB);
         if (apiAutoInicializada && getApiAutoPrefs().enabled) {
@@ -1369,6 +1399,13 @@ async function processarAnaliseApi(opcoes = {}) {
     const errorMsg = document.getElementById('apiErrorMsg');
     const resultsArea = document.getElementById('resultsArea');
     const tabsWrap = document.getElementById('apiAnalysisTabs');
+
+    const incompatibilidade = getApiPromoACompatibilityError();
+    if (incompatibilidade) {
+        mostrarApiPromoCompatibilityError(incompatibilidade);
+        if (automatico) atualizarStatusAutomacaoPromo(incompatibilidade);
+        return { status: 'error', error: incompatibilidade };
+    }
 
     if (!loja || !promocaoA || !promoBOptions.length) {
         if (automatico) {

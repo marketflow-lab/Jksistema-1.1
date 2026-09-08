@@ -57,6 +57,8 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
         com_arquivos: bool = False,
         promo_b_id: str = PROMO_B_ID,
         promo_b_type: str = "SMART",
+        raw_a_overrides: dict | None = None,
+        retornar_resultado: bool = False,
     ):
         raw_b_resolvido = copy.deepcopy(raw_b if raw_b_resolvido is None else raw_b_resolvido)
         price_info = copy.deepcopy(price_info or {
@@ -76,6 +78,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             "original_price": 149.24,
             "seller_percentage": 12.89,
         }
+        raw_a.update(copy.deepcopy(raw_a_overrides or {}))
         item = {
             "id": ITEM_ID,
             "title": "Produto prova boost",
@@ -250,7 +253,67 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
         finally:
             for patcher in reversed(patches):
                 patcher.stop()
+        if retornar_resultado:
+            return resultado
         return capturadas[0], resultado["analises"][0]["data"][0]
+
+    def test_resultado_zero_explica_filtro_sem_liberar_participacoes(self):
+        raw_b = {
+            "id": PROMO_B_ID, "type": "SMART", "status": "started",
+            "price": 114.22, "original_price": 149.24,
+        }
+        for com_arquivos in (False, True):
+            with self.subTest(com_arquivos=com_arquivos):
+                resultado = self._executar_fluxo(
+                    raw_b,
+                    raw_a_overrides={"price": 149.24, "seller_percentage": 0},
+                    retornar_resultado=True,
+                    com_arquivos=com_arquivos,
+                )
+                campanha = resultado["analises"][0]
+                self.assertEqual(campanha["data"], [])
+                self.assertEqual(campanha["total"], 0)
+                self.assertEqual(campanha["diagnostico"], {
+                    "candidatos": 1, "linhas_montadas": 1,
+                    "status_ok": 1, "pct_fixa_ok": 0,
+                    "excluidos_status": 0, "excluidos_pct_fixa": 1,
+                    "total_exibido": 0,
+                })
+                self.assertIn("% Fixa", campanha["motivo_sem_resultados"])
+                self.assertIn("zerado", campanha["motivo_sem_resultados"])
+                participacoes = jobs._promo_automacao_montar_participacoes(resultado, "Loja Teste")
+                self.assertEqual(participacoes["promocoes"], [])
+
+    def test_diagnostico_preserva_linha_financeira_quando_resultado_valido(self):
+        raw_b = {
+            "id": PROMO_B_ID, "type": "SMART", "status": "started",
+            "price": 114.22, "original_price": 149.24,
+        }
+        for com_arquivos in (False, True):
+            with self.subTest(com_arquivos=com_arquivos):
+                _interna, esperada = self._executar_fluxo(raw_b, com_arquivos=com_arquivos)
+                resultado = self._executar_fluxo(raw_b, com_arquivos=com_arquivos, retornar_resultado=True)
+                campanha = resultado["analises"][0]
+                self.assertEqual(campanha["data"], [esperada])
+                self.assertEqual(campanha["motivo_sem_resultados"], "")
+                self.assertEqual(campanha["diagnostico"]["total_exibido"], 1)
+
+    def test_diagnostico_preserva_criterios_e_ordem_sem_mutar_linhas(self):
+        linhas = [
+            {"MLB": "A", "Status": "Ativo", "% Fixa": "0%"},
+            {"MLB": "B", "Status": "Ativo", "% Fixa": "12%", "Decisao": "Nao participar"},
+            {"MLB": "C", "Status": "Encerrado", "% Fixa": "5%"},
+            {"MLB": "D", "Status": "Programada", "% Fixa": ""},
+            {"MLB": "E", "Status": "Elegivel", "% Fixa": "-2%"},
+        ]
+        original = copy.deepcopy(linhas)
+        selecionadas, diagnostico, motivo = analysis._promo_filtrar_resultado_com_diagnostico(linhas, 5)
+        self.assertEqual(selecionadas, [linhas[1], linhas[3], linhas[4]])
+        self.assertEqual(linhas, original)
+        self.assertIs(selecionadas[0], linhas[1])
+        self.assertEqual(diagnostico["excluidos_status"], 1)
+        self.assertEqual(diagnostico["excluidos_pct_fixa"], 1)
+        self.assertEqual(motivo, "")
 
     @staticmethod
     def _contexto_tarifa_smart_split():

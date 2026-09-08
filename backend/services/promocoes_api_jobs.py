@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from __future__ import annotations
 import asyncio
+from backend.services.promocoes_validacao import validar_promocoes_por_anuncio
 import inspect
 import json
 import logging
@@ -283,6 +284,7 @@ def _promo_start_api_worker_job(
     margem_tolerancia: float = 0.0,
     promocoes_b_meta: str = "[]",
 ) -> dict:
+    validar_promocoes_por_anuncio(promocao_a_type, promocoes_b_meta)
     if not _ensure_promo_worker_running():
         raise HTTPException(status_code=503, detail="Worker dedicado de promocoes indisponivel.")
 
@@ -581,6 +583,7 @@ async def iniciar_analise_promo_via_api_com_arquivos(
     files: list[UploadFile] = File(...),
     client_id: str = Depends(get_tenant_id),
 ):
+    validar_promocoes_por_anuncio(promocao_a_type, promocoes_b_meta)
     if not files:
         raise HTTPException(status_code=400, detail="Envie os arquivos das Promocoes 2.")
     if not _ensure_promo_worker_running():
@@ -708,6 +711,8 @@ def promo_automacao_obter(client_id: str = Depends(get_tenant_id)):
 
 
 def promo_automacao_salvar(req: PromoAutomacaoConfigRequest, client_id: str = Depends(get_tenant_id)):
+    if req.enabled:
+        validar_promocoes_por_anuncio(req.promocao_a_type, req.promocoes_b_meta)
     entrada = req.dict()
     with PROMO_AUTOMACAO_LOCK:
         anterior = _promo_automacao_carregar(client_id)

@@ -3,6 +3,10 @@
     if (!analise) { alert("AnÃ¡lise nÃ£o encontrada."); return; }
     const arquivo_nome = analise.arquivo_nome || `analise_promo_${idx + 1}.xlsx`;
     const fonte = dadosOverride || analise.data || [];
+    if (!Array.isArray(fonte) || fonte.length === 0) {
+        alert('Esta análise não tem anúncios para exportar. Consulte o resultado da campanha.');
+        return;
+    }
     const linhasExport = fonte.map((r) => {
         const out = Object.assign({}, r);
         out['AÃ§Ã£o'] = r['AÃ§Ã£o'] || r['Participar ou nÃ£o'] || '';
