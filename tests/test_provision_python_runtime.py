@@ -400,6 +400,83 @@ def test_runtime_cache_cleanup_is_strictly_scoped_to_pyc_inside_pycache(tmp_path
     assert cache.is_dir()
 
 
+def test_development_portable_cache_cleanup_restores_the_exact_pinned_tree(tmp_path):
+    source = tmp_path / "local_app"
+    portable = source / "python_runtime" / "portable"
+    portable.mkdir(parents=True)
+    (portable / "python.exe").write_bytes(b"signed-runtime-placeholder")
+    expected = provisioner.tree_inventory(portable)
+    generated = portable / "Lib" / "__pycache__" / "pathlib.cpython-314.pyc"
+    generated.parent.mkdir(parents=True)
+    generated.write_bytes(b"generated-bytecode")
+    _write_json(source / "runtime-versions.json", _runtime_config())
+    spec = provisioner.load_runtime_spec(source)
+    logger = provisioner.ProvisionLogger(source / "logs" / "provision.log")
+
+    removed = provisioner._remove_development_portable_bytecode_caches(
+        source, source, spec, logger
+    )
+
+    assert removed == (1, len(b"generated-bytecode"))
+    assert provisioner.tree_inventory(portable) == expected
+    assert not generated.parent.exists()
+    assert "runtime portatil de desenvolvimento" in logger.path.read_text(encoding="utf-8")
+
+
+def test_development_portable_cache_cleanup_never_mutates_packaged_source(tmp_path):
+    source = tmp_path / "package"
+    target = tmp_path / "user-data"
+    portable = source / "python_runtime" / "portable"
+    generated = portable / "Lib" / "__pycache__" / "pathlib.cpython-314.pyc"
+    generated.parent.mkdir(parents=True)
+    generated.write_bytes(b"generated-bytecode")
+    _write_json(source / "runtime-versions.json", _runtime_config())
+    spec = provisioner.load_runtime_spec(source)
+    logger = provisioner.ProvisionLogger(target / "logs" / "provision.log")
+
+    removed = provisioner._remove_development_portable_bytecode_caches(
+        source, target, spec, logger
+    )
+
+    assert removed == (0, 0)
+    assert generated.read_bytes() == b"generated-bytecode"
+
+
+def test_provision_normalizes_development_source_before_quick_reuse(tmp_path, monkeypatch):
+    source = tmp_path / "local_app"
+    source.mkdir()
+    _write_json(source / "runtime-versions.json", _runtime_config())
+    spec = provisioner.load_runtime_spec(source)
+    logger = provisioner.ProvisionLogger(source / "logs" / "provision.log")
+    events = []
+
+    monkeypatch.setattr(
+        provisioner,
+        "_remove_development_portable_bytecode_caches",
+        lambda *_args, **_kwargs: events.append("cache_cleanup") or (0, 0),
+    )
+
+    def quick_reuse(*_args, **_kwargs):
+        events.append("quick_reuse")
+        return {"action": "quick_reused"}
+
+    monkeypatch.setattr(provisioner, "try_quick_reuse", quick_reuse)
+
+    result = provisioner.provision(
+        source,
+        source,
+        spec,
+        logger,
+        lock_timeout=0,
+        command_timeout=1,
+        force=False,
+        quick_reuse=True,
+    )
+
+    assert result == {"action": "quick_reused"}
+    assert events == ["cache_cleanup", "quick_reuse"]
+
+
 def test_runtime_integrity_check_removes_generated_caches_then_matches_pin(tmp_path):
     runtime = tmp_path / ".python-runtime"
     runtime.mkdir()

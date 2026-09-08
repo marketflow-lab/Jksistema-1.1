@@ -1107,15 +1107,19 @@ def _replace_venv_with_retry(
                 time.sleep(delay)
 
 
-def _remove_installed_runtime_bytecode_caches(
-    runtime: Path, logger: ProvisionLogger
+def _remove_runtime_bytecode_caches(
+    runtime: Path,
+    logger: ProvisionLogger,
+    *,
+    label: str,
+    unsafe_code: str,
 ) -> tuple[int, int]:
-    """Remove only generated ``__pycache__/*.pyc`` files from the installed runtime."""
+    """Remove only generated ``__pycache__/*.pyc`` files from one runtime tree."""
 
     if not runtime.is_dir() or runtime.is_symlink() or _is_reparse_point(runtime):
         raise ProvisionError(
-            "installed_runtime_unsafe",
-            f"Runtime instalado ausente ou inseguro antes da limpeza de caches: {runtime}",
+            unsafe_code,
+            f"{label.capitalize()} ausente ou inseguro antes da limpeza de caches: {runtime}",
         )
     removed_files = 0
     removed_bytes = 0
@@ -1128,8 +1132,8 @@ def _remove_installed_runtime_bytecode_caches(
             cache_root = current_path / name
             if cache_root.is_symlink() or _is_reparse_point(cache_root):
                 raise ProvisionError(
-                    "installed_runtime_unsafe",
-                    f"Cache de bytecode inseguro no runtime instalado: {cache_root}",
+                    unsafe_code,
+                    f"Cache de bytecode inseguro no {label}: {cache_root}",
                 )
             for cache_current, _cache_directories, cache_files in os.walk(
                 cache_root, topdown=False, followlinks=False
@@ -1141,8 +1145,8 @@ def _remove_installed_runtime_bytecode_caches(
                         continue
                     if candidate.is_symlink() or _is_reparse_point(candidate) or not candidate.is_file():
                         raise ProvisionError(
-                            "installed_runtime_unsafe",
-                            f"Cache de bytecode inseguro no runtime instalado: {candidate}",
+                            unsafe_code,
+                            f"Cache de bytecode inseguro no {label}: {candidate}",
                         )
                     size = candidate.stat().st_size
                     _safe_remove(candidate, runtime)
@@ -1157,10 +1161,48 @@ def _remove_installed_runtime_bytecode_caches(
                     pass
     if removed_files:
         logger.write(
-            f"Caches de bytecode removidos do runtime instalado: "
+            f"Caches de bytecode removidos do {label}: "
             f"{removed_files} arquivo(s), {removed_bytes} byte(s)."
         )
     return removed_files, removed_bytes
+
+
+def _remove_installed_runtime_bytecode_caches(
+    runtime: Path, logger: ProvisionLogger
+) -> tuple[int, int]:
+    """Normalize generated caches in the user-writable installed runtime."""
+
+    return _remove_runtime_bytecode_caches(
+        runtime,
+        logger,
+        label="runtime instalado",
+        unsafe_code="installed_runtime_unsafe",
+    )
+
+
+def _remove_development_portable_bytecode_caches(
+    source_root: Path,
+    target_root: Path,
+    spec: RuntimeSpec,
+    logger: ProvisionLogger,
+) -> tuple[int, int]:
+    """Normalize a local checkout payload without mutating packaged sources."""
+
+    if source_root.resolve() != target_root.resolve():
+        return 0, 0
+    portable_root = _resolved_child(
+        source_root / "python_runtime",
+        spec.windows_portable_path,
+        "python.portable",
+    )
+    if not portable_root.exists():
+        return 0, 0
+    return _remove_runtime_bytecode_caches(
+        portable_root,
+        logger,
+        label="runtime portatil de desenvolvimento",
+        unsafe_code="portable_source_unsafe",
+    )
 
 
 def _verify_installed_runtime_after_checks(
@@ -1331,6 +1373,9 @@ def provision(
     target_root.mkdir(parents=True, exist_ok=True)
     lock_path = target_root / LOCK_NAME
     with ProvisionLock(lock_path, logger, lock_timeout):
+        _remove_development_portable_bytecode_caches(
+            source_root, target_root, spec, logger
+        )
         if quick_reuse and not force:
             quick_result = try_quick_reuse(source_root, target_root, spec, logger, command_timeout)
             if quick_result is not None:
