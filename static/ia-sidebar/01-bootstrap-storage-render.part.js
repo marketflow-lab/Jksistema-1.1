@@ -79,8 +79,24 @@
         ativo = null;
       }, true);
       try {
-        const observer = new MutationObserver(() => {
-          document.querySelectorAll('.jk-left-module-icon').forEach(normalizarGlyph);
+        const iconesPendentes = new Set();
+        let normalizacaoAgendada = false;
+        const normalizarPendentes = () => {
+          normalizacaoAgendada = false;
+          iconesPendentes.forEach(normalizarGlyph);
+          iconesPendentes.clear();
+        };
+        const observer = new MutationObserver((mutations) => {
+          mutations.forEach((mutation) => {
+            mutation.addedNodes.forEach((node) => {
+              if (!(node instanceof Element)) return;
+              if (node.matches('.jk-left-module-icon')) iconesPendentes.add(node);
+              node.querySelectorAll('.jk-left-module-icon').forEach(icon => iconesPendentes.add(icon));
+            });
+          });
+          if (!iconesPendentes.size || normalizacaoAgendada) return;
+          normalizacaoAgendada = true;
+          window.requestAnimationFrame(normalizarPendentes);
         });
         observer.observe(document.documentElement, { childList: true, subtree: true });
       } catch (_) {}

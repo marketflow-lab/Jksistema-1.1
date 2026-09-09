@@ -909,6 +909,30 @@ async function run() {
     {
       const context = await browser.newContext();
       const page = await context.newPage();
+      const chunkRequests = [];
+      page.on('request', request => {
+        if (new URL(request.url()).pathname.startsWith('/ia-sidebar/')) chunkRequests.push(request.url());
+      });
+      await page.addInitScript(() => {
+        Object.defineProperty(window, 'Worker', { configurable: true, value: undefined });
+        sessionStorage.setItem('jk_ia_sidebar_full_loaded_session_v1', '1');
+      });
+      await page.goto(`${baseUrl}/test.html`, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(900);
+      assert.strictEqual(await page.locator('#jk-ia-light-fab').count(), 1, 'inicio deve manter somente o acionador leve da IA');
+      assert.strictEqual(await page.locator('#jk-ia-fab').count(), 0, 'sidebar completa nao deve executar automaticamente apos navegacao');
+      assert.strictEqual(await page.evaluate(() => window.__JK_IA_SIDEBAR_BOOTSTRAPPED__ === true), false);
+      assert.deepStrictEqual(chunkRequests, [], 'inicio nao deve baixar os nove chunks pesados da sidebar');
+      await page.locator('#jk-ia-light-fab').click();
+      await page.locator('#jk-ia-fab').waitFor({ state: 'visible' });
+      assert.strictEqual(chunkRequests.length, 9, 'primeiro clique deve carregar cada chunk uma unica vez');
+      assert.strictEqual(await page.locator('#jk-codex-panel.aberto').count(), 1, 'Black Jhon deve continuar abrindo sob demanda');
+      await context.close();
+    }
+
+    {
+      const context = await browser.newContext();
+      const page = await context.newPage();
       await page.goto(`${baseUrl}/test.html?embed=share`, { waitUntil: 'domcontentloaded' });
       await page.waitForTimeout(250);
       assert.strictEqual(await page.locator('#jk-ia-light-fab').count(), 0);
