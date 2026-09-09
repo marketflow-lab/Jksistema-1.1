@@ -9,7 +9,8 @@ from fastapi import Depends, HTTPException
 from backend.modules.perguntas_pos_venda.endpoints.runtime import runtime_adapter
 from backend.modules.perguntas_pos_venda.endpoints.security import get_tenant_id
 from backend.schemas import PerguntasLojaConfigRequest, PerguntasLojasConfigLoteRequest
-from backend.services.integracoes import carregar_lojas_snapshot
+from backend.services.integracoes import carregar_lojas as carregar_lojas_canonicas
+from backend.services.store_listing_service import read_store_cards
 from backend.services.perguntas_pos_venda_automacao import (
     _perguntas_automacao_bg_status,
     _perguntas_automacao_bg_worker_iniciado,
@@ -25,40 +26,28 @@ _perguntas_loja_configs_carregar = runtime_adapter("_perguntas_loja_configs_carr
 
 
 def carregar_lojas(client_id: str):
-    """Serve store cards from the atomic snapshot without catalog/photo locks."""
+    """Canonical reader for mutations and automation, never the display cache."""
 
-    return carregar_lojas_snapshot(client_id)
+    return carregar_lojas_canonicas(client_id)
 
 
 def ml_perguntas_listar_lojas(client_id: str = Depends(get_tenant_id)):
     lojas = []
     configs_lojas = _perguntas_loja_configs_carregar(client_id)
     lojas_index = set()
-    for loja in carregar_lojas(client_id) or []:
-        if not isinstance(loja, dict):
-            continue
-        nome = _corrigir_texto_mojibake(str(loja.get("nome") or "").strip())
-        if not nome:
-            continue
+    display = read_store_cards(client_id)
+    for card in display["lojas"]:
+        nome = _corrigir_texto_mojibake(card["nome"])
         lojas_index.add(_integracoes_nome_normalizado(nome))
-        integracoes = loja.get("integracoes") or {}
-        cfg = integracoes.get("mercadolivre") if isinstance(integracoes, dict) else {}
-        ml_status = _ml_oauth_status(cfg)
-        conectado = bool(ml_status.get("conectado"))
         lojas.append({
+            **card,
             "nome": nome,
-            "store_id": str(loja.get("store_id") or "").strip(),
-            "site_id": str((cfg or {}).get("site_id") or loja.get("site_id") or "").strip(),
-            "mercadolivre_conectado": conectado,
-            "mercadolivre_status": ml_status.get("status") or ("conectado" if conectado else "pendente"),
-            "mercadolivre_motivo": ml_status.get("motivo") or "",
-            "mercadolivre_oauth_faltando": ml_status.get("faltando") or [],
-            "seller_id": str((cfg or {}).get("user_id") or "").strip(),
-            "config_perguntas": _perguntas_loja_config_normalizar(_perguntas_loja_config_obter(configs_lojas, nome)),
-            "precisa_reintegrar": False,
+            "config_perguntas": _perguntas_loja_config_normalizar(
+                _perguntas_loja_config_obter(configs_lojas, nome)
+            ),
         })
 
-    for nome_config, config in (configs_lojas or {}).items():
+    for nome_config, config in (() if display.get("session_scoped") else (configs_lojas or {}).items()):
         nome = _corrigir_texto_mojibake(str(nome_config or "").strip())
         nome_norm = _integracoes_nome_normalizado(nome)
         if not nome or not nome_norm or nome_norm in lojas_index:
@@ -81,7 +70,7 @@ def ml_perguntas_listar_lojas(client_id: str = Depends(get_tenant_id)):
         0 if item.get("mercadolivre_conectado") else 1,
         _integracoes_nome_normalizado(item.get("nome")),
     ))
-    return {"success": True, "lojas": lojas}
+    return {"success": True, "lojas": lojas, "snapshot": display["snapshot"]}
 
 
 def ml_perguntas_salvar_config_loja(req: PerguntasLojaConfigRequest, client_id: str = Depends(get_tenant_id)):

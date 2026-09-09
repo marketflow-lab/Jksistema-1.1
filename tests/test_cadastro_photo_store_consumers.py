@@ -46,6 +46,8 @@ def _configure(monkeypatch, tmp_path):
         assert client_id == "000002"
         return str(tenant)
 
+    monkeypatch.setattr(integracoes, "_get_tenant_path", tenant_path)
+    monkeypatch.setattr(integracoes, "PASTA_INFO", str(info_root))
     monkeypatch.setattr(cadastro_lojas_produtos, "get_tenant_path", tenant_path)
     monkeypatch.setattr(cadastro_fotos, "get_tenant_path", tenant_path)
     monkeypatch.setattr(cadastro_fotos, "PASTA_INFO", str(info_root), raising=False)

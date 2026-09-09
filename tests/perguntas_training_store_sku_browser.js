@@ -127,7 +127,7 @@ function contentType(filePath) {
         return;
       }
       if (url.pathname === '/api/mercadolivre/perguntas/lojas') {
-        await json(route, { lojas });
+        await json(route, { success: true, lojas, snapshot: { generation: 'fixture-1', published_at: '2026-09-09T12:00:00Z', status: 'ready' } });
         return;
       }
       if (url.pathname === '/api/mercadolivre/ia-treinamento/skus') {

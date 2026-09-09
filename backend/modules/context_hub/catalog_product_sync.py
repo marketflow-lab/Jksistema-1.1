@@ -139,8 +139,12 @@ def notify_catalog_committed(client_id, store_id="", *, info_root=None):
 
 def load_catalog_source_snapshot(client_id, store_id, *, info_root=None):
     """Same store/legacy resolution as Cadastro, without runtime-global rebinding."""
-    from backend.services import cadastro_lojas_produtos as cadastro, integracoes
-    from backend.services.path_coordination import path_lock_for, path_locks_for
+    from backend.services import cadastro_lojas_produtos as cadastro
+    from backend.services.store_coordination import (
+        coordinated_path_lock as path_lock_for,
+        coordinated_path_locks as path_locks_for,
+        store_lock,
+    )
     paths = _tenant_paths(client_id, info_root=info_root)
     files = ["lojas_config.json", cadastro.CADASTRO_PRODUTOS_LOJAS_ARQUIVO,
              *cadastro._ARQUIVOS_LEGADOS.values()]
@@ -149,7 +153,7 @@ def load_catalog_source_snapshot(client_id, store_id, *, info_root=None):
         _assert_path_chain_safe(target, paths.info_root)
     # Match Cadastro/Shared Sync writer lock order; lexicographic locking alone
     # would take costs before products and deadlock against a product commit.
-    with (integracoes._LOJAS_CONFIG_LOCK,
+    with (store_lock(paths.tenant_dir),
           path_lock_for(paths.tenant_dir / cadastro.CADASTRO_PRODUTOS_LOJAS_ARQUIVO),
           path_lock_for(paths.tenant_dir / "cadastro_custos_lojas.csv"),
           path_locks_for(str(target) for target in candidates)):

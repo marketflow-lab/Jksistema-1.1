@@ -1263,75 +1263,8 @@ async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnvia
     }
 }
 
-async function buscarLojasPerguntas(tentativas = 2, timeoutMs = 8000) {
-    let ultimoErro = null;
-    for (let tentativa = 1; tentativa <= tentativas; tentativa += 1) {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), timeoutMs);
-        try {
-            const response = await fetch('/api/mercadolivre/perguntas/lojas', {
-                headers: obterAuthHeaders(),
-                cache: 'no-store',
-                signal: controller.signal
-            });
-            const data = await response.json().catch(() => ({}));
-            if (!response.ok) {
-                const error = new Error(data.detail || 'Erro ao carregar lojas.');
-                error.status = response.status;
-                throw error;
-            }
-            return data;
-        } catch (error) {
-            ultimoErro = error?.name === 'AbortError'
-                ? new Error('A lista de lojas demorou mais que o esperado.')
-                : error;
-            if (error?.status === 401 || error?.status === 403 || tentativa >= tentativas) break;
-            await new Promise((resolve) => setTimeout(resolve, 350));
-        } finally {
-            clearTimeout(timeout);
-        }
-    }
-    throw ultimoErro || new Error('Erro ao carregar lojas.');
-}
-
-async function carregarLojas() {
-    lojasStatus.textContent = 'Carregando lojas...';
-    try {
-        window.JKPerguntasLoading?.verificarSessao();
-        const data = await buscarLojasPerguntas();
-        state.lojas = Array.isArray(data.lojas) ? data.lojas : [];
-        const haLojasConectadas = lojasMercadoLivreConectadas().length > 0;
-        const lojaSelecionadaAtual = state.lojas.find((loja) => String(loja.nome || '') === String(state.lojaSelecionada || ''));
-        if (!haLojasConectadas) {
-            state.lojaSelecionada = '';
-            state.lojaConfiguracaoPerguntas = '';
-        } else if (
-            !state.lojaSelecionada ||
-            todasAsLojasSelecionadas() ||
-            !lojaSelecionadaAtual ||
-            lojaSelecionadaAtual.mercadolivre_conectado !== true
-        ) {
-            state.lojaSelecionada = TODAS_LOJAS_VALUE;
-        }
-        if (todasAsLojasSelecionadas()) {
-            state.lojaConfiguracaoPerguntas = TODAS_LOJAS_VALUE;
-        } else if (!state.lojaConfiguracaoPerguntas) {
-            state.lojaConfiguracaoPerguntas = state.lojaSelecionada;
-        }
-        lojasStatus.textContent = state.lojas.length
-            ? `${state.lojas.length} loja(s) cadastrada(s)`
-            : 'Nenhuma loja cadastrada';
-        renderizarLojas();
-        atualizarCabecalhoPosVenda();
-        atualizarCabecalhoMediacao();
-        iniciarAutomacaoPerguntas();
-        if (state.lojaSelecionada) await carregarPerguntas();
-        carregarContadoresNotificacoes(true);
-    } catch (error) {
-        lojasStatus.textContent = 'Erro ao carregar lojas.';
-        lojasGrid.innerHTML = `<div class="empty-state"><div><h2>Falha ao carregar lojas</h2><p>${escapeHtml(mensagemErro(error))}</p><button class="action-btn secondary" type="button" data-retry-stores>Tentar novamente</button></div></div>`;
-        lojasGrid.querySelector('[data-retry-stores]')?.addEventListener('click', () => carregarLojas());
-    }
+function carregarLojas() {
+    return window.JKPerguntasStores.carregar();
 }
 
 async function selecionarLoja(nome, storeId = '') {

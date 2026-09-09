@@ -56,6 +56,10 @@ def configure_sqlite_connection(
     """Aplica as configuracoes comuns e devolve a propria conexao."""
 
     timeout_ms = max(0, int(busy_timeout_ms))
+    from backend.services.store_coordination import coordination_active, remaining_timeout
+
+    if coordination_active():
+        timeout_ms = min(timeout_ms, int(remaining_timeout() * 1000))
     conn.execute(f"PRAGMA busy_timeout={timeout_ms}")
     if writable:
         conn.execute("PRAGMA journal_mode=WAL")

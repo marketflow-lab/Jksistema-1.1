@@ -4,6 +4,7 @@ import threading
 import pandas as pd
 import pytest
 from fastapi import HTTPException
+from backend.services.store_coordination import StoreCoordinationError, store_lock
 
 from backend.services import (
     cadastro_lojas_produtos,
@@ -16,6 +17,8 @@ from backend.services import (
 def _configure_files(monkeypatch, tmp_path):
     tenant = tmp_path / "000002"
     tenant.mkdir()
+    monkeypatch.setattr(integracoes, "_get_tenant_path", lambda _: str(tenant))
+    monkeypatch.setattr(integracoes, "PASTA_INFO", str(tmp_path))
     cadastro = tenant / "cadastro_produtos.csv"
     estoque = tenant / "produtos_compilado.csv"
     pd.DataFrame([{"sku": "001", "ncm": "legacy", "cest": "legacy"}]).to_csv(cadastro, index=False)
@@ -618,10 +621,12 @@ def test_store_scoped_commit_holds_config_lock_before_stock_lock(monkeypatch, tm
 
     def commit_observado(*args, **kwargs):
         def probe_config_lock():
-            adquiriu = integracoes._LOJAS_CONFIG_LOCK.acquire(timeout=0.1)
-            lock_results.append(adquiriu)
-            if adquiriu:
-                integracoes._LOJAS_CONFIG_LOCK.release()
+            try:
+                with store_lock(estoque.parent, timeout_seconds=.1):
+                    lock_results.append(True)
+            except StoreCoordinationError as exc:
+                assert exc.code == "locked"
+                lock_results.append(False)
 
         probe = threading.Thread(target=probe_config_lock, daemon=True)
         probe.start()

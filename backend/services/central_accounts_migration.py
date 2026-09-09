@@ -237,7 +237,7 @@ def _refresh(provider: str, values: dict) -> dict:
 
 
 def _persist_refresh(client_id: str, store_id: str, provider: str, before: dict, after: dict) -> None:
-    with integracoes._LOJAS_CONFIG_LOCK:
+    with integracoes.lojas_config_lock(client_id):
         stores = _raw_stores(client_id)
         matches = [store for store in stores if str(store.get("store_id") or "").strip() == store_id]
         if len(matches) != 1:
@@ -401,7 +401,7 @@ def _cloud_payload(operation_id: str, stores: list[dict]) -> dict:
 def _scrub_local(client_id: str, store_ids: set[str], operation_id: str) -> None:
     removable = {"app_id", "client_id", "id", "app_secret", "client_secret", "secret",
                  "access_token", "refresh_token", "oauth_draft", "oauth_pending_state"}
-    with integracoes._LOJAS_CONFIG_LOCK:
+    with integracoes.lojas_config_lock(client_id):
         stores = _raw_stores(client_id)
         present = {str(store.get("store_id") or "").strip() for store in stores}
         if not store_ids <= present:

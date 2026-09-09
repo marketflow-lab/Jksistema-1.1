@@ -25,7 +25,12 @@ def editor_api(monkeypatch, tmp_path):
         {"nome": "Loja B", "store_id": "store-b", "integracoes": {"mercadolivre": {"user_id": "200", "site_id": "MLB"}}},
     ]
     monkeypatch.setattr(integracoes, "carregar_lojas", lambda _client: stores)
-    monkeypatch.setattr(store_config, "carregar_lojas", lambda _client: stores)
+    monkeypatch.setattr(store_config, "read_store_cards", lambda _client: {
+        "lojas": [{"nome": row["nome"], "store_id": row["store_id"],
+                   "seller_id": row["integracoes"]["mercadolivre"]["user_id"],
+                   "site_id": "MLB", "mercadolivre_conectado": True} for row in stores],
+        "snapshot": {"generation": "fixture-generation", "published_at": "2026-09-09T12:00:00Z", "status": "ready"},
+    })
     monkeypatch.setattr(store_config, "_perguntas_loja_configs_carregar", lambda _client: {})
     monkeypatch.setattr(store_config, "_perguntas_loja_config_obter", lambda *_args: {})
     monkeypatch.setattr(store_config, "_perguntas_loja_config_normalizar", lambda value: value)
@@ -49,7 +54,14 @@ def editor_api(monkeypatch, tmp_path):
 
 def test_store_api_identity_drives_editor_and_catalog(editor_api):
     client, _info, _stores = editor_api
-    stores = client.get("/lojas").json()["lojas"]
+    response = client.get("/lojas")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["snapshot"] == {
+        "generation": "fixture-generation", "published_at": "2026-09-09T12:00:00Z", "status": "ready",
+    }
+    stores = payload["lojas"]
+    assert all("integracoes" not in store for store in stores)
     assert [store["store_id"] for store in stores] == ["store-a", "store-b"]
     store = stores[0]
     snapshot = client.get("/training", params={"store_id": store["store_id"]})

@@ -1180,3 +1180,16 @@ def test_public_single_store_jobs_are_isolated_by_tenant_and_release_active(monk
         time.sleep(0.01)
     assert not any(estoque_sync.ESTOQUE_SYNC_ACTIVE.get(t) for t in OTHER_TENANTS)
     assert {estoque_sync.ESTOQUE_SYNC_META[t]["outcome"] for t in OTHER_TENANTS} == {"completed"}
+
+
+@pytest.fixture(autouse=True)
+def _configure_store_coordination(monkeypatch, tmp_path):
+    from backend.services import integracoes
+
+    def tenant_path(client_id):
+        path = tmp_path / str(client_id)
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
+    monkeypatch.setattr(integracoes, "_get_tenant_path", tenant_path)
+    monkeypatch.setattr(integracoes, "PASTA_INFO", str(tmp_path))

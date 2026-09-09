@@ -104,7 +104,8 @@ def test_additive_store_merge_removes_only_with_explicit_tombstone(
     tenant.mkdir(parents=True, exist_ok=True)
 
     fake_integrations = types.ModuleType("backend.services.integracoes")
-    fake_integrations._LOJAS_CONFIG_LOCK = threading.RLock()
+    fixture_lock = threading.RLock()
+    fake_integrations.lojas_config_lock = lambda _client_id, **_kwargs: fixture_lock
 
     @contextmanager
     def lock_catalog(_client_id, _tenant_abs):

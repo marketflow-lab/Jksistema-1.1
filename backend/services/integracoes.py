@@ -32,7 +32,9 @@ from backend.services.cadastro_fotos_coordenacao import (
     CadastroFotosCoordenacaoErro,
     bloquear_transicao_fotos_tenant,
 )
-from backend.services.path_coordination import path_lock_for
+from backend.services.store_coordination import coordinated_path_lock as path_lock_for, remaining_timeout
+from backend.services.store_listing_service import lojas_config_lock
+from backend.services.store_snapshot_transactions import before_write
 
 
 logger = logging.getLogger("jk_sistema")
@@ -44,7 +46,6 @@ _normalizar_integracao_conectada: Callable[[str, object], object] = lambda servi
 _resolver_redirect_uri_publica: Callable[..., str] = lambda **kwargs: ""
 _resolver_redirect_uri_bling: Callable[..., str] = lambda **kwargs: ""
 _bling_session = requests.Session()
-_LOJAS_CONFIG_LOCK = threading.RLock()
 _TEMP_AUTH_LOCK = threading.RLock()
 _TEMP_AUTH_TTL_SECONDS = 15 * 60
 _BLING_REFRESH_LOCKS_GUARD = threading.Lock()
@@ -151,7 +152,7 @@ def _integracoes_bloquear_catalogo_e_transicao_fotos(
             stack.enter_context(
                 bloquear_transicao_fotos_tenant(
                     tenant_coordenacao,
-                    timeout_seconds=10,
+                    timeout_seconds=remaining_timeout(),
                 )
             )
             yield
@@ -179,7 +180,7 @@ def _integracoes_bloquear_rmw_lojas(client_id: str):
     """Serializa o ciclo completo de leitura e commit de lojas entre processos."""
 
     tenant_path = _tenant_path(client_id)
-    with _LOJAS_CONFIG_LOCK, _integracoes_bloquear_catalogo_e_transicao_fotos(
+    with lojas_config_lock(client_id), _integracoes_bloquear_catalogo_e_transicao_fotos(
         client_id,
         tenant_path,
     ):
@@ -388,6 +389,7 @@ def _integracoes_isolar_backup_invalido_se_necessario(
 
 
 def _integracoes_escrever_lojas_config_atomico(caminho: str, lojas: list) -> None:
+    before_write(caminho)
     os.makedirs(os.path.dirname(caminho), exist_ok=True)
     tmp_path = f"{caminho}.tmp.{os.getpid()}.{threading.get_ident()}"
     try:
@@ -1421,7 +1423,7 @@ def restaurar_tombstone_integracao(
     tipo: str = "store",
 ) -> None:
     """Marca uma exclusao anterior como explicitamente recriada/reconectada."""
-    with _LOJAS_CONFIG_LOCK:
+    with lojas_config_lock(client_id):
         path = _integracoes_tombstones_path(client_id)
         payload = _integracoes_ler_tombstones_estrito(client_id)
         payload = _integracoes_atualizar_tombstone_payload(
@@ -1533,7 +1535,7 @@ def _integracoes_commit_lojas_tombstones(
 ) -> None:
     """Publica lojas+tombstones com journal recuperavel entre os replaces."""
 
-    with _LOJAS_CONFIG_LOCK:
+    with lojas_config_lock(client_id):
         _integracoes_validar_identidades_lojas_local(lojas)
         _integracoes_validar_tombstones_payload(tombstones)
         _integracoes_isolar_backup_invalido_se_necessario(client_id)
@@ -2065,7 +2067,7 @@ def salvar_turbo_local_central(client_id: str, lojas_centrais: list, store_id: s
     if len(centrais) != 1:
         raise HTTPException(404, "Loja não encontrada na sessão central.")
     path = os.path.join(_tenant_path(client_id), "lojas_config.json")
-    with _LOJAS_CONFIG_LOCK:
+    with lojas_config_lock(client_id):
         try:
             locais = _integracoes_ler_lojas_config_arquivo(path) if os.path.exists(path) else []
         except Exception:
@@ -2237,38 +2239,8 @@ def carregar_lojas(client_id: str):
 
 
 def carregar_lojas_snapshot(client_id: str):
-    """Read the current validated store snapshot without catalog/photo locks.
-
-    Store writes use atomic replacement under ``_LOJAS_CONFIG_LOCK``. Readers
-    that only need identities and integration status can therefore consume the
-    last complete file without joining the broader catalog transaction.
-    """
-
-    from backend.services.central_accounts_client import current
-
-    central = current(client_id)
-    if central is not None:
-        return mesclar_turbo_local(client_id, central.stores(), incluir_token=True)
-    caminho = os.path.join(_tenant_path(client_id), "lojas_config.json")
-    if not os.path.exists(caminho):
-        return carregar_lojas(client_id)
-    try:
-        with _LOJAS_CONFIG_LOCK:
-            lojas = _integracoes_ler_lojas_config_arquivo(caminho)
-            _integracoes_validar_identidades_lojas_local(lojas)
-            return lojas
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error(
-            "[INTEGRACOES] Snapshot de lojas invalido para o cliente %s: %s",
-            client_id,
-            type(exc).__name__,
-        )
-        raise HTTPException(
-            status_code=500,
-            detail="Configuracao de lojas invalida; a listagem foi interrompida.",
-        ) from exc
+    """Compatibility reader for canonical consumers; not used by store cards."""
+    return carregar_lojas(client_id)
 
 
 def salvar_lojas(
@@ -2289,7 +2261,7 @@ def salvar_lojas(
     tenant_path = _tenant_path(client_id)
     arquivo_lojas = os.path.join(tenant_path, "lojas_config.json")
 
-    with _LOJAS_CONFIG_LOCK, _integracoes_bloquear_catalogo_e_transicao_fotos(
+    with lojas_config_lock(client_id), _integracoes_bloquear_catalogo_e_transicao_fotos(
         client_id,
         tenant_path,
         cadastro_lock_adquirido=_cadastro_lock_adquirido,
@@ -2776,7 +2748,7 @@ def excluir_loja(
             },
         )
     tenant_path = _tenant_path(client_id)
-    with _LOJAS_CONFIG_LOCK, _integracoes_bloquear_catalogo_e_transicao_fotos(
+    with lojas_config_lock(client_id, recovery="rollback"), _integracoes_bloquear_catalogo_e_transicao_fotos(
         client_id,
         tenant_path,
     ):
@@ -3007,7 +2979,7 @@ def _bling_config_atual(
                 "message": "Informe o store_id exato para acessar o token Bling.",
             },
         )
-    with _LOJAS_CONFIG_LOCK:
+    with lojas_config_lock(client_id):
         loja = _integracoes_encontrar_loja_identidade(
             carregar_lojas(client_id),
             nome_loja,
@@ -3281,7 +3253,7 @@ def desconectar_api_loja(
             },
         )
     tenant_path = _tenant_path(client_id)
-    with _LOJAS_CONFIG_LOCK, _integracoes_bloquear_catalogo_e_transicao_fotos(
+    with lojas_config_lock(client_id, recovery="rollback"), _integracoes_bloquear_catalogo_e_transicao_fotos(
         client_id,
         tenant_path,
     ):
@@ -3379,7 +3351,7 @@ def criar_temp_auth_loja(client_id: str, store_id: str, dados: dict | None = Non
     identidade = str(store_id or "").strip()
     if not identidade:
         raise HTTPException(status_code=400, detail="Store_id exato e obrigatorio para OAuth.")
-    with _LOJAS_CONFIG_LOCK:
+    with lojas_config_lock(client_id):
         loja = _integracoes_encontrar_loja_identidade(
             carregar_lojas(client_id), "", identidade
         )

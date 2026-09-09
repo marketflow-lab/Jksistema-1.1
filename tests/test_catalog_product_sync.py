@@ -201,6 +201,8 @@ def test_crud_hooks_follow_commit_and_locks_and_skip_rollback(env, monkeypatch):
     monkeypatch.setattr(cadastro_fotos, "PASTA_INFO", str(root), raising=False)
     stores = json.loads((tenant / "lojas_config.json").read_text())
     monkeypatch.setattr(integracoes, "carregar_lojas", lambda client_id: stores)
+    monkeypatch.setattr(integracoes, "_get_tenant_path", lambda client_id: str(root / client_id))
+    monkeypatch.setattr(integracoes, "PASTA_INFO", str(root))
     notifications = []
 
     def notified(client, store):
@@ -233,3 +235,14 @@ def test_crud_hooks_follow_commit_and_locks_and_skip_rollback(env, monkeypatch):
     with pytest.raises(OSError):
         cadastro.salvar_produto_loja("testclient", STORE, {"sku": "004", "nome": "D"})
     assert len(notifications) == 3
+
+
+def test_catalog_snapshot_coordinates_explicit_root_without_runtime(env, monkeypatch):
+    from backend.services import integracoes
+    root, tenant, _, _ = env
+    def wrong_runtime(_client_id):
+        raise AssertionError("The explicit Context Hub root must not use runtime stores")
+    monkeypatch.setattr(integracoes, "_get_tenant_path", wrong_runtime)
+    result = sync.load_catalog_source_snapshot("testclient", STORE, info_root=root)
+    assert result["scope"]["store_ref"] == STORE
+    assert result["scope"]["seller_id"] == "12345"

@@ -673,7 +673,7 @@ def test_pull_add_only_aguarda_refresh_e_preserva_oauth_local_mais_novo(
         finally:
             concluido.set()
 
-    with integracoes._LOJAS_CONFIG_LOCK:
+    with integracoes.lojas_config_lock("cliente-a"):
         thread = threading.Thread(target=pull, daemon=True)
         thread.start()
         assert iniciado.wait(2)

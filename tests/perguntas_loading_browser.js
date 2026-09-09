@@ -60,7 +60,7 @@ async function fixture(browser) {
     if (url.pathname.startsWith('/api/')) {
       const call = { path: url.pathname, store: url.searchParams.get('store_id') || url.searchParams.get('loja'), offset: Number(url.searchParams.get('offset') || 0), limit: Number(url.searchParams.get('limit') || 20), start: Date.now() };
       calls.push(call);
-      if (url.pathname.endsWith('/lojas')) return json({ lojas: stores });
+      if (url.pathname.endsWith('/lojas')) return json({ success: true, lojas: stores, snapshot: { generation: 'fixture-1', published_at: '2026-09-09T12:00:00Z', status: 'ready' } });
       if (url.pathname === '/api/mercadolivre/perguntas' || url.pathname.endsWith('/perguntas/lista')) {
         const store = stores.find(s => s.store_id === call.store || s.nome === call.store);
         assert(store, 'consulta deve identificar uma loja da fixture');

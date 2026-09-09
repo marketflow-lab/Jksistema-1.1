@@ -64,7 +64,7 @@ from backend.services import integracoes as integracoes_service
 from backend.services.cadastro_common import *
 from backend.services.integracoes import carregar_lojas, renovar_token_bling_loja
 from backend.services.monofasico_rules import avaliar_monofasico
-from backend.services.path_coordination import path_lock_for
+from backend.services.store_coordination import coordinated_path_lock as path_lock_for
 
 SYNC_NCM_JOBS: dict[str, dict] = {}
 
@@ -617,7 +617,7 @@ def _sync_ncm_adotar_refresh_persistido(
 ) -> dict[str, Any]:
     """Accept token rotation only after observing that exact persisted snapshot."""
 
-    with integracoes_service._LOJAS_CONFIG_LOCK:
+    with integracoes_service.lojas_config_lock(client_id):
         loja = _sync_ncm_revalidar_loja_bloqueada(
             client_id,
             store_id,
@@ -651,7 +651,7 @@ def _sync_ncm_commit_estoque_loja_revalidado(
 ) -> pd.DataFrame:
     """Linearize config validation and the scoped stock commit."""
 
-    with integracoes_service._LOJAS_CONFIG_LOCK:
+    with integracoes_service.lojas_config_lock(client_id):
         loja = _sync_ncm_revalidar_loja_bloqueada(
             client_id,
             store_id,

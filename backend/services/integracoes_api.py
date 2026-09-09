@@ -16,7 +16,6 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from backend.schemas import AuthRequest, StoreRequest, TokenRequest
 from backend.services.integracoes import (
-    _LOJAS_CONFIG_LOCK,
     _integracoes_atualizar_tombstone_payload,
     _integracoes_commit_lojas_tombstones,
     _integracoes_ler_tombstones_estrito,

@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from fastapi import Header, HTTPException, Request
 
-from backend.services.path_coordination import path_locks_for
+from backend.services.store_coordination import coordinated_path_locks as path_locks_for
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.cadastro_tenant_trust import (
     CadastroTenantTrustErro,

@@ -447,3 +447,16 @@ def test_historico_lote_revalidates_store_before_database_writes(monkeypatch):
     assert changed.value.status_code == 409
     assert len(resolutions) == 2
     assert writes == []
+
+
+@pytest.fixture(autouse=True)
+def _configure_store_coordination(monkeypatch, tmp_path):
+    from backend.services import integracoes
+
+    def tenant_path(client_id):
+        path = tmp_path / str(client_id)
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
+    monkeypatch.setattr(integracoes, "_get_tenant_path", tenant_path)
+    monkeypatch.setattr(integracoes, "PASTA_INFO", str(tmp_path))

@@ -23,9 +23,6 @@ assert.match(source, /resposta_atual: String\(textarea\.value \|\| ''\)/);
 assert.match(source, /function skuRealPergunta\(pergunta\)/);
 assert.doesNotMatch(source, /String\(result\.resposta \|\| data\.resposta \|\| ''\)\.trim\(\)/);
 assert.doesNotMatch(source, /resposta_atual: String\(textarea\.value \|\| ''\)\.trim\(\)/);
-assert.match(source, /async function buscarLojasPerguntas\(tentativas = 2[\s\S]*new AbortController\(\)/);
-assert.match(source, /A lista de lojas demorou mais que o esperado/);
-assert.match(source, /data-retry-stores/);
 assert.match(source, /response\.status === 404 \|\| response\.status === 410/);
 
 class FakeClassList {
@@ -100,10 +97,6 @@ const stateStart = source.indexOf("const CODEX_JOB_STORAGE_PREFIX");
 const stateEnd = source.indexOf("window.aguardarJobAtendimentoCodex", stateStart);
 assert(stateStart >= 0 && stateEnd > stateStart, 'helpers persistentes do job nao encontrados');
 vm.runInContext(source.slice(stateStart, stateEnd), context);
-const storesStart = source.indexOf('async function buscarLojasPerguntas');
-const storesEnd = source.indexOf('async function carregarLojas', storesStart);
-assert(storesStart >= 0 && storesEnd > storesStart, 'helper resiliente de lojas nao encontrado');
-vm.runInContext(source.slice(storesStart, storesEnd), context);
 
 (async () => {
     currentCard = makeCard('Loja A::Q-CONTEXTUAL');
@@ -282,18 +275,6 @@ vm.runInContext(source.slice(storesStart, storesEnd), context);
     assert.strictEqual(goneGets, 1, 'HTTP 410 deve encerrar o polling na primeira leitura');
     assert.strictEqual(context.obterEstadoJobAtendimentoCodex('Loja A::Q-GONE'), null);
     assert.strictEqual(currentCard.elements.status.className, 'error');
-
-    let storeGets = 0;
-    fetchImpl = async (_url, options) => new Promise((_resolve, reject) => {
-        storeGets += 1;
-        options.signal.onabort = reject;
-    });
-    const storeTimeout = context.buscarLojasPerguntas(1, 1);
-    for (let index = 0; index < 12 && timerCallbacks.length === 0; index += 1) await Promise.resolve();
-    assert(timerCallbacks.length > 0, 'a listagem de lojas deve instalar um prazo');
-    timerCallbacks.shift()();
-    await assert.rejects(storeTimeout, /demorou mais que o esperado/);
-    assert.strictEqual(storeGets, 1, 'o prazo final deve encerrar a tentativa pendente');
 
     console.log('Perguntas Codex persistent frontend contract: OK');
 })().catch((error) => {

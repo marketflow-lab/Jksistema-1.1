@@ -56,7 +56,10 @@ from backend.services.cadastro_fotos import (
     _validar_caminhos_variantes_fotos,
     configure_cadastro_fotos_runtime,
 )
-from backend.services.path_coordination import path_lock_for, path_locks_for
+from backend.services.store_coordination import (
+    coordinated_path_lock as path_lock_for,
+    coordinated_path_locks as path_locks_for,
+)
 from backend.services.runtime_bridge import bind_runtime_globals
 
 
@@ -210,7 +213,7 @@ def _lock_arquivo(caminho: str):
 def _bloquear_config_e_arquivo_cadastro(client_id: str, caminho: str):
     """Canonical lock order for writers that also inspect store config."""
 
-    with integracoes._LOJAS_CONFIG_LOCK:
+    with integracoes.lojas_config_lock(client_id):
         with _lock_arquivo(caminho):
             yield
 
@@ -640,7 +643,7 @@ def _bloquear_loja_cadastro_para_commit(
 ):
     """Hold config, catalog, costs and transition through commit/rollback."""
 
-    with integracoes._LOJAS_CONFIG_LOCK:
+    with integracoes.lojas_config_lock(client_id):
         with _lock_arquivo(_cadastro_produtos_lojas_path(client_id)):
             with _cadastro_custos_lock(client_id):
                 with _cadastro_fotos_bloquear_transicao(client_id):

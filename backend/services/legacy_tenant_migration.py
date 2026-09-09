@@ -13,7 +13,12 @@ from backend.services.cadastro_fotos_coordenacao import (
     CadastroFotosCoordenacaoErro,
     bloquear_transicao_fotos_tenant,
 )
-from backend.services.path_coordination import path_lock_for
+from backend.services.store_coordination import (
+    StoreCoordinationError,
+    coordinated_path_lock as path_lock_for,
+    legacy_resource_lock,
+    store_lock,
+)
 
 
 _CATALOGOS_COM_REFERENCIA_FOTO = {
@@ -87,8 +92,6 @@ def migrar_arquivo_legado_para_tenant_seguro(
         logger.warning("[MIGRACAO] Nome de arquivo legado invalido; operacao bloqueada.")
         return destino
 
-    from backend.services import integracoes
-
     tenant_real = os.path.realpath(tenant_path)
     if os.path.normcase(os.path.normpath(tenant_real)) != os.path.normcase(
         os.path.normpath(tenant_path)
@@ -103,7 +106,8 @@ def migrar_arquivo_legado_para_tenant_seguro(
             timeout_seconds=10,
         )
         with (
-            integracoes._LOJAS_CONFIG_LOCK,
+            legacy_resource_lock(os.path.dirname(os.path.abspath(caminho_legado))),
+            store_lock(tenant_real),
             path_lock_for(cadastro_path),
             path_lock_for(custos_path),
             transicao,
@@ -225,7 +229,7 @@ def migrar_arquivo_legado_para_tenant_seguro(
                         os.unlink(temporario)
                     except OSError:
                         pass
-    except CadastroFotosCoordenacaoErro as exc:
+    except (CadastroFotosCoordenacaoErro, StoreCoordinationError) as exc:
         logger.warning(
             "[MIGRACAO] Coordenacao do legado default indisponivel (%s).",
             exc.code,

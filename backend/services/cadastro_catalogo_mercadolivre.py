@@ -435,7 +435,7 @@ def _revalidate_configuration(
     )
 
     try:
-        with integracoes._LOJAS_CONFIG_LOCK:
+        with integracoes.lojas_config_lock(client_id):
             current_store, current_cfg, current_seller, current_persisted_cfg = _resolve_store(
                 client_id, store["store_id"]
             )

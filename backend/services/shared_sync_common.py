@@ -21,10 +21,12 @@ from fastapi import HTTPException
 from backend.services.sqlite_coordination import (
     SQLITE_BUSY_TIMEOUT_MS,
     configure_sqlite_connection,
-    sqlite_lock_for_path,
-    sqlite_locks_for_paths,
 )
-from backend.services.path_coordination import path_lock_for
+from backend.services.store_coordination import (
+    coordinated_path_lock as path_lock_for,
+    coordinated_sqlite_lock as sqlite_lock_for_path,
+    coordinated_sqlite_locks as sqlite_locks_for_paths,
+)
 
 
 SHARED_SYNC_DEFAULT_MAX_FILE_BYTES = 75 * 1024 * 1024
@@ -167,13 +169,19 @@ def _shared_sync_relativo_seguro(rel_path: str) -> str:
 
 
 def _shared_sync_path_permanently_excluded(rel_path: str) -> bool:
-    """Runtime knowledge and Obsidian state are never Shared Sync payloads."""
+    """Local runtime, projections and recovery preimages never cross Shared Sync."""
     try:
         rel = _shared_sync_relativo_seguro(rel_path).lower()
     except HTTPException:
         return True
-    parts = [part for part in rel.split("/") if part]
-    return any(part in {"contextvault", "context_hub", ".obsidian", "sku"} for part in parts)
+    # Windows ignores trailing dots/spaces and supports alternate data streams.
+    parts = [part.split(":", 1)[0].rstrip(" .") for part in rel.split("/") if part]
+    return any(
+        part in {"contextvault", "context_hub", ".obsidian", "sku", "_stores_publication"}
+        or part == "lojas_public_snapshot.json"
+        or part.startswith("lojas_public_snapshot.json.")
+        for part in parts
+    )
 
 
 def _shared_sync_resolve_tenant_path(tenant_root: str, rel_path: str) -> str:

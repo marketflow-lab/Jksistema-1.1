@@ -155,6 +155,8 @@ def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = ""
         safe_dirs = []
         for directory in dirs:
             rel_dir = os.path.relpath(os.path.join(root, directory), tenant_abs).replace("\\", "/")
+            if _shared_sync_path_permanently_excluded(rel_dir):
+                continue
             if directory in {"__pycache__", "_drive_restore_backup", "_shared_sync_backups"} or directory.startswith("."):
                 continue
             try:
@@ -176,6 +178,8 @@ def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = ""
             if ext not in SHARED_SYNC_ALLOWED_EXTENSIONS:
                 continue
             rel = os.path.relpath(os.path.join(root, filename), tenant_abs).replace("\\", "/")
+            if _shared_sync_path_permanently_excluded(rel):
+                continue
             try:
                 abs_path = _shared_sync_resolve_tenant_path(tenant_abs, rel)
             except HTTPException:

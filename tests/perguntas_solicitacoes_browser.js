@@ -102,7 +102,7 @@ function solicitation(storeId, suffix = '') {
         return;
       }
       if (url.pathname === '/api/mercadolivre/perguntas/lojas') {
-        await json({ lojas: stores });
+        await json({ success: true, lojas: stores, snapshot: { generation: 'fixture-1', published_at: '2026-09-09T12:00:00Z', status: 'ready' } });
         return;
       }
       if (url.pathname === '/api/mercadolivre/assistant/solicitacoes') {

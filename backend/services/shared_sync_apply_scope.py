@@ -1392,7 +1392,7 @@ def _shared_sync_aplicar_cadastro_lojas_fotos_transacional(
         _capturar_estados_arquivos,
         _rollback_arquivos,
     )
-    from backend.services.path_coordination import path_locks_for
+    from backend.services.store_coordination import coordinated_path_locks as path_locks_for
 
     config = _shared_sync_cadastro_photo_config_preparar_locked(
         tenant_abs,
@@ -1519,7 +1519,7 @@ def _shared_sync_aplicar_config_fotos_write_once(
         _capturar_estados_arquivos,
         _rollback_arquivos,
     )
-    from backend.services.path_coordination import path_locks_for
+    from backend.services.store_coordination import coordinated_path_locks as path_locks_for
 
     config = _shared_sync_cadastro_photo_config_preparar_locked(
         tenant_abs,
@@ -1675,7 +1675,7 @@ def _shared_sync_aplicar_lojas_integracoes(
         integracoes_service._integracoes_pode_criar_lojas_legadas(client_id)
     )
 
-    with integracoes_service._LOJAS_CONFIG_LOCK:
+    with integracoes_service.lojas_config_lock(client_id, recovery="rollback"):
         # Uma operacao local interrompida e causalmente anterior a este pull.
         # Conclua seu journal antes de capturar preimages ou o novo merge
         # poderia sobrescreve-lo e ressuscitar a conta que ele removia.
@@ -2385,7 +2385,7 @@ def _shared_sync_aplicar_pacote_conteudo(client_id, scope, username, scope_confi
         elif legacy_photo_sku:
             from backend.services import integracoes
 
-            with integracoes._LOJAS_CONFIG_LOCK:
+            with integracoes.lojas_config_lock(client_id):
                 with _shared_sync_guard_legacy_photo_locked(
                     client_id,
                     tenant_abs,

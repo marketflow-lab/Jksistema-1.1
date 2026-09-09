@@ -15,7 +15,7 @@ from fastapi import Depends, HTTPException
 from starlette.concurrency import run_in_threadpool
 
 from backend.services import cadastro_lojas_produtos as _store
-from backend.services.path_coordination import path_locks_for
+from backend.services.store_coordination import coordinated_path_locks as path_locks_for
 
 
 SUMMARY_FIELDS = frozenset(
@@ -307,7 +307,7 @@ def _capturar_snapshot(
         os.path.join(tenant, arquivo)
         for arquivo in _store._ARQUIVOS_LEGADOS.values()
     ]
-    with _store.integracoes._LOJAS_CONFIG_LOCK:
+    with _store.integracoes.lojas_config_lock(client_id):
         lojas = _normalizar_lojas(_store._lojas_atuais(client_id))
         selecionadas = _selecionar_lojas(lojas, store_ids)
         with path_locks_for([caminho_canonico, *caminhos_legados]):

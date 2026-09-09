@@ -699,7 +699,7 @@ def _sincronizar_lancamentos_estoque_sku_api(
                 detail="Permissão insuficiente (insufficient_scope) no token Bling para consultar lançamentos de lote.",
             )
         total_lancamentos += len(lancs or [])
-        with integracoes_service._LOJAS_CONFIG_LOCK:
+        with integracoes_service.lojas_config_lock(client_id):
             _resolver_loja_historico_segura(
                 client_id,
                 loja_nome,
@@ -970,7 +970,7 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
             }
         )
 
-    with integracoes_service._LOJAS_CONFIG_LOCK:
+    with integracoes_service.lojas_config_lock(client_id):
         _resolver_loja_historico_segura(
             client_id,
             loja_nome,

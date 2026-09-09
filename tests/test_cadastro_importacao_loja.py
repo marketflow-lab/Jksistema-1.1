@@ -30,6 +30,8 @@ def _configurar(monkeypatch, tmp_path):
         return str(pasta)
 
     monkeypatch.setattr(cadastro_importacao, "get_tenant_path", tenant_path)
+    monkeypatch.setattr(integracoes, "_get_tenant_path", tenant_path)
+    monkeypatch.setattr(integracoes, "PASTA_INFO", str(raiz))
     monkeypatch.setattr(cadastro_lojas_produtos, "get_tenant_path", tenant_path)
     monkeypatch.setattr(cadastro_custos, "get_tenant_path", tenant_path)
     monkeypatch.setattr(cadastro_fotos, "get_tenant_path", tenant_path)

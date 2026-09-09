@@ -14,7 +14,7 @@ def enlist(paths):
     if journal is None:
         return
     from backend.services.cadastro_lojas_produtos import _capturar_estados_arquivos
-    from backend.services.path_coordination import path_locks_for
+    from backend.services.store_coordination import coordinated_path_locks as path_locks_for
     from backend.services.shared_sync_common import _shared_sync_resolve_tenant_path
 
     pending = []

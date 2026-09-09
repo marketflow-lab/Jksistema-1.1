@@ -27,7 +27,7 @@ def assert_legacy_sync_allowed(client_id):
 
     if current(client_id) is not None:
         raise HTTPException(409, "Atualize as lojas pela Central de Contas; as conexões já são centrais.")
-    with integracoes._LOJAS_CONFIG_LOCK:
+    with integracoes.lojas_config_lock(client_id):
         _, stores = _local_stores(client_id)
         if any(cfg.get("central") or cfg.get("central_migrated")
                for store in stores for cfg in (store.get("integracoes") or {}).values()

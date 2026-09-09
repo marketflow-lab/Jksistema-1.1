@@ -102,7 +102,7 @@ def _cadastro_importacao_bloquear_writer_store_id(
 
     from backend.services import integracoes
 
-    with integracoes._LOJAS_CONFIG_LOCK:
+    with integracoes.lojas_config_lock(client_id):
         with integracoes._integracoes_bloquear_catalogo_e_transicao_fotos(
             client_id,
             os.path.abspath(tenant_path),

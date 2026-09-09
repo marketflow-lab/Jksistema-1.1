@@ -434,7 +434,7 @@ def _shared_sync_montar_pacote_locked(
     arquivos_sensiveis_obrigatorios: set[str] = set()
     if scope == "lojas_integracoes":
         from backend.services import integracoes as integracoes_service
-        snapshot_lock = integracoes_service._LOJAS_CONFIG_LOCK
+        snapshot_lock = integracoes_service.lojas_config_lock(client_id)
     else:
         snapshot_lock = nullcontext()
 

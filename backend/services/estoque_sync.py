@@ -26,7 +26,7 @@ from backend.schemas.estoque import (
 )
 from backend.services import estoque_context, integracoes as integracoes_service
 from backend.services.integracoes import carregar_lojas
-from backend.services.path_coordination import path_lock_for
+from backend.services.store_coordination import coordinated_path_lock as path_lock_for
 from backend.services.runtime_bridge import bind_runtime_globals
 
 
@@ -1138,7 +1138,7 @@ async def _sincronizar_estoque_loja_impl(
     tenant_path = get_tenant_path(client_id)
     arquivo_cliente = os.path.join(tenant_path, "produtos_compilado.csv")
 
-    with integracoes_service._LOJAS_CONFIG_LOCK:
+    with integracoes_service.lojas_config_lock(client_id):
         with integracoes_service._integracoes_bloquear_catalogo_e_transicao_fotos(
             client_id,
             tenant_path,

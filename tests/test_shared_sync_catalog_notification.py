@@ -11,12 +11,15 @@ from backend.services import shared_sync_apply_scope as apply
 from backend.services import shared_sync_cadastro_transaction as transaction
 from backend.services import shared_sync_merge_sqlite as merge
 from backend.services.path_coordination import path_lock_for
+from backend.services.store_coordination import StoreCoordinationError, store_lock
 
 
 @pytest.fixture
 def catalog_import(tmp_path, monkeypatch):
     tenant = tmp_path / "000002"
     tenant.mkdir()
+    monkeypatch.setattr(integracoes, "_get_tenant_path", lambda _: str(tenant))
+    monkeypatch.setattr(integracoes, "PASTA_INFO", str(tmp_path))
     stores = [{"store_id": "store-a", "nome": "Loja A", "integracoes": {}}]
     (tenant / "lojas_config.json").write_text(json.dumps(stores), encoding="utf-8")
     (tenant / cadastro_fotos.CADASTRO_FOTOS_CONFIG_ARQUIVO).write_text(json.dumps({
@@ -47,8 +50,12 @@ def test_catalog_notification_after_import_releases_transaction_and_locks(catalo
         acquired = []
 
         def acquire_writer_locks():
-            locks = [integracoes._LOJAS_CONFIG_LOCK,
-                     path_lock_for(tenant / "cadastro_produtos_lojas.csv"),
+            try:
+                with store_lock(tenant, timeout_seconds=1):
+                    acquired.append(True)
+            except StoreCoordinationError:
+                acquired.append(False)
+            locks = [path_lock_for(tenant / "cadastro_produtos_lojas.csv"),
                      path_lock_for(tenant / "cadastro_custos_lojas.csv")]
             for lock in locks:
                 got = lock.acquire(timeout=1)

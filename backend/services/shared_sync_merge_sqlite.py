@@ -65,7 +65,7 @@ def _shared_sync_bloquear_writer_store_id(
     from backend.services import integracoes
 
     tenant_path = os.path.abspath(str(tenant_abs or ""))
-    with integracoes._LOJAS_CONFIG_LOCK:
+    with integracoes.lojas_config_lock(client_id):
         with integracoes._integracoes_bloquear_catalogo_e_transicao_fotos(
             client_id,
             tenant_path,
@@ -142,7 +142,7 @@ def _shared_sync_validar_store_ids_df_remoto_locked(
 ) -> None:
     """Reject rows for stores absent from the current config or tombstoned.
 
-    The caller must retain ``integracoes._LOJAS_CONFIG_LOCK`` until the file
+    The caller must retain ``integracoes.lojas_config_lock(client_id)`` until the file
     merge/replace finishes.  This makes store deletion and Shared Sync writes
     linearizable: whichever acquires the configuration lock first wins, and
     the second operation observes the first one's persisted state.
@@ -600,7 +600,7 @@ def _shared_sync_aplicar_foto_legada_atomica(
         _salvar_fotos_preparadas_atomico,
         _validar_caminhos_variantes_fotos,
     )
-    from backend.services.path_coordination import path_locks_for
+    from backend.services.store_coordination import coordinated_path_locks as path_locks_for
 
     target_abs = _shared_sync_resolve_tenant_path(tenant_abs, rel)
     preparada = {
@@ -795,7 +795,7 @@ def _shared_sync_aplicar_lojas_integracoes_atomico(
     tombstone_target = os.path.join(tenant_abs, "lojas_sync_tombstones.json")
 
     with (
-        integracoes._LOJAS_CONFIG_LOCK,
+        integracoes.lojas_config_lock(client_id, recovery="rollback"),
         integracoes._integracoes_bloquear_catalogo_e_transicao_fotos(
             client_id,
             tenant_abs,
@@ -1184,7 +1184,7 @@ def _shared_sync_merge_cadastro_lojas_versioned(
                     client_id,
                 )
 
-    with integracoes._LOJAS_CONFIG_LOCK:
+    with integracoes.lojas_config_lock(client_id):
         with _shared_sync_path_lock_for(target_abs):
             return _shared_sync_merge_cadastro_lojas_versioned_locked(
                 target_abs,
@@ -1423,7 +1423,7 @@ def _shared_sync_merge_cadastro_custos_versioned(
                     remoto_bytes,
                 )
 
-    with integracoes._LOJAS_CONFIG_LOCK:
+    with integracoes.lojas_config_lock(client_id):
         with _cadastro_custos_lock(client_id):
             return _shared_sync_merge_cadastro_custos_versioned_locked(target_abs, remoto_bytes)
 
@@ -2156,7 +2156,7 @@ def _shared_sync_aplicar_user_share_conteudo(client_id, scope, username, fontes,
             if legacy_photo_sku:
                 from backend.services import integracoes
 
-                with integracoes._LOJAS_CONFIG_LOCK:
+                with integracoes.lojas_config_lock(client_id):
                     with _shared_sync_guard_legacy_photo_locked(
                         client_id,
                         tenant_abs,

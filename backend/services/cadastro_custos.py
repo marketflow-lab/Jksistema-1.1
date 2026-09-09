@@ -43,7 +43,7 @@ import pandas as pd
 from fastapi import HTTPException
 
 from backend.services.cadastro_common import *
-from backend.services.path_coordination import path_lock_for
+from backend.services.store_coordination import coordinated_path_lock as path_lock_for
 
 CADASTRO_CUSTOS_LOJAS_COLS = [
     "store_id",

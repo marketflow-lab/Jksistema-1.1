@@ -186,7 +186,14 @@ def bloquear_transicao_fotos_tenant(
 ) -> Iterator[None]:
     """Serializa writers de fotos e a migracao no mesmo tenant fisico."""
 
+    # Store transactions pass one acquisition budget across every lock layer.
+    # Import lazily: store_coordination also reuses the POSIX lock primitive.
+    from backend.services.store_coordination import coordination_active, remaining_timeout
+
     timeout = max(0.0, float(timeout_seconds))
+    if coordination_active():
+        timeout = min(timeout, remaining_timeout())
+    deadline = time.monotonic() + timeout
     tenant = _diretorio_fisico(tenant_path, "unsafe_tenant")
     lock_path = cadastro_fotos_transition_lock_path(tenant)
     key = canonical_path_key(lock_path)
@@ -216,10 +223,11 @@ def bloquear_transicao_fotos_tenant(
         _falhar("locked", "As fotos do cliente estao sendo atualizadas.")
 
     try:
+        remaining = max(0.0, deadline - time.monotonic())
         bloqueio = (
-            _bloquear_mutex_windows(tenant, timeout)
+            _bloquear_mutex_windows(tenant, remaining)
             if os.name == "nt"
-            else _bloquear_arquivo_posix(lock_path, timeout)
+            else _bloquear_arquivo_posix(lock_path, remaining)
         )
         with bloqueio:
             held[key] = 1

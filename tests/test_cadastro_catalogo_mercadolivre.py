@@ -1816,3 +1816,16 @@ def test_cancellation_before_preflight_makes_no_network_request(monkeypatch: pyt
     assert result["cancelled"] is True
     assert result["items"] == []
     assert result["stats"]["pages_fetched"] == 0
+
+
+@pytest.fixture(autouse=True)
+def _configure_store_coordination(monkeypatch, tmp_path):
+    from backend.services import integracoes
+
+    def tenant_path(client_id):
+        path = tmp_path / str(client_id)
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
+    monkeypatch.setattr(integracoes, "_get_tenant_path", tenant_path)
+    monkeypatch.setattr(integracoes, "PASTA_INFO", str(tmp_path))
