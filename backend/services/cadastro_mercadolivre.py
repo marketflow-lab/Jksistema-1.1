@@ -9,6 +9,7 @@ existing create/update endpoints remain the only persistence boundary.
 from __future__ import annotations
 
 import base64
+import inspect
 import logging
 import re
 import time
@@ -27,6 +28,7 @@ from backend.services.runtime_bridge import bind_runtime_globals
 
 
 logger = logging.getLogger("jk_sistema")
+_runtime_get_tenant_id = None
 
 ML_API_BASE = "https://api.mercadolibre.com"
 ML_ITEM_ID_RE = re.compile(r"^MLB\d+$", re.IGNORECASE)
@@ -49,7 +51,15 @@ async def get_tenant_id(
     request: Request,
     authorization: Optional[str] = Header(default=None),
 ):
-    raise RuntimeError("Cadastro Mercado Livre runtime was not configured.")
+    if not callable(_runtime_get_tenant_id):
+        raise HTTPException(
+            status_code=503,
+            detail="Contexto de autenticacao do Cadastro ainda nao inicializado.",
+        )
+    resultado = _runtime_get_tenant_id(request, authorization)
+    if inspect.isawaitable(resultado):
+        return await resultado
+    return resultado
 
 
 def configure_cadastro_mercadolivre_runtime(runtime_module=None):
@@ -58,8 +68,12 @@ def configure_cadastro_mercadolivre_runtime(runtime_module=None):
         runtime_logger = getattr(runtime, "logger", None)
         if runtime_logger is not None:
             globals()["logger"] = runtime_logger
-        if hasattr(runtime, "get_tenant_id"):
-            globals()["get_tenant_id"] = getattr(runtime, "get_tenant_id")
+        runtime_get_tenant_id = getattr(runtime, "get_tenant_id", None)
+        if (
+            callable(runtime_get_tenant_id)
+            and runtime_get_tenant_id is not globals().get("get_tenant_id")
+        ):
+            globals()["_runtime_get_tenant_id"] = runtime_get_tenant_id
     return runtime
 
 

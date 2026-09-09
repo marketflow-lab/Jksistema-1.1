@@ -10,7 +10,6 @@
     const tabela = cadastro.produtosTabela;
     const secondary = cadastro.custosMlb;
     const storeTools = global.JKCadastroStore;
-    let carregamentoProdutosSeq = 0;
 
     function authHeaders(extra) {
         if (typeof global.obterAuthHeaders !== 'function') throw new Error('Autenticação indisponível.');
@@ -100,69 +99,9 @@
         }
     }
 
-    function extrairProdutos(payload) {
-        if (Array.isArray(payload)) return payload;
-        return payload && Array.isArray(payload.produtos) ? payload.produtos : [];
-    }
-
-    async function buscarProdutosLoja(loja) {
-        const response = await global.fetch(storeTools.apiLoja(loja.store_id, 'produtos'), { headers: authHeaders() });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload && payload.detail || `HTTP ${response.status}`);
-        return extrairProdutos(payload).map(item => ({
-            ...item,
-            store_id: loja.store_id,
-            loja_sync: rotuloLojaExibicao(loja),
-        }));
-    }
-
-    async function carregarProdutos() {
-        const requestSeq = ++carregamentoProdutosSeq;
-        state.carregandoProdutos = true;
-        atualizarEstadoMutacoes();
-        core.setStatus('Carregando produtos...', 'loading');
-        elements.btnAtualizar.disabled = true;
-        // Remove imediatamente o escopo anterior. Durante uma troca de loja,
-        // nenhuma linha antiga deve continuar clicavel enquanto a nova resposta
-        // ainda esta em transito.
-        state.produtos = [];
-        secondary.atualizarFiltroLojasCustos();
-        tabela.renderTabela();
-        secondary.renderCustos();
-        secondary.montarSeletorSku();
-        secondary.renderDetalhesMlbPorSku('');
-        try {
-            state.clientId = state.clientId || core.obterClientId();
-            if (!state.clientId) {
-                global.location.href = '/frontend_index.html';
-                return false;
-            }
-            const lojasAlvo = state.storeIdSelecionado ? [lojaPorId(state.storeIdSelecionado)].filter(Boolean) : state.lojas;
-            const lotes = await Promise.all(lojasAlvo.map(buscarProdutosLoja));
-            if (requestSeq !== carregamentoProdutosSeq) return false;
-            state.produtos = lotes.flat();
-            secondary.atualizarFiltroLojasCustos();
-            tabela.renderTabela();
-            secondary.renderCustos();
-            secondary.montarSeletorSku();
-            secondary.renderDetalhesMlbPorSku(elements.skuSelect.value || '');
-            const escopo = state.storeIdSelecionado ? (lojaPorId(state.storeIdSelecionado) || {}).nome : `${lojasAlvo.length} loja(s)`;
-            core.setStatus(`Produtos carregados: ${state.produtos.length}${escopo ? ` em ${escopo}` : ''}`, 'success');
-            return true;
-        } catch (error) {
-            if (requestSeq !== carregamentoProdutosSeq) return false;
-            state.produtos = [];
-            tabela.renderTabela();
-            core.setStatus(`Erro ao carregar produtos: ${error.message}`, 'error');
-            return false;
-        } finally {
-            if (requestSeq === carregamentoProdutosSeq) {
-                state.carregandoProdutos = false;
-                elements.btnAtualizar.disabled = false;
-                atualizarEstadoMutacoes();
-            }
-        }
-    }
+    cadastro.produtosCarregamento.configurar({ authHeaders, lojaPorId, rotuloLojaExibicao, atualizarEstadoMutacoes });
+    const carregarProdutos = cadastro.produtosCarregamento.carregar;
+    const cancelarCarregamentoProdutos = cadastro.produtosCarregamento.cancelar;
 
     async function inicializarLojas() {
         state.clientId = core.obterClientId();
@@ -330,7 +269,7 @@
     }
 
     cadastro.actions = Object.freeze({
-        atualizarCustosImpostosPorSku, atualizarEstadoMutacoes, carregarProdutos, importarColunasPorSku, inicializarLojas,
+        atualizarCustosImpostosPorSku, atualizarEstadoMutacoes, cancelarCarregamentoProdutos, carregarProdutos, importarColunasPorSku, inicializarLojas,
         inicializarNcm, selecionarLoja, setSeletorLojaDisabled, sincronizarNcmBackground,
     });
     cadastro.publicApi.carregarProdutos = carregarProdutos;

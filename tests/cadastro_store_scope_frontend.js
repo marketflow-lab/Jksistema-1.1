@@ -156,6 +156,7 @@ stored.set('cadastro_editar_item', JSON.stringify({ sku: 'SKU-IGUAL', nome: 'cac
 assert.strictEqual(stores.lerCacheEdicao('cliente-1', 'store-a', 'SKU-IGUAL'), null, 'cache antigo sem envelope deve ser rejeitado');
 
 const actions = read('static/cadastro/main/03-actions.js');
+const productLoader = read('static/cadastro/main/03-produtos-carregamento.js');
 const init = read('static/cadastro/main/04-init.js');
 const html = read('static/cadastro.html');
 const styles = read('static/cadastro/styles/main.css');
@@ -168,11 +169,16 @@ const inclusion = read('static/cadastro/incluir-item.js');
 
 assert.match(actions, /const semLoja = !state\.storeIdSelecionado;[\s\S]*const somenteLeitura = semLoja \|\| state\.carregandoProdutos/);
 assert.match(actions, /btnEditarCadastro[\s\S]*btnIncluirCadastro[\s\S]*btnImportarColunas[\s\S]*btnAtualizarCustosImpostos/);
-assert.match(actions, /const lotes = await Promise\.all\(lojasAlvo\.map\(buscarProdutosLoja\)\);[\s\S]*state\.produtos = lotes\.flat\(\)/, 'Todas deve manter registros homônimos de lojas distintas');
+assert.match(productLoader, /storeId[\s\S]*storeTools\.apiLoja\(storeId, 'produtos'\)[\s\S]*'\/api\/cadastro\/lojas\/produtos'[\s\S]*view=summary/, 'cada escopo deve usar a projeção resumida e Todas deve usar o endpoint consolidado');
+assert.doesNotMatch(productLoader, /Promise\.all\(lojasAlvo\.map\(/, 'Todas não deve disparar uma requisição por loja');
 assert.match(actions, /function rotuloLojaExibicao[\s\S]*homonimas\.length > 1[\s\S]*\$\{loja\.store_id\}/, 'lojas homônimas devem ser distinguíveis também na visão consolidada');
-assert.match(actions, /let carregamentoProdutosSeq = 0[\s\S]*const requestSeq = \+\+carregamentoProdutosSeq[\s\S]*if \(requestSeq !== carregamentoProdutosSeq\) return(?: false)?;/, 'troca rápida deve descartar resposta de loja obsoleta');
-assert.match(actions, /const requestSeq = \+\+carregamentoProdutosSeq[\s\S]*state\.produtos = \[\];[\s\S]*const lotes = await Promise\.all/, 'troca de loja deve limpar produtos antigos antes do fetch');
-assert.match(actions, /state\.carregandoProdutos = true;[\s\S]*atualizarEstadoMutacoes\(\)[\s\S]*state\.carregandoProdutos = false;/, 'mutações devem permanecer desabilitadas durante a troca');
+assert.match(productLoader, /let requestSeq = 0[\s\S]*const minhaSeq = \+\+requestSeq[\s\S]*if \(minhaSeq !== requestSeq \|\| escopoSolicitado !== escopoAtual\(\)\) return false;/, 'troca rápida deve descartar resposta ou escopo obsoleto');
+assert.match(productLoader, /const preservarTabela = state\.produtosEscopoCarregado === escopoSolicitado[\s\S]*if \(!preservarTabela\) \{[\s\S]*state\.produtos = \[\]/, 'troca de escopo deve limpar produtos antigos e refresh deve preservar dados úteis');
+assert.match(productLoader, /state\.carregandoProdutos = true;[\s\S]*opcoes\.atualizarEstadoMutacoes\(\)[\s\S]*state\.carregandoProdutos = false;/, 'mutações devem permanecer desabilitadas durante a troca');
+assert.match(productLoader, /TIMEOUT_MS = 30000[\s\S]*new global\.AbortController\(\)[\s\S]*controller\.abort\(\)/, 'carregamentos devem ter cancelamento e prazo finito');
+assert.match(productLoader, /global\.fetch\(urlEscopo\(storeId\)[\s\S]*cache: 'no-store'[\s\S]*signal: controller\.signal/, 'produtos devem ignorar cache e propagar o cancelamento');
+assert.match(productLoader, /async function lerRespostaJsonSegura[\s\S]*response\.text\(\)[\s\S]*JSON\.parse\(body\)/, 'corpo vazio, HTML e JSON truncado devem falhar de forma controlada');
+assert.match(productLoader, /function validarEnvelopeConsolidado[\s\S]*Array\.isArray\(payload\.lojas\)[\s\S]*Number\.isInteger\(payload\.total\)[\s\S]*typeof payload\.partial !== 'boolean'/, 'Todas deve validar integralmente o envelope consolidado');
 assert.match(core, /if \(!state\.storeIdSelecionado\) return escaparHtml\(formatarSkuExibicao\(sku\)\)/, 'Todas não deve oferecer link de edição');
 assert.match(products, /if \(!state\.storeIdSelecionado\) return;/, 'Todas não deve autorizar clique de edição');
 assert.match(secondary, /`store:\$\{encodeURIComponent\(storeId\)\}:\$\{encodeURIComponent\(sku\)\}`[\s\S]*produto\.store_id[\s\S]*selecao\.storeId/, 'detalhe MLB deve distinguir a mesma SKU entre lojas');

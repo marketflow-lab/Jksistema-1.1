@@ -31,18 +31,35 @@ function contentType(filePath) {
 (async () => {
   const browser = await chromium.launch({ headless: true });
   const requests = [];
+  const failedRequests = [];
   const pageErrors = [];
   let delayRcl = false;
+  let failNextRcl = false;
+  let failNextBulk = false;
+  let invalidNextBulk = false;
+  let allErrorNextBulk = false;
+  let partialNextBulk = false;
+  let nextRclResponse = '';
   try {
     const page = await browser.newPage({ viewport: { width: 1173, height: 900 } });
     page.on('pageerror', error => pageErrors.push(error.message));
+    page.on('requestfailed', request => failedRequests.push({
+      pathname: new URL(request.url()).pathname,
+      errorText: request.failure() && request.failure().errorText,
+    }));
     await page.addInitScript(() => {
       localStorage.setItem('user_data', JSON.stringify({ client_id: 'cliente-botoes' }));
+      const nativeSetTimeout = window.setTimeout.bind(window);
+      window.setTimeout = (callback, delay, ...args) => nativeSetTimeout(
+        callback,
+        Number(delay) === 30000 ? 25 : delay,
+        ...args,
+      );
     });
     await page.route('**/*', async route => {
       const request = route.request();
       const url = new URL(request.url());
-      requests.push({ method: request.method(), pathname: url.pathname });
+      requests.push({ method: request.method(), pathname: url.pathname, search: url.search });
 
       if (url.pathname === '/cadastro.html') {
         await route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: html });
@@ -83,11 +100,88 @@ function contentType(filePath) {
         await json(route, []);
         return;
       }
+      if (url.pathname === '/api/cadastro/lojas/produtos') {
+        assert.strictEqual(url.searchParams.get('view'), 'summary', 'visão consolidada deve pedir somente o resumo');
+        if (allErrorNextBulk) {
+          allErrorNextBulk = false;
+          await json(route, {
+            produtos: [],
+            lojas: lojas.map(loja => ({ store_id: loja.store_id, loja_sync: loja.nome, status: 'error', total: 0 })),
+            total: 0,
+            partial: true,
+          });
+          return;
+        }
+        if (invalidNextBulk) {
+          invalidNextBulk = false;
+          await json(route, { produtos: [], lojas: [], total: 1, partial: 'não' });
+          return;
+        }
+        if (failNextBulk) {
+          failNextBulk = false;
+          await json(route, { detail: { code: 'cadastro_stores_unavailable' } }, 503);
+          return;
+        }
+        const partial = partialNextBulk;
+        partialNextBulk = false;
+        const available = partial ? lojas.filter(loja => loja.store_id !== 'store-deckas') : lojas;
+        await json(route, {
+          produtos: available.map(loja => ({
+            sku: `SKU-${loja.store_id}`,
+            nome: `Produto ${loja.store_id}`,
+            store_id: loja.store_id,
+            loja_sync: loja.nome,
+          })),
+          lojas: lojas.map(loja => ({
+            store_id: loja.store_id,
+            loja_sync: loja.nome,
+            status: partial && loja.store_id === 'store-deckas' ? 'error' : 'ok',
+            total: partial && loja.store_id === 'store-deckas' ? 0 : 1,
+            ...(partial && loja.store_id === 'store-deckas' ? { erro_codigo: 'store_projection_failed' } : {}),
+          })),
+          total: available.length,
+          partial,
+        });
+        return;
+      }
       const produtosMatch = url.pathname.match(/^\/api\/cadastro\/lojas\/([^/]+)\/produtos$/);
       if (produtosMatch) {
         const storeId = decodeURIComponent(produtosMatch[1]);
+        assert.strictEqual(url.searchParams.get('view'), 'summary', 'visão de loja deve pedir somente o resumo');
+        const responseMode = nextRclResponse;
+        nextRclResponse = '';
+        if (storeId === 'store-rcl' && responseMode === 'empty') {
+          await route.fulfill({ status: 200, contentType: 'application/json', body: '' });
+          return;
+        }
+        if (storeId === 'store-rcl' && responseMode === 'html') {
+          await route.fulfill({ status: 500, contentType: 'text/html', body: '<html>erro interno</html>' });
+          return;
+        }
+        if (storeId === 'store-rcl' && responseMode === 'truncated') {
+          await route.fulfill({ status: 200, contentType: 'application/json', body: '{"produtos":[' });
+          return;
+        }
+        if (storeId === 'store-rcl' && ['401', '403'].includes(responseMode)) {
+          await json(route, { detail: { code: 'auth_denied' } }, Number(responseMode));
+          return;
+        }
+        if (storeId === 'store-rcl' && responseMode === 'timeout') {
+          await new Promise(resolve => setTimeout(resolve, 150));
+          try { await json(route, [{ sku: 'LATE', nome: 'Resposta fora do prazo' }]); } catch (_aborted) {}
+          return;
+        }
+        if (failNextRcl && storeId === 'store-rcl') {
+          failNextRcl = false;
+          await json(route, { detail: 'falha controlada' }, 500);
+          return;
+        }
         if (delayRcl && storeId === 'store-rcl') await new Promise(resolve => setTimeout(resolve, 150));
-        await json(route, [{ sku: `SKU-${storeId}`, nome: `Produto ${storeId}` }]);
+        try {
+          await json(route, [{ sku: `SKU-${storeId}`, nome: `Produto ${storeId}` }]);
+        } catch (error) {
+          if (!(delayRcl && storeId === 'store-rcl')) throw error;
+        }
         return;
       }
       await route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"not found"}' });
@@ -97,6 +191,11 @@ function contentType(filePath) {
     const botoes = page.locator('#cadastroLojaBotoes .loja-btn');
     await botoes.first().waitFor({ state: 'visible' });
     await page.waitForFunction(total => document.querySelector('#status').textContent.includes(`Produtos carregados: ${total}`), lojas.length);
+    assert.deepStrictEqual(
+      requests.filter(item => item.pathname.includes('/api/cadastro/lojas/')),
+      [{ method: 'GET', pathname: '/api/cadastro/lojas/produtos', search: '?view=summary' }],
+      'a abertura consolidada deve fazer uma única requisição resumida',
+    );
 
     assert.strictEqual(await botoes.count(), lojas.length + 1, 'todas as lojas devem ter botão visível');
     const rotulos = await botoes.allTextContents();
@@ -125,18 +224,83 @@ function contentType(filePath) {
     assert.match(await page.locator('#tBody').innerText(), /Produto store-rcl/);
     assert.deepStrictEqual(
       requests.slice(markerRcl).filter(item => item.pathname.includes('/api/cadastro/lojas/')),
-      [{ method: 'GET', pathname: '/api/cadastro/lojas/store-rcl/produtos' }],
+      [{ method: 'GET', pathname: '/api/cadastro/lojas/store-rcl/produtos', search: '?view=summary' }],
       'clicar RCL deve consultar somente o store_id exato',
     );
+
+    failNextRcl = true;
+    await page.locator('#btnAtualizar').click();
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Erro ao carregar produtos'));
+    assert.match(await page.locator('#tBody').innerText(), /Produto store-rcl/, 'falha ao atualizar o mesmo escopo deve preservar a tabela útil');
+    assert.strictEqual(await page.evaluate(() => window.JKCadastro.runtime.state.produtos.length), 1);
+    await page.locator('#btnAtualizar').click();
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Produtos carregados: 1'));
+
+    for (const scenario of [
+      ['empty', 'resposta vazia'],
+      ['html', 'resposta inválida'],
+      ['truncated', 'resposta inválida'],
+      ['401', 'Falha HTTP 401'],
+      ['403', 'Falha HTTP 403'],
+      ['timeout', 'limite de 30 segundos'],
+    ]) {
+      const [mode, expectedMessage] = scenario;
+      nextRclResponse = mode;
+      await page.locator('#btnAtualizar').click();
+      await page.waitForFunction(
+        expected => document.querySelector('#status').textContent.toLowerCase().includes(expected),
+        expectedMessage.toLowerCase(),
+      );
+      assert.match(
+        await page.locator('#tBody').innerText(),
+        /Produto store-rcl/,
+        `${mode}: refresh inválido do mesmo escopo deve preservar a tabela`,
+      );
+      assert.strictEqual(await page.evaluate(() => window.JKCadastro.runtime.state.produtos.length), 1);
+      await page.locator('#btnAtualizar').click();
+      await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Produtos carregados: 1'));
+    }
 
     const markerTodas = requests.length;
     await page.getByRole('button', { name: 'Todas as lojas', exact: true }).click();
     await page.waitForFunction(total => window.JKCadastro.runtime.state.storeIdSelecionado === ''
       && document.querySelector('#status').textContent.includes(`Produtos carregados: ${total}`), lojas.length);
+    assert.deepStrictEqual(
+      requests.slice(markerTodas).filter(item => item.pathname.includes('/api/cadastro/lojas/')),
+      [{ method: 'GET', pathname: '/api/cadastro/lojas/produtos', search: '?view=summary' }],
+      'Todas as lojas deve usar uma única leitura consolidada',
+    );
+
+    partialNextBulk = true;
+    await page.locator('#btnAtualizar').click();
+    await page.waitForFunction(total => window.JKCadastro.runtime.state.produtos.length === total - 1, lojas.length);
+    assert.match(await page.locator('#status').innerText(), /parcial/i, 'resposta parcial deve ficar explícita');
+    assert.doesNotMatch(await page.locator('#tBody').innerText(), /Produto store-deckas/);
+    failNextBulk = true;
+    await page.locator('#btnAtualizar').click();
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Erro ao carregar produtos'));
     assert.strictEqual(
-      requests.slice(markerTodas).filter(item => item.pathname.includes('/api/cadastro/lojas/')).length,
+      await page.evaluate(() => window.JKCadastro.runtime.state.produtos.length),
+      lojas.length - 1,
+      'falha ao atualizar Todas deve preservar o último resultado útil',
+    );
+    await page.locator('#btnAtualizar').click();
+    await page.waitForFunction(total => window.JKCadastro.runtime.state.produtos.length === total, lojas.length);
+    invalidNextBulk = true;
+    await page.locator('#btnAtualizar').click();
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('formato inválido'));
+    assert.strictEqual(
+      await page.evaluate(() => window.JKCadastro.runtime.state.produtos.length),
       lojas.length,
-      'Todas as lojas deve consolidar todos os endpoints autorizados',
+      'envelope consolidado inválido deve preservar o último resultado útil',
+    );
+    allErrorNextBulk = true;
+    await page.locator('#btnAtualizar').click();
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Nenhuma loja pôde ser carregada'));
+    assert.strictEqual(
+      await page.evaluate(() => window.JKCadastro.runtime.state.produtos.length),
+      lojas.length,
+      'resposta 200 com falha em todas as lojas deve ser tratada como erro total',
     );
 
     await page.setViewportSize({ width: 390, height: 900 });
@@ -155,12 +319,25 @@ function contentType(filePath) {
 
     delayRcl = true;
     await page.getByRole('button', { name: 'RCL', exact: true }).click();
+    await page.waitForFunction(() => window.JKCadastro.runtime.state.storeIdSelecionado === 'store-rcl'
+      && window.JKCadastro.runtime.state.produtos.length === 0);
+    assert.strictEqual(await page.locator('#painelProdutos').getAttribute('aria-busy'), 'true');
+    assert.deepStrictEqual(
+      await page.evaluate(() => window.JKCadastro.runtime.state.carregamentoProdutosProgresso),
+      { concluidas: 0, total: 1 },
+      'carregamento deve expor progresso do escopo atual',
+    );
     await page.getByRole('button', { name: 'Carlos José', exact: true }).click();
     await page.waitForFunction(() => window.JKCadastro.runtime.state.storeIdSelecionado === 'store-carlos'
       && document.querySelector('#status').textContent.includes('Produtos carregados: 1'));
     await page.waitForTimeout(200);
     assert.strictEqual(await page.evaluate(() => window.JKCadastro.runtime.state.storeIdSelecionado), 'store-carlos', 'resposta atrasada não pode restaurar a loja anterior');
+    assert.strictEqual(await page.locator('#painelProdutos').getAttribute('aria-busy'), 'false');
     assert.match(await page.locator('#tBody').innerText(), /Produto store-carlos/, 'resposta atrasada não pode sobrescrever a tabela atual');
+    assert(
+      failedRequests.every(item => !item.errorText || /abort|cancel/i.test(item.errorText)),
+      'cancelamentos de troca rápida não podem virar falhas de rede inesperadas',
+    );
     delayRcl = false;
 
     await page.goto('http://jk.local/cadastro.html?store_id=store-invalido', { waitUntil: 'load' });

@@ -147,6 +147,7 @@
       "static/cadastro/01-core.js",
       "static/cadastro/main/01-produtos.js",
       "static/cadastro/main/02-custos-mlb.js",
+      "static/cadastro/main/03-produtos-carregamento.js",
       "static/cadastro/main/03-actions.js",
       "static/cadastro/main/05-fornecedores.js",
       "static/cadastro/main/06-importacoes-catalogos.js",

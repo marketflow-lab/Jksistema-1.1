@@ -41,6 +41,7 @@ __all__ += [
     'resolver_loja_cadastro',
     'salvar_produto_loja',
     'salvar_produtos_loja_em_lote',
+    'listar_produtos_lojas',
     'listar_produtos_loja',
     'obter_produto_loja',
     'criar_produto_loja',

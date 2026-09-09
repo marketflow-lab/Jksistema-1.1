@@ -286,10 +286,77 @@ const { read } = require('./helpers/cadastro_frontend_sources');
   assert.doesNotMatch(markup, /<img\b|Authorization|[?&](?:access_)?token=/i, 'HTML inicial não deve expor rota protegida em img nem token');
 
   const produtos = read('static/cadastro/main/01-produtos.js');
+  const containersFila = Array.from({ length: 10 }, (_, index) => ({
+    dataset: { fotoUrl: `/api/cadastro/foto-arquivo/fila-${index}.png` },
+    innerHTML: '',
+    removeAttribute(name) { if (name === 'data-foto-url') delete this.dataset.fotoUrl; },
+    appendChild() {},
+  }));
+  const pendenciasFila = [];
+  let ativasFila = 0;
+  let maxAtivasFila = 0;
+  let abortadasFila = 0;
+  const tBodyFila = {
+    contains(container) { return containersFila.includes(container); },
+    querySelectorAll(selector) { return selector === '[data-foto-url]' ? containersFila : []; },
+  };
+  const filaContext = {
+    AbortController,
+    console,
+    document: {
+      createElement() { return { appendChild() {} }; },
+    },
+    JKCadastro: {
+      components: new Set(['core']),
+      core: {},
+      runtime: {
+        constants: {},
+        elements: { tBody: tBodyFila },
+        state: {},
+      },
+    },
+    JKCadastroStore: {
+      carregarFotoAutenticada(url, _headers, options) {
+        ativasFila += 1;
+        maxAtivasFila = Math.max(maxAtivasFila, ativasFila);
+        return new Promise((resolve, reject) => {
+          const concluir = () => { ativasFila -= 1; resolve({ url: `blob:${url}`, revogavel: true }); };
+          pendenciasFila.push({ concluir, url });
+          options.signal.addEventListener('abort', () => {
+            ativasFila -= 1;
+            abortadasFila += 1;
+            reject(Object.assign(new Error('cancelada'), { name: 'AbortError' }));
+          }, { once: true });
+        });
+      },
+      revogarFotoCarregada() {},
+    },
+    obterAuthHeaders: auth,
+    addEventListener() {},
+  };
+  filaContext.window = filaContext;
+  vm.createContext(filaContext);
+  vm.runInContext(produtos, filaContext, { filename: 'static/cadastro/main/01-produtos.js#fila' });
+  filaContext.JKCadastro.produtosTabela.hidratarFotosTabela();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.strictEqual(pendenciasFila.length, 6, 'fila deve iniciar no máximo seis miniaturas');
+  assert.strictEqual(maxAtivasFila, 6, 'fila não pode exceder seis hidratações simultâneas');
+  pendenciasFila[0].concluir();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.strictEqual(pendenciasFila.length, 7, 'fila deve avançar uma miniatura quando abre uma vaga');
+  assert.strictEqual(maxAtivasFila, 6, 'avanço da fila deve respeitar o limite simultâneo');
+  filaContext.JKCadastro.produtosTabela.revogarFotosTabela();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.strictEqual(abortadasFila, 6, 'rerender deve cancelar todas as seis hidratações em voo');
+  assert.strictEqual(pendenciasFila.length, 7, 'rerender deve descartar as miniaturas que ainda estavam na fila');
+
   const editor = read('static/cadastro/editar-item.js');
   const inclusao = read('static/cadastro/incluir-item.js');
   const mercadoLivreForm = read('static/cadastro/form/01-mercado-livre.js');
-  assert.match(produtos, /carregarFotoAutenticada\(url, authHeaders\)/);
+  assert.match(produtos, /MAX_FOTOS_SIMULTANEAS = 6/);
+  assert.match(produtos, /fotosTabelaEmAndamento < MAX_FOTOS_SIMULTANEAS/);
+  assert.match(produtos, /carregarFotoAutenticada\([\s\S]*url,[\s\S]*authHeaders,[\s\S]*signal: controller\.signal/);
+  assert.match(produtos, /revogarFotosTabela[\s\S]*fotosTabelaControllers\.forEach\(controller => controller\.abort\(\)\)/);
   assert.match(produtos, /createElement\('img'\)[\s\S]*image\.src = foto\.url/);
   assert.match(produtos, /beforeunload[\s\S]*revogarFotosTabela/);
   assert.match(produtos, /revogarFotosTabela\(\);[\s\S]*elements\.tBody\.innerHTML = ''/, 'rerender deve revogar URLs anteriores antes de substituir a tabela');

@@ -93,6 +93,7 @@
         void atualizarCadastroRecebido();
     });
     global.addEventListener?.('focus', () => { void atualizarCadastroRecebido(); });
+    global.addEventListener?.('beforeunload', actions.cancelarCarregamentoProdutos);
     document.addEventListener('focusout', () => { setTimeout(atualizarCadastroRecebido, 0); });
     global.addEventListener?.('jk:cadastro-operation-finished', () => { void atualizarCadastroRecebido(); });
 

@@ -256,7 +256,7 @@
         }
     }
 
-    async function carregarFotoAutenticada(url, authHeaders) {
+    async function carregarFotoAutenticada(url, authHeaders, options) {
         const texto = String(url || '').trim();
         if (!texto) throw new Error('Foto não informada.');
         if (/^data:/i.test(texto)) return { url: texto, revogavel: false };
@@ -267,7 +267,8 @@
         }
         const headers = typeof authHeaders === 'function' ? authHeaders() : null;
         if (!headers || !Object.keys(headers).length) throw new Error('Autenticação indisponível para carregar a foto.');
-        const response = await global.fetch(texto, { headers });
+        const config = options && typeof options === 'object' ? options : {};
+        const response = await global.fetch(texto, { headers, ...(config.signal ? { signal: config.signal } : {}) });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const blob = await response.blob();
         if (!global.URL || typeof global.URL.createObjectURL !== 'function') {

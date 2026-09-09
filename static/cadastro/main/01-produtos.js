@@ -8,8 +8,12 @@
     const { elements, state, constants } = cadastro.runtime;
     const core = cadastro.core;
     const storeTools = global.JKCadastroStore;
+    const MAX_FOTOS_SIMULTANEAS = 6;
     const fotosTabelaAtivas = new Set();
+    const fotosTabelaControllers = new Set();
+    const fotosTabelaFila = [];
     let fotosTabelaSeq = 0;
+    let fotosTabelaEmAndamento = 0;
 
     function authHeaders(extra) {
         if (typeof global.obterAuthHeaders !== 'function') throw new Error('Autenticação indisponível.');
@@ -18,6 +22,9 @@
 
     function revogarFotosTabela() {
         fotosTabelaSeq += 1;
+        fotosTabelaFila.length = 0;
+        fotosTabelaControllers.forEach(controller => controller.abort());
+        fotosTabelaControllers.clear();
         fotosTabelaAtivas.forEach(foto => storeTools.revogarFotoCarregada(foto));
         fotosTabelaAtivas.clear();
     }
@@ -41,26 +48,48 @@
     async function hidratarFotoTabela(container, requestSeq) {
         const url = String(container && container.dataset && container.dataset.fotoUrl || '').trim();
         if (!url) return;
+        const controller = typeof global.AbortController === 'function' ? new global.AbortController() : null;
+        if (controller) fotosTabelaControllers.add(controller);
         try {
-            const foto = await storeTools.carregarFotoAutenticada(url, authHeaders);
+            const foto = await storeTools.carregarFotoAutenticada(
+                url,
+                authHeaders,
+                controller ? { signal: controller.signal } : undefined,
+            );
             if (requestSeq !== fotosTabelaSeq || !elements.tBody.contains(container)) {
                 storeTools.revogarFotoCarregada(foto);
                 return;
             }
             fotosTabelaAtivas.add(foto);
             exibirMiniaturaFoto(container, foto);
-        } catch (_error) {
+        } catch (error) {
             if (requestSeq !== fotosTabelaSeq || !elements.tBody.contains(container)) return;
+            if (error && error.name === 'AbortError') return;
             container.innerHTML = '<span class="foto-empty">Foto indisponível</span>';
             container.removeAttribute('data-foto-url');
+        } finally {
+            if (controller) fotosTabelaControllers.delete(controller);
+        }
+    }
+
+    function processarFilaFotosTabela() {
+        while (fotosTabelaEmAndamento < MAX_FOTOS_SIMULTANEAS && fotosTabelaFila.length) {
+            const tarefa = fotosTabelaFila.shift();
+            if (!tarefa || tarefa.requestSeq !== fotosTabelaSeq || !elements.tBody.contains(tarefa.container)) continue;
+            fotosTabelaEmAndamento += 1;
+            void hidratarFotoTabela(tarefa.container, tarefa.requestSeq).finally(() => {
+                fotosTabelaEmAndamento = Math.max(0, fotosTabelaEmAndamento - 1);
+                processarFilaFotosTabela();
+            });
         }
     }
 
     function hidratarFotosTabela() {
         const requestSeq = fotosTabelaSeq;
         elements.tBody.querySelectorAll('[data-foto-url]').forEach(container => {
-            void hidratarFotoTabela(container, requestSeq);
+            fotosTabelaFila.push({ container, requestSeq });
         });
+        processarFilaFotosTabela();
     }
 
     function obterLarguraColuna(coluna) {

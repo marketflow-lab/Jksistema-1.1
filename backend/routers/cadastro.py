@@ -28,6 +28,7 @@ def create_cadastro_router() -> APIRouter:
     router.add_api_route("/produto", cadastro.atualizar_produto_cadastro_completo_query, methods=["PUT"], name="atualizar_produto_cadastro_completo_query")
     router.add_api_route("/foto/{client_id}/{filename:path}", cadastro.servir_foto_cadastro, methods=["GET"], name="servir_foto_cadastro")
     router.add_api_route("/foto-arquivo/{filename:path}", cadastro.servir_foto_cadastro_por_arquivo, methods=["GET"], name="servir_foto_cadastro_por_arquivo")
+    router.add_api_route("/lojas/produtos", cadastro.listar_produtos_lojas, methods=["GET"], name="listar_produtos_lojas")
     router.add_api_route("/lojas/{store_id}/produtos", cadastro.listar_produtos_loja, methods=["GET"], name="listar_produtos_loja")
     router.add_api_route("/lojas/{store_id}/produtos", cadastro.criar_produto_loja, methods=["POST"], name="criar_produto_loja")
     router.add_api_route("/lojas/{store_id}/produtos/{sku:path}", cadastro.obter_produto_loja, methods=["GET"], name="obter_produto_loja")

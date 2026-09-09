@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import os
 import re
 import threading
@@ -17,8 +18,19 @@ from backend.schemas import CadastroFornecedorRequest
 from backend.services.runtime_bridge import bind_runtime_globals
 
 
+_runtime_get_tenant_id = None
+
+
 async def get_tenant_id(request: Request, authorization: Optional[str] = Header(default=None)):
-    raise RuntimeError("Cadastro runtime was not configured.")
+    if not callable(_runtime_get_tenant_id):
+        raise HTTPException(
+            status_code=503,
+            detail="Contexto de autenticacao do Cadastro ainda nao inicializado.",
+        )
+    resultado = _runtime_get_tenant_id(request, authorization)
+    if inspect.isawaitable(resultado):
+        return await resultado
+    return resultado
 
 
 def get_tenant_path(client_id: str):
@@ -28,8 +40,12 @@ def get_tenant_path(client_id: str):
 def _configure_runtime_globals(target_globals, runtime_module=None):
     runtime = bind_runtime_globals(target_globals, runtime_module)
     if runtime is not None:
-        if hasattr(runtime, "get_tenant_id"):
-            target_globals["get_tenant_id"] = getattr(runtime, "get_tenant_id")
+        runtime_get_tenant_id = getattr(runtime, "get_tenant_id", None)
+        if (
+            callable(runtime_get_tenant_id)
+            and runtime_get_tenant_id is not target_globals.get("get_tenant_id")
+        ):
+            target_globals["_runtime_get_tenant_id"] = runtime_get_tenant_id
         if hasattr(runtime, "get_tenant_path"):
             target_globals["get_tenant_path"] = getattr(runtime, "get_tenant_path")
     return runtime

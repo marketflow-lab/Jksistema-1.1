@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import inspect
 import json
 import logging
 import os
@@ -19,9 +20,10 @@ import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Literal, Optional
 
 from fastapi import Depends, Header, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 
 from backend.schemas import (
     CadastroProdutoLojaAtualizacaoRequest,
@@ -59,10 +61,19 @@ from backend.services.runtime_bridge import bind_runtime_globals
 
 
 logger = logging.getLogger("jk_sistema")
+_runtime_get_tenant_id = None
 
 
 async def get_tenant_id(request: Request, authorization: Optional[str] = Header(default=None)):
-    raise RuntimeError("Cadastro runtime was not configured.")
+    if not callable(_runtime_get_tenant_id):
+        raise HTTPException(
+            status_code=503,
+            detail="Contexto de autenticacao do Cadastro ainda nao inicializado.",
+        )
+    resultado = _runtime_get_tenant_id(request, authorization)
+    if inspect.isawaitable(resultado):
+        return await resultado
+    return resultado
 
 
 def get_tenant_path(client_id: str):
@@ -75,8 +86,12 @@ def _configure_runtime_globals(target_globals, runtime_module=None):
         runtime_logger = getattr(runtime, "logger", None)
         if runtime_logger is not None:
             target_globals["logger"] = runtime_logger
-        if hasattr(runtime, "get_tenant_id"):
-            target_globals["get_tenant_id"] = getattr(runtime, "get_tenant_id")
+        runtime_get_tenant_id = getattr(runtime, "get_tenant_id", None)
+        if (
+            callable(runtime_get_tenant_id)
+            and runtime_get_tenant_id is not target_globals.get("get_tenant_id")
+        ):
+            target_globals["_runtime_get_tenant_id"] = runtime_get_tenant_id
         if hasattr(runtime, "get_tenant_path"):
             target_globals["get_tenant_path"] = getattr(runtime, "get_tenant_path")
     return runtime
@@ -1615,9 +1630,20 @@ def _listar_produtos_loja_sync(
 async def listar_produtos_loja(
     store_id: str,
     include_deleted: bool = False,
+    view: Literal["full", "summary"] = "full",
     client_id: str = Depends(get_tenant_id),
 ):
-    return _listar_produtos_loja_sync(client_id, store_id, include_deleted=include_deleted)
+    from backend.services.cadastro_lojas_listagem import (
+        listar_produtos_loja_snapshot_sync,
+    )
+
+    return await run_in_threadpool(
+        listar_produtos_loja_snapshot_sync,
+        client_id,
+        store_id,
+        include_deleted=include_deleted,
+        view=view,
+    )
 
 
 def _obter_produto_loja_sync(client_id: str, store_id: str, sku: str) -> dict[str, Any]:
