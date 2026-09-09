@@ -673,8 +673,15 @@
     _msgAtualizarSelecao();
     setTimeout(() => { void _msgBuscarUsuariosOnline().catch(() => {}); }, 10 * 60 * 1000);
     if (_usuarioLocalEhFull()) setTimeout(() => { _perguntasIniciarMonitorGlobal(); }, 2 * 60 * 1000);
-    _codexRemoverPerguntasMlDoHistoricoLocal();
-    _codexRemoverAlertasAutomaticosDoHistoricoLocal();
+    const limparHistoricoLegado = () => {
+      _codexRemoverPerguntasMlDoHistoricoLocal();
+      _codexRemoverAlertasAutomaticosDoHistoricoLocal();
+    };
+    if (typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(limparHistoricoLegado, { timeout: 4000 });
+    } else {
+      setTimeout(limparHistoricoLegado, 0);
+    }
     _questionsRenderLista();
     _codexAtualizarVisibilidade();
     const codexEstadoInicial = _codexLerEstadoPainel();

@@ -6,12 +6,8 @@
   'use strict';
 
   const VERSION = '20260828-cadastro-fotos-lojas-v1';
-  const FULL_AUTO_LOAD_DELAY_MS = 30000;
-  const WORKER_PREFETCH_DELAY_MS = 10000;
-  const FULL_RELOAD_AFTER_NAV_DELAY_MS = 500;
   const WORKER_TIMEOUT_MS = 25000;
-  const USER_CLICK_PREFETCH_WAIT_MS = 1200;
-  const FULL_SESSION_KEY = 'jk_ia_sidebar_full_loaded_session_v1';
+  const USER_CLICK_PREFETCH_WAIT_MS = 300;
   const CHUNKS = [
     "01-bootstrap-storage-render.part.js",
     "02-ui-modelos.part.js",
@@ -33,7 +29,6 @@
   const workerPendencias = new Map();
   let prefetchedPartsPromise = null;
   let fullLoadingPromise = null;
-  let fullLoadingIsAuto = false;
   let abrirDepoisDeCarregar = false;
   const MODULOS_LATERAIS = [
     {
@@ -134,14 +129,6 @@
       if (mod.key === atual || !moduloPermitido(mod)) return null;
       return mod;
     }).filter(Boolean);
-  }
-
-  function jaCarregouSidebarCompletaNaSessao() {
-    try { return sessionStorage.getItem(FULL_SESSION_KEY) === '1'; } catch (_) { return false; }
-  }
-
-  function marcarSidebarCompletaNaSessao() {
-    try { sessionStorage.setItem(FULL_SESSION_KEY, '1'); } catch (_) {}
   }
 
   function ensureWorker() {
@@ -482,13 +469,10 @@
       return;
     }
     if (fullLoadingPromise) {
-      if (!opts.openAfterLoad || !fullLoadingIsAuto) return fullLoadingPromise;
-      fullLoadingPromise = null;
-      fullLoadingIsAuto = false;
+      return fullLoadingPromise;
     }
 
     window.__JK_IA_SIDEBAR_SOURCE_LOADING__ = true;
-    fullLoadingIsAuto = !opts.openAfterLoad;
     marcarBotaoCarregando(true, false);
     fullLoadingPromise = (async () => {
       const partes = await obterPartesParaCarregamento(opts);
@@ -500,15 +484,12 @@
       window.__JK_IA_SIDEBAR_SOURCE_LOADING__ = false;
       window.setTimeout(() => {
         if (document.getElementById('jk-ia-fab')) {
-          marcarSidebarCompletaNaSessao();
-          fullLoadingIsAuto = false;
           removerBotaoLeve();
           if (abrirDepoisDeCarregar) abrirPainelQuandoDisponivel();
           return;
         }
         window.__JK_IA_SIDEBAR_BOOTSTRAPPED__ = false;
         fullLoadingPromise = null;
-        fullLoadingIsAuto = false;
         instalarLeftSidebarLeve();
         marcarBotaoCarregando(false, true);
         console.error('[IA Sidebar] Bundle carregou, mas o painel principal nao foi criado.');
@@ -516,7 +497,6 @@
     })().catch((error) => {
       window.__JK_IA_SIDEBAR_SOURCE_LOADING__ = false;
       fullLoadingPromise = null;
-      fullLoadingIsAuto = false;
       marcarBotaoCarregando(false, true);
       console.error('[IA Sidebar] Nao foi possivel carregar os arquivos isolados.', error);
       throw error;
@@ -547,6 +527,8 @@
     botao.innerHTML = '<img src="/assets/joao-pretinho-icon.png?v=20260710-black-jhon" alt="">';
     botao.title = 'Abrir Black Jhon';
     botao.setAttribute('aria-label', 'Abrir Black Jhon');
+    botao.addEventListener('pointerenter', iniciarPrefetchWorker, { once: true, passive: true });
+    botao.addEventListener('focus', iniciarPrefetchWorker, { once: true });
     botao.addEventListener('click', () => {
       loadFullSidebar({ openAfterLoad: true }).catch(() => {});
     });
@@ -560,18 +542,6 @@
     }
     instalarLeftSidebarLeve();
     instalarBotaoLeve();
-
-    if (jaCarregouSidebarCompletaNaSessao()) {
-      window.setTimeout(() => {
-        loadFullSidebar({ openAfterLoad: false }).catch(() => {});
-      }, FULL_RELOAD_AFTER_NAV_DELAY_MS);
-      return;
-    }
-
-    window.setTimeout(() => { iniciarPrefetchWorker(); }, WORKER_PREFETCH_DELAY_MS);
-    window.setTimeout(() => {
-      loadFullSidebar({ openAfterLoad: false }).catch(() => {});
-    }, FULL_AUTO_LOAD_DELAY_MS);
   }
 
   if (document.readyState === 'loading') {

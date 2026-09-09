@@ -43,6 +43,12 @@ const mercadoLivreSymbol = read(path.join('static', 'assets', 'mercado-livre-sym
 
 assert.match(loader, /20260828-cadastro-fotos-lojas-v1/);
 assert.match(loader, /Abrir Black Jhon/);
+assert.match(loader, /addEventListener\('pointerenter', iniciarPrefetchWorker/);
+assert.match(loader, /addEventListener\('focus', iniciarPrefetchWorker/);
+assert.doesNotMatch(loader, /FULL_AUTO_LOAD_DELAY_MS|FULL_RELOAD_AFTER_NAV_DELAY_MS|FULL_SESSION_KEY/);
+assert.doesNotMatch(loader, /loadFullSidebar\(\{ openAfterLoad: false \}\)/);
+assert.match(render, /mutation\.addedNodes\.forEach/);
+assert.doesNotMatch(render, /new MutationObserver\(\(\) => \{\s*document\.querySelectorAll/);
 assert.match(loader, /params\.get\('embed'\) === 'share'/);
 
 assert.strictEqual((ui.match(/id="jk-ia-fab"/g) || []).length, 1, 'deve existir um unico FAB do Black Jhon');
