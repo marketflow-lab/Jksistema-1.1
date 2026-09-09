@@ -562,16 +562,31 @@ def _normalizar_fields(source: str, fields: Any) -> dict[str, Any]:
     return result
 
 
-def _normalizar_plano_foto_ml(value: Any) -> dict[str, str]:
-    """Validate the private cover plan again before it can reach persistence."""
+def _normalizar_plano_foto_ml(value: Any) -> dict[str, list[dict[str, str]]]:
+    """Validate and deduplicate private cover candidates before persistence."""
 
     if not isinstance(value, dict):
         return {}
-    url = str(value.get("url") or "").strip()
-    item_id = cadastro_ml._normalizar_item_id(value.get("item_id"))
-    if not item_id or not cadastro_ml._photo_url_allowed(url):
-        return {}
-    return {"url": url, "item_id": item_id}
+    raw_candidates = value.get("candidates")
+    if not isinstance(raw_candidates, list):
+        raw_candidates = [value]
+    candidates: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_candidate in raw_candidates:
+        if not isinstance(raw_candidate, dict):
+            continue
+        url = str(raw_candidate.get("url") or "").strip()
+        item_id = cadastro_ml._normalizar_item_id(raw_candidate.get("item_id"))
+        key = (url, item_id)
+        if (
+            not item_id
+            or not cadastro_ml._photo_url_allowed(url)
+            or key in seen
+        ):
+            continue
+        seen.add(key)
+        candidates.append({"url": url, "item_id": item_id})
+    return {"candidates": candidates} if candidates else {}
 
 
 def _comprimir_foto_catalogo_ml(
@@ -792,6 +807,35 @@ def _construir_preview(
                 **_detalhes_ignorado(item),
             )
 
+    coverage_complete = (
+        provider_result.get("coverage_complete") is True
+        and not sku_identity_mismatch
+    )
+    sku_coverage_complete = (
+        provider_result.get(
+            "sku_coverage_complete",
+            provider_result.get("coverage_complete"),
+        )
+        is True
+        and not sku_identity_mismatch
+    )
+    ml_photo_only = fonte == "mercadolivre" and not sku_coverage_complete
+    provider_stats = (
+        provider_result.get("stats")
+        if isinstance(provider_result.get("stats"), dict)
+        else {}
+    )
+    seller_mismatch = bool(
+        int(provider_stats.get("owner_mismatch") or 0)
+        or any(
+            isinstance(item, dict) and item.get("reason") == "seller_mismatch"
+            for item in (provider_skipped or [])
+        )
+    )
+    partial_global_blocked = bool(
+        provider_result.get("cancelled") is True or seller_mismatch
+    )
+
     public_items: list[dict[str, Any]] = []
     public_items_total = 0
 
@@ -812,6 +856,8 @@ def _construir_preview(
         "ignorados": ignored_count,
         "aplicaveis": 0,
         "campos": 0,
+        "fotos_planejadas": 0,
+        "fotos_sem_candidato": 0,
     }
 
     for sku_normalizado in sorted(grupos):
@@ -932,7 +978,11 @@ def _construir_preview(
         fields_apply: dict[str, Any] = {}
         changes: list[dict[str, str]] = []
         row_conflicts = 0
-        if existente is None:
+        if ml_photo_only:
+            if existente is None:
+                ignorar("partial_new_sku_not_applied", sku=sku)
+                warnings.append("partial_new_sku_not_applied")
+        elif existente is None:
             fields_apply.update(fields)
             changes.extend(
                 {
@@ -978,17 +1028,30 @@ def _construir_preview(
                             }
                         )
 
-        photo_plan: dict[str, str] = {}
-        if fonte == "mercadolivre" and not _valor_preenchido(
-            (existente or {}).get("foto")
+        photo_plan: dict[str, Any] = {}
+        existing_store_row = bool(
+            existente
+            and str(existente.get("scope_source") or "") == "store_file"
+        )
+        if (
+            fonte == "mercadolivre"
+            and not _valor_preenchido((existente or {}).get("foto"))
+            and (not ml_photo_only or existing_store_row)
         ):
-            photo_plan = _normalizar_plano_foto_ml(
-                {
-                    "url": fields.get("foto_url_ml"),
-                    "item_id": fields.get("mlb_principal"),
-                }
+            raw_candidates = first.get("photo_candidates")
+            if not isinstance(raw_candidates, list):
+                raw_candidates = [
+                    {
+                        "url": fields.get("foto_url_ml"),
+                        "item_id": fields.get("mlb_principal"),
+                    }
+                ]
+            candidate_photo_plan = _normalizar_plano_foto_ml(
+                {"candidates": raw_candidates}
             )
+            photo_plan = candidate_photo_plan
             if photo_plan:
+                summary["fotos_planejadas"] += 1
                 changes.append(
                     {
                         "field": "foto",
@@ -999,8 +1062,16 @@ def _construir_preview(
                 )
             else:
                 fotos_ml_sem_capa += 1
+                summary["fotos_sem_candidato"] += 1
 
-        if existente is None:
+        if ml_photo_only and not existing_store_row:
+            status = "ignorado"
+            if existente is None:
+                summary["novos"] += 1
+            else:
+                ignorar("partial_non_store_sku_not_applied", sku=sku)
+                warnings.append("partial_non_store_sku_not_applied")
+        elif existente is None:
             status = "novo"
             summary["novos"] += 1
         elif fields_apply or materializar_sombra or photo_plan:
@@ -1016,10 +1087,14 @@ def _construir_preview(
             summary["conflitos"] += 1
 
         actionable = (
-            existente is None
-            or materializar_sombra
-            or bool(fields_apply)
-            or bool(photo_plan)
+            bool(photo_plan)
+            if ml_photo_only
+            else (
+                existente is None
+                or materializar_sombra
+                or bool(fields_apply)
+                or bool(photo_plan)
+            )
         )
         if actionable:
             row_version = int(str((existente or {}).get("row_version") or "0"))
@@ -1072,19 +1147,25 @@ def _construir_preview(
             }
         )
 
-    coverage_complete = (
-        provider_result.get("coverage_complete") is True
-        and not sku_identity_mismatch
+    summary["ignorados"] = ignored_count
+    partial_reasons: list[str] = []
+    if ml_photo_only:
+        partial_reasons.append("photos_only")
+    if not coverage_complete:
+        partial_reasons.append("catalog_coverage_incomplete")
+    if not sku_coverage_complete:
+        partial_reasons.append("sku_coverage_incomplete")
+    if ignored_count:
+        partial_reasons.append("items_ignored")
+    if summary["conflitos"]:
+        partial_reasons.append("conflicts_preserved")
+    can_apply = bool(apply_rows) and (
+        sku_coverage_complete or (ml_photo_only and not partial_global_blocked)
     )
-    sku_coverage_complete = (
-        provider_result.get(
-            "sku_coverage_complete",
-            provider_result.get("coverage_complete"),
-        )
-        is True
-        and not sku_identity_mismatch
+    partial_application = bool(ml_photo_only and can_apply)
+    partial_apply_scope = (
+        "confirmed_existing_photos" if ml_photo_only and can_apply else ""
     )
-    can_apply = sku_coverage_complete and bool(apply_rows)
     preview_warnings = [
         str(value) for value in (provider_result.get("warnings") or []) if str(value).strip()
     ]
@@ -1099,6 +1180,9 @@ def _construir_preview(
         "coverage_complete": coverage_complete,
         "sku_coverage_complete": sku_coverage_complete,
         "can_apply": can_apply,
+        "partial_application": partial_application,
+        "partial_apply_scope": partial_apply_scope,
+        "partial_reasons": partial_reasons if partial_application else [],
         "summary": summary,
         "items": public_items,
         "items_total": public_items_total,
@@ -1107,10 +1191,32 @@ def _construir_preview(
         "ignored_total": ignored_count,
         "ignored_truncated": ignored_count > len(ignorados),
         "warnings": preview_warnings,
-        "provider_stats": provider_result.get("stats")
-        if isinstance(provider_result.get("stats"), dict)
-        else {},
+        "provider_stats": provider_stats,
     }
+
+
+def _preview_parcial_fotos_confirmadas_valida(
+    source: Any,
+    preview: dict[str, Any],
+) -> bool:
+    if (
+        str(source or "").strip().lower() != "mercadolivre"
+        or preview.get("partial_application") is not True
+        or str(preview.get("partial_apply_scope") or "")
+        != "confirmed_existing_photos"
+    ):
+        return False
+    apply_rows = preview.get("apply_rows")
+    if not isinstance(apply_rows, list) or not apply_rows:
+        return False
+    return all(
+        isinstance(row, dict)
+        and str(row.get("expected_scope") or "") == "store_file"
+        and isinstance(row.get("fields"), dict)
+        and not row["fields"]
+        and bool(_normalizar_plano_foto_ml(row.get("photo_plan")))
+        for row in apply_rows
+    )
 
 
 def _erro_publico(exc: BaseException) -> dict[str, str]:
@@ -1175,6 +1281,12 @@ def _salvar_payloads_importacao_catalogo(
         0.01, float(CATALOG_IMPORT_PHOTO_APPLY_TIMEOUT_SECONDS)
     )
     cache: dict[tuple[str, str], dict[str, str] | None] = {}
+    photo_only_control_fields = {
+        "sku",
+        "row_version",
+        "__expected_scope",
+        "__legacy_snapshot_hash",
+    }
 
     for payload in payloads:
         seguro = dict(payload)
@@ -1184,56 +1296,66 @@ def _salvar_payloads_importacao_catalogo(
             continue
 
         plan = _normalizar_plano_foto_ml(raw_plan)
-        if not plan or limite_atingido or time.monotonic() >= deadline:
-            fotos_ignoradas += 1
-            limite_atingido = limite_atingido or time.monotonic() >= deadline
-        else:
-            cache_key = (plan["url"], plan["item_id"])
-            photo = cache.get(cache_key)
-            if cache_key not in cache:
-                try:
-                    downloaded = cadastro_ml._download_photo_data_url(
-                        plan["url"], plan["item_id"], deadline
-                    )
-                    optimized = _comprimir_foto_catalogo_ml(
-                        downloaded,
-                        plan["item_id"],
-                    )
-                    data_url = str(optimized.get("data_url") or "").strip()
-                    filename = str(optimized.get("filename") or "").strip()
-                    if not (
-                        data_url.startswith("data:image/")
-                        and ";base64," in data_url
-                        and filename
+        photo_saved = False
+        if plan and not limite_atingido:
+            for candidate in plan["candidates"]:
+                if time.monotonic() >= deadline:
+                    limite_atingido = True
+                    break
+                cache_key = (candidate["url"], candidate["item_id"])
+                photo = cache.get(cache_key)
+                if cache_key not in cache:
+                    try:
+                        downloaded = cadastro_ml._download_photo_data_url(
+                            candidate["url"], candidate["item_id"], deadline
+                        )
+                        optimized = _comprimir_foto_catalogo_ml(
+                            downloaded,
+                            candidate["item_id"],
+                        )
+                        data_url = str(optimized.get("data_url") or "").strip()
+                        filename = str(optimized.get("filename") or "").strip()
+                        if not (
+                            data_url.startswith("data:image/")
+                            and ";base64," in data_url
+                            and filename
+                        ):
+                            raise ValueError("invalid_photo_payload")
+                        photo = {"data_url": data_url, "filename": filename}
+                    except (
+                        HTTPException,
+                        OSError,
+                        ValueError,
+                        requests.RequestException,
                     ):
-                        raise ValueError("invalid_photo_payload")
-                    photo = {"data_url": data_url, "filename": filename}
-                except (
-                    HTTPException,
-                    OSError,
-                    ValueError,
-                    requests.RequestException,
-                ):
-                    photo = None
-                cache[cache_key] = photo
+                        photo = None
+                    cache[cache_key] = photo
 
-            data_url = str((photo or {}).get("data_url") or "")
-            if photo and (
-                total_data_url_chars + len(data_url)
-                <= CATALOG_IMPORT_PHOTO_MAX_DATA_URL_CHARS
-            ):
+                data_url = str((photo or {}).get("data_url") or "")
+                if not photo:
+                    continue
+                if (
+                    total_data_url_chars + len(data_url)
+                    > CATALOG_IMPORT_PHOTO_MAX_DATA_URL_CHARS
+                ):
+                    limite_atingido = True
+                    break
                 seguro["__foto_data_url"] = data_url
                 seguro["__foto_filename"] = str(photo["filename"])
                 total_data_url_chars += len(data_url)
                 fotos_salvas += 1
-            else:
-                fotos_ignoradas += 1
-                if photo:
-                    limite_atingido = True
+                photo_saved = True
+                break
+        if not photo_saved:
+            fotos_ignoradas += 1
 
         if photo_progress_callback is not None:
             photo_progress_callback(fotos_salvas + fotos_ignoradas, planos_total)
-        seguros.append(seguro)
+        photo_only = not any(
+            key not in photo_only_control_fields for key in seguro
+        )
+        if photo_saved or not photo_only:
+            seguros.append(seguro)
 
     result = salvar_produtos_loja_em_lote(
         client_id,
@@ -1451,6 +1573,9 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
     )
     apply_rows = preview.get("apply_rows")
     has_apply_rows = isinstance(apply_rows, list) and bool(apply_rows)
+    partial_application = _preview_parcial_fotos_confirmadas_valida(
+        job.get("source"), preview
+    )
     payload: dict[str, Any] = {
         "job_id": job["job_id"],
         "source": job["source"],
@@ -1465,8 +1590,20 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
         "can_apply": (
             job.get("can_apply") is True
             and job.get("status") == "ready"
-            and sku_coverage_complete
+            and (
+                sku_coverage_complete
+                or partial_application
+            )
             and has_apply_rows
+        ),
+        "partial_application": partial_application,
+        "partial_apply_scope": (
+            "confirmed_existing_photos" if partial_application else ""
+        ),
+        "partial_reasons": copy.deepcopy(
+            preview.get("partial_reasons")
+            if partial_application and isinstance(preview.get("partial_reasons"), list)
+            else []
         ),
         "summary": copy.deepcopy(preview.get("summary") or {}),
         "warnings": copy.deepcopy(preview.get("warnings") or []),
@@ -1738,10 +1875,13 @@ async def aplicar_importacao_catalogo(
             is True
         )
         apply_rows = raw_preview.get("apply_rows")
+        allow_partial = _preview_parcial_fotos_confirmadas_valida(
+            job.get("source"), raw_preview
+        )
         if (
             job.get("status") != "ready"
             or job.get("can_apply") is not True
-            or not sku_coverage_complete
+            or (not sku_coverage_complete and not allow_partial)
             or not isinstance(apply_rows, list)
             or not apply_rows
         ):
@@ -1750,7 +1890,7 @@ async def aplicar_importacao_catalogo(
                 detail={
                     "code": "catalog_preview_not_applicable",
                     "message": (
-                        "A previa ainda nao esta pronta ou nao possui cobertura completa de SKUs."
+                        "A previa ainda nao esta pronta ou nao possui SKUs confirmados para aplicar."
                     ),
                 },
             )
@@ -1860,6 +2000,15 @@ async def aplicar_importacao_catalogo(
             "atualizados": int(result.get("atualizados") or 0),
             "total": int(result.get("total") or 0),
         }
+        if preview.get("partial_application") is True:
+            apply_result.update(
+                partial_application=True,
+                partial_reasons=[
+                    str(value)
+                    for value in (preview.get("partial_reasons") or [])
+                    if str(value).strip()
+                ],
+            )
         if source == "mercadolivre":
             apply_result.update(
                 fotos_planejadas=int(result.get("fotos_planejadas") or 0),

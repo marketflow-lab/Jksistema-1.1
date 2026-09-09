@@ -1797,6 +1797,30 @@ def _build_catalog_items(
             )
         )
         primary = entries[0]
+        photo_entry = next(
+            (
+                entry
+                for entry in entries
+                if cadastro_ml._photo_url_allowed(
+                    str(entry.get("photo_url") or "").strip()
+                )
+            ),
+            None,
+        )
+        photo_candidates: list[dict[str, str]] = []
+        photo_candidates_seen: set[tuple[str, str]] = set()
+        for entry in entries:
+            photo_url = str(entry.get("photo_url") or "").strip()
+            item_id = _item_id(entry.get("mlb"))
+            candidate_key = (photo_url, item_id)
+            if (
+                not item_id
+                or not cadastro_ml._photo_url_allowed(photo_url)
+                or candidate_key in photo_candidates_seen
+            ):
+                continue
+            photo_candidates_seen.add(candidate_key)
+            photo_candidates.append({"url": photo_url, "item_id": item_id})
         listing_ids = _distinct(entry["mlb"] for entry in entries)
         titles_by_id: dict[str, str] = {}
         for entry in entries:
@@ -1987,8 +2011,10 @@ def _build_catalog_items(
             "inventory_id_ml": primary["inventory_id"],
             "inventory_ids_ml": "|".join(str(value) for value in inventory_ids),
             "link_ml": primary["permalink"],
-            "foto_url_ml": primary["photo_url"],
-            "imagens_ml_json": _canonical_json_if_present(primary["pictures"]),
+            "foto_url_ml": (photo_entry or {}).get("photo_url"),
+            "imagens_ml_json": _canonical_json_if_present(
+                (photo_entry or {}).get("pictures")
+            ),
             "atributos_ml_json": _canonical_json(primary["attributes"]),
             "anuncios_ml_json": _canonical_json(listing_summary),
             "consultado_em_utc": consulted_at,
@@ -2011,6 +2037,7 @@ def _build_catalog_items(
             "sku": primary["sku"],
             "sku_normalizado": primary["sku_normalizado"],
             "fields": fields,
+            "photo_candidates": photo_candidates,
             "listings": listing_summary,
             "conflicts": conflicts,
             "warnings": [],

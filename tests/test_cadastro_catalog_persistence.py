@@ -113,6 +113,70 @@ def test_catalogo_ml_salva_capa_comprimida_e_descricao_na_pasta_da_loja(
         assert max(saved_image.size) <= cadastro_importacao_catalogos.CATALOG_IMPORT_PHOTO_MAX_EDGE_PX
 
 
+def test_catalogo_ml_parcial_tenta_outro_anuncio_e_salva_no_sku_existente(
+    cadastro_runtime,
+    monkeypatch,
+):
+    info_root, _stores = cadastro_runtime
+    cadastro_lojas_produtos.salvar_produtos_loja_em_lote(
+        "cliente-a",
+        "store-a",
+        [{"sku": "SKU-DUP", "nome": "Produto preservado"}],
+    )
+    before = cadastro_lojas_produtos._obter_produto_loja_sync(
+        "cliente-a", "store-a", "SKU-DUP"
+    )
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (80, 60), color=(20, 80, 140)).save(image_buffer, format="PNG")
+    data_url = "data:image/png;base64," + base64.b64encode(
+        image_buffer.getvalue()
+    ).decode("ascii")
+    attempted = []
+
+    def download(url, item_id, _deadline):
+        attempted.append((url, item_id))
+        if item_id == "MLB111":
+            raise ValueError("primeira imagem indisponivel")
+        return {"data_url": data_url, "filename": f"{item_id}.png"}
+
+    monkeypatch.setattr(
+        cadastro_importacao_catalogos.cadastro_ml,
+        "_download_photo_data_url",
+        download,
+    )
+    result = cadastro_importacao_catalogos._salvar_payloads_importacao_catalogo(
+        "cliente-a",
+        "store-a",
+        "mercadolivre",
+        [{
+            "sku": "SKU-DUP",
+            "row_version": before["row_version"],
+            "__expected_scope": "store_file",
+            "__catalog_photo_plan": {
+                "candidates": [
+                    {"url": "https://http2.mlstatic.com/capa-1.png", "item_id": "MLB111"},
+                    {"url": "https://http2.mlstatic.com/capa-2.png", "item_id": "MLB222"},
+                ]
+            },
+        }],
+        campos_derivados_permitidos=set(),
+        precommit_validator=lambda _store: None,
+    )
+
+    after = cadastro_lojas_produtos._obter_produto_loja_sync(
+        "cliente-a", "store-a", "SKU-DUP"
+    )
+    assert attempted == [
+        ("https://http2.mlstatic.com/capa-1.png", "MLB111"),
+        ("https://http2.mlstatic.com/capa-2.png", "MLB222"),
+    ]
+    assert result["fotos_salvas"] == 1
+    assert result["fotos_ignoradas"] == 0
+    assert after["nome"] == "Produto preservado"
+    assert int(after["row_version"]) == int(before["row_version"]) + 1
+    assert (Path(info_root) / "cliente-a" / after["foto"]).is_file()
+
+
 def test_persisted_bling_tax_fields_are_read_as_safe_generic_aliases(cadastro_runtime):
     cadastro_lojas_produtos.salvar_produtos_loja_em_lote(
         "cliente-a",

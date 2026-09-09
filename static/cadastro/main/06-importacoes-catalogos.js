@@ -29,7 +29,7 @@
         if (!response.ok) throw new Error(erroPayload(payload, `HTTP ${response.status}`));
         return payload && typeof payload === 'object' ? payload : {};
     }
-    function setStatus(message, type) { elements.importacaoCatalogoStatus.textContent = String(message || ''); elements.importacaoCatalogoStatus.className = `status-bar ${type || ''}`.trim(); }
+    function setStatus(message, type) { elements.importacaoCatalogoStatus.textContent = String(message || ''); elements.importacaoCatalogoStatus.className = `status-bar ${type || ''}`.trim(); elements.importacaoCatalogoStatus.title = ''; }
     function dialogImportacao() { return elements.modalImportacaoCatalogo.querySelector('.catalog-import-dialog'); }
     function sincronizarEstadoFluxo(status) {
         const applying = Boolean(flow.applying || status === 'applying'); const cancelling = Boolean(flow.cancelling);
@@ -47,9 +47,12 @@
         const conflicts = Array.isArray(payload && payload.conflicts) ? payload.conflicts.length : 0;
         const ignored = Array.isArray(payload && (payload.ignored || payload.ignorados)) ? (payload.ignored || payload.ignorados).length : 0;
         return {
+            encontrados: numeroResumo(summary.encontrados ?? summary.found),
             novos: numeroResumo(summary.novos ?? summary.new), preencher: numeroResumo(summary.preencher ?? summary.campos_preencher),
             inalterados: numeroResumo(summary.inalterados ?? summary.unchanged), conflitos: numeroResumo(summary.conflitos ?? summary.conflicts ?? conflicts),
             ignorados: Math.max(numeroResumo(payload && payload.ignored_total), numeroResumo(summary.ignorados ?? summary.ignored), ignored),
+            aplicaveis: summary.aplicaveis == null && summary.applicable == null ? numeroResumo(summary.novos ?? summary.new) + numeroResumo(summary.preencher ?? summary.campos_preencher) : numeroResumo(summary.aplicaveis ?? summary.applicable),
+            fotosPlanejadas: numeroResumo(summary.fotos_planejadas ?? summary.planned_photos),
         };
     }
     function progressoPayload(payload, status) {
@@ -125,14 +128,18 @@
         const items = payload && payload.items; return Array.isArray(items)
             ? items.filter(item => item && (item.status === 'conflito' || numeroResumo(item.conflicts) > 0)) : [];
     }
+    function detalhesTecnicosConflito(item) {
+        if (typeof item === 'string') return texto(item, 1000); if (!item || typeof item !== 'object') return '';
+        return warningsUnicos([...(Array.isArray(item.conflicts) ? item.conflicts : []), item.message || item.mensagem || item.reason || item.motivo || item.campo || item.status]).join(', ');
+    }
     function rotuloConflito(item) {
-        if (typeof item === 'string') return item;
-        if (!item || typeof item !== 'object') return 'Conflito sem detalhes.';
-        const sku = texto(item.sku, 100);
-        const detail = Array.isArray(item.conflicts)
-            ? item.conflicts.map(value => texto(value, 120)).filter(Boolean).join(', ')
-            : texto(item.message || item.mensagem || item.reason || item.campo || item.status, 240);
-        return `${sku ? `SKU ${sku}: ` : ''}${detail || 'valores divergentes preservados.'}`;
+        if (!item || typeof item !== 'object') return 'Há informações diferentes que precisam de revisão.';
+        const sku = texto(item.sku, 100); const technical = detalhesTecnicosConflito(item).toLowerCase();
+        let detail = 'há informações diferentes entre os anúncios ou o cadastro; somente os dados seguros serão preenchidos.'; if (/sku_duplicado|duplicate_listing|mais de um anuncio|mais de um anúncio/.test(technical)) detail = 'há mais de um anúncio para este SKU. A capa disponível poderá ser salva e os outros dados diferentes serão preservados.';
+        else if (/valor_existente_preservado|preserv/.test(technical)) detail = 'alguns dados do cadastro são diferentes dos anúncios e serão preservados.';
+        else if (/sku_excluido|excluíd|excluid/.test(technical)) detail = 'este SKU está excluído no cadastro e precisa de revisão.';
+        else if (/identidade_ambigua|ambígu|ambigu/.test(technical)) detail = 'não foi possível confirmar com segurança qual cadastro corresponde ao anúncio.';
+        return `${sku ? `SKU ${sku}: ` : ''}${detail}`;
     }
     function renderConflitos(payload) {
         const conflicts = conflitosPayload(payload);
@@ -140,6 +147,7 @@
         conflicts.slice(0, MAX_CONFLICTS).forEach(item => {
             const entry = global.document.createElement('li');
             entry.textContent = rotuloConflito(item);
+            const technical = detalhesTecnicosConflito(item); if (technical) entry.title = `Detalhes técnicos: ${technical}`;
             fragment.appendChild(entry);
         });
         if (conflicts.length > MAX_CONFLICTS) {
@@ -147,30 +155,27 @@
             entry.textContent = `Outros ${conflicts.length - MAX_CONFLICTS} conflito(s) constam no resumo.`;
             fragment.appendChild(entry);
         }
-        elements.importacaoCatalogoConflitosLista.replaceChildren(fragment);
+        elements.importacaoCatalogoConflitosLista.replaceChildren(fragment); elements.importacaoCatalogoConflitosTitulo.textContent = `${conflicts.length} ${conflicts.length === 1 ? 'produto tem' : 'produtos têm'} diferenças — ver quais`;
         elements.importacaoCatalogoConflitos.hidden = conflicts.length === 0;
     }
     function coberturaGeralPayload(payload) { return payload && (payload.coverage_complete ?? payload.cobertura_completa); }
-    function coberturaSkuPayload(payload) {
-        if (!payload || typeof payload !== 'object') return undefined;
-        if (Object.prototype.hasOwnProperty.call(payload, 'sku_coverage_complete')) return payload.sku_coverage_complete;
-        if (Object.prototype.hasOwnProperty.call(payload, 'cobertura_sku_completa')) return payload.cobertura_sku_completa;
-        return coberturaGeralPayload(payload);
-    }
+    function plural(value, singular, pluralValue) { return `${value} ${value === 1 ? singular : pluralValue}`; }
     function detalhesRevisao(payload, summary) {
-        const warnings = totalWarnings(payload);
-        return `Avisos: ${warnings}. Ignorados: ${summary.ignorados}. Itens sem SKU são ignorados e não serão cadastrados.`;
+        const source = String(payload && payload.source || flow.source || '').toLowerCase();
+        if (payload && payload.partial_application === true && source === 'mercadolivre') return `Ao aprovar, o sistema tentará salvar uma foto em ${plural(summary.fotosPlanejadas, 'cadastro identificado', 'cadastros identificados')}. ${plural(summary.conflitos, 'produto tem outros dados diferentes, que serão mantidos', 'produtos têm outros dados diferentes, que serão mantidos')}. ${plural(summary.ignorados, 'anúncio ou variação ficou de fora', 'anúncios ou variações ficaram de fora')}.`;
+        const parts = [`${plural(summary.aplicaveis, 'cadastro será atualizado', 'cadastros serão atualizados')}`, `${plural(summary.conflitos, 'produto tem diferenças que serão mantidas', 'produtos têm diferenças que serão mantidas')}`, `${plural(summary.ignorados, 'anúncio ou variação foi ignorado', 'anúncios ou variações foram ignorados')}`];
+        if (source === 'mercadolivre') parts.push('as fotos disponíveis serão salvas ao aprovar');
+        return `${parts.join('; ')}.`;
     }
-    function podeAplicar(payload, status) { return status === 'ready' && payload && payload.can_apply === true && coberturaSkuPayload(payload) === true; }
+    function podeAplicar(payload, status) { return status === 'ready' && payload && payload.can_apply === true; }
     function renderPayload(payload) {
         const status = statusPayload(payload);
         const summary = resumoPayload(payload);
         const progress = progressoPayload(payload, status);
         const coverage = coberturaGeralPayload(payload);
-        const skuCoverage = coberturaSkuPayload(payload);
         const reviewDetails = detalhesRevisao(payload, summary);
         const busy = sincronizarEstadoFluxo(status);
-        elements.importacaoCatalogoNovos.textContent = String(summary.novos); elements.importacaoCatalogoPreencher.textContent = String(summary.preencher); elements.importacaoCatalogoInalterados.textContent = String(summary.inalterados);
+        elements.importacaoCatalogoNovos.textContent = String(summary.encontrados || summary.novos + summary.preencher + summary.inalterados); elements.importacaoCatalogoPreencher.textContent = String(summary.aplicaveis); elements.importacaoCatalogoInalterados.textContent = String(summary.inalterados);
         elements.importacaoCatalogoConflitosTotal.textContent = String(summary.conflitos); elements.importacaoCatalogoIgnorados.textContent = String(summary.ignorados);
         if (progress === null) {
             const terminalLabel = status === 'cancelled' ? 'Cancelada' : TERMINAL_ERRORS.has(status) ? 'Interrompida' : '';
@@ -184,26 +189,20 @@
         const fotosSalvas = numeroResumo(applyResult.fotos_salvas);
         const fotosIgnoradas = numeroResumo(applyResult.fotos_ignoradas);
         if (status === 'applied' && payload.refresh_failed) setStatus('Importação aplicada com sucesso, mas a lista não pôde ser atualizada. Use Atualizar.', 'warning');
-        else if (status === 'applied' && fotosIgnoradas > 0) setStatus(`Importação aplicada. ${fotosSalvas} capa(s) foram salvas e ${fotosIgnoradas} não puderam ser baixadas; os demais dados foram mantidos.`, 'warning');
-        else if (status === 'applied' && fotosSalvas > 0) setStatus(`Importação aplicada com sucesso. ${fotosSalvas} capa(s) do Mercado Livre foram salvas no cadastro.`, 'success');
+        else if (status === 'applied' && fotosIgnoradas > 0) setStatus(`Aplicação concluída: ${plural(fotosSalvas, 'foto foi salva', 'fotos foram salvas')}. ${plural(fotosIgnoradas, 'cadastro ficou sem foto porque a imagem não pôde ser baixada', 'cadastros ficaram sem foto porque as imagens não puderam ser baixadas')}.`, 'warning');
+        else if (status === 'applied' && fotosSalvas > 0) setStatus(`Aplicação concluída: ${plural(fotosSalvas, 'foto do Mercado Livre foi salva no cadastro', 'fotos do Mercado Livre foram salvas no cadastro')}.`, 'success');
         else if (status === 'applied') setStatus('Importação aplicada com sucesso.', 'success');
         else if (status === 'cancelled') setStatus('Consulta cancelada. Nenhuma nova alteração será aplicada por este trabalho.', 'success');
         else if (TERMINAL_ERRORS.has(status)) setStatus(erroPayload(payload, 'A consulta não pôde ser concluída.'), 'error');
-        else if (status === 'ready' && skuCoverage !== true) setStatus(`Prévia concluída sem cobertura completa de SKU. Nenhuma alteração pode ser aplicada. ${reviewDetails}`, 'error');
-        else if (status === 'ready' && coverage !== true) {
-            const message = podeAplicar(payload, status) ? 'Prévia pronta para aplicar, mas há dados opcionais incompletos. Revise as diferenças.'
-                : 'Prévia concluída com dados opcionais incompletos, sem alterações automáticas aplicáveis.';
-            setStatus(`${message} ${reviewDetails}`, 'warning');
-        }
-        else if (status === 'ready') setStatus(`Prévia pronta. Revise as diferenças antes de aplicar. ${reviewDetails}`, 'success');
+        else if (status === 'ready' && podeAplicar(payload, status)) { const partial = payload.partial_application === true || coverage !== true; setStatus(`${partial ? 'Prévia parcial pronta para aplicar.' : 'Prévia pronta para aplicar.'} ${reviewDetails}`, partial || summary.conflitos > 0 || summary.ignorados > 0 ? 'warning' : 'success'); }
         else if (status === 'applying') setStatus('A aplicação desta importação está em andamento...', 'loading');
         else setStatus(mensagemProgresso(payload) || erroPayload(payload, 'Consultando o catálogo externo...'), 'loading');
-        if (status === 'ready' && skuCoverage === true && coverage === true && !podeAplicar(payload, status)) {
+        if (status === 'ready' && !podeAplicar(payload, status)) {
             const warnings = totalWarnings(payload);
             const needsReview = summary.conflitos > 0 || summary.ignorados > 0 || warnings > 0;
             setStatus(needsReview
-                ? `Prévia concluída para revisão, sem alterações automáticas aplicáveis. ${reviewDetails}`
-                : `Prévia concluída. O cadastro já está atualizado com os dados disponíveis desta fonte. ${reviewDetails}`, needsReview ? 'warning' : 'success');
+                ? `Prévia concluída para revisão. Nenhum produto pode ser preenchido automaticamente. ${reviewDetails}`
+                : `Prévia concluída. O cadastro já está atualizado com os dados disponíveis desta fonte.`, needsReview ? 'warning' : 'success');
         }
     }
     function isCurrent(seq, storeId) { return flow.opened && seq === flow.requestSeq && storeId === flow.storeId && storeId === state.storeIdSelecionado; }
@@ -232,6 +231,7 @@
         elements.importacaoCatalogoConflitos.hidden = true;
         elements.importacaoCatalogoConflitosLista.replaceChildren();
         elements.tBodyImportacaoCatalogo.replaceChildren();
+        elements.modalImportacaoCatalogo.querySelectorAll('details').forEach(details => { details.open = false; });
         [elements.importacaoCatalogoNovos, elements.importacaoCatalogoPreencher,
             elements.importacaoCatalogoInalterados, elements.importacaoCatalogoConflitosTotal,
             elements.importacaoCatalogoIgnorados].forEach(item => { item.textContent = '0'; });

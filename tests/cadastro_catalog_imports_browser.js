@@ -110,7 +110,9 @@ function contentType(filePath) {
           const payload = {
             job_id: previewMode === 'incomplete' ? 'job-incomplete' : `job-${previewMode}`,
             source, store_id: storeId, status: 'ready', can_apply: true,
-            summary: { novos: 1, preencher: 2, inalterados: 3, conflitos: 4, ignorados: 5 },
+            partial_application: true,
+            partial_reasons: ['catalog_listing_details_incomplete'],
+            summary: { encontrados: 6, novos: 1, preencher: 2, aplicaveis: 3, fotos_planejadas: 3, inalterados: 3, conflitos: 2, ignorados: 5 },
           };
           if (previewMode === 'incomplete') payload.coverage_complete = false;
           if (previewMode === 'incomplete-null') payload.coverage_complete = null;
@@ -122,7 +124,8 @@ function contentType(filePath) {
           await json(route, {
             job_id: 'job-sku-incomplete', source, store_id: storeId, status: 'ready',
             sku_coverage_complete: false, coverage_complete: true, can_apply: true,
-            summary: { novos: 2, preencher: 0, inalterados: 0, conflitos: 0, ignorados: 3 },
+            partial_application: true, partial_reasons: ['sku_identity_incomplete'],
+            summary: { encontrados: 5, novos: 2, preencher: 0, aplicaveis: 2, fotos_planejadas: 2, inalterados: 0, conflitos: 0, ignorados: 3 },
             warnings: ['sku_identity_incomplete'],
           });
           return;
@@ -131,7 +134,8 @@ function contentType(filePath) {
           await json(route, {
             job_id: 'job-optional-incomplete', source, store_id: storeId, status: 'ready',
             sku_coverage_complete: true, coverage_complete: false, can_apply: true,
-            summary: { novos: 2, preencher: 1, inalterados: 0, conflitos: 0, ignorados: 4 },
+            partial_application: true, partial_reasons: ['stock_balance_incomplete', 'category_detail_missing'],
+            summary: { encontrados: 7, novos: 2, preencher: 1, aplicaveis: 3, inalterados: 0, conflitos: 0, ignorados: 4 },
             ignored: [{ reason: 'missing_sku', external_ids: { id_bling: 'sem-sku' } }],
             ignored_total: 7,
             warnings: ['stock_balance_incomplete', 'category_detail_missing'],
@@ -211,7 +215,7 @@ function contentType(filePath) {
           job_id: 'job-ready', source: 'bling', store_id: 'store-a', store_name: 'Loja A', status: 'ready',
           coverage_complete: true, can_apply: true,
           progress: { stage: 'ready', current: 1, total: 1, percent: 100 },
-          summary: { novos: 1, preencher: 2, inalterados: 3, conflitos: 1, ignorados: 5 },
+          summary: { encontrados: 7, novos: 1, preencher: 2, aplicaveis: 3, inalterados: 3, conflitos: 1, ignorados: 5 },
           items: [
             {
               sku: '<img src=x onerror="window.catalogInjected=true">', status: 'novo', conflicts: 0,
@@ -307,9 +311,16 @@ function contentType(filePath) {
       && !window.JKCadastro.runtime.state.carregandoProdutos);
     previewMode = 'incomplete';
     await page.locator('#btnImportarMercadoLivre').click();
-    await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('sem cobertura completa'));
-    assert.strictEqual(await page.locator('#btnAplicarImportacaoCatalogo').isDisabled(), true, 'cobertura incompleta deve bloquear aplicação mesmo com can_apply=true');
-    assert.strictEqual(await page.locator('#importacaoCatalogoNovos').textContent(), '1');
+    await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('Prévia parcial pronta para aplicar'));
+    assert.strictEqual(await page.locator('#btnAplicarImportacaoCatalogo').isEnabled(), true, 'prévia parcial aplicável deve habilitar a aprovação');
+    assert.strictEqual(await page.locator('#importacaoCatalogoNovos').textContent(), '6');
+    assert.strictEqual(await page.locator('#importacaoCatalogoPreencher').textContent(), '3');
+    const partialStatus = await page.locator('#importacaoCatalogoStatus').innerText();
+    assert.match(partialStatus, /tentará salvar uma foto em 3 cadastros identificados/);
+    assert.match(partialStatus, /2 produtos têm outros dados diferentes, que serão mantidos/);
+    assert.match(partialStatus, /5 anúncios ou variações ficaram de fora/);
+    assert.doesNotMatch(partialStatus, /catalog_listing_details_incomplete|Itens sem SKU são ignorados/);
+    assert.strictEqual(await page.locator('#importacaoCatalogoStatus').getAttribute('title'), '');
     await page.locator('#btnCancelarImportacaoCatalogo').click();
     await page.waitForFunction(() => window.JKCadastro.runtime.state.importacaoCatalogoCancelando === true);
     assert.strictEqual(await page.locator('#cadastroLojaBotoes .loja-btn').first().isDisabled(), true, 'troca de loja deve ser bloqueada durante cancelamento');
@@ -342,42 +353,46 @@ function contentType(filePath) {
     for (const mode of ['incomplete-missing', 'incomplete-null', 'incomplete-string']) {
       previewMode = mode;
       await page.locator('#btnImportarMercadoLivre').click();
-      await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('sem cobertura completa'));
-      assert.strictEqual(await page.locator('#btnAplicarImportacaoCatalogo').isDisabled(), true, `${mode} deve falhar fechado`);
+      await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('Prévia parcial pronta para aplicar'));
+      assert.strictEqual(await page.locator('#btnAplicarImportacaoCatalogo').isEnabled(), true, `${mode} deve respeitar can_apply=true`);
       await page.locator('#btnFecharImportacaoCatalogo').click();
     }
 
     previewMode = 'sku-incomplete';
     await page.locator('#btnImportarMercadoLivre').click();
-    await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('sem cobertura completa de SKU'));
-    assert.strictEqual(await page.locator('#btnAplicarImportacaoCatalogo').isDisabled(), true, 'cobertura de SKU falsa deve bloquear mesmo com can_apply=true');
-    assert.match(await page.locator('#importacaoCatalogoStatus').innerText(), /Avisos: 1/);
-    assert.match(await page.locator('#importacaoCatalogoStatus').innerText(), /Ignorados: 3/);
-    assert.match(await page.locator('#importacaoCatalogoStatus').innerText(), /Itens sem SKU são ignorados/);
+    await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('Prévia parcial pronta para aplicar'));
+    assert.strictEqual(await page.locator('#btnAplicarImportacaoCatalogo').isEnabled(), true, 'can_apply=true deve decidir a aplicação mesmo com cobertura parcial de SKU');
+    assert.match(await page.locator('#importacaoCatalogoStatus').innerText(), /3 anúncios ou variações ficaram de fora/);
+    assert.doesNotMatch(await page.locator('#importacaoCatalogoStatus').innerText(), /Itens sem SKU são ignorados|sku_identity_incomplete/);
     await page.locator('#btnFecharImportacaoCatalogo').click();
 
     previewMode = 'optional-incomplete';
     await page.locator('#btnImportarBling').click();
-    await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('dados opcionais incompletos'));
-    assert.strictEqual(await page.locator('#btnAplicarImportacaoCatalogo').isEnabled(), true, 'dados opcionais incompletos não devem bloquear quando a cobertura de SKU e can_apply permitem');
+    await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('Prévia parcial pronta para aplicar'));
+    assert.strictEqual(await page.locator('#btnAplicarImportacaoCatalogo').isEnabled(), true, 'prévia parcial não deve bloquear quando can_apply permite');
     assert.match(await page.locator('#importacaoCatalogoStatus').getAttribute('class'), /warning/);
-    assert.match(await page.locator('#importacaoCatalogoStatus').innerText(), /Avisos: 2/);
-    assert.match(await page.locator('#importacaoCatalogoStatus').innerText(), /Ignorados: 7/);
-    assert.match(await page.locator('#importacaoCatalogoStatus').innerText(), /Itens sem SKU são ignorados/);
+    assert.match(await page.locator('#importacaoCatalogoStatus').innerText(), /7 anúncios ou variações foram ignorados/);
+    assert.doesNotMatch(await page.locator('#importacaoCatalogoStatus').innerText(), /Avisos:|Itens sem SKU são ignorados|stock_balance_incomplete/);
     assert.strictEqual(await page.locator('#importacaoCatalogoIgnorados').textContent(), '7');
-    assert.match(await page.locator('#tBodyImportacaoCatalogo').innerText(), /missing_sku/);
+    assert.match(await page.locator('#tBodyImportacaoCatalogo').textContent(), /missing_sku/);
     await page.locator('#btnFecharImportacaoCatalogo').click();
 
     previewMode = 'item-warnings';
     await page.locator('#btnImportarBling').click();
-    await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('Avisos: 2'));
+    await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('para revisão'));
     assert.match(await page.locator('#importacaoCatalogoStatus').innerText(), /para revisão/);
     assert.strictEqual(await page.locator('#btnAplicarImportacaoCatalogo').isDisabled(), true);
-    const warningRows = await page.locator('#tBodyImportacaoCatalogo').innerText();
+    const warningRows = await page.locator('#tBodyImportacaoCatalogo').textContent();
     assert.match(warningRows, /duplicata consolidada com dados comuns/);
     assert.match(warningRows, /sku_duplicado_bling_consolidado:2/);
     assert.strictEqual((warningRows.match(/sku_duplicado_bling_consolidado:2/g) || []).length, 1, 'warning repetido no mesmo item deve aparecer uma vez');
-    assert.match(await page.locator('#importacaoCatalogoConflitosLista').innerText(), /sku_duplicado_bling:consolidado/);
+    const conflictList = page.locator('#importacaoCatalogoConflitosLista');
+    assert.match(await conflictList.textContent(), /SKU DUP: há mais de um anúncio para este SKU/);
+    assert.doesNotMatch(await conflictList.textContent(), /sku_duplicado_bling:consolidado/);
+    assert.match(await conflictList.locator('li').getAttribute('title'), /sku_duplicado_bling:consolidado/);
+    assert.strictEqual(await page.locator('#importacaoCatalogoConflitos').getAttribute('open'), null, 'lista extensa de diferenças deve iniciar recolhida');
+    assert.match(await page.locator('#importacaoCatalogoConflitosTitulo').innerText(), /1 produto tem diferenças/);
+    assert.deepStrictEqual(await page.locator('#modalImportacaoCatalogo details').evaluateAll(nodes => nodes.map(node => node.open)), [false, false], 'diferenças e detalhes técnicos devem iniciar recolhidos');
     await page.locator('#btnFecharImportacaoCatalogo').click();
 
     for (const mode of ['review-conflicts', 'review-ignored', 'review-warnings']) {
@@ -425,11 +440,11 @@ function contentType(filePath) {
     await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('Prévia pronta'));
     assert(pollRequests >= 1, 'trabalho em andamento deve ser acompanhado por GET');
     assert.strictEqual(await page.locator('#btnAplicarImportacaoCatalogo').isEnabled(), true);
-    assert.match(await page.locator('#tBodyImportacaoCatalogo').innerText(), /MLB-AUDIT/);
-    assert.match(await page.locator('#tBodyImportacaoCatalogo').innerText(), /VAR-77/);
-    assert.match(await page.locator('#tBodyImportacaoCatalogo').innerText(), /Exibindo 1 de 501 itens ignorados/);
+    assert.match(await page.locator('#tBodyImportacaoCatalogo').textContent(), /MLB-AUDIT/);
+    assert.match(await page.locator('#tBodyImportacaoCatalogo').textContent(), /VAR-77/);
+    assert.match(await page.locator('#tBodyImportacaoCatalogo').textContent(), /Exibindo 1 de 501 itens ignorados/);
     assert.strictEqual(await page.locator('#importacaoCatalogoIgnorados').textContent(), '501');
-    assert.match(await page.locator('#tBodyImportacaoCatalogo').innerText(), /window\.catalogInjected=true/);
+    assert.match(await page.locator('#tBodyImportacaoCatalogo').textContent(), /window\.catalogInjected=true/);
     assert.strictEqual(await page.locator('#tBodyImportacaoCatalogo img').count(), 0, 'dados externos devem ser renderizados como texto');
     assert.strictEqual(await page.evaluate(() => window.catalogInjected), undefined);
 
@@ -457,9 +472,9 @@ function contentType(filePath) {
       assert.strictEqual(await page.evaluate(() => document.activeElement.id), 'importacaoCatalogoDialog', 'foco não pode escapar durante Apply');
     }
     assert.strictEqual(await page.evaluate(() => window.JKCadastro.runtime.state.storeIdSelecionado), 'store-a');
-    await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('aplicada com sucesso'));
+    await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('Aplicação concluída'));
     assert.deepStrictEqual(applyRequests, [{}], 'Aplicar deve emitir um único POST com JSON vazio');
-    assert.match(await page.locator('#importacaoCatalogoStatus').innerText(), /2 capa\(s\).*salvas no cadastro/);
+    assert.match(await page.locator('#importacaoCatalogoStatus').innerText(), /2 fotos do Mercado Livre foram salvas no cadastro/);
     assert.strictEqual(await page.locator('#cadastroLojaBotoes .loja-btn').first().isEnabled(), true, 'troca de loja deve ser liberada após Apply');
 
     await page.locator('#btnFecharImportacaoCatalogo').click();

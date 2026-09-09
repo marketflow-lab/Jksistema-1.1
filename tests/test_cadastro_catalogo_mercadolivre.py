@@ -278,6 +278,48 @@ def test_collects_every_scroll_page_and_groups_duplicate_sku(monkeypatch: pytest
     assert progress[-1]["stage"] == "complete"
 
 
+def test_duplicate_sku_uses_trusted_photo_from_another_listing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    details = {
+        "MLB100": _base_item("MLB100", status="active"),
+        "MLB200": _base_item("MLB200", status="paused"),
+    }
+    details["MLB100"]["pictures"] = []
+    expected_photo = details["MLB200"]["pictures"][0]["secure_url"]
+
+    def handler(_client_id, _store_name, cfg, _method, url, *, params=None, timeout=None):
+        if url.endswith("/users/me"):
+            return _response({"id": 111}, cfg)
+        if url.endswith("/users/111/items/search"):
+            return _response(
+                {"results": ["MLB100", "MLB200"], "paging": {"total": 2}}, cfg
+            )
+        if url.endswith("/items/bulk"):
+            return _response(
+                [
+                    {"id": item_id, "status_code": 200, "body": details[item_id]}
+                    for item_id in details
+                ],
+                cfg,
+            )
+        if url.endswith("/description"):
+            return _response({"plain_text": "Descricao"}, cfg)
+        raise AssertionError(url)
+
+    _install_transport(monkeypatch, handler)
+
+    result = service.coletar_catalogo_mercadolivre("tenant-a", "store-a")
+
+    assert len(result["items"]) == 1
+    assert result["items"][0]["fields"]["mlb_principal"] == "MLB100"
+    assert result["items"][0]["fields"]["foto_url_ml"] == expected_photo
+    assert "MLB200" in result["items"][0]["fields"]["imagens_ml_json"]
+    assert result["items"][0]["photo_candidates"] == [
+        {"url": expected_photo, "item_id": "MLB200"}
+    ]
+
+
 def test_categoria_divergente_do_mesmo_sku_marca_id_e_nome_como_conflito(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

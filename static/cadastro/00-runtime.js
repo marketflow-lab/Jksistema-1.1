@@ -77,6 +77,7 @@
         importacaoCatalogoConflitosTotal: byId('importacaoCatalogoConflitosTotal'),
         importacaoCatalogoIgnorados: byId('importacaoCatalogoIgnorados'),
         importacaoCatalogoConflitos: byId('importacaoCatalogoConflitos'),
+        importacaoCatalogoConflitosTitulo: byId('importacaoCatalogoConflitosTitulo'),
         importacaoCatalogoConflitosLista: byId('importacaoCatalogoConflitosLista'),
         tBodyImportacaoCatalogo: byId('tBodyImportacaoCatalogo'),
         btnFecharImportacaoCatalogo: byId('btnFecharImportacaoCatalogo'),

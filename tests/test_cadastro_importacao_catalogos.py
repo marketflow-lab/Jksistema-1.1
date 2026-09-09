@@ -266,6 +266,8 @@ def test_preview_cria_ausentes_preenche_vazios_e_preserva_conflitos():
         "ignorados": 1,
         "aplicaveis": 2,
         "campos": 2,
+        "fotos_planejadas": 0,
+        "fotos_sem_candidato": 2,
     }
     existente = next(row for row in result["apply_rows"] if row["sku_normalizado"] == "001")
     assert existente["row_version"] == 7
@@ -306,8 +308,7 @@ def test_preview_ml_planeja_capa_confiavel_sem_expor_dados_da_imagem():
 
     assert result["can_apply"] is True
     assert result["apply_rows"][0]["photo_plan"] == {
-        "url": photo_url,
-        "item_id": "MLB999",
+        "candidates": [{"url": photo_url, "item_id": "MLB999"}],
     }
     assert any(
         change["field"] == "foto" and change["action"] == "fill"
@@ -372,7 +373,7 @@ def test_preview_ml_sem_foto_local_pode_tentar_novamente_a_capa():
     assert result["sku_coverage_complete"] is True
     assert result["can_apply"] is True
     assert result["apply_rows"][0]["fields"] == {}
-    assert result["apply_rows"][0]["photo_plan"]["item_id"] == "MLB456"
+    assert result["apply_rows"][0]["photo_plan"]["candidates"][0]["item_id"] == "MLB456"
 
 
 def test_preview_ml_rejeita_url_de_capa_fora_do_host_confiavel():
@@ -408,6 +409,129 @@ def test_preview_incompleta_nunca_pode_ser_aplicada():
     assert result["apply_rows"]
     assert result["sku_coverage_complete"] is False
     assert result["can_apply"] is False
+
+
+def test_preview_ml_parcial_aplica_somente_skus_confirmados():
+    result = catalogos._construir_preview(
+        "mercadolivre",
+        {
+            "coverage_complete": False,
+            "sku_coverage_complete": False,
+            "items": [
+                {
+                    "sku": "SKU-CONFIRMADO",
+                    "fields": {
+                        "mlb_principal": "MLB123",
+                        "foto_url_ml": "https://http2.mlstatic.com/capa-confirmada.jpg",
+                    },
+                },
+                {
+                    "sku": "SKU-DIVERGENTE",
+                    "sku_normalizado": "OUTRO-SKU",
+                    "fields": {"mlb_principal": "MLB999"},
+                },
+                {
+                    "sku": "SKU-NOVO",
+                    "fields": {
+                        "mlb_principal": "MLB777",
+                        "foto_url_ml": "https://http2.mlstatic.com/capa-nova.jpg",
+                    },
+                },
+                {
+                    "sku": "SKU-COM-FOTO",
+                    "fields": {
+                        "mlb_principal": "MLB888",
+                        "foto_url_ml": "https://http2.mlstatic.com/nao-baixar.jpg",
+                    },
+                },
+            ],
+            "skipped": [{"reason": "sku_ambiguous", "mlb": "MLB456"}],
+        },
+        [
+            {
+                "sku": "SKU-CONFIRMADO",
+                "row_version": 4,
+                "scope_source": "store_file",
+                "foto": "",
+            },
+            {
+                "sku": "SKU-COM-FOTO",
+                "row_version": 5,
+                "scope_source": "store_file",
+                "foto": "cadastro_fotos/lojas/store-a/existente.jpg",
+            },
+        ],
+    )
+
+    assert result["can_apply"] is True
+    assert result["partial_application"] is True
+    assert result["partial_apply_scope"] == "confirmed_existing_photos"
+    assert result["partial_reasons"] == [
+        "photos_only",
+        "catalog_coverage_incomplete",
+        "sku_coverage_incomplete",
+        "items_ignored",
+    ]
+    assert [row["sku"] for row in result["apply_rows"]] == ["SKU-CONFIRMADO"]
+    assert result["apply_rows"][0]["expected_scope"] == "store_file"
+    assert result["apply_rows"][0]["fields"] == {}
+    assert result["summary"]["aplicaveis"] == 1
+    assert result["summary"]["preencher"] == 1
+    assert result["summary"]["campos"] == 1
+    assert result["summary"]["fotos_planejadas"] == 1
+    assert {item["reason"] for item in result["ignored"]} == {
+        "sku_inconsistente",
+        "sku_ambiguous",
+        "partial_new_sku_not_applied",
+    }
+
+    public = catalogos._public_job(
+        _job_ready(
+            source="mercadolivre",
+            preview=result,
+            can_apply=True,
+        )
+    )
+    assert public["can_apply"] is True
+    assert public["partial_application"] is True
+    assert public["partial_apply_scope"] == "confirmed_existing_photos"
+
+
+@pytest.mark.parametrize(
+    "provider_guard",
+    [
+        {"cancelled": True},
+        {"stats": {"owner_mismatch": 1}},
+        {"skipped": [{"reason": "seller_mismatch", "mlb": "MLB999"}]},
+    ],
+)
+def test_preview_ml_parcial_mantem_bloqueios_globais(provider_guard):
+    result = catalogos._construir_preview(
+        "mercadolivre",
+        {
+            "coverage_complete": False,
+            "sku_coverage_complete": False,
+            "items": [{
+                "sku": "SKU-CONFIRMADO",
+                "fields": {
+                    "mlb_principal": "MLB123",
+                    "foto_url_ml": "https://http2.mlstatic.com/capa-confirmada.jpg",
+                },
+            }],
+            **provider_guard,
+        },
+        [{
+            "sku": "SKU-CONFIRMADO",
+            "row_version": 4,
+            "scope_source": "store_file",
+            "foto": "",
+        }],
+    )
+
+    assert result["apply_rows"]
+    assert result["can_apply"] is False
+    assert result["partial_application"] is False
+    assert result["partial_apply_scope"] == ""
 
 
 def test_preview_sinaliza_quando_detalhes_ignorados_foram_limitados():
@@ -1210,6 +1334,105 @@ def test_apply_ml_falha_de_download_nao_impede_salvar_metadados(monkeypatch):
     assert "url-secreta" not in str(response)
 
 
+def test_apply_ml_tenta_capa_seguinte_do_mesmo_sku(monkeypatch):
+    first_url = "https://http2.mlstatic.com/capa-1.jpg"
+    second_url = "https://http2.mlstatic.com/capa-2.jpg"
+    job = _job_ready(source="mercadolivre")
+    job["preview"]["apply_rows"] = [{
+        "sku": "FOTO-FALLBACK",
+        "sku_normalizado": "FOTO-FALLBACK",
+        "row_version": 2,
+        "expected_scope": "store_file",
+        "fields": {},
+        "photo_plan": {
+            "candidates": [
+                {"url": first_url, "item_id": "MLB111"},
+                {"url": second_url, "item_id": "MLB222"},
+            ]
+        },
+    }]
+    catalogos.CATALOG_IMPORT_JOBS[job["job_id"]] = job
+    monkeypatch.setattr(
+        catalogos,
+        "_configuracao_aplicacao_fingerprint",
+        lambda *_args: _FINGERPRINT_INITIAL,
+    )
+    source_data_url, _source_bytes = _test_image_data_url()
+    attempted = []
+
+    def download(url, item_id, _deadline):
+        attempted.append((url, item_id))
+        if url == first_url:
+            raise ValueError("primeira indisponivel")
+        return {"data_url": source_data_url, "filename": f"{item_id}.png"}
+
+    monkeypatch.setattr(catalogos.cadastro_ml, "_download_photo_data_url", download)
+    saved = []
+    monkeypatch.setattr(
+        catalogos,
+        "salvar_produtos_loja_em_lote",
+        lambda _client, _store, payloads, **_kwargs: (
+            saved.extend(payloads)
+            or {"incluidos": 0, "atualizados": 1, "total": 1}
+        ),
+    )
+
+    response = asyncio.run(
+        catalogos.aplicar_importacao_catalogo(
+            "store-a", "job-seguro", _request(), "cliente-a"
+        )
+    )
+
+    assert attempted == [(first_url, "MLB111"), (second_url, "MLB222")]
+    assert saved[0]["__foto_filename"] == "MLB222.jpg"
+    assert response["apply_result"]["fotos_salvas"] == 1
+    assert response["apply_result"]["fotos_ignoradas"] == 0
+
+
+def test_falha_de_todas_as_capas_nao_envia_linha_photo_only_ao_writer(monkeypatch):
+    first_url = "https://http2.mlstatic.com/capa-1.jpg"
+    second_url = "https://http2.mlstatic.com/capa-2.jpg"
+    attempted = []
+
+    def download(url, item_id, _deadline):
+        attempted.append((url, item_id))
+        raise ValueError("indisponivel")
+
+    monkeypatch.setattr(catalogos.cadastro_ml, "_download_photo_data_url", download)
+    writer_payloads = []
+
+    def salvar(_client, _store, payloads, **_kwargs):
+        writer_payloads.extend(payloads)
+        return {"incluidos": 0, "atualizados": 0, "total": 0}
+
+    monkeypatch.setattr(catalogos, "salvar_produtos_loja_em_lote", salvar)
+
+    result = catalogos._salvar_payloads_importacao_catalogo(
+        "cliente-a",
+        "store-a",
+        "mercadolivre",
+        [{
+            "sku": "FOTO-FALLBACK",
+            "row_version": 2,
+            "__expected_scope": "store_file",
+            "__catalog_photo_plan": {
+                "candidates": [
+                    {"url": first_url, "item_id": "MLB111"},
+                    {"url": second_url, "item_id": "MLB222"},
+                ]
+            },
+        }],
+        campos_derivados_permitidos=set(),
+        precommit_validator=lambda _loja: None,
+    )
+
+    assert attempted == [(first_url, "MLB111"), (second_url, "MLB222")]
+    assert writer_payloads == []
+    assert result["total"] == 0
+    assert result["fotos_salvas"] == 0
+    assert result["fotos_ignoradas"] == 1
+
+
 def test_compressao_ml_rejeita_imagem_corrompida():
     corrupt = "data:image/png;base64," + base64.b64encode(b"not-an-image").decode("ascii")
 
@@ -1260,6 +1483,68 @@ def test_apply_ml_revalida_plano_privado_e_nao_acessa_host_forgado(monkeypatch):
     assert response["apply_result"]["fotos_ignoradas"] == 1
 
 
+def test_apply_ml_parcial_commita_somente_linha_confirmada(monkeypatch):
+    job = _job_ready(source="mercadolivre")
+    job["preview"].update(
+        coverage_complete=False,
+        sku_coverage_complete=False,
+        partial_application=True,
+        partial_apply_scope="confirmed_existing_photos",
+        partial_reasons=["sku_coverage_incomplete", "items_ignored"],
+    )
+    photo_url = "https://http2.mlstatic.com/capa-confirmada.jpg"
+    job["preview"]["apply_rows"] = [
+        {
+            "sku": "001",
+            "sku_normalizado": "001",
+            "row_version": 3,
+            "expected_scope": "store_file",
+            "fields": {},
+            "photo_plan": {
+                "candidates": [{"url": photo_url, "item_id": "MLB123"}]
+            },
+        }
+    ]
+    catalogos.CATALOG_IMPORT_JOBS[job["job_id"]] = job
+    monkeypatch.setattr(
+        catalogos,
+        "_configuracao_aplicacao_fingerprint",
+        lambda *_args: _FINGERPRINT_INITIAL,
+    )
+    saved = []
+    source_data_url, _source_bytes = _test_image_data_url()
+    monkeypatch.setattr(
+        catalogos.cadastro_ml,
+        "_download_photo_data_url",
+        lambda *_args: {"data_url": source_data_url, "filename": "MLB123.png"},
+    )
+    monkeypatch.setattr(
+        catalogos,
+        "salvar_produtos_loja_em_lote",
+        lambda _client, _store, payloads, **_kwargs: (
+            saved.extend(payloads)
+            or {"incluidos": 1, "atualizados": 0, "total": 1}
+        ),
+    )
+
+    response = asyncio.run(
+        catalogos.aplicar_importacao_catalogo(
+            "store-a", "job-seguro", _request(), "cliente-a"
+        )
+    )
+
+    assert [payload["sku"] for payload in saved] == ["001"]
+    assert saved[0]["__foto_data_url"].startswith("data:image/jpeg;base64,")
+    assert response["status"] == "applied"
+    assert response["partial_application"] is True
+    assert response["partial_apply_scope"] == "confirmed_existing_photos"
+    assert response["apply_result"]["partial_application"] is True
+    assert response["apply_result"]["partial_reasons"] == [
+        "sku_coverage_incomplete",
+        "items_ignored",
+    ]
+
+
 @pytest.mark.parametrize("sku_coverage", [False, "false", None])
 def test_apply_rejeita_flag_stale_sem_cobertura_completa_de_skus(
     monkeypatch,
@@ -1288,6 +1573,35 @@ def test_apply_rejeita_flag_stale_sem_cobertura_completa_de_skus(
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail["code"] == "catalog_preview_not_applicable"
     assert job["status"] == "ready"
+
+
+def test_apply_ml_parcial_rejeita_job_sem_escopo_photo_only(monkeypatch):
+    job = _job_ready(source="mercadolivre", can_apply=True)
+    job["preview"].update(
+        coverage_complete=False,
+        sku_coverage_complete=False,
+        partial_application=True,
+        partial_apply_scope="confirmed_existing_photos",
+    )
+    # Uma linha de metadados nao pode ser liberada pelo gate parcial de fotos.
+    catalogos.CATALOG_IMPORT_JOBS[job["job_id"]] = job
+    monkeypatch.setattr(
+        catalogos,
+        "_configuracao_aplicacao_fingerprint",
+        lambda *_args: pytest.fail("job parcial forjado nao pode chegar ao commit"),
+    )
+
+    public = catalogos._public_job(job)
+    assert public["can_apply"] is False
+    assert public["partial_application"] is False
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            catalogos.aplicar_importacao_catalogo(
+                "store-a", "job-seguro", _request(), "cliente-a"
+            )
+        )
+
+    assert exc_info.value.detail["code"] == "catalog_preview_not_applicable"
 
 
 def test_apply_rejeita_can_apply_textual_sem_chegar_ao_commit(monkeypatch):
