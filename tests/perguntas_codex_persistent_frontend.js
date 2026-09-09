@@ -99,6 +99,14 @@ assert(stateStart >= 0 && stateEnd > stateStart, 'helpers persistentes do job na
 vm.runInContext(source.slice(stateStart, stateEnd), context);
 
 (async () => {
+    currentCard = makeCard('Loja A::Q-BLOCKED');
+    currentCard.elements.textarea.value = 'Rascunho do operador preservado';
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-BLOCKED', {
+        blocked_without_draft: true,
+        result: { resposta: '', blocked_without_draft: true, warnings: ['Histórico indisponível. Tente novamente.'] }
+    });
+    assert.strictEqual(currentCard.elements.textarea.value, 'Rascunho do operador preservado');
+    assert.match(currentCard.elements.status.textContent, /Histórico indisponível/);
     currentCard = makeCard('Loja A::Q-CONTEXTUAL');
     context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-CONTEXTUAL', {
         result: {

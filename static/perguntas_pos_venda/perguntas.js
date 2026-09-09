@@ -240,6 +240,17 @@ function renderizarDetalhePerguntaAtendimento(pergunta) {
     const linkAnuncio = pergunta.item_permalink
         ? `<a class="action-btn secondary" href="${escapeHtml(pergunta.item_permalink)}" target="_blank" rel="noopener">Abrir an&uacute;ncio</a>`
         : '';
+    const rotulosCarga = { loading: 'Carregando', ready: 'Pronto', stale: 'Desatualizado', unavailable: 'Indisponível', blocked: 'Acesso bloqueado' };
+    const anuncioEstado = pergunta._itemState || (pergunta._itemReady ? 'ready' : 'loading');
+    const historicoEstado = pergunta._historyState || (pergunta._detailReady ? 'ready' : 'loading');
+    const podeRepetir = !pergunta._detailPending && !pergunta._itemPending && (!pergunta._detailReady || !pergunta._itemReady);
+    const statusCarga = `<div class="question-loading-status" role="status">
+        ${pergunta._questionState === 'blocked' ? '<span data-component="question" data-state="blocked">Pergunta: acesso bloqueado</span>' : ''}
+        <span data-component="item" data-state="${escapeHtml(anuncioEstado)}">Anúncio: ${escapeHtml(rotulosCarga[anuncioEstado] || 'Indisponível')}</span>
+        <span data-component="history" data-state="${escapeHtml(historicoEstado)}">Histórico: ${escapeHtml(rotulosCarga[historicoEstado] || 'Indisponível')}</span>
+        ${pergunta._historyTruncated ? '<span>Histórico limitado às 50 perguntas recentes do anúncio, filtradas pelo comprador.</span>' : ''}
+        ${podeRepetir ? '<button class="action-btn secondary question-loading-retry" type="button">Tentar novamente</button>' : ''}
+    </div>`;
     const composer = podeResponder ? `
         <div class="question-answer-composer">
             <textarea class="question-answer-text" maxlength="2000" placeholder="Digite a resposta manualmente ou gere uma sugestao com IA para editar antes de enviar."></textarea>
@@ -253,7 +264,7 @@ function renderizarDetalhePerguntaAtendimento(pergunta) {
                 <button class="action-btn secondary question-save-example-btn" type="button" data-action="salvar-exemplo" disabled>Salvar exemplo</button>
                 <button class="action-btn secondary question-send-save-example-btn" type="button" data-action="enviar-salvar-exemplo" disabled>Responder e salvar exemplo</button>
                 <button class="action-btn question-send-answer-btn" type="button" data-action="enviar-resposta" disabled>Responder</button>
-                <span class="question-answer-status">Limite do Mercado Livre: 2000 caracteres.</span>
+                <span class="question-answer-status ${pergunta._generationError ? 'error' : ''}">${escapeHtml(pergunta._generationError || 'Limite do Mercado Livre: 2000 caracteres.')}</span>
             </div>
         </div>
     ` : '';
@@ -277,6 +288,7 @@ function renderizarDetalhePerguntaAtendimento(pergunta) {
                 </div>
                 <span class="question-detail-date">${escapeHtml(formatarData(pergunta.date_created))}</span>
             </header>
+            ${statusCarga}
             <div class="question-detail-body">
                 <div class="question-detail-main">
                     <span class="question-detail-label">Pergunta do comprador</span>
@@ -654,6 +666,7 @@ function configurarAcoesRespostaPerguntas() {
         const btnSalvarSku = card.querySelector('.question-sku-guidance-save');
         const statusSku = card.querySelector('.question-sku-guidance-status');
         const status = card.querySelector('.question-answer-composer .question-answer-status');
+        card.querySelector('.question-loading-retry')?.addEventListener('click', () => window.JKPerguntasLoading?.tentarNovamente());
         if (textareaSku && btnSalvarSku) {
             ajustarAlturaTextareaAtendimento(textareaSku);
             textareaSku.addEventListener('input', () => ajustarAlturaTextareaAtendimento(textareaSku));
@@ -662,7 +675,7 @@ function configurarAcoesRespostaPerguntas() {
         if (!textarea || !btnEnviar) return;
 
         const atualizarBotaoEnviar = () => {
-            const vazio = !textarea.value.trim();
+            const vazio = !textarea.value.trim() || obterPerguntaPorId(questionId, questionLoja)?._questionState === 'blocked';
             btnEnviar.disabled = vazio;
             if (btnEnviarSalvar) btnEnviarSalvar.disabled = vazio;
             if (btnSalvarExemplo) btnSalvarExemplo.disabled = vazio;
@@ -931,17 +944,26 @@ function aplicarResultadoJobAtendimentoCodex(questionKey, data, tenantScope = te
         if (!textarea) return;
         const resposta = String(result.resposta ?? data.resposta ?? '');
         if (!resposta.trim()) {
-            textarea.value = '';
+            const bloqueadoSemRascunho = Boolean(result.blocked_without_draft || data.blocked_without_draft);
+            if (!bloqueadoSemRascunho) textarea.value = '';
             delete textarea.dataset.codexProposalId;
             delete textarea.dataset.codexProposalVersion;
             delete textarea.dataset.codexProposalHash;
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
-            const avisoBloqueio = Array.isArray(data?.warnings) && data.warnings.length
-                ? ` ${data.warnings[0]}`
+            const warnings = Array.isArray(data?.warnings) && data.warnings.length ? data.warnings : result.warnings;
+            const avisoBloqueio = Array.isArray(warnings) && warnings.length
+                ? ` ${warnings[0]}`
                 : '';
+            const mensagem = `Nao foi possivel carregar o rascunho.${avisoBloqueio}`;
+            if (bloqueadoSemRascunho) {
+                const pergunta = (state.perguntas || []).find(q => chavePerguntaAtendimento(q) === questionKey);
+                if (pergunta) pergunta._generationError = mensagem;
+                window.JKPerguntasLoading?.rejeitarContexto(pergunta, result.error_component || data.error_component || 'all');
+            }
+            const currentStatus = cardsAtuaisJobAtendimentoCodex(questionKey)[0]?.querySelector('.question-answer-composer .question-answer-status') || status;
             setStatusRespostaPergunta(
-                status,
-                `Nao foi possivel carregar o rascunho.${avisoBloqueio}`,
+                currentStatus,
+                mensagem,
                 'error'
             );
             return;
@@ -952,26 +974,27 @@ function aplicarResultadoJobAtendimentoCodex(questionKey, data, tenantScope = te
         textarea.dataset.codexProposalHash = String(result.proposal_hash || data.proposal_hash || '');
         textarea.dispatchEvent(new Event('input', { bubbles: true }));
         const draftSource = String(result.draft_source || data?.draft_source || '').trim().toLowerCase();
+        const avisos = [...new Set([...(Array.isArray(data?.warnings) ? data.warnings : []), ...(Array.isArray(result?.warnings) ? result.warnings : [])].filter(value => typeof value === 'string'))].join(' ');
         const parcial = (result.data_sufficient ?? data?.data_sufficient) === false
             && Boolean(result.completed_with_partial ?? data?.completed_with_partial);
         if (draftSource === 'contextual_fallback') {
             setStatusRespostaPergunta(
                 status,
-                'Rascunho de contingencia baseado no contexto. Revise antes de enviar.'
+                `Rascunho de contingencia baseado no contexto. Revise antes de enviar. ${avisos}`.trim()
             );
             return;
         }
         if (draftSource === 'neutral_fallback') {
             setStatusRespostaPergunta(
                 status,
-                'Rascunho neutro de contingencia. Revise antes de enviar.'
+                `Rascunho neutro de contingencia. Revise antes de enviar. ${avisos}`.trim()
             );
             return;
         }
         const mensagem = parcial
             ? 'Rascunho gerado com as informacoes disponiveis.'
             : 'Sugestao gerada pelo Black Jhon.';
-        setStatusRespostaPergunta(status, mensagem, 'ok');
+        setStatusRespostaPergunta(status, `${mensagem} ${avisos}`.trim(), 'ok');
     });
 }
 
@@ -1146,7 +1169,8 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
     const pergunta = obterPerguntaPorId(questionId, loja);
     const lojaResposta = lojaOrigemItem(pergunta) || (todasAsLojasSelecionadas() ? '' : state.lojaSelecionada);
     if (!pergunta || !lojaResposta) return;
-    const questionKey = `${lojaResposta}::${String(questionId || '').trim()}`;
+    const questionKey = chavePerguntaAtendimento(pergunta);
+    pergunta._generationError = '';
     btnGerar.disabled = true;
     btnEnviar.disabled = true;
     setStatusRespostaPergunta(status, 'Gerando sugestao com IA...');
@@ -1166,7 +1190,11 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
             })
         });
         let data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.detail || 'Erro ao gerar resposta com IA.');
+        if (!response.ok) {
+            pergunta._generationError = `Erro ao gerar IA: ${mensagemErroApi(data, 'Erro ao gerar resposta com IA.')}`;
+            window.JKPerguntasLoading?.tratarNegacaoGeracao(response, pergunta);
+            throw new Error(mensagemErroApi(data, 'Erro ao gerar resposta com IA.'));
+        }
         if (data.job_id && data.status !== 'completed') {
             salvarEstadoJobAtendimentoCodex(questionKey, {
                 job_id: String(data.job_id),
@@ -1184,7 +1212,9 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
         if (error && error.cancelled) {
             setStatusRespostaPergunta(status, 'Pesquisa cancelada pelo usuario.');
         } else {
-            setStatusRespostaPergunta(status, `Erro ao gerar IA: ${mensagemErro(error)}`, 'error');
+            const currentStatus = cardsAtuaisJobAtendimentoCodex(questionKey)[0]?.querySelector('.question-answer-composer .question-answer-status') || status;
+            pergunta._generationError = `Erro ao gerar IA: ${mensagemErro(error)}`;
+            setStatusRespostaPergunta(currentStatus, pergunta._generationError, 'error');
         }
     } finally {
         aplicarEstadoJobAtendimentoCodex(questionKey);
@@ -1192,8 +1222,8 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
         const currentTextarea = currentCard?.querySelector('.question-answer-text') || textarea;
         const currentGenerate = currentCard?.querySelector('.question-ai-answer-btn') || btnGerar;
         const currentSend = currentCard?.querySelector('.question-send-answer-btn') || btnEnviar;
-        currentGenerate.disabled = Boolean(obterEstadoJobAtendimentoCodex(questionKey)?.polling_active);
-        currentSend.disabled = !String(currentTextarea?.value || '').trim();
+        currentGenerate.disabled = Boolean(obterEstadoJobAtendimentoCodex(questionKey)?.polling_active) || !pergunta._itemReady || !pergunta._detailReady;
+        currentSend.disabled = !String(currentTextarea?.value || '').trim() || pergunta._questionState === 'blocked';
     }
 }
 

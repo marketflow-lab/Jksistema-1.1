@@ -36,7 +36,6 @@ def clean_cache():
         assert not cache._RUNNING
         cache._ENTRIES.clear()
         cache._REVISIONS.clear()
-        cache._CLIENT_SLOTS.clear()
     yield
     with cache._LOCK:
         pending = list(cache._RUNNING.values())
@@ -277,8 +276,8 @@ def test_cached_items_are_reused_without_new_network_calls(env, monkeypatch):
     assert cache.peek_items(("tenant", "A", "other-user", "10", "MLB"), ["MLB123"]) == {}
 
 
-def test_four_client_reads_run_and_remaining_work_queues():
-    release, four_started = threading.Event(), threading.Event()
+def test_two_secondary_client_reads_run_and_remaining_work_queues():
+    release, two_started = threading.Event(), threading.Event()
     lock = threading.Lock()
     active, maximum = 0, 0
     def load():
@@ -286,8 +285,8 @@ def test_four_client_reads_run_and_remaining_work_queues():
         with lock:
             active += 1
             maximum = max(maximum, active)
-            if active == 4:
-                four_started.set()
+            if active == 2:
+                two_started.set()
         assert release.wait(2)
         with lock:
             active -= 1
@@ -296,11 +295,11 @@ def test_four_client_reads_run_and_remaining_work_queues():
         futures = [pool.submit(cache.read, ("tenant", str(i), "alice", str(i), "MLB", "count"),
                                load, ttl=60) for i in range(8)]
         try:
-            assert four_started.wait(1)
+            assert two_started.wait(1)
         finally:
             release.set()
         assert all(future.result(2)["perguntas"] == 1 for future in futures)
-    assert maximum == 4
+    assert maximum == 2
 
 
 def test_summary_returns_partial_before_shared_deadline(env, monkeypatch):
@@ -348,13 +347,13 @@ def test_denial_fences_other_inflight_reads_including_items():
     assert not cache._ENTRIES
 
 
-def test_summary_propagates_provider_denial(env):
+def test_summary_scopes_provider_denial_to_failed_store(env):
     def denied(path, params):
         raise HTTPException(403, "revoked")
     env.handler = denied
-    with pytest.raises(HTTPException) as error:
-        api.ml_perguntas_resumo_rapido(request(), client_id="tenant")
-    assert error.value.status_code == 403
+    result = api.ml_perguntas_resumo_rapido(request(), client_id="tenant")
+    assert result["lojas"][0]["component"]["state"] == "blocked"
+    assert result["lojas"][0]["component"]["scope"] == "resource"
 
 
 def test_variations_are_completed_even_with_parent_sku(env):

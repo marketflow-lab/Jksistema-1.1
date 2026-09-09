@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 from requests import exceptions as requests_exceptions
 
 from backend.services import codex_agent_runtime, codex_assistant_storage
+from backend.services.perguntas_generation_preflight import GenerationContextUnavailable
 from backend.services.codex.storage import customer_replies as customer_reply_storage
 from backend.services.codex_turn_context import (
     EVIDENCE_ENVELOPE_V2,
@@ -120,6 +121,7 @@ PROMPT_HASH = hashlib.sha256(
         "conditional-public-web-v1|"
         "six-stage-sol-high|two-round-gap-research|directed-reference-relations|"
         "nonempty-ai-draft-preserved|public-signature-append-only-v1|oversize-manual-edit-v1|"
+        "manual-canonical-preflight-v1|ready-question-item-history|scoped-session-revalidation|"
         "human-approval-required|no-direct-publish"
     ).encode("utf-8")
 ).hexdigest()
@@ -1311,6 +1313,25 @@ def _subject_aware_safe_fallback(
         allow_contextual=True,
     )
     return answer
+
+
+def _complete_generation_blocked(job: dict[str, Any]) -> dict[str, Any]:
+    """A loading/auth failure cannot produce an AI draft, including a fallback."""
+    warning = "Carregamento ou sessao indisponivel. Atualize a pergunta e solicite a geracao novamente."
+    job.update(status="completed", agent_state="concluido", current_step="consultar",
+               result={"resposta": "", "contexto": {}, "data_sufficient": False,
+                       "blocked_without_draft": True, "requires_approval": False,
+                       "warnings": [warning]},
+               blocked_without_draft=True, requires_approval=False, data_sufficient=False,
+               completion_reason="generation_context_unavailable", warnings=[warning],
+               proposal_hash="", proposal_id="", lease_owner="", lease_expires_ts=0.0,
+               completed_at=_now())
+    job.pop("last_partial_result", None)
+    _cancel_retry_timer(str(job.get("job_id") or ""))
+    return codex_assistant_storage.codex_assistant_customer_reply_job_save(
+        _runtime_info_base(), str(job.get("client_id") or ""), job,
+        expected_lease_generation=_lease_generation(job),
+    )
 
 
 def _complete_without_draft(
@@ -3200,6 +3221,17 @@ def _create_job_unserialized(
     except Exception:
         _discard_vin_envelope_family(job_id)
         raise
+    if (queue_origin == QUEUE_ORIGIN_MANUAL and request.get("_generation_session")
+            and isinstance(latest, dict)
+            and (str(latest.get("created_by") or "") != str(created_by)
+                 or ((request or {}).get("_generation_session")
+                     and (latest.get("request") or {}).get("_generation_session")
+                     != request["_generation_session"])
+                 or str(latest.get("request_hash") or "") != request_hash
+                 or any(str(latest.get(key) or "") != str(store_identity[key])
+                        for key in ("store_id", "seller_id", "site_id")))):
+        # Drafts and active turns may not cross operators or a reconnected account.
+        latest = None
     latest_result = latest.get("result") if isinstance(latest, dict) and isinstance(latest.get("result"), dict) else {}
     operator_revision_requested = bool(
         str(request.get("resposta_atual") or request.get("orientacao_usuario") or "").strip()
@@ -3323,6 +3355,9 @@ def _create_job_unserialized(
             "subject": event_subject_key,
             "request": request,
             "origin": queue_origin,
+            "actor": created_by,
+            "seller_id": store_identity["seller_id"],
+            "site_id": store_identity["site_id"],
             "bucket": int(time.time() // 5),
         }
     )
@@ -4315,12 +4350,24 @@ def _product_evidence_identity(
 
 
 def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    if str(job.get("queue_origin") or "") == QUEUE_ORIGIN_MANUAL:
+        from backend.services.perguntas_generation_preflight import run_with_session
+        return run_with_session(job, lambda: _load_question_context_impl(job))
+    return _load_question_context_impl(job)
+
+
+def _load_question_context_impl(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     runtime = _require_runtime()
     request = job.get("request") if isinstance(job.get("request"), dict) else {}
     client_id = str(job.get("client_id") or "default")
     store = str(job.get("store") or "")
     question = dict(request.get("pergunta") or {}) if isinstance(request.get("pergunta"), dict) else {}
     question_id = str(job.get("question_id") or question.get("id") or job.get("event_subject_key") or "").strip()
+    canonical = None
+    if str(job.get("queue_origin") or "") == QUEUE_ORIGIN_MANUAL:
+        from backend.services.perguntas_generation_preflight import load_job_context
+        canonical = load_job_context(job, runtime)
+        question = dict(canonical["question"])
     if not question and question_id:
         reload_cfg = runtime._obter_cfg_ml(client_id, store)
         try:
@@ -4366,12 +4413,13 @@ def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         question["_resposta_atual"] = str(request.get("resposta_atual") or "")
     if str(request.get("orientacao_usuario") or "").strip():
         question["_orientacao_usuario"] = str(request.get("orientacao_usuario") or "").strip()[:1200]
-    cfg = runtime._obter_cfg_ml(client_id, store)
+    cfg = (runtime._obter_cfg_ml(client_id, store, store_id=str(job.get("store_id") or ""))
+           if canonical else runtime._obter_cfg_ml(client_id, store))
     request_item = dict(request.get("item") or {}) if isinstance(request.get("item"), dict) else {}
-    item: dict[str, Any] = {}
-    official_current_listing = False
+    item: dict[str, Any] = dict(canonical["item"]) if canonical else {}
+    official_current_listing = canonical is not None
     item_id = str(question.get("item_id") or job.get("item_id") or request_item.get("id") or "").strip()
-    if item_id:
+    if item_id and canonical is None:
         try:
             response, cfg = runtime._ml_api_request(
                 client_id, store, cfg, "GET", f"https://api.mercadolibre.com/items/{item_id}", timeout=12
@@ -4400,11 +4448,11 @@ def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     codex_fields = {key: value for key, value in question.items() if str(key).startswith("_")}
     try:
         normalizer = getattr(runtime, "_ml_perguntas_normalizar", None)
-        if callable(normalizer):
+        if callable(normalizer) and canonical is None:
             question = normalizer(question, {item_id: item} if item_id else {}, {})
         history_loader = getattr(runtime, "_ml_perguntas_anexar_historico_comprador", None)
         seller_id = str((cfg or {}).get("user_id") or "").strip()
-        if callable(history_loader) and seller_id:
+        if callable(history_loader) and seller_id and canonical is None:
             enriched, cfg = history_loader(client_id, store, cfg, seller_id, [question])
             if enriched and isinstance(enriched[0], dict):
                 question = enriched[0]
@@ -4438,8 +4486,15 @@ def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     question["_product_evidence_identity"] = product_identity
     question["_verified_product_evidence"] = verified_product_evidence
     question["_product_research_evidence"] = product_research_evidence
+    if canonical:
+        from backend.services.perguntas_generation_preflight import run_with_session
+        run_with_session(job, lambda: None)  # Recheck expiry after enrichment, before AI.
     answer, _cfg, context = runtime._perguntas_ia_gerar_resposta(client_id, store, cfg, question, item or {})
     context = context if isinstance(context, dict) else {}
+    if canonical and canonical.get("history_truncated"):
+        from backend.services.perguntas_generation_preflight import HISTORY_TRUNCATED_WARNING
+        context["history_truncated"] = True
+        context["warnings"] = _unique_warnings(context.get("warnings"), [HISTORY_TRUNCATED_WARNING])
     context.setdefault("loja", store)
     if vehicle_identity:
         context.setdefault("vehicle_identity", vehicle_identity)
@@ -4776,6 +4831,8 @@ def _run_job(client_id: str, job_id: str) -> None:
                 },
                 details={"data_sufficient": sufficient, "completion_reason": "evidence_confirmed"},
             )
+    except GenerationContextUnavailable:
+        _complete_generation_blocked(job)
     except _LeaseLost:
         logger.info("[PPV CODEX] evento=lease_perdida resultado=descartado")
     except InterruptedError as exc:

@@ -168,7 +168,8 @@ def test_progressive_question_routes_have_authenticated_read_contracts() -> None
     expected = {
         "lista": {"request", "store_id", "loja", "status", "offset", "limit", "forcar", "client_id"},
         "itens": {"request", "store_id", "item_ids", "forcar", "client_id"},
-        "detalhe": {"request", "store_id", "question_id", "forcar", "client_id"},
+        # Additive selector: server-authorized cached context remains mandatory.
+        "detalhe": {"request", "store_id", "question_id", "forcar", "client_id", "componentes"},
         "resumo": {"request", "store_ids", "store_id", "metricas", "forcar", "client_id"},
     }
     for spec in PERGUNTAS_LOADING_ROUTES:
@@ -179,3 +180,5 @@ def test_progressive_question_routes_have_authenticated_read_contracts() -> None
         tenant = signature.parameters["client_id"].default
         assert isinstance(tenant, Depends) and tenant.dependency.__name__ == "get_tenant_id"
         assert signature.parameters["forcar"].default is False
+        if spec.path.endswith("/detalhe"):
+            assert signature.parameters["componentes"].default == ""

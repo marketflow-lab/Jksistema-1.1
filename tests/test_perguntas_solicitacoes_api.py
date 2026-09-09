@@ -393,6 +393,7 @@ def test_manual_generation_propagates_canonical_store_id_to_created_job(
             seller_id="seller-beta",
             site_id="MLB",
             name="Loja repetida",
+            username="operator",
         ),
     )
     request = PerguntasGerarRespostaRequest(
@@ -407,6 +408,11 @@ def test_manual_generation_propagates_canonical_store_id_to_created_job(
         **{"async": True},
     )
 
+    # This test owns store propagation; canonical loading is tested separately.
+    monkeypatch.setattr(manual_questions.perguntas_generation_preflight, "load_context",
+                        lambda *_args: {"question": dict(request.pergunta)})
+    monkeypatch.setattr(manual_questions.perguntas_generation_preflight, "remember_session",
+                        lambda *_args: "execution-scope-test")
     response = manual_questions.ml_perguntas_gerar_resposta_manual(
         request,
         _request("tenant-a"),

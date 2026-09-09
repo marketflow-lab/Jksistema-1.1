@@ -37,7 +37,7 @@ function questions(store, offset, limit) {
 async function fixture(browser) {
   const calls = [];
   const errors = [];
-  const control = { slowMs: 900, fastMs: 35, deny: '', fail: '', listHold: null, counts: {} };
+  const control = { slowMs: 900, fastMs: 35, deny: '', fail: '', listHold: null, counts: {}, detailMs: 75, history: 'ready', detailDeny: false, itemDeny: false, omitComponents: false, itemMissingOnce: '', detailErrors: [], retryAfter: '0' };
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
@@ -58,7 +58,7 @@ async function fixture(browser) {
     if (url.pathname === '/auth.js') return route.fulfill({ contentType: 'application/javascript', body: 'window.verificarSessao=()=>true; window.obterAuthHeaders=()=>({Authorization:"Bearer "+localStorage.getItem("token")});' });
     if (url.pathname === '/ia-sidebar.js') return route.fulfill({ contentType: 'application/javascript', body: '' });
     if (url.pathname.startsWith('/api/')) {
-      const call = { path: url.pathname, store: url.searchParams.get('store_id') || url.searchParams.get('loja'), offset: Number(url.searchParams.get('offset') || 0), limit: Number(url.searchParams.get('limit') || 20), start: Date.now() };
+      const call = { path: url.pathname, store: url.searchParams.get('store_id') || url.searchParams.get('loja'), question: url.searchParams.get('question_id'), itemIds: url.searchParams.get('item_ids'), force: url.searchParams.get('forcar'), offset: Number(url.searchParams.get('offset') || 0), limit: Number(url.searchParams.get('limit') || 20), start: Date.now() };
       calls.push(call);
       if (url.pathname.endsWith('/lojas')) return json({ success: true, lojas: stores, snapshot: { generation: 'fixture-1', published_at: '2026-09-09T12:00:00Z', status: 'ready' } });
       if (url.pathname === '/api/mercadolivre/perguntas' || url.pathname.endsWith('/perguntas/lista')) {
@@ -68,21 +68,30 @@ async function fixture(browser) {
         if (control.listHold) await control.listHold;
         await delay(store === stores[9] ? control.slowMs : control.fastMs);
         call.end = Date.now();
-        if (store.store_id === control.deny) return json({ detail: 'Acesso revogado na fixture' }, 403);
+        if (store.store_id === control.deny) return route.fulfill({ status: 401, contentType: 'application/json', headers: {'X-JK-Error-Scope': 'store', 'X-JK-Retryable': 'false'}, body: JSON.stringify({ detail: 'Acesso revogado na fixture' }) }).catch(() => {});
         if (store === stores[10] || store.store_id === control.fail) return json({ detail: 'Falha sintética' }, 503);
         return json(payload);
       }
       if (url.pathname.endsWith('/perguntas/itens')) {
         await delay(50);
+        if (control.itemDeny) return route.fulfill({status: 403, contentType: 'application/json', headers: {'X-JK-Error-Scope': 'resource', 'X-JK-Retryable': 'false'}, body: JSON.stringify({detail: 'Anúncio com acesso negado'})}).catch(() => {});
         const ids = url.searchParams.getAll('item_ids').flatMap(value => value.split(','));
-        const itens = ids.map(id => ({ id, item_id: id, item_title: `Anúncio ${id}`, item_thumbnail: '', item_permalink: '', item_sku: '001' }));
-        return json({ itens, items: itens, store_id: call.store });
+        const missing = ids.includes(control.itemMissingOnce) ? control.itemMissingOnce : '';
+        if (missing) control.itemMissingOnce = '';
+        const itens = ids.filter(id => id !== missing).map(id => ({ id, item_id: id, item_title: `Anúncio ${id}`, item_thumbnail: '', item_permalink: '', item_sku: '001' }));
+        return json({ itens, items: itens, store_id: call.store, partial: Boolean(missing), item_states: Object.fromEntries(ids.map(id => [id, {state: id === missing ? 'unavailable' : 'ready', retryable: id === missing}])) });
       }
       if (url.pathname.endsWith('/perguntas/detalhe')) {
-        await delay(75);
-        return json({ question: { buyer_name: 'Comprador fixture', buyer_question_chat: [], buyer_question_history_count: 1 }, store_id: call.store, partial: true, stale: false });
+        await delay(control.detailMs);
+        const transient = control.detailErrors.shift();
+        if (transient) return route.fulfill({status: transient, contentType: 'application/json', headers: {'X-JK-Error-Scope': 'resource', 'X-JK-Retryable': 'true', 'Retry-After': control.retryAfter}, body: JSON.stringify({detail: 'Falha transitória sintética'})}).catch(() => {});
+        if (control.detailDeny) return route.fulfill({ status: 403, contentType: 'application/json', headers: {'X-JK-Error-Scope': 'resource', 'X-JK-Retryable': 'false'}, body: JSON.stringify({ detail: 'Recurso indisponível' }) }).catch(() => {});
+        return json({ question: { text: 'Pergunta sintética de teste', buyer_name: '', buyer_question_chat: [], buyer_question_history_count: 1 }, store_id: call.store, partial: !control.omitComponents, stale: false,
+          history_truncated: control.history === 'ready', components: control.omitComponents ? undefined : { question: {state: 'ready'}, history: {state: control.history, retryable: false}, buyer: {state: 'unavailable', retryable: false} } });
       }
       if (url.pathname.endsWith('/perguntas/resumo')) return json({ lojas: stores.map(s => ({ ...s, perguntas: s === stores[10] ? null : control.counts[s.store_id] ?? 60, total: s === stores[10] ? null : 60, status_resumo: { UNANSWERED: 60 }, erro: s === stores[10] ? 'Falha sintética' : null })), partial: true });
+      if (url.pathname.endsWith('/perguntas/resposta/gerar') && control.generationScope) return route.fulfill({status: control.generationScope === 'session' ? 401 : control.generationScope === 'resource' ? 404 : 403, contentType: 'application/json', headers: {'X-JK-Error-Code': `${control.generationScope}_disconnected`, 'X-JK-Error-Scope': control.generationScope}, body: JSON.stringify({detail: 'Consulta sem acesso na fixture'})}).catch(() => {});
+      if (url.pathname.endsWith('/perguntas/resposta/gerar') && control.generationReject) return route.fulfill({status: 409, contentType: 'application/json', headers: {'X-JK-Error-Code': 'generation_context_unavailable', 'X-JK-Error-Component': control.generationReject}, body: JSON.stringify({detail: 'Histórico não confirmado. Tente novamente.'})}).catch(() => {});
       if (url.pathname.endsWith('/perguntas/responder')) return json({ success: true, resposta: 'Resposta sintética confirmada' });
       if (url.pathname.endsWith('/ia-treinamento')) return json({ success: true, store_id: call.store, exemplos: {}, notas_sku: {}, orientacoes: '' });
       return json({ success: true, lojas: [], produtos: [], status: 'idle' });
@@ -188,12 +197,13 @@ async function verifyUpdated(f) {
   assert(await page.evaluate(() => state.perguntas.every(p => p.store_id === 'fixture-1')), 'resposta antiga contaminou a loja atual');
   const input = page.locator('.question-answer-text');
   await page.waitForFunction(() => document.querySelector('.question-ai-answer-btn')?.disabled === false);
+  await verifyRecovery(f);
   assert.strictEqual(
     await page.evaluate(() => state.perguntas.find(
       question => chavePerguntaAtendimento(question) === state.perguntaSelecionadaKey
     )?._detailPartial),
     true,
-    'detalhe parcial deve ser sinalizado sem bloquear a geracao de IA'
+    'comprador opcional indisponível não bloqueia a geração quando o histórico foi consultado'
   );
   await input.fill('Rascunho sintético preservado');
   await input.focus();
@@ -221,19 +231,143 @@ async function verifyUpdated(f) {
   assert.strictEqual(await page.evaluate(id => state.perguntas.find(q => q.id === id)?.status, answeredId), 'ANSWERED', 'consulta anterior não pode restaurar pendência após resposta');
   control.deny = 'fixture-1';
   await page.evaluate(() => carregarPerguntas(1, { forcar: true, background: true }));
-  assert.strictEqual(await page.locator('[data-question-select]').count(), 0, '403 deve remover os dados em cache');
+  assert.strictEqual(await page.locator('[data-question-select]').count(), 0, 'revogação da loja deve remover seus dados em cache');
+  assert.strictEqual(await page.evaluate(() => state.lojas.length), 11, 'revogação da loja não apaga as outras lojas');
   control.deny = '';
   await page.evaluate(() => carregarLojas());
   await page.evaluate(() => selecionarLoja('Fixture 02'));
   await page.waitForFunction(() => state.perguntas.length === 20);
   await verifyExpiry(f);
   await verifyDuplicateNames(f);
+  await verifySessionRenewal(f);
   await verifyTokenChange(f);
+  await page.evaluate(() => carregarLojas());
+  await page.waitForFunction(() => state.perguntas.length === 20);
+  await verifyGenerationDenial(f);
   await page.evaluate(() => carregarLojas());
   await page.waitForFunction(() => state.perguntas.length === 20);
   await page.evaluate(() => window.dispatchEvent(new Event('jk:logout')));
   assert.strictEqual(await page.locator('[data-question-select]').count(), 0, 'logout deve limpar lista');
   assert.strictEqual(await page.locator('[data-question-card]').count(), 0, 'logout deve limpar detalhe');
+}
+
+async function verifyGenerationDenial({ page, control }) {
+  await page.evaluate(() => selecionarLoja(TODAS_LOJAS_VALUE));
+  await page.waitForFunction(() => document.querySelector('.question-ai-answer-btn')?.disabled === false);
+  await page.locator('.question-answer-text').fill('Rascunho enquanto o servidor pesquisa');
+  await page.evaluate(() => aplicarResultadoJobAtendimentoCodex(state.perguntaSelecionadaKey, {blocked_without_draft: true, result: {resposta: '', blocked_without_draft: true, warnings: ['Histórico indisponível durante a pesquisa.']}}));
+  assert.strictEqual(await page.locator('.question-answer-text').inputValue(), 'Rascunho enquanto o servidor pesquisa', 'job bloqueado sem resposta não apaga rascunho local');
+  assert.strictEqual(await page.locator('.question-ai-answer-btn').isEnabled(), false);
+  assert.match(await page.locator('.question-answer-composer .question-answer-status').innerText(), /Histórico indisponível/);
+  await page.locator('.question-loading-retry').click();
+  await page.waitForFunction(() => document.querySelector('.question-ai-answer-btn')?.disabled === false);
+  const before = await page.evaluate(() => {
+    const selected = state.perguntas.find(q => chavePerguntaAtendimento(q) === state.perguntaSelecionadaKey);
+    return {store: selected.store_id, others: state.perguntas.filter(q => q.store_id !== selected.store_id).map(q => q.id)};
+  });
+  assert(before.others.length > 0);
+  control.generationScope = 'store';
+  await page.locator('.question-ai-answer-btn').click();
+  await page.waitForFunction(id => state.perguntas.every(q => q.store_id !== id), before.store);
+  assert.deepStrictEqual(await page.evaluate(() => state.perguntas.map(q => q.id)), before.others, 'revogação durante geração preserva perguntas de outras lojas');
+  assert.strictEqual(await page.evaluate(() => state.lojas.length), 11);
+  await page.waitForFunction(() => document.querySelector('.question-ai-answer-btn')?.disabled === false);
+  control.generationScope = 'resource';
+  await page.locator('.question-ai-answer-btn').click();
+  await page.waitForFunction(() => state.perguntas.find(q => chavePerguntaAtendimento(q) === state.perguntaSelecionadaKey)?._questionState === 'blocked');
+  assert(await page.evaluate(() => state.perguntas.length > 0 && state.lojas.length === 11), '404 de recurso durante geração não esvazia loja ou sessão');
+  assert.strictEqual(await page.evaluate(() => Boolean(state.perguntas.find(q => chavePerguntaAtendimento(q) === state.perguntaSelecionadaKey)?.text)), false);
+  await page.locator('[data-question-select]').nth(1).click();
+  await page.waitForFunction(() => document.querySelector('.question-ai-answer-btn')?.disabled === false);
+  control.generationScope = 'session';
+  await page.locator('.question-ai-answer-btn').click();
+  await page.waitForFunction(() => state.perguntas.length === 0 && state.lojas.length === 0);
+  control.generationScope = '';
+  // A revoked session requires a new login before the following logout regression.
+  await page.evaluate(() => localStorage.setItem('token', 'synthetic-session-after-relogin'));
+}
+
+async function verifyRecovery({ page, calls, control }) {
+  const select = index => page.locator('[data-question-select]').nth(index).click();
+  const questionA = await page.evaluate(() => String(state.perguntas[18].id));
+  control.detailMs = 600;
+  const start = calls.length;
+  await select(18);
+  await page.waitForFunction(() => state.perguntas[18]._detailPending);
+  await select(19);
+  await select(18);
+  await page.waitForFunction(() => state.perguntas[18]._detailReady && !state.perguntas[18]._detailPending);
+  assert(calls.slice(start).filter(c => c.question === questionA).length >= 2, 'A → B → A deve retomar a consulta abortada');
+  assert.strictEqual(await page.locator('.question-ai-answer-btn').isEnabled(), true);
+  control.generationReject = 'history';
+  await page.locator('.question-ai-answer-btn').click();
+  await page.waitForFunction(() => document.querySelector('.question-loading-retry') && document.querySelector('.question-ai-answer-btn')?.disabled);
+  assert.match(await page.locator('.question-answer-composer .question-answer-status').innerText(), /Histórico não confirmado/);
+  await page.evaluate(() => renderizarPerguntas());
+  assert.match(await page.locator('.question-answer-composer .question-answer-status').innerText(), /Histórico não confirmado/, 'nova renderização deve preservar explicação da rejeição');
+  control.generationReject = '';
+  await page.locator('.question-loading-retry').click();
+  await page.waitForFunction(() => document.querySelector('.question-ai-answer-btn')?.disabled === false);
+  control.detailMs = 75;
+  control.history = 'unavailable';
+  await page.evaluate(() => JKPerguntasLoading.detalhe(state.perguntas[18], true));
+  assert.strictEqual(await page.locator('.question-ai-answer-btn').isEnabled(), false, 'histórico não consultado bloqueia IA');
+  assert.strictEqual(await page.locator('[data-question-select]').count(), 20, 'pergunta válida permanece visível');
+  assert.match(await page.locator('[data-component="history"]').innerText(), /Indisponível/);
+  assert.strictEqual(await page.locator('.question-loading-retry').count(), 1);
+  control.history = 'ready';
+  await page.locator('.question-loading-retry').click();
+  await page.waitForFunction(() => document.querySelector('.question-ai-answer-btn')?.disabled === false);
+  assert.match(await page.locator('.question-loading-status').innerText(), /50 perguntas/);
+  control.omitComponents = true;
+  await page.evaluate(() => JKPerguntasLoading.detalhe(state.perguntas[18], true));
+  assert.strictEqual(await page.locator('.question-ai-answer-btn').isEnabled(), false, 'HTTP200 e array de histórico sem confirmação de consulta não liberam IA');
+  control.omitComponents = false;
+  await page.evaluate(() => JKPerguntasLoading.detalhe(state.perguntas[18], true));
+  await page.locator('.question-answer-text').fill('Rascunho antes de falha pontual');
+  control.detailDeny = true;
+  await page.evaluate(() => JKPerguntasLoading.detalhe(state.perguntas[18], true));
+  assert.strictEqual(await page.locator('[data-question-select]').count(), 20, '403 de recurso não esvazia perguntas');
+  assert.strictEqual(await page.evaluate(() => state.lojas.length), 11, '403 de recurso não esvazia lojas');
+  assert.strictEqual(await page.locator('.question-answer-text').inputValue(), 'Rascunho antes de falha pontual');
+  assert.strictEqual(await page.evaluate(() => Boolean(state.perguntas[18].text)), false, '403 da pergunta principal remove conteúdo protegido desse recurso');
+  assert.strictEqual(await page.locator('.question-send-answer-btn').isEnabled(), false, 'pergunta negada também bloqueia envio manual');
+  assert.strictEqual(await page.locator('.question-ai-answer-btn').isEnabled(), false);
+  control.detailDeny = false;
+  const missing = await page.evaluate(() => String(state.perguntas[18].item_id));
+  control.itemMissingOnce = missing;
+  const refreshStart = calls.length;
+  await page.evaluate(() => carregarPerguntas(1, { forcar: true }));
+  await page.waitForFunction(() => state.perguntas.every(q => q._itemReady && !q._itemPending));
+  await page.waitForFunction(() => document.querySelector('.question-ai-answer-btn')?.disabled === false);
+  const refresh = calls.slice(refreshStart);
+  for (const path of ['lista', 'itens', 'detalhe']) assert(refresh.some(c => c.path.endsWith(`/perguntas/${path}`) && c.force === 'true'), `Atualizar deve forçar ${path}`);
+  assert(refresh.some(c => c.path.endsWith('/perguntas/itens') && c.itemIds === missing), 'tentativa deve consultar apenas anúncio pendente');
+  control.detailErrors = [503, 429];
+  control.retryAfter = '1';
+  const retryStart = calls.length;
+  await page.evaluate(() => JKPerguntasLoading.detalhe(state.perguntas[18], true));
+  const attempts = calls.slice(retryStart).filter(c => c.path.endsWith('/perguntas/detalhe'));
+  assert.strictEqual(attempts.length, 3, '503 e 429 devem repetir até três tentativas');
+  assert(attempts[1].start - attempts[0].start >= 2000 && attempts[2].start - attempts[1].start >= 4000, 'repetições respeitam intervalos de 2 e 4 segundos');
+  assert.strictEqual(await page.locator('.question-ai-answer-btn').isEnabled(), true);
+  control.detailErrors = [429];
+  control.retryAfter = '60';
+  const rateLimitStart = calls.length;
+  await page.evaluate(() => JKPerguntasLoading.detalhe(state.perguntas[18], true));
+  assert.strictEqual(calls.slice(rateLimitStart).filter(c => c.path.endsWith('/perguntas/detalhe')).length, 1, 'Retry-After além da janela de 30s deve oferecer tentativa manual');
+  assert.strictEqual(await page.locator('.question-ai-answer-btn').isEnabled(), false);
+  assert.strictEqual(await page.locator('.question-loading-retry').count(), 1);
+  control.retryAfter = '0';
+  control.itemDeny = true;
+  await page.evaluate(() => carregarPerguntas(1, {forcar: true}));
+  await page.waitForFunction(() => state.perguntas.every(q => !q._itemPending));
+  assert(await page.evaluate(() => state.perguntas.every(q => !q.item_title && q._itemState === 'blocked')), '403 de anúncio remove campos antigos e bloqueia prontidão');
+  assert.strictEqual(await page.evaluate(() => state.lojas.length), 11);
+  control.itemDeny = false;
+  await page.evaluate(() => carregarPerguntas(1, {forcar: true}));
+  await select(0);
+  await page.waitForFunction(() => document.querySelector('.question-ai-answer-btn')?.disabled === false);
 }
 
 async function verifyExpiry({ page, control }) {
@@ -302,6 +436,25 @@ async function verifyTokenChange({ page, calls, control }) {
   assert.strictEqual(await page.locator('[data-question-card]').count(), 0);
   assert.deepStrictEqual(await page.evaluate(() => state.notificacoes.lojas), {}, 'troca de token deve limpar contadores');
   assert.strictEqual(await page.locator('#lojas-grid .notification-pill').count(), 0);
+}
+
+async function verifySessionRenewal({ page }) {
+  const jwt = claims => `synthetic.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.signature`;
+  const identity = {sub: 'fixture-user', client_id: 'fixture-tenant', jti: 'fixture-session'};
+  await page.evaluate(token => { localStorage.setItem('token', token); JKPerguntasLoading.verificarSessao(); }, jwt({...identity, exp: 100}));
+  await page.evaluate(() => carregarLojas());
+  await page.waitForFunction(() => state.perguntas.length === 20 && !state.carregandoPerguntas);
+  await page.locator('[data-question-select]').nth(3).click();
+  await page.locator('.question-answer-text').fill('Rascunho conservado na renovação');
+  const key = await page.evaluate(() => state.perguntaSelecionadaKey);
+  await page.evaluate(token => { localStorage.setItem('token', token); JKPerguntasLoading.verificarSessao(); }, jwt({...identity, exp: 200}));
+  await page.waitForFunction(() => !state.carregandoPerguntas);
+  assert.strictEqual(await page.evaluate(() => state.perguntaSelecionadaKey), key, 'renovação mantém seleção da mesma sessão');
+  assert.strictEqual(await page.locator('.question-answer-text').inputValue(), 'Rascunho conservado na renovação');
+  await page.evaluate(token => { localStorage.setItem('token', token); JKPerguntasLoading.verificarSessao(); }, jwt({...identity, client_id: 'other-tenant', exp: 300}));
+  assert.strictEqual(await page.locator('[data-question-select]').count(), 0, 'troca de empresa limpa dados e rascunhos');
+  await page.evaluate(() => carregarLojas());
+  await page.waitForFunction(() => state.perguntas.length === 20 && !state.carregandoPerguntas);
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });
