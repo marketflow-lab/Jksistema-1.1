@@ -6,6 +6,11 @@
       "size": 1838
     },
     {
+      "path": "docs/knowledge/catalog-product-fiches.md",
+      "sha256": "a797c304327a948af1dd631535df6af3ec70c96b5f90b5b4813949fee85cb68f",
+      "size": 9517
+    },
+    {
       "path": "docs/knowledge/curation-governance-v2.md",
       "sha256": "be43fb8aff69ff58df71b5291a9aa284eebe5b7e1789fdc6606ee1e09121a335",
       "size": 1651
@@ -57,5 +62,5 @@
     }
   ],
   "schema_version": 1,
-  "source_version": "1.0.139"
+  "source_version": "1.0.140"
 }

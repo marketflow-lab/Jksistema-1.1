@@ -4602,7 +4602,9 @@ def test_desconexao_cria_tombstone_sem_remover_registro(tmp_path):
 
 
 def test_pull_machine_serializa_aplicacao_e_estado_causal(monkeypatch):
-    sessao = {"username": "operador", "client_id": "000002"}
+    # Usa uma chave de tenant exclusiva para que workers mantidos pelos testes
+    # de integracao nao disputem o lock cuja ordenacao e verificada aqui.
+    sessao = {"username": "operador", "client_id": "999992"}
     iniciou_primeiro_apply = threading.Event()
     liberar_primeiro_apply = threading.Event()
     chamadas_meta = []
@@ -4650,7 +4652,7 @@ def test_pull_machine_serializa_aplicacao_e_estado_causal(monkeypatch):
         aplicados.append(snapshot)
         if snapshot == "snapshot-a":
             iniciou_primeiro_apply.set()
-            assert liberar_primeiro_apply.wait(timeout=5)
+            assert liberar_primeiro_apply.wait(timeout=10)
         return {"file_count": 1}
 
     monkeypatch.setattr(shared_sync_machine, "_shared_sync_aplicar_pacote", aplicar)
@@ -4668,7 +4670,7 @@ def test_pull_machine_serializa_aplicacao_e_estado_causal(monkeypatch):
             sessao,
             "cadastro",
         )
-        assert iniciou_primeiro_apply.wait(timeout=5)
+        assert iniciou_primeiro_apply.wait(timeout=10)
         segundo = pool.submit(
             shared_sync_machine._shared_sync_machine_pull_scope,
             sessao,
@@ -6441,7 +6443,7 @@ def test_versoes_fonte_e_electron_estao_alinhadas_com_a_release():
     root_package = json.loads(open("package.json", "r", encoding="utf-8").read())
     electron_package = json.loads(open("electron_app/package.json", "r", encoding="utf-8").read())
     backend_source = open("backend_api.py", "r", encoding="utf-8-sig").read()
-    assert root_package["version"] == "1.0.139"
+    assert root_package["version"] == "1.0.140"
     assert electron_package["version"] == root_package["version"]
     # O minimo do backend pode permanecer anterior para nao derrubar clientes
     # durante o rollout em duas ondas.
