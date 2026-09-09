@@ -59,7 +59,8 @@
         const progress = payload && (payload.progress || payload.progresso) || {}; const raw = progress.percent ?? progress.percentual ?? payload.progress_percent;
         if (raw === null || raw === undefined || raw === '') return status === 'ready' ? 100 : null;
         let value = Number(raw); if (!Number.isFinite(value)) return status === 'ready' ? 100 : null; if (value > 0 && value <= 1) value *= 100;
-        return Math.max(0, Math.min(100, value));
+        const maximum = status === 'applying' ? 99 : 100;
+        return Math.max(0, Math.min(maximum, value));
     }
     function mensagemProgresso(payload) { const progress = payload && (payload.progress || payload.progresso) || {}; return String(progress.message || progress.mensagem || '').trim().slice(0, 300); }
     function warningsUnicos(value) {
@@ -162,10 +163,28 @@
     function plural(value, singular, pluralValue) { return `${value} ${value === 1 ? singular : pluralValue}`; }
     function detalhesRevisao(payload, summary) {
         const source = String(payload && payload.source || flow.source || '').toLowerCase();
-        if (payload && payload.partial_application === true && source === 'mercadolivre') return `Ao aprovar, o sistema tentará salvar uma foto em ${plural(summary.fotosPlanejadas, 'cadastro identificado', 'cadastros identificados')}. ${plural(summary.conflitos, 'produto tem outros dados diferentes, que serão mantidos', 'produtos têm outros dados diferentes, que serão mantidos')}. ${plural(summary.ignorados, 'anúncio ou variação ficou de fora', 'anúncios ou variações ficaram de fora')}.`;
+        if (payload && payload.partial_application === true && source === 'mercadolivre') return `As fotos ainda não foram baixadas. Ao aplicar, o sistema atualizará as descrições disponíveis e tentará baixar e salvar uma foto em ${plural(summary.fotosPlanejadas, 'cadastro identificado', 'cadastros identificados')}. ${plural(summary.conflitos, 'produto tem outros dados diferentes, que serão mantidos', 'produtos têm outros dados diferentes, que serão mantidos')}. ${plural(summary.ignorados, 'anúncio ou variação ficou de fora', 'anúncios ou variações ficaram de fora')}.`;
         const parts = [`${plural(summary.aplicaveis, 'cadastro será atualizado', 'cadastros serão atualizados')}`, `${plural(summary.conflitos, 'produto tem diferenças que serão mantidas', 'produtos têm diferenças que serão mantidas')}`, `${plural(summary.ignorados, 'anúncio ou variação foi ignorado', 'anúncios ou variações foram ignorados')}`];
-        if (source === 'mercadolivre') parts.push('as fotos disponíveis serão salvas ao aprovar');
+        if (source === 'mercadolivre') parts.push('as fotos ainda não foram baixadas e serão processadas ao aplicar');
         return `${parts.join('; ')}.`;
+    }
+    function progressoDetalhadoAplicacao(payload) {
+        const progress = payload && (payload.progress || payload.progresso) || {};
+        const stage = String(progress.stage || progress.etapa || '').toLowerCase();
+        const current = numeroResumo(progress.current ?? progress.atual);
+        const total = numeroResumo(progress.total);
+        if (stage === 'photos' && total > 0) return `Baixando fotos do Mercado Livre: ${current} de ${total} processadas.`;
+        if (stage === 'saving') return 'Fotos processadas. Salvando as informações no Cadastro...';
+        return mensagemProgresso(payload) || 'Preparando informações e fotos para salvar no Cadastro...';
+    }
+    function resultadoFotosAplicadas(applyResult) {
+        const keys = ['fotos_planejadas', 'fotos_salvas', 'fotos_ignoradas'];
+        if (!applyResult || !keys.some(key => Object.prototype.hasOwnProperty.call(applyResult, key))) return '';
+        const salvas = numeroResumo(applyResult.fotos_salvas);
+        const ignoradas = numeroResumo(applyResult.fotos_ignoradas);
+        const planejadas = Math.max(numeroResumo(applyResult.fotos_planejadas), salvas + ignoradas);
+        if (planejadas === 0) return 'Fotos do Mercado Livre: nenhuma foto nova precisava ser baixada.';
+        return `Fotos do Mercado Livre: ${salvas} de ${planejadas} foram baixadas e salvas; ${plural(ignoradas, 'não pôde ser baixada', 'não puderam ser baixadas')}.`;
     }
     function podeAplicar(payload, status) { return status === 'ready' && payload && payload.can_apply === true; }
     function renderPayload(payload) {
@@ -186,16 +205,15 @@
         elements.btnFecharImportacaoCatalogo.disabled = busy;
         elements.btnCancelarImportacaoCatalogo.disabled = busy || !flow.jobId || !CANCELLABLE.has(status);
         const applyResult = payload && payload.apply_result && typeof payload.apply_result === 'object' ? payload.apply_result : {};
-        const fotosSalvas = numeroResumo(applyResult.fotos_salvas);
         const fotosIgnoradas = numeroResumo(applyResult.fotos_ignoradas);
-        if (status === 'applied' && payload.refresh_failed) setStatus('Importação aplicada com sucesso, mas a lista não pôde ser atualizada. Use Atualizar.', 'warning');
-        else if (status === 'applied' && fotosIgnoradas > 0) setStatus(`Aplicação concluída: ${plural(fotosSalvas, 'foto foi salva', 'fotos foram salvas')}. ${plural(fotosIgnoradas, 'cadastro ficou sem foto porque a imagem não pôde ser baixada', 'cadastros ficaram sem foto porque as imagens não puderam ser baixadas')}.`, 'warning');
-        else if (status === 'applied' && fotosSalvas > 0) setStatus(`Aplicação concluída: ${plural(fotosSalvas, 'foto do Mercado Livre foi salva no cadastro', 'fotos do Mercado Livre foram salvas no cadastro')}.`, 'success');
+        const resultadoFotos = resultadoFotosAplicadas(applyResult);
+        if (status === 'applied' && resultadoFotos) setStatus(`Aplicação concluída. ${resultadoFotos}${payload.refresh_failed ? ' A lista não pôde ser atualizada; use Atualizar.' : ''}`, fotosIgnoradas > 0 || payload.refresh_failed ? 'warning' : 'success');
+        else if (status === 'applied' && payload.refresh_failed) setStatus('Importação aplicada com sucesso, mas a lista não pôde ser atualizada. Use Atualizar.', 'warning');
         else if (status === 'applied') setStatus('Importação aplicada com sucesso.', 'success');
         else if (status === 'cancelled') setStatus('Consulta cancelada. Nenhuma nova alteração será aplicada por este trabalho.', 'success');
         else if (TERMINAL_ERRORS.has(status)) setStatus(erroPayload(payload, 'A consulta não pôde ser concluída.'), 'error');
         else if (status === 'ready' && podeAplicar(payload, status)) { const partial = payload.partial_application === true || coverage !== true; setStatus(`${partial ? 'Prévia parcial pronta para aplicar.' : 'Prévia pronta para aplicar.'} ${reviewDetails}`, partial || summary.conflitos > 0 || summary.ignorados > 0 ? 'warning' : 'success'); }
-        else if (status === 'applying') setStatus('A aplicação desta importação está em andamento...', 'loading');
+        else if (status === 'applying') setStatus(progressoDetalhadoAplicacao(payload), 'loading');
         else setStatus(mensagemProgresso(payload) || erroPayload(payload, 'Consultando o catálogo externo...'), 'loading');
         if (status === 'ready' && !podeAplicar(payload, status)) {
             const warnings = totalWarnings(payload);
@@ -220,6 +238,21 @@
             const status = statusPayload(payload);
             if (status === 'ready' || status === 'applied' || status === 'cancelled' || TERMINAL_ERRORS.has(status)) return;
             if (!POLLABLE.has(status)) throw new Error('A importação retornou um estado desconhecido.');
+        }
+    }
+    async function acompanharAplicacao(seq, storeId, source, ativo) {
+        while (ativo() && isCurrent(seq, storeId)) {
+            await esperar(POLL_INTERVAL_MS);
+            if (!ativo() || !isCurrent(seq, storeId)) return;
+            try {
+                const payload = await requestJson(apiImportacao(storeId, encodeURIComponent(flow.jobId)), { headers: authHeaders() });
+                if (!ativo() || !isCurrent(seq, storeId)) return;
+                validarEscopo(payload, storeId, source);
+                const status = statusPayload(payload);
+                if (status === 'applying') { flow.lastPayload = payload; renderPayload(payload); }
+                else if (status === 'applied') { flow.lastPayload = payload; return; }
+                else if (status === 'cancelled' || TERMINAL_ERRORS.has(status)) { flow.lastPayload = payload; renderPayload(payload); return; }
+            } catch (_pollError) { /* o resultado definitivo continua sendo aguardado no POST */ }
         }
     }
     function resetPreview(source, storeId) {
@@ -303,14 +336,19 @@
         const seq = flow.requestSeq;
         const storeId = flow.storeId;
         flow.applying = true;
-        sincronizarEstadoFluxo(status);
-        renderPayload(payload);
+        const summary = resumoPayload(payload);
+        flow.lastPayload = { ...payload, status: 'applying', can_apply: false,
+            progress: { stage: 'applying', current: 0, total: summary.aplicaveis, percent: 0,
+                message: 'Preparando informações e fotos para salvar no Cadastro...' } };
+        renderPayload(flow.lastPayload);
         dialogImportacao().focus();
-        setStatus('Aplicando alterações revisadas ao cadastro...', 'loading');
+        let acompanhar = true;
+        const acompanhamento = acompanharAplicacao(seq, storeId, flow.source, () => acompanhar);
         try {
             const result = await requestJson(apiImportacao(storeId, `${encodeURIComponent(flow.jobId)}/aplicar`), {
                 method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: '{}',
             });
+            acompanhar = false;
             return await finalizarAplicado(result, seq, storeId);
         } catch (error) {
             try {
@@ -329,6 +367,8 @@
             }
             return false;
         } finally {
+            acompanhar = false;
+            await acompanhamento;
             flow.applying = false;
             if (isCurrent(seq, storeId)) renderPayload(flow.lastPayload || {});
             else {

@@ -38,6 +38,7 @@ function contentType(filePath) {
   let productLoadFails = false;
   let productLoadRequests = 0;
   let appliedRemotely = false;
+  let applyPollStep = 0;
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     page.on('pageerror', error => pageErrors.push(error.message));
@@ -211,6 +212,16 @@ function contentType(filePath) {
           });
           return;
         }
+        if (applyMode === 'progress' && applyRequests.length > 0) {
+          applyPollStep += 1;
+          await json(route, {
+            job_id: 'job-ready', source: 'bling', store_id: 'store-a', status: 'applying', can_apply: false,
+            progress: applyPollStep === 1
+              ? { stage: 'photos', current: 1, total: 2, percent: 45, message: 'Baixando capas.' }
+              : { stage: 'saving', current: 2, total: 2, percent: 100, message: 'Salvando.' },
+          });
+          return;
+        }
         await json(route, {
           job_id: 'job-ready', source: 'bling', store_id: 'store-a', store_name: 'Loja A', status: 'ready',
           coverage_complete: true, can_apply: true,
@@ -271,10 +282,11 @@ function contentType(filePath) {
           await route.abort('failed');
           return;
         }
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, applyMode === 'progress' ? 1900 : 500));
         await json(route, {
           job_id: 'job-ready', source: 'bling', store_id: 'store-a', status: 'applied', can_apply: false,
-          apply_result: { fotos_salvas: 2, fotos_ignoradas: 0 },
+          progress: { stage: 'applied', current: 1, total: 1, percent: 100 },
+          apply_result: { fotos_planejadas: 2, fotos_salvas: 2, fotos_ignoradas: 0 },
         });
         return;
       }
@@ -316,7 +328,9 @@ function contentType(filePath) {
     assert.strictEqual(await page.locator('#importacaoCatalogoNovos').textContent(), '6');
     assert.strictEqual(await page.locator('#importacaoCatalogoPreencher').textContent(), '3');
     const partialStatus = await page.locator('#importacaoCatalogoStatus').innerText();
-    assert.match(partialStatus, /tentará salvar uma foto em 3 cadastros identificados/);
+    assert.match(partialStatus, /As fotos ainda não foram baixadas/);
+    assert.match(partialStatus, /atualizará as descrições disponíveis/);
+    assert.match(partialStatus, /tentará baixar e salvar uma foto em 3 cadastros identificados/);
     assert.match(partialStatus, /2 produtos têm outros dados diferentes, que serão mantidos/);
     assert.match(partialStatus, /5 anúncios ou variações ficaram de fora/);
     assert.doesNotMatch(partialStatus, /catalog_listing_details_incomplete|Itens sem SKU são ignorados/);
@@ -414,6 +428,8 @@ function contentType(filePath) {
     assert.deepStrictEqual(cancelRequests, [{}], 'Fechar pelo X não deve cancelar o trabalho');
 
     previewMode = 'poll';
+    applyMode = 'progress';
+    applyPollStep = 0;
     cancelMode = 'applied';
     await page.locator('#btnImportarBling').click();
     await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('Detalhando User Products'));
@@ -454,6 +470,7 @@ function contentType(filePath) {
       button.click();
     });
     await page.waitForFunction(() => window.JKCadastro.runtime.state.importacaoCatalogoAplicando === true);
+    assert.strictEqual(await page.locator('#importacaoCatalogoProgressText').textContent(), '0%', 'Apply deve sair dos 100% da prévia imediatamente');
     assert.strictEqual(await page.locator('#cadastroLojaBotoes .loja-btn').first().isDisabled(), true, 'troca de loja deve ser bloqueada durante Apply');
     for (const selector of ['#btnSyncNcm', '#btnEditarCadastro', '#btnIncluirCadastro', '#btnImportarColunas', '#btnAtualizarCustosImpostos']) {
       assert.strictEqual(await page.locator(selector).isDisabled(), true, `${selector} deve permanecer bloqueado durante Apply`);
@@ -472,9 +489,14 @@ function contentType(filePath) {
       assert.strictEqual(await page.evaluate(() => document.activeElement.id), 'importacaoCatalogoDialog', 'foco não pode escapar durante Apply');
     }
     assert.strictEqual(await page.evaluate(() => window.JKCadastro.runtime.state.storeIdSelecionado), 'store-a');
+    await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('1 de 2 processadas'));
+    assert.strictEqual(await page.locator('#importacaoCatalogoProgressText').textContent(), '45%');
+    await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('Salvando as informações'));
+    assert.strictEqual(await page.locator('#importacaoCatalogoProgressText').textContent(), '99%', '100% deve ficar reservado para aplicação concluída');
     await page.waitForFunction(() => document.querySelector('#importacaoCatalogoStatus').textContent.includes('Aplicação concluída'));
     assert.deepStrictEqual(applyRequests, [{}], 'Aplicar deve emitir um único POST com JSON vazio');
-    assert.match(await page.locator('#importacaoCatalogoStatus').innerText(), /2 fotos do Mercado Livre foram salvas no cadastro/);
+    assert.match(await page.locator('#importacaoCatalogoStatus').innerText(), /Fotos do Mercado Livre: 2 de 2 foram baixadas e salvas; 0 não puderam ser baixadas/);
+    assert.strictEqual(await page.locator('#importacaoCatalogoProgressText').textContent(), '100%');
     assert.strictEqual(await page.locator('#cadastroLojaBotoes .loja-btn').first().isEnabled(), true, 'troca de loja deve ser liberada após Apply');
 
     await page.locator('#btnFecharImportacaoCatalogo').click();

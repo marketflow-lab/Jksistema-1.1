@@ -215,7 +215,7 @@ def test_progress_callback_preserva_percentual_global_e_mensagem_bling_sem_regre
     }
 
 
-def test_preview_cria_ausentes_preenche_vazios_e_preserva_conflitos():
+def test_preview_cria_ausentes_prioriza_descricao_ml_e_preserva_outros_conflitos():
     result = catalogos._construir_preview(
         "mercadolivre",
         {
@@ -265,14 +265,17 @@ def test_preview_cria_ausentes_preenche_vazios_e_preserva_conflitos():
         "conflitos": 1,
         "ignorados": 1,
         "aplicaveis": 2,
-        "campos": 2,
+        "campos": 3,
         "fotos_planejadas": 0,
         "fotos_sem_candidato": 2,
     }
     existente = next(row for row in result["apply_rows"] if row["sku_normalizado"] == "001")
     assert existente["row_version"] == 7
     assert existente["expected_scope"] == "store_file"
-    assert existente["fields"] == {"titulo_ml": "Titulo novo"}
+    assert existente["fields"] == {
+        "descricao": "Descricao externa",
+        "titulo_ml": "Titulo novo",
+    }
     novo = next(row for row in result["apply_rows"] if row["sku_normalizado"] == "002")
     assert novo["expected_scope"] == "absent"
     assert novo["fields"] == {"titulo_ml": "Produto novo"}
@@ -422,6 +425,7 @@ def test_preview_ml_parcial_aplica_somente_skus_confirmados():
                     "sku": "SKU-CONFIRMADO",
                     "fields": {
                         "mlb_principal": "MLB123",
+                        "descricao": "Descricao atualizada pelo Mercado Livre",
                         "foto_url_ml": "https://http2.mlstatic.com/capa-confirmada.jpg",
                     },
                 },
@@ -453,6 +457,7 @@ def test_preview_ml_parcial_aplica_somente_skus_confirmados():
                 "row_version": 4,
                 "scope_source": "store_file",
                 "foto": "",
+                "descricao": "Descricao antiga",
             },
             {
                 "sku": "SKU-COM-FOTO",
@@ -465,19 +470,21 @@ def test_preview_ml_parcial_aplica_somente_skus_confirmados():
 
     assert result["can_apply"] is True
     assert result["partial_application"] is True
-    assert result["partial_apply_scope"] == "confirmed_existing_photos"
+    assert result["partial_apply_scope"] == "confirmed_existing_photos_and_descriptions"
     assert result["partial_reasons"] == [
-        "photos_only",
+        "confirmed_existing_updates_only",
         "catalog_coverage_incomplete",
         "sku_coverage_incomplete",
         "items_ignored",
     ]
     assert [row["sku"] for row in result["apply_rows"]] == ["SKU-CONFIRMADO"]
     assert result["apply_rows"][0]["expected_scope"] == "store_file"
-    assert result["apply_rows"][0]["fields"] == {}
+    assert result["apply_rows"][0]["fields"] == {
+        "descricao": "Descricao atualizada pelo Mercado Livre"
+    }
     assert result["summary"]["aplicaveis"] == 1
     assert result["summary"]["preencher"] == 1
-    assert result["summary"]["campos"] == 1
+    assert result["summary"]["campos"] == 2
     assert result["summary"]["fotos_planejadas"] == 1
     assert {item["reason"] for item in result["ignored"]} == {
         "sku_inconsistente",
@@ -494,7 +501,7 @@ def test_preview_ml_parcial_aplica_somente_skus_confirmados():
     )
     assert public["can_apply"] is True
     assert public["partial_application"] is True
-    assert public["partial_apply_scope"] == "confirmed_existing_photos"
+    assert public["partial_apply_scope"] == "confirmed_existing_photos_and_descriptions"
 
 
 @pytest.mark.parametrize(
@@ -1048,7 +1055,7 @@ def test_multiplos_anuncios_ml_agregam_ids_e_nao_gravam_campos_divergentes():
     assert "marca:valores_divergentes_na_fonte" in result["items"][0]["conflicts"]
 
 
-def test_legacy_shadow_preenche_so_vazios_e_preserva_campos_manuais():
+def test_legacy_shadow_prioriza_descricao_ml_e_preserva_outros_campos_manuais():
     result = catalogos._construir_preview(
         "mercadolivre",
         {
@@ -1078,11 +1085,20 @@ def test_legacy_shadow_preenche_so_vazios_e_preserva_campos_manuais():
         ],
     )
 
-    assert result["apply_rows"][0]["fields"] == {"titulo_ml": "Titulo ML"}
+    assert result["apply_rows"][0]["fields"] == {
+        "descricao": "Descricao externa",
+        "titulo_ml": "Titulo ML",
+    }
     assert result["apply_rows"][0]["expected_scope"] == "legacy_shadow"
     assert result["apply_rows"][0]["legacy_snapshot_hash"]
     assert "marca:valor_existente_preservado" in result["items"][0]["conflicts"]
-    assert "descricao:valor_existente_preservado" in result["items"][0]["conflicts"]
+    assert "descricao:valor_existente_preservado" not in result["items"][0]["conflicts"]
+    assert {
+        "field": "descricao",
+        "current": "Descricao manual",
+        "incoming": "Descricao externa",
+        "action": "overwrite",
+    } in result["items"][0]["changes"]
 
 
 def test_sku_bruto_divergente_do_normalizado_falha_fechado():
@@ -1489,7 +1505,7 @@ def test_apply_ml_parcial_commita_somente_linha_confirmada(monkeypatch):
         coverage_complete=False,
         sku_coverage_complete=False,
         partial_application=True,
-        partial_apply_scope="confirmed_existing_photos",
+        partial_apply_scope="confirmed_existing_photos_and_descriptions",
         partial_reasons=["sku_coverage_incomplete", "items_ignored"],
     )
     photo_url = "https://http2.mlstatic.com/capa-confirmada.jpg"
@@ -1499,7 +1515,7 @@ def test_apply_ml_parcial_commita_somente_linha_confirmada(monkeypatch):
             "sku_normalizado": "001",
             "row_version": 3,
             "expected_scope": "store_file",
-            "fields": {},
+            "fields": {"descricao": "Descricao confirmada do Mercado Livre"},
             "photo_plan": {
                 "candidates": [{"url": photo_url, "item_id": "MLB123"}]
             },
@@ -1534,10 +1550,11 @@ def test_apply_ml_parcial_commita_somente_linha_confirmada(monkeypatch):
     )
 
     assert [payload["sku"] for payload in saved] == ["001"]
+    assert saved[0]["descricao"] == "Descricao confirmada do Mercado Livre"
     assert saved[0]["__foto_data_url"].startswith("data:image/jpeg;base64,")
     assert response["status"] == "applied"
     assert response["partial_application"] is True
-    assert response["partial_apply_scope"] == "confirmed_existing_photos"
+    assert response["partial_apply_scope"] == "confirmed_existing_photos_and_descriptions"
     assert response["apply_result"]["partial_application"] is True
     assert response["apply_result"]["partial_reasons"] == [
         "sku_coverage_incomplete",
@@ -1575,15 +1592,15 @@ def test_apply_rejeita_flag_stale_sem_cobertura_completa_de_skus(
     assert job["status"] == "ready"
 
 
-def test_apply_ml_parcial_rejeita_job_sem_escopo_photo_only(monkeypatch):
+def test_apply_ml_parcial_rejeita_metadado_fora_do_escopo_confirmado(monkeypatch):
     job = _job_ready(source="mercadolivre", can_apply=True)
     job["preview"].update(
         coverage_complete=False,
         sku_coverage_complete=False,
         partial_application=True,
-        partial_apply_scope="confirmed_existing_photos",
+        partial_apply_scope="confirmed_existing_photos_and_descriptions",
     )
-    # Uma linha de metadados nao pode ser liberada pelo gate parcial de fotos.
+    # O gate parcial aceita descricao e foto, mas rejeita outros metadados.
     catalogos.CATALOG_IMPORT_JOBS[job["job_id"]] = job
     monkeypatch.setattr(
         catalogos,

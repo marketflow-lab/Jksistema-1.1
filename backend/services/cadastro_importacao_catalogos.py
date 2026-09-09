@@ -2,9 +2,10 @@
 
 External providers are collected in a background, read-only preview.  The
 preview is kept server-side and can only be applied by the same tenant and
-store.  Applying creates missing SKUs and fills empty fields.  Existing Bling
-SKUs are the deliberate exception: only their Bling title plus canonical/source
-NCM and CEST fields are refreshed, while every other existing value is kept.
+store. Applying creates missing SKUs and fills empty fields. Mercado Livre
+descriptions are refreshed when available. Existing Bling SKUs are the other
+deliberate exception: only their Bling title plus canonical/source NCM and CEST
+fields are refreshed, while every other existing value is kept.
 """
 
 from __future__ import annotations
@@ -819,7 +820,9 @@ def _construir_preview(
         is True
         and not sku_identity_mismatch
     )
-    ml_photo_only = fonte == "mercadolivre" and not sku_coverage_complete
+    ml_confirmed_existing_only = (
+        fonte == "mercadolivre" and not sku_coverage_complete
+    )
     provider_stats = (
         provider_result.get("stats")
         if isinstance(provider_result.get("stats"), dict)
@@ -978,10 +981,33 @@ def _construir_preview(
         fields_apply: dict[str, Any] = {}
         changes: list[dict[str, str]] = []
         row_conflicts = 0
-        if ml_photo_only:
+        existing_store_row = bool(
+            existente
+            and str(existente.get("scope_source") or "") == "store_file"
+        )
+        if ml_confirmed_existing_only:
             if existente is None:
                 ignorar("partial_new_sku_not_applied", sku=sku)
                 warnings.append("partial_new_sku_not_applied")
+            elif existing_store_row and _valor_preenchido(fields.get("descricao")):
+                current_description = existente.get("descricao")
+                incoming_description = fields["descricao"]
+                if _texto_comparacao(current_description) != _texto_comparacao(
+                    incoming_description
+                ):
+                    fields_apply["descricao"] = incoming_description
+                    changes.append(
+                        {
+                            "field": "descricao",
+                            "current": _texto_preview(current_description),
+                            "incoming": _texto_preview(incoming_description),
+                            "action": (
+                                "overwrite"
+                                if _valor_preenchido(current_description)
+                                else "fill"
+                            ),
+                        }
+                    )
         elif existente is None:
             fields_apply.update(fields)
             changes.extend(
@@ -1007,7 +1033,9 @@ def _construir_preview(
                         }
                     )
                 elif _texto_comparacao(current) != _texto_comparacao(value):
-                    if bling_existente:
+                    if bling_existente or (
+                        fonte == "mercadolivre" and name == "descricao"
+                    ):
                         fields_apply[name] = value
                         changes.append(
                             {
@@ -1029,14 +1057,10 @@ def _construir_preview(
                         )
 
         photo_plan: dict[str, Any] = {}
-        existing_store_row = bool(
-            existente
-            and str(existente.get("scope_source") or "") == "store_file"
-        )
         if (
             fonte == "mercadolivre"
             and not _valor_preenchido((existente or {}).get("foto"))
-            and (not ml_photo_only or existing_store_row)
+            and (not ml_confirmed_existing_only or existing_store_row)
         ):
             raw_candidates = first.get("photo_candidates")
             if not isinstance(raw_candidates, list):
@@ -1064,7 +1088,7 @@ def _construir_preview(
                 fotos_ml_sem_capa += 1
                 summary["fotos_sem_candidato"] += 1
 
-        if ml_photo_only and not existing_store_row:
+        if ml_confirmed_existing_only and not existing_store_row:
             status = "ignorado"
             if existente is None:
                 summary["novos"] += 1
@@ -1087,8 +1111,8 @@ def _construir_preview(
             summary["conflitos"] += 1
 
         actionable = (
-            bool(photo_plan)
-            if ml_photo_only
+            bool(fields_apply) or bool(photo_plan)
+            if ml_confirmed_existing_only
             else (
                 existente is None
                 or materializar_sombra
@@ -1149,8 +1173,8 @@ def _construir_preview(
 
     summary["ignorados"] = ignored_count
     partial_reasons: list[str] = []
-    if ml_photo_only:
-        partial_reasons.append("photos_only")
+    if ml_confirmed_existing_only:
+        partial_reasons.append("confirmed_existing_updates_only")
     if not coverage_complete:
         partial_reasons.append("catalog_coverage_incomplete")
     if not sku_coverage_complete:
@@ -1160,11 +1184,14 @@ def _construir_preview(
     if summary["conflitos"]:
         partial_reasons.append("conflicts_preserved")
     can_apply = bool(apply_rows) and (
-        sku_coverage_complete or (ml_photo_only and not partial_global_blocked)
+        sku_coverage_complete
+        or (ml_confirmed_existing_only and not partial_global_blocked)
     )
-    partial_application = bool(ml_photo_only and can_apply)
+    partial_application = bool(ml_confirmed_existing_only and can_apply)
     partial_apply_scope = (
-        "confirmed_existing_photos" if ml_photo_only and can_apply else ""
+        "confirmed_existing_photos_and_descriptions"
+        if ml_confirmed_existing_only and can_apply
+        else ""
     )
     preview_warnings = [
         str(value) for value in (provider_result.get("warnings") or []) if str(value).strip()
@@ -1195,7 +1222,7 @@ def _construir_preview(
     }
 
 
-def _preview_parcial_fotos_confirmadas_valida(
+def _preview_parcial_dados_confirmados_valida(
     source: Any,
     preview: dict[str, Any],
 ) -> bool:
@@ -1203,20 +1230,25 @@ def _preview_parcial_fotos_confirmadas_valida(
         str(source or "").strip().lower() != "mercadolivre"
         or preview.get("partial_application") is not True
         or str(preview.get("partial_apply_scope") or "")
-        != "confirmed_existing_photos"
+        != "confirmed_existing_photos_and_descriptions"
     ):
         return False
     apply_rows = preview.get("apply_rows")
     if not isinstance(apply_rows, list) or not apply_rows:
         return False
-    return all(
-        isinstance(row, dict)
-        and str(row.get("expected_scope") or "") == "store_file"
-        and isinstance(row.get("fields"), dict)
-        and not row["fields"]
-        and bool(_normalizar_plano_foto_ml(row.get("photo_plan")))
-        for row in apply_rows
-    )
+    for row in apply_rows:
+        if (
+            not isinstance(row, dict)
+            or str(row.get("expected_scope") or "") != "store_file"
+            or not isinstance(row.get("fields"), dict)
+            or any(name != "descricao" for name in row["fields"])
+        ):
+            return False
+        has_description = _valor_preenchido(row["fields"].get("descricao"))
+        has_photo = bool(_normalizar_plano_foto_ml(row.get("photo_plan")))
+        if not has_description and not has_photo:
+            return False
+    return True
 
 
 def _erro_publico(exc: BaseException) -> dict[str, str]:
@@ -1573,7 +1605,7 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
     )
     apply_rows = preview.get("apply_rows")
     has_apply_rows = isinstance(apply_rows, list) and bool(apply_rows)
-    partial_application = _preview_parcial_fotos_confirmadas_valida(
+    partial_application = _preview_parcial_dados_confirmados_valida(
         job.get("source"), preview
     )
     payload: dict[str, Any] = {
@@ -1598,7 +1630,9 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
         ),
         "partial_application": partial_application,
         "partial_apply_scope": (
-            "confirmed_existing_photos" if partial_application else ""
+            "confirmed_existing_photos_and_descriptions"
+            if partial_application
+            else ""
         ),
         "partial_reasons": copy.deepcopy(
             preview.get("partial_reasons")
@@ -1875,7 +1909,7 @@ async def aplicar_importacao_catalogo(
             is True
         )
         apply_rows = raw_preview.get("apply_rows")
-        allow_partial = _preview_parcial_fotos_confirmadas_valida(
+        allow_partial = _preview_parcial_dados_confirmados_valida(
             job.get("source"), raw_preview
         )
         if (
@@ -1973,15 +2007,26 @@ async def aplicar_importacao_catalogo(
                 )
 
         def photo_progress(current: int, total: int) -> None:
-            percent = round((max(0, current) / max(1, total)) * 90.0, 2)
+            current = max(0, current)
+            total = max(0, total)
+            downloads_finished = total > 0 and current >= total
+            percent = (
+                95.0
+                if downloads_finished
+                else round((current / max(1, total)) * 90.0, 2)
+            )
             _atualizar_job(
                 job_id,
                 progress={
-                    "stage": "photos",
-                    "current": max(0, current),
-                    "total": max(0, total),
+                    "stage": "saving" if downloads_finished else "photos",
+                    "current": current,
+                    "total": total,
                     "percent": percent,
-                    "message": "Baixando capas confiaveis do Mercado Livre.",
+                    "message": (
+                        "Fotos processadas. Salvando os dados no Cadastro."
+                        if downloads_finished
+                        else "Baixando capas confiaveis do Mercado Livre."
+                    ),
                 },
             )
 
