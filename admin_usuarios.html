@@ -934,10 +934,8 @@
                             Por segurança, o sistema não mostra nem registra o nome, o caminho ou o conteúdo da credencial nesta tela.
                         </div>
                     </div>
-                    <label class="check-item">
-                        <input id="machineSyncEnabled" type="checkbox">
-                        <span>Receber automaticamente nesta máquina os dados enviados pelas outras máquinas em que estou logado</span>
-                    </label>
+                    <p class="small">Sincronização manual: use Enviar agora na origem e Importar agora no destino.</p>
+                    <p id="machineSyncCentralNotice" class="small" hidden>As lojas e conexões desta sessão são gerenciadas pela Central. Use Atualizar lojas na aba Lojas e APIs; para os dados do Cadastro, use Enviar agora e Importar agora abaixo.</p>
                     <div class="machine-sync-grid">
                         <div>
                             <label>Dados para sincronizar</label>
@@ -945,7 +943,7 @@
                             <div class="form-actions">
                                 <button id="machineSyncSaveButton" class="btn-primary" onclick="salvarSincronizacaoMinhasMaquinas()">Salvar opção</button>
                                 <button id="machineSyncPushButton" class="btn-success" onclick="executarSincronizacaoMinhasMaquinas('push')" disabled>Enviar agora</button>
-                                <button id="machineSyncPullButton" class="btn-warning" onclick="executarSincronizacaoMinhasMaquinas('pull')" disabled>Importar cópia legada do Firebase</button>
+                                <button id="machineSyncPullButton" class="btn-warning" onclick="executarSincronizacaoMinhasMaquinas('pull')" disabled>Importar agora</button>
                                 <div class="muted-line">Esta importação recebe uma cópia legada do Firebase e não ativa a Central de Contas.</div>
                             </div>
                         </div>
@@ -1906,7 +1904,12 @@
                 : item.connections_preserved ? '; conexões locais preservadas' : '';
             const confirmacao = item.receipt && item.receipt.state === 'confirmation_pending'
                 ? '; confirmação para a origem pendente' : '';
-            return `${nome}: ${item.file_count || 0} arquivo(s)${lojas}${conexoes}${confirmacao}`;
+            const verificacao = item.connection_verification === 'reauth_required'
+                ? '; reautorização necessária em Integrações'
+                : item.connection_verification === 'valid' ? '; conexão verificada e válida'
+                : item.connection_verification === 'not_performed' || item.scope === 'lojas_integracoes'
+                    ? '; conexões não verificadas: confira em Integrações' : '';
+            return `${nome}: ${item.file_count || 0} arquivo(s)${lojas}${conexoes}${verificacao}${confirmacao}`;
         }).join(' | ');
     }
 
@@ -2803,23 +2806,23 @@
 
     function renderSincronizacaoMinhasMaquinas(payload) {
         sincronizacaoMaquinasCache = payload || {};
+        const centralNotice = document.getElementById('machineSyncCentralNotice');
+        if (centralNotice) centralNotice.hidden = !window.jkCentralManualMode?.();
         const summary = document.getElementById('machineSyncSummary');
         const grid = document.getElementById('machineSyncScopes');
         const machinesEl = document.getElementById('machineSyncMachines');
-        const enabledEl = document.getElementById('machineSyncEnabled');
         const keyringEl = document.getElementById('machineSyncKeyringStatus');
         const config = (payload && payload.config) || {};
         const keyring = (payload && payload.keyring) || {};
         const scopes = (payload && payload.scopes) || {};
         const scopeKeys = Object.keys(scopes).filter(scope => scopes[scope] && scopes[scope].allowed);
         const selected = new Set(Array.isArray(config.scopes) ? config.scopes : []);
-        if (enabledEl) enabledEl.checked = !!config.enabled;
         if (summary) {
             const ativos = scopeKeys.filter(scope => selected.has(scope)).length;
             const maquinas = Number((payload && payload.online_count) || 0);
             const backend = payload && payload.backend === 'firebase' ? 'Firebase' : 'local';
             const pendentes = scopeKeys.filter(scope => (scopes[scope] || {}).pending_receive === true).length;
-            const recebimento = config.enabled && config.auto_pull !== false ? 'Recebimento automático ativo' : 'Recebimento automático desativado';
+            const recebimento = 'Sincronização manual';
             summary.textContent = `${recebimento} | ${ativos} dado(s) selecionado(s) | ${pendentes ? `${pendentes} para receber` : 'sem pendências'} | ${maquinas} máquina(s) online | ${backend}`;
         }
         if (keyringEl) {
@@ -2873,7 +2876,7 @@
                         ? `Último envio: ${remote.updated_at || 'sem data'}${remote.machine_id ? ' | ' + remote.machine_id : ''}`
                         : 'Ainda não enviado.';
                     const receiveText = pendingReceive
-                        ? 'Novo envio disponível para receber automaticamente.'
+                        ? 'Novo envio disponível. Clique em Importar agora.'
                         : (lastReceivedAt
                             ? `Último recebimento: ${lastReceivedAt}`
                             : (pendingKnown && remote.exists ? 'Recebimento em dia nesta máquina.' : 'Ainda não recebido nesta máquina.'));
@@ -2913,11 +2916,10 @@
     }
 
     function coletarSincronizacaoMinhasMaquinas() {
-        const enabled = !!document.getElementById('machineSyncEnabled')?.checked;
         return {
-            enabled,
+            enabled: true,
             scopes: scopesSelecionadosSincronizacaoMinhasMaquinas(),
-            auto_pull: enabled,
+            auto_pull: false,
             auto_push: false,
             machine_id: machineIdAtual()
         };
@@ -2987,7 +2989,7 @@
     window.addEventListener('jk:machine-sync-updated', (event) => {
         const detail = event && event.detail ? event.detail : {};
         const results = Array.isArray(detail.results) ? detail.results : [];
-        const recebeuDados = results.some(item => item && item.direction === 'pull' && item.success !== false && item.skipped !== true);
+        const recebeuDados = (detail.received_scopes || []).length > 0 || results.some(item => item && item.direction === 'pull' && item.success !== false && item.skipped !== true);
         if (recebeuDados) void carregarSincronizacaoMinhasMaquinas({ silencioso: true });
     });
     window.addEventListener('focus', atualizarStatusSincronizacaoMaquinasAoRetomar);
@@ -3015,7 +3017,7 @@
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao salvar sincronização.');
             renderSincronizacaoMinhasMaquinas(data);
-            if (!silencioso) setStatus(payload.enabled ? 'Sincronização entre minhas máquinas ativada.' : 'Sincronização entre minhas máquinas desativada.');
+            if (!silencioso) setStatus('Seleção salva. Use Enviar agora ou Importar agora para transferir os dados.');
             return true;
         } catch (error) {
             setStatus(error.message || 'Erro ao salvar sincronização.', true);
@@ -3042,7 +3044,7 @@
             `${Number(total.credentials || 0)} credencial(is)`,
             `${Number(total.stores || 0)} loja(s) no snapshot`
         ].join(', ');
-        const acao = direcao === 'pull' ? 'Importar cópia legada do Firebase' : 'Enviar agora';
+        const acao = direcao === 'pull' ? 'Importar agora' : 'Enviar agora';
         return confirm(`Prévia: ${resumo}.\n\n"Presente apenas no destino" é uma comparação de arquivos e não significa exclusão de lojas. O snapshot anterior é preservado.\n\n${acao}?`) ? data.operation_id : '';
     }
 
@@ -3090,7 +3092,6 @@
             const resultados = Array.isArray(data.results) ? data.results : [];
             const resultadosConcluidos = resultados.filter(item => item && item.success !== false);
             const scopesRetornados = new Set(resultados.filter(Boolean).map(item => String(item.scope || '')));
-            const scopesConcluidos = new Set(resultadosConcluidos.map(item => String(item.scope || '')));
             const scopesAusentes = scopes.filter(scope => !scopesRetornados.has(String(scope)));
             const falhas = resultados.filter(item => item && item.success === false);
             atualizarBalaoSincronizacaoMaquinas(
@@ -3098,11 +3099,11 @@
                 enviando ? 'Finalizando o envio...' : 'Atualizando as lojas e a tela...'
             );
             if (!enviando) {
-                const scopesConcluidosLista = Array.from(scopesConcluidos);
+                const scopesConcluidosLista = resultadosConcluidos.filter(item => item.skipped !== true).map(item => String(item.scope || '')).filter(Boolean);
                 await atualizarCacheHistoricoFavoritosSincronizado(resultadosConcluidos, scopesConcluidosLista);
                 const detail = { received_scopes: scopesConcluidosLista, results: resultadosConcluidos };
-                window.dispatchEvent(new CustomEvent('jk:machine-sync-updated', { detail }));
-                try { if (window.parent !== window) window.parent.dispatchEvent(new window.parent.CustomEvent('jk:machine-sync-updated', { detail })); } catch (_error) {}
+                if (window.jkNotificarImportacaoMaquinas) window.jkNotificarImportacaoMaquinas(detail);
+                else window.dispatchEvent(new CustomEvent('jk:machine-sync-updated', { detail }));
 
                 const resultadoLojas = resultados.find(item => item && item.scope === 'lojas_integracoes' && item.success !== false);
                 if (resultadoLojas) {

@@ -42,20 +42,12 @@ def test_explicit_local_disconnect_is_not_reconnected_by_sync():
     assert result == local
 
 
-def test_machine_auto_reports_partial_failure(monkeypatch):
+def test_machine_auto_cannot_apply_connections_even_with_old_config(monkeypatch):
     monkeypatch.setattr(machine, '_shared_sync_machine_config_read', lambda _: {'enabled': True, 'auto_pull': True})
-    monkeypatch.setattr(machine, '_shared_sync_machine_resolver_scopes', lambda *a, **k: ['cadastro', 'lojas_integracoes'])
-    monkeypatch.setattr(machine, '_shared_sync_state_read', lambda *a: {})
-    monkeypatch.setattr(machine, '_shared_sync_machine_remote_meta', lambda *a: {'snapshot_hash': 'remote', 'machine_id': 'other'})
-    def pull(_session, scope, **_kwargs):
-        if scope == 'cadastro':
-            raise HTTPException(409, {'code': 'cadastro_photo_config_required', 'message': 'Synthetic conflict'})
-        return {'scope': scope, 'direction': 'pull', 'success': True}
-    monkeypatch.setattr(machine, '_shared_sync_machine_pull_scope', pull)
+    monkeypatch.setattr(machine, '_shared_sync_machine_pull_scope', lambda *a, **k: pytest.fail('automatic pull must not apply connections'))
     result = machine._shared_sync_machine_auto_run({'client_id': 'test', 'username': 'test'}, 'this-machine')
-    assert result['success'] is False
-    assert result['partial'] is True
-    assert any(item.get('reason') == 'pull_failed' for item in result['skipped'])
+    assert result['results'] == []
+    assert result['skipped'][0]['reason'] == 'manual_only'
 
 
 def test_public_routes_and_request_schemas_remain_compatible():

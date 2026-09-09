@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 import threading
 import time
 import zipfile
@@ -111,276 +112,79 @@ def test_shared_sync_inicializa_depois_de_get_tenant_path():
     assert source.index("def get_tenant_path") < source.index("configure_shared_sync_runtime")
 
 
-def test_boot_web_mantem_user_share_manual_e_ativa_somente_machine_auto_pull():
-    source = open("static/auth/shared-sync-boot.js", "r", encoding="utf-8-sig").read()
-    shared_start = source.index("(function initSharedSyncAutoPull")
-    shared_return = source.index("    return;", shared_start)
-    assert shared_return < source.index("/api/shared-sync/auto-pull", shared_start)
-    assert shared_return < source.index("/api/shared-sync/user-shares/auto-push", shared_start)
-    machine_start = source.index("(function initMachineSharedSyncAuto")
-    machine_end = source.index("})();", machine_start)
-    machine_source = source[machine_start:machine_end]
-    assert "/api/shared-sync/machine-sync/auto" in machine_source
-    assert "setInterval" in machine_source or "setTimeout" in machine_source
-    assert "/api/shared-sync/machine-sync/push" not in machine_source
+def test_boot_web_mantem_todas_as_transferencias_manuais():
+    source = Path("static/auth/shared-sync-boot.js").read_text(encoding="utf-8")
+    start = source.index("(function initMachineSharedSyncAuto")
+    end = source.index("})();", start)
+    machine_source = source[start:end]
+    assert "manual_only: true" in machine_source
+    assert "fetch(" not in machine_source
+    assert "setInterval" not in machine_source and "setTimeout" not in machine_source
 
 
-def test_auto_global_fica_desativado_mas_machine_auto_pull_respeita_opt_in(monkeypatch):
+@pytest.mark.parametrize("legacy", [
+    {"enabled": True, "auto_pull": False},
+    {"enabled": True, "auto_pull": True, "auto_push": True},
+    {"enabled": True, "auto_pull": True, "mode_version": 2, "auto_pull_explicit": True},
+    {"enabled": False},
+])
+def test_machine_config_normaliza_preferencia_antiga_para_manual_sem_mudar_escopos(legacy, monkeypatch):
     monkeypatch.setenv("JK_SHARED_SYNC_AUTO", "1")
     assert shared_sync_config._shared_sync_auto_enabled() is False
     sessao = {"username": "operador", "client_id": "000002", "permissions": {"integracao": True}}
+    before = dict(legacy)
     cfg = shared_sync_config._shared_sync_machine_config_normalizar(
-        sessao,
-        {"enabled": True, "scopes": ["lojas_integracoes"], "auto_pull": True, "auto_push": True},
+        sessao, {**legacy, "scopes": ["lojas_integracoes", "cadastro"]},
     )
-    assert cfg["auto_pull"] is True
-    assert cfg["auto_push"] is False
+    assert cfg["auto_pull"] is False and cfg["auto_push"] is False
+    assert cfg["mode_version"] == 3 and cfg["auto_pull_explicit"] is True
+    assert cfg["enabled"] is legacy["enabled"]
+    assert cfg["scopes"] == ["lojas_integracoes"]
+    assert legacy == before
 
 
-def test_machine_config_migra_auto_pull_legado_e_novo_save_fica_explicito(monkeypatch):
+def test_machine_config_save_preserva_historico_e_isola_sessao(monkeypatch):
     sessao = {"username": "operador", "client_id": "000002", "permissions": {"integracao": True}}
-    legado = shared_sync_config._shared_sync_machine_config_normalizar(
-        sessao,
-        {"enabled": True, "scopes": ["lojas_integracoes"], "auto_pull": False, "auto_push": False},
-    )
-    assert legado["auto_pull"] is True
-    assert legado["auto_pull_explicit"] is False
-    assert legado["mode_version"] == 1
-
-    state = {"scopes": {}}
+    original_scopes = {"machine-sync:cadastro": {"snapshot_hash": "confirmed", "synced_at": "2026-09-08"}}
+    state = {"scopes": original_scopes}
     monkeypatch.setattr(shared_sync_config, "_shared_sync_state_read", lambda *args: dict(state))
-
-    def save_state(_client_id, _username, payload):
+    identities = []
+    def save_state(client_id, username, payload):
+        identities.append((client_id, username))
         state.clear()
         state.update(payload)
-
     monkeypatch.setattr(shared_sync_config, "_shared_sync_state_write", save_state)
-    monkeypatch.setattr(shared_sync_config, "_shared_sync_now_iso", lambda: "2026-07-20T12:00:00Z")
-
     saved = shared_sync_config._shared_sync_machine_config_save(
-        sessao,
-        {"enabled": True, "scopes": ["lojas_integracoes"], "auto_pull": False, "auto_push": True},
+        sessao, {"enabled": True, "scopes": ["lojas_integracoes"], "auto_pull": True, "auto_push": True},
     )
-
-    assert saved["auto_pull"] is False
-    assert saved["auto_push"] is False
-    assert saved["auto_pull_explicit"] is True
-    assert saved["mode_version"] == 2
-    assert state["machine_sync"] == saved
+    assert saved["auto_pull"] is False and saved["auto_push"] is False
+    assert saved["mode_version"] == 3
+    assert state["scopes"] == original_scopes
+    assert identities == [("000002", "operador")]
 
 
-def test_machine_auto_endpoint_independe_do_auto_global(monkeypatch):
+@pytest.mark.parametrize("enabled", [True, False])
+def test_machine_auto_run_nao_le_remoto_nem_transfere_mesmo_com_opt_in_antigo(monkeypatch, enabled):
     sessao = {"username": "operador", "client_id": "000002"}
-    chamadas = []
-    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_session", lambda *args: sessao)
-    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_auto_enabled", lambda: False)
-    rate_limits = []
-    monkeypatch.setattr(
-        shared_sync_machine_endpoints,
-        "_shared_sync_auto_rate_limit",
-        lambda *args, **kwargs: rate_limits.append((args, kwargs)) or None,
-    )
-    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_machine_auto_interval_seconds", lambda: 120)
-    monkeypatch.setattr(
-        shared_sync_machine_endpoints,
-        "_shared_sync_machine_auto_run",
-        lambda received, machine_id, scopes: chamadas.append((received, machine_id, scopes)) or {
-            "success": True,
-            "direction": "machine-auto",
-            "results": [{"scope": "cadastro", "direction": "pull"}],
-            "skipped": [],
-        },
-    )
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_machine_config_read", lambda _: {
+        "enabled": enabled, "auto_pull": True, "auto_push": True, "scopes": ["cadastro", "lojas_integracoes"]})
+    for name in ("_shared_sync_machine_remote_meta", "_shared_sync_machine_pull_scope", "_shared_sync_machine_push_scope", "_shared_sync_state_read"):
+        monkeypatch.setattr(shared_sync_machine, name, lambda *a, **k: pytest.fail("automatic request must not read or transfer data"))
+    result = shared_sync_machine._shared_sync_machine_auto_run(sessao, "pc:destino", ["cadastro"])
+    assert result["results"] == [] and result["success"] is True
+    assert result["skipped"][0]["reason"] == "manual_only"
 
+
+def test_machine_auto_endpoint_autentica_mas_nao_limita_nem_transfere(monkeypatch):
+    calls = []
+    sessao = {"username": "operador", "client_id": "000002"}
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_session", lambda *args: calls.append(args) or sessao)
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_auto_rate_limit", lambda *a, **k: pytest.fail("manual_only must not pollute rate limits"))
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_machine_auto_run", shared_sync_machine._shared_sync_machine_auto_run)
     result = shared_sync_machine_endpoints.shared_sync_machine_auto(
-        SharedSyncRunRequest(scopes=["cadastro"], machine_id="pc:destino"),
-        authorization="Bearer teste",
-        client_id="000002",
-    )
-
-    assert result["results"] == [{"scope": "cadastro", "direction": "pull"}]
-    assert chamadas == [(sessao, "pc:destino", ["cadastro"])]
-    assert rate_limits[0][1]["interval_seconds"] == 120
-
-
-def test_machine_auto_intervalo_padrao_alinha_com_o_scheduler(monkeypatch):
-    monkeypatch.delenv("JK_MACHINE_SHARED_SYNC_AUTO_INTERVAL_S", raising=False)
-    assert shared_sync_config._shared_sync_machine_auto_interval_seconds() == 120
-    monkeypatch.setenv("JK_MACHINE_SHARED_SYNC_AUTO_INTERVAL_S", "5")
-    assert shared_sync_config._shared_sync_machine_auto_interval_seconds() == 60
-    monkeypatch.setenv("JK_MACHINE_SHARED_SYNC_AUTO_INTERVAL_S", "9999")
-    assert shared_sync_config._shared_sync_machine_auto_interval_seconds() == 900
-
-
-def test_machine_auto_run_puxa_apenas_hash_novo_de_outra_maquina_e_nunca_envia(monkeypatch):
-    sessao = {"username": "operador", "client_id": "000002"}
-    scopes = ["cadastro", "lojas_integracoes", "vendas", "favoritos_historico"]
-    monkeypatch.setattr(
-        shared_sync_machine,
-        "_shared_sync_machine_config_read",
-        lambda _sessao: {
-            "enabled": True,
-            "scopes": list(scopes),
-            "auto_pull": True,
-            # Mesmo um estado legado inconsistente nao pode reativar auto-push.
-            "auto_push": True,
-        },
-    )
-    monkeypatch.setattr(shared_sync_machine, "_shared_sync_machine_resolver_scopes", lambda *args, **kwargs: list(scopes))
-    monkeypatch.setattr(
-        shared_sync_machine,
-        "_shared_sync_state_read",
-        lambda *args: {
-            "scopes": {
-                "machine-sync:cadastro": {"snapshot_hash": "cadastro-antigo"},
-                "machine-sync:lojas_integracoes": {"snapshot_hash": "lojas-atual"},
-                "machine-sync:vendas": {"snapshot_hash": "vendas-antigo"},
-            }
-        },
-    )
-    remotos = {
-        "cadastro": {"snapshot_hash": "cadastro-novo", "machine_id": "pc:origem"},
-        "lojas_integracoes": {"snapshot_hash": "lojas-atual", "machine_id": "pc:origem"},
-        "vendas": {"snapshot_hash": "vendas-novo", "machine_id": "pc:destino"},
-        "favoritos_historico": {},
-    }
-    monkeypatch.setattr(shared_sync_machine, "_shared_sync_machine_remote_meta", lambda _sessao, scope: dict(remotos[scope]))
-    pulls = []
-    monkeypatch.setattr(
-        shared_sync_machine,
-        "_shared_sync_machine_pull_scope",
-        lambda _sessao, scope, **_kwargs: pulls.append(scope) or {"scope": scope, "success": True, "direction": "pull"},
-    )
-    monkeypatch.setattr(
-        shared_sync_machine,
-        "_shared_sync_machine_push_scope",
-        lambda *args, **kwargs: pytest.fail("machine-auto nunca pode enviar"),
-    )
-
-    result = shared_sync_machine._shared_sync_machine_auto_run(sessao, "pc:destino")
-
-    assert pulls == ["lojas_integracoes", "cadastro"]
-    assert result["results"] == [{"scope": scope, "success": True, "direction": "pull"} for scope in pulls]
-    assert {item["scope"]: item["reason"] for item in result["skipped"]} == {
-        "vendas": "same_machine",
-        "favoritos_historico": "remote_missing",
-    }
-
-
-def test_machine_auto_continua_outros_scopes_quando_um_pull_falha(monkeypatch):
-    sessao = {"username": "operador", "client_id": "000002"}
-    scopes = ["cadastro", "vendas"]
-    monkeypatch.setattr(
-        shared_sync_machine,
-        "_shared_sync_machine_config_read",
-        lambda _sessao: {"enabled": True, "scopes": scopes, "auto_pull": True, "auto_push": False},
-    )
-    monkeypatch.setattr(shared_sync_machine, "_shared_sync_machine_resolver_scopes", lambda *args, **kwargs: scopes)
-    monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_read", lambda *args: {"scopes": {}})
-    monkeypatch.setattr(
-        shared_sync_machine,
-        "_shared_sync_machine_remote_meta",
-        lambda _sessao, scope: {"snapshot_hash": f"hash-{scope}", "machine_id": "pc:origem"},
-    )
-    pulls = []
-
-    def pull_scope(_sessao, scope, **_kwargs):
-        pulls.append(scope)
-        if scope == "cadastro":
-            raise HTTPException(status_code=502, detail="snapshot de cadastro invalido")
-        return {"scope": scope, "success": True, "direction": "pull"}
-
-    monkeypatch.setattr(shared_sync_machine, "_shared_sync_machine_pull_scope", pull_scope)
-
-    result = shared_sync_machine._shared_sync_machine_auto_run(sessao, "pc:destino")
-
-    assert pulls == scopes
-    assert result["results"] == [{"scope": "vendas", "success": True, "direction": "pull"}]
-    assert result["skipped"] == [{
-        "scope": "cadastro",
-        "reason": "pull_failed",
-        "status_code": 502,
-        "success": False,
-        "error_code": "",
-        "message": "snapshot de cadastro invalido",
-    }]
-
-
-    assert result["success"] is False
-    assert result["partial"] is True
-
-def test_machine_auto_aplica_lojas_antes_do_cadastro(monkeypatch):
-    sessao = {"username": "operador", "client_id": "000002"}
-    scopes = ["cadastro", "lojas_integracoes"]
-    monkeypatch.setattr(
-        shared_sync_machine,
-        "_shared_sync_machine_config_read",
-        lambda _sessao: {
-            "enabled": True,
-            "scopes": scopes,
-            "auto_pull": True,
-            "auto_push": False,
-        },
-    )
-    monkeypatch.setattr(
-        shared_sync_machine,
-        "_shared_sync_machine_resolver_scopes",
-        lambda *args, **kwargs: list(scopes),
-    )
-    monkeypatch.setattr(
-        shared_sync_machine,
-        "_shared_sync_state_read",
-        lambda *args: {"scopes": {}},
-    )
-    monkeypatch.setattr(
-        shared_sync_machine,
-        "_shared_sync_machine_remote_meta",
-        lambda _sessao, scope: {
-            "snapshot_hash": f"hash-{scope}",
-            "machine_id": "pc:origem",
-        },
-    )
-    pulls = []
-    monkeypatch.setattr(
-        shared_sync_machine,
-        "_shared_sync_machine_pull_scope",
-        lambda _sessao, scope, **_kwargs: pulls.append(scope)
-        or {"scope": scope, "success": True, "direction": "pull"},
-    )
-
-    result = shared_sync_machine._shared_sync_machine_auto_run(
-        sessao,
-        "pc:destino",
-    )
-
-    assert pulls == ["lojas_integracoes", "cadastro"]
-    assert [item["scope"] for item in result["results"]] == pulls
-
-
-def test_machine_auto_run_sem_opt_in_nao_le_remoto_nem_transfere(monkeypatch):
-    sessao = {"username": "operador", "client_id": "000002"}
-    monkeypatch.setattr(
-        shared_sync_machine,
-        "_shared_sync_machine_config_read",
-        lambda _sessao: {
-            "enabled": True,
-            "scopes": ["cadastro"],
-            "auto_pull": False,
-            "auto_push": False,
-        },
-    )
-    monkeypatch.setattr(shared_sync_machine, "_shared_sync_machine_resolver_scopes", lambda *args, **kwargs: ["cadastro"])
-    monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_read", lambda *args: {"scopes": {}})
-    monkeypatch.setattr(
-        shared_sync_machine,
-        "_shared_sync_machine_remote_meta",
-        lambda *args: pytest.fail("sem opt-in nao deve consultar nem transferir snapshot"),
-    )
-
-    result = shared_sync_machine._shared_sync_machine_auto_run(sessao, "pc:destino")
-
-    assert result["results"] == []
-    assert result["skipped"] == [{"scope": "cadastro", "reason": "auto_pull_disabled"}]
+        SharedSyncRunRequest(scopes=["cadastro"], machine_id="pc:destino"), authorization="Bearer synthetic", client_id="000002")
+    assert calls == [("Bearer synthetic", "000002")]
+    assert result["results"] == [] and result["skipped"][0]["reason"] == "manual_only"
 
 
 def test_machine_status_expoe_recebimento_pendente_e_ultimo_pull(monkeypatch):
@@ -473,7 +277,7 @@ def test_machine_preview_distinguishes_missing_snapshot_from_firebase_failure(mo
 
 def test_legacy_firebase_import_label_does_not_claim_to_activate_central():
     source = open("static/admin_usuarios.html", "r", encoding="utf-8-sig").read()
-    assert "Importar cópia legada do Firebase" in source
+    assert ">Importar agora</button>" in source
     assert "não ativa a Central de Contas" in source
 
 

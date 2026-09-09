@@ -3052,3 +3052,278 @@ def test_shared_sync_aplica_foto_global_legada_gif_bmp(tmp_path, monkeypatch, ex
 
     assert (tenant / rel).read_bytes() == b"legacy"
     assert result["files"] == [rel]
+
+
+@pytest.mark.parametrize("events,blocked", [
+    ([{"version": 1, "deleted_at": "2026-09-01"}, {"version": 2, "restored_at": "2026-09-02"}], False),
+    ([{"version": 3, "deleted_at": "2026-09-03"}, {"version": 2, "restored_at": "2026-09-02"}], True),
+    ([{"version": 2, "restored_at": "2026-09-02"}, {"version": 2, "deleted_at": "2026-09-02"}], True),
+])
+def test_restoration_event_order_is_shared_by_csv_and_photo_config(tmp_path, monkeypatch, events, blocked):
+    tenant = tmp_path / "000002"
+    tenant.mkdir()
+    _write_store_config(tenant, "store-a", "store-b")
+    tombs = [{"type": "store", "key": "store:store-a:", "store_id": "store-a", **event} for event in events]
+    (tenant / "lojas_sync_tombstones.json").write_text(json.dumps(tombs), encoding="utf-8")
+    monkeypatch.setattr(shared_sync_apply_scope, "get_tenant_path", lambda _: str(tenant), raising=False)
+    files = [
+        ("cadastro_fotos_config.json", _photo_config_bytes("store-a", "store-b")),
+        (REL, _csv_bytes([_row("store-a", "001", "Produto", 1, "2026-09-01T10:00:00Z")])),
+        (COST_REL, _cost_csv_bytes([{"store_id": "store-a", "sku": "001", "custo": "12.00"}])),
+        ("produtos_compilado.csv", b"store_id,sku,nome\nstore-a,001,Produto\n"),
+    ]
+    if blocked:
+        with pytest.raises(HTTPException):
+            shared_sync_apply_scope._shared_sync_aplicar_pacote("000002", "cadastro", _bundle("cadastro", files))
+        assert not (tenant / REL).exists()
+        assert not (tenant / "cadastro_fotos_config.json").exists()
+    else:
+        result = shared_sync_apply_scope._shared_sync_aplicar_pacote("000002", "cadastro", _bundle("cadastro", files))
+        assert result["file_count"] == 4
+        assert _read_rows(tenant / REL)[0]["sku"] == "001"
+        assert _read_rows(tenant / COST_REL)[0]["custo"] == "12.00"
+
+
+@pytest.mark.parametrize("cross_user", [False, True])
+def test_full_cadastro_rollback_includes_completed_photos_costs_and_new_files(tmp_path, monkeypatch, cross_user):
+    tenant = tmp_path / "000002"
+    tenant.mkdir()
+    _write_store_config(tenant, "store-a")
+    _write_default_photo_config(tenant)
+    monkeypatch.setattr(shared_sync_apply_scope, "get_tenant_path", lambda _: str(tenant), raising=False)
+    segment = cadastro_fotos._cadastro_store_id_foto_segmento("store-a")
+    old_ref = f"cadastro_fotos/lojas/{segment}/001.jpg"
+    new_ref = f"cadastro_fotos/lojas/{segment}/001.png"
+    old_photo = tenant / old_ref
+    old_photo.parent.mkdir(parents=True)
+    old_photo.write_bytes(b"original-photo")
+    columns = ["store_id", "sku", "nome", "foto", "row_version", "updated_at_utc", "deleted_at_utc"]
+    original = _csv_bytes([{**_row("store-a", "001", "Original", 1, "2026-09-01T10:00:00Z"), "foto": old_ref}], columns)
+    (tenant / REL).write_bytes(original)
+    remote = _csv_bytes([{**_row("store-a", "001", "Updated", 2, "2026-09-02T10:00:00Z"), "foto": new_ref}], columns)
+    files = [(REL, remote), (new_ref, b"new-photo"),
+             (COST_REL, _cost_csv_bytes([{"store_id": "store-a", "sku": "001", "custo": "15.00"}])),
+             ("cadastro_produtos_meta.json", b'{"updated":true}')]
+    original_write = shared_sync_apply_scope._shared_sync_atomic_write
+    def fail_after_costs(path, data):
+        if Path(path).name == "cadastro_produtos_meta.json":
+            assert (tenant / COST_REL).exists()
+            assert (tenant / new_ref).read_bytes() == b"new-photo"
+            raise OSError("synthetic final write failure")
+        return original_write(path, data)
+    monkeypatch.setattr(shared_sync_apply_scope, "_shared_sync_atomic_write", fail_after_costs)
+    if cross_user:
+        write_missing = shared_sync_merge_sqlite._shared_sync_write_missing_file
+        def fail_missing(path, data):
+            if Path(path).name == "cadastro_produtos_meta.json":
+                raise OSError("synthetic final write failure")
+            return write_missing(path, data)
+        monkeypatch.setattr(shared_sync_merge_sqlite, "_shared_sync_write_missing_file", fail_missing)
+    with pytest.raises(OSError):
+        if cross_user:
+            shared_sync_merge_sqlite._shared_sync_aplicar_user_share_add_only("000002", "cadastro", "user", files, str(tenant), str(tenant / "_backup"))
+        else:
+            shared_sync_apply_scope._shared_sync_aplicar_pacote("000002", "cadastro", _bundle("cadastro", files))
+    assert (tenant / REL).read_bytes() == original
+    assert old_photo.read_bytes() == b"original-photo"
+    assert not (tenant / new_ref).exists()
+    assert not (tenant / COST_REL).exists()
+    assert not (tenant / "cadastro_produtos_meta.json").exists()
+
+
+def test_invalid_cost_reference_is_rejected_before_any_product_write(tmp_path, monkeypatch):
+    tenant = tmp_path / "000002"
+    tenant.mkdir()
+    _write_store_config(tenant, "store-a")
+    _write_default_photo_config(tenant)
+    monkeypatch.setattr(shared_sync_apply_scope, "get_tenant_path", lambda _: str(tenant), raising=False)
+    writes = []
+    monkeypatch.setattr(shared_sync_apply_scope, "_shared_sync_atomic_write", lambda *args: writes.append(args[0]))
+    files = [(REL, _csv_bytes([_row("store-a", "001", "Product", 1, "2026-09-01T10:00:00Z")])),
+             (COST_REL, _cost_csv_bytes([{"store_id": "missing-store", "sku": "001", "custo": "15.00"}]))]
+    with pytest.raises(HTTPException) as caught:
+        shared_sync_apply_scope._shared_sync_aplicar_pacote("000002", "cadastro", _bundle("cadastro", files))
+    assert caught.value.detail["code"] == "shared_sync_store_identity_invalid"
+    assert writes == []
+    assert not (tenant / REL).exists()
+
+
+def test_manual_roundtrip_preserves_store_sku_costs_custom_fields_and_photo_versions(tmp_path, monkeypatch):
+    a, b = tmp_path / "machine-a" / "000002", tmp_path / "machine-b" / "000002"
+    for tenant in (a, b):
+        tenant.mkdir(parents=True)
+        _write_store_config(tenant, "store-a", "store-b")
+        _write_default_photo_config(tenant)
+        stores = json.loads((tenant / "lojas_config.json").read_text())
+        for store in stores:
+            store["nome"] = "Same store name"
+        (tenant / "lojas_config.json").write_text(json.dumps(stores))
+    current = [a]
+    monkeypatch.setattr(shared_sync_apply_scope, "get_tenant_path", lambda _: str(current[0]), raising=False)
+    columns = ["store_id", "sku", "nome", "foto", "custom_field", "row_version", "updated_at_utc", "deleted_at_utc"]
+    refs = {sid: f"cadastro_fotos/lojas/{cadastro_fotos._cadastro_store_id_foto_segmento(sid)}/001.jpg" for sid in ("store-a", "store-b")}
+    rows = [{**_row(sid, "001", sid, 1, "2026-09-01T10:00:00Z"), "foto": refs[sid], "custom_field": sid + "-extra"} for sid in refs]
+    costs = [{"store_id": sid, "loja_sync": "Same store name", "sku": "001", "custo": str(i + 10), "updated_at": "2026-09-01T10:00:00Z"} for i, sid in enumerate(refs)]
+    files = [(REL, _csv_bytes(rows, columns)), (COST_REL, _cost_csv_bytes(costs)),
+             *[(refs[sid], (sid + "-photo").encode()) for sid in refs]]
+    initial = _bundle("cadastro", files)
+    # Origin already has the initial state; destination receives that same snapshot.
+    for tenant in (a, b):
+        current[0] = tenant
+        monkeypatch.setattr(cadastro_fotos, "PASTA_INFO", str(tenant.parent), raising=False)
+        shared_sync_apply_scope._shared_sync_aplicar_pacote("000002", "cadastro", initial)
+    current[0] = b
+    monkeypatch.setattr(cadastro_fotos, "PASTA_INFO", str(b.parent), raising=False)
+    before = {rel: (b / rel).read_bytes() for rel, _ in files}
+    shared_sync_apply_scope._shared_sync_aplicar_pacote("000002", "cadastro", initial)
+    assert {rel: (b / rel).read_bytes() for rel, _ in files} == before
+    rows[0].update(nome="Changed on B", row_version="2", updated_at_utc="2026-09-02T10:00:00Z")
+    costs[0].update(custo="99", updated_at="2026-09-02T10:00:00Z")
+    newer = _bundle("cadastro", [(REL, _csv_bytes(rows, columns)), (COST_REL, _cost_csv_bytes(costs)),
+                                  (refs["store-a"], b"newer-photo"), (refs["store-b"], b"store-b-photo")])
+    shared_sync_apply_scope._shared_sync_aplicar_pacote("000002", "cadastro", newer)
+    current[0] = a
+    monkeypatch.setattr(cadastro_fotos, "PASTA_INFO", str(a.parent), raising=False)
+    shared_sync_apply_scope._shared_sync_aplicar_pacote("000002", "cadastro", newer)
+    shared_sync_apply_scope._shared_sync_aplicar_pacote("000002", "cadastro", initial)
+    products = _read_rows(a / REL)
+    assert len(products) == 2
+    keyed = {row["store_id"]: row for row in products}
+    assert keyed["store-a"]["nome"] == "Changed on B"
+    assert keyed["store-b"]["nome"] == "store-b"
+    assert all(row["sku"] == "001" for row in products)
+    assert keyed["store-a"]["custom_field"] == "store-a-extra"
+    assert (a / refs["store-a"]).read_bytes() == b"newer-photo"
+    assert (a / refs["store-b"]).read_bytes() == b"store-b-photo"
+    assert {row["store_id"]: row["custo"] for row in _read_rows(a / COST_REL)} == {"store-a": "99", "store-b": "11"}
+
+
+def test_failed_manual_pull_does_not_ack_and_same_snapshot_can_be_retried(tmp_path, monkeypatch):
+    from backend.services import shared_sync_machine as machine
+    tenant = tmp_path / "000002"
+    tenant.mkdir()
+    _write_store_config(tenant, "store-a")
+    _write_default_photo_config(tenant)
+    monkeypatch.setattr(shared_sync_apply_scope, "get_tenant_path", lambda _: str(tenant), raising=False)
+    files = [(REL, _csv_bytes([_row("store-a", "001", "Product", 1, "2026-09-01T10:00:00Z")])),
+             ("cadastro_produtos_meta.json", b'{"updated":true}')]
+    bundle = _bundle("cadastro", files)
+    meta = {"snapshot_id": "same-snapshot", "snapshot_hash": "same-hash"}
+    monkeypatch.setattr(machine, "_shared_sync_remote_meta_by_id", lambda *_: meta)
+    monkeypatch.setattr(machine, "_shared_sync_obter_bundle_por_id", lambda *a, **k: (bundle, meta))
+    monkeypatch.setattr(machine, "_shared_sync_machine_local_stamp", lambda *a: "stamp")
+    monkeypatch.setattr(machine, "_shared_sync_pull_already_current", lambda *a: False)
+    monkeypatch.setattr(machine, "_shared_sync_aplicar_pacote", shared_sync_apply_scope._shared_sync_aplicar_pacote)
+    receipts, history = [], []
+    def receipt(*a, **k):
+        receipts.append(True)
+        return {"state": "confirmed"}
+    monkeypatch.setattr(machine, "_shared_sync_machine_receipt", receipt)
+    monkeypatch.setattr(machine, "_shared_sync_state_update", lambda *a, **k: history.append(a))
+    original_write = shared_sync_apply_scope._shared_sync_atomic_write
+    def fail(path, data):
+        if Path(path).name == "cadastro_produtos_meta.json":
+            raise OSError("synthetic failure")
+        return original_write(path, data)
+    monkeypatch.setattr(shared_sync_apply_scope, "_shared_sync_atomic_write", fail)
+    session = {"client_id": "000002", "username": "test-user"}
+    with pytest.raises(OSError):
+        machine._shared_sync_machine_pull_scope(session, "cadastro", force=True, machine_id="B")
+    assert receipts == history == []
+    assert not (tenant / REL).exists()
+    monkeypatch.setattr(shared_sync_apply_scope, "_shared_sync_atomic_write", original_write)
+    result = machine._shared_sync_machine_pull_scope(session, "cadastro", force=True, machine_id="B")
+    assert result["success"] is True
+    assert len(receipts) == len(history) == 1
+    assert _read_rows(tenant / REL)[0]["sku"] == "001"
+
+
+def test_completed_photo_fanout_is_rolled_back_when_final_scope_file_fails(
+    tmp_path,
+    monkeypatch,
+):
+    tenant = tmp_path / "000002"
+    tenant.mkdir()
+    store_ids = ("store-a", "store-b", "store-c")
+    _write_store_config(tenant, *store_ids)
+    _enable_shared_photo_group(tenant, monkeypatch, *store_ids)
+    monkeypatch.setattr(
+        shared_sync_apply_scope,
+        "get_tenant_path",
+        lambda _client_id: str(tenant),
+        raising=False,
+    )
+    columns = [
+        "store_id", "sku", "nome", "foto", "row_version",
+        "updated_at_utc", "deleted_at_utc",
+    ]
+    jpgs = {}
+    pngs = {}
+    for store_id in store_ids:
+        segmento = cadastro_fotos._cadastro_store_id_foto_segmento(store_id)
+        jpgs[store_id] = f"cadastro_fotos/lojas/{segmento}/001.jpg"
+        pngs[store_id] = f"cadastro_fotos/lojas/{segmento}/001.png"
+    local_rows = [
+        {
+            **_row(store_id, "001", f"Local {store_id}", 1, "2026-08-28T11:00:00Z"),
+            "foto": jpgs[store_id],
+        }
+        for store_id in store_ids
+    ]
+    target = tenant / REL
+    target.write_bytes(_csv_bytes(local_rows, columns))
+    target_antes = target.read_bytes()
+    for store_id, photo_rel in jpgs.items():
+        photo_path = tenant / photo_rel
+        photo_path.parent.mkdir(parents=True, exist_ok=True)
+        photo_path.write_bytes(f"jpg-antigo-{store_id}".encode())
+    jpgs_antes = {rel: (tenant / rel).read_bytes() for rel in jpgs.values()}
+
+    remote_rows = [
+        {
+            **_row(store_id, "001", f"Remoto PNG {store_id}", 2, "2026-08-28T12:00:00Z"),
+            "foto": pngs[store_id],
+        }
+        for store_id in store_ids
+    ]
+    write_real = shared_sync_apply_scope._shared_sync_atomic_write
+    def fail_metadata(path, data):
+        if Path(path).name == "cadastro_produtos_meta.json":
+            assert all((tenant / rel).read_bytes() == b"png-novo" for rel in pngs.values())
+            assert all(not (tenant / rel).exists() for rel in jpgs.values())
+            raise OSError("late scope failure")
+        return write_real(path, data)
+    monkeypatch.setattr(shared_sync_apply_scope, "_shared_sync_atomic_write", fail_metadata)
+    with pytest.raises(OSError, match="late scope failure"):
+        shared_sync_apply_scope._shared_sync_aplicar_pacote(
+            "000002",
+            "cadastro",
+            _bundle(
+                "cadastro",
+                [
+                    *((rel, b"png-novo") for rel in pngs.values()),
+                    (REL, _csv_bytes(remote_rows, columns)),
+                    ("cadastro_produtos_meta.json", b"{}"),
+                ],
+            ),
+            "operador",
+        )
+
+    assert target.read_bytes() == target_antes
+    assert all((tenant / rel).read_bytes() == data for rel, data in jpgs_antes.items())
+    assert all(not (tenant / rel).exists() for rel in pngs.values())
+
+
+def test_invalid_cadastro_metadata_blocks_snapshot_before_changes(tmp_path, monkeypatch):
+    tenant = tmp_path / "000002"
+    tenant.mkdir()
+    _write_store_config(tenant, "store-a")
+    _write_default_photo_config(tenant)
+    monkeypatch.setattr(shared_sync_apply_scope, "get_tenant_path", lambda _: str(tenant), raising=False)
+    data = _csv_bytes([_row("store-a", "001", "Product", 1, "2026-09-01T10:00:00Z")])
+    with pytest.raises(HTTPException) as caught:
+        shared_sync_apply_scope._shared_sync_aplicar_pacote("000002", "cadastro", _bundle("cadastro", [
+            (REL, data), ("cadastro_produtos_meta.json", b"invalid-json"),
+        ]))
+    assert caught.value.detail["code"] == "shared_sync_cadastro_metadata_invalid"
+    assert not (tenant / REL).exists()

@@ -54,27 +54,40 @@
     });
     let syncPendente = false;
     let recarregandoSync = false;
+    let fornecedorEditado = false;
+    elements.fornecedorForm?.addEventListener('input', () => { fornecedorEditado = true; });
+    elements.fornecedorForm?.addEventListener('reset', () => {
+        fornecedorEditado = false;
+        setTimeout(atualizarCadastroRecebido, 0);
+    });
     global.jkCadastroPodeReceberSync = () => {
         const state = cadastro.runtime.state;
         const active = document.activeElement;
         return !state.carregandoProdutos && !state.importacaoCatalogoAtiva
             && !state.importacaoCatalogoAplicando && !state.importacaoCatalogoCancelando
-            && !state.sincronizacaoArquivoAtiva
+            && !state.sincronizacaoArquivoAtiva && !fornecedorEditado
+            && !elements.fornecedorId?.value
             && !(active && (active.isContentEditable || active.closest?.('#fornecedorForm')));
     };
     async function atualizarCadastroRecebido() {
         if (!syncPendente || recarregandoSync || !global.jkCadastroPodeReceberSync()) return;
         syncPendente = false;
         recarregandoSync = true;
+        let sucesso = false;
         try {
-            if (await actions.inicializarLojas()) await actions.carregarProdutos();
+            sucesso = await actions.inicializarLojas() && await actions.carregarProdutos();
+            if (!sucesso) throw new Error('cadastro_reload_failed');
         } catch (_error) {
             syncPendente = true;
             cadastro.core.setStatus('Dados recebidos. Atualize a lista para conferir o cadastro.', 'error');
-        } finally { recarregandoSync = false; }
+        } finally {
+            recarregandoSync = false;
+            // Um segundo recebimento durante a recarga também precisa aparecer.
+            if (sucesso && syncPendente) setTimeout(atualizarCadastroRecebido, 0);
+        }
     }
     global.addEventListener?.('jk:machine-sync-updated', event => {
-        const scopes = event.detail && event.detail.received_scopes || [];
+        const scopes = Array.isArray(event.detail?.received_scopes) ? event.detail.received_scopes : [];
         if (!scopes.some(scope => ['cadastro', 'lojas_integracoes'].includes(scope))) return;
         syncPendente = true;
         void atualizarCadastroRecebido();
@@ -91,7 +104,7 @@
             if (await actions.inicializarLojas()) await actions.carregarProdutos();
         } catch (error) {
             cadastro.core.setStatus(`Erro ao carregar lojas: ${error.message}`, 'error');
-        }
+        } finally { void atualizarCadastroRecebido(); }
     }
     iniciar();
 })(window);

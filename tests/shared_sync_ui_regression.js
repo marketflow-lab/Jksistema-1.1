@@ -107,8 +107,8 @@ assert.strictEqual(integrations, read('integracoes.html'), 'integracoes.html div
 assert.strictEqual(settings, read('configuracoes.html'), 'configuracoes.html divergiu do espelho oficial');
 
 assert(admin.includes('Atualizar status'), 'botao precisa deixar claro que apenas atualiza o status');
-assert(admin.includes('Receber automaticamente nesta máquina'), 'opt-in de recebimento automatico ausente');
-assert(admin.includes('auto_pull: enabled'), 'configuracao precisa acompanhar o opt-in de recebimento');
+assert(admin.includes('Sincronização manual: use Enviar agora na origem e Importar agora no destino.'), 'orientação do modo manual ausente');
+assert(admin.includes('auto_pull: false'), 'configuração deve manter recebimento manual');
 assert(admin.includes('auto_push: false'), 'envio automatico nao pode ser habilitado pela tela');
 assert(admin.includes('item.pending_receive === true'), 'status de recebimento pendente nao e exibido');
 assert(admin.includes('item.last_received_at'), 'ultimo recebimento nao e exibido');
@@ -126,17 +126,23 @@ assert(userShareAutoReturn < sharedSyncBoot.indexOf('/api/shared-sync/auto-pull'
 const machineAutoStart = sharedSyncBoot.indexOf('(function initMachineSharedSyncAuto');
 const machineAutoSource = sharedSyncBoot.slice(machineAutoStart);
 assert(machineAutoStart >= 0, 'inicializador de auto-pull entre maquinas ausente');
-assert(machineAutoSource.includes('/api/shared-sync/machine-sync/auto'), 'auto-pull entre maquinas nao chama o endpoint');
-assert(machineAutoSource.includes('MACHINE_SHARED_SYNC_AUTO_START_DELAY_MS = 4000'), 'chamada inicial curta do auto-pull ausente');
-assert(machineAutoSource.includes('MACHINE_SHARED_SYNC_AUTO_INTERVAL_MS = 2 * 60 * 1000'), 'intervalo seguro do auto-pull ausente');
-assert(machineAutoSource.includes('setInterval(') && machineAutoSource.includes('setTimeout('), 'scheduler do auto-pull esta incompleto');
-assert(machineAutoSource.includes('liderMachineSync()'), 'auto-pull perdeu a guarda de lideranca');
-assert(machineAutoSource.includes('const machineSyncLeader = telaSeguraParaSincronizar()'), 'pagina sem auto-pull pode bloquear a lideranca da tela segura');
-assert(machineAutoSource.includes("document.visibilityState === 'hidden'"), 'auto-pull perdeu a guarda de visibilidade');
-assert(machineAutoSource.includes("'jk:machine-sync-updated'"), 'auto-pull nao notifica a tela apos recebimento');
-assert(!machineAutoSource.includes('/api/shared-sync/machine-sync/push'), 'boot nao pode habilitar auto-push');
+assert(machineAutoSource.includes('manual_only: true'), 'alias antigo deve responder manual_only');
+assert(!machineAutoSource.includes('fetch(') && !machineAutoSource.includes('setInterval(') && !machineAutoSource.includes('setTimeout('), 'boot de máquinas não pode transferir em background');
+assert(machineAutoSource.includes("'jk:machine-sync-updated'"), 'notificação do recebimento manual ausente');
+assert(machineAutoSource.includes('coordinator?.broadcast?.(channel, message)'), 'notificação não chega às outras abas');
 const authLoader = read('static/auth.js');
-assert(authLoader.includes("VERSION = '20260908-sync-preserve-connections-v1'"), 'cache-buster do auth loader nao foi atualizado');
+assert(authLoader.includes("VERSION = '20260909-sync-manual-cadastro-v1'"), 'cache-buster do auth loader nao foi atualizado');
 assert.strictEqual(authLoader, read('auth.js'), 'auth.js divergiu do espelho oficial');
+
+const summaryStart = admin.indexOf('function resumoResultadosSync(');
+const summaryEnd = admin.indexOf('async function executarCompartilhamentoDados(', summaryStart);
+const resultSummary = new Function('compartilhamentoCache', 'compartilhamentoUsuariosCache',
+    `${admin.slice(summaryStart, summaryEnd)}; return resumoResultadosSync;`)(null, null);
+const imported = resultSummary([{ scope: 'lojas_integracoes', file_count: 1, stores_count: 11,
+    connection_conflicts: 21, connection_verification: 'not_performed' }]);
+assert(imported.includes('21 conexão(ões) divergente(s)') && imported.includes('conexões não verificadas'), 'divergências não podem ser apresentadas como tokens inválidos');
+assert(!imported.includes('reautorização necessária'), 'importação sem validação não deve pedir reautorização');
+assert(resultSummary([{ scope: 'lojas_integracoes', connection_verification: 'reauth_required' }]).includes('reautorização necessária'), 'reautorização confirmada deve ser distinta');
+assert(resultSummary([{ scope: 'lojas_integracoes', connection_verification: 'valid' }]).includes('conexão verificada e válida'), 'validação confirmada deve ser distinta');
 
 console.log('shared_sync_ui_regression: ok');

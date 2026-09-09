@@ -7,7 +7,8 @@ const forbidden = () => { calls++; throw new Error('Automatic activity is forbid
 const context = {
     window: { jkCentralManualMode: () => true },
     document: { addEventListener: forbidden },
-    localStorage: { getItem: forbidden },
+    // Local identity is needed only to scope cross-tab screen invalidation.
+    localStorage: { getItem: key => { assert.equal(key, 'user_data'); return JSON.stringify({ client_id: 'synthetic', username: 'operator' }); }, setItem: forbidden },
     fetch: forbidden, setInterval: forbidden, setTimeout: forbidden,
 };
 vm.runInNewContext(fs.readFileSync('static/auth/shared-sync-boot.js', 'utf8'), context);

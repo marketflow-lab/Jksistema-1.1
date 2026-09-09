@@ -207,16 +207,7 @@ def _shared_sync_validar_store_ids_df_remoto_locked(
                 tombstones = json.load(file)
             if not isinstance(tombstones, list):
                 raise ValueError("tombstones_nao_e_lista")
-        store_ids_tombstonados = {
-            str((item or {}).get("store_id") or "").strip()
-            for item in tombstones
-            if isinstance(item, dict)
-            and str((item or {}).get("store_id") or "").strip()
-            and (
-                str((item or {}).get("type") or "").strip().casefold() == "store"
-                or str((item or {}).get("key") or "").strip().casefold().startswith("store:")
-            )
-        }
+        store_ids_tombstonados = _shared_sync_store_ids_tombstonados(tombstones)
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
         raise HTTPException(
             status_code=409,
@@ -620,6 +611,8 @@ def _shared_sync_aplicar_foto_legada_atomica(
         "sku": _shared_sync_legacy_photo_sku(rel),
     }
     variantes = _cadastro_caminhos_variantes_fotos_preparadas([preparada])
+    from backend.services.shared_sync_cadastro_transaction import enlist
+    enlist(variantes)
     with path_locks_for(variantes):
         _validar_caminhos_variantes_fotos(variantes)
         existentes = [caminho for caminho in variantes if os.path.isfile(caminho)]
@@ -709,16 +702,27 @@ def _shared_sync_merge_tombstones_integracoes_payload(
 
 
 def _shared_sync_store_ids_tombstonados(tombstones: list[dict]) -> set[str]:
-    return {
-        str((item or {}).get("store_id") or "").strip()
-        for item in tombstones
-        if str((item or {}).get("store_id") or "").strip()
-        and not str((item or {}).get("restored_at") or "").strip()
-        and (
-            str((item or {}).get("type") or "").strip().casefold() == "store"
-            or _shared_sync_tombstone_key(item).casefold().startswith("store:")
+    # Resolve the latest event per exact store identity. Restorations are
+    # events too; an older deletion must not invalidate a restored store.
+    latest: dict[str, tuple[tuple, bool]] = {}
+    for item in tombstones:
+        if not isinstance(item, dict):
+            raise ValueError("tombstone_invalido")
+        store_id = str(item.get("store_id") or "").strip()
+        if not store_id or not (
+            str(item.get("type") or "").strip().casefold() == "store"
+            or str(item.get("key") or "").strip().casefold().startswith("store:")
+        ):
+            continue
+        restored = bool(str(item.get("restored_at") or "").strip())
+        priority = (
+            max(0, int(item.get("version") or 0)),
+            str(item.get("restored_at") or item.get("deleted_at") or "").strip(),
+            not restored,  # A deletion wins an otherwise identical event.
         )
-    }
+        if store_id not in latest or priority > latest[store_id][0]:
+            latest[store_id] = (priority, not restored)
+    return {store_id for store_id, (_priority, deleted) in latest.items() if deleted}
 
 
 def _shared_sync_aplicar_tombstones_integracao(
@@ -1924,6 +1928,18 @@ def _shared_sync_aplicar_user_share_add_only(
     tenant_abs: str,
     backup_dir: str,
 ) -> dict:
+    if scope == "cadastro":
+        from backend.services.shared_sync_cadastro_transaction import transaction
+        from backend.services.shared_sync_apply_scope import _shared_sync_prevalidar_cadastro
+        with _shared_sync_bloquear_writer_store_id(client_id, tenant_abs):
+            _shared_sync_prevalidar_cadastro(client_id, tenant_abs, fontes)
+            targets = [_shared_sync_resolve_tenant_path(tenant_abs, rel) for rel, _data in fontes]
+            with transaction(tenant_abs, targets):
+                return _shared_sync_aplicar_user_share_conteudo(client_id, scope, username, fontes, tenant_abs, backup_dir)
+    return _shared_sync_aplicar_user_share_conteudo(client_id, scope, username, fontes, tenant_abs, backup_dir)
+
+
+def _shared_sync_aplicar_user_share_conteudo(client_id, scope, username, fontes, tenant_abs, backup_dir):
     if not fontes:
         return {"file_count": 0, "files": [], "added": 0}
     if scope == "lojas_integracoes":

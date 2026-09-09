@@ -414,58 +414,11 @@ def _shared_sync_machine_status_payload(sessao: dict, machine_id: str = "") -> d
     }
 
 def _shared_sync_machine_auto_run(sessao: dict, machine_id: str = "", requested: Optional[list[str]] = None) -> dict:
-    config = _shared_sync_machine_config_read(sessao)
-    if not config.get("enabled"):
-        return {"success": True, "direction": "machine-auto", "results": [], "skipped": [{"reason": "disabled"}]}
-    scopes = _shared_sync_machine_resolver_scopes(sessao, requested, require_enabled=True)
-    if "lojas_integracoes" in scopes:
-        scopes = [
-            "lojas_integracoes",
-            *(scope for scope in scopes if scope != "lojas_integracoes"),
-        ]
-    state = _shared_sync_state_read(sessao.get("client_id"), sessao.get("username") or "")
-    state_scopes = state.get("scopes") if isinstance(state.get("scopes"), dict) else {}
-    results = []
-    skipped = []
-    for scope in scopes:
-        if not config.get("auto_pull"):
-            skipped.append({"scope": scope, "reason": "auto_pull_disabled"})
-            continue
-        state_key = _shared_sync_machine_state_scope(scope)
-        remote = _shared_sync_machine_remote_meta(sessao, scope) or {}
-        remote_hash = str(remote.get("snapshot_hash") or "")
-        state_hash = str(((state_scopes.get(state_key) or {}).get("snapshot_hash")) or "")
-        remote_machine = str(remote.get("machine_id") or "").strip()
-        current_machine = str(machine_id or "").strip()
+    # Compatibilidade com clientes anteriores: autenticação permanece no endpoint,
+    # mas nem configuração legada habilitada inicia leitura ou aplicação remota.
+    from backend.services.shared_sync_config import _shared_sync_manual_only_payload
+    return _shared_sync_manual_only_payload("machine-auto")
 
-        if not remote:
-            skipped.append({"scope": scope, "reason": "remote_missing"})
-            continue
-        if not remote_hash:
-            skipped.append({"scope": scope, "reason": "remote_hash_missing"})
-            continue
-        state_scope = state_scopes.get(state_key) if isinstance(state_scopes.get(state_key), dict) else {}
-        remote_snapshot_id = str(remote.get("snapshot_id") or "").strip()
-        state_snapshot_id = str(state_scope.get("snapshot_id") or "").strip()
-        if (
-            state_hash == remote_hash
-            and not state_scope.get("receipt_pending")
-            and (scope not in {"cadastro", "lojas_integracoes"} or (state_scope.get("local_content_stamp") and state_scope.get("local_content_stamp") == _shared_sync_machine_local_stamp(sessao, scope)))
-            and (not remote_snapshot_id or state_snapshot_id == remote_snapshot_id)
-        ):
-            skipped.append({"scope": scope, "reason": "already_current", "snapshot_hash": remote_hash})
-            continue
-        if remote_machine == current_machine:
-            skipped.append({"scope": scope, "reason": "same_machine", "snapshot_hash": remote_hash})
-            continue
-        try:
-            results.append(_shared_sync_machine_pull_scope(sessao, scope, machine_id=machine_id))
-        except Exception as exc:
-            from backend.services.shared_sync_machine_endpoints import _shared_sync_machine_pull_failure
-            skipped.append(_shared_sync_machine_pull_failure(scope, exc))
-    failures = [item for item in skipped if item.get("reason") == "pull_failed"]
-    return {"success": not failures, "partial": bool(failures) and bool(results),
-            "direction": "machine-auto", "results": results, "skipped": skipped}
 
 def _shared_sync_status_payload(client_id: str, config: Optional[dict] = None) -> dict:
     cfg = config or _shared_sync_config_read(client_id)

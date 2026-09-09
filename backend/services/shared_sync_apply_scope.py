@@ -181,6 +181,8 @@ def _shared_sync_atomic_write(target_abs: str, data: bytes) -> None:
     # Reentrant by design: callers may hold this same canonical path lock
     # across backup + write, while direct users still coordinate with Cadastro,
     # NCM and stock writers instead of replacing the file concurrently.
+    from backend.services.shared_sync_cadastro_transaction import enlist
+    enlist([target_abs])
     with _shared_sync_path_lock_for(target_abs):
         os.makedirs(os.path.dirname(target_abs), exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(
@@ -1166,17 +1168,7 @@ def _shared_sync_cadastro_photo_config_store_ids_locked(
                 tombstones = json.load(arquivo)
             if not isinstance(tombstones, list):
                 raise ValueError("tombstones_invalidos")
-            for item in tombstones:
-                if not isinstance(item, dict):
-                    raise ValueError("tombstone_invalido")
-                store_id = item.get("store_id")
-                if not isinstance(store_id, str) or not store_id:
-                    continue
-                if (
-                    str(item.get("type") or "").strip().casefold() == "store"
-                    or str(item.get("key") or "").strip().casefold().startswith("store:")
-                ):
-                    tombstonados.add(store_id)
+            tombstonados = _shared_sync_store_ids_tombstonados(tombstones)
     except HTTPException:
         raise
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -1445,6 +1437,8 @@ def _shared_sync_aplicar_cadastro_lojas_fotos_transacional(
                 tenant_abs,
                 list(photo_plan.get("lock_fontes") or store_photo_fontes),
             )
+            from backend.services.shared_sync_cadastro_transaction import enlist
+            enlist(caminhos_fotos)
             with path_locks_for(caminhos_fotos):
                 estados.update(_capturar_estados_arquivos(caminhos_fotos))
                 _shared_sync_backup_target(tenant_abs, backup_dir, rel, target_abs)
@@ -2075,6 +2069,56 @@ def _shared_sync_aplicar_pacote(
                 },
             )
         tenant_abs = tenant_confiavel
+    _manifest, fontes = _shared_sync_read_validated_bundle(bundle, scope)
+    if scope == "cadastro":
+        from backend.services.shared_sync_cadastro_transaction import transaction
+        with _shared_sync_bloquear_writer_store_id(client_id, tenant_abs):
+            _shared_sync_prevalidar_cadastro(client_id, tenant_abs, fontes, scope_config)
+            targets = [_shared_sync_resolve_tenant_path(tenant_abs, rel) for rel, _data in fontes]
+            with transaction(tenant_abs, targets):
+                return _shared_sync_aplicar_pacote_conteudo(
+                    client_id, scope, username, scope_config, tenant_abs, fontes)
+    return _shared_sync_aplicar_pacote_conteudo(
+        client_id, scope, username, scope_config, tenant_abs, fontes)
+
+
+def _shared_sync_prevalidar_cadastro(client_id, tenant_abs, fontes, scope_config=None):
+    """Validate all store references before the first file in the scope changes."""
+    config_data = next((data for rel, data in fontes if rel.lower() == "cadastro_fotos_config.json"), None)
+    photos = [(rel, data) for rel, data in fontes if _shared_sync_cadastro_store_photo_key("cadastro", rel)]
+    bootstrap = bool((scope_config or {}).get("allow_legacy_cadastro_bootstrap")) and config_data is None and not photos
+    if config_data is not None:
+        _shared_sync_cadastro_photo_config_preparar_locked(tenant_abs, config_data)
+    for rel, data in fontes:
+        target = _shared_sync_resolve_tenant_path(tenant_abs, rel)
+        lower = rel.lower()
+        if lower == "cadastro_produtos_meta.json":
+            try:
+                json.loads(data.decode("utf-8-sig"))
+            except (ValueError, UnicodeError) as exc:
+                raise HTTPException(409, {"code": "shared_sync_cadastro_metadata_invalid",
+                                          "message": "Os metadados do cadastro recebido sao invalidos."}) from exc
+        if lower.endswith(".csv") and lower != "cadastro_produtos.csv":
+            _shared_sync_validar_store_ids_csv_remoto_locked(
+                tenant_abs, data, rel,
+                exigir_store_id=lower == "cadastro_produtos_lojas.csv" or (
+                    lower in {"cadastro_custos_lojas.csv", "produtos_compilado.csv"} and not bootstrap),
+            )
+        if lower == "produtos_compilado.csv":
+            _shared_sync_exigir_produtos_compilado_sem_fotos_locais_locked(client_id, tenant_abs, data, rel)
+        elif lower == "cadastro_produtos.csv":
+            with _shared_sync_guard_legacy_cadastro_csv_locked(
+                client_id, target, data, allow_store_owned_legacy=bootstrap,
+            ):
+                pass
+        elif _shared_sync_legacy_photo_sku(rel):
+            with _shared_sync_guard_legacy_photo_locked(
+                client_id, tenant_abs, target, rel, allow_store_owned_legacy=bootstrap,
+            ):
+                pass
+
+
+def _shared_sync_aplicar_pacote_conteudo(client_id, scope, username, scope_config, tenant_abs, fontes):
     backup_dir = os.path.join(
         tenant_abs,
         "_shared_sync_backups",
@@ -2089,7 +2133,6 @@ def _shared_sync_aplicar_pacote(
     legacy_favoritos_fontes: list[tuple[str, bytes]] = []
     user_share = bool((scope_config or {}).get("user_share"))
     share_between_users = bool((scope_config or {}).get("share_between_users")) and bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped"))
-    _manifest, fontes = _shared_sync_read_validated_bundle(bundle, scope)
 
     if scope == "lojas_integracoes":
         base_lojas_bytes = None

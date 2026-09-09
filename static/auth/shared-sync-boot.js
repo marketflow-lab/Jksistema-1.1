@@ -1285,175 +1285,65 @@
 })();
 
 (function initMachineSharedSyncAuto() {
-    if (window.jkCentralManualMode?.()) return;
     if (window.__jkMachineSharedSyncAutoInit) return;
     window.__jkMachineSharedSyncAutoInit = true;
+    // Alias público mantido para extensões antigas. Transferências exigem a prévia
+    // e os botões Enviar agora / Importar agora da Central de Integrações.
+    window.jkMachineSyncNow = async () => ({ success: false, manual_only: true });
+})();
 
-    let executando = false;
-    let falhasConsecutivas = 0;
-    let bloqueadoPorConflito = false;
-    let proximaTentativa = 0;
-    function mostrarPendenciaSync(message) {
-        let panel = document.getElementById('jkMachineSyncNotice');
-        if (!panel) {
-            panel = document.createElement('div');
-            panel.id = 'jkMachineSyncNotice';
-            panel.setAttribute('role', 'status');
-            panel.style.cssText = 'position:fixed;bottom:16px;right:16px;max-width:420px;padding:14px;background:#252a38;color:#fff;border:1px solid #d3a641;border-radius:8px;z-index:10050';
-            document.body.appendChild(panel);
-        }
-        panel.replaceChildren();
-        if (!message) { panel.hidden = true; return; }
-        panel.hidden = false;
-        const text = document.createElement('span');
-        text.textContent = message;
-        panel.appendChild(text);
-        const retry = document.createElement('button');
-        retry.textContent = 'Tentar receber novamente';
-        retry.style.marginLeft = '8px';
-        retry.onclick = () => { void executarMachineSync('manual'); };
-        panel.appendChild(retry);
-    }
-    let ultimaExecucao = 0;
-    let machineSyncInitialTimer = null;
-    let machineSyncIntervalTimer = null;
-    const MACHINE_SHARED_SYNC_AUTO_INTERVAL_MS = 2 * 60 * 1000;
-    const MACHINE_SHARED_SYNC_AUTO_START_DELAY_MS = 4000;
-    const machineSyncLeader = telaSeguraParaSincronizar()
-        && window.jkTabCoordinator
-        && typeof window.jkTabCoordinator.createLeader === 'function'
-        ? window.jkTabCoordinator.createLeader('machine-shared-sync-auto', { ttlMs: 60000 })
-        : null;
-
-    function liderMachineSync() {
-        return !machineSyncLeader || machineSyncLeader.isLeader();
-    }
-
-    function telaSeguraParaSincronizar() {
-        const path = String(window.location.pathname || '').toLowerCase();
-        return !path || path === '/' || /dashboard\.html$|configuracoes\.html$|admin_usuarios\.html$|cadastro\.html$|integracoes\.html$/.test(path);
-    }
-
-    function machineIdAtualSync() {
+(function initMachineSharedSyncNotifications() {
+    if (window.__jkMachineSharedSyncNotificationsInit) return;
+    window.__jkMachineSharedSyncNotificationsInit = true;
+    const coordinator = window.jkTabCoordinator;
+    const seen = new Set();
+    function sessionScope() {
         try {
-            const data = JSON.parse(localStorage.getItem('user_data') || '{}') || {};
-            return String(data.machine_id || '').trim();
-        } catch (_err) {
-            return '';
-        }
+            const user = JSON.parse(localStorage.getItem('user_data') || '{}');
+            const client = String(user.client_id || '').trim();
+            const username = String(user.username || '').trim().toLowerCase();
+            return client && username ? JSON.stringify([client, username]) : '';
+        } catch (_error) { return ''; }
     }
-
-    function resultadosPullAplicados(results) {
-        return (Array.isArray(results) ? results : []).filter(item => (
-            item
-            && item.direction === 'pull'
-            && item.success !== false
-            && item.skipped !== true
-        ));
+    const scope = sessionScope();
+    function deliver(detail) {
+        if (!scope || sessionScope() !== scope || !detail || detail.session_scope !== scope || !detail.event_id || seen.has(detail.event_id)) return;
+        const received = (Array.isArray(detail.received_scopes) ? detail.received_scopes : [])
+            .filter(item => typeof item === 'string');
+        if (!received.length) return;
+        seen.add(detail.event_id);
+        if (seen.size > 100) seen.delete(seen.values().next().value);
+        window.dispatchEvent(new CustomEvent('jk:machine-sync-updated', {
+            detail: { event_id: detail.event_id, received_scopes: received, source: 'machine-manual-pull' }
+        }));
     }
-
-    function dispararAtualizacaoMachineSync(data, pullResults) {
-        const detail = {
-            source: 'machine-auto-pull',
-            results: Array.isArray(data && data.results) ? data.results : pullResults,
-            received_scopes: pullResults.map(item => String(item.scope || '')).filter(Boolean),
-            updated_at: new Date().toISOString()
+    const channel = `machine-sync-updated:${scope}`;
+    if (scope && coordinator?.subscribe) coordinator.subscribe(channel, deliver);
+    // Abas internas em iframes compartilham sessionStorage e o tabId do bus.
+    // Entregue também na árvore local; a guarda de sessão e event_id evita
+    // mistura de contas e duplicação quando o bus chega à mesma janela.
+    window.jkReceberNotificacaoImportacaoMaquinas = deliver;
+    function notifyFrames(target, message) {
+        try {
+            target.jkReceberNotificacaoImportacaoMaquinas?.(message);
+            for (let index = 0; index < target.frames.length; index += 1) {
+                notifyFrames(target.frames[index], message);
+            }
+        } catch (_error) { /* frame de outra origem */ }
+    }
+    window.jkNotificarImportacaoMaquinas = detail => {
+        if (!scope || sessionScope() !== scope) return;
+        const message = {
+            event_id: window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+            session_scope: scope,
+            received_scopes: Array.isArray(detail?.received_scopes) ? detail.received_scopes : []
         };
-        const targets = [window];
-        try {
-            if (window.parent && window.parent !== window) targets.push(window.parent);
-        } catch (_err) {}
-        targets.forEach((target) => {
-            try {
-                target.dispatchEvent(new target.CustomEvent('jk:machine-sync-updated', { detail }));
-            } catch (_err) {}
-        });
-    }
-
-    async function executarMachineSync(motivo) {
-        if (executando || !obterToken() || tokenSessaoExpirado()) return null;
-        if (/frontend_index\.html$/i.test(window.location.pathname || '')) return null;
-        if (!telaSeguraParaSincronizar()) return null;
-        if (window.jkCadastroPodeReceberSync && !window.jkCadastroPodeReceberSync()) return null;
-        if (motivo === 'manual') { bloqueadoPorConflito = false; falhasConsecutivas = 0; proximaTentativa = 0; }
-        if (motivo !== 'manual' && (bloqueadoPorConflito || falhasConsecutivas >= 3 || Date.now() < proximaTentativa)) return null;
-        if (motivo !== 'manual' && !liderMachineSync()) return null;
-        if (motivo !== 'manual' && document.visibilityState === 'hidden') return null;
-        const agora = Date.now();
-        if (motivo !== 'manual' && agora - ultimaExecucao < MACHINE_SHARED_SYNC_AUTO_INTERVAL_MS) return null;
-        ultimaExecucao = agora;
-        executando = true;
-        try {
-            const resp = await fetch('/api/shared-sync/machine-sync/auto', {
-                method: 'POST',
-                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ machine_id: machineIdAtualSync() })
-            });
-            const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) {
-                throw new Error(data.detail || data.message || 'Erro ao receber dados das outras maquinas.');
-            }
-            const pullResults = resultadosPullAplicados(data.results);
-            if (pullResults.length) {
-                dispararAtualizacaoMachineSync(data, pullResults);
-            }
-            const failures = [...(data.results || []), ...(data.skipped || [])]
-                .filter(item => item && (item.success === false || item.reason === 'pull_failed'));
-            if (failures.length || data.success === false) {
-                bloqueadoPorConflito = failures.some(item => [400, 401, 403, 409, 422].includes(Number(item.status_code)));
-                throw new Error(failures.map(item => `${item.scope}: ${item.message || 'recebimento pendente'}`).join(' / ') || 'Recebimento não concluído.');
-            }
-            falhasConsecutivas = 0;
-            proximaTentativa = 0;
-            const conflicts = pullResults.reduce((total, item) => total + Number(item.connection_conflicts || 0), 0);
-            const pendingReceipt = pullResults.some(item => item.receipt && item.receipt.state === 'confirmation_pending');
-            if (pullResults.length) mostrarPendenciaSync(conflicts ? `${conflicts} conexão(ões) divergente(s). As conexões locais foram preservadas. Confira em Integrações.`
-                : pendingReceipt ? 'Dados aplicados. A confirmação para a outra máquina está pendente.' : '');
-            return data;
-        } catch (err) {
-            falhasConsecutivas += 1;
-            proximaTentativa = Date.now() + MACHINE_SHARED_SYNC_AUTO_INTERVAL_MS * (2 ** Math.min(falhasConsecutivas, 3));
-            mostrarPendenciaSync(`Recebimento pendente. ${String(err.message || 'Falha de comunicação.').slice(0, 500)}`);
-            return null;
-        } finally {
-            executando = false;
-        }
-    }
-
-    function iniciarAgendamentoMachineSync() {
-        if (!machineSyncInitialTimer) {
-            machineSyncInitialTimer = setTimeout(() => {
-                machineSyncInitialTimer = null;
-                void executarMachineSync('inicio');
-            }, MACHINE_SHARED_SYNC_AUTO_START_DELAY_MS);
-        }
-        if (!machineSyncIntervalTimer) {
-            machineSyncIntervalTimer = setInterval(() => {
-                void executarMachineSync('intervalo');
-            }, MACHINE_SHARED_SYNC_AUTO_INTERVAL_MS);
-        }
-    }
-
-    window.jkMachineSyncNow = () => executarMachineSync('manual');
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', iniciarAgendamentoMachineSync, { once: true });
-    } else {
-        iniciarAgendamentoMachineSync();
-    }
-    window.addEventListener('focus', () => {
-        if (document.visibilityState !== 'hidden') void executarMachineSync('foco');
-    });
-    window.addEventListener('pageshow', iniciarAgendamentoMachineSync);
-    window.addEventListener('pagehide', () => {
-        if (machineSyncInitialTimer) clearTimeout(machineSyncInitialTimer);
-        if (machineSyncIntervalTimer) clearInterval(machineSyncIntervalTimer);
-        machineSyncInitialTimer = null;
-        machineSyncIntervalTimer = null;
-        try { machineSyncLeader?.release(); } catch (_err) {}
-    });
-    document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState !== 'hidden') void executarMachineSync('visivel');
-    });
+        deliver(message);
+        try { notifyFrames(window.top, message); } catch (_error) {}
+        // Apenas a invalidação da tela circula entre abas; dados importados e
+        // credenciais nunca são enviados ao bus nem persistidos por ele.
+        coordinator?.broadcast?.(channel, message);
+    };
 })();
 
 /** Remove dados de sessão e redireciona para login. */

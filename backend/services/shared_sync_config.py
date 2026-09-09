@@ -528,6 +528,7 @@ def _shared_sync_machine_scope_allowed(scope: str, sessao: dict) -> bool:
 def _shared_sync_machine_allowed_scopes(sessao: dict) -> list[str]:
     return [scope for scope in SHARED_SYNC_SCOPES if _shared_sync_machine_scope_allowed(scope, sessao)]
 
+
 def _shared_sync_machine_config_normalizar(sessao: dict, payload: Optional[dict]) -> dict:
     data = payload if isinstance(payload, dict) else {}
     allowed = set(_shared_sync_machine_allowed_scopes(sessao))
@@ -537,27 +538,15 @@ def _shared_sync_machine_config_normalizar(sessao: dict, payload: Optional[dict]
         scope_norm = str(scope or "").strip()
         if scope_norm in allowed and scope_norm not in scopes:
             scopes.append(scope_norm)
-    auto_pull_explicit = bool(data.get("auto_pull_explicit"))
-    try:
-        mode_version = int(data.get("mode_version") or 0)
-    except Exception:
-        mode_version = 0
-    if mode_version >= 2:
-        auto_pull_explicit = True
-    # Versoes anteriores persistiam auto_pull=false em todos os casos. Sem o
-    # marcador v2, uma configuracao ja habilitada migra para recebimento
-    # automatico para nao exigir um novo clique em cada maquina existente.
-    auto_pull = bool(data.get("auto_pull", False)) if auto_pull_explicit else bool(data.get("enabled", False))
     return {
         "enabled": bool(data.get("enabled", False)),
         "scopes": scopes,
-        # O recebimento automatico entre maquinas da mesma conta e opt-in.
-        # O envio automatico permanece proibido para evitar que uma copia
-        # desatualizada volte a publicar um snapshot regressivo.
-        "auto_pull": auto_pull,
+        # Modo v3: preferências antigas não podem reativar transferências.
+        # A leitura normaliza somente esta sessão e preserva o histórico.
+        "auto_pull": False,
         "auto_push": False,
-        "auto_pull_explicit": auto_pull_explicit,
-        "mode_version": 2 if auto_pull_explicit else 1,
+        "auto_pull_explicit": True,
+        "mode_version": 3,
         "updated_at": str(data.get("updated_at") or ""),
     }
 
@@ -568,7 +557,7 @@ def _shared_sync_machine_config_read(sessao: dict) -> dict:
 def _shared_sync_machine_config_save(sessao: dict, payload: dict) -> dict:
     explicit_payload = dict(payload) if isinstance(payload, dict) else {}
     explicit_payload["auto_pull_explicit"] = True
-    explicit_payload["mode_version"] = 2
+    explicit_payload["mode_version"] = 3
     config = _shared_sync_machine_config_normalizar(sessao, explicit_payload)
     config["updated_at"] = _shared_sync_now_iso()
     with _SHARED_SYNC_STATE_LOCK:
