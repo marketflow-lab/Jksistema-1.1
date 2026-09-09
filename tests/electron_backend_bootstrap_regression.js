@@ -49,13 +49,21 @@ const backendStartupSource = backendSource.slice(
   backendSource.indexOf('function stopTrackedProcessTree(')
 );
 const trustedLauncherCheck = backendStartupSource.indexOf('consumeCanonicalLauncherPreparedServers()');
+const trustedLauncherHealthWait = backendStartupSource.indexOf('await waitForLocalBackendCompatibleHealth(firebaseEnv)');
 const mandatoryCleanup = backendStartupSource.indexOf("stopManagedLocalServers('before-start')");
 const backendSync = backendStartupSource.indexOf('syncBundledLocalBackend(inspection)');
 assert(
   trustedLauncherCheck >= 0
+    && trustedLauncherHealthWait > trustedLauncherCheck
+    && mandatoryCleanup > trustedLauncherHealthWait
     && mandatoryCleanup > trustedLauncherCheck
     && backendSync > mandatoryCleanup,
   'direct Electron startup must close and confirm old managed servers before syncing or starting the backend'
+);
+assert(
+  backendStartupSource.includes("logElectronLifecycle('canonical-launcher-backend-not-ready'")
+    && !backendStartupSource.includes('launcherPrepared && await isTcpPortOpen(JK_LOCAL_BACKEND_PORT)'),
+  'canonical launcher startup must wait for compatible health instead of racing the first TCP probe'
 );
 assert(
   backendStartupSource.includes('preparedByCanonicalLauncher: true')

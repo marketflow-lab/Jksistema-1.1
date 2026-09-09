@@ -2236,6 +2236,41 @@ def carregar_lojas(client_id: str):
         return lojas
 
 
+def carregar_lojas_snapshot(client_id: str):
+    """Read the current validated store snapshot without catalog/photo locks.
+
+    Store writes use atomic replacement under ``_LOJAS_CONFIG_LOCK``. Readers
+    that only need identities and integration status can therefore consume the
+    last complete file without joining the broader catalog transaction.
+    """
+
+    from backend.services.central_accounts_client import current
+
+    central = current(client_id)
+    if central is not None:
+        return mesclar_turbo_local(client_id, central.stores(), incluir_token=True)
+    caminho = os.path.join(_tenant_path(client_id), "lojas_config.json")
+    if not os.path.exists(caminho):
+        return carregar_lojas(client_id)
+    try:
+        with _LOJAS_CONFIG_LOCK:
+            lojas = _integracoes_ler_lojas_config_arquivo(caminho)
+            _integracoes_validar_identidades_lojas_local(lojas)
+            return lojas
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            "[INTEGRACOES] Snapshot de lojas invalido para o cliente %s: %s",
+            client_id,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Configuracao de lojas invalida; a listagem foi interrompida.",
+        ) from exc
+
+
 def salvar_lojas(
     client_id: str,
     lojas: list,
@@ -3509,6 +3544,7 @@ __all__ = [
     "_integracoes_mesclar_legadas",
     "_integracoes_normalizar_oauth_compartilhado_lojas",
     "carregar_lojas",
+    "carregar_lojas_snapshot",
     "salvar_lojas",
     "buscar_loja",
     "criar_loja",

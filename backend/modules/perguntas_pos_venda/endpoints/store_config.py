@@ -9,6 +9,7 @@ from fastapi import Depends, HTTPException
 from backend.modules.perguntas_pos_venda.endpoints.runtime import runtime_adapter
 from backend.modules.perguntas_pos_venda.endpoints.security import get_tenant_id
 from backend.schemas import PerguntasLojaConfigRequest, PerguntasLojasConfigLoteRequest
+from backend.services.integracoes import carregar_lojas_snapshot
 from backend.services.perguntas_pos_venda_automacao import (
     _perguntas_automacao_bg_status,
     _perguntas_automacao_bg_worker_iniciado,
@@ -21,7 +22,12 @@ _perguntas_loja_config_normalizar = runtime_adapter("_perguntas_loja_config_norm
 _perguntas_loja_config_obter = runtime_adapter("_perguntas_loja_config_obter")
 _perguntas_loja_config_salvar = runtime_adapter("_perguntas_loja_config_salvar")
 _perguntas_loja_configs_carregar = runtime_adapter("_perguntas_loja_configs_carregar")
-carregar_lojas = runtime_adapter("carregar_lojas")
+
+
+def carregar_lojas(client_id: str):
+    """Serve store cards from the atomic snapshot without catalog/photo locks."""
+
+    return carregar_lojas_snapshot(client_id)
 
 
 def ml_perguntas_listar_lojas(client_id: str = Depends(get_tenant_id)):

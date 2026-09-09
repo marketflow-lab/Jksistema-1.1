@@ -1009,20 +1009,30 @@ async function aguardarJobAtendimentoCodex(jobId, atualizarStatus, cancelamentoL
             if (!response.ok) {
                 const error = new Error(mensagemErroApi(data, 'Falha temporaria ao acompanhar o agente Codex.'));
                 error.pollingStatus = response.status;
+                error.pollingTerminal = response.status === 404 || response.status === 410;
                 throw error;
             }
             falhasPolling = 0;
             ultimoStatus = data;
             if (typeof atualizarStatus === 'function') atualizarStatus(mensagemProgressoJobAtendimentoCodex(data), data);
             if (data.status === 'completed') return data;
-            if (data.status === 'failed') throw new Error(data.error || 'O agente Codex nao conseguiu gerar a resposta.');
+            if (data.status === 'failed') {
+                const failedError = new Error(data.error || 'O agente Codex nao conseguiu gerar a resposta.');
+                failedError.pollingTerminal = true;
+                throw failedError;
+            }
             if (data.status === 'cancelled') {
                 const cancelError = new Error('A pesquisa foi cancelada.');
                 cancelError.cancelled = true;
                 throw cancelError;
             }
         } catch (error) {
-            if (error && (error.cancelled || error.pollingStatus === 401 || error.pollingStatus === 403)) throw error;
+            if (error && (
+                error.cancelled
+                || error.pollingTerminal
+                || error.pollingStatus === 401
+                || error.pollingStatus === 403
+            )) throw error;
             falhasPolling += 1;
             const ultimaAtividade = ultimoStatus?.last_activity_at
                 ? new Date(ultimoStatus.last_activity_at).toLocaleTimeString('pt-BR')
@@ -1064,6 +1074,12 @@ async function garantirPollingJobAtendimentoCodex(questionKey) {
             cardsAtuaisJobAtendimentoCodex(key).forEach((card) => setStatusRespostaPergunta(
                 card.querySelector('.question-answer-composer .question-answer-status'),
                 'Pesquisa cancelada pelo usuario.'
+            ));
+        } else {
+            cardsAtuaisJobAtendimentoCodex(key).forEach((card) => setStatusRespostaPergunta(
+                card.querySelector('.question-answer-composer .question-answer-status'),
+                mensagemErro(error) || 'Nao foi possivel acompanhar a geracao da resposta.',
+                'error'
             ));
         }
         limparEstadoJobAtendimentoCodex(key, tenantScope);
@@ -1247,16 +1263,42 @@ async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnvia
     }
 }
 
+async function buscarLojasPerguntas(tentativas = 2, timeoutMs = 8000) {
+    let ultimoErro = null;
+    for (let tentativa = 1; tentativa <= tentativas; tentativa += 1) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const response = await fetch('/api/mercadolivre/perguntas/lojas', {
+                headers: obterAuthHeaders(),
+                cache: 'no-store',
+                signal: controller.signal
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                const error = new Error(data.detail || 'Erro ao carregar lojas.');
+                error.status = response.status;
+                throw error;
+            }
+            return data;
+        } catch (error) {
+            ultimoErro = error?.name === 'AbortError'
+                ? new Error('A lista de lojas demorou mais que o esperado.')
+                : error;
+            if (error?.status === 401 || error?.status === 403 || tentativa >= tentativas) break;
+            await new Promise((resolve) => setTimeout(resolve, 350));
+        } finally {
+            clearTimeout(timeout);
+        }
+    }
+    throw ultimoErro || new Error('Erro ao carregar lojas.');
+}
+
 async function carregarLojas() {
-    window.JKPerguntasLoading?.verificarSessao();
     lojasStatus.textContent = 'Carregando lojas...';
     try {
-        const response = await fetch('/api/mercadolivre/perguntas/lojas', {
-            headers: obterAuthHeaders(),
-            cache: 'no-store'
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.detail || 'Erro ao carregar lojas.');
+        window.JKPerguntasLoading?.verificarSessao();
+        const data = await buscarLojasPerguntas();
         state.lojas = Array.isArray(data.lojas) ? data.lojas : [];
         const haLojasConectadas = lojasMercadoLivreConectadas().length > 0;
         const lojaSelecionadaAtual = state.lojas.find((loja) => String(loja.nome || '') === String(state.lojaSelecionada || ''));
@@ -1287,7 +1329,8 @@ async function carregarLojas() {
         carregarContadoresNotificacoes(true);
     } catch (error) {
         lojasStatus.textContent = 'Erro ao carregar lojas.';
-        lojasGrid.innerHTML = `<div class="empty-state"><div><h2>Falha ao carregar lojas</h2><p>${escapeHtml(mensagemErro(error))}</p></div></div>`;
+        lojasGrid.innerHTML = `<div class="empty-state"><div><h2>Falha ao carregar lojas</h2><p>${escapeHtml(mensagemErro(error))}</p><button class="action-btn secondary" type="button" data-retry-stores>Tentar novamente</button></div></div>`;
+        lojasGrid.querySelector('[data-retry-stores]')?.addEventListener('click', () => carregarLojas());
     }
 }
 

@@ -23,6 +23,10 @@ assert.match(source, /resposta_atual: String\(textarea\.value \|\| ''\)/);
 assert.match(source, /function skuRealPergunta\(pergunta\)/);
 assert.doesNotMatch(source, /String\(result\.resposta \|\| data\.resposta \|\| ''\)\.trim\(\)/);
 assert.doesNotMatch(source, /resposta_atual: String\(textarea\.value \|\| ''\)\.trim\(\)/);
+assert.match(source, /async function buscarLojasPerguntas\(tentativas = 2[\s\S]*new AbortController\(\)/);
+assert.match(source, /A lista de lojas demorou mais que o esperado/);
+assert.match(source, /data-retry-stores/);
+assert.match(source, /response\.status === 404 \|\| response\.status === 410/);
 
 class FakeClassList {
     constructor() { this.values = new Set(['hidden']); }
@@ -79,6 +83,14 @@ const context = {
     mensagemErro: (error) => String(error && error.message || error || ''),
     fetch: (...args) => fetchImpl(...args),
     Event: class Event { constructor(type) { this.type = type; } },
+    AbortController: class AbortController {
+        constructor() { this.signal = { onabort: null }; }
+        abort() {
+            const error = new Error('aborted');
+            error.name = 'AbortError';
+            if (typeof this.signal.onabort === 'function') this.signal.onabort(error);
+        }
+    },
     setTimeout: (callback) => { timerCallbacks.push(callback); return timerCallbacks.length; },
     clearTimeout: () => {},
     window: {}
@@ -88,6 +100,10 @@ const stateStart = source.indexOf("const CODEX_JOB_STORAGE_PREFIX");
 const stateEnd = source.indexOf("window.aguardarJobAtendimentoCodex", stateStart);
 assert(stateStart >= 0 && stateEnd > stateStart, 'helpers persistentes do job nao encontrados');
 vm.runInContext(source.slice(stateStart, stateEnd), context);
+const storesStart = source.indexOf('async function buscarLojasPerguntas');
+const storesEnd = source.indexOf('async function carregarLojas', storesStart);
+assert(storesStart >= 0 && storesEnd > storesStart, 'helper resiliente de lojas nao encontrado');
+vm.runInContext(source.slice(storesStart, storesEnd), context);
 
 (async () => {
     currentCard = makeCard('Loja A::Q-CONTEXTUAL');
@@ -233,6 +249,51 @@ vm.runInContext(source.slice(stateStart, stateEnd), context);
     await Promise.all([tenantOnePoll, tenantTwoPoll]);
     assert.strictEqual(countsByJob.get('job-tenant-1'), 2);
     assert.strictEqual(countsByJob.get('job-tenant-2'), 2);
+
+    tenantAtual = 'tenant-1';
+    currentCard = makeCard('Loja A::Q-FAILED');
+    context.salvarEstadoJobAtendimentoCodex('Loja A::Q-FAILED', {
+        job_id: 'job-failed-terminal', can_cancel: true, polling_active: true
+    });
+    let failedGets = 0;
+    fetchImpl = async () => {
+        failedGets += 1;
+        return { ok: true, json: async () => ({ status: 'failed', error: 'Falha definitiva da fixture.' }) };
+    };
+    await assert.rejects(
+        context.garantirPollingJobAtendimentoCodex('Loja A::Q-FAILED'),
+        /Falha definitiva da fixture/
+    );
+    assert.strictEqual(failedGets, 1, 'status failed deve encerrar o polling na primeira leitura');
+    assert.strictEqual(context.obterEstadoJobAtendimentoCodex('Loja A::Q-FAILED'), null);
+    assert.strictEqual(currentCard.elements.status.textContent, 'Falha definitiva da fixture.');
+    assert.strictEqual(currentCard.elements.status.className, 'error');
+
+    currentCard = makeCard('Loja A::Q-GONE');
+    context.salvarEstadoJobAtendimentoCodex('Loja A::Q-GONE', {
+        job_id: 'job-gone-terminal', can_cancel: true, polling_active: true
+    });
+    let goneGets = 0;
+    fetchImpl = async () => {
+        goneGets += 1;
+        return { ok: false, status: 410, json: async () => ({ detail: 'Job expirado.' }) };
+    };
+    await assert.rejects(context.garantirPollingJobAtendimentoCodex('Loja A::Q-GONE'));
+    assert.strictEqual(goneGets, 1, 'HTTP 410 deve encerrar o polling na primeira leitura');
+    assert.strictEqual(context.obterEstadoJobAtendimentoCodex('Loja A::Q-GONE'), null);
+    assert.strictEqual(currentCard.elements.status.className, 'error');
+
+    let storeGets = 0;
+    fetchImpl = async (_url, options) => new Promise((_resolve, reject) => {
+        storeGets += 1;
+        options.signal.onabort = reject;
+    });
+    const storeTimeout = context.buscarLojasPerguntas(1, 1);
+    for (let index = 0; index < 12 && timerCallbacks.length === 0; index += 1) await Promise.resolve();
+    assert(timerCallbacks.length > 0, 'a listagem de lojas deve instalar um prazo');
+    timerCallbacks.shift()();
+    await assert.rejects(storeTimeout, /demorou mais que o esperado/);
+    assert.strictEqual(storeGets, 1, 'o prazo final deve encerrar a tentativa pendente');
 
     console.log('Perguntas Codex persistent frontend contract: OK');
 })().catch((error) => {

@@ -1365,9 +1365,9 @@ function ensureLocalBackendStarted() {
         const remoteAuthEnv = getLocalBackendRemoteAuthEnv();
 
         const launcherPrepared = consumeCanonicalLauncherPreparedServers();
-        if (launcherPrepared && await isTcpPortOpen(JK_LOCAL_BACKEND_PORT)) {
-            const health = await fetchLocalBackendJson('/health');
-            if (localBackendHealthCompatible(health, firebaseEnv) && !inspection.required && !privateBootstrap.firstUnlock) {
+        if (launcherPrepared && !inspection.required && !privateBootstrap.firstUnlock) {
+            try {
+                const health = await waitForLocalBackendCompatibleHealth(firebaseEnv);
                 logElectronLifecycle('local-backend-prestarted-by-canonical-launcher', {
                     port: JK_LOCAL_BACKEND_PORT,
                     health
@@ -1378,6 +1378,11 @@ function ensureLocalBackendStarted() {
                     preparedByCanonicalLauncher: true,
                     port: JK_LOCAL_BACKEND_PORT
                 };
+            } catch (error) {
+                logElectronLifecycle('canonical-launcher-backend-not-ready', {
+                    port: JK_LOCAL_BACKEND_PORT,
+                    message: String(error && error.message || error || '')
+                });
             }
         }
 

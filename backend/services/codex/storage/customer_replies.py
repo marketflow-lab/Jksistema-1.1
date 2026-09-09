@@ -29,6 +29,8 @@ from .customer_reply_state import (
     _customer_reply_cache_key,
     _customer_reply_cleanup_rows,
     _customer_reply_durable_payload,
+    _customer_reply_seal_result,
+    _CUSTOMER_REPLY_SEALED_RESULT_FIELD,
     _customer_reply_transient_merge,
     _customer_reply_transient_put,
 )
@@ -124,7 +126,21 @@ def codex_assistant_customer_reply_job_has_transient(
         if cached and cached[0] > time.time():
             return True
         _CUSTOMER_REPLY_TRANSIENT.pop(key, None)
-        return False
+    with _lock_for(db_path):
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            row = conn.execute(
+                "SELECT payload_json FROM assistant_customer_reply_jobs WHERE job_id = ? LIMIT 1",
+                (_safe_id(job_id, ""),),
+            ).fetchone()
+    payload = _json_loads(row["payload_json"] if row else "", None)
+    merged = (
+        _customer_reply_transient_merge(db_path, payload, _safe_id(job_id, ""))
+        if isinstance(payload, dict)
+        else {}
+    )
+    result = merged.get("result") if isinstance(merged, dict) else {}
+    return bool(isinstance(result, dict) and str(result.get("resposta") or "").strip())
 
 
 def codex_assistant_customer_reply_jobs_cleanup(info_base: str, client_id: str) -> int:
@@ -154,6 +170,7 @@ def _customer_reply_prepare_job(
         ).hexdigest()[:32]
     now = _now_iso()
     data["job_id"] = job_id
+    data["client_id"] = str(client_id or "default")
     data.setdefault("profile", "mercado_livre_customer_reply")
     data.setdefault("status", "queued")
     data.setdefault("agent_state", "entendendo")
@@ -219,37 +236,40 @@ def _customer_reply_existing_result(
     if not isinstance(existing, dict):
         existing = {}
     if bool(existing_row["cancel_requested"]) or str(existing_row["status"] or "") == "cancelled":
-        return _customer_reply_transient_merge(db_path, existing)
+        return _customer_reply_transient_merge(db_path, existing, data.get("job_id", ""))
     existing_owner = str(existing_row["lease_owner"] or "")
     incoming_owner = str(data.get("lease_owner") or "")
     expected_owner = str(expected_lease_owner or "")
     existing_generation = max(0, int(existing_row["lease_generation"] or 0))
     incoming_generation = max(0, int(data.get("lease_generation") or 0))
     if expected_lease_generation is not None and int(expected_lease_generation) != existing_generation:
-        return _customer_reply_transient_merge(db_path, existing)
+        return _customer_reply_transient_merge(db_path, existing, data.get("job_id", ""))
     existing_request_generation = max(1, int(existing.get("request_generation") or 1))
     if (
         expected_request_generation is not None
         and int(expected_request_generation) != existing_request_generation
     ):
-        return _customer_reply_transient_merge(db_path, existing)
+        return _customer_reply_transient_merge(db_path, existing, data.get("job_id", ""))
     if incoming_generation != existing_generation:
-        return _customer_reply_transient_merge(db_path, existing)
+        return _customer_reply_transient_merge(db_path, existing, data.get("job_id", ""))
     if (
         str(existing_row["status"] or "") == "running"
         and existing_owner
         and existing_owner not in {incoming_owner, expected_owner}
     ):
-        return _customer_reply_transient_merge(db_path, existing)
+        return _customer_reply_transient_merge(db_path, existing, data.get("job_id", ""))
     data["lease_generation"] = existing_generation
     return None
 
 
 def _customer_reply_upsert(
-    conn: sqlite3.Connection, data: dict[str, Any], job_id: str, now: str
+    conn: sqlite3.Connection, db_path: str, data: dict[str, Any], job_id: str, now: str
 ) -> dict[str, Any]:
     durable, transient = _customer_reply_durable_payload(data)
     _persist_safe_vehicle_identity(data, durable, transient)
+    sealed_result = _customer_reply_seal_result(db_path, data)
+    if sealed_result:
+        durable[_CUSTOMER_REPLY_SEALED_RESULT_FIELD] = sealed_result
     raw = _json_dumps(durable)
     conn.execute(
         """
@@ -360,7 +380,7 @@ def _codex_assistant_customer_reply_job_save_cas(
                 if expected_request_generation is not None:
                     result[_REQUEST_GENERATION_CAS_APPLIED] = False
                 return result
-            transient = _customer_reply_upsert(conn, data, job_id, now)
+            transient = _customer_reply_upsert(conn, db_path, data, job_id, now)
     with _CUSTOMER_REPLY_TRANSIENT_LOCK:
         for expired_job_id in expired_job_ids:
             _CUSTOMER_REPLY_TRANSIENT.pop(_customer_reply_cache_key(db_path, expired_job_id), None)
@@ -413,11 +433,15 @@ def codex_assistant_customer_reply_job_get(
         with _connection(db_path) as conn:
             _ensure_state_schema(conn)
             row = conn.execute(
-                f"SELECT payload_json FROM assistant_customer_reply_jobs WHERE {clause} LIMIT 1",
+                f"SELECT job_id, payload_json FROM assistant_customer_reply_jobs WHERE {clause} LIMIT 1",
                 (value,),
             ).fetchone()
     payload = _json_loads(row["payload_json"] if row else "", None)
-    return _customer_reply_transient_merge(db_path, payload) if isinstance(payload, dict) else None
+    return (
+        _customer_reply_transient_merge(db_path, payload, str(row["job_id"] or ""))
+        if row and isinstance(payload, dict)
+        else None
+    )
 
 
 def codex_assistant_customer_reply_job_latest(
@@ -437,7 +461,7 @@ def codex_assistant_customer_reply_job_latest(
             exact_store_id = str(store_id or "").strip()
             if exact_store_id:
                 row = conn.execute(
-                    "SELECT payload_json FROM assistant_customer_reply_jobs "
+                    "SELECT job_id, payload_json FROM assistant_customer_reply_jobs "
                     "WHERE profile = 'mercado_livre_customer_reply' "
                     "AND task_type = ? AND store_id = ? AND subject_key = ? "
                     "ORDER BY created_at DESC LIMIT 1",
@@ -445,14 +469,18 @@ def codex_assistant_customer_reply_job_latest(
                 ).fetchone()
             else:
                 row = conn.execute(
-                    "SELECT payload_json FROM assistant_customer_reply_jobs "
+                    "SELECT job_id, payload_json FROM assistant_customer_reply_jobs "
                     "WHERE profile = 'mercado_livre_customer_reply' "
                     "AND task_type = ? AND store = ? AND subject_key = ? "
                     "ORDER BY created_at DESC LIMIT 1",
                     (str(task_type or ""), str(store or ""), str(subject_key or "")),
                 ).fetchone()
     payload = _json_loads(row["payload_json"] if row else "", None)
-    return _customer_reply_transient_merge(db_path, payload) if isinstance(payload, dict) else None
+    return (
+        _customer_reply_transient_merge(db_path, payload, str(row["job_id"] or ""))
+        if row and isinstance(payload, dict)
+        else None
+    )
 
 
 def codex_assistant_customer_reply_jobs_list(
@@ -465,7 +493,7 @@ def codex_assistant_customer_reply_jobs_list(
     priority_order: bool = False,
 ) -> list[dict[str, Any]]:
     params: list[Any] = []
-    sql = "SELECT payload_json FROM assistant_customer_reply_jobs"
+    sql = "SELECT job_id, payload_json FROM assistant_customer_reply_jobs"
     clean_statuses = [str(item or "").strip() for item in (statuses or []) if str(item or "").strip()]
     if clean_statuses:
         sql += " WHERE status IN (" + ",".join("?" for _ in clean_statuses) + ")"
@@ -486,7 +514,7 @@ def codex_assistant_customer_reply_jobs_list(
     for row in rows:
         payload = _json_loads(row["payload_json"], None)
         if isinstance(payload, dict):
-            result.append(_customer_reply_transient_merge(db_path, payload))
+            result.append(_customer_reply_transient_merge(db_path, payload, str(row["job_id"] or "")))
     return result
 
 
@@ -605,7 +633,7 @@ def codex_assistant_customer_reply_job_claim(
             data = _json_loads(row["payload_json"], {})
             if not isinstance(data, dict):
                 data = {}
-            data = _customer_reply_transient_merge(db_path, data)
+            data = _customer_reply_transient_merge(db_path, data, _safe_id(job_id, ""))
             next_generation = max(
                 0,
                 int(row["lease_generation"] or data.get("lease_generation") or 0),
@@ -680,7 +708,7 @@ def codex_assistant_customer_reply_job_heartbeat(
             data = _json_loads(row["payload_json"], {})
             if not isinstance(data, dict):
                 data = {}
-            data = _customer_reply_transient_merge(db_path, data)
+            data = _customer_reply_transient_merge(db_path, data, _safe_id(job_id, ""))
             data.update(
                 {
                     "status": "running",
@@ -736,7 +764,7 @@ def codex_assistant_customer_reply_job_request_cancel(
             data = _json_loads(row["payload_json"], {})
             if not isinstance(data, dict):
                 data = {}
-            data = _customer_reply_transient_merge(db_path, data)
+            data = _customer_reply_transient_merge(db_path, data, safe_job_id)
             if str(row["status"] or "") in {"completed", "cancelled"}:
                 return data
             now = _now_iso()

@@ -80,7 +80,7 @@ async function fixture(browser) {
       }
       if (url.pathname.endsWith('/perguntas/detalhe')) {
         await delay(75);
-        return json({ question: { buyer_name: 'Comprador fixture', buyer_question_chat: [], buyer_question_history_count: 1 }, store_id: call.store });
+        return json({ question: { buyer_name: 'Comprador fixture', buyer_question_chat: [], buyer_question_history_count: 1 }, store_id: call.store, partial: true, stale: false });
       }
       if (url.pathname.endsWith('/perguntas/resumo')) return json({ lojas: stores.map(s => ({ ...s, perguntas: s === stores[10] ? null : control.counts[s.store_id] ?? 60, total: s === stores[10] ? null : 60, status_resumo: { UNANSWERED: 60 }, erro: s === stores[10] ? 'Falha sintética' : null })), partial: true });
       if (url.pathname.endsWith('/perguntas/responder')) return json({ success: true, resposta: 'Resposta sintética confirmada' });
@@ -187,6 +187,14 @@ async function verifyUpdated(f) {
   await delay(1000);
   assert(await page.evaluate(() => state.perguntas.every(p => p.store_id === 'fixture-1')), 'resposta antiga contaminou a loja atual');
   const input = page.locator('.question-answer-text');
+  await page.waitForFunction(() => document.querySelector('.question-ai-answer-btn')?.disabled === false);
+  assert.strictEqual(
+    await page.evaluate(() => state.perguntas.find(
+      question => chavePerguntaAtendimento(question) === state.perguntaSelecionadaKey
+    )?._detailPartial),
+    true,
+    'detalhe parcial deve ser sinalizado sem bloquear a geracao de IA'
+  );
   await input.fill('Rascunho sintético preservado');
   await input.focus();
   await page.evaluate(() => carregarPerguntas(1, { background: true, preservarInteracao: true, forcar: true }));
