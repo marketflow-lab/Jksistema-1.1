@@ -191,7 +191,8 @@ class CentralAccounts:
             for store in normalized:
                 current_store = self.documents.get("stores", key_for("store", store["store_id"]))
                 if current_store and (current_store.get("tenant") != principal.tenant
-                                      or current_store.get("owner") != principal.key):
+                                      or current_store.get("owner") != principal.key
+                                      or current_store.get("deleted")):
                     raise CentralError("central_store_identity_conflict", 409,
                                        {"store_id": store["store_id"]})
                 verified_connections = {}
@@ -234,9 +235,27 @@ class CentralAccounts:
                     connection_id = connection["id"]
                     credentials = connection["credentials"]
 
-                    def save_connection(old, *, connection_id=connection_id, credentials=credentials):
+                    def save_connection(old, *, connection_id=connection_id, credentials=credentials,
+                                        store_id=store["store_id"]):
                         if old and old.get("tenant") != principal.tenant:
                             raise CentralError("central_account_already_owned", 409)
+                        if old:
+                            # A retry or another machine's legacy snapshot must
+                            # never overwrite credentials already owned centrally.
+                            try:
+                                stored = self.vault.open("connection:" + connection_id, old["sealed"])
+                                equivalent = all(stored.get(key) == credentials.get(key) for key in (
+                                    "provider", "app_id", "app_secret", "access_token", "refresh_token",
+                                    "seller_id", "site_id"))
+                                ready = (old.get("status") == "ready" and equivalent
+                                         and stored.get("expires_at", 0) > self.clock() + 60
+                                         and old.get("retry_after", 0) <= self.clock())
+                            except Exception:
+                                ready = False
+                            if not ready:
+                                raise CentralError("central_existing_connection_recovery_required", 409,
+                                                   {"store_id": store_id, "provider": credentials["provider"]})
+                            return old
                         return {"tenant": principal.tenant,
                                 "version": int((old or {}).get("version", 0)) + 1,
                                 "sealed": self.vault.seal("connection:" + connection_id, credentials),
@@ -249,12 +268,14 @@ class CentralAccounts:
                                       for provider, value in store["connections"].items()}
 
                 def save_store(old, *, store=store, public_connections=public_connections):
-                    if old and (old.get("tenant") != principal.tenant or old.get("owner") != principal.key):
+                    if old and (old.get("tenant") != principal.tenant or old.get("owner") != principal.key
+                                or old.get("deleted")):
                         raise CentralError("central_store_identity_conflict", 409)
                     return {"store_id": store["store_id"], "tenant": principal.tenant,
                             "owner": principal.key, "name": store["name"],
                             "connections": public_connections,
-                            "grants": {principal.key: "owner"}, "access_keys": [principal.key]}
+                            "grants": (old or {}).get("grants", {principal.key: "owner"}),
+                            "access_keys": (old or {}).get("access_keys", [principal.key])}
 
                 self.documents.change("stores", key_for("store", store["store_id"]), save_store)
 
@@ -433,9 +454,13 @@ class CentralAccounts:
         if row["status"] == "refreshing":
             # An expired lease is uncertain: never replay a possibly consumed refresh token.
             raise CentralError("central_refresh_busy" if row["lease_until"] > self.clock()
-                               else "central_reconnect_required", 409)
+                               else "central_refresh_uncertain", 409)
+        if row["status"] == "refresh_uncertain":
+            raise CentralError("central_refresh_uncertain", 503)
         if row["status"] != "ready":
             raise CentralError("central_reconnect_required", 409)
+        if row.get("retry_after", 0) > self.clock():
+            raise CentralError("central_provider_rate_limited", 429)
         credentials = self.vault.open("connection:" + connection_id, row["sealed"])
         if rejected_token and credentials["access_token"] != rejected_token:
             return credentials
@@ -446,19 +471,31 @@ class CentralAccounts:
         def claim(current):
             if current["version"] != row["version"] or current["status"] != "ready":
                 raise CentralError("central_refresh_busy", 409)
+            if current.get("retry_after", 0) > self.clock():
+                raise CentralError("central_provider_rate_limited", 429)
             current.update(status="refreshing", lease=lease, lease_until=self.clock() + 45)
             return current
 
         self.documents.change("connections", connection_id, claim)
         try:
             refreshed = self.provider.refresh(credentials)
-        except Exception:
+        except Exception as exc:
+            code = exc.code if isinstance(exc, CentralError) else "central_refresh_uncertain"
+            if code not in {"central_reconnect_required", "central_provider_rate_limited"}:
+                code = "central_refresh_uncertain"
             def uncertain(current):
                 if current.get("lease") == lease:
-                    current["status"] = "reconnect_required"
+                    current["status"] = ("ready" if code == "central_provider_rate_limited" else
+                                         "reconnect_required" if code == "central_reconnect_required" else
+                                         "refresh_uncertain")
+                    current.pop("lease", None)
+                    current["lease_until"] = 0
+                    if code == "central_provider_rate_limited":
+                        current["retry_after"] = self.clock() + 60
                 return current
             self.documents.change("connections", connection_id, uncertain)
-            raise CentralError("central_reconnect_required", 409) from None
+            raise CentralError(code, 429 if code == "central_provider_rate_limited" else
+                               409 if code == "central_reconnect_required" else 503) from None
 
         def finish(current):
             if current.get("lease") != lease or current["version"] != row["version"]:

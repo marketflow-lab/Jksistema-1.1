@@ -116,6 +116,7 @@
                 <p>Esta ação envia somente as conexões Mercado Livre e Bling para o cofre central. Produtos, vendas, estoque e Mercado Turbo não são sincronizados.</p>
                 <div id="central-migration-preview" role="status" aria-live="polite">Carregando prévia sem credenciais…</div>
                 <button id="central-migration-run" type="button" disabled>Migrar minhas lojas para a central</button>
+                <button id="central-migration-status" type="button">Atualizar prévia e status</button>
                 <p id="central-migration-feedback" role="status" aria-live="polite"></p>
             </section>
             <section id="central-account-controls" hidden>
@@ -778,61 +779,137 @@
                 const previewElement = document.getElementById('central-migration-preview');
                 const feedback = document.getElementById('central-migration-feedback');
                 const button = document.getElementById('central-migration-run');
+                const statusButton = document.getElementById('central-migration-status');
                 let migrationPreview = null;
+                let migrationOperationId = '';
+                let migrationBusy = false;
                 panel.hidden = false;
 
+                function migrationError(value, fallback) {
+                    const detail = value?.detail || value || {};
+                    const where = detail.store_id
+                        ? ` Loja ${detail.store_id}${detail.provider ? ` (${detail.provider})` : ''}.` : '';
+                    return (typeof detail === 'string' ? detail : (detail.message || fallback)) + where;
+                }
+
+                async function readMigrationStatus() {
+                    const query = migrationOperationId ? '?operation_id=' + encodeURIComponent(migrationOperationId) : '';
+                    const response = await fetch('/api/central/migration/status' + query, {
+                        headers: obterAuthHeaders(), cache: 'no-store'
+                    });
+                    const value = await response.json().catch(() => ({}));
+                    if (!response.ok) throw new Error(migrationError(value, 'Não foi possível consultar a migração.'));
+                    // O backend é a fonte da operação congelada após fechar/reabrir
+                    // a tela. Sua impressão original não muda com tokens renovados.
+                    if (value.backup_status === 'frozen' && value.status !== 'completed') {
+                        if (!/^[a-f0-9]{32}$/.test(value.operation_id || '') || !/^[a-f0-9]{64}$/.test(value.preview_fingerprint || '')) {
+                            throw new Error('Não foi possível recuperar a operação original. Atualize o sistema antes de retomar.');
+                        }
+                        migrationOperationId = value.operation_id;
+                        migrationPreview = {
+                            preview_fingerprint: value.preview_fingerprint,
+                            stores_total: value.stores_total, connections_total: value.connections_total
+                        };
+                    }
+                    if (value.remote_error) throw new Error(migrationError(value.remote_error, 'Não foi possível confirmar o estado na Central. Atualize o status antes de retomar.'));
+                    return value;
+                }
+
+                function pendingMigrationMessage(state) {
+                    if (state.needs_local_finalize || (state.remote?.success === true && state.remote?.status === 'completed' && state.status !== 'completed')) {
+                        button.textContent = 'Finalizar migração nesta máquina';
+                        return 'A Central confirmou a ativação. Falta concluir a migração nesta máquina.';
+                    }
+                    button.textContent = migrationOperationId ? 'Consultar e retomar migração' : 'Migrar minhas lojas para a central';
+                    return migrationOperationId ? 'Operação anterior recuperada. O estado será conferido antes de retomar.' : '';
+                }
+
                 async function loadMigrationPreview() {
+                    if (migrationBusy) return;
+                    migrationBusy = true;
                     button.disabled = true;
+                    statusButton.disabled = true;
                     feedback.textContent = '';
                     try {
-                        const response = await fetch('/api/central/migration/preview', {
-                            headers: obterAuthHeaders(), cache: 'no-store'
-                        });
-                        const value = await response.json().catch(() => ({}));
-                        if (!response.ok) throw new Error(typeof value.detail === 'string'
-                            ? value.detail : (value.detail?.message || 'Não foi possível preparar a prévia.'));
-                        migrationPreview = value;
-                        const names = (value.stores || []).map(store => store.name).join(', ');
-                        previewElement.textContent = `${value.stores_total} loja(s), ${value.connections_total} conexão(ões) Mercado Livre/Bling. `
-                            + `${value.turbo_local_total} configuração(ões) Turbo permanecerão locais. Lojas: ${names}.`;
+                        const state = await readMigrationStatus();
+                        if (state.status === 'completed') {
+                            previewElement.textContent = 'Migração concluída nesta máquina. Faça um novo login no JK Sistema.';
+                            return;
+                        }
+                        if (!migrationOperationId) {
+                            const response = await fetch('/api/central/migration/preview', {
+                                headers: obterAuthHeaders(), cache: 'no-store'
+                            });
+                            const value = await response.json().catch(() => ({}));
+                            if (!response.ok) throw new Error(migrationError(value, 'Não foi possível preparar a prévia.'));
+                            if (!/^[a-f0-9]{64}$/.test(value.preview_fingerprint || '')) throw new Error('A prévia não confirmou a identidade da operação.');
+                            migrationPreview = value;
+                        }
+                        if (!migrationPreview) throw new Error('Atualize a prévia antes de retomar.');
+                        const names = (migrationPreview.stores || []).map(store => store.name).join(', ');
+                        previewElement.textContent = `${migrationPreview.stores_total} loja(s), ${migrationPreview.connections_total} conexão(ões) Mercado Livre/Bling.`
+                            + (names ? ` Lojas: ${names}.` : '');
+                        feedback.textContent = pendingMigrationMessage(state);
                         button.disabled = false;
                     } catch (error) {
                         previewElement.textContent = error.message || 'Não foi possível preparar a prévia.';
+                    } finally {
+                        migrationBusy = false;
+                        statusButton.disabled = false;
                     }
                 }
 
                 button.addEventListener('click', async () => {
-                    if (!migrationPreview) return;
-                    const accepted = confirm(`Migrar ${migrationPreview.stores_total} loja(s) e ${migrationPreview.connections_total} conexão(ões) para a central?\n\nO sistema validará cada conta, criará um backup seguro por 30 dias e encerrará esta sessão após concluir.`);
+                    if (!migrationPreview || migrationBusy) return;
+                    const accepted = confirm(`${migrationOperationId ? 'Retomar a migração de' : 'Migrar'} ${migrationPreview.stores_total} loja(s) e ${migrationPreview.connections_total} conexão(ões) para a central?\n\nO sistema conferirá a operação, preservará o backup seguro e encerrará esta sessão somente após concluir nesta máquina.`);
                     if (!accepted) return;
+                    migrationBusy = true;
                     button.disabled = true;
-                    feedback.textContent = 'Validando, renovando quando necessário e criando o backup seguro…';
+                    statusButton.disabled = true;
+                    feedback.textContent = 'Conferindo o estado da migração…';
+                    let completed = false;
                     try {
-                        const bytes = new Uint8Array(16);
-                        crypto.getRandomValues(bytes);
-                        const operationId = Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
+                        const state = await readMigrationStatus();
+                        if (state.status === 'completed') {
+                            feedback.textContent = 'Migração concluída nesta máquina. Faça um novo login no JK Sistema.';
+                            completed = true;
+                            return;
+                        }
+                        if (state.remote && !['failed', 'completed'].includes(state.remote.status)) {
+                            throw new Error('A migração ainda está em andamento na Central. Atualize o status antes de retomar.');
+                        }
+                        if (!migrationOperationId) {
+                            const bytes = new Uint8Array(16);
+                            crypto.getRandomValues(bytes);
+                            migrationOperationId = Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
+                        }
+                        feedback.textContent = 'Validando e concluindo a migração nesta máquina…';
                         const response = await fetch('/api/central/migration/execute', {
                             method: 'POST', headers: obterAuthHeaders({'Content-Type': 'application/json'}),
-                            body: JSON.stringify({operation_id: operationId,
+                            body: JSON.stringify({operation_id: migrationOperationId,
                                 preview_fingerprint: migrationPreview.preview_fingerprint, confirmed: true})
                         });
                         const value = await response.json().catch(() => ({}));
-                        if (!response.ok) {
-                            const detail = value.detail || {};
-                            const where = detail.store_id
-                                ? ` Loja ${detail.store_id}${detail.provider ? ` (${detail.provider})` : ''}.` : '';
-                            throw new Error((typeof detail === 'string' ? detail : (detail.message || 'Migração não concluída.')) + where);
+                        if (!response.ok) throw new Error(migrationError(value, 'Migração não concluída.'));
+                        if (value.success !== true || value.status !== 'completed' || value.logout_required !== true) {
+                            throw new Error('A conclusão nesta máquina ainda não foi confirmada. Atualize o status antes de retomar.');
                         }
+                        completed = true;
                         feedback.textContent = 'Migração concluída. Faça um novo login no JK Sistema.';
                         localStorage.removeItem('access_token');
                         localStorage.removeItem('user_data');
                         localStorage.removeItem('permissions');
                         setTimeout(() => navegarComTransicao('/frontend_index.html'), 500);
                     } catch (error) {
-                        feedback.textContent = error.message || 'Migração não concluída.';
-                        button.disabled = false;
+                        feedback.textContent = error.message || 'Migração não concluída. Atualize o status antes de retomar.';
+                        button.textContent = 'Consultar e retomar migração';
+                    } finally {
+                        migrationBusy = false;
+                        button.disabled = completed;
+                        statusButton.disabled = false;
                     }
                 });
+                statusButton.addEventListener('click', () => { void loadMigrationPreview(); });
                 void loadMigrationPreview();
             }
             void loadStores().catch(() => {});

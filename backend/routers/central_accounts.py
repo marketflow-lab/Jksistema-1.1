@@ -57,12 +57,14 @@ def create_central_accounts_router(get_tenant_id):
 
     @router.get("/migration/preview")
     def migration_preview(tenant=Depends(get_tenant_id), _migration=Depends(migration_client)):
+        central_accounts_migration.ensure_available(_migration)
         return central_accounts_migration.preview(tenant)
 
     @router.post("/migration/execute")
     def migration_execute(payload: MigrationExecuteRequest,
                           authorization: str = Header(default=""),
                           tenant=Depends(get_tenant_id), migration=Depends(migration_client)):
+        central_accounts_migration.ensure_available(migration)
         result = central_accounts_migration.execute(
             tenant, migration, operation_id=payload.operation_id,
             preview_fingerprint=payload.preview_fingerprint, confirmed=payload.confirmed)

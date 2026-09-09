@@ -427,6 +427,9 @@ def _shared_sync_montar_pacote_locked(
     known_keys: Optional[set[str]] = None,
     sanitize_user_share_oauth: bool = False,
 ) -> tuple[bytes, dict, list[str]]:
+    if scope == "lojas_integracoes":
+        from backend.services.central_accounts_store_index import assert_legacy_sync_allowed
+        assert_legacy_sync_allowed(client_id)
     item_keys: list[str] = []
     arquivos_sensiveis_obrigatorios: set[str] = set()
     if scope == "lojas_integracoes":
@@ -605,6 +608,21 @@ def _shared_sync_montar_pacote_locked(
             client_id,
             entries,
         )
+    if scope == "cadastro":
+        from backend.services.central_accounts_client import current
+        if current(client_id) is not None:
+            from backend.services.shared_sync_apply_scope import _shared_sync_validar_acesso_cadastro_central
+            frozen = []
+            for item in entries:
+                data = item.get("data") if "data" in item else _shared_sync_ler_arquivo_pacote(item["abs_path"])
+                if hashlib.sha256(data or b"").hexdigest() != item["sha256"]:
+                    raise HTTPException(409, "O cadastro mudou durante o preparo do envio; confira novamente.")
+                frozen.append({**item, "data": data or b""})
+            _shared_sync_validar_acesso_cadastro_central(
+                client_id, get_tenant_path(client_id),
+                [(item["relative_path"], item["data"]) for item in frozen],
+            )
+            entries = frozen
     manifest = {
         "schema": 2,
         "app": "JK Sistema",
@@ -653,6 +671,11 @@ def _shared_sync_montar_pacote(
     known_keys: Optional[set[str]] = None,
     sanitize_user_share_oauth: bool = False,
 ) -> tuple[bytes, dict, list[str]]:
+    if scope == "cadastro":
+        from backend.services.central_accounts_client import current
+        central = current(client_id)
+        if central is not None:
+            central.refresh_stores()
     if scope in {"lojas_integracoes", "cadastro", "vendas"}:
         from backend.services import integracoes
 

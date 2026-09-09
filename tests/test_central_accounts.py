@@ -209,9 +209,54 @@ def test_uncertain_refresh_is_never_replayed(central):
     for _ in range(2):
         with pytest.raises(CentralError) as error:
             central.request(owner, identity, request())
-        assert error.value.code == "central_reconnect_required"
+        assert error.value.code == "central_refresh_uncertain"
     assert central.provider.refreshes == 1
     assert not central.provider.requests
+
+
+def test_rate_limited_refresh_retains_authority_and_recovers_after_cooldown(central):
+    owner, identity, _ = connected(central)
+    expire_connection(central, owner, identity)
+    central.provider.refresh_error = CentralError("central_provider_rate_limited", 429)
+    for _ in range(2):
+        with pytest.raises(CentralError) as error:
+            central.request(owner, identity, request())
+        assert error.value.code == "central_provider_rate_limited"
+    assert central.provider.refreshes == 1
+    central.clock = lambda: NOW + 61
+    central.provider.refresh_error = None
+    assert central.request(owner, identity, request())["status"] == 200
+    assert central.provider.refreshes == 2
+
+
+def test_concurrent_rate_limit_is_rechecked_inside_refresh_claim(central, monkeypatch):
+    owner, identity, _ = connected(central)
+    expire_connection(central, owner, identity)
+    original_change = central.documents.change
+    injected = []
+
+    def rate_limit_before_claim(group, key, transform):
+        if group == "connections" and not injected:
+            injected.append(True)
+            original_change(group, key, lambda row: {**row, "retry_after": NOW + 60})
+        return original_change(group, key, transform)
+
+    monkeypatch.setattr(central.documents, "change", rate_limit_before_claim)
+    with pytest.raises(CentralError) as error:
+        central.request(owner, identity, request())
+    assert error.value.code == "central_provider_rate_limited"
+    assert central.provider.refreshes == 0
+
+
+@pytest.mark.parametrize("status, expected", [(429, "central_provider_rate_limited"),
+                                              (503, "central_refresh_uncertain"),
+                                              (400, "central_reconnect_required")])
+def test_provider_refresh_errors_keep_distinct_meanings(status, expected, monkeypatch):
+    transport = ProviderTransport()
+    monkeypatch.setattr(transport, "_http", lambda *args, **kwargs: (status, {}, b"{}"))
+    with pytest.raises(CentralError) as error:
+        transport._token("mercadolivre", "app", "secret", {"grant_type": "refresh_token"})
+    assert error.value.code == expected
 
 
 def test_mutation_not_replayed_on_retry_or_401(central):
@@ -374,6 +419,71 @@ def test_legacy_adoption_is_idempotent_and_rejects_changed_content(central):
     with pytest.raises(CentralError) as error:
         central.adopt_legacy(actor, changed)
     assert error.value.code == "central_migration_conflict"
+
+
+def test_repeated_adoption_never_overwrites_central_credentials_or_grants(central):
+    central.enrollment_required = True
+    capability = central.migration_session(central.users.get_user("owner"), "owner", "machine-a")
+    actor = central.authenticate_migration(capability["session"], "machine-a")
+    payload = legacy_request(1)
+    central.adopt_legacy(actor, payload)
+    store_id = payload.stores[0].store_id
+    store_key = key_for("store", store_id)
+    store = central.documents.get("stores", store_key)
+    connection_id = store["connections"]["mercadolivre"]["id"]
+    before = central.documents.get("connections", connection_id)
+    central.documents.change("stores", store_key, lambda row: {
+        **row, "grants": {**row["grants"], "reader-key": "read"},
+        "access_keys": [*row["access_keys"], "reader-key"]})
+    retry = payload.model_copy(update={"operation_id": "d" * 32})
+    central.adopt_legacy(actor, retry)
+    assert central.documents.get("connections", connection_id) == before
+    assert central.documents.get("stores", store_key)["grants"]["reader-key"] == "read"
+
+
+@pytest.mark.parametrize("condition", ["refreshing", "refresh_uncertain", "reconnect_required", "divergent", "expired"])
+def test_existing_connection_needing_recovery_cannot_complete_adoption(central, condition):
+    central.enrollment_required = True
+    capability = central.migration_session(central.users.get_user("owner"), "owner", "machine-a")
+    actor = central.authenticate_migration(capability["session"], "machine-a")
+    payload = legacy_request(1)
+    central.adopt_legacy(actor, payload)
+    store = central.documents.get("stores", key_for("store", payload.stores[0].store_id))
+    connection_id = store["connections"]["mercadolivre"]["id"]
+
+    def invalidate(row):
+        if condition in {"divergent", "expired"}:
+            values = central.vault.open("connection:" + connection_id, row["sealed"])
+            values.update({"access_token": "another-valid-token"} if condition == "divergent" else {"expires_at": NOW - 1})
+            row["sealed"] = central.vault.seal("connection:" + connection_id, values)
+        else:
+            row["status"] = condition
+        return row
+
+    central.documents.change("connections", connection_id, invalidate)
+    before = central.documents.get("connections", connection_id)
+    retry = payload.model_copy(update={"operation_id": "d" * 32})
+    with pytest.raises(CentralError) as error:
+        central.adopt_legacy(actor, retry)
+    assert error.value.code == "central_existing_connection_recovery_required"
+    assert central.documents.get("connections", connection_id) == before
+    assert central.migration_status(actor, retry.operation_id)["status"] == "failed"
+
+
+def test_migration_cannot_resurrect_deleted_central_store(central):
+    central.enrollment_required = True
+    capability = central.migration_session(central.users.get_user("owner"), "owner", "machine-a")
+    actor = central.authenticate_migration(capability["session"], "machine-a")
+    payload = legacy_request(1)
+    central.adopt_legacy(actor, payload)
+    store_key = key_for("store", payload.stores[0].store_id)
+    central.documents.change("stores", store_key, lambda row: {**row, "deleted": True})
+    retry = payload.model_copy(update={"operation_id": "d" * 32})
+    with pytest.raises(CentralError) as error:
+        central.adopt_legacy(actor, retry)
+    assert error.value.code == "central_store_identity_conflict"
+    assert central.documents.get("stores", store_key)["deleted"] is True
+    assert central.migration_status(actor, retry.operation_id)["success"] is False
 
 
 @pytest.mark.parametrize("failure", ["token", "identity", "tenant"])

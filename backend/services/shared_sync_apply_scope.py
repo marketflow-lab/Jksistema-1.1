@@ -1595,6 +1595,8 @@ def _shared_sync_aplicar_lojas_integracoes(
     preserve_local_connections: bool = False,
 ) -> dict:
     """Mescla e grava o escopo inteiro sem expor estado parcialmente aplicado."""
+    from backend.services.central_accounts_store_index import assert_legacy_sync_allowed
+    assert_legacy_sync_allowed(client_id)
     canonical_order = (
         "lojas_config.json",
         "integracoes.json",
@@ -2071,6 +2073,10 @@ def _shared_sync_aplicar_pacote(
         tenant_abs = tenant_confiavel
     _manifest, fontes = _shared_sync_read_validated_bundle(bundle, scope)
     if scope == "cadastro":
+        from backend.services.central_accounts_client import current
+        central = current(client_id)
+        if central is not None:
+            central.refresh_stores()
         from backend.services.shared_sync_cadastro_transaction import transaction
         with _shared_sync_bloquear_writer_store_id(client_id, tenant_abs):
             _shared_sync_prevalidar_cadastro(client_id, tenant_abs, fontes, scope_config)
@@ -2082,8 +2088,47 @@ def _shared_sync_aplicar_pacote(
         client_id, scope, username, scope_config, tenant_abs, fontes)
 
 
+def _shared_sync_validar_acesso_cadastro_central(client_id, tenant_abs, fontes):
+    from backend.services.central_accounts_client import current
+    from backend.services.cadastro_fotos import _cadastro_store_id_foto_segmento
+    central = current(client_id)
+    if central is None:
+        return
+    authorized = {row["store_id"] for row in central.public_stores()}
+    segments = {_cadastro_store_id_foto_segmento(store_id) for store_id in authorized}
+    config_data = next((data for rel, data in fontes if rel.lower() == "cadastro_fotos_config.json"), None)
+    if config_data is None:
+        config_path = _shared_sync_resolve_tenant_path(tenant_abs, "cadastro_fotos_config.json")
+        if os.path.isfile(config_path):
+            with open(config_path, "rb") as handle:
+                config_data = handle.read()
+    if config_data is not None:
+        config = _shared_sync_cadastro_photo_config_parse_locked(tenant_abs, config_data)
+        if any(store_id not in authorized for group in config["shared_groups"] for store_id in group["store_ids"]):
+            raise HTTPException(403, "A configuracao de fotos referencia loja sem acesso nesta sessao.")
+    # Global legacy artifacts cannot be attributed to a subset of local stores.
+    config_path = _shared_sync_resolve_tenant_path(tenant_abs, "lojas_config.json")
+    with open(config_path, "r", encoding="utf-8-sig") as handle:
+        local = json.load(handle)
+    all_local_authorized = all(str(row.get("store_id") or "") in authorized for row in local)
+    for rel, data in fontes:
+        lower = rel.lower()
+        if lower.endswith(".csv"):
+            frame = _shared_sync_csv_read_bytes(data)
+            column = next((col for col in frame.columns if str(col).strip().casefold() == "store_id"), None)
+            ids = [str(value).strip() for value in frame[column]] if column is not None else [""] * len(frame)
+            if any((value and value not in authorized) or (not value and not all_local_authorized) for value in ids):
+                raise HTTPException(403, "O cadastro referencia loja sem acesso nesta sessao.")
+        photo = _shared_sync_cadastro_store_photo_key("cadastro", rel)
+        if photo and photo.split("/")[2] not in segments:
+            raise HTTPException(403, "A foto referencia loja sem acesso nesta sessao.")
+        if not photo and lower.startswith(("cadastro_fotos/", "cadastro_produtos_fotos/")) and not all_local_authorized:
+            raise HTTPException(403, "Fotos legadas sem loja exigem acesso a todas as lojas locais.")
+
+
 def _shared_sync_prevalidar_cadastro(client_id, tenant_abs, fontes, scope_config=None):
     """Validate all store references before the first file in the scope changes."""
+    _shared_sync_validar_acesso_cadastro_central(client_id, tenant_abs, fontes)
     config_data = next((data for rel, data in fontes if rel.lower() == "cadastro_fotos_config.json"), None)
     photos = [(rel, data) for rel, data in fontes if _shared_sync_cadastro_store_photo_key("cadastro", rel)]
     bootstrap = bool((scope_config or {}).get("allow_legacy_cadastro_bootstrap")) and config_data is None and not photos

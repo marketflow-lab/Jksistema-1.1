@@ -114,6 +114,8 @@ class CentralClient:
                 messages = {
                     "central_refresh_busy": "A conexão está sendo renovada. Aguarde e solicite novamente.",
                     "central_reconnect_required": "Reconecte esta conta em Lojas e APIs.",
+                    "central_provider_rate_limited": "A plataforma limitou temporariamente a renovação. Aguarde um minuto.",
+                    "central_refresh_uncertain": "Não foi possível confirmar a renovação da conexão. Confira a conexão na Central antes de tentar novamente.",
                     "central_result_uncertain": "Não foi possível confirmar o resultado. Consulte a plataforma antes de repetir.",
                     "central_operation_already_submitted": "Esta operação já foi enviada. Confira o resultado antes de repetir.",
                     "central_store_denied": "Você não tem mais acesso a esta loja. Atualize a lista de lojas.",
@@ -134,8 +136,10 @@ class CentralClient:
                 session.close()
 
     def refresh_stores(self):
+        from backend.services.central_accounts_store_index import materialize_store_index
         result = self.call("GET", "/bootstrap")
         validate_public_stores(result.get("stores"))
+        materialize_store_index(self.tenant, result["stores"])
         self._stores = copy.deepcopy(result["stores"])
         self.refreshed_at = int(time.time())
         return self.public_stores()
@@ -201,6 +205,7 @@ class MigrationClient:
                     "central_store_identity_conflict": "O identificador da loja já pertence a outro cadastro.",
                     "central_migration_conflict": "Esta operação já existe com outro conteúdo.",
                     "central_migration_revoked": "Esta máquina ou usuário não está mais autorizado a migrar.",
+                    "central_existing_connection_recovery_required": "Já existe uma conexão central diferente ou pendente de recuperação. Recupere essa conexão na Central antes de concluir a migração.",
                 }
                 detail = {"code": code, "message": messages.get(
                     code, "A central não conseguiu concluir a migração.")}

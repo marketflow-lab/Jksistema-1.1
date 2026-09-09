@@ -170,6 +170,14 @@ def _shared_sync_create_preview(
     machine_id: str = "",
     key_context: Optional[dict] = None,
 ) -> dict:
+    if "lojas_integracoes" in scopes:
+        from backend.services.central_accounts_store_index import assert_legacy_sync_allowed
+        assert_legacy_sync_allowed(sessao.get("client_id"))
+    if "cadastro" in scopes:
+        from backend.services.central_accounts_client import current
+        central = current(sessao.get("client_id"))
+        if central is not None:
+            central.refresh_stores()
     direction = _shared_sync_operation_direction(direction)
     local_hashes, local_files = _shared_sync_local_fingerprint(sessao, scopes)
     remote_hashes, remote_metas = _shared_sync_remote_fingerprint(bundle_ids)

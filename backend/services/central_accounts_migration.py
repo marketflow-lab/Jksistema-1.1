@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -28,6 +29,20 @@ SECRET_FIELDS = ("app_id", "app_secret", "access_token", "refresh_token")
 STORE_ID_RE = re.compile(r"(?:[a-f0-9]{24}|[a-f0-9]{32})")
 OPERATION_ID_RE = re.compile(r"[a-f0-9]{32}")
 BACKUP_TTL_SECONDS = 30 * 86400
+_EXECUTE_LOCK = threading.RLock()
+
+
+def ensure_available(migration_client):
+    """Use the existing read-only operation route to verify deployment and auth."""
+    try:
+        migration_client.call("GET", "/migrations/legacy/" + "0" * 32)
+    except HTTPException as exc:
+        code = exc.detail.get("code") if isinstance(exc.detail, dict) else None
+        if exc.status_code == 404 and code == "central_migration_not_found":
+            return
+        if exc.status_code == 404:
+            raise HTTPException(503, "O serviço de migração da Central ainda não está disponível. Atualize o serviço antes de ativar as contas.") from None
+        raise
 
 
 def _state_path(client_id: str) -> str:
@@ -164,8 +179,10 @@ def _identity(provider: str, access_token: str) -> tuple[str, str]:
         response = _request("GET", url, headers={"Authorization": "Bearer " + access_token})
     except requests.RequestException:
         raise HTTPException(503, "Não foi possível validar a conta na plataforma.") from None
-    if response.status_code in (400, 401, 403):
+    if response.status_code == 401:
         raise HTTPException(401, "A conexão precisa ser renovada.")
+    if response.status_code == 429:
+        raise HTTPException(429, "A plataforma limitou temporariamente a validação da conta.")
     if response.status_code != 200:
         raise HTTPException(503, "A plataforma não respondeu à validação da conta.")
     try:
@@ -195,22 +212,26 @@ def _refresh(provider: str, values: dict) -> dict:
     try:
         response = _request("POST", url, **kwargs)
     except requests.RequestException:
-        raise HTTPException(503, "Não foi possível renovar a conexão agora.") from None
+        raise HTTPException(503, {"code": "legacy_refresh_uncertain",
+                                 "message": "A plataforma não confirmou a renovação. Confira a conexão antes de repetir a migração."}) from None
     if response.status_code in (400, 401, 403):
         raise HTTPException(401, "A conexão precisa de uma nova autorização.")
     if response.status_code == 429:
         raise HTTPException(429, "A plataforma limitou temporariamente as renovações.")
     if response.status_code != 200:
-        raise HTTPException(503, "A plataforma não concluiu a renovação.")
+        raise HTTPException(503, {"code": "legacy_refresh_uncertain",
+                                 "message": "A plataforma não confirmou a renovação. Confira a conexão antes de repetir a migração."})
     try:
         payload = response.json()
         access = str(payload.get("access_token") or "").strip()
         refresh = str(payload.get("refresh_token") or values["refresh_token"]).strip()
         expires_in = int(payload.get("expires_in") or 0)
     except (AttributeError, TypeError, ValueError):
-        raise HTTPException(502, "A plataforma retornou uma renovação inválida.") from None
+        raise HTTPException(502, {"code": "legacy_refresh_uncertain",
+                                 "message": "A resposta de renovação não pôde ser validada. Confira a conexão antes de repetir."}) from None
     if not access or not refresh or expires_in < 60:
-        raise HTTPException(502, "A plataforma retornou uma renovação inválida.")
+        raise HTTPException(502, {"code": "legacy_refresh_uncertain",
+                                 "message": "A resposta de renovação não pôde ser validada. Confira a conexão antes de repetir."})
     return {**values, "access_token": access, "refresh_token": refresh,
             "expires_at": int(time.time()) + expires_in}
 
@@ -229,6 +250,17 @@ def _persist_refresh(client_id: str, store_id: str, provider: str, before: dict,
                       expires_at=after["expires_at"], updated_at=str(time.time()))
         integracoes._integracoes_validar_lojas_config(stores, "migração para a central")
         integracoes._integracoes_escrever_lojas_config_atomico(_stores_path(client_id), stores)
+
+
+def _validation_failure(exc, store_id, provider, values):
+    detail = exc.detail if isinstance(exc.detail, dict) else {"message": exc.detail}
+    code = detail.get("code") or ("legacy_reauthorization_required" if exc.status_code == 401
+                                  else "legacy_connection_validation_failed")
+    failure = {"code": code, "store_id": store_id, "provider": provider,
+               "message": detail.get("message", "Não foi possível validar a conexão.")}
+    if code == "legacy_refresh_uncertain":
+        failure["refresh_fingerprint"] = hashlib.sha256(values["refresh_token"].encode()).hexdigest()
+    return HTTPException(exc.status_code, failure)
 
 
 def _prepare_connections(client_id: str, stores: list[dict]) -> list[dict]:
@@ -257,13 +289,9 @@ def _prepare_connections(client_id: str, stores: list[dict]) -> list[dict]:
                         expires_at = refreshed["expires_at"]
                         identity, site = _identity(provider, values["access_token"])
                     except HTTPException as retry_exc:
-                        raise HTTPException(retry_exc.status_code, detail={
-                            "code": "legacy_reauthorization_required", "store_id": store["store_id"],
-                            "provider": provider, "message": retry_exc.detail}) from None
+                        raise _validation_failure(retry_exc, store["store_id"], provider, values) from None
                 else:
-                    raise HTTPException(exc.status_code, detail={
-                        "code": "legacy_connection_validation_failed", "store_id": store["store_id"],
-                        "provider": provider, "message": exc.detail}) from None
+                    raise _validation_failure(exc, store["store_id"], provider, values) from None
             expected = str(connection.get("expected_account_id") or "")
             expected_site = str(connection.get("expected_site_id") or "")
             if (expected and not secrets.compare_digest(expected, identity)) or (
@@ -353,6 +381,10 @@ def _create_backup(client_id: str, operation_id: str, stores: list[dict], source
         "stores_total": len(stores), "connections_total": sum(len(s["connections"]) for s in stores),
         "backup_status": "frozen", "backup_created_at": created,
         "backup_expires_at": created + BACKUP_TTL_SECONDS, "backup_entries": entries,
+        "request_metadata": [{"store_id": store["store_id"], "name": store["name"],
+                              "connections": [{key: connection[key] for key in (
+                                  "provider", "expires_at", "expected_account_id", "expected_site_id")}
+                                  for connection in store["connections"]]} for store in stores],
     }
 
 
@@ -389,12 +421,58 @@ def _scrub_local(client_id: str, store_ids: set[str], operation_id: str) -> None
 
 def execute(client_id: str, migration_client, *, operation_id: str, preview_fingerprint: str,
             confirmed: bool) -> dict:
+    # Two explicit clicks must not rotate the same local token before its backup.
+    with _EXECUTE_LOCK:
+        return _execute(client_id, migration_client, operation_id=operation_id,
+                        preview_fingerprint=preview_fingerprint, confirmed=confirmed)
+
+
+def _completed_result(client_id, state):
+    store_ids = {entry["store_id"] for entry in state.get("backup_entries") or []}
+    if not store_ids:
+        raise HTTPException(409, "A migração não possui identidades locais verificáveis.")
+    _scrub_local(client_id, store_ids, state["operation_id"])
+    state.update(status="completed", completed_at=int(time.time()), failure=None)
+    _write_state(client_id, state)
+    return {"success": True, "status": "completed", "operation_id": state["operation_id"],
+            "stores_total": state["stores_total"], "connections_total": state["connections_total"],
+            "backup_expires_at": state["backup_expires_at"], "logout_required": True}
+
+
+def _execute(client_id: str, migration_client, *, operation_id: str, preview_fingerprint: str,
+             confirmed: bool) -> dict:
     if not confirmed:
         raise HTTPException(400, "Confirme a migração depois de revisar a prévia.")
     if not OPERATION_ID_RE.fullmatch(str(operation_id or "")):
         raise HTTPException(400, "Identificador de migração inválido.")
-    current_preview = preview(client_id)
     state = cleanup_expired_backup(client_id)
+    same_operation = (state.get("operation_id") == operation_id
+                      and state.get("source_fingerprint") == preview_fingerprint)
+    if same_operation and state.get("status") == "completed":
+        return _completed_result(client_id, state)
+    previous_id = str(state.get("operation_id") or "")
+    if state.get("status") in {"uploading", "failed"} and state.get("backup_entries"):
+        # A failed response may have activated the central refresh authority.
+        # Consult the original operation BEFORE any local validation or renewal.
+        try:
+            remote = migration_client.call("GET", "/migrations/legacy/" + previous_id)
+        except HTTPException as exc:
+            code = exc.detail.get("code") if isinstance(exc.detail, dict) else None
+            if exc.status_code != 404 or code != "central_migration_not_found":
+                raise
+            remote = None
+        if remote is not None:
+            if remote.get("operation_id") != previous_id:
+                raise HTTPException(502, "A central retornou outra operação de migração.")
+            if remote.get("status") == "completed" and remote.get("success") is True:
+                return _completed_result(client_id, state)
+            if remote.get("status") != "failed":
+                raise HTTPException(409, "A migração ainda está em andamento. Consulte o status antes de repetir.")
+        if not same_operation:
+            raise HTTPException(409, {"code": "legacy_migration_pending", "operation_id": previous_id,
+                                      "preview_fingerprint": state.get("source_fingerprint"),
+                                      "message": "Retome a operação original antes de iniciar outra migração."})
+    current_preview = preview(client_id)
     resumable = (state.get("operation_id") == operation_id
                  and state.get("source_fingerprint") == preview_fingerprint
                  and state.get("backup_status") == "frozen"
@@ -402,6 +480,15 @@ def execute(client_id: str, migration_client, *, operation_id: str, preview_fing
     if current_preview["preview_fingerprint"] != preview_fingerprint and not resumable:
         raise HTTPException(409, "As lojas mudaram depois da prévia; revise novamente.")
     stores = _validate_stores(_raw_stores(client_id))
+    previous_failure = state.get("failure") or {}
+    if previous_failure.get("code") == "legacy_refresh_uncertain":
+        for store in stores:
+            for connection in store["connections"]:
+                if (store["store_id"] == previous_failure.get("store_id")
+                        and connection["provider"] == previous_failure.get("provider")
+                        and hashlib.sha256(connection["refresh_token"].encode()).hexdigest()
+                        == previous_failure.get("refresh_fingerprint")):
+                    raise HTTPException(409, previous_failure)
     if not resumable:
         try:
             prepared = _prepare_connections(client_id, stores)
@@ -414,8 +501,9 @@ def execute(client_id: str, migration_client, *, operation_id: str, preview_fing
                                      "failure": public_failure})
             raise
     else:
+        # Replay only the frozen request. Renewing here could race with a central
+        # activation and change the idempotency fingerprint of this operation.
         prepared = stores
-        prepared = _prepare_connections(client_id, prepared)
         expected = {(entry["store_id"], entry["provider"], entry["field"]): entry["value_hash"]
                     for entry in state.get("backup_entries") or []}
         for store in prepared:
@@ -427,6 +515,16 @@ def execute(client_id: str, migration_client, *, operation_id: str, preview_fing
                     if expected.get(key) != hashlib.sha256(value.encode()).hexdigest() or not secrets.compare_digest(
                             read_scoped_secret(target), value):
                         raise HTTPException(409, "O backup congelado não corresponde mais às conexões locais.")
+        if state.get("request_metadata"):
+            values_by_key = {(store["store_id"], connection["provider"]): connection
+                             for store in prepared for connection in store["connections"]}
+            prepared = copy.deepcopy(state["request_metadata"])
+            for store in prepared:
+                for connection in store["connections"]:
+                    local = values_by_key.get((store["store_id"], connection["provider"]))
+                    if local is None:
+                        raise HTTPException(409, "As identidades locais mudaram durante a migração.")
+                    connection.update({field: local[field] for field in SECRET_FIELDS})
     state.update(status="uploading", failure=None)
     _write_state(client_id, state)
     try:
@@ -440,27 +538,34 @@ def execute(client_id: str, migration_client, *, operation_id: str, preview_fing
         state.update(status="failed", failure={"message": "A central não confirmou a ativação."})
         _write_state(client_id, state)
         raise HTTPException(503, "A central não confirmou a ativação.")
-    _scrub_local(client_id, {store["store_id"] for store in prepared}, operation_id)
-    state.update(status="completed", completed_at=int(time.time()), failure=None)
-    _write_state(client_id, state)
-    return {"success": True, "status": "completed", "operation_id": operation_id,
-            "stores_total": len(prepared),
-            "connections_total": sum(len(store["connections"]) for store in prepared),
-            "backup_expires_at": state["backup_expires_at"], "logout_required": True}
+    if result.get("operation_id") != operation_id:
+        raise HTTPException(502, "A central retornou outra operação de migração.")
+    return _completed_result(client_id, state)
 
 
 def status(client_id: str, migration_client=None, operation_id: str = "") -> dict:
     state = cleanup_expired_backup(client_id)
+    operation_id = operation_id or str(state.get("operation_id") or "")
+    remote_error = None
     if operation_id and migration_client is not None and OPERATION_ID_RE.fullmatch(operation_id):
         try:
             remote = migration_client.call("GET", "/migrations/legacy/" + operation_id)
-        except HTTPException:
+            if remote.get("operation_id") != operation_id:
+                raise HTTPException(502, {"code": "central_migration_response_invalid",
+                                          "message": "A central retornou outra operação de migração."})
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+            if exc.status_code != 404 or detail.get("code") != "central_migration_not_found":
+                remote_error = {"status_code": exc.status_code,
+                                "code": detail.get("code", "central_unavailable"),
+                                "message": detail.get("message", "Não foi possível consultar o status da migração.")}
             remote = None
     else:
         remote = None
     return {
         "available": migration_client is not None,
         "operation_id": str(state.get("operation_id") or ""),
+        "preview_fingerprint": str(state.get("source_fingerprint") or ""),
         "status": str(state.get("status") or "not_started"),
         "stores_total": int(state.get("stores_total") or 0),
         "connections_total": int(state.get("connections_total") or 0),
@@ -468,6 +573,11 @@ def status(client_id: str, migration_client=None, operation_id: str = "") -> dic
         "backup_expires_at": state.get("backup_expires_at"),
         "failure": state.get("failure"),
         "remote": remote,
+        "remote_error": remote_error,
+        "needs_local_finalize": bool(remote and remote.get("success") is True
+                                     and remote.get("status") == "completed"
+                                     and remote.get("operation_id") == state.get("operation_id")
+                                     and state.get("status") != "completed"),
     }
 
 

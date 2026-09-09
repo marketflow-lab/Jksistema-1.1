@@ -123,8 +123,16 @@ class ProviderTransport:
             url = BASES[provider] + "/oauth/token"
             kwargs = {"data": {**form, "client_id": app_id, "client_secret": app_secret}}
         status, _, raw = self._http("POST", url, **kwargs)
+        if status == 429:
+            raise CentralError("central_provider_rate_limited", 429)
+        if status >= 500:
+            # An error response after a refresh POST cannot prove that the
+            # single-use refresh token was not consumed.
+            raise CentralError("central_refresh_uncertain", 503)
         if status != 200:
-            raise CentralError("central_reconnect_required", 409)
+            if status in (400, 401, 403):
+                raise CentralError("central_reconnect_required", 409)
+            raise CentralError("central_refresh_uncertain", 503)
         try:
             value = json.loads(raw)
             if not value.get("access_token") or not value.get("refresh_token") or int(value["expires_in"]) < 60:

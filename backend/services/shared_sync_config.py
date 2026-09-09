@@ -526,8 +526,14 @@ def _shared_sync_machine_scope_allowed(scope: str, sessao: dict) -> bool:
     return bool(chave and permissoes.get(chave) is True)
 
 def _shared_sync_machine_allowed_scopes(sessao: dict) -> list[str]:
-    return [scope for scope in SHARED_SYNC_SCOPES if _shared_sync_machine_scope_allowed(scope, sessao)]
-
+    allowed = [scope for scope in SHARED_SYNC_SCOPES if _shared_sync_machine_scope_allowed(scope, sessao)]
+    if "lojas_integracoes" in allowed:
+        from backend.services.central_accounts_store_index import assert_legacy_sync_allowed
+        try:
+            assert_legacy_sync_allowed(sessao.get("client_id"))
+        except HTTPException:
+            allowed.remove("lojas_integracoes")
+    return allowed
 
 def _shared_sync_machine_config_normalizar(sessao: dict, payload: Optional[dict]) -> dict:
     data = payload if isinstance(payload, dict) else {}
