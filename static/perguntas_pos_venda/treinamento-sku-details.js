@@ -83,45 +83,6 @@ function textoComparacaoCaracteristicasTreinamento(value) {
     return Object.entries(value || {}).map(([key, text]) => `${labels.get(key) || 'Característica sem fonte atual'}: ${text || '(Vazio)'}`).join('\n') || '(Sem edições)';
 }
 
-async function carregarDetalhesSkuTreinamento(force = false) {
-    const lojaEscopo = lojaEscopoTreinamento();
-    const sku = String(aiTrainingSku.value || '');
-    const sessao = sessaoTreinamento();
-    if (!lojaEscopo || !sku || sessao?.saving) return;
-    if (sessao.detailsLoading === sku && !force) return;
-    const requestId = ++treinamentoDetalhesRequestId;
-    treinamentoDetalhesController?.abort();
-    treinamentoDetalhesController = new AbortController();
-    const controller = treinamentoDetalhesController;
-    const timeout = setTimeout(() => controller.abort(), 15000);
-    // Invalida uma consulta geral iniciada antes de abrir esta ficha.
-    const snapshotRequestId = ++treinamentoSync.requestId;
-    sessao.detailsLoading = sku;
-    sessao.detailsRequestId = requestId;
-    sessao.detailsError = '';
-    renderizarDetalhesSkuTreinamento();
-    try {
-        const params = new URLSearchParams({ store_id: lojaEscopo, loja: nomeLojaEscopoTreinamento(), sku });
-        const response = await fetch(`/api/mercadolivre/ia-treinamento?${params}`, {
-            headers: obterAuthHeaders(), cache: 'no-store', signal: controller.signal
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(erroRespostaTreinamento(data, 'Não foi possível carregar as informações do SKU.'));
-        if (lojaEscopo !== lojaEscopoTreinamento() || sku !== aiTrainingSku.value || requestId !== treinamentoDetalhesRequestId || snapshotRequestId !== treinamentoSync.requestId || sessao.saving) return;
-        if (data.store_id !== lojaEscopo || data.sku_details?.sku !== sku) throw new Error('A ficha recebida não corresponde à loja e ao SKU selecionados.');
-        guardarEdicaoTreinamento();
-        receberSnapshotTreinamento(data);
-    } catch (error) {
-        if (lojaEscopo === lojaEscopoTreinamento() && sku === aiTrainingSku.value && requestId === treinamentoDetalhesRequestId) {
-            sessao.detailsError = mensagemErro(error);
-        }
-    } finally {
-        clearTimeout(timeout);
-        if (sessao.detailsRequestId === requestId) sessao.detailsLoading = '';
-        if (lojaEscopo === lojaEscopoTreinamento() && sku === aiTrainingSku.value && requestId === treinamentoDetalhesRequestId) renderizarDetalhesSkuTreinamento();
-    }
-}
-
 function adicionarDocumentoSkuTreinamento(container, title, value, open = false) {
     if (value === undefined || value === null || value === '') return;
     const details = document.createElement('details');
@@ -157,7 +118,8 @@ function editarCaracteristicaSkuTreinamento(field, row) {
         if (input.value === textoValorCaracteristicaTreinamento(field.original_value ?? field.value)) delete value.caracteristicas[field.key];
         else Object.defineProperty(value.caracteristicas, field.key, { value: input.value, enumerable: true, configurable: true, writable: true });
         if (iguaisTreinamento(value, original) && !current?.conflict) delete sessao.drafts[key];
-        else sessao.drafts[key] = { ...current, value, base: original, revision: current?.revision || sessao.snapshot.editorial?.revision };
+        else sessao.drafts[key] = { ...current, value, base: original, revision: current?.revision || revisaoEditorTreinamento(sessao, key),
+            sourceRevision: current?.sourceRevision || revisaoFonteFichaTreinamento(sessao.skuDetails?.[sku]) };
         atualizarEstadoSincronizacaoTreinamento();
         renderizarConflitosTreinamento();
     });
@@ -179,10 +141,10 @@ function renderizarDetalhesSkuTreinamento(force = false) {
         refresh.id = 'btn-ai-training-refresh-catalog';
         refresh.type = 'button'; refresh.className = 'action-btn secondary';
         refresh.textContent = 'Atualizar informações';
-        refresh.addEventListener('click', () => sincronizarCadastroTreinamento(false));
+        refresh.addEventListener('click', () => carregarDetalhesSkuTreinamento(true, true));
         container.append(refresh);
     }
-    const status = document.createElement('p');
+    let status = document.createElement('p');
     status.className = 'status-line';
     status.setAttribute('role', 'status');
     if (sessao?.detailsError) {
@@ -193,12 +155,33 @@ function renderizarDetalhesSkuTreinamento(force = false) {
         retry.textContent = 'Tentar novamente';
         retry.addEventListener('click', () => carregarDetalhesSkuTreinamento(true));
         container.append(status, retry);
-        return;
+        if (!data) return;
+        status = document.createElement('p'); status.className = 'status-line';
     }
     if (!data) {
         status.textContent = sessao?.detailsLoading ? 'Carregando informações do SKU no Obsidian…' : 'Abra o SKU para consultar suas informações no Obsidian.';
         container.append(status);
         return;
+    }
+    if (sessao.detailsLoading) {
+        const updating = document.createElement('p'); updating.className = 'status-line';
+        updating.textContent = 'Exibindo última leitura válida. Atualizando em segundo plano…'; container.append(updating);
+    }
+    const editorialState = data.editorial_state?.status || data.editorial_state;
+    const catalogState = data.catalog_state?.status || data.catalog_state;
+    const messages = {
+        invalid: 'A orientação atual no Obsidian está inválida. A última leitura válida foi preservada.',
+        conflict: 'Há conflito na orientação do Obsidian. Compare as versões antes de salvar.',
+        unavailable: 'A orientação está temporariamente indisponível. A última leitura válida foi preservada.',
+    };
+    if (messages[editorialState]) {
+        const warning = document.createElement('p'); warning.className = 'status-line';
+        warning.textContent = messages[editorialState]; container.append(warning);
+    }
+    if (catalogState === 'unavailable') {
+        const warning = document.createElement('p'); warning.className = 'status-line';
+        warning.textContent = 'Cadastro temporariamente indisponível. As orientações do Obsidian continuam disponíveis.';
+        container.append(warning);
     }
     const title = document.createElement('h4');
     status.textContent = rotuloSincronizacaoCadastroTreinamento(data.synchronization);
@@ -277,7 +260,7 @@ function renderizarDetalhesSkuTreinamento(force = false) {
     // O estado refere-se à orientação editorial; a ficha pode existir sem ela.
     const note = sessao.snapshot?.editorial?.skus?.[sku];
     const skuStatus = document.getElementById('ai-training-sku-sync');
-    if (skuStatus && (!note?.status || note.status === 'missing')) skuStatus.textContent = (data.characteristics || []).length || Object.keys(data.catalog_document || {}).length
+    if (skuStatus && note?.status === 'missing') skuStatus.textContent = (data.characteristics || []).length || Object.keys(data.catalog_document || {}).length
         ? 'Orientação ainda não cadastrada. Informações do produto disponíveis abaixo.' : 'Orientação ainda não cadastrada.';
 }
 

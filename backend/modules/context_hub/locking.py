@@ -96,14 +96,22 @@ def _pid_is_running(pid: object) -> bool:
 
 
 def _remove_owned_lock(lock_path: Path, token: str) -> bool:
-    owner = _read_lock_owner(lock_path)
-    if not token or str(owner.get("token") or "") != token:
-        return False
-    try:
-        lock_path.unlink()
-    except FileNotFoundError:
-        return False
-    return True
+    # A Windows waiter briefly holds this file while reading its owner. Retry
+    # sharing violations, checking ownership again before each removal attempt.
+    deadline = time.monotonic() + 0.25
+    while True:
+        owner = _read_lock_owner(lock_path)
+        if not token or str(owner.get("token") or "") != token:
+            return False
+        try:
+            lock_path.unlink()
+            return True
+        except FileNotFoundError:
+            return False
+        except PermissionError as exc:
+            if getattr(exc, "winerror", None) not in {32, 33} or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.005)
 
 
 @contextlib.contextmanager

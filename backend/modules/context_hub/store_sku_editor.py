@@ -144,10 +144,13 @@ def _active(paths: Any, scope: StoreSkuScope) -> dict[str, Any]:
     }
 
 
-def _snapshot(paths: Any, scope: StoreSkuScope) -> dict[str, Any]:
+def _snapshot(paths: Any, scope: StoreSkuScope, *, note_paths=None, read_note=None, file_hash=None) -> dict[str, Any]:
     published = _active(paths, scope)
-    files = find_editor_note_paths(paths, scope)
+    files = find_editor_note_paths(paths, scope) if note_paths is None else note_paths
+    read_note = read_note or _read_curated_note
+    file_hash = file_hash or _file_hash
     slots = set(files) | set(published["sku_guidance"]) | {""}
+    canonical_skus = set(published["canonical_skus"])
     general: dict[str, Any] = {}
     skus: dict[str, dict[str, Any]] = {}
     statuses: dict[str, dict[str, Any]] = {}
@@ -157,13 +160,13 @@ def _snapshot(paths: Any, scope: StoreSkuScope) -> dict[str, Any]:
             active_value = published["sku_guidance"].get(sku, {}) if sku else published["guidance"]["general"]
             entry: dict[str, Any] = {"status": "deleted" if active_value else "missing", "hash": ""}
             if candidates:
-                fingerprints = [(p.relative_to(paths.curated_dir).as_posix(), _file_hash(p, paths)) for p in candidates]
+                fingerprints = [(p.relative_to(paths.curated_dir).as_posix(), file_hash(p, paths)) for p in candidates]
                 entry["hash"] = fingerprints[0][1] if len(candidates) == 1 else content_sha256(fingerprints)
                 entry["relative_path"] = fingerprints[0][0] if len(candidates) == 1 else ""
                 entry["status"] = "conflict" if len(candidates) > 1 else "invalid"
                 if len(candidates) == 1:
                     try:
-                        record = _read_curated_note(paths, candidates[0])
+                        record = read_note(paths, candidates[0])
                         entry["note_id"] = record["note_id"]
                         metadata = record["metadata"]
                         slot_matches = (
@@ -176,7 +179,7 @@ def _snapshot(paths: Any, scope: StoreSkuScope) -> dict[str, Any]:
                         value = _read_payload(record["body"], sku)
                         entry["source_body"] = record["body"]
                         entry["requires_catalog_sync"] = (
-                            sku not in published["canonical_skus"] if sku else not bool(published["generation_id"])
+                            sku not in canonical_skus if sku else not bool(published["generation_id"])
                         )
                         row = connection.execute(
                             "SELECT state, content_sha256 FROM context_hub_curated_approvals WHERE relative_path=? AND present=1",
@@ -285,7 +288,10 @@ def save_store_guidance_editor(
         with _connect(paths) as connection:
             _ensure_curation_row(connection, record["relative_path"], record["content_sha256"], str(record["metadata"].get("id") or ""))
             connection.commit()
-        return _snapshot(paths, exact_scope)
+        result = _snapshot(paths, exact_scope)
+        from backend.services.training_read_service import notify_saved
+        notify_saved(paths.client_id, exact_scope.as_dict(), info_root=paths.info_root)
+        return result
 
 
 __all__ = ["StoreGuidanceEditorConflict", "find_editor_note_paths", "load_store_guidance_editor", "save_store_guidance_editor"]

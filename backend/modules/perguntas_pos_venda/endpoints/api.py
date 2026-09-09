@@ -60,9 +60,15 @@ from backend.modules.perguntas_pos_venda.endpoints.training import (
     ml_ia_treinamento_salvar,
     ml_ia_treinamento_simular,
 )
+from backend.modules.perguntas_pos_venda.endpoints.training_read import (
+    ml_ia_treinamento_ficha_obter,
+    ml_ia_treinamento_ficha_atualizar,
+)
 
 
 __all__ = [
+    "ml_ia_treinamento_ficha_obter",
+    "ml_ia_treinamento_ficha_atualizar",
     "ml_perguntas_lista_rapida",
     "ml_perguntas_itens_rapidos",
     "ml_perguntas_detalhe_rapido",

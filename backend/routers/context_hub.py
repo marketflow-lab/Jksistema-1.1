@@ -46,6 +46,8 @@ def create_context_hub_router(
         context_hub_api.stop_all_product_evidence_sync_workers()
         from backend.modules.context_hub.catalog_product_sync import stop_catalog_sync_workers
         stop_catalog_sync_workers()
+        from backend.modules.context_hub.training_index_worker import stop_workers
+        stop_workers()
 
     router.add_event_handler("startup", recover_product_evidence_outboxes)
     router.add_event_handler("shutdown", stop_product_evidence_workers)

@@ -33,12 +33,16 @@ def list_product_research_evidence(
     as_of: Optional[object] = None,
     info_root: Optional[object] = None,
     recalculate: bool = True,
+    _prepared_paths=None,
 ) -> list[dict[str, Any]]:
     """List bounded compiled facts and provenance for agent-side judgment."""
 
     config = _runtime_config(info_root=info_root)
-    bootstrap_context_hub(client_id, info_root=config.info_root, surface=config.surface)
+    if _prepared_paths is None:
+        bootstrap_context_hub(client_id, info_root=config.info_root, surface=config.surface)
     paths = _tenant_paths(client_id, info_root=config.info_root)
+    if _prepared_paths is not None and paths != _prepared_paths:
+        raise ValueError("prepared_evidence_scope_mismatch")
     identity = _normalized_identity(
         store_ref, seller_id, site_id, sku, item_id, variation_id
     )

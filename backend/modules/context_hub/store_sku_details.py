@@ -113,11 +113,12 @@ def _documents(
     generated_store_name: str,
     canonical_hash: str,
     editorial_entry: Mapping[str, Any],
+    index_lookup=None,
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     indexed = False
     try:
-        index_entry = load_store_sku_index_entry(
+        index_entry = (index_lookup or load_store_sku_index_entry)(
             paths, scope, generation_id=generation_id, sku=sku,
         ) if generation_id else None
         if index_entry is not None:
@@ -159,7 +160,8 @@ def _documents(
 
 
 def load_store_sku_details(client_id: object, scope_value: Mapping[str, Any], sku: str,
-                           editor: Mapping[str, Any], *, info_root=None) -> dict[str, Any]:
+                           editor: Mapping[str, Any], *, info_root=None,
+                           catalog_snapshot=None, catalog_sync=None, index_lookup=None, evidence_loader=None) -> dict[str, Any]:
     """Caller proves current catalog membership; no global or other-store fallback."""
     paths = _tenant_paths(client_id, info_root=info_root)
     scope = _scope_for_paths(paths, scope_value)
@@ -193,7 +195,7 @@ def load_store_sku_details(client_id: object, scope_value: Mapping[str, Any], sk
                 canonical_hash = str(row["content_hash"] or "")
     evidence = []
     for item_id, variation_id in sorted(bindings):
-        evidence.extend({**fact, "item_id": item_id, "variation_id": variation_id} for fact in list_product_research_evidence(
+        evidence.extend({**fact, "item_id": item_id, "variation_id": variation_id} for fact in (evidence_loader or list_product_research_evidence)(
             client_id, store_ref=scope.store_ref, seller_id=scope.seller_id, site_id=scope.site_id,
             sku=sku, item_id=item_id, variation_id=variation_id, info_root=info_root, recalculate=False,
         ))
@@ -201,13 +203,15 @@ def load_store_sku_details(client_id: object, scope_value: Mapping[str, Any], sk
     from backend.modules.context_hub.catalog_product_sync import get_catalog_sync_status
     catalog_error = False
     try:
-        catalog = load_catalog_product(client_id, scope_value, sku, info_root=info_root)
+        catalog = (load_catalog_product(client_id, scope_value, sku, info_root=info_root)
+                   if catalog_snapshot is None else catalog_snapshot)
     except (ContextHubValidationError, ContextHubConflictError, OSError, sqlite3.Error, ValueError):
         # A failed generated file must not hide the existing editorial content.
         catalog, catalog_error = {}, True
     try:
-        synchronization = get_catalog_sync_status(client_id, scope.store_ref, info_root=info_root)
-        if synchronization.get("status") == "not_synced" and catalog.get("found"):
+        synchronization = (get_catalog_sync_status(client_id, scope.store_ref, info_root=info_root)
+                           if catalog_sync is None else catalog_sync)
+        if catalog_sync is None and synchronization.get("status") == "not_synced" and catalog.get("found"):
             synchronization = catalog_snapshot_status(client_id, scope_value, info_root=info_root)
     except (ContextHubValidationError, ContextHubConflictError, OSError, sqlite3.Error, ValueError):
         synchronization = {"status": "error", "last_error_code": "catalog_sync_read_failed"}
@@ -249,9 +253,11 @@ def load_store_sku_details(client_id: object, scope_value: Mapping[str, Any], sk
             "documents": _documents(
                 paths, scope, sku, generation_id=generation if canonical else "",
                 generated_store_name=generated_store_name, canonical_hash=canonical_hash,
-                editorial_entry=entry,
+                editorial_entry=entry, index_lookup=index_lookup,
             ),
-            "revision": str((editor.get("editorial") or {}).get("revision") or "")}
+            "revision": str((editor.get("editorial") or {}).get("revision") or ""),
+            "source_revision": content_sha256([{key: row.get(key) for key in (
+                "key", "original_value", "source_revision", "source_missing")} for row in characteristics])}
 
 
 def characteristic_edit_payload(edits: dict[str, str], details: Mapping[str, Any]) -> dict[str, Any]:

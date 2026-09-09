@@ -22,6 +22,10 @@ from backend.services import shared_sync_common as common
     "_stores_publication/journal.json",
     "_STORES_PUBLICATION\\preimages\\stores.json",
     "nested/_stores_publication. /preimage.json",
+    "context_hub/training_read_index.sqlite",
+    "context_hub/training_read_index.sqlite-wal",
+    "context_hub/training_read_index.sqlite-shm",
+    "CONTEXT_HUB/training-index-worker.lock",
 ])
 def test_public_projection_and_preimages_are_rejected_on_import(relative, monkeypatch, tmp_path):
     monkeypatch.setitem(common.SHARED_SYNC_SCOPES, "synthetic", {"patterns": ["*"]})
@@ -51,6 +55,10 @@ def test_export_prunes_publication_tree_even_with_wildcard_scope(tmp_path, monke
     (private / "preimages.json").write_text('{"private":true}', encoding="utf-8")
     (tmp_path / "LOJAS_PUBLIC_SNAPSHOT.JSON").write_text('{"derived":true}', encoding="utf-8")
     (tmp_path / "ordinary.json").write_text('{"allowed":true}', encoding="utf-8")
+    index_dir = tmp_path / "context_hub"
+    index_dir.mkdir()
+    for name in ("training_read_index.sqlite", "training_read_index.sqlite-wal", "training_read_index.sqlite-shm"):
+        (index_dir / name).write_bytes(b"private-derived-projection")
     monkeypatch.setattr(collect, "get_tenant_path", lambda _: str(tmp_path), raising=False)
     monkeypatch.setitem(common.SHARED_SYNC_SCOPES, "synthetic", {"patterns": ["*"]})
     entries, warnings = collect._shared_sync_coletar_arquivos("tenant-test", "synthetic")

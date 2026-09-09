@@ -12,6 +12,8 @@ from backend.modules.context_hub import api as hub
 from backend.modules.perguntas_pos_venda.endpoints import store_config, training
 from backend.modules.perguntas_pos_venda.endpoints.security import get_tenant_id
 from backend.services import integracoes, cadastro_compatibilidade, ia_treinamento_ppv
+from backend.services import training_read_service
+from backend.modules.context_hub import training_read_index, training_index_worker
 
 
 @pytest.fixture()
@@ -24,6 +26,12 @@ def editor_api(monkeypatch, tmp_path):
         {"nome": "Loja A", "store_id": "store-a", "integracoes": {"mercadolivre": {"user_id": "100", "site_id": "MLB"}}},
         {"nome": "Loja B", "store_id": "store-b", "integracoes": {"mercadolivre": {"user_id": "200", "site_id": "MLB"}}},
     ]
+    tenant_dir = info / "tenant-a"
+    tenant_dir.mkdir()
+    (tenant_dir / "ia_treinamento_perguntas_pos_venda.json").write_text(json.dumps({"por_loja": {
+        "store_id:" + row["store_id"]: {"store_id": row["store_id"], "loja": row["nome"],
+                                        "orientacoes_pos_venda": "Pos-venda preservado"}
+        for row in stores}}), encoding="utf-8")
     monkeypatch.setattr(integracoes, "carregar_lojas", lambda _client: stores)
     monkeypatch.setattr(store_config, "read_store_cards", lambda _client: {
         "lojas": [{"nome": row["nome"], "store_id": row["store_id"],
@@ -36,6 +44,8 @@ def editor_api(monkeypatch, tmp_path):
     monkeypatch.setattr(store_config, "_perguntas_loja_config_normalizar", lambda value: value)
     monkeypatch.setattr(store_config, "_integracoes_nome_normalizado", lambda value: str(value).lower())
     monkeypatch.setattr(store_config, "_ml_oauth_status", lambda value: {"conectado": True})
+    monkeypatch.setattr(training_read_service, "read_store_cards", store_config.read_store_cards)
+    monkeypatch.setattr(training_index_worker, "request_refresh", lambda *args, **kwargs: None)
     monkeypatch.setattr(training, "_ia_treinamento_ppv_resolver", lambda *_args, **_kwargs: {"orientacoes_pos_venda": "Pos-venda preservado"})
     monkeypatch.setattr(training, "_ia_treinamento_ppv_tipo_normalizar", lambda value: value or "perguntas_anuncio")
     monkeypatch.setattr(training, "_ia_treinamento_ppv_listar_skus", lambda _client, store, strict=False: [{"sku": "001", "nome": store}])
@@ -47,7 +57,30 @@ def editor_api(monkeypatch, tmp_path):
     app.get("/skus")(training.ml_ia_treinamento_listar_skus)
     app.get("/synchronization")(training.ml_ia_treinamento_sincronizacao_obter)
     app.post("/synchronization")(training.ml_ia_treinamento_sincronizacao_solicitar)
-    with TestClient(app) as client:
+    class ProjectedClient(TestClient):
+        def get(self, url, **kwargs):
+            # Deterministically finish a background publication BEFORE dispatching
+            # old editor-contract requests. New read-path and worker tests cover
+            # queueing, eventual freshness and absence of source I/O inside GET.
+            params = kwargs.get("params") or {}
+            store_id = params.get("store_id")
+            if url == "/training" and store_id in {row["store_id"] for row in stores}:
+                identity = training_read_service.resolve_read_scope("tenant-a", store_id)
+                try:
+                    editor = training.load_store_guidance_editor("tenant-a", identity)
+                    status = "ready"
+                    try:
+                        products = {"001": training.load_store_sku_details("tenant-a", identity, "001", editor)}
+                    except (OSError, sqlite3.Error, training.ContextHubConflictError, training.ContextHubValidationError):
+                        status = "degraded"
+                        products = {"001": training_read_index.read_ficha("tenant-a", identity, "001")["sku_details"]}
+                    training_read_index.publish_generation("tenant-a", identity, editor, products, product_status=status)
+                except (OSError, sqlite3.Error, training.ContextHubConflictError, training.ContextHubValidationError):
+                    # Last good projection survives a failed source refresh.
+                    training_read_index.mark_unavailable("tenant-a", identity)
+            return super().get(url, **kwargs)
+
+    with ProjectedClient(app) as client:
         yield client, info, stores
     hub.stop_all_context_hub_watchers()
 
@@ -76,7 +109,7 @@ def test_catalog_sync_api_is_exactly_scoped_and_preserves_zero_sku(editor_api, m
     calls = []
     monkeypatch.setattr(sync, "request_catalog_sync", lambda tenant, store, **kw:
                         calls.append((tenant, store, kw)) or {"status": "pending"})
-    monkeypatch.setattr(sync, "get_catalog_sync_status", lambda tenant, store: {"status": "completed", "total": 1})
+    monkeypatch.setattr(sync, "get_catalog_sync_status_for_scope", lambda tenant, scope: {"status": "completed", "total": 1})
     response = client.post("/synchronization", json={"store_id": "store-a", "sku": "001"})
     assert response.status_code == 200 and response.json()["store_id"] == "store-a"
     assert calls == [("tenant-a", "store-a", {"sku": "001"})]
@@ -216,7 +249,7 @@ def test_public_writes_require_revision_and_exact_catalog_membership(editor_api)
     assert client.post("/training", json=payload).status_code == 409
     payload.update(edit_target="sku", sku="not-in-store")
     assert client.post("/training", json=payload).json()["detail"]["code"] == "sku_store_scope_unresolved"
-    assert client.get("/training", params={"store_id": "another-tenant-store"}).status_code == 409
+    assert client.get("/training", params={"store_id": "another-tenant-store"}).status_code == 403
 
 
 def test_examples_live_in_exact_sku_note_and_partial_edits_preserve_them(editor_api):
@@ -302,7 +335,7 @@ def test_storage_failure_has_explicit_sync_error(editor_api, monkeypatch, failur
     monkeypatch.setattr(training, "load_store_guidance_editor", fail)
     response = client.get("/training", params={"store_id": "store-a"})
     assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "editorial_read_failed"
+    assert response.json()["detail"]["code"] == "training_index_unavailable"
     monkeypatch.setattr(training, "save_store_guidance_editor", fail)
     response = client.post("/training", json={"store_id": "store-a", "edit_target": "general", "expected_revision": "revision", "orientacoes": "Texto"})
     assert response.status_code == 503
@@ -362,7 +395,8 @@ def test_sku_details_without_guidance_shows_canonical_and_exact_documents(editor
     assert len(current["documents"]) == len(details["documents"])
     other = client.get("/training", params={"store_id": "store-b", "sku": "001"}).json()["sku_details"]
     assert other["canonical_document"] == {} and other["documents"] == []
-    assert client.get("/training", params={"store_id": "store-a", "sku": "1"}).status_code == 409
+    unknown = client.get("/training", params={"store_id": "store-a", "sku": "1"})
+    assert unknown.status_code == 200 and unknown.json()["sku_known"] is False
     assert client.get("/training", params={"sku": "001"}).status_code == 409
 
 
@@ -435,6 +469,26 @@ def test_sku_characteristics_roundtrip_preserves_sources_and_reorder_does_not_re
     assert cleared.status_code == 200, cleared.text
     assert cleared.json()["caracteristicas_sku"]["001"] == {}
     assert "Comentario externo preservado" in note.read_text(encoding="utf-8")
+
+
+def test_characteristics_source_revision_conflict_preserves_note_bytes(editor_api):
+    client, info, _stores = editor_api
+    _publish_details_fixture(info)
+    before = client.get("/training", params={"store_id": "store-a", "sku": "001"}).json()
+    saved = client.post("/training", json={"store_id": "store-a", "edit_target": "sku", "sku": "001",
+        "expected_revision": before["editorial"]["revision"], "notas_sku": "Nota preservada"}).json()
+    note = info / "tenant-a" / "ContextVault" / "80_Curadoria" / saved["editorial"]["skus"]["001"]["relative_path"]
+    original_bytes = note.read_bytes()
+    current = client.get("/training", params={"store_id": "store-a", "sku": "001"}).json()
+    field = current["sku_details"]["characteristics"][0]
+    response = client.post("/training", json={"store_id": "store-a", "edit_target": "sku", "sku": "001",
+        "expected_revision": current["editorial"]["revision"],
+        "expected_source_revision": "different-technical-source",
+        "notas_sku": "Nao gravar", "caracteristicas_sku": {field["key"]: "Edicao desatualizada"}})
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "catalog_source_revision_conflict"
+    assert note.read_bytes() == original_bytes
+    assert client.get("/training", params={"store_id": "store-a", "sku": "001"}).json()["notas_sku"]["001"] == "Nota preservada"
 
 
 def test_unknown_or_wrong_target_characteristics_are_rejected(editor_api):

@@ -63,11 +63,11 @@ def _key(scope):
 
 
 @contextmanager
-def _db(paths, *, readonly=False):
+def _db(paths, *, readonly=False, timeout=10):
     target = paths.internal_dir / "catalog-sync.db"
     _assert_path_chain_safe(target, paths.info_root)
     if readonly:
-        con = sqlite3.connect(target.as_uri() + "?mode=ro", uri=True, timeout=10)
+        con = sqlite3.connect(target.as_uri() + "?mode=ro", uri=True, timeout=timeout)
     else:
         paths.internal_dir.mkdir(parents=True, exist_ok=True)
         con = sqlite3.connect(target, timeout=10)
@@ -87,12 +87,26 @@ def _db(paths, *, readonly=False):
 
 def get_catalog_sync_status(client_id, store_id, *, info_root=None):
     paths = _tenant_paths(client_id, info_root=info_root)
-    default = {"status": "not_synced", "requested_revision": 0,
-               "completed_revision": 0, "last_error_code": "", "pending": 0}
+    if not (paths.internal_dir / "catalog-sync.db").exists():
+        return _catalog_sync_default()
+    scope = resolve_catalog_scope(client_id, store_id, info_root=paths.info_root)
+    return get_catalog_sync_status_for_scope(client_id, scope, info_root=paths.info_root)
+
+
+def _catalog_sync_default():
+    return {"status": "not_synced", "requested_revision": 0,
+            "completed_revision": 0, "last_error_code": "", "pending": 0}
+
+
+def get_catalog_sync_status_for_scope(client_id, scope, *, info_root=None):
+    """Caller supplies session-authorized scope; polling never reloads stores."""
+    from .store_sku_repository_support import _scope_for_paths
+    paths = _tenant_paths(client_id, info_root=info_root)
+    scope = _scope_for_paths(paths, scope).as_dict()
+    default = _catalog_sync_default()
     if not (paths.internal_dir / "catalog-sync.db").exists():
         return default
-    scope = resolve_catalog_scope(client_id, store_id, info_root=paths.info_root)
-    with _db(paths, readonly=True) as con:
+    with _db(paths, readonly=True, timeout=0.05) as con:
         row = con.execute("SELECT * FROM catalog_outbox WHERE scope_key=?", (_key(scope),)).fetchone()
     if row is None:
         return default
@@ -244,6 +258,8 @@ def run_catalog_sync_now(client_id, store_id, *, sku="", info_root=None):
                     last_error_code='',report=? WHERE scope_key=?""",
                     (revision, revision, json.dumps(report, ensure_ascii=False), key))
                 con.commit()
+            from backend.services.training_read_service import notify_saved
+            notify_saved(client_id, snapshot["scope"], info_root=paths.info_root)
             return report
         except Exception:
             with _db(paths) as con:

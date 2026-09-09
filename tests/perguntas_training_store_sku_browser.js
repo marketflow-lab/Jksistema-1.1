@@ -59,7 +59,7 @@ function skuDetails(storeId, sku) {
   const product = (productsByStore[storeId] || []).find(item => item.sku === sku);
   const base = { marca: product?.marca || '', tensao: storeId === 'store-alpha' ? '12 V' : '24 V' };
   return {
-    sku,
+    sku, source_revision: `source-${storeId}-${sku}-${generation}`,
     catalog_document: { fields: {description: `Descrição do cadastro próprio ${storeId}/${sku}`, images: ['/img/test-product.png', 'javascript:alert(1)']} },
     catalog_found: true,
     synchronization: { status: 'completed', total: (productsByStore[storeId] || []).length },
@@ -135,6 +135,10 @@ function contentType(filePath) {
         await json(route, failCatalog ? { detail: 'Catálogo indisponível' } : { success: true, store_id: storeId, produtos: productsByStore[storeId] || [] }, failCatalog ? 503 : 200);
         return;
       }
+      if (url.pathname === '/api/mercadolivre/ia-treinamento/ficha/atualizar') {
+        const payload = request.postDataJSON(); synchronizationRequests.push(payload);
+        await json(route, failSynchronization ? { detail: 'Atualização temporariamente indisponível' } : { success: true }, failSynchronization ? 503 : 202); return;
+      }
       if (url.pathname === '/api/mercadolivre/ia-treinamento/sincronizacao') {
         const payload = request.method() === 'POST' ? request.postDataJSON() : null;
         const storeId = payload?.store_id || url.searchParams.get('store_id');
@@ -144,11 +148,19 @@ function contentType(filePath) {
         }, failSynchronization ? 503 : 200);
         return;
       }
-      if (url.pathname === '/api/mercadolivre/ia-treinamento' && request.method() === 'GET') {
+      if (['/api/mercadolivre/ia-treinamento', '/api/mercadolivre/ia-treinamento/ficha'].includes(url.pathname) && request.method() === 'GET') {
         const storeId = url.searchParams.get('store_id');
         const sku = url.searchParams.get('sku') || '';
         if (sku && failDetails) { await json(route, { detail: 'Detalhes do Obsidian indisponíveis' }, 503); return; }
         const result = snapshot(storeId, sku);
+        if (url.pathname.endsWith('/ficha')) {
+          result.sku = sku;
+          result.snapshot = { generation, checked_at: new Date().toISOString(), state: 'ready' };
+          result.editorial.skus[sku] ||= { status: 'missing' };
+          result.notas_sku = { [sku]: result.notas_sku?.[sku] || '' };
+          result.caracteristicas_sku = { [sku]: result.caracteristicas_sku?.[sku] || {} };
+          result.exemplos = { perguntas_anuncio: result.exemplos.perguntas_anuncio.filter(example => example.sku === sku) };
+        }
         let delivered;
         if (sku && delayedDetails?.storeId === storeId && delayedDetails?.sku === sku) {
           const delayed = delayedDetails;
@@ -191,6 +203,7 @@ function contentType(filePath) {
           assert(!('orientacoes' in payload), 'gravar SKU não pode enviar orientações gerais');
           data.notas_sku[payload.sku] = payload.notas_sku;
           if (payload.caracteristicas_sku) {
+            assert.strictEqual(payload.expected_source_revision, skuDetails(payload.store_id, payload.sku).source_revision, 'edição técnica preserva a revisão da fonte');
             assert.strictEqual(typeof payload.caracteristicas_sku, 'object');
             assert(Object.values(payload.caracteristicas_sku).every(value => typeof value === 'string'));
             data.caracteristicas_sku ||= {};
@@ -242,7 +255,8 @@ function contentType(filePath) {
     await page.locator('[data-training-sku="002"]').click();
     await page.getByRole('dialog').waitFor({ state: 'visible' });
     assert.match(await page.getByRole('dialog').innerText(), /Produto Alpha 2/);
-    assert.match(await page.getByRole('dialog').innerText(), /ainda não possui orientação específica/);
+    await page.locator('#ai-training-sku-guidance-view').filter({ hasText: 'ainda não possui orientação específica' }).waitFor();
+    assert.doesNotMatch(await page.getByRole('dialog').innerText(), /Arquivo ausente/);
 
     await page.getByRole('button', { name: 'Adicionar orientação', exact: true }).last().click();
     await page.locator('#ai-training-notas-sku').fill('Orientação nova e isolada do SKU 002.');
@@ -269,11 +283,11 @@ function contentType(filePath) {
     assert.strictEqual(await details.locator('.training-catalog-images img').count(), 1);
     failSynchronization = true;
     await page.locator('#btn-ai-training-refresh-catalog').click();
-    await page.locator('#ai-training-catalog-sync').filter({hasText: 'preservadas'}).waitFor();
+    await details.filter({hasText: 'preservadas'}).waitFor();
     failSynchronization = false;
     await page.locator('#btn-ai-training-refresh-catalog').click();
-    await page.locator('#ai-training-catalog-sync').filter({hasText: 'Informações atualizadas'}).waitFor();
-    assert.deepStrictEqual(synchronizationRequests.at(-1), {store_id: 'store-alpha', loja: 'Loja Alpha', sku: '003'});
+    await page.waitForFunction(() => !sessaoTreinamento().detailsLoading && !sessaoTreinamento().detailsError);
+    assert.deepStrictEqual(synchronizationRequests.at(-1), {store_id: 'store-alpha', sku: '003'});
     await page.locator('#btn-ai-training-fechar-sku').click();
     const storeSync = page.waitForRequest(req => req.url().endsWith('/sincronizacao') && req.method() === 'POST');
     await page.locator('#btn-ai-training-sync-catalog').click();
@@ -343,9 +357,8 @@ function contentType(filePath) {
     await page.locator('#btn-ai-training-salvar-sku').click();
     await page.locator('#ai-training-sku-editor').waitFor({ state: 'hidden' });
     assert.strictEqual(trainingByStore['store-alpha'].caracteristicas_sku['003'].tensao, 'Valor confirmado antes da falha de releitura');
-    await page.locator('#btn-ai-training-retry-details').waitFor({ state: 'visible' });
-    await page.locator('#btn-ai-training-retry-details').click();
     await tensionValue().filter({ hasText: 'Valor confirmado antes da falha de releitura' }).waitFor();
+    assert.strictEqual(await page.evaluate(() => Object.hasOwn(sessaoTreinamento().drafts, 'sku:003')), false);
     await page.locator('#btn-ai-training-fechar-sku').click();
 
     // A failed details request is recoverable and cannot masquerade as absent guidance.
@@ -428,6 +441,10 @@ function contentType(filePath) {
     await page.evaluate(() => abrirBalaoSkuTreinamento('002'));
     await page.locator('#ai-training-sku-conflict').getByRole('button', { name: 'Usar versão do Obsidian' }).click();
     await page.locator('#btn-ai-training-fechar-sku').click();
+    // A partial SKU refresh cannot advance the general editor CAS revision.
+    await page.waitForFunction(() => !sessaoTreinamento().detailsLoading && !sessaoTreinamento().loading);
+    await page.evaluate(() => carregarTreinamentoAI(true));
+    await page.waitForFunction(revision => sessaoTreinamento().snapshot.editorial.revision === revision, `store-alpha-${revision}`);
     await page.evaluate(async () => {
       aiTrainingExemploEscopo.value = 'geral';
       aiTrainingExemploPergunta.value = 'Horário de atendimento?';
@@ -435,6 +452,7 @@ function contentType(filePath) {
       await adicionarExemploTreinamento();
     });
     assert.strictEqual(trainingByStore['store-alpha'].exemplos.perguntas_anuncio.length, 2);
+    // Removal must refresh the target SKU itself; the general save cannot promote stale cached details.
     await page.evaluate(() => abrirBalaoSkuTreinamento('001'));
     await page.locator('#btn-ai-training-fechar-sku').click();
     const removed = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes('/ia-treinamento'));
@@ -454,7 +472,7 @@ function contentType(filePath) {
 
     // Same SKU in two stores never inherits the other store's guidance.
     await page.locator('[data-training-sku="001"]').click();
-    assert.match(await page.locator('#ai-training-sku-guidance-view').innerText(), /ainda não possui/);
+    await page.locator('#ai-training-sku-guidance-view').filter({ hasText: 'não contém texto' }).waitFor();
     await page.getByRole('button', { name: 'Fechar orientações do SKU' }).click();
 
     // A real polling cycle reflects external text verbatim, including whitespace and markup.
@@ -541,9 +559,10 @@ function contentType(filePath) {
     assert.match(await page.locator('#ai-training-general-summary').innerText(), /ainda não possui/);
     failCatalog = true;
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await page.locator('#ai-training-sku-count').filter({ hasText: 'Falha ao carregar' }).waitFor();
+    await page.locator('#ai-training-sku-count').filter({ hasText: 'última lista disponível' }).waitFor();
     await page.evaluate(() => carregarTreinamentoAI(true));
-    assert.strictEqual(await page.locator('#ai-training-sku-count').innerText(), 'Falha ao carregar');
+    assert.match(await page.locator('#ai-training-sku-count').innerText(), /última lista disponível/);
+    assert.strictEqual(await page.locator('[data-training-sku]').count(), 1, 'falha ao atualizar preserva a lista válida');
     failCatalog = false;
 
     // Late response from an old selection cannot flash another store's content.
@@ -591,6 +610,8 @@ function contentType(filePath) {
     await page.locator('#btn-ai-training-fechar-sku').click();
 
     const trainingGets = requests.filter(item => item.method === 'GET' && item.pathname === '/api/mercadolivre/ia-treinamento');
+    assert(trainingGets.every(item => !new URLSearchParams(item.search).has('sku')), 'modal usa a ficha indexada, sem GET geral com SKU');
+    assert(requests.some(item => item.pathname === '/api/mercadolivre/ia-treinamento/ficha'));
     assert(trainingGets.every(item => /store_id=store-(alpha|beta)/.test(item.search)), 'treinamento nunca pode consultar escopo global');
     assert.deepStrictEqual(pageErrors, [], `erros no navegador: ${pageErrors.join(' | ')}`);
     console.log('Treinar IA por loja no navegador: OK');

@@ -168,30 +168,29 @@ def ml_ia_treinamento_obter(
     client_id: str = Depends(get_tenant_id),
     sku: Optional[str] = None,
 ):
-    # A tela edita uma camada por vez. Herdar o global aqui faria um salvamento
-    # rapido materializar/copiar a camada global dentro do perfil da loja.
+    from backend.services import training_read_service as display
+    if store_id:
+        if sku:
+            return display.read_ficha(client_id, store_id, sku)
+        scope, editor = display.read_editor(client_id, store_id)
+        data = display.legacy_profile_for_display(client_id, scope)
+        return {**_editor_response(data, editor, scope["store_name"], scope["store_ref"]),
+                "snapshot": editor.get("snapshot") or {},
+                "seller_id": scope["seller_id"], "site_id": scope["site_id"]}
+    # Name-only callers retain their legacy resolution contract, then use the
+    # same authorized indexed reader. Global/post-sale configuration is unchanged.
     loja, store_id = _resolver_escopo_loja_treinamento(client_id, loja, store_id)
+    if store_id:
+        return ml_ia_treinamento_obter(loja, store_id, client_id, sku)
     data = _ia_treinamento_ppv_resolver(
         client_id,
         loja,
         store_id=store_id,
         include_inherited=False,
     )
-    editor = None
-    if store_id:
-        scope = _resolver_context_hub_scope(client_id, loja, store_id)
-        try:
-            editor = load_store_guidance_editor(client_id, scope)
-        except (OSError, sqlite3.Error, ContextHubConflictError, ContextHubValidationError) as exc:
-            raise HTTPException(status_code=503, detail={
-                "code": "editorial_read_failed",
-                "message": "Nao foi possivel ler as orientacoes do Obsidian.",
-            }) from exc
-    result = _editor_response(data, editor or {}, loja, store_id)
     if sku:
         _require_store_sku(client_id, store_id, sku)
-        result["sku_details"] = _sku_details_response(client_id, scope, sku, editor)
-    return result
+    return _editor_response(data, {}, loja, store_id)
 
 
 def _require_store_sku(client_id: str, store_id: str, sku: str) -> None:
@@ -220,10 +219,12 @@ def _catalog_sync_scope(client_id: str, loja: str, store_id: str, sku: str = "")
 
 def ml_ia_treinamento_sincronizacao_obter(store_id: str, loja: str = "", sku: str = "",
                                          client_id: str = Depends(get_tenant_id)):
-    from backend.modules.context_hub.catalog_product_sync import get_catalog_sync_status
-    store_id = _catalog_sync_scope(client_id, loja, store_id, sku)
+    from backend.modules.context_hub.catalog_product_sync import get_catalog_sync_status_for_scope
+    from backend.services.training_read_service import resolve_read_scope
+    scope = resolve_read_scope(client_id, store_id)
+    store_id = scope["store_ref"]
     try:
-        return {"success": True, "store_id": store_id, "synchronization": get_catalog_sync_status(client_id, store_id)}
+        return {"success": True, "store_id": store_id, "synchronization": get_catalog_sync_status_for_scope(client_id, scope)}
     except (OSError, sqlite3.Error, ContextHubValidationError) as exc:
         raise HTTPException(status_code=503, detail={"code": "catalog_sync_read_failed", "message": "Nao foi possivel consultar a sincronizacao."}) from exc
 
@@ -340,6 +341,12 @@ def ml_ia_treinamento_salvar(
                 if current["editorial"]["revision"] != req.expected_revision:
                     raise StoreGuidanceEditorConflict("As orientacoes mudaram.")
                 details = load_store_sku_details(client_id, scope, sku, current)
+                if (req.expected_source_revision is not None
+                        and req.expected_source_revision != details.get("source_revision", "")):
+                    raise HTTPException(status_code=409, detail={
+                        "code": "catalog_source_revision_conflict",
+                        "message": "Os dados de origem mudaram. Preserve sua edicao e compare a ficha atual.",
+                    })
                 guidance.update(characteristic_edit_payload(req.caracteristicas_sku, details))
             editor = save_store_guidance_editor(
                 client_id, scope, guidance=guidance, sku=sku,
@@ -360,6 +367,8 @@ def ml_ia_treinamento_salvar(
                 "code": "editorial_write_failed",
                 "message": "Nao foi possivel confirmar a gravacao no Obsidian.",
             }) from exc
+        from backend.services.training_read_service import notify_saved
+        notify_saved(client_id, scope)
         data = _ia_treinamento_ppv_resolver(
             client_id, loja, store_id=store_id, include_inherited=False,
         )

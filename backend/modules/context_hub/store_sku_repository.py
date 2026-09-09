@@ -129,6 +129,9 @@ def publish_store_sku_generation(
             expected_active_generation_id=expected_active_generation_id,
         )
     active_generation_id = str(active["generation_id"]) if active is not None else ""
+    if not idempotent:
+        from backend.services.training_read_service import notify_saved
+        notify_saved(client_id, scope_value, info_root=paths.info_root)
     if idempotent:
         return {
             "success": True,

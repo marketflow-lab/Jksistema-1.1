@@ -13,6 +13,7 @@ from backend.schemas import ia
 from backend.schemas import perguntas_pos_venda as ppv_schemas
 from backend.services import perguntas_pos_venda_endpoints as endpoints
 from backend.modules.perguntas_pos_venda.endpoints.training import CatalogSynchronizationRequest
+from backend.modules.perguntas_pos_venda.endpoints.training_read import TrainingRefreshRequest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,13 +33,15 @@ MODEL_TYPES = (
     ia.IATreinamentoPerguntasPosVendaRequest,
     ia.IATreinamentoPerguntasPosVendaSimularRequest,
     CatalogSynchronizationRequest,
+    TrainingRefreshRequest,
 )
 CONTRACT_HASHES = {
-    # Additive authenticated catalog synchronization GET/POST; legacy signatures preserved.
-    "routes": "dacfa687b5dbb601eac63ea2c56e58c1996a6473e8b35b6f345106d890c299c4",
+    # Additive indexed ficha GET/refresh POST and optional technical-source CAS;
+    # legacy endpoint signatures and facade exports remain unchanged.
+    "routes": "77bdca722f74a16061e65ea83490c374f16cf1421d697f5cbc9d3af7cc273aea",
     "exports": "cb28869e16292f3f0af3c259bd6dc70a62cfd29969d7aa7e1a46bf1458de4909",
     "signatures": "40509257eef17db74bca7ca80a11f7bc39229d3ab87101f72a4722f44aafad5e",
-    "schemas": "d741faa44ffe66e2bb54d68bdd192ffab8f9f2890d50a18c93990e4e78507686",
+    "schemas": "91eb3ca0ae524b6565020dfce4cc65c39995d09663b56e368cc4aa9be62239f4",
     "http_status_codes": "c06ceb69456b4923815b0461ddeef6f9c90b6fcf5c0568dd79b3fdbc888a4546",
     "governance": "af72e45eecb3012d9fbc01f23fc530977e25f72106912c85921b5f587d0b4dee",
 }
@@ -153,9 +156,9 @@ def _snapshot() -> dict[str, object]:
 
 def test_perguntas_pos_venda_endpoints_contract_snapshot() -> None:
     snapshot = _snapshot()
-    assert len(snapshot["routes"]) == 38
+    assert len(snapshot["routes"]) == 40
     assert len(snapshot["exports"]) == 36
-    assert len(snapshot["schemas"]) == 13
+    assert len(snapshot["schemas"]) == 14
     assert {name: _digest(value) for name, value in snapshot.items()} == CONTRACT_HASHES
 
 
