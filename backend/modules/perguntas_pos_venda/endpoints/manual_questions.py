@@ -9,7 +9,7 @@ from fastapi.encoders import jsonable_encoder
 from backend.modules.perguntas_pos_venda.endpoints.runtime import runtime_adapter
 from backend.modules.perguntas_pos_venda.endpoints.security import get_tenant_id
 from backend.schemas import PerguntasEnviarRespostaRequest, PerguntasGerarRespostaRequest
-from backend.services import perguntas_pos_venda_codex
+from backend.services import perguntas_pos_venda_codex, perguntas_generation_preflight
 from backend.services.perguntas_pos_venda_state import ML_RESPOSTA_PERGUNTA_MAX_CHARS, PerguntasIARespostaIndisponivel
 from backend.modules.perguntas_pos_venda.endpoints.jobs import (
     _customer_reply_wait_or_raise,
@@ -78,14 +78,23 @@ def ml_perguntas_gerar_resposta_manual(
     if not str(pergunta.get("id") or "").strip():
         raise HTTPException(status_code=400, detail="Informe a pergunta.")
 
+    scope = _manual_generation_scope(request, client_id, str(req.store_id or ""), loja)
+    canonical = perguntas_generation_preflight.load_context(request, scope, str(pergunta["id"]))
+    pergunta = dict(canonical["question"])
+    if resposta_atual.strip():
+        pergunta["_resposta_atual"] = resposta_atual
+    if orientacao_usuario:
+        pergunta["_orientacao_usuario"] = orientacao_usuario[:1200]
+
     if perguntas_pos_venda_codex.enabled():
-        scope = _manual_generation_scope(request, client_id, str(req.store_id or ""), loja)
+        generation_session = perguntas_generation_preflight.remember_session(request, scope, str(pergunta["id"]))
         job = perguntas_pos_venda_codex.create_job(
             client_id=client_id,
             task_type="question",
             store=loja,
             subject_key=str(pergunta.get("id") or "").strip(),
             request={
+                "_generation_session": generation_session,
                 "pergunta": pergunta,
                 "question_text": str(pergunta.get("text") or ""),
                 "resposta_atual": resposta_atual,
@@ -96,6 +105,7 @@ def ml_perguntas_gerar_resposta_manual(
             seller_id=scope.seller_id if scope is not None else "",
             site_id=scope.site_id if scope is not None else "",
             channel="app",
+            created_by=scope.username,
         )
         if req.async_mode:
             return jsonable_encoder(job)
@@ -121,59 +131,27 @@ def ml_perguntas_gerar_resposta_manual(
             "warnings": job.get("warnings") or [],
         })
 
-    cfg = _obter_cfg_ml(client_id, loja)
+    cfg = _obter_cfg_ml(client_id, loja, store_id=scope.store_id)
     item_id = str(pergunta.get("item_id") or "").strip()
-    item = {}
-    official_current_listing = False
-    if item_id:
-        try:
-            resp_item, cfg = _ml_api_request(
-                client_id,
-                loja,
-                cfg,
-                "GET",
-                f"https://api.mercadolibre.com/items/{item_id}",
-                timeout=12,
-            )
-            if resp_item.status_code == 200:
-                loaded_item = resp_item.json() or {}
-                if isinstance(loaded_item, dict) and loaded_item:
-                    item = loaded_item
-                    official_current_listing = True
-        except Exception as exc:
-            logger.warning("[ML PERGUNTAS] evento=buscar_item_manual status=erro tipo=%s", type(exc).__name__)
-    if not item:
-        loaded_item = _ml_api_item_com_oauth_tenant(client_id, item_id) or _ml_api_item(item_id) or {}
-        if isinstance(loaded_item, dict) and loaded_item:
-            item = loaded_item
-            official_current_listing = True
-    if not isinstance(item, dict):
-        item = {}
+    item = dict(canonical["item"])
+    official_current_listing = True
     bind_official_listing_catalog_identity(
         client_id, loja, cfg, pergunta, item if official_current_listing else {}, extract_sku=_ml_extrair_sku,
     )
     if item and not _ml_extrair_sku(item):
         item = _ml_perguntas_completar_skus_itens(client_id, loja, cfg, [item])[0]
-    if not item:
-        item = {
-            "id": item_id,
-            "title": pergunta.get("item_title") or "",
-            "permalink": pergunta.get("item_permalink") or "",
-            "thumbnail": pergunta.get("item_thumbnail") or "",
-            "attributes": [
-                {"id": "SELLER_SKU", "value_name": pergunta.get("item_sku") or ""}
-            ] if pergunta.get("item_sku") else [],
-        }
     item["_ppv_official_current_listing"] = official_current_listing
 
     try:
         resposta, cfg, contexto = _perguntas_ia_gerar_resposta(client_id, loja, cfg, pergunta, item)
     except PerguntasIARespostaIndisponivel as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    warnings = ([perguntas_generation_preflight.HISTORY_TRUNCATED_WARNING]
+                if canonical.get("history_truncated") else [])
     return {
         "success": True, "loja": loja,
         "question_id": str(pergunta.get("id") or "").strip(),
-        "resposta": resposta, "contexto": contexto,
+        "resposta": resposta, "contexto": contexto, "warnings": warnings,
     }
 
 

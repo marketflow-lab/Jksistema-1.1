@@ -649,6 +649,9 @@ def test_terminal_safe_partial_is_never_reactivated(tmp_path, monkeypatch):
 
 
 def test_manual_endpoint_never_reports_blocked_completion_as_success(monkeypatch):
+    from fastapi import Request
+    from backend.modules.perguntas_pos_venda.endpoints import manual_questions
+    from backend.modules.perguntas_pos_venda.endpoints.questions_loading_support import Scope
     blocked = {
         "job_id": "blocked-job",
         "status": "completed",
@@ -673,7 +676,15 @@ def test_manual_endpoint_never_reports_blocked_completion_as_success(monkeypatch
         }
     )
 
-    result = endpoints.ml_perguntas_gerar_resposta_manual(request, "tenant")
+    http_request = Request({"type": "http", "headers": []})
+    http_request.state.username, http_request.state.client_id = "operator", "tenant"
+    monkeypatch.setattr(manual_questions, "_manual_generation_scope",
+        lambda *_args: Scope("tenant", "store-a", "operator", "17", "MLB", "Loja A"))
+    monkeypatch.setattr(manual_questions.perguntas_generation_preflight, "load_context",
+                        lambda *_args: {"question": dict(request.pergunta)})
+    monkeypatch.setattr(manual_questions.perguntas_generation_preflight, "remember_session",
+                        lambda *_args: "execution-test")
+    result = endpoints.ml_perguntas_gerar_resposta_manual(request, http_request, "tenant")
     assert result["status"] == "completed"
     assert result["success"] is False
     assert result["blocked_without_draft"] is True

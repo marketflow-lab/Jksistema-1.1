@@ -12,7 +12,7 @@ from fastapi.encoders import jsonable_encoder
 from backend.modules.perguntas_pos_venda.endpoints.runtime import runtime_adapter
 from backend.modules.perguntas_pos_venda.endpoints.security import get_tenant_id
 from backend.schemas import MLQuestionsV2ProcessRequest, MLQuestionsV2ReviewActionRequest, PerguntasAprovacaoRequest
-from backend.services import perguntas_pos_venda_codex
+from backend.services import perguntas_pos_venda_codex, perguntas_generation_preflight
 from backend.services.perguntas_pos_venda_state import PerguntasIARespostaIndisponivel
 from backend.modules.perguntas_pos_venda.endpoints.approvals import (
     ml_perguntas_aprovacoes_aprovar,
@@ -72,24 +72,29 @@ def ml_questions_v2_process(request: Request, question_id: str, req: MLQuestions
         raise HTTPException(status_code=400, detail="Informe a pergunta.")
     if not str(pergunta.get("text") or "").strip() and not pergunta.get("buyer_question_chat"):
         raise HTTPException(status_code=400, detail="Informe o texto da pergunta.")
-    item = req.item if isinstance(req.item, dict) else {}
+    exact_store_id = str(req.store_id or "").strip()
+    if not exact_store_id:
+        exact_store_id = str(
+            resolver_loja_ativa_para_leitura(client_id, loja).get("store_id") or ""
+        ).strip()
+    if not exact_store_id:
+        raise HTTPException(status_code=400, detail="Informe o store_id exato da loja.")
+    scope = resolve_scope(request, client_id, exact_store_id)
+    if scope is not None and scope.name != loja:
+        raise HTTPException(status_code=409, detail="A loja selecionada mudou. Atualize a lista de lojas.")
+    canonical = perguntas_generation_preflight.load_context(request, scope, str(pergunta["id"]))
+    pergunta, item = dict(canonical["question"]), dict(canonical["item"])
+    if str(req.resposta_atual or "").strip():
+        pergunta["_resposta_atual"] = str(req.resposta_atual)
     if perguntas_pos_venda_codex.enabled():
-        exact_store_id = str(req.store_id or "").strip()
-        if not exact_store_id:
-            exact_store_id = str(
-                resolver_loja_ativa_para_leitura(client_id, loja).get("store_id") or ""
-            ).strip()
-        if not exact_store_id:
-            raise HTTPException(status_code=400, detail="Informe o store_id exato da loja.")
-        scope = resolve_scope(request, client_id, exact_store_id)
-        if scope is not None and scope.name != loja:
-            raise HTTPException(status_code=409, detail="A loja selecionada mudou. Atualize a lista de lojas.")
+        generation_session = perguntas_generation_preflight.remember_session(request, scope, str(pergunta["id"]))
         job = perguntas_pos_venda_codex.create_job(
             client_id=client_id,
             task_type="question",
             store=loja,
             subject_key=str(pergunta.get("id") or ""),
             request={
+                "_generation_session": generation_session,
                 "pergunta": pergunta,
                 "item": item,
                 "question_text": str(pergunta.get("text") or ""),
@@ -100,6 +105,7 @@ def ml_questions_v2_process(request: Request, question_id: str, req: MLQuestions
             seller_id=scope.seller_id if scope is not None else "",
             site_id=scope.site_id if scope is not None else "",
             channel="app",
+            created_by=scope.username,
         )
         job = _customer_reply_wait_or_raise(client_id, job)
         result = job.get("result") if isinstance(job.get("result"), dict) else {}
@@ -113,35 +119,8 @@ def ml_questions_v2_process(request: Request, question_id: str, req: MLQuestions
             "context": result.get("contexto") or {},
             "publish_attempted": False,
         })
-    cfg = _obter_cfg_ml(client_id, loja)
-    request_item = dict(item)
-    item = {}
-    official_current_listing = False
-    item_id = str(pergunta.get("item_id") or request_item.get("id") or "").strip()
-    if item_id:
-        try:
-            response, cfg = _ml_api_request(
-                client_id,
-                loja,
-                cfg,
-                "GET",
-                f"https://api.mercadolibre.com/items/{item_id}",
-                timeout=12,
-            )
-            if response.status_code == 200:
-                loaded_item = response.json() or {}
-                if isinstance(loaded_item, dict) and loaded_item:
-                    item = loaded_item
-                    official_current_listing = True
-        except Exception:
-            item = {}
-    if not item:
-        loaded_item = _ml_api_item_com_oauth_tenant(client_id, item_id) or _ml_api_item(item_id) or {}
-        if isinstance(loaded_item, dict) and loaded_item:
-            item = loaded_item
-            official_current_listing = True
-    if not item:
-        item = request_item
+    cfg = _obter_cfg_ml(client_id, loja, store_id=scope.store_id)
+    official_current_listing = True
     from backend.modules.perguntas_pos_venda.ai.catalog_context import bind_official_listing_catalog_identity
     bind_official_listing_catalog_identity(
         client_id, loja, cfg, pergunta, item if official_current_listing else {}, extract_sku=_ml_extrair_sku,
@@ -153,11 +132,14 @@ def ml_questions_v2_process(request: Request, question_id: str, req: MLQuestions
         resposta, cfg, contexto = _perguntas_ia_gerar_resposta(client_id, loja, cfg, pergunta, item)
     except PerguntasIARespostaIndisponivel as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    warnings = ([perguntas_generation_preflight.HISTORY_TRUNCATED_WARNING]
+                if canonical.get("history_truncated") else [])
     return {
         "success": True,
         "question_id": pergunta.get("id"),
         "answer": resposta,
         "context": contexto,
+        "warnings": warnings,
         "publish_attempted": False,
     }
 

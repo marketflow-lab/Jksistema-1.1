@@ -2620,3 +2620,17 @@
     object-fit: contain;
     border-radius: 6px;
 }
+.question-loading-status {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    padding: 10px 14px;
+    color: var(--text-muted, #a9bfd3);
+    font-size: 12px;
+    border-bottom: 1px solid rgba(120, 170, 210, .2);
+}
+.question-loading-status [data-state="ready"] { color: #83d9b6; }
+.question-loading-status [data-state="blocked"],
+.question-loading-status [data-state="unavailable"],
+.question-loading-status [data-state="stale"] { color: #f1c774; }

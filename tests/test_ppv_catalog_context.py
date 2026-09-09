@@ -236,10 +236,12 @@ def test_existing_exact_binding_also_enables_catalog(reader):
 @pytest.mark.parametrize("official_sku", ["001", ""])
 def test_synchronous_public_boundaries_bind_before_enrichment(reader, monkeypatch, surface, official_sku):
     from types import SimpleNamespace
+    from fastapi import Request
+    from backend.modules.perguntas_pos_venda.endpoints.questions_loading_support import Scope
     from backend.modules.perguntas_pos_venda.endpoints import manual_questions, questions_v2
     endpoint = manual_questions if surface == "manual" else questions_v2
     monkeypatch.setattr(endpoint.perguntas_pos_venda_codex, "enabled", lambda: False)
-    monkeypatch.setattr(endpoint, "_obter_cfg_ml", lambda *args: {"user_id": "123", "site_id": "MLB"})
+    monkeypatch.setattr(endpoint, "_obter_cfg_ml", lambda *args, **kwargs: {"user_id": "123", "site_id": "MLB"})
     official = {**ITEM, "seller_sku": official_sku}
     response = SimpleNamespace(status_code=200, json=lambda: deepcopy(official))
     monkeypatch.setattr(endpoint, "_ml_api_request", lambda client, store, cfg, *args, **kwargs: (response, cfg))
@@ -251,13 +253,19 @@ def test_synchronous_public_boundaries_bind_before_enrichment(reader, monkeypatc
         captured.append(question)
         return "Resposta", cfg, {}
     monkeypatch.setattr(endpoint, "_perguntas_ia_gerar_resposta", generate)
-    request = SimpleNamespace(loja="Loja A", resposta_atual="", orientacao_usuario="", async_mode=False,
+    request = SimpleNamespace(loja="Loja A", store_id="store-a", resposta_atual="", orientacao_usuario="", async_mode=False,
                               pergunta={"id": "Q1", "item_id": "MLB100", "text": "Marca?",
                                         "item_sku": "001", "_catalog_identity_proof": proof()}, item=deepcopy(ITEM))
+    http_request = Request({"type": "http", "headers": []})
+    http_request.state.username, http_request.state.client_id = "operator", "tenant-a"
+    resolved_scope = Scope("tenant-a", "store-a", "operator", "123", "MLB", "Loja A")
+    monkeypatch.setattr(endpoint, "resolve_scope", lambda *_args: resolved_scope)
+    monkeypatch.setattr(endpoint.perguntas_generation_preflight, "load_context",
+                        lambda *_args: {"question": dict(request.pergunta), "item": deepcopy(official)})
     if surface == "manual":
-        endpoint.ml_perguntas_gerar_resposta_manual(request, None, "tenant-a")
+        endpoint.ml_perguntas_gerar_resposta_manual(request, http_request, "tenant-a")
     else:
-        endpoint.ml_questions_v2_process(None, "Q1", request, "tenant-a")
+        endpoint.ml_questions_v2_process(http_request, "Q1", request, "tenant-a")
     assert bool(captured[0]["_catalog_identity_proof"]) == bool(official_sku)
     if official_sku:
         assert captured[0]["_product_evidence_identity"]["sku"] == "001"

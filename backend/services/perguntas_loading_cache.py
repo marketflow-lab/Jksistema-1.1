@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 import copy
-import contextvars
 import threading
 import time
-import weakref
 import itertools
 from collections import OrderedDict
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
+from concurrent.futures import Future, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from typing import Callable
 
 from fastapi import HTTPException
+import requests
 
 from backend.services.perguntas_loading_transport import read_budget, remaining
+from backend.services.perguntas_loading_scheduler import ReadScheduler, unavailable, retain_current_admission
 
 
 @dataclass
@@ -31,9 +31,7 @@ _ENTRIES: OrderedDict[tuple, Entry] = OrderedDict()
 _RUNNING: dict[tuple, Future] = {}
 _REVISIONS: OrderedDict[tuple[str, str], int] = OrderedDict()
 _VERSION_SEQUENCE = itertools.count(1)
-_CLIENT_SLOTS: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
-_POOL = ThreadPoolExecutor(max_workers=16, thread_name_prefix="questions-read")
-_QUEUE = threading.BoundedSemaphore(64)
+_SCHEDULER = ReadScheduler()
 MAX_ENTRIES = 500
 
 
@@ -95,6 +93,17 @@ def _discard_scope(key: tuple) -> None:
                 del _ENTRIES[existing]
 
 
+def peek_current(key: tuple, *, max_age=60):
+    """Detached authorized snapshot for component retries; never extends its age."""
+    with _LOCK:
+        entry = _ENTRIES.get(key)
+        if (entry is None or entry.revision != _REVISIONS.get(key[:2], 0)
+                or time.monotonic() - entry.monotonic_at > max_age):
+            return None
+        return {"value": copy.deepcopy(entry.value),
+                "origin": (entry.monotonic_at, entry.consulted_at)}
+
+
 def _metadata(entry: Entry, key: tuple, *, stale: bool, source: str) -> dict:
     with _LOCK:
         current_revision = revision(key[0], key[1])
@@ -110,27 +119,43 @@ def _metadata(entry: Entry, key: tuple, *, stale: bool, source: str) -> dict:
     }
     result.update(metadata)
     result["metadata"] = dict(metadata)
+    if stale:
+        for field in ("components", "item_states"):
+            for component in (result.get(field) or {}).values():
+                if isinstance(component, dict) and component.get("state") == "ready":
+                    component["state"] = "stale"
     return result
 
 
 def _perform(key: tuple, loader: Callable[[], dict], generation: int) -> Entry:
-    with _LOCK:
-        slots = _CLIENT_SLOTS.setdefault(key[0], threading.BoundedSemaphore(4))
     with read_budget(seconds=15):
-        if not slots.acquire(timeout=max(0, (remaining() or 15) - 0.01)):
-            raise HTTPException(503, "Consultas em andamento. Tente novamente em instantes.")
+        with _LOCK:
+            if generation != _REVISIONS.get(key[:2], 0):
+                raise HTTPException(409, "As perguntas mudaram durante a consulta. Atualize a lista.")
         try:
             value = loader()
         except HTTPException as error:
-            if error.status_code in {401, 403}:
+            scope = (error.headers or {}).get("X-JK-Error-Scope", "store")
+            if error.status_code in {401, 403} and scope != "resource":
                 _discard_scope(key)
+            elif error.status_code in {401, 403, 404}:
+                with _LOCK:
+                    _ENTRIES.pop(key, None)
             raise
-        finally:
-            slots.release()
-    entry = Entry(copy.deepcopy(value), time.monotonic(), int(time.time() * 1000), generation)
+    origin = value.pop("_cache_origin", None)
+    monotonic_at, consulted_at = time.monotonic(), int(time.time() * 1000)
+    if (isinstance(origin, tuple) and len(origin) == 2
+            and isinstance(origin[0], (int, float)) and isinstance(origin[1], int)
+            and 0 <= origin[0] <= monotonic_at):
+        monotonic_at, consulted_at = origin
+    entry = Entry(copy.deepcopy(value), monotonic_at, consulted_at, generation)
     with _LOCK:
         if generation != _REVISIONS.get(key[:2], 0):
             raise HTTPException(409, "As perguntas mudaram durante a consulta. Atualize a lista.")
+        current = _ENTRIES.get(key)
+        if origin is not None and current and current.monotonic_at > entry.monotonic_at:
+            # A completed full refresh wins over a partial retry based on an older snapshot.
+            return current
         _ENTRIES[key] = entry
         _ENTRIES.move_to_end(key)
         while len(_ENTRIES) > MAX_ENTRIES:
@@ -138,30 +163,26 @@ def _perform(key: tuple, loader: Callable[[], dict], generation: int) -> Entry:
     return entry
 
 
-def _start(key: tuple, loader: Callable[[], dict]) -> Future:
-    # Called under _LOCK; every concurrent request for this key joins this future.
+def _start(key: tuple, loader: Callable[[], dict], *, flight_variant=()) -> Future:
+    # Called under _LOCK; only requests with compatible component work join this future.
     generation = _REVISIONS.setdefault(key[:2], next(_VERSION_SEQUENCE))
-    flight_key = (*key, generation)
+    flight_key = (*key, ("variant", flight_variant), generation)
     if flight_key in _RUNNING:
         return _RUNNING[flight_key]
-    if not _QUEUE.acquire(blocking=False):
-        raise HTTPException(503, "Fila de consultas ocupada. Tente novamente em instantes.")
-    context = contextvars.copy_context()
-    future = _POOL.submit(context.run, _perform, key, loader, generation)
+    future = _SCHEDULER.submit(key, lambda: _perform(key, loader, generation))
     _RUNNING[flight_key] = future
 
     def finished(_future):
         with _LOCK:
             _RUNNING.pop(flight_key, None)
             _prune_revisions_locked()
-        _QUEUE.release()
 
     future.add_done_callback(finished)
     return future
 
 
 def read(key: tuple, loader: Callable[[], dict], *, ttl: int, stale_seconds: int = 600,
-         force: bool = False) -> dict:
+         force: bool = False, flight_variant=()) -> dict:
     """Caller must authorize the complete scope before invoking this function.
 
     Key layout: tenant, exact store, user, seller, site, kind, query parameters.
@@ -177,7 +198,7 @@ def read(key: tuple, loader: Callable[[], dict], *, ttl: int, stale_seconds: int
             return _metadata(entry, key, stale=False, source="memory_cache")
         stale_entry = entry if entry and age <= max(ttl, stale_seconds) else None
         try:
-            future = _start(key, loader)
+            future = _start(key, loader, flight_variant=flight_variant)
         except HTTPException:
             if stale_entry and not force:
                 return _metadata(stale_entry, key, stale=True, source="memory_cache")
@@ -187,9 +208,12 @@ def read(key: tuple, loader: Callable[[], dict], *, ttl: int, stale_seconds: int
     try:
         available = remaining()
         fresh = future.result(timeout=max(0, (15 if available is None else available) - 0.01))
-        return _metadata(fresh, key, stale=False, source="mercadolivre")
-    except (FutureTimeout, TimeoutError):
-        error = HTTPException(504, "O Mercado Livre demorou para responder. Tente atualizar novamente.")
+        # A complementary retry can finish after its reused question expires.
+        # Preserve the original timestamp and report that age instead of readiness.
+        return _metadata(fresh, key, stale=time.monotonic() - fresh.monotonic_at > ttl,
+                         source="mercadolivre")
+    except (FutureTimeout, TimeoutError, requests.Timeout):
+        error = unavailable(504, "read_timeout")
     except HTTPException as caught:
         if caught.status_code in {401, 403, 404, 409}:
             raise
@@ -203,5 +227,13 @@ def read(key: tuple, loader: Callable[[], dict], *, ttl: int, stale_seconds: int
             result = _metadata(stale_entry, key, stale=True, source="memory_cache")
             result["erro"] = str(error.detail)
             result["partial"] = result["metadata"]["partial"] = True
+            headers = error.headers or {}
+            retry_after = headers.get("Retry-After", "")
+            if str(retry_after).isdigit():
+                result["retry_after"] = int(retry_after)
+                for field in ("components", "item_states"):
+                    for component in (result.get(field) or {}).values():
+                        if isinstance(component, dict):
+                            component["retry_after"] = int(retry_after)
             return result
     raise error
