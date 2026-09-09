@@ -74,7 +74,7 @@ def _attempt_remote_request(
                 request_url,
                 json=request_body,
                 headers={"User-Agent": f"JK-Sistema/{str(app_version or 'unknown').strip() or 'unknown'}",
-                         "X-JK-Central-Protocol": "1"},
+                         "X-JK-Central-Protocol": "1", "X-JK-Firebase-Protocol": "1"},
                 timeout=(3.05, configuration.timeout_seconds),
                 allow_redirects=False,
             )
@@ -124,6 +124,7 @@ def _attempt_remote_request(
             policy=validated["policy"],
             central=validated.get("central", {}),
             central_migration=validated.get("central_migration", {}),
+            firebase_access=validated.get("firebase_access", {}),
         )
     finally:
         if owns_session:

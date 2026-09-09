@@ -1,6 +1,105 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function grant() {
+      return get(/databases/$(database)/documents/jk_sistema_firebase_grants/$(request.auth.token.jk_firebase_grant)).data;
+    }
+    function currentPolicy(g) {
+      let u = get(/databases/$(database)/documents/$(g.users_collection)/$(g.username)).data;
+      let p = g.user_policy;
+      return u.get('active', null) == p.active && u.get('ativo', null) == p.ativo
+        && u.get('valid_until', null) == p.valid_until && u.get('validade', null) == p.validade
+        && u.get('vencimento', null) == p.vencimento
+        && u.get('client_id', null) == p.client_id && u.get('cliente', null) == p.cliente
+        && u.get('tenant_id', null) == p.tenant_id
+        && u.get('permissions', null) == p.permissions && u.get('permissoes', null) == p.permissoes
+        && u.get('machine_ids', null) == p.machine_ids && u.get('machine_id', null) == p.machine_id
+        && u.get('maquinas', null) == p.maquinas && u.get('machines', null) == p.machines
+        && u.get('max_machines', null) == p.max_machines
+        && u.get('limite_maquinas', null) == p.limite_maquinas
+        && u.get('updated_at', null) == p.updated_at;
+    }
+    function connected() {
+      return request.auth != null && request.auth.token.get('jk_firebase_v', 0) == 1
+        && request.auth.token.jk_firebase_grant.matches('^[a-f0-9]{64}$')
+        && grant().protocol == 1 && grant().uid == request.auth.uid
+        && grant().username == request.auth.token.jk_username
+        && grant().client_id == request.auth.token.jk_client_id
+        && grant().receipt_id == request.auth.token.jk_machine_hash
+        && request.time < grant().expires_at && currentPolicy(grant());
+    }
+    function pointerId(id) { return id.split('__')[0]; }
+    function ownPointer(id) {
+      return pointerId(id) in grant().pointers
+        && id.matches('^[a-f0-9]{64}(__[a-f0-9]{32}|__v2_authority)?$');
+    }
+    function ownMetadata(id, data) {
+      return ownPointer(id) && data.client_id == grant().client_id
+        && data.pointer_id == pointerId(id) && data.scope == grant().pointers[pointerId(id)];
+    }
+    function ownChunk(id, data) {
+      return id.matches('^[a-f0-9]{64}__[a-f0-9]{32}_[0-9]{5}$')
+        && pointerId(id) in grant().pointers && data.client_id == grant().client_id
+        && data.pointer_id == pointerId(id) && data.scope == grant().pointers[pointerId(id)]
+        && data.bundle_id.matches('^' + pointerId(id) + '__[a-f0-9]{32}$');
+    }
+    function ownKey(data) {
+      return data.schema == 1 && data.owner_client_hash == grant().owner_client_hash
+        && data.owner_user_hash == grant().owner_user_hash
+        && ((data.kind == 'keyring' && data.id == grant().keyring_id)
+          || (data.kind == 'member' && data.keyring_id == grant().keyring_id
+              && data.id in grant().member_ids)
+          || (data.kind == 'envelope' && data.keyring_id == grant().keyring_id
+              && data.member_id in grant().member_ids));
+    }
+    match /jk_sistema_firebase_grants/{id} {
+      allow get: if connected() && id == request.auth.token.jk_firebase_grant;
+      allow list, write: if false;
+    }
+    match /jk_sistema_shared_sync_config/{id} {
+      allow get: if connected() && id == grant().config_id;
+      allow list, write: if false;
+    }
+    match /jk_sistema_shared_sync/{id} {
+      allow get: if connected() && ownPointer(id);
+      allow list: if connected() && resource.data.pointer_id in grant().pointers
+        && resource.data.client_id == grant().client_id;
+      allow create: if connected() && ownMetadata(id, request.resource.data);
+      allow update: if connected() && ownMetadata(id, resource.data)
+        && ownMetadata(id, request.resource.data);
+      allow delete: if connected() && ownMetadata(id, resource.data);
+      match /receipts/{machine} {
+        allow read: if connected() && id in grant().pointers;
+        allow create, update: if connected() && id in grant().pointers
+          && machine == grant().receipt_id
+          && request.resource.data.keys().hasOnly(['protocol', 'snapshot_hash', 'snapshot_id',
+             'applied_at', 'connection_conflicts', 'connection_verification'])
+          && request.resource.data.protocol == 1
+          && request.resource.data.snapshot_id.matches('^' + id + '__[a-f0-9]{32}$');
+        allow delete: if false;
+      }
+    }
+    match /jk_sistema_shared_sync_chunks/{id} {
+      allow get: if connected() && pointerId(id) in grant().pointers
+        && id.matches('^[a-f0-9]{64}__[a-f0-9]{32}_[0-9]{5}$');
+      allow list: if connected() && resource.data.pointer_id in grant().pointers
+        && resource.data.client_id == grant().client_id;
+      allow create: if connected() && ownChunk(id, request.resource.data);
+      allow update: if connected() && ownChunk(id, resource.data) && ownChunk(id, request.resource.data);
+      allow delete: if connected() && ownChunk(id, resource.data);
+    }
+    match /jk_sistema_shared_sync_keyrings/{id} {
+      // A missing key/envelope is a legitimate first-machine bootstrap result.
+      allow get: if connected() && (!exists(/databases/$(database)/documents/jk_sistema_shared_sync_keyrings/$(id))
+        || ownKey(resource.data));
+      allow create: if connected() && ownKey(request.resource.data) && request.resource.data.id == id
+        && (request.resource.data.kind != 'member' || id == grant().member_id);
+      allow update: if connected() && ownKey(resource.data) && ownKey(request.resource.data)
+        && request.resource.data.id == id && resource.data.kind == request.resource.data.kind
+        && (request.resource.data.kind == 'envelope'
+          || (request.resource.data.kind == 'member' && id == grant().member_id));
+      allow list, delete: if false;
+    }
     // Only the new central collections are declared here. Server SDKs use IAM.
     match /jk_central_v1_stores/{document=**} {
       allow read, write: if false;

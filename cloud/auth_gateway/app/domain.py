@@ -70,11 +70,13 @@ class AuthenticationService:
         token_issuer: IdentityTokenIssuer,
         minimum_app_version: str,
         central=None,
+        firebase_sessions=None,
     ) -> None:
         self._repository = repository
         self._token_issuer = token_issuer
         self._minimum_app_version = minimum_app_version
         self._central = central
+        self._firebase_sessions = firebase_sessions
 
     def _signed_response(
         self,
@@ -86,6 +88,7 @@ class AuthenticationService:
         code: str,
         central_protocol: bool = False,
         app_version: str = "",
+        firebase_protocol: bool = False,
     ) -> dict[str, Any]:
         expiry = assert_access_allowed(current)
         permissions = normalize_permissions(current.get("permissions") or current.get("permissoes"))
@@ -125,6 +128,11 @@ class AuthenticationService:
                     from .central_accounts import CentralError
                     if not isinstance(exc, CentralError) or exc.code != "central_permission_denied":
                         raise
+        if firebase_protocol:
+            if self._firebase_sessions is None:
+                raise GatewayUnavailable("firebase_session_unavailable")
+            signed_payload["firebase_access"] = self._firebase_sessions.bootstrap_session(
+                current, username, machine_id)
         claims = {
             "jk_auth_v": AUTH_PROTOCOL_VERSION,
             "jk_username": username,
@@ -142,7 +150,7 @@ class AuthenticationService:
             "registered_machines": len(machine_ids),
         }
 
-    def authenticate(self, request: GatewayLoginRequest, *, central_protocol=False) -> dict[str, Any]:
+    def authenticate(self, request: GatewayLoginRequest, *, central_protocol=False, firebase_protocol=False) -> dict[str, Any]:
         assert_supported_version(request.app_version, self._minimum_app_version)
         username = request.username
         supplied_password = request.password.get_secret_value()
@@ -163,10 +171,11 @@ class AuthenticationService:
             request.request_nonce,
             code="authenticated",
             central_protocol=central_protocol,
+            firebase_protocol=firebase_protocol,
             app_version=request.app_version,
         )
 
-    def change_password(self, request: GatewayChangePasswordRequest, *, central_protocol=False) -> dict[str, Any]:
+    def change_password(self, request: GatewayChangePasswordRequest, *, central_protocol=False, firebase_protocol=False) -> dict[str, Any]:
         assert_supported_version(request.app_version, self._minimum_app_version)
         username = request.username
         current_password = request.current_password.get_secret_value()
@@ -199,6 +208,7 @@ class AuthenticationService:
             request.request_nonce,
             code="password_changed",
             central_protocol=central_protocol,
+            firebase_protocol=firebase_protocol,
             app_version=request.app_version,
         )
 

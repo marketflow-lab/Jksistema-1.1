@@ -55,3 +55,40 @@ python -m pytest -q tests/test_remote_auth_client.py tests/test_auth_gateway_dom
 
 O container usa `cloud/auth_gateway/Dockerfile`. O arquivo `.env.example` é apenas um modelo e não deve
 ser renomeado para um arquivo versionado com valores de produção.
+
+## Conexão Firebase restrita após login (protocolo 1)
+
+Clientes novos enviam `X-JK-Firebase-Protocol: 1` no login e na troca de senha.
+Depois de validar usuário e máquina, o gateway inclui `firebase_access` no payload
+assinado: projeto/chave web pública, ID de grant, ID token dedicado, refresh token,
+validade do token e validade máxima da sessão. Clientes sem o cabeçalho mantêm o
+contrato anterior. O refresh renova o ID token, mas não prorroga o grant de oito
+horas, também limitado pela validade de acesso do usuário.
+
+O grant `jk_sistema_firebase_grants/{id}` contém somente projeção pública do perfil,
+permissões, máquinas e IDs dos recursos autorizados. Não contém senhas, hashes de
+senha, tokens nem chave administrativa. As Rules conferem o grant e a política
+atual do usuário a cada acesso. Alterações de empresa, permissões, máquinas,
+validade, status ou `updated_at` invalidam a sessão antiga; os fluxos suportados de
+troca de senha atualizam `updated_at`. Edições administrativas diretas também devem
+atualizar esse campo. O usuário realiza novo login para obter a política atual.
+
+O escopo inicial permite somente sincronização v2 entre máquinas do próprio
+usuário, conforme suas permissões, e leitura da configuração da empresa. Não
+libera coleção administrativa de usuários, compartilhamentos entre usuários,
+credenciais centrais ou pacotes plaintext v1. Uma máquina recém-autorizada pode
+exigir novo login nas outras máquinas para renovar a relação de membros e o
+envelope criptográfico. A conexão automática não inicia importação de arquivos.
+
+Antes da ativação, publicar conjuntamente as Rules versionadas e o gateway; esta
+implementação não executa deploy. O status do desktop só confirma conexão após
+ler seu grant pelas Rules. Testes de Rules usam o projeto de demonstração local:
+
+```powershell
+$env:FIRESTORE_EMULATOR_HOST = '127.0.0.1:8787'
+python -m pytest -q tests/test_auth_gateway_firebase_sessions.py tests/test_auth_gateway_firebase_rules_emulator.py
+```
+
+O teste de integração desativa o atalho `Bearer owner` do SDK no cliente sob teste,
+mantém o ID token restrito e exercita upload, criptografia, download e transação de
+ponteiros pelos helpers reais. Dados sintéticos são semeados somente no emulador.

@@ -48,7 +48,7 @@ def _configurar_ca_bundle_windows() -> None:
 
 _configurar_ca_bundle_windows()
 
-from fastapi.responses import StreamingResponse, RedirectResponse, FileResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, RedirectResponse, FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
@@ -668,10 +668,24 @@ app = FastAPI(title="JK Sistema API")
 @app.middleware("http")
 async def central_request_context(request: Request, call_next):
     from backend.services.central_accounts_client import _current
+    from backend.services.firebase_user_session import bind_request, reset_request
     context_token = _current.set(None)
+    firebase_context = bind_request("", {})
     try:
+        authorization = request.headers.get("authorization", "")
+        if authorization.lower().startswith("bearer "):
+            token = authorization[7:].strip()
+            try:
+                payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM], options=JWT_DECODE_OPTIONS)
+            except JWTError:
+                payload = None  # Endpoint authorization still rejects invalid credentials.
+            if payload is not None:
+                bind_request(token, payload)
         return await call_next(request)
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     finally:
+        reset_request(firebase_context)
         _current.reset(context_token)
 include_feature_routers(app)
 
@@ -757,7 +771,7 @@ JWT_SECRET = _carregar_ou_gerar_jwt_secret()
 JWT_ALGORITHM = "HS256"
 JWT_DECODE_OPTIONS = {"verify_exp": False}
 
-def criar_access_token(username: str, client_id: str, machine_id: Optional[str] = None, *, central=False, central_migration=False) -> str:
+def criar_access_token(username: str, client_id: str, machine_id: Optional[str] = None, *, central=False, central_migration=False, firebase_user=False) -> str:
     payload = {"sub": username, "client_id": client_id}
     if machine_id:
         payload["machine_id"] = str(machine_id).strip()
@@ -767,11 +781,17 @@ def criar_access_token(username: str, client_id: str, machine_id: Optional[str] 
     if central_migration:
         import secrets
         payload.update(jk_central_migration=1, jti=secrets.token_hex(16))
+    if firebase_user:
+        import secrets
+        payload.update(jk_firebase=1, jti=secrets.token_hex(16))
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
 def decodificar_access_token(token: str) -> dict:
-    return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM], options=JWT_DECODE_OPTIONS)
+    payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM], options=JWT_DECODE_OPTIONS)
+    from backend.services.firebase_user_session import bind_request
+    bind_request(token, payload)
+    return payload
 
     
 
@@ -1935,6 +1955,17 @@ USER_CHAT_REMOTE_HISTORY_CHECK_CACHE: dict[str, int] = {}
 
 _admin_usuarios_module.configure_admin_usuarios_runtime(sys.modules[__name__])
 app.include_router(create_admin_usuarios_router())
+from backend.routers.firebase_provisioning import FirebaseProvisioningRouterConfig, create_firebase_provisioning_router
+from backend.services.admin_usuarios_store import (
+    _authorize_full_admin_firebase_provisioning, _authorize_admin_firebase_provisioning_status,
+)
+app.include_router(create_firebase_provisioning_router(FirebaseProvisioningRouterConfig(
+    base_dir=BASE_DIR, info_dir=PASTA_INFO,
+    authorize_recovery=_authorize_full_admin_firebase_provisioning,
+    authorize_status=_authorize_admin_firebase_provisioning_status,
+)))
+from backend.routers.firebase_user_session import create_firebase_user_session_router
+app.include_router(create_firebase_user_session_router(_payload_sessao_por_authorization))
 
 # WhatsApp Cloud API bridge: the public gateway stays at Cloudflare, while all
 # Joao Pretinho processing remains on this authenticated local runtime.

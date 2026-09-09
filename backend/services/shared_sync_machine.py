@@ -353,6 +353,10 @@ def _shared_sync_machine_status_payload(sessao: dict, machine_id: str = "") -> d
     state_scopes = state.get("scopes") if isinstance(state.get("scopes"), dict) else {}
     scopes = {}
     for scope in SHARED_SYNC_SCOPES:
+        if scope not in permitidos:
+            scopes[scope] = {**_shared_sync_scope_public(scope), "allowed": False,
+                             "selected": False, "remote": {"exists": False}}
+            continue
         meta = _shared_sync_machine_remote_meta(sessao, scope, strict=True) or {}
         state_key = _shared_sync_machine_state_scope(scope)
         scope_state = state_scopes.get(state_key) or {}

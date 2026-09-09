@@ -51,6 +51,18 @@ def _salvar_perfil_autenticado_remoto(username: str, remote_attempt) -> dict:
     return usuario_remoto
 
 
+def _conectar_firebase_apos_login(response, remote_attempt):
+    """Keep user credentials in the backend session; expose only verified status."""
+    if not remote_attempt.firebase_access:
+        response.user_data["firebase"] = {"ready": False, "code": "server_setup_required"}
+        return response
+    from backend.services.firebase_user_session import register_login
+    session = register_login(response.access_token, remote_attempt)
+    result = session.status()
+    response.user_data["firebase"] = {"ready": result["ready"], "code": result["code"]}
+    return response
+
+
 def trocar_minha_senha(payload: UserChangePasswordRequest, authorization: Optional[str] = Header(default=None)):
     sessao = _payload_sessao_por_authorization(authorization)
     usuario = _obter_usuario_sql(sessao["username"])
@@ -70,7 +82,7 @@ def trocar_minha_senha(payload: UserChangePasswordRequest, authorization: Option
     if nova_senha != confirmacao:
         raise HTTPException(status_code=400, detail="A confirmação da senha não confere.")
 
-    if str(usuario.get("source") or "").strip() == "remote-auth-profile":
+    if str(usuario.get("source") or "").strip() in {"remote-auth-profile", "user_session"}:
         remote_attempt = attempt_remote_password_change(
             username=sessao["username"],
             current_password=senha_atual,
@@ -87,6 +99,9 @@ def trocar_minha_senha(payload: UserChangePasswordRequest, authorization: Option
             except Exception as exc:
                 logger.error("[REMOTE-AUTH] Falha ao atualizar perfil local apos troca de senha: %s", type(exc).__name__)
                 raise HTTPException(status_code=503, detail="A senha foi alterada, mas a sessão local não pôde ser atualizada.")
+            if remote_attempt.firebase_access:
+                from backend.services.firebase_user_session import register_login
+                register_login(str(authorization)[7:].strip(), remote_attempt)
             return {"success": True, "message": "Senha alterada com sucesso."}
         if remote_attempt.state is RemoteAuthState.REJECTED:
             raise HTTPException(status_code=400, detail=remote_attempt.message)
@@ -107,6 +122,18 @@ def minha_sessao_auth(
 ):
     sessao = _payload_sessao_por_authorization(authorization)
     machine_final = _authenticated_session_machine_id(sessao, machine_id)
+    from backend.services.firebase_user_session import current
+    firebase_session = current(sessao["client_id"])
+    if firebase_session is not None:
+        profile = firebase_session.profile()
+        return LoginResponse(
+            success=True, message="Sessão atualizada.",
+            user_data={"username": profile["username"], "client_id": profile["client_id"],
+                       "name": profile.get("name") or profile["username"], "email": profile.get("email") or "",
+                       "machine_id": machine_final, "firebase": {"ready": True, "code": "ready"}},
+            permissions=profile["permissions"],
+            access_token=str(authorization)[len("Bearer "):].strip(),
+        )
     usuario = _obter_usuario_sql(sessao["username"])
     client_usuario = str(usuario.get("client_id") or sessao["client_id"] or "default").strip() or "default"
     if client_usuario != sessao["client_id"]:
@@ -369,6 +396,8 @@ async def login_endpoint(payload: LoginRequest, request: Request):
             logger.error("[REMOTE-AUTH] Falha ao preparar perfil local autenticado: %s", type(exc).__name__)
             return LoginResponse(success=False, message="Nao foi possivel preparar a sessao local. Tente novamente.")
 
+        usuario_remoto["firebase_user"] = bool(remote_attempt.firebase_access)
+
         if remote_attempt.central:
             from backend.services.central_accounts_client import register_login
             usuario_remoto["central"] = True
@@ -387,7 +416,7 @@ async def login_endpoint(payload: LoginRequest, request: Request):
                     runtime_logger.warning("[CENTRAL] Limpeza local pendente apos ativacao: %s", type(exc).__name__)
             response.user_data["central"] = {"protocol": 1, "sync_mode": "manual",
                                              "expires_at": remote_attempt.central["expires_at"]}
-            return response
+            return _conectar_firebase_apos_login(response, remote_attempt)
 
         migration_response = None
         if remote_attempt.central_migration:
@@ -415,14 +444,15 @@ async def login_endpoint(payload: LoginRequest, request: Request):
         except Exception as exc:
             logger.warning("[LOGIN] Nao foi possivel registrar presenca inicial remota: %s", type(exc).__name__)
         if migration_response is not None:
-            return migration_response
-        return _montar_resposta_login_sucesso(
+            return _conectar_firebase_apos_login(migration_response, remote_attempt)
+        response = _montar_resposta_login_sucesso(
             username,
             usuario_remoto,
             remote_attempt.permissions,
             client_id,
             machine_final,
         )
+        return _conectar_firebase_apos_login(response, remote_attempt)
 
     if remote_attempt.state in {RemoteAuthState.REJECTED, RemoteAuthState.INTEGRITY_FAILURE}:
         return LoginResponse(success=False, message=remote_attempt.message)

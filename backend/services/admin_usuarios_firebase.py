@@ -181,6 +181,9 @@ def _firebase_user_status_collection_name() -> str:
     return _env_texto("FIREBASE_USER_STATUS_COLLECTION", "JK_FIREBASE_USER_STATUS_COLLECTION") or "jk_sistema_user_status"
 
 def _firebase_live_features_ativas() -> bool:
+    from backend.services.firebase_user_session import current
+    if current() is not None:
+        return False  # RTDB admin channels are not user-session Firestore channels.
     if not _firebase_deve_usar():
         return False
     return _env_config_bool(
@@ -331,6 +334,9 @@ def _firebase_tem_configuracao() -> bool:
     return False
 
 def _firebase_deve_usar() -> bool:
+    from backend.services.firebase_user_session import current
+    if current() is not None:
+        return True
     if _firebase_access_desativado():
         return False
     if _firebase_access_obrigatorio():
@@ -366,6 +372,9 @@ def _firebase_credencial():
 
 def _firebase_app():
     global FIREBASE_AUTH_APP, FIREBASE_AUTH_LAST_ERROR
+    from backend.services.firebase_user_session import current
+    if current() is not None:
+        return None
     if not _firebase_deve_usar():
         return None
     if firebase_admin is None or firebase_credentials is None:
@@ -406,6 +415,10 @@ def _firebase_app():
 
 def _firebase_db():
     global FIREBASE_AUTH_DB, FIREBASE_AUTH_LAST_ERROR
+    from backend.services.firebase_user_session import current
+    user_session = current()
+    if user_session is not None:
+        return user_session.db
     if not _firebase_deve_usar():
         return None
     if firebase_firestore is None:
@@ -749,6 +762,13 @@ def _firebase_listar_usuarios(
         return None
 
 def _firebase_obter_usuario(username: str) -> Optional[dict]:
+    from backend.services.firebase_user_session import current
+    user_session = current()
+    if user_session is not None:
+        profile = user_session.profile()
+        if profile["username"] != str(username or "").strip().lower():
+            raise HTTPException(403, detail="A sessão permite consultar somente o próprio perfil.")
+        return profile
     coll = _firebase_collection()
     username_norm = str(username or "").strip().lower()
     if coll is None or not username_norm:

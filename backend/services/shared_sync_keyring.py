@@ -102,6 +102,13 @@ def _shared_sync_keyring_data_target(identity: dict, key_id: str) -> str:
 def _shared_sync_keyring_approved_machine_ids(sessao: dict) -> set[str]:
     username = _shared_sync_normalizar_username((sessao or {}).get("username"))
     client_id = _shared_sync_normalizar_client_id((sessao or {}).get("client_id"))
+    from backend.services.firebase_user_session import current
+    user_session = current(client_id)
+    if user_session is not None:
+        profile = user_session.profile()
+        if profile["username"] != username:
+            raise HTTPException(403, detail="A sessão não autoriza as máquinas deste usuário.")
+        return set(profile["machine_ids"])
     try:
         collection = _firebase_collection()
         snap = collection.document(_firebase_doc_id(username)).get() if collection is not None else None
@@ -121,6 +128,13 @@ def _shared_sync_keyring_approved_machine_ids(sessao: dict) -> set[str]:
 
 def _shared_sync_keyring_persist_unrestricted_machine(sessao: dict, machine_id: str) -> None:
     """Persist the authenticated admin/full machine before it can join a keyring."""
+    from backend.services.firebase_user_session import current
+    user_session = current(str(sessao.get("client_id") or ""))
+    if user_session is not None:
+        machine = _authenticated_session_machine_id(sessao, machine_id)
+        if machine not in _shared_sync_keyring_approved_machine_ids(sessao):
+            raise HTTPException(403, detail="Faça login novamente para autorizar esta máquina.")
+        return
     permissions = (sessao or {}).get("permissions") if isinstance((sessao or {}).get("permissions"), dict) else {}
     username = _shared_sync_normalizar_username((sessao or {}).get("username"))
     unrestricted = bool(permissions.get("full") is True or username in {"admin", "administrador"})

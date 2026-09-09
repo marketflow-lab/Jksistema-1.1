@@ -96,10 +96,21 @@ def _shared_sync_decrypt_bundle(bundle_id: str, encrypted: bytes, secret: Option
     except InvalidToken:
         raise HTTPException(status_code=502, detail="Pacote criptografado invalido ou chave incompatível.")
 
+def _shared_sync_user_query(collection, field: str, value: str):
+    from backend.services.firebase_user_session import current
+    query = collection.where(field, "==", value)
+    session = current()
+    if session is not None:
+        query = query.where("client_id", "==", session.identity["client_id"])
+        if field == "bundle_id":
+            query = query.where("pointer_id", "==", value.split("__", 1)[0])
+    return query
+
+
 def _shared_sync_delete_chunks(db, bundle_id: str) -> None:
     try:
         coll = db.collection(_firebase_shared_sync_chunks_collection_name())
-        for snap in coll.where("bundle_id", "==", bundle_id).stream():
+        for snap in _shared_sync_user_query(coll, "bundle_id", bundle_id).stream():
             snap.reference.delete()
     except Exception as exc:
         logger.warning("[SHARED-SYNC] Falha ao limpar chunks antigos: %s", exc)
@@ -125,7 +136,7 @@ def _shared_sync_cleanup_old_snapshots(db, pointer_id: str, current_snapshot_id:
 
         protected = protected_snapshot_ids()
         snapshots = []
-        for snap in coll.where("pointer_id", "==", pointer_id).stream():
+        for snap in _shared_sync_user_query(coll, "pointer_id", pointer_id).stream():
             data = snap.to_dict() or {}
             if str(data.get("status") or "") != "complete":
                 continue
@@ -677,7 +688,7 @@ def _shared_sync_remote_snapshot_meta_by_hash(
     try:
         coll = db.collection(_firebase_shared_sync_collection_name())
         candidates: list[tuple[tuple[int, str, str, str], dict]] = []
-        for snap in coll.where("pointer_id", "==", logical_id).stream():
+        for snap in _shared_sync_user_query(coll, "pointer_id", logical_id).stream():
             data = snap.to_dict() or {}
             if not isinstance(data, dict):
                 continue

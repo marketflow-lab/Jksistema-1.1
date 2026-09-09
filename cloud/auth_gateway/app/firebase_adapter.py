@@ -169,6 +169,10 @@ class FirebaseIdentityTokenIssuer:
         self._app = firebase_app(settings.project_id)
 
     def issue(self, uid: str, claims: dict[str, Any]) -> tuple[str, int]:
+        payload = self.issue_session(uid, claims)
+        return payload["id_token"], payload["expires_in"]
+
+    def issue_session(self, uid: str, claims: dict[str, Any]) -> dict[str, Any]:
         try:
             custom_token = auth.create_custom_token(uid, developer_claims=claims, app=self._app)
             custom_token_text = (
@@ -189,7 +193,9 @@ class FirebaseIdentityTokenIssuer:
             expires_in = int(payload.get("expiresIn") or 0)
             if not identity_token or expires_in < 60:
                 raise GatewayUnavailable("identity_exchange_invalid")
-            return identity_token, expires_in
+            refresh_token = str(payload.get("refreshToken") or "").strip()
+            return {"id_token": identity_token, "refresh_token": refresh_token,
+                    "expires_in": expires_in}
         except GatewayUnavailable:
             raise
         except Exception as exc:

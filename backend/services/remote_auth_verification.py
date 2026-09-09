@@ -85,6 +85,22 @@ def validate_success_payload(
         raise ValueError("invalid_remote_policy")
 
     extension = {}
+    if "firebase_access" in payload:
+        access = payload["firebase_access"]
+        fields = {"protocol", "project_id", "grant_id", "id_token", "refresh_token",
+                  "api_key", "expires_at", "session_expires_at"}
+        if (not isinstance(access, dict) or set(access) != fields
+                or type(access["protocol"]) is not int or access["protocol"] != 1
+                or not isinstance(access["project_id"], str)
+                or not re.fullmatch(r"[a-z][a-z0-9-]{4,29}", access["project_id"])
+                or not isinstance(access["grant_id"], str)
+                or not re.fullmatch(r"[a-f0-9]{64}", access["grant_id"])
+                or any(not isinstance(access[key], str) or not 1 <= len(access[key]) <= limit
+                       for key, limit in (("id_token", 16384), ("refresh_token", 8192), ("api_key", 256)))
+                or type(access["expires_at"]) is not int
+                or type(access["session_expires_at"]) is not int):
+            raise ValueError("invalid_firebase_access")
+        extension["firebase_access"] = dict(access)
     if "central" in payload:
         central = payload["central"]
         if (not isinstance(central, dict)
@@ -166,6 +182,13 @@ def verify_signed_response(
         "policy": validated["policy"],
         "request_nonce": validated["request_nonce"],
     }
+    if "firebase_access" in validated:
+        access = validated["firebase_access"]
+        if (access["project_id"] != configuration.project_id
+                or not now < access["expires_at"] <= now + 3700
+                or not now < access["session_expires_at"] <= now + 8 * 3600 + 60):
+            raise ValueError("invalid_firebase_access_expiry")
+        signed_payload["firebase_access"] = access
     if "central" in validated:
         signed_payload["central"] = validated["central"]
         if not now < validated["central"]["expires_at"] <= now + 9 * 3600:

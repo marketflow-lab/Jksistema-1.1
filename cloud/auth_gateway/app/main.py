@@ -21,6 +21,7 @@ from .domain import (
 )
 from .firebase_adapter import FirebaseIdentityTokenIssuer, FirestoreUserRepository
 from .central_http import build_central, install_central_routes
+from .firebase_sessions import build_firebase_sessions
 
 
 logger = logging.getLogger("jk.auth_gateway")
@@ -77,6 +78,7 @@ def create_app(
                     FirebaseIdentityTokenIssuer(gateway_settings),
                     gateway_settings.minimum_app_version,
                     central=resolve_central(),
+                    firebase_sessions=build_firebase_sessions(gateway_settings),
                 )
                 application.state.auth_service = configured
             return configured
@@ -131,6 +133,9 @@ def create_app(
             limiter = resolve_limiter()
             if not limiter.consume(payload.username, _client_address(request)):
                 raise AuthRejected("rate_limited", 429)
+            if request.headers.get("x-jk-firebase-protocol") == "1":
+                return resolve_service().authenticate(payload, firebase_protocol=True,
+                    central_protocol=request.headers.get("x-jk-central-protocol") == "1")
             if request.headers.get("x-jk-central-protocol") == "1":
                 return resolve_service().authenticate(payload, central_protocol=True)
             return resolve_service().authenticate(payload)
@@ -170,6 +175,9 @@ def create_app(
             limiter = resolve_limiter()
             if not limiter.consume(payload.username, _client_address(request)):
                 raise AuthRejected("rate_limited", 429)
+            if request.headers.get("x-jk-firebase-protocol") == "1":
+                return resolve_service().change_password(payload, firebase_protocol=True,
+                    central_protocol=request.headers.get("x-jk-central-protocol") == "1")
             if request.headers.get("x-jk-central-protocol") == "1":
                 return resolve_service().change_password(payload, central_protocol=True)
             return resolve_service().change_password(payload)

@@ -59,7 +59,7 @@ assert(firebaseProvisioningSource.includes("'/api/admin/firebase-provisioning/im
 assert(firebaseProvisioningSource.includes("formData.append('file', arquivo, 'credencial-firebase.json')"), 'arquivo Firebase não é enviado com nome neutro no único campo multipart permitido');
 assert(firebaseProvisioningSource.includes("fetch('/api/admin/firebase-provisioning/migrate-legacy'"), 'migração da credencial Firebase legada ausente');
 assert(firebaseProvisioningSource.includes("confirm('Já existe uma credencial Firebase nesta máquina."), 'substituição da credencial Firebase perdeu a confirmação explícita');
-assert(firebaseProvisioningSource.includes('panel.hidden = !usuarioPodeGerenciarUsuarios || (pronto && !firebaseProvisioningStatus.can_migrate);'), 'provisionamento Firebase pode aparecer para usuário sem permissão full ou esconder migração disponível');
+assert(firebaseProvisioningSource.includes('panel.hidden = firebaseProvisioningStatus.user_session || !usuarioPodeGerenciarUsuarios || (pronto && !firebaseProvisioningStatus.can_migrate);'), 'sessão restrita deve ocultar credencial administrativa e preservar a migração legada');
 assert(firebaseProvisioningSource.includes('if (!usuarioPodeGerenciarUsuarios || firebaseProvisioningBusy) return;'), 'importação e migração precisam continuar exclusivas de full');
 assert(firebaseProvisioningSource.includes('importArea.hidden = firebaseProvisioningStatus.loaded && firebaseProvisioningStatus.ready;'), 'importação de arquivo precisa desaparecer quando o backend confirma ready=true');
 assert(firebaseProvisioningSource.includes('migrateButton.hidden = !firebaseProvisioningStatus.can_migrate;'), 'ação de migração precisa seguir exclusivamente can_migrate');
@@ -74,6 +74,9 @@ assert(firebaseProvisioningSource.includes('firebase_permissions_test_failed:'),
 const firebaseReadinessMatch = admin.match(/function resolverProntidaoSincronizacaoFirebase\([^)]*\)\s*\{[\s\S]*?\n\s*\}/);
 assert(firebaseReadinessMatch, 'resolver puro de prontidão Firebase ausente');
 const resolverProntidaoSincronizacaoFirebase = new Function(`return (${firebaseReadinessMatch[0]});`)();
+assert.strictEqual(resolverProntidaoSincronizacaoFirebase('firebase', { user_session: true, loaded: true, ready: false }, false), false, 'sessão restrita expirada bloqueia sincronização também para usuário comum');
+assert.strictEqual(resolverProntidaoSincronizacaoFirebase('firebase', { user_session: true, loaded: false, unavailable: true, ready: false }, true), false, 'erro de status restrito não pode liberar fallback administrativo');
+assert.strictEqual(resolverProntidaoSincronizacaoFirebase('firebase', { user_session: true, loaded: true, ready: true }, false), true, 'usuário comum conectado pode sincronizar');
 assert.strictEqual(resolverProntidaoSincronizacaoFirebase('local', { loaded: true, ready: true }, true), false, 'backend local não pode liberar Enviar/Importar');
 assert.strictEqual(resolverProntidaoSincronizacaoFirebase('firebase', { loaded: true, ready: false }, true), false, 'status carregado sem ready não pode liberar Enviar/Importar');
 assert.strictEqual(resolverProntidaoSincronizacaoFirebase('firebase', { loaded: true, ready: true, restart_required: true }, true), false, 'reinício pendente não pode liberar Enviar/Importar');
@@ -85,8 +88,8 @@ const firebaseReadinessWrapperEnd = admin.indexOf('function atualizarInterfacePr
 const firebaseReadinessWrapper = admin.slice(firebaseReadinessWrapperStart, firebaseReadinessWrapperEnd);
 assert(firebaseReadinessWrapper.includes('usuarioAdmin'), 'readiness de administrador precisa abranger full e admin_usuarios');
 assert(!firebaseReadinessWrapper.includes('usuarioPodeGerenciarUsuarios'), 'readiness não pode depender exclusivamente da permissão full');
-const adminStatusLoads = admin.match(/if \(usuarioAdmin\) \{\s*await carregarStatusProvisionamentoFirebase\(\{ silencioso: true \}\);/g) || [];
-assert(adminStatusLoads.length >= 2, 'status sanitizado precisa ser consultado no sucesso e na falha do status de sincronização para todo administrador');
+const adminStatusLoads = admin.match(/await carregarStatusProvisionamentoFirebase\(\{ silencioso: true \}\);/g) || [];
+assert(adminStatusLoads.length >= 2, 'status sanitizado precisa ser consultado no sucesso e na falha da sincronização para todos os usuários');
 const manualMachineSyncStart = admin.indexOf('async function executarSincronizacaoMinhasMaquinas(');
 const manualMachineSyncEnd = admin.indexOf('async function carregarUsuariosParaCompartilhar(', manualMachineSyncStart);
 const manualMachineSyncSource = admin.slice(manualMachineSyncStart, manualMachineSyncEnd);

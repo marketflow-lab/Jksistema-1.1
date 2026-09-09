@@ -350,6 +350,11 @@
             margin: 10px 0;
             padding: 10px 12px;
         }
+        .machine-sync-firebase-notice.is-connected {
+            border-color: rgba(70, 190, 125, 0.52);
+            background: rgba(70, 190, 125, 0.10);
+            color: #b9efcd;
+        }
         .firebase-provisioning-panel {
             border: 1px solid rgba(79, 172, 254, 0.38);
             background: rgba(12, 22, 37, 0.82);
@@ -2517,6 +2522,7 @@
         return {
             loaded: !!loaded,
             unavailable: !!unavailable,
+            user_session: payload && payload.source === 'user_session',
             configured: payload && payload.configured === true,
             ready: payload && payload.ready === true,
             code: String((payload && payload.code) || '').trim().toLowerCase().slice(0, 80),
@@ -2529,7 +2535,12 @@
     function mensagemSeguraProvisionamentoFirebase(status = firebaseProvisioningStatus, httpStatus = 0) {
         const code = String((status && status.code) || '').toLowerCase();
         const mensagens = {
-            ready: 'Firebase pronto para a sincronização nesta máquina.',
+            ready: status.user_session
+                ? 'Firebase conectado automaticamente à sua conta, com suas permissões.'
+                : 'Firebase pronto para a sincronização nesta máquina.',
+            session_expired: 'A conexão da sua conta expirou ou foi revogada. Faça login novamente.',
+            connection_failed: 'Não foi possível conectar sua conta ao Firebase. Verifique a internet e atualize o status.',
+            server_setup_required: 'A conexão automática após o login ainda precisa ser ativada no servidor.',
             legacy_detected: 'Foi encontrada uma credencial antiga válida. Migre-a para o local padronizado desta máquina.',
             not_configured: 'O Firebase ainda não foi configurado nesta máquina.',
             invalid_canonical: 'A credencial salva no local padronizado não é válida. Selecione um novo arquivo JSON para substituí-la.',
@@ -2575,7 +2586,8 @@
 
     function resolverProntidaoSincronizacaoFirebase(backend, status = {}, conferirStatusAdministrativo = false) {
         if (backend !== 'firebase') return false;
-        if (!conferirStatusAdministrativo) return true;
+        if (!conferirStatusAdministrativo && !status.user_session) return true;
+        if (status.user_session) return status.loaded === true && status.ready === true;
         if (status.unavailable === true) return true;
         return status.loaded === true
             && status.ready === true
@@ -2601,9 +2613,14 @@
         const selected = !!(input && input.files && input.files.length);
 
         if (notice) {
-            notice.hidden = pronto;
-            if (!pronto) {
-                if (!usuarioPodeGerenciarUsuarios) {
+            notice.hidden = pronto && !firebaseProvisioningStatus.user_session;
+            notice.classList.toggle('is-connected', pronto && firebaseProvisioningStatus.user_session);
+            if (!notice.hidden) {
+                if (firebaseProvisioningStatus.user_session) {
+                    notice.textContent = mensagemSeguraProvisionamentoFirebase(firebaseProvisioningStatus);
+                } else if (firebaseProvisioningStatus.code === 'server_setup_required') {
+                    notice.textContent = mensagemSeguraProvisionamentoFirebase(firebaseProvisioningStatus);
+                } else if (!usuarioPodeGerenciarUsuarios) {
                     notice.textContent = 'Esta máquina está usando somente o armazenamento local. Peça ao administrador para configurar o Firebase antes de enviar ou importar dados entre computadores.';
                 } else if (firebaseProvisioningStatus.restart_required) {
                     notice.textContent = 'A credencial foi salva somente nesta máquina, mas o Firebase ainda não está ativo. Feche completamente o JK Sistema, abra novamente e atualize o status.';
@@ -2619,7 +2636,7 @@
             }
         }
 
-        if (panel) panel.hidden = !usuarioPodeGerenciarUsuarios || (pronto && !firebaseProvisioningStatus.can_migrate);
+        if (panel) panel.hidden = firebaseProvisioningStatus.user_session || !usuarioPodeGerenciarUsuarios || (pronto && !firebaseProvisioningStatus.can_migrate);
         if (importArea) importArea.hidden = firebaseProvisioningStatus.loaded && firebaseProvisioningStatus.ready;
         const selectButton = document.getElementById('firebaseProvisioningSelectButton');
         const importButton = document.getElementById('firebaseProvisioningImportButton');
@@ -2677,13 +2694,23 @@
     }
 
     async function carregarStatusProvisionamentoFirebase(opcoes = {}) {
-        if (!usuarioAdmin) {
-            atualizarInterfaceProvisionamentoFirebase();
-            return false;
-        }
         const silencioso = !!(opcoes && opcoes.silencioso);
         if (!silencioso) setFirebaseProvisioningStatus('Conferindo a configuração segura do Firebase...');
         try {
+            const sessionResp = await fetch('/api/firebase/session/status', {
+                headers: obterAuthHeaders(), cache: 'no-store'
+            });
+            const sessionData = await sessionResp.json().catch(() => ({}));
+            if (sessionData.source === 'user_session') {
+                firebaseProvisioningStatus = normalizarStatusProvisionamentoFirebase(sessionData, sessionResp.ok);
+                setFirebaseProvisioningStatus(mensagemSeguraProvisionamentoFirebase(firebaseProvisioningStatus),
+                    sessionData.ready ? 'success' : 'error');
+                return sessionData.ready === true;
+            }
+            if (!usuarioAdmin) {
+                firebaseProvisioningStatus = normalizarStatusProvisionamentoFirebase(sessionData, sessionResp.ok);
+                return false;
+            }
             const resp = await fetch('/api/admin/firebase-provisioning/status', {
                 headers: obterAuthHeaders(),
                 cache: 'no-store'
@@ -2700,7 +2727,10 @@
             setFirebaseProvisioningStatus(mensagemSeguraProvisionamentoFirebase(firebaseProvisioningStatus, resp.status), tone);
             return true;
         } catch (_error) {
-            firebaseProvisioningStatus = normalizarStatusProvisionamentoFirebase({}, false);
+            firebaseProvisioningStatus = normalizarStatusProvisionamentoFirebase({
+                source: firebaseProvisioningStatus.user_session ? 'user_session' : 'none',
+                code: 'connection_failed'
+            }, false);
             setFirebaseProvisioningStatus('Não foi possível consultar a configuração segura do Firebase. Tente atualizar o status.', 'error');
             return false;
         } finally {
@@ -2952,11 +2982,7 @@
                 const data = await resp.json().catch(() => ({}));
                 if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao carregar sincronização.');
                 renderSincronizacaoMinhasMaquinas(data);
-                if (usuarioAdmin) {
-                    await carregarStatusProvisionamentoFirebase({ silencioso: true });
-                } else {
-                    atualizarInterfaceProvisionamentoFirebase();
-                }
+                await carregarStatusProvisionamentoFirebase({ silencioso: true });
                 return true;
             } catch (error) {
                 sincronizacaoMaquinasCache = null;
@@ -2965,11 +2991,7 @@
                 const machinesEl = document.getElementById('machineSyncMachines');
                 if (grid) grid.innerHTML = '<div class="machine-sync-empty">Status indisponível. Atualize novamente antes de sincronizar.</div>';
                 if (machinesEl) machinesEl.innerHTML = '<div class="machine-sync-empty">Não foi possível conferir as máquinas agora.</div>';
-                if (usuarioAdmin) {
-                    await carregarStatusProvisionamentoFirebase({ silencioso: true });
-                } else {
-                    atualizarInterfaceProvisionamentoFirebase();
-                }
+                await carregarStatusProvisionamentoFirebase({ silencioso: true });
                 return false;
             }
         })();

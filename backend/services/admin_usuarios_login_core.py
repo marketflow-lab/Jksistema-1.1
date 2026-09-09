@@ -624,7 +624,11 @@ def _buscar_usuario_por_email_google(usuarios: dict, email: str) -> tuple[Option
     return fallback_username, fallback_usuario
 
 def _montar_resposta_login_sucesso(username: str, usuario: dict, permissoes: dict, client_id: str, machine_final: str) -> LoginResponse:
-    token = (criar_access_token(username, client_id, machine_final, central=True) if usuario.get("central")
+    token = (criar_access_token(username, client_id, machine_final,
+                               central=bool(usuario.get("central")),
+                               central_migration=bool(usuario.get("central_migration")), firebase_user=True)
+             if usuario.get("firebase_user") else
+             criar_access_token(username, client_id, machine_final, central=True) if usuario.get("central")
              else criar_access_token(username, client_id, machine_final,
                                      central_migration=bool(usuario.get("central_migration"))))
     user_data = {

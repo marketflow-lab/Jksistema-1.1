@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import requests
+import pytest
 
 from backend.services import remote_auth_client as client
 
@@ -74,6 +75,8 @@ def token_claims(payload, **overrides):
         "policy": payload["policy"],
         "request_nonce": payload["request_nonce"],
     }
+    if "firebase_access" in payload:
+        signed["firebase_access"] = payload["firebase_access"]
     claims = {
         "iss": "https://securetoken.google.com/jkjkjk-485920",
         "aud": "jkjkjk-485920",
@@ -317,3 +320,60 @@ def test_remote_password_change_never_falls_back_to_local_on_outage():
 
     assert result.state is client.RemoteAuthState.UNAVAILABLE
     assert result.allow_legacy_fallback is False
+
+
+def firebase_payload():
+    payload = success_payload()
+    payload["firebase_access"] = {
+        "protocol": 1, "project_id": ENV["JK_REMOTE_AUTH_PROJECT_ID"],
+        "grant_id": "a" * 64, "id_token": "private-id-token",
+        "refresh_token": "private-refresh-token", "api_key": "firebase-public-key",
+        "expires_at": NOW + 3600, "session_expires_at": NOW + 28800,
+    }
+    return payload
+
+
+def firebase_attempt(payload, claims):
+    return client.attempt_remote_login(
+        username="usuario", password="senha", machine_id="pc:maquina-1",
+        app_version="1.0.140", environ=ENV,
+        session=FakeSession(FakeResponse(200, payload)),
+        verifier=lambda *_args, **_kwargs: claims, now=NOW, request_nonce=NONCE,
+    )
+
+
+def test_remote_firebase_credentials_are_bound_to_signed_login():
+    payload = firebase_payload()
+    result = firebase_attempt(payload, token_claims(payload))
+    assert result.success
+    assert result.firebase_access == payload["firebase_access"]
+    assert "private-id-token" not in repr(result)
+    assert "private-refresh-token" not in repr(result)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("grant_id", "b" * 64), ("id_token", "substituted-token"),
+    ("refresh_token", "substituted-refresh"), ("api_key", "substituted-key"),
+    ("project_id", "another-project"), ("expires_at", NOW + 3500),
+    ("session_expires_at", NOW + 28700),
+])
+def test_remote_firebase_rejects_tampered_credential(field, value):
+    payload = firebase_payload()
+    claims = token_claims(payload)
+    payload["firebase_access"][field] = value
+    result = firebase_attempt(payload, claims)
+    assert result.state is client.RemoteAuthState.INTEGRITY_FAILURE
+    assert not result.allow_legacy_fallback
+
+
+@pytest.mark.parametrize("field,value", [
+    ("protocol", True), ("expires_at", NOW - 1),
+    ("session_expires_at", NOW + 28861), ("expires_at", NOW + 3701),
+    ("project_id", "another-project"), ("private_key", "unexpected-secret"),
+])
+def test_remote_firebase_rejects_invalid_signed_extension(field, value):
+    payload = firebase_payload()
+    payload["firebase_access"][field] = value
+    result = firebase_attempt(payload, token_claims(payload))
+    assert result.state is client.RemoteAuthState.INTEGRITY_FAILURE
+    assert not result.allow_legacy_fallback
