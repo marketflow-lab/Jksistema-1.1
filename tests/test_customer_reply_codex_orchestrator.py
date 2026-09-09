@@ -3983,6 +3983,54 @@ def test_restart_never_replaces_an_unavailable_ai_draft_with_fallback(tmp_path, 
     assert any("Nenhum texto substituto" in warning for warning in rehydrated["warnings"])
 
 
+def test_restart_recovers_a_valid_sealed_ai_draft(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_known_clients", lambda _base: ["cliente"])
+    monkeypatch.setattr(orchestrator, "_schedule", lambda _job: False)
+    monkeypatch.setattr(customer_reply_state, "_customer_reply_sealed_results_enabled", lambda: True)
+    monkeypatch.setattr(
+        customer_reply_state,
+        "_customer_reply_result_key",
+        lambda _client_id, *, create: b"A" * 32,
+    )
+    completed = {
+        "job_id": "job-restart-sealed", "profile": orchestrator.PROFILE,
+        "client_id": "cliente", "task_type": "public_question", "subject_key": "Q-SEALED",
+        "event_subject_key": "Q-SEALED", "question_id": "Q-SEALED", "item_id": "MLB-1",
+        "store": "Loja", "status": "completed", "agent_state": "aguardando_aprovacao",
+        "thread_id": "thread-same", "prompt_version": orchestrator.PROMPT_VERSION,
+        "prompt_hash": orchestrator.PROMPT_HASH, "schema_version": orchestrator.SCHEMA_VERSION,
+        "queue_policy_version": orchestrator.QUEUE_POLICY_VERSION,
+        "queue_origin": orchestrator.QUEUE_ORIGIN_AUTOMATION,
+        "queue_priority": orchestrator.QUEUE_PRIORITY_AUTOMATION,
+        "proposal_version": 1, "proposal_hash": "hash",
+        "result": {
+            "resposta": "CANARY_SEALED_RESTART",
+            "proposal_id": "job-restart-sealed",
+            "proposal_version": 1,
+            "proposal_hash": "hash",
+            "requires_approval": True,
+            "publish_attempted": False,
+        },
+    }
+    codex_assistant_storage.codex_assistant_customer_reply_job_save(
+        str(tmp_path), "cliente", completed
+    )
+    with customer_reply_state._CUSTOMER_REPLY_TRANSIENT_LOCK:
+        customer_reply_state._CUSTOMER_REPLY_TRANSIENT.clear()
+
+    orchestrator.recover_pending_jobs()
+    recovered = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", completed["job_id"]
+    )
+
+    assert recovered["agent_state"] == "aguardando_aprovacao"
+    assert recovered["result"]["resposta"] == "CANARY_SEALED_RESTART"
+    assert not recovered.get("blocked_without_draft")
+    public = orchestrator.get_job("cliente", completed["job_id"])
+    assert public["result"]["resposta"] == "CANARY_SEALED_RESTART"
+
+
 def test_completed_ai_draft_remains_literal_for_the_terminal_job_lifetime(tmp_path, monkeypatch):
     now = [1_000_000.0]
     monkeypatch.setattr(customer_reply_state.time, "time", lambda: now[0])

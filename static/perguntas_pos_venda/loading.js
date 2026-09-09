@@ -328,7 +328,12 @@
             if (token !== generation || sequence !== detailSequence || revision !== (revisions.get(String(store.store_id)) || 0)) return;
             const fields = { ...(data.question || {}) };
             Object.keys(fields).filter(name => name.startsWith('item_') && !fields[name]).forEach(name => delete fields[name]);
-            Object.assign(question, fields, { _detailReady: !data.partial && !data.stale, loja: store.nome, store_id: store.store_id });
+            Object.assign(question, fields, {
+                _detailReady: !data.stale,
+                _detailPartial: Boolean(data.partial),
+                loja: store.nome,
+                store_id: store.store_id
+            });
             if (!data.partial && !data.stale) boundedSet(detailCache, key, { data: fields, at: Number(data.consultado_em || Date.now()) });
             if (data.stale && !force) {
                 question._detailPending = false;
