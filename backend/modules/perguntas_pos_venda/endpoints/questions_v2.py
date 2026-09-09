@@ -142,6 +142,10 @@ def ml_questions_v2_process(request: Request, question_id: str, req: MLQuestions
             official_current_listing = True
     if not item:
         item = request_item
+    from backend.modules.perguntas_pos_venda.ai.catalog_context import bind_official_listing_catalog_identity
+    bind_official_listing_catalog_identity(
+        client_id, loja, cfg, pergunta, item if official_current_listing else {}, extract_sku=_ml_extrair_sku,
+    )
     if item and not _ml_extrair_sku(item):
         item = _ml_perguntas_completar_skus_itens(client_id, loja, cfg, [item])[0]
     item["_ppv_official_current_listing"] = official_current_listing

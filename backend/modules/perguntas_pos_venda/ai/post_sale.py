@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 import unicodedata
+import json
+from copy import deepcopy
 
 from .runtime import (
     PerguntasPosVendaDomainError,
@@ -73,7 +75,29 @@ def _ml_pos_venda_contexto_prompt(contexto: Optional[dict]) -> str:
         "perguntas_anteriores_anuncio": contexto.get("perguntas_anteriores_anuncio") or [],
         "evidence_envelope": contexto.get("evidence_envelope") or {},
     }
-    return _perguntas_codex_compact_json(prompt_context, 6500)
+    # Preserve catalog fields as whole evidence documents. The legacy structural
+    # compactor may shorten strings, which would change a technical assertion.
+    catalog_sources = []
+    listings = deepcopy(prompt_context["anuncios"])
+    for listing in listings:
+        if isinstance(listing, dict):
+            catalog_sources.extend(listing.pop("catalog_product_context", []) or [])
+    prompt_context["anuncios"] = listings
+    compacted = _perguntas_codex_compact_json(prompt_context, 6500)
+    if not catalog_sources:
+        return compacted
+    from backend.modules.context_hub.store_sku_contracts import canonical_json
+    if len(canonical_json(catalog_sources)) > 24000:
+        catalog_sources = [{"catalog_status": "context_budget_exceeded", "catalog_document": {},
+                            "instruction_policy": "Ficha indisponivel: nao afirmar caracteristicas cadastrais."}]
+    try:
+        result = json.loads(compacted)
+    except (TypeError, ValueError):
+        result = {"gaps": ["post_sale_context_unavailable"]}
+    if not isinstance(result, dict):
+        result = {"gaps": ["post_sale_context_unavailable"]}
+    result["catalog_product_context"] = catalog_sources
+    return canonical_json(result)
 
 def _ml_pos_venda_validar_resposta(resposta: str, contexto: dict, limite: int | None = None) -> dict:
     limite_num = int(limite or contexto.get("max_chars") or ML_POS_VENDA_DEFAULT_MAX_CHARS)

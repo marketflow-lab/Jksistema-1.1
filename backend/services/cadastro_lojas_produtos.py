@@ -1353,7 +1353,8 @@ def salvar_produto_loja(
                 except BaseException:
                     _rollback_arquivos(estados)
                     raise
-            return produto
+    _notificar_ficha_catalogo(client_id, loja["store_id"])
+    return produto
 
 
 def salvar_produtos_loja_em_lote(
@@ -1557,6 +1558,7 @@ def salvar_produtos_loja_em_lote(
                     _rollback_arquivos(estados)
                     raise
 
+    _notificar_ficha_catalogo(client_id, loja["store_id"])
     return {
         "success": True,
         "store_id": loja["store_id"],
@@ -1730,6 +1732,7 @@ async def excluir_produto_loja(
             tombstone["deleted_at_utc"] = agora
             registros[indice] = tombstone
         _salvar_registros_atomico(client_id, registros, colunas)
+    _notificar_ficha_catalogo(client_id, loja["store_id"])
     return {
         "success": True,
         "sku": _normalizar_sku_mes(sku),
@@ -1737,6 +1740,17 @@ async def excluir_produto_loja(
         "row_version": versao,
         "deleted_at_utc": agora,
     }
+
+
+def _notificar_ficha_catalogo(client_id: str, store_id: str) -> None:
+    try:
+        from backend.modules.context_hub.catalog_product_sync import notify_catalog_committed
+        notify_catalog_committed(
+            client_id, store_id, info_root=Path(get_tenant_path(client_id)).parent)
+    except Exception:
+        # The CSV transaction is already committed. Reconciliation recovers a
+        # missing notification without reporting a false save failure.
+        pass
 
 
 async def listar_colunas_produtos_loja(

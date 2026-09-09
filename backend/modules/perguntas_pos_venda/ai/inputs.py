@@ -64,6 +64,7 @@ _PERGUNTAS_IA_RESEARCH_INPUT_FIELDS = frozenset({
     "use_web_search", "vehicle_identity", "verified_product_evidence", "product_research_evidence", "web_search_required",
     "product_evidence_identity", "technical_question_plan", "technical_gap_queries",
     "sku_question_context", "adaptive_route", "web_research_reason",
+    "_catalog_identity_proof",
 })
 
 
@@ -604,6 +605,7 @@ def _build_agent_payload(
         "context": contexto_dict,
         "vehicle_identity": _perguntas_ia_vehicle_identity_segura(pergunta),
         "product_evidence_identity": _perguntas_ia_product_evidence_identity_segura(pergunta),
+        "_catalog_identity_proof": str(pergunta.get("_catalog_identity_proof") or ""),
         "verified_product_evidence": _perguntas_ia_verified_product_evidence_segura(pergunta),
         "product_research_evidence": safe_agent_product_research_evidence(
             pergunta.get("_product_research_evidence")

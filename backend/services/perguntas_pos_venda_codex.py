@@ -7,6 +7,8 @@ existing Perguntas/Pós-venda read-only adapters injected at application startup
 
 from __future__ import annotations
 
+import copy
+
 import contextlib
 import errno
 import hashlib
@@ -4388,6 +4390,9 @@ def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             official_current_listing = True
     if not item:
         item = request_item
+    # Preserve the official payload before any SKU enrichment from local/request
+    # data. Only this snapshot may establish the catalog listing identity.
+    catalog_official_item = copy.deepcopy(item) if official_current_listing else {}
     if isinstance(item, dict) and item and not runtime._ml_extrair_sku(item):
         item = runtime._ml_perguntas_completar_skus_itens(client_id, store, cfg, [item])[0]
     if isinstance(item, dict):
@@ -4415,6 +4420,14 @@ def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         item=item if isinstance(item, dict) else {},
         request=request,
     )
+    from backend.modules.perguntas_pos_venda.ai.catalog_context import issue_listing_identity_proof
+    try:
+        question["_catalog_identity_proof"] = issue_listing_identity_proof(
+            client_id, store, cfg, catalog_official_item, product_identity,
+            extract_sku=runtime._ml_extrair_sku,
+        )
+    except Exception:
+        question["_catalog_identity_proof"] = ""
     verified_product_evidence = load_verified_product_evidence(client_id, product_identity)
     product_research_evidence = load_product_research_evidence(
         client_id,

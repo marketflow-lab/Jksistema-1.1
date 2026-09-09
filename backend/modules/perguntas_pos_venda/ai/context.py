@@ -291,7 +291,7 @@ def _read_public_store_sku_context(client_id: str, entrada: dict, query_hash: st
         )
 
         identity = _perguntas_ia_context_hub_product_evidence_identity(entrada)
-        loaded = load_store_sku_knowledge(client_id, identity) if identity else {
+        loaded = {
             "found": False,
             "reason_code": "exact_identity_incomplete",
             "canonical_document": {},
@@ -300,7 +300,18 @@ def _read_public_store_sku_context(client_id: str, entrada: dict, query_hash: st
             "gaps": ["exact_identity_incomplete"],
             "read_only": True,
         }
+        if identity:
+            try:
+                loaded = load_store_sku_knowledge(client_id, identity)
+            except Exception:
+                loaded.update({"reason_code": "store_sku_context_unavailable",
+                               "gaps": ["store_sku_context_unavailable"]})
+        from .catalog_context import with_catalog_evidence
+        loaded = with_catalog_evidence(
+            client_id, identity, loaded, proof=entrada.get("_catalog_identity_proof"),
+        )
         found = bool(loaded.get("found"))
+        catalog_found = bool(loaded.get("catalog_document") and loaded.get("catalog_identity_verified"))
         result = {
             **loaded,
             "results": ([{
@@ -313,11 +324,20 @@ def _read_public_store_sku_context(client_id: str, entrada: dict, query_hash: st
                 "eligible_as_solo_evidence": True,
                 "content_role": "untrusted_reference_data",
             }] if found else []),
-            "count": 1 if found else 0,
-            "authoritative_count": 1 if found else 0,
+            "count": int(found) + int(catalog_found),
+            "authoritative_count": int(found) + int(catalog_found),
             "legacy_unverified_count": 0,
             "tenant_binding": "server_client_id",
         }
+        if catalog_found:
+            result["found"] = True
+            result["results"].append({
+                "doc_id": "jk:store-catalog:exact", "type": "store_catalog_product",
+                "truth_class": "source", "content_role": "untrusted_reference_data",
+                "source_hash": str((loaded.get("hashes") or {}).get("catalog_product") or ""),
+                "generation_id": str((loaded.get("catalog_generation") or {}).get("id") or ""),
+                "eligible_as_factual_evidence": True, "eligible_as_solo_evidence": not bool(loaded.get("conflicts")),
+            })
         return {"function": "context_hub_store_sku_read", "arguments": arguments, "result": result}
     except Exception as exc:
         logger.warning(

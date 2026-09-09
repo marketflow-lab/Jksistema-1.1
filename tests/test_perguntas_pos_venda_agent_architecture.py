@@ -35,7 +35,8 @@ PUBLIC_EXPORTS = [
     "validate_post_sale_response",
 ]
 CONTRACT_HASHES = {
-    "routes": "c8168de81d0cf383e8a631ef457ac9fe7f8fb5ed6c22cdaf34f70c27902230c1",
+    # Current additive training detail and catalog synchronization routes.
+    "routes": "dacfa687b5dbb601eac63ea2c56e58c1996a6473e8b35b6f345106d890c299c4",
     "aliases": "f149aa04a166eacd3f942889d2495dc5a23be9bb3317160d97e247ae834aa68e",
     "schema": "500b7ccbcedc02d3a254e8114e974355be5635d2f01bd7dc929b212643cb254a",
     "policy": "c0f16148cf07452b5cfef3a48088485055cc7ca7f52382b96ecc95085529894a",
@@ -43,6 +44,7 @@ CONTRACT_HASHES = {
     "exports": "fbd5bf89bb3a7d13d32c55dda0a0b89996c3c6a4828f94a250c94c5f18b74550",
 }
 LAYERS = {
+    "catalog_context": 0,
     "contracts": 0, "attachments": 0, "telemetry_core": 0,
     "deep_research_contracts": 0, "deep_research_prefetch": 0, "deep_research_scoping": 0,
     "deep_research_sanitization": 0, "input_contracts": 0, "input_sanitization": 0,
@@ -155,7 +157,7 @@ def _contract_snapshot() -> dict[str, object]:
 
 def test_ppv_public_contract_snapshot() -> None:
     snapshot = _contract_snapshot()
-    assert len(snapshot["routes"]) == 35
+    assert len(snapshot["routes"]) == 38
     assert len(snapshot["aliases"]) == 2
     assert len(snapshot["policy"]["allowed_tools"]) == 7
     assert snapshot["exports"] == PUBLIC_EXPORTS

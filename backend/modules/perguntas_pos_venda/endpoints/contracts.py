@@ -21,6 +21,8 @@ PERGUNTAS_POS_VENDA_ENDPOINTS: tuple[str, ...] = (
     "ml_questions_v2_metrics",
     "ml_perguntas_gerar_resposta_manual",
     "ml_perguntas_responder_manual",
+    "ml_ia_treinamento_sincronizacao_obter",
+    "ml_ia_treinamento_sincronizacao_solicitar",
     "ml_ia_treinamento_obter",
     "ml_ia_treinamento_salvar",
     "ml_ia_treinamento_listar_skus",

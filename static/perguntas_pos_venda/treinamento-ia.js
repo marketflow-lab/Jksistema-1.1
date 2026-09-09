@@ -76,6 +76,11 @@ function sincronizarLojaTreinamento() {
     const anterior = lojaEscopoTreinamento();
     montarSeletorEscopoTreinamento();
     if (anterior === lojaEscopoTreinamento()) return;
+    treinamentoCatalogoRequestId++;
+    treinamentoDetalhesRequestId++;
+    treinamentoDetalhesController?.abort();
+    const catalogStatus = document.getElementById('ai-training-catalog-sync');
+    if (catalogStatus) catalogStatus.textContent = '';
     treinamentoSync.requestId++;
     treinamentoSync.skuRequestId++;
     state.treinamentoCarregado = false;
@@ -104,7 +109,15 @@ function receberSnapshotTreinamento(data) {
     Object.entries(sessao.drafts).forEach(([key, draft]) => {
         const atual = valorSnapshotTreinamento(data, key);
         const caracteristicasAlteradas = key.startsWith('sku:') && !iguaisTreinamento(draft.value.caracteristicas, draft.base.caracteristicas);
-        const fonteAlterada = caracteristicasAlteradas && anterior?.context_generation_id !== data.context_generation_id;
+        const sku = key.slice(4);
+        const previousFields = sessao.skuDetails?.[sku]?.characteristics || [];
+        const nextFields = data.sku_details?.sku === sku ? data.sku_details.characteristics || [] : previousFields;
+        const changedSource = Object.keys(draft.value.caracteristicas || {}).some(fieldKey => {
+            const previous = previousFields.find(field => field.key === fieldKey);
+            const next = nextFields.find(field => field.key === fieldKey);
+            return previous && (!next || previous.original_value !== next.original_value);
+        });
+        const fonteAlterada = caracteristicasAlteradas && (anterior?.context_generation_id !== data.context_generation_id || changedSource);
         if (fonteAlterada) draft.sourceConflict = true;
         if (!iguaisTreinamento(atual, draft.base) || fonteAlterada) draft.conflict = true;
         else if (!draft.conflict) draft.revision = data.editorial?.revision;
@@ -128,6 +141,8 @@ function aplicarSnapshotTreinamento() {
     const sessao = sessaoTreinamento();
     if (!sessao?.snapshot) return;
     const data = sessao.snapshot;
+    const catalogStatus = document.getElementById('ai-training-catalog-sync');
+    if (catalogStatus) catalogStatus.textContent = rotuloSincronizacaoCadastroTreinamento(sessao.catalogSynchronization);
     const general = sessao.drafts.general?.value || valorGeralSnapshotTreinamento(data);
     const skus = new Set([
         ...(data.exemplos?.perguntas_anuncio || []).map(item => String(item.sku || '').trim()),
@@ -574,6 +589,7 @@ function abrirBalaoSkuTreinamento(sku) {
     guardarEdicaoTreinamento();
     const valor = String(sku || '').trim();
     if (!valor || !Array.from(aiTrainingSku.options).some((option) => option.value === valor)) return;
+    if (aiTrainingSku.value !== valor) treinamentoCatalogoRequestId++;
     aiTrainingSku.value = valor;
     renderizarSkuTreinamentoInfo();
     renderizarNotasSkuTreinamento();
@@ -589,6 +605,9 @@ function abrirBalaoSkuTreinamento(sku) {
 
 function fecharBalaoSkuTreinamento() {
     guardarEdicaoTreinamento();
+    treinamentoDetalhesRequestId++;
+    treinamentoDetalhesController?.abort();
+    treinamentoCatalogoRequestId++;
     aiTrainingSkuPopover?.classList.add('hidden');
     aiTrainingSkuPopover?.setAttribute('aria-hidden', 'true');
     exibirLeituraOrientacaoSku();

@@ -36,12 +36,16 @@ def create_context_hub_router(
         context_hub_api.recover_pending_product_evidence_syncs(
             info_root=recovery_info_root
         )
+        from backend.modules.context_hub.catalog_product_sync import start_catalog_sync_workers
+        start_catalog_sync_workers(info_root=recovery_info_root)
 
     def stop_product_evidence_workers() -> None:
         if not recovery_lifecycle["started"]:
             return
         recovery_lifecycle["started"] = False
         context_hub_api.stop_all_product_evidence_sync_workers()
+        from backend.modules.context_hub.catalog_product_sync import stop_catalog_sync_workers
+        stop_catalog_sync_workers()
 
     router.add_event_handler("startup", recover_product_evidence_outboxes)
     router.add_event_handler("shutdown", stop_product_evidence_workers)

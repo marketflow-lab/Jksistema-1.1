@@ -2608,3 +2608,15 @@
 @media (max-width: 600px) { .training-conflict-versions { grid-template-columns: 1fr; } }
 
 .training-obsidian-source pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; font: inherit; }
+.training-catalog-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 12px 0;
+}
+.training-catalog-images img {
+    width: 100px;
+    height: 100px;
+    object-fit: contain;
+    border-radius: 6px;
+}

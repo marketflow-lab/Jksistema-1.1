@@ -331,7 +331,17 @@ def _ml_pos_venda_buscar_dados_anuncios(client_id: str, loja: str, cfg: dict, or
         if not isinstance(item, dict):
             continue
         descricao, cfg = _perguntas_ia_descricao_item(client_id, loja, cfg, str(item.get("id") or ""), item)
-        anuncios.append(_ml_pos_venda_resumir_anuncio_para_ia(item, descricao))
+        resumo = _ml_pos_venda_resumir_anuncio_para_ia(item, descricao)
+        from backend.modules.perguntas_pos_venda.ai.catalog_context import prove_order_item_context
+        try:
+            fichas = prove_order_item_context(
+                client_id, loja, cfg, order, item, extract_sku=_ml_extrair_sku,
+            )
+        except Exception:
+            fichas = []
+        if fichas:
+            resumo["catalog_product_context"] = fichas
+        anuncios.append(resumo)
     return anuncios, cfg
 
 

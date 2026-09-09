@@ -51,12 +51,18 @@ let delayedDetails = null;
 let conflictCharacteristicOnSave = false;
 let generation = 'gen-1';
 let failSavedDetails = false;
+let failSynchronization = false;
+let synchronizationRunning = false;
+const synchronizationRequests = [];
 function skuDetails(storeId, sku) {
   const overrides = trainingByStore[storeId]?.caracteristicas_sku?.[sku] || {};
   const product = (productsByStore[storeId] || []).find(item => item.sku === sku);
   const base = { marca: product?.marca || '', tensao: storeId === 'store-alpha' ? '12 V' : '24 V' };
   return {
     sku,
+    catalog_document: { fields: {description: `Descrição do cadastro próprio ${storeId}/${sku}`, images: ['/img/test-product.png', 'javascript:alert(1)']} },
+    catalog_found: true,
+    synchronization: { status: 'completed', total: (productsByStore[storeId] || []).length },
     canonical_document: { sku, title: product?.nome, marca: base.marca, tensao: base.tensao, description: `Cadastro completo ${storeId}/${sku}` },
     evidence: [{ fact: `Evidência exclusiva ${storeId}/${sku}` }],
     guidance: { notas: trainingByStore[storeId]?.notas_sku?.[sku] || '' },
@@ -129,19 +135,31 @@ function contentType(filePath) {
         await json(route, failCatalog ? { detail: 'Catálogo indisponível' } : { success: true, store_id: storeId, produtos: productsByStore[storeId] || [] }, failCatalog ? 503 : 200);
         return;
       }
+      if (url.pathname === '/api/mercadolivre/ia-treinamento/sincronizacao') {
+        const payload = request.method() === 'POST' ? request.postDataJSON() : null;
+        const storeId = payload?.store_id || url.searchParams.get('store_id');
+        if (payload) synchronizationRequests.push(payload);
+        await json(route, failSynchronization ? {detail: 'Atualização temporariamente indisponível'} : {
+          store_id: storeId, synchronization: {status: synchronizationRunning ? 'running' : 'completed', total: 3}
+        }, failSynchronization ? 503 : 200);
+        return;
+      }
       if (url.pathname === '/api/mercadolivre/ia-treinamento' && request.method() === 'GET') {
         const storeId = url.searchParams.get('store_id');
         const sku = url.searchParams.get('sku') || '';
         if (sku && failDetails) { await json(route, { detail: 'Detalhes do Obsidian indisponíveis' }, 503); return; }
         const result = snapshot(storeId, sku);
+        let delivered;
         if (sku && delayedDetails?.storeId === storeId && delayedDetails?.sku === sku) {
           const delayed = delayedDetails;
           delayedDetails = null;
           delayed.requested();
           await delayed.wait;
+          delivered = delayed.delivered;
         }
         if (storeId === 'store-alpha' && delayedAlpha) { const wait = delayedAlpha; delayedAlpha = null; await wait; }
         await json(route, result);
+        delivered?.();
         return;
       }
       if (url.pathname === '/api/mercadolivre/ia-treinamento' && request.method() === 'POST') {
@@ -247,6 +265,22 @@ function contentType(filePath) {
     assert.match(await details.textContent(), /Evidência exclusiva store-alpha\/003/);
     assert.match(await details.textContent(), /<script>window.skuInjected = true<\/script>/);
     assert.strictEqual(await page.evaluate(() => window.skuInjected), undefined);
+    assert.match(await details.textContent(), /Descrição do cadastro próprio store-alpha\/003/);
+    assert.strictEqual(await details.locator('.training-catalog-images img').count(), 1);
+    failSynchronization = true;
+    await page.locator('#btn-ai-training-refresh-catalog').click();
+    await page.locator('#ai-training-catalog-sync').filter({hasText: 'preservadas'}).waitFor();
+    failSynchronization = false;
+    await page.locator('#btn-ai-training-refresh-catalog').click();
+    await page.locator('#ai-training-catalog-sync').filter({hasText: 'Informações atualizadas'}).waitFor();
+    assert.deepStrictEqual(synchronizationRequests.at(-1), {store_id: 'store-alpha', loja: 'Loja Alpha', sku: '003'});
+    await page.locator('#btn-ai-training-fechar-sku').click();
+    const storeSync = page.waitForRequest(req => req.url().endsWith('/sincronizacao') && req.method() === 'POST');
+    await page.locator('#btn-ai-training-sync-catalog').click();
+    await storeSync;
+    await page.waitForFunction(() => document.querySelector('#ai-training-catalog-sync').textContent.includes('Informações atualizadas'));
+    assert.strictEqual(synchronizationRequests.at(-1).sku, '');
+    await page.locator('[data-training-sku="003"]').click();
     if (process.env.JK_CAPTURE_TEST_SCREENSHOT === '1') {
       const outputDir = path.join(root, 'test-results', 'perguntas-training-store-sku');
       fs.mkdirSync(outputDir, { recursive: true });
@@ -265,6 +299,9 @@ function contentType(filePath) {
     await tensionValue().dblclick();
     const savedTension = '  12 V e 24 V\nConferir aplicação  ';
     await tensionInput().fill(savedTension);
+    await page.evaluate(() => sincronizarCadastroTreinamento(false));
+    assert.strictEqual(await tensionInput().inputValue(), savedTension, 'atualizar o cadastro preserva o campo em edição');
+    assert.strictEqual(trainingByStore['store-alpha'].caracteristicas_sku?.['003'], undefined, 'sincronizar dados não salva a edição humana');
     await page.locator('#btn-ai-training-salvar-sku').click();
     await page.locator('#ai-training-sku-editor').waitFor({ state: 'hidden' });
     assert.strictEqual(trainingByStore['store-alpha'].caracteristicas_sku['003'].tensao, savedTension);
@@ -325,19 +362,20 @@ function contentType(filePath) {
     async function delaySkuDetails(storeId, sku) {
       let release;
       let requested;
+      let delivered;
       const requestSeen = new Promise(resolve => { requested = resolve; });
+      const responseDelivered = new Promise(resolve => { delivered = resolve; });
       const wait = new Promise(resolve => { release = resolve; });
-      delayedDetails = { storeId, sku, requested, wait };
-      return { release, requestSeen };
+      delayedDetails = { storeId, sku, requested, wait, delivered };
+      return { release, requestSeen, responseDelivered };
     }
     const oldSku = await delaySkuDetails('store-alpha', '003');
     await page.locator('[data-training-sku="003"]').click();
     await oldSku.requestSeen;
     await page.evaluate(() => abrirBalaoSkuTreinamento('001'));
     await details.filter({ hasText: 'Cadastro completo store-alpha/001' }).waitFor();
-    const oldSkuResponse = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).searchParams.get('sku') === '003');
     oldSku.release();
-    await oldSkuResponse;
+    await oldSku.responseDelivered;
     await page.evaluate(() => carregarTreinamentoAI(true));
     assert.match(await details.textContent(), /Cadastro completo store-alpha\/001/);
     assert(!await details.textContent().then(text => text.includes('Cadastro completo store-alpha/003')));
@@ -349,9 +387,8 @@ function contentType(filePath) {
     await page.locator('#ai-training-sku-count').filter({ hasText: '1 SKU(s)' }).waitFor();
     await page.locator('[data-training-sku="001"]').click();
     await details.filter({ hasText: 'Cadastro completo store-beta/001' }).waitFor();
-    const oldStoreResponse = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).searchParams.get('store_id') === 'store-alpha' && new URL(response.url()).searchParams.get('sku') === '003');
     oldStore.release();
-    await oldStoreResponse;
+    await oldStore.responseDelivered;
     await page.evaluate(() => carregarTreinamentoAI(true));
     assert.match(await details.textContent(), /Cadastro completo store-beta\/001/);
     assert.strictEqual(await tensionValue().innerText(), '24 V');

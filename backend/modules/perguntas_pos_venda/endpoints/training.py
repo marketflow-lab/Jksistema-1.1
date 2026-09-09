@@ -7,6 +7,7 @@ import sqlite3
 from typing import Optional
 
 from fastapi import Depends, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.modules.perguntas_pos_venda.endpoints.runtime import runtime_adapter
 from backend.modules.perguntas_pos_venda.endpoints.security import get_tenant_id
@@ -198,6 +199,45 @@ def _require_store_sku(client_id: str, store_id: str, sku: str) -> None:
         raise HTTPException(status_code=409, detail={
             "code": "sku_store_scope_unresolved", "message": "O SKU nao pertence ao cadastro desta loja.",
         })
+
+
+class CatalogSynchronizationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    store_id: str = Field(min_length=1, max_length=200)
+    loja: str = ""
+    sku: str = Field(default="", max_length=200)
+
+
+def _catalog_sync_scope(client_id: str, loja: str, store_id: str, sku: str = "") -> str:
+    loja, store_id = _resolver_escopo_loja_treinamento(client_id, loja, store_id)
+    if not store_id:
+        raise HTTPException(status_code=409, detail={"code": "store_scope_unresolved", "message": "Selecione a loja exata."})
+    _resolver_context_hub_scope(client_id, loja, store_id)
+    if sku:
+        _require_store_sku(client_id, store_id, sku)
+    return store_id
+
+
+def ml_ia_treinamento_sincronizacao_obter(store_id: str, loja: str = "", sku: str = "",
+                                         client_id: str = Depends(get_tenant_id)):
+    from backend.modules.context_hub.catalog_product_sync import get_catalog_sync_status
+    store_id = _catalog_sync_scope(client_id, loja, store_id, sku)
+    try:
+        return {"success": True, "store_id": store_id, "synchronization": get_catalog_sync_status(client_id, store_id)}
+    except (OSError, sqlite3.Error, ContextHubValidationError) as exc:
+        raise HTTPException(status_code=503, detail={"code": "catalog_sync_read_failed", "message": "Nao foi possivel consultar a sincronizacao."}) from exc
+
+
+def ml_ia_treinamento_sincronizacao_solicitar(req: CatalogSynchronizationRequest,
+                                             client_id: str = Depends(get_tenant_id)):
+    from backend.modules.context_hub.catalog_product_sync import request_catalog_sync
+    store_id = _catalog_sync_scope(client_id, req.loja, req.store_id, req.sku)
+    try:
+        return {"success": True, "store_id": store_id, "synchronization": request_catalog_sync(client_id, store_id, sku=req.sku)}
+    except ContextHubValidationError as exc:
+        raise HTTPException(status_code=409, detail={"code": "catalog_sync_scope_invalid", "message": "A loja nao esta disponivel para sincronizacao."}) from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise HTTPException(status_code=503, detail={"code": "catalog_sync_request_failed", "message": "Nao foi possivel iniciar a sincronizacao."}) from exc
 
 
 def _sku_details_response(client_id: str, scope: dict, sku: str, editor: dict) -> dict:
@@ -517,6 +557,8 @@ def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest,
 
 
 __all__ = [
+    "ml_ia_treinamento_sincronizacao_obter",
+    "ml_ia_treinamento_sincronizacao_solicitar",
     "ml_ia_treinamento_obter",
     "ml_ia_treinamento_salvar",
     "ml_ia_treinamento_listar_skus",

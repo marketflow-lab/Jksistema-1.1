@@ -40,6 +40,8 @@ LEGACY_PERGUNTAS_POS_VENDA_ROUTES: tuple[LegacyRouteSpec, ...] = (
     LegacyRouteSpec("POST", "/api/mercadolivre/perguntas/resposta/gerar", "ml_perguntas_gerar_resposta_manual"),
     LegacyRouteSpec("POST", "/api/mercadolivre/perguntas/responder", "ml_perguntas_responder_manual"),
     LegacyRouteSpec("GET", "/api/mercadolivre/ia-treinamento", "ml_ia_treinamento_obter"),
+    LegacyRouteSpec("GET", "/api/mercadolivre/ia-treinamento/sincronizacao", "ml_ia_treinamento_sincronizacao_obter"),
+    LegacyRouteSpec("POST", "/api/mercadolivre/ia-treinamento/sincronizacao", "ml_ia_treinamento_sincronizacao_solicitar"),
     LegacyRouteSpec("POST", "/api/mercadolivre/ia-treinamento", "ml_ia_treinamento_salvar"),
     LegacyRouteSpec("GET", "/api/mercadolivre/ia-treinamento/skus", "ml_ia_treinamento_listar_skus"),
     LegacyRouteSpec("POST", "/api/mercadolivre/ia-treinamento/simular", "ml_ia_treinamento_simular"),

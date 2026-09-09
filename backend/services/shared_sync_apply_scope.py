@@ -2082,10 +2082,20 @@ def _shared_sync_aplicar_pacote(
             _shared_sync_prevalidar_cadastro(client_id, tenant_abs, fontes, scope_config)
             targets = [_shared_sync_resolve_tenant_path(tenant_abs, rel) for rel, _data in fontes]
             with transaction(tenant_abs, targets):
-                return _shared_sync_aplicar_pacote_conteudo(
+                result = _shared_sync_aplicar_pacote_conteudo(
                     client_id, scope, username, scope_config, tenant_abs, fontes)
-    return _shared_sync_aplicar_pacote_conteudo(
-        client_id, scope, username, scope_config, tenant_abs, fontes)
+    else:
+        result = _shared_sync_aplicar_pacote_conteudo(
+            client_id, scope, username, scope_config, tenant_abs, fontes)
+    if result.get("file_count") and scope in {"cadastro", "vendas"}:
+        # Shared Sync writes canonical files directly. Notify only after the
+        # complete apply transaction and its writer locks have been released.
+        try:
+            from backend.modules.context_hub.catalog_product_sync import notify_catalog_committed
+            notify_catalog_committed(client_id, info_root=os.path.dirname(tenant_abs))
+        except Exception:
+            pass  # Periodic reconciliation closes the post-commit crash window.
+    return result
 
 
 def _shared_sync_validar_acesso_cadastro_central(client_id, tenant_abs, fontes):

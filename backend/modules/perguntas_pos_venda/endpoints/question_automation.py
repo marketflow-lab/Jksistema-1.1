@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -32,6 +34,7 @@ from backend.modules.perguntas_pos_venda.endpoints.question_paging import (
 
 _ml_api_request = runtime_adapter("_ml_api_request")
 _ml_buscar_itens_batch = runtime_adapter("_ml_buscar_itens_batch")
+_ml_extrair_sku = runtime_adapter("_ml_extrair_sku")
 _ml_oauth_status = runtime_adapter("_ml_oauth_status")
 _ml_perguntas_anexar_historico_comprador = runtime_adapter("_ml_perguntas_anexar_historico_comprador")
 _ml_perguntas_buscar_usuarios = runtime_adapter("_ml_perguntas_buscar_usuarios")
@@ -108,6 +111,7 @@ def _question_poll_load_batch(
         if str(question.get("item_id") or "").strip()
     ))
     items, cfg = _ml_buscar_itens_batch(poll.client_id, store, cfg, item_ids)
+    raw_item_by_id = {str(item.get("id") or "").strip(): deepcopy(item) for item in items if isinstance(item, dict)}
     items = _ml_perguntas_completar_skus_itens(poll.client_id, store, cfg, items)
     for item in items:
         if isinstance(item, dict):
@@ -124,6 +128,12 @@ def _question_poll_load_batch(
     normalized, cfg = _ml_perguntas_anexar_historico_comprador(
         poll.client_id, store, cfg, seller_id, normalized
     )
+    from backend.modules.perguntas_pos_venda.ai.catalog_context import bind_official_listing_catalog_identity
+    for question in normalized:
+        bind_official_listing_catalog_identity(
+            poll.client_id, store, cfg, question, raw_item_by_id.get(str(question.get("item_id") or ""), {}),
+            extract_sku=_ml_extrair_sku,
+        )
     return normalized, item_by_id, cfg
 
 

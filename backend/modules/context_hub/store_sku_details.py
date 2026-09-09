@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
+import unicodedata
 from typing import Any, Mapping
 
-from backend.modules.context_hub.contracts import ContextHubValidationError
+from backend.modules.context_hub.contracts import ContextHubConflictError, ContextHubValidationError
 from backend.modules.context_hub.dlp import scan_dlp
 from backend.modules.context_hub.metadata import _parse_frontmatter
 from backend.modules.context_hub.path_safety import _assert_path_chain_safe
@@ -16,8 +18,16 @@ from backend.modules.context_hub.storage import _connect
 from backend.modules.context_hub.store_sku_contracts import content_sha256, normalize_sku
 from backend.modules.context_hub.store_sku_repository_support import _scope_for_paths
 
-_KEY = re.compile(r"^(?:canonical|evidence):[0-9a-f]{32}$")
+_KEY = re.compile(r"^(?:canonical|evidence|catalog):[0-9a-f]{32}$")
 _METADATA_FIELDS = {"sku", "schema_version", "status", "source_refs", "sources", "fontes", "source_hash", "content_hash"}
+
+
+def _field_identity(label: str) -> str:
+    # Match declared field names only; never derive attributes from source prose.
+    leaf = re.split(r"[/\.]", label)[-1]
+    token = re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", leaf.casefold()).encode("ascii", "ignore").decode())
+    return {"nomeproduto": "nome", "name": "nome", "title": "nome", "titulo": "nome",
+            "description": "descricao", "brand": "marca", "category": "categoria", "model": "modelo"}.get(token, token)
 
 
 def validate_characteristic_edits(value: object) -> dict[str, str]:
@@ -105,7 +115,24 @@ def load_store_sku_details(client_id: object, scope_value: Mapping[str, Any], sk
             client_id, store_ref=scope.store_ref, seller_id=scope.seller_id, site_id=scope.site_id,
             sku=sku, item_id=item_id, variation_id=variation_id, info_root=info_root, recalculate=False,
         ))
-    characteristics = _canonical_characteristics(canonical)
+    from backend.modules.context_hub.catalog_product_repository import load_catalog_product, catalog_snapshot_status
+    from backend.modules.context_hub.catalog_product_sync import get_catalog_sync_status
+    catalog_error = False
+    try:
+        catalog = load_catalog_product(client_id, scope_value, sku, info_root=info_root)
+    except (ContextHubValidationError, ContextHubConflictError, OSError, sqlite3.Error, ValueError):
+        # A failed generated file must not hide the existing editorial content.
+        catalog, catalog_error = {}, True
+    try:
+        synchronization = get_catalog_sync_status(client_id, scope.store_ref, info_root=info_root)
+        if synchronization.get("status") == "not_synced" and catalog.get("found"):
+            synchronization = catalog_snapshot_status(client_id, scope_value, info_root=info_root)
+    except (ContextHubValidationError, ContextHubConflictError, OSError, sqlite3.Error, ValueError):
+        synchronization = {"status": "error", "last_error_code": "catalog_sync_read_failed"}
+    if catalog_error:
+        synchronization = {"status": "error", "last_error_code": "catalog_source_read_failed"}
+    characteristics = [dict(row) for row in catalog.get("characteristics", [])]
+    characteristics.extend(_canonical_characteristics(canonical))
     for fact in evidence:
         identity = {key: fact.get(key) for key in ("item_id", "variation_id", "field_name", "scope", "value", "unit", "state")}
         characteristics.append(_characteristic("evidence", identity, str(fact.get("field_name") or "Caracteristica").replace("_", " "),
@@ -121,9 +148,21 @@ def load_store_sku_details(client_id: object, scope_value: Mapping[str, Any], sk
                                 "source": key.split(":", 1)[0], "edited": False, "source_missing": True})
     for row in characteristics:
         if row["key"] in edits:
-            row.update(value=edits[row["key"]], edited=True)
+            previous = provenance.get(row["key"], {}) if isinstance(provenance, dict) else {}
+            row.update(value=edits[row["key"]], edited=True,
+                       source_changed=previous.get("original_value") != row.get("original_value"))
+    # Keep both sources visible when their labels overlap but values differ.
+    labels: dict[str, list[dict]] = {}
+    for row in characteristics:
+        labels.setdefault(_field_identity(str(row["label"])), []).append(row)
+    for rows in labels.values():
+        if len({row["source"] for row in rows}) > 1 and len({row.get("original_value") for row in rows}) > 1:
+            for row in rows:
+                row["source_conflict"] = True
     entry = ((editor.get("editorial") or {}).get("skus") or {}).get(sku) or {}
     return {"sku": sku, "canonical_document": canonical, "evidence": evidence, "guidance": guidance,
+            "catalog_document": catalog.get("document") or {}, "catalog_revision": catalog.get("revision") or "",
+            "catalog_found": bool(catalog.get("found")), "synchronization": synchronization,
             "source_body": str(entry.get("source_body") or ""), "characteristics": characteristics,
             "documents": _documents(paths, scope, sku),
             "revision": str((editor.get("editorial") or {}).get("revision") or "")}
@@ -134,7 +173,12 @@ def characteristic_edit_payload(edits: dict[str, str], details: Mapping[str, Any
     available = {row["key"]: row for row in details["characteristics"]}
     if any(key not in available for key in edits):
         raise ContextHubValidationError("Caracteristica nao pertence ao conhecimento deste SKU; recarregue a ficha.")
+    guidance = details.get("guidance") or {}
+    previous_edits = guidance.get("caracteristicas") or {}
+    previous_sources = guidance.get("caracteristicas_fontes") or {}
     return {"caracteristicas": edits, "caracteristicas_fontes": {
-        key: {field: available[key].get(field) for field in ("label", "source", "original_value")}
+        # Saving an unrelated note must not acknowledge a changed technical source.
+        key: (dict(previous_sources[key]) if key in previous_sources and edits[key] == previous_edits.get(key)
+              else {field: available[key].get(field) for field in ("label", "source", "original_value", "source_revision")})
         for key in edits
     }}

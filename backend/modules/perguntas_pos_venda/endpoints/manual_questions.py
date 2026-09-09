@@ -16,6 +16,7 @@ from backend.modules.perguntas_pos_venda.endpoints.jobs import (
 )
 from backend.modules.perguntas_pos_venda.endpoints.questions_loading_support import resolve_scope
 from backend.services.cadastro_compatibilidade import resolver_loja_ativa_para_leitura
+from backend.modules.perguntas_pos_venda.ai.catalog_context import bind_official_listing_catalog_identity
 
 _ml_api_item = runtime_adapter("_ml_api_item")
 _ml_api_item_com_oauth_tenant = runtime_adapter("_ml_api_item_com_oauth_tenant")
@@ -148,6 +149,9 @@ def ml_perguntas_gerar_resposta_manual(
             official_current_listing = True
     if not isinstance(item, dict):
         item = {}
+    bind_official_listing_catalog_identity(
+        client_id, loja, cfg, pergunta, item if official_current_listing else {}, extract_sku=_ml_extrair_sku,
+    )
     if item and not _ml_extrair_sku(item):
         item = _ml_perguntas_completar_skus_itens(client_id, loja, cfg, [item])[0]
     if not item:
@@ -167,11 +171,9 @@ def ml_perguntas_gerar_resposta_manual(
     except PerguntasIARespostaIndisponivel as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
-        "success": True,
-        "loja": loja,
+        "success": True, "loja": loja,
         "question_id": str(pergunta.get("id") or "").strip(),
-        "resposta": resposta,
-        "contexto": contexto,
+        "resposta": resposta, "contexto": contexto,
     }
 
 

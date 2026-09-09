@@ -39,6 +39,8 @@ def editor_api(monkeypatch, tmp_path):
     app.get("/training")(training.ml_ia_treinamento_obter)
     app.post("/training")(training.ml_ia_treinamento_salvar)
     app.get("/skus")(training.ml_ia_treinamento_listar_skus)
+    app.get("/synchronization")(training.ml_ia_treinamento_sincronizacao_obter)
+    app.post("/synchronization")(training.ml_ia_treinamento_sincronizacao_solicitar)
     with TestClient(app) as client:
         yield client, info, stores
     hub.stop_all_context_hub_watchers()
@@ -53,6 +55,114 @@ def test_store_api_identity_drives_editor_and_catalog(editor_api):
     assert snapshot.status_code == 200, snapshot.text
     assert snapshot.json()["editorial"]["revision"]
     assert client.get("/skus", params={"store_id": store["store_id"]}).json()["produtos"] == [{"sku": "001", "nome": "store-a"}]
+
+
+def test_catalog_sync_api_is_exactly_scoped_and_preserves_zero_sku(editor_api, monkeypatch):
+    from backend.modules.context_hub import catalog_product_sync as sync
+    client, _info, _stores = editor_api
+    calls = []
+    monkeypatch.setattr(sync, "request_catalog_sync", lambda tenant, store, **kw:
+                        calls.append((tenant, store, kw)) or {"status": "pending"})
+    monkeypatch.setattr(sync, "get_catalog_sync_status", lambda tenant, store: {"status": "completed", "total": 1})
+    response = client.post("/synchronization", json={"store_id": "store-a", "sku": "001"})
+    assert response.status_code == 200 and response.json()["store_id"] == "store-a"
+    assert calls == [("tenant-a", "store-a", {"sku": "001"})]
+    assert client.get("/synchronization", params={"store_id": "store-b"}).json()["store_id"] == "store-b"
+    for payload in [{"store_id": "store-a", "sku": "1"}, {"store_id": "foreign-tenant-store"}]:
+        assert client.post("/synchronization", json=payload).status_code == 409
+    assert client.post("/synchronization", json={"store_id": "store-a", "client_id": "other"}).status_code == 422
+    assert len(calls) == 1
+
+
+def test_catalog_sync_api_failure_is_retriable(editor_api, monkeypatch):
+    from backend.modules.context_hub import catalog_product_sync as sync
+    client, _info, _stores = editor_api
+    def fail(*args, **kwargs):
+        raise OSError("test unavailable")
+    monkeypatch.setattr(sync, "request_catalog_sync", fail)
+    assert client.post("/synchronization", json={"store_id": "store-a"}).status_code == 503
+    monkeypatch.setattr(sync, "request_catalog_sync", lambda *a, **k: {"status": "pending"})
+    assert client.post("/synchronization", json={"store_id": "store-a"}).status_code == 200
+
+
+def test_catalog_details_without_mlb_and_override_survives_source_update(editor_api, monkeypatch):
+    from backend.modules.context_hub import catalog_product_repository as repository
+    client, _info, _stores = editor_api
+    key = "catalog:" + "a" * 32
+    source = {"value": "Descricao A", "revision": "1"}
+    def product(tenant, scope, sku, **kwargs):
+        value = source["value"] if scope["store_ref"] == "store-a" else "Descricao B"
+        return {"found": True, "document": {"descricao": value}, "revision": source["revision"],
+                "characteristics": [{"key": key, "label": "Descricao", "value": value,
+                  "original_value": value, "source": "catalog", "source_revision": source["revision"]}]}
+    monkeypatch.setattr(repository, "load_catalog_product", product)
+    initial = client.get("/training", params={"store_id": "store-a", "sku": "001"}).json()
+    assert initial["sku_details"]["canonical_document"] == {}
+    assert initial["sku_details"]["catalog_document"] == {"descricao": "Descricao A"}
+    response = client.post("/training", json={"store_id": "store-a", "sku": "001", "edit_target": "sku",
+        "expected_revision": initial["editorial"]["revision"], "caracteristicas_sku": {key: "Edicao humana"}})
+    assert response.status_code == 200, response.text
+    source.update(value="Fonte atualizada", revision="2")
+    latest = client.get("/training", params={"store_id": "store-a", "sku": "001"}).json()
+    row = latest["sku_details"]["characteristics"][0]
+    assert row["value"] == "Edicao humana" and row["original_value"] == "Fonte atualizada" and row["source_changed"]
+    saved_note = client.post("/training", json={"store_id": "store-a", "sku": "001", "edit_target": "sku",
+        "expected_revision": latest["editorial"]["revision"], "notas_sku": "Nova nota",
+        "caracteristicas_sku": {key: "Edicao humana"}})
+    assert saved_note.status_code == 200
+    assert saved_note.json()["sku_details"]["characteristics"][0]["source_changed"]
+    other = client.get("/training", params={"store_id": "store-b", "sku": "001"}).json()["sku_details"]
+    assert other["characteristics"][0]["value"] == "Descricao B" and not other["guidance"]
+
+
+def test_catalog_projection_roundtrip_and_changed_file_preserves_guidance(editor_api):
+    from backend.modules.context_hub.catalog_product_repository import publish_catalog_snapshot, load_catalog_product
+    client, info, _stores = editor_api
+    scope = {"store_ref": "store-a", "store_name": "Loja A", "seller_id": "100", "site_id": "MLB"}
+    publication = publish_catalog_snapshot("tenant-a", scope,
+        [{"store_id": "store-a", "sku": "001", "nome": "Sensor", "descricao": "Rosca M10", "preco": 100}], info_root=info)
+    state = client.get("/training", params={"store_id": "store-a", "sku": "001"}).json()
+    details = state["sku_details"]
+    assert details["catalog_found"] and details["canonical_document"] == {}
+    assert details["catalog_document"]["fields"] == {"name": "Sensor", "description": "Rosca M10"}
+    assert publication["total"] == 1
+    saved = client.post("/training", json={"store_id": "store-a", "sku": "001", "edit_target": "sku",
+        "expected_revision": state["editorial"]["revision"], "notas_sku": "Orientacao preservada"})
+    assert saved.status_code == 200
+    source = load_catalog_product("tenant-a", scope, "001", info_root=info)
+    path = info / "tenant-a" / "ContextVault" / source["path"]
+    path.write_text(path.read_text(encoding="utf-8") + "\nMudanca manual", encoding="utf-8")
+    failed = client.get("/training", params={"store_id": "store-a", "sku": "001"})
+    assert failed.status_code == 200
+    assert failed.json()["notas_sku"]["001"] == "Orientacao preservada"
+    assert failed.json()["sku_details"]["synchronization"]["status"] == "error"
+    assert not failed.json()["sku_details"]["catalog_found"]
+
+
+def test_catalog_and_canonical_conflicts_keep_both_sources(editor_api):
+    from backend.modules.context_hub.catalog_product_repository import publish_catalog_snapshot
+    client, info, _stores = editor_api
+    _publish_details_fixture(info)
+    publish_catalog_snapshot("tenant-a", {"store_ref": "store-a", "seller_id": "100", "site_id": "MLB"},
+        [{"store_id": "store-a", "sku": "001", "nome": "Sensor revisado"}], info_root=info)
+    data = client.get("/training", params={"store_id": "store-a", "sku": "001"}).json()["sku_details"]
+    conflicts = [row for row in data["characteristics"] if row.get("source_conflict")]
+    assert {row["original_value"] for row in conflicts} == {"Sensor", "Sensor revisado"}
+    assert {row["source"] for row in conflicts} == {"catalog", "canonical"}
+
+
+def test_sync_routes_reject_unauthenticated_requests_before_scope_resolution(monkeypatch):
+    from fastapi import HTTPException
+    from backend.modules.perguntas_pos_venda.endpoints import security
+    def deny(*args, **kwargs):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    monkeypatch.setattr(security, "runtime_dependency", lambda name: deny)
+    app = FastAPI()
+    app.get("/sync")(training.ml_ia_treinamento_sincronizacao_obter)
+    app.post("/sync")(training.ml_ia_treinamento_sincronizacao_solicitar)
+    with TestClient(app) as client:
+        assert client.get("/sync", params={"store_id": "store-a"}).status_code == 401
+        assert client.post("/sync", json={"store_id": "store-a"}).status_code == 401
 
 
 def test_general_and_new_sku_roundtrip_preserve_text_and_other_store(editor_api):

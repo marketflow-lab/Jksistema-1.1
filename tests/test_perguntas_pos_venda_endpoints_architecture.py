@@ -76,7 +76,8 @@ def test_endpoint_package_has_no_dynamic_globals_wildcards_or_facade_imports() -
 
 
 def test_endpoint_facade_does_not_reexport_private_helpers() -> None:
-    assert len(facade.__all__) == 34
+    # Additive GET/POST catalog synchronization facade; private helpers remain private.
+    assert len(facade.__all__) == 36
     assert not any(name.startswith("_") for name in facade.__all__)
     assert not hasattr(facade, "_customer_reply_wait_or_raise")
     assert not hasattr(facade, "_ml_pos_venda_sync_running")

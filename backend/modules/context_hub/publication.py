@@ -94,7 +94,42 @@ def _copy_publish_candidate(paths: ContextHubPaths, generation_id: str) -> tuple
     _safe_remove_tree(backup, paths.vault_dir)
     shutil.copytree(snapshot, temporary, copy_function=shutil.copy2)
     materialize_active_store_sku_generated(paths, temporary)
+    _preserve_catalog_products(paths, temporary)
     return temporary, backup
+
+
+def _preserve_catalog_products(paths: ContextHubPaths, target_root: Path) -> None:
+    """Keep independently versioned catalog notes across global vault swaps.
+
+    Include historical source objects and manual edits exactly as stored. The
+    catalog repository owns their checksums and recovery, not this generation.
+    """
+    source = paths.generated_dir / "CadastroPorLoja"
+    target = target_root / "CadastroPorLoja"
+    _assert_path_chain_safe(source, paths.info_root)
+    _assert_path_chain_safe(target, paths.info_root)
+    _safe_remove_tree(target, paths.vault_dir)
+    if not source.exists():
+        return
+    if not source.is_dir():
+        raise ContextHubValidationError("catalog_source_directory_invalid")
+
+    def copy_directory(original: Path, destination: Path) -> None:
+        _assert_path_chain_safe(original, paths.info_root)
+        _assert_path_chain_safe(destination, paths.info_root)
+        destination.mkdir(parents=True, exist_ok=True)
+        for entry in original.iterdir():
+            _assert_path_chain_safe(entry, paths.info_root)
+            output = destination / entry.name
+            _assert_path_chain_safe(output, paths.info_root)
+            if entry.is_dir():
+                copy_directory(entry, output)
+            elif entry.is_file():
+                shutil.copy2(entry, output)
+            else:
+                raise ContextHubValidationError("catalog_source_file_invalid")
+
+    copy_directory(source, target)
 
 
 def _swap_generated_directory(

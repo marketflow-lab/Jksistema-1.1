@@ -1,5 +1,77 @@
 // Ficha do Obsidian consultada somente para a loja e o SKU abertos.
 let treinamentoDetalhesRequestId = 0;
+let treinamentoDetalhesController;
+let treinamentoCatalogoRequestId = 0;
+
+function rotuloSincronizacaoCadastroTreinamento(sync) {
+    return ({pending: 'Aguardando sincronização do cadastro…', running: 'Atualizando informações do cadastro…',
+        completed: `Informações atualizadas. ${Number(sync?.total || 0)} ficha(s) na loja.`,
+        error: 'Falha ao atualizar informações. Tente novamente.',
+        not_synced: 'O cadastro ainda não foi sincronizado com o Obsidian.'})[sync?.status] || '';
+}
+
+async function sincronizarCadastroTreinamento(todaLoja = false) {
+    const store = lojaEscopoTreinamento();
+    const sku = todaLoja ? '' : String(aiTrainingSku.value || '');
+    if (!store || (!todaLoja && !sku)) return;
+    guardarEdicaoTreinamento();
+    const session = sessaoTreinamento();
+    const deadline = Date.now() + 120000;
+    const requestId = ++treinamentoCatalogoRequestId;
+    const current = () => requestId === treinamentoCatalogoRequestId && store === lojaEscopoTreinamento()
+        && treinamentoVisivel() && (todaLoja || sku === aiTrainingSku.value);
+    const show = sync => {
+        session.catalogSynchronization = sync;
+        const label = document.getElementById('ai-training-catalog-sync');
+        if (label) label.textContent = rotuloSincronizacaoCadastroTreinamento(sync);
+        const detail = session.skuDetails?.[aiTrainingSku.value];
+        if (detail) detail.synchronization = sync;
+        renderizarDetalhesSkuTreinamento();
+    };
+    try {
+        show({status: 'pending'});
+        let response = await fetch('/api/mercadolivre/ia-treinamento/sincronizacao', {
+            method: 'POST', headers: {...obterAuthHeaders(), 'Content-Type': 'application/json'},
+            body: JSON.stringify({store_id: store, loja: nomeLojaEscopoTreinamento(), sku}),
+            signal: AbortSignal.timeout(15000)
+        });
+        let data = await response.json().catch(() => ({}));
+        if (!current()) return;
+        if (!response.ok) throw new Error(erroRespostaTreinamento(data, 'Falha ao iniciar atualização.'));
+        // Limite de dois minutos: o servidor mantém a fila mesmo após fechar a tela.
+        for (let attempt = 0; attempt < 60 && Date.now() < deadline; attempt += 1) {
+            if (!current()) return;
+            if (data.store_id !== store) throw new Error('A sincronização recebida pertence a outra loja.');
+            const sync = data.synchronization || {};
+            show(sync);
+            if (sync.status === 'error') throw new Error('Falha ao atualizar informações. Tente novamente.');
+            if (sync.status === 'completed' && !sync.pending) {
+                if (aiTrainingSku.value) await carregarDetalhesSkuTreinamento(true);
+                return;
+            }
+            if (!['running', 'pending', 'completed'].includes(sync.status)) return;
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            if (!current()) return;
+            if (Date.now() >= deadline) break;
+            response = await fetch(`/api/mercadolivre/ia-treinamento/sincronizacao?${new URLSearchParams({store_id: store})}`, {
+                headers: obterAuthHeaders(), cache: 'no-store', signal: AbortSignal.timeout(Math.max(1, Math.min(15000, deadline - Date.now())))
+            });
+            data = await response.json().catch(() => ({}));
+            if (!current()) return;
+            if (!response.ok) throw new Error(erroRespostaTreinamento(data, 'Falha ao consultar atualização.'));
+        }
+        if (current()) {
+            const label = document.getElementById('ai-training-catalog-sync');
+            if (label) label.textContent = 'A atualização continua no servidor. Consulte novamente em Atualizar informações.';
+        }
+    } catch (error) {
+        if (current()) {
+            show({status: 'error'});
+            const label = document.getElementById('ai-training-catalog-sync');
+            if (label) label.textContent = `${mensagemErro(error)} Suas edições foram preservadas.`;
+        }
+    }
+}
 
 function textoValorCaracteristicaTreinamento(value) {
     return typeof value === 'string' ? value : JSON.stringify(value, null, 2) ?? '';
@@ -18,6 +90,10 @@ async function carregarDetalhesSkuTreinamento(force = false) {
     if (!lojaEscopo || !sku || sessao?.saving) return;
     if (sessao.detailsLoading === sku && !force) return;
     const requestId = ++treinamentoDetalhesRequestId;
+    treinamentoDetalhesController?.abort();
+    treinamentoDetalhesController = new AbortController();
+    const controller = treinamentoDetalhesController;
+    const timeout = setTimeout(() => controller.abort(), 15000);
     // Invalida uma consulta geral iniciada antes de abrir esta ficha.
     const snapshotRequestId = ++treinamentoSync.requestId;
     sessao.detailsLoading = sku;
@@ -27,7 +103,7 @@ async function carregarDetalhesSkuTreinamento(force = false) {
     try {
         const params = new URLSearchParams({ store_id: lojaEscopo, loja: nomeLojaEscopoTreinamento(), sku });
         const response = await fetch(`/api/mercadolivre/ia-treinamento?${params}`, {
-            headers: obterAuthHeaders(), cache: 'no-store', signal: AbortSignal.timeout(15000)
+            headers: obterAuthHeaders(), cache: 'no-store', signal: controller.signal
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(erroRespostaTreinamento(data, 'Não foi possível carregar as informações do SKU.'));
@@ -40,6 +116,7 @@ async function carregarDetalhesSkuTreinamento(force = false) {
             sessao.detailsError = mensagemErro(error);
         }
     } finally {
+        clearTimeout(timeout);
         if (sessao.detailsRequestId === requestId) sessao.detailsLoading = '';
         if (lojaEscopo === lojaEscopoTreinamento() && sku === aiTrainingSku.value && requestId === treinamentoDetalhesRequestId) renderizarDetalhesSkuTreinamento();
     }
@@ -97,6 +174,14 @@ function renderizarDetalhesSkuTreinamento(force = false) {
     const sessao = sessaoTreinamento();
     const sku = String(aiTrainingSku.value || '');
     const data = sessao?.skuDetails?.[sku];
+    if (sku) {
+        const refresh = document.createElement('button');
+        refresh.id = 'btn-ai-training-refresh-catalog';
+        refresh.type = 'button'; refresh.className = 'action-btn secondary';
+        refresh.textContent = 'Atualizar informações';
+        refresh.addEventListener('click', () => sincronizarCadastroTreinamento(false));
+        container.append(refresh);
+    }
     const status = document.createElement('p');
     status.className = 'status-line';
     status.setAttribute('role', 'status');
@@ -116,6 +201,8 @@ function renderizarDetalhesSkuTreinamento(force = false) {
         return;
     }
     const title = document.createElement('h4');
+    status.textContent = rotuloSincronizacaoCadastroTreinamento(data.synchronization);
+    if (status.textContent) container.append(status);
     title.textContent = 'Características do SKU';
     const hint = document.createElement('p');
     hint.className = 'training-characteristics-hint';
@@ -139,24 +226,59 @@ function renderizarDetalhesSkuTreinamento(force = false) {
             if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); editarCaracteristicaSkuTreinamento(field, row); }
         });
         const source = document.createElement('small');
-        const sourceName = ({ canonical: 'Cadastro no Obsidian', evidence: 'Pesquisa no Obsidian' })[field.source] || textoValorCaracteristicaTreinamento(field.source || 'Obsidian');
+        const sourceName = ({ catalog: 'Cadastro da própria loja', canonical: 'Conhecimento técnico no Obsidian', evidence: 'Pesquisa no Obsidian' })[field.source] || textoValorCaracteristicaTreinamento(field.source || 'Obsidian');
         const savedOverrides = sessao.snapshot?.caracteristicas_sku?.[sku] || {};
         const pending = overrides[field.key] !== savedOverrides[field.key];
-        source.textContent = `${pending ? 'Edição não salva · ' : Object.hasOwn(overrides, field.key) ? 'Salvo no Obsidian · ' : ''}${field.source_missing ? 'Fonte original alterada ou indisponível · ' : ''}${sourceName}`;
+        source.textContent = `${pending ? 'Edição não salva · ' : Object.hasOwn(overrides, field.key) ? 'Salvo no Obsidian · ' : ''}${field.source_missing ? 'Fonte original alterada ou indisponível · ' : ''}${field.source_changed ? 'Cadastro alterado; edição preservada · ' : ''}${field.source_conflict ? 'Fontes divergentes · ' : ''}${sourceName}`;
         row.append(label, button, source);
+        if (field.edited && field.source_changed) {
+            const original = document.createElement('small');
+            original.textContent = `Valor atual na fonte: ${textoValorCaracteristicaTreinamento(field.original_value)}`;
+            row.append(original);
+        }
         container.append(row);
     }
     if (!(data.characteristics || []).length) {
         const empty = document.createElement('p');
-        empty.textContent = 'Nenhuma característica registrada no Obsidian para este SKU nesta loja.';
+        empty.textContent = ['pending', 'running'].includes(data.synchronization?.status)
+            ? 'Aguardando informações do cadastro desta loja.'
+            : 'Sem dados técnicos cadastrados nesta ficha. Use Atualizar informações para consultar o cadastro da loja.';
         container.append(empty);
     }
-    if (Object.keys(data.canonical_document || {}).length) adicionarDocumentoSkuTreinamento(container, 'Informações completas do produto', data.canonical_document);
+    const catalog = data.catalog_document || {};
+    const images = catalog.fields?.images || [];
+    if (images.length) {
+        const gallery = document.createElement('div');
+        gallery.className = 'training-catalog-images';
+        for (const reference of images) {
+            const url = obterFotoProdutoCadastro({foto: reference});
+            if (!url) continue;
+            const img = document.createElement('img');
+            img.alt = 'Imagem do produto no cadastro desta loja';
+            img.loading = 'lazy';
+            if (ehUrlFotoCadastroProtegida(url)) img.dataset.jkAuthSrc = url;
+            else img.src = url;
+            gallery.append(img);
+        }
+        container.append(gallery);
+    }
+    for (const conflict of catalog.source_conflicts || []) {
+        const note = document.createElement('p');
+        note.className = 'status-line';
+        const label = (data.characteristics || []).find(field => field.field === conflict.field)?.label || conflict.field;
+        note.textContent = `Fontes divergentes para ${label}: ${textoValorCaracteristicaTreinamento(conflict.value)} (${conflict.source_field}). Confira o cadastro antes de usar esta informação.`;
+        container.append(note);
+    }
+    if (Object.keys(catalog).length) adicionarDocumentoSkuTreinamento(container, 'Informações completas do cadastro da loja', catalog.fields || catalog, true);
+    if (Object.keys(data.canonical_document || {}).length) adicionarDocumentoSkuTreinamento(container, 'Conhecimento técnico existente', data.canonical_document);
     for (const doc of data.documents || []) adicionarDocumentoSkuTreinamento(container, doc.title || 'Documento do SKU', doc.body);
     for (const [index, evidence] of (data.evidence || []).entries()) adicionarDocumentoSkuTreinamento(container, `Pesquisa e fontes ${index + 1}`, evidence);
     if (Object.keys(data.guidance || {}).length) adicionarDocumentoSkuTreinamento(container, 'Orientações e modelos completos', data.guidance);
     // O estado refere-se à orientação editorial; a ficha pode existir sem ela.
     const note = sessao.snapshot?.editorial?.skus?.[sku];
     const skuStatus = document.getElementById('ai-training-sku-sync');
-    if (skuStatus && (!note?.status || note.status === 'missing')) skuStatus.textContent = 'Orientação ainda não cadastrada. Informações do SKU exibidas abaixo.';
+    if (skuStatus && (!note?.status || note.status === 'missing')) skuStatus.textContent = (data.characteristics || []).length || Object.keys(data.catalog_document || {}).length
+        ? 'Orientação ainda não cadastrada. Informações do produto disponíveis abaixo.' : 'Orientação ainda não cadastrada.';
 }
+
+document.getElementById('btn-ai-training-sync-catalog')?.addEventListener('click', () => sincronizarCadastroTreinamento(true));

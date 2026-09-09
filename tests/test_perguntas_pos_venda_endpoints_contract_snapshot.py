@@ -12,6 +12,7 @@ from backend.routers.perguntas_pos_venda import create_perguntas_pos_venda_route
 from backend.schemas import ia
 from backend.schemas import perguntas_pos_venda as ppv_schemas
 from backend.services import perguntas_pos_venda_endpoints as endpoints
+from backend.modules.perguntas_pos_venda.endpoints.training import CatalogSynchronizationRequest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,16 +31,16 @@ MODEL_TYPES = (
     ia.IAChatRequest,
     ia.IATreinamentoPerguntasPosVendaRequest,
     ia.IATreinamentoPerguntasPosVendaSimularRequest,
+    CatalogSynchronizationRequest,
 )
 CONTRACT_HASHES = {
-    # Five additive read endpoints; all legacy exports and contracts remain explicit.
-    "routes": "db194f1c965f5b8b31fb3ec085801621335081ad6ab582bcfea7e2abb926025e",
-    "exports": "3f87143501cb75287c5c4c45b74e0944415bd7c61996c3e2c94412509e748558",
-    # Optional SKU detail read and scoped human characteristic edits are additive.
-    "signatures": "fe84b6a77c840537698804a23fe51118202c49aa527658044a435a154332b984",
-    "schemas": "c999535e3d69b41296fca00a96e119d04066e6efa1beb83a44e3312c36727347",
+    # Additive authenticated catalog synchronization GET/POST; legacy signatures preserved.
+    "routes": "dacfa687b5dbb601eac63ea2c56e58c1996a6473e8b35b6f345106d890c299c4",
+    "exports": "cb28869e16292f3f0af3c259bd6dc70a62cfd29969d7aa7e1a46bf1458de4909",
+    "signatures": "40509257eef17db74bca7ca80a11f7bc39229d3ab87101f72a4722f44aafad5e",
+    "schemas": "d741faa44ffe66e2bb54d68bdd192ffab8f9f2890d50a18c93990e4e78507686",
     "http_status_codes": "c06ceb69456b4923815b0461ddeef6f9c90b6fcf5c0568dd79b3fdbc888a4546",
-    "governance": "39ff5cece6b46177fc8ff30abc56133f38a780e3fd5f76db665367df9f2e3b3f",
+    "governance": "af72e45eecb3012d9fbc01f23fc530977e25f72106912c85921b5f587d0b4dee",
 }
 GOVERNANCE_NAMES = (
     "_ML_POS_VENDA_RECENT_DAYS",
@@ -152,9 +153,9 @@ def _snapshot() -> dict[str, object]:
 
 def test_perguntas_pos_venda_endpoints_contract_snapshot() -> None:
     snapshot = _snapshot()
-    assert len(snapshot["routes"]) == 36
-    assert len(snapshot["exports"]) == 34
-    assert len(snapshot["schemas"]) == 12
+    assert len(snapshot["routes"]) == 38
+    assert len(snapshot["exports"]) == 36
+    assert len(snapshot["schemas"]) == 13
     assert {name: _digest(value) for name, value in snapshot.items()} == CONTRACT_HASHES
 
 
