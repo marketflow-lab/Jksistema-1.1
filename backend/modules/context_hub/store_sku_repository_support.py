@@ -24,6 +24,10 @@ from backend.modules.context_hub.filesystem import _write_text_atomic
 from backend.modules.context_hub.findings import _has_blocker
 from backend.modules.context_hub.metadata import _dump_frontmatter
 from backend.modules.context_hub.path_safety import _assert_path_chain_safe
+from backend.modules.context_hub.obsidian_store_sku_index import (
+    store_sku_index_relative_path,
+    store_sku_index_text,
+)
 from backend.modules.context_hub.store_sku_contracts import (
     APPLICABLE_GUIDANCE_MAX_CHARS,
     CANONICAL_DOCUMENT_MAX_CHARS,
@@ -287,6 +291,15 @@ def _materialized_files(
             "generated",
             False,
         ))
+    index_entries = {sku: {"path": (Path("70_Gerado") / item[0]).as_posix(),
+                           "file_hash": content_sha256(item[1]), "content_hash": content_sha256(canonical[sku])}
+                     for sku, item in zip(sorted(canonical), files)}
+    files.append((
+        store_sku_index_relative_path(scope),
+        store_sku_index_text(scope, generation_id=generation_id, entries=index_entries),
+        "generated",
+        False,
+    ))
     if not include_curated:
         return files
     general_body = _guidance_body("Orientacoes gerais da loja", store_guidance)

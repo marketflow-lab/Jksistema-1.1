@@ -107,8 +107,10 @@ def _checked_file(paths, entry):
 
 def _write_index(paths, scope, active, manifest):
     folder = _directory(paths, scope)
-    target = folder / "Indice.md"
-    _assert_path_chain_safe(target, paths.info_root)
+    markdown_target = folder / "Indice.md"
+    json_target = folder / "Indice.json"
+    _assert_path_chain_safe(markdown_target, paths.info_root)
+    _assert_path_chain_safe(json_target, paths.info_root)
     lines = [f"# Fichas do cadastro — {scope.store_name}", "",
              f"Revisão: `{active['revision']}`", "", f"Produtos ativos: {len(manifest)}", ""]
     for sku, entry in sorted(manifest.items()):
@@ -116,8 +118,69 @@ def _write_index(paths, scope, active, manifest):
         label = sku.replace("[", "\\[").replace("]", "\\]")
         lines.append(f"- [[{entry['path'][:-3]}|SKU {label}]]")
     text = "\n".join(lines) + "\n"
-    if not target.exists() or target.read_text(encoding="utf-8") != text:
-        _write_text_atomic(target, text)
+    if not markdown_target.exists() or markdown_target.read_text(encoding="utf-8") != text:
+        _write_text_atomic(markdown_target, text)
+    identity = {key: getattr(scope, key) for key in ("tenant_scope", "store_ref", "seller_id", "site_id", "surface")}
+    payload = {
+        "schema": "jk_obsidian_catalog_index_v1",
+        "identity": identity,
+        "generation_id": active["generation_id"],
+        "revision": active["revision"],
+        "skus": {
+            sku: {key: entry[key] for key in ("path", "file_hash", "revision")}
+            for sku, entry in sorted(manifest.items())
+        },
+    }
+    json_text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if not json_target.exists() or json_target.read_text(encoding="utf-8") != json_text:
+        _write_text_atomic(json_target, json_text)
+
+
+def _read_index(paths, scope, active):
+    target = _directory(paths, scope) / "Indice.json"
+    _assert_path_chain_safe(target, paths.info_root)
+    try:
+        value = json.loads(target.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, UnicodeError, ValueError, TypeError):
+        return None
+    identity = {key: getattr(scope, key) for key in ("tenant_scope", "store_ref", "seller_id", "site_id", "surface")}
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != "jk_obsidian_catalog_index_v1"
+        or value.get("identity") != identity
+        or str(value.get("generation_id") or "") != str(active["generation_id"])
+        or str(value.get("revision") or "") != str(active["revision"])
+        or not isinstance(value.get("skus"), dict)
+    ):
+        return None
+    return value["skus"]
+
+
+def _catalog_index(paths, scope, active, manifest):
+    skus = _read_index(paths, scope, active)
+    expected = {
+        sku: {key: entry[key] for key in ("path", "file_hash", "revision")}
+        for sku, entry in manifest.items()
+    }
+    if skus == expected:
+        return skus, active, manifest
+    # Existing installations acquire the machine index on their first read.
+    # The SQLite generation remains the atomic pointer and repair source.
+    with _tenant_thread_lock(paths), _exclusive_file_lock(paths):
+        with _db(paths, readonly=True) as con:
+            current = _active(con, _scope_key(scope))
+        if not current:
+            return {}, None, {}
+        current_manifest = _manifest(current)
+        _write_index(paths, scope, current, current_manifest)
+        skus = _read_index(paths, scope, current)
+        expected = {
+            sku: {key: entry[key] for key in ("path", "file_hash", "revision")}
+            for sku, entry in current_manifest.items()
+        }
+        if skus != expected:
+            raise ContextHubValidationError("catalog_index_invalid")
+        return skus, current, current_manifest
 
 
 def publish_catalog_snapshot(client_id, scope_value, products, *, deleted_skus=(), complete=True, info_root=None):
@@ -218,11 +281,17 @@ def load_catalog_product(client_id, scope_value, sku, *, info_root=None):
         active = _active(con, _scope_key(scope))
     if not active:
         return missing
-    entry = _manifest(active).get(sku)
+    manifest = _manifest(active)
+    indexed, active, manifest = _catalog_index(paths, scope, active, manifest)
+    if not active:
+        return missing
+    entry = indexed.get(sku)
     if not entry:
         return {**missing, "generation_id": active["generation_id"]}
+    if entry != {key: manifest.get(sku, {}).get(key) for key in ("path", "file_hash", "revision")}:
+        raise ContextHubValidationError("catalog_index_entry_mismatch")
     _checked_file(paths, entry)
-    document = entry["document"]
+    document = manifest[sku]["document"]
     if document.get("sku") != sku or document.get("identity") != {k: getattr(scope, k) for k in ("tenant_scope", "store_ref", "seller_id", "site_id")} or content_sha256(document) != entry["revision"]:
         raise ContextHubValidationError("catalog_identity_or_revision_mismatch")
     return {"found": True, "document": document, "characteristics": catalog_characteristics(document),

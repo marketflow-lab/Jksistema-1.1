@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from types import SimpleNamespace
 
@@ -351,6 +352,42 @@ def test_sku_details_without_guidance_shows_canonical_and_exact_documents(editor
     assert other["canonical_document"] == {} and other["documents"] == []
     assert client.get("/training", params={"store_id": "store-a", "sku": "1"}).status_code == 409
     assert client.get("/training", params={"sku": "001"}).status_code == 409
+
+
+def test_sku_details_uses_obsidian_index_without_scanning_generated_notes(editor_api, monkeypatch):
+    from pathlib import Path
+    client, info, _stores = editor_api
+    published = _publish_details_fixture(info)
+    generated = info / "tenant-a" / "ContextVault" / "70_Gerado"
+    index = next((generated / "Lojas" / "_JK_Sistema" / "IndicesStoreSku").rglob("Indice.json"))
+    payload = json.loads(index.read_text(encoding="utf-8"))
+    assert payload["generation_id"] == published["generation_id"]
+    assert payload["skus"]["001"]["path"].endswith("/SKUs/001/Contexto.md")
+
+    unrelated = generated / "VolumeIrrelevante"
+    unrelated.mkdir(parents=True)
+    for number in range(2000):
+        (unrelated / f"nota-{number}.md").write_text("sem relação", encoding="utf-8")
+    original_rglob = Path.rglob
+
+    def reject_generated_scan(path, pattern):
+        if path == generated:
+            raise AssertionError("SKU detail lookup must not scan 70_Gerado")
+        return original_rglob(path, pattern)
+
+    monkeypatch.setattr(Path, "rglob", reject_generated_scan)
+    response = client.get("/training", params={"store_id": "store-a", "sku": "001"})
+    assert response.status_code == 200, response.text
+    details = response.json()["sku_details"]
+    assert details["canonical_document"]["sku"] == "001"
+    assert len(details["documents"]) == 1
+
+    # Older generations have no JSON index. Their deterministic canonical path
+    # remains a constant-time compatibility route until the next publication.
+    index.unlink()
+    legacy = client.get("/training", params={"store_id": "store-a", "sku": "001"})
+    assert legacy.status_code == 200, legacy.text
+    assert len(legacy.json()["sku_details"]["documents"]) == 1
 
 
 def test_sku_characteristics_roundtrip_preserves_sources_and_reorder_does_not_retarget(editor_api):

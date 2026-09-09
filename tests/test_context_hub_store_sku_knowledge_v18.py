@@ -860,9 +860,10 @@ def test_store_sku_components_have_explicit_size_and_function_budgets():
         "store_sku_contracts.py": 220,
         "store_sku_compiler.py": 420,
         "store_sku_migration.py": 380,
+        "obsidian_store_sku_index.py": 140,
         "store_sku_repository.py": 620,
         "store_sku_repository_db.py": 460,
-        "store_sku_repository_support.py": 620,
+        "store_sku_repository_support.py": 640,
     }
     module_root = project / "backend" / "modules" / "context_hub"
     for name, line_budget in budgets.items():

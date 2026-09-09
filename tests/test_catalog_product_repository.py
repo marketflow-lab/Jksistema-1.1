@@ -45,6 +45,25 @@ def test_unbound_catalog_is_visible_preserves_zero_and_exact_scope(root):
         repo.load_catalog_product("000003", scope(), "001", info_root=root)
 
 
+def test_obsidian_machine_index_drives_exact_lookup_and_repairs_without_scan(root, monkeypatch):
+    publish(root, [row(), row("1", descricao="Outro produto")])
+    index = next(root.rglob("CadastroPorLoja/*/*/Indice.json"))
+    payload = json.loads(index.read_text(encoding="utf-8"))
+    assert payload["schema"] == "jk_obsidian_catalog_index_v1"
+    assert set(payload["skus"]) == {"001", "1"}
+    assert "document" not in payload["skus"]["001"]
+    index.write_text("{corrompido", encoding="utf-8")
+
+    def reject_scan(*_args, **_kwargs):
+        raise AssertionError("catalog lookup must not scan the Obsidian vault")
+
+    monkeypatch.setattr(Path, "rglob", reject_scan)
+    assert load(root, "001")["document"]["sku"] == "001"
+    assert load(root, "1")["document"]["sku"] == "1"
+    repaired = json.loads(index.read_text(encoding="utf-8"))
+    assert repaired["identity"]["store_ref"] == "uai"
+
+
 def test_missing_read_creates_no_files(root):
     assert not load(root)["found"]
     assert repo.catalog_snapshot_status("000002", scope(), info_root=root)["status"] == "not_synced"
