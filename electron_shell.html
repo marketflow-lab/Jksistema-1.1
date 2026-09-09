@@ -814,7 +814,6 @@
         }
 
         function refreshNativeSurfacesAfterZoom() {
-            notifyRustDeskTabVisibility();
             if (mlBrowserWebview && typeof mlBrowserWebview.setZoomFactor === 'function') {
                 try { mlBrowserWebview.setZoomFactor(currentWindowZoomPercent / 100); } catch (_err) {}
             }
@@ -1556,110 +1555,6 @@
 
         configurarBarraFavoritosWorker();
 
-        function isRustDeskUrl(url, title = '') {
-            const urlText = String(url || '').toLowerCase();
-            const titleText = String(title || '').toLowerCase();
-            return urlText.includes('/rustdesk.html') || titleText.includes('rustdesk') || titleText.includes('acesso remoto');
-        }
-
-        function isRustDeskTab(tab) {
-            const url = String((tab && (tab.url || tab.webview?.src)) || '');
-            const title = String((tab && tab.title) || '');
-            return isRustDeskUrl(url, title);
-        }
-
-        function findRustDeskTab() {
-            if (activeId && tabs.has(activeId) && isRustDeskTab(tabs.get(activeId))) {
-                return { id: activeId, tab: tabs.get(activeId) };
-            }
-            for (const [id, tab] of tabs) {
-                if (isRustDeskTab(tab)) return { id, tab };
-            }
-            return null;
-        }
-
-        function rustDeskTabIds() {
-            return Array.from(tabs.entries())
-                .filter(([, tab]) => isRustDeskTab(tab))
-                .map(([id]) => id);
-        }
-
-        function hasAnotherRustDeskTab(id) {
-            return rustDeskTabIds().some(tabId => tabId !== id);
-        }
-
-        function dedupeRustDeskTabs(keepId) {
-            const ids = rustDeskTabIds();
-            ids.forEach(id => {
-                if (id !== keepId) closeTab(id);
-            });
-        }
-
-        function isActiveRustDeskTab() {
-            return !!(activeId && isRustDeskTab(tabs.get(activeId)));
-        }
-
-        let rustDeskShellHideTimer = null;
-        let rustDeskShellHideLastAt = 0;
-
-        async function hideRustDeskFromShell(reason = 'rustdesk-tab-inactive') {
-            const api = window.electronAPI || null;
-            if (!api || typeof api.hideRustDeskInApp !== 'function') return;
-            const now = Date.now();
-            if (now - rustDeskShellHideLastAt < 500) return;
-            rustDeskShellHideLastAt = now;
-            const payload = {
-                allow_hide: true,
-                parent_mode: 'window',
-                reason
-            };
-            try {
-                if (typeof api.getNativeWindowHandle === 'function') {
-                    const handle = await api.getNativeWindowHandle().catch(() => null);
-                    if (handle && handle.success && handle.hwnd) {
-                        payload.parent_hwnd = handle.hwnd;
-                    }
-                }
-                await api.hideRustDeskInApp(payload, '').catch(() => null);
-            } catch (_err) {}
-        }
-
-        function scheduleRustDeskShellHide(reason = 'rustdesk-tab-inactive') {
-            window.clearTimeout(rustDeskShellHideTimer);
-            rustDeskShellHideTimer = window.setTimeout(() => {
-                if (isActiveRustDeskTab()) return;
-                hideRustDeskFromShell(reason);
-            }, 450);
-        }
-
-        function tabFrameBounds(tab, id) {
-            if (!tab || !tab.webview || typeof tab.webview.getBoundingClientRect !== 'function') return null;
-            const rect = tab.webview.getBoundingClientRect();
-            return scaleBoundsForNativeWindow({
-                x: rect.left,
-                y: rect.top,
-                width: rect.width,
-                height: rect.height,
-                active: String(id || tab.id || '') === String(activeId || '')
-            });
-        }
-
-        function notifyRustDeskTabVisibility() {
-            const activeRustDesk = isActiveRustDeskTab();
-            tabs.forEach((tab, id) => {
-                if (!isRustDeskTab(tab)) return;
-                const active = id === activeId;
-                postToTab(tab, {
-                    channel: 'jk-rustdesk-tab-visibility',
-                    active,
-                    payload: {
-                        frame: tabFrameBounds(tab, id),
-                        anotherRustDeskActive: !active && activeRustDesk
-                    }
-                });
-            });
-        }
-
         function getTabIdFromButton(button) {
             return button && button.dataset ? String(button.dataset.tabId || '') : '';
         }
@@ -2369,12 +2264,6 @@
                     tab.loadState.classList.toggle('is-active', active && !tab.loaded);
                 }
             });
-            notifyRustDeskTabVisibility();
-            if (isActiveRustDeskTab()) {
-                window.clearTimeout(rustDeskShellHideTimer);
-            } else {
-                scheduleRustDeskShellHide('no-active-rustdesk-tab');
-            }
             const activeMlBounds = activeId ? mlBrowserBoundsByTab.get(activeId) : null;
             const activeMlBackground = !!(activeMlBounds && activeMlBounds.background);
             const activeHasMlState = !!(activeId && mlBrowserUrlByTab.get(activeId));
@@ -2405,21 +2294,6 @@
         function closeTab(id) {
             const tab = tabs.get(id);
             if (!tab) return;
-            if (isRustDeskTab(tab)) {
-                const anotherRustDesk = hasAnotherRustDeskTab(id);
-                postToTab(tab, {
-                    channel: 'jk-rustdesk-tab-visibility',
-                    active: false,
-                    payload: {
-                        closing: true,
-                        frame: tabFrameBounds(tab, id),
-                        anotherRustDeskActive: anotherRustDesk
-                    }
-                });
-                if (!anotherRustDesk) {
-                    hideRustDeskFromShell('rustdesk-tab-close');
-                }
-            }
             if (mlBrowserOwnerId === id) {
                 mlBrowserOwnerId = '';
                 hideEmbeddedMlBrowserShell({ destroy: true, reason: 'tab-close' });
@@ -2445,18 +2319,6 @@
 
         function createTab(url, title = 'JK Sistema', options = {}) {
             const targetUrl = String(url || appUrl);
-            if (isRustDeskUrl(targetUrl, title)) {
-                const existingRustDesk = findRustDeskTab();
-                if (existingRustDesk) {
-                    dedupeRustDeskTabs(existingRustDesk.id);
-                    if (!sameUrlWithoutCache(existingRustDesk.tab.url || existingRustDesk.tab.webview?.src || '', targetUrl)) {
-                        reloadTab(existingRustDesk.id, { url: targetUrl });
-                        setTabTitle(existingRustDesk.id, title || existingRustDesk.tab.title || 'Acesso Remoto');
-                    }
-                    activateTab(existingRustDesk.id);
-                    return existingRustDesk.id;
-                }
-            }
             if (options.reuseExisting) {
                 for (const [id, tab] of tabs) {
                     if (sameUrlWithoutCache(tab.url, targetUrl)) {
@@ -3179,79 +3041,6 @@
             if (data.channel === 'jk-open-module-tab') {
                 const payload = data.payload || {};
                 if (payload.url) createTab(payload.url, payload.title || 'Modulo', { reuseExisting: true });
-                return;
-            }
-
-            if (data.channel === 'jk-native-window-handle-request') {
-                const requestId = data.requestId || data.payload?.requestId || '';
-                const reply = (payload) => {
-                    try {
-                        event.source?.postMessage({
-                            channel: 'jk-native-window-handle-response',
-                            requestId,
-                            payload
-                        }, '*');
-                    } catch (_err) {}
-                };
-                if (!window.electronAPI || typeof window.electronAPI.getNativeWindowHandle !== 'function') {
-                    reply({ success: false, message: 'Electron API indisponivel.' });
-                    return;
-                }
-                window.electronAPI.getNativeWindowHandle()
-                    .then((result) => reply(result || { success: false, message: 'Handle indisponivel.' }))
-                    .catch((err) => reply({ success: false, message: err && err.message ? err.message : String(err) }));
-                return;
-            }
-
-            if (data.channel === 'jk-tab-frame-bounds-request') {
-                const requestId = data.requestId || data.payload?.requestId || '';
-                const found = findTabBySource(event.source);
-                const reply = (payload) => {
-                    try {
-                        event.source?.postMessage({
-                            channel: 'jk-tab-frame-bounds-response',
-                            requestId,
-                            payload
-                        }, '*');
-                    } catch (_err) {}
-                };
-                if (!found) {
-                    reply({ success: false, message: 'Aba nao encontrada.' });
-                    return;
-                }
-                const frame = tabFrameBounds(found.tab, found.id);
-                reply({
-                    success: !!frame,
-                    frame,
-                    active: found.id === activeId
-                });
-                return;
-            }
-
-            if (data.channel === 'jk-rustdesk-in-app-request') {
-                const requestId = data.requestId || data.payload?.requestId || '';
-                const payload = data.payload || {};
-                const action = payload.action === 'hide' ? 'hide' : (payload.action === 'dock' ? 'dock' : 'open');
-                const reply = (result) => {
-                    try {
-                        event.source?.postMessage({
-                            channel: 'jk-rustdesk-in-app-response',
-                            requestId,
-                            payload: result
-                        }, '*');
-                    } catch (_err) {}
-                };
-                const api = window.electronAPI || null;
-                const method = action === 'hide'
-                    ? api?.hideRustDeskInApp
-                    : (action === 'dock' ? api?.dockRustDeskInApp : api?.openRustDeskInApp);
-                if (typeof method !== 'function') {
-                    reply({ success: false, message: 'Electron API do Acesso Remoto indisponivel.' });
-                    return;
-                }
-                method(payload.dockPayload || {}, payload.authToken || '')
-                    .then((result) => reply(result || { success: false, message: 'Resposta vazia do Electron.' }))
-                    .catch((err) => reply({ success: false, message: err && err.message ? err.message : String(err) }));
                 return;
             }
 

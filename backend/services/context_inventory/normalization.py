@@ -113,7 +113,7 @@ def _domain(value: Any) -> str:
         ("fiscal", ("imposto", "fiscal", "monofasico", "siscomex", "transito", "simulador")),
         ("renovacao", ("renovacao",)),
         ("etiquetas", ("etiqueta", "qrcode")),
-        ("reuniao", ("sala-reuniao", "rustdesk", "daily")),
+        ("reuniao", ("sala-reuniao", "daily")),
         ("cadastro", ("cadastro", "produto", "foto", "ncm", "sku", "catalog")),
         ("integracoes", ("integracoes", "bling", "lojas", "oauth")),
         (

@@ -22,10 +22,6 @@ def create_sala_reuniao_router() -> APIRouter:
     router.add_api_route("/api/sala-reuniao/uso-mensal/adicionar", sala_reuniao.sala_reuniao_uso_mensal_adicionar, methods=["POST"], name="sala_reuniao_uso_mensal_adicionar")
     router.add_api_route("/api/sala-reuniao/gravacoes", sala_reuniao.sala_reuniao_gravacoes, methods=["GET"], name="sala_reuniao_gravacoes")
     router.add_api_route("/api/sala-reuniao/transcricoes", sala_reuniao.sala_reuniao_transcricoes, methods=["GET"], name="sala_reuniao_transcricoes")
-    router.add_api_route("/api/sala-reuniao/rustdesk/status", sala_reuniao.sala_reuniao_rustdesk_status, methods=["GET"], name="sala_reuniao_rustdesk_status")
-    router.add_api_route("/api/sala-reuniao/rustdesk/abrir", sala_reuniao.sala_reuniao_rustdesk_abrir, methods=["POST"], name="sala_reuniao_rustdesk_abrir")
-    router.add_api_route("/api/sala-reuniao/rustdesk/acoplar", sala_reuniao.sala_reuniao_rustdesk_acoplar, methods=["POST"], name="sala_reuniao_rustdesk_acoplar")
-    router.add_api_route("/api/sala-reuniao/rustdesk/ocultar", sala_reuniao.sala_reuniao_rustdesk_ocultar, methods=["POST"], name="sala_reuniao_rustdesk_ocultar")
     return router
 
 

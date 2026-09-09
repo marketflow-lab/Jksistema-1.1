@@ -3,10 +3,6 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
     getMac: () => ipcRenderer.invoke('get-mac'),
     getAppVersion: () => ipcRenderer.invoke('get-app-version'),
-    getNativeWindowHandle: () => ipcRenderer.invoke('get-native-window-handle'),
-    openRustDeskInApp: (payload, authToken) => ipcRenderer.invoke('rustdesk-open-in-app', payload || {}, authToken || ''),
-    dockRustDeskInApp: (payload, authToken) => ipcRenderer.invoke('rustdesk-dock-in-app', payload || {}, authToken || ''),
-    hideRustDeskInApp: (payload, authToken) => ipcRenderer.invoke('rustdesk-hide-in-app', payload || {}, authToken || ''),
     checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
     onAutoUpdateStatus: (callback) => {
         if (typeof callback !== 'function') return () => {};
