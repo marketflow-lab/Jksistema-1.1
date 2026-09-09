@@ -13,8 +13,6 @@ const preloadSource = read('preload.js');
 const packagedPreloadSource = read('electron_app/preload.js');
 const windowSource = read('electron_app/main/modules/window.js');
 const ipcSource = read('electron_app/main/modules/ipc.js');
-const rustDeskSource = read('rustdesk.html');
-const staticRustDeskSource = read('static/rustdesk.html');
 
 assert.match(shellSource, /id="zoom-out"[\s\S]*id="zoom-reset"[\s\S]*id="zoom-in"/, 'a toolbar deve expor diminuir, percentual/reset e aumentar zoom');
 assert.match(shellSource, /aria-label="Zoom da tela"/, 'o grupo de zoom deve ser acessivel');
@@ -34,8 +32,6 @@ assert.match(windowSource, /handleAppWindowShortcutInput[\s\S]*setAppZoomPercent
 assert.match(windowSource, /embeddedMlBrowserView\.webContents[\s\S]*applyAppZoomToWebContents/, 'o BrowserView do Mercado Livre deve receber o mesmo zoom');
 assert.match(ipcSource, /ipcMain\.handle\('get-app-zoom'[\s\S]*ipcMain\.handle\('set-app-zoom'/, 'os contratos IPC de zoom devem estar registrados');
 assert.match(ipcSource, /getZoomFactor\(\)[\s\S]*x \*= zoomFactor[\s\S]*y \*= zoomFactor/, 'cliques nativos devem acompanhar o zoom do BrowserView');
-assert.match(rustDeskSource, /bridged\.frame\.zoomFactor[\s\S]*rect\.width \* zoomFactor/, 'o encaixe do RustDesk deve acompanhar o zoom');
-assert.strictEqual(rustDeskSource, staticRustDeskSource, 'as duas superficies do RustDesk devem permanecer espelhadas');
 
 const inlineScripts = Array.from(shellSource.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi), match => match[1].trim()).filter(Boolean);
 for (const [index, script] of inlineScripts.entries()) {

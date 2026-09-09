@@ -319,7 +319,7 @@ def _scan_integrations(base: Path, surface: str) -> list[dict[str, Any]]:
         ("bling", "Bling", ("backend/routers/integracoes.py", "integracoes.py")),
         ("whatsapp", "WhatsApp", ("backend/routers/whatsapp_bridge.py", "backend/services/whatsapp")),
         ("ia-providers", "Provedores de IA", ("backend/services/ia_providers.py",)),
-        ("daily-rustdesk", "Daily e RustDesk", ("backend/routers/sala_reuniao.py", "static/rustdesk.html")),
+        ("daily", "Daily", ("backend/routers/sala_reuniao.py",)),
     )
     for slug, title, refs in fixed:
         files: list[Path] = []

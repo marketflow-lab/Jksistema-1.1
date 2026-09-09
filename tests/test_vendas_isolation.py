@@ -101,10 +101,11 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
         # de acesso. O treinamento por loja adiciona leitura, gravacao e lista
         # de SKUs. Perguntas adiciona quatro consultas progressivas, duas rotas
         # de sincronizacao do catalogo e a lista de solicitacoes. Cadastro soma
-        # a listagem consolidada das lojas. O contrato isolado de Vendas mantem
-        # o hash congelado.
-        "routes": 466,
-        "pairs": 464,
+        # a listagem consolidada das lojas. A Sala de Reuniao deixa de registrar
+        # as quatro rotas RustDesk. O contrato isolado de Vendas mantem o hash
+        # congelado.
+        "routes": 462,
+        "pairs": 460,
         "duplicates": [],
         "openapi": "4592ad7b7431ffb069c65eca1874b0f26010549fab41b2836d740e8cc037d0f1",
     }
