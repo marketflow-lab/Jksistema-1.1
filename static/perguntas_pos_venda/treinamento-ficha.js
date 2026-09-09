@@ -70,6 +70,12 @@ async function consultarTreinamento(url, options = {}, timeoutMs = 8000) {
         if (!response.ok && (!options.allowError || [401, 403].includes(response.status))) {
             const error = new Error(erroRespostaTreinamento(data, 'Não foi possível atualizar a leitura.'));
             error.status = response.status; error.code = data.detail?.code;
+            const retryAfter = response.headers?.get('Retry-After');
+            if (retryAfter) {
+                const delay = /^\d+(?:\.\d+)?$/.test(retryAfter.trim())
+                    ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now();
+                if (Number.isFinite(delay)) error.retryAfterMs = Math.max(1000, delay);
+            }
             throw error;
         }
         return { response, data };
@@ -140,6 +146,7 @@ function receberFichaTreinamento(data, session, sku) {
     session.fichaCache ??= {}; session.fichaCache[sku] = { at: Date.now(), state: data.snapshot.state, generation: data.snapshot.generation, checkedAt: data.snapshot.checked_at };
     session.skuDetails ??= {}; session.skuDetails[sku] = data.sku_details;
     session.detailsError = '';
+    session.detailsPending = ''; session.detailsRetryAt = 0;
     state.treinamentoContexto.notas_sku[sku] = draft?.value.notas ?? partial.notas;
     const examples = state.treinamentoDados.perguntas_anuncio?.exemplos || [];
     state.treinamentoDados.perguntas_anuncio = { ...state.treinamentoDados.perguntas_anuncio,
@@ -162,6 +169,7 @@ function aguardarFichaTreinamento(ms, signal) {
 async function carregarDetalhesSkuTreinamento(force = false, refresh = false) {
     const store = lojaEscopoTreinamento(), sku = String(aiTrainingSku.value || ''), session = sessaoTreinamento();
     if (!store || !sku || session?.saving || (session.detailsLoading === sku && !force)) return;
+    if (!refresh && session.detailsPending === sku && session.detailsRetryAt > Date.now()) return;
     const cached = session.fichaCache?.[sku];
     if (!force && cached && Date.now() - cached.at < 30000 && ['ready', 'fresh'].includes(cached.state)) {
         renderizarDetalhesSkuTreinamento(); return;
@@ -174,6 +182,7 @@ async function carregarDetalhesSkuTreinamento(force = false, refresh = false) {
     const current = () => identity === identidadeSessaoTreinamento() && requestId === treinamentoDetalhesRequestId
         && store === lojaEscopoTreinamento() && sku === aiTrainingSku.value && !session.saving;
     session.detailsLoading = sku; session.detailsRequestId = requestId; session.detailsError = ''; session.detailsRetryStopped = false;
+    session.detailsPending = ''; session.detailsRetryAt = 0;
     renderizarDetalhesSkuTreinamento();
     const deadline = Date.now() + 30000;
     let attempt = 0, requested = false;
@@ -197,16 +206,26 @@ async function carregarDetalhesSkuTreinamento(force = false, refresh = false) {
                 await schedule();
             } catch (error) {
                 if (!current() || controller.signal.aborted || [401, 403].includes(error.status)) return;
-                session.detailsError = error.name === 'AbortError' ? 'A atualização demorou mais que o esperado.' : mensagemErro(error);
-                renderizarDetalhesSkuTreinamento();
-                if (error.status && error.status < 500 && error.status !== 429) return;
-                try { await schedule(); } catch (scheduleError) { if (!current() || [401, 403].includes(scheduleError.status)) return; }
+                if (error.status === 503 && error.code === 'training_index_initializing') {
+                    // O GET já agenda a leitura. A primeira geração pode levar mais de um ciclo.
+                    session.detailsPending = sku; session.detailsError = '';
+                    session.detailsRetryAt = Date.now() + (error.retryAfterMs ?? 2000);
+                    renderizarDetalhesSkuTreinamento();
+                } else {
+                    session.detailsPending = ''; session.detailsRetryAt = 0;
+                    session.detailsError = error.name === 'AbortError' ? 'A atualização demorou mais que o esperado.' : mensagemErro(error);
+                    renderizarDetalhesSkuTreinamento();
+                    if (error.status && error.status < 500 && error.status !== 429) return;
+                    try { await schedule(); } catch (scheduleError) { if (!current() || [401, 403].includes(scheduleError.status)) return; }
+                }
             }
             const remaining = deadline - Date.now();
             if (remaining <= 0) break;
-            await aguardarFichaTreinamento(Math.min(2000 * 2 ** Math.min(attempt++, 2), remaining), controller.signal);
+            const delay = session.detailsPending === sku ? Math.max(0, session.detailsRetryAt - Date.now())
+                : 2000 * 2 ** Math.min(attempt++, 2);
+            await aguardarFichaTreinamento(Math.min(delay, remaining), controller.signal);
         }
-        if (current() && !session.detailsError) session.detailsError = 'A atualização continua indisponível. Tente novamente.';
+        if (current() && !session.detailsError && !session.detailsPending) session.detailsError = 'A atualização continua indisponível. Tente novamente.';
     } catch (error) {
         if (current() && !controller.signal.aborted && ![401, 403].includes(error.status)) session.detailsError = mensagemErro(error);
     } finally {

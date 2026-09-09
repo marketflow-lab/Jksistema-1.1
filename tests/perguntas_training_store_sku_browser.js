@@ -47,6 +47,7 @@ let conflictOnSave = false;
 let conflictModelOnSave = false;
 let delayedAlpha = null;
 let failDetails = false;
+let preparingDetails = false;
 let delayedDetails = null;
 let conflictCharacteristicOnSave = false;
 let generation = 'gen-1';
@@ -101,7 +102,7 @@ function contentType(filePath) {
     await page.route('**/*', async route => {
       const request = route.request();
       const url = new URL(request.url());
-      requests.push({ method: request.method(), pathname: url.pathname, search: url.search });
+      requests.push({ method: request.method(), pathname: url.pathname, search: url.search, at: Date.now() });
 
       if (url.pathname === '/perguntas_pos_venda.html') {
         await route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: html });
@@ -151,6 +152,11 @@ function contentType(filePath) {
       if (['/api/mercadolivre/ia-treinamento', '/api/mercadolivre/ia-treinamento/ficha'].includes(url.pathname) && request.method() === 'GET') {
         const storeId = url.searchParams.get('store_id');
         const sku = url.searchParams.get('sku') || '';
+        if (url.pathname.endsWith('/ficha') && preparingDetails) {
+          await route.fulfill({ status: 503, contentType: 'application/json', headers: { 'Retry-After': '2' },
+            body: JSON.stringify({ detail: { code: 'training_index_initializing', message: 'Preparando a primeira leitura do Obsidian.' } }) });
+          return;
+        }
         if (sku && failDetails) { await json(route, { detail: 'Detalhes do Obsidian indisponíveis' }, 503); return; }
         const result = snapshot(storeId, sku);
         if (url.pathname.endsWith('/ficha')) {
@@ -252,9 +258,31 @@ function contentType(filePath) {
     assert.match(await page.locator('#ai-training-general-summary').innerText(), /Responder de forma cordial e objetiva/);
     assert.strictEqual(await page.locator('#ai-training-sku-list .training-sku-card').count(), 3, 'todos os SKUs da loja devem aparecer');
 
+    // First publication can outlast one 30-second read cycle. The real visible-tab
+    // interval must resume it without a user click or a forced server refresh.
+    preparingDetails = true;
+    const preparationStart = requests.length;
     await page.locator('[data-training-sku="002"]').click();
     await page.getByRole('dialog').waitFor({ state: 'visible' });
     assert.match(await page.getByRole('dialog').innerText(), /Produto Alpha 2/);
+    const preparingPanel = page.locator('#ai-training-sku-details');
+    await preparingPanel.filter({ hasText: 'Preparando a leitura do Obsidian' }).waitFor();
+    const firstPreparationRequest = await page.evaluate(() => sessaoTreinamento().detailsRequestId);
+    await page.waitForFunction(requestId => {
+      const session = sessaoTreinamento();
+      return session.detailsPending === '002' && session.detailsRequestId > requestId;
+    }, firstPreparationRequest, { timeout: 40000 });
+    const preparationReads = requests.slice(preparationStart).filter(item => item.method === 'GET' && item.pathname.endsWith('/ficha'));
+    assert(preparationReads.at(-1).at - preparationReads[0].at >= 30000, 'preparação deve atravessar o primeiro ciclo completo');
+    assert.match(await preparingPanel.innerText(), /Preparando a leitura do Obsidian/);
+    assert.doesNotMatch(await preparingPanel.innerText(), /Falha ao carregar/);
+    assert.strictEqual(await page.locator('#btn-ai-training-retry-details').count(), 0);
+    assert.deepStrictEqual(await page.evaluate(() => [sessaoTreinamento().detailsError, sessaoTreinamento().detailsRetryStopped]), ['', false]);
+    preparingDetails = false;
+    await preparingPanel.filter({ hasText: 'Cadastro completo store-alpha/002' }).waitFor();
+    assert.strictEqual(await page.evaluate(() => sessaoTreinamento().detailsPending), '');
+    assert.strictEqual(requests.slice(preparationStart).filter(item => item.method === 'POST' && item.pathname.endsWith('/ficha/atualizar')).length, 0,
+      'GET de primeira leitura já enfileira o trabalho e não deve causar POST adicional');
     await page.locator('#ai-training-sku-guidance-view').filter({ hasText: 'ainda não possui orientação específica' }).waitFor();
     assert.doesNotMatch(await page.getByRole('dialog').innerText(), /Arquivo ausente/);
 
@@ -538,6 +566,17 @@ function contentType(filePath) {
     revision++;
     await page.locator('#ai-training-sku-conflict').waitFor({ state: 'visible' });
     assert.strictEqual(await page.locator('#ai-training-notas-sku').inputValue(), 'Rascunho SKU Beta');
+    await page.waitForFunction(() => !sessaoTreinamento().detailsLoading);
+    const conflictBeforePreparation = await page.evaluate(() => {
+      const session = sessaoTreinamento();
+      session.detailsPending = '001'; session.detailsRetryAt = Date.now() + 60000;
+      return JSON.stringify(session.drafts['sku:001']);
+    });
+    await page.locator('#ai-training-sku-conflict').getByRole('button', { name: 'Continuar com minha edição após comparar' }).click();
+    assert.strictEqual(await page.evaluate(() => JSON.stringify(sessaoTreinamento().drafts['sku:001'])), conflictBeforePreparation,
+      'preparação pendente não confirma uma comparação nem libera o conflito do rascunho');
+    assert(await page.locator('#ai-training-sku-conflict').isVisible());
+    await page.evaluate(() => { sessaoTreinamento().detailsPending = ''; sessaoTreinamento().detailsRetryAt = 0; });
     await page.locator('#btn-ai-training-fechar-sku').click();
     await page.locator('#lojas-grid .store-card[data-loja="Loja Alpha"]').click();
     await page.locator('#ai-training-sku-count').filter({ hasText: '3 SKU(s)' }).waitFor();

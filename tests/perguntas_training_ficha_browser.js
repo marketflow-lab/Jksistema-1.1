@@ -54,7 +54,8 @@ const { chromium } = require('playwright');
         calls.push({ url, at: Date.now(), signal: options.signal, method: options.method || 'GET' });
         if (options.method === 'POST') return { ok: true, status: 202, json: async () => ({ success: true }) };
         const response = queue.shift() || fallback;
-        const result = () => ({ ok: !response.status || response.status < 400, status: response.status || 200, json: async () => response.body });
+        const result = () => ({ ok: !response.status || response.status < 400, status: response.status || 200,
+          headers: new Headers(response.headers || {}), json: async () => response.body });
         if (response.hold) return new Promise(resolve => { window.release = () => resolve(result()); });
         if (response.hang) return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(new DOMException('timeout', 'AbortError')), { once: true }));
         return result();
@@ -103,6 +104,64 @@ const { chromium } = require('playwright');
     assert.strictEqual(await page.evaluate(() => sessaoTreinamento().detailsLoading), '');
     assert.strictEqual(await page.evaluate(() => sessaoTreinamento().detailsRetryStopped), true);
 
+    // Cold Obsidian preparation can outlive a request cycle; it must remain retryable.
+    await page.evaluate(() => {
+      calls.length = 0;
+      fallback = { status: 503, headers: { 'Retry-After': '2' },
+        body: { detail: { code: 'training_index_initializing', message: 'Preparando a primeira leitura do Obsidian.' } } };
+    });
+    await start(); await page.clock.runFor(30000);
+    assert.deepStrictEqual(await page.evaluate(() => [sessaoTreinamento().detailsError,
+      sessaoTreinamento().detailsPending, sessaoTreinamento().detailsRetryStopped]), ['', '001', false]);
+    assert.strictEqual(await page.evaluate(() => calls.filter(c => c.method === 'POST').length), 0);
+    assert.strictEqual(await page.evaluate(() => sessaoTreinamento().drafts['sku:001'].value.notas), 'edição local');
+    await page.evaluate(() => queue.push(ficha('cold-ready', 'Obsidian pronto', 'mudança externa')));
+    await start();
+    assert.deepStrictEqual(await page.evaluate(() => [sessaoTreinamento().detailsPending, sessaoTreinamento().detailsRetryAt]), ['', 0]);
+    assert.strictEqual(await page.locator('#ai-training-sku-details').textContent(), 'Obsidian pronto');
+
+    // Retry-After crosses the 30 second cycle, including the HTTP-date form.
+    for (const dateHeader of [false, true]) {
+      await page.evaluate(dateHeader => {
+        calls.length = 0;
+        fallback.headers = { 'Retry-After': dateHeader ? new Date(Date.now() + 45000).toUTCString() : '45' };
+      }, dateHeader);
+      await start(); await page.clock.runFor(30000);
+      await start();
+      assert.strictEqual(await page.evaluate(() => calls.length), 1, 'background poll must honor Retry-After across cycles');
+      await page.clock.runFor(15000);
+      await page.evaluate(() => queue.push(ficha('after-retry', 'Leitura recuperada', 'mudança externa')));
+      await start();
+      assert.strictEqual(await page.locator('#ai-training-sku-details').textContent(), 'Leitura recuperada');
+    }
+
+    // A pending SKU cannot delay another SKU or keep its retry alive after switching.
+    await start();
+    await page.evaluate(() => {
+      const other = ficha('other-ready', 'Outro SKU');
+      other.body.sku = other.body.sku_details.sku = '002';
+      other.body.notas_sku = { '002': 'Orientação do outro SKU' };
+      other.body.caracteristicas_sku = { '002': {} };
+      other.body.editorial.skus = { '002': { status: 'draft' } };
+      aiTrainingSku.value = '002'; queue.push(other);
+    });
+    await start();
+    assert.strictEqual(await page.locator('#ai-training-sku-details').textContent(), 'Outro SKU');
+    const afterSwitch = await page.evaluate(() => calls.length);
+    await page.clock.runFor(45000);
+    assert.strictEqual(await page.evaluate(() => calls.length), afterSwitch);
+    await page.evaluate(() => { aiTrainingSku.value = '001'; });
+
+    // Preparation must not mask a real failure that follows it.
+    await page.evaluate(() => {
+      fallback.headers = { 'Retry-After': '2' };
+      queue.push(fallback, { status: 503, body: { detail: { code: 'training_index_unavailable', message: 'Fonte indisponível' } } });
+      fallback = { status: 503, body: { detail: 'Fonte indisponível' } };
+    });
+    await start(); await page.clock.runFor(30000);
+    assert.deepStrictEqual(await page.evaluate(() => [sessaoTreinamento().detailsPending,
+      sessaoTreinamento().detailsError, sessaoTreinamento().detailsRetryStopped]), ['', 'Fonte indisponível', true]);
+
     // A request already in flight when saving starts cannot roll back the saved UI.
     await page.evaluate(() => queue.push({ ...ficha('old', 'old response'), hold: true }));
     await start();
@@ -135,6 +194,6 @@ const { chromium } = require('playwright');
     await page.evaluate(() => dispatchEvent(new Event('jk:logout')));
     assert.strictEqual(await page.locator('#ai-training-sku-details').textContent(), '');
     assert.deepStrictEqual(errors, []);
-    console.log('Treinamento ficha browser: OK (partial merge, CAS, stale, deadline, session/revocation, save supersession)');
+    console.log('Treinamento ficha browser: OK (cold preparation, Retry-After, SKU switch, partial merge, CAS, stale, deadline, session/revocation, save supersession)');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

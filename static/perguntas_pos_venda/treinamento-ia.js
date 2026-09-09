@@ -260,7 +260,8 @@ function renderizarConflitosTreinamento() {
         keep.addEventListener('click', async () => {
             if (target === 'sku') {
                 await carregarDetalhesSkuTreinamento(true);
-                if (sessao !== sessaoTreinamento() || sessao.detailsError) return;
+                if (sessao !== sessaoTreinamento() || sessao.detailsError || sessao.detailsPending
+                    || key !== `sku:${aiTrainingSku.value}`) return;
             }
             const current = sessao.drafts[key];
             if (!current) return;

@@ -159,11 +159,13 @@ function renderizarDetalhesSkuTreinamento(force = false) {
         status = document.createElement('p'); status.className = 'status-line';
     }
     if (!data) {
-        status.textContent = sessao?.detailsLoading ? 'Carregando informações do SKU no Obsidian…' : 'Abra o SKU para consultar suas informações no Obsidian.';
+        status.textContent = sessao?.detailsPending === sku
+            ? 'Preparando a leitura do Obsidian. As informações aparecerão automaticamente quando estiverem prontas.'
+            : sessao?.detailsLoading ? 'Carregando informações do SKU no Obsidian…' : 'Abra o SKU para consultar suas informações no Obsidian.';
         container.append(status);
         return;
     }
-    if (sessao.detailsLoading) {
+    if (sessao.detailsLoading || sessao.detailsPending === sku) {
         const updating = document.createElement('p'); updating.className = 'status-line';
         updating.textContent = 'Exibindo última leitura válida. Atualizando em segundo plano…'; container.append(updating);
     }
