@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from .central_accounts import CentralAccounts, CentralError
 from .central_contracts import (ConnectRequest, DisconnectRequest, LegacyAdoptionRequest,
-                                ProviderRequest, StoreCreate, StoreGrant)
+                                ProviderRequest, StoreCreate, StoreGrant, StoreUpdate)
 from .central_provider import ProviderTransport
 from .central_store import FirestoreDocuments, Vault
 from .errors import GatewayUnavailable
@@ -93,6 +93,10 @@ def install_central_routes(app, resolve_central):
     @router.delete("/stores/{identity}")
     def remove(identity: str, actor=Depends(principal)):
         return service().delete_store(actor, store_id(identity))
+
+    @router.patch("/stores/{identity}")
+    def update(identity: str, payload: StoreUpdate, actor=Depends(principal)):
+        return service().rename_store(actor, store_id(identity), payload)
 
     @router.put("/stores/{identity}/grant")
     def grant(identity: str, payload: StoreGrant, actor=Depends(principal)):

@@ -12,7 +12,8 @@ from fastapi.testclient import TestClient
 
 from cloud.auth_gateway.app.central_accounts import CentralAccounts, CentralError, Principal, key_for
 from cloud.auth_gateway.app.central_contracts import (ConnectRequest, LegacyAdoptionRequest,
-                                                       ProviderRequest, StoreCreate, StoreGrant)
+                                                       ProviderRequest, StoreCreate, StoreGrant,
+                                                       StoreUpdate)
 from cloud.auth_gateway.app.central_provider import ProviderTransport
 from cloud.auth_gateway.app.central_store import MemoryDocuments, Vault
 from cloud.auth_gateway.app.domain import AuthenticationService
@@ -162,6 +163,52 @@ def test_grant_is_explicit_scoped_and_revoked_without_relogin(central):
         central.request(other, identity, request())
 
 
+def test_rename_store_changes_only_name_and_allows_duplicate_names(central):
+    owner, identity, _ = connected(central)
+    before = central.documents.get("stores", key_for("store", identity))
+    duplicate = central.create_store(
+        owner, StoreCreate(name="Renamed shop", request_id="e" * 32))
+
+    renamed = central.rename_store(owner, identity, StoreUpdate(name="  Renamed shop  "))
+    after = central.documents.get("stores", key_for("store", identity))
+
+    assert renamed == {**central.public_store(before, owner), "nome": "Renamed shop"}
+    assert after == {**before, "name": "Renamed shop"}
+    assert renamed["store_id"] == identity
+    assert duplicate["store_id"] != identity
+    assert duplicate["nome"] == renamed["nome"]
+    assert central.rename_store(owner, identity, StoreUpdate(name="Renamed shop")) == renamed
+
+
+@pytest.mark.parametrize("permission", ["integracao", "admin_usuarios", "full"])
+def test_rename_store_accepts_each_management_permission(central, permission):
+    owner, identity, _ = connected(central)
+    central.users.rows["owner"]["permissions"] = {permission: True}
+    actor = principal(central)
+    assert central.rename_store(actor, identity, StoreUpdate(name=permission))["nome"] == permission
+
+
+def test_rename_store_authorizes_write_and_rejects_read_or_missing_module_permission(central):
+    owner, identity, _ = connected(central)
+    central.grant(owner, identity, StoreGrant(username="other", access="write"))
+    writer = principal(central, "other")
+    assert central.rename_store(writer, identity, StoreUpdate(name="Writer name"))["nome"] == "Writer name"
+
+    with pytest.raises(CentralError) as error:
+        central.rename_store(principal(central, "reader"), identity, StoreUpdate(name="Blocked"))
+    assert error.value.code == "central_store_denied"
+
+    central.grant(owner, identity, StoreGrant(username="reader", access="read"))
+    with pytest.raises(CentralError) as error:
+        central.rename_store(principal(central, "reader"), identity, StoreUpdate(name="Blocked"))
+    assert error.value.code == "central_store_read_only"
+
+    central.users.rows["other"]["permissions"] = {"vendas": True}
+    with pytest.raises(CentralError) as error:
+        central.rename_store(principal(central, "other"), identity, StoreUpdate(name="Blocked"))
+    assert error.value.code == "central_permission_denied"
+
+
 def test_oauth_is_one_use_and_checks_revocation(central):
     owner, identity, state = connected(central)
     with pytest.raises(CentralError):
@@ -298,6 +345,27 @@ def test_http_requires_session_and_rejects_tenant_injection(central):
     assert response.status_code == 422 and "injected" not in response.text
     assert response.headers["cache-control"] == "no-store"
     assert client.get("/api/central/v1/bootstrap", headers=headers).json()["stores"] == []
+
+
+def test_http_store_rename_is_closed_trimmed_and_validated(central):
+    client = TestClient(create_app(central=central))
+    session = central.bootstrap_session(central.users.get_user("owner"), "owner", "machine-a")
+    headers = {"Authorization": "Bearer " + session["session"], "X-JK-Machine": "machine-a"}
+    store = central.create_store(principal(central), StoreCreate(name="Before", request_id="f" * 32))
+    url = "/api/central/v1/stores/" + store["store_id"]
+
+    assert client.patch(url, headers=headers,
+                        json={"name": "Injected", "tenant": "injected"}).status_code == 422
+    assert client.patch(url, headers=headers, json={"name": " " * 10}).status_code == 422
+    assert client.patch(url, headers=headers, json={"name": "x" * 101}).status_code == 422
+    assert central.list_stores(principal(central))[0]["nome"] == "Before"
+
+    response = client.patch(url, headers=headers, json={"name": "  After  "})
+    assert response.status_code == 200
+    assert response.json() == {**store, "nome": "After"}
+    assert response.headers["cache-control"] == "no-store"
+    assert client.patch("/api/central/v1/stores/not-an-id", headers=headers,
+                        json={"name": "After"}).status_code == 400
 
 
 def test_store_write_grant_does_not_override_module_permission(central):

@@ -60,6 +60,7 @@ from .perguntas_pos_venda import (
 from .mercado_livre import (
     PromoRequest,
     StoreRequest,
+    StoreRenameRequest,
     MLPrecoRequest,
     MLEstoqueRequest,
     MLStatusRequest,
@@ -208,6 +209,7 @@ __all__ = [
     "IARagReindexRequest",
     "PromoRequest",
     "StoreRequest",
+    "StoreRenameRequest",
     "AuthRequest",
     "TokenRequest",
     "MLPrecoRequest",

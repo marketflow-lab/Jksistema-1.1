@@ -32,6 +32,7 @@ def create_integracoes_router(config: IntegracoesRouterConfig) -> APIRouter:
     router.add_api_route("/api/lojas", integracoes_api.get_lojas, methods=["GET"], name="get_lojas")
     router.add_api_route("/api/lojas/{nome_loja}", integracoes_api.get_loja, methods=["GET"], name="get_loja")
     router.add_api_route("/api/lojas", integracoes_api.create_loja, methods=["POST"], name="create_loja")
+    router.add_api_route("/api/lojas/{nome_loja}", integracoes_api.rename_loja, methods=["PATCH"], name="rename_loja")
     router.add_api_route("/api/lojas/{nome_loja}", integracoes_api.delete_loja, methods=["DELETE"], name="delete_loja")
     router.add_api_route("/api/integracoes/{loja_nome}/turbo", integracoes_api.save_turbo_token, methods=["POST"], name="save_turbo_token")
     router.add_api_route("/api/integracoes/{loja_nome}/{servico_nome}", integracoes_api.disconnect_integracao, methods=["DELETE"], name="disconnect_integracao")

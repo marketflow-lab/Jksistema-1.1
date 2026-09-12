@@ -1,14 +1,22 @@
 import asyncio
+import copy
 import json
 from contextlib import contextmanager
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
-from backend.schemas import AuthRequest, StoreRequest, TokenRequest
+from backend.schemas import (
+    AuthRequest,
+    StoreRenameRequest,
+    StoreRequest,
+    TokenRequest,
+)
 from backend.services import (
     bling_vendas,
     cadastro_fotos,
+    central_accounts_client,
     integracoes,
     integracoes_api,
     mercadolivre_legacy_api,
@@ -1119,3 +1127,197 @@ def test_renome_preserva_lista_versionada_de_nomes_anteriores_sem_duplicatas(tmp
         "Nome Inicial",
         "Nome Novo",
     ]
+
+
+def test_renomear_loja_usa_store_id_exato_e_preserva_estado(tmp_path):
+    _configure(tmp_path)
+    lojas = _homonimas()
+    lojas[0].update(
+        integracoes={
+            "mercadolivre": {
+                "access_token": "token-a",
+                "seller_id": "seller-a",
+            }
+        },
+        custom={"photo_group": "grupo-a"},
+    )
+    integracoes.salvar_lojas("cliente-a", lojas)
+    antes = copy.deepcopy(integracoes.buscar_loja("cliente-a", "", store_id="StoreA"))
+
+    renomeada = integracoes.renomear_loja(
+        "cliente-a",
+        "nome desatualizado",
+        "  Loja Renomeada  ",
+        store_id="StoreA",
+    )
+
+    assert renomeada["store_id"] == "StoreA"
+    assert renomeada["nome"] == "Loja Renomeada"
+    assert renomeada["integracoes"] == antes["integracoes"]
+    assert renomeada["custom"] == antes["custom"]
+    assert renomeada["nomes_anteriores"] == ["Loja Igual"]
+    assert renomeada["_sync_version"] == antes["_sync_version"] + 1
+    por_id = {
+        loja["store_id"]: loja
+        for loja in integracoes.carregar_lojas("cliente-a")
+    }
+    assert por_id["storea"]["nome"] == "Loja Igual"
+
+    idempotente = integracoes.renomear_loja(
+        "cliente-a",
+        "Loja Renomeada",
+        "Loja Renomeada",
+        store_id="StoreA",
+    )
+    assert idempotente["_sync_version"] == renomeada["_sync_version"]
+    assert idempotente["nomes_anteriores"] == ["Loja Igual"]
+
+    repetida = integracoes.renomear_loja(
+        "cliente-a",
+        "Loja Renomeada",
+        "Loja Igual",
+        store_id="StoreA",
+    )
+    assert repetida["nome"] == "Loja Igual"
+    assert repetida["nomes_anteriores"] == ["Loja Renomeada"]
+    assert repetida["_sync_version"] == idempotente["_sync_version"] + 1
+
+
+def test_renomear_loja_rejeita_identidade_ausente_e_nome_invalido(tmp_path):
+    tenant = _configure(tmp_path)
+    integracoes.salvar_lojas(
+        "cliente-a",
+        [{"store_id": "StoreA", "nome": "Loja A", "integracoes": {}}],
+    )
+    antes = (tenant / "lojas_config.json").read_bytes()
+
+    with pytest.raises(HTTPException) as exc_info:
+        integracoes.renomear_loja("cliente-a", "Loja A", "Loja B")
+    assert exc_info.value.detail["code"] == "store_id_required"
+
+    with pytest.raises(HTTPException) as exc_info:
+        integracoes.renomear_loja(
+            "cliente-a",
+            "Loja A",
+            "Loja B",
+            store_id="nao-existe",
+        )
+    assert exc_info.value.detail["code"] == "store_config_changed"
+
+    for nome in ("   ", "x" * 101):
+        with pytest.raises(HTTPException) as exc_info:
+            integracoes.renomear_loja(
+                "cliente-a",
+                "Loja A",
+                nome,
+                store_id="StoreA",
+            )
+        assert exc_info.value.detail["code"] == "store_name_invalid"
+
+    assert (tenant / "lojas_config.json").read_bytes() == antes
+
+
+def test_schema_renome_loja_fecha_contrato_e_normaliza_nome():
+    assert StoreRenameRequest(nome="  Novo Nome  ").nome == "Novo Nome"
+
+    for payload in (
+        {"nome": "   "},
+        {"nome": "x" * 101},
+        {"nome": "Novo Nome", "store_id": "StoreA"},
+    ):
+        with pytest.raises(ValidationError):
+            StoreRenameRequest(**payload)
+
+
+def test_endpoint_renomeia_loja_local_e_retorna_identidade(tmp_path):
+    _configure(tmp_path)
+    integracoes.salvar_lojas(
+        "cliente-a",
+        [{"store_id": "StoreA", "nome": "Loja A", "integracoes": {}}],
+    )
+
+    resposta = asyncio.run(
+        integracoes_api.rename_loja(
+            "Loja A",
+            StoreRenameRequest(nome="Loja B"),
+            store_id="StoreA",
+            client_id="cliente-a",
+        )
+    )
+
+    assert resposta["success"] is True
+    assert resposta["store_id"] == "StoreA"
+    assert resposta["loja"]["store_id"] == "StoreA"
+    assert resposta["loja"]["nome"] == "Loja B"
+
+
+def test_endpoint_renome_central_encaminha_patch_e_atualiza_cache(monkeypatch):
+    chamadas = []
+
+    class Central:
+        def call(self, method, path, body=None):
+            chamadas.append((method, path, body))
+            return {"store_id": "StoreA", "nome": "Loja B"}
+
+        def refresh_stores(self):
+            chamadas.append(("refresh",))
+            return [
+                {
+                    "store_id": "StoreA",
+                    "nome": "Loja B",
+                    "integracoes": {},
+                }
+            ]
+
+    def mesclar_turbo(client_id, lojas_centrais, *, incluir_token):
+        chamadas.append(
+            (
+                "turbo",
+                client_id,
+                copy.deepcopy(lojas_centrais),
+                incluir_token,
+            )
+        )
+        lojas = copy.deepcopy(lojas_centrais)
+        lojas[0]["integracoes"]["mercadoturbo"] = {
+            "connected": True,
+            "local_only": True,
+        }
+        return lojas
+
+    monkeypatch.setattr(central_accounts_client, "current", lambda _client_id: Central())
+    monkeypatch.setattr(integracoes, "mesclar_turbo_local", mesclar_turbo)
+
+    resposta = asyncio.run(
+        integracoes_api.rename_loja(
+            "Loja A",
+            StoreRenameRequest(nome="Loja B"),
+            store_id="StoreA",
+            client_id="cliente-a",
+        )
+    )
+
+    assert chamadas == [
+        ("PATCH", "/stores/StoreA", {"name": "Loja B"}),
+        ("refresh",),
+        (
+            "turbo",
+            "cliente-a",
+            [{"store_id": "StoreA", "nome": "Loja B", "integracoes": {}}],
+            False,
+        ),
+    ]
+    assert resposta == {
+        "success": True,
+        "store_id": "StoreA",
+        "loja": {
+            "store_id": "StoreA",
+            "nome": "Loja B",
+            "integracoes": {
+                "mercadoturbo": {
+                    "connected": True,
+                    "local_only": True,
+                }
+            },
+        },
+    }

@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 from fastapi import Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from backend.schemas import AuthRequest, StoreRequest, TokenRequest
+from backend.schemas import AuthRequest, StoreRenameRequest, StoreRequest, TokenRequest
 from backend.services.integracoes import (
     _integracoes_atualizar_tombstone_payload,
     _integracoes_commit_lojas_tombstones,
@@ -33,6 +33,7 @@ from backend.services.integracoes import (
     desconectar_api_loja,
     excluir_loja,
     ler_temp_auth,
+    renomear_loja as renomear_loja_identidade,
     salvar_temp_auth,
 )
 
@@ -380,6 +381,55 @@ async def create_loja(store_request: StoreRequest, client_id: str = Depends(get_
         return {"success": True, "store_id": loja["store_id"], "loja": loja}
     loja = criar_loja_identidade(client_id, store_request.nome)
     return {"success": True, "store_id": loja["store_id"], "loja": loja}
+
+
+async def rename_loja(
+    nome_loja: str,
+    store_request: StoreRenameRequest,
+    store_id: Optional[str] = None,
+    client_id: str = Depends(get_tenant_id),
+):
+    store_id_exato = _store_id_mutacao_exato(store_id)
+    from backend.services.central_accounts_client import current
+
+    central = current(client_id)
+    if central:
+        central.call(
+            "PATCH",
+            f"/stores/{store_id_exato}",
+            {"name": store_request.nome},
+        )
+        lojas_centrais = central.refresh_stores()
+        from backend.services.integracoes import mesclar_turbo_local
+
+        lojas = mesclar_turbo_local(
+            client_id,
+            lojas_centrais,
+            incluir_token=False,
+        )
+        atualizadas = [
+            loja
+            for loja in lojas
+            if str(loja.get("store_id") or "").strip() == store_id_exato
+        ]
+        if len(atualizadas) != 1:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "store_config_changed",
+                    "message": "A identidade da loja nao existe mais.",
+                    "store_id": store_id_exato,
+                },
+            )
+        loja = atualizadas[0]
+    else:
+        loja = renomear_loja_identidade(
+            client_id,
+            nome_loja,
+            store_request.nome,
+            store_id=store_id_exato,
+        )
+    return {"success": True, "store_id": store_id_exato, "loja": loja}
 
 
 async def delete_loja(
@@ -789,6 +839,7 @@ __all__ = [
     "get_lojas",
     "get_loja",
     "create_loja",
+    "rename_loja",
     "delete_loja",
     "save_turbo_token",
     "disconnect_integracao",

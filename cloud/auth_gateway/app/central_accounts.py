@@ -343,6 +343,21 @@ class CentralAccounts:
         row = self.documents.change("stores", key_for("store", store_id), lambda old: old or initial)
         return self.public_store(row, principal)
 
+    def rename_store(self, principal, store_id, payload):
+        self._can_manage(principal)
+
+        def change(row):
+            if (not row or row.get("deleted")
+                    or principal.key not in row.get("access_keys", [])):
+                raise CentralError("central_store_denied", 403)
+            if row.get("grants", {}).get(principal.key) not in ("owner", "write"):
+                raise CentralError("central_store_read_only", 403)
+            row["name"] = payload.name
+            return row
+
+        row = self.documents.change("stores", key_for("store", store_id), change)
+        return self.public_store(row, principal)
+
     def grant(self, principal, store_id, payload):
         self.store(principal, store_id, manage=True)
         username = payload.username.lower()

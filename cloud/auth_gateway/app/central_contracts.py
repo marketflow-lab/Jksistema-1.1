@@ -12,6 +12,10 @@ class StoreCreate(ClosedModel):
     request_id: str = Field(pattern=r"^[a-f0-9]{32}$")
 
 
+class StoreUpdate(ClosedModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
 class StoreGrant(ClosedModel):
     username: str = Field(min_length=1, max_length=128)
     access: Literal["read", "write", "revoke"]

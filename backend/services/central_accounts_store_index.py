@@ -67,6 +67,7 @@ def materialize_store_index(client_id, public_stores):
                 elif provider in configs:
                     configs[provider] = {"central": True, "central_migrated": True,
                                          "connected": False}
+        integracoes._integracoes_preservar_nomes_anteriores(result, before)
         integracoes._integracoes_validar_identidades_lojas_local(result)
         if result != before:
             integracoes._integracoes_escrever_lojas_config_atomico(path, result)

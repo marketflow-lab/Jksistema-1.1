@@ -43,6 +43,20 @@
         .status.connected { background-color: #28a745; color: white; }
         .status.disconnected { background-color: #dc3545; color: white; }
         .delete-btn { background: #dc3545; font-size: 10px; padding: 2px 6px; }
+        .store-heading { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #444; margin-bottom: 16px; }
+        .store-heading h2 { flex: 0 1 auto; border-bottom: 0; margin-bottom: 0; }
+        .rename-store-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; margin: 0; padding: 0; border: 1px solid #4facfe; border-radius: 50%; background: transparent; color: #7bc5ff; font-size: 17px; }
+        .rename-store-btn:hover { background: #183a55; }
+        .rename-store-btn[hidden] { display: none; }
+        .store-rename-editor { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: -6px 0 18px; padding: 12px; border: 1px solid #3f5368; border-radius: 8px; background: #18212b; }
+        .store-rename-editor[hidden] { display: none; }
+        .store-rename-editor input { flex: 1 1 260px; }
+        .store-rename-editor button { margin: 0; }
+        .store-rename-cancel { background: #4b5563; }
+        .store-rename-cancel:hover { background: #374151; }
+        .store-rename-feedback { flex-basis: 100%; min-height: 1.25em; margin: 2px 0 0; color: #b8c7d9; font-size: 0.9rem; }
+        .store-rename-feedback[data-status="success"] { color: #72d99b; }
+        .store-rename-feedback[data-status="error"] { color: #ff8f99; }
         .hidden { display: none; }
         .shared-sync-screen-overlay {
             position: fixed;
@@ -145,7 +159,16 @@
             </div>
 
             <div id="main-tab-lojas" class="main-tab-content active">
-                <h2 id="store-title">Selecione uma loja</h2>
+                <div class="store-heading">
+                    <h2 id="store-title">Selecione uma loja</h2>
+                    <button id="rename-store-btn" class="rename-store-btn" type="button" aria-label="Alterar nome da loja" title="Alterar nome da loja" hidden><span aria-hidden="true">&#9998;</span></button>
+                </div>
+                <form id="store-rename-editor" class="store-rename-editor" aria-busy="false" hidden novalidate>
+                    <input id="store-rename-input" type="text" maxlength="100" autocomplete="off" aria-label="Novo nome da loja">
+                    <button id="store-rename-save" type="submit">Salvar</button>
+                    <button id="store-rename-cancel" class="store-rename-cancel" type="button">Cancelar</button>
+                    <p id="store-rename-feedback" class="store-rename-feedback" role="status" aria-live="polite"></p>
+                </form>
 
                 <div id="integrations-panel" class="hidden">
                 <div class="tabs">
@@ -219,6 +242,12 @@
             const addStoreBtn = document.getElementById('add-store-btn');
             const newStoreInput = document.getElementById('new-store-name');
             const storeTitle = document.getElementById('store-title');
+            const renameStoreBtn = document.getElementById('rename-store-btn');
+            const storeRenameEditor = document.getElementById('store-rename-editor');
+            const storeRenameInput = document.getElementById('store-rename-input');
+            const storeRenameSave = document.getElementById('store-rename-save');
+            const storeRenameCancel = document.getElementById('store-rename-cancel');
+            const storeRenameFeedback = document.getElementById('store-rename-feedback');
             const integrationsPanel = document.getElementById('integrations-panel');
 
             const mainTabs = document.querySelectorAll('[data-main-tab]');
@@ -235,6 +264,9 @@
             
             let stores = [];
             let selectedStore = null;
+            let renameEditorStoreId = '';
+            let renameAttempt = 0;
+            let renameBusy = false;
 
             window.jkIntegracoesSetSyncProgress = (ativo, mensagem) => {
                 const overlay = document.getElementById('sharedSyncScreenOverlay');
@@ -396,6 +428,10 @@
                     `/api/lojas/${encodeURIComponent(store.nome)}?store_id=${encodeURIComponent(store.store_id)}`,
                     { method: 'DELETE' }
                 ),
+                renameStore: (store, name) => apiFetch(
+                    `/api/lojas/${encodeURIComponent(store.nome)}?store_id=${encodeURIComponent(store.store_id)}`,
+                    { method: 'PATCH', body: JSON.stringify({ nome: name }) }
+                ),
                 saveTurbo: (store, token) => apiFetch(`/api/integracoes/${encodeURIComponent(store.nome)}/turbo?store_id=${encodeURIComponent(store.store_id)}`, {
                     method: 'POST',
                     body: JSON.stringify({ token: token })
@@ -428,6 +464,137 @@
                     li.appendChild(deleteBtn);
                     storeList.appendChild(li);
                 });
+            }
+
+            function podeRenomearLoja(store) {
+                if (!store || !store.store_id) return false;
+                if (!window.jkCentralManualMode?.()) return true;
+                return store.access === 'owner' || store.access === 'write';
+            }
+
+            function atualizarBotaoSalvarNome() {
+                const nome = storeRenameInput.value.trim();
+                const nomeAtual = selectedStore && selectedStore.store_id === renameEditorStoreId
+                    ? String(selectedStore.nome || '').trim()
+                    : '';
+                storeRenameSave.disabled = renameBusy || nome.length < 1 || nome.length > 100 || nome === nomeAtual;
+                storeRenameInput.disabled = renameBusy;
+                storeRenameCancel.disabled = renameBusy;
+            }
+
+            function definirFeedbackRenomear(mensagem, status = '') {
+                storeRenameFeedback.textContent = mensagem || '';
+                if (status) storeRenameFeedback.dataset.status = status;
+                else delete storeRenameFeedback.dataset.status;
+            }
+
+            function fecharEditorNomeLoja() {
+                renameAttempt += 1;
+                renameEditorStoreId = '';
+                renameBusy = false;
+                storeRenameEditor.hidden = true;
+                storeRenameEditor.setAttribute('aria-busy', 'false');
+                storeRenameInput.disabled = false;
+                storeRenameCancel.disabled = false;
+                storeRenameSave.textContent = 'Salvar';
+                definirFeedbackRenomear('');
+            }
+
+            function atualizarCabecalhoLoja() {
+                if (!selectedStore || !selectedStore.store_id) {
+                    storeTitle.textContent = 'Selecione uma loja';
+                    renameStoreBtn.hidden = true;
+                    return;
+                }
+                storeTitle.textContent = `Configurando: ${selectedStore.nome}`;
+                renameStoreBtn.hidden = !podeRenomearLoja(selectedStore);
+                if (renameStoreBtn.hidden && renameEditorStoreId) fecharEditorNomeLoja();
+            }
+
+            function abrirEditorNomeLoja() {
+                if (!podeRenomearLoja(selectedStore)) return;
+                renameAttempt += 1;
+                renameEditorStoreId = selectedStore.store_id;
+                renameBusy = false;
+                storeRenameInput.value = selectedStore.nome || '';
+                storeRenameEditor.hidden = false;
+                storeRenameEditor.setAttribute('aria-busy', 'false');
+                storeRenameSave.textContent = 'Salvar';
+                definirFeedbackRenomear('');
+                atualizarBotaoSalvarNome();
+                storeRenameInput.focus();
+                storeRenameInput.select();
+            }
+
+            function mesclarLojaRenomeada(storeId, storeData, nomeConfirmado) {
+                const index = stores.findIndex(store => store.store_id === storeId);
+                const anterior = index >= 0 ? stores[index] : {};
+                const integracoesAnteriores = anterior.integracoes && typeof anterior.integracoes === 'object'
+                    ? anterior.integracoes
+                    : {};
+                const respostaTemIntegracoes = Object.prototype.hasOwnProperty.call(storeData, 'integracoes');
+                const integracoes = respostaTemIntegracoes
+                    ? { ...(storeData.integracoes && typeof storeData.integracoes === 'object' ? storeData.integracoes : {}) }
+                    : { ...integracoesAnteriores };
+                if (respostaTemIntegracoes
+                    && !Object.prototype.hasOwnProperty.call(integracoes, 'mercadoturbo')
+                    && Object.prototype.hasOwnProperty.call(integracoesAnteriores, 'mercadoturbo')) {
+                    integracoes.mercadoturbo = integracoesAnteriores.mercadoturbo;
+                }
+                const atualizada = { ...anterior, ...storeData, store_id: storeId, nome: nomeConfirmado, integracoes };
+                if (index >= 0) stores.splice(index, 1, atualizada);
+                else stores.push(atualizada);
+                return atualizada;
+            }
+
+            async function salvarNovoNomeLoja(event) {
+                event.preventDefault();
+                const store = selectedStore;
+                const nomeTentado = storeRenameInput.value.trim();
+                if (!store || store.store_id !== renameEditorStoreId || !podeRenomearLoja(store)) return;
+                if (renameBusy || nomeTentado.length < 1 || nomeTentado.length > 100 || nomeTentado === String(store.nome || '').trim()) {
+                    atualizarBotaoSalvarNome();
+                    return;
+                }
+
+                const attempt = renameAttempt;
+                const storeId = store.store_id;
+                renameBusy = true;
+                storeRenameEditor.setAttribute('aria-busy', 'true');
+                storeRenameSave.textContent = 'Salvando…';
+                definirFeedbackRenomear('Salvando novo nome…');
+                atualizarBotaoSalvarNome();
+                try {
+                    const result = await api.renameStore(store, nomeTentado);
+                    if (!result || result.success === false) {
+                        throw new Error(result && result.detail ? result.detail : 'Não foi possível alterar o nome da loja.');
+                    }
+                    const storeData = result.loja && typeof result.loja === 'object' ? result.loja : result;
+                    if (!storeData || storeData.store_id !== storeId) {
+                        throw new Error('A resposta do servidor não confirmou a identidade da loja.');
+                    }
+                    const nomeConfirmado = String(storeData.nome || '').trim();
+                    if (!nomeConfirmado) throw new Error('A resposta do servidor não confirmou o novo nome.');
+                    const atualizada = mesclarLojaRenomeada(storeId, storeData, nomeConfirmado);
+                    if (attempt === renameAttempt && renameEditorStoreId === storeId && selectedStore && selectedStore.store_id === storeId) {
+                        selectedStore = { ...selectedStore, ...atualizada };
+                        storeRenameInput.value = nomeConfirmado;
+                        atualizarCabecalhoLoja();
+                        definirFeedbackRenomear('Nome atualizado com sucesso.', 'success');
+                    }
+                    renderStores();
+                } catch (error) {
+                    if (attempt === renameAttempt && renameEditorStoreId === storeId && selectedStore && selectedStore.store_id === storeId) {
+                        definirFeedbackRenomear(error.message || 'Não foi possível alterar o nome da loja.', 'error');
+                    }
+                } finally {
+                    if (attempt === renameAttempt && renameEditorStoreId === storeId) {
+                        renameBusy = false;
+                        storeRenameEditor.setAttribute('aria-busy', 'false');
+                        storeRenameSave.textContent = 'Salvar';
+                        atualizarBotaoSalvarNome();
+                    }
+                }
             }
 
             function updateStatus(elementId, isConnected) {
@@ -467,12 +634,15 @@
 
             async function selectStore(store) {
                 if (!store || !store.store_id) {
+                    fecharEditorNomeLoja();
                     selectedStore = null;
-                    storeTitle.textContent = 'Selecione uma loja';
+                    atualizarCabecalhoLoja();
                     integrationsPanel.classList.add('hidden');
                     renderStores();
                     return;
                 }
+
+                if (!selectedStore || selectedStore.store_id !== store.store_id) fecharEditorNomeLoja();
 
                 try {
                     const storeData = await api.getStore(store);
@@ -480,7 +650,7 @@
                     if (window.jkCentralManualMode?.()) {
                         document.getElementById('central-grant-form').hidden = selectedStore.access !== 'owner';
                     }
-                    storeTitle.textContent = `Configurando: ${selectedStore.nome}`;
+                    atualizarCabecalhoLoja();
                     integrationsPanel.classList.remove('hidden');
 
                     formBling.reset();
@@ -548,6 +718,18 @@
                     } else {
                         selectStore(store);
                     }
+                }
+            });
+
+            renameStoreBtn.addEventListener('click', abrirEditorNomeLoja);
+            storeRenameInput.addEventListener('input', atualizarBotaoSalvarNome);
+            storeRenameEditor.addEventListener('submit', salvarNovoNomeLoja);
+            storeRenameCancel.addEventListener('click', fecharEditorNomeLoja);
+            storeRenameEditor.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape' && !renameBusy) {
+                    event.preventDefault();
+                    fecharEditorNomeLoja();
+                    renameStoreBtn.focus();
                 }
             });
 

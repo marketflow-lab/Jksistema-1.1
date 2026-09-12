@@ -2,7 +2,7 @@
 
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class PromoRequest(BaseModel):
@@ -12,6 +12,19 @@ class PromoRequest(BaseModel):
 
 class StoreRequest(BaseModel):
     nome: str
+
+
+class StoreRenameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    nome: str = Field(min_length=1, max_length=100)
+
+    @field_validator("nome", mode="before")
+    @classmethod
+    def validar_nome(cls, value):
+        if not isinstance(value, str):
+            raise ValueError("nome deve ser texto")
+        return value.strip()
 
 
 class MLPrecoRequest(BaseModel):
@@ -48,6 +61,7 @@ class MLPromocoesItensRequest(BaseModel):
 __all__ = [
     "PromoRequest",
     "StoreRequest",
+    "StoreRenameRequest",
     "MLPrecoRequest",
     "MLEstoqueRequest",
     "MLStatusRequest",

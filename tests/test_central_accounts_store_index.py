@@ -37,6 +37,8 @@ def test_index_preserves_exact_ids_local_metadata_and_removes_provider_secrets(t
     index.materialize_store_index("tenant-a", [STORE])
     result = json.loads(path.read_text())
     assert result[0]["store_id"] == STORE["store_id"]
+    assert result[0]["nome"] == STORE["nome"]
+    assert result[0]["nomes_anteriores"] == [local["nome"]]
     assert result[0]["custom"] == local["custom"]
     assert result[0]["integracoes"]["mercadoturbo"] == local["integracoes"]["mercadoturbo"]
     assert result[1] == other
@@ -44,6 +46,22 @@ def test_index_preserves_exact_ids_local_metadata_and_removes_provider_secrets(t
     assert cfg == {**STORE["integracoes"]["mercadolivre"], "central_migrated": True}
     with pytest.raises(HTTPException):
         index.assert_legacy_sync_allowed("tenant-a")
+
+
+def test_index_preserves_successive_names_without_duplicates(tenant):
+    path = tenant / "lojas_config.json"
+    path.write_text(json.dumps([{"store_id": STORE["store_id"], "nome": "First",
+                                 "nomes_anteriores": ["Original"], "integracoes": {}}]))
+
+    second = {**STORE, "nome": "Second"}
+    index.materialize_store_index("tenant-a", [second])
+    index.materialize_store_index("tenant-a", [second])
+    third = {**STORE, "nome": "Third"}
+    index.materialize_store_index("tenant-a", [third])
+
+    result = json.loads(path.read_text())[0]
+    assert result["nome"] == "Third"
+    assert result["nomes_anteriores"] == ["Original", "First", "Second"]
 
 
 @pytest.mark.parametrize("restored, materialized", [(False, False), (True, True)])

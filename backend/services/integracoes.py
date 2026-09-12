@@ -2587,6 +2587,64 @@ def criar_loja(client_id: str, nome_loja: str) -> dict:
         return dict(criada)
 
 
+def renomear_loja(
+    client_id: str,
+    nome_loja: str,
+    nome_novo: str,
+    *,
+    store_id: str | None = None,
+) -> dict:
+    """Renomeia uma identidade exata preservando integracoes e metadados."""
+    store_id_exato = str(store_id or "").strip()
+    if not store_id_exato:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "store_id_required",
+                "message": "Informe o store_id exato para renomear a loja.",
+            },
+        )
+    nome_final = str(nome_novo or "").strip()
+    if not 1 <= len(nome_final) <= 100:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "store_name_invalid",
+                "message": "O nome da loja deve ter entre 1 e 100 caracteres.",
+            },
+        )
+
+    with _integracoes_bloquear_rmw_lojas(client_id):
+        lojas = carregar_lojas(client_id)
+        loja = _integracoes_encontrar_loja_identidade(
+            lojas,
+            nome_loja,
+            store_id_exato,
+        )
+        if not isinstance(loja, dict):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "store_config_changed",
+                    "message": "A identidade da loja nao existe mais.",
+                    "store_id": store_id_exato,
+                },
+            )
+        loja["nome"] = nome_final
+        salvar_lojas(client_id, lojas)
+        persistida = _integracoes_encontrar_loja_identidade(
+            lojas,
+            nome_final,
+            store_id_exato,
+        )
+        if not isinstance(persistida, dict):
+            raise HTTPException(
+                status_code=500,
+                detail="Nao foi possivel confirmar o renome da loja.",
+            )
+        return copy.deepcopy(persistida)
+
+
 def _integracoes_ler_csv_operacional(caminho: str) -> list[dict[str, str]]:
     if not os.path.exists(caminho):
         return []
@@ -3520,6 +3578,7 @@ __all__ = [
     "salvar_lojas",
     "buscar_loja",
     "criar_loja",
+    "renomear_loja",
     "excluir_loja",
     "atualizar_api_loja",
     "renovar_token_bling_loja",
