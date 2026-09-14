@@ -29,6 +29,7 @@ from .customer_reply_state import (
     _customer_reply_cache_key,
     _customer_reply_cleanup_rows,
     _customer_reply_durable_payload,
+    _manual_safe_job_payload,
     _customer_reply_seal_result,
     _CUSTOMER_REPLY_SEALED_RESULT_FIELD,
     _customer_reply_transient_merge,
@@ -344,6 +345,8 @@ def _codex_assistant_customer_reply_job_save_cas(
     """Persist a job with an optional internal request-generation CAS."""
 
     data, job_id, now = _customer_reply_prepare_job(client_id, payload)
+    if str(data.get("queue_origin") or "") == "manual":
+        data = _manual_safe_job_payload(data)
     db_path = codex_assistant_state_db_path(info_base, client_id)
     expired_job_ids: list[str] = []
     with _lock_for(db_path):

@@ -80,14 +80,15 @@ def ml_questions_v2_process(request: Request, question_id: str, req: MLQuestions
     if not exact_store_id:
         raise HTTPException(status_code=400, detail="Informe o store_id exato da loja.")
     scope = resolve_scope(request, client_id, exact_store_id)
-    if scope is not None and scope.name != loja:
-        raise HTTPException(status_code=409, detail="A loja selecionada mudou. Atualize a lista de lojas.")
+    loja = scope.name
     canonical = perguntas_generation_preflight.load_context(request, scope, str(pergunta["id"]))
     pergunta, item = dict(canonical["question"]), dict(canonical["item"])
     if str(req.resposta_atual or "").strip():
         pergunta["_resposta_atual"] = str(req.resposta_atual)
     if perguntas_pos_venda_codex.enabled():
-        generation_session = perguntas_generation_preflight.remember_session(request, scope, str(pergunta["id"]))
+        generation_session = perguntas_generation_preflight.remember_session(
+            request, scope, str(pergunta["id"]), canonical,
+        )
         job = perguntas_pos_venda_codex.create_job(
             client_id=client_id,
             task_type="question",
@@ -95,9 +96,8 @@ def ml_questions_v2_process(request: Request, question_id: str, req: MLQuestions
             subject_key=str(pergunta.get("id") or ""),
             request={
                 "_generation_session": generation_session,
-                "pergunta": pergunta,
-                "item": item,
                 "question_text": str(pergunta.get("text") or ""),
+                "item_id": str(pergunta.get("item_id") or item.get("id") or ""),
                 "resposta_atual": str(req.resposta_atual or ""),
                 "sku": str(pergunta.get("item_sku") or pergunta.get("sku") or ""),
             },
@@ -118,6 +118,7 @@ def ml_questions_v2_process(request: Request, question_id: str, req: MLQuestions
             "answer": result.get("resposta") or "",
             "context": result.get("contexto") or {},
             "publish_attempted": False,
+            "context_status": (result.get("contexto") or {}).get("context_status") or {},
         })
     cfg = _obter_cfg_ml(client_id, loja, store_id=scope.store_id)
     official_current_listing = True
@@ -132,14 +133,27 @@ def ml_questions_v2_process(request: Request, question_id: str, req: MLQuestions
         resposta, cfg, contexto = _perguntas_ia_gerar_resposta(client_id, loja, cfg, pergunta, item)
     except PerguntasIARespostaIndisponivel as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    context_status = canonical.get("context_status") or {}
     warnings = ([perguntas_generation_preflight.HISTORY_TRUNCATED_WARNING]
                 if canonical.get("history_truncated") else [])
+    if context_status.get("warning"):
+        warnings.append(str(context_status["warning"]))
+    hub_status = perguntas_pos_venda_codex.context_hub_status(
+        contexto if isinstance(contexto, dict) else {}
+    )
+    if hub_status.get("warning"):
+        warnings.append(str(hub_status["warning"]))
+    if isinstance(contexto, dict):
+        contexto["context_status"] = context_status
+        contexto["context_hub_status"] = hub_status
     return {
         "success": True,
         "question_id": pergunta.get("id"),
         "answer": resposta,
         "context": contexto,
         "warnings": warnings,
+        "context_status": context_status,
+        "context_hub_status": hub_status,
         "publish_attempted": False,
     }
 

@@ -149,6 +149,8 @@
             error.status = response.status;
             error.scope = response.headers.get('X-JK-Error-Scope') || (error.status === 401 ? 'session' : 'resource');
             error.code = response.headers.get('X-JK-Error-Code') || 'request_failed';
+            error.component = response.headers.get('X-JK-Error-Component') || '';
+            error.reason = response.headers.get('X-JK-Error-Reason') || '';
             const retry = response.headers.get('X-JK-Retryable');
             error.retryable = retry ? retry === 'true' : [408, 429, 500, 502, 503, 504].includes(error.status);
             error.retryAfter = retryDelay(response.headers.get('Retry-After'));
@@ -165,16 +167,21 @@
             revokeStore(String(values.store_id || '')); return true;
         }
         if (question && (error.code === 'generation_context_unavailable' || [403, 404].includes(error.status))) {
-            rejectContext(question, error.component || 'question', [403, 404].includes(error.status));
+            rejectContext(question, error.component || 'question', [403, 404].includes(error.status), error.reason || '');
             return true;
         }
         return false;
     }
     function generationDenial(response, question) {
-        return handleDenial({ status: response.status,
+        const denial = { status: response.status,
             scope: response.headers.get('X-JK-Error-Scope') || (response.status === 401 ? 'session' : 'resource'),
-            code: response.headers.get('X-JK-Error-Code'), component: response.headers.get('X-JK-Error-Component')
-        }, { store_id: question?.store_id }, question);
+            code: response.headers.get('X-JK-Error-Code'),
+            component: response.headers.get('X-JK-Error-Component') || '',
+            reason: response.headers.get('X-JK-Error-Reason') || ''
+        };
+        if (denial.component === 'session') { clear(); return true; }
+        if (denial.component === 'store') { revokeStore(String(question?.store_id || '')); return true; }
+        return handleDenial(denial, { store_id: question?.store_id }, question);
     }
     function revokeStore(id) {
         if (!id) return;
@@ -393,12 +400,21 @@
         return { retryable: pending.some(value => value.retryable || value.state === 'stale'),
             retryAfter: Math.max(0, ...pending.map(value => retryDelay(value.retry_after))) };
     }
-    function enrichVisible(token, force = false) {
+    function clearGenerationContextWhenReady(question) {
+        if (!question?._itemReady || !question?._detailReady) return;
+        if (!['identity', 'question', 'history', 'item'].includes(question._generationComponent)) return;
+        question._generationComponent = '';
+        question._generationReason = '';
+        question._contextState = '';
+        question._generationError = '';
+    }
+    function enrichVisible(token, force = false, onlySelected = false) {
         let cachedApplied = false;
         const selected = state.perguntas.find(q => chavePerguntaAtendimento(q) === state.perguntaSelecionadaKey);
         if (selected) detail(selected, force);
         const groups = new Map();
-        state.perguntas.slice(0, 20).forEach(q => {
+        const candidates = onlySelected ? (selected ? [selected] : []) : state.perguntas.slice(0, 20);
+        candidates.forEach(q => {
             if (force) itemCache.delete(`${q.store_id}::${q.item_id}`);
             const cached = itemCache.get(`${q.store_id}::${q.item_id}`);
             if (!force && cached && Date.now() - cached.at < 900000) {
@@ -435,6 +451,7 @@
                             itemCache.delete(`${q.store_id}::${q.item_id}`);
                             for (const name of ['item_title', 'item_thumbnail', 'item_permalink', 'item_sku']) q[name] = '';
                         }
+                        clearGenerationContextWhenReady(q);
                     });
                     renderSafe();
                     return stateError(states);
@@ -507,21 +524,18 @@
                 }
                 if (question._detailReady) boundedSet(detailCache, key, { data: { ...fields, _detailReady: true, _questionState: 'ready', _historyState: 'ready', _historyTruncated: question._historyTruncated, _detailPartial: question._detailPartial }, at: Number(data.consultado_em || Date.now()) });
                 else detailCache.delete(key);
+                clearGenerationContextWhenReady(question);
                 if (chavePerguntaAtendimento(question) === state.perguntaSelecionadaKey) renderSafe();
                 return main.state === 'blocked' ? { retryable: false } : stateError([main, history]);
             });
         } catch (error) {
             if (error.name === 'AbortError') run.controller.abort();
             if (error.name !== 'AbortError' && token === generation && detailRun === run) {
-                question._historyState = [401, 403].includes(error.status) ? 'blocked' : 'unavailable';
-                question._questionState = question._historyState;
-                if (question._historyState === 'blocked') {
-                    for (const name of ['text', 'answer', 'from_id', 'buyer_id', 'buyer_name', 'buyer_nickname']) delete question[name];
-                    question.buyer_question_chat = [];
-                    question.buyer_question_history_count = 0;
-                    detailCache.delete(key);
-                }
-                perguntasStatus.textContent = 'Histórico indisponível. Tente novamente para liberar a IA.';
+                const failedComponent = ['question', 'history'].includes(error.component) ? error.component : 'question';
+                rejectContext(question, failedComponent, [401, 403, 404].includes(error.status), error.reason || '');
+                perguntasStatus.textContent = failedComponent === 'history'
+                    ? 'Histórico indisponível. Tente novamente para liberar a IA.'
+                    : 'Pergunta indisponível. Tente novamente para liberar a IA.';
             }
         } finally {
             if (!run.controller.signal.aborted && token === generation && question._detailRun === run) question._detailSettled = token;
@@ -546,24 +560,57 @@
     }
     function retrySelected() {
         const question = state.perguntas.find(q => chavePerguntaAtendimento(q) === state.perguntaSelecionadaKey);
-        if (question && !question._detailReady) detail(question, true);
-        if (question && !question._itemReady) enrichVisible(generation);
-    }
-    function rejectContext(question, name, blocked = false) {
         if (!question) return;
+        saveDraft();
+        const identity = question._generationComponent === 'identity';
+        if (!question._detailReady || identity) detail(question, true);
+        if (!question._itemReady || identity) enrichVisible(generation, true, true);
+    }
+    function generationContextMessage(name, reason = '') {
+        if (name === 'identity') return 'Os dados da loja, pergunta ou anúncio mudaram. Recarregue o contexto.';
+        if (name === 'context_hub') {
+            return reason === 'training_index_initializing'
+                ? 'As informações do Obsidian ainda estão sendo preparadas. Tente novamente em instantes.'
+                : 'As informações do Obsidian estão temporariamente indisponíveis. Tente novamente.';
+        }
+        if (name === 'context') return 'O contexto validado da IA expirou. Gere a sugestão novamente.';
+        if (name === 'question') return 'A pergunta não pôde ser confirmada. Recarregue o contexto.';
+        if (name === 'item') return 'O anúncio não pôde ser confirmado. Recarregue o contexto.';
+        if (name === 'history') return 'O histórico não pôde ser confirmado. Tente novamente.';
+        return '';
+    }
+    function rejectContext(question, name, blocked = false, reason = '') {
+        if (!question) return;
+        const allowed = new Set(['session', 'store', 'identity', 'question', 'history', 'item', 'context', 'context_hub']);
+        name = allowed.has(name) ? name : 'context';
+        if (name === 'session') { clear(); return; }
+        if (name === 'store') { revokeStore(String(question.store_id || '')); return; }
+        if (name === 'identity') blocked = true;
         const status = blocked ? 'blocked' : 'unavailable';
-        if (name === 'item' || name === 'all') {
+        const resourceStatus = name === 'identity' ? 'unavailable' : status;
+        question._generationComponent = name;
+        question._generationReason = reason;
+        question._generationError = generationContextMessage(name, reason) || question._generationError;
+        if (name === 'context') {
+            question._contextState = status;
+        } else if (name === 'context_hub') {
+            question._contextHubState = status;
+        } else if (name === 'item' || name === 'identity') {
             itemCache.delete(`${question.store_id}::${question.item_id}`);
-            Object.assign(question, { _itemReady: false, _itemState: status });
+            Object.assign(question, { _itemReady: false, _itemState: resourceStatus });
             if (blocked) for (const field of ['item_title', 'item_thumbnail', 'item_permalink', 'item_sku']) question[field] = '';
         }
-        if (name !== 'item') {
+        if (['question', 'history', 'identity'].includes(name)) {
             detailCache.delete(keyOf(question));
-            Object.assign(question, { _detailReady: false, _detailSettled: generation, _historyState: status });
+            Object.assign(question, { _detailReady: false, _detailSettled: generation });
             if (name === 'question') question._questionState = status;
+            if (name === 'history') question._historyState = status;
+            if (name === 'identity') Object.assign(question, { _questionState: resourceStatus, _historyState: resourceStatus, _contextState: status });
             if (blocked) {
-                question.buyer_question_chat = []; question.buyer_question_history_count = 0;
-                if (name === 'question') for (const field of ['text', 'answer', 'from_id', 'buyer_id', 'buyer_name', 'buyer_nickname']) delete question[field];
+                if (name === 'history' || name === 'identity') {
+                    question.buyer_question_chat = []; question.buyer_question_history_count = 0;
+                }
+                if (name === 'question' || name === 'identity') for (const field of ['text', 'answer', 'from_id', 'buyer_id', 'buyer_name', 'buyer_nickname']) delete question[field];
             }
         }
         if (chavePerguntaAtendimento(question) === state.perguntaSelecionadaKey) renderSafe();

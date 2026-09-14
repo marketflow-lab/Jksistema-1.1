@@ -2633,4 +2633,9 @@
 .question-loading-status [data-state="ready"] { color: #83d9b6; }
 .question-loading-status [data-state="blocked"],
 .question-loading-status [data-state="unavailable"],
+.question-loading-status [data-state="partial"],
 .question-loading-status [data-state="stale"] { color: #f1c774; }
+.question-loading-status .question-context-message {
+    flex-basis: 100%;
+    color: #ff9ca6;
+}

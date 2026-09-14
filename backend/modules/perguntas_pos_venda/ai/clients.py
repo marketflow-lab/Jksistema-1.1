@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from ml_questions_gemini.prompt_builder import _untrusted_json_block
 from backend.modules.context_hub.store_sku_contracts import canonical_json
-
 from .runtime import (
     AIAnswer,
     AIResponseParser,
@@ -30,6 +29,7 @@ from .compatibility import (
     _perguntas_ia_v2_compatibilidade_normalizar,
 )
 from .context import (
+    _context_hub_stage_metadata,
     _perguntas_ia_context_hub_deve_buscar,
     _perguntas_ia_context_hub_tool,
     _perguntas_ia_v2_coverage_analysis,
@@ -586,7 +586,7 @@ class _PerguntasVertexGeminiV2Client:
                 "source": reference.get("reference") or reference.get("doc_id") or "context_hub",
                 "authority": reference.get("truth_class") or "legacy_unverified",
             })
-        self.context_pipeline.append({
+        stage = {
             "step": step,
             "name": name,
             "status": "error" if erro else ("completed" if found else "unavailable"),
@@ -596,7 +596,10 @@ class _PerguntasVertexGeminiV2Client:
             "source_count": len(_perguntas_ia_v2_fontes_web(tool_result)) or len(reference_results),
             "error": erro[:180],
             "empty_result_is_not_incompatibility": not found,
-        })
+        }
+        if name == "context_hub_sku_reference":
+            stage.update(_context_hub_stage_metadata(result))
+        self.context_pipeline.append(stage)
 
     def _tool_segura(self, function_name: str, callback: Callable[[], Optional[dict]]) -> dict:
         try:

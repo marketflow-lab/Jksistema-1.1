@@ -200,9 +200,11 @@ def ml_perguntas_itens_rapidos(request: Request, store_id: str, item_ids: str,
                               stale_seconds=900, force=forcar)
 
 
-def _load_detail(scope, request, question_id, requested=None):
+def _load_detail(scope, request, question_id, requested=None, *, snapshot_max_age=60):
     cfg = support.config_for(scope, request)
-    snapshot = cache.peek_current(scope.key("detail", question_id), max_age=60) if requested else None
+    snapshot = cache.peek_current(
+        scope.key("detail", question_id), max_age=snapshot_max_age,
+    ) if requested else None
     previous = snapshot["value"] if snapshot else {}
     old_components = previous.get("components") or {}
     reuse_question = (requested and "question" not in requested
@@ -276,28 +278,164 @@ def _load_detail(scope, request, question_id, requested=None):
     return result
 
 
+def _cached_detail(scope, request, question_id, requested, *, force, snapshot_max_age=60):
+    return support.cached(
+        scope, "detail", (question_id,),
+        lambda: _load_detail(
+            scope, request, question_id, requested=requested, snapshot_max_age=snapshot_max_age,
+        ),
+        ttl=60, force=force or bool(requested), flight_variant=tuple(sorted(requested)),
+    )
+
+
+def _generation_age(origin) -> float:
+    return max(0.0, time.monotonic() - origin[0]) if origin else 0.0
+
+
+def _generation_component_age(value, name, fallback_age) -> float:
+    consulted = ((value.get("components") or {}).get(name) or {}).get("consultado_em")
+    if isinstance(consulted, (int, float)) and consulted > 0:
+        return max(0.0, time.time() - consulted / 1000.0)
+    return fallback_age
+
+
+def _generation_detail_ready(value) -> bool:
+    components = value.get("components") or {}
+    return all((components.get(name) or {}).get("state") == "ready"
+               for name in ("question", "history"))
+
+
+def _generation_detail_retryable(value) -> bool:
+    components = value.get("components") or {}
+    failed = [(components.get(name) or {}) for name in ("question", "history")
+              if (components.get(name) or {}).get("state") != "ready"]
+    return bool(failed) and all(component.get("retryable") for component in failed)
+
+
+def _generation_error_transient(error) -> bool:
+    return error.status_code in {408, 429} or error.status_code >= 500
+
+
 def canonical_context(request: Request, client_id: str, store_id: str, question_id: str, *, force=True):
-    """Server-derived, fully scoped context for both manual generation paths."""
+    """Return one authorized generation snapshot with a five-minute safety bound."""
+    warning = "Resposta gerada com contexto validado há até 5 minutos. Revise antes de enviar."
+
     with support.api_budget():
         scope = support.resolve_scope(request, client_id, store_id)
-        # Leave a portion of the shared 15-second deadline for the canonical item.
-        with read_budget(seconds=10):
-            detail = ml_perguntas_detalhe_rapido(request, store_id, question_id, forcar=force, client_id=client_id)
+        question_id = support.validate_id(question_id, "ID da pergunta", r"\d{1,30}")
+        support.config_for(scope, request)
+        detail_snapshot = cache.peek_current(scope.key("detail", question_id), max_age=300)
+        detail = detail_snapshot["value"] if detail_snapshot else None
+        detail_fallback = bool(detail and _generation_detail_ready(detail))
+        detail_origin_age = _generation_age(detail_snapshot["origin"]) if detail_snapshot else float("inf")
+        question_age = _generation_component_age(detail or {}, "question", detail_origin_age)
+        history_age = _generation_component_age(detail or {}, "history", detail_origin_age)
+        used_fallback = False
+        refreshed = False
+
+        detail_components = ""
+        if not force and detail_snapshot and question_age <= 60 < history_age:
+            detail_components = "history"
+        if force or not detail_snapshot or question_age > 60 or history_age > 60:
+            try:
+                with read_budget(seconds=10):
+                    loaded = _cached_detail(
+                        scope, request, question_id,
+                        {detail_components} if detail_components else set(),
+                        force=not detail_components, snapshot_max_age=300,
+                    )
+                refreshed = True
+                if loaded.get("stale"):
+                    if detail_fallback:
+                        used_fallback = True
+                    else:
+                        raise support.loading_error(
+                            503, "O contexto da pergunta expirou antes da atualizacao.",
+                            code="context_expired",
+                        )
+                elif _generation_detail_ready(loaded):
+                    detail = loaded
+                    detail_snapshot = cache.peek_current(scope.key("detail", question_id), max_age=300)
+                elif detail_fallback and _generation_detail_retryable(loaded):
+                    used_fallback = True
+                else:
+                    detail = loaded
+                    detail_snapshot = None
+            except HTTPException as error:
+                if detail_fallback and _generation_error_transient(error):
+                    used_fallback = True
+                else:
+                    raise
+
+        if not isinstance(detail, dict) or not isinstance(detail.get("question"), dict):
+            raise support.loading_error(502, "Contexto canonico da pergunta invalido.", code="context_invalid")
         question = detail["question"]
         item_id = support.validate_id(question.get("item_id"), "ID do anuncio", r"[A-Z]{3}\d{1,20}")
-        if detail["components"]["history"]["state"] == "ready":
-            items = ml_perguntas_itens_rapidos(request, store_id, item_id, forcar=force, client_id=client_id)
+        item_entries = cache.peek_item_entries(scope.key("items"), [item_id], max_age=300)
+        item_snapshot = item_entries.get(item_id)
+        item = item_snapshot["value"] if item_snapshot else None
+        item_component = item_snapshot["component"] if item_snapshot else None
+        item_fallback = bool(item and (item_component or {}).get("state") == "ready")
+
+        needs_item_refresh = (force or not item_snapshot or _generation_age(item_snapshot["origin"]) > 60)
+        if detail.get("components", {}).get("history", {}).get("state") == "ready":
+            if needs_item_refresh:
+                try:
+                    loaded_items = ml_perguntas_itens_rapidos(
+                        request, store_id, item_id, forcar=True, client_id=client_id,
+                    )
+                    refreshed = True
+                    loaded_component = (loaded_items.get("item_states") or {}).get(item_id) or {}
+                    loaded_item = next((row for row in loaded_items.get("items", [])
+                                        if str(row.get("id") or "") == item_id), None)
+                    if item_id in (loaded_items.get("fallback_item_ids") or []):
+                        used_fallback = True
+                    elif loaded_items.get("stale"):
+                        if item_fallback:
+                            used_fallback = True
+                        else:
+                            raise support.loading_error(
+                                503, "O contexto do anuncio expirou antes da atualizacao.",
+                                code="context_expired",
+                            )
+                    elif loaded_item and loaded_component.get("state") == "ready":
+                        item, item_component, item_snapshot = loaded_item, loaded_component, None
+                    elif item_fallback and loaded_component.get("retryable"):
+                        used_fallback = True
+                    else:
+                        if (loaded_component.get("state") == "blocked"
+                                or loaded_component.get("code") in {"access_denied", "not_found"}):
+                            cache._discard_scope((scope.client_id, scope.store_id))
+                        item, item_component, item_snapshot = loaded_item, loaded_component, None
+                except HTTPException as error:
+                    if item_fallback and _generation_error_transient(error):
+                        used_fallback = True
+                    else:
+                        raise
         else:
-            items = {"items": [], "item_states": {item_id: support.component(support.loading_error(
-                503, "Historico necessario antes de carregar contexto da IA.", code="component_deferred"))}}
-        support.config_for(scope, request)
+            item, item_component = {}, support.component(support.loading_error(
+                503, "Historico necessario antes de carregar contexto da IA.", code="component_deferred"))
+
+        detail_origin_age = _generation_age(detail_snapshot["origin"]) if detail_snapshot else 0.0
+        ages = [_generation_component_age(detail, name, detail_origin_age)
+                for name in ("question", "history")]
+        if item_snapshot:
+            ages.append(_generation_age(item_snapshot["origin"]))
+        source = "stale_fallback" if used_fallback else "refreshed" if refreshed else "fresh_cache"
+        context_status = {
+            "source": source,
+            "age_seconds": min(300, int(max(ages, default=0))),
+            "warning": warning if used_fallback else None,
+        }
         return {"scope": {"client_id": scope.client_id, "username": scope.username,
                 "store_id": scope.store_id, "seller_id": scope.seller_id, "site_id": scope.site_id,
                 "name": scope.name}, "loja": scope.name, "question": question,
-                "item": next((row for row in items["items"] if str(row.get("id")) == item_id), {}),
-                "components": {**detail["components"], "item": items["item_states"][item_id]},
-                "history_truncated": detail["history_truncated"],
-                "stale": bool(detail.get("stale") or items.get("stale"))}
+                "item": item or {}, "components": {**(detail.get("components") or {}),
+                "item": item_component or support.component(support.loading_error(
+                    502, "Anuncio canonico indisponivel.", code="component_not_ready"))},
+                "history_truncated": bool(detail.get("history_truncated")), "stale": False,
+                "cache_revision": cache.revision(scope.client_id, scope.store_id),
+                "context_status": context_status}
 
 
 def ml_perguntas_detalhe_rapido(request: Request, store_id: str, question_id: str,
@@ -309,9 +447,7 @@ def ml_perguntas_detalhe_rapido(request: Request, store_id: str, question_id: st
         requested = {part.strip() for part in componentes.split(",") if part.strip()}
         if requested - {"question", "history", "buyer"}:
             raise HTTPException(400, "Componente de pergunta invalido.")
-        return support.cached(scope, "detail", (question_id,),
-                              lambda: _load_detail(scope, request, question_id, requested=requested),
-                              ttl=60, force=forcar or bool(requested), flight_variant=tuple(sorted(requested)))
+        return _cached_detail(scope, request, question_id, requested, force=forcar)
 
 
 def _count(scope, request, force):

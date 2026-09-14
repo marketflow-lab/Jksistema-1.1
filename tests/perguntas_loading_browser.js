@@ -37,7 +37,7 @@ function questions(store, offset, limit) {
 async function fixture(browser) {
   const calls = [];
   const errors = [];
-  const control = { slowMs: 900, fastMs: 35, deny: '', fail: '', listHold: null, counts: {}, detailMs: 75, history: 'ready', detailDeny: false, itemDeny: false, omitComponents: false, itemMissingOnce: '', detailErrors: [], retryAfter: '0' };
+  const control = { slowMs: 900, fastMs: 35, deny: '', fail: '', listHold: null, counts: {}, detailMs: 75, history: 'ready', detailDeny: false, itemDeny: false, omitComponents: false, itemMissingOnce: '', detailErrors: [], retryAfter: '0', generationReject: '', generationReason: '' };
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
@@ -91,7 +91,7 @@ async function fixture(browser) {
       }
       if (url.pathname.endsWith('/perguntas/resumo')) return json({ lojas: stores.map(s => ({ ...s, perguntas: s === stores[10] ? null : control.counts[s.store_id] ?? 60, total: s === stores[10] ? null : 60, status_resumo: { UNANSWERED: 60 }, erro: s === stores[10] ? 'Falha sintética' : null })), partial: true });
       if (url.pathname.endsWith('/perguntas/resposta/gerar') && control.generationScope) return route.fulfill({status: control.generationScope === 'session' ? 401 : control.generationScope === 'resource' ? 404 : 403, contentType: 'application/json', headers: {'X-JK-Error-Code': `${control.generationScope}_disconnected`, 'X-JK-Error-Scope': control.generationScope}, body: JSON.stringify({detail: 'Consulta sem acesso na fixture'})}).catch(() => {});
-      if (url.pathname.endsWith('/perguntas/resposta/gerar') && control.generationReject) return route.fulfill({status: 409, contentType: 'application/json', headers: {'X-JK-Error-Code': 'generation_context_unavailable', 'X-JK-Error-Component': control.generationReject}, body: JSON.stringify({detail: 'Histórico não confirmado. Tente novamente.'})}).catch(() => {});
+      if (url.pathname.endsWith('/perguntas/resposta/gerar') && control.generationReject) return route.fulfill({status: 409, contentType: 'application/json', headers: {'X-JK-Error-Code': 'generation_context_unavailable', 'X-JK-Error-Component': control.generationReject, 'X-JK-Error-Reason': control.generationReason}, body: JSON.stringify({detail: control.generationReject === 'history' ? 'Histórico não confirmado. Tente novamente.' : control.generationReject === 'context_hub' ? 'Índice temporariamente indisponível.' : 'Contexto não confirmado. Tente novamente.'})}).catch(() => {});
       if (url.pathname.endsWith('/perguntas/responder')) return json({ success: true, resposta: 'Resposta sintética confirmada' });
       if (url.pathname.endsWith('/ia-treinamento')) return json({ success: true, store_id: call.store, exemplos: {}, notas_sku: {}, orientacoes: '' });
       return json({ success: true, lojas: [], produtos: [], status: 'idle' });
@@ -255,7 +255,7 @@ async function verifyGenerationDenial({ page, control }) {
   await page.evaluate(() => selecionarLoja(TODAS_LOJAS_VALUE));
   await page.waitForFunction(() => document.querySelector('.question-ai-answer-btn')?.disabled === false);
   await page.locator('.question-answer-text').fill('Rascunho enquanto o servidor pesquisa');
-  await page.evaluate(() => aplicarResultadoJobAtendimentoCodex(state.perguntaSelecionadaKey, {blocked_without_draft: true, result: {resposta: '', blocked_without_draft: true, warnings: ['Histórico indisponível durante a pesquisa.']}}));
+  await page.evaluate(() => aplicarResultadoJobAtendimentoCodex(state.perguntaSelecionadaKey, {blocked_without_draft: true, result: {resposta: '', blocked_without_draft: true, error_component: 'history', warnings: ['Histórico indisponível durante a pesquisa.']}}));
   assert.strictEqual(await page.locator('.question-answer-text').inputValue(), 'Rascunho enquanto o servidor pesquisa', 'job bloqueado sem resposta não apaga rascunho local');
   assert.strictEqual(await page.locator('.question-ai-answer-btn').isEnabled(), false);
   assert.match(await page.locator('.question-answer-composer .question-answer-status').innerText(), /Histórico indisponível/);
@@ -302,12 +302,35 @@ async function verifyRecovery({ page, calls, control }) {
   control.generationReject = 'history';
   await page.locator('.question-ai-answer-btn').click();
   await page.waitForFunction(() => document.querySelector('.question-loading-retry') && document.querySelector('.question-ai-answer-btn')?.disabled);
-  assert.match(await page.locator('.question-answer-composer .question-answer-status').innerText(), /Histórico não confirmado/);
+  assert.match(await page.locator('.question-answer-composer .question-answer-status').innerText(), /histórico não pôde ser confirmado/i);
   await page.evaluate(() => renderizarPerguntas());
-  assert.match(await page.locator('.question-answer-composer .question-answer-status').innerText(), /Histórico não confirmado/, 'nova renderização deve preservar explicação da rejeição');
+  assert.match(await page.locator('.question-answer-composer .question-answer-status').innerText(), /histórico não pôde ser confirmado/i, 'nova renderização deve preservar explicação da rejeição');
   control.generationReject = '';
   await page.locator('.question-loading-retry').click();
   await page.waitForFunction(() => document.querySelector('.question-ai-answer-btn')?.disabled === false);
+  await page.locator('.question-answer-text').fill('Rascunho preservado na divergência');
+  control.generationReject = 'identity';
+  control.generationReason = 'store_changed';
+  await page.locator('.question-ai-answer-btn').click();
+  await page.waitForFunction(() => document.querySelector('[data-component="identity"]')?.dataset.state === 'blocked');
+  assert.match(await page.locator('.question-loading-status').innerText(), /Os dados da loja, pergunta ou anúncio mudaram\. Recarregue o contexto\./);
+  assert.doesNotMatch(await page.locator('[data-component="history"]').innerText(), /Acesso bloqueado/, 'divergência de identidade não pode se apresentar como bloqueio do histórico');
+  assert.strictEqual(await page.locator('.question-answer-text').inputValue(), 'Rascunho preservado na divergência');
+  assert.strictEqual(await page.locator('.question-loading-retry').innerText(), 'Recarregar contexto');
+  control.generationReject = '';
+  control.generationReason = '';
+  await page.locator('.question-loading-retry').click();
+  await page.waitForFunction(() => document.querySelector('.question-ai-answer-btn')?.disabled === false);
+  assert.strictEqual(await page.locator('.question-answer-text').inputValue(), 'Rascunho preservado na divergência');
+  control.generationReject = 'context_hub';
+  control.generationReason = 'training_index_initializing';
+  await page.locator('.question-ai-answer-btn').click();
+  await page.waitForFunction(() => document.querySelector('[data-component="context_hub"]')?.dataset.state === 'unavailable');
+  assert.match(await page.locator('.question-loading-status').innerText(), /informações do Obsidian ainda estão sendo preparadas/i);
+  assert.strictEqual(await page.locator('.question-answer-text').inputValue(), 'Rascunho preservado na divergência');
+  assert.strictEqual(await page.locator('.question-ai-answer-btn').isEnabled(), true, 'Context Hub indisponível deve permitir nova tentativa sem apagar o contexto do Mercado Livre');
+  control.generationReject = '';
+  control.generationReason = '';
   control.detailMs = 75;
   control.history = 'unavailable';
   await page.evaluate(() => JKPerguntasLoading.detalhe(state.perguntas[18], true));

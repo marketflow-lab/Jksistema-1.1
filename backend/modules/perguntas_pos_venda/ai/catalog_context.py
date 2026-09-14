@@ -30,24 +30,27 @@ def _signature(client_id: str, identity: Mapping[str, Any]) -> str:
 
 def issue_listing_identity_proof(
     client_id: str, store: str, cfg: Mapping[str, Any], official_item: Mapping[str, Any],
-    identity: Mapping[str, Any], *, extract_sku: Any,
+    identity: Mapping[str, Any], *, extract_sku: Any, store_id: object = "",
 ) -> str:
     """Call only on the raw item just returned by a server marketplace read.
 
     A client-provided SKU/variation is never proof. Variations must be unique for
     public questions; orders use prove_order_item_context for their exact line.
     """
-    from backend.services.cadastro_compatibilidade import resolver_loja_ativa_para_leitura
-
     exact = {key: _text(identity.get(key)) for key in _IDENTITY_FIELDS}
     if not client_id or not all(exact[key] for key in _IDENTITY_FIELDS[:-1]):
         return ""
-    scope = resolver_loja_ativa_para_leitura(client_id, store)
+    exact_store_id = _text(store_id)
+    if not exact_store_id:
+        from backend.services.cadastro_compatibilidade import resolver_loja_ativa_para_leitura
+        exact_store_id = _text(
+            resolver_loja_ativa_para_leitura(client_id, store).get("store_id")
+        )
     seller = _text(cfg.get("user_id") or cfg.get("seller_id"))
     item_seller = _text(official_item.get("seller_id") or (official_item.get("seller") or {}).get("id"))
     site = _text(official_item.get("site_id"))
     if (
-        _text(scope.get("store_id")) != exact["store_ref"]
+        exact_store_id != exact["store_ref"]
         or not seller or seller != item_seller or seller != exact["seller_id"]
         or not site or site != exact["site_id"]
         or _text(official_item.get("id")) != exact["item_id"]

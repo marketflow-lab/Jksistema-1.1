@@ -33,6 +33,26 @@ _REVISIONS: OrderedDict[tuple[str, str], int] = OrderedDict()
 _VERSION_SEQUENCE = itertools.count(1)
 _SCHEDULER = ReadScheduler()
 MAX_ENTRIES = 500
+_INVALIDATION_LISTENERS: list[Callable[[str, str], None]] = []
+
+
+def register_invalidation_listener(callback: Callable[[str, str], None]) -> None:
+    """Register an in-process purge hook without introducing service imports."""
+    with _LOCK:
+        if callback not in _INVALIDATION_LISTENERS:
+            _INVALIDATION_LISTENERS.append(callback)
+
+
+def _notify_invalidation(client_id: str, store_id: str) -> None:
+    with _LOCK:
+        listeners = list(_INVALIDATION_LISTENERS)
+    for callback in listeners:
+        try:
+            callback(client_id, store_id)
+        except Exception:
+            # Cache invalidation must remain successful even if optional consumers
+            # have already shut down during process teardown.
+            pass
 
 
 def _prune_revisions_locked() -> None:
@@ -64,6 +84,7 @@ def invalidate_store(client_id: str, store_id: str) -> None:
                 else:
                     del _ENTRIES[key]
         _prune_revisions_locked()
+    _notify_invalidation(client_id, store_id)
 
 
 def peek_items(scope_key: tuple, item_ids: list[str]) -> dict[str, dict]:
@@ -84,6 +105,39 @@ def peek_items(scope_key: tuple, item_ids: list[str]) -> dict[str, dict]:
     return result
 
 
+def peek_item_entries(scope_key: tuple, item_ids: list[str], *, max_age=60) -> dict[str, dict]:
+    """Return detached item snapshots together with their original cache age.
+
+    The lookup is intentionally bounded to the complete authorized scope.  It can
+    reuse an item loaded as part of a larger browser batch without turning that
+    read into a new cache hit or extending its lifetime.
+    """
+    wanted = set(item_ids)
+    result: dict[str, dict] = {}
+    now = time.monotonic()
+    with _LOCK:
+        current_revision = _REVISIONS.get(scope_key[:2], 0)
+        candidates = sorted(_ENTRIES.items(), key=lambda pair: pair[1].monotonic_at, reverse=True)
+        for key, entry in candidates:
+            if (key[:5] != scope_key[:5] or key[5] != "items"
+                    or entry.revision != current_revision
+                    or now - entry.monotonic_at > max_age):
+                continue
+            states = entry.value.get("item_states") or {}
+            for item in entry.value.get("items", []):
+                item_id = str(item.get("id") or "")
+                if item_id in wanted and item_id not in result:
+                    result[item_id] = {
+                        "value": copy.deepcopy(item),
+                        "component": copy.deepcopy(states.get(item_id) or {}),
+                        "origin": (entry.monotonic_at, entry.consulted_at),
+                        "revision": entry.revision,
+                    }
+            if len(result) == len(wanted):
+                break
+    return result
+
+
 def _discard_scope(key: tuple) -> None:
     # Never keep stale content after a provider explicitly denies access.
     with _LOCK:
@@ -91,6 +145,35 @@ def _discard_scope(key: tuple) -> None:
         for existing in list(_ENTRIES):
             if existing[:2] == key[:2]:
                 del _ENTRIES[existing]
+    _notify_invalidation(str(key[0]), str(key[1]))
+
+
+def _merge_retryable_item_failures(current: Entry | None, value: dict) -> tuple[dict, tuple | None]:
+    if current is None or not value.get("partial"):
+        return value, None
+    old_states = current.value.get("item_states") or {}
+    new_states = value.get("item_states") or {}
+    old_items = {str(item.get("id") or ""): item for item in current.value.get("items", [])}
+    new_items = {str(item.get("id") or ""): item for item in value.get("items", [])}
+    recovered = []
+    for item_id, state in new_states.items():
+        if ((state or {}).get("state") == "ready" or not (state or {}).get("retryable")
+                or (old_states.get(item_id) or {}).get("state") != "ready"
+                or item_id not in old_items):
+            continue
+        new_items[item_id] = copy.deepcopy(old_items[item_id])
+        new_states[item_id] = copy.deepcopy(old_states[item_id])
+        recovered.append(item_id)
+    if not recovered:
+        return value, None
+    merged = copy.deepcopy(value)
+    merged["items"] = list(new_items.values())
+    merged["item_states"] = new_states
+    merged["missing_item_ids"] = [
+        item_id for item_id in (merged.get("missing_item_ids") or []) if item_id not in recovered
+    ]
+    merged["fallback_item_ids"] = sorted(set(merged.get("fallback_item_ids") or []) | set(recovered))
+    return merged, (current.monotonic_at, current.consulted_at)
 
 
 def peek_current(key: tuple, *, max_age=60):
@@ -143,6 +226,13 @@ def _perform(key: tuple, loader: Callable[[], dict], generation: int) -> Entry:
                     _ENTRIES.pop(key, None)
             raise
     origin = value.pop("_cache_origin", None)
+    if key[5] == "items":
+        with _LOCK:
+            current_for_merge = _ENTRIES.get(key)
+            if current_for_merge and current_for_merge.revision != generation:
+                current_for_merge = None
+        value, item_origin = _merge_retryable_item_failures(current_for_merge, value)
+        origin = origin or item_origin
     monotonic_at, consulted_at = time.monotonic(), int(time.time() * 1000)
     if (isinstance(origin, tuple) and len(origin) == 2
             and isinstance(origin[0], (int, float)) and isinstance(origin[1], int)
@@ -153,8 +243,17 @@ def _perform(key: tuple, loader: Callable[[], dict], generation: int) -> Entry:
         if generation != _REVISIONS.get(key[:2], 0):
             raise HTTPException(409, "As perguntas mudaram durante a consulta. Atualize a lista.")
         current = _ENTRIES.get(key)
-        if origin is not None and current and current.monotonic_at > entry.monotonic_at:
-            # A completed full refresh wins over a partial retry based on an older snapshot.
+        if origin is not None and current and (
+            current.monotonic_at > entry.monotonic_at
+            or (
+                current.monotonic_at == entry.monotonic_at
+                and entry.value.get("partial")
+                and not current.value.get("partial")
+            )
+        ):
+            # A successful snapshot wins over a partial retry derived from it. This
+            # keeps the bounded fallback available for another click without
+            # extending the original consultation age.
             return current
         _ENTRIES[key] = entry
         _ENTRIES.move_to_end(key)

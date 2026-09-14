@@ -4299,8 +4299,10 @@ def test_product_evidence_identity_is_exact_or_fails_closed_for_variations():
     selected_question = {"item_id": item["id"], "variation_id": "V12"}
     selected = orchestrator._product_evidence_identity(
         runtime,
-        store="Loja",
-        cfg={},
+        store_id="store-a",
+        seller_id="SELLER-1",
+        site_id="MLB",
+        item_id=item["id"],
         question=selected_question,
         item=item,
         request={},
@@ -4308,8 +4310,10 @@ def test_product_evidence_identity_is_exact_or_fails_closed_for_variations():
     unresolved_question = {"item_id": item["id"]}
     unresolved = orchestrator._product_evidence_identity(
         runtime,
-        store="Loja",
-        cfg={},
+        store_id="store-a",
+        seller_id="SELLER-1",
+        site_id="MLB",
+        item_id=item["id"],
         question=unresolved_question,
         item=item,
         request={},
@@ -4318,8 +4322,10 @@ def test_product_evidence_identity_is_exact_or_fails_closed_for_variations():
     single_question = {"item_id": item["id"]}
     single = orchestrator._product_evidence_identity(
         runtime,
-        store="Loja",
-        cfg={},
+        store_id="store-a",
+        seller_id="SELLER-1",
+        site_id="MLB",
+        item_id=item["id"],
         question=single_question,
         item=single_item,
         request={},

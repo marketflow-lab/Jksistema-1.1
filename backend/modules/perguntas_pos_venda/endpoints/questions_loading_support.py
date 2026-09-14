@@ -137,10 +137,10 @@ def resolve_seller_site(scope: Scope) -> str:
 def config_for(scope: Scope, request: Request) -> dict:
     # Recheck authorization inside the initiating session context for background work.
     current = resolve_scope(request, scope.client_id, scope.store_id)
-    if current != scope:
+    if current.key("identity")[:5] != scope.key("identity")[:5]:
         cache._discard_scope((scope.client_id, scope.store_id))
         raise loading_error(409, "A conexao da loja mudou. Atualize a lista de lojas.", scope="store", code="store_changed")
-    return _store_config(scope)
+    return _store_config(current)
 
 
 def _store_config(scope: Scope) -> dict:

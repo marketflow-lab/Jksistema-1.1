@@ -128,6 +128,11 @@ def _public_solicitacao(job: dict[str, Any], stores: dict[str, dict[str, str]]) 
             else ("aguardar_processamento" if str(job.get("status") or "") in {"queued", "running", "waiting_retry"} else "")
         ),
         "completion_reason": str(job.get("completion_reason") or ""),
+        "error_code": str(job.get("error_code") or ""),
+        "error_component": str(job.get("error_component") or ""),
+        "error_reason": str(job.get("error_reason") or ""),
+        "retryable": bool(job.get("retryable")),
+        "retry_after": max(0, int(job.get("retry_after") or 0)),
         "evidencias": _safe_evidence(job.get("evidence_status")),
         "avisos": warnings,
         "created_at": str(job.get("created_at") or ""),

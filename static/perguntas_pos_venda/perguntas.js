@@ -240,16 +240,24 @@ function renderizarDetalhePerguntaAtendimento(pergunta) {
     const linkAnuncio = pergunta.item_permalink
         ? `<a class="action-btn secondary" href="${escapeHtml(pergunta.item_permalink)}" target="_blank" rel="noopener">Abrir an&uacute;ncio</a>`
         : '';
-    const rotulosCarga = { loading: 'Carregando', ready: 'Pronto', stale: 'Desatualizado', unavailable: 'Indisponível', blocked: 'Acesso bloqueado' };
+    const rotulosCarga = { loading: 'Carregando', ready: 'Pronto', stale: 'Desatualizado', partial: 'Parcial', unavailable: 'Indisponível', blocked: 'Acesso bloqueado' };
     const anuncioEstado = pergunta._itemState || (pergunta._itemReady ? 'ready' : 'loading');
+    const perguntaEstado = pergunta._questionState || (pergunta._detailReady ? 'ready' : 'loading');
     const historicoEstado = pergunta._historyState || (pergunta._detailReady ? 'ready' : 'loading');
+    const erroComponente = String(pergunta._generationComponent || '');
+    const contextoEstado = pergunta._contextState || '';
+    const contextHubEstado = pergunta._contextHubState || '';
     const podeRepetir = !pergunta._detailPending && !pergunta._itemPending && (!pergunta._detailReady || !pergunta._itemReady);
+    const rotuloRepetir = erroComponente === 'identity' ? 'Recarregar contexto' : 'Tentar novamente';
     const statusCarga = `<div class="question-loading-status" role="status">
-        ${pergunta._questionState === 'blocked' ? '<span data-component="question" data-state="blocked">Pergunta: acesso bloqueado</span>' : ''}
+        ${perguntaEstado !== 'ready' ? `<span data-component="question" data-state="${escapeHtml(perguntaEstado)}">Pergunta: ${escapeHtml(rotulosCarga[perguntaEstado] || 'Indisponível')}</span>` : ''}
         <span data-component="item" data-state="${escapeHtml(anuncioEstado)}">Anúncio: ${escapeHtml(rotulosCarga[anuncioEstado] || 'Indisponível')}</span>
         <span data-component="history" data-state="${escapeHtml(historicoEstado)}">Histórico: ${escapeHtml(rotulosCarga[historicoEstado] || 'Indisponível')}</span>
+        ${contextoEstado ? `<span data-component="${erroComponente === 'identity' ? 'identity' : 'context'}" data-state="${escapeHtml(contextoEstado)}">${erroComponente === 'identity' ? 'Identidade' : 'Contexto IA'}: ${escapeHtml(rotulosCarga[contextoEstado] || 'Indisponível')}</span>` : ''}
+        ${contextHubEstado ? `<span data-component="context_hub" data-state="${escapeHtml(contextHubEstado)}">Obsidian: ${escapeHtml(rotulosCarga[contextHubEstado] || 'Indisponível')}</span>` : ''}
+        ${pergunta._generationError && ['identity', 'context', 'context_hub'].includes(erroComponente) ? `<span class="question-context-message" data-context-message="${escapeHtml(erroComponente)}">${escapeHtml(pergunta._generationError)}</span>` : ''}
         ${pergunta._historyTruncated ? '<span>Histórico limitado às 50 perguntas recentes do anúncio, filtradas pelo comprador.</span>' : ''}
-        ${podeRepetir ? '<button class="action-btn secondary question-loading-retry" type="button">Tentar novamente</button>' : ''}
+        ${podeRepetir ? `<button class="action-btn secondary question-loading-retry" type="button">${rotuloRepetir}</button>` : ''}
     </div>`;
     const composer = podeResponder ? `
         <div class="question-answer-composer">
@@ -930,9 +938,38 @@ function aplicarEstadoJobAtendimentoCodex(questionKey, tenantScope = tenantJobAt
                 button.disabled = false;
                 delete button.dataset.jobId;
             }
-            if (generate) generate.disabled = false;
+            if (generate) {
+                const question = (state.perguntas || []).find(item => chavePerguntaAtendimento(item) === questionKey);
+                generate.disabled = Boolean(question && (!question._itemReady || !question._detailReady));
+            }
         }
     });
+}
+
+function statusContextHubResultado(result) {
+    if (!result || typeof result !== 'object') return null;
+    const raw = result.context_hub_status ?? result.contexto?.context_hub_status;
+    if (raw === undefined || raw === null || raw === '') return null;
+    const value = typeof raw === 'string' ? { state: raw } : (typeof raw === 'object' ? raw : {});
+    if (!Object.keys(value).length) return null;
+    let state = String(value.state || value.status || '').trim().toLowerCase();
+    if (!state && (value.partial === true || value.partial_unavailable === true)) state = 'partial';
+    if (!state && value.unavailable === true) state = 'unavailable';
+    if (!['ready', 'partial', 'unavailable'].includes(state)) return null;
+    return {
+        state,
+        reason: String(value.reason || value.reason_code || '').trim(),
+        warning: String(value.warning || value.message || '').trim()
+    };
+}
+
+function avisoContextHubResultado(status) {
+    if (!status || status.state === 'ready') return '';
+    if (status.warning) return status.warning;
+    if (status.state === 'partial') {
+        return 'As informações do Obsidian foram carregadas parcialmente. Revise o rascunho antes de enviar.';
+    }
+    return 'As informações do Obsidian estavam indisponíveis. O rascunho foi gerado com as demais evidências disponíveis.';
 }
 
 function aplicarResultadoJobAtendimentoCodex(questionKey, data, tenantScope = tenantJobAtendimentoCodex()) {
@@ -958,7 +995,12 @@ function aplicarResultadoJobAtendimentoCodex(questionKey, data, tenantScope = te
             if (bloqueadoSemRascunho) {
                 const pergunta = (state.perguntas || []).find(q => chavePerguntaAtendimento(q) === questionKey);
                 if (pergunta) pergunta._generationError = mensagem;
-                window.JKPerguntasLoading?.rejeitarContexto(pergunta, result.error_component || data.error_component || 'all');
+                window.JKPerguntasLoading?.rejeitarContexto(
+                    pergunta,
+                    result.error_component || data.error_component || 'context',
+                    false,
+                    result.error_reason || data.error_reason || ''
+                );
             }
             const currentStatus = cardsAtuaisJobAtendimentoCodex(questionKey)[0]?.querySelector('.question-answer-composer .question-answer-status') || status;
             setStatusRespostaPergunta(
@@ -968,13 +1010,46 @@ function aplicarResultadoJobAtendimentoCodex(questionKey, data, tenantScope = te
             );
             return;
         }
+        const pergunta = (state.perguntas || []).find(q => chavePerguntaAtendimento(q) === questionKey);
+        const contextHubStatus = statusContextHubResultado(result);
+        const contextHubWarning = avisoContextHubResultado(contextHubStatus);
+        if (pergunta) {
+            pergunta._contextState = '';
+            if (contextHubStatus && contextHubStatus.state !== 'ready') {
+                pergunta._contextHubState = contextHubStatus.state;
+                pergunta._generationComponent = 'context_hub';
+                pergunta._generationReason = contextHubStatus.reason;
+                pergunta._generationError = contextHubWarning;
+            } else {
+                pergunta._contextHubState = '';
+                pergunta._generationComponent = '';
+                pergunta._generationReason = '';
+                pergunta._generationError = '';
+            }
+        }
+        card.querySelector('[data-component="context"]')?.remove();
+        if (!contextHubStatus || contextHubStatus.state === 'ready') {
+            card.querySelector('[data-component="context_hub"]')?.remove();
+            card.querySelector('[data-context-message="context_hub"]')?.remove();
+        }
         textarea.value = resposta;
         textarea.dataset.codexProposalId = String(result.proposal_id || data.proposal_id || data.job_id || '');
         textarea.dataset.codexProposalVersion = String(result.proposal_version || data.proposal_version || 1);
         textarea.dataset.codexProposalHash = String(result.proposal_hash || data.proposal_hash || '');
         textarea.dispatchEvent(new Event('input', { bubbles: true }));
         const draftSource = String(result.draft_source || data?.draft_source || '').trim().toLowerCase();
-        const avisos = [...new Set([...(Array.isArray(data?.warnings) ? data.warnings : []), ...(Array.isArray(result?.warnings) ? result.warnings : [])].filter(value => typeof value === 'string'))].join(' ');
+        const contextStatus = result.context_status && typeof result.context_status === 'object'
+            ? result.context_status
+            : (data?.context_status && typeof data.context_status === 'object' ? data.context_status : {});
+        const avisoContexto = String(contextStatus.source || '').toLowerCase() === 'stale_fallback'
+            ? String(contextStatus.warning || 'Resposta gerada com contexto validado há até 5 minutos. Revise antes de enviar.')
+            : '';
+        const avisos = [...new Set([
+            ...(Array.isArray(data?.warnings) ? data.warnings : []),
+            ...(Array.isArray(result?.warnings) ? result.warnings : []),
+            avisoContexto,
+            contextHubWarning
+        ].filter(value => typeof value === 'string' && value.trim()))].join(' ');
         const parcial = (result.data_sufficient ?? data?.data_sufficient) === false
             && Boolean(result.completed_with_partial ?? data?.completed_with_partial);
         if (draftSource === 'contextual_fallback') {
@@ -1190,10 +1265,16 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
             })
         });
         let data = await response.json().catch(() => ({}));
+        const acceptedContextStatus = data?.context_status && typeof data.context_status === 'object'
+            ? data.context_status
+            : null;
         if (!response.ok) {
-            pergunta._generationError = `Erro ao gerar IA: ${mensagemErroApi(data, 'Erro ao gerar resposta com IA.')}`;
-            window.JKPerguntasLoading?.tratarNegacaoGeracao(response, pergunta);
-            throw new Error(mensagemErroApi(data, 'Erro ao gerar resposta com IA.'));
+            const apiMessage = mensagemErroApi(data, 'Erro ao gerar resposta com IA.');
+            pergunta._generationError = `Erro ao gerar IA: ${apiMessage}`;
+            const handled = window.JKPerguntasLoading?.tratarNegacaoGeracao(response, pergunta);
+            const generationError = new Error(apiMessage);
+            generationError.contextHandled = Boolean(handled);
+            throw generationError;
         }
         if (data.job_id && data.status !== 'completed') {
             salvarEstadoJobAtendimentoCodex(questionKey, {
@@ -1206,6 +1287,9 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
             aplicarEstadoJobAtendimentoCodex(questionKey);
             data = await garantirPollingJobAtendimentoCodex(questionKey);
         }
+        if (acceptedContextStatus && !data.context_status && !data.result?.context_status) {
+            data.context_status = acceptedContextStatus;
+        }
         aplicarResultadoJobAtendimentoCodex(questionKey, data);
         cardsAtuaisJobAtendimentoCodex(questionKey)[0]?.querySelector('.question-answer-text')?.focus();
     } catch (error) {
@@ -1213,7 +1297,7 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
             setStatusRespostaPergunta(status, 'Pesquisa cancelada pelo usuario.');
         } else {
             const currentStatus = cardsAtuaisJobAtendimentoCodex(questionKey)[0]?.querySelector('.question-answer-composer .question-answer-status') || status;
-            pergunta._generationError = `Erro ao gerar IA: ${mensagemErro(error)}`;
+            if (!error?.contextHandled) pergunta._generationError = `Erro ao gerar IA: ${mensagemErro(error)}`;
             setStatusRespostaPergunta(currentStatus, pergunta._generationError, 'error');
         }
     } finally {

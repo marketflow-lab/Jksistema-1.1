@@ -173,7 +173,8 @@ def test_question_worker_seals_raw_official_sku_before_local_enrichment(reader, 
     monkeypatch.setattr(worker, "load_verified_product_evidence", lambda *args: [])
     monkeypatch.setattr(worker, "load_product_research_evidence", lambda *args, **kwargs: [])
     worker._load_question_context({
-        "client_id": "tenant-a", "store": "Loja A", "question_id": "Q1", "item_id": "MLB100",
+        "client_id": "tenant-a", "store": "Loja A", "store_id": "store-a",
+        "seller_id": "123", "site_id": "MLB", "question_id": "Q1", "item_id": "MLB100",
         "request": {"pergunta": {"id": "Q1", "item_id": "MLB100", "item_sku": "001", "text": "Marca?",
                                   "_catalog_identity_proof": proof()}, "sku": "001"},
     })
@@ -230,6 +231,230 @@ def test_existing_exact_binding_also_enables_catalog(reader):
     assert result["catalog_status"] == "available"
     assert result["canonical_document"] == loaded["canonical_document"]
     assert not catalog.with_catalog_evidence("tenant-b", IDENTITY, loaded).get("catalog_document")
+
+
+def _public_question_hub_input(identity=None, proof_value=""):
+    return {
+        "task": "mercado_livre_public_question_draft",
+        "intent": {"fluxo": "perguntas_anuncio", "categoria": "product_feature"},
+        "question": {"text": "Qual a marca?"},
+        "item": deepcopy(ITEM),
+        "product_evidence_identity": deepcopy(identity or IDENTITY),
+        "_catalog_identity_proof": proof_value,
+    }
+
+
+def test_public_context_hub_unavailable_is_explicit_and_never_uses_global_fallback(
+    reader, monkeypatch,
+):
+    from backend.modules.context_hub import retrieval, store_sku_repository
+    from backend.modules.context_hub.training_read_index import TrainingIndexUnavailable
+    from backend.modules.perguntas_pos_venda.ai import context as agent_context
+
+    exact_calls = []
+
+    def exact_reader(client_id, identity):
+        exact_calls.append((client_id, deepcopy(identity)))
+        raise TrainingIndexUnavailable("training_index_initializing")
+
+    monkeypatch.setattr(store_sku_repository, "load_store_sku_knowledge", exact_reader)
+    reader[0].load_catalog_product = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        TimeoutError("catalog unavailable")
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "search_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("global Context Hub fallback is forbidden")
+        ),
+    )
+
+    result = agent_context._perguntas_ia_context_hub_tool(
+        "tenant-a", _public_question_hub_input(proof_value=proof())
+    )["result"]
+
+    assert exact_calls == [("tenant-a", IDENTITY)]
+    assert result["found"] is False
+    assert result["unavailable"] is True
+    assert result["component"] == "context_hub"
+    assert result["reason_code"] == "training_index_initializing"
+    assert result["retryable"] is True
+    assert result["retry_after"] == 2
+    assert "rascunho foi preservado" in result["warning"]
+
+
+def test_public_context_hub_reads_the_current_indexed_snapshot_on_every_generation(
+    reader, monkeypatch,
+):
+    from backend.modules.context_hub import store_sku_repository
+    from backend.modules.perguntas_pos_venda.ai import context as agent_context
+
+    revisions = iter(("Primeira ficha publicada", "Ficha atualizada no Obsidian"))
+    exact_calls = []
+
+    def exact_reader(client_id, identity):
+        exact_calls.append((client_id, deepcopy(identity)))
+        return {
+            "found": True,
+            "identity": {**identity, "tenant_scope": "tenant:" + client_id},
+            "validity": {"identity_verified": True},
+            "canonical_document": {"descricao": next(revisions)},
+            "guidance": {"general": {}, "sku": {"notas": "Orientacao aprovada"}},
+            "conflicts": [],
+            "generation_id": "published",
+        }
+
+    monkeypatch.setattr(store_sku_repository, "load_store_sku_knowledge", exact_reader)
+    payload = _public_question_hub_input(proof_value=proof())
+
+    first = agent_context._perguntas_ia_context_hub_tool("tenant-a", payload)["result"]
+    second = agent_context._perguntas_ia_context_hub_tool("tenant-a", payload)["result"]
+
+    assert first["canonical_document"]["descricao"] == "Primeira ficha publicada"
+    assert second["canonical_document"]["descricao"] == "Ficha atualizada no Obsidian"
+    assert second["guidance"]["sku"]["notas"] == "Orientacao aprovada"
+    assert exact_calls == [("tenant-a", IDENTITY), ("tenant-a", IDENTITY)]
+
+
+def test_manual_worker_uses_frozen_listing_identity_before_context_hub_and_ai(
+    reader, monkeypatch,
+):
+    from types import SimpleNamespace
+    from backend.modules.context_hub import store_sku_repository
+    from backend.modules.perguntas_pos_venda.ai import context as agent_context
+    from backend.services import cadastro_compatibilidade
+    from backend.services import perguntas_generation_preflight as preflight
+    from backend.services import perguntas_pos_venda_codex as worker
+
+    events = []
+    canonical = {
+        "question": {"id": "Q1", "item_id": "MLB100", "text": "Qual a marca?"},
+        "item": deepcopy(ITEM),
+        "history_truncated": False,
+        "scope": {
+            "client_id": "tenant-a",
+            "store_id": "store-a",
+            "seller_id": "123",
+            "site_id": "MLB",
+        },
+    }
+
+    def load_job_context(job, runtime):
+        events.append("load_job_context")
+        return deepcopy(canonical)
+
+    def exact_reader(client_id, identity):
+        events.append("context_hub")
+        assert client_id == "tenant-a"
+        assert identity == IDENTITY
+        return {
+            "found": True,
+            "identity": {**identity, "tenant_scope": "tenant:tenant-a"},
+            "validity": {"identity_verified": True},
+            "canonical_document": {"marca": "Marca do Obsidian"},
+            "guidance": {"general": {}, "sku": {"notas": "Confirmada"}},
+            "conflicts": [],
+        }
+
+    def generate(client_id, store, cfg, question, item):
+        payload = _public_question_hub_input(
+            question["_product_evidence_identity"], question["_catalog_identity_proof"]
+        )
+        payload["item"] = deepcopy(item)
+        hub = agent_context._perguntas_ia_context_hub_tool(client_id, payload)
+        events.append("ai")
+        assert hub["result"]["canonical_document"]["marca"] == "Marca do Obsidian"
+        return "Resposta baseada na ficha", cfg, {"context_hub": hub}
+
+    runtime = SimpleNamespace(
+        _obter_cfg_ml=lambda *_args, **_kwargs: {"user_id": "123", "site_id": "MLB"},
+        _ml_extrair_sku=extract_sku,
+        _perguntas_ia_gerar_resposta=generate,
+    )
+    monkeypatch.setattr(worker, "_require_runtime", lambda: runtime)
+    monkeypatch.setattr(worker, "_sanitize_question_and_decode_vehicle", lambda job, q: (q, {}))
+    monkeypatch.setattr(worker, "load_verified_product_evidence", lambda *_args: [])
+    monkeypatch.setattr(worker, "load_product_research_evidence", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(preflight, "load_job_context", load_job_context)
+    monkeypatch.setattr(preflight, "run_with_session", lambda _job, callback: callback())
+    monkeypatch.setattr(store_sku_repository, "load_store_sku_knowledge", exact_reader)
+    monkeypatch.setattr(
+        cadastro_compatibilidade,
+        "resolver_loja_ativa_para_leitura",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("nome de loja homonimo nao pode resolver identidade")
+        ),
+    )
+
+    answer, context = worker._load_question_context({
+        "client_id": "tenant-a",
+        "store": "Loja A",
+        "store_id": "store-a",
+        "seller_id": "123",
+        "site_id": "MLB",
+        "question_id": "Q1",
+        "item_id": "MLB100",
+        "queue_origin": worker.QUEUE_ORIGIN_MANUAL,
+        "request": {"sku": "001"},
+    })
+
+    assert answer == "Resposta baseada na ficha"
+    assert context["context_hub"]["result"]["found"] is True
+    assert context["context_hub_status"] == {
+        "state": "ready",
+        "component": "context_hub",
+        "reason": None,
+        "retryable": False,
+        "retry_after": None,
+        "warning": None,
+    }
+    assert events == ["load_job_context", "context_hub", "ai"]
+
+
+def test_context_hub_unavailable_metadata_is_additive_and_keeps_the_draft():
+    from backend.services import perguntas_pos_venda_codex as worker
+
+    draft = "Rascunho gerado apenas com os dados confirmados do anuncio."
+    context = {
+        "diagnostico_ia": [{
+            "result": {
+                "context_collection_pipeline": [{
+                    "name": "context_hub_sku_reference",
+                    "found": False,
+                    "unavailable": True,
+                    "partial_unavailable": False,
+                    "reason_code": "training_index_initializing",
+                    "retryable": True,
+                    "retry_after": 2,
+                    "warning": "Context Hub temporariamente indisponivel.",
+                }],
+            },
+        }],
+    }
+
+    status = worker._context_hub_status(context)
+
+    assert draft == "Rascunho gerado apenas com os dados confirmados do anuncio."
+    assert status == {
+        "state": "unavailable",
+        "component": "context_hub",
+        "reason": "training_index_initializing",
+        "retryable": True,
+        "retry_after": 2,
+        "warning": "Context Hub temporariamente indisponivel.",
+    }
+    partial = worker._context_hub_status({
+        "context_hub": {"result": {
+            "found": True,
+            "partial_unavailable": True,
+            "reason_code": "store_sku_context_unavailable",
+            "retryable": True,
+            "warning": "Parte das informacoes nao estava disponivel.",
+        }},
+    })
+    assert partial["state"] == "partial"
+    assert partial["reason"] == "store_sku_context_unavailable"
+    assert partial["warning"] == "Parte das informacoes nao estava disponivel."
 
 
 @pytest.mark.parametrize("surface", ["manual", "v2"])

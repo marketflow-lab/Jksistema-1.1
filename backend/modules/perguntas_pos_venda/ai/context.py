@@ -46,6 +46,55 @@ _PERGUNTAS_CONTEXT_HUB_PRODUCT_EVIDENCE_IDENTITY_FIELDS = (
 )
 _PERGUNTAS_CONTEXT_HUB_PER_SOURCE_LIMIT = 6
 _PERGUNTAS_CONTEXT_HUB_GLOBAL_LIMIT = 6
+_CONTEXT_HUB_WARNING = (
+    "As informacoes do Context Hub estao temporariamente indisponiveis; "
+    "o rascunho foi preservado para revisao."
+)
+_CONTEXT_HUB_RETRYABLE_REASONS = {
+    "training_index_initializing",
+    "training_index_unavailable",
+    "store_sku_context_unavailable",
+    "context_hub_unavailable",
+}
+
+
+def _context_hub_failure_metadata(exc: Exception, default_reason: str) -> dict[str, Any]:
+    candidate = str(getattr(exc, "code", "") or "").strip()
+    reason = candidate if candidate in _CONTEXT_HUB_RETRYABLE_REASONS else default_reason
+    retryable = bool(
+        reason in _CONTEXT_HUB_RETRYABLE_REASONS
+        or isinstance(exc, (TimeoutError, ConnectionError, OSError))
+    )
+    headers = getattr(exc, "headers", None)
+    retry_after = (headers or {}).get("Retry-After") if isinstance(headers, dict) else None
+    if retry_after is None:
+        retry_after = getattr(exc, "retry_after", None)
+    try:
+        retry_after_value = max(1, min(300, int(retry_after)))
+    except (TypeError, ValueError, OverflowError):
+        retry_after_value = 2 if reason == "training_index_initializing" else None
+    return {
+        "reason_code": reason,
+        "retryable": retryable,
+        "retry_after": retry_after_value,
+        "warning": _CONTEXT_HUB_WARNING,
+    }
+
+
+def _context_hub_stage_metadata(result: dict[str, Any]) -> dict[str, Any]:
+    try:
+        retry_after = max(1, min(300, int(result.get("retry_after"))))
+    except (TypeError, ValueError, OverflowError):
+        retry_after = None
+    return {
+        "component": "context_hub",
+        "unavailable": bool(result.get("unavailable")),
+        "partial_unavailable": bool(result.get("partial_unavailable")),
+        "reason_code": str(result.get("reason_code") or "")[:80],
+        "retryable": bool(result.get("retryable")),
+        "retry_after": retry_after,
+        "warning": str(result.get("warning") or "")[:240],
+    }
 
 def _perguntas_ia_context_hub_sku(agent_input: Optional[dict[str, Any]]) -> str:
     entrada = agent_input if isinstance(agent_input, dict) else {}
@@ -300,18 +349,28 @@ def _read_public_store_sku_context(client_id: str, entrada: dict, query_hash: st
             "gaps": ["exact_identity_incomplete"],
             "read_only": True,
         }
+        store_sku_unavailable = False
         if identity:
             try:
                 loaded = load_store_sku_knowledge(client_id, identity)
-            except Exception:
-                loaded.update({"reason_code": "store_sku_context_unavailable",
-                               "gaps": ["store_sku_context_unavailable"]})
+            except Exception as exc:
+                store_sku_unavailable = True
+                failure = _context_hub_failure_metadata(
+                    exc, "store_sku_context_unavailable",
+                )
+                loaded.update({
+                    **failure,
+                    "gaps": [failure["reason_code"]],
+                })
         from .catalog_context import with_catalog_evidence
         loaded = with_catalog_evidence(
             client_id, identity, loaded, proof=entrada.get("_catalog_identity_proof"),
         )
         found = bool(loaded.get("found"))
         catalog_found = bool(loaded.get("catalog_document") and loaded.get("catalog_identity_verified"))
+        context_hub_unavailable = bool(
+            store_sku_unavailable and not found and not catalog_found
+        )
         result = {
             **loaded,
             "results": ([{
@@ -328,7 +387,11 @@ def _read_public_store_sku_context(client_id: str, entrada: dict, query_hash: st
             "authoritative_count": int(found) + int(catalog_found),
             "legacy_unverified_count": 0,
             "tenant_binding": "server_client_id",
+            "unavailable": context_hub_unavailable,
+            "partial_unavailable": bool(store_sku_unavailable and (found or catalog_found)),
         }
+        if context_hub_unavailable:
+            result["component"] = "context_hub"
         if catalog_found:
             result["found"] = True
             result["results"].append({
@@ -354,8 +417,12 @@ def _read_public_store_sku_context(client_id: str, entrada: dict, query_hash: st
                 "count": 0,
                 "authoritative_count": 0,
                 "unavailable": True,
+                "component": "context_hub",
                 "reason_code": "store_sku_context_unavailable",
                 "gaps": ["store_sku_context_unavailable"],
+                "retryable": True,
+                "retry_after": None,
+                "warning": _CONTEXT_HUB_WARNING,
                 "read_only": True,
                 "tenant_binding": "server_client_id",
             },
@@ -455,7 +522,11 @@ def _search_legacy_context_hub(client_id: str, entrada: dict, query: str, query_
                 "results": [],
                 "count": 0,
                 "unavailable": True,
+                "component": "context_hub",
                 "reason_code": "context_hub_unavailable",
+                "retryable": True,
+                "retry_after": None,
+                "warning": _CONTEXT_HUB_WARNING,
                 "read_only": True,
                 "tenant_binding": "server_client_id",
             },

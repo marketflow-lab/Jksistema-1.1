@@ -9,6 +9,7 @@ from test_perguntas_loading_api import env, clean_cache, request, question
 from backend.modules.perguntas_pos_venda.endpoints import questions_loading as api
 from backend.modules.perguntas_pos_venda.endpoints import questions_loading_support as support
 from backend.services import perguntas_loading_cache as cache
+from backend.services import perguntas_generation_preflight as preflight
 
 
 @pytest.mark.parametrize("history_denied", [False, True])
@@ -120,6 +121,170 @@ def test_canonical_context_binds_all_identity_dimensions_and_ignores_browser(env
     with pytest.raises(HTTPException) as denied:
         api.canonical_context(request(), 'tenant', 'A', '1')
     assert denied.value.headers['X-JK-Error-Scope'] == 'store'
+
+
+def _canonical_handler(path, params):
+    if path == '/questions/1':
+        return question()
+    if path == '/questions/search':
+        return {'total': 1, 'questions': [question()]}
+    if path == '/items':
+        return [{'code': 200, 'body': {'id': 'MLB123', 'seller_id': '10'}}]
+    return {'id': 20, 'nickname': 'buyer'}
+
+
+def test_fresh_canonical_context_reuses_browser_cache_without_provider_reads(env):
+    env.handler = _canonical_handler
+    api.ml_perguntas_detalhe_rapido(request(), 'A', '1', client_id='tenant')
+    api.ml_perguntas_itens_rapidos(request(), 'A', 'MLB123', client_id='tenant')
+    env.calls.clear()
+    result = api.canonical_context(request(), 'tenant', 'A', '1', force=False)
+    assert env.calls == []
+    assert result['context_status']['source'] == 'fresh_cache'
+    assert result['cache_revision'] == cache.revision('tenant', 'A')
+
+
+def test_partial_multiget_ready_item_supports_two_generation_clicks(env):
+    def partial_handler(path, params):
+        if path == '/questions/1':
+            return question()
+        if path == '/questions/search':
+            return {'total': 1, 'questions': [question()]}
+        if path == '/items':
+            return [
+                {'code': 200, 'body': {'id': 'MLB123', 'seller_id': '10'}},
+                {'code': 429, 'body': {'id': 'MLB456'}},
+            ]
+        return {'id': 20, 'nickname': 'buyer'}
+    env.handler = partial_handler
+    api.ml_perguntas_detalhe_rapido(request(), 'A', '1', client_id='tenant')
+    batch = api.ml_perguntas_itens_rapidos(
+        request(), 'A', 'MLB123,MLB456', client_id='tenant',
+    )
+    assert batch['partial'] is True
+    assert batch['item_states']['MLB123']['state'] == 'ready'
+    assert batch['item_states']['MLB456']['retryable'] is True
+    env.calls.clear()
+    first = api.canonical_context(request(), 'tenant', 'A', '1', force=False)
+    second = api.canonical_context(request(), 'tenant', 'A', '1', force=False)
+    assert env.calls == []
+    assert first['item']['id'] == second['item']['id'] == 'MLB123'
+    assert first['components']['item']['state'] == second['components']['item']['state'] == 'ready'
+
+
+def test_partial_multiget_refresh_retains_previous_ready_item(env):
+    batches = iter([
+        [
+            {'code': 200, 'body': {'id': 'MLB123', 'seller_id': '10', 'title': 'original'}},
+            {'code': 429, 'body': {'id': 'MLB456'}},
+        ],
+        [
+            {'code': 503, 'body': {'id': 'MLB123'}},
+            {'code': 200, 'body': {'id': 'MLB456', 'seller_id': '10', 'title': 'recuperado'}},
+        ],
+    ])
+    env.handler = lambda path, _params: next(batches) if path == '/items' else {'id': 20}
+    first = api.ml_perguntas_itens_rapidos(
+        request(), 'A', 'MLB123,MLB456', client_id='tenant',
+    )
+    assert first['item_states']['MLB123']['state'] == 'ready'
+    refreshed = api.ml_perguntas_itens_rapidos(
+        request(), 'A', 'MLB123,MLB456', forcar=True, client_id='tenant',
+    )
+    by_id = {item['id']: item for item in refreshed['items']}
+    assert by_id['MLB123']['title'] == 'original'
+    assert by_id['MLB456']['title'] == 'recuperado'
+    assert refreshed['item_states']['MLB123']['state'] == 'ready'
+    assert refreshed['fallback_item_ids'] == ['MLB123']
+
+
+def test_only_expired_item_is_refreshed(env):
+    env.handler = _canonical_handler
+    api.ml_perguntas_detalhe_rapido(request(), 'A', '1', client_id='tenant')
+    api.ml_perguntas_itens_rapidos(request(), 'A', 'MLB123', client_id='tenant')
+    with cache._LOCK:
+        next(entry for key, entry in cache._ENTRIES.items() if key[5] == 'items').monotonic_at -= 61
+    env.calls.clear()
+    result = api.canonical_context(request(), 'tenant', 'A', '1', force=False)
+    assert [path for path, _params in env.calls] == ['/items']
+    assert result['context_status']['source'] == 'refreshed'
+
+
+def test_only_expired_history_is_refreshed(env):
+    env.handler = _canonical_handler
+    api.ml_perguntas_detalhe_rapido(request(), 'A', '1', client_id='tenant')
+    api.ml_perguntas_itens_rapidos(request(), 'A', 'MLB123', client_id='tenant')
+    with cache._LOCK:
+        detail = next(entry for key, entry in cache._ENTRIES.items() if key[5] == 'detail')
+        detail.value['components']['history']['consultado_em'] -= 61_000
+    env.calls.clear()
+    result = api.canonical_context(request(), 'tenant', 'A', '1', force=False)
+    assert [path for path, _params in env.calls] == ['/questions/search']
+    assert result['components']['question']['state'] == 'ready'
+    assert result['components']['history']['state'] == 'ready'
+
+
+def test_transient_refresh_uses_valid_context_for_at_most_five_minutes(env):
+    env.handler = _canonical_handler
+    api.ml_perguntas_detalhe_rapido(request(), 'A', '1', client_id='tenant')
+    api.ml_perguntas_itens_rapidos(request(), 'A', 'MLB123', client_id='tenant')
+    with cache._LOCK:
+        for entry in cache._ENTRIES.values():
+            if entry.value.get('question') or entry.value.get('items'):
+                entry.monotonic_at -= 120
+            for component in (entry.value.get('components') or {}).values():
+                if isinstance(component, dict) and component.get('consultado_em'):
+                    component['consultado_em'] -= 120_000
+    env.handler = lambda _path, _params: (_ for _ in ()).throw(Timeout('transient'))
+    result = api.canonical_context(request(), 'tenant', 'A', '1', force=False)
+    assert result['components']['history']['state'] == 'ready'
+    assert result['components']['item']['state'] == 'ready'
+    assert result['context_status']['source'] == 'stale_fallback'
+    assert result['context_status']['warning']
+    assert 119 <= result['context_status']['age_seconds'] <= 121
+    repeated = api.canonical_context(request(), 'tenant', 'A', '1', force=False)
+    assert repeated['components']['history']['state'] == 'ready'
+    assert repeated['components']['item']['state'] == 'ready'
+    assert repeated['context_status']['source'] == 'stale_fallback'
+
+
+def test_context_older_than_five_minutes_cannot_fallback(env):
+    env.handler = _canonical_handler
+    api.ml_perguntas_detalhe_rapido(request(), 'A', '1', client_id='tenant')
+    api.ml_perguntas_itens_rapidos(request(), 'A', 'MLB123', client_id='tenant')
+    with cache._LOCK:
+        for entry in cache._ENTRIES.values():
+            entry.monotonic_at -= 301
+            for component in (entry.value.get('components') or {}).values():
+                if isinstance(component, dict) and component.get('consultado_em'):
+                    component['consultado_em'] -= 301_000
+    env.handler = lambda _path, _params: (_ for _ in ()).throw(Timeout('transient'))
+    with pytest.raises(HTTPException) as caught:
+        api.canonical_context(request(), 'tenant', 'A', '1', force=False)
+    assert caught.value.status_code == 503
+    assert caught.value.headers['X-JK-Retryable'] == 'true'
+
+
+def test_item_404_invalidates_cached_context_and_frozen_session(env):
+    env.handler = _canonical_handler
+    req = request()
+    req.state.auth_payload = {'exp': time.time() + 3600}
+    api.ml_perguntas_detalhe_rapido(req, 'A', '1', client_id='tenant')
+    api.ml_perguntas_itens_rapidos(req, 'A', 'MLB123', client_id='tenant')
+    canonical = api.canonical_context(req, 'tenant', 'A', '1', force=False)
+    scope = support.resolve_scope(req, 'tenant', 'A')
+    handle = preflight.remember_session(req, scope, '1', canonical)
+    with cache._LOCK:
+        next(entry for key, entry in cache._ENTRIES.items() if key[5] == 'items').monotonic_at -= 61
+    env.handler = lambda path, _params: (
+        [{'code': 404, 'body': {'id': 'MLB123'}}] if path == '/items' else _canonical_handler(path, {})
+    )
+    with pytest.raises(preflight.GenerationContextUnavailable) as caught:
+        preflight.load_context(req, scope, '1')
+    assert caught.value.headers['X-JK-Error-Component'] == 'item'
+    assert caught.value.headers['X-JK-Error-Reason'] == 'not_found'
+    assert handle not in preflight._SESSIONS
+    assert not any(key[:2] == ('tenant', 'A') for key in cache._ENTRIES)
 
 
 def test_optional_buyer_denial_does_not_clear_valid_list_cache(env):

@@ -83,6 +83,7 @@ _CUSTOMER_REPLY_DURABLE_FIELDS = frozenset({
     "last_attempt_completed_at", "created_at", "updated_at", "completed_at",
     "data_sufficient", "publish_attempted", "requires_approval",
     "completion_reason", "draft_source", "review_required", "draft_expired", "retry_kind",
+    "error_code", "error_component", "error_reason", "retryable", "retry_after",
 })
 
 
@@ -112,6 +113,102 @@ def _customer_reply_safe_warnings(values: Any) -> list[str]:
         if message and message not in result:
             result.append(message)
     return result[:12]
+
+
+def _manual_safe_evidence_status(values: Any) -> list[dict[str, Any]]:
+    allowed = ("id", "intent", "status", "confidence")
+    return [
+        {key: row.get(key) for key in allowed if key in row}
+        for row in (values if isinstance(values, list) else [])[:12]
+        if isinstance(row, dict)
+    ]
+
+
+def _manual_safe_context(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    safe = {
+        key: source.get(key)
+        for key in _CUSTOMER_REPLY_SEALED_CONTEXT_FIELDS | {"history_truncated"}
+        if key in source and isinstance(source.get(key), (str, bool, int, float))
+    }
+    for name, allowed in (
+        ("context_status", ("source", "age_seconds", "warning")),
+        ("context_hub_status", ("state", "component", "reason", "retryable", "retry_after", "warning")),
+    ):
+        status = source.get(name)
+        if isinstance(status, dict):
+            safe[name] = {key: status.get(key) for key in allowed if key in status}
+    warnings = [str(item or "")[:300] for item in (source.get("warnings") or [])[:12]
+                if str(item or "").strip()]
+    if warnings:
+        safe["warnings"] = warnings
+    sources = [str(item or "")[:500] for item in (source.get("sources") or [])[:32]
+               if str(item or "").strip()]
+    envelope = source.get("evidence_envelope") if isinstance(source.get("evidence_envelope"), dict) else {}
+    envelope_sources = [str(item or "")[:500] for item in (envelope.get("sources") or [])[:32]
+                        if str(item or "").strip()]
+    records = [
+        {key: row.get(key) for key in ("field", "source", "coverage", "authority") if key in row}
+        for row in (envelope.get("records") or [])[:64] if isinstance(row, dict)
+    ]
+    if sources:
+        safe["sources"] = sources
+    if envelope:
+        safe["evidence_envelope"] = {
+            key: envelope.get(key)
+            for key in ("status", "gaps", "confidence", "evidence_sufficient", "coverage_complete")
+            if key in envelope
+        }
+        safe["evidence_envelope"].update(
+            sources=envelope_sources, records=records,
+            source_count=len(envelope_sources), record_count=len(records),
+        )
+    safe["source_count"] = len(set(sources + envelope_sources))
+    return safe
+
+
+def _manual_safe_result(value: Any) -> dict[str, Any]:
+    result = dict(value) if isinstance(value, dict) else {}
+    if "contexto" in result:
+        result["contexto"] = _manual_safe_context(result.get("contexto"))
+    if "evidence_envelope" in result:
+        result["evidence_envelope"] = _manual_safe_context(
+            {"evidence_envelope": result.get("evidence_envelope")}
+        ).get("evidence_envelope", {})
+    if "evidence_status" in result:
+        result["evidence_status"] = _manual_safe_evidence_status(result.get("evidence_status"))
+    return result
+
+
+def _manual_safe_request(value: Any) -> dict[str, Any]:
+    request = dict(value) if isinstance(value, dict) else {}
+    forbidden = {"pergunta", "item", "history", "buyer_question_history", "buyer_question_chat",
+                 "historico_comprador", "context_hub", "contexto", "auth_payload", "credentials",
+                 "authorization", "access_token", "refresh_token", "cookie", "password", "secret"}
+    return {key: item for key, item in request.items() if str(key).lower() not in forbidden}
+
+
+def _manual_safe_job_payload(value: dict[str, Any]) -> dict[str, Any]:
+    source = dict(value)
+    if isinstance(source.get("request"), dict):
+        source["request"] = _manual_safe_request(source["request"])
+    for field in ("result", "last_partial_result"):
+        if isinstance(source.get(field), dict):
+            source[field] = _manual_safe_result(source[field])
+    if isinstance(source.get("research_history"), list):
+        source["research_history"] = [
+            {
+                key: row.get(key)
+                for key in ("attempt", "at", "decision", "confidence", "missing_fields", "sources",
+                            "evidence_status", "warnings", "answer", "error")
+                if key in row
+            }
+            for row in source["research_history"][-12:] if isinstance(row, dict)
+        ]
+    for field in ("history", "buyer_question_history", "buyer_question_chat", "historico_comprador",
+                  "context_hub", "verified_product_evidence", "product_research_evidence"):
+        source.pop(field, None)
+    return source
 
 
 def _customer_reply_cache_key(db_path: str, job_id: str) -> tuple[str, str]:
@@ -287,6 +384,8 @@ def _customer_reply_unseal_result(db_path: str, payload: dict[str, Any]) -> dict
 
 def _customer_reply_durable_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     source = dict(payload or {}) if isinstance(payload, dict) else {}
+    if str(source.get("queue_origin") or "") == "manual":
+        source = _manual_safe_job_payload(source)
     durable = {key: value for key, value in source.items() if key in _CUSTOMER_REPLY_DURABLE_FIELDS}
     scope = source.get("scope_verifiers") if isinstance(source.get("scope_verifiers"), dict) else {}
     durable_scope = {

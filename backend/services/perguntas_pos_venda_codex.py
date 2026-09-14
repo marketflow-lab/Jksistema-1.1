@@ -493,6 +493,45 @@ def _unique_warnings(*groups: Any) -> list[str]:
     return result[:12]
 
 
+def _context_hub_status(context: Mapping[str, Any]) -> dict[str, Any]:
+    raw: Mapping[str, Any] = {}
+    tool = context.get("context_hub")
+    if isinstance(tool, Mapping) and isinstance(tool.get("result"), Mapping):
+        raw = tool["result"]
+    if not raw:
+        diagnostics = context.get("diagnostico_ia")
+        diagnostic = diagnostics[0] if isinstance(diagnostics, list) and diagnostics else {}
+        result = diagnostic.get("result") if isinstance(diagnostic, Mapping) else {}
+        pipeline = result.get("context_collection_pipeline") if isinstance(result, Mapping) else []
+        for stage in reversed(pipeline if isinstance(pipeline, list) else []):
+            if isinstance(stage, Mapping) and stage.get("name") == "context_hub_sku_reference":
+                raw = stage
+                break
+    if not raw:
+        return {}
+    unavailable = bool(raw.get("unavailable"))
+    partial = bool(raw.get("partial_unavailable"))
+    state = "unavailable" if unavailable else "partial" if partial else "ready"
+    try:
+        retry_after = max(1, min(300, int(raw.get("retry_after"))))
+    except (TypeError, ValueError, OverflowError):
+        retry_after = None
+    return {
+        "state": state,
+        "component": "context_hub",
+        "reason": str(raw.get("reason_code") or "")[:80] or None,
+        "retryable": bool(raw.get("retryable")),
+        "retry_after": retry_after,
+        "warning": str(raw.get("warning") or "")[:240] or None,
+    }
+
+
+def context_hub_status(context: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the additive Context Hub status used by public API boundaries."""
+
+    return _context_hub_status(context)
+
+
 def _merge_unique_items(*groups: Any, limit: int = 64) -> list[Any]:
     merged: list[Any] = []
     seen: set[str] = set()
@@ -1315,17 +1354,33 @@ def _subject_aware_safe_fallback(
     return answer
 
 
-def _complete_generation_blocked(job: dict[str, Any]) -> dict[str, Any]:
+def _complete_generation_blocked(
+    job: dict[str, Any], error: GenerationContextUnavailable | None = None,
+) -> dict[str, Any]:
     """A loading/auth failure cannot produce an AI draft, including a fallback."""
     warning = "Carregamento ou sessao indisponivel. Atualize a pergunta e solicite a geracao novamente."
+    headers = (getattr(error, "headers", None) or {}) if error is not None else {}
+    allowed_components = {"session", "store", "identity", "question", "history", "item", "context", "context_hub"}
+    error_component = str(headers.get("X-JK-Error-Component") or "context").strip().lower()
+    if error_component not in allowed_components:
+        error_component = "context"
+    error_reason = str(headers.get("X-JK-Error-Reason") or "component_not_ready").strip().lower()
+    if not re.fullmatch(r"[a-z0-9_]{1,80}", error_reason):
+        error_reason = "component_not_ready"
+    retryable = headers.get("X-JK-Retryable", "false") == "true"
+    retry_after = headers.get("Retry-After", "")
+    retry_after = min(86400, max(0, int(retry_after))) if str(retry_after).isdigit() else 0
+    error_metadata = {"error_code": "generation_context_unavailable",
+                      "error_component": error_component, "error_reason": error_reason,
+                      "retryable": retryable, "retry_after": retry_after}
     job.update(status="completed", agent_state="concluido", current_step="consultar",
                result={"resposta": "", "contexto": {}, "data_sufficient": False,
                        "blocked_without_draft": True, "requires_approval": False,
-                       "warnings": [warning]},
+                       "warnings": [warning], **error_metadata},
                blocked_without_draft=True, requires_approval=False, data_sufficient=False,
                completion_reason="generation_context_unavailable", warnings=[warning],
                proposal_hash="", proposal_id="", lease_owner="", lease_expires_ts=0.0,
-               completed_at=_now())
+               completed_at=_now(), **error_metadata)
     job.pop("last_partial_result", None)
     _cancel_retry_timer(str(job.get("job_id") or ""))
     return codex_assistant_storage.codex_assistant_customer_reply_job_save(
@@ -2761,6 +2816,11 @@ def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, An
         "warnings": list(result.get("warnings") or job.get("warnings") or []),
         "result": result,
         "error": str(job.get("error") or ""),
+        "error_code": str(result.get("error_code") or job.get("error_code") or ""),
+        "error_component": str(result.get("error_component") or job.get("error_component") or ""),
+        "error_reason": str(result.get("error_reason") or job.get("error_reason") or ""),
+        "retryable": bool(result.get("retryable") or job.get("retryable")),
+        "retry_after": max(0, int(result.get("retry_after") or job.get("retry_after") or 0)),
         "retry_policy": str(job.get("retry_policy") or _task_retry_policy(job.get("task_type"))),
         "retry_count": max(0, int(job.get("retry_count") or 0)),
         "retry_reason": str(job.get("retry_reason") or ""),
@@ -3375,7 +3435,7 @@ def _create_job_unserialized(
     question = request.get("pergunta") if isinstance(request.get("pergunta"), dict) else {}
     question_id = str(question.get("id") or event_subject_key).strip()
     item = request.get("item") if isinstance(request.get("item"), dict) else {}
-    item_id = str(question.get("item_id") or item.get("id") or "").strip()
+    item_id = str(question.get("item_id") or item.get("id") or request.get("item_id") or "").strip()
     subquestions = _initial_subquestions(task_type)
     conversation_id = _subject_conversation_id(
         client_id, task_type, store_scope_key, conversation_subject_key
@@ -4293,26 +4353,30 @@ def _product_sku_for_variation(
 def _product_evidence_identity(
     runtime: Any,
     *,
-    store: str,
-    cfg: dict[str, Any],
+    store_id: str,
+    seller_id: str,
+    site_id: str,
+    item_id: str,
     question: dict[str, Any],
     item: dict[str, Any],
     request: dict[str, Any],
 ) -> dict[str, str]:
-    from backend.services.cadastro_compatibilidade import (
-        resolver_loja_ativa_para_leitura,
-    )
-
-    store_identity = resolver_loja_ativa_para_leitura(
-        str(question.get("_tenant_id") or request.get("client_id") or ""),
-        store,
-    ) if str(question.get("_tenant_id") or request.get("client_id") or "").strip() else {}
-    store_ref = str(store_identity.get("store_id") or "").strip()
+    # The job/preflight already resolved this immutable identity inside the
+    # authenticated server session. A display name is never an identity lookup.
+    store_ref = str(store_id or "").strip()
     seller = item.get("seller") if isinstance(item.get("seller"), dict) else {}
-    item_id = str(item.get("id") or question.get("item_id") or request.get("item_id") or "").strip()
-    site_id = str(item.get("site_id") or cfg.get("site_id") or "").strip()
-    if not site_id and re.match(r"^[A-Z]{3}", item_id, flags=re.IGNORECASE):
-        site_id = item_id[:3].upper()
+    exact_seller_id = str(seller_id or "").strip()
+    exact_site_id = str(site_id or "").strip()
+    exact_item_id = str(item_id or "").strip()
+    observed_item_id = str(item.get("id") or question.get("item_id") or "").strip()
+    observed_seller_id = str(item.get("seller_id") or seller.get("id") or "").strip()
+    observed_site_id = str(item.get("site_id") or "").strip()
+    identity_matches_listing = bool(
+        store_ref and exact_seller_id and exact_site_id and exact_item_id
+        and observed_item_id == exact_item_id
+        and (not observed_seller_id or observed_seller_id == exact_seller_id)
+        and (not observed_site_id or observed_site_id == exact_site_id)
+    )
     variation_id, selected_variation, variation_state = _resolve_product_variation(
         question,
         item,
@@ -4329,16 +4393,10 @@ def _product_evidence_identity(
     )
     raw_identity = {
         "store_ref": store_ref,
-        "seller_id": str(
-            item.get("seller_id")
-            or seller.get("id")
-            or cfg.get("user_id")
-            or cfg.get("seller_id")
-            or ""
-        ).strip(),
-        "site_id": site_id,
-        "sku": sku,
-        "item_id": item_id,
+        "seller_id": exact_seller_id,
+        "site_id": exact_site_id,
+        "sku": sku if identity_matches_listing else "",
+        "item_id": exact_item_id,
         "variation_id": variation_id,
     }
     # Public V18 must fail closed when the opaque store identity is unresolved;
@@ -4460,10 +4518,17 @@ def _load_question_context_impl(job: dict[str, Any]) -> tuple[str, dict[str, Any
         logger.warning("[PPV CODEX] evento=recarregar_historico status=erro tipo=%s", type(exc).__name__)
     question.update(codex_fields)
     question, vehicle_identity = _sanitize_question_and_decode_vehicle(job, question)
+    canonical_scope = (
+        canonical.get("scope")
+        if isinstance(canonical, dict) and isinstance(canonical.get("scope"), dict)
+        else {}
+    )
     product_identity = _product_evidence_identity(
         runtime,
-        store=store,
-        cfg=cfg if isinstance(cfg, dict) else {},
+        store_id=str(canonical_scope.get("store_id") or job.get("store_id") or ""),
+        seller_id=str(canonical_scope.get("seller_id") or job.get("seller_id") or ""),
+        site_id=str(canonical_scope.get("site_id") or job.get("site_id") or ""),
+        item_id=str(question.get("item_id") or job.get("item_id") or item_id),
         question=question,
         item=item if isinstance(item, dict) else {},
         request=request,
@@ -4473,6 +4538,7 @@ def _load_question_context_impl(job: dict[str, Any]) -> tuple[str, dict[str, Any
         question["_catalog_identity_proof"] = issue_listing_identity_proof(
             client_id, store, cfg, catalog_official_item, product_identity,
             extract_sku=runtime._ml_extrair_sku,
+            store_id=str(canonical_scope.get("store_id") or job.get("store_id") or ""),
         )
     except Exception:
         question["_catalog_identity_proof"] = ""
@@ -4491,10 +4557,26 @@ def _load_question_context_impl(job: dict[str, Any]) -> tuple[str, dict[str, Any
         run_with_session(job, lambda: None)  # Recheck expiry after enrichment, before AI.
     answer, _cfg, context = runtime._perguntas_ia_gerar_resposta(client_id, store, cfg, question, item or {})
     context = context if isinstance(context, dict) else {}
+    context_hub_status = _context_hub_status(context)
+    if context_hub_status:
+        context["context_hub_status"] = context_hub_status
+        if context_hub_status.get("warning"):
+            context["warnings"] = _unique_warnings(
+                context.get("warnings"), context_hub_status["warning"],
+            )
     if canonical and canonical.get("history_truncated"):
         from backend.services.perguntas_generation_preflight import HISTORY_TRUNCATED_WARNING
         context["history_truncated"] = True
         context["warnings"] = _unique_warnings(context.get("warnings"), [HISTORY_TRUNCATED_WARNING])
+    if canonical:
+        status = canonical.get("context_status") if isinstance(canonical.get("context_status"), dict) else {}
+        context["context_status"] = {
+            "source": str(status.get("source") or "fresh_cache"),
+            "age_seconds": max(0, min(300, int(status.get("age_seconds") or 0))),
+            "warning": str(status.get("warning") or "") or None,
+        }
+        if status.get("warning"):
+            context["warnings"] = _unique_warnings(context.get("warnings"), [status["warning"]])
     context.setdefault("loja", store)
     if vehicle_identity:
         context.setdefault("vehicle_identity", vehicle_identity)
@@ -4831,8 +4913,8 @@ def _run_job(client_id: str, job_id: str) -> None:
                 },
                 details={"data_sufficient": sufficient, "completion_reason": "evidence_confirmed"},
             )
-    except GenerationContextUnavailable:
-        _complete_generation_blocked(job)
+    except GenerationContextUnavailable as error:
+        _complete_generation_blocked(job, error)
     except _LeaseLost:
         logger.info("[PPV CODEX] evento=lease_perdida resultado=descartado")
     except InterruptedError as exc:

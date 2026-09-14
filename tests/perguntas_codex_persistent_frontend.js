@@ -15,7 +15,7 @@ assert.match(source, /next_retry_at_epoch|next_retry_in_seconds|Nova tentativa/)
 assert.match(source, /\/api\/mercadolivre\/assistant\/jobs\/\$\{encodeURIComponent\(jobId\)\}\/cancel/);
 assert.match(source, /question-ai-cancel-btn[\s\S]*Cancelar pesquisa/);
 assert.match(source, /cancelarPesquisaAtendimentoCodex\(questionKey\)/);
-assert.match(html, /perguntas\.js\?v=20260908-solicitacoes-v1/);
+assert.match(html, /perguntas\.js\?v=20260914-context-errors-v1/);
 assert.doesNotMatch(source, /A pesquisa terminou sem rascunho/);
 assert.match(source, /Rascunho gerado com as informacoes disponiveis/);
 assert.match(source, /const resposta = String\(result\.resposta \?\? data\.resposta \?\? ''\);/);
@@ -58,6 +58,7 @@ let tenantAtual = 'tenant-1';
 const timerCallbacks = [];
 let currentCard = makeCard('Loja A::Q1');
 let fetchImpl = async () => ({ ok: true, json: async () => ({ status: 'cancelled' }) });
+let rejectedContext = null;
 const container = { querySelectorAll: () => [currentCard] };
 const context = {
     state: {},
@@ -90,7 +91,11 @@ const context = {
     },
     setTimeout: (callback) => { timerCallbacks.push(callback); return timerCallbacks.length; },
     clearTimeout: () => {},
-    window: {}
+    window: {
+        JKPerguntasLoading: {
+            rejeitarContexto: (_question, component, _blocked, reason) => { rejectedContext = { component, reason }; }
+        }
+    }
 };
 vm.createContext(context);
 const stateStart = source.indexOf("const CODEX_JOB_STORAGE_PREFIX");
@@ -107,6 +112,75 @@ vm.runInContext(source.slice(stateStart, stateEnd), context);
     });
     assert.strictEqual(currentCard.elements.textarea.value, 'Rascunho do operador preservado');
     assert.match(currentCard.elements.status.textContent, /Histórico indisponível/);
+    currentCard = makeCard('Loja A::Q-CONTEXT-HUB');
+    currentCard.elements.textarea.value = 'Rascunho preservado com Obsidian indisponível';
+    context.state.perguntas = [{ key: 'fixture' }];
+    context.chavePerguntaAtendimento = () => 'Loja A::Q-CONTEXT-HUB';
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-CONTEXT-HUB', {
+        blocked_without_draft: true,
+        error_component: 'context_hub',
+        error_reason: 'training_index_initializing',
+        result: { resposta: '', blocked_without_draft: true }
+    });
+    assert.strictEqual(currentCard.elements.textarea.value, 'Rascunho preservado com Obsidian indisponível');
+    assert.deepStrictEqual(rejectedContext, { component: 'context_hub', reason: 'training_index_initializing' });
+
+    context.chavePerguntaAtendimento = (question) => question.question_key;
+    currentCard = makeCard('Loja A::Q-HUB-UNAVAILABLE');
+    const unavailableQuestion = { question_key: 'Loja A::Q-HUB-UNAVAILABLE', _contextHubState: '' };
+    context.state.perguntas = [unavailableQuestion];
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-HUB-UNAVAILABLE', {
+        result: {
+            resposta: 'Rascunho sem a ficha do Obsidian.',
+            context_hub_status: { state: 'unavailable', reason_code: 'context_hub_unavailable' }
+        }
+    });
+    assert.strictEqual(currentCard.elements.textarea.value, 'Rascunho sem a ficha do Obsidian.');
+    assert.strictEqual(unavailableQuestion._contextHubState, 'unavailable');
+    assert.strictEqual(unavailableQuestion._generationComponent, 'context_hub');
+    assert.match(currentCard.elements.status.textContent, /informações do Obsidian estavam indisponíveis/i);
+    assert.doesNotMatch(currentCard.elements.status.textContent, /Histórico/);
+
+    currentCard = makeCard('Loja A::Q-HUB-PARTIAL');
+    const partialHubQuestion = { question_key: 'Loja A::Q-HUB-PARTIAL', _contextHubState: '' };
+    context.state.perguntas = [partialHubQuestion];
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-HUB-PARTIAL', {
+        result: {
+            resposta: 'Rascunho com ficha parcial.',
+            contexto: { context_hub_status: { partial_unavailable: true } }
+        }
+    });
+    assert.strictEqual(currentCard.elements.textarea.value, 'Rascunho com ficha parcial.');
+    assert.strictEqual(partialHubQuestion._contextHubState, 'partial');
+    assert.match(currentCard.elements.status.textContent, /Obsidian foram carregadas parcialmente/i);
+
+    currentCard = makeCard('Loja A::Q-HUB-READY');
+    const readyHubQuestion = { question_key: 'Loja A::Q-HUB-READY', _contextHubState: 'unavailable', _generationComponent: 'context_hub' };
+    context.state.perguntas = [readyHubQuestion];
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-HUB-READY', {
+        result: { resposta: 'Rascunho com ficha pronta.', context_hub_status: { state: 'ready' } }
+    });
+    assert.strictEqual(readyHubQuestion._contextHubState, '');
+    assert.strictEqual(readyHubQuestion._generationComponent, '');
+
+    currentCard = makeCard('Loja A::Q-HUB-ABSENT');
+    const absentHubQuestion = { question_key: 'Loja A::Q-HUB-ABSENT', _contextHubState: 'partial', _generationComponent: 'context_hub' };
+    context.state.perguntas = [absentHubQuestion];
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-HUB-ABSENT', {
+        result: { resposta: 'Rascunho sem metadado novo.' }
+    });
+    assert.strictEqual(absentHubQuestion._contextHubState, '');
+    assert.strictEqual(absentHubQuestion._generationComponent, '');
+
+    currentCard = makeCard('Loja A::Q-HUB-EMPTY');
+    const emptyHubQuestion = { question_key: 'Loja A::Q-HUB-EMPTY', _contextHubState: 'partial', _generationComponent: 'context_hub' };
+    context.state.perguntas = [emptyHubQuestion];
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-HUB-EMPTY', {
+        result: { resposta: 'Rascunho sem consulta aplicável.', context_hub_status: {} }
+    });
+    assert.strictEqual(emptyHubQuestion._contextHubState, '');
+    assert.strictEqual(emptyHubQuestion._generationComponent, '');
+
     currentCard = makeCard('Loja A::Q-CONTEXTUAL');
     context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-CONTEXTUAL', {
         result: {
@@ -141,6 +215,16 @@ vm.runInContext(source.slice(stateStart, stateEnd), context);
     });
     assert.strictEqual(currentCard.elements.status.textContent, 'Sugestao gerada pelo Black Jhon.');
     assert.strictEqual(currentCard.elements.status.className, 'ok');
+
+    currentCard = makeCard('Loja A::Q-STALE');
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-STALE', {
+        result: {
+            resposta: 'Resposta com contexto recente.',
+            context_status: { source: 'stale_fallback', age_seconds: 240 }
+        }
+    });
+    assert.match(currentCard.elements.status.textContent, /contexto validado há até 5 minutos/i);
+    assert.match(currentCard.elements.status.textContent, /Revise antes de enviar/);
 
     currentCard = makeCard('Loja A::Q-PARTIAL');
     context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-PARTIAL', {

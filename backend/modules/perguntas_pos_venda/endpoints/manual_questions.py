@@ -50,8 +50,6 @@ def _manual_generation_scope(
     if not exact_store_id:
         raise HTTPException(status_code=400, detail="Informe o store_id exato da loja.")
     scope = resolve_scope(request, client_id, exact_store_id)
-    if scope.name != store_name:
-        raise HTTPException(status_code=409, detail="A loja selecionada mudou. Atualize a lista de lojas.")
     return scope
 
 
@@ -79,6 +77,7 @@ def ml_perguntas_gerar_resposta_manual(
         raise HTTPException(status_code=400, detail="Informe a pergunta.")
 
     scope = _manual_generation_scope(request, client_id, str(req.store_id or ""), loja)
+    loja = scope.name
     canonical = perguntas_generation_preflight.load_context(request, scope, str(pergunta["id"]))
     pergunta = dict(canonical["question"])
     if resposta_atual.strip():
@@ -87,7 +86,9 @@ def ml_perguntas_gerar_resposta_manual(
         pergunta["_orientacao_usuario"] = orientacao_usuario[:1200]
 
     if perguntas_pos_venda_codex.enabled():
-        generation_session = perguntas_generation_preflight.remember_session(request, scope, str(pergunta["id"]))
+        generation_session = perguntas_generation_preflight.remember_session(
+            request, scope, str(pergunta["id"]), canonical,
+        )
         job = perguntas_pos_venda_codex.create_job(
             client_id=client_id,
             task_type="question",
@@ -95,8 +96,10 @@ def ml_perguntas_gerar_resposta_manual(
             subject_key=str(pergunta.get("id") or "").strip(),
             request={
                 "_generation_session": generation_session,
-                "pergunta": pergunta,
                 "question_text": str(pergunta.get("text") or ""),
+                "item_id": str(
+                    pergunta.get("item_id") or (canonical.get("item") or {}).get("id") or ""
+                ),
                 "resposta_atual": resposta_atual,
                 "orientacao_usuario": orientacao_usuario,
                 "sku": str(pergunta.get("item_sku") or pergunta.get("sku") or ""),
@@ -129,6 +132,7 @@ def ml_perguntas_gerar_resposta_manual(
             "data_sufficient": bool(job.get("data_sufficient")),
             "proposal_version": job.get("proposal_version") or 1,
             "warnings": job.get("warnings") or [],
+            "context_status": (result.get("contexto") or {}).get("context_status") or {},
         })
 
     cfg = _obter_cfg_ml(client_id, loja, store_id=scope.store_id)
@@ -146,12 +150,25 @@ def ml_perguntas_gerar_resposta_manual(
         resposta, cfg, contexto = _perguntas_ia_gerar_resposta(client_id, loja, cfg, pergunta, item)
     except PerguntasIARespostaIndisponivel as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    context_status = canonical.get("context_status") or {}
     warnings = ([perguntas_generation_preflight.HISTORY_TRUNCATED_WARNING]
                 if canonical.get("history_truncated") else [])
+    if context_status.get("warning"):
+        warnings.append(str(context_status["warning"]))
+    hub_status = perguntas_pos_venda_codex.context_hub_status(
+        contexto if isinstance(contexto, dict) else {}
+    )
+    if hub_status.get("warning"):
+        warnings.append(str(hub_status["warning"]))
+    if isinstance(contexto, dict):
+        contexto["context_status"] = context_status
+        contexto["context_hub_status"] = hub_status
     return {
         "success": True, "loja": loja,
         "question_id": str(pergunta.get("id") or "").strip(),
         "resposta": resposta, "contexto": contexto, "warnings": warnings,
+        "context_status": context_status,
+        "context_hub_status": hub_status,
     }
 
 
