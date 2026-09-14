@@ -310,7 +310,21 @@ def _codex_auth_file_path() -> str:
 
 
 def _codex_auth_detected() -> bool:
-    return os.path.exists(_codex_auth_file_path())
+    runtime = _codex_runtime_diagnostics()
+    status = _codex_auth_status(
+        str(runtime.get("path") or ""),
+        auth_file_path=_codex_auth_file_path(),
+    )
+    return status.get("authenticated") is True
+
+
+def _codex_auth_allows_attempt() -> bool:
+    runtime = _codex_runtime_diagnostics()
+    status = _codex_auth_status(
+        str(runtime.get("path") or ""),
+        auth_file_path=_codex_auth_file_path(),
+    )
+    return status.get("authenticated") is not False
 
 
 def _codex_cli_version() -> tuple[bool, str]:
@@ -556,7 +570,7 @@ def _codex_require_full_admin(
     return sessao
 
 
-def _codex_status_payload() -> dict[str, Any]:
+def _codex_status_payload(*, background_auth: bool = False) -> dict[str, Any]:
     sdk_ok = _codex_sdk_installed()
     enabled = _codex_enabled()
     runtime = _codex_runtime_diagnostics() if sdk_ok and enabled else {
@@ -570,19 +584,38 @@ def _codex_status_payload() -> dict[str, Any]:
         cli_ok = True
         cli_path = str(runtime.get("path") or "")
     auth_file = _codex_auth_file_path()
-    auth_file_exists = _codex_auth_detected()
+    if sdk_ok and enabled:
+        auth_status = _codex_auth_status(
+            str(runtime.get("path") or ""),
+            auth_file_path=auth_file,
+            background=background_auth,
+        )
+    else:
+        auth_status = {
+            "state": "unknown",
+            "authenticated": None,
+            "auth_file_detected": os.path.exists(auth_file),
+        }
+    auth_file_exists = bool(auth_status.get("auth_file_detected"))
+    authentication_state = str(auth_status.get("state") or "unknown")
+    authentication_check_pending = bool(auth_status.get("check_pending"))
+    authenticated = auth_status.get("authenticated")
     runtime_config_ok = bool(runtime.get("config_ok", True))
-    ready = bool(enabled and sdk_ok and runtime_config_ok)
+    ready = bool(enabled and sdk_ok and runtime_config_ok and authenticated is True)
     if not sdk_ok:
         runtime_status = "dependency_missing"
+    elif not enabled:
+        runtime_status = "disabled"
     elif not runtime_config_ok:
         runtime_status = "configuration_invalid"
-    elif not auth_file_exists:
+    elif authentication_state == "checking":
+        runtime_status = "authentication_checking"
+    elif authentication_state == "unauthenticated":
         runtime_status = "authentication_pending"
-    elif enabled:
-        runtime_status = "ready"
+    elif authentication_state == "unknown":
+        runtime_status = "authentication_unknown"
     else:
-        runtime_status = "disabled"
+        runtime_status = "ready"
     message = f"{BLACK_JHON_DISPLAY_NAME} pronto com Codex como IA principal."
     if not enabled:
         message = f"{BLACK_JHON_DISPLAY_NAME} esta com o Codex desabilitado pela configuracao local."
@@ -593,8 +626,15 @@ def _codex_status_payload() -> dict[str, Any]:
             "A configuracao MCP local do Codex e incompativel. Atualize o aplicativo Codex "
             "ou revise [mcp_servers.node_repl] no config.toml; o login nao foi perdido."
         )
-    elif not auth_file_exists:
-        message = "SDK instalado. Se nao houver credencial no keyring, rode codex login nesta maquina."
+    elif authentication_state == "unauthenticated":
+        message = "Codex instalado, mas sem sessao ativa. Rode codex login nesta maquina."
+    elif authentication_state == "checking":
+        message = "Verificando a sessao local do Codex..."
+    elif authentication_state == "unknown":
+        message = (
+            "Codex disponivel. Nao foi possivel confirmar a sessao local agora; "
+            "a execucao ainda tentara usar o login existente."
+        )
 
     return {
         "success": True,
@@ -604,7 +644,10 @@ def _codex_status_payload() -> dict[str, Any]:
         "development_write_enabled": CODEX_DEVELOPMENT_WRITE_ENABLED,
         "development_error_code": CODEX_DEVELOPMENT_ERROR_CODE,
         "runtime_status": runtime_status,
-        "authentication_required": bool(sdk_ok and not auth_file_exists),
+        "authentication_required": bool(sdk_ok and authenticated is False),
+        "authentication_state": authentication_state,
+        "authentication_check_pending": authentication_check_pending,
+        "authenticated": authenticated,
         "sdk_installed": sdk_ok,
         "cli_available": cli_ok,
         "cli_path": cli_path,
@@ -629,7 +672,7 @@ def _codex_status_payload() -> dict[str, Any]:
 
 
 def _codex_status_for_session(sessao: dict[str, Any]) -> dict[str, Any]:
-    payload = _codex_status_payload()
+    payload = _codex_status_payload(background_auth=True)
     for sensitive_path_field in ("cli_path", "auth_file_path", "cwd"):
         payload.pop(sensitive_path_field, None)
     is_full = bool(sessao.get("is_full"))
@@ -679,6 +722,6 @@ def _codex_status_for_session(sessao: dict[str, Any]) -> dict[str, Any]:
             "can_reset": not active_tasks,
         }
     return payload
-__codex_dependencies__ = ['BLACK_JHON_DISPLAY_NAME', 'CODEX_DEFAULT_MODEL', 'CODEX_DEVELOPMENT_ERROR_CODE', 'CODEX_DEVELOPMENT_WRITE_ENABLED', 'CODEX_EXECUTION_PLANE', 'CONSOLE_STATE', '_codex_agent_data_selection_from_task', '_codex_agent_data_selection_tool_ids', '_codex_agent_planned_arguments', '_codex_agent_screen_summary', '_codex_agent_source_policy_from_screen', '_codex_config_file_path', '_codex_hmac_identifier', '_codex_load_or_create_conversation_state', '_codex_load_or_create_shared_conversation_state', '_codex_owned_persisted_tasks', '_codex_safe_id', '_codex_shared_continuity_for_session', '_codex_task_stored_conversation_id']
+__codex_dependencies__ = ['BLACK_JHON_DISPLAY_NAME', 'CODEX_DEFAULT_MODEL', 'CODEX_DEVELOPMENT_ERROR_CODE', 'CODEX_DEVELOPMENT_WRITE_ENABLED', 'CODEX_EXECUTION_PLANE', 'CONSOLE_STATE', '_codex_agent_data_selection_from_task', '_codex_agent_data_selection_tool_ids', '_codex_agent_planned_arguments', '_codex_agent_screen_summary', '_codex_agent_source_policy_from_screen', '_codex_auth_status', '_codex_config_file_path', '_codex_hmac_identifier', '_codex_load_or_create_conversation_state', '_codex_load_or_create_shared_conversation_state', '_codex_owned_persisted_tasks', '_codex_safe_id', '_codex_shared_continuity_for_session', '_codex_task_stored_conversation_id']
 
-__codex_exports__ = ['_codex_bool_env', '_codex_int_env', '_codex_enabled', '_codex_agent_mode_enabled', '_codex_base_dir', '_codex_base_info_dir', '_codex_info_dir', '_codex_task_path', '_codex_now', '_codex_deadline_at', '_codex_deadline_epoch', '_codex_native_mcp_enabled', '_codex_native_mcp_result_path', '_codex_native_mcp_read_results', '_codex_native_mcp_cleanup', '_codex_native_mcp_thread_config', '_codex_sdk_installed', '_codex_auth_file_path', '_codex_auth_detected', '_codex_cli_version', '_codex_bin_version', '_codex_desktop_runtime_candidates', '_codex_bin_config_preflight', '_codex_runtime_diagnostics', '_codex_runtime_require_ready', '_codex_runtime_bin', '_codex_local_request_allowed', '_codex_payload_sessao', '_codex_require_authenticated', '_codex_require_full_admin', '_codex_status_payload', '_codex_status_for_session']
+__codex_exports__ = ['_codex_bool_env', '_codex_int_env', '_codex_enabled', '_codex_agent_mode_enabled', '_codex_base_dir', '_codex_base_info_dir', '_codex_info_dir', '_codex_task_path', '_codex_now', '_codex_deadline_at', '_codex_deadline_epoch', '_codex_native_mcp_enabled', '_codex_native_mcp_result_path', '_codex_native_mcp_read_results', '_codex_native_mcp_cleanup', '_codex_native_mcp_thread_config', '_codex_sdk_installed', '_codex_auth_file_path', '_codex_auth_detected', '_codex_auth_allows_attempt', '_codex_cli_version', '_codex_bin_version', '_codex_desktop_runtime_candidates', '_codex_bin_config_preflight', '_codex_runtime_diagnostics', '_codex_runtime_require_ready', '_codex_runtime_bin', '_codex_local_request_allowed', '_codex_payload_sessao', '_codex_require_authenticated', '_codex_require_full_admin', '_codex_status_payload', '_codex_status_for_session']

@@ -118,6 +118,13 @@
           void _codexCarregarStatus(true);
         }
         document.getElementById('jk-ia-fab')?.classList.remove('piscando');
+      } else {
+        if (codexAuthStatusPollTimer) {
+          clearTimeout(codexAuthStatusPollTimer);
+          codexAuthStatusPollTimer = null;
+        }
+        codexAuthStatusPollDeadline = 0;
+        if (codexStatusAbortController) codexStatusAbortController.abort();
       }
     }
 

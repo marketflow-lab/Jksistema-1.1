@@ -28,7 +28,11 @@ def test_release_version_is_canonical_and_materialized():
 def test_codex_status_distinguishes_authentication_pending(monkeypatch):
     monkeypatch.setattr(console_runtime, "_codex_sdk_installed", lambda: True)
     monkeypatch.setattr(console_runtime, "_codex_enabled", lambda: True)
-    monkeypatch.setattr(console_runtime, "_codex_auth_detected", lambda: False)
+    monkeypatch.setattr(console_runtime, "_codex_auth_status", lambda *args, **kwargs: {
+        "state": "unauthenticated",
+        "authenticated": False,
+        "auth_file_detected": False,
+    })
     monkeypatch.setattr(console_runtime, "_codex_cli_version", lambda: (True, "codex.exe"))
     monkeypatch.setattr(console_runtime, "_codex_runtime_diagnostics",
         lambda: {
@@ -41,7 +45,7 @@ def test_codex_status_distinguishes_authentication_pending(monkeypatch):
 
     payload = console_runtime._codex_status_payload()
 
-    assert payload["ready"] is True
+    assert payload["ready"] is False
     assert payload["runtime_status"] == "authentication_pending"
     assert payload["authentication_required"] is True
     assert payload["sdk_installed"] is True

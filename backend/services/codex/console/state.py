@@ -105,6 +105,14 @@ class ConsoleState:
         self.runtime_selected_path_cache = ""
         self.runtime_selected_version_cache: tuple[int, ...] = ()
         self.runtime_config_error_cache = ""
+        self.auth_status_lock = threading.Lock()
+        self.auth_status_cache: Optional[dict[str, Any]] = None
+        self.auth_status_cache_key = ""
+        self.auth_status_cache_at = 0.0
+        self.auth_status_inflight = False
+        self.auth_status_generation = 0
+        self.auth_status_event = threading.Event()
+        self.auth_status_event.set()
 
 
 CONSOLE_STATE = ConsoleState()

@@ -153,9 +153,41 @@ async function newScenario(browser, baseUrl, options = {}) {
 
     if (pathname === '/api/codex/status') {
       calls.codexStatus += 1;
+      if (options.authAlwaysChecking === true) {
+        return json(200, {
+          success: true,
+          ready: false,
+          authentication_state: 'checking',
+          authentication_check_pending: true,
+          message: 'Verificando a sessao local do Codex...',
+        });
+      }
+      if (options.authOutOfOrder === true && calls.codexStatus === 1) {
+        await new Promise(resolve => setTimeout(resolve, 250));
+        return json(200, {
+          success: true,
+          ready: false,
+          authentication_state: 'checking',
+          authentication_check_pending: true,
+          message: 'Verificando a sessao local do Codex...',
+        });
+      }
+      if (options.authCheckingOnce === true && calls.codexStatus === 1) {
+        return json(200, {
+          success: true,
+          ready: false,
+          authentication_state: 'checking',
+          authentication_check_pending: true,
+          message: 'Verificando a sessao local do Codex...',
+          defaults: { model: 'gpt-5.5', reasoning_effort: 'xhigh', speed: 'standard' },
+          conversation: { conversation_id: canonicalConversationId, channel: 'app', generation: 1, state: 'active', can_reset: true, queue: { running: 0, pending: 0 } },
+        });
+      }
       return json(200, {
         success: true,
         ready: options.statusReady !== false,
+        authentication_state: options.statusReady === false ? 'unauthenticated' : 'authenticated',
+        authentication_check_pending: false,
         message: options.statusReady === false ? 'Codex indisponivel no teste.' : 'Black Jhon pronto com Codex como IA principal.',
         defaults: { model: 'gpt-5.5', reasoning_effort: 'xhigh', speed: 'standard' },
         conversation: { conversation_id: canonicalConversationId, channel: 'app', generation: 1, state: 'active', can_reset: true, queue: { running: 0, pending: 0 } },
@@ -902,6 +934,71 @@ async function run() {
       await new Promise(resolve => setTimeout(resolve, 30));
       assert.strictEqual(calls.restoredTaskGets, restoredGets, 'reinicio de memoria deve cancelar polls antigos');
       assert.doesNotMatch(await page.locator('#jk-codex-messages').textContent(), /RESPOSTA ANTIGA NAO DEVE VOLTAR/);
+      assert.deepStrictEqual(pageErrors, []);
+      await context.close();
+    }
+
+    {
+      const scenario = await newScenario(browser, baseUrl, {
+        full: true,
+        authCheckingOnce: true,
+      });
+      const { context, page, calls, pageErrors } = scenario;
+      await page.locator('#jk-codex-panel.aberto').waitFor();
+      await waitForCondition(() => calls.codexStatus === 1, 'consulta checking nao iniciou');
+      await page.locator('#jk-codex-close').click();
+      await page.waitForTimeout(700);
+      assert.strictEqual(calls.codexStatus, 1, 'painel fechado deve cancelar o polling de autenticacao');
+      assert.deepStrictEqual(pageErrors, []);
+      await context.close();
+    }
+
+    {
+      const scenario = await newScenario(browser, baseUrl, {
+        full: true,
+        authAlwaysChecking: true,
+      });
+      const { context, page, calls, pageErrors } = scenario;
+      await page.locator('#jk-codex-panel.aberto').waitFor();
+      await waitForCondition(() => calls.codexStatus >= 3, 'polling checking nao iniciou');
+      await page.waitForTimeout(10500);
+      const callsAtDeadline = calls.codexStatus;
+      await page.waitForTimeout(1000);
+      assert.strictEqual(calls.codexStatus, callsAtDeadline, 'polling checking deve parar no deadline');
+      assert.match(await page.locator('#jk-codex-status').textContent(), /Nao foi possivel confirmar/);
+      assert.deepStrictEqual(pageErrors, []);
+      await context.close();
+    }
+
+    {
+      const scenario = await newScenario(browser, baseUrl, {
+        full: true,
+        statusReady: true,
+        authOutOfOrder: true,
+      });
+      const { context, page, calls, pageErrors } = scenario;
+      await page.locator('#jk-codex-panel.aberto').waitFor();
+      await waitForCondition(() => calls.codexStatus === 1, 'primeira consulta de status nao iniciou');
+      await page.locator('#jk-codex-refresh').click();
+      await page.waitForFunction(() => document.querySelector('#jk-codex-status')?.textContent.includes('Black Jhon pronto'));
+      await page.waitForTimeout(700);
+      assert.strictEqual(calls.codexStatus, 2, 'resposta checking antiga nao deve reiniciar polling');
+      assert.match(await page.locator('#jk-codex-status').textContent(), /Black Jhon pronto/);
+      assert.deepStrictEqual(pageErrors, []);
+      await context.close();
+    }
+
+    {
+      const scenario = await newScenario(browser, baseUrl, {
+        full: true,
+        statusReady: true,
+        authCheckingOnce: true,
+      });
+      const { context, page, calls, pageErrors } = scenario;
+      await page.locator('#jk-codex-panel.aberto').waitFor();
+      await waitForCondition(() => calls.codexStatus >= 2, 'status de autenticacao nao foi atualizado');
+      await page.waitForFunction(() => document.querySelector('#jk-codex-status')?.textContent.includes('Black Jhon pronto'));
+      assert.strictEqual(calls.codexStatus, 2, 'estado checking deve iniciar somente uma nova consulta');
       assert.deepStrictEqual(pageErrors, []);
       await context.close();
     }

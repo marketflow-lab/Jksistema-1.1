@@ -42,6 +42,10 @@
     let codexOperationalFailureCount = 0;
     let codexOperationalFailureTasks = new Set();
     let codexStatusFailureCounted = false;
+    let codexAuthStatusPollTimer = null;
+    let codexAuthStatusPollDeadline = 0;
+    let codexStatusRequestGeneration = 0;
+    let codexStatusAbortController = null;
     let codexPaths = [];
     let codexUploadedAttachments = [];
     let codexVoiceRecorder = null;
@@ -2791,11 +2795,31 @@
       return true;
     }
 
-    async function _codexCarregarStatus(silencioso = false) {
+    async function _codexCarregarStatus(silencioso = false, authPoll = false) {
+      if (!authPoll) {
+        codexAuthStatusPollDeadline = 0;
+        if (codexAuthStatusPollTimer) {
+          clearTimeout(codexAuthStatusPollTimer);
+          codexAuthStatusPollTimer = null;
+        }
+      }
+      if (codexStatusAbortController) codexStatusAbortController.abort();
+      const statusController = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      codexStatusAbortController = statusController;
+      const requestGeneration = ++codexStatusRequestGeneration;
+      const requestTimeoutMs = authPoll && codexAuthStatusPollDeadline
+        ? Math.max(1, codexAuthStatusPollDeadline - Date.now())
+        : 10000;
+      const requestTimeout = statusController
+        ? setTimeout(() => statusController.abort(), requestTimeoutMs)
+        : null;
       _codexAtualizarVisibilidade();
       if (!silencioso) _codexSetStatus('Verificando Codex...');
       try {
-        const data = await _codexFetchJson('/api/codex/status');
+        const data = await _codexFetchJson('/api/codex/status', {
+          signal: statusController ? statusController.signal : undefined,
+        });
+        if (requestGeneration !== codexStatusRequestGeneration) return data;
         const conversation = data && data.conversation && typeof data.conversation === 'object' ? data.conversation : {};
         if (conversation.conversation_id) {
           codexCanonicalConversationId = String(conversation.conversation_id || '');
@@ -2809,6 +2833,34 @@
         if (!saved.reasoning_effort && defaults.reasoning_effort) _codexSetSelectValue('jk-codex-reasoning', defaults.reasoning_effort);
         if (!saved.speed && defaults.speed) _codexSetSelectValue('jk-codex-speed', defaults.speed);
         const msg = data && data.message ? data.message : 'Status do Codex recebido.';
+        const authState = String(data && data.authentication_state || '');
+        const authChecking = authState === 'checking' || (data && data.authentication_check_pending === true);
+        if (codexAuthStatusPollTimer && !authChecking) {
+          clearTimeout(codexAuthStatusPollTimer);
+          codexAuthStatusPollTimer = null;
+        }
+        if (authChecking) {
+          const now = Date.now();
+          if (!codexAuthStatusPollDeadline) {
+            codexAuthStatusPollDeadline = now + 10000;
+          }
+          if (now >= codexAuthStatusPollDeadline) {
+            _codexSetStatus(
+              'Nao foi possivel confirmar a sessao local do Codex agora. Uma execucao ainda pode tentar usar o login existente.',
+              false,
+            );
+            return data;
+          }
+          _codexSetStatus(msg, false);
+          if (!codexAuthStatusPollTimer && now < codexAuthStatusPollDeadline) {
+            codexAuthStatusPollTimer = setTimeout(() => {
+              codexAuthStatusPollTimer = null;
+              if (codexPanelAberto) void _codexCarregarStatus(true, true);
+            }, 500);
+          }
+          return data;
+        }
+        codexAuthStatusPollDeadline = 0;
         if (data && data.ready === true) {
           codexOperationalFailureCount = 0;
           codexStatusFailureCounted = false;
@@ -2816,12 +2868,24 @@
           codexOperationalFailureCount += 1;
           codexStatusFailureCounted = true;
         }
-        _codexSetStatus(msg, !(data && data.ready));
+        _codexSetStatus(msg, !(data && data.ready) && authState !== 'unknown');
         if (_usuarioLocalEhFull()) void _codexCarregarPropostasPendentes();
         return data;
       } catch (err) {
+        if (requestGeneration !== codexStatusRequestGeneration) return null;
+        codexAuthStatusPollDeadline = 0;
+        if (statusController && statusController.signal.aborted) {
+          _codexSetStatus(
+            'Nao foi possivel confirmar a sessao local do Codex agora. Uma execucao ainda pode tentar usar o login existente.',
+            false,
+          );
+          return null;
+        }
         _codexSetStatus(_codexErroCurto(err, 'Nao foi possivel verificar o Codex.'), true);
         return null;
+      } finally {
+        if (requestTimeout) clearTimeout(requestTimeout);
+        if (codexStatusAbortController === statusController) codexStatusAbortController = null;
       }
     }
 

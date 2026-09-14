@@ -11,6 +11,7 @@ from typing import Any
 COMPONENT_MODULES = (
     "state",
     "runtime",
+    "auth_status",
     "runtime_policy",
     "task_views",
     "attachments",

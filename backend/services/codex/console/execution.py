@@ -15,7 +15,7 @@ from .agent_prompt import (
 )
 from .worker_execution import _codex_run_worker as run_task
 from .runtime import (
-    _codex_auth_detected as auth_detected,
+    _codex_auth_allows_attempt as auth_detected,
     _codex_enabled as enabled,
     _codex_runtime_bin as runtime_bin,
     _codex_runtime_require_ready as require_runtime_ready,
