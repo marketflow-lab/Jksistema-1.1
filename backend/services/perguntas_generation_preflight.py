@@ -6,6 +6,7 @@ import copy
 from dataclasses import replace
 import hashlib
 import json
+import math
 import threading
 import time
 import uuid
@@ -20,6 +21,7 @@ from backend.services import perguntas_loading_cache
 
 POLICY = "jk_manual_question_canonical_preflight_v1"
 HISTORY_TRUNCATED_WARNING = "Historico consultado nas 50 perguntas recentes do anuncio, filtradas pelo comprador."
+_SESSION_TTL_SECONDS = 15 * 60.0
 _SESSIONS = OrderedDict()
 _LOCK = threading.Lock()
 
@@ -121,11 +123,21 @@ def _snapshot_hash(canonical: dict | None) -> str:
 def remember_session(request: Request, scope: Scope, question_id: str = "", canonical: dict | None = None) -> str:
     """Keep the initiating auth context only in memory; restart requires a new request."""
     payload = getattr(request.state, "auth_payload", {}) or {}
-    try:
-        expiry = min(float(payload.get("exp") or 0), time.time() + 900)
-    except (ValueError, TypeError):
-        expiry = 0
-    if expiry <= time.time():
+    if (not isinstance(payload, dict)
+            or str(payload.get("sub") or "") != scope.username
+            or str(payload.get("client_id") or "") != scope.client_id):
+        raise _blocked("session", access=True, reason="session_identity_invalid")
+    now = time.time()
+    expiry = now + _SESSION_TTL_SECONDS
+    if "exp" in payload:
+        try:
+            token_expiry = float(payload["exp"])
+        except (ValueError, TypeError):
+            raise _blocked("session", access=True, reason="session_expiry_invalid") from None
+        if not math.isfinite(token_expiry):
+            raise _blocked("session", access=True, reason="session_expiry_invalid")
+        expiry = min(expiry, token_expiry)
+    if expiry <= now:
         raise _blocked("session", access=True)
     # Session claims are supplied by authenticated middleware, never the body.
     # A stable handle deduplicates concurrent clicks without sharing two logins.

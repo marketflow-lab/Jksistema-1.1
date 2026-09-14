@@ -268,7 +268,9 @@ def test_context_older_than_five_minutes_cannot_fallback(env):
 def test_item_404_invalidates_cached_context_and_frozen_session(env):
     env.handler = _canonical_handler
     req = request()
-    req.state.auth_payload = {'exp': time.time() + 3600}
+    req.state.auth_payload = {
+        'sub': 'alice', 'client_id': 'tenant', 'exp': time.time() + 3600,
+    }
     api.ml_perguntas_detalhe_rapido(req, 'A', '1', client_id='tenant')
     api.ml_perguntas_itens_rapidos(req, 'A', 'MLB123', client_id='tenant')
     canonical = api.canonical_context(req, 'tenant', 'A', '1', force=False)

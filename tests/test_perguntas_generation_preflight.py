@@ -211,9 +211,86 @@ def job_for(handle):
 
 
 def session_request():
-    req = request()
-    req.state.auth_payload = {"exp": time.time() + 3600}
+    req = current_local_session_request()
+    req.state.auth_payload["exp"] = time.time() + 3600
     return req
+
+
+def current_local_session_request():
+    req = request()
+    req.state.auth_payload = {
+        "sub": "operator", "client_id": "tenant-a", "machine_id": "machine-a",
+    }
+    return req
+
+
+def test_current_local_token_without_exp_gets_bounded_generation_session():
+    before = time.time()
+    handle = preflight.remember_session(current_local_session_request(), scope(), "23", context())
+    after = time.time()
+
+    remembered = preflight._SESSIONS[handle]
+    assert before + preflight._SESSION_TTL_SECONDS <= remembered.expiry
+    assert remembered.expiry <= after + preflight._SESSION_TTL_SECONDS
+    assert preflight.run_with_session(job_for(handle), lambda: "authorized") == "authorized"
+
+
+def test_manual_generation_with_current_local_token_reaches_job_creation(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(manual, "_manual_generation_scope", lambda *_args: scope())
+    monkeypatch.setattr(preflight, "load_context", lambda *_args: context())
+    monkeypatch.setattr(manual.perguntas_pos_venda_codex, "enabled", lambda: True)
+
+    def create_job(**kwargs):
+        captured.update(kwargs)
+        return {"job_id": "job-current-token", "status": "queued"}
+
+    monkeypatch.setattr(manual.perguntas_pos_venda_codex, "create_job", create_job)
+    result = manual.ml_perguntas_gerar_resposta_manual(
+        PerguntasGerarRespostaRequest(
+            loja="Loja", store_id="store-a",
+            pergunta={"id": "23", "item_id": "MLB12", "text": "Pergunta"},
+            **{"async": True},
+        ),
+        current_local_session_request(),
+        "tenant-a",
+    )
+
+    handle = captured["request"]["_generation_session"]
+    assert result == {"job_id": "job-current-token", "status": "queued"}
+    assert handle in preflight._SESSIONS
+
+
+def test_token_expiry_still_limits_internal_generation_session():
+    req = current_local_session_request()
+    token_expiry = time.time() + 30
+    req.state.auth_payload["exp"] = token_expiry
+    handle = preflight.remember_session(req, scope(), "23", context())
+    assert preflight._SESSIONS[handle].expiry == token_expiry
+
+
+@pytest.mark.parametrize("invalid", [None, "", "invalid", float("nan"), float("inf"), float("-inf")])
+def test_invalid_token_expiry_fails_closed(invalid):
+    req = current_local_session_request()
+    req.state.auth_payload["exp"] = invalid
+    with pytest.raises(preflight.GenerationContextUnavailable) as caught:
+        preflight.remember_session(req, scope(), "23", context())
+    assert caught.value.headers["X-JK-Error-Component"] == "session"
+    assert caught.value.headers["X-JK-Error-Reason"] == "session_expiry_invalid"
+
+
+@pytest.mark.parametrize("claims", [
+    {},
+    {"sub": "other", "client_id": "tenant-a"},
+    {"sub": "operator", "client_id": "tenant-b"},
+])
+def test_missing_or_foreign_auth_claims_fail_closed(claims):
+    req = request()
+    req.state.auth_payload = claims
+    with pytest.raises(preflight.GenerationContextUnavailable) as caught:
+        preflight.remember_session(req, scope(), "23", context())
+    assert caught.value.headers["X-JK-Error-Component"] == "session"
+    assert caught.value.headers["X-JK-Error-Reason"] == "session_identity_invalid"
 
 
 def test_parallel_sessions_of_same_operator_keep_distinct_credentials():
@@ -264,8 +341,8 @@ def test_worker_rejects_reconnected_store_or_changed_identity(field):
 def test_worker_restart_and_expired_session_fail_closed():
     with pytest.raises(preflight.GenerationContextUnavailable):
         preflight.run_with_session(job_for("missing-after-restart"), lambda: None)
-    req = request()
-    req.state.auth_payload = {"exp": time.time() - 1}
+    req = current_local_session_request()
+    req.state.auth_payload["exp"] = time.time() - 1
     with pytest.raises(preflight.GenerationContextUnavailable):
         preflight.remember_session(req, scope())
 
