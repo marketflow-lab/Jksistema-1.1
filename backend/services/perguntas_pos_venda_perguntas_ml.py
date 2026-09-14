@@ -41,7 +41,12 @@ from fastapi.responses import StreamingResponse
 from backend.services.codex_turn_context import EVIDENCE_ENVELOPE_V2, normalize_evidence_envelope
 from backend.modules.perguntas_pos_venda.ai import api as perguntas_agent_api
 from backend.modules.perguntas_pos_venda.ai.validation import ML_PERGUNTAS_IA_V2_MODO
-from backend.services.perguntas_pos_venda_state import PerguntasIARespostaIndisponivel
+from backend.services.perguntas_pos_venda_state import (
+    PerguntasIAClassificacaoInconclusiva,
+    PerguntasIARespostaIndisponivel,
+    PerguntasIASegurancaBloqueada,
+    _perguntas_ia_classificacao_consultiva_padrao,
+)
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.vendas_sync_progress import _corrigir_texto_mojibake
 
@@ -1520,7 +1525,7 @@ def _perguntas_ia_gerar_resposta(
         "assinatura_obrigatoria": _perguntas_ia_assinatura_loja(loja),
     }
     historico_transitorio = []
-    for evento in _perguntas_ia_historico_anterior(pergunta)[-10:]:
+    for evento in _perguntas_ia_historico_anterior(pergunta):
         if not isinstance(evento, dict):
             continue
         if question_id and str(evento.get("question_id") or "").strip() == question_id:
@@ -1534,7 +1539,7 @@ def _perguntas_ia_gerar_resposta(
         role = str(evento.get("role") or evento.get("from_role") or "").strip().lower()
         historico_transitorio.append({
             "role": "seller" if role in {"seller", "loja", "store"} else "buyer",
-            "text": texto_evento[:500],
+            "text": texto_evento,
         })
     fallback_context = {
         "question": {
@@ -1556,16 +1561,15 @@ def _perguntas_ia_gerar_resposta(
             pergunta,
             item,
         )
-    except Exception as exc:
-        if exc.__class__.__name__ == "PerguntasIAClassificacaoInconclusiva":
-            fallback_context["classification"] = _perguntas_ia_contexto_fallback_classificacao(
-                getattr(exc, "classificacao", {})
-            )
-            try:
-                setattr(exc, "ppv_fallback_context", fallback_context)
-            except Exception:
-                pass
-        raise
+        contexto["classificacao_consultiva_status"] = "ok"
+    except (
+        PerguntasIAClassificacaoInconclusiva,
+        PerguntasIASegurancaBloqueada,
+        PerguntasIARespostaIndisponivel,
+    ) as exc:
+        intencao_atendimento = _perguntas_ia_classificacao_consultiva_padrao(pergunta)
+        contexto["classificacao_consultiva_status"] = "fallback"
+        contexto["classificacao_consultiva_reason"] = type(exc).__name__
     contexto["intencao_atendimento"] = intencao_atendimento
     fallback_context["classification"] = _perguntas_ia_contexto_fallback_classificacao(
         intencao_atendimento
@@ -1591,7 +1595,7 @@ def _perguntas_ia_gerar_resposta(
     )
     historico_anterior = _perguntas_ia_historico_anterior(pergunta)
     linhas_historico = []
-    for evento in historico_anterior[-10:]:
+    for evento in historico_anterior:
         if not isinstance(evento, dict):
             continue
         texto_evento = str(evento.get("text") or "").strip()
@@ -1599,7 +1603,7 @@ def _perguntas_ia_gerar_resposta(
             continue
         role = str(evento.get("role") or evento.get("from_role") or "").strip().lower()
         rotulo = "Loja" if role in {"seller", "loja", "store"} else "Comprador"
-        linhas_historico.append(f"{rotulo}: {texto_evento[:500]}")
+        linhas_historico.append(f"{rotulo}: {texto_evento}")
     historico_prompt = _perguntas_ia_compactar_contexto("\n".join(linhas_historico), 1600)
     bloco_historico_prompt = f"Historico da conversa:\n{historico_prompt}\n\n" if historico_prompt else ""
     resposta_atual = _perguntas_ia_compactar_contexto(

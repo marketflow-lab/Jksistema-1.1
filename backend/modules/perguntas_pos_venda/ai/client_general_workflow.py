@@ -51,8 +51,15 @@ def initialize_general_context_pipeline(client, metadata: dict) -> None:
     ]
 
 
-def initial_general_response(client, prompt: str, metadata: dict) -> AIAnswer:
-    initialize_general_context_pipeline(client, metadata)
+def initial_general_response(
+    client,
+    prompt: str,
+    metadata: dict,
+    *,
+    initialize_pipeline: bool = True,
+) -> AIAnswer:
+    if initialize_pipeline:
+        initialize_general_context_pipeline(client, metadata)
     internal_prompt = prompt + (
         "\n\nETAPA INTERNA OBRIGATORIA: use primeiro somente a pergunta, o historico e os dados do produto do anuncio. "
         "Avalie silenciosamente todas as subperguntas e determine o estado comercial de cada uma: atende, atende mediante "
@@ -488,10 +495,10 @@ def run_general(
 ) -> AIAnswer:
     post_sale = str(metadata.get("category") or "").strip() == "post_sale"
     internal_sources: list[dict] = []
+    initialize_general_context_pipeline(client, metadata)
     if post_sale:
-        parsed = initial_general_response(client, prompt, metadata)
+        parsed = None
     else:
-        initialize_general_context_pipeline(client, metadata)
         allowed = set(_perguntas_ia_allowed_tools_classificadas(client.agent_input))
         internal_sources = _collect_general_internal_sources(
             client, metadata, bindings, allowed, hooks.classified_tool,
@@ -519,6 +526,13 @@ def run_general(
             ),
         })
     if post_sale:
+        if parsed is None:
+            parsed = initial_general_response(
+                client,
+                prompt,
+                metadata,
+                initialize_pipeline=False,
+            )
         return parsed
     packet = bind_client_sku_question_context(
         client,

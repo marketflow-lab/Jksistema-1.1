@@ -31,6 +31,7 @@ from .runtime import (
     _modelo_eh_codex,
     _modelo_eh_vertex_ai,
     _perguntas_ia_assinatura_loja,
+    _perguntas_ia_classificacao_consultiva_padrao,
     _perguntas_ia_compactar_contexto,
     _perguntas_ia_fluxo_pos_venda,
     _perguntas_ia_intencao_agent,
@@ -197,6 +198,7 @@ def _perguntas_ia_v2_prompt(
         "Responda como a equipe da loja, sem mencionar sistema interno, app, prompt ou treinamento.",
         f"A resposta deve terminar exatamente com: {resolve_runtime_adapter('state', 'store_signature', _perguntas_ia_assinatura_loja)(str(agent_input.get('store') or agent_input.get('loja') or ''))}",
         "Gere sempre UM rascunho de resposta ao comprador com as informacoes disponiveis.",
+        "A classificacao de intencao e somente uma pista consultiva. Determine a resposta pelo turno atual, por todo o historico, pelo anuncio e pelas referencias do Context Hub; divergencia ou incerteza da classificacao nunca impede a geracao.",
         "Nao envie, nao publique, nao altere anuncio, nao altere estoque e nao chame ferramentas externas.",
         "Use somente os dados deste prompt e das referencias read-only fornecidas pelo aplicativo: pergunta, historico, anuncio, Context Hub, memoria do SKU e contexto interno.",
         "Nao use web, nao use Bling ao vivo e nao invente dados ausentes.",
@@ -283,9 +285,15 @@ def _perguntas_ia_execucao_configurar(client_id: str, agent_input: dict, started
     if not loja:
         raise HTTPException(status_code=400, detail="Informe a loja no input da nova IA.")
     if not _perguntas_ia_categoria_classificada(agent_input):
-        raise PerguntasIARespostaIndisponivel(
-            "Classificacao estruturada da IA sem categoria canonica; use o rascunho neutro disponivel."
-        )
+        question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
+        advisory = _perguntas_ia_classificacao_consultiva_padrao(question)
+        agent_input["intent"] = advisory
+        agent_input["classification"] = advisory
+        agent_input["category"] = advisory["categoria"]
+        context = agent_input.get("context") if isinstance(agent_input.get("context"), dict) else {}
+        context["intencao_atendimento"] = advisory
+        context["classificacao_consultiva_status"] = "fallback"
+        agent_input["context"] = context
     settings = GeminiQuestionsSettings.from_env()
     post_sale = _perguntas_ia_fluxo_pos_venda(agent_input)
     settings.max_sentences = 3

@@ -1126,7 +1126,7 @@ def test_legacy_json_guidance_is_labeled_behavioral_not_factual():
     memory.assert_not_called()
 
 
-def test_post_sale_classification_does_not_promote_context_hub_or_web():
+def test_post_sale_queries_context_hub_before_answer_ai_without_web():
     agent_input = _compatibility_input()
     agent_input["intent"] = _structured_intent("post_sale")
     agent_input["question"]["text"] = "O produto parou de funcionar, como seguimos?"
@@ -1137,12 +1137,22 @@ def test_post_sale_classification_does_not_promote_context_hub_or_web():
         requires_human_review=True,
         reason="post_sale_listing_only",
     )
+    call_order = []
+
+    def context_hub(*_args, **_kwargs):
+        call_order.append("context_hub")
+        return _hub_result()
+
+    def answer_model(*_args, **_kwargs):
+        call_order.append("answer_ai")
+        return listing_answer
+
     with patch.object(agent_clients, "marketplace_listing_query", side_effect=AssertionError("listing nao deveria ser chamada")) as listing, \
          patch.object(agent_clients, "_ia_tool_get_product_data", side_effect=AssertionError("cadastro nao deveria ser chamado")) as product, \
          patch.object(agent_clients, "_ia_tool_get_bling_product", side_effect=AssertionError("bling nao deveria ser chamado")) as bling, \
-         patch.object(agent_clients, "_perguntas_ia_context_hub_tool", return_value=_hub_result()) as hub, \
+         patch.object(agent_clients, "_perguntas_ia_context_hub_tool", side_effect=context_hub) as hub, \
          patch.object(agent_clients, "_ia_agent_perguntas_web_tool", side_effect=AssertionError("web nao deveria ser chamada")), \
-         patch.object(client, "_call_model", return_value=listing_answer):
+         patch.object(client, "_call_model", side_effect=answer_model):
         result = client.generate("prompt", {
             "category": "post_sale",
             "question_text": "O produto parou de funcionar, como seguimos?",
@@ -1153,11 +1163,13 @@ def test_post_sale_classification_does_not_promote_context_hub_or_web():
     listing.assert_not_called()
     product.assert_not_called()
     bling.assert_not_called()
-    hub.assert_not_called()
+    hub.assert_called_once()
+    assert call_order[0] == "context_hub"
+    assert "answer_ai" in call_order[1:]
     assert result.answer == listing_answer.answer
     assert [stage["name"] for stage in client.context_pipeline] == [
         "buyer_question_and_history",
         "listing_product_analysis",
         "context_hub_sku_reference",
     ]
-    assert client.context_pipeline[-1]["status"] == "skipped"
+    assert client.context_pipeline[-1]["status"] == "completed"

@@ -219,8 +219,8 @@ def _general_technical_context(
     question = client.agent_input.get("question") if isinstance(client.agent_input.get("question"), dict) else {}
     context = {
         "question": {
-            "text": str(question.get("text") or "")[:2000],
-            "history": list(question.get("history") or [])[-10:],
+            "text": str(question.get("text") or ""),
+            "history": list(question.get("history") or []),
         },
         "subquestions": list(client.agent_input.get("subquestions") or [])[:8],
         "item": client.agent_input.get("item") if isinstance(client.agent_input.get("item"), dict) else {},
@@ -370,7 +370,7 @@ def _general_fit_evaluation_prompt(
     sku_context = getattr(client, "sku_question_context", {})
     integral_v18 = isinstance(sku_context, dict) and bool(sku_context)
     fit_context = {} if integral_v18 else {
-        "question": {"text": str(question.get("text") or ""), "history": list(question.get("history") or [])[-10:]},
+        "question": {"text": str(question.get("text") or ""), "history": list(question.get("history") or [])},
         "item": client.agent_input.get("item") if isinstance(client.agent_input.get("item"), dict) else {},
         "official_store_context": client.agent_input.get("context") if isinstance(client.agent_input.get("context"), dict) else {},
         "classification": client.agent_input.get("classification") if isinstance(client.agent_input.get("classification"), dict) else {},

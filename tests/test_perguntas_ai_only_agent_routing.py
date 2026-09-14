@@ -114,6 +114,22 @@ def test_non_public_or_blocked_category_does_not_expose_external_research(catego
         tool.startswith("web_search")
         for tool in agent_inputs._perguntas_ia_allowed_tools_classificadas(payload)
     )
+    assert "context_hub_search" in agent_inputs._perguntas_ia_allowed_tools_classificadas(payload)
+
+
+def test_answer_agent_receives_all_loaded_history_events() -> None:
+    history = [
+        {"role": "buyer" if index % 2 == 0 else "seller", "text": f"mensagem-{index}"}
+        for index in range(24)
+    ]
+
+    projected = agent_inputs._perguntas_ia_pergunta_para_agente({
+        "id": "Q-HISTORY",
+        "text": "Pergunta atual",
+        "buyer_question_chat": history,
+    })
+
+    assert projected["history"] == history
 
 
 def test_public_web_queries_do_not_extract_free_form_buyer_numbers_or_instructions() -> None:
@@ -579,20 +595,23 @@ def test_cloud_regulated_prompt_disables_commercial_method_and_escapes_injection
     assert json.loads(encoded_draft) == draft
 
 
-def test_missing_ai_category_is_blocked_before_orchestration() -> None:
-    agent = agent_execution
-    class ClassificationUnavailable(Exception):
-        pass
+def test_missing_ai_category_receives_advisory_default_and_reaches_pipeline() -> None:
+    agent_input = {
+        "store": "JK Pecas",
+        "question": {"id": "Q-UNKNOWN", "text": "Mensagem simples do comprador"},
+        "intent": {"fluxo": "perguntas_anuncio", "categoria": ""},
+    }
 
-    with patch.object(agent, "PerguntasIARespostaIndisponivel", ClassificationUnavailable, create=True):
-        with pytest.raises(ClassificationUnavailable, match="sem categoria canonica"):
-            agent._perguntas_ia_v2_gerar_resposta(
-                "000002",
-                {
-                    "store": "JK Pecas",
-                    "intent": {"fluxo": "perguntas_anuncio", "categoria": ""},
-                },
-            )
+    configured = agent_execution._perguntas_ia_execucao_configurar(
+        "000002",
+        agent_input,
+        1.0,
+    )
+
+    assert configured["agent_input"] is agent_input
+    assert agent_input["intent"]["categoria"] == "unknown"
+    assert agent_input["context"]["classificacao_consultiva_status"] == "fallback"
+    assert "context_hub_search" in agent_inputs._perguntas_ia_allowed_tools_classificadas(agent_input)
 
 
 @pytest.mark.parametrize(

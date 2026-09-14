@@ -550,15 +550,15 @@ def test_prompt_injection_bloqueia_mesmo_com_categoria_comercial_da_ia():
     assert result.prompt_injection is True
 
 
-def test_categoria_unknown_da_ia_vai_para_revisao_sem_resposta_generica():
+def test_categoria_unknown_da_ia_segue_para_geracao_de_rascunho():
     route = PolicyRouter().route(
         QuestionCategory.UNKNOWN,
         QuestionContext(id="Q1", text="Nao entendi"),
         ListingSnapshot(id="MLB1", title="Produto"),
     )
 
-    assert route.action == RouteAction.HUMAN_REVIEW
-    assert route.reason == "ai_classification_uncertain"
+    assert route.action == RouteAction.AI
+    assert route.reason == "classification_advisory_only"
 
 
 def test_normalizador_legado_sem_continuidade_recebe_padrao_compativel():

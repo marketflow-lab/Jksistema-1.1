@@ -21,11 +21,11 @@ class PolicyRouter:
         prompt_injection: bool = False,
     ) -> RouteDecision:
         if prompt_injection:
-            return RouteDecision(RouteAction.HUMAN_REVIEW, "prompt_injection")
+            return RouteDecision(RouteAction.AI, "prompt_injection_as_untrusted_data")
         if category == QuestionCategory.REGULATED_PRODUCT:
-            return RouteDecision(RouteAction.HUMAN_REVIEW, category.value)
+            return RouteDecision(RouteAction.AI, "regulated_product_safe_draft")
         if category == QuestionCategory.UNKNOWN:
-            return RouteDecision(RouteAction.HUMAN_REVIEW, "ai_classification_uncertain")
+            return RouteDecision(RouteAction.AI, "classification_advisory_only")
         if category == QuestionCategory.POST_SALE:
             return RouteDecision(RouteAction.AI, "post_sale_draft")
         if category in {QuestionCategory.COMPATIBILITY, QuestionCategory.PRODUCT_FEATURE, QuestionCategory.WARRANTY_ORIGINALITY, QuestionCategory.OTHER_PRODUCT}:

@@ -226,7 +226,7 @@ def _perguntas_ia_pergunta_para_agente(pergunta: dict) -> dict:
         "buyer_id": pergunta.get("buyer_id") or "", "buyer_name": pergunta.get("buyer_name") or "",
         "history_count": pergunta.get("buyer_question_history_count") or len(historico),
         "history_source": "Mercado Livre questions/search: mesmo comprador no mesmo anuncio",
-        "history": historico[-10:],
+        "history": historico,
     }
 
 
@@ -364,9 +364,12 @@ def _perguntas_ia_allowed_tools_classificadas(agent_input: Optional[dict[str, An
     classificacao = _perguntas_ia_classificacao_agent(agent_input)
     flags = classificacao.get("flags") if isinstance(classificacao.get("flags"), dict) else {}
     fluxo = str(classificacao.get("fluxo") or "").strip()
-    tools: list[str] = []
+    # Context Hub is tenant/store/SKU scoped by the server and is part of the
+    # answer context for every category.  Classification may select additional
+    # read-only sources, but it must never suppress the canonical Obsidian view.
+    tools: list[str] = ["context_hub_search"]
     if fluxo == "perguntas_anuncio":
-        tools.extend(["get_product_data", "context_hub_search"])
+        tools.insert(0, "get_product_data")
         if _perguntas_ia_bool_classificado(flags, "usar_mercado_livre_anuncio"):
             tools.append("get_mercado_livre_listing")
         if _perguntas_ia_bool_classificado(flags, "usar_bling"):
@@ -632,7 +635,7 @@ def _build_agent_payload(
         "_codex_prompt_version": str((pergunta or {}).get("_codex_prompt_version") or ""),
         "_codex_schema_version": str((pergunta or {}).get("_codex_schema_version") or ""),
         "research_attempt": max(1, int((pergunta or {}).get("_research_attempt") or 1)),
-        "research_history": list((pergunta or {}).get("_research_history") or [])[-6:],
+        "research_history": list((pergunta or {}).get("_research_history") or []),
         "research_gaps": list((pergunta or {}).get("_research_gaps") or [])[:16],
         "technical_question_plan": _perguntas_ia_technical_question_plan_seguro(
             (pergunta or {}).get("_technical_question_plan")

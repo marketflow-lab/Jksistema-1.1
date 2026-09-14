@@ -312,7 +312,7 @@ def _ia_agent_perguntas_contexto_prompt(client_id: str, agent_input: dict, tool_
     bloco_rascunho_atual = rascunho_atual
     historico = question.get("history") if isinstance(question.get("history"), list) else []
     linhas_historico: list[dict[str, str]] = []
-    for evento in historico[-10:]:
+    for evento in historico:
         if not isinstance(evento, dict):
             continue
         texto_evento = str(evento.get("text") or "")
@@ -320,7 +320,7 @@ def _ia_agent_perguntas_contexto_prompt(client_id: str, agent_input: dict, tool_
             continue
         role = str(evento.get("role") or evento.get("from_role") or "").strip().lower()
         rotulo = "Loja" if role in {"seller", "loja", "store"} else "Comprador"
-        linhas_historico.append({"speaker": rotulo, "text": texto_evento[:500]})
+        linhas_historico.append({"speaker": rotulo, "text": texto_evento})
     bloco_historico = linhas_historico
     return (
         base_prompt, app_guidance, legacy_bloco, bloco_politica_comercial, bloco_perfil, question, fluxo_pos_venda, constraints,

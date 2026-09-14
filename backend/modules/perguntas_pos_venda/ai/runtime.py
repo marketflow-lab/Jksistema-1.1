@@ -117,6 +117,7 @@ from backend.services.perguntas_pos_venda_state import (
     _ia_agent_extrair_texto,
     _ia_agent_http_post,
     _perguntas_ia_assinatura_loja,
+    _perguntas_ia_classificacao_consultiva_padrao,
     _perguntas_ia_compactar_contexto,
     _perguntas_ia_fluxo_pos_venda,
     _perguntas_ia_intencao_agent,

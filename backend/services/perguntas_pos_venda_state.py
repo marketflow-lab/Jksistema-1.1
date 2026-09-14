@@ -1049,6 +1049,53 @@ def _perguntas_ia_mensagem_pos_venda_evidente(texto: object) -> bool:
     )
 
 
+def _perguntas_ia_classificacao_consultiva_padrao(pergunta: object) -> dict:
+    """Return a non-blocking hint so the answer model always receives the turn.
+
+    The structured classifier is advisory.  When it cannot provide a usable
+    result, this envelope keeps the response pipeline open without inventing
+    product facts or granting tools.  The answer model still receives the raw
+    question, history, listing and tenant-scoped Context Hub references.
+    """
+
+    question = pergunta if isinstance(pergunta, dict) else {}
+    text = str(question.get("text") or "").strip()
+    post_sale = _perguntas_ia_mensagem_pos_venda_evidente(text)
+    category = QuestionCategory.POST_SALE.value if post_sale else QuestionCategory.UNKNOWN.value
+    intent = "reclamacao" if post_sale else "nao_entendi"
+    flow = "pos_venda" if post_sale else "perguntas_anuncio"
+    sub_intent = "post_sale" if post_sale else "general"
+    return {
+        "intencao": intent,
+        "categoria": category,
+        "categorias": [category],
+        "fluxo": flow,
+        "confianca": 0.0,
+        "continuidade": {"tipo": "inconclusiva", "herdou_historico": False},
+        "flags": {
+            "usar_busca_web": False,
+            "usar_mercado_livre_anuncio": False,
+            "usar_bling": False,
+        },
+        "subperguntas": [{
+            "intent": sub_intent,
+            "question": text[:500] or "Interpretar a mensagem atual com o contexto completo.",
+            "required_evidence": "Pergunta, historico, anuncio e referencias do Context Hub.",
+        }],
+        "compatibilidade": {
+            "aplicavel": False,
+            "target_item": "",
+            "target_type": "",
+            "compatibility_profile": "",
+            "technical_focus": "",
+            "missing_fields": [],
+            "decisive_fields": [],
+        },
+        "motivo": "Classificacao consultiva indisponivel; o contexto completo segue para a IA.",
+        "source": "classification_advisory_fallback",
+    }
+
+
 def _perguntas_ia_prompt_injection_evidente(texto: object) -> bool:
     normalizado = _ml_question_normalize(texto)
     if QuestionClassifier._has_prompt_injection(normalizado):

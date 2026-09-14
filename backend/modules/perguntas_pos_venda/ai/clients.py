@@ -266,7 +266,7 @@ class _PerguntasVertexGeminiV2Client:
                     1400,
                 )
                 + "\nHISTORICO_COMPACTO_DAS_TENTATIVAS:\n"
-                + _untrusted_compact_block("historico_pesquisa_nao_confiavel", research_history[-6:], 7000)
+                + _untrusted_compact_block("historico_pesquisa_nao_confiavel", research_history, 7000)
             )
         effective_tool_results = list(tool_results or [])
         if not fluxo_pos_venda and self.sku_question_context:
@@ -731,7 +731,7 @@ class _PerguntasVertexGeminiV2Client:
             "Responda exclusivamente em JSON com answer, confidence, category, requires_human_review e reason. "
             "Use category=compatibility.\n\n"
             "PERGUNTA_DO_COMPRADOR_NAO_CONFIAVEL:\n"
-            + _untrusted_json_block("pergunta_compatibilidade_nao_confiavel", str(question.get("text") or "")[:2000])
+            + _untrusted_json_block("pergunta_compatibilidade_nao_confiavel", str(question.get("text") or ""))
             + "\n\nDECISAO_E_INFORMACOES_SELECIONADAS_PELO_BLACK_JHON:\n"
             + _untrusted_json_block("selecao_tecnica_nao_confiavel", technical_facts)
             + "\n\nRESULTADO_DA_BUSCA_INTERNA_DA_MESMA_LOJA:\n"

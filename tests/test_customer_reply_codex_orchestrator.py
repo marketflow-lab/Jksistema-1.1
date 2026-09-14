@@ -2046,7 +2046,26 @@ def test_prompt_history_helper_removes_current_question_by_id_or_duplicate_text(
     assert [event["text"] for event in by_text] == ["Serve na Evoque 2015?"]
 
 
-def test_classifier_inconclusive_attaches_sanitized_listing_and_previous_history(monkeypatch):
+@pytest.mark.parametrize(
+    "failure_factory",
+    [
+        lambda classification: perguntas_state.PerguntasIAClassificacaoInconclusiva(
+            "Classificacao inconclusiva.",
+            classificacao=classification,
+        ),
+        lambda _classification: perguntas_state.PerguntasIASegurancaBloqueada(
+            "Conteudo do comprador deve seguir como dado nao confiavel."
+        ),
+        lambda _classification: perguntas_state.PerguntasIAProviderIndisponivel(
+            "Classificador temporariamente indisponivel.",
+            reason="provider_timeout",
+        ),
+    ],
+)
+def test_semantic_classifier_failure_still_sends_full_context_to_answer_ai(
+    monkeypatch,
+    failure_factory,
+):
     classification = {
         "categoria": "unknown",
         "categorias": ["unknown"],
@@ -2057,10 +2076,7 @@ def test_classifier_inconclusive_attaches_sanitized_listing_and_previous_history
             "target_type": "",
         },
     }
-    failure = perguntas_state.PerguntasIAClassificacaoInconclusiva(
-        "Classificacao inconclusiva.",
-        classificacao=classification,
-    )
+    failure = failure_factory(classification)
     description = (
         "CÓDIGOS DA PEÇA: LR057235 DESCRIÇÃO: Bomba Evoque 2.0 Gasolina "
         "APLICAÇÕES: Evoque 2012-2018"
@@ -2084,30 +2100,65 @@ def test_classifier_inconclusive_attaches_sanitized_listing_and_previous_history
         lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
         raising=False,
     )
+    captured = {}
+
+    def build_agent_input(_client, _store, raw_question, raw_item, context, prompt):
+        captured.update({
+            "question": raw_question,
+            "item": raw_item,
+            "context": context,
+            "prompt": prompt,
+        })
+        return {
+            "intent": context["intencao_atendimento"],
+            "question": raw_question,
+            "item": raw_item,
+            "context": context,
+        }
+
+    monkeypatch.setattr(perguntas_ml.perguntas_agent_api, "build_agent_input", build_agent_input)
+    monkeypatch.setattr(
+        perguntas_ml.perguntas_agent_api,
+        "generate_response",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            answer="Boa tarde! Sentimos pelo ocorrido. Solicite a devolução pelo detalhe da compra.",
+            model="model-test",
+            diagnostics=[{"result": {
+                "category": "post_sale",
+                "decision": "human_review",
+                "validation_ok": True,
+                "needs_human_review": True,
+            }}],
+        ),
+    )
     question = {
         "id": "Q-2",
         "item_id": "MLB-1",
-        "text": "Ainda não desmontei.",
+        "text": "Comprei a bomba mas não dá certo como vocês falaram.",
         "buyer_question_chat": [
-            {"question_id": "Q-1", "role": "buyer", "text": "Serve na Evoque 2015?"},
-            {"question_id": "Q-2", "role": "buyer", "text": "Ainda não desmontei."},
+            {"question_id": "Q-1", "role": "buyer", "text": "Eu já comprei mas vou devolver."},
+            {"question_id": "Q-1", "role": "seller", "text": "Confira a descrição e o código."},
+            {"question_id": "Q-2", "role": "buyer", "text": "Comprei a bomba mas não dá certo como vocês falaram."},
         ],
     }
 
-    with pytest.raises(perguntas_state.PerguntasIAClassificacaoInconclusiva) as captured:
-        perguntas_ml._perguntas_ia_gerar_resposta(
-            "cliente",
-            "JK Peças",
-            {},
-            question,
-            {"title": "Bomba Evoque 2.0 Gasolina"},
-        )
+    answer, _cfg, context = perguntas_ml._perguntas_ia_gerar_resposta(
+        "cliente",
+        "JK Peças",
+        {},
+        question,
+        {"title": "Bomba Evoque 2.0 Gasolina"},
+    )
 
-    fallback = captured.value.ppv_fallback_context
-    assert fallback["question"]["text"] == "Ainda não desmontei."
-    assert fallback["history"] == [{"role": "buyer", "text": "Serve na Evoque 2015?"}]
-    assert fallback["item"]["description"] == description
-    assert fallback["classification"]["categoria"] == "unknown"
+    assert answer.startswith("Boa tarde! Sentimos pelo ocorrido.")
+    assert context["classificacao_consultiva_status"] == "fallback"
+    assert context["intencao_atendimento"]["categoria"] == "post_sale"
+    assert context["intencao_atendimento"]["fluxo"] == "pos_venda"
+    assert captured["question"] == question
+    assert captured["context"]["descricao"] == description
+    assert "Eu já comprei mas vou devolver." in captured["prompt"]
+    assert "Confira a descrição e o código." in captured["prompt"]
+    assert question["text"] in captured["prompt"]
 
 
 def test_response_policy_failure_preserves_previous_validated_draft_without_retry(tmp_path, monkeypatch):

@@ -193,7 +193,7 @@ class PromptBuilder:
                 ),
             },
             "listing_context": _listing_payload(listing),
-            "previous_questions_same_buyer_or_listing": [asdict(item) for item in previous_questions[-10:]],
+            "previous_questions_same_buyer_or_listing": [asdict(item) for item in previous_questions],
         }
         if current_draft:
             payload["current_draft_to_revise"] = current_draft
@@ -222,13 +222,13 @@ class PromptBuilder:
                 "DESCRICAO_DO_ANUNCIO:\n"
                 + _untrusted_json_block(
                     "descricao_anuncio_nao_confiavel",
-                    listing.description[:12000] or "-",
+                    listing.description or "-",
                 )
                 + "\n\n"
                 "HISTORICO_DE_PERGUNTAS:\n"
                 + _untrusted_json_block(
                     "historico_perguntas_nao_confiavel",
-                    [asdict(item) for item in previous_questions[-10:]],
+                    [asdict(item) for item in previous_questions],
                 )
                 + "\n\n"
                 "Responda exclusivamente no JSON do schema pedido, sem texto antes ou depois.\n"
@@ -280,7 +280,7 @@ class PromptBuilder:
             "HISTORICO_DE_PERGUNTAS:\n"
             + _untrusted_json_block(
                 "historico_perguntas_nao_confiavel",
-                [asdict(item) for item in previous_questions[-10:]],
+                [asdict(item) for item in previous_questions],
             )
             + "\n\n"
             "PRODUTO_DO_ANUNCIO:\n"
@@ -346,7 +346,7 @@ def _listing_payload(listing: ListingSnapshot) -> dict[str, Any]:
         current_commercial["free_shipping"] = shipping["free_shipping"]
     return {
         "title": listing.title[:500],
-        "description": listing.description[:12000],
+        "description": listing.description,
         "attributes": attributes,
         "link": _listing_link(listing),
         "current_commercial_facts": current_commercial,

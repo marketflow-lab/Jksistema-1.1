@@ -76,7 +76,7 @@ def _ia_agent_perguntas_texto_fonte(agent_input: dict) -> str:
         str(context.get("descricao") or ""),
     ]
     historico = question.get("history") if isinstance(question.get("history"), list) else []
-    for evento in historico[-10:]:
+    for evento in historico:
         if not isinstance(evento, dict):
             continue
         role = str(evento.get("role") or evento.get("from_role") or "").strip().lower()
@@ -234,7 +234,7 @@ def _ia_agent_perguntas_contexto_validacao(agent_input: dict, resposta: str) -> 
     item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
     historico = question.get("history") if isinstance(question.get("history"), list) else []
     textos_comprador = [str(question.get("text") or "")]
-    for evento in historico[-10:]:
+    for evento in historico:
         if not isinstance(evento, dict):
             continue
         role = str(evento.get("role") or evento.get("from_role") or "").strip().lower()
