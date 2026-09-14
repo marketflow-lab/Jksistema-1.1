@@ -28,7 +28,10 @@ from urllib.parse import urlsplit
 from requests import exceptions as requests_exceptions
 
 from backend.services import codex_agent_runtime, codex_assistant_storage
-from backend.services.perguntas_generation_preflight import GenerationContextUnavailable
+from backend.services.perguntas_generation_preflight import (
+    GenerationContextUnavailable,
+    identity_mismatch,
+)
 from backend.services.codex.storage import customer_replies as customer_reply_storage
 from backend.services.codex_turn_context import (
     EVIDENCE_ENVELOPE_V2,
@@ -244,12 +247,12 @@ def _resolve_job_store_identity(
         resolved = resolver_loja_ativa_para_leitura(client_id, store, store_id)
     except (OSError, RuntimeError):
         if str(store_id or "").strip():
-            raise ValueError("A identidade exata da loja nao foi confirmada.")
+            raise identity_mismatch("store_identity_unconfirmed")
         return {"store_id": "", "seller_id": "", "site_id": ""}
     resolved_store_id = str(resolved.get("store_id") or "").strip()
     if not resolved_store_id:
         if str(store_id or "").strip():
-            raise ValueError("A identidade exata da loja nao foi confirmada.")
+            raise identity_mismatch("store_identity_unconfirmed")
         return {"store_id": "", "seller_id": "", "site_id": ""}
     runtime = _require_runtime()
     loader = getattr(runtime, "carregar_lojas", None)
@@ -260,16 +263,27 @@ def _resolve_job_store_identity(
     ]
     if len(matches) != 1:
         if str(store_id or "").strip():
-            raise ValueError("A configuracao da loja exata nao foi confirmada.")
+            raise identity_mismatch("store_config_unconfirmed")
         return {"store_id": resolved_store_id, "seller_id": "", "site_id": ""}
     row = matches[0]
     cfg = (row.get("integracoes") or {}).get("mercadolivre") or {}
     resolved_seller_id = str(cfg.get("user_id") or cfg.get("seller_id") or "").strip()
     resolved_site_id = str(cfg.get("site_id") or row.get("site_id") or "").strip()
-    if str(seller_id or "").strip() and str(seller_id).strip() != resolved_seller_id:
-        raise PermissionError("O seller_id nao pertence a loja informada.")
-    if str(site_id or "").strip() and str(site_id).strip() != resolved_site_id:
-        raise PermissionError("O site_id nao pertence a loja informada.")
+    expected_seller_id = str(seller_id or "").strip()
+    expected_site_id = str(site_id or "").strip()
+    if expected_seller_id and expected_seller_id != resolved_seller_id:
+        raise identity_mismatch("seller_id_mismatch")
+    if expected_site_id and resolved_site_id and expected_site_id != resolved_site_id:
+        raise identity_mismatch("site_id_mismatch")
+    if expected_site_id and not resolved_site_id:
+        # Canonical generation supplies this value from an authenticated Scope.
+        # It may complete an older local store record only after the exact seller
+        # matched, and never replace a site already bound by local configuration.
+        if not expected_seller_id:
+            raise identity_mismatch("seller_id_unconfirmed")
+        if not re.fullmatch(r"[A-Z]{3}", expected_site_id):
+            raise identity_mismatch("site_id_invalid")
+        resolved_site_id = expected_site_id
     return {
         "store_id": resolved_store_id,
         "seller_id": resolved_seller_id,

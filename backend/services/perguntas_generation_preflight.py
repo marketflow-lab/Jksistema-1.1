@@ -41,7 +41,7 @@ class GenerationContextUnavailable(HTTPException):
 
 
 def _blocked(component="history", *, access=False, reason="component_not_ready", status=None,
-             retryable=None, retry_after=None):
+             retryable=None, retry_after=None, detail=None):
     is_retryable = (not access) if retryable is None else bool(retryable)
     headers = {"X-JK-Error-Code": "generation_context_unavailable",
                "X-JK-Error-Component": component, "X-JK-Error-Reason": reason,
@@ -49,8 +49,30 @@ def _blocked(component="history", *, access=False, reason="component_not_ready",
     if retry_after is not None and str(retry_after).isdigit():
         headers["Retry-After"] = str(retry_after)
     return GenerationContextUnavailable(status or (403 if access else 409),
-        "Confirme o carregamento da pergunta, anuncio e historico antes de gerar a resposta.",
+        detail or "Confirme o carregamento da pergunta, anuncio e historico antes de gerar a resposta.",
         headers=headers)
+
+
+def identity_mismatch(reason: str = "store_identity_mismatch") -> GenerationContextUnavailable:
+    """Build the public preflight contract for a server-side identity mismatch."""
+
+    normalized_reason = str(reason or "store_identity_mismatch")
+    detail = {
+        "store_identity_unconfirmed": "A identidade exata da loja nao foi confirmada.",
+        "store_config_unconfirmed": "A configuracao da loja exata nao foi confirmada.",
+        "seller_id_mismatch": "O seller_id nao pertence a loja informada.",
+        "seller_id_unconfirmed": "O seller_id exato da loja nao foi confirmado.",
+        "site_id_mismatch": "O site_id nao pertence a loja informada.",
+        "site_id_invalid": "O site_id confirmado da loja e invalido.",
+    }.get(normalized_reason, "Os dados da loja, pergunta ou anuncio mudaram.")
+    return _blocked(
+        "identity",
+        access=True,
+        reason=normalized_reason,
+        status=409,
+        retryable=False,
+        detail=detail,
+    )
 
 
 def _translate(error: HTTPException) -> GenerationContextUnavailable:

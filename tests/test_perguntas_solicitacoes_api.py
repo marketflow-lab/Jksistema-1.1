@@ -373,6 +373,127 @@ def test_job_identity_resolution_uses_exact_store_id_for_homonymous_stores(
     }
 
 
+def test_job_identity_accepts_authenticated_site_when_local_site_is_blank(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        orchestrator,
+        "_RUNTIME",
+        SimpleNamespace(
+            carregar_lojas=lambda _client_id: [
+                {
+                    "store_id": "store-alpha",
+                    "nome": "Loja",
+                    "integracoes": {
+                        "mercadolivre": {"user_id": "seller-alpha", "site_id": ""}
+                    },
+                }
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        cadastro_compatibilidade,
+        "resolver_loja_ativa_para_leitura",
+        lambda client_id, loja, store_id: {
+            "store_id": store_id,
+            "nome": loja,
+        }
+        if client_id == "tenant-a"
+        else {},
+    )
+
+    identity = orchestrator._resolve_job_store_identity(
+        "tenant-a",
+        "Loja",
+        store_id="store-alpha",
+        seller_id="seller-alpha",
+        site_id="MLB",
+    )
+
+    assert identity == {
+        "store_id": "store-alpha",
+        "seller_id": "seller-alpha",
+        "site_id": "MLB",
+    }
+
+
+@pytest.mark.parametrize(
+    (
+        "configured_seller",
+        "configured_site",
+        "requested_seller",
+        "requested_site",
+        "reason",
+        "detail",
+    ),
+    [
+        (
+            "seller-alpha", "MLA", "seller-alpha", "MLB", "site_id_mismatch",
+            "O site_id nao pertence a loja informada.",
+        ),
+        (
+            "seller-alpha", "", "seller-alpha", "invalid", "site_id_invalid",
+            "O site_id confirmado da loja e invalido.",
+        ),
+        (
+            "seller-alpha", "", "seller-beta", "MLB", "seller_id_mismatch",
+            "O seller_id nao pertence a loja informada.",
+        ),
+        (
+            "seller-alpha", "", "", "MLB", "seller_id_unconfirmed",
+            "O seller_id exato da loja nao foi confirmado.",
+        ),
+    ],
+)
+def test_job_identity_rejects_untrusted_site_as_typed_identity_error(
+    monkeypatch,
+    configured_seller: str,
+    configured_site: str,
+    requested_seller: str,
+    requested_site: str,
+    reason: str,
+    detail: str,
+) -> None:
+    monkeypatch.setattr(
+        orchestrator,
+        "_RUNTIME",
+        SimpleNamespace(
+            carregar_lojas=lambda _client_id: [
+                {
+                    "store_id": "store-alpha",
+                    "nome": "Loja",
+                    "integracoes": {
+                        "mercadolivre": {
+                            "user_id": configured_seller,
+                            "site_id": configured_site,
+                        }
+                    },
+                }
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        cadastro_compatibilidade,
+        "resolver_loja_ativa_para_leitura",
+        lambda _client_id, loja, store_id: {"store_id": store_id, "nome": loja},
+    )
+
+    with pytest.raises(orchestrator.GenerationContextUnavailable) as caught:
+        orchestrator._resolve_job_store_identity(
+            "tenant-a",
+            "Loja",
+            store_id="store-alpha",
+            seller_id=requested_seller,
+            site_id=requested_site,
+        )
+
+    assert caught.value.status_code == 409
+    assert caught.value.headers["X-JK-Error-Code"] == "generation_context_unavailable"
+    assert caught.value.headers["X-JK-Error-Component"] == "identity"
+    assert caught.value.headers["X-JK-Error-Reason"] == reason
+    assert caught.value.detail == detail
+
+
 def test_manual_generation_propagates_canonical_store_id_to_created_job(
     monkeypatch,
 ) -> None:
@@ -422,5 +543,6 @@ def test_manual_generation_propagates_canonical_store_id_to_created_job(
     assert request.store_id == "store-beta"
     assert captured["client_id"] == "tenant-a"
     assert captured["store_id"] == "store-beta"
-    assert captured["request"]["pergunta"]["store_id"] == "store-beta"
+    assert captured["request"]["item_id"] == "MLB-beta"
+    assert "pergunta" not in captured["request"]
     assert response["job_id"] == "job-beta"

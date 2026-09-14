@@ -261,6 +261,83 @@ def test_manual_generation_with_current_local_token_reaches_job_creation(monkeyp
     assert handle in preflight._SESSIONS
 
 
+def test_real_job_creation_accepts_canonical_site_with_blank_local_site(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        codex_service,
+        "_RUNTIME",
+        SimpleNamespace(
+            PASTA_INFO=str(tmp_path),
+            carregar_lojas=lambda _client_id: [
+                {
+                    "store_id": "store-a",
+                    "nome": "Loja",
+                    "integracoes": {
+                        "mercadolivre": {"user_id": "17", "site_id": ""}
+                    },
+                }
+            ],
+        ),
+    )
+    monkeypatch.setattr(codex_service, "_RECOVERY_STARTED", True)
+    monkeypatch.setattr(codex_service, "_schedule", lambda _job: True)
+    monkeypatch.setattr(
+        codex_service.codex_agent_runtime,
+        "resolve_guidance",
+        lambda *_args, **_kwargs: [],
+    )
+    from backend.services import cadastro_compatibilidade
+    monkeypatch.setattr(
+        cadastro_compatibilidade,
+        "resolver_loja_ativa_para_leitura",
+        lambda client_id, loja, store_id: {
+            "store_id": store_id,
+            "nome": loja,
+        }
+        if client_id == "tenant-a"
+        else {},
+    )
+
+    created = codex_service.create_job(
+        client_id="tenant-a",
+        task_type="question",
+        store="Loja",
+        store_id="store-a",
+        seller_id="17",
+        site_id="MLB",
+        subject_key="23",
+        created_by="operator",
+        request={
+            "_generation_session": "opaque-context",
+            "question_text": "Pergunta canonica",
+            "item_id": "MLB12",
+            "resposta_atual": "",
+            "orientacao_usuario": "",
+            "sku": "SKU-1",
+        },
+    )
+
+    persisted = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path),
+        "tenant-a",
+        created["job_id"],
+    )
+    assert created["status"] == "queued"
+    assert persisted["store_id"] == "store-a"
+    assert persisted["seller_id"] == "17"
+    assert persisted["site_id"] == "MLB"
+    assert persisted["request"] == {
+        "_generation_session": "opaque-context",
+        "question_text": "Pergunta canonica",
+        "item_id": "MLB12",
+        "resposta_atual": "",
+        "orientacao_usuario": "",
+        "sku": "SKU-1",
+    }
+
+
 def test_token_expiry_still_limits_internal_generation_session():
     req = current_local_session_request()
     token_expiry = time.time() + 30
