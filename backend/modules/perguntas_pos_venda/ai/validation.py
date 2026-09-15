@@ -506,8 +506,19 @@ def _perguntas_ia_seller_body(resposta: Any) -> str:
     ).strip()
 
 def _perguntas_ia_seller_sentences(resposta: Any) -> list[str]:
-    protected = re.sub(r"(?<=\d)\.(?=\d)", "\x00", str(resposta or ""))
-    return [part.replace("\x00", ".").strip() for part in re.split(r"[.!?]+", protected) if part.strip()]
+    urls: list[str] = []
+
+    def protect_url(match: re.Match[str]) -> str:
+        urls.append(match.group(0))
+        return f"\x02{len(urls) - 1}\x03"
+
+    protected = re.sub(r"https?://[^\s<>\"']+", protect_url, str(resposta or ""))
+    protected = re.sub(r"(?<=\d)\.(?=\d)", "\x00", protected)
+    parts = [part.replace("\x00", ".").strip() for part in re.split(r"[.!?]+", protected) if part.strip()]
+    return [
+        re.sub(r"\x02(\d+)\x03", lambda match: urls[int(match.group(1))], part)
+        for part in parts
+    ]
 
 def _perguntas_ia_seller_greeting_only(sentence: Any) -> bool:
     normalized = _favoritos_normalizar_sem_acentos(str(sentence or "")).strip(" ,;:-")
@@ -539,12 +550,20 @@ def _perguntas_ia_seller_style_violations(resposta: Any) -> list[str]:
     violations: list[str] = []
     sentences = _perguntas_ia_seller_sentences(body)
     content_sentences = sentences[1:] if sentences and _perguntas_ia_seller_greeting_only(sentences[0]) else sentences
+    if not content_sentences:
+        violations.append("seller_style_no_answer")
     if len(content_sentences) > 3:
         violations.append("seller_style_too_many_sentences")
     process_terms = (
         "evidencia tecnica",
         "evidencia insuficiente",
         "analise de compatibilidade",
+        "nao ha dados suficientes",
+        "a avaliacao exige",
+        "a avaliacao requer",
+        "dados disponiveis do produto",
+        "identificacao exata da bomba",
+        "conexoes necessarias a montagem",
         "validacao humana",
         "revisao humana",
         "interface alvo",

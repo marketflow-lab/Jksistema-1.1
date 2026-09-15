@@ -769,7 +769,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             })
 
         self.assertEqual(result.answer, "Acompanha cabo USB.")
-        self.assertEqual(model_call.call_count, 6)
+        self.assertEqual(model_call.call_count, 5)
         self.assertEqual(
             _v16_model_stages(model_call),
             [
@@ -778,7 +778,6 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 "technical_resolution_round_1",
                 "technical_resolution_final",
                 "external_research_final",
-                "factual_critic",
             ],
         )
         web_call.assert_called_once()
@@ -926,7 +925,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             })
 
         web_call.assert_called_once()
-        self.assertEqual(model_call.call_count, 6)
+        self.assertEqual(model_call.call_count, 5)
         self.assertEqual(result.answer, draft)
         research_step = _pipeline_step(client, "question_focused_web_research")
         self.assertEqual(research_step["status"], "completed")
@@ -963,7 +962,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             })
 
         web_call.assert_called_once()
-        self.assertEqual(model_call.call_count, 6)
+        self.assertEqual(model_call.call_count, 5)
         self.assertEqual(result.answer, draft)
         research_step = _pipeline_step(client, "question_focused_web_research")
         self.assertEqual(research_step["status"], "error")
@@ -1097,7 +1096,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
                 if category in {"warranty_originality", "prohibited_contact"}:
                     web_call.assert_called_once()
-                    self.assertEqual(model_call.call_count, 6)
+                    self.assertEqual(model_call.call_count, 5)
                     self.assertEqual(
                         _v16_model_stages(model_call),
                         [
@@ -1106,7 +1105,6 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                             "technical_resolution_round_1",
                             "technical_resolution_final",
                             "external_research_final",
-                            "factual_critic",
                         ],
                     )
                 else:
@@ -1172,7 +1170,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             })
 
         web_call.assert_called_once()
-        self.assertEqual(model_call.call_count, 6)
+        self.assertEqual(model_call.call_count, 5)
         self.assertEqual(result.answer, "Aciona a 93 C e enviamos hoje.")
         research_step = _pipeline_step(client, "question_focused_web_research")
         self.assertEqual(research_step["status"], "completed")
@@ -1384,7 +1382,6 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 "technical_evidence_graph",
                 "technical_resolution_final",
                 "compatibility_public_answer",
-                "factual_critic",
             ],
         )
         technical_payload = _v16_model_payload(model_call, "technical_evidence_graph")
@@ -1644,7 +1641,7 @@ print("nested-deadlines-returned", flush=True)
                 "listing_title": "Carcaca Valvula Termostatica THP 1.6",
             })
 
-        self.assertEqual(model_call.call_count, 6)
+        self.assertEqual(model_call.call_count, 5)
         web_call.assert_called_once()
         self.assertEqual(web_call.call_args.args[0], "cliente")
         self.assertEqual(web_call.call_args.args[1]["store"], "Loja")
@@ -1773,7 +1770,7 @@ print("nested-deadlines-returned", flush=True)
             "Esse adaptador e compativel com a R1300GS equipada com a base original BMW Navigator IV ou posterior. "
             "Ele encaixa nessa base e nao acompanha nem substitui o suporte original.",
         )
-        self.assertEqual(model_call.call_count, 7)
+        self.assertEqual(model_call.call_count, 6)
         self.assertEqual(web_call.call_count, 2)
         self.assertEqual(
             _v16_model_stages(model_call),
@@ -1784,7 +1781,6 @@ print("nested-deadlines-returned", flush=True)
                 "technical_evidence_graph",
                 "technical_resolution_final",
                 "compatibility_public_answer",
-                "factual_critic",
             ],
         )
         self.assertEqual(client.compatibility_analysis["decision"], "conditional")
@@ -1795,7 +1791,7 @@ print("nested-deadlines-returned", flush=True)
             for group in ("product", "target_vehicle", "equivalence")
             for evidence in client.compatibility_analysis["evidence"][group]
         ))
-        self.assertEqual(_pipeline_step(client, "factual_critic")["status"], "pass")
+        self.assertNotIn("factual_critic", [step["name"] for step in client.context_pipeline])
         pipeline_names = [step["name"] for step in client.context_pipeline]
         for expected_stage in (
             "technical_question_plan_v1",
@@ -1805,7 +1801,6 @@ print("nested-deadlines-returned", flush=True)
             "technical_evidence_graph_final",
             "technical_resolution_final",
             "compatibility_public_generation",
-            "factual_critic",
         ):
             self.assertIn(expected_stage, pipeline_names)
         payload_modelo = _v16_model_payload(model_call, "technical_evidence_graph")
@@ -2414,7 +2409,7 @@ print("nested-deadlines-returned", flush=True)
         self.assertEqual(result.confidence, 0.4)
         self.assertFalse(result.requires_human_review)
         self.assertEqual(web_call.call_count, 2)
-        self.assertEqual(model_call.call_count, 7)
+        self.assertEqual(model_call.call_count, 6)
         self.assertEqual(
             _v16_model_stages(model_call),
             [
@@ -2424,7 +2419,6 @@ print("nested-deadlines-returned", flush=True)
                 "technical_evidence_graph",
                 "technical_resolution_final",
                 "compatibility_public_answer",
-                "factual_critic",
             ],
         )
 

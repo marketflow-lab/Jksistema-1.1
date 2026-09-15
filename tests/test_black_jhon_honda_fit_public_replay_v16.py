@@ -580,8 +580,8 @@ def test_honda_fit_v16_public_job_replays_all_six_stages_without_publishing(
         "technical_evidence_graph",
         "technical_resolution_final",
         "compatibility_public_answer",
-        "factual_critic",
     ]
+    assert not {"factual_critic", "factual_revision"} & {call["stage"] for call in stage_calls}
     assert [call["attachments"] for call in stage_calls if call["stage"] == "technical_evidence_graph"] == [1, 1]
     assert all(call["model"] == "codex:gpt-5.6-sol" for call in stage_calls)
     assert all(call["reasoning"] == "high" for call in stage_calls)

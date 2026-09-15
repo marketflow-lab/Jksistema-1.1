@@ -327,7 +327,9 @@ def test_incompatible_runs_one_same_store_search_then_one_public_generation() ->
     pipeline_names = [step["name"] for step in client.context_pipeline]
     assert pipeline_names.index("same_store_technically_verified_alternative") < pipeline_names.index(
         "compatibility_public_generation"
-    ) < pipeline_names.index("factual_critic")
+    )
+    assert "factual_critic" not in pipeline_names
+    assert "factual_revision" not in pipeline_names
 
 
 def test_compatibility_empty_research_does_not_bypass_v16_and_can_preserve_draft() -> None:
@@ -663,7 +665,7 @@ def test_conditional_compatibility_prompt_blocks_cta_until_condition_is_confirme
     assert "conduza a compra somente sob essa condicao" not in prompt
 
 
-def test_public_generation_failure_preserves_nonempty_technical_ai_output_literally() -> None:
+def test_public_generation_failure_uses_cordial_fallback_instead_of_technical_output() -> None:
     safe_fallback = (
         "Nao, este produto usa uma interface diferente da exigida pelo equipamento informado.\n\n"
         "Equipe JK Pecas agradece pelo contato, Precisando estamos a disposição!"
@@ -692,17 +694,19 @@ def test_public_generation_failure_preserves_nonempty_technical_ai_output_litera
     )
 
     assert alternative.call_count == 1
-    assert result.answer == safe_fallback
+    assert result.answer != safe_fallback
+    assert result.answer.startswith("Olá!")
+    assert result.requires_human_review is False
     assert "analise" not in result.answer.lower()
-    assert result.answer.endswith("Equipe JK Pecas agradece pelo contato, Precisando estamos a disposição!")
+    assert "Equipe JK Pecas" not in result.answer
     public_step = next(
         step for step in client.context_pipeline
         if step["name"] == "compatibility_public_generation"
     )
-    assert public_step["fallback"] == "technical_draft"
+    assert public_step["fallback"] == "seller_voice_deterministic"
 
 
-def test_whitespace_only_public_generation_preserves_technical_draft() -> None:
+def test_whitespace_only_public_generation_uses_cordial_fallback() -> None:
     technical = AIAnswer(answer="  Rascunho tecnico literal.\n ", confidence=0.8)
 
     def model_call(client, _prompt, _metadata, *, stage, tool_results=None):
@@ -721,12 +725,13 @@ def test_whitespace_only_public_generation_preserves_technical_draft() -> None:
         },
     )
 
-    assert result.answer == "  Rascunho tecnico literal.\n "
+    assert result.answer != "  Rascunho tecnico literal.\n "
+    assert result.answer.startswith("Olá!")
     public_step = next(
         step for step in client.context_pipeline
         if step["name"] == "compatibility_public_generation"
     )
-    assert public_step["fallback"] == "technical_draft"
+    assert public_step["fallback"] == "seller_voice_deterministic"
 
 
 def _active_item(**overrides) -> dict:

@@ -36,11 +36,11 @@ PUBLIC_EXPORTS = [
 ]
 CONTRACT_HASHES = {
     # Current additive training detail and catalog synchronization routes.
-    "routes": "dacfa687b5dbb601eac63ea2c56e58c1996a6473e8b35b6f345106d890c299c4",
+    "routes": "77bdca722f74a16061e65ea83490c374f16cf1421d697f5cbc9d3af7cc273aea",
     "aliases": "f149aa04a166eacd3f942889d2495dc5a23be9bb3317160d97e247ae834aa68e",
     "schema": "500b7ccbcedc02d3a254e8114e974355be5635d2f01bd7dc929b212643cb254a",
     "policy": "c0f16148cf07452b5cfef3a48088485055cc7ca7f52382b96ecc95085529894a",
-    "prompts": "fced1d79f90d23cbd3a5a4770c53b4276d540c5def5b5d05938aacfef4df665e",
+    "prompts": "86c1b3cb5e37a5c20c2256ef06165e3235c5dd9638d41138232ffa2d0b30f6a2",
     "exports": "fbd5bf89bb3a7d13d32c55dda0a0b89996c3c6a4828f94a250c94c5f18b74550",
 }
 LAYERS = {
@@ -157,7 +157,7 @@ def _contract_snapshot() -> dict[str, object]:
 
 def test_ppv_public_contract_snapshot() -> None:
     snapshot = _contract_snapshot()
-    assert len(snapshot["routes"]) == 38
+    assert len(snapshot["routes"]) == 40
     assert len(snapshot["aliases"]) == 2
     assert len(snapshot["policy"]["allowed_tools"]) == 7
     assert snapshot["exports"] == PUBLIC_EXPORTS

@@ -899,7 +899,6 @@ def test_canonical_context_hub_answer_uses_compact_simple_factual_route_without_
         "listing_product_analysis",
         "context_hub_sku_reference",
         "adaptive_simple_public_generation",
-        "factual_critic",
     ]
     context_metrics = client.sku_question_context_metrics
     assert context_metrics["route"] == "simple_factual"

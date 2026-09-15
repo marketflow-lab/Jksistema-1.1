@@ -579,29 +579,8 @@ def run_general(
             "web_research": "skipped",
             "web_reason": str((packet.get("web") or {}).get("reason") or "no_research_needed"),
         })
-        if route == ROUTE_SIMPLE_OPERATIONAL:
-            client._candidate_reviewed_in_workflow = True
-            return candidate
         client._candidate_reviewed_in_workflow = True
-        reviewed = client._review_public_candidate(candidate, metadata)
-        if not client._adaptive_escalation_required:
-            return reviewed
-        client._candidate_reviewed_in_workflow = False
-        client.manual_review_required = False
-        packet = bind_client_sku_question_context(
-            client,
-            metadata,
-            internal_sources=internal_sources,
-            context_hub=hub,
-            force_high_risk=True,
-        )
-        client.context_pipeline.append({
-            "step": hooks.next_pipeline_step(client, 4),
-            "name": "adaptive_high_risk_escalation",
-            "status": "required",
-            "reason": "factual_critic_escalation",
-        })
-        parsed = reviewed
+        return client._enforce_public_seller_voice(candidate, metadata)
     return web_fallback(
         client, prompt, metadata, hub, parsed, bindings, hooks, internal_sources,
     )

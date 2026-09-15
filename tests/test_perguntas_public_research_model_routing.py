@@ -70,8 +70,6 @@ def _capture_model_call(monkeypatch):
         "technical_evidence_graph",
         "technical_resolution_round_1",
         "technical_resolution_final",
-        "factual_critic",
-        "factual_revision",
     ),
 )
 def test_public_technical_research_stages_use_sol_high(monkeypatch, stage):
@@ -111,9 +109,62 @@ def test_public_listing_generation_keeps_configured_model_and_effort(monkeypatch
     assert call["payload"].context["_codex_reasoning_effort"] == "low"
 
 
+def test_seller_voice_edit_keeps_configured_model_and_is_ephemeral(monkeypatch):
+    captured = _capture_model_call(monkeypatch)
+    data = _agent_input("Serve no veiculo?")
+    data.update({"_codex_thread_id": "thread-old", "_codex_job_id": "job-1"})
+    client = clients._PerguntasVertexGeminiV2Client(
+        "tenant-test", "Loja Teste", "codex:gpt-5.5", data,
+        reasoning_effort="low",
+    )
+
+    client._invoke_stage_model(
+        "Ajuste somente a linguagem",
+        {"category": "seller_voice"},
+        stage="seller_voice_edit",
+        isolated=True,
+    )
+
+    call = captured[0]
+    assert call["model_req"] == "codex:gpt-5.5"
+    assert call["payload"].context["_codex_reasoning_effort"] == "low"
+    assert call["payload"].context["_codex_thread_id"] == ""
+
+
+def test_seller_voice_edit_receives_the_same_scoped_context_hub_envelope(monkeypatch):
+    captured = _capture_model_call(monkeypatch)
+    client = clients._PerguntasVertexGeminiV2Client(
+        "tenant-test", "Loja Teste", "codex:gpt-5.5",
+        _agent_input("Qual é o conector?"),
+    )
+    packet = {
+        "schema": "jk_store_sku_question_context_v18",
+        "tenant": "tenant-test",
+        "store_id": "store-1",
+        "seller_id": "seller-1",
+        "site_id": "MLB",
+        "item_id": "MLB1",
+        "sku": "SKU-1",
+        "canonical_document": {"content": "Conector USB-C."},
+    }
+    client.sku_question_context = packet
+
+    client._invoke_stage_model(
+        "Ajuste somente a linguagem",
+        {"category": "seller_voice"},
+        stage="seller_voice_edit",
+        isolated=True,
+    )
+
+    tool = captured[0]["payload"].tool_results[0]
+    assert tool["function"] == "store_sku_question_context"
+    assert tool["result"] == packet
+    assert len(captured[0]["payload"].tool_results) == 1
+
+
 @pytest.mark.parametrize(
     "stage",
-    ("technical_resolution_final", "factual_critic", "factual_revision"),
+    ("technical_resolution_final", "seller_voice_edit"),
 )
 def test_v16_independent_stages_do_not_reuse_operational_thread(monkeypatch, stage):
     captured = _capture_model_call(monkeypatch)
