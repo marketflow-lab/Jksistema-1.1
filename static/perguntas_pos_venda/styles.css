@@ -462,6 +462,29 @@
             accent-color: var(--accent);
         }
 
+        .store-option.required-approval-option {
+            color: #9df6d0;
+            cursor: default;
+        }
+
+        .required-approval-mark {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 16px;
+            height: 16px;
+            flex: 0 0 16px;
+            border-radius: 4px;
+            background: #19835a;
+            color: #fff;
+            font-size: 0.78rem;
+        }
+
+        .required-approval-option strong {
+            margin-left: 4px;
+            color: #fff;
+        }
+
         .store-option.interval-option {
             flex-basis: 100%;
             flex-wrap: wrap;

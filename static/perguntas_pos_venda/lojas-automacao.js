@@ -584,10 +584,10 @@ function renderizarLojas() {
                         <input class="store-config-checkbox" type="checkbox" data-config="responder_automaticamente" ${config.responder_automaticamente ? 'checked' : ''}>
                         <span>Gerar sugestões automaticamente</span>
                     </label>
-                    <label class="store-option">
-                        <input class="store-config-checkbox" type="checkbox" data-config="solicitar_aprovacao" checked disabled>
-                        <span>Aprovação obrigatória antes de qualquer envio</span>
-                    </label>
+                    <span class="store-option required-approval-option" role="status">
+                        <span class="required-approval-mark" aria-hidden="true">✓</span>
+                        <span>Aprovação obrigatória para sugestões da IA antes do envio <strong>Ativa</strong></span>
+                    </span>
                     <label class="store-option whatsapp-approval-option">
                         <input class="store-config-checkbox" type="checkbox" data-config="notificar_whatsapp_aprovacoes" ${config.notificar_whatsapp_aprovacoes ? 'checked' : ''}>
                         <span>Enviar sugestão ao WhatsApp cadastrado com Aprovar, Negar e Gerar nova resposta</span>
@@ -659,7 +659,7 @@ async function salvarConfigLoja(card) {
     const nome = card.dataset.loja || '';
     if (!nome) return;
     const responderAutomaticamente = !!card.querySelector('[data-config="responder_automaticamente"]')?.checked;
-    const solicitarAprovacao = !!card.querySelector('[data-config="solicitar_aprovacao"]')?.checked;
+    const solicitarAprovacao = true;
     const notificarWhatsappAprovacoes = !!card.querySelector('[data-config="notificar_whatsapp_aprovacoes"]')?.checked;
     const lojaAtual = state.lojas.find((item) => String(item.nome || '') === nome);
     const configAtual = lojaAtual && lojaAtual.config_perguntas ? lojaAtual.config_perguntas : {};
@@ -737,7 +737,7 @@ async function salvarIntervaloLojaSelecionada() {
             body: JSON.stringify({
                 loja: loja.nome || '',
                 responder_automaticamente: config.responder_automaticamente === true,
-                solicitar_aprovacao: config.solicitar_aprovacao === true,
+                solicitar_aprovacao: true,
                 notificar_whatsapp_aprovacoes: config.notificar_whatsapp_aprovacoes === true,
                 habilitar_pos_venda_automatico: false,
                 intervalo_minutos: intervaloMinutos
