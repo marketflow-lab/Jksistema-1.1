@@ -370,6 +370,23 @@ def test_technical_prompts_reference_one_typed_integral_envelope_without_copying
     assert all("CAMPO_RARO_NAO_DUPLICAR" not in prompt for prompt in prompts)
 
 
+def test_missing_automotive_feature_prompts_seek_original_part_without_assuming_the_replacement_matches():
+    packet, _ = build_sku_question_context(
+        _input("product_feature", "A luz dos botoes e branca?"),
+        {"category": "product_feature"}, context_hub=_hub(),
+    )
+    simple = simple_public_prompt(packet)
+    plan = technical_question_plan_prompt(packet)
+    resolution = technical_resolution_prompt(
+        normalize_technical_question_plan({}, fallback_questions=["A luz dos botoes e branca?"]),
+        packet, round_number=1, final=False,
+    )
+    assert "missing_specific_product_fact" in simple
+    assert "peca original" in plan
+    assert "sem pressupor" in plan
+    assert "referencia distinta da unidade anunciada" in resolution
+
+
 def test_reference_metadata_is_path_free_and_never_replaces_integral_core():
     packet, _ = build_sku_question_context(
         _input("compatibility", "Serve na Honda ADV 160?"),

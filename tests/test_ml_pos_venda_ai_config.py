@@ -732,16 +732,43 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         self.assertEqual([item["type"] for item in queries], [
             "product_specification_by_code",
             "product_specification_by_code",
+            "original_part_reference",
             "product_feature_technical",
         ])
         self.assertIn("11537534521", queries[0]["query"])
         self.assertIn("9810916980", queries[1]["query"])
-        self.assertTrue(all("engate rapido abracadeira" in item["query"] for item in queries))
+        self.assertTrue(all("engate rapido abracadeira" in item["query"] for item in [queries[0], queries[1], queries[3]]))
+        self.assertIn("catalogo OEM", queries[2]["query"])
         self.assertTrue(all("Boa tarde" not in item["query"] for item in queries))
         self.assertTrue(all("MLB4129425225" not in item["query"] for item in queries))
         self.assertTrue(all("307-K" not in item["query"] for item in queries))
         self.assertNotIn('"', agent_queries._ia_agent_perguntas_relaxar_query_web(queries[0]["query"]))
         self.assertIn("11537534521", agent_queries._ia_agent_perguntas_query_ml_publica(queries[0]["query"]))
+
+    def test_missing_led_color_searches_original_spec_without_repeating_buyers_white_guess(self):
+        import backend_api  # noqa: F401
+
+        agent_input = {
+            "question": {"text": "A iluminacao da chave dos botoes e em LED branco?"},
+            "item": {
+                "id": "MLB1987142239", "seller_sku": "299-1",
+                "title": "Chave Farol Luz Milha Neblina Auto Passat Jetta Tiguan Golf",
+                "description": "Referencia original 5ND941431B",
+            },
+            "intent": ai_classification(
+                "A iluminacao da chave dos botoes e em LED branco?",
+                use_web=True,
+                technical_focus="iluminacao dos botoes LED branco",
+                required_evidence="cor original da iluminacao da chave",
+            ),
+        }
+
+        queries = agent_queries._ia_agent_perguntas_queries_web(agent_input, [])
+        original = next(query for query in queries if query["type"] == "original_part_reference")
+        self.assertIn("5ND941431B", original["query"])
+        self.assertIn("catalogo OEM", original["query"])
+        self.assertNotIn("branco", original["query"].lower())
+        self.assertNotIn("299-1", original["query"])
 
     def test_public_feature_without_canonical_fact_uses_high_risk_research(self):
         import backend_api  # noqa: F401 - configura os globals do runtime modular

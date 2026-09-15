@@ -101,7 +101,9 @@ def simple_public_prompt(packet: Mapping[str, Any], behavior_profile: Mapping[st
     policy = (
         "Use somente os fatos operacionais atuais solicitados. Nao transforme ausencia de campo em fato. "
         if route == ROUTE_SIMPLE_OPERATIONAL else
-        "Use todos os campos do documento canonico exato que forem pertinentes. Se eles nao sustentarem a resposta, marque revisao humana. "
+        "Use todos os campos do documento canonico exato que forem pertinentes. Se ele nao trouxer o fato "
+        "especifico perguntado, nao encerre a apuracao: marque requires_human_review=true e "
+        "reason=missing_specific_product_fact para continuar a pesquisa da peca original. "
     )
     prefix = (
         "RESPOSTA PUBLICA ADAPTATIVA V18 DO MERCADO LIVRE. Responda todas as subperguntas usando o envelope integral "

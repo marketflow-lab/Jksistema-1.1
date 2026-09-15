@@ -906,6 +906,72 @@ def test_canonical_context_hub_answer_uses_compact_simple_factual_route_without_
     assert context_metrics["model_call_count"] == 0  # patched model boundaries bypass transport telemetry
 
 
+def test_canonical_document_missing_led_color_continues_to_original_part_research():
+    agent_input = _compatibility_input(exact_identity=True)
+    agent_input["intent"] = _structured_intent("product_feature", web=False)
+    agent_input["question"]["text"] = "A iluminacao dos botoes e branca?"
+    agent_input["item"].update({
+        "title": "Chave Farol Luz Milha Neblina Jetta",
+        "description": "Referencia original 5ND941431B",
+    })
+    client = agent_clients._PerguntasVertexGeminiV2Client(
+        "000002", "JK Pecas", "codex:gpt-5.5", agent_input,
+    )
+    missing = AIAnswer(
+        answer="Ainda preciso confirmar a cor da iluminacao.", confidence=0.4,
+        requires_human_review=True, reason="missing_specific_product_fact",
+    )
+    original_answer = AIAnswer(
+        answer="No padrao original dessa chave, a iluminacao dos botoes e vermelha.",
+        confidence=0.85, requires_human_review=True, reason="original_part_reference",
+    )
+    web_result = {
+        "function": "web_search_question_context", "arguments": {},
+        "result": {
+            "found": True,
+            "context": (
+                "Catalogo do fabricante da peca original 5ND941431B para Jetta: "
+                "iluminacao dos botoes vermelha. A cor da reposicao anunciada nao consta."
+            ),
+            "verified_target_evidence": [
+                _verified_fact("lighting.button_color", "vermelha", scope="target"),
+            ],
+        },
+    }
+    model_calls = []
+
+    def model(prompt, metadata, *, stage, tool_results=None, **_kwargs):
+        model_calls.append((stage, prompt, tool_results or []))
+        return missing if stage == "adaptive_simple_public_answer" else original_answer
+
+    structured = _v16_structured_model(
+        client, decision="insufficient", body=original_answer.answer,
+    )
+    with patch.object(agent_clients, "_perguntas_ia_context_hub_tool", return_value=_hub_result(
+        snippet="SKU 001: chave de farol; cor de iluminacao nao documentada.",
+    )) as hub_call, patch.object(
+        agent_clients, "_ia_agent_perguntas_web_tool", return_value=web_result,
+    ) as web_call, patch.object(
+        client, "_call_model", side_effect=model,
+    ), patch.object(client, "_call_structured_model", side_effect=structured):
+        result = client.generate("prompt", {
+            "category": "product_feature", "question_text": agent_input["question"]["text"],
+            "item_id": "MLB1", "listing_title": agent_input["item"]["title"],
+        })
+
+    hub_call.assert_called_once()
+    assert web_call.call_count >= 1
+    assert result.answer == original_answer.answer
+    assert any(stage == "adaptive_simple_public_answer" for stage, _, _ in model_calls)
+    assert any(stage == "external_research_final" for stage, _, _ in model_calls)
+    assert client.adaptive_route == "high_risk"
+    assert any(
+        "iluminacao dos botoes vermelha" in str((tool.get("result") or {}).get("context") or "")
+        for stage, _, results in model_calls if stage == "external_research_final"
+        for tool in results if tool.get("function") == "web_search_question_context"
+    )
+
+
 def test_high_confidence_insufficient_hub_answer_is_enriched_by_mandatory_web(isolated_hub_internal_sources):
     agent_input = _compatibility_input(exact_identity=True)
     agent_input["intent"] = _structured_intent("product_feature", web=False)

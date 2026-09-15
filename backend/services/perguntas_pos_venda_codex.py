@@ -121,7 +121,7 @@ PROMPT_HASH = hashlib.sha256(
         "canonical-document-full|guidance-full|operational-context-full|"
         "question-history-full|integral-envelope-full|"
         "stage-prompt-full|global-transport-full|"
-        "conditional-public-web-v1|"
+        "conditional-public-web-v1|oem-reference-fallback-v1|"
         "six-stage-sol-high|two-round-gap-research|directed-reference-relations|"
         "literal-ai-draft-no-answer-inspection|oversize-send-preflight-v1|"
         "manual-canonical-preflight-v1|ready-question-item-history|scoped-session-revalidation|"

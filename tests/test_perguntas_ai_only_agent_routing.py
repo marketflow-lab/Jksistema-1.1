@@ -434,6 +434,8 @@ def test_response_policy_v7_applies_rvc_only_when_commercial_state_allows_it() -
     assert "Responder, Valorizar e Conduzir" in policy
     assert "pergunta composta" in policy
     assert "API oficial ou do anuncio atual" in policy
+    assert "peca original" in policy
+    assert "codigo, funcao e variacao" in policy
     assert agent_runtime._PERGUNTAS_IA_COMMERCIAL_STATE_POLICY["fits"]["cta"] == "direct_purchase"
     assert agent_runtime._PERGUNTAS_IA_COMMERCIAL_STATE_POLICY["variant"]["cta"] == "select_exact_variation"
     for state in ("partial", "insufficient", "not_applicable"):

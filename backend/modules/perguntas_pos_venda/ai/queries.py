@@ -734,6 +734,17 @@ def _ia_agent_perguntas_queries_web(agent_input: dict, tool_results: list[dict])
                 "query": f'"{codigo}" {produto_base} {foco_busca}'[:260],
                 "research_phase": "fallback",
             })
+        referencia_base = (
+            f'"{codigos_tecnicos[0]}" {produto_base}'
+            if codigos_tecnicos else produto_base
+        )
+        queries.append({
+            "type": "original_part_reference",
+            "query": (
+                f"{referencia_base} peca original especificacoes fabricante catalogo OEM"
+            )[:260],
+            "research_phase": "fallback",
+        })
         queries.append({
             "type": "product_feature_technical",
             "query": f"{produto_base} {foco_busca}"[:260],

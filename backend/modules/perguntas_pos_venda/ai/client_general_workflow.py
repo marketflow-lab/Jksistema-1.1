@@ -579,6 +579,19 @@ def run_general(
             "web_research": "skipped",
             "web_reason": str((packet.get("web") or {}).get("reason") or "no_research_needed"),
         })
+        if (
+            route == ROUTE_SIMPLE_FACTUAL
+            and bool(getattr(candidate, "requires_human_review", False))
+            and str(getattr(candidate, "reason", "") or "") == "missing_specific_product_fact"
+        ):
+            bind_client_sku_question_context(client, metadata, force_high_risk=True)
+            client.context_pipeline[-1].update({
+                "web_research": "continuing",
+                "web_reason": "missing_specific_product_fact",
+            })
+            return web_fallback(
+                client, prompt, metadata, hub, candidate, bindings, hooks, internal_sources,
+            )
         client._candidate_reviewed_in_workflow = True
         return candidate
     return web_fallback(
