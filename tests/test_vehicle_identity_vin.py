@@ -330,6 +330,25 @@ def test_labelled_all_letter_vin_is_detected_and_redacted_before_research_prompt
     assert labelled_vin not in str(projected)
 
 
+def test_safe_product_evidence_keeps_all_records_full_values_and_sources():
+    explanation = "EXPLICACAO_TECNICA:" + "T" * 1800
+    values = [
+        {"field_name": f"campo.{index}", "value": f"valor-{index}", "state": "verified"}
+        for index in range(165)
+    ]
+    values.append({
+        "field_name": "technical.cable_length", "value": explanation, "state": "verified",
+        "sources": [{"authority": "official_manufacturer", "section_ref": f"pagina-{index}"}
+                    for index in range(12)],
+    })
+
+    projected = safe_agent_product_research_evidence(values)
+
+    assert len(projected) == len(values)
+    assert projected[-1]["value"] == explanation
+    assert len(projected[-1]["sources"]) == 12
+
+
 def test_recursive_payload_capture_sanitizes_every_copy_and_binds_by_job():
     store = _store(tokens=["unused"])
     source = {

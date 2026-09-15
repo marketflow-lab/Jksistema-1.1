@@ -400,14 +400,7 @@ def _ml_pos_venda_conversa_respondida_pela_loja(conversa: dict) -> bool:
 
 
 def _perguntas_ia_limpar_resposta(texto: str) -> str:
-    resposta = str(texto or "").strip()
-    resposta = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", resposta)
-    resposta = re.sub(r"\s*```$", "", resposta)
-    resposta = re.sub(r"\n{3,}", "\n\n", resposta).strip()
-    limite = min(ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO, ML_RESPOSTA_PERGUNTA_MAX_CHARS)
-    if len(resposta) > limite:
-        resposta = resposta[: max(0, limite - 3)].rstrip() + "..."
-    return resposta
+    return texto if isinstance(texto, str) else str(texto or "")
 
 
 def _perguntas_ia_assinatura_loja(loja: str) -> str:
@@ -418,40 +411,14 @@ def _perguntas_ia_assinatura_loja(loja: str) -> str:
 
 
 def _perguntas_ia_remover_apresentacao_sistema(texto: str) -> str:
-    resposta = str(texto or "").strip()
-    if not resposta:
-        return ""
-    resposta = re.sub(
-        r"(?is)^\s*(?:ol[aá][!,.\s]*)?(?:eu\s+)?sou\s+(?:o|a|um|uma)?\s*(?:assistente|ia|intelig[êe]ncia\s+artificial)[^.!?\n]*(?:jk\s*sistema|sistema)?[.!?]?\s*",
-        "",
-        resposta,
-    ).strip()
-    resposta = re.sub(
-        r"(?is)^\s*(?:ol[aá][!,.\s]*)?estou\s+(?:aqui\s+)?(?:para|pra)\s+ajudar[.!?]?\s*",
-        "",
-        resposta,
-    ).strip()
-    linhas = []
-    for linha in resposta.splitlines():
-        linha_norm = _favoritos_normalizar_sem_acentos(linha)
-        if "jk sistema" in linha_norm and any(termo in linha_norm for termo in ("assistente", " ia ", "inteligencia artificial", "sistema")):
-            continue
-        if any(termo in linha_norm for termo in ("sou o assistente", "sou a assistente", "sou uma ia", "sou um assistente")):
-            continue
-        linhas.append(linha)
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(linhas)).strip()
+    return texto if isinstance(texto, str) else str(texto or "")
 
 
 def _perguntas_ia_resposta_final_loja(resposta: str, loja: str) -> str:
-    """Acrescenta a assinatura publica sem reescrever o corpo produzido pela IA."""
+    """Compatibility facade that leaves the model's text untouched."""
 
-    assinatura = _perguntas_ia_assinatura_loja(loja)
-    corpo = resposta if isinstance(resposta, str) else str(resposta or "")
-    if not corpo.strip():
-        return ""
-    if corpo.rstrip().endswith(assinatura):
-        return corpo
-    return f"{corpo}\n\n{assinatura}"
+    del loja
+    return resposta if isinstance(resposta, str) else str(resposta or "")
 
 
 class PerguntasIARespostaIndisponivel(RuntimeError):

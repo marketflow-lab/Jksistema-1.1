@@ -506,6 +506,19 @@ def _ia_chat_resumo_historico(history: Optional[list[dict]], limite: int = 10) -
 
 
 def _ia_chat_mensagem_contextual(payload: IAChatRequest) -> str:
+    contexto = payload.context if isinstance(payload.context, dict) else {}
+    if (contexto.get("modulo") == "perguntas_pos_venda"
+            and contexto.get("tipo_treinamento") in {"perguntas_anuncio", "pos_venda"}
+            and contexto.get("desativar_recursos_chat") is True):
+        mensagem = str(payload.message or "")
+        historico = payload.history or []
+        if not historico:
+            return mensagem
+        linhas = [
+            f"{'U' if item.get('role') == 'user' else 'A'}: {str(item.get('content') or '')}"
+            for item in historico if isinstance(item, dict) and item.get("content") is not None
+        ]
+        return f"{mensagem}\n\nContexto da conversa:\n" + "\n".join(linhas) if linhas else mensagem
     mensagem = str(payload.message or "").strip()
     resumo = _ia_chat_resumo_historico(payload.history, limite=6)
     if not resumo:
@@ -525,7 +538,10 @@ def _ia_chat_normalizar_anexos(payload: IAChatRequest) -> list[dict]:
     anexos_raw = payload.attachments or []
     contexto = payload.context if isinstance(payload.context, dict) else {}
     stage = str(contexto.get("context_collection_stage") or "").strip().lower()
-    limite_anexos = 8 if stage == "technical_evidence_graph" else 4
+    ml_stage = (contexto.get("modulo") == "perguntas_pos_venda"
+                and contexto.get("tipo_treinamento") in {"perguntas_anuncio", "pos_venda"}
+                and contexto.get("desativar_recursos_chat") is True)
+    limite_anexos = len(anexos_raw) if ml_stage else (8 if stage == "technical_evidence_graph" else 4)
     for item in anexos_raw[:limite_anexos]:
         try:
             nome = str(getattr(item, "name", "") or "anexo").strip()[:120] or "anexo"

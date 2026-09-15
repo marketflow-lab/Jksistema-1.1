@@ -300,11 +300,11 @@ def _general_gap_callback(
     def collect_general_gap_research(first_resolution, current_context, current_results):
         gap_queries = [deepcopy(value) for value in first_resolution.gap_queries]
         missing_fields = [
-            str(field or "")[:160]
+            str(field or "")
             for requirement in first_resolution.requirements
             for field in (requirement.get("missing_fields") or [])
             if str(field or "").strip()
-        ][:16]
+        ]
         client.agent_input["gap_queries"] = gap_queries
         client.agent_input["research_gaps"] = missing_fields
         client.agent_input["research_attempt"] = max(
@@ -313,8 +313,8 @@ def _general_gap_callback(
         client.agent_input["force_external_research"] = True
         client.agent_input["research_directive"] = "; ".join([
             *missing_fields,
-            *[str(value.get("query") or "")[:260] for value in gap_queries],
-        ])[:1200]
+            *[str(value.get("query") or "") for value in gap_queries],
+        ])
         gap_result = hooks.mandatory_web_tool(
             "web_search_question_context",
             lambda: binding.web_tool(
@@ -580,7 +580,7 @@ def run_general(
             "web_reason": str((packet.get("web") or {}).get("reason") or "no_research_needed"),
         })
         client._candidate_reviewed_in_workflow = True
-        return client._enforce_public_seller_voice(candidate, metadata)
+        return candidate
     return web_fallback(
         client, prompt, metadata, hub, parsed, bindings, hooks, internal_sources,
     )

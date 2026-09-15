@@ -261,7 +261,7 @@ function renderizarDetalhePerguntaAtendimento(pergunta) {
     </div>`;
     const composer = podeResponder ? `
         <div class="question-answer-composer">
-            <textarea class="question-answer-text" maxlength="2000" placeholder="Digite a resposta manualmente ou gere uma sugestao com IA para editar antes de enviar."></textarea>
+            <textarea class="question-answer-text" placeholder="Digite a resposta manualmente ou gere uma sugestao com IA para editar antes de enviar."></textarea>
             <div class="question-reply-options">
                 <label><input class="question-save-example-checkbox" type="checkbox" checked>Usar esta resposta como exemplo da IA</label>
                 <span>Salva pergunta, resposta, loja e SKU no treinamento.</span>
@@ -393,7 +393,7 @@ function renderizarPerguntas() {
         const podeResponder = !(pergunta.answer && pergunta.answer.text) && String(pergunta.status || '').toUpperCase() === 'UNANSWERED';
         const composer = podeResponder ? `
             <div class="question-answer-composer">
-                <textarea class="question-answer-text" maxlength="2000" placeholder="Digite a resposta manualmente ou gere uma sugestao com IA para editar antes de enviar."></textarea>
+                <textarea class="question-answer-text" placeholder="Digite a resposta manualmente ou gere uma sugestao com IA para editar antes de enviar."></textarea>
                 <div class="question-answer-actions">
                     <button class="action-btn secondary question-ai-answer-btn" type="button" data-action="gerar-ia">Gerar resposta com IA</button>
                     <button class="action-btn question-send-answer-btn" type="button" data-action="enviar-resposta" disabled>Enviar resposta</button>

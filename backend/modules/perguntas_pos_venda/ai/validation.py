@@ -577,33 +577,5 @@ def _perguntas_ia_seller_style_violations(resposta: Any) -> list[str]:
     return violations
 
 def _perguntas_ia_compactar_estilo_vendedor(resposta: Any, loja: str) -> str:
-    body = _perguntas_ia_seller_body(resposta)
-    sentences = _perguntas_ia_seller_sentences(body)
-    greeting: list[str] = []
-    if sentences and _perguntas_ia_seller_greeting_only(sentences[0]):
-        greeting = sentences[:1]
-        sentences = sentences[1:]
-    process_terms = (
-        "evidencia tecnica",
-        "evidencia insuficiente",
-        "analise de compatibilidade",
-        "validacao humana",
-        "revisao humana",
-        "interface alvo",
-        "target type",
-        "compatibility analysis",
-        "decision insufficient",
-        "schema de resposta",
-    )
-    content_sentences = [
-        sentence
-        for sentence in sentences
-        if not any(term in _favoritos_normalizar_sem_acentos(sentence) for term in process_terms)
-    ][:3]
-    safe_sentences = [*greeting, *content_sentences]
-    if not safe_sentences:
-        return ""
-    compacted = ". ".join(safe_sentences).strip()
-    if compacted and compacted[-1] not in ".!?":
-        compacted += "."
-    return resolve_runtime_adapter("state", "final_response", _perguntas_ia_resposta_final_loja)(compacted, loja)
+    del loja
+    return resposta if isinstance(resposta, str) else str(resposta or "")

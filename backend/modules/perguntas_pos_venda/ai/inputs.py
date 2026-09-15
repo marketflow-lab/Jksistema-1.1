@@ -47,7 +47,6 @@ from .runtime import (
     _perguntas_ia_limpar_resposta,
     resolve_runtime_adapter,
     _vertex_ai_headers_e_project,
-    compact_json_structural,
     hashlib,
     json,
     logger,
@@ -174,7 +173,7 @@ def _perguntas_ia_item_para_agente(item: dict, descricao: str = "") -> dict:
             "name": attr.get("name") or "",
             "value_name": attr.get("value_name") or attr.get("value_id") or "",
         }
-        for attr in (item.get("attributes") or [])[:40]
+        for attr in (item.get("attributes") or [])
         if isinstance(attr, dict)
     ]
     sale_terms = [
@@ -183,7 +182,7 @@ def _perguntas_ia_item_para_agente(item: dict, descricao: str = "") -> dict:
             "name": term.get("name") or "",
             "value_name": term.get("value_name") or term.get("value_id") or "",
         }
-        for term in (item.get("sale_terms") or [])[:20]
+        for term in (item.get("sale_terms") or [])
         if isinstance(term, dict)
     ]
     variations = [
@@ -193,7 +192,7 @@ def _perguntas_ia_item_para_agente(item: dict, descricao: str = "") -> dict:
             "price": variation.get("price"),
             "attribute_combinations": variation.get("attribute_combinations") or [],
         }
-        for variation in (item.get("variations") or [])[:20]
+        for variation in (item.get("variations") or [])
         if isinstance(variation, dict)
     ]
     return {
@@ -205,7 +204,7 @@ def _perguntas_ia_item_para_agente(item: dict, descricao: str = "") -> dict:
         "catalog_product_id": item.get("catalog_product_id") or "",
         "listing_type_id": item.get("listing_type_id") or "", "buying_mode": item.get("buying_mode") or "",
         "seller_sku": _ml_extrair_sku(item),
-        "description": descricao[:ML_PERGUNTAS_IA_DESCRICAO_AGENT_MAX_CHARS],
+        "description": descricao,
         "attributes": atributos, "sale_terms": sale_terms,
         "shipping": item.get("shipping") if isinstance(item.get("shipping"), dict) else {},
         "variations": variations, "tags": item.get("tags") if isinstance(item.get("tags"), list) else [],
@@ -242,7 +241,7 @@ def _perguntas_ia_vehicle_identity_segura(pergunta: dict) -> dict[str, str]:
         return {}
     safe: dict[str, str] = {}
     for field in _VEHICLE_IDENTITY_PROMPT_FIELDS:
-        value = re.sub(r"\s+", " ", str(raw.get(field) or "")).strip()[:160]
+        value = re.sub(r"\s+", " ", str(raw.get(field) or "")).strip()
         if value and not contains_vin_like_identifier(value):
             safe[field] = value
     return safe
@@ -255,7 +254,7 @@ def _perguntas_ia_product_evidence_identity_segura(pergunta: dict) -> dict[str, 
         else {}
     )
     return {
-        field: re.sub(r"\s+", " ", str(raw.get(field) or "")).strip()[:160]
+        field: re.sub(r"\s+", " ", str(raw.get(field) or "")).strip()
         for field in ("store_ref", "seller_id", "site_id", "sku", "item_id", "variation_id")
         if str(raw.get(field) or "").strip()
     }
@@ -267,17 +266,17 @@ def _perguntas_ia_verified_product_evidence_segura(pergunta: dict) -> list[dict[
         if isinstance(pergunta.get("_verified_product_evidence"), list)
         else []
     )
-    projected = safe_agent_product_research_evidence(raw[:120])
+    projected = safe_agent_product_research_evidence(raw)
     return [
         {
-            "field_name": str(value.get("field_name") or "")[:96],
-            "scope": str(value.get("scope") or "")[:24],
-            "value": str(value.get("value") or "")[:256],
-            "unit": str(value.get("unit") or "")[:16],
-            "activation_policy": str(value.get("activation_policy") or "")[:64],
+            "field_name": str(value.get("field_name") or ""),
+            "scope": str(value.get("scope") or ""),
+            "value": str(value.get("value") or ""),
+            "unit": str(value.get("unit") or ""),
+            "activation_policy": str(value.get("activation_policy") or ""),
             "source_authorities": [
-                str(authority or "")[:24]
-                for authority in (value.get("source_authorities") or [])[:4]
+                str(authority or "")
+                for authority in (value.get("source_authorities") or [])
                 if str(authority or "").strip()
             ],
         }
@@ -413,50 +412,10 @@ def _perguntas_codex_provider_selection(
     }
 
 def _perguntas_codex_compact_json(value: Any, max_chars: int) -> str:
-    """Compact a payload structurally and always return valid JSON."""
+    """Compatibility facade that serializes the complete selected context."""
 
-    limit = max(2, int(max_chars or 2))
-    try:
-        return compact_json_structural(
-            value,
-            max_bytes=limit,
-            priority_paths=("question", "request", "facts", "records", "gaps", "sources", "history"),
-        ).json_text
-    except Exception:
-        # Compatibility fallback for partial upgrades where the shared helper is unavailable.
-        pass
-
-    def encode(payload: Any) -> str:
-        return json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":"))
-
-    raw = encode(value)
-    if len(raw) <= limit:
-        return raw
-
-    def shrink(payload: Any, *, string_limit: int, list_limit: int, depth: int = 0) -> Any:
-        if depth >= 7:
-            return "[compactado]"
-        if isinstance(payload, dict):
-            return {
-                str(key): shrink(item, string_limit=string_limit, list_limit=list_limit, depth=depth + 1)
-                for key, item in list(payload.items())[: max(2, list_limit)]
-            }
-        if isinstance(payload, (list, tuple)):
-            return [
-                shrink(item, string_limit=string_limit, list_limit=list_limit, depth=depth + 1)
-                for item in list(payload)[:list_limit]
-            ]
-        if isinstance(payload, str):
-            return payload if len(payload) <= string_limit else payload[: max(1, string_limit - 1)] + "…"
-        return payload
-
-    for string_limit, list_limit in ((1200, 12), (600, 8), (300, 6), (120, 4), (48, 3), (16, 2)):
-        compacted = shrink(value, string_limit=string_limit, list_limit=list_limit)
-        raw = encode(compacted)
-        if len(raw) <= limit:
-            return raw
-    marker = encode({"_truncated": True})
-    return marker if len(marker) <= limit else "{}"
+    del max_chars
+    return json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))
 
 def _perguntas_codex_public_listing_evidence(item: Any, store: str) -> list[dict[str, Any]]:
     """Extract only listing fields that directly support a response intent."""
@@ -486,7 +445,7 @@ def _perguntas_codex_public_listing_evidence(item: Any, store: str) -> list[dict
         })
     attributes = [entry for entry in list(listing.get("attributes") or []) if isinstance(entry, dict)]
     if attributes:
-        add("atributos_anuncio", attributes[:80])
+        add("atributos_anuncio", attributes)
     warranty_terms = []
     sale_terms = [entry for entry in list(listing.get("sale_terms") or []) if isinstance(entry, dict)]
     for term in [*attributes, *sale_terms]:
@@ -496,7 +455,7 @@ def _perguntas_codex_public_listing_evidence(item: Any, store: str) -> list[dict
     if listing.get("warranty") not in (None, "", [], {}):
         warranty_terms.append({"value_name": listing.get("warranty")})
     if warranty_terms:
-        add("garantia_anuncio", warranty_terms[:20])
+        add("garantia_anuncio", warranty_terms)
     return records
 
 def _perguntas_ia_legacy_sku_memory_reader_enabled() -> bool:
@@ -557,7 +516,7 @@ def _perguntas_ia_mensagens_aprovacao(pergunta: dict, loja: str) -> list[dict]:
     pergunta = pergunta if isinstance(pergunta, dict) else {}
     chat = pergunta.get("buyer_question_chat") if isinstance(pergunta.get("buyer_question_chat"), list) else []
     mensagens = []
-    for evento in chat[-20:]:
+    for evento in chat:
         if not isinstance(evento, dict):
             continue
         texto = str(evento.get("text") or "").strip()
@@ -591,7 +550,7 @@ def _build_agent_payload(
         "tenant_id": str(client_id or "").strip(),
         "store": str(loja or "").strip(),
         "prompt": str(prompt or "").strip(),
-        "app_guidance": app_guidance[:24000],
+        "app_guidance": app_guidance,
         "app_guidance_source": _PERGUNTAS_IA_RESPONSE_POLICY_VERSION,
         "app_guidance_truth_class": "versioned_technical",
         "app_guidance_usage": "published_behavior_policy_not_product_evidence",
@@ -636,7 +595,7 @@ def _build_agent_payload(
         "_codex_schema_version": str((pergunta or {}).get("_codex_schema_version") or ""),
         "research_attempt": max(1, int((pergunta or {}).get("_research_attempt") or 1)),
         "research_history": list((pergunta or {}).get("_research_history") or []),
-        "research_gaps": list((pergunta or {}).get("_research_gaps") or [])[:16],
+        "research_gaps": list((pergunta or {}).get("_research_gaps") or []),
         "technical_question_plan": _perguntas_ia_technical_question_plan_seguro(
             (pergunta or {}).get("_technical_question_plan")
         ),
@@ -645,11 +604,11 @@ def _build_agent_payload(
         ),
         "research_gap_only": bool((pergunta or {}).get("_research_gap_only")),
         "force_external_research": bool((pergunta or {}).get("_force_external_research")),
-        "research_directive": str((pergunta or {}).get("_research_directive") or "")[:1200],
+        "research_directive": str((pergunta or {}).get("_research_directive") or ""),
         **build_input_operational_contract(
             use_web_search=usar_busca_web,
             allowed_tools=allowed_tools,
-            max_chars=ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO,
+            max_chars=0,
         ),
     }
 

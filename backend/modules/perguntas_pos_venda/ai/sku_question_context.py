@@ -597,23 +597,10 @@ def build_sku_question_context(
         ),
     }
     packet = {key: value for key, value in packet.items() if value not in ("", [], {})}
-    size_checks = {
-        "canonical_document_too_large": len(canonical_json(canonical_document)) > CANONICAL_DOCUMENT_MAX_CHARS,
-        "catalog_document_too_large": len(canonical_json(catalog_document)) > CANONICAL_DOCUMENT_MAX_CHARS,
-        "applicable_guidance_too_large": len(canonical_json(guidance)) > APPLICABLE_GUIDANCE_MAX_CHARS,
-        "operational_data_too_large": len(canonical_json(operational)) > OPERATIONAL_DATA_MAX_CHARS,
-        "question_history_too_large": len(canonical_json(question)) > QUESTION_HISTORY_MAX_CHARS,
-        "integral_envelope_too_large": len(canonical_json(packet)) > INTEGRAL_ENVELOPE_MAX_CHARS,
-    }
-    failures = [code for code, failed in size_checks.items() if failed]
-    if failures:
-        packet = _blocked_packet(
-            route_reasons=reasons,
-            identity=identity,
-            question=question,
-            failure_codes=failures,
-            source_hashes=source_hashes,
-        )
+    # The exact store/SKU envelope must be handed to the model intact. A
+    # transport-size failure belongs to the provider, not to a substitute
+    # packet that silently drops the buyer's question or product evidence.
+    failures: list[str] = []
     metrics = _context_metrics(
         packet, canonical_document, guidance, operational, question, failures,
     )
@@ -653,9 +640,7 @@ def with_document_references(
                 "generation": generation,
             })
     if safe:
-        candidate = {**projected, "technical_references": safe}
-        if len(canonical_json(candidate)) <= INTEGRAL_ENVELOPE_MAX_CHARS:
-            projected = candidate
+        projected = {**projected, "technical_references": safe}
     return projected
 
 

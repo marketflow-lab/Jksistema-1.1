@@ -81,8 +81,6 @@ def _ml_pos_venda_anexar_perguntas_anuncio_comprador(
         if item_id and item_id not in vistos:
             vistos.add(item_id)
             item_ids.append(item_id)
-        if len(item_ids) >= 3:
-            break
     if not item_ids:
         return conversa, cfg
 
@@ -167,14 +165,14 @@ def _ml_pos_venda_anexar_perguntas_anuncio_comprador(
         list(por_id.values()) + sem_id,
         key=lambda item: str((item or {}).get("date_created") or (item or {}).get("last_updated") or ""),
     )
-    conversa["buyer_listing_question_history"] = historico_final[-30:]
-    conversa["buyer_listing_question_chat"] = _ml_perguntas_montar_chat_historico(historico_final)[-40:]
+    conversa["buyer_listing_question_history"] = historico_final
+    conversa["buyer_listing_question_chat"] = _ml_perguntas_montar_chat_historico(historico_final)
     conversa["buyer_listing_question_history_count"] = len(historico_final)
     conversa["buyer_listing_question_history_by_item"] = {
         item_id: sorted(
             perguntas,
             key=lambda item: str((item or {}).get("date_created") or (item or {}).get("last_updated") or ""),
-        )[-15:]
+        )
         for item_id, perguntas in historico_por_item.items()
     }
     return conversa, cfg
@@ -553,7 +551,7 @@ def _ml_pos_venda_normalizar_pedido(order: dict, mensagens_data: dict, seller_id
         "buyer_name": buyer_name,
         "buyer_nickname": str(buyer.get("nickname") or buyer_name or "").strip(),
         "items": itens,
-        "item_title": " / ".join([item.get("title") for item in itens if item.get("title")][:3]),
+        "item_title": " / ".join([item.get("title") for item in itens if item.get("title")]),
         "messages_count": len(mensagens_ordenadas),
         "unread": bool(nao_lida),
         "is_unread": bool(nao_lida),
@@ -947,30 +945,28 @@ def _ml_pos_venda_gerar_resposta_ia(
     max_chars: int | None = None,
     contexto_pipeline: Optional[dict] = None,
 ) -> tuple[str, str]:
-    limite = int(max_chars or conversa.get("seller_max_message_length") or ML_POS_VENDA_DEFAULT_MAX_CHARS)
-    limite = max(1, min(limite, ML_POS_VENDA_DEFAULT_MAX_CHARS))
+    del max_chars
     mensagens = conversa.get("messages") if isinstance(conversa.get("messages"), list) else []
     historico = "\n".join([
         f"{'Vendedor' if msg.get('from_role') == 'seller' else 'Comprador'}: {msg.get('text') or ''}"
-        for msg in mensagens[-12:]
+        for msg in mensagens
         if isinstance(msg, dict)
     ])
-    perguntas_anuncio_chat = _ml_pos_venda_perguntas_anuncio_chat(conversa)
+    perguntas_anuncio_chat = conversa.get("buyer_listing_question_chat") if isinstance(conversa.get("buyer_listing_question_chat"), list) else []
     historico_perguntas_anuncio = "\n".join([
         f"{evento.get('label') or ('Loja' if evento.get('role') == 'seller' else 'Comprador')}: {evento.get('text') or ''}"
-        for evento in perguntas_anuncio_chat[-20:]
+        for evento in perguntas_anuncio_chat
         if isinstance(evento, dict)
     ])
     itens = conversa.get("items") if isinstance(conversa.get("items"), list) else []
     produtos = "\n".join([
         f"- SKU {item.get('sku') or '-'} | {item.get('title') or '-'} | ID {item.get('id') or '-'}"
-        for item in itens[:8]
+        for item in itens
         if isinstance(item, dict)
     ])
-    ultima = str(conversa.get("last_message_text") or (mensagens[-1].get("text") if mensagens else "") or "").strip()
-    assinatura_loja = _perguntas_ia_assinatura_loja(loja)
+    ultima = str(conversa.get("last_message_text") or (mensagens[-1].get("text") if mensagens else "") or "")
     contexto_estruturado = perguntas_agent_api.build_post_sale_context(contexto_pipeline)
-    resposta_atual = str(conversa.get("_resposta_atual") or "").strip()[:1200]
+    resposta_atual = str(conversa.get("_resposta_atual") or "")
     bloco_resposta_atual = (
         "RESPOSTA ATUAL QUE O OPERADOR ESTA EDITANDO:\n"
         f"{resposta_atual}\n\n"
@@ -979,7 +975,7 @@ def _ml_pos_venda_gerar_resposta_ia(
         if resposta_atual
         else ""
     )
-    orientacao_usuario = str(conversa.get("_orientacao_usuario") or "").strip()[:1200]
+    orientacao_usuario = str(conversa.get("_orientacao_usuario") or "")
     bloco_orientacao_usuario = (
         "COMANDO EDITORIAL DO OPERADOR PARA ESTA NOVA RESPOSTA:\n"
         f"{orientacao_usuario}\n\n"
@@ -1003,9 +999,7 @@ def _ml_pos_venda_gerar_resposta_ia(
         "Considere as perguntas anteriores feitas pelo comprador no anuncio apenas como contexto do atendimento. "
         "Use esse historico para entender o que ja foi perguntado e respondido, sem repetir tudo ao comprador. "
         "Se faltar informacao para resolver o atendimento, peca o dado necessario de forma educada. "
-        f"A resposta final completa deve ter no maximo {min(limite, ML_POS_VENDA_LIMITE_SEGURO)} caracteres "
-        "e no maximo 3 sentencas, incluindo a assinatura. "
-        f"Finalize exatamente com: {assinatura_loja}\n\n"
+        "Responda com naturalidade, como um vendedor que conhece o caso.\n\n"
         f"Contexto estruturado do pipeline:\n{contexto_estruturado or '-'}\n\n"
         f"{bloco_orientacao_usuario}"
         f"{bloco_resposta_atual}"
@@ -1022,7 +1016,7 @@ def _ml_pos_venda_gerar_resposta_ia(
     if subquestions:
         mensagem += (
             "\n\nSUBPERGUNTAS OBRIGATORIAS IDENTIFICADAS PELO ORQUESTRADOR:\n"
-            + perguntas_agent_providers.compact_json(subquestions[:8], 5000)
+            + json.dumps(subquestions, ensure_ascii=False, default=str)
             + "\nResponda todos os assuntos confirmados pelo contexto e sinalize de forma objetiva o que ainda depende de dado do comprador."
         )
     payload = IAChatRequest(

@@ -519,7 +519,7 @@ def test_public_seller_style_is_objective_and_signature_is_not_counted() -> None
     assert "too_many_sentences" in verbose.issues
 
 
-def test_style_failure_codes_and_deterministic_compaction_are_stable() -> None:
+def test_style_diagnostic_helper_does_not_change_reply() -> None:
     import backend_api  # noqa: F401
     original = (
         "Ola. A analise de compatibilidade esta pronta. Primeira informacao util. "
@@ -532,9 +532,7 @@ def test_style_failure_codes_and_deterministic_compaction_are_stable() -> None:
         "seller_style_too_many_sentences",
         "seller_style_internal_process_language",
     ]
-    assert agent_validation._perguntas_ia_seller_style_violations(compacted) == []
-    assert compacted.startswith("Ola. Primeira informacao util.")
-    assert compacted.endswith("Equipe JK Pecas agradece pelo contato, Precisando estamos a disposição!")
+    assert compacted == original
 
 
 def _validation_classification(question: str, *, category: str) -> dict:

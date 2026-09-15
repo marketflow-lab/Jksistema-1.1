@@ -54,7 +54,6 @@ class PromptBuilder:
             current_draft = current_draft_literal if current_draft_literal.strip() else ""
         app_rules = {
             "store_signature": _store_signature(rules.store_name),
-            "max_chars": rules.max_chars,
             "seller_guidance": "" if is_regulated else rules.guidance[:8000],
             "method_version": "seller-conversion-v1",
             "commercial_method_active": commercial_method_active,
@@ -77,6 +76,8 @@ class PromptBuilder:
                 "Nunca use compre sem medo, 100% garantido, ultimas unidades ou escassez sem comprovacao oficial atual.",
             ],
         }
+        if int(rules.max_chars or 0) > 0:
+            app_rules["max_chars"] = int(rules.max_chars)
         if int(rules.max_sentences or 0) > 0:
             app_rules["max_sentences"] = int(rules.max_sentences)
         if current_draft:
@@ -100,7 +101,7 @@ class PromptBuilder:
                 "Em partial, insufficient ou incompatible, nao incentive a compra do produto atual e nao use urgencia.",
                 "Pergunta composta so permite chamada a compra quando todas as necessidades essenciais estiverem resolvidas.",
                 "Preco, promocao, disponibilidade, postagem ou envio so sustentam persuasao quando marcados como fatos atuais do anuncio/API oficial; web, notas e exemplos nunca autorizam urgencia.",
-                "Responda como vendedor profissional, com conclusao e adequacao na primeira frase, beneficio comprovado na segunda e CTA, alternativa ou proximo passo na terceira; use no maximo tres frases de conteudo antes da assinatura.",
+                "Responda como vendedor profissional, com conclusao e adequacao claras, beneficio comprovado quando pertinente e um proximo passo natural.",
                 "Perguntas publicas do Mercado Livre nao aceitam anexos: nunca solicite que o comprador envie, mande, anexe ou forneca foto ou imagem.",
                 "E permitido mencionar de forma informativa as fotos que ja fazem parte do anuncio, sem pedir novo arquivo ao comprador.",
                 "Em compatibilidade, compare a interface, encaixe, base, eixo, estrias, rosca, conector, medida, tensao, protocolo ou codigo do produto com o item consultado; nao decida apenas porque o modelo aparece ou nao aparece no anuncio.",

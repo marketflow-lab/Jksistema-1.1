@@ -423,7 +423,8 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         self.assertIn("ML_POS_VENDA_IA_V2_MODO", body)
         self.assertNotIn("_pos_venda_ia_resposta_final_loja", body)
         self.assertIn("return resposta_literal, model_usado", body)
-        self.assertIn("Finalize exatamente com", body)
+        self.assertNotIn("Finalize exatamente com", body)
+        self.assertNotIn("no maximo 3 sentencas", body)
         self.assertIn("sem se apresentar como assistente", body)
         self.assertIn("contexto_pipeline", body)
 

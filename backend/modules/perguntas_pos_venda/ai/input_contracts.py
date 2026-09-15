@@ -81,7 +81,7 @@ def build_input_operational_contract(
         "constraints": {
             "read_only": True,
             "do_not_send_to_mercado_livre": True,
-            "max_chars": max_chars,
+            **({"max_chars": max_chars} if max_chars > 0 else {}),
             "no_markdown": True,
             "do_not_invent_links_or_compatibility": True,
             "internet_product_research_required": use_web_search,

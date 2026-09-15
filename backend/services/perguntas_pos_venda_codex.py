@@ -117,13 +117,13 @@ PROMPT_HASH = hashlib.sha256(
         "store-sku-binding:jk_context_store_sku_binding_v1|"
         "store-sku-question-context:jk_ml_store_sku_question_context_v1|"
         "store-sku-migration:jk_context_store_sku_migration_v1|"
-        "adaptive-public-flow-v1|curation-schema:3|integral-context-no-truncation-v1|"
-        "canonical-document-max:24000|guidance-max:8000|operational-max:2000|"
-        "question-history-max:1500|integral-envelope-max:32000|"
-        "simple-prompt-max:40000|high-risk-stage-max:48000|global-transport-max:52000|"
+        "adaptive-public-flow-v1|curation-schema:3|integral-context-no-truncation-v2|"
+        "canonical-document-full|guidance-full|operational-context-full|"
+        "question-history-full|integral-envelope-full|"
+        "stage-prompt-full|global-transport-full|"
         "conditional-public-web-v1|"
         "six-stage-sol-high|two-round-gap-research|directed-reference-relations|"
-        "nonempty-ai-draft-preserved|public-signature-append-only-v1|oversize-manual-edit-v1|"
+        "literal-ai-draft-no-answer-inspection|oversize-send-preflight-v1|"
         "manual-canonical-preflight-v1|ready-question-item-history|scoped-session-revalidation|"
         "human-approval-required|no-direct-publish"
     ).encode("utf-8")
@@ -2670,8 +2670,9 @@ def _evidence_matrix(
     context: dict[str, Any],
     envelope: Optional[dict[str, Any]] = None,
 ) -> tuple[list[dict[str, Any]], bool, list[str]]:
+    del answer
     diagnostic = _diagnostic_result(context)
-    validation_ok = diagnostic.get("validation_ok") is True and bool(answer.strip())
+    validation_ok = diagnostic.get("validation_ok") is True
     validation_issues = [str(item) for item in (diagnostic.get("validation_issues") or []) if str(item).strip()]
     analysis = diagnostic.get("compatibility_analysis") if isinstance(diagnostic.get("compatibility_analysis"), dict) else {}
     compatibility_ok, compatibility_warnings = _compatibility_evidence(analysis)
@@ -2682,20 +2683,21 @@ def _evidence_matrix(
     )
     sources = list(analysis.get("sources") or [])
     matrix: list[dict[str, Any]] = []
-    warnings = list(dict.fromkeys(validation_issues + compatibility_warnings))
+    warnings = list(dict.fromkeys(validation_issues))
     for item in subquestions:
         row = dict(item)
         intent = str(row.get("intent") or "general")
         if intent == "compatibility":
+            warnings.extend(compatibility_warnings)
             confirmed = bool(validation_ok and compatibility_ok)
-            row["status"] = "confirmed" if confirmed else ("partial" if answer.strip() else "no_evidence")
+            row["status"] = "confirmed" if confirmed else "partial"
             row["confidence"] = float(analysis.get("confidence") or diagnostic.get("confidence") or 0.0)
             row["sources"] = sources[:12]
         elif intent == "post_sale":
             # A post-sale classification inside the public-question surface is
             # allowed to produce a draft and is not a missing classification.
             confirmed = bool(validation_ok)
-            row["status"] = "confirmed" if confirmed else ("partial" if answer.strip() else "no_evidence")
+            row["status"] = "confirmed" if confirmed else "partial"
             row["confidence"] = float(diagnostic.get("confidence") or (0.65 if validation_ok else 0.35))
             row["sources"] = []
         else:
@@ -2708,7 +2710,7 @@ def _evidence_matrix(
                 validation_ok
                 and records_confirmed
             )
-            row["status"] = "confirmed" if confirmed else ("partial" if answer.strip() else "no_evidence")
+            row["status"] = "confirmed" if confirmed else "partial"
             row["confidence"] = float(diagnostic.get("confidence") or (0.65 if validation_ok else 0.35))
             row["sources"] = [
                 {
@@ -2720,8 +2722,6 @@ def _evidence_matrix(
             ]
         matrix.append(row)
     sufficient = bool(matrix) and all(str(item.get("status")) == "confirmed" for item in matrix)
-    if not sufficient:
-        warnings.append("O rascunho responde somente com as informacoes disponiveis.")
     return matrix, sufficient, list(dict.fromkeys(warnings))[:12]
 
 

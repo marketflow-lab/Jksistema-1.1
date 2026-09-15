@@ -292,28 +292,26 @@ def test_incomplete_exact_identity_can_never_take_a_simple_route():
     assert "exact_identity_incomplete" in packet["gaps"]
 
 
-def test_oversize_blocks_automation_without_silent_truncation():
+def test_large_canonical_document_reaches_model_packet_without_budget_fallback():
     large = _canonical("x" * 25_000)
     packet, metrics = build_sku_question_context(
         _input("product_feature", "Qual o campo?"),
         {"category": "product_feature"},
         context_hub=_hub(canonical=large),
     )
-    assert packet["automation_blocked"] is True
-    assert packet["requires_human_review"] is True
-    assert "canonical_document_too_large" in packet["block_reasons"]
-    assert "x" * 100 not in json.dumps(packet)
-    assert metrics["context_budget_exceeded"] is True
+    assert packet.get("automation_blocked") is not True
+    assert "canonical_document_too_large" not in (packet.get("block_reasons") or [])
+    assert "x" * 25_000 in json.dumps(packet)
+    assert metrics.get("context_budget_exceeded") is not True
 
 
-def test_prompts_validate_limits_instead_of_replacing_evidence():
+def test_stage_prompts_preserve_large_input_and_integral_evidence():
     packet, _ = build_sku_question_context(
         _input("product_feature", "Qual conector?"),
         {"category": "product_feature"},
         context_hub=_hub(),
     )
     simple = simple_public_prompt(packet, {"legacy": "nao usar"})
-    assert len(simple) + packet_wire_chars(packet) <= SIMPLE_PUBLIC_PROMPT_MAX_CHARS
     assert "CAMPO_RARO" not in simple
     assert SKU_QUESTION_CONTEXT_SCHEMA in simple
     unchanged, replaced = bounded_stage_prompt(
@@ -322,23 +320,15 @@ def test_prompts_validate_limits_instead_of_replacing_evidence():
     )
     assert unchanged == "instrucao tecnica"
     assert replaced is False
-    with pytest.raises(ValueError, match="prompt_budget_exceeded"):
-        bounded_stage_prompt(
-            "x" * (HIGH_RISK_STAGE_PROMPT_MAX_CHARS - packet_wire_chars(packet) + 1),
-            packet,
-            stage="technical_resolution_final",
-            limit=HIGH_RISK_STAGE_PROMPT_MAX_CHARS,
-        )
-    with pytest.raises(ValueError, match="prompt_budget_exceeded"):
-        bounded_stage_prompt(
-            "x" * (HIGH_RISK_STAGE_PROMPT_MAX_CHARS + 1),
-            packet,
-            stage="technical_resolution_final",
-            limit=HIGH_RISK_STAGE_PROMPT_MAX_CHARS,
-        )
+    large = "x" * (HIGH_RISK_STAGE_PROMPT_MAX_CHARS + 1)
+    unchanged, replaced = bounded_stage_prompt(
+        large, packet, stage="technical_resolution_final", limit=HIGH_RISK_STAGE_PROMPT_MAX_CHARS,
+    )
+    assert unchanged == large
+    assert replaced is False
 
 
-def test_complete_stage_transport_blocks_oversized_research_without_mutating_envelope():
+def test_complete_stage_transport_preserves_oversized_research_and_envelope():
     packet, _ = build_sku_question_context(
         _input("compatibility", "Serve na Honda ADV 160?"),
         {"category": "compatibility"},
@@ -358,13 +348,9 @@ def test_complete_stage_transport_blocks_oversized_research_without_mutating_env
     ]
     before = json.dumps(packet, ensure_ascii=False, sort_keys=True)
     assert stage_transport_chars("resolver", tool_results) > HIGH_RISK_STAGE_PROMPT_MAX_CHARS
-    with pytest.raises(ValueError, match="transport_budget_exceeded|prompt_budget_exceeded"):
-        validate_stage_transport(
-            "resolver",
-            tool_results,
-            stage="technical_resolution_final",
-            limit=HIGH_RISK_STAGE_PROMPT_MAX_CHARS,
-        )
+    assert validate_stage_transport(
+        "resolver", tool_results, stage="technical_resolution_final", limit=HIGH_RISK_STAGE_PROMPT_MAX_CHARS,
+    ) == stage_transport_chars("resolver", tool_results)
     assert json.dumps(packet, ensure_ascii=False, sort_keys=True) == before
 
 

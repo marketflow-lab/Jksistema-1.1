@@ -666,7 +666,7 @@ function renderizarDetalhePosVenda(conversa, mensagemStatus = '') {
         <div class="pos-sale-products">${produtosHtml}</div>
         <div class="pos-sale-messages">${mensagensHtml}</div>
         <div class="pos-sale-reply">
-            <textarea id="pos-venda-resposta-texto" maxlength="${limite}" placeholder="Digite a resposta para enviar ao comprador"></textarea>
+            <textarea id="pos-venda-resposta-texto" placeholder="Digite a resposta para enviar ao comprador"></textarea>
             <div class="pos-sale-reply-actions">
                 <button id="btn-pos-venda-enviar-resposta" class="action-btn" type="button" disabled>Enviar resposta</button>
             </div>
@@ -729,8 +729,8 @@ async function abrirConversaPosVenda(venda) {
 }
 
 async function enviarRespostaPosVenda(conversa, textarea, botao, status) {
-    const texto = String(textarea.value || '').trim();
-    if (!texto) return;
+    const texto = String(textarea.value || '');
+    if (!texto.trim()) return;
     const lojaConversa = lojaOrigemItem(conversa) || (todasAsLojasSelecionadas() ? '' : state.lojaSelecionada);
     if (!lojaConversa) {
         status.textContent = 'Não foi possível identificar a loja desta conversa.';

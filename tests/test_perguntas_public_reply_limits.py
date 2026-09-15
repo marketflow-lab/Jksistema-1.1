@@ -21,17 +21,15 @@ def test_public_question_uses_full_mercado_livre_limit_and_keeps_post_sale_limit
     assert state.ML_POS_VENDA_LIMITE_SEGURO == 340
 
 
-def test_legacy_public_question_cleaner_keeps_its_bounded_contract():
+def test_legacy_public_question_cleaner_preserves_oversize_model_reply():
     exact = "x" * 2000
     over = "x" * 2001
 
     assert state._perguntas_ia_limpar_resposta(exact) == exact
-    truncated = state._perguntas_ia_limpar_resposta(over)
-    assert len(truncated) == 2000
-    assert truncated.endswith("...")
+    assert state._perguntas_ia_limpar_resposta(over) == over
 
 
-def test_public_question_signature_append_only_preserves_oversize_body(monkeypatch):
+def test_public_question_reply_does_not_append_signature_to_oversize_body(monkeypatch):
     monkeypatch.setattr(
         state_module,
         "_favoritos_normalizar_sem_acentos",
@@ -39,14 +37,13 @@ def test_public_question_signature_append_only_preserves_oversize_body(monkeypat
         raising=False,
     )
     body = "x" * 2000
-    signature = "Equipe JK Pecas agradece pelo contato, Precisando estamos a disposição!"
     answer = state._perguntas_ia_resposta_final_loja(body, "JK Pecas")
 
-    assert answer == f"{body}\n\n{signature}"
-    assert len(answer) > 2000
+    assert answer == body
+    assert len(answer) == 2000
 
 
-def test_public_question_signature_uses_store_name_and_is_not_duplicated(monkeypatch):
+def test_public_question_reply_preserves_existing_signature_without_editing(monkeypatch):
     monkeypatch.setattr(
         state_module,
         "_favoritos_normalizar_sem_acentos",
@@ -71,7 +68,7 @@ def test_public_question_signature_uses_store_name_and_is_not_duplicated(monkeyp
 
     assert answer == f"Serve para a aplicação informada.\n\n{signature}"
     assert answer.count(signature) == 1
-    assert legacy_answer == f"{legacy_body}\n\n{signature}"
+    assert legacy_answer == legacy_body
 
 
 def test_public_question_signature_detection_preserves_body_bytes_and_trailing_whitespace():

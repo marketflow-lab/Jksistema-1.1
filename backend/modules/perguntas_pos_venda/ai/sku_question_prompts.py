@@ -43,12 +43,10 @@ def record_model_prompt_metrics(client: Any, *, stage: str, prompt_chars: int, c
 def bounded_stage_prompt(
     prompt: str, packet: Mapping[str, Any], *, stage: str, limit: int,
 ) -> tuple[str, bool]:
-    """Validate a stage budget; V18 never replaces or truncates its evidence."""
+    """Preserve the complete stage prompt and exact evidence packet."""
 
-    raw = str(prompt or "")
-    if len(raw) + packet_wire_chars(packet) <= limit:
-        return raw, False
-    raise ValueError(f"{stage or 'public_stage'}_prompt_budget_exceeded")
+    del packet, stage, limit
+    return str(prompt or ""), False
 
 
 def packet_wire_chars(packet: Mapping[str, Any]) -> int:
@@ -77,12 +75,8 @@ def validate_stage_transport(
     stage: str,
     limit: int,
 ) -> int:
-    size = stage_transport_chars(prompt, tool_results)
-    if size > GLOBAL_TRANSPORT_PROMPT_MAX_CHARS:
-        raise ValueError(f"{stage or 'public_stage'}_global_transport_budget_exceeded")
-    if size > limit:
-        raise ValueError(f"{stage or 'public_stage'}_prompt_budget_exceeded")
-    return size
+    del stage, limit
+    return stage_transport_chars(prompt, tool_results)
 
 
 def record_stage_transport(
@@ -94,14 +88,7 @@ def record_stage_transport(
     limit: int,
 ) -> None:
     chars = stage_transport_chars(prompt, tool_results)
-    try:
-        validate_stage_transport(prompt, tool_results, stage=stage, limit=limit)
-    except ValueError:
-        client.manual_review_required = True
-        record_model_prompt_metrics(
-            client, stage=stage, prompt_chars=chars, capped=True,
-        )
-        raise
+    validate_stage_transport(prompt, tool_results, stage=stage, limit=limit)
     record_model_prompt_metrics(
         client, stage=stage, prompt_chars=chars, capped=False,
     )
@@ -125,8 +112,8 @@ def simple_public_prompt(packet: Mapping[str, Any], behavior_profile: Mapping[st
         "Escreva como vendedor cordial: responda primeiro a duvida com palavras simples, sem tom de laudo, "
         "parecer, relatorio ou lista de requisitos. Se faltar um dado, peca somente o detalhe decisivo em uma "
         "pergunta natural. As orientacoes e os exemplos aprovados do envelope ensinam o tom da resposta. "
-        "Use no maximo tres frases de conteudo, sem markdown, tabela ou emoji. CTA somente quando todos os pontos essenciais "
-        "estiverem comprovadamente atendidos. Nao inclua assinatura; o aplicativo a acrescentara fora do corpo. "
+        "Use palavras simples, sem markdown, tabela ou emoji. CTA somente quando todos os pontos essenciais "
+        "estiverem comprovadamente atendidos. "
         "Responda exclusivamente em JSON com answer, confidence, category, requires_human_review, reason e commercial_state.\n\n"
     )
     del behavior_profile
@@ -135,8 +122,6 @@ def simple_public_prompt(packet: Mapping[str, Any], behavior_profile: Mapping[st
         + "O envelope integral imutavel esta no resultado da ferramenta store_sku_question_context "
         + f"sob o contrato {_plain(packet.get('schema'))}."
     )
-    if len(prompt) + packet_wire_chars(packet) > SIMPLE_PUBLIC_PROMPT_MAX_CHARS:
-        raise ValueError("simple_public_prompt_budget_exceeded")
     return prompt
 
 

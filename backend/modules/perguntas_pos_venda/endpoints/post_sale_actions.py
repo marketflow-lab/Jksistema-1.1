@@ -99,9 +99,9 @@ def ml_pos_venda_gerar_resposta_conversa(
     if req.buyer_id and not conversa.get("buyer_id"):
         conversa["buyer_id"] = str(req.buyer_id or "").strip()
     if str(req.resposta_atual or "").strip():
-        conversa["_resposta_atual"] = str(req.resposta_atual or "").strip()[:1200]
+        conversa["_resposta_atual"] = str(req.resposta_atual or "")
     if str(req.orientacao_usuario or "").strip():
-        conversa["_orientacao_usuario"] = str(req.orientacao_usuario or "").strip()[:1200]
+        conversa["_orientacao_usuario"] = str(req.orientacao_usuario or "")
     conversa, cfg = _ml_pos_venda_preparar_conversa_ia(client_id, nome_loja, cfg, conversa)
     resultado_ia, cfg = _ml_pos_venda_executar_pipeline_ia(client_id, nome_loja, cfg, conversa, max_chars)
     return jsonable_encoder({

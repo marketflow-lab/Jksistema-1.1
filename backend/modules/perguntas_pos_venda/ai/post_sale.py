@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import re
 import unicodedata
-import json
-from copy import deepcopy
 
 from .runtime import (
     PerguntasPosVendaDomainError,
@@ -75,57 +73,18 @@ def _ml_pos_venda_contexto_prompt(contexto: Optional[dict]) -> str:
         "perguntas_anteriores_anuncio": contexto.get("perguntas_anteriores_anuncio") or [],
         "evidence_envelope": contexto.get("evidence_envelope") or {},
     }
-    # Preserve catalog fields as whole evidence documents. The legacy structural
-    # compactor may shorten strings, which would change a technical assertion.
-    catalog_sources = []
-    listings = deepcopy(prompt_context["anuncios"])
-    for listing in listings:
-        if isinstance(listing, dict):
-            catalog_sources.extend(listing.pop("catalog_product_context", []) or [])
-    prompt_context["anuncios"] = listings
-    compacted = _perguntas_codex_compact_json(prompt_context, 6500)
-    if not catalog_sources:
-        return compacted
-    from backend.modules.context_hub.store_sku_contracts import canonical_json
-    if len(canonical_json(catalog_sources)) > 24000:
-        catalog_sources = [{"catalog_status": "context_budget_exceeded", "catalog_document": {},
-                            "instruction_policy": "Ficha indisponivel: nao afirmar caracteristicas cadastrais."}]
-    try:
-        result = json.loads(compacted)
-    except (TypeError, ValueError):
-        result = {"gaps": ["post_sale_context_unavailable"]}
-    if not isinstance(result, dict):
-        result = {"gaps": ["post_sale_context_unavailable"]}
-    result["catalog_product_context"] = catalog_sources
-    return canonical_json(result)
+    return _perguntas_codex_compact_json(prompt_context, 0)
 
 def _ml_pos_venda_validar_resposta(resposta: str, contexto: dict, limite: int | None = None) -> dict:
-    limite_num = int(limite or contexto.get("max_chars") or ML_POS_VENDA_DEFAULT_MAX_CHARS)
-    limite_num = max(1, min(limite_num, ML_POS_VENDA_DEFAULT_MAX_CHARS))
-    limite_seguro = min(limite_num, ML_POS_VENDA_LIMITE_SEGURO)
-    texto = str(resposta or "").strip()
-    norm = _ml_pos_venda_texto_norm(texto)
-    issues = []
-    if not texto:
-        issues.append("resposta_vazia")
-    if len(texto) > limite_seguro:
-        issues.append("resposta_acima_do_limite")
-    if any(term in norm for term in ("jk sistema", "sou assistente", "sou uma ia", "gemini", "vertex")):
-        issues.append("identidade_incorreta")
-    if any(term in norm for term in ("whatsapp", "telefone", "email", "e-mail", "fora do mercado livre")):
-        issues.append("contato_externo")
-    assinatura_fn = resolve_runtime_adapter("state", "store_signature", _perguntas_ia_assinatura_loja)
-    assinatura = _ml_pos_venda_texto_norm(assinatura_fn(str(contexto.get("loja") or "")))
-    assinatura_curta = _ml_pos_venda_texto_norm(assinatura_fn(""))
-    if assinatura and assinatura not in norm and assinatura_curta not in norm:
-        issues.append("sem_assinatura_loja")
+    # Publication eligibility is determined by operational rules, not by
+    # inspecting or rewriting the model's reply.
+    del resposta, limite
     regras = contexto.get("regras_oficiais") if isinstance(contexto.get("regras_oficiais"), dict) else {}
     decisao = contexto.get("decisao_automacao") if isinstance(contexto.get("decisao_automacao"), dict) else {}
     requires_human = bool(regras.get("precisa_consultar") or not decisao.get("pode_responder_automaticamente"))
-    if requires_human:
-        issues.append("requer_revisao_humana")
+    issues = ["requer_revisao_humana"] if requires_human else []
     return {
-        "ok": not [issue for issue in issues if issue not in {"requer_revisao_humana"}],
-        "requires_human_review": requires_human or bool([issue for issue in issues if issue != "requer_revisao_humana"]),
-        "issues": list(dict.fromkeys(issues)),
+        "ok": True,
+        "requires_human_review": requires_human,
+        "issues": issues,
     }

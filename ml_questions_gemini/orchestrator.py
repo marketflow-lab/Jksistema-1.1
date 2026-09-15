@@ -68,6 +68,7 @@ class QuestionAnswerOrchestrator:
         search_service: SearchService | None = None,
         prompt_builder: PromptBuilder | None = None,
         validator: AnswerValidator | None = None,
+        inspect_model_answer: bool = True,
         review_queue: HumanReviewQueue | None = None,
         audit_logger: AuditLogger | None = None,
         metrics: MetricsService | None = None,
@@ -80,6 +81,7 @@ class QuestionAnswerOrchestrator:
         self.search_service = search_service or SearchService()
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.validator = validator or AnswerValidator()
+        self.inspect_model_answer = inspect_model_answer
         self.review_queue = review_queue or HumanReviewQueue()
         self.audit_logger = audit_logger or AuditLogger()
         self.metrics = metrics or MetricsService()
@@ -172,14 +174,18 @@ class QuestionAnswerOrchestrator:
             self.review_queue.enqueue(result)
             return result
 
-        validation = self.validator.validate(
-            ai_answer.answer,
-            question=question,
-            listing=listing,
-            category=classification.category,
-            rules=rules,
-            confidence=ai_answer.confidence,
-            compatibility_analysis=getattr(self.gemini_client, "compatibility_analysis", None),
+        validation = (
+            self.validator.validate(
+                ai_answer.answer,
+                question=question,
+                listing=listing,
+                category=classification.category,
+                rules=rules,
+                confidence=ai_answer.confidence,
+                compatibility_analysis=getattr(self.gemini_client, "compatibility_analysis", None),
+            )
+            if self.inspect_model_answer
+            else ValidationResult(True, [], ai_answer.confidence)
         )
         decision = self._publication_decision(
             validation,

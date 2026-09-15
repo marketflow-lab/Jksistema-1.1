@@ -273,14 +273,16 @@ def test_public_web_is_deferred_to_integral_envelope_except_mandatory_categories
     assert "web_search" in compatibility_without_flag["allowed_tools"]
 
 
-def test_structural_compaction_never_slices_json():
+def test_question_and_history_json_is_complete_even_when_old_budget_is_smaller():
     compacted = agent_inputs._perguntas_codex_compact_json(
         {"question": "x" * 10_000, "history": [{"text": "y" * 2000}] * 40},
         900,
     )
     decoded = json.loads(compacted)
     assert isinstance(decoded, dict)
-    assert len(compacted.encode("utf-8")) <= 900
+    assert decoded["question"] == "x" * 10_000
+    assert len(decoded["history"]) == 40
+    assert decoded["history"][-1]["text"] == "y" * 2000
 
 
 def test_evidence_matrix_does_not_confirm_intent_without_matching_coverage():
@@ -452,6 +454,26 @@ def test_empty_other_product_search_is_not_confirmed():
 
     assert matrix[0]["status"] == "partial"
     assert sufficient is False
+
+
+def test_evidence_matrix_does_not_read_the_model_reply():
+    envelope = {
+        "schema_version": "evidence-envelope-v2", "status": "completed",
+        "records": [{"field": "envio", "value": {"status": "ready"}, "coverage": "confirmed"}],
+        "evidence_sufficient": True, "coverage_complete": True,
+    }
+    context = {"diagnostico_ia": [{"result": {"validation_ok": True}}]}
+    subquestions = [{"id": "s1", "intent": "shipping"}]
+
+    first = codex_surface._evidence_matrix(
+        subquestions, answer="Entrega confirmada.", context=context, envelope=envelope,
+    )
+    second = codex_surface._evidence_matrix(
+        subquestions, answer="  Texto completamente diferente com cinco frases.  ",
+        context=context, envelope=envelope,
+    )
+
+    assert first == second
 
 
 def test_normal_flows_do_not_read_or_write_variable_sku_memory():

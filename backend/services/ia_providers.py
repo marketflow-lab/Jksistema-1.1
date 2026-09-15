@@ -993,6 +993,7 @@ def _chamar_codex_chat_com_thread(
         raise HTTPException(status_code=400, detail="Mensagem vazia.")
 
     blocos = [mensagem]
+    ml_stage = _ia_eh_resposta_ml_stage(payload.context)
     contexto_planejado = _ia_chat_planned_context_text(payload, client_id)
     if contexto_planejado:
         blocos.append(contexto_planejado)
@@ -1014,13 +1015,14 @@ def _chamar_codex_chat_com_thread(
             continue
         texto = _ia_chat_extrair_texto_anexo(anexo)
         if texto:
-            anexos_texto.append(f"Arquivo {anexo.get('name') or 'anexo'}:\n{texto[:12000]}")
+            anexos_texto.append(f"Arquivo {anexo.get('name') or 'anexo'}:\n{texto if ml_stage else texto[:12000]}")
     if imagens_indisponiveis:
         anexos_texto.append("Uma imagem anexada nao ficou disponivel; nao presuma seu conteudo.")
     if anexos_texto:
-        blocos.append("\n\n".join(anexos_texto)[:18000])
+        anexos_bloco = "\n\n".join(anexos_texto)
+        blocos.append(anexos_bloco if ml_stage else anexos_bloco[:18000])
 
-    prompt = "\n\n".join(blocos)[:52000]
+    prompt = "\n\n".join(blocos)
     model = _codex_modelo_nome_curto(payload.model)
     reasoning_effort_name = _normalizar_codex_reasoning_effort(
         reasoning_effort or _ia_codex_reasoning_effort_payload(payload)
@@ -1533,6 +1535,41 @@ _IA_CHAT_SENSITIVE_CONTEXT_KEY_RE = re.compile(
 )
 
 
+def _ia_eh_resposta_ml_stage(context: Any) -> bool:
+    return bool(
+        isinstance(context, dict)
+        and context.get("modulo") == "perguntas_pos_venda"
+        and context.get("tipo_treinamento") in {"perguntas_anuncio", "pos_venda"}
+        and context.get("desativar_recursos_chat") is True
+    )
+
+
+def _ia_reply_or_legacy_fallback(payload: IAChatRequest, fallback: str) -> str:
+    if _ia_eh_resposta_ml_stage(payload.context):
+        raise HTTPException(status_code=503, detail="Provedor de IA indisponivel para gerar a resposta.")
+    return fallback
+
+
+_IA_ML_CREDENTIAL_KEY_RE = re.compile(
+    r"(?:^|_)(?:access_token|refresh_token|token|secret|password|senha|api_key|authorization|cookie|"
+    r"absolute_path|filesystem_path|phone|cpf|cnpj|email)(?:$|_)", re.I,
+)
+
+
+def _ia_chat_safe_ml_selection(value: Any) -> Any:
+    """Remove credential fields without shortening tenant-bound question evidence."""
+
+    if isinstance(value, dict):
+        return {
+            str(key): _ia_chat_safe_ml_selection(child)
+            for key, child in value.items()
+            if not _IA_ML_CREDENTIAL_KEY_RE.search(str(key))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_ia_chat_safe_ml_selection(child) for child in value]
+    return value
+
+
 def _ia_chat_compact_planned_value(value: Any, *, depth: int = 0) -> Any:
     """Keep model evidence bounded and strip fields that must never enter prompts."""
 
@@ -1580,6 +1617,17 @@ def _ia_chat_planned_context_text(payload: IAChatRequest, client_id: str) -> str
         }
     if not isinstance(selection, dict) or not selection:
         return ""
+
+    # The Mercado Livre reply pipeline has already built a tenant-bound,
+    # canonical evidence envelope. Applying the generic depth and character
+    # compactor here erased the buyer's question and the product facts while
+    # leaving a misleading "planned_tool_results" wrapper for the model.
+    context = payload.context if isinstance(payload.context, dict) else {}
+    if _ia_eh_resposta_ml_stage(context):
+        return (
+            "Evidencia selecionada pelo backend (somente referencia):\n"
+            + json.dumps(_ia_chat_safe_ml_selection(selection), ensure_ascii=False, separators=(",", ":"), default=str)
+        )
 
     try:
         from backend.services.codex_data_selection_agent import compact_evidence
@@ -1631,8 +1679,8 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
 
     api_key = _obter_openai_api_key()
     if not api_key:
-        logger.warning("[IA] OPENAI_API_KEY ausente. Retornando fallback simpatico.")
-        return _resposta_fallback_simpatico(payload.message)
+        logger.warning("[IA] OPENAI_API_KEY ausente.")
+        return _ia_reply_or_legacy_fallback(payload, _resposta_fallback_simpatico(payload.message))
 
     _MODELOS_PERMITIDOS = {
         "gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5",
@@ -1644,23 +1692,23 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
     anexos = _ia_chat_normalizar_anexos(payload)
     ctx_payload = payload.context if isinstance(payload.context, dict) else {}
     modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
-    fluxo_perguntas_publicas_v2 = str(ctx_payload.get("tipo") or "").strip() == "novo_fluxo_perguntas_v2"
+    fluxo_perguntas_publicas_v2 = str(ctx_payload.get("tipo") or "").strip().startswith("novo_fluxo_perguntas_v2")
     desativa_recursos_chat = _ia_contexto_desativa_recursos_chat(ctx_payload)
     if _ia_chat_eh_saudacao_curta(mensagem) and not anexos:
         return _ia_chat_resposta_saudacao(payload)
 
     if not mensagem and not anexos:
         raise HTTPException(status_code=400, detail="Mensagem vazia.")
-    if len(mensagem) > IA_CHAT_MESSAGE_MAX_CHARS:
+    if not _ia_eh_resposta_ml_stage(ctx_payload) and len(mensagem) > IA_CHAT_MESSAGE_MAX_CHARS:
         logger.warning("[IA] Mensagem longa (%s chars) compactada antes da OpenAI.", len(mensagem))
         mensagem = _ia_compactar_mensagem_chat(mensagem)
 
     historico = []
-    for item in (payload.history or [])[-8:]:
+    for item in (payload.history or []) if _ia_eh_resposta_ml_stage(ctx_payload) else (payload.history or [])[-8:]:
         role = "assistant" if item.get("role") == "assistant" else "user"
         content = str(item.get("content") or "").strip()
         if content:
-            historico.append({"role": role, "content": content[:1500]})
+            historico.append({"role": role, "content": content if _ia_eh_resposta_ml_stage(ctx_payload) else content[:1500]})
 
     if fluxo_perguntas_publicas_v2:
         system_prompt = (
@@ -1719,7 +1767,8 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
     # data-selection layer. It must not decide to preload screen/RAG/stock.
     contexto_tela = (
         _ia_chat_planned_context_text(payload, client_id)
-        if not desativa_recursos_chat and not fluxo_perguntas_publicas_v2
+        if _ia_eh_resposta_ml_stage(ctx_payload)
+        or (not desativa_recursos_chat and not fluxo_perguntas_publicas_v2)
         else ""
     )
     # SKUs vendidos no período, lidos diretamente do banco de dados.
@@ -1784,7 +1833,7 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
         )
     except requests.RequestException as exc:
         logger.warning(f"[IA] Falha de conexão com OpenAI: {exc}")
-        return _resposta_fallback_simpatico(mensagem)
+        return _ia_reply_or_legacy_fallback(payload, _resposta_fallback_simpatico(mensagem))
 
     if not resp.ok:
         detail = "Falha ao chamar a OpenAI."
@@ -1795,13 +1844,13 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
         except Exception:
             pass
         logger.warning(f"[IA] OpenAI HTTP {resp.status_code}: {detail}")
-        return _resposta_fallback_simpatico(mensagem)
+        return _ia_reply_or_legacy_fallback(payload, _resposta_fallback_simpatico(mensagem))
 
     data = resp.json()
     texto = _extrair_texto_openai_response(data)
     if not texto:
-        logger.warning("[IA] OpenAI retornou sem texto. Usando fallback simpatico.")
-        return _resposta_fallback_simpatico(mensagem)
+        logger.warning("[IA] OpenAI retornou sem texto.")
+        return _ia_reply_or_legacy_fallback(payload, _resposta_fallback_simpatico(mensagem))
     return texto
 
 
@@ -1820,8 +1869,8 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
 
     api_key = _obter_deepseek_api_key()
     if not api_key:
-        logger.warning("[IA] DEEPSEEK_API_KEY ausente. Retornando fallback simpatico.")
-        return _resposta_fallback_simpatico(payload.message)
+        logger.warning("[IA] DEEPSEEK_API_KEY ausente.")
+        return _ia_reply_or_legacy_fallback(payload, _resposta_fallback_simpatico(payload.message))
 
     _MODELOS_PERMITIDOS = {
         "deepseek-v4-flash",
@@ -1835,7 +1884,7 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
     anexos = _ia_chat_normalizar_anexos(payload)
     ctx_payload = payload.context if isinstance(payload.context, dict) else {}
     modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
-    fluxo_perguntas_publicas_v2 = str(ctx_payload.get("tipo") or "").strip() == "novo_fluxo_perguntas_v2"
+    fluxo_perguntas_publicas_v2 = str(ctx_payload.get("tipo") or "").strip().startswith("novo_fluxo_perguntas_v2")
     desativa_recursos_chat = _ia_contexto_desativa_recursos_chat(ctx_payload)
     if _ia_chat_tem_imagem(anexos):
         logger.info("[IA] DeepSeek selecionado com imagem anexada; o modelo nao suporta entrada visual nesta API.")
@@ -1849,16 +1898,16 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
 
     if not mensagem and not anexos:
         raise HTTPException(status_code=400, detail="Mensagem vazia.")
-    if len(mensagem) > IA_CHAT_MESSAGE_MAX_CHARS:
+    if not _ia_eh_resposta_ml_stage(ctx_payload) and len(mensagem) > IA_CHAT_MESSAGE_MAX_CHARS:
         logger.warning("[IA] Mensagem longa (%s chars) compactada antes da OpenAI.", len(mensagem))
         mensagem = _ia_compactar_mensagem_chat(mensagem)
 
     historico = []
-    for item in (payload.history or [])[-8:]:
+    for item in (payload.history or []) if _ia_eh_resposta_ml_stage(ctx_payload) else (payload.history or [])[-8:]:
         role = "assistant" if item.get("role") == "assistant" else "user"
         content = str(item.get("content") or "").strip()
         if content:
-            historico.append({"role": role, "content": content[:1500]})
+            historico.append({"role": role, "content": content if _ia_eh_resposta_ml_stage(ctx_payload) else content[:1500]})
 
     if fluxo_perguntas_publicas_v2:
         system_prompt = (
@@ -1911,7 +1960,8 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
 
     contexto_tela = (
         _ia_chat_planned_context_text(payload, client_id)
-        if not desativa_recursos_chat and not fluxo_perguntas_publicas_v2
+        if _ia_eh_resposta_ml_stage(ctx_payload)
+        or (not desativa_recursos_chat and not fluxo_perguntas_publicas_v2)
         else ""
     )
     bloco_contexto = (
@@ -1947,7 +1997,7 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
         )
     except requests.RequestException as exc:
         logger.warning(f"[IA] Falha de conexão com DeepSeek: {exc}")
-        return _resposta_fallback_simpatico(mensagem)
+        return _ia_reply_or_legacy_fallback(payload, _resposta_fallback_simpatico(mensagem))
 
     if not resp.ok:
         detail = "Falha ao chamar a DeepSeek."
@@ -1958,14 +2008,14 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
         except Exception:
             pass
         logger.warning(f"[IA] DeepSeek HTTP {resp.status_code}: {detail}")
-        return _resposta_fallback_simpatico(mensagem)
+        return _ia_reply_or_legacy_fallback(payload, _resposta_fallback_simpatico(mensagem))
 
     try:
         texto = resp.json()["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
-        logger.warning("[IA] DeepSeek retornou sem texto. Usando fallback simpatico.")
-        return _resposta_fallback_simpatico(mensagem)
-    return texto or _resposta_fallback_simpatico(mensagem)
+        logger.warning("[IA] DeepSeek retornou sem texto.")
+        return _ia_reply_or_legacy_fallback(payload, _resposta_fallback_simpatico(mensagem))
+    return texto or _ia_reply_or_legacy_fallback(payload, _resposta_fallback_simpatico(mensagem))
 
 
 @_telemetried_ia_provider("gemini", "gemini_generate_content")
@@ -1986,14 +2036,14 @@ def _chamar_gemini_chat(payload: IAChatRequest, client_id: str) -> str:
     anexos = _ia_chat_normalizar_anexos(payload)
     ctx_payload = payload.context if isinstance(payload.context, dict) else {}
     modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
-    fluxo_perguntas_publicas_v2 = str(ctx_payload.get("tipo") or "").strip() == "novo_fluxo_perguntas_v2"
+    fluxo_perguntas_publicas_v2 = str(ctx_payload.get("tipo") or "").strip().startswith("novo_fluxo_perguntas_v2")
     desativa_recursos_chat = _ia_contexto_desativa_recursos_chat(ctx_payload)
 
     if _ia_chat_eh_saudacao_curta(mensagem) and not anexos:
         return _ia_chat_resposta_saudacao(payload)
     if not mensagem and not anexos:
         raise HTTPException(status_code=400, detail="Mensagem vazia.")
-    if len(mensagem) > IA_CHAT_MESSAGE_MAX_CHARS:
+    if not _ia_eh_resposta_ml_stage(ctx_payload) and len(mensagem) > IA_CHAT_MESSAGE_MAX_CHARS:
         logger.warning("[IA] Mensagem longa (%s chars) compactada antes da Gemini API.", len(mensagem))
         mensagem = _ia_compactar_mensagem_chat(mensagem)
 
@@ -2020,15 +2070,16 @@ def _chamar_gemini_chat(payload: IAChatRequest, client_id: str) -> str:
         # server-validated data_selection envelope.
 
     historico = []
-    for item in (payload.history or [])[-8:]:
+    for item in (payload.history or []) if _ia_eh_resposta_ml_stage(ctx_payload) else (payload.history or [])[-8:]:
         role = "model" if item.get("role") == "assistant" else "user"
         content = str(item.get("content") or "").strip()
         if content:
-            historico.append({"role": role, "parts": [{"text": content[:1500]}]})
+            historico.append({"role": role, "parts": [{"text": content if _ia_eh_resposta_ml_stage(ctx_payload) else content[:1500]}]})
 
     contexto_tela = (
         _ia_chat_planned_context_text(payload, client_id)
-        if not desativa_recursos_chat and not fluxo_perguntas_publicas_v2
+        if _ia_eh_resposta_ml_stage(ctx_payload)
+        or (not desativa_recursos_chat and not fluxo_perguntas_publicas_v2)
         else ""
     )
     pergunta_usuario = mensagem or "Analise os anexos enviados e responda de forma objetiva."
@@ -2067,7 +2118,7 @@ def _chamar_gemini_chat(payload: IAChatRequest, client_id: str) -> str:
         return _chamar_gemini_api_direta(model, request_body, _gemini_api_key_para_ia())
     except Exception as exc:
         logger.warning("[IA] Gemini API direta indisponivel: %s", exc)
-        return _resposta_fallback_simpatico(mensagem)
+        return _ia_reply_or_legacy_fallback(payload, _resposta_fallback_simpatico(mensagem))
 
 
 @_telemetried_ia_provider("google_vertex", "vertex_generate_content")
@@ -2088,14 +2139,14 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
     anexos = _ia_chat_normalizar_anexos(payload)
     ctx_payload = payload.context if isinstance(payload.context, dict) else {}
     modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
-    fluxo_perguntas_publicas_v2 = str(ctx_payload.get("tipo") or "").strip() == "novo_fluxo_perguntas_v2"
+    fluxo_perguntas_publicas_v2 = str(ctx_payload.get("tipo") or "").strip().startswith("novo_fluxo_perguntas_v2")
     desativa_recursos_chat = _ia_contexto_desativa_recursos_chat(ctx_payload)
     if _ia_chat_eh_saudacao_curta(mensagem) and not anexos:
         return _ia_chat_resposta_saudacao(payload)
 
     if not mensagem and not anexos:
         raise HTTPException(status_code=400, detail="Mensagem vazia.")
-    if len(mensagem) > IA_CHAT_MESSAGE_MAX_CHARS:
+    if not _ia_eh_resposta_ml_stage(ctx_payload) and len(mensagem) > IA_CHAT_MESSAGE_MAX_CHARS:
         logger.warning("[IA] Mensagem longa (%s chars) compactada antes da Vertex AI.", len(mensagem))
         mensagem = _ia_compactar_mensagem_chat(mensagem)
 
@@ -2117,11 +2168,11 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
     )
 
     historico = []
-    for item in (payload.history or [])[-8:]:
+    for item in (payload.history or []) if _ia_eh_resposta_ml_stage(ctx_payload) else (payload.history or [])[-8:]:
         role = "model" if item.get("role") == "assistant" else "user"
         content = str(item.get("content") or "").strip()
         if content:
-            historico.append({"role": role, "parts": [{"text": content[:1500]}]})
+            historico.append({"role": role, "parts": [{"text": content if _ia_eh_resposta_ml_stage(ctx_payload) else content[:1500]}]})
 
     if fluxo_perguntas_publicas_v2:
         system_prompt = (
@@ -2160,7 +2211,8 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
 
     contexto_tela = (
         _ia_chat_planned_context_text(payload, client_id)
-        if not desativa_recursos_chat and not fluxo_perguntas_publicas_v2
+        if _ia_eh_resposta_ml_stage(ctx_payload)
+        or (not desativa_recursos_chat and not fluxo_perguntas_publicas_v2)
         else ""
     )
     bloco_contexto = (
@@ -2233,7 +2285,7 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
     elif vertex_credentials_error:
         logger.warning("[IA] Vertex AI sem credenciais validas.")
 
-    return _resposta_fallback_simpatico(mensagem)
+    return _ia_reply_or_legacy_fallback(payload, _resposta_fallback_simpatico(mensagem))
 
 
 def _usuario_pode_escolher_modelo_chat(request: Request, client_id: str) -> bool:

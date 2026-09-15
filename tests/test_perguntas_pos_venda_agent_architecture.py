@@ -39,8 +39,8 @@ CONTRACT_HASHES = {
     "routes": "77bdca722f74a16061e65ea83490c374f16cf1421d697f5cbc9d3af7cc273aea",
     "aliases": "f149aa04a166eacd3f942889d2495dc5a23be9bb3317160d97e247ae834aa68e",
     "schema": "500b7ccbcedc02d3a254e8114e974355be5635d2f01bd7dc929b212643cb254a",
-    "policy": "c0f16148cf07452b5cfef3a48088485055cc7ca7f52382b96ecc95085529894a",
-    "prompts": "86c1b3cb5e37a5c20c2256ef06165e3235c5dd9638d41138232ffa2d0b30f6a2",
+    "policy": "9ce1ff920a7b10a8ac0acc4ce9b2d1e3fb8c2c4a89fa7e6627ac8c22e0e8fe4a",
+    "prompts": "3c78c9764979578b3bbf2ead6e8817daaf408c948d944f2021f2108cc0e5b575",
     "exports": "fbd5bf89bb3a7d13d32c55dda0a0b89996c3c6a4828f94a250c94c5f18b74550",
 }
 LAYERS = {
@@ -102,7 +102,7 @@ def _contract_snapshot() -> dict[str, object]:
         "commercial_state_policy": runtime._PERGUNTAS_IA_COMMERCIAL_STATE_POLICY,
         "allowed_tools": sorted(runtime._PERGUNTAS_IA_ALLOWED_TOOLS),
         "decisions": ["yes", "no", "conditional", "insufficient"],
-        "max_sentences": 3,
+        "max_sentences": 0,
     }
     prompt_targets = {
         "execution.py": ["_perguntas_ia_v2_prompt_dados", "_perguntas_ia_v2_prompt"],

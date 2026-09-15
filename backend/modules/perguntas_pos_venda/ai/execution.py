@@ -32,7 +32,6 @@ from .runtime import (
     _modelo_eh_vertex_ai,
     _perguntas_ia_assinatura_loja,
     _perguntas_ia_classificacao_consultiva_padrao,
-    _perguntas_ia_compactar_contexto,
     _perguntas_ia_fluxo_pos_venda,
     _perguntas_ia_intencao_agent,
     _perguntas_ia_limpar_resposta,
@@ -203,8 +202,7 @@ def _perguntas_ia_v2_prompt(
         "Use somente os dados deste prompt e das referencias read-only fornecidas pelo aplicativo: pergunta, historico, anuncio, Context Hub, memoria do SKU e contexto interno.",
         "Nao use web, nao use Bling ao vivo e nao invente dados ausentes.",
         "Responda em portugues do Brasil, sem markdown, sem tabela, sem emoji e sem aspas externas.",
-        "Para pergunta publica, responda como vendedor cordial. Uma saudacao curta e opcional; depois dela, coloque a decisao principal imediatamente e use no maximo tres frases de conteudo antes da assinatura.",
-        f"Limite maximo: {ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO} caracteres. Esse limite inclui a assinatura; reserve espaco para ela.",
+        "Para pergunta publica, responda como vendedor cordial. Uma saudacao curta e opcional; depois dela, coloque a decisao principal imediatamente.",
     ]
     if fluxo_pos_venda:
         partes.extend([
@@ -240,7 +238,7 @@ def _perguntas_ia_v2_prompt(
             f"(source={agent_input.get('app_guidance_source') or _PERGUNTAS_IA_RESPONSE_POLICY_VERSION}; "
             f"truth_class={agent_input.get('app_guidance_truth_class') or 'versioned_technical'}). "
             "Use para comportamento e seguranca; nunca como evidencia de compatibilidade, OEM, medida, estoque ou fato tecnico:\n"
-            + app_guidance[:18000]
+            + app_guidance
         )
     if seller_profile:
         partes.append(
@@ -251,7 +249,7 @@ def _perguntas_ia_v2_prompt(
             + _perguntas_codex_compact_json(seller_profile, 10000)
         )
     if memoria_sku:
-        partes.append("Memoria tecnica local aprovada deste SKU:\n" + memoria_sku[:6000])
+        partes.append("Memoria tecnica local aprovada deste SKU:\n" + memoria_sku)
     partes.append("Dados normalizados para a resposta:\n" + _perguntas_codex_compact_json(dados, 18000))
     resposta_bloqueada = str(resposta_bloqueada or "").strip()
     if resposta_bloqueada or violacoes:
@@ -261,7 +259,7 @@ def _perguntas_ia_v2_prompt(
             f"Resposta original a preservar literalmente:\n{resposta_bloqueada or '-'}\n\n"
             f"Desvios somente diagnosticos: {', '.join(violacoes or []) or '-'}"
         )
-    return _perguntas_ia_compactar_contexto("\n\n".join(partes), 32000)
+    return "\n\n".join(partes)
 
 
 def _perguntas_ia_v2_corrigir_resposta_bloqueada(
@@ -296,8 +294,8 @@ def _perguntas_ia_execucao_configurar(client_id: str, agent_input: dict, started
         agent_input["context"] = context
     settings = GeminiQuestionsSettings.from_env()
     post_sale = _perguntas_ia_fluxo_pos_venda(agent_input)
-    settings.max_sentences = 3
-    settings.max_chars = int(ML_POS_VENDA_LIMITE_SEGURO if post_sale else ML_RESPOSTA_PERGUNTA_MAX_CHARS)
+    settings.max_sentences = 0
+    settings.max_chars = 0
     exige_aprovacao = _pos_venda_ia_v2_exigir_aprovacao() if post_sale else _perguntas_ia_v2_exigir_aprovacao()
     settings.auto_publish_enabled = bool(settings.auto_publish_enabled and not exige_aprovacao)
     configured_model = (
@@ -354,7 +352,9 @@ def _perguntas_ia_execucao_orquestrar(contexto: dict) -> tuple:
         contexto["client_id"], contexto["loja"], contexto["model_req"], agent_input,
         reasoning_effort=contexto["reasoning"],
     )
-    orchestrator = QuestionAnswerOrchestrator(settings=settings, gemini_client=client)
+    orchestrator = QuestionAnswerOrchestrator(
+        settings=settings, gemini_client=client, inspect_model_answer=False,
+    )
     started = time.perf_counter()
     resultado = orchestrator.process(
         question=question_ctx, listing=listing_snapshot, previous_questions=previous_questions, rules=seller_rules,
@@ -525,15 +525,9 @@ def _perguntas_ia_tentar_reparo(
 
 
 def _perguntas_ia_validar_resposta(contexto: dict, resultado, client, resposta: str, model_usado: str) -> tuple[str, str]:
-    """Registra desvios sem bloquear, substituir, compactar ou reescrever a resposta da IA."""
+    """Fachada legada: a resposta da IA nao passa por inspecao do aplicativo."""
 
-    violacoes, insuficiente = _perguntas_ia_violacoes_execucao(contexto, resposta, client)
-    if violacoes:
-        contexto["diagnostics"][0]["result"].update({
-            "app_validation_issues": violacoes[:8],
-            "app_validation_diagnostic_only": True,
-            "insufficient_safety_issue": bool(insuficiente),
-        })
+    del contexto, resultado, client
     return resposta, model_usado
 
 

@@ -284,40 +284,37 @@ def safe_agent_research_metrics(value: object) -> dict[str, Any]:
 def safe_agent_product_research_evidence(values: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Apply the final VIN/PII-safe projection before compiled facts enter a prompt."""
 
+    def full_safe(value: object) -> str:
+        return sanitize_public_research_text(value, max(600_000, len(str(value or "")) * 2))
+
     safe: list[dict[str, Any]] = []
-    for index, value in enumerate(values):
-        if index >= 160:
-            break
+    for value in values:
         if not isinstance(value, Mapping):
             continue
         if contains_vin_like_identifier(value.get("value")):
             continue
         normalized_value = re.sub(
-            r"\s+", " ", sanitize_public_research_text(value.get("value"), 300)
-        ).strip()[:300]
+            r"\s+", " ", full_safe(value.get("value"))
+        ).strip()
         if not normalized_value or contains_vin_like_identifier(normalized_value):
             continue
         sources: list[dict[str, str]] = []
-        for source in (value.get("sources") or [])[:8]:
+        for source in value.get("sources") or []:
             if not isinstance(source, Mapping):
                 continue
-            safe_url = sanitize_public_research_text(source.get("url"), 700)
+            safe_url = full_safe(source.get("url"))
             if "_PROTEGIDO]" in safe_url.upper():
                 safe_url = ""
             projection = {
-                "source_type": sanitize_public_research_text(source.get("source_type"), 40),
-                "authority": sanitize_public_research_text(source.get("authority"), 40),
+                "source_type": full_safe(source.get("source_type")),
+                "authority": full_safe(source.get("authority")),
                 "url": safe_url,
-                "domain": sanitize_public_research_text(source.get("domain"), 200),
+                "domain": full_safe(source.get("domain")),
                 "section_ref": re.sub(
-                    r"\s+", " ", sanitize_public_research_text(source.get("section_ref"), 160)
-                ).strip()[:160],
-                "collected_at": sanitize_public_research_text(
-                    source.get("collected_at"), 40
-                ),
-                "valid_until": sanitize_public_research_text(
-                    source.get("valid_until"), 40
-                ),
+                    r"\s+", " ", full_safe(source.get("section_ref"))
+                ).strip(),
+                "collected_at": full_safe(source.get("collected_at")),
+                "valid_until": full_safe(source.get("valid_until")),
             }
             if any(contains_vin_like_identifier(part) for part in projection.values()):
                 continue
@@ -325,28 +322,22 @@ def safe_agent_product_research_evidence(values: Iterable[Mapping[str, Any]]) ->
         safe.append({
             "field_name": re.sub(
                 r"[^a-z0-9_.]", "",
-                sanitize_public_research_text(value.get("field_name"), 96).lower(),
-            )[:96],
-            "scope": sanitize_public_research_text(value.get("scope"), 24),
+                full_safe(value.get("field_name")).lower(),
+            ),
+            "scope": full_safe(value.get("scope")),
             "value": normalized_value,
-            "unit": sanitize_public_research_text(value.get("unit"), 16),
-            "state": sanitize_public_research_text(
-                value.get("state") or "candidate", 24
-            ),
-            "activation_policy": sanitize_public_research_text(
-                value.get("activation_policy"), 64
-            ),
-            "conflict_group": sanitize_public_research_text(
-                value.get("conflict_group"), 40
-            ),
-            "valid_from": sanitize_public_research_text(value.get("valid_from"), 40),
-            "valid_until": sanitize_public_research_text(value.get("valid_until"), 40),
+            "unit": full_safe(value.get("unit")),
+            "state": full_safe(value.get("state") or "candidate"),
+            "activation_policy": full_safe(value.get("activation_policy")),
+            "conflict_group": full_safe(value.get("conflict_group")),
+            "valid_from": full_safe(value.get("valid_from")),
+            "valid_until": full_safe(value.get("valid_until")),
             "sources": sources,
             "source_authorities": [
                 safe_authority
-                for authority in (value.get("source_authorities") or [])[:8]
+                for authority in value.get("source_authorities") or []
                 if (
-                    safe_authority := sanitize_public_research_text(authority, 40)
+                    safe_authority := full_safe(authority)
                 )
                 and "_PROTEGIDO]" not in safe_authority.upper()
                 and not contains_vin_like_identifier(safe_authority)
