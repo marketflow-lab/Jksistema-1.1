@@ -1973,6 +1973,57 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             self.assertEqual(linha_json["Margem ML"], "")
 
 
+    def test_ja_participa_preservado_nas_tres_variantes_da_analise(self):
+        base = {
+            "id": PROMO_B_ID, "promotion_type": "SMART", "item_id": ITEM_ID,
+            "price": 148.46, "original_price": 192.28, "sale_fee_amount": 16,
+        }
+        for variante in ({}, {"com_arquivos": True}, {"via_api_direta": True}):
+            for status in ("started", "active", "pending", "programmed", "candidate", "eligible", "", "paused", "finished"):
+                with self.subTest(variante=variante, status=status):
+                    raw = dict(base, status=status)
+                    interna, saida = self._executar_fluxo(raw, **variante)
+                    esperado = status in {"started", "active", "pending", "programmed"}
+                    self.assertIs(interna["action_ja_participa"], esperado)
+                    self.assertIs(saida["action_ja_participa"], esperado)
+
+    def test_ja_participa_exige_identidade_confirmada_e_independe_de_preco(self):
+        base = self._confirmar_contexto_candidate({
+            "promotion_id": PROMO_B_ID, "promotion_type": "SMART",
+            "item_id": ITEM_ID, "status": "started",
+            "offer_id": f"OFFER-{ITEM_ID}-TESTE",
+        }, PROMO_B_ID)
+        casos = (
+            ({}, True),
+            ({"promotion_id": "P-OUTRA"}, False),
+            ({"promotion_type": "DEAL"}, False),
+            ({"item_id": "MLB888"}, False),
+            ({"offer_id": "OFFER-MLB888-OUTRA"}, False),
+            ({"_jk_contexto_promocao_confirmado": False}, False),
+            ({"status": "", "campaign": {"status": "started"}}, False),
+            ({"status": "", "promotion": {"status": "active"}}, False),
+            ({"status": "", "status_item": "started"}, True),
+            ({"status": "", "statusItem": "active"}, True),
+            ({"status": "", "_jk_status_item_consultado": "pending"}, True),
+        )
+        with (
+            patch.object(analysis, "_promo_obter_fretes_por_preco") as fretes,
+            patch.object(analysis, "_ml_obter_taxas_anuncio") as taxas,
+        ):
+            for alteracoes, esperado in casos:
+                with self.subTest(alteracoes=alteracoes):
+                    financeiro, _cfg = analysis._promo_obter_contexto_financeiro_acao(
+                        "000002", "Loja Teste", {"user_id": "123"}, ITEM_ID, {},
+                        dict(base, **alteracoes), PROMO_B_ID, 100, None, 20, 20, 0.1,
+                        promotion_type_esperado="SMART",
+                    )
+                    self.assertIs(financeiro["ja_participa"], esperado)
+                    self.assertFalse(financeiro["exato"])
+                    campos = analysis._promo_campos_financeiros_acao(financeiro, base, 20, 10)
+                    self.assertIs(campos["action_ja_participa"], esperado)
+            fretes.assert_not_called()
+            taxas.assert_not_called()
+
     def test_financeiro_e_exibicao_compartilham_campanha_nas_tres_variantes(self):
         candidate = {
             "id": PROMO_B_ID, "promotion_type": "SMART", "status": "candidate",
