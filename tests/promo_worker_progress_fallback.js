@@ -18,7 +18,7 @@ const electronBackend = fs.readFileSync(
 );
 
 assert(
-  promoJs.includes('async function consultarProgressoAnaliseApi(jobId)'),
+  promoJs.includes('async function consultarProgressoAnaliseApi(jobId, contexto = null)'),
   'promo UI must route progress polling through the resilient helper'
 );
 assert(
@@ -26,7 +26,7 @@ assert(
   'promo UI must fall back to the local promo worker when backend polling fails'
 );
 assert(
-  promoJs.includes('const payload = await consultarProgressoAnaliseApi(jobId);'),
+  promoJs.includes('const payload = await consultarProgressoAnaliseApi(jobId, contexto);'),
   'promo job polling must use the fallback helper'
 );
 assert(

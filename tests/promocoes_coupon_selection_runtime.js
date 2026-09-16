@@ -25,6 +25,8 @@ const campaigns = [
 const context = {
   console, Set, URLSearchParams,
   apiAutoInicializada: false,
+  apiAnaliseGeracao: 0, apiPromocoesCarregamentoGeracao: 0,
+  apiAnaliseJobPolling: null, apiAnaliseResolveAtual: null,
   apiPromoBCampaigns: [], apiPromoBSelectedIds: new Set(), apiPromoBPendingSelectedIds: null, apiPromoBSelectionReady: false,
   document: { getElementById: id => ids[id] || null, createElement: () => new Element() },
   fetch: async (url, options) => {

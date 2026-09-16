@@ -5,6 +5,9 @@ from __future__ import annotations
 from __future__ import annotations
 import asyncio
 from backend.services.promocoes_validacao import validar_promocoes_por_anuncio
+from backend.services.mercadolivre_legacy_promocoes import (
+    _promo_contextualizar_entry_campanha as _validar_contexto_entry_campanha,
+)
 import inspect
 import json
 import logging
@@ -114,7 +117,11 @@ def _promo_aplicar_item_participacao_ml(
     deal_price: Optional[float] = None,
     discount_percentage: Optional[float] = None,
     allow_alternative_deal_price: bool = True,
+    result_details: Optional[dict] = None,
 ) -> tuple[bool, str, dict]:
+    # Opt-in outcome reporting keeps existing tuple callers and their defaults.
+    if result_details is not None:
+        result_details["outcome"] = "blocked"
     item_id = _promo_normalizar_mlb(item_id)
     promotion_id = str(promotion_id or "").strip()
     promotion_type = str(promotion_type or "").strip()
@@ -247,6 +254,9 @@ def _promo_aplicar_item_participacao_ml(
     promotion_type_upper = promotion_type.upper().strip()
     deal_price_num = _parse_float_flex(deal_price)
     discount_num = _parse_float_flex(discount_percentage)
+    if result_details is not None:
+        deal_price_num = deal_price_num if deal_price_num is not None and math.isfinite(deal_price_num) else None
+        discount_num = discount_num if discount_num is not None and math.isfinite(discount_num) else None
     offer_id_texto = str(offer_id or "").strip()
     tipos_exigem_offer_id = {"SMART", "PRICE_MATCHING", "PRICE_MATCHING_MELI_ALL"}
     payloads = []
@@ -275,6 +285,22 @@ def _promo_aplicar_item_participacao_ml(
                 )
             except Exception:
                 raw_item_promocao = {}
+            if result_details is not None and raw_item_promocao:
+                context_ids = (
+                    ("_jk_campaign_id_consultado", promotion_id),
+                    ("_jk_item_id_consultado", item_id),
+                    ("_jk_promotion_type_consultado", promotion_type),
+                )
+                if any(
+                    raw_item_promocao.get(key)
+                    and str(raw_item_promocao[key]).upper() != expected.upper()
+                    for key, expected in context_ids
+                ):
+                    return False, "A oferta retornada pertence a outra campanha ou anuncio.", cfg
+                raw_item_promocao = _validar_contexto_entry_campanha(
+                    raw_item_promocao, campaign_id=promotion_id,
+                    promotion_type_consultado=promotion_type, item_id=item_id,
+                )
             offer_id_texto = _extrair_offer_id_promocao(raw_item_promocao)
         if not offer_id_texto:
             return (
@@ -285,6 +311,11 @@ def _promo_aplicar_item_participacao_ml(
                 ),
                 cfg,
             )
+        if result_details is not None and any(
+            _promo_normalizar_mlb(value) != item_id
+            for value in re.findall(r"MLB[-_ ]?\d+", offer_id_texto.upper())
+        ):
+            return False, "O identificador da oferta pertence a outro anuncio.", cfg
         _adicionar_payload({**base_payload, "offer_id": offer_id_texto})
     # Em campanhas do vendedor com percentual fixo, o percentual ja foi usado para
     # calcular o preco cheio. Na adesao do item, a API espera o preco final
@@ -308,21 +339,45 @@ def _promo_aplicar_item_participacao_ml(
         idx_payload += 1
         url_item_promocao = f"https://api.mercadolibre.com/seller-promotions/items/{item_id}"
         params_promocao = {"app_version": "v2"}
-        resp, cfg = _ml_api_request(
-            client_id,
-            loja,
-            cfg,
-            "POST",
-            url_item_promocao,
-            params=params_promocao,
-            json=payload,
-            timeout=20,
-        )
+        if result_details is not None:
+            result_details["outcome"] = "unknown"
+        try:
+            resp, cfg = _ml_api_request(
+                client_id,
+                loja,
+                cfg,
+                "POST",
+                url_item_promocao,
+                params=params_promocao,
+                json=payload,
+                timeout=20,
+            )
+        except Exception:
+            if result_details is None:
+                raise
+            return False, "Resultado nao confirmado apos a tentativa de inclusao.", cfg
+        if result_details is not None:
+            status_code = int(getattr(resp, "status_code", 0) or 0)
+            if status_code <= 0 or status_code == 408 or status_code >= 500:
+                return False, "Resultado nao confirmado pelo Mercado Livre apos a tentativa de inclusao.", cfg
+            result_details["outcome"] = "rejected"
         if resp.status_code in (200, 201):
+            if result_details is not None:
+                try:
+                    response_data = resp.json()
+                except Exception:
+                    response_data = None
+                if not isinstance(response_data, dict):
+                    result_details["outcome"] = "unknown"
+                    return False, "Mercado Livre retornou uma resposta sem resultado reconhecivel.", cfg
+                if response_data.get("error") or response_data.get("success") is False:
+                    return False, str(response_data.get("message") or response_data.get("error") or "Mercado Livre recusou a inclusao."), cfg
             erro_payload = _erro_payload_ml(resp)
             if erro_payload:
                 ultimo_erro = f"Mercado Livre respondeu {resp.status_code}, mas recusou a promocao: {erro_payload}"
                 continue
+            if result_details is not None:
+                result_details["outcome"] = "applied"
             return True, "", cfg
         erro = _ml_parse_error_detail(resp, f"Erro {resp.status_code} ao incluir item")
         erro_payload = _erro_payload_ml(resp)
@@ -338,6 +393,18 @@ def _promo_aplicar_item_participacao_ml(
                 cfg,
             )
         if "already" in erro_norm or ("ja" in erro_norm and "promoc" in erro_norm):
+            if result_details is not None:
+                try:
+                    existing, cfg = _promo_consultar_item_na_campanha(
+                        client_id, loja, cfg, promotion_id, promotion_type, item_id,
+                    )
+                except Exception:
+                    existing = {}
+                if (isinstance(existing, dict) and existing.get("success")
+                        and existing.get("found") and existing.get("already_participating")):
+                    result_details["outcome"] = "already_participating"
+                    return True, "Item ja esta participando na campanha.", cfg
+                return False, erro_completo, cfg
             edit_resp, cfg = _ml_api_request(
                 client_id,
                 loja,
@@ -440,7 +507,7 @@ def _aplicar_participacoes_promocoes_payload(
 
     _notificar(f"Iniciando entrada em {total_itens} anuncio(s) nas promocoes...")
 
-    for grupo in promocoes:
+    for group_index, grupo in enumerate(promocoes):
         if not isinstance(grupo, dict):
             continue
         promotion_id = str(grupo.get("promotion_id") or grupo.get("promo_b_id") or grupo.get("id") or "").strip()
@@ -456,148 +523,97 @@ def _aplicar_participacoes_promocoes_payload(
             "ignorados": 0,
             "erros": [],
         }
-        if not promotion_id:
-            promo_resumo["falhas"] = len(items)
-            promo_resumo["erros"].append("Promocao sem ID.")
-            total_falha += len(items)
-            processados += len(items)
-            _notificar(f"Promocao sem ID ignorada ({processados}/{total_itens}).")
-            resumo.append(promo_resumo)
-            continue
-        for item in items:
-            if not isinstance(item, dict):
-                total_ignorados += 1
-                promo_resumo["ignorados"] += 1
-                processados += 1
-                _notificar(f"Item invalido ignorado ({processados}/{total_itens}).")
-                continue
+        for item_index, item in enumerate(items):
+            valid_item = isinstance(item, dict)
+            item = item if valid_item else {}
             item_id = _promo_normalizar_mlb(item.get("item_id") or item.get("mlb") or item.get("MLB"))
-            offer_id = str(
-                item.get("offer_id")
-                or item.get("offerId")
-                or item.get("ref_id")
-                or item.get("refId")
-                or ""
-            ).strip()
-            deal_price = _parse_float_flex(item.get("deal_price") or item.get("preco_final_ml") or item.get("price"))
-            discount_percentage = _parse_float_flex(item.get("discount_percentage") or item.get("percentual") or item.get("ml_pct"))
-            if not item_id:
-                total_ignorados += 1
-                promo_resumo["ignorados"] += 1
-                processados += 1
-                _notificar(f"Item sem MLB ignorado ({processados}/{total_itens}).")
-                continue
-            elegibilidade, cfg = _promo_consultar_item_na_campanha(
-                client_id,
-                loja,
-                cfg,
-                promotion_id,
-                promotion_type,
-                item_id,
-            )
-            if elegibilidade.get("success") and elegibilidade.get("found"):
-                if elegibilidade.get("already_participating"):
-                    total_ignorados += 1
-                    promo_resumo["ignorados"] += 1
-                    processados += 1
-                    status_atual = elegibilidade.get("status") or "started"
-                    if len(promo_resumo["erros"]) < 8:
-                        promo_resumo["erros"].append(f"{item_id}: ja esta na campanha ({status_atual}).")
-                    if len(detalhes) < 300:
-                        detalhes.append({
-                            "item_id": item_id,
-                            "promotion_id": promotion_id,
-                            "promotion_type": promotion_type,
-                            "success": True,
-                            "ignored": True,
-                            "status": status_atual,
-                            "message": "Item ja esta participando ou pendente na campanha.",
-                        })
-                    _notificar(f"{item_id} ja esta na campanha; ignorado ({processados}/{total_itens}).")
-                    continue
-                if not elegibilidade.get("can_participate"):
-                    total_ignorados += 1
-                    promo_resumo["ignorados"] += 1
-                    processados += 1
-                    status_atual = elegibilidade.get("status") or "-"
-                    if len(promo_resumo["erros"]) < 8:
-                        promo_resumo["erros"].append(f"{item_id}: status {status_atual}; nao esta candidate.")
-                    if len(detalhes) < 300:
-                        detalhes.append({
-                            "item_id": item_id,
-                            "promotion_id": promotion_id,
-                            "promotion_type": promotion_type,
-                            "success": True,
-                            "ignored": True,
-                            "status": status_atual,
-                            "message": "Item nao esta com status candidate para essa campanha.",
-                        })
-                    _notificar(f"{item_id} nao esta candidate; ignorado ({processados}/{total_itens}).")
-                    continue
-            elif elegibilidade.get("success") and not elegibilidade.get("found"):
-                total_ignorados += 1
-                promo_resumo["ignorados"] += 1
-                processados += 1
-                detalhe = str(elegibilidade.get("detail") or "Nao elegivel para essa campanha.")
-                if len(promo_resumo["erros"]) < 8:
-                    promo_resumo["erros"].append(f"{item_id}: nao elegivel/candidate nesta campanha.")
-                if len(detalhes) < 300:
-                    detalhes.append({
-                        "item_id": item_id,
-                        "promotion_id": promotion_id,
-                        "promotion_type": promotion_type,
-                        "success": True,
-                        "ignored": True,
-                        "status": "not_candidate",
-                        "message": detalhe,
-                    })
-                _notificar(f"{item_id} nao e candidato da campanha; ignorado ({processados}/{total_itens}).")
-                continue
-            ok, erro, cfg = _promo_aplicar_item_participacao_ml(
-                client_id,
-                loja,
-                cfg,
-                item_id=item_id,
-                promotion_id=promotion_id,
-                promotion_type=promotion_type,
-                offer_id=offer_id,
-                deal_price=deal_price,
-                discount_percentage=discount_percentage,
-            )
-            if ok:
+            detail = {
+                "client_ref": str(item.get("client_ref") or f"{group_index}:{item_index}"),
+                "item_id": item_id,
+                "promotion_id": promotion_id,
+                "promotion_type": promotion_type,
+                "outcome": "blocked",
+                "status": "",
+            }
+            message = ""
+            try:
+                action_campaign = str(item.get("action_promotion_id") or "").strip()
+                if not valid_item:
+                    message = "Entrada invalida para participacao."
+                elif not promotion_id:
+                    message = "Promocao sem ID."
+                elif not item_id or not re.fullmatch(r"MLB\d+", item_id):
+                    message = "MLB ausente ou invalido."
+                elif action_campaign and action_campaign != promotion_id:
+                    message = "Os dados de execucao pertencem a outra campanha. Execute uma nova analise."
+                else:
+                    # An inconclusive lookup does not revoke the user's selection.
+                    try:
+                        elegibilidade, cfg = _promo_consultar_item_na_campanha(
+                            client_id, loja, cfg, promotion_id, promotion_type, item_id,
+                        )
+                    except Exception:
+                        elegibilidade = {}
+                    elegibilidade = elegibilidade if isinstance(elegibilidade, dict) else {}
+                    if (elegibilidade.get("success") and elegibilidade.get("found")
+                            and elegibilidade.get("already_participating")):
+                        detail["outcome"] = "already_participating"
+                        detail["status"] = elegibilidade.get("status") or "started"
+                        message = "Item ja esta participando ou pendente na campanha."
+                    else:
+                        has_action = any(key in item for key in (
+                            "action_offer_id", "action_deal_price", "action_discount_percentage",
+                        ))
+                        offer_id = str((item.get("action_offer_id") if has_action else (
+                            item.get("offer_id") or item.get("offerId") or item.get("ref_id") or item.get("refId")
+                        )) or "").strip()
+                        deal_price = _parse_float_flex(item.get("action_deal_price") if has_action else (
+                            item.get("deal_price") or item.get("preco_final_ml") or item.get("price")
+                        ))
+                        discount_percentage = _parse_float_flex(item.get("action_discount_percentage") if has_action else (
+                            item.get("discount_percentage") or item.get("percentual") or item.get("ml_pct")
+                        ))
+                        offer_items = re.findall(r"MLB[-_ ]?\d+", offer_id.upper())
+                        if any(_promo_normalizar_mlb(value) != item_id for value in offer_items):
+                            message = "O identificador da oferta pertence a outro anuncio."
+                        else:
+                            result_details = {}
+                            ok, message, cfg = _promo_aplicar_item_participacao_ml(
+                                client_id, loja, cfg,
+                                item_id=item_id,
+                                promotion_id=promotion_id,
+                                promotion_type=promotion_type,
+                                offer_id=offer_id,
+                                deal_price=deal_price,
+                                discount_percentage=discount_percentage,
+                                allow_alternative_deal_price=False,
+                                result_details=result_details,
+                            )
+                            detail["outcome"] = result_details.get("outcome") or ("applied" if ok else "unknown")
+                            if ok and not message:
+                                message = "Inclusao confirmada pelo Mercado Livre."
+            except Exception:
+                # Preserve preceding results and continue with the next selected row.
+                detail["outcome"] = "unknown"
+                message = "Nao foi possivel confirmar o resultado deste anuncio."
+
+            outcome = detail["outcome"]
+            detail["success"] = outcome in {"applied", "already_participating"}
+            detail["ignored"] = outcome == "already_participating"
+            detail["message"] = message
+            if outcome == "applied":
                 total_sucesso += 1
                 promo_resumo["sucesso"] += 1
+            elif outcome == "already_participating":
+                total_ignorados += 1
+                promo_resumo["ignorados"] += 1
             else:
-                if _promo_erro_candidate_not_found(erro):
-                    total_ignorados += 1
-                    promo_resumo["ignorados"] += 1
-                    if len(promo_resumo["erros"]) < 8:
-                        promo_resumo["erros"].append(f"{item_id}: nao elegivel/candidate nesta campanha.")
-                    if len(detalhes) < 300:
-                        detalhes.append({
-                            "item_id": item_id,
-                            "promotion_id": promotion_id,
-                            "promotion_type": promotion_type,
-                            "success": True,
-                            "ignored": True,
-                            "status": "candidate_not_found",
-                            "message": erro,
-                        })
-                    processados += 1
-                    _notificar(f"{item_id} nao e candidato da campanha; ignorado ({processados}/{total_itens}).")
-                    continue
                 total_falha += 1
                 promo_resumo["falhas"] += 1
+                detail["error"] = message
                 if len(promo_resumo["erros"]) < 8:
-                    promo_resumo["erros"].append(f"{item_id}: {erro}")
-                if len(detalhes) < 300:
-                    detalhes.append({
-                        "item_id": item_id,
-                        "promotion_id": promotion_id,
-                        "promotion_type": promotion_type,
-                        "success": False,
-                        "error": erro,
-                    })
+                    promo_resumo["erros"].append(f"{item_id or detail['client_ref']}: {message}")
+            detalhes.append(detail)
             processados += 1
             _notificar(f"Entrando nas promocoes: {processados}/{total_itens} anuncio(s).")
         resumo.append(promo_resumo)

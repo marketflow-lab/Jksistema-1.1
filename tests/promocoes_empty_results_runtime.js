@@ -55,6 +55,7 @@ const context = {
   getTableCellValue: (row, key) => row[key],
   parsePercentValue: value => Number(value.replace('%', '')),
   isDecisaoParticipar: value => value === 'Participar',
+  obterLinhasSelecionadasPromocoes: rows => rows.filter(row => row['Ação'] === 'Participar'),
   normalizeApiDatasetRules: rows => rows,
   savePagePrefs() {},
   mergeAndSaveColumnWidthPrefs() {},

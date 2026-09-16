@@ -39,7 +39,7 @@ const context = {
 vm.createContext(context);
 vm.runInContext(source, context, { filename: 'tabela-preferencias.js' });
 
-function programada(margem, margemMl) {
+function programada(margem, margemMl, sugestao = 'Não participar') {
   return {
     Status: 'Programada',
     Custo: 'R$ 12,52',
@@ -48,7 +48,7 @@ function programada(margem, margemMl) {
     'Valor líquido ML': 'R$ 4,28',
     Margem: `${String(margem).replace('.', ',')}%`,
     'Margem ML': `${String(margemMl).replace('.', ',')}%`,
-    Ação: 'Participar',
+    Ação: sugestao,
   };
 }
 
@@ -60,22 +60,28 @@ function decisao(row) {
 assert.strictEqual(
   decisao(programada(31.56, 11.79)),
   'Não participar',
-  'o caso real deve ser reprovado por margem ML abaixo de 15% e diferença superior a 3 pontos'
+  'a recomendação negativa do backend para margem ML baixa deve ser preservada'
 );
 assert.strictEqual(
   decisao(programada(17, 14.99)),
   'Não participar',
-  'margem ML abaixo de 15% deve ser reprovada'
+  'a recomendação negativa do backend abaixo de 15% deve ser preservada'
 );
 assert.strictEqual(
   decisao(programada(20, 16.99)),
   'Não participar',
-  'diferença superior a 3 pontos deve ser reprovada'
+  'a recomendação negativa do backend para diferença superior a 3 pontos deve ser preservada'
 );
 assert.strictEqual(
-  decisao(programada(20, 17)),
+  decisao(programada(20, 17, 'Participar')),
   'Participar',
-  'diferença exata de 3 pontos com margem ML suficiente deve ser aceita'
+  'a recomendação positiva do backend no limite de 3 pontos deve ser preservada'
+);
+
+assert.strictEqual(
+  decisao(programada(31.56, 11.79, 'Participar')),
+  'Participar',
+  'a normalização preserva a decisão recebida, inclusive uma escolha manual; regras financeiras são testadas no backend'
 );
 
 console.log('promocoes programada margem checks passed');

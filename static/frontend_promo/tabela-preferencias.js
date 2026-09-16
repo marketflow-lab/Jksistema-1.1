@@ -4,70 +4,19 @@ function formatPercentValueBr(num) {
     return `${String(rounded).replace('.', ',')}%`;
 }
 
-const MARGEM_MINIMA_PROGRAMADA_PCT = 15;
-const MARGEM_TOLERANCIA_PROGRAMADA_PCT = 3;
-
-function temValorApi(row, aliases) {
-    const valor = getFirstRowValueByAliases(row, aliases);
-    if (!valor) return false;
-    const normalizado = String(valor).trim().toLowerCase();
-    return !['-', 'nan', 'none', 'null', '<na>'].includes(normalizado);
-}
-
-function temValoresEssenciaisProgramado(row) {
-    return (
-        temValorApi(row, ['Custo']) &&
-        temValorApi(row, ['Tarifa ML']) &&
-        temValorApi(row, ['Preço Final ML', 'Preço Final Promoção 2', 'M ML']) &&
-        temValorApi(row, ['Valor líquido ML', 'Valor Líquido ML']) &&
-        parsePercentValue(getFirstRowValueByAliases(row, ['Margem ML'])) !== null
-    );
-}
-
 function normalizeApiRowPercentAndAction(row) {
     if (!row || typeof row !== 'object') return;
     preencherCamposCanonicosTabelaPromo(row);
 
-    // Regras solicitadas para Ação no modo API.
+    // Normaliza a apresentação. A sugestão financeira pertence à análise;
+    // renderizações posteriores devem preservar também a escolha manual.
     const statusOriginal = String(row['Status'] ?? '');
     const statusNorm = statusOriginal.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     const ativoPromo1 = statusNorm === 'ativo' || statusNorm.includes('ativo na promocao 1');
     const programadoPromo1 = statusNorm === 'programado' || statusNorm === 'programada' || statusNorm.includes('programado na promocao 1') || statusNorm.includes('programada na promocao 1');
     const elegivelPromo1 = statusNorm === 'elegivel' || statusNorm === 'eligible';
-    const semPromoFixa = (
-        statusNorm === 'sem promo fixa' ||
-        statusNorm.includes('somente arquivo promocao 2') ||
-        statusNorm.includes('somente promocao 2')
-    );
     row['Status'] = ativoPromo1 ? 'Ativo' : (programadoPromo1 ? 'Programada' : (elegivelPromo1 ? 'Elegível' : 'Sem Promo Fixa'));
-    const margemMinima = Number(document.getElementById('apiMargemMinima')?.value || 15);
-    const minPct = Number.isFinite(margemMinima) ? margemMinima : 15;
-    const toleranciaPct = getActionTolerancePct();
-    const margem1 = parsePercentValue(row['Margem']);
-    const margem2 = parsePercentValue(row['Margem ML']);
-
-    let decisao = 'Participar';
-    if (semPromoFixa || (!ativoPromo1 && !programadoPromo1)) {
-        decisao = 'Não participar';
-    } else if (programadoPromo1) {
-        const margemMinimaProgramada = Math.max(minPct, MARGEM_MINIMA_PROGRAMADA_PCT);
-        const margensProgramadaAprovadas = (
-            margem1 !== null &&
-            margem2 !== null &&
-            margem2 >= margemMinimaProgramada &&
-            margem2 + MARGEM_TOLERANCIA_PROGRAMADA_PCT >= margem1
-        );
-        decisao = temValoresEssenciaisProgramado(row) && margensProgramadaAprovadas
-            ? 'Participar'
-            : 'Não participar';
-    } else if (margem1 === null || margem1 < minPct) {
-        decisao = 'Não participar';
-    } else if (margem2 === null || margem2 < minPct) {
-        decisao = 'Não participar';
-    } else if (margem1 !== null && margem2 < (margem1 - toleranciaPct)) {
-        decisao = 'Não participar';
-    }
-
+    const decisao = obterDecisaoPromocoes(row);
     row['Ação'] = decisao;
     row['Participar ou não'] = decisao;
 }
@@ -85,6 +34,26 @@ function isDecisaoParticipar(valor) {
     const normalized = upperRaw.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     const negativa = normalized.includes('NAO') || upperRaw.includes('NÃO') || upperRaw.includes('NÃ');
     return normalized.includes('PARTICIPAR') && !negativa;
+}
+
+function obterDecisaoPromocoes(row) {
+    // A chave canônica é atualizada pela escolha manual e tem precedência
+    // sobre aliases presentes no resultado original da análise.
+    const valor = row?.['Ação'] || getFirstRowValueByAliases(row, ['Ação', 'Acao', 'Participar ou não', 'Participar ou nao']);
+    return isDecisaoParticipar(valor) ? 'Participar' : 'Não participar';
+}
+
+function obterLinhasSelecionadasPromocoes(rows) {
+    return (Array.isArray(rows) ? rows : []).filter((row) => obterDecisaoPromocoes(row) === 'Participar');
+}
+
+function obterMotivoSugestaoPromocoes(row) {
+    if (obterDecisaoPromocoes(row) === 'Participar') return '';
+    const exato = String(row?.action_financeiro_exato ?? '').trim().toLowerCase();
+    if (exato === 'false' || exato === '0') {
+        return 'Dados financeiros insuficientes para recomendar a participação.';
+    }
+    return '';
 }
 
 function _normalizeLookupKeyBase(value) {
@@ -201,7 +170,7 @@ function aplicarRegraAutomaticaAcaoPorMargem() {
 
 function promptToleranciaAcao() {
     const atual = String(actionTolerancePct).replace('.', ',');
-    const entrada = prompt('Informe a tolerância (%) para Ação automática por Margem ML vs Margem:', atual);
+    const entrada = prompt('Informe a tolerância (%) para a próxima análise:', atual);
     if (entrada === null) return;
     const n = Number(String(entrada).replace(',', '.'));
     if (!Number.isFinite(n) || n < 0) {
@@ -212,7 +181,6 @@ function promptToleranciaAcao() {
     const input = document.getElementById('apiMargemTolerancia');
     if (input) input.value = String(actionTolerancePct);
     saveActionTolerance();
-    aplicarRegraAutomaticaAcaoPorMargem();
     renderTable(currentData);
 }
 

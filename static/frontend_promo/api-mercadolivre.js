@@ -43,12 +43,14 @@ async function fetchJsonOrThrow(url, options, fallbackMessage) {
     return payload;
 }
 
-async function consultarProgressoAnaliseApi(jobId) {
+async function consultarProgressoAnaliseApi(jobId, contexto = null) {
+    const clientId = contexto ? contexto.clientId : getPromoClientId();
+    const headers = contexto ? contexto.headers : getAuthHeadersWithClient();
     const progressUrl = `/api/promo/analise-via-api-arquivos/progresso/${encodeURIComponent(jobId)}`;
     try {
         return await fetchJsonOrThrow(
             progressUrl,
-            { headers: getAuthHeadersWithClient() },
+            { headers },
             'Erro ao consultar o andamento da analise.'
         );
     } catch (backendError) {
@@ -57,7 +59,6 @@ async function consultarProgressoAnaliseApi(jobId) {
         if (!pareceFalhaRede) {
             throw backendError;
         }
-        const clientId = getPromoClientId();
         if (!clientId) {
             throw backendError;
         }
@@ -924,7 +925,7 @@ function ativarAnaliseApiPorCampanha(index) {
     const analise = Array.isArray(apiAnalisesPorCampanha) ? apiAnalisesPorCampanha[index] : null;
     if (!analise) return;
     apiAnaliseAtiva = index;
-    currentData = normalizeApiDatasetRules(Array.isArray(analise.data) ? analise.data : []);
+    currentData = Array.isArray(analise.data) ? analise.data : [];
     planilhaGeradaAtual = analise.planilha_gerada || null;
     renderApiAnalysisTabs();
     renderTable(currentData);
@@ -1162,22 +1163,57 @@ function renderApiJobDetails(payload) {
     detailsEl.innerHTML = linhas.map((l) => `<div>${l}</div>`).join('');
 }
 
-async function acompanharJobAnaliseApi(jobId) {
+function capturarContextoAnaliseApi() {
+    return {
+        geracao: apiAnaliseGeracao,
+        loja: String(document.getElementById('apiLojaSelect')?.value || '').trim(),
+        clientId: getPromoClientId(),
+        headers: getAuthHeadersWithClient(),
+    };
+}
+
+function contextoAnaliseApiAtual(contexto) {
+    return !!contexto && contexto.geracao === apiAnaliseGeracao
+        && contexto.loja === String(document.getElementById('apiLojaSelect')?.value || '').trim()
+        && contexto.clientId === getPromoClientId();
+}
+
+function invalidarAnaliseApiAtual() {
+    apiAnaliseGeracao += 1;
+    resolverAcompanhamentoAnaliseApi({ status: 'superseded' });
+    apiAnaliseJobId = '';
+    apiAnaliseCancelada = false;
+    apiAnalisesPorCampanha = [];
+    apiAnaliseAtiva = 0;
+    currentData = [];
+    planilhaGeradaAtual = null;
+    for (const id of ['resultsArea', 'apiLoading', 'apiLoadingDetails', 'apiAnalysisTabs']) {
+        const el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+    }
+    setApiCancelButtonVisible(false);
+}
+
+async function acompanharJobAnaliseApi(jobId, contexto = capturarContextoAnaliseApi()) {
     const loading = document.getElementById('apiLoading');
     const loadingDetails = document.getElementById('apiLoadingDetails');
     const errorMsg = document.getElementById('apiErrorMsg');
     const resultsArea = document.getElementById('resultsArea');
     if (!jobId) return null;
+    if (!contextoAnaliseApiAtual(contexto)) return { status: 'superseded' };
     apiAnaliseJobId = String(jobId || '').trim();
     limparPollingAnaliseApi();
     apiAnaliseResolveAtual = null;
 
     const consultar = async () => {
         try {
+            if (!contextoAnaliseApiAtual(contexto)) return { status: 'superseded' };
             if (apiAnaliseCancelada) {
                 return { status: 'canceled', payload: { message: 'Verificacao cancelada pelo usuario.' } };
             }
-            const payload = await consultarProgressoAnaliseApi(jobId);
+            const payload = await consultarProgressoAnaliseApi(jobId, contexto);
+            if (!contextoAnaliseApiAtual(contexto)) return { status: 'superseded' };
+            if (apiAnaliseCancelada) return { status: 'canceled' };
             const status = String(payload.status || '').toLowerCase();
             const progress = Number(payload.progress || 0);
             const message = payload.message || 'Processando análise em segundo plano...';
@@ -1200,6 +1236,10 @@ async function acompanharJobAnaliseApi(jobId) {
                 apiAnaliseJobId = jobIdAtual;
                 apiAnalisesPorCampanha = Array.isArray(result.analises) ? result.analises : [];
                 apiAnalisesPorCampanha.forEach((analise) => {
+                    if (analise) {
+                        analise.origem_loja = contexto.loja;
+                        analise.origem_client_id = contexto.clientId;
+                    }
                     if (analise && jobIdAtual) {
                         analise.job_id = jobIdAtual;
                     }
@@ -1277,6 +1317,7 @@ async function acompanharJobAnaliseApi(jobId) {
                 return { status: 'error', payload, error: errorMsg.textContent };
             }
         } catch (e) {
+            if (!contextoAnaliseApiAtual(contexto)) return { status: 'superseded' };
             limparPollingAnaliseApi();
             setApiCancelButtonVisible(false);
             loading.style.display = 'none';
@@ -1296,22 +1337,34 @@ async function acompanharJobAnaliseApi(jobId) {
         return null;
     };
 
-    const finalizado = await consultar();
-    if (finalizado) return finalizado;
     return new Promise((resolve) => {
         apiAnaliseResolveAtual = resolve;
-        apiAnaliseJobPolling = setInterval(async () => {
+        let consultando = false;
+        const executarConsulta = async () => {
+            if (consultando) return;
+            consultando = true;
             const final = await consultar();
+            consultando = false;
             if (final) {
-                apiAnaliseResolveAtual = null;
+                if (apiAnaliseResolveAtual === resolve) {
+                    limparPollingAnaliseApi();
+                    apiAnaliseResolveAtual = null;
+                }
                 resolve(final);
             }
-        }, 3000);
+        };
+        apiAnaliseJobPolling = setInterval(executarConsulta, 3000);
+        executarConsulta();
     });
 }
 
 async function carregarPromocoesApi() {
     const loja = document.getElementById('apiLojaSelect')?.value || '';
+    const clientId = getPromoClientId();
+    const geracaoCarregamento = ++apiPromocoesCarregamentoGeracao;
+    const carregamentoAtual = () => geracaoCarregamento === apiPromocoesCarregamentoGeracao
+        && loja === (document.getElementById('apiLojaSelect')?.value || '') && clientId === getPromoClientId();
+    invalidarAnaliseApiAtual();
     const selectA = document.getElementById('apiPromoASelect');
     const selectB = document.getElementById('apiPromoBSelect');
     if (!selectA || !selectB) return;
@@ -1333,6 +1386,7 @@ async function carregarPromocoesApi() {
         const query = new URLSearchParams({ loja });
         const resp = await fetch(`/api/mercadolivre/promocoes?${query.toString()}`, { headers: getAuthHeadersWithClient() });
         const data = await resp.json().catch(() => ({}));
+        if (!carregamentoAtual()) return;
         if (!resp.ok || data.success === false) {
             throw new Error(buildApiErrorMessage(resp, data, 'Erro ao carregar promoções'));
         }
@@ -1365,7 +1419,7 @@ async function carregarPromocoesApi() {
         }
         carregarContagensCampanhasApi(loja).then((countsByCampaignId) => {
             if (!countsByCampaignId || !Object.keys(countsByCampaignId).length) return;
-            if ((document.getElementById('apiLojaSelect')?.value || '') !== loja) return;
+            if (!carregamentoAtual()) return;
             const campanhasComContagem = campanhasB.map((campanha) => applyPromoCounts(campanha, countsByCampaignId));
             renderApiPromoBButtons(campanhasComContagem);
             if (apiAutoInicializada && getApiAutoPrefs().enabled) {
@@ -1373,6 +1427,7 @@ async function carregarPromocoesApi() {
             }
         }).catch(() => {});
     } catch (e) {
+        if (!carregamentoAtual()) return;
         const mensagem = e?.message || 'Erro ao carregar promoções';
         selectA.innerHTML = `<option value="">${escapeHtml(mensagem)}</option>`;
         selectB.innerHTML = `<div class="api-promo-empty">${escapeHtml(mensagem)}</div>`;
@@ -1416,6 +1471,9 @@ async function processarAnaliseApi(opcoes = {}) {
         return null;
     }
 
+    invalidarAnaliseApiAtual();
+    const contexto = capturarContextoAnaliseApi();
+
     saveColumnPrefs();
     savePagePrefs();
     pendingWidthPrefs = {
@@ -1452,8 +1510,10 @@ async function processarAnaliseApi(opcoes = {}) {
 
     try {
         await carregarColumnWidthPrefsServidor();
+        if (!contextoAnaliseApiAtual(contexto)) return { status: 'superseded' };
         if (promoBOptions.some((promo) => promo.activeCount === null || promo.eligibleCount === null)) {
             const countsByCampaignId = await carregarContagensCampanhasApi(loja);
+            if (!contextoAnaliseApiAtual(contexto)) return { status: 'superseded' };
             if (countsByCampaignId && Object.keys(countsByCampaignId).length) {
                 apiPromoBCampaigns = apiPromoBCampaigns.map((campanha) => applyPromoCounts(campanha, countsByCampaignId));
                 renderApiPromoBButtons(apiPromoBCampaigns);
@@ -1476,10 +1536,11 @@ async function processarAnaliseApi(opcoes = {}) {
 
         const resp = await fetch('/api/promo/analise-via-api/start', {
             method: 'POST',
-            headers: getAuthHeadersWithClient(),
+            headers: contexto.headers,
             body: formData,
         });
         const result = await resp.json().catch(() => ({}));
+        if (!contextoAnaliseApiAtual(contexto)) return { status: 'superseded' };
         if (!resp.ok || !result.success) {
             throw new Error(buildApiErrorMessage(resp, result, 'Erro ao analisar promoções via API'));
         }
@@ -1488,6 +1549,7 @@ async function processarAnaliseApi(opcoes = {}) {
             try {
                 await cancelarJobAnaliseApi(apiAnaliseJobId);
             } catch (_e) {}
+            if (!contextoAnaliseApiAtual(contexto)) return { status: 'superseded' };
             setApiCancelButtonVisible(false);
             return { status: 'canceled' };
         }
@@ -1497,13 +1559,15 @@ async function processarAnaliseApi(opcoes = {}) {
             progress: 5,
             message: result.message || 'Analise iniciada em segundo plano.',
         });
-        const acompanhamento = await acompanharJobAnaliseApi(result.job_id);
+        const acompanhamento = await acompanharJobAnaliseApi(result.job_id, contexto);
+        if (!contextoAnaliseApiAtual(contexto)) return { status: 'superseded' };
         setApiCancelButtonVisible(false);
         if (acompanhamento?.status === 'completed' && !apiAnaliseCancelada) {
             await executarParticipacaoAutomaticaPromocoes();
         }
         return acompanhamento;
     } catch (e) {
+        if (!contextoAnaliseApiAtual(contexto)) return { status: 'superseded' };
         setApiCancelButtonVisible(false);
         loading.style.display = 'none';
         errorMsg.textContent = e.message || 'Erro ao iniciar a análise em segundo plano.';

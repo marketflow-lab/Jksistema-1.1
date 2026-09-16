@@ -261,7 +261,7 @@ function renderTable(data) {
             td.style.textAlign = col.key === 'Título' ? 'left' : 'center';
             if (col.editable) {
                 const select = document.createElement('select');
-                const decisaoAtual = row['Ação'] || row['Participar ou não'] || '';
+                const decisaoAtual = obterDecisaoPromocoes(row);
                 const isParticipar = isDecisaoParticipar(decisaoAtual);
                 select.className = `decision-select ${isParticipar ? 'participar' : 'nao-participar'}`;
                 select.style.cursor = 'pointer';
@@ -280,6 +280,11 @@ function renderTable(data) {
                 select.appendChild(optNaoParticipar);
                 select.value = isParticipar ? 'Participar' : 'Não participar';
 
+                const motivo = document.createElement('small');
+                motivo.textContent = obterMotivoSugestaoPromocoes(row);
+                motivo.style.display = motivo.textContent ? 'block' : 'none';
+                motivo.style.whiteSpace = 'normal';
+
                 select.addEventListener('change', function() {
                     const val = this.value;
                     const isPart = val === 'Participar';
@@ -287,10 +292,21 @@ function renderTable(data) {
                     currentData[dataIndex]['Participar ou não'] = val;
                     this.className = `decision-select ${isPart ? 'participar' : 'nao-participar'}`;
                     this.parentElement.style.backgroundColor = '#fff3cd';
+                    motivo.textContent = obterMotivoSugestaoPromocoes(currentData[dataIndex]);
+                    motivo.style.display = motivo.textContent ? 'block' : 'none';
+                    const analise = typeof apiAnalisesPorCampanha !== 'undefined' && Array.isArray(apiAnalisesPorCampanha)
+                        ? apiAnalisesPorCampanha.find((item) => item?.data === currentData)
+                        : null;
+                    if (analise) {
+                        analise.participacao_confirmada = false;
+                        analise.participacao_selecao_revisao = (Number(analise.participacao_selecao_revisao) || 0) + 1;
+                        if (typeof renderApiAnalysisTabs === 'function') renderApiAnalysisTabs();
+                    }
                     updateMetrics();
                 });
 
                 td.appendChild(select);
+                td.appendChild(motivo);
             } else {
                 td.textContent = cellValue;
                 if (col.key === 'Valor Líquido' || col.key === 'Valor líquido ML') {
@@ -353,9 +369,7 @@ function renderTable(data) {
 
 function updateMetrics() {
     const total = currentData.length;
-    const part = currentData.filter(r => {
-        return isDecisaoParticipar(r['Ação'] || r['Participar ou não'] || "");
-    }).length;
+    const part = obterLinhasSelecionadasPromocoes(currentData).length;
 
     document.getElementById('totalAnuncios').textContent = total;
     document.getElementById('totalParticipar').textContent = part;

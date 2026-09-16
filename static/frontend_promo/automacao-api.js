@@ -396,7 +396,6 @@ function inicializarAutomacaoPromoApi() {
         getActionTolerancePct();
         saveActionTolerance();
         if (Array.isArray(currentData) && currentData.length) {
-            normalizeApiDatasetRules(currentData);
             renderTable(currentData);
         }
         if (enabledEl.checked) salvarServidor();
@@ -503,6 +502,7 @@ async function cancelarJobAnaliseApi(jobId) {
 }
 
 async function cancelarAnaliseApi() {
+    const contexto = capturarContextoAnaliseApi();
     apiAnaliseCancelada = true;
     setApiCancelButtonVisible(true, true);
     const loading = document.getElementById('apiLoading');
@@ -510,6 +510,7 @@ async function cancelarAnaliseApi() {
     const errorMsg = document.getElementById('apiErrorMsg');
     try {
         const payload = await cancelarJobAnaliseApi(apiAnaliseJobId);
+        if (!contextoAnaliseApiAtual(contexto)) return;
         limparPollingAnaliseApi();
         if (loading) loading.style.display = 'none';
         if (loadingDetails) {
@@ -526,6 +527,7 @@ async function cancelarAnaliseApi() {
         atualizarStatusAutomacaoPromo('Verificacao cancelada.');
         resolverAcompanhamentoAnaliseApi({ status: 'canceled', payload });
     } catch (e) {
+        if (!contextoAnaliseApiAtual(contexto)) return;
         limparPollingAnaliseApi();
         if (loading) loading.style.display = 'none';
         if (loadingDetails) {
@@ -542,6 +544,6 @@ async function cancelarAnaliseApi() {
         atualizarStatusAutomacaoPromo('Verificacao cancelada na tela.');
         resolverAcompanhamentoAnaliseApi({ status: 'canceled', error: e.message || 'Cancelamento local.' });
     } finally {
-        setApiCancelButtonVisible(false);
+        if (contextoAnaliseApiAtual(contexto)) setApiCancelButtonVisible(false);
     }
 }
