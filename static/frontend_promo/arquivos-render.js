@@ -288,7 +288,7 @@ function renderTable(data) {
 
                 const impedimento = document.createElement('small');
                 impedimento.className = 'promo-decision-reason promo-decision-technical';
-                impedimento.textContent = obterImpedimentoTecnicoPromocoes(row);
+                impedimento.textContent = obterAvisoParticipacaoPromocoes(row);
                 impedimento.style.display = impedimento.textContent ? 'block' : 'none';
 
                 select.addEventListener('change', function() {

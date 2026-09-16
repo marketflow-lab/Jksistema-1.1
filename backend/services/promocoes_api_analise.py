@@ -1194,7 +1194,8 @@ def _promo_obter_contexto_financeiro_acao(
     """Consulta a campanha selecionada sem confundir oferta com rentabilidade."""
     vazio = {"tarifa": None, "valor_liquido": None, "margem": None, "exato": False, "fonte": "",
              "motivo": "Contexto da campanha selecionada nao confirmado.",
-             "tecnico_apto": False, "impedimento_tecnico": "Contexto da campanha selecionada nao confirmado."}
+             "tecnico_apto": False, "impedimento_tecnico": "Contexto da campanha selecionada nao confirmado.",
+             "ja_participa": False}
     preco = _parse_float_flex(preco_acao)
     if not isinstance(raw_acao, dict):
         return vazio, cfg
@@ -1233,7 +1234,11 @@ def _promo_obter_contexto_financeiro_acao(
         impedimento = "Identificador da oferta nao informado; sera consultado antes do envio."
     elif offer_id and not offer_item_valido:
         impedimento = "Identificador da oferta nao confirmado para este anuncio."
-    tecnico = {"tecnico_apto": not impedimento, "impedimento_tecnico": impedimento}
+    tecnico = {
+        "tecnico_apto": not impedimento,
+        "impedimento_tecnico": impedimento,
+        "ja_participa": _promo_status_item_promocao(raw_acao) in {"started", "active", "pending", "programmed"},
+    }
     if preco is None or preco <= 0:
         vazio.update(tecnico, motivo="Preco da campanha selecionada nao informado.")
         return vazio, cfg
@@ -1312,6 +1317,7 @@ def _promo_campos_financeiros_acao(financeiro: dict, raw_acao: dict, percentual:
         "action_financeiro_motivo": financeiro.get("motivo") or ("Margem da promocao 1 nao confirmada para comparar." if margem_base is None else ""),
         "action_impedimento_tecnico": financeiro.get("impedimento_tecnico", ""),
         "action_tecnico_apto": financeiro.get("tecnico_apto", False),
+        "action_ja_participa": financeiro.get("ja_participa") is True,
         "pricing_promotion_id": _ml_promocao_raw_id(raw_acao),
         "pricing_offer_id": _ml_promocao_raw_offer_id(raw_acao),
         "pricing_price": preco,
@@ -1897,6 +1903,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             "action_financeiro_motivo": str(item.get("action_financeiro_motivo") or ""),
             "action_impedimento_tecnico": str(item.get("action_impedimento_tecnico") or ""),
             "action_tecnico_apto": item.get("action_tecnico_apto") is True,
+            "action_ja_participa": item.get("action_ja_participa") is True,
             "pricing_promotion_id": str(item.get("pricing_promotion_id") or "").strip(),
             "pricing_offer_id": str(item.get("pricing_offer_id") or "").strip(),
             "pricing_price": _parse_float_flex(item.get("pricing_price")),
@@ -1925,6 +1932,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             "action_financeiro_motivo",
             "action_impedimento_tecnico",
             "action_tecnico_apto",
+            "action_ja_participa",
             "pricing_promotion_id",
             "pricing_offer_id",
             "pricing_price",
@@ -2639,6 +2647,7 @@ async def analisar_promo_via_api_sem_arquivos(
                 "action_financeiro_motivo": str(item.get("action_financeiro_motivo") or ""),
                 "action_impedimento_tecnico": str(item.get("action_impedimento_tecnico") or ""),
                 "action_tecnico_apto": item.get("action_tecnico_apto") is True,
+                "action_ja_participa": item.get("action_ja_participa") is True,
                 "pricing_promotion_id": str(item.get("pricing_promotion_id") or "").strip(),
                 "pricing_offer_id": str(item.get("pricing_offer_id") or "").strip(),
                 "pricing_price": _parse_float_flex(item.get("pricing_price")),
@@ -2670,6 +2679,7 @@ async def analisar_promo_via_api_sem_arquivos(
                 "action_financeiro_motivo",
                 "action_impedimento_tecnico",
                 "action_tecnico_apto",
+                "action_ja_participa",
                 "pricing_promotion_id",
                 "pricing_offer_id",
                 "pricing_price",
@@ -3321,6 +3331,7 @@ async def analisar_promo_via_api_com_arquivos(
                 "action_financeiro_motivo": str(item.get("action_financeiro_motivo") or ""),
                 "action_impedimento_tecnico": str(item.get("action_impedimento_tecnico") or ""),
                 "action_tecnico_apto": item.get("action_tecnico_apto") is True,
+                "action_ja_participa": item.get("action_ja_participa") is True,
                 "pricing_promotion_id": str(item.get("pricing_promotion_id") or "").strip(),
                 "pricing_offer_id": str(item.get("pricing_offer_id") or "").strip(),
                 "pricing_price": _parse_float_flex(item.get("pricing_price")),
@@ -3352,6 +3363,7 @@ async def analisar_promo_via_api_com_arquivos(
                 "action_financeiro_motivo",
                 "action_impedimento_tecnico",
                 "action_tecnico_apto",
+                "action_ja_participa",
                 "pricing_promotion_id",
                 "pricing_offer_id",
                 "pricing_price",

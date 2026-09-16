@@ -29,12 +29,14 @@ const { chromium } = require('playwright');
         window[name] = () => {};
       }
       currentData = [
-        { MLB: 'MLB123', 'Margem ML': '28,01%', 'Ação': 'Participar', action_financeiro_exato: true,
+        { MLB: 'MLB123', Status: 'Ativo', 'Margem ML': '28,01%', 'Ação': 'Participar', action_financeiro_exato: true,
           action_tecnico_apto: false, action_impedimento_tecnico: 'Identificador da oferta não informado.' },
         { MLB: 'MLB456', 'Margem ML': '', 'Ação': 'Não participar', action_financeiro_exato: false,
           action_financeiro_motivo: 'Frete não confirmado para o preço da campanha selecionada.' },
         { MLB: 'MLB789', 'Margem ML': '12,00%', 'Ação': 'Não participar', action_financeiro_exato: true,
           action_impedimento_tecnico: '<img src=x onerror=alert(1)>' },
+        { MLB: 'MLB987', 'Margem ML': '28,01%', 'Ação': 'Não participar', action_financeiro_exato: true,
+          action_ja_participa: true, action_impedimento_tecnico: 'Situacao da oferta exige verificacao antes do envio.' },
       ];
       renderTable(currentData);
     });
@@ -42,17 +44,23 @@ const { chromium } = require('playwright');
     assert.strictEqual(await rows.nth(0).locator('td').nth(1).textContent(), '28,01%');
     assert.strictEqual(await rows.nth(0).locator('select').inputValue(), 'Participar');
     assert.strictEqual(await rows.nth(0).locator('.promo-decision-reason').first().isVisible(), false);
-    assert((await rows.nth(0).locator('.promo-decision-technical').textContent()).startsWith('Pendência de envio:'));
+    assert.strictEqual(await rows.nth(0).locator('.promo-decision-technical').isVisible(), false,
+      'participação na promoção de comparação não confirma a campanha selecionada');
     assert.strictEqual(await rows.nth(1).locator('.promo-decision-reason').first().textContent(), 'Frete não confirmado para o preço da campanha selecionada.');
     assert.strictEqual(await rows.nth(2).locator('img').count(), 0, 'reasons must be plain text');
+    assert.strictEqual(await rows.nth(2).locator('.promo-decision-technical').isVisible(), false);
+    assert.strictEqual(await rows.nth(3).locator('.promo-decision-technical').textContent(), 'Já participa');
+    assert.strictEqual(await rows.nth(3).locator('.promo-decision-technical').isVisible(), true);
+    assert(!(await page.locator('#tabelaAnalise').innerText()).includes('Pendência de envio'));
     await rows.nth(0).locator('select').selectOption('Não participar');
     assert.strictEqual(await page.locator('#totalParticipar').textContent(), '0');
     await rows.nth(0).locator('select').selectOption('Participar');
     assert.strictEqual(await page.locator('#totalParticipar').textContent(), '1');
-    assert.strictEqual(await rows.nth(0).locator('.promo-decision-technical').isVisible(), true);
+    assert.strictEqual(await rows.nth(0).locator('.promo-decision-technical').isVisible(), false);
     await page.evaluate(() => renderTable(currentData));
     assert.strictEqual(await rows.nth(0).locator('select').inputValue(), 'Participar');
-    assert.strictEqual(await rows.nth(0).locator('.promo-decision-technical').isVisible(), true);
+    assert.strictEqual(await rows.nth(0).locator('.promo-decision-technical').isVisible(), false);
+    assert.strictEqual(await rows.nth(3).locator('.promo-decision-technical').textContent(), 'Já participa');
     assert.deepStrictEqual(errors, []);
     console.log('promocoes margin browser checks passed');
   } finally {

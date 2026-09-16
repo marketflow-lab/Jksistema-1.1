@@ -58,9 +58,10 @@ function obterMotivoSugestaoPromocoes(row) {
     return '';
 }
 
-function obterImpedimentoTecnicoPromocoes(row) {
-    const motivo = String(row?.action_impedimento_tecnico ?? '').trim();
-    return motivo ? `Pendência de envio: ${motivo}` : '';
+function obterAvisoParticipacaoPromocoes(row) {
+    // Somente a análise da campanha selecionada confirma participação.
+    // O Status da tabela pode pertencer à promoção usada na comparação.
+    return row?.action_ja_participa === true ? 'Já participa' : '';
 }
 
 function _normalizeLookupKeyBase(value) {
