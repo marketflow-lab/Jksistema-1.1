@@ -220,6 +220,30 @@ def test_factual_route_receives_every_original_canonical_field_and_guidance():
     assert "compatibility_coverage" not in packet
 
 
+@pytest.mark.parametrize("question", [
+    "Eh usado?",
+    "E novo?",
+    "O produto e novo ou usado?",
+    "Nunca foi usado?",
+    "Qual a condicao do produto?",
+    "Ele e recondicionado?",
+])
+def test_store_product_condition_is_new_and_answers_used_question_without_web(question):
+    packet, metrics = build_sku_question_context(
+        _input("product_feature", question),
+        {"category": "product_feature"},
+        context_hub={"function": "context_hub_store_sku_read", "result": {"found": False}},
+    )
+    assert packet["route"] == ROUTE_SIMPLE_FACTUAL
+    assert packet["route_reasons"] == ["store_product_condition_new"]
+    assert packet["store_facts"] == {"product_condition": "new"}
+    assert packet["web"] == {"required": False, "reason": "no_research_needed"}
+    assert metrics["web_required"] is False
+    prompt = simple_public_prompt(packet)
+    assert "Todos os produtos vendidos pela loja sao novos" in prompt
+    assert "nao peca confirmacao" in prompt
+
+
 def test_compatibility_originality_conflict_and_missing_evidence_are_high_risk():
     compatibility, _ = build_sku_question_context(
         _input("compatibility", "Serve na Honda ADV 160?"),
@@ -370,7 +394,7 @@ def test_technical_prompts_reference_one_typed_integral_envelope_without_copying
     assert all("CAMPO_RARO_NAO_DUPLICAR" not in prompt for prompt in prompts)
 
 
-def test_missing_automotive_feature_prompts_seek_original_part_without_assuming_the_replacement_matches():
+def test_missing_automotive_feature_prompts_inherit_original_standard_for_the_replacement():
     packet, _ = build_sku_question_context(
         _input("product_feature", "A luz dos botoes e branca?"),
         {"category": "product_feature"}, context_hub=_hub(),
@@ -384,7 +408,8 @@ def test_missing_automotive_feature_prompts_seek_original_part_without_assuming_
     assert "missing_specific_product_fact" in simple
     assert "peca original" in plan
     assert "sem pressupor" in plan
-    assert "referencia distinta da unidade anunciada" in resolution
+    assert "atribua a ela a caracteristica confirmada" in resolution
+    assert "todos os produtos vendidos sao novos" in resolution
 
 
 def test_reference_metadata_is_path_free_and_never_replaces_integral_core():

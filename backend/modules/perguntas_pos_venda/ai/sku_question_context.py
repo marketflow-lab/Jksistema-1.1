@@ -47,6 +47,15 @@ _COMPATIBILITY_MARKERS = (
 _ORIGINALITY_MARKERS = (
     "original", "genuin", "autentic", "procedencia", "falsific", "garantia",
 )
+_PRODUCT_CONDITION_PATTERNS = (
+    re.compile(r"\b(?:e|eh)\s+(?:nov[oa]|usad[oa])s?\b"),
+    re.compile(r"\bnov[oa]\s+ou\s+usad[oa]\b"),
+    re.compile(r"\b(?:nunca|ja)\s+(?:foi\s+)?usad[oa]\b"),
+    re.compile(r"\b(?:produto|peca|item)\s+(?:e|eh)\s+(?:nov[oa]|usad[oa]|seminov[oa]|recondicionad[oa])\b"),
+    re.compile(r"\bcondicao\s+(?:do|da)\s+(?:produto|peca|item)\b"),
+    re.compile(r"\bqual\s+(?:e\s+)?(?:a\s+)?(?:condicao|estado)\b"),
+    re.compile(r"\b(?:seminov[oa]|recondicionad[oa]|remanufaturad[oa]|refurbished)\b"),
+)
 _HIGH_RISK_REASONS = frozenset({
     "compatibility_required", "originality_required", "identity_mismatch",
     "identity_incomplete", "evidence_conflict", "stale_evidence",
@@ -364,12 +373,14 @@ def _route(
     classification: Mapping[str, Any],
     force_high_risk: bool,
 ) -> tuple[str, list[str], bool]:
-    if category in _UNCHANGED_POLICY_CATEGORIES:
-        return ROUTE_LEGACY_POLICY, ["unchanged_existing_policy"], False
     combined = _normalized(" ".join([
         str(question.get("text") or ""),
         *(str(value.get("intent") or "") + " " + str(value.get("question") or "") for value in subquestions),
     ]))
+    if any(pattern.search(combined) for pattern in _PRODUCT_CONDITION_PATTERNS):
+        return ROUTE_SIMPLE_FACTUAL, ["store_product_condition_new"], False
+    if category in _UNCHANGED_POLICY_CATEGORIES:
+        return ROUTE_LEGACY_POLICY, ["unchanged_existing_policy"], False
     reasons: list[str] = []
     if category == "compatibility" or any(marker in combined for marker in _COMPATIBILITY_MARKERS):
         reasons.append("compatibility_required")
@@ -560,6 +571,7 @@ def build_sku_question_context(
         "canonical_document": canonical_document,
         **({"catalog_document": catalog_document, "catalog_generation": catalog_generation} if catalog_document else {}),
         "guidance": guidance,
+        "store_facts": {"product_condition": "new"},
         "operational_data": operational,
         "generation": generation,
         "source_hashes": source_hashes,
@@ -580,6 +592,7 @@ def build_sku_question_context(
         "canonical_document": canonical_document,
         **({"catalog_document": catalog_document, "catalog_generation": catalog_generation} if catalog_document else {}),
         "guidance": guidance,
+        "store_facts": {"product_condition": "new"},
         "operational_data": operational,
         "generation": generation,
         "source_hashes": source_hashes,
