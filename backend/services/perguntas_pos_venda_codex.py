@@ -122,6 +122,7 @@ PROMPT_HASH = hashlib.sha256(
         "question-history-full|integral-envelope-full|"
         "stage-prompt-full|global-transport-full|"
         "conditional-public-web-v1|oem-characteristics-inheritance-v1|new-product-condition-v1|"
+        "literal-store-signature-v1|"
         "six-stage-sol-high|two-round-gap-research|directed-reference-relations|"
         "literal-ai-draft-no-answer-inspection|oversize-send-preflight-v1|"
         "manual-canonical-preflight-v1|ready-question-item-history|scoped-session-revalidation|"
@@ -724,7 +725,7 @@ def _job_question_text(job: dict[str, Any]) -> str:
 
 def _fallback_signature(job: dict[str, Any]) -> str:
     store = str(job.get("store") or "da loja").strip()
-    return f"Equipe {store} agradece pelo contato, Precisando estamos a disposição!"
+    return f"A equipe {store} agradece o contato. Se precisar, estamos à disposição!"
 
 
 def _fallback_sanitize_text(value: Any, limit: int) -> str:

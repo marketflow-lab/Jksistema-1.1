@@ -2284,7 +2284,7 @@ def test_safe_fallback_addresses_compatibility_quantity_and_store_signature():
 
     assert "confirmacao final" in orchestrator._normal(draft)
     assert "quantidade do kit" in orchestrator._normal(draft)
-    assert "Equipe Uai Mineirinho agradece pelo contato, Precisando estamos a disposição!" in draft
+    assert "A equipe Uai Mineirinho agradece o contato. Se precisar, estamos à disposição!" in draft
     assert "esse ponto ainda nao esta confirmado" not in draft.lower()
 
 

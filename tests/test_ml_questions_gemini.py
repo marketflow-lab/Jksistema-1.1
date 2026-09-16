@@ -843,7 +843,7 @@ class MlQuestionsGeminiTests(unittest.TestCase):
             rules=SellerRules(store_name="Minha Loja"),
             search_results=[],
         )
-        self.assertIn("Equipe Minha Loja agradece pelo contato, Precisando estamos a disposição!", prompt)
+        self.assertIn("A equipe Minha Loja agradece o contato. Se precisar, estamos à disposição!", prompt)
         self.assertIn("Nunca se apresente como IA", prompt)
         self.assertIn("PERGUNTA_DO_COMPRADOR", prompt)
         self.assertIn("PRODUTO_DO_ANUNCIO", prompt)

@@ -144,6 +144,17 @@ def _normalized(value: object) -> str:
     return "".join(char for char in text if not unicodedata.combining(char))
 
 
+def _response_signature(source: Mapping[str, Any]) -> str:
+    context = source.get("context") if isinstance(source.get("context"), Mapping) else {}
+    explicit = _plain(context.get("assinatura_obrigatoria"))
+    if explicit:
+        return explicit[:400]
+    store = _plain(source.get("store") or source.get("loja"))[:160]
+    if store:
+        return f"A equipe {store} agradece o contato. Se precisar, estamos à disposição!"
+    return "A equipe da loja agradece o contato. Se precisar, estamos à disposição!"
+
+
 def _classification(agent_input: Mapping[str, Any]) -> dict[str, Any]:
     intent = agent_input.get("intent") if isinstance(agent_input.get("intent"), Mapping) else {}
     if not intent:
@@ -528,6 +539,7 @@ def build_sku_question_context(
     source = agent_input if isinstance(agent_input, Mapping) else {}
     metadata_dict = metadata if isinstance(metadata, Mapping) else {}
     classification = _classification(source)
+    response_signature = _response_signature(source)
     category = _category(source, metadata_dict)
     question = _question_projection(source)
     subquestions = _subquestions(source)
@@ -572,6 +584,7 @@ def build_sku_question_context(
         **({"catalog_document": catalog_document, "catalog_generation": catalog_generation} if catalog_document else {}),
         "guidance": guidance,
         "store_facts": {"product_condition": "new"},
+        "response_signature": response_signature,
         "operational_data": operational,
         "generation": generation,
         "source_hashes": source_hashes,
@@ -593,6 +606,7 @@ def build_sku_question_context(
         **({"catalog_document": catalog_document, "catalog_generation": catalog_generation} if catalog_document else {}),
         "guidance": guidance,
         "store_facts": {"product_condition": "new"},
+        "response_signature": response_signature,
         "operational_data": operational,
         "generation": generation,
         "source_hashes": source_hashes,

@@ -321,7 +321,7 @@ def _ia_agent_perguntas_violacoes_politica(contexto: dict) -> list[str]:
     if not pergunta_pede_preco and (re.search(r"\bR\$\s*\d", texto) or "O VALOR E" in texto_norm or "O PRECO E" in texto_norm):
         violacoes.append("respondeu preco sem o comprador perguntar")
     texto_norm_sem_assinatura = re.sub(
-        r"EQUIPE\s+.+?\s+AGRADECE\s+(?:(?:O\s+)?SEU\s+CONTATO\.?|PELO\s+CONTATO,\s*PRECISANDO\s+ESTAMOS\s+A\s+DISPOSICAO!)\s*$",
+        r"(?:A\s+)?EQUIPE\s+.+?\s+AGRADECE\s+(?:(?:O\s+)?SEU\s+CONTATO\.?|O\s+CONTATO\.\s*SE\s+PRECISAR,?\s*ESTAMOS\s+A\s+DISPOSICAO!|PELO\s+CONTATO,\s*PRECISANDO\s+ESTAMOS\s+A\s+DISPOSICAO!)\s*$",
         "",
         texto_norm,
         flags=re.IGNORECASE,
@@ -500,7 +500,7 @@ def _ia_agent_perguntas_exige_rascunho_insuficiente_seguro(
 
 def _perguntas_ia_seller_body(resposta: Any) -> str:
     return re.sub(
-        r"(?is)\s*Equipe\s+.+?\s+agradece\s+(?:(?:o\s+)?seu\s+contato\.?|pelo\s+contato,\s*Precisando\s+estamos\s+[àa]\s+disposi[cç][ãa]o!)\s*$",
+        r"(?is)\s*(?:A\s+)?Equipe\s+.+?\s+agradece\s+(?:(?:o\s+)?seu\s+contato\.?|o\s+contato\.\s*Se\s+precisar,?\s*estamos\s+[àa]\s+disposi[cç][ãa]o!|pelo\s+contato,\s*Precisando\s+estamos\s+[àa]\s+disposi[cç][ãa]o!)\s*$",
         "",
         str(resposta or ""),
     ).strip()

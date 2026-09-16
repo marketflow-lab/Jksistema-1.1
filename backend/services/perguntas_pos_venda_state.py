@@ -406,8 +406,8 @@ def _perguntas_ia_limpar_resposta(texto: str) -> str:
 def _perguntas_ia_assinatura_loja(loja: str) -> str:
     nome_loja = re.sub(r"\s+", " ", str(loja or "").strip())
     if nome_loja:
-        return f"Equipe {nome_loja} agradece pelo contato, Precisando estamos a disposição!"
-    return "Equipe da loja agradece pelo contato, Precisando estamos a disposição!"
+        return f"A equipe {nome_loja} agradece o contato. Se precisar, estamos à disposição!"
+    return "A equipe da loja agradece o contato. Se precisar, estamos à disposição!"
 
 
 def _perguntas_ia_remover_apresentacao_sistema(texto: str) -> str:

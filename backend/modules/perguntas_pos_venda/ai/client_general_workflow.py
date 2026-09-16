@@ -29,6 +29,7 @@ from .sku_question_context import (
     ROUTE_SIMPLE_OPERATIONAL,
     bind_client_sku_question_context,
     packet_tool_result,
+    _response_signature,
     with_document_references,
 )
 from .sku_question_prompts import simple_public_prompt
@@ -429,6 +430,22 @@ def _synthesize_general_answer(
             if isinstance(getattr(client, "sku_question_context", None), dict)
             else None
         ),
+        response_signature=_response_signature({
+            **(
+                client.agent_input
+                if isinstance(getattr(client, "agent_input", None), dict)
+                else {}
+            ),
+            "store": str(
+                (
+                    client.agent_input.get("store")
+                    if isinstance(getattr(client, "agent_input", None), dict)
+                    else ""
+                )
+                or getattr(client, "loja", "")
+                or ""
+            ),
+        }),
     )
     try:
         answer = hooks.preserve_technical_state(

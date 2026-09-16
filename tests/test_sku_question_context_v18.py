@@ -244,6 +244,52 @@ def test_store_product_condition_is_new_and_answers_used_question_without_web(qu
     assert "nao peca confirmacao" in prompt
 
 
+def test_public_prompts_receive_the_server_store_signature_exactly_once():
+    agent_input = _input("product_feature", "Qual conector acompanha?")
+    signature = "A equipe Loja Autenticada agradece o contato. Se precisar, estamos à disposição!"
+    agent_input["context"] = {"assinatura_obrigatoria": signature}
+    packet, _ = build_sku_question_context(
+        agent_input,
+        {"category": "product_feature"},
+        context_hub=_hub(),
+    )
+    simple = simple_public_prompt(packet)
+    resolution = technical_resolution_prompt(
+        normalize_technical_question_plan({}, fallback_questions=["Qual conector acompanha?"]),
+        packet,
+        round_number=1,
+        final=False,
+    )
+
+    assert packet["response_signature"] == signature
+    assert simple.count(signature) == 1
+    assert resolution.count(signature) == 1
+    assert "terminar exatamente uma vez" in simple
+    assert "Termine esse corpo exatamente uma vez" in resolution
+
+
+def test_public_signature_uses_bound_store_and_has_a_safe_empty_store_fallback():
+    packet, _ = build_sku_question_context(
+        _input("product_feature", "Qual conector acompanha?"),
+        {"category": "product_feature"},
+        context_hub=_hub(),
+    )
+    assert packet["response_signature"] == (
+        "A equipe JK Pecas agradece o contato. Se precisar, estamos à disposição!"
+    )
+
+    without_store = _input("product_feature", "Qual conector acompanha?")
+    without_store.pop("store")
+    fallback, _ = build_sku_question_context(
+        without_store,
+        {"category": "product_feature"},
+        context_hub=_hub(),
+    )
+    assert fallback["response_signature"] == (
+        "A equipe da loja agradece o contato. Se precisar, estamos à disposição!"
+    )
+
+
 def test_compatibility_originality_conflict_and_missing_evidence_are_high_risk():
     compatibility, _ = build_sku_question_context(
         _input("compatibility", "Serve na Honda ADV 160?"),

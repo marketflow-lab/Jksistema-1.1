@@ -98,6 +98,7 @@ def simple_public_prompt(packet: Mapping[str, Any], behavior_profile: Mapping[st
     """Build the single-turn public writer prompt from the integral envelope."""
 
     route = _plain(packet.get("route"))[:80]
+    signature = _plain(packet.get("response_signature"))[:400]
     policy = (
         "Use somente os fatos operacionais atuais solicitados. Nao transforme ausencia de campo em fato. "
         if route == ROUTE_SIMPLE_OPERATIONAL else
@@ -112,6 +113,7 @@ def simple_public_prompt(packet: Mapping[str, Any], behavior_profile: Mapping[st
         + policy
         + "Todos os produtos vendidos pela loja sao novos. Se o comprador perguntar se e usado ou qual a condicao, "
         "responda diretamente que o produto e novo e nao peca confirmacao. "
+        + f"O campo answer deve terminar exatamente uma vez com esta assinatura: {signature} "
         + "Nunca invente preco, estoque, prazo, envio, originalidade, garantia, codigo, medida, compatibilidade ou link. "
         "Escreva como vendedor cordial: responda primeiro a duvida com palavras simples, sem tom de laudo, "
         "parecer, relatorio ou lista de requisitos. Se faltar um dado, peca somente o detalhe decisivo em uma "

@@ -58,6 +58,6 @@ def test_prompts_preserve_candidate_bytes_inside_untrusted_json():
     assert "  Sim, serve.\\r\\nLinha dois ✅  " in review_prompt
     assert "  Sim, serve.\\r\\nLinha dois ✅  " in revision_prompt
     assert "UNTRUSTED_REFERENCE_DATA" in review_prompt
-    assert "assinatura de loja" in review_prompt
-    assert "Nao inclua assinatura no answer" in revision_prompt
-    assert "Equipe Loja agradece" not in revision_prompt
+    assert "assinatura obrigatoria da loja" in review_prompt
+    assert "Preserve exatamente uma vez" in revision_prompt
+    assert "assinatura da loja presente no candidato anterior" in revision_prompt

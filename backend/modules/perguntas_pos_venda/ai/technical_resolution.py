@@ -404,6 +404,7 @@ def technical_resolution_prompt(
     final: bool,
     previous: TechnicalResolutionV1 | None = None,
 ) -> str:
+    signature = _text(context.get("response_signature"), 400)
     final_instruction = (
         "Esta e a adjudicacao final em contexto isolado. Reavalie todo o material por conta propria; a rodada anterior e "
         "apenas uma hipotese consultiva e pode ser corrigida. Resolva explicitamente cada requirement antes da decisao final. "
@@ -429,8 +430,8 @@ def technical_resolution_prompt(
         "produto usado deve ser resolvida como produto novo, sem abrir lacuna ou pedir confirmacao. Resultado vazio ou falha de pesquisa nunca prova incompatibilidade. Nao "
         "invente fatos. O aplicativo preservara sua decisao factual e o commercial_state que voce adjudicar; validara somente "
         "a estrutura fechada do contrato, sem rebaixar ou reescrever a conclusao por regra deterministica. "
-        "Inclua contingency_answer_body como rascunho factual publicavel, sem CTA, sem assinatura e com no maximo tres frases "
-        "de conteudo; o aplicativo acrescentara a assinatura canonica fora do corpo. Esse corpo deve permanecer literal se a "
+        "Inclua contingency_answer_body como rascunho factual publicavel, sem CTA e com no maximo tres frases "
+        f"de conteudo antes da assinatura. Termine esse corpo exatamente uma vez com: {signature} Esse corpo deve permanecer literal se a "
         "redacao comercial falhar. Responda exclusivamente em JSON "
         f"no contrato {TECHNICAL_RESOLUTION_SCHEMA}, com round={round_number}, final={'true' if final else 'false'}, requirements, "
         "reference_relations, overall_decision, commercial_state, confidence, reason, gap_queries, contingency_answer_body e "

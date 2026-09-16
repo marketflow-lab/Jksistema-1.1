@@ -50,11 +50,11 @@ def test_public_question_reply_preserves_existing_signature_without_editing(monk
         _favoritos_normalizar_sem_acentos,
         raising=False,
     )
-    signature = "Equipe JK Peças agradece pelo contato, Precisando estamos a disposição!"
+    signature = "A equipe JK Peças agradece o contato. Se precisar, estamos à disposição!"
 
     assert state._perguntas_ia_assinatura_loja("  JK   Peças ") == signature
     assert state._perguntas_ia_assinatura_loja("") == (
-        "Equipe da loja agradece pelo contato, Precisando estamos a disposição!"
+        "A equipe da loja agradece o contato. Se precisar, estamos à disposição!"
     )
     answer = state._perguntas_ia_resposta_final_loja(
         f"Serve para a aplicação informada.\n\n{signature}",
@@ -72,7 +72,7 @@ def test_public_question_reply_preserves_existing_signature_without_editing(monk
 
 
 def test_public_question_signature_detection_preserves_body_bytes_and_trailing_whitespace():
-    signature = "Equipe JK Pecas agradece pelo contato, Precisando estamos a disposição!"
+    signature = "A equipe JK Pecas agradece o contato. Se precisar, estamos à disposição!"
     literal = f"  Corpo com espaços.  \n\n{signature}  \n"
 
     assert state._perguntas_ia_resposta_final_loja(literal, "JK Pecas") == literal
