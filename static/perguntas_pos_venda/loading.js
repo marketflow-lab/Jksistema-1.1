@@ -256,9 +256,10 @@
     }
     function statusText(pager, completed = pager.stores.length) {
         const failed = pager.stores.filter(s => s.error).length;
+        const successful = Math.max(0, completed - failed);
         const stale = pager.stores.some(s => s.stale);
         const limited = pager.stores.some(s => s.limited);
-        return [completed < pager.stores.length ? `Lista parcial: ${completed}/${pager.stores.length} lojas consultadas.` : '',
+        return [completed < pager.stores.length ? `Lista parcial: ${completed}/${pager.stores.length} tentativas concluídas; ${successful} conta(s) consultada(s).` : '',
             failed ? `${failed} loja(s) indisponível(is); resultados parciais.` : '',
             stale ? 'Dados anteriores; atualizando em segundo plano.' : '', limited ? 'Limite de paginação do Mercado Livre atingido.' : ''].filter(Boolean).join(' ');
     }
@@ -274,8 +275,11 @@
             ? Math.min(pager.total, pager.pages.flat().length) : pager.total;
         const summary = {};
         pager.stores.forEach(s => Object.entries(s.summary).forEach(([k, v]) => { summary[k] = (summary[k] || 0) + Number(v || 0); }));
+        const errors = pager.stores.filter(s => s.error);
+        const failed = errors.length;
         renderizarResumo({ modo_todas: todasAsLojasSelecionadas(), total: pager.total, retornadas: questions.length, status_resumo: summary,
-            lojas_consultadas: completed, erros: pager.stores.filter(s => s.error), tempo_resposta_ml: pager.metrics });
+            lojas_consultadas: Math.max(0, completed - failed), tentativas_concluidas: completed,
+            erros: errors, tempo_resposta_ml: pager.metrics });
         renderizarPerguntas();
         restaurarInteracaoPerguntas(drafts.get(state.perguntaSelecionadaKey));
         perguntasStatus.textContent = statusText(pager, completed) + (pager.pending ? ' Novas perguntas disponíveis. Clique em Atualizar.' : '');

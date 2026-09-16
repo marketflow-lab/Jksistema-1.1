@@ -12,7 +12,8 @@ from backend.modules.perguntas_pos_venda.endpoints.state import ENDPOINTS_STATE
 DEPENDENCY_GROUPS: Mapping[str, frozenset[str]] = MappingProxyType({
     "tenant": frozenset({"get_tenant_id", "get_tenant_path"}),
     "stores": frozenset({
-        "carregar_lojas", "_integracoes_nome_normalizado", "_obter_cfg_ml", "_ml_oauth_status",
+        "carregar_lojas", "carregar_lojas_snapshot", "_integracoes_nome_normalizado",
+        "_ml_cfg_com_store_id_context", "_obter_cfg_ml", "_ml_oauth_status",
         "_perguntas_loja_config_normalizar", "_perguntas_loja_config_obter",
         "_perguntas_loja_config_salvar", "_perguntas_loja_configs_carregar",
     }),

@@ -49,9 +49,10 @@ def clean_cache():
 @pytest.fixture
 def env(monkeypatch):
     state = SimpleNamespace(rows=[store()], calls=[], handler=None)
-    monkeypatch.setattr(support, "carregar_lojas", lambda tenant: copy.deepcopy(state.rows))
+    monkeypatch.setattr(support, "carregar_lojas_snapshot", lambda tenant: copy.deepcopy(state.rows))
     monkeypatch.setattr(support, "_ml_oauth_status", lambda cfg: {"conectado": bool(cfg and cfg.get("access_token"))})
-    monkeypatch.setattr(support, "_obter_cfg_ml", lambda tenant, name, store_id=None: {"_store_id_context": store_id})
+    monkeypatch.setattr(support, "_ml_cfg_com_store_id_context",
+                        lambda cfg, store_id: {**cfg, "_store_id_context": store_id})
     monkeypatch.setattr(support, "_ml_perguntas_normalizar", lambda q, items, users: {
         **copy.deepcopy(q), "buyer_id": (q.get("from") or {}).get("id"), "item_title": ""})
     monkeypatch.setattr(support, "_ml_perguntas_resumir_status", lambda rows: {"unanswered": len(rows)})

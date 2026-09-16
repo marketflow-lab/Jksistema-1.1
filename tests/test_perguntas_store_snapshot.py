@@ -69,11 +69,39 @@ def test_store_cards_do_not_wait_for_catalog_held_by_another_thread_and_real_wri
             cards = listing.read_store_cards("tenant-" + suffix)
             assert time.perf_counter() - start < 0.5
             assert cards["lojas"][0]["store_id"] == "store-" + suffix
+            start = time.perf_counter()
+            canonical = integracoes.carregar_lojas_snapshot("tenant-" + suffix)
+            assert time.perf_counter() - start < 0.5
+            assert canonical[0]["integracoes"]["mercadolivre"]["access_token"] == "fixture-access"
         assert not finished.is_set()
     worker.join(timeout=5)
     assert not worker.is_alive()
     assert not failures
     assert listing.read_store_cards("tenant-a")["lojas"][0]["nome"] == "Loja atualizada"
+
+
+def test_credential_snapshot_rejects_unpublished_identity_and_accepts_same_identity_refresh(tenants):
+    tenant = tenants / "tenant-a"
+    current = _store("a")
+    current["integracoes"]["mercadolivre"]["access_token"] = "refreshed-access"
+    (tenant / "lojas_config.json").write_text(json.dumps([current]), encoding="utf-8")
+
+    refreshed = integracoes.carregar_lojas_snapshot("tenant-a")
+    assert refreshed[0]["integracoes"]["mercadolivre"]["access_token"] == "refreshed-access"
+
+    changed = copy.deepcopy(current)
+    changed["integracoes"]["mercadolivre"]["user_id"] = "different-seller"
+    (tenant / "lojas_config.json").write_text(json.dumps([changed]), encoding="utf-8")
+    assert integracoes.carregar_lojas_snapshot("tenant-a") == []
+
+    changed_site = copy.deepcopy(current)
+    changed_site["integracoes"]["mercadolivre"]["site_id"] = "MLA"
+    (tenant / "lojas_config.json").write_text(json.dumps([changed_site]), encoding="utf-8")
+    assert integracoes.carregar_lojas_snapshot("tenant-a") == []
+
+    (tenant / "lojas_config.json").write_text(json.dumps([changed]), encoding="utf-8")
+    projection.write_snapshot(tenant, projection.build_snapshot([changed]))
+    assert integracoes.carregar_lojas_snapshot("tenant-a")[0]["integracoes"]["mercadolivre"]["user_id"] == "different-seller"
 
 
 def _http_client(monkeypatch, configs=None):

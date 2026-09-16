@@ -261,6 +261,7 @@ from backend.services.integracoes import (
     atualizar_api_loja,
     buscar_loja,
     carregar_lojas,
+    carregar_lojas_snapshot,
     configure_integracoes_context,
     desconectar_api_loja,
     ler_temp_auth,

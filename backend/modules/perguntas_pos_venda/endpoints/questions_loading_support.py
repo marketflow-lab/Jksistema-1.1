@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from contextlib import contextmanager
 from typing import Any
 from email.utils import parsedate_to_datetime
@@ -66,8 +66,8 @@ def component(error=None, **extra):
         result["retry_after"] = int(headers["Retry-After"])
     return result
 
-carregar_lojas = runtime_adapter("carregar_lojas")
-_obter_cfg_ml = runtime_adapter("_obter_cfg_ml")
+carregar_lojas_snapshot = runtime_adapter("carregar_lojas_snapshot")
+_ml_cfg_com_store_id_context = runtime_adapter("_ml_cfg_com_store_id_context")
 _ml_oauth_status = runtime_adapter("_ml_oauth_status")
 _ml_api_request = runtime_adapter("_ml_api_request")
 _ml_perguntas_normalizar = runtime_adapter("_ml_perguntas_normalizar")
@@ -82,6 +82,7 @@ class Scope:
     seller_id: str
     site_id: str
     name: str
+    config: dict = field(repr=False, compare=False, default_factory=dict)
 
     def key(self, kind: str, *parameters: Any) -> tuple:
         return (self.client_id, self.store_id, self.username, self.seller_id,
@@ -94,7 +95,7 @@ def authorized_stores(request: Request, client_id: str) -> list[dict]:
     if not username or authenticated_tenant != client_id:
         raise loading_error(401, "Sessao autenticada necessaria para consultar perguntas.", scope="session", code="session_invalid")
     with read_budget(seconds=15):
-        return [row for row in (carregar_lojas(client_id) or []) if isinstance(row, dict)]
+        return [row for row in (carregar_lojas_snapshot(client_id) or []) if isinstance(row, dict)]
 
 
 def resolve_scope(request: Request, client_id: str, store_id: str, *, rows=None, resolve_site=True) -> Scope:
@@ -116,7 +117,7 @@ def resolve_scope(request: Request, client_id: str, store_id: str, *, rows=None,
         raise HTTPException(409, "A loja ainda nao possui seller_id confirmado.")
     scope = Scope(client_id, exact, str(request.state.username), seller,
                   str(cfg.get("site_id") or row.get("site_id") or "").strip(),
-                  str(row.get("nome") or "").strip())
+                  str(row.get("nome") or "").strip(), dict(cfg))
     if scope.site_id or not resolve_site:
         return scope
     return replace(scope, site_id=resolve_seller_site(scope))
@@ -144,14 +145,14 @@ def config_for(scope: Scope, request: Request) -> dict:
 
 
 def _store_config(scope: Scope) -> dict:
-    try:
-        return _obter_cfg_ml(scope.client_id, scope.name, store_id=scope.store_id)
-    except HTTPException as error:
-        if error.status_code in {401, 403}:
-            cache._discard_scope((scope.client_id, scope.store_id))
-            raise loading_error(error.status_code, "Reconecte esta loja ao Mercado Livre.",
-                                scope="store", code="store_disconnected") from error
-        raise
+    cfg = dict(scope.config or {})
+    cfg["app_id"] = cfg.get("app_id") or cfg.get("id") or cfg.get("client_id")
+    cfg["client_secret"] = cfg.get("client_secret") or cfg.get("secret")
+    if not cfg.get("access_token"):
+        cache._discard_scope((scope.client_id, scope.store_id))
+        raise loading_error(401, "Reconecte esta loja ao Mercado Livre.",
+                            scope="store", code="store_disconnected")
+    return _ml_cfg_com_store_id_context(cfg, scope.store_id)
 
 
 def remote(scope: Scope, cfg: dict, path: str, *, params=None) -> Any:

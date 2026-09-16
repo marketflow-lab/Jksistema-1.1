@@ -2239,8 +2239,78 @@ def carregar_lojas(client_id: str):
 
 
 def carregar_lojas_snapshot(client_id: str):
-    """Compatibility reader for canonical consumers; not used by store cards."""
-    return carregar_lojas(client_id)
+    """Read the last published store identities without waiting for writers.
+
+    The public projection is the authorization boundary.  The canonical JSON is
+    replaced atomically, so intersecting both generations can expose an already
+    published store with its current credentials while a longer catalog/store
+    transaction is still holding the business mutex.  New or identity-changed
+    stores remain unavailable until their public generation is published.
+    """
+    from backend.services.central_accounts_client import current, session_expired
+
+    central = current(client_id)
+    if central is not None:
+        if central.expires_at <= time.time():
+            raise session_expired()
+        return central.stores()
+
+    from backend.services.store_listing_service import read_store_cards
+
+    public_rows = read_store_cards(client_id).get("lojas") or []
+    canonical_path = os.path.join(_tenant_path(client_id), "lojas_config.json")
+    deadline = time.monotonic() + 0.05
+    while True:
+        try:
+            canonical_rows = _integracoes_ler_lojas_config_arquivo(canonical_path)
+            _integracoes_validar_identidades_lojas_local(canonical_rows)
+            break
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "stores_snapshot_credentials_unavailable",
+                        "message": "A configuracao das lojas esta sendo atualizada.",
+                    },
+                    headers={"Retry-After": "2"},
+                ) from None
+            time.sleep(0.001)
+        except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError):
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "stores_snapshot_credentials_unavailable",
+                    "message": "A configuracao das lojas ainda nao esta disponivel.",
+                },
+                headers={"Retry-After": "2"},
+            ) from None
+
+    published = {
+        str(row.get("store_id") or "").strip(): row
+        for row in public_rows
+        if isinstance(row, dict) and str(row.get("store_id") or "").strip()
+    }
+    authorized = []
+    for row in canonical_rows:
+        store_id = str(row.get("store_id") or "").strip()
+        public = published.get(store_id)
+        if public is None:
+            continue
+        integrations = row.get("integracoes") or {}
+        if not isinstance(integrations, dict):
+            continue
+        cfg = integrations.get("mercadolivre") or {}
+        if not isinstance(cfg, dict):
+            continue
+        seller_id = str(cfg.get("user_id") or "").strip()
+        site_id = str(cfg.get("site_id") or row.get("site_id") or "").strip()
+        if seller_id != str(public.get("seller_id") or "").strip():
+            continue
+        if site_id != str(public.get("site_id") or "").strip():
+            continue
+        authorized.append(row)
+    return authorized
 
 
 def salvar_lojas(

@@ -131,6 +131,11 @@ async function main() {
     if (baseline) assert(slow.end, 'baseline espera pela loja lenta');
     else assert(!slow?.end, 'primeira lista deve aparecer antes da loja lenta');
     await page.waitForFunction(() => !state.carregandoPerguntas);
+    if (!baseline) {
+      const summaryText = await page.locator('#perguntas-summary').innerText();
+      assert.match(summaryText, /10\s*Contas/, 'contas deve somar somente consultas bem-sucedidas');
+      assert.match(summaryText, /1\s*Erros/, 'falha deve permanecer visível separadamente');
+    }
     await delay(1100);
     const initialCalls = calls.filter(c => c.path === '/api/mercadolivre/perguntas' || c.path.endsWith('/perguntas/lista') || c.path.endsWith('/perguntas/resumo')).length;
     const page1 = await page.evaluate(() => state.perguntas.map(p => p.id));
