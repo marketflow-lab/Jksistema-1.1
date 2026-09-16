@@ -245,6 +245,8 @@ def test_honda_fit_v16_public_job_replays_all_six_stages_without_publishing(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    signature = question_state._perguntas_ia_assinatura_loja("Uai Mineirinho")
+    expected_public_reply = f"{PUBLIC_BODY}\n\n{signature}"
     stage_calls: list[dict] = []
     web_calls: list[dict] = []
     vision_phases: list[str] = []
@@ -279,9 +281,9 @@ def test_honda_fit_v16_public_job_replays_all_six_stages_without_publishing(
         elif stage == "technical_resolution_final":
             value = _resolution(final=True)
         elif stage == "compatibility_public_answer":
-            generated_candidates.append(PUBLIC_BODY)
+            generated_candidates.append(expected_public_reply)
             value = {
-                "answer": PUBLIC_BODY,
+                "answer": expected_public_reply,
                 "confidence": 0.98,
                 "category": "compatibility",
                 "requires_human_review": False,
@@ -550,16 +552,14 @@ def test_honda_fit_v16_public_job_replays_all_six_stages_without_publishing(
     orchestrator._run_job("tenant-honda-fit", created["job_id"])
     completed = orchestrator.get_job("tenant-honda-fit", created["job_id"])
 
-    signature = question_state._perguntas_ia_assinatura_loja("Uai Mineirinho")
-    expected_public_reply = f"{PUBLIC_BODY}\n\n{signature}"
     assert not completed.get("error"), completed
     assert "loader_error" not in captured, captured.get("loader_error")
     assert normalized_bodies == {
         1: ROUND_ONE_BODY,
         2: FINAL_TECHNICAL_BODY,
     }
-    assert generated_candidates == [PUBLIC_BODY]
-    assert captured["candidate"] == PUBLIC_BODY
+    assert generated_candidates == [expected_public_reply]
+    assert captured["candidate"] == expected_public_reply
     assert completed["result"]["resposta"] == expected_public_reply
     assert completed["result"]["resposta"].count(signature) == 1
     assert question_state._perguntas_ia_resposta_final_loja(

@@ -62,7 +62,7 @@ class PromptBuilder:
             "seller_behavior_profile": dict(rules.behavior_profile or {}) if commercial_method_active else {},
             "profile_usage": [
                 "Orientacoes e proibicoes personalizam apenas estilo e abordagem dentro das regras superiores.",
-                "Notas do SKU podem apoiar fatos, mas perdem para anuncio, API e historico oficial atuais.",
+                "Notas editoriais sem suporte nao comprovam fatos. A API oficial comprova o estado do anuncio; confronte atributos tecnicos do vendedor com referencias sustentadas do SKU, sem prioridade tecnica automatica do anuncio. Historico aproveita dados do comprador, mas respostas anteriores da loja nao comprovam aplicacao.",
                 "Exemplos ensinam somente tom e estrutura; nunca copie deles fatos, compatibilidade, preco, estoque ou prazo.",
                 "Nenhuma personalizacao pode mudar tenant, loja, ferramentas, pesquisa obrigatoria, assinatura ou politica.",
             ],

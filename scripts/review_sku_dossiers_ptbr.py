@@ -17,12 +17,23 @@ import re
 import sys
 import unicodedata
 from collections import defaultdict
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 
 SCHEMA_VERSION = 2
+SKU_232_2_OEM_OBSERVATION = (
+    "Referências de aplicação do par preto: 51427281465, traseiro esquerdo; "
+    "51427281466, traseiro direito. As referências não afirmam que a reposição "
+    "seja uma peça original BMW."
+)
+SKU_232_2_APPLICATION_OBSERVATION = (
+    "Aplicação por geração: F30 sedã e F31 Touring, antes e depois da "
+    "reestilização (LCI), incluindo a 318d F31 anterior à reestilização. "
+    "Não extrapolar para outras gerações a partir do nome 318d."
+)
 # O SKU permanece no cadastro comercial, mas não deve possuir dossiê publicado.
 EXCLUDED_DOSSIER_SKUS = {"395"}
 
@@ -188,7 +199,7 @@ OEM_FINAL_OVERRIDES = {
     "237": ["A2229003300", "1307329315"],
     "240": ["A2189009303", "A1668203589"],
     "232-1": ["51417279316", "51417279315"],
-    "232-2": ["51427281465"],
+    "232-2": ["51427281465", "51427281466"],
     "232-5": ["51417279316", "51417279315"],
     "254-1": ["LR057235", "LR044427", "LR026192"],
     "272-K4": [],
@@ -283,7 +294,9 @@ OEM_FINAL_OVERRIDES = {
 # A lista final funciona como base curada, mas uma pesquisa marcada como
 # autoritativa pode substituí-la. Assim, uma nova confirmação técnica não fica
 # bloqueada por um override antigo.
-OEM_FINAL_SUPERSEDES_RESEARCH: set[str] = set()
+# A correção do par traseiro preto substitui relatórios antigos que misturavam
+# códigos dianteiros e traseiros ou cores distintas no mesmo anúncio.
+OEM_FINAL_SUPERSEDES_RESEARCH: set[str] = {"232-2"}
 
 FINAL_TECHNICAL_OVERRIDES = {
     "27-1": ["Material: plástico técnico reforçado com fibra de carbono.", "Cor: preta."],
@@ -734,10 +747,14 @@ FINAL_VEHICLE_OVERRIDES = {
         {"marca": "BMW", "modelo": "440", "anos": ["2014 a 2017"]},
     ],
     "232-2": [
-        {"marca": "BMW", "modelo": "Série 3 F30", "anos": ["2011 a 2015"]},
-        {"marca": "BMW", "modelo": "Série 3 F30 reestilizada", "anos": ["2014 a 2018"]},
-        {"marca": "BMW", "modelo": "Série 3 F31", "anos": ["2011 a 2015"]},
-        {"marca": "BMW", "modelo": "Série 3 F31 reestilizada", "anos": ["2014 a 2019"]},
+        {"marca": "BMW", "modelo": "Série 3 F30 sedã", "anos": []},
+        {"marca": "BMW", "modelo": "Série 3 F30 LCI sedã", "anos": []},
+        {"marca": "BMW", "modelo": "Série 3 F31 Touring", "anos": []},
+        {"marca": "BMW", "modelo": "Série 3 F31 LCI Touring", "anos": []},
+        {"marca": "BMW", "modelo": "318d F30 sedã", "anos": []},
+        {"marca": "BMW", "modelo": "318d F30 LCI sedã", "anos": []},
+        {"marca": "BMW", "modelo": "318d F31 Touring", "anos": []},
+        {"marca": "BMW", "modelo": "318d F31 LCI Touring", "anos": []},
     ],
     "232-6": [
         {"marca": "BMW", "modelo": "Série 3 F30", "anos": ["2011 a 2015"]},
@@ -3532,9 +3549,83 @@ def _build_clean_dossier(
         },
         "atualizado_em": datetime.now(timezone.utc).isoformat(),
     }
+    if sku == "232-2":
+        dossier = repair_sku_232_2_dossier(dossier)
     if _contains_source_fields(dossier):
         raise ValueError(f"SKU {sku}: campo de fonte ou URL encontrado no arquivo final")
     return dossier
+
+
+def repair_sku_232_2_dossier(
+    dossier: dict[str, Any], *, updated_at: str | None = None,
+) -> dict[str, Any]:
+    """Return the targeted correction without rebuilding unrelated SKU data.
+
+    The caller must validate tenant/store/listing identity before persisting it.
+    Unknown metadata and other vehicle models remain intact. An optional timestamp
+    is applied only when the correction changes the existing document.
+    """
+    if dossier.get("sku") != "232-2":
+        raise ValueError("Correção restrita ao SKU 232-2")
+
+    def append_review_note(section: dict[str, Any], note: str) -> str:
+        existing = section.get("observação")
+        if existing is None or existing == "":
+            return note
+        if not isinstance(existing, str):
+            raise ValueError("Observação existente deve ser texto para preservar a curadoria")
+        return existing if note in existing else f"{existing}\n\n{note}"
+
+    corrected = deepcopy(dossier)
+    oem = corrected.setdefault("oem", {})
+    oem.update({
+        "status": "documentado",
+        "códigos": list(OEM_FINAL_OVERRIDES["232-2"]),
+        "observação": append_review_note(oem, SKU_232_2_OEM_OBSERVATION),
+    })
+    application = corrected.setdefault("aplicação", {})
+    vehicles = application.setdefault("veículos_compatíveis", {})
+    retained = []
+    reviewed_vehicles = _merge_vehicle_rows(FINAL_VEHICLE_OVERRIDES["232-2"], sku="232-2")
+    reviewed_by_model = {_fold(row["modelo"]): row for row in reviewed_vehicles}
+    existing_by_model: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for vehicle in vehicles.get("itens") or []:
+        model = _fold(vehicle.get("modelo"))
+        generation_match = (
+            _fold(vehicle.get("marca")) == "bmw"
+            and re.fullmatch(
+                r"(?P<model>serie 3|318d) (?P<generation>f3[01])"
+                r"(?P<suffix>(?: (?:lci|reestilizada|seda|touring))*)",
+                model,
+            )
+        )
+        if not generation_match:
+            retained.append(vehicle)
+            continue
+        generation = generation_match.group("generation")
+        lci = bool(re.search(r"\b(?:lci|reestilizada)\b", generation_match.group("suffix")))
+        body = "seda" if generation == "f30" else "touring"
+        canonical_key = f"{generation_match.group('model')} {generation}{' lci' if lci else ''} {body}"
+        # Preserve restrictions and arbitrary row metadata. Distinct conditional
+        # applications must not be collapsed into one unconditional model entry.
+        vehicle["modelo"] = reviewed_by_model[canonical_key]["modelo"]
+        vehicle["anos"] = []
+        existing_by_model[canonical_key].append(vehicle)
+    corrected_vehicles = [
+        row
+        for reviewed in reviewed_vehicles
+        for row in (existing_by_model.get(_fold(reviewed["modelo"])) or [reviewed])
+    ]
+    vehicles.update({
+        "status": "documentado",
+        "itens": [*corrected_vehicles, *retained],
+        "observação": append_review_note(vehicles, SKU_232_2_APPLICATION_OBSERVATION),
+    })
+    if isinstance(corrected.get("revisão"), dict):
+        corrected["revisão"]["anos_exibidos_em_cada_modelo"] = False
+    if corrected != dossier and updated_at is not None:
+        corrected["atualizado_em"] = updated_at
+    return corrected
 
 
 def _format_research_value(value: Any) -> str:

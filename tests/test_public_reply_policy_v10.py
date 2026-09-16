@@ -7,7 +7,7 @@ import pytest
 
 from backend.modules.perguntas_pos_venda.ai.client_compatibility_workflow import compatibility_prompt
 from backend.modules.perguntas_pos_venda.ai.clients import _PerguntasVertexGeminiV2Client
-from backend.modules.perguntas_pos_venda.ai.factual_critic import factual_revision_prompt
+from backend.modules.perguntas_pos_venda.ai.factual_critic import factual_review_prompt, factual_revision_prompt
 from backend.modules.perguntas_pos_venda.ai.general_commercial import _general_fit_evaluation_prompt, _general_research_final_prompt
 from backend.modules.perguntas_pos_venda.ai.sku_question_context import (
     ROUTE_SIMPLE_FACTUAL,
@@ -17,6 +17,8 @@ from backend.modules.perguntas_pos_venda.ai.sku_question_context import (
 from backend.modules.perguntas_pos_venda.ai.sku_question_prompts import simple_public_prompt
 from backend.modules.perguntas_pos_venda.ai.technical_resolution import (
     normalize_technical_question_plan,
+    technical_evidence_graph_prompt,
+    technical_question_plan_prompt,
     technical_resolution_prompt,
 )
 from backend.modules.perguntas_pos_venda.ai import execution, tools
@@ -150,7 +152,7 @@ def test_cloud_writer_fallback_observes_same_public_post_sale_boundary(route):
     assert (PUBLIC_REPLY_EVIDENCE_GUIDANCE in prompt) is (route != "pos_venda")
 
 
-@pytest.mark.parametrize("decision", ["insufficient", "yes", "no"])
+@pytest.mark.parametrize("decision", ["insufficient", "conditional", "yes", "no"])
 def test_final_compatibility_model_call_receives_guidance_and_preserves_decision_signature_and_alternative(decision):
     calls = []
     final = AIAnswer(answer="Resposta literal. " + SIGNATURE, confidence=0.9, requires_human_review=False, reason="ok", raw=None)
@@ -184,6 +186,8 @@ def test_final_compatibility_model_call_receives_guidance_and_preserves_decision
     assert metadata["category"] == "compatibility_public"
     assert kwargs["stage"] == "compatibility_public_answer"
     assert kwargs["tool_results"] == [alternative]
+    if decision == "conditional":
+        assert "trate o estado como partial e nao incentive a compra" in prompt
 
 
 @pytest.mark.parametrize("integral", [False, True])
@@ -204,3 +208,91 @@ def test_factual_revision_retains_guidance_and_preserves_candidate_as_untrusted_
     assert candidate in prompt
     assert "preserved_candidate" in prompt
     assert "assinatura da loja presente no candidato anterior" in prompt
+
+
+def test_v11_prompt_contract_distinguishes_listing_state_part_identity_and_fitment():
+    policy = PUBLIC_REPLY_EVIDENCE_GUIDANCE
+    assert "PUBLICAS v11" in policy
+    assert "A API oficial do Mercado Livre comprova o conteudo e o estado atual do anuncio" in policy
+    assert "atributos tecnicos preenchidos pelo vendedor nao se tornam confirmacao do fabricante" in policy
+    assert "Verifique separadamente dois vinculos" in policy
+    assert "SKU e variacao para a peca ou referencia efetivamente vendida" in policy
+    assert "Um catalogo OEM que confirma a aplicacao de um codigo nao comprova sozinho" in policy
+    assert "Fotos, semelhanca de titulo e respostas anteriores da loja, isoladamente" in policy
+    assert "posicao dianteira/traseira, lado, cor e variacao de cada codigo" in policy
+    assert "nao mantenha insufficient apenas porque o anuncio ainda contem o erro" in policy
+    assert "Se a identidade da peca continuar incerta, mantenha insufficient" in policy
+    assert "Nao solicite codigo original quando esses dados ja resolvem a lacuna" in policy
+    assert "Nao transfira ao comprador o conflito do cadastro" in policy
+    assert "cliente, loja, seller, site e SKU exatos" in policy
+
+
+@pytest.mark.parametrize("integral", [False, True], ids=["legacy", "sku-context"])
+def test_internal_identity_gap_guidance_reaches_resolver_and_writer_without_forcing_a_question(integral):
+    question = "Serve na BMW 318d F31 Touring 2013?"
+    packet = {**_packet(), "question": {"text": question}} if integral else {}
+    decision = {"decision": "insufficient", "reason": "missing_sku_reference_link"}
+    literal = "Ainda não é possível confirmar a aplicação deste par. " + SIGNATURE
+    final = AIAnswer(answer=literal, category="compatibility", requires_human_review=False)
+    writer_prompts = []
+    def capture(prompt, *_args, **_kwargs):
+        writer_prompts.append(prompt)
+        return final
+    client = SimpleNamespace(
+        compatibility_analysis=decision, agent_input={"question": {"text": question}},
+        sku_question_context=packet, loja="Loja Teste", _technical_resolution_final={
+            "overall_decision": "insufficient", "reason": "missing_sku_reference_link",
+        }, _technical_evidence_graph={}, _call_model=capture,
+    )
+    plan = normalize_technical_question_plan({}, fallback_questions=[question])
+    resolver_prompt = technical_resolution_prompt(
+        plan, packet or {"question": {"text": question}, "response_signature": SIGNATURE},
+        round_number=2, final=True,
+    )
+    result = _PerguntasVertexGeminiV2Client._generate_public_compatibility_answer(
+        client, {"category": "compatibility"}, technical=final, alternative={},
+    )
+    assert len(writer_prompts) == 1
+    for prompt in (resolver_prompt, writer_prompts[0]):
+        assert "somente se uma informacao do comprador resolver a lacuna" in prompt
+        assert "nem transfira ao comprador a tarefa de identificar o estoque" in prompt
+        assert "preserve os demais fatos conhecidos e nao invente pergunta" in prompt
+        assert "a resposta realmente resolver uma lacuna dele" in prompt
+    assert result is final
+    assert result.answer == literal
+    assert "?" not in result.answer
+
+
+@pytest.mark.parametrize("integral", [False, True], ids=["legacy", "sku-context"])
+def test_planner_and_critic_apply_two_links_before_generation_or_review(integral):
+    context = _packet() if integral else {"question": {"text": QUESTION}}
+    planner = technical_question_plan_prompt(context)
+    graph = technical_evidence_graph_prompt(normalize_technical_question_plan({}), context)
+    critic = factual_review_prompt(
+        candidate_body="Falta o codigo original porque o cadastro diverge.",
+        technical_resolution={"overall_decision": "conditional"}, research={},
+    )
+    assert "SKU/variacao e peca/referencia vendida" in planner
+    assert "comprovacao da aplicacao dessa referencia no alvo" in planner
+    assert "posicao, lado, cor e variacao" in planner
+    assert "nao abra lacuna de codigo original" in planner
+    assert "aproveite esses dados quando ja constarem do historico" in planner
+    assert "ligacao do SKU/variacao com a peca/referencia" in graph
+    assert "ligacao dessa referencia com o alvo" in graph
+    assert "posicao, lado, cor e variacao dos codigos" in graph
+    assert "SKU/variacao -> peca/referencia vendida" in critic
+    assert "referencia -> alvo" in critic
+    assert "divergencia ja resolvida pelas evidencias" in critic
+    assert "pedir codigo original quando somente geracao ou ano/carroceria" in critic
+
+
+def test_v11_hash_rejects_cached_v10_draft_without_changing_public_contracts():
+    from backend.services import perguntas_pos_venda_codex as codex
+
+    current = {
+        "prompt_version": "jk_ml_customer_reply_codex_v18", "schema_version": "5.2",
+        "queue_policy_version": "jk_ppv_queue_v3", "prompt_hash": codex.PROMPT_HASH,
+    }
+    assert codex._job_contract_current(current)
+    prior_policy = {**current, "prompt_hash": "2318e116d6ca5dcf8e9586362718389c2632ea213130c4858f8fc37006e27660"}
+    assert not codex._job_contract_current(prior_policy)

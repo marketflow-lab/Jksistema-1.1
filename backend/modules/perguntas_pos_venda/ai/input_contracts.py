@@ -28,7 +28,7 @@ CONTEXT_COLLECTION_PIPELINE = (
     (
         8,
         "question_focused_web_research",
-        "Pesquisar dados tecnicos quando houver compatibilidade, originalidade, conflito, evidencia vencida ou campo tecnico decisivo ausente. Para cancelamento, reembolso, devolucao ou procedimentos da plataforma, consultar separadamente diretrizes oficiais atuais do Mercado Livre antes de redigir.",
+        "Pesquisar dados tecnicos quando houver compatibilidade, originalidade, conflito, evidencia vencida ou campo tecnico decisivo ausente; priorizar campos ainda necessarios e distinguir o vinculo SKU/peca da aplicacao da referencia no alvo. Para cancelamento, reembolso, devolucao ou procedimentos da plataforma, consultar separadamente diretrizes oficiais atuais do Mercado Livre antes de redigir.",
     ),
     (
         9,

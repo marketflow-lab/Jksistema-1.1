@@ -6,6 +6,163 @@ import pytest
 from scripts import review_sku_dossiers_ptbr as reviewer
 
 
+def test_sku_232_2_regeneration_rejects_mixed_codes_and_unverified_year_ranges():
+    contaminated_codes = ["51417279312", "51427281465", "51427281469", "51427281470"]
+    dossier = reviewer._build_clean_dossier(
+        {
+            "sku": "232-2",
+            "produto_bling": "Par puxador porta traseira BMW preto",
+            "descricao": "Posição: portas dianteiras. BMW 318d 2011 a 2015.",
+            "categoria": "Autopeças",
+        },
+        {"produto": {"oem": {"codigos": [
+            {"codigo": code, "fontes": ["anuncio:MLB2781314798"]}
+            for code in contaminated_codes
+        ]}}},
+        {"232-2": {
+            "_oem_pesquisa_autoritativo": True,
+            "oem": contaminated_codes,
+            "características_técnicas": ["Cor: bege.", "Posição: dianteira."],
+            "veículos_compatíveis": [
+                {"marca": "BMW", "modelo": "318d F31", "anos": ["2014 a 2019"]}
+            ],
+        }},
+        [],
+    )
+
+    assert dossier["oem"]["códigos"] == ["51427281465", "51427281466"]
+    assert "traseiro esquerdo" in dossier["oem"]["observação"]
+    assert "traseiro direito" in dossier["oem"]["observação"]
+    assert "não afirmam" in dossier["oem"]["observação"]
+    technical = dossier["características_técnicas"]["itens"]
+    assert "Cor: preta." in technical
+    assert "Quantidade do conjunto: 2 unidades." in technical
+    assert "Posições: traseira direita e traseira esquerda." in technical
+    vehicles = dossier["aplicação"]["veículos_compatíveis"]["itens"]
+    for model in ("318d F30 sedã", "318d F30 LCI sedã", "318d F31 Touring", "318d F31 LCI Touring"):
+        assert {"marca": "BMW", "modelo": model, "anos": []} in vehicles
+    assert all(vehicle["anos"] == [] for vehicle in vehicles)
+    assert dossier["revisão"]["anos_exibidos_em_cada_modelo"] is False
+    assert dossier["revisão"]["pendências"] == []
+    assert reviewer._contains_source_fields(dossier) is False
+    serialized = json.dumps(dossier, ensure_ascii=False)
+    for forbidden in ("51417279312", "51427281469", "51427281470", "2014 a 2019", "Cor: bege"):
+        assert forbidden not in serialized
+
+
+def test_sku_232_2_targeted_repair_is_pure_preserves_metadata_and_is_idempotent():
+    existing = {
+        "schema_version": 2,
+        "sku": "232-2",
+        "nome_produto": "Nome curado atual",
+        "orientações": ["Orientação editorial preservada."],
+        "características_técnicas": {"itens": ["Material: plástico ABS."]},
+        "medidas_do_produto": {"itens": ["Dimensões aproximadas do conjunto: 380 × 90 × 80 mm"]},
+        "oem": {"códigos": ["51427281465"], "metadado": "preservar"},
+        "aplicação": {
+            "tipo": "automóvel",
+            "veículos_compatíveis": {
+                "metadado": "preservar",
+                "itens": [
+                    {"marca": "BMW", "modelo": "Série 3 F31", "anos": ["2011 a 2015"]},
+                    {"marca": "BMW", "modelo": "Série 3 F31 reestilizada", "anos": ["2014 a 2019"]},
+                    {"marca": "BMW", "modelo": "320i F30", "anos": [], "restrições": ["Condição curada"]},
+                ],
+            },
+            "equipamentos_ou_aplicações_compatíveis": {"itens": [], "observação": "manter"},
+        },
+        "revisão": {"status": "revisado", "anos_exibidos_em_cada_modelo": True, "pendências": []},
+        "atualizado_em": "2026-07-16T16:32:08+00:00",
+    }
+    original = json.loads(json.dumps(existing, ensure_ascii=False))
+
+    corrected = reviewer.repair_sku_232_2_dossier(existing, updated_at="2026-09-16T15:00:00+00:00")
+
+    assert existing == original
+    for field in ("schema_version", "nome_produto", "orientações", "características_técnicas", "medidas_do_produto"):
+        assert corrected[field] == existing[field]
+    assert corrected["oem"]["metadado"] == "preservar"
+    assert corrected["aplicação"]["veículos_compatíveis"]["metadado"] == "preservar"
+    assert corrected["aplicação"]["equipamentos_ou_aplicações_compatíveis"] == existing["aplicação"]["equipamentos_ou_aplicações_compatíveis"]
+    assert existing["aplicação"]["veículos_compatíveis"]["itens"][-1] in corrected["aplicação"]["veículos_compatíveis"]["itens"]
+    assert corrected["atualizado_em"] == "2026-09-16T15:00:00+00:00"
+    assert reviewer.repair_sku_232_2_dossier(corrected, updated_at="2026-09-17T15:00:00+00:00") == corrected
+    assert reviewer.repair_sku_232_2_dossier(existing)["atualizado_em"] == existing["atualizado_em"]
+
+
+def test_sku_232_2_repair_preserves_conditions_in_separate_rows_and_user_observations():
+    original_rows = [
+        {
+            "marca": "BMW", "modelo": "Série 3 F30", "anos": ["2011 a 2015"],
+            "restrições": ["Somente volante à esquerda"], "revisado_por": "curadoria",
+        },
+        {
+            "marca": "BMW", "modelo": "Série 3 F30 sedã", "anos": ["2012"],
+            "restrições": ["Conferir variante de acabamento"], "referência_interna": "variante-B",
+        },
+        {
+            "marca": "BMW", "modelo": "318d F31 reestilizada", "anos": ["2014 a 2019"],
+            "restricoes": ["Montagem revisada"], "metadados": {"conferência": "manual"},
+        },
+        {
+            "marca": "BMW", "modelo": "318d F31", "anos": ["2013"],
+            "restrições": ["Aplicação pré-LCI conferida"],
+        },
+    ]
+    existing = {
+        "sku": "232-2",
+        "oem": {"observação": "Conservar a referência da embalagem para rastreio."},
+        "aplicação": {"veículos_compatíveis": {
+            "itens": original_rows,
+            "observação": "Curadoria da loja: respeitar as condições de cada linha.",
+        }},
+        "atualizado_em": "2026-07-16T16:32:08+00:00",
+    }
+    original = json.loads(json.dumps(existing, ensure_ascii=False))
+
+    corrected = reviewer.repair_sku_232_2_dossier(existing, updated_at="2026-09-16T15:00:00+00:00")
+
+    assert existing == original
+    rows = corrected["aplicação"]["veículos_compatíveis"]["itens"]
+    f30_rows = [row for row in rows if row["modelo"] == "Série 3 F30 sedã"]
+    assert f30_rows == [
+        {**original_rows[0], "modelo": "Série 3 F30 sedã", "anos": []},
+        {**original_rows[1], "anos": []},
+    ]
+    assert {**original_rows[2], "modelo": "318d F31 LCI Touring", "anos": []} in rows
+    assert {**original_rows[3], "modelo": "318d F31 Touring", "anos": []} in rows
+    assert len(rows) == 9
+    for before_section, after_section, note in (
+        (existing["oem"], corrected["oem"], reviewer.SKU_232_2_OEM_OBSERVATION),
+        (
+            existing["aplicação"]["veículos_compatíveis"],
+            corrected["aplicação"]["veículos_compatíveis"],
+            reviewer.SKU_232_2_APPLICATION_OBSERVATION,
+        ),
+    ):
+        assert after_section["observação"] == before_section["observação"] + "\n\n" + note
+        assert after_section["observação"].count(note) == 1
+    assert reviewer.repair_sku_232_2_dossier(corrected, updated_at="2026-09-17T15:00:00+00:00") == corrected
+
+
+@pytest.mark.parametrize("sku", ["232-6", "232-1", "232-5", " 232-2", "232-2 ", ""])
+def test_sku_232_2_targeted_repair_rejects_other_variations(sku):
+    with pytest.raises(ValueError, match="restrita ao SKU 232-2"):
+        reviewer.repair_sku_232_2_dossier({"sku": sku})
+
+
+def test_sku_232_6_regeneration_keeps_its_existing_beige_variation():
+    dossier = reviewer._build_clean_dossier(
+        {"sku": "232-6", "produto_bling": "Par de puxadores traseiros bege", "categoria": "Autopeças"},
+        {"produto": {}},
+        {},
+        [],
+    )
+    assert "Cor: bege." in dossier["características_técnicas"]["itens"]
+    assert {"marca": "BMW", "modelo": "Série 3 F31", "anos": ["2011 a 2015"]} in dossier["aplicação"]["veículos_compatíveis"]["itens"]
+    assert "51427281466" not in dossier["oem"]["códigos"]
+
+
 def test_clean_product_name_prioritizes_ptbr_override():
     row = {
         "nome": "Engine Speed Sensor",

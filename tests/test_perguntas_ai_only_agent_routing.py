@@ -423,8 +423,8 @@ def test_compatibility_uses_only_structured_target_profile_focus_and_missing_fie
     assert not hasattr(agent_facade, "_perguntas_ia_v2_resposta_segura_compatibilidade")
 
 
-def test_response_policy_v10_applies_rvc_only_when_commercial_state_allows_it() -> None:
-    assert agent_runtime._PERGUNTAS_IA_RESPONSE_POLICY_VERSION == "jk_ppv_response_policy_v10"
+def test_response_policy_v11_applies_rvc_only_when_commercial_state_allows_it() -> None:
+    assert agent_runtime._PERGUNTAS_IA_RESPONSE_POLICY_VERSION == "jk_ppv_response_policy_v11"
     assert agent_runtime._PERGUNTAS_IA_SELLER_METHOD_VERSION == "seller-conversion-v1"
     policy = agent_runtime._PERGUNTAS_IA_RESPONSE_POLICY["perguntas_anuncio"]
     assert "todo o material compilado e sanitizado" in policy
@@ -603,7 +603,16 @@ def test_cloud_regulated_prompt_disables_commercial_method_and_escapes_injection
     assert json.loads(encoded_draft) == draft
 
 
-def test_missing_ai_category_receives_advisory_default_and_reaches_pipeline() -> None:
+def test_missing_ai_category_receives_advisory_default_and_reaches_pipeline(monkeypatch) -> None:
+    # This routing test does not require backend_api global provider wiring.
+    def configured_adapter(group, key, default):
+        if group == "models" and key == "public_model":
+            return lambda: "codex:gpt-5.5"
+        if group == "models" and key == "public_reasoning":
+            return lambda: "high"
+        return default
+
+    monkeypatch.setattr(agent_execution, "resolve_runtime_adapter", configured_adapter)
     agent_input = {
         "store": "JK Pecas",
         "question": {"id": "Q-UNKNOWN", "text": "Mensagem simples do comprador"},
