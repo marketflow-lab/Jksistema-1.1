@@ -25,6 +25,7 @@ from .runtime import (
     re,
     requests,
     requests_tls_verify,
+    target_variant_universe_query,
     urlparse,
 )
 from .inputs import (
@@ -754,6 +755,7 @@ def _ia_agent_perguntas_queries_web(agent_input: dict, tool_results: list[dict])
     codigo_tecnico = next(iter(codigos_tecnicos), "")
     queries: list[dict] = []
     if alvo:
+        queries.append(target_variant_universe_query(target_type, alvo))
         detalhes_alvo = " ".join(
             dict.fromkeys(value for value in (foco_tecnico, interface or termos_perfil) if str(value or "").strip())
         )

@@ -9,6 +9,9 @@ from backend.modules.perguntas_pos_venda.ai import compatibility as agent_compat
 from backend.modules.perguntas_pos_venda.ai import evidence as agent_evidence
 from backend.modules.perguntas_pos_venda.ai import queries as agent_queries
 from backend.modules.perguntas_pos_venda.ai import sources as agent_sources
+from backend.modules.perguntas_pos_venda.ai.deep_research_target import (
+    _COMPATIBILITY_CRITICAL_QUERY_TYPES,
+)
 from backend.services import perguntas_pos_venda_agent as agent_facade
 from ml_questions_gemini.classifier import QuestionClassifier
 from ml_questions_gemini.compatibility import normalize_comparison_attributes
@@ -95,6 +98,39 @@ def test_classifier_and_profile_respect_ai_targets(question, title, target, targ
         "target_type": target_type,
         "compatibility_profile": _COMPATIBILITY_PROFILE_BY_TARGET_TYPE[target_type],
     }
+
+
+@pytest.mark.parametrize(
+    ("target_item", "target_type", "title", "expected_terms"),
+    [
+        ("Range Rover Sport 2014", "vehicle", "Tampa de combustivel", ("MOTORIZACOES", "CARROCERIAS")),
+        ("Stihl 120", "machine_tool", "Enxada rotativa", ("EIXOS", "ROSCAS")),
+        ("iPhone 15", "phone_computing", "Capa protetora", ("GERACOES", "REGIOES")),
+        ("Samsung QN90", "electrical_electronic", "Controle remoto", ("REVISOES", "PROTOCOLOS")),
+        ("torneira 1/2", "hydraulic", "Adaptador", ("ROSCAS", "PRESSOES")),
+        ("suporte 30 mm", "dimensional", "Abracadeira", ("FURACOES", "FIXACOES")),
+        ("equipamento XPTO", "generic", "Peca de reposicao", ("VARIANTES", "INTERFACES")),
+    ],
+)
+def test_compatibility_research_includes_complete_target_variant_universe(
+    target_item, target_type, title, expected_terms,
+):
+    agent_input = {
+        "question": {"text": f"Serve em {target_item}?"},
+        "item": {"id": "MLB1", "title": title, "seller_sku": "SKU-1"},
+        "intent": _compatibility_intent(target_item, target_type),
+    }
+
+    generated = agent_queries._ia_agent_perguntas_queries_web(agent_input, [])
+    universe = [query for query in generated if query["type"] == "target_variant_universe_official"]
+
+    assert len(universe) == 1
+    normalized = agent_queries._normalizar_texto(universe[0]["query"])
+    assert agent_queries._normalizar_texto(target_item) in normalized
+    assert "LINHA COMPLETA" in normalized
+    assert "MERCADO BRASILEIRO" in normalized
+    assert all(term in normalized for term in expected_terms)
+    assert "target_variant_universe_official" in _COMPATIBILITY_CRITICAL_QUERY_TYPES
 
 
 def test_phone_as_device_is_not_confused_with_external_contact():

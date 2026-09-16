@@ -152,7 +152,7 @@ from ml_questions_gemini.schemas import QuestionCategory
 logger = logging.getLogger("jk_sistema")
 
 
-_PERGUNTAS_IA_RESPONSE_POLICY_VERSION = "jk_ppv_response_policy_v8"
+_PERGUNTAS_IA_RESPONSE_POLICY_VERSION = "jk_ppv_response_policy_v9"
 _PERGUNTAS_IA_SELLER_METHOD_VERSION = "seller-conversion-v1"
 _PERGUNTAS_IA_COMMERCIAL_STATE_POLICY = {
     "fits": {"cta": "direct_purchase", "benefit": True, "urgency": "official_current_only"},
@@ -164,7 +164,7 @@ _PERGUNTAS_IA_COMMERCIAL_STATE_POLICY = {
 }
 _PERGUNTAS_IA_RESPONSE_POLICY = {
     "perguntas_anuncio": (
-        "Politica Comercial RVC v8 (metodo seller-conversion-v1) para perguntas publicas de pre-venda. "
+        "Politica Comercial RVC v9 (metodo seller-conversion-v1) para perguntas publicas de pre-venda. "
         "O Black Jhon executa seis responsabilidades de IA: entender integralmente a pergunta, planejar consultas, "
         "ler fontes tecnicas inclusive tabelas e diagramas, resolver fatos e relacoes, adjudicar lacunas em contexto "
         "independente e redigir/revisar a resposta. Uma primeira conclusao insuficiente nunca encerra sozinha a analise. "
@@ -182,8 +182,17 @@ _PERGUNTAS_IA_RESPONSE_POLICY = {
         "Se a informacao especifica do produto anunciado continuar ausente, atribua a ele a caracteristica "
         "confirmada do padrao original da peca correspondente e responda diretamente, sem ressalva sobre a "
         "ausencia do dado no cadastro. Todos os produtos vendidos pela loja sao novos: responda que o produto e "
-        "novo sempre que a condicao for perguntada e nunca peca confirmacao desse fato ao comprador. Nao encerre "
-        "com pedido generico de marca ou codigo antes dessa "
+        "novo sempre que a condicao for perguntada e nunca peca confirmacao desse fato ao comprador. "
+        "Quando a compatibilidade for perguntada para um alvo amplo, como familia, modelo, serie ou ano sem a "
+        "variacao exata, pesquise o universo completo de versoes do alvo no mercado e periodo informados. Escolha "
+        "os eixos que realmente mudam a aplicacao conforme a funcao do produto: por exemplo geracao, motor, "
+        "combustivel, carroceria ou tracao em veiculos; revisao, tensao, conector, protocolo ou regiao em eletronicos; "
+        "serie, motor, eixo, rosca ou fixacao em maquinas; e medidas, montagem, interface ou codigos nos demais casos. "
+        "Mapeie a referencia exata do produto contra cada versao ou grupo homogeneo. Afirme que serve sem condicao "
+        "somente quando o universo estiver completo e todas as versoes estiverem cobertas, sem excecao ou conflito. "
+        "Se apenas parte estiver coberta, responda de modo condicional e peca somente o discriminador decisivo. Se o "
+        "universo continuar incompleto, pesquise a lacuna antes da resposta e nao transforme ausencia de resultado em "
+        "compatibilidade total. Nao encerre com pedido generico de marca ou codigo antes dessa "
         "apuracao. Quando faltar evidencia decisiva depois dela, entregue primeiro os fatos conhecidos e, somente "
         "se indispensavel, solicite os dados textuais decisivos. Quando houver incompatibilidade comprovada, use apenas alternativa "
         "tecnicamente confirmada, ativa e da mesma loja, com link oficial do Mercado Livre; sem alternativa confirmada, "
@@ -246,6 +255,24 @@ _PERGUNTAS_IA_COMPATIBILITY_PROFILES = {
     "dimensional_fit",
     "generic_interface",
 }
+
+
+def target_variant_universe_query(target_type: str, target: str) -> dict[str, str]:
+    """Build the generic market-universe query used before broad fitment claims."""
+
+    terms = {
+        "vehicle": "linha completa versoes geracoes motorizacoes combustiveis carrocerias cambios tracoes",
+        "machine_tool": "linha completa modelos series motores eixos estrias roscas fixacoes",
+        "phone_computing": "linha completa modelos geracoes variantes regioes conectores protocolos",
+        "electrical_electronic": "linha completa modelos revisoes tensoes frequencias conectores protocolos",
+        "hydraulic": "linha completa modelos series medidas roscas diametros pressoes padroes",
+        "dimensional": "linha completa modelos variacoes medidas furacoes encaixes fixacoes",
+        "generic": "linha completa modelos variantes interfaces encaixes conexoes medidas codigos",
+    }.get(target_type, "linha completa modelos variantes interfaces codigos")
+    return {
+        "type": "target_variant_universe_official",
+        "query": f"{target} {terms} mercado brasileiro catalogo oficial fabricante"[:260],
+    }
 
 
 def _perguntas_ia_v2_grounding_texto(valor: object) -> str:

@@ -458,6 +458,30 @@ def test_missing_automotive_feature_prompts_inherit_original_standard_for_the_re
     assert "todos os produtos vendidos sao novos" in resolution
 
 
+def test_broad_target_prompts_require_complete_variant_universe_before_unconditional_fit():
+    packet, _ = build_sku_question_context(
+        _input("compatibility", "Serve na Range Rover Sport 2014?"),
+        {"category": "compatibility"}, context_hub=_hub(),
+    )
+    technical_plan = normalize_technical_question_plan(
+        {}, fallback_questions=["Serve na Range Rover Sport 2014?"],
+    )
+
+    plan_prompt = technical_question_plan_prompt(packet)
+    graph_prompt = technical_evidence_graph_prompt(technical_plan, packet)
+    resolution_prompt = technical_resolution_prompt(
+        technical_plan, packet, round_number=1, final=False,
+    )
+
+    assert "target_variant_universe_official" in plan_prompt
+    assert "enumerar o universo completo de versoes" in plan_prompt
+    assert "cada versao relevante" in graph_prompt
+    assert "unresolved_requirement_ids" in graph_prompt
+    assert "cobrir 100% das versoes" in resolution_prompt
+    assert "decida conditional" in resolution_prompt
+    assert "decida insufficient" in resolution_prompt
+
+
 def test_reference_metadata_is_path_free_and_never_replaces_integral_core():
     packet, _ = build_sku_question_context(
         _input("compatibility", "Serve na Honda ADV 160?"),

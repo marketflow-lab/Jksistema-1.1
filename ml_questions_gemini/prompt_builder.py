@@ -105,6 +105,7 @@ class PromptBuilder:
                 "Perguntas publicas do Mercado Livre nao aceitam anexos: nunca solicite que o comprador envie, mande, anexe ou forneca foto ou imagem.",
                 "E permitido mencionar de forma informativa as fotos que ja fazem parte do anuncio, sem pedir novo arquivo ao comprador.",
                 "Em compatibilidade, compare a interface, encaixe, base, eixo, estrias, rosca, conector, medida, tensao, protocolo ou codigo do produto com o item consultado; nao decida apenas porque o modelo aparece ou nao aparece no anuncio.",
+                "Quando o alvo for familia, modelo, serie ou ano amplo, pesquise o universo completo de versoes no mercado e periodo informados e mapeie a referencia exata do produto. Confirme sem condicao somente quando 100% das versoes estiverem cobertas, sem excecao ou conflito; para cobertura parcial, responda de modo condicional e solicite apenas o discriminador decisivo.",
                 "Uma fonte oficial dizendo que o alvo aceita uma interface, medida, conexao ou geracao comprova a interface alvo; se o produto usa a mesma especificacao, a equivalencia pode ser derivada sem exigir a expressao literal 'mesmo encaixe'.",
                 "Apresente uma decisao de compatibilidade clara nas primeiras frases, com redacao natural; nao existe palavra ou prefixo obrigatorio para iniciar a resposta.",
                 "Se faltar evidencia de compatibilidade, nao peca foto, chassi ou VIN e nao recomende genericamente um mecanico ou oficina.",

@@ -423,8 +423,8 @@ def test_compatibility_uses_only_structured_target_profile_focus_and_missing_fie
     assert not hasattr(agent_facade, "_perguntas_ia_v2_resposta_segura_compatibilidade")
 
 
-def test_response_policy_v7_applies_rvc_only_when_commercial_state_allows_it() -> None:
-    assert agent_runtime._PERGUNTAS_IA_RESPONSE_POLICY_VERSION == "jk_ppv_response_policy_v8"
+def test_response_policy_v9_applies_rvc_only_when_commercial_state_allows_it() -> None:
+    assert agent_runtime._PERGUNTAS_IA_RESPONSE_POLICY_VERSION == "jk_ppv_response_policy_v9"
     assert agent_runtime._PERGUNTAS_IA_SELLER_METHOD_VERSION == "seller-conversion-v1"
     policy = agent_runtime._PERGUNTAS_IA_RESPONSE_POLICY["perguntas_anuncio"]
     assert "todo o material compilado e sanitizado" in policy
@@ -438,6 +438,8 @@ def test_response_policy_v7_applies_rvc_only_when_commercial_state_allows_it() -
     assert "codigo, funcao e variacao" in policy
     assert "atribua a ele a caracteristica" in policy
     assert "Todos os produtos vendidos pela loja sao novos" in policy
+    assert "universo completo de versoes" in policy
+    assert "todas as versoes estiverem cobertas" in policy
     assert agent_runtime._PERGUNTAS_IA_COMMERCIAL_STATE_POLICY["fits"]["cta"] == "direct_purchase"
     assert agent_runtime._PERGUNTAS_IA_COMMERCIAL_STATE_POLICY["variant"]["cta"] == "select_exact_variation"
     for state in ("partial", "insufficient", "not_applicable"):

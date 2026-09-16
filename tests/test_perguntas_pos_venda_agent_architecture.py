@@ -39,8 +39,8 @@ CONTRACT_HASHES = {
     "routes": "77bdca722f74a16061e65ea83490c374f16cf1421d697f5cbc9d3af7cc273aea",
     "aliases": "f149aa04a166eacd3f942889d2495dc5a23be9bb3317160d97e247ae834aa68e",
     "schema": "500b7ccbcedc02d3a254e8114e974355be5635d2f01bd7dc929b212643cb254a",
-    "policy": "02a90b53ef588fd78856dae7fbacf79dae3eb0246c803155ae926265cc5fe6d5",
-    "prompts": "63706ab32006561b0193dd49b0eca4dc3da5a56a762455ba09353604642bbd6e",
+    "policy": "571f6b7133350540afedd6f6112f5eb67bd5727389ccb59b4a3c387d7aadc25d",
+    "prompts": "1a283297358424f27d31eb853d309b6b98c53610137ffdcc70ac212c5c68aced",
     "exports": "fbd5bf89bb3a7d13d32c55dda0a0b89996c3c6a4828f94a250c94c5f18b74550",
 }
 LAYERS = {

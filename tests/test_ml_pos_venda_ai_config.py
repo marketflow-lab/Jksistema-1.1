@@ -288,7 +288,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         self.assertIn("context_hub_search", payload["allowed_tools"])
         self.assertIn("web_search_question_context", payload["allowed_tools"])
         self.assertEqual(payload["app_guidance_truth_class"], "versioned_technical")
-        self.assertEqual(payload["app_guidance_source"], "jk_ppv_response_policy_v8")
+        self.assertEqual(payload["app_guidance_source"], "jk_ppv_response_policy_v9")
         self.assertEqual(payload["commercial_method_version"], "seller-conversion-v1")
         self.assertEqual(payload["commercial_state_policy"]["fits"]["cta"], "direct_purchase")
         self.assertEqual(payload["commercial_state_policy"]["insufficient"]["cta"], "none")
@@ -655,7 +655,8 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         queries = agent_queries._ia_agent_perguntas_queries_web(agent_input, [])
 
         self.assertEqual([item["type"] for item in queries], [
-            "target_interface_official", "product_interface_technical", "interface_equivalence",
+            "target_variant_universe_official", "target_interface_official",
+            "product_interface_technical", "interface_equivalence",
         ])
         self.assertIn("BMW R1300GS", queries[0]["query"])
         self.assertNotIn("suporte gps da", queries[0]["query"].lower())
@@ -698,7 +699,10 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         queries = agent_queries._ia_agent_perguntas_queries_web(agent_input, collected)
         identity_queries = agent_queries._ia_agent_perguntas_queries_identificacao_produto(agent_input, collected)
 
-        self.assertTrue(all("Navigator" in item["query"] for item in queries))
+        product_queries = [
+            item for item in queries if item["type"] != "target_variant_universe_official"
+        ]
+        self.assertTrue(all("Navigator" in item["query"] for item in product_queries))
         self.assertIn("Navigator", identity_queries[0]["query"])
         self.assertIn("BMW R1300GS", queries[0]["query"])
         for item in [*queries, *identity_queries]:

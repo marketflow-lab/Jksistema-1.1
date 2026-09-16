@@ -28,7 +28,7 @@ _TARGET_SOURCE_AUTHORITIES = {
 _TARGET_OFFICIAL_AUTHORITIES = {"official_manufacturer", "official_oem"}
 _TARGET_TECHNICAL_AUTHORITIES = {"technical_distributor", "technical_independent"}
 _COMPATIBILITY_CRITICAL_QUERY_TYPES = {
-    "target_interface_official", "target_interface_technical", "product_interface_technical",
+    "target_variant_universe_official", "target_interface_official", "target_interface_technical", "product_interface_technical",
     "interface_equivalence",
 }
 
