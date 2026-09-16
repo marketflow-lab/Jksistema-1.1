@@ -197,6 +197,7 @@ def _perguntas_ia_item_para_agente(item: dict, descricao: str = "") -> dict:
     ]
     return {
         "id": item_id, "title": item.get("title") or "", "permalink": permalink,
+        "site_id": str(item.get("site_id") or "").strip(),
         "link": permalink, "url": permalink, "thumbnail": item.get("thumbnail") or "",
         "price": item.get("price"), "currency_id": item.get("currency_id") or "",
         "available_quantity": item.get("available_quantity"), "status": item.get("status") or "",

@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from backend.modules.perguntas_pos_venda.ai import runtime
+from backend.modules.perguntas_pos_venda.ai.marketplace_policy import MARKETPLACE_POLICY_GUIDANCE
 from backend.routers.ia import create_ia_router
 from backend.routers.perguntas_pos_venda import create_perguntas_pos_venda_router
 from backend.schemas.ia import IAAgentQueryRequest
@@ -40,7 +41,7 @@ CONTRACT_HASHES = {
     "aliases": "f149aa04a166eacd3f942889d2495dc5a23be9bb3317160d97e247ae834aa68e",
     "schema": "500b7ccbcedc02d3a254e8114e974355be5635d2f01bd7dc929b212643cb254a",
     "policy": "f90b92d01d0ece5ac9c4f7aba8116d40566a497ad0216161aed2f871536d60dc",
-    "prompts": "5fd0a6bbe4f0906907614fb21896124bd953ecc318f8fd6d31a727264c67d840",
+    "prompts": "fb0bd8fb21b549af644425709a8ca7690aa99076803614e1be13ec734e56cb10",
     "exports": "fbd5bf89bb3a7d13d32c55dda0a0b89996c3c6a4828f94a250c94c5f18b74550",
 }
 LAYERS = {
@@ -59,6 +60,7 @@ LAYERS = {
     "marketplace_search": 2, "source_analysis": 2,
     "deep_research_documents": 3, "document_vision": 3,
     "queries": 3, "context": 4, "sources": 4, "evidence": 5,
+    "marketplace_policy_sources": 5, "marketplace_policy": 6,
     "deep_research": 4, "deep_research_crawler": 4,
     "compatibility": 6, "tools": 6, "client_workflow_support": 6,
     "client_compatibility_workflow": 7, "client_general_workflow": 7,
@@ -128,7 +130,9 @@ def _contract_snapshot() -> dict[str, object]:
             "technical_question_plan_prompt", "technical_resolution_prompt",
         ],
         "factual_critic.py": ["factual_review_prompt", "factual_revision_prompt"],
-        "clients.py": ["_generate_public_compatibility_answer"],
+        "clients.py": ["_generate_public_compatibility_answer", "_invoke_stage_model"],
+        "marketplace_policy.py": ["policy_stage_context", "policy_research_topics"],
+        "backend/services/perguntas_pos_venda_state.py": ["_perguntas_ia_classification_prompt"],
         "ml_questions_gemini/prompt_builder.py": ["build"],
         "backend/modules/perguntas_pos_venda/endpoints/training.py": ["ml_ia_treinamento_simular"],
         "backend/services/ia_treinamento_ppv.py": ["_ia_treinamento_ppv_profile_v2_bloco_prompt"],
@@ -145,6 +149,7 @@ def _contract_snapshot() -> dict[str, object]:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names
         }
         prompts.update({f"{filename}:{name}": functions[name] for name in names})
+    prompts["marketplace_policy_guidance"] = MARKETPLACE_POLICY_GUIDANCE
     return {
         "routes": routes,
         "aliases": aliases,
@@ -252,6 +257,8 @@ def test_ppv_runtime_components_are_pinned_in_installer_manifest() -> None:
         "backend/modules/perguntas_pos_venda/ai/sku_question_context.py",
         "backend/modules/perguntas_pos_venda/ai/sku_question_prompts.py",
         "ml_questions_gemini/public_reply_policy.py",
+        "backend/modules/perguntas_pos_venda/ai/marketplace_policy.py",
+        "backend/modules/perguntas_pos_venda/ai/marketplace_policy_sources.py",
     }
 
     assert sources <= set(manifest.get("requiredSourceFiles") or [])

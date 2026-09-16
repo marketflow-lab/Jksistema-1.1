@@ -169,7 +169,8 @@ class PromptBuilder:
                 "listing_link": listing_link,
                 "buyer_question": question.text,
                 "instruction": (
-                    "Nao pesquise nem responda como venda; use apenas o contexto e as regras de pos-venda."
+                    "Nao responda como venda; use o contexto de pos-venda e a consulta atual de diretrizes "
+                    "oficiais do Mercado Livre compilada pelo orquestrador para politicas e procedimentos."
                     if is_post_sale
                     else (
                         "Depois de vincular historico e dados oficiais do anuncio, o orquestrador deve sempre tentar "
@@ -292,6 +293,8 @@ class PromptBuilder:
             + "\n\n"
             "PESQUISA_TECNICA_ADAPTATIVA:\n"
             "O orquestrador pesquisara fontes tecnicas publicas somente para compatibilidade, originalidade, conflito, evidencia vencida ou campo tecnico decisivo ausente. "
+            "Para cancelamento, reembolso, devolucao e politicas ou procedimentos da plataforma, ha tambem "
+            "consulta separada de diretrizes oficiais do Mercado Livre antes da resposta. "
             "A pesquisa deve limitar-se aos campos ainda necessarios e priorizar fabricante, manual, catalogo OEM e documentacao oficial. "
             "Resultado vazio ou falha de pesquisa nunca prova incompatibilidade nem ausencia da caracteristica.\n\n"
             "REGRAS_DO_APP:\n"

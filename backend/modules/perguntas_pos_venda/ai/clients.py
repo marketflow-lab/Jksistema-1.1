@@ -73,6 +73,7 @@ from .client_workflows import (
     run_general,
 )
 from .technical_evidence_persistence import persist_technical_evidence_graph
+from .marketplace_policy import policy_stage_context
 from .sku_question_context import (
     packet_tool_result,
 )
@@ -200,6 +201,7 @@ class _PerguntasVertexGeminiV2Client:
         self.sku_question_context_metrics: dict[str, Any] = {}
         self.adaptive_route = ""
         self._candidate_reviewed_in_workflow = False
+        self._official_marketplace_policy = None
 
     def _persist_technical_graph(
         self,
@@ -258,6 +260,7 @@ class _PerguntasVertexGeminiV2Client:
                 + _untrusted_compact_block("historico_pesquisa_nao_confiavel", research_history, 0)
             )
         effective_tool_results = list(tool_results or [])
+        prompt, effective_tool_results = policy_stage_context(self, prompt, effective_tool_results)
         if not fluxo_pos_venda and self.sku_question_context:
             prompt, _ = bounded_stage_prompt(
                 prompt,
@@ -266,7 +269,7 @@ class _PerguntasVertexGeminiV2Client:
                 limit=stage_prompt_limit(self.adaptive_route),
             )
             effective_tool_results = _v18_effective_tool_results(
-                self.sku_question_context, tool_results,
+                self.sku_question_context, effective_tool_results,
             )
             record_stage_transport(
                 self, prompt, effective_tool_results,
@@ -662,6 +665,7 @@ class _PerguntasVertexGeminiV2Client:
         return run_compatibility(self, prompt, metadata, bindings)
 
     def generate(self, prompt: str, metadata: Optional[dict[str, Any]] = None) -> AIAnswer:
+        self._official_marketplace_policy = None
         metadata_dict = metadata if isinstance(metadata, dict) else {}
         if str(metadata_dict.get("category") or "").strip().lower() == "compatibility":
             candidate = self._generate_compatibility(prompt, metadata_dict)

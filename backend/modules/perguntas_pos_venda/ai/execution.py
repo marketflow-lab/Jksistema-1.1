@@ -201,7 +201,7 @@ def _perguntas_ia_v2_prompt(
         "A classificacao de intencao e somente uma pista consultiva. Determine a resposta pelo turno atual, por todo o historico, pelo anuncio e pelas referencias do Context Hub; divergencia ou incerteza da classificacao nunca impede a geracao.",
         "Nao envie, nao publique, nao altere anuncio, nao altere estoque e nao chame ferramentas externas.",
         "Use somente os dados deste prompt e das referencias read-only fornecidas pelo aplicativo: pergunta, historico, anuncio, Context Hub, memoria do SKU e contexto interno.",
-        "Nao use web, nao use Bling ao vivo e nao invente dados ausentes.",
+        "Nao acione web nem Bling por conta propria; use a pesquisa oficial de politicas compilada pelo orquestrador quando presente e nao invente dados ausentes.",
         "Responda em portugues do Brasil, sem markdown, sem tabela, sem emoji e sem aspas externas.",
         "Para pergunta publica, responda como vendedor cordial. Uma saudacao curta e opcional; depois dela, coloque a decisao principal imediatamente.",
     ]

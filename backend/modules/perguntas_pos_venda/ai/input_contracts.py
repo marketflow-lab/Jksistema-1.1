@@ -28,7 +28,7 @@ CONTEXT_COLLECTION_PIPELINE = (
     (
         8,
         "question_focused_web_research",
-        "Pesquisar somente quando houver compatibilidade, originalidade, conflito, evidencia vencida ou campo tecnico decisivo ausente; limitar a busca aos campos ainda necessarios.",
+        "Pesquisar dados tecnicos quando houver compatibilidade, originalidade, conflito, evidencia vencida ou campo tecnico decisivo ausente. Para cancelamento, reembolso, devolucao ou procedimentos da plataforma, consultar separadamente diretrizes oficiais atuais do Mercado Livre antes de redigir.",
     ),
     (
         9,
@@ -86,6 +86,7 @@ def build_input_operational_contract(
             "do_not_invent_links_or_compatibility": True,
             "internet_product_research_required": use_web_search,
             "public_research_policy": "jk_black_jhon_research_v3",
+            "marketplace_policy_research": "jk_ml_official_policy_research_v1",
             "vehicle_identity_policy": "jk_public_vin_decode_v1",
             "product_evidence_policy": "jk_product_evidence_v2",
             "evidence_usage_policy": "jk_black_jhon_factual_discretion_v1",
