@@ -64,9 +64,10 @@ for (const name of ['applyColumnWidthPrefsToDom', 'bindPromoMinimizeOnDblClick',
 context.carregarApiAutoPrefsServidor = async () => ({ config: {} });
 context.getVisibleColumns = () => [{ key: 'Ação', label: 'Ação', editable: true }];
 
-// The action target may have insufficient financial data even though displayed margins look profitable.
+// Incomplete campaign finances carry their specific reason; technical warnings are independent.
 const rows = [
-  { Status: 'Ativo', Margem: '40%', 'Margem ML': '50%', Acao: 'Não participar', action_financeiro_exato: false },
+  { Status: 'Ativo', Margem: '40%', 'Margem ML': '', Acao: 'Não participar', action_financeiro_exato: false,
+    action_financeiro_motivo: 'Frete da campanha selecionada não confirmado.' },
   { Status: 'Programada', Margem: '31,56%', 'Margem ML': '11,79%', 'Participar ou nao': 'Participar' },
 ];
 context.rows = rows;
@@ -78,7 +79,7 @@ context.ativarAnaliseApiPorCampanha(0);
 assert.strictEqual(ids.totalParticipar.textContent, '1');
 let select = tbody.children[0].children[0].children[0];
 let reason = tbody.children[0].children[0].children[1];
-assert(reason.textContent.includes('Dados financeiros insuficientes'));
+assert.strictEqual(reason.textContent, 'Frete da campanha selecionada não confirmado.');
 assert(!select.disabled, 'financial uncertainty must not disable the manual decision');
 select.change('Participar');
 assert.strictEqual(ids.totalParticipar.textContent, '2');
@@ -127,6 +128,24 @@ context.ativarAnaliseApiPorCampanha(0);
 assert.strictEqual(ids.totalParticipar.textContent, '0');
 assert.strictEqual(newRows[0]['Ação'], 'Não participar');
 assert.strictEqual(context.obterLinhasSelecionadasPromocoes([{ 'Participar ou nao': 'Participar' }]).length, 1);
+
+// A calculated profitable margin may recommend participation despite an unavailable offer ID.
+const technicalRows = [{ MLB: 'MLB123', 'Ação': 'Participar', 'Margem ML': '28,01%',
+  action_financeiro_exato: true, action_tecnico_apto: false,
+  action_impedimento_tecnico: 'Identificador da oferta não informado.' }];
+context.technicalRows = technicalRows;
+vm.runInContext('currentData = technicalRows', context);
+context.renderTable(technicalRows);
+const technicalCell = tbody.children[0].children[0];
+assert.strictEqual(technicalCell.children[1].textContent, '');
+assert.strictEqual(technicalCell.children[2].textContent, 'Pendência de envio: Identificador da oferta não informado.');
+technicalCell.children[0].change('Não participar');
+assert.strictEqual(technicalCell.children[2].style.display, 'block');
+technicalCell.children[0].change('Participar');
+assert.strictEqual(ids.totalParticipar.textContent, '1');
+assert.strictEqual(technicalCell.children[2].style.display, 'block', 'manual participation cannot hide a technical warning');
+assert.strictEqual(context.obterMotivoSugestaoPromocoes({ 'Ação': 'Não participar', action_financeiro_exato: true }), '');
+assert(!context.obterMotivoSugestaoPromocoes({ 'Ação': 'Não participar', action_financeiro_exato: false }).includes('Dados financeiros insuficientes'), 'legacy uncertainty must not invent a financial cause');
 vm.runInContext('apiAnalisesPorCampanha = undefined', context);
 tbody.children[0].children[0].children[0].change('Participar');
 assert.strictEqual(ids.totalParticipar.textContent, '1', 'legacy rows remain editable without campaign state');

@@ -281,9 +281,15 @@ function renderTable(data) {
                 select.value = isParticipar ? 'Participar' : 'Não participar';
 
                 const motivo = document.createElement('small');
+                motivo.className = 'promo-decision-reason';
                 motivo.textContent = obterMotivoSugestaoPromocoes(row);
                 motivo.style.display = motivo.textContent ? 'block' : 'none';
                 motivo.style.whiteSpace = 'normal';
+
+                const impedimento = document.createElement('small');
+                impedimento.className = 'promo-decision-reason promo-decision-technical';
+                impedimento.textContent = obterImpedimentoTecnicoPromocoes(row);
+                impedimento.style.display = impedimento.textContent ? 'block' : 'none';
 
                 select.addEventListener('change', function() {
                     const val = this.value;
@@ -307,6 +313,7 @@ function renderTable(data) {
 
                 td.appendChild(select);
                 td.appendChild(motivo);
+                td.appendChild(impedimento);
             } else {
                 td.textContent = cellValue;
                 if (col.key === 'Valor Líquido' || col.key === 'Valor líquido ML') {

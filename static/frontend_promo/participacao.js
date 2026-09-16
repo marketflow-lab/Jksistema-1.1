@@ -342,6 +342,10 @@ function montarPayloadParticipacoesPromocoes(indiceCampanha = null, opcoes = {})
         const promotionType = String(analise?.promo_b_type || campanha?.type || campanha?.promotion_type || '').trim();
         const nome = String(analise?.promo_b_nome || campanha?.name || campanha?.title || `Promocao ${idx + 1}`).trim();
         const items = selecionadas.map((row, indiceSelecionado) => {
+            if (opcoes.automatica && Object.prototype.hasOwnProperty.call(row || {}, 'action_tecnico_apto')) {
+                const apto = String(row.action_tecnico_apto ?? '').trim().toLowerCase();
+                if (!['1', 'true', 'sim', 'yes'].includes(apto)) return null;
+            }
             if (opcoes.automatica && Object.prototype.hasOwnProperty.call(row || {}, 'action_financeiro_exato')) {
                 const contextoExato = row?.action_financeiro_exato;
                 const contextoExatoTexto = String(contextoExato ?? '').trim().toLowerCase();

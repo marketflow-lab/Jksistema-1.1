@@ -140,7 +140,7 @@ def test_shadow_cannot_mutate_authoritative_result_through_its_snapshots(monkeyp
         result = _calculate(raw, fee, shipping)
 
     assert raw["promotion_id"] == "PROMO-SHADOW-TEST"
-    assert result == {
+    assert {key: result[key] for key in ("tarifa", "valor_liquido", "margem", "exato", "fonte")} == {
         "tarifa": 14.77,
         "valor_liquido": 18.38,
         "margem": 22.975,

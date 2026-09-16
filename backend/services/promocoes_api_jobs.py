@@ -366,6 +366,13 @@ def _promo_automacao_montar_participacoes(resultado: dict, loja: str) -> dict:
             )
             if decisao != "Participar":
                 continue
+            if "action_tecnico_apto" in row:
+                tecnico_apto = row.get("action_tecnico_apto")
+                if not (
+                    tecnico_apto is True
+                    or str(tecnico_apto or "").strip().lower() in {"1", "true", "sim", "yes"}
+                ):
+                    continue
             if "action_financeiro_exato" in row:
                 contexto_exato = row.get("action_financeiro_exato")
                 if not (
@@ -376,14 +383,27 @@ def _promo_automacao_montar_participacoes(resultado: dict, loja: str) -> dict:
             item_id = _promo_normalizar_mlb(_promo_automacao_linha_valor(row, ["MLB", "mlb", "Item ID", "item_id", "AnÃºncio", "Anuncio"]))
             if not item_id:
                 continue
-            items.append({
+            item_payload = {
                 "item_id": item_id,
                 "offer_id": str(_promo_automacao_linha_valor(row, ["action_offer_id", "offer_id", "offerId", "ref_id", "refId"]) or "").strip(),
                 "deal_price": _parse_float_flex(_promo_automacao_linha_valor(row, ["action_deal_price", "deal_price", "preco_promocional_ml", "PreÃ§o Promocional ML", "Preco Promocional ML", "PreÃ§o Final ML", "Preco Final ML", "PreÃ§o Final PromoÃ§Ã£o 2", "Preco Final Promocao 2"])),
                 "discount_percentage": _parse_float_flex(_promo_automacao_linha_valor(row, ["action_discount_percentage", "ML % Campanha", "% Fixa", "Desconto ML %", "discount_percentage", "percentual"])),
                 "sku": str(_promo_automacao_linha_valor(row, ["SKU", "sku"]) or "").strip(),
                 "titulo": str(_promo_automacao_linha_valor(row, ["TÃ­tulo", "Titulo", "title"]) or "").strip(),
-            })
+            }
+            if any(key in row for key in (
+                "action_promotion_id", "action_offer_id", "action_deal_price",
+                "action_discount_percentage", "action_financeiro_exato",
+            )):
+                # O contexto da ação é exclusivo, inclusive quando está incompleto.
+                # Nunca completar com valores legados de outra oferta exibida.
+                item_payload.update({
+                    "action_promotion_id": str(row.get("action_promotion_id") or "").strip(),
+                    "offer_id": str(row.get("action_offer_id") or "").strip(),
+                    "deal_price": _parse_float_flex(row.get("action_deal_price")),
+                    "discount_percentage": _parse_float_flex(row.get("action_discount_percentage")),
+                })
+            items.append(item_payload)
         if promotion_id and items:
             promocoes.append({
                 "promotion_id": promotion_id,

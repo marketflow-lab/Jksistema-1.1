@@ -33,6 +33,10 @@ assert.strictEqual(payload.promocoes[0].items.length, 236, 'toda escolha humana 
 assert.strictEqual(context.obterLinhasSelecionadasPromocoes(rows).length, 236);
 assert.strictEqual(new Set(payload.promocoes[0].items.map(item => item.client_ref)).size, 236);
 assert.strictEqual(context.montarPayloadParticipacoesPromocoes(null, { automatica: true }).promocoes[0].items.length, 11, 'automação mantém regra financeira');
+rows[1].action_tecnico_apto = false;
+rows[1].action_impedimento_tecnico = 'Identificador da oferta não informado.';
+assert.strictEqual(context.montarPayloadParticipacoesPromocoes(0).promocoes[0].items.length, 236, 'impedimento técnico não retira a escolha humana');
+assert.strictEqual(context.montarPayloadParticipacoesPromocoes(null, { automatica: true }).promocoes[0].items.length, 10, 'automação preserva validação técnica separada da financeira');
 rows[0]['Ação'] = 'Não participar';
 assert.strictEqual(context.montarPayloadParticipacoesPromocoes(0).promocoes[0].items.length, 235);
 

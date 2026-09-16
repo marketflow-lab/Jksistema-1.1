@@ -49,11 +49,18 @@ function obterLinhasSelecionadasPromocoes(rows) {
 
 function obterMotivoSugestaoPromocoes(row) {
     if (obterDecisaoPromocoes(row) === 'Participar') return '';
+    const motivo = String(row?.action_financeiro_motivo ?? '').trim();
+    if (motivo) return motivo;
     const exato = String(row?.action_financeiro_exato ?? '').trim().toLowerCase();
     if (exato === 'false' || exato === '0') {
-        return 'Dados financeiros insuficientes para recomendar a participação.';
+        return 'Margem da campanha selecionada não confirmada nesta análise. Execute uma nova análise para obter o motivo.';
     }
     return '';
+}
+
+function obterImpedimentoTecnicoPromocoes(row) {
+    const motivo = String(row?.action_impedimento_tecnico ?? '').trim();
+    return motivo ? `Pendência de envio: ${motivo}` : '';
 }
 
 function _normalizeLookupKeyBase(value) {

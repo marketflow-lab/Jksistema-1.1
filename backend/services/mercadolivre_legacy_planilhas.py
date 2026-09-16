@@ -77,6 +77,7 @@ def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_ex
     linhas = []
     for item in dados_analise or []:
         item = dict(item or {})
+        campos_analise = dict(item)
         preco_final = _to_float_safe(item.get('M 21 Fixa'))
         preco_final_ml = _to_float_safe(item.get('M ML'))
         preco_final_ml_display = _to_float_safe(item.get('preco_final_ml_display') or item.get('recebe_ml'))
@@ -244,6 +245,25 @@ def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_ex
             'Margem ML': _format_pct_br(margem_ml_pct) if margem_ml_pct is not None else item.get('Margem ML', item.get('Margem %', '')),
             'AÃ§Ã£o': item.get('Participar ou nÃ£o', item.get('AÃ§Ã£o', '')),
         })
+
+        if "action_financeiro_exato" in item:
+            # Preserva tambem o comparador e os componentes financeiros: a
+            # exportacao apenas apresenta o resultado da analise, sem criar
+            # um segundo calculo com precisao e preenchimentos diferentes.
+            for campo in (
+                "%", "Frete", "Frete ML", "Tarifa", "Tarifa ML",
+                "PreÃ§o Final", "PreÃ§o Final ML", "Imposto %", "Imposto",
+                "Imposto ML", "Desconto ML", "ML % Campanha",
+                "Valor LÃ­quido", "Margem",
+            ):
+                if campo in campos_analise:
+                    linhas[-1][campo] = campos_analise[campo]
+            exato = campos_analise.get("action_financeiro_exato") is True
+            linhas[-1]["Imposto Fixa"] = campos_analise.get("Imposto Fixa", campos_analise.get("Imposto", ""))
+            liquido = _to_float_safe(campos_analise.get("action_valor_liquido_ml")) if exato else None
+            margem = _to_float_safe(campos_analise.get("action_margem_ml")) if exato else None
+            linhas[-1]["Valor lÃ­quido ML"] = formatar_moeda_br(liquido) if liquido is not None else ""
+            linhas[-1]["Margem ML"] = _format_pct_br(margem) if margem is not None else ""
 
     df = pd.DataFrame(linhas)
     for c in COLUNAS_PLANILHA_ANALISE_PROMO:

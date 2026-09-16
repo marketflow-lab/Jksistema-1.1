@@ -59,7 +59,11 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
         promo_b_type: str = "SMART",
         raw_a_overrides: dict | None = None,
         retornar_resultado: bool = False,
+        via_api_direta: bool = False,
+        margem_tolerancia: float = 0,
     ):
+        # Os adaptadores reais vinculam o raw a campanha/item consultados.
+        raw_b = self._confirmar_contexto_candidate(raw_b, promo_b_id, promo_b_type)
         raw_b_resolvido = copy.deepcopy(raw_b if raw_b_resolvido is None else raw_b_resolvido)
         price_info = copy.deepcopy(price_info or {
             "price": 130.0,
@@ -224,7 +228,16 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
                 "promo_b_type": promo_b_type,
                 "promo_texto": "Top ferramentas",
             }
-            if com_arquivos:
+            if via_api_direta:
+                resultado_direto = analysis.analisar_promo_via_api(analysis.PromoAnaliseApiRequest(
+                    loja="Loja Teste", promocao_a_id=PROMO_A_ID,
+                    promocao_a_type="SELLER_CAMPAIGN", promocao_b_id=promo_b_id,
+                    promocao_b_type=promo_b_type, margem_minima=-100,
+                    promocao_b_files=["promocao.xlsx"],
+                    margem_tolerancia=margem_tolerancia,
+                ), client_id="000002")
+                resultado = {"analises": [resultado_direto]}
+            elif com_arquivos:
                 class UploadTeste:
                     filename = "promocao.xlsx"
 
@@ -237,6 +250,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
                     promocao_a_id=PROMO_A_ID,
                     promocao_a_type="SELLER_CAMPAIGN",
                     margem_minima=-100,
+                    margem_tolerancia=margem_tolerancia,
                     promocoes_b_meta=json.dumps([meta]),
                     files=[UploadTeste()],
                     client_id="000002",
@@ -247,6 +261,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
                     promocao_a_id=PROMO_A_ID,
                     promocao_a_type="SELLER_CAMPAIGN",
                     margem_minima=-100,
+                    margem_tolerancia=margem_tolerancia,
                     promocoes_b_meta=json.dumps([meta]),
                     client_id="000002",
                 ))
@@ -322,7 +337,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             "promotion_id": "P-MLB17753016",
             "type": "SMART",
             "status": "started",
-            "ref_id": "OFFER-MLB4407660734-13520914530",
+            "ref_id": "OFFER-MLB999000111-13520914530",
             "price": 147.34,
             "original_price": 192.28,
             "seller_percentage": 20.4,
@@ -967,7 +982,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
         self.assertEqual(linha_json["Margem ML"], "22,98%")
         self.assertTrue(linha_json["action_financeiro_exato"])
 
-    def test_candidate_contextualizado_sem_offer_calcula_pricing_mas_bloqueia_acao(self):
+    def test_candidate_contextualizado_sem_offer_calcula_margem_e_sugere_participar(self):
         candidate = self._candidate_sem_identidade_publica_contextualizado()
         candidate.pop("ref_id", None)
 
@@ -989,16 +1004,20 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             imposto_rate=0.10,
             promo_b_id="P-MLB17903092",
             promo_b_type="SMART",
+            margem_tolerancia=100,
         )
 
         self.assertEqual(linha_json["Tarifa ML"], "R$ 14,77")
         self.assertEqual(_valor_por_sufixo(linha_json, "quido ML"), "R$ 18,38")
         self.assertEqual(linha_json["Margem ML"], "22,98%")
-        self.assertFalse(linha_interna["action_financeiro_exato"])
-        self.assertFalse(linha_json["action_financeiro_exato"])
+        self.assertTrue(linha_interna["action_financeiro_exato"])
+        self.assertTrue(linha_json["action_financeiro_exato"])
+        self.assertFalse(linha_json["action_tecnico_apto"])
+        self.assertIn("Identificador da oferta", linha_json["action_impedimento_tecnico"])
+        self.assertEqual(linha_json.get("action_financeiro_motivo", ""), "")
         self.assertEqual(
             next(valor for chave, valor in linha_json.items() if str(chave).startswith("A")),
-            "Nao participar",
+            "Participar",
         )
 
     def test_candidate_contextualizado_falha_fechado_em_mismatch_de_campanha_ou_tipo(self):
@@ -1186,7 +1205,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             "promotion_type": "SMART",
             "status": "candidate",
             "item_id": ITEM_ID,
-            "offer_id": "CANDIDATE-MLB5211215702-76553900860",
+            "offer_id": "CANDIDATE-MLB999000111-76553900860",
             "price": 114.22,
             "original_price": 149.24,
             "seller_percentage": 21.1,
@@ -1212,7 +1231,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             "promotion_type": "SMART",
             "status": "candidate",
             "item_id": ITEM_ID,
-            "offer_id": "CANDIDATE-MLB5211215702-76553900860",
+            "offer_id": "CANDIDATE-MLB999000111-76553900860",
             "price": 114.22,
             "original_price": 149.24,
             "seller_percentage": 21.1,
@@ -1490,12 +1509,12 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
 
     def test_fluxo_caso_real_usa_oferta_ativa_e_tarifa_liquida_uma_vez(self):
         active = {
-            "id": "P-AGOSTO-TOP-ITENS",
+            "id": PROMO_B_ID,
             "promotion_id": PROMO_B_ID,
             "promotion_type": "SMART",
             "status": "started",
             "item_id": ITEM_ID,
-            "offer_id": "OFFER-MLB4407660734-13520914530",
+            "offer_id": "OFFER-MLB999000111-13520914530",
             "price": 147.34,
             "original_price": 192.28,
             "seller_percentage": 20.4,
@@ -1507,12 +1526,12 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             "seller_receives": 112.50,
         }
         candidate = {
-            "id": "P-AGOSTO-TOP-ITENS",
+            "id": PROMO_B_ID,
             "promotion_id": PROMO_B_ID,
             "promotion_type": "SMART",
             "status": "candidate",
             "item_id": ITEM_ID,
-            "ref_id": "CANDIDATE-MLB4407660734-77013259494",
+            "ref_id": "CANDIDATE-MLB999000111-77013259494",
             "price": 148.46,
             "original_price": 192.28,
             "seller_percentage": 21.0,
@@ -1523,14 +1542,14 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
         }
 
         linha_interna, linha_json = self._executar_fluxo(
-            candidate,
-            raw_b_resolvido=candidate,
+            active,
+            raw_b_resolvido=active,
             promocoes_item=[candidate, active],
             price_info={
                 "price": 147.34,
                 "standard_price": 192.28,
                 "original_price": 192.28,
-                "promotion_id": "OFFER-MLB4407660734-13520914530",
+                "promotion_id": "OFFER-MLB999000111-13520914530",
                 "promotion_type": "marketplace_campaign",
                 "price_source": "sale_price",
             },
@@ -1542,9 +1561,9 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
 
         self.assertEqual(linha_interna["deal_price"], 147.34)
         self.assertEqual(linha_interna["preco_promocional_ml"], 147.34)
-        self.assertEqual(linha_interna["offer_id"], "CANDIDATE-MLB4407660734-77013259494")
-        self.assertEqual(linha_interna["action_offer_id"], "CANDIDATE-MLB4407660734-77013259494")
-        self.assertEqual(linha_interna["pricing_offer_id"], "OFFER-MLB4407660734-13520914530")
+        self.assertEqual(linha_interna["offer_id"], "OFFER-MLB999000111-13520914530")
+        self.assertEqual(linha_interna["action_offer_id"], "OFFER-MLB999000111-13520914530")
+        self.assertEqual(linha_interna["pricing_offer_id"], "OFFER-MLB999000111-13520914530")
         self.assertEqual(linha_interna[analysis.PROMO_TARIFA_ML_EXATA_KEY], True)
         self.assertEqual(_valor_por_sufixo(linha_json, "o Final ML"), "R$ 147,34")
         self.assertEqual(linha_json["ML % Campanha"], "23,37%")
@@ -1555,11 +1574,11 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
 
     def test_fluxo_caso_live_separa_candidato_da_oferta_ativa_mais_barata(self):
         candidate = {
-            "id": "P-MLB17919018",
+            "id": PROMO_B_ID,
             "promotion_type": "SMART",
             "status": "candidate",
             "item_id": ITEM_ID,
-            "ref_id": "CANDIDATE-MLB4407660734-77013259494",
+            "ref_id": "CANDIDATE-MLB999000111-77013259494",
             "price": 148.46,
             "original_price": 192.28,
             "seller_percentage": 18.2,
@@ -1569,7 +1588,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             "id": "P-MLB17753016",
             "type": "SMART",
             "status": "started",
-            "ref_id": "OFFER-MLB4407660734-13520914530",
+            "ref_id": "OFFER-MLB999000111-13520914530",
             "price": 147.34,
             "original_price": 192.28,
             "seller_percentage": 20.4,
@@ -1584,7 +1603,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
                 "price": 147.34,
                 "standard_price": 192.28,
                 "original_price": 192.28,
-                "promotion_id": "OFFER-MLB4407660734-13520914530",
+                "promotion_id": "OFFER-MLB999000111-13520914530",
                 "promotion_type": "SMART",
                 "price_source": "sale_price",
             },
@@ -1593,28 +1612,28 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             custo=53.92,
         )
 
-        self.assertEqual(linha_interna["deal_price"], 147.34)
-        self.assertEqual(linha_interna["preco_promocional_ml"], 147.34)
-        self.assertEqual(linha_interna["offer_id"], "CANDIDATE-MLB4407660734-77013259494")
+        self.assertEqual(linha_interna["deal_price"], 148.46)
+        self.assertEqual(linha_interna["preco_promocional_ml"], 148.46)
+        self.assertEqual(linha_interna["offer_id"], "CANDIDATE-MLB999000111-77013259494")
         self.assertEqual(linha_interna["action_promotion_id"], PROMO_B_ID)
-        self.assertEqual(linha_interna["action_offer_id"], "CANDIDATE-MLB4407660734-77013259494")
+        self.assertEqual(linha_interna["action_offer_id"], "CANDIDATE-MLB999000111-77013259494")
         self.assertEqual(linha_interna["action_deal_price"], 148.46)
         self.assertAlmostEqual(linha_interna["action_discount_percentage"], 22.789682, places=6)
-        self.assertEqual(linha_interna["pricing_promotion_id"], "P-MLB17753016")
-        self.assertEqual(linha_interna["pricing_offer_id"], "OFFER-MLB4407660734-13520914530")
-        self.assertEqual(linha_interna["pricing_source"], "sale_price_active_offer")
-        self.assertEqual(_valor_por_sufixo(linha_json, "o Final ML"), "R$ 147,34")
-        self.assertEqual(linha_json["ML % Campanha"], "23,37%")
-        self.assertEqual(linha_json["Desconto ML"], "R$ 5,71")
+        self.assertEqual(linha_interna["pricing_promotion_id"], PROMO_B_ID)
+        self.assertEqual(linha_interna["pricing_offer_id"], "CANDIDATE-MLB999000111-77013259494")
+        self.assertEqual(linha_interna["pricing_source"], "campanha_selecionada")
+        self.assertEqual(_valor_por_sufixo(linha_json, "o Final ML"), "R$ 148,46")
+        self.assertEqual(linha_json["ML % Campanha"], "22,79%")
+        self.assertEqual(linha_json["Desconto ML"], "R$ 8,83")
         self.assertTrue(linha_interna[analysis.PROMO_TARIFA_ML_EXATA_KEY])
         self.assertEqual(
             linha_interna[analysis.PROMO_TARIFA_ML_FONTE_KEY],
             "listing_prices.menos_coparticipacao_ml_smart",
         )
-        self.assertEqual(linha_json["Tarifa ML"], "R$ 16,39")
-        self.assertEqual(_valor_por_sufixo(linha_json, "quido ML"), "R$ 25,22")
-        self.assertEqual(linha_json["Margem ML"], "17,12%")
-        self.assertEqual(linha_json["action_offer_id"], "CANDIDATE-MLB4407660734-77013259494")
+        self.assertEqual(linha_json["Tarifa ML"], "R$ 13,27")
+        self.assertEqual(_valor_por_sufixo(linha_json, "quido ML"), "R$ 29,19")
+        self.assertEqual(linha_json["Margem ML"], "19,66%")
+        self.assertEqual(linha_json["action_offer_id"], "CANDIDATE-MLB999000111-77013259494")
         self.assertEqual(linha_json["action_deal_price"], 148.46)
 
     def test_decisao_usa_financeiro_da_acao_quando_pricing_e_de_outra_campanha(self):
@@ -1660,9 +1679,10 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(linha_interna["pricing_promotion_id"], "P-ACTIVE-PRICING")
+        self.assertEqual(linha_interna["pricing_promotion_id"], PROMO_B_ID)
         self.assertEqual(linha_interna["action_promotion_id"], PROMO_B_ID)
-        self.assertEqual(linha_interna["Margem ML"], "41,24%")
+        self.assertEqual(linha_interna["Margem ML"], "-1,35%")
+        self.assertEqual(linha_json["Margem ML"], linha_interna["Margem ML"])
         self.assertEqual(linha_interna["action_tarifa_ml"], 80.0)
         self.assertTrue(linha_interna["action_financeiro_exato"])
         self.assertLess(linha_interna["action_valor_liquido_ml"], 0)
@@ -1733,7 +1753,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             "promotion_type": "SMART",
             "status": "candidate",
             "item_id": ITEM_ID,
-            "ref_id": "CANDIDATE-MLB4407660734-77013259494",
+            "ref_id": "CANDIDATE-MLB999000111-77013259494",
             "price": 148.46,
             "original_price": 192.28,
             "seller_percentage": 18.2,
@@ -1744,7 +1764,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             "type": "SMART",
             "status": "started",
             "item_id": ITEM_ID,
-            "ref_id": "OFFER-MLB4407660734-13520914530",
+            "ref_id": "OFFER-MLB999000111-13520914530",
             "price": 147.34,
             "original_price": 192.28,
             "seller_percentage": 20.4,
@@ -1759,7 +1779,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
                 "price": 147.34,
                 "standard_price": 192.28,
                 "original_price": 192.28,
-                "promotion_id": "OFFER-MLB4407660734-13520914530",
+                "promotion_id": "OFFER-MLB999000111-13520914530",
                 "promotion_type": "SMART",
                 "price_source": "sale_price",
             },
@@ -1769,24 +1789,24 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             com_arquivos=True,
         )
 
-        self.assertEqual(linha_interna["deal_price"], 147.34)
-        self.assertEqual(linha_interna["offer_id"], "CANDIDATE-MLB4407660734-77013259494")
+        self.assertEqual(linha_interna["deal_price"], 148.46)
+        self.assertEqual(linha_interna["offer_id"], "CANDIDATE-MLB999000111-77013259494")
         self.assertEqual(linha_interna["action_promotion_id"], PROMO_B_ID)
-        self.assertEqual(linha_interna["action_offer_id"], "CANDIDATE-MLB4407660734-77013259494")
+        self.assertEqual(linha_interna["action_offer_id"], "CANDIDATE-MLB999000111-77013259494")
         self.assertEqual(linha_interna["action_deal_price"], 148.46)
         self.assertAlmostEqual(linha_interna["action_discount_percentage"], 22.789682, places=6)
-        self.assertEqual(linha_interna["pricing_promotion_id"], "P-MLB17753016")
-        self.assertEqual(linha_interna["pricing_offer_id"], "OFFER-MLB4407660734-13520914530")
-        self.assertEqual(linha_interna["pricing_price"], 147.34)
-        self.assertEqual(linha_interna["pricing_source"], "sale_price_active_offer")
-        self.assertEqual(_valor_por_sufixo(linha_json, "o Final ML"), "R$ 147,34")
-        self.assertEqual(linha_json["ML % Campanha"], "23,37%")
-        self.assertEqual(linha_json["Desconto ML"], "R$ 5,71")
-        self.assertEqual(linha_json["offer_id"], "CANDIDATE-MLB4407660734-77013259494")
-        self.assertEqual(linha_json["action_offer_id"], "CANDIDATE-MLB4407660734-77013259494")
+        self.assertEqual(linha_interna["pricing_promotion_id"], PROMO_B_ID)
+        self.assertEqual(linha_interna["pricing_offer_id"], "CANDIDATE-MLB999000111-77013259494")
+        self.assertEqual(linha_interna["pricing_price"], 148.46)
+        self.assertEqual(linha_interna["pricing_source"], "campanha_selecionada")
+        self.assertEqual(_valor_por_sufixo(linha_json, "o Final ML"), "R$ 148,46")
+        self.assertEqual(linha_json["ML % Campanha"], "22,79%")
+        self.assertEqual(linha_json["Desconto ML"], "R$ 8,83")
+        self.assertEqual(linha_json["offer_id"], "CANDIDATE-MLB999000111-77013259494")
+        self.assertEqual(linha_json["action_offer_id"], "CANDIDATE-MLB999000111-77013259494")
         self.assertEqual(linha_json["action_deal_price"], 148.46)
-        self.assertEqual(linha_json["pricing_offer_id"], "OFFER-MLB4407660734-13520914530")
-        self.assertEqual(linha_json["pricing_price"], 147.34)
+        self.assertEqual(linha_json["pricing_offer_id"], "CANDIDATE-MLB999000111-77013259494")
+        self.assertEqual(linha_json["pricing_price"], 148.46)
 
     def test_fluxo_com_arquivos_aceita_tarifa_cobrada_exata_sem_fee_base(self):
         candidate = self._confirmar_contexto_candidate({
@@ -1852,10 +1872,10 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
                     "promo_b_id": "P-MLB17919018",
                     "promo_b_type": "SMART",
                     "data": [{
-                        "MLB": "MLB4407660734",
+                        "MLB": "MLB999000111",
                         "Acao": "Participar",
-                        "action_offer_id": "CANDIDATE-MLB4407660734-77013259494",
-                        "offer_id": "OFFER-MLB4407660734-13520914530",
+                        "action_offer_id": "CANDIDATE-MLB999000111-77013259494",
+                        "offer_id": "OFFER-MLB999000111-13520914530",
                         "action_deal_price": 148.46,
                         "deal_price": 147.34,
                         "action_discount_percentage": 22.789682,
@@ -1867,7 +1887,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
         )
 
         item = payload["promocoes"][0]["items"][0]
-        self.assertEqual(item["offer_id"], "CANDIDATE-MLB4407660734-77013259494")
+        self.assertEqual(item["offer_id"], "CANDIDATE-MLB999000111-77013259494")
         self.assertEqual(item["deal_price"], 148.46)
         self.assertAlmostEqual(item["discount_percentage"], 22.789682, places=6)
 
@@ -1878,9 +1898,9 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
                     "promo_b_id": "P-MLB17919018",
                     "promo_b_type": "SMART",
                     "data": [{
-                        "MLB": "MLB4407660734",
+                        "MLB": "MLB999000111",
                         "Acao": "Participar",
-                        "action_offer_id": "CANDIDATE-MLB4407660734-77013259494",
+                        "action_offer_id": "CANDIDATE-MLB999000111-77013259494",
                         "action_deal_price": 148.46,
                         "action_discount_percentage": 22.789682,
                         "action_financeiro_exato": False,
@@ -1899,7 +1919,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             "promotion_type": "SMART",
             "status": "started",
             "item_id": ITEM_ID,
-            "offer_id": "OFFER-MLB4407660734-13520914530",
+            "offer_id": "OFFER-MLB999000111-13520914530",
             "price": 147.34,
             "original_price": 192.28,
             "boosted_offer": True,
@@ -1911,7 +1931,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             "price": 147.34,
             "standard_price": 192.28,
             "original_price": 192.28,
-            "promotion_id": "OFFER-MLB4407660734-13520914530",
+            "promotion_id": "OFFER-MLB999000111-13520914530",
             "price_source": "sale_price",
         }
 
@@ -1951,6 +1971,101 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             self.assertEqual(linha_interna["Margem ML"], "")
             self.assertEqual(_valor_por_sufixo(linha_json, "quido ML"), "")
             self.assertEqual(linha_json["Margem ML"], "")
+
+
+    def test_financeiro_e_exibicao_compartilham_campanha_nas_tres_variantes(self):
+        candidate = {
+            "id": PROMO_B_ID, "promotion_type": "SMART", "status": "candidate",
+            "item_id": ITEM_ID, "price": 148.46, "original_price": 192.28,
+            "sale_fee_amount": 16.00,
+        }
+        outra = dict(candidate, id="P-OUTRA", price=70, sale_fee_amount=1)
+        for variante in ({}, {"com_arquivos": True}, {"via_api_direta": True}):
+            for status in ("candidate", "started"):
+                with self.subTest(variante=variante, status=status):
+                    raw = dict(candidate, status=status)
+                    if status == "started":
+                        raw["offer_id"] = f"OFFER-{ITEM_ID}-ATIVA"
+                    interna, saida = self._executar_fluxo(
+                        raw, raw_b_resolvido=outra, promocoes_item=[raw, outra],
+                        custo=20.004, imposto_rate=0.012345, margem_tolerancia=100,
+                        **variante,
+                    )
+                    self.assertTrue(saida["action_financeiro_exato"])
+                    self.assertEqual(saida["action_deal_price"], 148.46)
+                    self.assertEqual(saida["deal_price"], 148.46)
+                    self.assertEqual(saida["pricing_promotion_id"], PROMO_B_ID)
+                    self.assertEqual(saida["Margem ML"], analysis._format_pct_br(interna["action_margem_ml"]))
+                    self.assertEqual(saida["Margem"], interna["Margem"])
+                    for campo in ("Tarifa ML", "Frete ML", "Imposto ML", "Desconto ML", "ML % Campanha"):
+                        self.assertEqual(saida[campo], interna[campo])
+                    self.assertEqual(_valor_por_sufixo(saida, "quido ML"), analysis.formatar_moeda_br(interna["action_valor_liquido_ml"]))
+                    self.assertEqual(next(v for k, v in saida.items() if str(k).startswith("A")), "Participar")
+                    self.assertEqual(saida.get("action_financeiro_motivo", ""), "")
+                    self.assertFalse(saida["action_tecnico_apto"])
+                    self.assertTrue(saida["action_impedimento_tecnico"])
+
+    def test_financeiro_ausente_nao_vira_zero_nem_margem_na_exportacao(self):
+        raw = {
+            "id": PROMO_B_ID, "promotion_type": "SMART", "status": "candidate",
+            "item_id": ITEM_ID, "offer_id": f"CANDIDATE-{ITEM_ID}-TESTE",
+            "price": 148.46, "original_price": 192.28, "sale_fee_amount": 16,
+        }
+        faltantes = (
+            ({"custo": None}, "custo"),
+            ({"imposto_rate": None}, "imposto"),
+            ({"frete_b_data": {"shipping_exact_for_price": False}}, "frete"),
+        )
+        for variante in ({}, {"com_arquivos": True}, {"via_api_direta": True}):
+            for dados, motivo in faltantes:
+                with self.subTest(variante=variante, motivo=motivo):
+                    interna, saida = self._executar_fluxo(raw, **dados, **variante)
+                    self.assertFalse(saida["action_financeiro_exato"])
+                    self.assertIn(motivo, saida["action_financeiro_motivo"])
+                    self.assertTrue(saida["action_tecnico_apto"])
+                    self.assertEqual(saida["Margem ML"], "")
+                    self.assertEqual(interna["Margem ML"], "")
+                    self.assertEqual(_valor_por_sufixo(saida, "quido ML"), "")
+                    if motivo == "imposto":
+                        self.assertEqual(saida["Imposto ML"], "")
+
+    def test_builder_preserva_precisao_canonica_sem_recalculo_ou_fallback_de_imposto(self):
+        linha = {
+            "MLB": ITEM_ID, "deal_price": 80, "Custo": "R$ 20,00",
+            "Frete ML": "A calcular", "Tarifa ML": "A calcular", "Imposto ML": "",
+            "frete_ml_exato": False, analysis.PROMO_TARIFA_ML_EXATA_KEY: False,
+            "Margem": "12,34%", "Margem ML": "999%", "Imposto": "R$ 1,83",
+            "action_financeiro_exato": True, "action_margem_ml": 22.975,
+            "action_valor_liquido_ml": 18.38,
+        }
+        saida = analysis._build_df_planilha_analise_promo([linha]).to_dict(orient="records")[0]
+        self.assertEqual(saida["Margem ML"], "22,98%")
+        self.assertEqual(saida["Margem"], "12,34%")
+        self.assertEqual(_valor_por_sufixo(saida, "quido ML"), "R$ 18,38")
+        self.assertEqual(saida["Imposto ML"], "")
+        self.assertEqual(saida["Imposto Fixa"], "R$ 1,83")
+        saida_inexata = analysis._build_df_planilha_analise_promo([
+            dict(linha, action_financeiro_exato=False)
+        ]).to_dict(orient="records")[0]
+        self.assertEqual(saida_inexata["Margem ML"], "")
+        self.assertEqual(_valor_por_sufixo(saida_inexata, "quido ML"), "")
+
+    def test_contexto_divergente_nao_exibe_margem_de_outra_campanha(self):
+        base = {
+            "id": PROMO_B_ID, "promotion_type": "SMART", "status": "candidate",
+            "item_id": ITEM_ID, "offer_id": f"CANDIDATE-{ITEM_ID}-TESTE",
+            "price": 148.46, "original_price": 192.28, "sale_fee_amount": 16,
+        }
+        for variante in ({}, {"com_arquivos": True}, {"via_api_direta": True}):
+            for invalido in ({"id": "P-OUTRA"}, {"item_id": "MLB888"}, {"promotion_type": "DEAL"}, {"offer_id": "CANDIDATE-MLB888-OUTRA"}):
+                with self.subTest(variante=variante, invalido=invalido):
+                    interna, saida = self._executar_fluxo(dict(base, **invalido), **variante)
+                    self.assertFalse(saida["action_financeiro_exato"])
+                    self.assertFalse(saida["action_tecnico_apto"])
+                    self.assertIn("Contexto", saida["action_financeiro_motivo"])
+                    self.assertEqual(saida["Margem ML"], "")
+                    self.assertEqual(saida["Tarifa ML"], "A calcular")
+                    self.assertEqual(_valor_por_sufixo(saida, "o Final ML"), "A calcular")
 
 
 if __name__ == "__main__":

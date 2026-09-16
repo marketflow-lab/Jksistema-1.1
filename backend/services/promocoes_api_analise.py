@@ -909,24 +909,34 @@ def _promo_calcular_contexto_financeiro_acao(
     client_id: Any = None,
     loja: Any = None,
 ) -> dict:
-    """Calcula o cenario que sera efetivamente enviado na participacao.
-
-    A linha pode exibir a oferta ativa vigente, mas a decisao automatica precisa
-    usar o CANDIDATE da campanha selecionada. Qualquer falta de contexto torna o
-    cenario nao elegivel, sem reaproveitar valores da oferta ativa.
-    """
+    """Calcula o unico cenario financeiro exibido e usado na sugestao."""
     resultado = {
         "tarifa": None,
         "valor_liquido": None,
         "margem": None,
         "exato": False,
         "fonte": "",
+        "motivo": "",
+        "preco": None,
+        "imposto": None,
+        "frete": None,
+        "frete_exato": False,
+        "frete_fonte": "",
+        "tarifa_exata": False,
+        "desconto": None,
+        "desconto_confiavel": False,
+        "desconto_fonte": "",
+        "recebivel": None,
+        "fee_data": fee_data or {},
+        "shipping_data": shipping_data or {},
     }
     preco = _parse_float_flex(preco_promocional)
     custo_num = _parse_float_flex(custo)
     imposto_num = _parse_float_flex(imposto_rate)
-    if preco is None or preco <= 0 or custo_num is None or imposto_num is None:
+    if preco is None or preco <= 0:
+        resultado["motivo"] = "Preco da campanha selecionada nao informado."
         return resultado
+    resultado["preco"] = preco
 
     desconto_ml = _ml_extrair_desconto_tarifa_promocao_raw(raw_promocao)
     tarifa_base = _parse_float_flex((fee_data or {}).get("ad_cost"))
@@ -985,7 +995,34 @@ def _promo_calcular_contexto_financeiro_acao(
         "shipping_price_context",
     )
     frete = _parse_float_flex((shipping_data or {}).get("shipping_cost"))
-    if tarifa_exata and tarifa is not None and frete_exato and frete is not None:
+    recebivel = _ml_extrair_recebivel_promocao_raw(raw_promocao)
+    if recebivel is None and tarifa_exata and frete_exato:
+        recebivel = _ml_calcular_recebivel_promocao(raw_promocao, preco, tarifa, frete, None)
+    resultado.update({
+        "tarifa": round(float(tarifa), 2) if tarifa_exata and tarifa is not None else None,
+        "tarifa_exata": bool(tarifa_exata),
+        "fonte": tarifa_fonte,
+        "frete": frete if frete_exato else None,
+        "frete_exato": bool(frete_exato),
+        "frete_fonte": (shipping_data or {}).get("shipping_cost_retry_source") or "",
+        "imposto": float(preco) * imposto_num if imposto_num is not None else None,
+        "desconto": desconto_ml,
+        "desconto_confiavel": desconto_confiavel,
+        "desconto_fonte": desconto_fonte,
+        "recebivel": recebivel,
+    })
+    faltantes = []
+    if custo_num is None:
+        faltantes.append("custo")
+    if imposto_num is None:
+        faltantes.append("imposto")
+    if not tarifa_exata or tarifa is None:
+        faltantes.append("tarifa exata no preco da campanha")
+    if not frete_exato or frete is None:
+        faltantes.append("frete exato no preco da campanha")
+    if faltantes:
+        resultado["motivo"] = "Dados financeiros pendentes: " + ", ".join(faltantes) + "."
+    else:
         imposto = float(preco) * float(imposto_num)
         liquido = float(preco) - float(custo_num) - float(frete) - imposto - float(tarifa)
         resultado.update({
@@ -1154,10 +1191,12 @@ def _promo_obter_contexto_financeiro_acao(
     imposto_rate: Any,
     promotion_type_esperado: str = "",
 ):
-    """Consulta tarifa/frete do CANDIDATE usado no payload de participacao."""
-    vazio = {"tarifa": None, "valor_liquido": None, "margem": None, "exato": False, "fonte": ""}
+    """Consulta a campanha selecionada sem confundir oferta com rentabilidade."""
+    vazio = {"tarifa": None, "valor_liquido": None, "margem": None, "exato": False, "fonte": "",
+             "motivo": "Contexto da campanha selecionada nao confirmado.",
+             "tecnico_apto": False, "impedimento_tecnico": "Contexto da campanha selecionada nao confirmado."}
     preco = _parse_float_flex(preco_acao)
-    if preco is None or preco <= 0 or not isinstance(raw_acao, dict):
+    if not isinstance(raw_acao, dict):
         return vazio, cfg
 
     status = _promo_raw_texto_explicito(raw_acao, ("status", "state")).strip().lower()
@@ -1182,13 +1221,21 @@ def _promo_obter_contexto_financeiro_acao(
         and (not tipo_esperado or promotion_type.upper() == tipo_esperado.upper())
         and item_raw
         and item_raw.upper() == item_esperado.upper()
-        and offer_item_valido
-        and (
-            status in {"candidate", "eligible"}
-            and offer_id.startswith("CANDIDATE-")
-        )
+        and (not offer_item or offer_item_valido)
     )
     if not identidade_valida:
+        return vazio, cfg
+
+    impedimento = ""
+    if status not in {"candidate", "eligible"}:
+        impedimento = "Situacao da oferta exige verificacao antes do envio."
+    elif promotion_type.upper() in {"SMART", "PRICE_MATCHING", "MARKETPLACE_CAMPAIGN"} and not offer_id:
+        impedimento = "Identificador da oferta nao informado; sera consultado antes do envio."
+    elif offer_id and not offer_item_valido:
+        impedimento = "Identificador da oferta nao confirmado para este anuncio."
+    tecnico = {"tecnico_apto": not impedimento, "impedimento_tecnico": impedimento}
+    if preco is None or preco <= 0:
+        vazio.update(tecnico, motivo="Preco da campanha selecionada nao informado.")
         return vazio, cfg
 
     try:
@@ -1216,7 +1263,7 @@ def _promo_obter_contexto_financeiro_acao(
     except Exception:
         fee_acao = {}
 
-    return _promo_calcular_contexto_financeiro_acao(
+    financeiro = _promo_calcular_contexto_financeiro_acao(
         raw_acao,
         preco_base,
         preco,
@@ -1227,7 +1274,49 @@ def _promo_obter_contexto_financeiro_acao(
         imposto_rate,
         client_id=client_id,
         loja=loja,
-    ), cfg
+    )
+    financeiro.update(tecnico)
+    return financeiro, cfg
+
+
+def _promo_campos_financeiros_acao(financeiro: dict, raw_acao: dict, percentual: Any, margem_base: Any) -> dict:
+    """A apresentacao da promocao 2 usa o mesmo contexto da recomendacao."""
+    preco = financeiro.get("preco")
+    tarifa = financeiro.get("tarifa")
+    frete = financeiro.get("frete")
+    imposto = financeiro.get("imposto")
+    fee = financeiro.get("fee_data") or {}
+    shipping = financeiro.get("shipping_data") or {}
+    buyer_cost = _parse_float_flex(shipping.get("shipping_buyer_cost"))
+    return {
+        "%": _format_pct_br(fee.get("sale_fee_pct", fee.get("meli_fee_pct"))),
+        "PreÃ§o Final ML": formatar_moeda_br(preco) if preco is not None else "A calcular",
+        "deal_price": preco,
+        "preco_promocional_ml": preco,
+        "preco_final_ml_display": financeiro.get("recebivel"),
+        "ML % Campanha": _format_pct_br(percentual) if preco is not None else "",
+        "Tarifa ML": formatar_moeda_br(tarifa) if tarifa is not None else "A calcular",
+        PROMO_TARIFA_ML_EXATA_KEY: financeiro.get("tarifa_exata", False),
+        PROMO_TARIFA_ML_LIQUIDA_KEY: financeiro.get("tarifa_exata", False),
+        PROMO_TARIFA_ML_FONTE_KEY: financeiro.get("fonte", ""),
+        "Frete ML": formatar_moeda_br(frete) if frete is not None else "A calcular",
+        "frete_ml_exato": financeiro.get("frete_exato", False),
+        "frete_ml_fonte": financeiro.get("frete_fonte", ""),
+        "Frete Gratis ML": ("SIM" if shipping.get("free_shipping") or (buyer_cost is not None and buyer_cost <= 0) else "NÃO") if shipping else "A calcular",
+        "Imposto ML": formatar_moeda_br(imposto) if imposto is not None else "",
+        "Desconto ML": formatar_moeda_br(financeiro["desconto"]) if financeiro.get("desconto_confiavel") and financeiro.get("desconto") is not None else PROMO_DESCONTO_ML_NAO_INFORMADO,
+        PROMO_DESCONTO_ML_CONFIAVEL_KEY: financeiro.get("desconto_confiavel", False),
+        PROMO_DESCONTO_ML_FONTE_KEY: financeiro.get("desconto_fonte", ""),
+        "Valor lÃ­quido ML": formatar_moeda_br(financeiro["valor_liquido"]) if financeiro.get("valor_liquido") is not None else "",
+        "Margem ML": _format_pct_br(financeiro.get("margem")),
+        "action_financeiro_motivo": financeiro.get("motivo") or ("Margem da promocao 1 nao confirmada para comparar." if margem_base is None else ""),
+        "action_impedimento_tecnico": financeiro.get("impedimento_tecnico", ""),
+        "action_tecnico_apto": financeiro.get("tecnico_apto", False),
+        "pricing_promotion_id": _ml_promocao_raw_id(raw_acao),
+        "pricing_offer_id": _ml_promocao_raw_offer_id(raw_acao),
+        "pricing_price": preco,
+        "pricing_source": "campanha_selecionada",
+    }
 
 
 def _promo_ajustar_preco_painel_seller_campaign(
@@ -1444,27 +1533,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             raw_b_participacao,
             priorizar_percentual_total_api=True,
         )
-        raw_b_ativo = dict(raw_b_item) if isinstance(raw_b_item, dict) else {}
-        raw_b_item, cfg_local = _ml_resolver_raw_promocao_equivalente_para_analise(
-            client_id,
-            req.loja,
-            cfg_local,
-            item_id,
-            raw_b_item,
-            promo_b,
-            promo_b_type,
-            preco_base_anuncio,
-        )
-        if not promocoes_item_a:
-            raw_b_item = dict(raw_b_participacao)
-        raw_b_item = _promo_selecionar_raw_ativo_sale_price(
-            raw_b_ativo,
-            raw_b_item,
-            price_info,
-            promo_b,
-            promocoes_item_a,
-            preco_candidato_override=preco_b_acao_raw,
-        )
+        raw_b_item = dict(raw_b_participacao)
         try:
             raw_a_item = _promo_ajustar_preco_painel_seller_campaign(
                 raw_a_item,
@@ -1504,7 +1573,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         desconto_tarifa_ml = _ml_extrair_desconto_tarifa_promocao_raw(raw_b_item)
         preco_a = preco_a_raw or preco_base_anuncio or preco_atual
         preco_b = preco_b_raw or preco_atual or preco_base_anuncio
-        preco_b_acao = preco_b_acao_raw or preco_b
+        preco_b_acao = preco_b_acao_raw
 
         desconto_a = _ml_resolver_percentual_desconto_campanha_raw(
             raw_a_item,
@@ -1767,6 +1836,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             "pricing_offer_id": _ml_promocao_raw_offer_id(raw_b_item),
             "pricing_price": round(float(preco_b), 2) if preco_b is not None else None,
             "pricing_source": _promo_pricing_source(raw_b_item, price_info),
+            **_promo_campos_financeiros_acao(financeiro_acao, raw_b_participacao, desconto_b_acao, margem_a),
         }
 
     dados_analise = []
@@ -1824,6 +1894,9 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             "action_margem_ml": _parse_float_flex(item.get("action_margem_ml")),
             "action_financeiro_exato": item.get("action_financeiro_exato") is True,
             "action_financeiro_fonte": str(item.get("action_financeiro_fonte") or "").strip(),
+            "action_financeiro_motivo": str(item.get("action_financeiro_motivo") or ""),
+            "action_impedimento_tecnico": str(item.get("action_impedimento_tecnico") or ""),
+            "action_tecnico_apto": item.get("action_tecnico_apto") is True,
             "pricing_promotion_id": str(item.get("pricing_promotion_id") or "").strip(),
             "pricing_offer_id": str(item.get("pricing_offer_id") or "").strip(),
             "pricing_price": _parse_float_flex(item.get("pricing_price")),
@@ -1849,6 +1922,9 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             "action_margem_ml",
             "action_financeiro_exato",
             "action_financeiro_fonte",
+            "action_financeiro_motivo",
+            "action_impedimento_tecnico",
+            "action_tecnico_apto",
             "pricing_promotion_id",
             "pricing_offer_id",
             "pricing_price",
@@ -2037,19 +2113,7 @@ async def analisar_promo_via_api_sem_arquivos(
             raw_b_participacao,
             priorizar_percentual_total_api=True,
         )
-        raw_b_ativo = dict(raw_b_item) if isinstance(raw_b_item, dict) else {}
-        raw_b_item, cfg_local = _ml_resolver_raw_promocao_equivalente_para_analise(
-            client_id,
-            loja,
-            cfg_local,
-            item_id,
-            raw_b_item,
-            promo_meta["promo_b"],
-            promo_meta.get("promo_b_type") or "",
-            None,
-        )
-        if not promocoes_item_a:
-            raw_b_item = dict(raw_b_participacao)
+        raw_b_item = dict(raw_b_participacao)
         raw_a_item = raw_a.get(item_id, {}) if isinstance(raw_a, dict) else {}
         if promo_a_type and not raw_a_item:
             try:
@@ -2083,14 +2147,6 @@ async def analisar_promo_via_api_sem_arquivos(
             )
         except Exception:
             price_info = {}
-        raw_b_item = _promo_selecionar_raw_ativo_sale_price(
-            raw_b_ativo,
-            raw_b_item,
-            price_info,
-            promo_meta["promo_b"],
-            promocoes_item_a,
-            preco_candidato_override=preco_b_acao_raw,
-        )
         preco_atual = _parse_float_flex(price_info.get("price")) or _parse_float_flex(item.get("price")) or 0.0
         preco_base_anuncio = (
             _parse_float_flex(raw_b_item.get("original_price"))
@@ -2139,7 +2195,7 @@ async def analisar_promo_via_api_sem_arquivos(
         status_exibicao_promo_a = _ml_status_promocao_usuario_exibicao(status_promo_a)
         preco_a = preco_a_raw or preco_base_anuncio or preco_atual
         preco_b = preco_b_raw or _parse_float_flex(raw_b_item.get("price")) or preco_atual or preco_base_anuncio
-        preco_b_acao = preco_b_acao_raw or preco_b
+        preco_b_acao = preco_b_acao_raw
 
         desconto_a = _ml_resolver_percentual_desconto_campanha_raw(
             raw_a_item,
@@ -2415,6 +2471,7 @@ async def analisar_promo_via_api_sem_arquivos(
             "pricing_offer_id": _ml_promocao_raw_offer_id(raw_b_item),
             "pricing_price": round(float(preco_b), 2) if preco_b is not None else None,
             "pricing_source": _promo_pricing_source(raw_b_item, price_info),
+            **_promo_campos_financeiros_acao(financeiro_acao, raw_b_participacao, desconto_b_acao, margem_a),
         }
 
     analises = []
@@ -2579,6 +2636,9 @@ async def analisar_promo_via_api_sem_arquivos(
                 "action_margem_ml": _parse_float_flex(item.get("action_margem_ml")),
                 "action_financeiro_exato": item.get("action_financeiro_exato") is True,
                 "action_financeiro_fonte": str(item.get("action_financeiro_fonte") or "").strip(),
+                "action_financeiro_motivo": str(item.get("action_financeiro_motivo") or ""),
+                "action_impedimento_tecnico": str(item.get("action_impedimento_tecnico") or ""),
+                "action_tecnico_apto": item.get("action_tecnico_apto") is True,
                 "pricing_promotion_id": str(item.get("pricing_promotion_id") or "").strip(),
                 "pricing_offer_id": str(item.get("pricing_offer_id") or "").strip(),
                 "pricing_price": _parse_float_flex(item.get("pricing_price")),
@@ -2607,6 +2667,9 @@ async def analisar_promo_via_api_sem_arquivos(
                 "action_margem_ml",
                 "action_financeiro_exato",
                 "action_financeiro_fonte",
+                "action_financeiro_motivo",
+                "action_impedimento_tecnico",
+                "action_tecnico_apto",
                 "pricing_promotion_id",
                 "pricing_offer_id",
                 "pricing_price",
@@ -2862,27 +2925,7 @@ async def analisar_promo_via_api_com_arquivos(
         )
         preco_b_arquivo = _parse_float_flex(entrada_b.get("PreÃ§o Final ML"))
         preco_b_acao = preco_b_arquivo or preco_b_acao_raw
-        raw_b_ativo = dict(raw_b_item) if isinstance(raw_b_item, dict) else {}
-        raw_b_item, cfg_local = _ml_resolver_raw_promocao_equivalente_para_analise(
-            client_id,
-            loja,
-            cfg_local,
-            item_id,
-            raw_b_item,
-            promo_b_id,
-            promo_b_type,
-            None,
-        )
-        if not promocoes_item_a:
-            raw_b_item = dict(raw_b_participacao)
-        raw_b_item = _promo_selecionar_raw_ativo_sale_price(
-            raw_b_ativo,
-            raw_b_item,
-            price_info,
-            promo_b_id,
-            promocoes_item_a,
-            preco_candidato_override=preco_b_arquivo,
-        )
+        raw_b_item = dict(raw_b_participacao)
 
         try:
             raw_a_item = _promo_ajustar_preco_painel_seller_campaign(
@@ -2914,8 +2957,6 @@ async def analisar_promo_via_api_com_arquivos(
             preco_atual or preco_base_anuncio,
             promocoes_item_a,
         )
-        if preco_b_acao is None:
-            preco_b_acao = preco_b
         status_promo_a = _ml_classificar_status_promocao_entry(raw_a_item)
         if str(price_info.get("promotion_id") or "").strip().lower() == promo_a.lower():
             status_promo_a = "Ativo"
@@ -3138,18 +3179,7 @@ async def analisar_promo_via_api_com_arquivos(
         else:
             status = status_exibicao_promo_a
 
-        tem_valores_comparacao = (
-            custo is not None
-            and preco_a not in (None, 0)
-            and preco_b not in (None, 0)
-            and margem_a is not None
-            and tarifa_b_exata
-            and tarifa_b_cobrada is not None
-            and valor_liquido_b is not None
-            and margem_b is not None
-            and financeiro_acao["exato"]
-            and financeiro_acao["margem"] is not None
-        )
+        tem_valores_comparacao = financeiro_acao["exato"] and margem_a is not None
         if not tem_valores_comparacao:
             decisao = "NÃ£o participar"
         elif not _promo_margens_aprovadas_por_status(
@@ -3228,6 +3258,7 @@ async def analisar_promo_via_api_com_arquivos(
             "pricing_offer_id": _ml_promocao_raw_offer_id(raw_b_item),
             "pricing_price": round(float(preco_b), 2) if preco_b is not None else None,
             "pricing_source": _promo_pricing_source(raw_b_item, price_info),
+            **_promo_campos_financeiros_acao(financeiro_acao, raw_b_participacao, desconto_b_acao, margem_a),
         }
 
     for idx, promo_meta in enumerate(promocoes_processar, start=1):
@@ -3287,6 +3318,9 @@ async def analisar_promo_via_api_com_arquivos(
                 "action_margem_ml": _parse_float_flex(item.get("action_margem_ml")),
                 "action_financeiro_exato": item.get("action_financeiro_exato") is True,
                 "action_financeiro_fonte": str(item.get("action_financeiro_fonte") or "").strip(),
+                "action_financeiro_motivo": str(item.get("action_financeiro_motivo") or ""),
+                "action_impedimento_tecnico": str(item.get("action_impedimento_tecnico") or ""),
+                "action_tecnico_apto": item.get("action_tecnico_apto") is True,
                 "pricing_promotion_id": str(item.get("pricing_promotion_id") or "").strip(),
                 "pricing_offer_id": str(item.get("pricing_offer_id") or "").strip(),
                 "pricing_price": _parse_float_flex(item.get("pricing_price")),
@@ -3315,6 +3349,9 @@ async def analisar_promo_via_api_com_arquivos(
                 "action_margem_ml",
                 "action_financeiro_exato",
                 "action_financeiro_fonte",
+                "action_financeiro_motivo",
+                "action_impedimento_tecnico",
+                "action_tecnico_apto",
                 "pricing_promotion_id",
                 "pricing_offer_id",
                 "pricing_price",
