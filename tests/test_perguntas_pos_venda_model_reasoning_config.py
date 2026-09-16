@@ -312,9 +312,9 @@ def test_thread_id_is_persisted_before_failed_turn_and_reused_on_retry(monkeypat
 
 @pytest.mark.parametrize(
     ("post_sale", "expected_max_chars", "expected_max_sentences"),
-    ((False, 2000, 3), (True, 340, 3)),
+    ((False, 0, 0), (True, 0, 0)),
 )
-def test_v2_applies_channel_reply_limits_and_keeps_provider_only_as_fallback(
+def test_v2_preserves_unbounded_replies_and_keeps_provider_only_as_fallback(
     monkeypatch,
     post_sale,
     expected_max_chars,

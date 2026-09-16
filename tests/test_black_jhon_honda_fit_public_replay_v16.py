@@ -27,6 +27,7 @@ PUBLIC_BODY = (
     "Sim, este interruptor é instalado na carcaça da válvula termostática do "
     "Honda Fit 1.4 de 2003 a 2005. O código 37760-P00-003 substitui a referência "
     "37760-PHM-004 e mantém a aplicação correta do conjunto. Pode realizar a compra."
+    "\n\nA equipe Uai Mineirinho agradece o contato. Se precisar, estamos à disposição!"
 )
 
 
@@ -279,6 +280,7 @@ def test_honda_fit_v16_public_job_replays_all_six_stages_without_publishing(
         elif stage == "technical_resolution_final":
             value = _resolution(final=True)
         elif stage == "compatibility_public_answer":
+            assert question_state._perguntas_ia_assinatura_loja("Uai Mineirinho") in payload.message
             generated_candidates.append(PUBLIC_BODY)
             value = {
                 "answer": PUBLIC_BODY,
@@ -551,7 +553,7 @@ def test_honda_fit_v16_public_job_replays_all_six_stages_without_publishing(
     completed = orchestrator.get_job("tenant-honda-fit", created["job_id"])
 
     signature = question_state._perguntas_ia_assinatura_loja("Uai Mineirinho")
-    expected_public_reply = f"{PUBLIC_BODY}\n\n{signature}"
+    expected_public_reply = PUBLIC_BODY
     assert not completed.get("error"), completed
     assert "loader_error" not in captured, captured.get("loader_error")
     assert normalized_bodies == {

@@ -209,7 +209,10 @@ async function verifyUpdated(f) {
   await input.focus();
   await page.evaluate(() => carregarPerguntas(1, { background: true, preservarInteracao: true, forcar: true }));
   assert.strictEqual(await input.inputValue(), 'Rascunho sintético preservado');
-  assert(await input.evaluate(el => el === document.activeElement), 'atualização deve preservar foco');
+  assert(await page.evaluate(() => {
+    const composer = document.querySelector('.question-answer-text');
+    return composer !== null && composer === document.activeElement;
+  }), 'atualização deve preservar foco');
   control.fail = 'fixture-1';
   await page.evaluate(() => carregarPerguntas(1, { forcar: true, background: true }));
   assert.strictEqual(await page.locator('[data-question-select]').count(), 20, '503 preserva dados autorizados em cache');

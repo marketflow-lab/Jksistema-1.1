@@ -52,7 +52,7 @@ function contentType(filePath) {
       const nativeSetTimeout = window.setTimeout.bind(window);
       window.setTimeout = (callback, delay, ...args) => nativeSetTimeout(
         callback,
-        Number(delay) === 30000 ? 25 : delay,
+        window.__cadastroTesteTimeout && Number(delay) === 30000 ? 25 : delay,
         ...args,
       );
     });
@@ -246,11 +246,13 @@ function contentType(filePath) {
     ]) {
       const [mode, expectedMessage] = scenario;
       nextRclResponse = mode;
+      await page.evaluate(timeout => { window.__cadastroTesteTimeout = timeout; }, mode === 'timeout');
       await page.locator('#btnAtualizar').click();
       await page.waitForFunction(
         expected => document.querySelector('#status').textContent.toLowerCase().includes(expected),
         expectedMessage.toLowerCase(),
       );
+      await page.evaluate(() => { window.__cadastroTesteTimeout = false; });
       assert.match(
         await page.locator('#tBody').innerText(),
         /Produto store-rcl/,

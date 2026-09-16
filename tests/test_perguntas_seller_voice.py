@@ -29,6 +29,7 @@ class _VoiceClient(_PerguntasVertexGeminiV2Client):
             "item": {"title": "Bomba Injetora Motor Diesel 5-7-10hp Branco Buffalo Toyama"},
         }
         self.compatibility_analysis = {"decision": "insufficient", "confidence": 0.45}
+        self.sku_question_context = {}
         self._technical_resolution_final = {}
         self._technical_evidence_graph = {}
         self.context_pipeline = []
