@@ -101,7 +101,7 @@ PROMPT_HASH = hashlib.sha256(
         "codex-native|public-question-by-item-buyer|post-sale-by-pack|"
         "evidence-envelope-v3|bounded-public-research|ai-only-subquestions|"
         "classification-contract-v3|continuity-repair-v1|typed-provider-failures|"
-        "contextual-fallback-v1|response-policy-v9|compatibility-coverage-advisory-v1|"
+        "contextual-fallback-v1|response-policy-v10|public-reply-evidence-guidance-v1|compatibility-coverage-advisory-v1|"
         "compatibility-interface-evidence|seller-conversion-v1|seller-profile-v2|priority-queue-v3|"
         "public-technical-research-sol-high-v1|public-research-resilience-v2|"
         f"vehicle-identity-policy:{VEHICLE_IDENTITY_POLICY}|"

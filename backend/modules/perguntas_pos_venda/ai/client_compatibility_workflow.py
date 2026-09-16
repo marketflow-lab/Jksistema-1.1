@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from ml_questions_gemini.public_reply_policy import PUBLIC_REPLY_EVIDENCE_GUIDANCE
 from ml_questions_gemini.prompt_builder import _untrusted_json_block
 
 from .client_workflow_support import CompatibilityBindings, CompatibilityWorkflowHooks
@@ -330,7 +331,8 @@ def compatibility_prompt(
     sku_context = getattr(client, "sku_question_context", {})
     if isinstance(sku_context, dict) and sku_context:
         return (
-            "ETAPA INTERNA V18 DE ADEQUACAO TECNICA. Sem perfil vendedor, CTA, urgencia ou persuasao. "
+            PUBLIC_REPLY_EVIDENCE_GUIDANCE
+            + "ETAPA INTERNA V18 DE ADEQUACAO TECNICA. Sem perfil vendedor, CTA, urgencia ou persuasao. "
             "Avalie todas as subperguntas usando o envelope integral e imutavel da loja/SKU fornecido como resultado "
             "tipado desta etapa. Resultado vazio, erro ou "
             "HTTP 403 nunca prova incompatibilidade. Se faltar dado decisivo, use decision=insufficient e solicite no "
@@ -405,7 +407,8 @@ def compatibility_prompt(
         "publica cordial sem publicar literalmente o rascunho tecnico."
     )
     return (
-        "ETAPA INTERNA DE ADEQUACAO TECNICA SEM PERSONALIZACAO COMERCIAL. O seller_behavior_profile_v2, as orientacoes da loja, "
+        PUBLIC_REPLY_EVIDENCE_GUIDANCE
+        + "ETAPA INTERNA DE ADEQUACAO TECNICA SEM PERSONALIZACAO COMERCIAL. O seller_behavior_profile_v2, as orientacoes da loja, "
         "as notas do SKU e os exemplos ficam desativados nesta decisao e so poderao ser aplicados na geracao publica posterior. "
         + policy
         + "\n\nDADOS_PRIMARIOS_NAO_CONFIAVEIS:\n"

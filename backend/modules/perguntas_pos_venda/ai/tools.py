@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Callable
 
+from ml_questions_gemini.public_reply_policy import PUBLIC_REPLY_EVIDENCE_GUIDANCE
 from ml_questions_gemini.prompt_builder import _untrusted_json_block
 
 from .provider_transport import invoke_model as _invoke_model
@@ -387,7 +388,8 @@ def _ia_agent_perguntas_prompt_pos_venda(max_chars: int, blocks: dict[str, str])
 
 def _ia_agent_perguntas_prompt_regulado(max_chars: int, blocks: dict[str, str]) -> str:
     return (
-        "Voce e o agente de perguntas do Mercado Livre para um produto regulado. Gere somente um rascunho factual, "
+        PUBLIC_REPLY_EVIDENCE_GUIDANCE
+        + "Voce e o agente de perguntas do Mercado Livre para um produto regulado. Gere somente um rascunho factual, "
         "cauteloso e sem persuasao comercial. O metodo comercial fica desativado: nao use RVC, CTA, chamada a compra, "
         "urgencia, escassez, promessa de resultado ou garantia. Responda apenas com fatos atuais confirmados; nao invente "
         "indicacao, diagnostico, dose, beneficio de saude, compatibilidade, prazo, estoque ou procedimento. Quando faltar "
@@ -409,7 +411,8 @@ def _ia_agent_perguntas_prompt_regulado(max_chars: int, blocks: dict[str, str]) 
 
 def _ia_agent_perguntas_prompt_pre_venda(max_chars: int, blocks: dict[str, str]) -> str:
     return (
-        "Voce e o agente Cloud de perguntas do Mercado Livre do JK Sistema. Gere somente um rascunho ao comprador; "
+        PUBLIC_REPLY_EVIDENCE_GUIDANCE
+        + "Voce e o agente Cloud de perguntas do Mercado Livre do JK Sistema. Gere somente um rascunho ao comprador; "
         "nao envie, publique ou altere dados. Responda em portugues do Brasil, sem markdown, tabela, emoji ou aspas externas. "
         "Aplique internamente o Metodo RVC seller-conversion-v1: Responder, Valorizar e Conduzir. Classifique silenciosamente "
         "a adequacao como fits, variant, partial, insufficient, incompatible ou not_applicable. Em fits, confirme, destaque "

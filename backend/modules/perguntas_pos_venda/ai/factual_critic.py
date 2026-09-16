@@ -7,6 +7,7 @@ import re
 from typing import Any, Mapping, Sequence
 
 from ml_questions_gemini.prompt_builder import _untrusted_json_block
+from ml_questions_gemini.public_reply_policy import PUBLIC_REPLY_EVIDENCE_GUIDANCE
 
 
 FACTUAL_REVIEW_VERSION = "jk_ml_factual_review_v1"
@@ -138,7 +139,8 @@ def factual_revision_prompt(
     """Ask the model for a new candidate while preserving the previous one verbatim."""
 
     return (
-        "NOVA REDACAO PUBLICA DA IA APOS REVISAO FACTUAL. O candidato anterior deve permanecer intacto como artefato "
+        PUBLIC_REPLY_EVIDENCE_GUIDANCE
+        + "NOVA REDACAO PUBLICA DA IA APOS REVISAO FACTUAL. O candidato anterior deve permanecer intacto como artefato "
         "da tentativa; produza um NOVO answer, sem explicar a revisao. Corrija somente os problemas identificados, "
         "responda todas as subperguntas e mantenha a decisao tecnica final. Use o metodo RVC, no maximo tres frases "
         "de conteudo, e preserve como condicional qualquer compatibilidade cuja cobertura nao alcance 100% do universo "

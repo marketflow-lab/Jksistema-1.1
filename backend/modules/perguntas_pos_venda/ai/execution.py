@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ml_questions_gemini.public_reply_policy import PUBLIC_REPLY_EVIDENCE_GUIDANCE
 from fastapi import HTTPException
 from backend.services.compatibility_coverage import COMPATIBILITY_COVERAGE_VERSION
 
@@ -213,6 +214,7 @@ def _perguntas_ia_v2_prompt(
             "Nao peca foto por padrao; solicite-a pelo detalhe da compra somente quando for indispensavel para orientar o atendimento.",
         ])
     else:
+        partes.append(PUBLIC_REPLY_EVIDENCE_GUIDANCE)
         partes.extend([
             "A intencao foi classificada como PERGUNTA DE ANUNCIO.",
             "Aplique internamente o Metodo RVC seller-conversion-v1 e o estado comercial definido na politica versionada; CTA somente em fits/variant e somente depois de resolver todas as necessidades essenciais.",
@@ -228,7 +230,7 @@ def _perguntas_ia_v2_prompt(
             "Nao use elogio generico como produto de excelente qualidade; converta em material, certificacao, fabricacao, originalidade ou outra qualidade objetiva apenas quando estiver comprovada.",
             "Quando a aplicacao documentada trouxer uma faixa de anos que nao inclui o alvo perguntado, informe a faixa comprovada e diga que nao pode garantir o encaixe fora dela; ainda responda separadamente os demais assuntos confirmados.",
             "Deixe a conclusao clara nas primeiras frases com redacao natural, sem palavra ou prefixo obrigatorio.",
-            "Se faltar dado tecnico, responda primeiro com os fatos disponiveis. Somente quando nenhum rascunho util for possivel, identifique o perfil do alvo e solicite no maximo dois dados textuais decisivos de interface, medida, conexao, modelo ou aplicacao.",
+            "Se faltar dado tecnico, responda primeiro com os fatos disponiveis. Somente quando indispensavel para resolver uma duvida restante, identifique o perfil do alvo e solicite no maximo dois dados textuais decisivos de interface, medida, conexao, modelo ou aplicacao.",
             "Nunca mencione evidencia, analise, validacao, schema, decisao, ferramenta, sistema, interface alvo ou revisao humana ao comprador.",
             "Nunca solicite foto, imagem, anexo, arquivo, documento, PDF, video, chassi/VIN ou confirmacao generica com mecanico/oficina em pergunta publica.",
             "Se a pergunta for sobre outra peca, so informe link quando o contexto interno trouxer anuncio ativo e link.",

@@ -440,7 +440,7 @@ def test_technical_prompts_reference_one_typed_integral_envelope_without_copying
     assert all("CAMPO_RARO_NAO_DUPLICAR" not in prompt for prompt in prompts)
 
 
-def test_missing_automotive_feature_prompts_inherit_original_standard_for_the_replacement():
+def test_missing_automotive_feature_uses_original_standard_only_with_proven_equivalence():
     packet, _ = build_sku_question_context(
         _input("product_feature", "A luz dos botoes e branca?"),
         {"category": "product_feature"}, context_hub=_hub(),
@@ -454,7 +454,7 @@ def test_missing_automotive_feature_prompts_inherit_original_standard_for_the_re
     assert "missing_specific_product_fact" in simple
     assert "peca original" in plan
     assert "sem pressupor" in plan
-    assert "atribua a ela a caracteristica confirmada" in resolution
+    assert "somente com equivalencia comprovada de codigo, funcao e variacao, atribua a ela a caracteristica confirmada" in resolution
     assert "todos os produtos vendidos sao novos" in resolution
 
 

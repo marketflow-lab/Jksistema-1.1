@@ -1,6 +1,7 @@
 """Static dependencies and immutable policies for the extracted legacy AI flow."""
 
 from __future__ import annotations
+
 import base64
 import copy
 import csv
@@ -147,12 +148,13 @@ from ml_questions_gemini import (
 )
 from ml_questions_gemini.parser import AIResponseParser
 from ml_questions_gemini.schemas import QuestionCategory
+from ml_questions_gemini.public_reply_policy import PUBLIC_REPLY_EVIDENCE_GUIDANCE
 
 
 logger = logging.getLogger("jk_sistema")
 
 
-_PERGUNTAS_IA_RESPONSE_POLICY_VERSION = "jk_ppv_response_policy_v9"
+_PERGUNTAS_IA_RESPONSE_POLICY_VERSION = "jk_ppv_response_policy_v10"
 _PERGUNTAS_IA_SELLER_METHOD_VERSION = "seller-conversion-v1"
 _PERGUNTAS_IA_COMMERCIAL_STATE_POLICY = {
     "fits": {"cta": "direct_purchase", "benefit": True, "urgency": "official_current_only"},
@@ -164,7 +166,8 @@ _PERGUNTAS_IA_COMMERCIAL_STATE_POLICY = {
 }
 _PERGUNTAS_IA_RESPONSE_POLICY = {
     "perguntas_anuncio": (
-        "Politica Comercial RVC v9 (metodo seller-conversion-v1) para perguntas publicas de pre-venda. "
+        PUBLIC_REPLY_EVIDENCE_GUIDANCE
+        + "Politica Comercial RVC v10 (metodo seller-conversion-v1) para perguntas publicas de pre-venda. "
         "O Black Jhon executa seis responsabilidades de IA: entender integralmente a pergunta, planejar consultas, "
         "ler fontes tecnicas inclusive tabelas e diagramas, resolver fatos e relacoes, adjudicar lacunas em contexto "
         "independente e redigir/revisar a resposta. Uma primeira conclusao insuficiente nunca encerra sozinha a analise. "
@@ -179,7 +182,7 @@ _PERGUNTAS_IA_RESPONSE_POLICY = {
         "Quando faltar uma caracteristica tecnica no anuncio ou no documento do SKU, investigue a peca original "
         "do veiculo identificado em manual, catalogo OEM ou fonte do fabricante. Use a caracteristica original "
         "para responder sobre a reposicao anunciada quando codigo, funcao e variacao comprovarem a equivalencia. "
-        "Se a informacao especifica do produto anunciado continuar ausente, atribua a ele a caracteristica "
+        "Somente com equivalencia comprovada de codigo, funcao e variacao, atribua ao produto a caracteristica "
         "confirmada do padrao original da peca correspondente e responda diretamente, sem ressalva sobre a "
         "ausencia do dado no cadastro. Todos os produtos vendidos pela loja sao novos: responda que o produto e "
         "novo sempre que a condicao for perguntada e nunca peca confirmacao desse fato ao comprador. "
@@ -194,7 +197,7 @@ _PERGUNTAS_IA_RESPONSE_POLICY = {
         "universo continuar incompleto, pesquise a lacuna antes da resposta e nao transforme ausencia de resultado em "
         "compatibilidade total. Nao encerre com pedido generico de marca ou codigo antes dessa "
         "apuracao. Quando faltar evidencia decisiva depois dela, entregue primeiro os fatos conhecidos e, somente "
-        "se indispensavel, solicite os dados textuais decisivos. Quando houver incompatibilidade comprovada, use apenas alternativa "
+        "se indispensavel, solicite no maximo dois dados textuais decisivos. Quando houver incompatibilidade comprovada, use apenas alternativa "
         "tecnicamente confirmada, ativa e da mesma loja, com link oficial do Mercado Livre; sem alternativa confirmada, "
         "informe o criterio correto de escolha sem inventar produto ou link. Preco, promocao, disponibilidade, postagem "
         "e velocidade de envio so podem sustentar persuasao ou urgencia quando vierem da API oficial ou do anuncio atual; "
