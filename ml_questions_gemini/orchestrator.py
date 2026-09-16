@@ -174,8 +174,8 @@ class QuestionAnswerOrchestrator:
             self.review_queue.enqueue(result)
             return result
 
-        validation = (
-            self.validator.validate(
+        if self.inspect_model_answer:
+            validation = self.validator.validate(
                 ai_answer.answer,
                 question=question,
                 listing=listing,
@@ -184,9 +184,10 @@ class QuestionAnswerOrchestrator:
                 confidence=ai_answer.confidence,
                 compatibility_analysis=getattr(self.gemini_client, "compatibility_analysis", None),
             )
-            if self.inspect_model_answer
-            else ValidationResult(True, [], ai_answer.confidence)
-        )
+        elif isinstance(ai_answer.validation, ValidationResult):
+            validation = ai_answer.validation
+        else:
+            validation = ValidationResult(False, ["ai_review_missing"], 0.0)
         decision = self._publication_decision(
             validation,
             ai_answer.confidence,

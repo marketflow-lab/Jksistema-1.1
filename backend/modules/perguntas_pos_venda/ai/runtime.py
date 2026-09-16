@@ -144,6 +144,7 @@ from ml_questions_gemini import (
     AIAnswer,
     GeminiQuestionsSettings,
     QuestionAnswerOrchestrator,
+    ValidationResult,
     context_from_agent_input,
 )
 from ml_questions_gemini.parser import AIResponseParser
@@ -197,7 +198,7 @@ _PERGUNTAS_IA_RESPONSE_POLICY = {
         "universo continuar incompleto, pesquise a lacuna antes da resposta e nao transforme ausencia de resultado em "
         "compatibilidade total. Nao encerre com pedido generico de marca ou codigo antes dessa "
         "apuracao. Quando faltar evidencia decisiva depois dela, entregue primeiro os fatos conhecidos e, somente "
-        "se indispensavel, solicite no maximo dois dados textuais decisivos. Quando houver incompatibilidade comprovada, use apenas alternativa "
+        "se indispensavel, solicite somente um dado textual decisivo em uma unica pergunta. Quando houver incompatibilidade comprovada, use apenas alternativa "
         "tecnicamente confirmada, ativa e da mesma loja, com link oficial do Mercado Livre; sem alternativa confirmada, "
         "informe o criterio correto de escolha sem inventar produto ou link. Preco, promocao, disponibilidade, postagem "
         "e velocidade de envio so podem sustentar persuasao ou urgencia quando vierem da API oficial ou do anuncio atual; "

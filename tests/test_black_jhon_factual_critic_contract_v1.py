@@ -41,6 +41,28 @@ def test_invalid_critic_payload_is_insufficient_and_never_becomes_public_text():
     assert review_requires_revision(review) is False
 
 
+def test_review_v1_keeps_final_ai_issue_codes_typed():
+    codes = [
+        "internal_process_language",
+        "seller_tone_mismatch",
+        "unnecessary_question",
+        "multiple_decisive_questions",
+        "signature_mismatch",
+        "policy_mismatch",
+    ]
+    review = normalize_factual_review({
+        "verdict": "revise",
+        "issues": [
+            {"code": code, "message": code, "claim": "trecho", "source_refs": []}
+            for code in codes
+        ],
+        "revision_instructions": [],
+        "confidence": 0.8,
+    })
+
+    assert [issue["code"] for issue in review["issues"]] == codes
+
+
 def test_prompts_preserve_candidate_bytes_inside_untrusted_json():
     candidate = "  Sim, serve.\r\nLinha dois ✅  "
     review_prompt = factual_review_prompt(

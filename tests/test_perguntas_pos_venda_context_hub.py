@@ -899,6 +899,7 @@ def test_canonical_context_hub_answer_uses_compact_simple_factual_route_without_
         "listing_product_analysis",
         "context_hub_sku_reference",
         "adaptive_simple_public_generation",
+        "factual_critic",
     ]
     context_metrics = client.sku_question_context_metrics
     assert context_metrics["route"] == "simple_factual"
@@ -1217,7 +1218,14 @@ def test_post_sale_queries_context_hub_before_answer_ai_without_web():
          patch.object(agent_clients, "_ia_tool_get_bling_product", side_effect=AssertionError("bling nao deveria ser chamado")) as bling, \
          patch.object(agent_clients, "_perguntas_ia_context_hub_tool", side_effect=context_hub) as hub, \
          patch.object(agent_clients, "_ia_agent_perguntas_web_tool", side_effect=AssertionError("web nao deveria ser chamada")), \
-         patch.object(client, "_call_model", side_effect=answer_model):
+         patch.object(client, "_call_model", side_effect=answer_model), \
+         patch.object(client, "_call_structured_model", return_value={
+             "schema": "jk_ml_factual_review_v1",
+             "verdict": "pass",
+             "issues": [],
+             "revision_instructions": [],
+             "confidence": 1.0,
+         }):
         result = client.generate("prompt", {
             "category": "post_sale",
             "question_text": "O produto parou de funcionar, como seguimos?",
@@ -1236,5 +1244,6 @@ def test_post_sale_queries_context_hub_before_answer_ai_without_web():
         "buyer_question_and_history",
         "listing_product_analysis",
         "context_hub_sku_reference",
+        "factual_critic",
     ]
-    assert client.context_pipeline[-1]["status"] == "completed"
+    assert client.context_pipeline[-1]["status"] == "pass"

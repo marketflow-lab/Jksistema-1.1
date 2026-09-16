@@ -329,7 +329,7 @@ def test_incompatible_runs_one_same_store_search_then_one_public_generation() ->
     assert pipeline_names.index("same_store_technically_verified_alternative") < pipeline_names.index(
         "compatibility_public_generation"
     )
-    assert "factual_critic" not in pipeline_names
+    assert pipeline_names[-1] == "factual_critic"
     assert "factual_revision" not in pipeline_names
 
 

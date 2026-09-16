@@ -110,7 +110,7 @@ class PromptBuilder:
                 "Uma fonte oficial dizendo que o alvo aceita uma interface, medida, conexao ou geracao comprova a interface alvo; se o produto usa a mesma especificacao, a equivalencia pode ser derivada sem exigir a expressao literal 'mesmo encaixe'.",
                 "Apresente uma decisao de compatibilidade clara nas primeiras frases, com redacao natural; nao existe palavra ou prefixo obrigatorio para iniciar a resposta.",
                 "Se faltar evidencia de compatibilidade, nao peca foto, chassi ou VIN e nao recomende genericamente um mecanico ou oficina.",
-                "Nesse caso, responda primeiro com os fatos disponiveis. Somente quando indispensavel para resolver uma duvida restante, solicite no maximo dois dados textuais decisivos apropriados: em veiculos, ano/versao ou se a base e original ou paralela; nos demais perfis, interface da maquina, modelo do aparelho, conexao eletrica, rosca, medida ou fixacao.",
+                "Nesse caso, responda primeiro com os fatos disponiveis. Somente quando indispensavel para resolver uma duvida restante, solicite um unico dado textual decisivo apropriado: em veiculos, ano/versao ou se a base e original ou paralela; nos demais perfis, interface da maquina, modelo do aparelho, conexao eletrica, rosca, medida ou fixacao.",
                 "O rascunho final nao exige revisao humana; mantenha requires_human_review=false. A aprovacao antes do envio e controlada separadamente pelo aplicativo.",
             ])
         else:
@@ -276,7 +276,7 @@ class PromptBuilder:
             + commercial_method_block
             + "CONTRATO_PARA_COMPATIBILIDADE:\n"
             "A conclusao pode ser compativel, incompativel, condicional ou evidencia insuficiente e deve ficar clara nas primeiras frases, sem inicio padronizado. "
-            "Compare interfaces e encaixes tecnicos conforme o tipo de alvo. Se faltar um dado, responda primeiro com os fatos disponiveis e somente quando indispensavel peca no maximo dois campos textuais decisivos do perfil correto. "
+            "Compare interfaces e encaixes tecnicos conforme o tipo de alvo. Se faltar um dado, responda primeiro com os fatos disponiveis e somente quando indispensavel peca um unico campo textual decisivo do perfil correto. "
             "Quando fabricante e produto confirmarem a mesma geracao de interface, aceite a equivalencia derivada sem exigir uma frase literal sobre o encaixe. "
             "Nunca solicite foto/anexo, chassi/VIN ou confirmacao generica com mecanico em pergunta publica.\n\n"
             "PERGUNTA_DO_COMPRADOR:\n"

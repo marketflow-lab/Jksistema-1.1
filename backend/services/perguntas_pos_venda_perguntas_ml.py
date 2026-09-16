@@ -1650,7 +1650,7 @@ def _perguntas_ia_gerar_resposta(
             "Aplique o Metodo RVC: responda todas as subperguntas e conclua a adequacao na primeira frase; valorize na segunda "
             "somente o beneficio comprovado relevante; na terceira, use chamada natural a compra apenas quando todas as necessidades "
             "essenciais estiverem comprovadamente atendidas ou quando a variacao correta estiver indicada. Em atendimento parcial, "
-            "evidencia insuficiente ou incompatibilidade, solicite os dados textuais decisivos quando necessario. "
+            "evidencia insuficiente ou incompatibilidade, solicite somente um dado textual decisivo quando necessario. "
             "Preco, promocao, disponibilidade, postagem e velocidade de envio so podem criar urgencia quando forem fatos atuais da "
             "API oficial ou do anuncio corrente, nunca pesquisa publica, memoria, exemplo ou nota antiga. "
             "A resposta sera enviada ao comprador, portanto seja cordial, objetiva, factual e comercial somente quando o produto atender. "

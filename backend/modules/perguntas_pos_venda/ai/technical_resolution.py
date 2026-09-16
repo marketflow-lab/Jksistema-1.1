@@ -1,16 +1,12 @@
 """AI-owned two-pass technical resolution and adjudication contracts."""
-
 from __future__ import annotations
-
 import copy
 import re
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Mapping, Sequence
-
 from ml_questions_gemini.public_reply_policy import PUBLIC_REPLY_EVIDENCE_GUIDANCE
 from ml_questions_gemini.prompt_builder import _untrusted_json_block
 from backend.modules.context_hub.store_sku_contracts import STORE_SKU_QUESTION_CONTEXT_SCHEMA
-
 from .technical_planning import (
     TECHNICAL_EVIDENCE_GRAPH_SCHEMA,
     TECHNICAL_QUESTION_PLAN_SCHEMA,
@@ -33,8 +29,6 @@ from .technical_planning import (
     normalize_technical_question_plan,
     technical_evidence_graph_prompt,
 )
-
-
 def _decision(value: object) -> str:
     normalized = _text(value, 40).lower()
     aliases = {
@@ -46,8 +40,6 @@ def _decision(value: object) -> str:
     }
     normalized = aliases.get(normalized, normalized)
     return normalized if normalized in _DECISIONS else "insufficient"
-
-
 def commercial_state_for_decision(decision: str, requested_state: object = "") -> str:
     requested = _text(requested_state, 40).lower()
     if requested in _COMMERCIAL_STATES:

@@ -40,8 +40,8 @@ CONTRACT_HASHES = {
     "routes": "77bdca722f74a16061e65ea83490c374f16cf1421d697f5cbc9d3af7cc273aea",
     "aliases": "f149aa04a166eacd3f942889d2495dc5a23be9bb3317160d97e247ae834aa68e",
     "schema": "500b7ccbcedc02d3a254e8114e974355be5635d2f01bd7dc929b212643cb254a",
-    "policy": "f90b92d01d0ece5ac9c4f7aba8116d40566a497ad0216161aed2f871536d60dc",
-    "prompts": "fb0bd8fb21b549af644425709a8ca7690aa99076803614e1be13ec734e56cb10",
+    "policy": "8d9dae7d9107e06c83cecb9945ffc5609abf877e2116861b0c490c5760a78a56",
+    "prompts": "9c3244c16b1e3f8e762e02463f85d9ba3c847f864dbe036289c1409515d78b07",
     "exports": "fbd5bf89bb3a7d13d32c55dda0a0b89996c3c6a4828f94a250c94c5f18b74550",
 }
 LAYERS = {
@@ -64,7 +64,7 @@ LAYERS = {
     "deep_research": 4, "deep_research_crawler": 4,
     "compatibility": 6, "tools": 6, "client_workflow_support": 6,
     "client_compatibility_workflow": 7, "client_general_workflow": 7,
-    "client_workflows": 7, "general_commercial": 7, "validation": 7,
+    "client_workflows": 7, "final_ai_review": 7, "general_commercial": 7, "validation": 7,
     "approval": 8, "clients": 8, "post_sale": 8, "providers": 8, "telemetry": 8,
     "execution": 9, "api": 10, "__init__": 10,
 }

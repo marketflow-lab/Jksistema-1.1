@@ -6,8 +6,8 @@ from ml_questions_gemini.config import GeminiQuestionsSettings
 from ml_questions_gemini.gemini_client import MockGeminiClient
 from ml_questions_gemini.orchestrator import QuestionAnswerOrchestrator
 from ml_questions_gemini.prompt_builder import PromptBuilder
-from ml_questions_gemini.schemas import ListingSnapshot, PreviousQA, PublishDecision, QuestionContext
-from ml_questions_gemini.schemas import QuestionCategory, SellerRules
+from ml_questions_gemini.schemas import AIAnswer, ListingSnapshot, PreviousQA, PublishDecision, QuestionContext
+from ml_questions_gemini.schemas import QuestionCategory, SellerRules, ValidationResult
 from ml_questions_gemini.search import SearchResult, SearchService, StaticSearchProvider, domain_allowed
 from ml_questions_gemini.validator import AnswerValidator
 
@@ -64,6 +64,36 @@ def process(
 
 
 class MlQuestionsGeminiTests(unittest.TestCase):
+    def test_ai_review_result_blocks_automatic_publication_without_text_validator(self):
+        class ReviewedClient:
+            compatibility_analysis = {}
+
+            def generate(self, _prompt, _metadata):
+                return AIAnswer(
+                    answer="Rascunho preservado para revisão humana.",
+                    confidence=0.96,
+                    requires_human_review=True,
+                    validation=ValidationResult(False, ["ai_review_timeout"], 0.0),
+                )
+
+        settings = GeminiQuestionsSettings(auto_publish_enabled=True, min_confidence=0.78)
+        orchestrator = QuestionAnswerOrchestrator(
+            settings=settings,
+            gemini_client=ReviewedClient(),
+            inspect_model_answer=False,
+        )
+
+        result = orchestrator.process(
+            question=_question("Qual a aplicação?"),
+            listing=listing(),
+            previous_questions=[],
+            rules=SellerRules(auto_publish_enabled=True),
+        )
+
+        self.assertEqual(result.answer, "Rascunho preservado para revisão humana.")
+        self.assertEqual(result.decision, PublishDecision.HUMAN_REVIEW)
+        self.assertEqual(result.validation.issues, ["ai_review_timeout"])
+
     def test_connection_type_question_is_classified_as_product_feature(self):
         result = process(
             "Essa carcaca da valvula termostatica e de engate rapido ou para abracadeira?",

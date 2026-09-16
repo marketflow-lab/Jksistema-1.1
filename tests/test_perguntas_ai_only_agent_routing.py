@@ -12,7 +12,7 @@ from backend.modules.perguntas_pos_venda.ai import queries as agent_queries
 from backend.modules.perguntas_pos_venda.ai import runtime as agent_runtime
 from backend.modules.perguntas_pos_venda.ai import tools as agent_tools
 from backend.services import perguntas_pos_venda_agent as agent_facade
-from ml_questions_gemini.schemas import AIAnswer, QuestionCategory
+from ml_questions_gemini.schemas import AIAnswer, QuestionCategory, ValidationResult
 from ml_questions_gemini.config import GeminiQuestionsSettings
 from ml_questions_gemini.adapters import context_from_agent_input
 from ml_questions_gemini.orchestrator import QuestionAnswerOrchestrator
@@ -778,6 +778,7 @@ def test_public_answer_with_four_sentences_is_preserved_without_answer_validator
                 confidence=0.95,
                 requires_human_review=True,
                 reason="evidence_confirmed",
+                validation=ValidationResult(True, [], 0.99),
             )
 
     monkeypatch.setattr(agent, "_PerguntasCodexV3Client", FakeClient)

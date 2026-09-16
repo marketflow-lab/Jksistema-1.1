@@ -1,7 +1,6 @@
 """Low-level network transports without dependencies on the PPV state graph."""
 
 from __future__ import annotations
-
 import asyncio
 import os
 import time
@@ -579,6 +578,12 @@ FACTUAL_REVIEW_SCHEMA: dict[str, Any] = {
                             "redundant_question",
                             "commercial_mismatch",
                             "privacy_issue",
+                            "internal_process_language",
+                            "seller_tone_mismatch",
+                            "unnecessary_question",
+                            "multiple_decisive_questions",
+                            "signature_mismatch",
+                            "policy_mismatch",
                             "other",
                         ],
                     },

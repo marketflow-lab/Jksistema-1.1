@@ -74,6 +74,7 @@ from .client_workflows import (
 )
 from .technical_evidence_persistence import persist_technical_evidence_graph
 from .marketplace_policy import policy_stage_context
+from .final_ai_review import review_public_answer
 from .sku_question_context import (
     packet_tool_result,
 )
@@ -236,7 +237,8 @@ class _PerguntasVertexGeminiV2Client:
         # resume or update the job's persistent operational thread.
         isolated_turn = bool(isolated or stage == "technical_evidence_graph")
         subquestions = self.agent_input.get("subquestions") if isinstance(self.agent_input.get("subquestions"), list) else []
-        if subquestions and not self.sku_question_context:
+        final_review_stage = stage in {"factual_critic", "factual_revision"}
+        if subquestions and not self.sku_question_context and not final_review_stage:
             prompt = (
                 prompt
                 + "\n\nSUBPERGUNTAS OBRIGATORIAS IDENTIFICADAS PELO ORQUESTRADOR:\n"
@@ -246,7 +248,11 @@ class _PerguntasVertexGeminiV2Client:
             )
         research_attempt = max(1, int(self.agent_input.get("research_attempt") or 1))
         research_history = self.agent_input.get("research_history") if isinstance(self.agent_input.get("research_history"), list) else []
-        if (research_attempt > 1 or self.agent_input.get("force_external_research")) and not self.sku_question_context:
+        if (
+            (research_attempt > 1 or self.agent_input.get("force_external_research"))
+            and not self.sku_question_context
+            and not final_review_stage
+        ):
             prompt += (
                 f"\n\nNOVA TENTATIVA DE PESQUISA TECNICA: {research_attempt}. "
                 "Use todos os achados compilados e sanitizados das tentativas anteriores, mas nao repita apenas as mesmas consultas ou as mesmas fontes inconclusivas. "
@@ -426,6 +432,9 @@ class _PerguntasVertexGeminiV2Client:
         }
         self.context_pipeline.append(stage)
 
+    def _review_public_answer(self, candidate: AIAnswer, metadata: dict[str, Any]) -> AIAnswer:
+        return review_public_answer(self, candidate, metadata)
+
     def _enforce_public_seller_voice(
         self,
         candidate: AIAnswer,
@@ -554,7 +563,7 @@ class _PerguntasVertexGeminiV2Client:
             "condition": str(analysis.get("condition") or "")[:1200],
             "missing_fields": [
                 str(item or "")[:160]
-                for item in (analysis.get("missing_fields") or [])[:2]
+                for item in (analysis.get("missing_fields") or [])[:1]
                 if str(item or "").strip()
             ],
             "related_conditions": list(coverage_rule.get("related_conditions") or [])[:8],
@@ -671,7 +680,7 @@ class _PerguntasVertexGeminiV2Client:
         metadata_dict = metadata if isinstance(metadata, dict) else {}
         if str(metadata_dict.get("category") or "").strip().lower() == "compatibility":
             candidate = self._generate_compatibility(prompt, metadata_dict)
-            return candidate
+            return self._review_public_answer(candidate, metadata_dict)
         bindings = GeneralBindings(
             context_hub_tool=_perguntas_ia_context_hub_tool,
             web_tool=_ia_agent_perguntas_web_tool,
@@ -681,7 +690,7 @@ class _PerguntasVertexGeminiV2Client:
             bling_tool=resolve_runtime_adapter("tools", "bling_product", _ia_tool_get_bling_product),
         )
         candidate = run_general(self, prompt, metadata_dict, bindings)
-        return candidate
+        return self._review_public_answer(candidate, metadata_dict)
 
 
 class _PerguntasCodexV3Client(_PerguntasVertexGeminiV2Client):

@@ -230,7 +230,7 @@ def _perguntas_ia_v2_prompt(
             "Nao use elogio generico como produto de excelente qualidade; converta em material, certificacao, fabricacao, originalidade ou outra qualidade objetiva apenas quando estiver comprovada.",
             "Quando a aplicacao documentada trouxer uma faixa de anos que nao inclui o alvo perguntado, informe a faixa comprovada e diga que nao pode garantir o encaixe fora dela; ainda responda separadamente os demais assuntos confirmados.",
             "Deixe a conclusao clara nas primeiras frases com redacao natural, sem palavra ou prefixo obrigatorio.",
-            "Se faltar dado tecnico, responda primeiro com os fatos disponiveis. Somente quando indispensavel para resolver uma duvida restante, identifique o perfil do alvo e solicite no maximo dois dados textuais decisivos de interface, medida, conexao, modelo ou aplicacao.",
+            "Se faltar dado tecnico, responda primeiro com os fatos disponiveis. Somente quando indispensavel para resolver uma duvida restante, identifique o perfil do alvo e solicite um unico dado textual decisivo de interface, medida, conexao, modelo ou aplicacao.",
             "Nunca mencione evidencia, analise, validacao, schema, decisao, ferramenta, sistema, interface alvo ou revisao humana ao comprador.",
             "Nunca solicite foto, imagem, anexo, arquivo, documento, PDF, video, chassi/VIN ou confirmacao generica com mecanico/oficina em pergunta publica.",
             "Se a pergunta for sobre outra peca, so informe link quando o contexto interno trouxer anuncio ativo e link.",

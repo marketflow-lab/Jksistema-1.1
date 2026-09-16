@@ -111,6 +111,13 @@ class SellerRules:
 
 
 @dataclass
+class ValidationResult:
+    ok: bool
+    issues: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+
+
+@dataclass
 class AIAnswer:
     answer: str
     confidence: float = 0.0
@@ -118,13 +125,7 @@ class AIAnswer:
     requires_human_review: bool = True
     reason: str = ""
     raw: Any = None
-
-
-@dataclass
-class ValidationResult:
-    ok: bool
-    issues: list[str] = field(default_factory=list)
-    confidence: float = 0.0
+    validation: ValidationResult | None = None
 
 
 @dataclass

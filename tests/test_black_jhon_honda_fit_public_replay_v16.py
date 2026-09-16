@@ -241,7 +241,7 @@ def _resolution(*, final: bool) -> dict:
     }
 
 
-def test_honda_fit_v16_public_job_replays_all_six_stages_without_publishing(
+def test_honda_fit_v16_public_job_replays_generation_and_final_ai_review_without_publishing(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -580,8 +580,10 @@ def test_honda_fit_v16_public_job_replays_all_six_stages_without_publishing(
         "technical_evidence_graph",
         "technical_resolution_final",
         "compatibility_public_answer",
+        "factual_critic",
     ]
-    assert not {"factual_critic", "factual_revision"} & {call["stage"] for call in stage_calls}
+    assert "factual_revision" not in {call["stage"] for call in stage_calls}
+    assert next(call for call in stage_calls if call["stage"] == "factual_critic")["isolated"] is True
     assert [call["attachments"] for call in stage_calls if call["stage"] == "technical_evidence_graph"] == [1, 1]
     assert all(call["model"] == "codex:gpt-5.6-sol" for call in stage_calls)
     assert all(call["reasoning"] == "high" for call in stage_calls)

@@ -801,7 +801,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             })
 
         self.assertEqual(result.answer, "Acompanha cabo USB.")
-        self.assertEqual(model_call.call_count, 5)
+        self.assertEqual(model_call.call_count, 6)
         self.assertEqual(
             _v16_model_stages(model_call),
             [
@@ -810,6 +810,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 "technical_resolution_round_1",
                 "technical_resolution_final",
                 "external_research_final",
+                "factual_critic",
             ],
         )
         web_call.assert_called_once()
@@ -957,7 +958,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             })
 
         web_call.assert_called_once()
-        self.assertEqual(model_call.call_count, 5)
+        self.assertEqual(model_call.call_count, 6)
         self.assertEqual(result.answer, draft)
         research_step = _pipeline_step(client, "question_focused_web_research")
         self.assertEqual(research_step["status"], "completed")
@@ -994,7 +995,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             })
 
         web_call.assert_called_once()
-        self.assertEqual(model_call.call_count, 5)
+        self.assertEqual(model_call.call_count, 6)
         self.assertEqual(result.answer, draft)
         research_step = _pipeline_step(client, "question_focused_web_research")
         self.assertEqual(research_step["status"], "error")
@@ -1084,17 +1085,18 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                     "requires_human_review": False,
                     "reason": "authenticated_store_evidence",
                 })
-                conflicting = json.dumps({
-                    "answer": "A informacao operacional autenticada foi alterada.",
+                critic_pass = json.dumps({
+                    "schema": "jk_ml_factual_review_v1",
+                    "verdict": "pass",
+                    "issues": [],
+                    "revision_instructions": [],
                     "confidence": 0.99,
-                    "requires_human_review": False,
-                    "reason": "conflicting_renderer",
                 })
                 v16_responder = _v16_model_responder(draft)
 
-                def preserve_against_conflicting_critic(client_id, request, model_req):
+                def review_without_rewriting(client_id, request, model_req):
                     if request.context.get("context_collection_stage") == "factual_critic":
-                        return conflicting, model_req
+                        return critic_pass, model_req
                     return v16_responder(client_id, request, model_req)
 
                 client = agent._PerguntasVertexGeminiV2Client("cliente", "Loja", "codex:gpt-5.5", {
@@ -1113,7 +1115,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 with patch.object(
                     agent,
                     "_ia_agent_perguntas_chamar_modelo",
-                    side_effect=preserve_against_conflicting_critic,
+                    side_effect=review_without_rewriting,
                 ) as model_call, patch.object(
                     agent,
                     "_ia_agent_perguntas_web_tool",
@@ -1128,7 +1130,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
                 if category in {"warranty_originality", "prohibited_contact"}:
                     web_call.assert_called_once()
-                    self.assertEqual(model_call.call_count, 5)
+                    self.assertEqual(model_call.call_count, 6)
                     self.assertEqual(
                         _v16_model_stages(model_call),
                         [
@@ -1137,12 +1139,16 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                             "technical_resolution_round_1",
                             "technical_resolution_final",
                             "external_research_final",
+                            "factual_critic",
                         ],
                     )
                 else:
                     web_call.assert_not_called()
-                    self.assertEqual(model_call.call_count, 1)
-                    self.assertEqual(_v16_model_stages(model_call), ["adaptive_simple_public_answer"])
+                    self.assertEqual(model_call.call_count, 2)
+                    self.assertEqual(
+                        _v16_model_stages(model_call),
+                        ["adaptive_simple_public_answer", "factual_critic"],
+                    )
                 self.assertEqual(result.answer, expected)
                 if category in {"warranty_originality", "prohibited_contact"}:
                     research_step = _pipeline_step(client, "question_focused_web_research")
@@ -1202,7 +1208,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
             })
 
         web_call.assert_called_once()
-        self.assertEqual(model_call.call_count, 5)
+        self.assertEqual(model_call.call_count, 6)
         self.assertEqual(result.answer, "Aciona a 93 C e enviamos hoje.")
         research_step = _pipeline_step(client, "question_focused_web_research")
         self.assertEqual(research_step["status"], "completed")
@@ -1414,6 +1420,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 "technical_evidence_graph",
                 "technical_resolution_final",
                 "compatibility_public_answer",
+                "factual_critic",
             ],
         )
         technical_payload = _v16_model_payload(model_call, "technical_evidence_graph")
@@ -1673,7 +1680,7 @@ print("nested-deadlines-returned", flush=True)
                 "listing_title": "Carcaca Valvula Termostatica THP 1.6",
             })
 
-        self.assertEqual(model_call.call_count, 5)
+        self.assertEqual(model_call.call_count, 6)
         web_call.assert_called_once()
         self.assertEqual(web_call.call_args.args[0], "cliente")
         self.assertEqual(web_call.call_args.args[1]["store"], "Loja")
@@ -1802,7 +1809,7 @@ print("nested-deadlines-returned", flush=True)
             "Esse adaptador e compativel com a R1300GS equipada com a base original BMW Navigator IV ou posterior. "
             "Ele encaixa nessa base e nao acompanha nem substitui o suporte original.",
         )
-        self.assertEqual(model_call.call_count, 6)
+        self.assertEqual(model_call.call_count, 7)
         self.assertEqual(web_call.call_count, 2)
         self.assertEqual(
             _v16_model_stages(model_call),
@@ -1813,6 +1820,7 @@ print("nested-deadlines-returned", flush=True)
                 "technical_evidence_graph",
                 "technical_resolution_final",
                 "compatibility_public_answer",
+                "factual_critic",
             ],
         )
         self.assertEqual(client.compatibility_analysis["decision"], "conditional")
@@ -1823,7 +1831,7 @@ print("nested-deadlines-returned", flush=True)
             for group in ("product", "target_vehicle", "equivalence")
             for evidence in client.compatibility_analysis["evidence"][group]
         ))
-        self.assertNotIn("factual_critic", [step["name"] for step in client.context_pipeline])
+        self.assertEqual(client.context_pipeline[-1]["name"], "factual_critic")
         pipeline_names = [step["name"] for step in client.context_pipeline]
         for expected_stage in (
             "technical_question_plan_v1",
@@ -2441,7 +2449,7 @@ print("nested-deadlines-returned", flush=True)
         self.assertEqual(result.confidence, 0.4)
         self.assertFalse(result.requires_human_review)
         self.assertEqual(web_call.call_count, 2)
-        self.assertEqual(model_call.call_count, 6)
+        self.assertEqual(model_call.call_count, 7)
         self.assertEqual(
             _v16_model_stages(model_call),
             [
@@ -2451,6 +2459,7 @@ print("nested-deadlines-returned", flush=True)
                 "technical_evidence_graph",
                 "technical_resolution_final",
                 "compatibility_public_answer",
+                "factual_critic",
             ],
         )
 

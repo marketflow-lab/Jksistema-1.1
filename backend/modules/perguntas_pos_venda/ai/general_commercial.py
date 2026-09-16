@@ -323,7 +323,7 @@ def _general_research_final_prompt(
         "Avalie silenciosamente todas as subperguntas antes da redacao final. Conclua a adequacao com naturalidade e conduza a "
         "compra somente quando todas as necessidades essenciais estiverem comprovadamente resolvidas ou indicar a variacao "
         "exata. Em atendimento parcial, evidencia insuficiente ou incompatibilidade, nao use CTA nem urgencia e solicite no "
-        "dados textuais decisivos quando necessario. Urgencia comercial so pode usar fato operacional atual da API oficial ou do "
+        "somente um dado textual decisivo quando necessario. Urgencia comercial so pode usar fato operacional atual da API oficial ou do "
         "anuncio corrente, nunca web, memoria, exemplo ou nota antiga. Aplique o perfil v2 depois das evidencias; exemplos "
         "alteram apenas tom, estrutura e abordagem, nunca fatos. "
     )

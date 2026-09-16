@@ -6,6 +6,7 @@ import pytest
 from backend.modules.perguntas_pos_venda.ai import clients, marketplace_policy as policy
 from backend.modules.perguntas_pos_venda.ai.inputs import _perguntas_ia_item_para_agente
 from backend.services import perguntas_pos_venda_state as state
+from ml_questions_gemini.schemas import AIAnswer
 
 
 @pytest.fixture(autouse=True)
@@ -178,7 +179,11 @@ def test_generation_refresh_and_clients_are_isolated(monkeypatch):
         calls.append(kwargs["client_id"])
         return _result()
     monkeypatch.setattr(policy, "collect_official_marketplace_policy", collect)
-    monkeypatch.setattr(clients, "run_general", lambda client, prompt, meta, bindings: policy.policy_stage_context(client, prompt, []))
+    def generate_after_policy(client, prompt, _meta, _bindings):
+        policy.policy_stage_context(client, prompt, [])
+        return AIAnswer(answer="Rascunho para revisão.", requires_human_review=True)
+    monkeypatch.setattr(clients, "run_general", generate_after_policy)
+    monkeypatch.setattr(clients, "review_public_answer", lambda _client, candidate, _meta: candidate)
     a = clients._PerguntasVertexGeminiV2Client("tenant-a", "store-a", "test", _input())
     b = clients._PerguntasVertexGeminiV2Client("tenant-b", "store-b", "test", _input())
     a.generate("base")

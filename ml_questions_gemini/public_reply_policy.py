@@ -32,7 +32,7 @@ PUBLIC_REPLY_EVIDENCE_GUIDANCE = (
     "Responda primeiro o que esta confirmado. A falta de um dado sobre uma duvida nao impede responder as "
     "demais. Se ainda faltar informacao indispensavel depois de usar o contexto e a pesquisa disponiveis, "
     "explique brevemente o fato conhecido e, somente se uma informacao do comprador resolver a lacuna, "
-    "solicite no maximo dois dados textuais decisivos em linguagem natural. Se a aplicacao estiver "
+    "solicite somente um dado textual decisivo em uma unica pergunta natural. Se a aplicacao estiver "
     "comprovada para determinadas geracoes ou carrocerias e faltar apenas "
     "identificar o veiculo do comprador, informe a aplicacao de modo condicional e pergunte somente a "
     "geracao ou ano/carroceria ainda ausentes. Nao solicite codigo original quando esses dados ja resolvem "
