@@ -44,7 +44,11 @@ def _shared_sync_operation_direction(value: str) -> str:
     return direction
 
 
-def _shared_sync_local_fingerprint(sessao: dict, scopes: list[str]) -> tuple[dict, dict]:
+def _shared_sync_local_fingerprint(
+    sessao: dict,
+    scopes: list[str],
+    include_ai_context: bool = False,
+) -> tuple[dict, dict]:
     hashes: dict[str, str] = {}
     files: dict[str, list[dict]] = {}
     for scope in scopes:
@@ -52,14 +56,28 @@ def _shared_sync_local_fingerprint(sessao: dict, scopes: list[str]) -> tuple[dic
             sessao.get("client_id"), scope, username=sessao.get("username"), user_only=True,
         )
         entries = _shared_sync_sanitize_transient_oauth_entries(scope, entries)
-        hashes[scope] = _shared_sync_snapshot_hash(entries)
+        fingerprint_entries = list(entries)
+        if scope == "cadastro" and include_ai_context:
+            from backend.services.shared_sync_ai_context import (
+                build_snapshot_bytes,
+                fingerprint_entry,
+            )
+
+            tenant_abs = os.path.abspath(get_tenant_path(sessao.get("client_id")))
+            data, payload = build_snapshot_bytes(
+                sessao.get("client_id"),
+                sessao.get("username") or "",
+                info_root=os.path.dirname(tenant_abs),
+            )
+            fingerprint_entries.append(fingerprint_entry(data, payload))
+        hashes[scope] = _shared_sync_snapshot_hash(fingerprint_entries)
         files[scope] = [
             {
                 "relative_path": str(item.get("relative_path") or ""),
                 "size": int(item.get("size") or 0),
                 "sha256": str(item.get("sha256") or ""),
             }
-            for item in entries
+            for item in fingerprint_entries
         ]
     return hashes, files
 
@@ -179,13 +197,27 @@ def _shared_sync_create_preview(
         if central is not None:
             central.refresh_stores()
     direction = _shared_sync_operation_direction(direction)
-    local_hashes, local_files = _shared_sync_local_fingerprint(sessao, scopes)
+    local_hashes, local_files = _shared_sync_local_fingerprint(
+        sessao,
+        scopes,
+        kind == "machine",
+    )
     remote_hashes, remote_metas = _shared_sync_remote_fingerprint(bundle_ids)
     remote_bundle_hashes: dict[str, str] = {}
     totals = {"inclusions": 0, "changes": 0, "deletions": 0, "disconnects": 0, "credentials": 0, "stores": 0}
     per_scope = {}
     for scope in scopes:
-        remote_files = list((remote_metas.get(scope) or {}).get("files") or [])
+        remote_meta = remote_metas.get(scope) or {}
+        remote_files = list(remote_meta.get("files") or [])
+        extension = (remote_meta.get("extensions") or {}).get("ai_context")
+        if kind == "machine" and isinstance(extension, dict):
+            from backend.services.shared_sync_ai_context import AI_CONTEXT_FINGERPRINT_PATH
+
+            remote_files.append({
+                "relative_path": AI_CONTEXT_FINGERPRINT_PATH,
+                "size": int(extension.get("size") or 0),
+                "sha256": str(extension.get("sha256") or ""),
+            })
         if direction == "push":
             counts = _shared_sync_preview_file_counts(local_files.get(scope) or [], remote_files)
         else:
@@ -296,7 +328,11 @@ def _shared_sync_require_operation(
         # Reclama a operacao ainda dentro do lock. Uma segunda confirmacao
         # concorrente nao pode passar pelo mesmo operation_id.
         _OPERATIONS[operation_id]["used"] = True
-    current_local, _ = _shared_sync_local_fingerprint(sessao, scopes)
+    current_local, _ = _shared_sync_local_fingerprint(
+        sessao,
+        scopes,
+        kind == "machine",
+    )
     current_remote, _ = _shared_sync_remote_fingerprint(bundle_ids)
     if current_local != record.get("local_hashes") or current_remote != record.get("remote_hashes"):
         raise HTTPException(status_code=409, detail="Os dados mudaram depois da previa; confira novamente.")

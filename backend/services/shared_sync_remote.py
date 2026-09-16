@@ -389,6 +389,7 @@ def _shared_sync_push_scope(
     skip_if_remote_hash_matches: bool = False,
     expected_snapshot_hash: str = "",
     key_context: Optional[dict] = None,
+    include_ai_context: bool = False,
 ) -> dict:
     db = _shared_sync_firestore_required()
     bundle, manifest, warnings = _shared_sync_montar_pacote(
@@ -399,6 +400,7 @@ def _shared_sync_push_scope(
         user_only=user_only,
         known_keys=known_keys,
         sanitize_user_share_oauth=sanitize_user_share_oauth,
+        include_ai_context=include_ai_context,
     )
     stores_count = 0
     if scope == "lojas_integracoes":
@@ -554,6 +556,7 @@ def _shared_sync_push_scope(
         "chunk_count": len(chunks),
         "snapshot_hash": manifest.get("snapshot_hash") or "",
         "files": (manifest.get("files") or [])[:250],
+        "extensions": manifest.get("extensions") or {},
         "warnings": warnings,
     }
     if isinstance(extra_meta, dict):

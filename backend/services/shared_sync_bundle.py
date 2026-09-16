@@ -426,6 +426,7 @@ def _shared_sync_montar_pacote_locked(
     user_only: bool = False,
     known_keys: Optional[set[str]] = None,
     sanitize_user_share_oauth: bool = False,
+    include_ai_context: bool = False,
 ) -> tuple[bytes, dict, list[str]]:
     if scope == "lojas_integracoes":
         from backend.services.central_accounts_store_index import assert_legacy_sync_allowed
@@ -623,6 +624,29 @@ def _shared_sync_montar_pacote_locked(
                 [(item["relative_path"], item["data"]) for item in frozen],
             )
             entries = frozen
+    ai_context_data: bytes | None = None
+    ai_context_descriptor: dict[str, Any] | None = None
+    snapshot_entries = list(entries)
+    if scope == "cadastro" and include_ai_context:
+        from backend.services.shared_sync_ai_context import (
+            AI_CONTEXT_EXTENSION_KEY,
+            build_snapshot_bytes,
+            extension_descriptor,
+            fingerprint_entry,
+        )
+
+        tenant_abs = os.path.abspath(get_tenant_path(client_id))
+        ai_context_data, ai_context_payload = build_snapshot_bytes(
+            client_id,
+            username,
+            info_root=os.path.dirname(tenant_abs),
+        )
+        ai_context_descriptor = extension_descriptor(
+            ai_context_data,
+            ai_context_payload,
+        )
+        snapshot_entries.append(fingerprint_entry(ai_context_data, ai_context_payload))
+
     manifest = {
         "schema": 2,
         "app": "JK Sistema",
@@ -631,7 +655,7 @@ def _shared_sync_montar_pacote_locked(
         "created_at": _shared_sync_now_iso(),
         "created_by": str(username or "").strip().lower(),
         "machine_id": str(machine_id or "").strip(),
-        "snapshot_hash": _shared_sync_snapshot_hash(entries),
+        "snapshot_hash": _shared_sync_snapshot_hash(snapshot_entries),
         "file_count": len(entries),
         "delta": known_keys is not None,
         "item_count": len(item_keys),
@@ -647,12 +671,20 @@ def _shared_sync_montar_pacote_locked(
             for item in entries
         ],
     }
+    if ai_context_descriptor is not None:
+        manifest["extensions"] = {
+            AI_CONTEXT_EXTENSION_KEY: ai_context_descriptor,
+        }
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
         for item in entries:
             data = item.get("data") if "data" in item else _shared_sync_ler_arquivo_pacote(item["abs_path"])
             zf.writestr("files/" + item["relative_path"], data or b"")
+        if ai_context_data is not None:
+            from backend.services.shared_sync_ai_context import AI_CONTEXT_EXTENSION_PATH
+
+            zf.writestr(AI_CONTEXT_EXTENSION_PATH, ai_context_data)
     bundle = buffer.getvalue()
     if len(bundle) > _shared_sync_max_bundle_bytes():
         raise HTTPException(
@@ -670,6 +702,7 @@ def _shared_sync_montar_pacote(
     user_only: bool = False,
     known_keys: Optional[set[str]] = None,
     sanitize_user_share_oauth: bool = False,
+    include_ai_context: bool = False,
 ) -> tuple[bytes, dict, list[str]]:
     if scope == "cadastro":
         from backend.services.central_accounts_client import current
@@ -688,6 +721,7 @@ def _shared_sync_montar_pacote(
                 user_only=user_only,
                 known_keys=known_keys,
                 sanitize_user_share_oauth=sanitize_user_share_oauth,
+                include_ai_context=include_ai_context,
             )
     return _shared_sync_montar_pacote_locked(
         client_id,
@@ -697,6 +731,7 @@ def _shared_sync_montar_pacote(
         user_only=user_only,
         known_keys=known_keys,
         sanitize_user_share_oauth=sanitize_user_share_oauth,
+        include_ai_context=include_ai_context,
     )
 
 configure_shared_sync_bundle_runtime()

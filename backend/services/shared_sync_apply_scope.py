@@ -170,6 +170,32 @@ def _shared_sync_read_validated_bundle(bundle: bytes, scope: str) -> tuple[dict,
                     _shared_sync_validate_sqlite_payload(rel, data)
                 if not legacy_state and not tombstone_local_only:
                     fontes.append((rel, data))
+            extensions = manifest.get("extensions") or {}
+            if not isinstance(extensions, dict) or set(extensions) - {"ai_context"}:
+                raise HTTPException(502, detail="Extensoes invalidas no pacote Shared Sync.")
+            extension_members = [
+                name for name in archive_names if str(name).startswith("extensions/")
+            ]
+            if "ai_context" in extensions:
+                if scope != "cadastro":
+                    raise HTTPException(400, detail="Contexto de IA fora do escopo Cadastro.")
+                from backend.services.shared_sync_ai_context import (
+                    AI_CONTEXT_EXTENSION_PATH,
+                    validate_extension_descriptor,
+                )
+
+                if archive_names.count(AI_CONTEXT_EXTENSION_PATH) != 1:
+                    raise HTTPException(502, detail="Pacote sem o contexto de IA esperado.")
+                extension_info = zf.getinfo(AI_CONTEXT_EXTENSION_PATH)
+                if extension_info.file_size > min(max_file, 50 * 1024 * 1024):
+                    raise HTTPException(413, detail="Contexto de IA maior que o limite permitido.")
+                extension_data = zf.read(extension_info)
+                validate_extension_descriptor(extensions["ai_context"], extension_data)
+                manifest["_ai_context_payload"] = extension_data
+                if extension_members != [AI_CONTEXT_EXTENSION_PATH]:
+                    raise HTTPException(502, detail="Pacote contem extensoes inesperadas.")
+            elif extension_members:
+                raise HTTPException(502, detail="Pacote contem extensao sem descritor.")
             return manifest, fontes
     except HTTPException:
         raise
@@ -2071,12 +2097,39 @@ def _shared_sync_aplicar_pacote(
                 },
             )
         tenant_abs = tenant_confiavel
-    _manifest, fontes = _shared_sync_read_validated_bundle(bundle, scope)
+    manifest, fontes = _shared_sync_read_validated_bundle(bundle, scope)
+    ai_context_payload = manifest.pop("_ai_context_payload", None)
+    ai_context_plan = None
+    ai_context_staged = None
     if scope == "cadastro":
         from backend.services.central_accounts_client import current
+
         central = current(client_id)
         if central is not None:
             central.refresh_stores()
+    if ai_context_payload is not None:
+        if (
+            scope != "cadastro"
+            or not bool((scope_config or {}).get("ai_context_machine_sync"))
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="O contexto de IA so pode acompanhar a sincronizacao entre maquinas da mesma conta.",
+            )
+        if str(manifest.get("client_id") or "").strip() != str(client_id or "").strip():
+            raise HTTPException(
+                status_code=403,
+                detail="O contexto de IA pertence a outro cliente.",
+            )
+        from backend.services.shared_sync_ai_context import validate_snapshot_bytes
+
+        ai_context_plan = validate_snapshot_bytes(
+            ai_context_payload,
+            expected_client_id=client_id,
+            expected_username=username,
+            authorize_stores=True,
+        )
+    if scope == "cadastro":
         from backend.services.shared_sync_cadastro_transaction import transaction
         with _shared_sync_bloquear_writer_store_id(client_id, tenant_abs):
             _shared_sync_prevalidar_cadastro(client_id, tenant_abs, fontes, scope_config)
@@ -2084,6 +2137,10 @@ def _shared_sync_aplicar_pacote(
             with transaction(tenant_abs, targets):
                 result = _shared_sync_aplicar_pacote_conteudo(
                     client_id, scope, username, scope_config, tenant_abs, fontes)
+                if ai_context_plan is not None:
+                    from backend.services.shared_sync_ai_context import stage_snapshot
+
+                    ai_context_staged = stage_snapshot(ai_context_plan, tenant_abs)
     else:
         result = _shared_sync_aplicar_pacote_conteudo(
             client_id, scope, username, scope_config, tenant_abs, fontes)
@@ -2095,6 +2152,10 @@ def _shared_sync_aplicar_pacote(
             notify_catalog_committed(client_id, info_root=os.path.dirname(tenant_abs))
         except Exception:
             pass  # Periodic reconciliation closes the post-commit crash window.
+    if ai_context_staged is not None:
+        from backend.services.shared_sync_ai_context import finalize_snapshot
+
+        result["ai_context"] = finalize_snapshot(ai_context_staged, tenant_abs)
     return result
 
 

@@ -18,6 +18,15 @@ com WAL, separado do banco transacional do Context Hub. Shared Sync e Drive já
 excluem esse diretório. O índice é reconstruído localmente e não é fonte de
 operações de negócio.
 
+Ao sincronizar o Cadastro entre máquinas da mesma conta, o pacote também leva
+uma projeção tipada do contexto editorial publicado. São transportadas as notas
+efetivas da publicação ativa e as gerações ativas por loja e SKU, vinculadas ao
+mesmo cliente e usuário. Arquivos do vault, configuração do Obsidian, SQLite,
+WAL e SHM continuam fora do pacote. O destino valida loja, seller, site,
+superfície, anúncio, variação e SKU antes de gravar, publica a projeção local e
+reconstrói este índice. Contexto removido na origem só retira no destino o que
+uma sincronização anterior registrou como pertencente à mesma origem.
+
 ## Atualização e consistência
 
 A primeira consulta agenda a construção em segundo plano. Até haver uma geração
@@ -32,7 +41,9 @@ Um mutex por cliente coordena os processos; publicação SQLite é atômica e os
 leitores não adquirem o bloqueio dos escritores.
 
 `POST /api/mercadolivre/ia-treinamento/ficha/atualizar` recebe `store_id` e `sku`
-e retorna 202. Recarregar a orientação é separado de sincronizar o cadastro.
+e retorna 202. Recarregar a orientação continua disponível separadamente; uma
+sincronização do Cadastro entre máquinas também agenda a reconstrução após
+aplicar o contexto publicado recebido.
 O andamento da sincronização é consultado por identidade autorizada, sem
 enumerar produtos ou resolver novamente a configuração canônica de lojas.
 

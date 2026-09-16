@@ -99,6 +99,15 @@ def _shared_sync_machine_local_stamp(sessao: dict, scope: str) -> str:
                 if _shared_sync_scope_match(scope, rel) and not os.path.islink(path):
                     stat = os.stat(path)
                     entries.append((rel, stat.st_size, stat.st_mtime_ns))
+        if scope == "cadastro" and str(sessao.get("username") or "").strip():
+            from backend.services.shared_sync_ai_context import build_snapshot_bytes
+
+            _data, payload = build_snapshot_bytes(
+                sessao.get("client_id"),
+                sessao.get("username") or "",
+                info_root=os.path.dirname(os.path.abspath(root)),
+            )
+            entries.append(("@ai-context", str(payload.get("root_hash") or ""), 0))
         return hashlib.sha256(json.dumps(sorted(entries)).encode()).hexdigest()
     except (OSError, NameError):
         return ""
@@ -137,6 +146,7 @@ def _shared_sync_machine_push_scope(
         skip_if_remote_hash_matches=skip_if_remote_hash_matches,
         expected_snapshot_hash=expected_snapshot_hash,
         key_context={"sessao": sessao, "machine_id": machine_id},
+        include_ai_context=scope == "cadastro",
     )
 
 def _shared_sync_machine_pull_scope(
@@ -318,6 +328,7 @@ def _shared_sync_machine_pull_scope_serialized(
         # de fotos quando o produtor ainda nao executou a migracao por loja.
         # Pacotes com fotos ja escopadas continuam exigindo a configuracao.
         "allow_legacy_cadastro_bootstrap": scope == "cadastro",
+        "ai_context_machine_sync": scope == "cadastro",
     }
     result = _shared_sync_aplicar_pacote(sessao.get("client_id"), scope, bundle, sessao.get("username") or "", scope_config)
     receipt = _shared_sync_machine_receipt(sessao, scope, machine_id, meta, publish=True,
@@ -338,6 +349,7 @@ def _shared_sync_machine_pull_scope_serialized(
         "connection_verification": "not_performed",
         "delivery_state": "applied",
         "receipt": receipt,
+        "ai_context": dict(result.get("ai_context") or {}),
 
         "backup_dir": result.get("backup_dir") or "",
         "snapshot_hash": meta.get("snapshot_hash") or "",

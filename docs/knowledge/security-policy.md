@@ -13,4 +13,10 @@ identidade da sessão, aplica permissões fora do texto e retorna apenas a gera�
 ativa. Falhas de validação ou publicação preservam a geração anterior.
 
 ContextVault, `context_hub`, `.obsidian`, bancos operacionais e configurações
-de integração são permanentemente excluídos dos descobridores e do Shared Sync.
+de integração são permanentemente excluídos da coleta de arquivos do Shared
+Sync. Na sincronização do Cadastro entre máquinas da mesma conta, uma extensão
+tipada pode transportar somente notas efetivas da publicação ativa e gerações
+ativas de loja e SKU. O pacote vincula cliente, usuário, loja, seller, site,
+superfície, anúncio, variação e SKU; o destino revalida essas identidades e
+reconstrói bancos e índices localmente. Vínculos de compartilhamento entre
+usuários nunca recebem essa extensão.
