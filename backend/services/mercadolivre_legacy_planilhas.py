@@ -61,6 +61,7 @@ PROMO_DESCONTO_ML_CONFIAVEL_KEY = "_jk_desconto_ml_confiavel"
 PROMO_DESCONTO_ML_FONTE_KEY = "_jk_desconto_ml_fonte"
 PROMO_TARIFA_ML_EXATA_KEY = "_jk_tarifa_ml_exata"
 PROMO_TARIFA_ML_LIQUIDA_KEY = "_jk_tarifa_ml_liquida"
+PROMO_TARIFA_ML_ESTIMADA_KEY = "_jk_tarifa_ml_estimada"
 
 
 def _normalizar_sku_saida(v):
@@ -73,7 +74,12 @@ def _normalizar_sku_saida(v):
     return ", ".join(_normalizar_sku_mes(p) for p in partes)
 
 
-def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_exibicao: bool = False) -> pd.DataFrame:
+def _build_df_planilha_analise_promo(
+    dados_analise: list[dict],
+    limpar_status_exibicao: bool = False,
+    *,
+    destacar_estimativas: bool = False,
+) -> pd.DataFrame:
     linhas = []
     for item in dados_analise or []:
         item = dict(item or {})
@@ -258,12 +264,29 @@ def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_ex
             ):
                 if campo in campos_analise:
                     linhas[-1][campo] = campos_analise[campo]
-            exato = campos_analise.get("action_financeiro_exato") is True
+            financeiro_disponivel = (
+                campos_analise.get("action_financeiro_exato") is True
+                or campos_analise.get("action_financeiro_estimado") is True
+            )
             linhas[-1]["Imposto Fixa"] = campos_analise.get("Imposto Fixa", campos_analise.get("Imposto", ""))
-            liquido = _to_float_safe(campos_analise.get("action_valor_liquido_ml")) if exato else None
-            margem = _to_float_safe(campos_analise.get("action_margem_ml")) if exato else None
+            liquido = _to_float_safe(campos_analise.get("action_valor_liquido_ml")) if financeiro_disponivel else None
+            margem = _to_float_safe(campos_analise.get("action_margem_ml")) if financeiro_disponivel else None
             linhas[-1]["Valor lÃ­quido ML"] = formatar_moeda_br(liquido) if liquido is not None else ""
             linhas[-1]["Margem ML"] = _format_pct_br(margem) if margem is not None else ""
+
+        if destacar_estimativas:
+            # A API usa este mesmo DataFrame. O rotulo pertence somente ao
+            # arquivo exportado; seus consumidores continuam recebendo os
+            # valores formatados e os metadados de estimativa em separado.
+            campos_estimados = []
+            if campos_analise.get(PROMO_TARIFA_ML_ESTIMADA_KEY) is True:
+                campos_estimados.append("Tarifa ML")
+            if campos_analise.get("action_financeiro_estimado") is True:
+                campos_estimados.extend(("Valor lÃ­quido ML", "Margem ML"))
+            for campo in campos_estimados:
+                valor = linhas[-1].get(campo)
+                if _to_float_safe(valor) is not None:
+                    linhas[-1][campo] = f"{valor} (Estimado)"
 
     df = pd.DataFrame(linhas)
     for c in COLUNAS_PLANILHA_ANALISE_PROMO:
@@ -279,7 +302,11 @@ def _salvar_planilha_analise_promo(client_id: str, dados_analise: list[dict], pr
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     nome = f"{prefixo}_{ts}.xlsx"
     caminho = os.path.join(pasta_tmp, nome)
-    df = _build_df_planilha_analise_promo(dados_analise, limpar_status_exibicao=True)
+    df = _build_df_planilha_analise_promo(
+        dados_analise,
+        limpar_status_exibicao=True,
+        destacar_estimativas=True,
+    )
     with pd.ExcelWriter(caminho, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Analise Promocao')
     return nome

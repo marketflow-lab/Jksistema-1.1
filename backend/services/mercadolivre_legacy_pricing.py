@@ -756,6 +756,8 @@ def _ml_obter_taxas_anuncio(client_id: str, loja: str, cfg: dict, item: dict, re
         "listing_fee_amount": None,
         "listing_fee_text": "-",
         "sale_fee_pct": None,
+        "sale_fee_total_pct": None,
+        "fixed_fee_source": "",
         "meli_fee_pct": None,
         "financing_fee_pct": None,
         "listing_type_name": _ml_nome_tipo_anuncio(item.get('listing_type_id')),
@@ -817,6 +819,7 @@ def _ml_obter_taxas_anuncio(client_id: str, loja: str, cfg: dict, item: dict, re
             sale_fee_details = data.get("sale_fee_details") or {}
             listing_fee_details = data.get("listing_fee_details") or {}
             fixed_fee_amount = _to_float(sale_fee_details.get("fixed_fee"))
+            sale_fixed_fee_known = fixed_fee_amount is not None
             if fixed_fee_amount is None:
                 fixed_fee_amount = _to_float(listing_fee_details.get("fixed_fee"))
             percentage_fee = _to_float(sale_fee_details.get("percentage_fee"))
@@ -825,11 +828,14 @@ def _ml_obter_taxas_anuncio(client_id: str, loja: str, cfg: dict, item: dict, re
             info["listing_type_name"] = data.get("listing_type_name") or info["listing_type_name"]
 
             info["ad_cost"] = sale_fee_amount
+            # Mantem a proveniencia mesmo se so houver os componentes da tarifa.
+            info["ad_cost_source"] = "sites/MLB/listing_prices"
             if sale_fee_amount is not None:
-                info["ad_cost_source"] = "sites/MLB/listing_prices"
                 info["ad_cost_exact_for_price"] = bool(info["ad_cost_context_complete"])
             info["listing_fee_amount"] = listing_fee_amount
             info["fixed_fee_amount"] = fixed_fee_amount
+            info["fixed_fee_source"] = "listing_prices" if sale_fixed_fee_known else "listing_fee"
+            info["sale_fee_total_pct"] = percentage_fee
             # Exibe exatamente o percentual disponibilizado pela API: primeiro a tarifa ML
             # separada, quando existir, e depois o percentual total retornado.
             sale_fee_pct_display = meli_percentage_fee if meli_percentage_fee is not None else percentage_fee
@@ -873,6 +879,7 @@ def _ml_obter_taxas_anuncio(client_id: str, loja: str, cfg: dict, item: dict, re
         )
         if estimada is not None:
             info["fixed_fee_amount"] = estimada
+            info["fixed_fee_source"] = "estimativa_legada"
             info["fixed_fee_text"] = f"R$ {estimada:.2f}"
             if info.get("fee_breakdown"):
                 info["fee_breakdown"] = f"{info['fee_breakdown']} | Taxa fixa (estimada): R$ {estimada:.2f}"

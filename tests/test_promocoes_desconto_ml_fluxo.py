@@ -61,6 +61,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
         retornar_resultado: bool = False,
         via_api_direta: bool = False,
         margem_tolerancia: float = 0,
+        preco_arquivo: float = 148.46,
     ):
         # Os adaptadores reais vinculam o raw a campanha/item consultados.
         raw_b = self._confirmar_contexto_candidate(raw_b, promo_b_id, promo_b_type)
@@ -200,7 +201,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
                     "MLB": ITEM_ID,
                     "SKU": "SKU-TESTE",
                     "TITLE": "Produto prova boost",
-                    "FINAL_PRICE": 148.46,
+                    "FINAL_PRICE": preco_arquivo,
                     "DISCOUNT_PERCENTAGE": 22.789682,
                 }]),
             ),
@@ -212,7 +213,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
                         "MLB": ITEM_ID,
                         "SKU": "",
                         "TÃ­tulo": "Produto prova boost",
-                        "PreÃ§o Final ML": "R$ 148,46",
+                        "PreÃ§o Final ML": f"R$ {preco_arquivo:.2f}".replace(".", ","),
                         "Desconto ML": "",
                         "ML % Campanha": "22,79%",
                     }},
@@ -1273,8 +1274,10 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
         self.assertFalse(linha_interna[analysis.PROMO_DESCONTO_ML_CONFIAVEL_KEY])
         self.assertEqual(linha_interna[analysis.PROMO_DESCONTO_ML_FONTE_KEY], "")
         self.assertEqual(linha_json["Desconto ML"], "Não informado pela API")
-        self.assertEqual(_valor_por_sufixo(linha_json, "quido ML"), "")
-        self.assertEqual(linha_json["Margem ML"], "")
+        self.assertEqual(_valor_por_sufixo(linha_json, "quido ML"), "R$ 30,54")
+        self.assertEqual(linha_json["Tarifa ML"], "R$ 18,83")
+        self.assertTrue(linha_json["action_financeiro_estimado"])
+        self.assertFalse(linha_json["action_financeiro_exato"])
 
     def test_flag_boost_invalida_nao_inventa_desconto(self):
         raw_b = {
@@ -1297,8 +1300,10 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
         self.assertFalse(linha_interna[analysis.PROMO_DESCONTO_ML_CONFIAVEL_KEY])
         self.assertEqual(linha_interna[analysis.PROMO_DESCONTO_ML_FONTE_KEY], "")
         self.assertEqual(linha_json["Desconto ML"], "Não informado pela API")
-        self.assertEqual(_valor_por_sufixo(linha_json, "quido ML"), "")
-        self.assertEqual(linha_json["Margem ML"], "")
+        self.assertEqual(_valor_por_sufixo(linha_json, "quido ML"), "R$ 30,54")
+        self.assertEqual(linha_json["Tarifa ML"], "R$ 18,83")
+        self.assertTrue(linha_json["action_financeiro_estimado"])
+        self.assertFalse(linha_json["action_financeiro_exato"])
 
     def test_boost_percentual_zero_nao_vira_zero_confiavel(self):
         raw_b = {
@@ -1321,8 +1326,10 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
         self.assertFalse(linha_interna[analysis.PROMO_DESCONTO_ML_CONFIAVEL_KEY])
         self.assertEqual(linha_interna[analysis.PROMO_DESCONTO_ML_FONTE_KEY], "")
         self.assertEqual(linha_json["Desconto ML"], "Não informado pela API")
-        self.assertEqual(_valor_por_sufixo(linha_json, "quido ML"), "")
-        self.assertEqual(linha_json["Margem ML"], "")
+        self.assertEqual(_valor_por_sufixo(linha_json, "quido ML"), "R$ 30,54")
+        self.assertEqual(linha_json["Tarifa ML"], "R$ 18,83")
+        self.assertTrue(linha_json["action_financeiro_estimado"])
+        self.assertFalse(linha_json["action_financeiro_exato"])
 
     def test_seller_receives_incompativel_nao_substitui_fonte_calculada(self):
         raw_b = {
@@ -1347,8 +1354,10 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             "seller_promotions.smart_split_reconciliado",
         )
         self.assertEqual(linha_json["Desconto ML"], "R$ 3,53")
-        self.assertEqual(_valor_por_sufixo(linha_json, "quido ML"), "")
-        self.assertEqual(linha_json["Margem ML"], "")
+        self.assertEqual(_valor_por_sufixo(linha_json, "quido ML"), "R$ 32,56")
+        self.assertEqual(linha_json["Tarifa ML"], "R$ 19,42")
+        self.assertTrue(linha_json["action_financeiro_estimado"])
+        self.assertFalse(linha_json["action_financeiro_exato"])
 
     def test_desconto_ausente_permanece_nao_informado_sem_inferencia(self):
         raw_b = {
@@ -1368,8 +1377,10 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
         self.assertFalse(linha_interna[analysis.PROMO_DESCONTO_ML_CONFIAVEL_KEY])
         self.assertEqual(linha_interna[analysis.PROMO_DESCONTO_ML_FONTE_KEY], "")
         self.assertEqual(linha_json["Desconto ML"], "Não informado pela API")
-        self.assertEqual(_valor_por_sufixo(linha_json, "quido ML"), "")
-        self.assertEqual(linha_json["Margem ML"], "")
+        self.assertEqual(_valor_por_sufixo(linha_json, "quido ML"), "R$ 34,12")
+        self.assertEqual(linha_json["Tarifa ML"], "R$ 15,25")
+        self.assertTrue(linha_json["action_financeiro_estimado"])
+        self.assertFalse(linha_json["action_financeiro_exato"])
         self.assertNotIn(analysis.PROMO_DESCONTO_ML_CONFIAVEL_KEY, linha_json)
         self.assertNotIn(analysis.PROMO_DESCONTO_ML_FONTE_KEY, linha_json)
 

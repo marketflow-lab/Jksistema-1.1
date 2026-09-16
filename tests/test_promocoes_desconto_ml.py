@@ -405,6 +405,8 @@ class PromocoesDescontoMlTests(unittest.TestCase):
             )
 
         self.assertEqual(info["ad_cost"], 18.83)
+        self.assertEqual(info["sale_fee_total_pct"], 17)
+        self.assertEqual(info["fixed_fee_source"], "listing_prices")
         self.assertTrue(info["ad_cost_exact_for_price"])
         self.assertTrue(info["ad_cost_context_complete"])
         self.assertEqual(info["ad_cost_price_context"], 110.79)

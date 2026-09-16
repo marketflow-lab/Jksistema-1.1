@@ -63,6 +63,7 @@ from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.promocoes_common import *
 from backend.services.promocoes_core import *
 from backend.services.promocoes_validacao import validar_promocoes_por_anuncio
+from backend.services.promocoes_tarifa_estimada import estimar_tarifa_promocao
 
 _PROMOCOES_RUNTIME_GET_TENANT_ID = None
 
@@ -94,6 +95,8 @@ PROMO_DESCONTO_ML_FONTE_KEY = "_jk_desconto_ml_fonte"
 PROMO_TARIFA_ML_EXATA_KEY = "_jk_tarifa_ml_exata"
 PROMO_TARIFA_ML_FONTE_KEY = "_jk_tarifa_ml_fonte"
 PROMO_TARIFA_ML_LIQUIDA_KEY = "_jk_tarifa_ml_liquida"
+PROMO_TARIFA_ML_ESTIMADA_KEY = "_jk_tarifa_ml_estimada"
+PROMO_TARIFA_ML_ESTIMATIVA_MOTIVO_KEY = "_jk_tarifa_ml_estimativa_motivo"
 PROMO_FINANCIAL_QUOTE_SHADOW_ENV = "JK_ML_FINANCIAL_QUOTE_SHADOW"
 PROMO_DESCONTO_ML_TARIFA_FIELDS = (
     "sale_fee_discount",
@@ -910,11 +913,18 @@ def _promo_calcular_contexto_financeiro_acao(
     loja: Any = None,
 ) -> dict:
     """Calcula o unico cenario financeiro exibido e usado na sugestao."""
+    def numero_financeiro(valor):
+        numero = _parse_float_flex(valor) if not isinstance(valor, bool) else None
+        return numero if numero is not None and math.isfinite(numero) and numero >= 0 else None
+
     resultado = {
         "tarifa": None,
         "valor_liquido": None,
         "margem": None,
         "exato": False,
+        "estimado": False,
+        "tarifa_estimada": False,
+        "estimativa_motivo": "",
         "fonte": "",
         "motivo": "",
         "preco": None,
@@ -930,9 +940,11 @@ def _promo_calcular_contexto_financeiro_acao(
         "fee_data": fee_data or {},
         "shipping_data": shipping_data or {},
     }
-    preco = _parse_float_flex(preco_promocional)
-    custo_num = _parse_float_flex(custo)
-    imposto_num = _parse_float_flex(imposto_rate)
+    preco = numero_financeiro(preco_promocional)
+    custo_num = numero_financeiro(custo)
+    imposto_num = numero_financeiro(imposto_rate)
+    if imposto_num is not None and imposto_num > 1:
+        imposto_num = None
     if preco is None or preco <= 0:
         resultado["motivo"] = "Preco da campanha selecionada nao informado."
         return resultado
@@ -988,19 +1000,41 @@ def _promo_calcular_contexto_financeiro_acao(
         desconto_confiavel,
         desconto_fonte,
     )
+    estimativa = None
+    if not tarifa_exata:
+        beneficio_aplicavel = desconto_confiavel and (
+            _promo_beneficio_explicito_aplicavel_tarifa(raw_promocao, preco, desconto_ml, desconto_fonte)
+            or (desconto_fonte == "seller_promotions.smart_split_reconciliado"
+                and _promo_split_smart_aplicavel_tarifa(raw_promocao, preco, desconto_ml))
+        )
+        estimativa = estimar_tarifa_promocao(
+            raw_promocao, preco, fee_data or {},
+            preco_raw=_promo_preco_efetivo_raw(raw_promocao),
+            desconto_validado=desconto_ml if beneficio_aplicavel else None,
+            conflito=tarifa_fonte if str(tarifa_fonte).startswith("conflito_") else "",
+            tipo_promocao=_promo_identidade_financeira_raw(raw_promocao)[1],
+        )
+        if estimativa:
+            tarifa = estimativa["tarifa"]
+            tarifa_fonte = estimativa["fonte"]
     frete_exato = _promo_contexto_valor_exato(
         shipping_data,
         preco,
         "shipping_exact_for_price",
         "shipping_price_context",
     )
-    frete = _parse_float_flex((shipping_data or {}).get("shipping_cost"))
+    frete = numero_financeiro((shipping_data or {}).get("shipping_cost"))
+    frete_exato = frete_exato and frete is not None
     recebivel = _ml_extrair_recebivel_promocao_raw(raw_promocao)
-    if recebivel is None and tarifa_exata and frete_exato:
+    if estimativa and frete_exato and frete is not None:
+        recebivel = round(float(preco) - float(tarifa) - float(frete), 2)
+    elif recebivel is None and tarifa_exata and frete_exato:
         recebivel = _ml_calcular_recebivel_promocao(raw_promocao, preco, tarifa, frete, None)
     resultado.update({
-        "tarifa": round(float(tarifa), 2) if tarifa_exata and tarifa is not None else None,
+        "tarifa": round(float(tarifa), 2) if (tarifa_exata or estimativa) and tarifa is not None else None,
         "tarifa_exata": bool(tarifa_exata),
+        "tarifa_estimada": bool(estimativa),
+        "estimativa_motivo": estimativa["motivo"] if estimativa else "",
         "fonte": tarifa_fonte,
         "frete": frete if frete_exato else None,
         "frete_exato": bool(frete_exato),
@@ -1016,7 +1050,7 @@ def _promo_calcular_contexto_financeiro_acao(
         faltantes.append("custo")
     if imposto_num is None:
         faltantes.append("imposto")
-    if not tarifa_exata or tarifa is None:
+    if not (tarifa_exata or estimativa) or tarifa is None:
         faltantes.append("tarifa exata no preco da campanha")
     if not frete_exato or frete is None:
         faltantes.append("frete exato no preco da campanha")
@@ -1029,7 +1063,9 @@ def _promo_calcular_contexto_financeiro_acao(
             "tarifa": round(float(tarifa), 2),
             "valor_liquido": round(liquido, 2),
             "margem": (liquido * 100.0) / float(preco),
-            "exato": True,
+            "exato": bool(tarifa_exata),
+            "estimado": bool(estimativa),
+            "motivo": "Margem calculada com tarifa estimada." if estimativa else "",
             "fonte": tarifa_fonte,
         })
 
@@ -1304,6 +1340,10 @@ def _promo_campos_financeiros_acao(financeiro: dict, raw_acao: dict, percentual:
         PROMO_TARIFA_ML_EXATA_KEY: financeiro.get("tarifa_exata", False),
         PROMO_TARIFA_ML_LIQUIDA_KEY: financeiro.get("tarifa_exata", False),
         PROMO_TARIFA_ML_FONTE_KEY: financeiro.get("fonte", ""),
+        PROMO_TARIFA_ML_ESTIMADA_KEY: financeiro.get("tarifa_estimada", False),
+        PROMO_TARIFA_ML_ESTIMATIVA_MOTIVO_KEY: financeiro.get("estimativa_motivo", ""),
+        "action_financeiro_estimado": financeiro.get("estimado", False),
+        "action_financeiro_estimativa_motivo": financeiro.get("estimativa_motivo", ""),
         "Frete ML": formatar_moeda_br(frete) if frete is not None else "A calcular",
         "frete_ml_exato": financeiro.get("frete_exato", False),
         "frete_ml_fonte": financeiro.get("frete_fonte", ""),
@@ -1901,6 +1941,10 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             "action_financeiro_exato": item.get("action_financeiro_exato") is True,
             "action_financeiro_fonte": str(item.get("action_financeiro_fonte") or "").strip(),
             "action_financeiro_motivo": str(item.get("action_financeiro_motivo") or ""),
+            PROMO_TARIFA_ML_ESTIMADA_KEY: item.get(PROMO_TARIFA_ML_ESTIMADA_KEY) is True,
+            PROMO_TARIFA_ML_ESTIMATIVA_MOTIVO_KEY: str(item.get(PROMO_TARIFA_ML_ESTIMATIVA_MOTIVO_KEY) or ""),
+            "action_financeiro_estimado": item.get("action_financeiro_estimado") is True,
+            "action_financeiro_estimativa_motivo": str(item.get("action_financeiro_estimativa_motivo") or ""),
             "action_impedimento_tecnico": str(item.get("action_impedimento_tecnico") or ""),
             "action_tecnico_apto": item.get("action_tecnico_apto") is True,
             "action_ja_participa": item.get("action_ja_participa") is True,
@@ -1930,6 +1974,10 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             "action_financeiro_exato",
             "action_financeiro_fonte",
             "action_financeiro_motivo",
+            PROMO_TARIFA_ML_ESTIMADA_KEY,
+            PROMO_TARIFA_ML_ESTIMATIVA_MOTIVO_KEY,
+            "action_financeiro_estimado",
+            "action_financeiro_estimativa_motivo",
             "action_impedimento_tecnico",
             "action_tecnico_apto",
             "action_ja_participa",
@@ -2645,6 +2693,10 @@ async def analisar_promo_via_api_sem_arquivos(
                 "action_financeiro_exato": item.get("action_financeiro_exato") is True,
                 "action_financeiro_fonte": str(item.get("action_financeiro_fonte") or "").strip(),
                 "action_financeiro_motivo": str(item.get("action_financeiro_motivo") or ""),
+                PROMO_TARIFA_ML_ESTIMADA_KEY: item.get(PROMO_TARIFA_ML_ESTIMADA_KEY) is True,
+                PROMO_TARIFA_ML_ESTIMATIVA_MOTIVO_KEY: str(item.get(PROMO_TARIFA_ML_ESTIMATIVA_MOTIVO_KEY) or ""),
+                "action_financeiro_estimado": item.get("action_financeiro_estimado") is True,
+                "action_financeiro_estimativa_motivo": str(item.get("action_financeiro_estimativa_motivo") or ""),
                 "action_impedimento_tecnico": str(item.get("action_impedimento_tecnico") or ""),
                 "action_tecnico_apto": item.get("action_tecnico_apto") is True,
                 "action_ja_participa": item.get("action_ja_participa") is True,
@@ -2677,6 +2729,10 @@ async def analisar_promo_via_api_sem_arquivos(
                 "action_financeiro_exato",
                 "action_financeiro_fonte",
                 "action_financeiro_motivo",
+                PROMO_TARIFA_ML_ESTIMADA_KEY,
+                PROMO_TARIFA_ML_ESTIMATIVA_MOTIVO_KEY,
+                "action_financeiro_estimado",
+                "action_financeiro_estimativa_motivo",
                 "action_impedimento_tecnico",
                 "action_tecnico_apto",
                 "action_ja_participa",
@@ -3329,6 +3385,10 @@ async def analisar_promo_via_api_com_arquivos(
                 "action_financeiro_exato": item.get("action_financeiro_exato") is True,
                 "action_financeiro_fonte": str(item.get("action_financeiro_fonte") or "").strip(),
                 "action_financeiro_motivo": str(item.get("action_financeiro_motivo") or ""),
+                PROMO_TARIFA_ML_ESTIMADA_KEY: item.get(PROMO_TARIFA_ML_ESTIMADA_KEY) is True,
+                PROMO_TARIFA_ML_ESTIMATIVA_MOTIVO_KEY: str(item.get(PROMO_TARIFA_ML_ESTIMATIVA_MOTIVO_KEY) or ""),
+                "action_financeiro_estimado": item.get("action_financeiro_estimado") is True,
+                "action_financeiro_estimativa_motivo": str(item.get("action_financeiro_estimativa_motivo") or ""),
                 "action_impedimento_tecnico": str(item.get("action_impedimento_tecnico") or ""),
                 "action_tecnico_apto": item.get("action_tecnico_apto") is True,
                 "action_ja_participa": item.get("action_ja_participa") is True,
@@ -3361,6 +3421,10 @@ async def analisar_promo_via_api_com_arquivos(
                 "action_financeiro_exato",
                 "action_financeiro_fonte",
                 "action_financeiro_motivo",
+                PROMO_TARIFA_ML_ESTIMADA_KEY,
+                PROMO_TARIFA_ML_ESTIMATIVA_MOTIVO_KEY,
+                "action_financeiro_estimado",
+                "action_financeiro_estimativa_motivo",
                 "action_impedimento_tecnico",
                 "action_tecnico_apto",
                 "action_ja_participa",

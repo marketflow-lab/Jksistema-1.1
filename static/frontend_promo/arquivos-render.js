@@ -187,6 +187,18 @@ function renderEmptyAnalysisState(data) {
     notice.style.display = 'block';
 }
 
+function obterEstimativaCelulaPromocoes(row, coluna) {
+    if (coluna === 'Tarifa ML' && row?._jk_tarifa_ml_estimada === true) {
+        return String(row._jk_tarifa_ml_estimativa_motivo || '').trim()
+            || 'Tarifa aproximada com os dados disponíveis. O valor cobrado pelo Mercado Livre pode ser diferente.';
+    }
+    if ((coluna === 'Valor líquido ML' || coluna === 'Margem ML') && row?.action_financeiro_estimado === true) {
+        return String(row.action_financeiro_estimativa_motivo || '').trim()
+            || 'Resultado calculado com tarifa estimada. O valor final depende da cobrança do Mercado Livre.';
+    }
+    return '';
+}
+
 function renderTable(data) {
     const table = document.getElementById('tabelaAnalise');
     table.setAttribute('data-table-key', `tabelaAnalise__${getCurrentUserPrefScope()}`);
@@ -328,6 +340,17 @@ function renderTable(data) {
                         else if (pct >= 13 && pct < 15) td.classList.add('margin-high');
                         else if (pct >= 15) td.classList.add('margin-top');
                     }
+                }
+                const estimativa = obterEstimativaCelulaPromocoes(row, col.key);
+                if (cellValue && estimativa) {
+                    const badge = document.createElement('small');
+                    badge.className = 'promo-estimate-badge';
+                    badge.textContent = 'Estimado';
+                    badge.title = estimativa;
+                    badge.tabIndex = 0;
+                    badge.setAttribute('aria-label', `${col.label}: ${cellValue}. Estimado. ${estimativa}`);
+                    td.title = estimativa;
+                    td.appendChild(badge);
                 }
             }
             tr.appendChild(td);

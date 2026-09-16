@@ -16,6 +16,7 @@ def test_automacao_separa_pendencia_tecnica_de_margem_aprovada():
                action_deal_price=30, action_promotion_id="P-ALVO")
     assert len(montar(row)["promocoes"][0]["items"]) == 1
     row["action_financeiro_exato"] = False
+    row["action_financeiro_estimado"] = True
     assert montar(row)["promocoes"] == []
 
 
