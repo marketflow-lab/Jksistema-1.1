@@ -305,14 +305,6 @@ function renderizarDetalhePerguntaAtendimento(pergunta) {
                 </div>
                 <aside class="question-detail-context">
                     <div class="question-context-card">
-                        <h3>Atalhos de decis&atilde;o</h3>
-                        <ul>
-                            <li>Revise compatibilidade, c&oacute;digo, lado, motor e ano antes de confirmar.</li>
-                            <li>Quando faltar dado, pe&ccedil;a foto da etiqueta, c&oacute;digo ou chassi.</li>
-                            <li>N&atilde;o prometa aplica&ccedil;&atilde;o se o SKU exigir confer&ecirc;ncia.</li>
-                        </ul>
-                    </div>
-                    <div class="question-context-card">
                         <h3>Dados r&aacute;pidos</h3>
                         <p>SKU ${escapeHtml(sku || '-')} &middot; ${escapeHtml(titulo)}.</p>
                     </div>

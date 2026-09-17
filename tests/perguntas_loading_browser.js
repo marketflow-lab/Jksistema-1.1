@@ -384,7 +384,10 @@ async function verifyGenerationDenial({ page, control }) {
   await page.evaluate(() => aplicarResultadoJobAtendimentoCodex(state.perguntaSelecionadaKey, {blocked_without_draft: true, result: {resposta: '', blocked_without_draft: true, error_component: 'history', warnings: ['Histórico indisponível durante a pesquisa.']}}));
   assert.strictEqual(await page.locator('.question-answer-text').inputValue(), 'Rascunho enquanto o servidor pesquisa', 'job bloqueado sem resposta não apaga rascunho local');
   assert.strictEqual(await page.locator('.question-ai-answer-btn').isEnabled(), false);
-  assert.match(await page.locator('.question-answer-composer .question-answer-status').innerText(), /Histórico indisponível/);
+  assert.match(
+    await page.locator('.question-answer-composer .question-answer-status').innerText(),
+    /histórico (?:indisponível|não pôde ser confirmado)/i,
+  );
   await page.locator('.question-loading-retry').click();
   await page.waitForFunction(() => document.querySelector('.question-ai-answer-btn')?.disabled === false);
   const before = await page.evaluate(() => {

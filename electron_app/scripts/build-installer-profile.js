@@ -9,13 +9,14 @@ if (!['full', 'update'].includes(profile)) {
   process.exit(2);
 }
 
-const executable = process.platform === 'win32' ? 'electron-builder.cmd' : 'electron-builder';
+const appRoot = path.resolve(__dirname, '..');
+const builderCli = require.resolve('electron-builder/out/cli/cli.js', { paths: [appRoot] });
 const args = ['--publish', 'never'];
 if (profile === 'update') {
   args.push('--config', path.join('scripts', 'electron-builder-update-config.js'));
 }
-const result = spawnSync(executable, args, {
-  cwd: path.resolve(__dirname, '..'),
+const result = spawnSync(process.execPath, [builderCli, ...args], {
+  cwd: appRoot,
   env: { ...process.env, JK_INSTALLER_PACKAGE_PROFILE: profile },
   stdio: 'inherit',
   windowsHide: false,
