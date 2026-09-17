@@ -27,6 +27,7 @@ from backend.services.ia_providers import (
     _vertex_modelo_nome_curto,
 )
 from .deep_research_contracts import PUBLIC_RESEARCH_MAX_DECOMPRESSED_BYTES
+from .unified_response_agent import UNIFIED_RESPONSE_AGENT_SCHEMA
 
 
 TECHNICAL_QUESTION_PLAN_SCHEMA_VERSION = "jk_ml_technical_question_plan_v1"
@@ -607,6 +608,7 @@ FACTUAL_REVIEW_SCHEMA: dict[str, Any] = {
 }
 
 _CODEX_STRUCTURED_STAGE_SCHEMAS: dict[str, dict[str, Any]] = {
+    "unified_response_agent": UNIFIED_RESPONSE_AGENT_SCHEMA,
     "technical_question_plan": TECHNICAL_QUESTION_PLAN_SCHEMA,
     "technical_evidence_graph": TECHNICAL_EVIDENCE_GRAPH_SCHEMA,
     "technical_resolution_round_1": TECHNICAL_RESOLUTION_SCHEMA,
@@ -795,6 +797,7 @@ __all__ = [
     "TECHNICAL_QUESTION_PLAN_SCHEMA_VERSION",
     "TECHNICAL_RESOLUTION_SCHEMA",
     "TECHNICAL_RESOLUTION_SCHEMA_VERSION",
+    "UNIFIED_RESPONSE_AGENT_SCHEMA",
     "fetch_research_response",
     "invoke_model",
 ]

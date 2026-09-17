@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from types import SimpleNamespace
 
@@ -231,7 +232,29 @@ def test_post_sale_sends_complete_context_and_preserves_model_reply(monkeypatch)
 
     def invoke(_tenant, payload, model):
         captured["message"] = payload.message
-        return literal, model
+        return json.dumps({
+            "action": "answer",
+            "flow": "pre_sale",
+            "category": "post_sale_support",
+            "subquestions": ["Ajudar o comprador com o pedido."],
+            "research_requests": [],
+            "answer": literal,
+            "confidence": 0.9,
+            "reason": "O contexto autenticado ja permite responder.",
+            "requires_human_review": False,
+            "decision": "not_applicable",
+            "commercial_state": "not_applicable",
+            "compatibility_analysis": {
+                "applicable": False,
+                "target": "",
+                "decision": "not_applicable",
+                "condition": "",
+                "missing_fields": [],
+                "evidence_refs": [],
+            },
+            "missing_fact_owner": "none",
+            "buyer_detail_needed": "",
+        }, ensure_ascii=False), model
 
     monkeypatch.setattr(post_sale_runtime.perguntas_agent_providers, "invoke_model", invoke)
 

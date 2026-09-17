@@ -42,10 +42,7 @@ from backend.services.codex_turn_context import EVIDENCE_ENVELOPE_V2, normalize_
 from backend.modules.perguntas_pos_venda.ai import api as perguntas_agent_api
 from backend.modules.perguntas_pos_venda.ai.validation import ML_PERGUNTAS_IA_V2_MODO
 from backend.services.perguntas_pos_venda_state import (
-    PerguntasIAClassificacaoInconclusiva,
     PerguntasIARespostaIndisponivel,
-    PerguntasIASegurancaBloqueada,
-    _perguntas_ia_classificacao_consultiva_padrao,
 )
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.vendas_sync_progress import _corrigir_texto_mojibake
@@ -1476,11 +1473,18 @@ def _perguntas_ia_gerar_resposta(
     texto_pergunta = str((pergunta or {}).get("text") or "").strip()
     titulo = str((item or {}).get("title") or "").strip()
     sku = _ml_extrair_sku(item or {})
+    variation_id = _ml_perguntas_variacao_id(pergunta or {}, item or {})
     descricao, cfg = _perguntas_ia_descricao_item(client_id, loja, cfg, item_id, item)
     contexto = {
+        "tenant_id": str(client_id or "").strip(),
         "loja": loja,
+        "store_id": str(loja or "").strip(),
+        "seller_id": str((cfg or {}).get("user_id") or "").strip(),
+        "site_id": str((item or {}).get("site_id") or (cfg or {}).get("site_id") or "").strip(),
         "question_id": question_id,
         "item_id": item_id,
+        "variation_id": variation_id,
+        "order_id": "",
         "titulo": titulo,
         "sku": sku,
         "permalink": str((item or {}).get("permalink") or (pergunta or {}).get("item_permalink") or "").strip(),
@@ -1490,66 +1494,20 @@ def _perguntas_ia_gerar_resposta(
         "pergunta": texto_pergunta,
         "assinatura_obrigatoria": _perguntas_ia_assinatura_loja(loja),
     }
-    historico_transitorio = []
-    for evento in _perguntas_ia_historico_anterior(pergunta):
-        if not isinstance(evento, dict):
-            continue
-        if question_id and str(evento.get("question_id") or "").strip() == question_id:
-            continue
-        texto_evento = _perguntas_ia_contexto_fallback_sanitizar_texto(
-            evento.get("text"),
-            500,
-        )
-        if not texto_evento:
-            continue
-        role = str(evento.get("role") or evento.get("from_role") or "").strip().lower()
-        historico_transitorio.append({
-            "role": "seller" if role in {"seller", "loja", "store"} else "buyer",
-            "text": texto_evento,
-        })
-    fallback_context = {
-        "question": {
-            "text": _perguntas_ia_contexto_fallback_sanitizar_texto(texto_pergunta, 1200)
-        },
-        "item": {
-            "title": _perguntas_ia_contexto_fallback_sanitizar_texto(titulo, 500),
-            "description": _perguntas_ia_contexto_fallback_sanitizar_texto(
-                descricao,
-                3500,
-            ),
-        },
-        "history": historico_transitorio,
+    # A classificacao semantica pertence ao mesmo agente que pesquisa, decide
+    # e redige. O servidor informa apenas a origem operacional da mensagem.
+    intencao_atendimento = {
+        "schema": "jk_ml_unified_intent_pending_v1",
+        "fluxo": "pre_sale",
+        "categoria": "unknown",
+        "categorias": [],
+        "subperguntas": [],
+        "confianca": 0.0,
+        "source": "server_pending_unified_agent",
     }
-    try:
-        intencao_atendimento = _perguntas_ia_classificar_intencao(
-            client_id,
-            loja,
-            pergunta,
-            item,
-        )
-        contexto["classificacao_consultiva_status"] = "ok"
-    except (
-        PerguntasIAClassificacaoInconclusiva,
-        PerguntasIASegurancaBloqueada,
-        PerguntasIARespostaIndisponivel,
-    ) as exc:
-        intencao_atendimento = _perguntas_ia_classificacao_consultiva_padrao(pergunta)
-        contexto["classificacao_consultiva_status"] = "fallback"
-        contexto["classificacao_consultiva_reason"] = type(exc).__name__
+    contexto["classificacao_consultiva_status"] = "unified_agent"
     contexto["intencao_atendimento"] = intencao_atendimento
-    fallback_context["classification"] = _perguntas_ia_contexto_fallback_classificacao(
-        intencao_atendimento
-    )
-    if intencao_atendimento.get("intencao") == "outra_peca":
-        contexto_outra_peca_txt, cfg, contexto_outra_peca = _perguntas_ia_contexto_outra_peca(
-            client_id,
-            loja,
-            cfg,
-            texto_pergunta,
-            titulo,
-        )
-    else:
-        contexto_outra_peca_txt, contexto_outra_peca = "", {}
+    contexto_outra_peca_txt, contexto_outra_peca = "", {}
     contexto["busca_outra_peca"] = contexto_outra_peca
     descricao_prompt = descricao
     contexto_outra_peca_prompt = contexto_outra_peca_txt
@@ -1590,32 +1548,10 @@ def _perguntas_ia_gerar_resposta(
         if orientacao_usuario
         else ""
     )
-    if intencao_atendimento.get("fluxo") == "pos_venda":
-        prompt = (
-            "Gere um rascunho via IA de pos-venda para uma mensagem recebida no Mercado Livre. "
-            "Orientacoes salvas ajustam somente tom e redacao, depois das regras do Mercado Livre e dos fatos atuais. "
-            f"{bloco_orientacao_usuario}"
-            "Nao responda como venda, compatibilidade ou aplicacao do produto. "
-            "Se o comprador relata defeito, mau funcionamento, troca ou garantia, reconheca o problema e responda primeiro com o que ja estiver confirmado. "
-            "Evite solicitar dados; somente quando indispensavel, peça a evidencia minima pelo detalhe da compra. "
-            "Nao invente causa tecnica, prazo, garantia, estoque ou procedimento. "
-            "Nao mencione SKU, codigo interno, quantidade em estoque, preco ou nome da loja fora da assinatura obrigatoria. "
-            f"A resposta deve terminar exatamente uma vez com: {_perguntas_ia_assinatura_loja(loja)} "
-            "A resposta sera enviada ao comprador, portanto seja cordial e objetiva, sem persuasao comercial, CTA ou urgencia. "
-            "Nunca se apresente como IA, assistente ou JK Sistema. "
-            "Escreva com naturalidade, como um vendedor que conhece o atendimento.\n\n"
-            f"Loja: {loja}\n"
-            f"ID da pergunta: {question_id}\n"
-            f"ID do anuncio: {item_id}\n"
-            f"Titulo do anuncio: {titulo or '-'}\n"
-            f"Intencao classificada:\n{json.dumps(intencao_atendimento, ensure_ascii=False, default=str)}\n\n"
-            f"{bloco_historico_prompt}"
-            f"{bloco_resposta_atual}"
-            f"Pergunta do comprador:\n{texto_pergunta}"
-        )
-    else:
-        prompt = (
-            "Gere um rascunho via IA para uma pergunta recebida no Mercado Livre. "
+    prompt = (
+            "Gere um rascunho via IA para uma mensagem recebida no Mercado Livre. "
+            "Classifique a categoria no mesmo raciocinio, identifique todas as subperguntas, solicite somente "
+            "consultas read-only necessarias e produza uma unica resposta final de pre-venda. "
             "Siga esta precedencia: seguranca, regras do Mercado Livre e isolamento de tenant; dados atuais da loja e pesquisa "
             "externa obrigatoria; metodo comercial RVC global; orientacoes e proibicoes da loja; notas do mesmo SKU; exemplos "
             "aprovados e comando editorial. Exemplos ensinam somente tom, estrutura e abordagem, nunca fatos de produto. "
@@ -1667,8 +1603,8 @@ def _perguntas_ia_gerar_resposta(
             f"{bloco_historico_prompt}"
             f"{bloco_resposta_atual}"
             f"Pergunta do comprador:\n{texto_pergunta}"
-        )
-    tipo_treinamento = "pos_venda" if intencao_atendimento.get("fluxo") == "pos_venda" else "perguntas_anuncio"
+    )
+    tipo_treinamento = "perguntas_anuncio"
     payload = IAChatRequest(
         message=prompt,
         page="Perguntas e pÃ³s venda",
@@ -1684,15 +1620,7 @@ def _perguntas_ia_gerar_resposta(
     model_req = _normalizar_ia_modelo_padrao(_ia_modelo_perguntas_configurado())
     payload.model = model_req
     agent_input = perguntas_agent_api.build_agent_input(client_id, loja, pergunta, item, contexto, prompt)
-    try:
-        agent_result = perguntas_agent_api.generate_response(client_id, agent_input)
-    except Exception as exc:
-        if exc.__class__.__name__ == "PerguntasIAClassificacaoInconclusiva":
-            try:
-                setattr(exc, "ppv_fallback_context", fallback_context)
-            except Exception:
-                pass
-        raise
+    agent_result = perguntas_agent_api.generate_response(client_id, agent_input)
     resposta_ia = agent_result.answer
     if not isinstance(resposta_ia, str) or not resposta_ia.strip():
         raise PerguntasIARespostaIndisponivel("Nova IA de perguntas nao gerou resposta.")
@@ -1701,6 +1629,17 @@ def _perguntas_ia_gerar_resposta(
     diagnostico_v2 = {}
     if diagnostico_ia and isinstance(diagnostico_ia[0], dict) and isinstance(diagnostico_ia[0].get("result"), dict):
         diagnostico_v2 = diagnostico_ia[0].get("result") or {}
+    contexto["intencao_atendimento"] = {
+        "schema": "jk_ml_unified_response_agent_v1",
+        "fluxo": diagnostico_v2.get("flow") or "pre_sale",
+        "categoria": diagnostico_v2.get("category") or "unknown",
+        "categorias": [diagnostico_v2.get("category")]
+        if diagnostico_v2.get("category")
+        else [],
+        "subperguntas": diagnostico_v2.get("subquestions") or [],
+        "confianca": diagnostico_v2.get("confidence") or 0.0,
+        "source": "unified_response_agent",
+    }
     return resposta_ia, cfg, {
         **contexto,
         "model": model_usado,

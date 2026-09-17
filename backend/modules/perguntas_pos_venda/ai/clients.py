@@ -83,6 +83,11 @@ from .sku_question_prompts import (
     record_stage_transport,
     stage_prompt_limit,
 )
+from .unified_presale import (
+    collect_unified_initial_context,
+    execute_unified_research,
+    invoke_unified_turn,
+)
 
 
 _PUBLIC_TECHNICAL_RESEARCH_STAGES = frozenset({
@@ -170,7 +175,12 @@ class _PerguntasVertexGeminiV2Client:
         self.model_usado = model_req
         self.parser = AIResponseParser()
         self.agent_input = copy.deepcopy(agent_input) if isinstance(agent_input, dict) else {}
-        fluxo_pos_venda = _perguntas_ia_fluxo_pos_venda(self.agent_input)
+        server_flow = str(self.agent_input.get("_unified_response_flow") or "").strip().lower()
+        fluxo_pos_venda = (
+            server_flow == "post_sale"
+            if server_flow in {"pre_sale", "post_sale"}
+            else _perguntas_ia_fluxo_pos_venda(self.agent_input)
+        )
         self._is_post_sale = bool(fluxo_pos_venda)
         intent = self.agent_input.get("intent") if isinstance(self.agent_input.get("intent"), dict) else {}
         self._is_regulated = _ia_agent_perguntas_categoria_regulada(self.agent_input, intent)
@@ -203,6 +213,8 @@ class _PerguntasVertexGeminiV2Client:
         self.adaptive_route = ""
         self._candidate_reviewed_in_workflow = False
         self._official_marketplace_policy = None
+        self.unified_research_rounds = 0
+        self.unified_research_results: list[dict[str, Any]] = []
 
     def _persist_technical_graph(
         self,
@@ -267,7 +279,7 @@ class _PerguntasVertexGeminiV2Client:
             )
         effective_tool_results = list(tool_results or [])
         prompt, effective_tool_results = policy_stage_context(self, prompt, effective_tool_results)
-        if not fluxo_pos_venda and self.sku_question_context:
+        if not fluxo_pos_venda and self.sku_question_context and stage != "unified_response_agent":
             prompt, _ = bounded_stage_prompt(
                 prompt,
                 self.sku_question_context,
@@ -296,7 +308,10 @@ class _PerguntasVertexGeminiV2Client:
                 "loja": self.loja,
                 "metadata": metadata,
                 "_codex_thread_id": "" if isolated_turn else self.codex_thread_id,
-                "_codex_persist_thread": False if isolated_turn else bool(self.agent_input.get("_codex_job_id")),
+                "_codex_persist_thread": False if isolated_turn else bool(
+                    stage == "unified_response_agent"
+                    or self.agent_input.get("_codex_job_id")
+                ),
                 "_codex_job_id": str(self.agent_input.get("_codex_job_id") or ""),
                 "_codex_active_turn_key": "" if isolated_turn else str(
                     self.agent_input.get("_codex_active_turn_key")
@@ -357,6 +372,39 @@ class _PerguntasVertexGeminiV2Client:
         if not payload_obj:
             raise ValueError("invalid_structured_ai_payload")
         return payload_obj
+
+    def invoke_unified_turn(
+        self,
+        prompt: str,
+        tool_results: list[dict[str, Any]],
+        force_answer: bool,
+    ) -> dict[str, Any]:
+        return invoke_unified_turn(self, prompt, tool_results, force_answer)
+
+    def _unified_bindings(self) -> GeneralBindings:
+        return GeneralBindings(
+            context_hub_tool=_perguntas_ia_context_hub_tool,
+            web_tool=_ia_agent_perguntas_web_tool,
+            alternative_tool=_find_same_store_compatible_alternative,
+            listing_tool=resolve_runtime_adapter("tools", "mercado_livre_listing", marketplace_listing_query),
+            product_tool=resolve_runtime_adapter("tools", "product_data", _ia_tool_get_product_data),
+            bling_tool=resolve_runtime_adapter("tools", "bling_product", _ia_tool_get_bling_product),
+        )
+
+    def collect_unified_initial_context(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        return collect_unified_initial_context(self, metadata, self._unified_bindings())
+
+    def execute_unified_research(
+        self,
+        requests: list[dict[str, str]],
+        round_number: int,
+    ) -> list[dict[str, Any]]:
+        return execute_unified_research(
+            self,
+            requests,
+            round_number,
+            self._unified_bindings(),
+        )
 
     def _call_model(
         self,

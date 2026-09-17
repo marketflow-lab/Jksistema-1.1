@@ -5,6 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ml_questions_gemini.public_reply_policy import PUBLIC_REPLY_EVIDENCE_GUIDANCE
+from ml_questions_gemini.schemas import (
+    ProcessingResult,
+    PublishDecision,
+    RouteAction,
+    ValidationResult,
+)
 from fastapi import HTTPException
 from backend.services.compatibility_coverage import COMPATIBILITY_COVERAGE_VERSION
 
@@ -23,6 +29,7 @@ from .runtime import (
     PerguntasIASegurancaBloqueada,
     QuestionAnswerOrchestrator,
     QuestionCategory,
+    _PERGUNTAS_IA_RESPONSE_POLICY,
     _PERGUNTAS_IA_RESPONSE_POLICY_VERSION,
     _PERGUNTAS_IA_SELLER_METHOD_VERSION,
     _ia_modelo_perguntas_configurado,
@@ -73,6 +80,10 @@ from .validation import (
 )
 from .clients import (
     _PerguntasCodexV3Client,
+)
+from .unified_response_agent import (
+    UnifiedResponseAgentOperationalError,
+    run_unified_response_agent,
 )
 
 
@@ -287,18 +298,20 @@ def _perguntas_ia_execucao_configurar(client_id: str, agent_input: dict, started
     loja = str((agent_input or {}).get("store") or (agent_input or {}).get("loja") or "").strip()
     if not loja:
         raise HTTPException(status_code=400, detail="Informe a loja no input da nova IA.")
-    if not _perguntas_ia_categoria_classificada(agent_input):
-        question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
-        advisory = _perguntas_ia_classificacao_consultiva_padrao(question)
-        agent_input["intent"] = advisory
-        agent_input["classification"] = advisory
-        agent_input["category"] = advisory["categoria"]
-        context = agent_input.get("context") if isinstance(agent_input.get("context"), dict) else {}
-        context["intencao_atendimento"] = advisory
-        context["classificacao_consultiva_status"] = "fallback"
-        agent_input["context"] = context
     settings = GeminiQuestionsSettings.from_env()
-    post_sale = _perguntas_ia_fluxo_pos_venda(agent_input)
+    server_flow = str(agent_input.get("_unified_response_flow") or "").strip().lower()
+    task = str(agent_input.get("task") or "").strip().lower()
+    if task == "mercado_livre_public_question_draft":
+        server_flow = "pre_sale"
+    if server_flow not in {"pre_sale", "post_sale"}:
+        try:
+            server_flow = "post_sale" if _perguntas_ia_fluxo_pos_venda(agent_input) else "pre_sale"
+        except Exception:
+            # Classification is now owned by the unified answer agent. A
+            # missing/partial legacy intent must not create a classifier gate.
+            server_flow = "pre_sale"
+    post_sale = server_flow == "post_sale"
+    agent_input["_unified_response_flow"] = server_flow
     settings.max_sentences = 0
     settings.max_chars = 0
     exige_aprovacao = _pos_venda_ia_v2_exigir_aprovacao() if post_sale else _perguntas_ia_v2_exigir_aprovacao()
@@ -338,7 +351,7 @@ def _perguntas_ia_execucao_configurar(client_id: str, agent_input: dict, started
     }]
     return {
         "client_id": client_id, "agent_input": agent_input, "started": started, "loja": loja,
-        "settings": settings, "post_sale": post_sale, "reasoning": reasoning,
+        "settings": settings, "post_sale": post_sale, "flow": server_flow, "reasoning": reasoning,
         "model_req": model_req, "diagnostics": diagnostics,
     }
 
@@ -349,48 +362,110 @@ def _perguntas_ia_execucao_orquestrar(contexto: dict) -> tuple:
     question_ctx, listing_snapshot, previous_questions, seller_rules = context_from_agent_input(
         agent_input, auto_publish_enabled=settings.auto_publish_enabled,
     )
-    seller_rules.min_confidence = settings.min_confidence
-    seller_rules.max_chars = settings.max_chars
-    seller_rules.max_sentences = settings.max_sentences
-    seller_rules.whitelisted_domains = list(settings.whitelisted_domains)
     client = _PerguntasCodexV3Client(
         contexto["client_id"], contexto["loja"], contexto["model_req"], agent_input,
         reasoning_effort=contexto["reasoning"],
     )
-    orchestrator = QuestionAnswerOrchestrator(
-        settings=settings, gemini_client=client, inspect_model_answer=False,
-    )
     started = time.perf_counter()
-    resultado = orchestrator.process(
-        question=question_ctx, listing=listing_snapshot, previous_questions=previous_questions, rules=seller_rules,
+    metadata = {
+        "item_id": str(getattr(listing_snapshot, "id", "") or ""),
+        "listing_title": str(getattr(listing_snapshot, "title", "") or ""),
+        "history_count": len(previous_questions),
+        "question_id": str(getattr(question_ctx, "id", "") or ""),
+    }
+    initial_context = client.collect_unified_initial_context(metadata)
+    item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
+    input_context = agent_input.get("context") if isinstance(agent_input.get("context"), dict) else {}
+    server_identity = {
+        "tenant_id": str(contexto["client_id"] or ""),
+        "store": str(contexto["loja"] or ""),
+        "store_id": str(agent_input.get("store_id") or input_context.get("store_id") or ""),
+        "seller_id": str(agent_input.get("seller_id") or input_context.get("seller_id") or ""),
+        "site_id": str(agent_input.get("site_id") or input_context.get("site_id") or ""),
+        "sku": str(
+            input_context.get("sku")
+            or item.get("seller_sku")
+            or item.get("sku")
+            or ""
+        ),
+        "item_id": str(item.get("id") or getattr(question_ctx, "item_id", "") or ""),
+        "variation_id": str(
+            agent_input.get("variation_id")
+            or input_context.get("variation_id")
+            or item.get("variation_id")
+            or ""
+        ),
+        "order_id": str(agent_input.get("order_id") or input_context.get("order_id") or ""),
+    }
+    signature = resolve_runtime_adapter(
+        "state", "store_signature", _perguntas_ia_assinatura_loja,
+    )(contexto["loja"])
+    unified_context = {
+        "flow": contexto["flow"],
+        "server_identity": server_identity,
+        "response_signature": signature,
+        "response_policy": _PERGUNTAS_IA_RESPONSE_POLICY[
+            "pos_venda" if contexto["post_sale"] else "perguntas_anuncio"
+        ],
+        "response_policy_version": _PERGUNTAS_IA_RESPONSE_POLICY_VERSION,
+        "seller_method_version": _PERGUNTAS_IA_SELLER_METHOD_VERSION,
+        "approval_required": not bool(settings.auto_publish_enabled),
+        "agent_input": copy.deepcopy(agent_input),
+        "initial_read_only_context": initial_context,
+    }
+    try:
+        unified = run_unified_response_agent(
+            flow=contexto["flow"],
+            context=unified_context,
+            invoke_turn=client.invoke_unified_turn,
+            execute_research=client.execute_unified_research,
+            max_research_rounds=2,
+        )
+    except UnifiedResponseAgentOperationalError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, PerguntasIAProviderIndisponivel):
+            raise cause
+        raise PerguntasIARespostaIndisponivel(
+            f"Agente unificado nao gerou resposta valida ({exc.code})."
+        ) from exc
+
+    category_value = str(unified.get("category") or "unknown").strip().lower()
+    try:
+        category = QuestionCategory(category_value)
+    except ValueError:
+        category = QuestionCategory.UNKNOWN
+    confidence = float(unified.get("confidence") or 0.0)
+    requires_human = bool(
+        unified.get("requires_human_review")
+        or client.manual_review_required
+        or not settings.auto_publish_enabled
+        or confidence < settings.min_confidence
     )
-    resposta = resultado.answer if isinstance(resultado.answer, str) else str(resultado.answer or "")
-    if not resposta.strip():
-        if (
-            resultado.category == QuestionCategory.UNKNOWN
-            and str(resultado.reason or "") == "prompt_injection"
-        ):
-            raise PerguntasIASegurancaBloqueada(
-                "A pergunta foi bloqueada pela politica de seguranca."
-            )
-        if resultado.category == QuestionCategory.UNKNOWN:
-            raise PerguntasIAClassificacaoInconclusiva(
-                "A classificacao semantica permaneceu inconclusiva.",
-                classificacao=_perguntas_ia_intencao_agent(agent_input),
-            )
-        if str(resultado.source or "") == "gemini_error":
-            provider_reason = str(resultado.reason or "")
-            if provider_reason in {
-                "provider_timeout",
-                "provider_connection",
-                "provider_http_429",
-                "provider_http_5xx",
-            }:
-                raise PerguntasIAProviderIndisponivel(
-                    "O provedor de resposta esta temporariamente indisponivel.",
-                    reason=provider_reason,
-                )
-        raise PerguntasIARespostaIndisponivel("Nova IA de perguntas nao gerou resposta.")
+    publish_decision = PublishDecision.HUMAN_REVIEW if requires_human else PublishDecision.PUBLISH
+    validation = ValidationResult(True, [], confidence)
+    resposta = str(unified.get("answer") or "")
+    resultado = ProcessingResult(
+        question_id=str(getattr(question_ctx, "id", "") or ""),
+        category=category,
+        route=(
+            RouteAction.SEARCH_AND_AI
+            if client.unified_research_rounds
+            else RouteAction.AI
+        ),
+        decision=publish_decision,
+        answer=resposta,
+        needs_human=requires_human,
+        confidence=confidence,
+        validation=validation,
+        prompt="",
+        ai_raw=copy.deepcopy(unified),
+        audit={
+            "pipeline": "unified_response_agent",
+            "research_rounds": client.unified_research_rounds,
+        },
+        source="unified_response_agent",
+        reason=str(unified.get("reason") or ""),
+    )
     return resultado, resposta, client.model_usado or contexto["model_req"], client, started
 
 
@@ -435,11 +510,15 @@ def _perguntas_ia_atualizar_diagnostico(
     perf_orq_t0: float,
 ) -> None:
     analysis = client.compatibility_analysis
+    unified = resultado.ai_raw if isinstance(resultado.ai_raw, dict) else {}
     contexto["diagnostics"][0]["result"].update({
-        "category": resultado.category.value,
+        "flow": str(unified.get("flow") or contexto.get("flow") or ""),
+        "category": str(unified.get("category") or resultado.category.value),
         "route": resultado.route.value,
-        "decision": resultado.decision.value,
+        "decision": str(unified.get("decision") or "not_applicable"),
+        "publication_decision": resultado.decision.value,
         "needs_human_review": resultado.needs_human,
+        "requires_human_review": bool(unified.get("requires_human_review")),
         "confidence": resultado.confidence,
         "source": resultado.source,
         "reason": resultado.reason,
@@ -448,7 +527,14 @@ def _perguntas_ia_atualizar_diagnostico(
         "prompt_chars": len(resultado.prompt or ""),
         "audit": resultado.audit,
         "context_collection_pipeline": list(client.context_pipeline),
-        "compatibility_analysis": copy.deepcopy(analysis),
+        "compatibility_analysis": copy.deepcopy(
+            unified.get("compatibility_analysis")
+            if isinstance(unified.get("compatibility_analysis"), dict)
+            else analysis
+        ),
+        "missing_fact_owner": str(unified.get("missing_fact_owner") or "none"),
+        "buyer_detail_needed": str(unified.get("buyer_detail_needed") or ""),
+        "research_rounds": int(getattr(client, "unified_research_rounds", 0) or 0),
         "response_policy_version": _PERGUNTAS_IA_RESPONSE_POLICY_VERSION,
         "seller_render_policy": _PERGUNTAS_IA_SELLER_METHOD_VERSION,
         "seller_method_version": _PERGUNTAS_IA_SELLER_METHOD_VERSION,
@@ -459,7 +545,8 @@ def _perguntas_ia_atualizar_diagnostico(
             (contexto["agent_input"].get("seller_behavior_profile") or {}).get("profile_active")
         ),
         "commercial_state": str(
-            getattr(client, "commercial_state", "")
+            unified.get("commercial_state")
+            or getattr(client, "commercial_state", "")
             or (analysis or {}).get("commercial_state")
             or ({"yes": "fits", "no": "incompatible", "conditional": "partial", "insufficient": "insufficient"}.get(
                 str((analysis or {}).get("decision") or "").lower(),
@@ -488,7 +575,7 @@ def _perguntas_ia_atualizar_diagnostico(
         "research_skipped": str(analysis.get("research_skipped") or "")[:80],
         "codex_thread_id": client.codex_thread_id,
         "orchestrator_profile": str(contexto["agent_input"].get("orchestrator_profile") or ""),
-        "subquestions": list(contexto["agent_input"].get("subquestions") or []),
+        "subquestions": list(unified.get("subquestions") or contexto["agent_input"].get("subquestions") or []),
         "evidence_envelope": _perguntas_ia_evidencia_publica(contexto["agent_input"], contexto["loja"], client),
     })
     _ia_agent_perguntas_log_perf(
@@ -496,7 +583,8 @@ def _perguntas_ia_atualizar_diagnostico(
         time.perf_counter() - perf_orq_t0, tentativa=1, modelo=model_usado,
         status="revisao" if resultado.needs_human else "ok", prompt_chars=len(resultado.prompt or ""),
         resposta_chars=len(resposta or ""), categoria=resultado.category.value,
-        rota=resultado.route.value, decisao=resultado.decision.value,
+        rota=resultado.route.value, decisao=str(unified.get("decision") or "not_applicable"),
+        publication_decision=resultado.decision.value,
         commercial_state=contexto["diagnostics"][0]["result"]["commercial_state"],
         alternative_used=contexto["diagnostics"][0]["result"]["alternative_used"],
         research_attempted=contexto["diagnostics"][0]["result"]["research_attempted"],

@@ -310,15 +310,44 @@ def test_thread_id_is_persisted_before_failed_turn_and_reused_on_retry(monkeypat
     assert calls["resumed"] == ["thread-created-before-run"]
 
 
-@pytest.mark.parametrize(
-    ("post_sale", "expected_max_chars", "expected_max_sentences"),
-    ((False, 2000, 3), (True, 340, 3)),
-)
-def test_v2_applies_channel_reply_limits_and_keeps_provider_only_as_fallback(
+def _unified_answer(
+    answer: str,
+    *,
+    category: str = "product_detail",
+    confidence: float = 0.9,
+    review: bool = False,
+) -> dict:
+    compatibility = category == "compatibility"
+    return {
+        "action": "answer",
+        "flow": "pre_sale",
+        "category": category,
+        "subquestions": ["Responder ao comprador."],
+        "research_requests": [],
+        "answer": answer,
+        "confidence": confidence,
+        "reason": "Resposta produzida pelo agente unificado.",
+        "requires_human_review": review,
+        "decision": "insufficient" if compatibility else "not_applicable",
+        "commercial_state": "insufficient" if compatibility else "not_applicable",
+        "compatibility_analysis": {
+            "applicable": compatibility,
+            "target": "coroa" if compatibility else "",
+            "decision": "insufficient" if compatibility else "not_applicable",
+            "condition": "",
+            "missing_fields": ["codigo_da_peca", "medida_bcd"] if compatibility else [],
+            "evidence_refs": [],
+        },
+        "missing_fact_owner": "internal" if review else "none",
+        "buyer_detail_needed": "",
+    }
+
+
+@pytest.mark.parametrize(("post_sale", "expected_flow"), ((False, "pre_sale"), (True, "post_sale")))
+def test_v2_keeps_provider_fallback_and_imposes_server_flow(
     monkeypatch,
     post_sale,
-    expected_max_chars,
-    expected_max_sentences,
+    expected_flow,
 ):
     captured: dict = {}
 
@@ -337,20 +366,17 @@ def test_v2_applies_channel_reply_limits_and_keeps_provider_only_as_fallback(
             self.compatibility_analysis = {}
             self.evidence_records = []
             self.codex_thread_id = ""
+            self.manual_review_required = False
+            self.unified_research_rounds = 0
 
-    result = SimpleNamespace(
-        answer="Resposta segura",
-        category=SimpleNamespace(value="product_detail"),
-        route=SimpleNamespace(value="listing_only"),
-        decision=SimpleNamespace(value="answer"),
-        needs_human=False,
-        confidence=0.9,
-        source="gemini",
-        reason="listing",
-        validation=SimpleNamespace(ok=True, issues=[]),
-        prompt="prompt",
-        audit={},
-    )
+        def collect_unified_initial_context(self, _metadata):
+            return {}
+
+        def invoke_unified_turn(self, *_args, **_kwargs):
+            raise AssertionError("runner stub must own the turn")
+
+        def execute_unified_research(self, *_args, **_kwargs):
+            raise AssertionError("runner stub must own research")
 
     monkeypatch.setattr(agent, "GeminiQuestionsSettings", GeminiQuestionsSettings, raising=False)
     monkeypatch.setattr(agent, "ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO", 900, raising=False)
@@ -373,12 +399,11 @@ def test_v2_applies_channel_reply_limits_and_keeps_provider_only_as_fallback(
         raising=False,
     )
     monkeypatch.setattr(agent, "_PerguntasCodexV3Client", _Client)
-    def _orchestrator_factory(**kwargs):
-        captured["max_chars"] = kwargs["settings"].max_chars
-        captured["max_sentences"] = kwargs["settings"].max_sentences
-        return SimpleNamespace(process=lambda **_process_kwargs: result)
+    def run_unified(**kwargs):
+        captured["flow"] = kwargs["flow"]
+        return _unified_answer("Resposta segura")
 
-    monkeypatch.setattr(agent, "QuestionAnswerOrchestrator", _orchestrator_factory, raising=False)
+    monkeypatch.setattr(agent, "run_unified_response_agent", run_unified)
     monkeypatch.setattr(agent, "_perguntas_ia_limpar_resposta", lambda value: value, raising=False)
     monkeypatch.setattr(agent, "_perguntas_ia_resposta_final_loja", lambda value, _store: value, raising=False)
     monkeypatch.setattr(agent, "_perguntas_ia_resposta_fallback_invalida", lambda _value: False, raising=False)
@@ -399,8 +424,7 @@ def test_v2_applies_channel_reply_limits_and_keeps_provider_only_as_fallback(
     assert captured == {
         "model": "codex:gpt-5.5",
         "reasoning_effort": "high",
-        "max_chars": expected_max_chars,
-        "max_sentences": expected_max_sentences,
+        "flow": expected_flow,
     }
     assert diagnostics[0]["result"]["reasoning_effort"] == "high"
     assert diagnostics[0]["result"]["response_provider_policy"] == "codex_only"
@@ -433,23 +457,17 @@ def _configure_v2_insufficient_draft_case(
             }
             self.evidence_records = []
             self.codex_thread_id = ""
+            self.manual_review_required = False
+            self.unified_research_rounds = 0
 
-    result = SimpleNamespace(
-        answer=initial_answer,
-        category=SimpleNamespace(value="compatibility"),
-        route=SimpleNamespace(value="search_and_ai"),
-        decision=SimpleNamespace(value="human_review"),
-        needs_human=True,
-        confidence=0.3,
-        source="gemini",
-        reason="compatibility_evidence_insufficient",
-        validation=SimpleNamespace(
-            ok=False,
-            issues=["low_confidence", "compatibility_missing_detail_request"],
-        ),
-        prompt="prompt",
-        audit={},
-    )
+        def collect_unified_initial_context(self, _metadata):
+            return {}
+
+        def invoke_unified_turn(self, *_args, **_kwargs):
+            raise AssertionError("runner stub must own the turn")
+
+        def execute_unified_research(self, *_args, **_kwargs):
+            raise AssertionError("runner stub must own research")
 
     monkeypatch.setattr(agent, "GeminiQuestionsSettings", GeminiQuestionsSettings, raising=False)
     monkeypatch.setattr(agent, "ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO", 900, raising=False)
@@ -471,9 +489,13 @@ def _configure_v2_insufficient_draft_case(
     monkeypatch.setattr(agent, "_PerguntasCodexV3Client", _Client)
     monkeypatch.setattr(
         agent,
-        "QuestionAnswerOrchestrator",
-        lambda **_kwargs: SimpleNamespace(process=lambda **_process_kwargs: result),
-        raising=False,
+        "run_unified_response_agent",
+        lambda **_kwargs: _unified_answer(
+            initial_answer,
+            category="compatibility",
+            confidence=0.3,
+            review=True,
+        ),
     )
     monkeypatch.setattr(agent, "_perguntas_ia_limpar_resposta", lambda value: value, raising=False)
     monkeypatch.setattr(agent, "_perguntas_ia_resposta_final_loja", lambda value, _store: value, raising=False)

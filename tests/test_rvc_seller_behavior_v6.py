@@ -397,8 +397,13 @@ def test_post_sale_generation_and_transport_preserve_nonempty_text_byte_for_byte
     def forbidden(*_args, **_kwargs):
         raise AssertionError("post-sale cleaner or renderer must not rewrite nonempty AI text")
 
-    monkeypatch.setattr(post_sale_service, "_ia_modelo_pos_venda_configurado", lambda: "codex:test")
-    monkeypatch.setattr(post_sale_service, "_perguntas_ia_assinatura_loja", lambda _loja: "Equipe JK Pecas agradece!")
+    monkeypatch.setattr(post_sale_service, "_ia_modelo_pos_venda_configurado", lambda: "codex:test", raising=False)
+    monkeypatch.setattr(
+        post_sale_service,
+        "_perguntas_ia_assinatura_loja",
+        lambda _loja: "Equipe JK Pecas agradece!",
+        raising=False,
+    )
     monkeypatch.setattr(post_sale_service, "_pos_venda_ia_resposta_final_loja", forbidden, raising=False)
     monkeypatch.setattr(post_sale_service, "_pos_venda_ia_limpar_resposta", forbidden, raising=False)
     monkeypatch.setattr(
@@ -415,7 +420,29 @@ def test_post_sale_generation_and_transport_preserve_nonempty_text_byte_for_byte
     monkeypatch.setattr(
         post_sale_service.perguntas_agent_providers,
         "invoke_model",
-        lambda *_args, **_kwargs: (literal, "codex:test"),
+        lambda *_args, **_kwargs: (json.dumps({
+            "action": "answer",
+            "flow": "pre_sale",
+            "category": "post_sale_support",
+            "subquestions": ["Ajudar o comprador com o pedido."],
+            "research_requests": [],
+            "answer": literal,
+            "confidence": 0.9,
+            "reason": "O contexto autenticado ja permite responder.",
+            "requires_human_review": False,
+            "decision": "not_applicable",
+            "commercial_state": "not_applicable",
+            "compatibility_analysis": {
+                "applicable": False,
+                "target": "",
+                "decision": "not_applicable",
+                "condition": "",
+                "missing_fields": [],
+                "evidence_refs": [],
+            },
+            "missing_fact_owner": "none",
+            "buyer_detail_needed": "",
+        }, ensure_ascii=False), "codex:test"),
     )
 
     generated, model = post_sale_service._ml_pos_venda_gerar_resposta_ia(
@@ -442,7 +469,7 @@ def test_post_sale_generation_and_transport_preserve_nonempty_text_byte_for_byte
         sent_payloads.append(kwargs["json"])
         return Response(), cfg
 
-    monkeypatch.setattr(post_sale_service, "_ml_api_request", api_request)
+    monkeypatch.setattr(post_sale_service, "_ml_api_request", api_request, raising=False)
     post_sale_service._ml_pos_venda_enviar_resposta_ml(
         "tenant-a",
         "JK Pecas",

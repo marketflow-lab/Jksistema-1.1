@@ -41,7 +41,7 @@ CONTRACT_HASHES = {
     "aliases": "f149aa04a166eacd3f942889d2495dc5a23be9bb3317160d97e247ae834aa68e",
     "schema": "500b7ccbcedc02d3a254e8114e974355be5635d2f01bd7dc929b212643cb254a",
     "policy": "8d9dae7d9107e06c83cecb9945ffc5609abf877e2116861b0c490c5760a78a56",
-    "prompts": "9c3244c16b1e3f8e762e02463f85d9ba3c847f864dbe036289c1409515d78b07",
+    "prompts": "b065f9bee2f580c8eee3bb03dd19f83429adb32c99fd0b7bc109763bc3e17c69",
     "exports": "fbd5bf89bb3a7d13d32c55dda0a0b89996c3c6a4828f94a250c94c5f18b74550",
 }
 LAYERS = {
@@ -49,7 +49,7 @@ LAYERS = {
     "contracts": 0, "attachments": 0, "telemetry_core": 0,
     "deep_research_contracts": 0, "deep_research_prefetch": 0, "deep_research_scoping": 0,
     "deep_research_sanitization": 0, "input_contracts": 0, "input_sanitization": 0,
-    "official_source_registry": 0, "sku_question_context": 0,
+    "official_source_registry": 0, "sku_question_context": 0, "unified_response_agent": 0,
     "technical_planning": 0, "technical_evidence_persistence": 0, "factual_critic": 0,
     "runtime": 1, "deep_research_analysis": 1, "deep_research_claims": 1,
     "sku_question_prompts": 1,
@@ -64,7 +64,8 @@ LAYERS = {
     "deep_research": 4, "deep_research_crawler": 4,
     "compatibility": 6, "tools": 6, "client_workflow_support": 6,
     "client_compatibility_workflow": 7, "client_general_workflow": 7,
-    "client_workflows": 7, "final_ai_review": 7, "general_commercial": 7, "validation": 7,
+    "client_workflows": 7, "final_ai_review": 7, "general_commercial": 7,
+    "unified_presale": 7, "validation": 7,
     "approval": 8, "clients": 8, "post_sale": 8, "providers": 8, "telemetry": 8,
     "execution": 9, "api": 10, "__init__": 10,
 }
@@ -131,12 +132,14 @@ def _contract_snapshot() -> dict[str, object]:
         ],
         "factual_critic.py": ["factual_review_prompt", "factual_revision_prompt"],
         "clients.py": ["_generate_public_compatibility_answer", "_invoke_stage_model"],
+        "unified_response_agent.py": ["_turn_prompt"],
         "marketplace_policy.py": ["policy_stage_context", "policy_research_topics"],
         "backend/services/perguntas_pos_venda_state.py": ["_perguntas_ia_classification_prompt"],
         "ml_questions_gemini/prompt_builder.py": ["build"],
         "backend/modules/perguntas_pos_venda/endpoints/training.py": ["ml_ia_treinamento_simular"],
         "backend/services/ia_treinamento_ppv.py": ["_ia_treinamento_ppv_profile_v2_bloco_prompt"],
         "backend/services/perguntas_pos_venda_perguntas_ml.py": ["_perguntas_ia_gerar_resposta"],
+        "backend/services/perguntas_pos_venda_pos_venda.py": ["_ml_pos_venda_unified_trusted_prompt"],
     }
     prompts: dict[str, str] = {}
     for filename, names in prompt_targets.items():
