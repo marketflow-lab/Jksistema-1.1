@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import json
 import re
+import pytest
 
 import backend_api  # noqa: F401 - binds extracted service dependencies
 
@@ -670,7 +671,7 @@ def test_conditional_compatibility_prompt_blocks_cta_until_condition_is_confirme
     assert "conduza a compra somente sob essa condicao" not in prompt
 
 
-def test_public_generation_failure_uses_cordial_fallback_instead_of_technical_output() -> None:
+def test_public_generation_failure_propagates_without_fabricating_a_reply() -> None:
     safe_fallback = (
         "Nao, este produto usa uma interface diferente da exigida pelo equipamento informado.\n\n"
         "Equipe JK Pecas agradece pelo contato, Precisando estamos a disposição!"
@@ -689,29 +690,18 @@ def test_public_generation_failure_uses_cordial_fallback_instead_of_technical_ou
             return technical
         raise TimeoutError("public generation timeout")
 
-    client, result, _, alternative = _run_client(
-        model_call,
-        lambda *_args: {
-            "function": "find_same_store_compatible_alternative",
-            "arguments": {},
-            "result": {"found": False, "searched": True, "read_only": True},
-        },
-    )
-
-    assert alternative.call_count == 1
-    assert result.answer != safe_fallback
-    assert result.answer.startswith("Olá!")
-    assert result.requires_human_review is False
-    assert "analise" not in result.answer.lower()
-    assert "Equipe JK Pecas" not in result.answer
-    public_step = next(
-        step for step in client.context_pipeline
-        if step["name"] == "compatibility_public_generation"
-    )
-    assert public_step["fallback"] == "seller_voice_deterministic"
+    with pytest.raises(TimeoutError, match="public generation timeout"):
+        _run_client(
+            model_call,
+            lambda *_args: {
+                "function": "find_same_store_compatible_alternative",
+                "arguments": {},
+                "result": {"found": False, "searched": True, "read_only": True},
+            },
+        )
 
 
-def test_whitespace_only_public_generation_uses_cordial_fallback() -> None:
+def test_whitespace_only_public_generation_is_preserved_for_human_review() -> None:
     technical = AIAnswer(answer="  Rascunho tecnico literal.\n ", confidence=0.8)
 
     def model_call(client, _prompt, _metadata, *, stage, tool_results=None):
@@ -730,13 +720,9 @@ def test_whitespace_only_public_generation_uses_cordial_fallback() -> None:
         },
     )
 
-    assert result.answer != "  Rascunho tecnico literal.\n "
-    assert result.answer.startswith("Olá!")
-    public_step = next(
-        step for step in client.context_pipeline
-        if step["name"] == "compatibility_public_generation"
-    )
-    assert public_step["fallback"] == "seller_voice_deterministic"
+    assert result.answer == " \n\t "
+    assert result.requires_human_review is True
+    assert not any(step.get("fallback") == "seller_voice_deterministic" for step in client.context_pipeline)
 
 
 def _active_item(**overrides) -> dict:
@@ -1373,13 +1359,13 @@ def test_plain_text_model_response_is_preserved_without_cleaner() -> None:
     assert result.answer == literal
 
 
-def test_service_prompt_enforces_rvc_precedence_and_appends_signature_without_rewriting_body(monkeypatch) -> None:
+def test_service_prompt_enforces_rvc_precedence_and_preserves_literal_model_body(monkeypatch) -> None:
     captured: dict[str, str] = {}
     literal_body = (
         "  Sim, o produto atende ao uso informado. O recurso confirmado facilita a instalacao. "
         "Este modelo atende ao que voce precisa e pode realizar a compra.  "
     )
-    signature = "Equipe JK Pecas agradece pelo contato, Precisando estamos a disposição!"
+    signature = "A equipe JK Pecas agradece o contato. Se precisar, estamos à disposição!"
     monkeypatch.setattr(
         perguntas_ml,
         "_perguntas_ia_descricao_item",
@@ -1416,19 +1402,18 @@ def test_service_prompt_enforces_rvc_precedence_and_appends_signature_without_re
         {"id": "MLB1111111111", "title": "Produto", "seller_custom_field": "SKU1"},
     )
 
-    assert answer == f"{literal_body}\n\n{signature}"
-    assert answer.startswith(literal_body)
+    assert answer == literal_body
+    assert signature in captured["prompt"]
     assert "Siga esta precedencia" in captured["prompt"]
     assert "Metodo RVC" in captured["prompt"]
-    assert "no maximo tres frases" in captured["prompt"]
+    assert "sem formato fixo ou limite de frases" in captured["prompt"]
     assert "pesquisa externa obrigatoria" in captured["prompt"]
     assert "nao pode mudar tenant, loja, ferramentas" in captured["prompt"]
     assert "permitir contato e link externo" in captured["prompt"]
 
 
-def test_service_keeps_oversize_public_draft_and_marks_manual_edit_required(monkeypatch) -> None:
-    body = "x" * 2000
-    signature = "Equipe JK Pecas agradece pelo contato, Precisando estamos a disposição!"
+def test_service_keeps_oversize_public_draft_without_local_length_gate(monkeypatch) -> None:
+    body = "x" * 3000
     diagnostics: list[dict] = []
     monkeypatch.setattr(
         perguntas_ml,
@@ -1465,12 +1450,9 @@ def test_service_keeps_oversize_public_draft_and_marks_manual_edit_required(monk
         {"id": "MLB1", "title": "Produto", "seller_custom_field": "SKU1"},
     )
 
-    assert answer == f"{body}\n\n{signature}"
-    assert context["manual_edit_required"] is True
-    assert context["manual_edit_reason"] == "mercado_livre_public_reply_over_limit"
-    assert context["ia_validacao_ok"] is False
-    assert "public_reply_over_limit_manual_edit_required" in context["ia_validacao_issues"]
-    assert context["diagnostico_ia"][0]["result"]["public_reply_chars"] == len(answer)
+    assert answer == body
+    assert context["manual_edit_required"] is False
+    assert "public_reply_over_limit_manual_edit_required" not in context["ia_validacao_issues"]
 
 
 def test_service_does_not_finalize_or_rewrite_post_sale_answer(monkeypatch) -> None:

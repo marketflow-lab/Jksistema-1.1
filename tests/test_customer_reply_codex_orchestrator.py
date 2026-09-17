@@ -3094,9 +3094,9 @@ def test_legacy_jobs_are_hidden_from_latest_recovery_and_approval(tmp_path, monk
 
 @pytest.mark.parametrize(
     ("length", "expected_length", "truncated"),
-    [(1999, 1999, False), (2000, 2000, False), (2001, 2000, True)],
+    [(1999, 1999, False), (2000, 2000, False), (2001, 2001, False)],
 )
-def test_public_answer_limit_accepts_up_to_2000_characters(length, expected_length, truncated):
+def test_public_answer_preserves_text_across_legacy_2000_character_boundary(length, expected_length, truncated):
     answer = perguntas_state._perguntas_ia_limpar_resposta("x" * length)
 
     assert len(answer) == expected_length
@@ -3150,7 +3150,7 @@ def test_manual_public_question_send_forwards_legacy_invalid_fallback_text(monke
     assert returned_cfg is cfg
 
 
-def test_post_sale_draft_remains_bounded_to_340_chars_and_three_sentences(monkeypatch):
+def test_post_sale_draft_preserves_literal_text_beyond_legacy_limits(monkeypatch):
     monkeypatch.setattr(perguntas_ml, "ML_POS_VENDA_DEFAULT_MAX_CHARS", 350, raising=False)
     monkeypatch.setattr(perguntas_ml, "ML_POS_VENDA_LIMITE_SEGURO", 340, raising=False)
     monkeypatch.setattr(
@@ -3164,17 +3164,15 @@ def test_post_sale_draft_remains_bounded_to_340_chars_and_three_sentences(monkey
         raising=False,
     )
     monkeypatch.setattr(perguntas_ml, "_perguntas_ia_remover_apresentacao_sistema", lambda texto: texto, raising=False)
+    draft = "  Primeira frase. Segunda frase. Terceira frase. Quarta frase. " + "Detalhe integral. " * 30 + "\n"
     answer = perguntas_ml._pos_venda_ia_resposta_final_loja(
-        "Primeira frase. Segunda frase. Terceira frase que nao deve entrar. Quarta frase.",
+        draft,
         "JK Pecas",
         350,
     )
 
-    sentences = [item for item in answer.replace("\n", " ").split(". ") if item.strip()]
-    assert len(answer) <= 340
-    assert len(sentences) <= 3
-    assert "Terceira frase" not in answer
-    assert answer.endswith("Equipe JK Pecas agradece pelo contato, Precisando estamos a disposição!")
+    assert len(draft) > 340
+    assert answer == draft
 
 
 @pytest.mark.parametrize(

@@ -134,8 +134,8 @@ def test_post_sale_exact_order_variation_and_distinct_guidance(reader):
     assert not rows[0].get("guidance")
     from backend.modules.perguntas_pos_venda.ai.post_sale import _ml_pos_venda_contexto_prompt
     rendered = json.loads(_ml_pos_venda_contexto_prompt({"anuncios": [{"id": "MLB100", "catalog_product_context": rows}]}))
-    assert rendered["catalog_product_context"][0]["catalog_document"] == DOCUMENT
-    assert not rendered["anuncios"][0].get("catalog_product_context")
+    assert rendered["anuncios"][0]["catalog_product_context"] == rows
+    assert "catalog_product_context" not in rendered
 
 
 @pytest.mark.parametrize("order", [
@@ -515,11 +515,19 @@ def test_automation_batch_seals_official_snapshot_before_local_sku(reader, monke
     assert bool(questions[0]["_catalog_identity_proof"]) == bool(official_sku)
 
 
-@pytest.mark.parametrize("compacted", ['{"truncated":', '"text"', '[]'])
-def test_post_sale_compactor_fallback_preserves_integral_catalog(reader, monkeypatch, compacted):
+@pytest.mark.parametrize("description", ["Ficha integral. " * 2000, 'Medida "especial"\nDescrição técnica', "[] {campos} çã"])
+def test_post_sale_serializer_preserves_integral_nested_catalog(reader, monkeypatch, description):
     from backend.modules.perguntas_pos_venda.ai import post_sale
-    monkeypatch.setattr(post_sale, "_perguntas_codex_compact_json", lambda *args: compacted)
-    rows = [{"catalog_document": DOCUMENT}]
+    serialize = post_sale._perguntas_codex_compact_json
+    limits = []
+    def capture(value, max_chars):
+        limits.append(max_chars)
+        return serialize(value, max_chars)
+    monkeypatch.setattr(post_sale, "_perguntas_codex_compact_json", capture)
+    document = deepcopy(DOCUMENT)
+    document["fields"]["description"] = description
+    rows = [{"catalog_document": document}]
     result = json.loads(post_sale._ml_pos_venda_contexto_prompt({"anuncios": [{"catalog_product_context": rows}]}))
-    assert result["catalog_product_context"] == rows
-    assert "post_sale_context_unavailable" in result["gaps"]
+    assert limits == [0]
+    assert result["anuncios"][0]["catalog_product_context"] == rows
+    assert "post_sale_context_unavailable" not in result.get("gaps", [])

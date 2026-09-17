@@ -102,10 +102,12 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
         # de SKUs. Perguntas adiciona quatro consultas progressivas, duas rotas
         # de sincronizacao do catalogo e a lista de solicitacoes. Cadastro soma
         # a listagem consolidada das lojas. A Sala de Reuniao deixa de registrar
-        # as quatro rotas RustDesk. O contrato isolado de Vendas mantem o hash
-        # congelado.
-        "routes": 462,
-        "pairs": 460,
+        # as quatro rotas RustDesk. Firebase soma tres rotas de provisionamento
+        # e uma de status da sessao (e06e8db). As fichas de treinamento somam
+        # duas rotas (1161317), e renomear loja soma uma (bb40d26).
+        # O contrato isolado de Vendas mantem o hash congelado.
+        "routes": 469,
+        "pairs": 467,
         "duplicates": [],
         "openapi": "4592ad7b7431ffb069c65eca1874b0f26010549fab41b2836d740e8cc037d0f1",
     }

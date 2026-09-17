@@ -27,6 +27,7 @@ PUBLIC_BODY = (
     "Sim, este interruptor é instalado na carcaça da válvula termostática do "
     "Honda Fit 1.4 de 2003 a 2005. O código 37760-P00-003 substitui a referência "
     "37760-PHM-004 e mantém a aplicação correta do conjunto. Pode realizar a compra."
+    "\n\nA equipe Uai Mineirinho agradece o contato. Se precisar, estamos à disposição!"
 )
 
 

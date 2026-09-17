@@ -22,8 +22,8 @@
     },
     {
       "path": "docs/knowledge/security-policy.md",
-      "sha256": "586d9611ebde78da0a040722bf8aa1c372d8a2866f80c1f44cd8f30ddac99710",
-      "size": 890
+      "sha256": "6882a97177aaa2ed4cff71f7abc49616ad56e344284ce03e7ed810d0eaaf4c05",
+      "size": 1327
     },
     {
       "path": "docs/knowledge/sku-product-category-taxonomy-v1.md",
@@ -62,5 +62,5 @@
     }
   ],
   "schema_version": 1,
-  "source_version": "1.0.140"
+  "source_version": "1.0.142"
 }
