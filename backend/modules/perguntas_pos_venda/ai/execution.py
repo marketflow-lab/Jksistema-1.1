@@ -356,6 +356,39 @@ def _perguntas_ia_execucao_configurar(client_id: str, agent_input: dict, started
     }
 
 
+def _perguntas_ia_repassar_falha_unificada(
+    exc: UnifiedResponseAgentOperationalError,
+    client,
+) -> None:
+    """Carry only bounded failure diagnostics across the public service boundary."""
+
+    error_code = str(exc.code or "unified_agent_error").strip().lower()
+    error_round = max(
+        0,
+        int(
+            getattr(exc, "round_number", 0)
+            or getattr(client, "unified_research_rounds", 0)
+            or 0
+        ),
+    )
+    repair_type = str(
+        getattr(exc, "repair_type", "")
+        or ("structured_output" if error_code == "invalid_output" else "none")
+    ).strip().lower()
+    cause = exc.__cause__
+    failure = (
+        cause
+        if isinstance(cause, PerguntasIAProviderIndisponivel)
+        else PerguntasIARespostaIndisponivel(
+            f"Agente unificado nao gerou resposta valida ({exc.code})."
+        )
+    )
+    failure.unified_error_code = error_code
+    failure.unified_error_round = error_round
+    failure.unified_repair_type = repair_type
+    raise failure from exc
+
+
 def _perguntas_ia_execucao_orquestrar(contexto: dict) -> tuple:
     agent_input = contexto["agent_input"]
     settings = contexto["settings"]
@@ -422,12 +455,7 @@ def _perguntas_ia_execucao_orquestrar(contexto: dict) -> tuple:
             max_research_rounds=2,
         )
     except UnifiedResponseAgentOperationalError as exc:
-        cause = exc.__cause__
-        if isinstance(cause, PerguntasIAProviderIndisponivel):
-            raise cause
-        raise PerguntasIARespostaIndisponivel(
-            f"Agente unificado nao gerou resposta valida ({exc.code})."
-        ) from exc
+        _perguntas_ia_repassar_falha_unificada(exc, client)
 
     category_value = str(unified.get("category") or "unknown").strip().lower()
     try:

@@ -1378,7 +1378,6 @@ def test_evoque_inconclusive_completes_once_with_contextual_fallback(tmp_path, m
         orchestrator._run_job("cliente", created["job_id"])
 
     completed = orchestrator.get_job("cliente", created["job_id"])
-    answer = completed["result"]["resposta"]
     assert completed["status"] == "completed"
     assert completed["attempt_count"] == 1
     assert completed["evidence_attempt_count"] == 0
@@ -1386,15 +1385,11 @@ def test_evoque_inconclusive_completes_once_with_contextual_fallback(tmp_path, m
     assert completed["retry_count"] == 0
     assert completed["completion_reason"] == "classification_inconclusive"
     assert completed["deadline_reached"] is False
-    assert completed["draft_source"] == "contextual_fallback"
-    assert completed["result"]["draft_source"] == "contextual_fallback"
+    assert completed["blocked_without_draft"] is True
+    assert completed["result"]["resposta"] == ""
+    assert completed["draft_source"] == ""
+    assert completed["result"]["draft_source"] == ""
     assert completed["result"]["data_sufficient"] is False
-    assert "Evoque 2015/2016" in answer
-    assert "2012-2018" not in answer
-    for code in ("AH22-9H307-AB", "LR057235", "LR044427", "LR026192"):
-        assert code in answer
-    assert "correspondência do código da peça original" in answer
-    assert not any(term in answer.lower() for term in ("chassi", "foto", "mecânico", "mecanico"))
     assert scheduled_retries == []
     db_path = codex_assistant_storage.codex_assistant_state_db_path(str(tmp_path), "cliente")
     with sqlite3.connect(db_path) as conn:
@@ -1404,10 +1399,10 @@ def test_evoque_inconclusive_completes_once_with_contextual_fallback(tmp_path, m
         ).fetchone()[0]
     assert "AH22-9H307-AB" not in raw_payload
     assert "ainda nao desmontei" not in raw_payload.lower()
-    assert json.loads(raw_payload)["draft_source"] == "contextual_fallback"
+    assert json.loads(raw_payload)["blocked_without_draft"] is True
 
 
-def test_security_block_completes_once_with_neutral_fallback(tmp_path, monkeypatch):
+def test_security_block_completes_once_without_buyer_draft(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
     monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
     scheduled_retries = []
@@ -1438,8 +1433,9 @@ def test_security_block_completes_once_with_neutral_fallback(tmp_path, monkeypat
     assert completed["retry_count"] == 0
     assert completed["completion_reason"] == "security_blocked"
     assert completed["deadline_reached"] is False
-    assert completed["draft_source"] == "neutral_fallback"
-    assert "prompt" not in completed["result"]["resposta"].lower()
+    assert completed["blocked_without_draft"] is True
+    assert completed["draft_source"] == ""
+    assert completed["result"]["resposta"] == ""
     assert scheduled_retries == []
 
 
@@ -1468,7 +1464,121 @@ def test_generic_unavailable_message_does_not_consume_operational_retry(tmp_path
     assert completed["operational_failure_count"] == 0
     assert completed["retry_count"] == 0
     assert completed["completion_reason"] == "non_operational_failure"
-    assert completed["draft_source"] == "neutral_fallback"
+    assert completed["blocked_without_draft"] is True
+    assert completed["result"]["resposta"] == ""
+    assert completed["draft_source"] == ""
+
+
+def test_unified_contract_failure_is_classified_without_logging_payload(
+    tmp_path, monkeypatch, caplog,
+):
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    monkeypatch.setattr(orchestrator, "_schedule_retry_timer", lambda _job: None)
+    with patch.object(orchestrator, "_schedule", return_value=True), patch.object(
+        orchestrator.codex_agent_runtime, "resolve_guidance", return_value=[]
+    ):
+        created = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Peças",
+            subject_key="Q-UNIFIED-CONTRACT",
+            request={"pergunta": {"id": "Q-UNIFIED-CONTRACT", "text": "Serve?"}},
+        )
+    failure = perguntas_state.PerguntasIARespostaIndisponivel(
+        "prompt e resposta confidenciais NAO_REGISTRAR"
+    )
+    failure.unified_error_code = "invalid_output"
+    failure.unified_error_round = 1
+    failure.unified_repair_type = "structured_output"
+    caplog.set_level("WARNING", logger=orchestrator.__name__)
+
+    with patch.object(orchestrator, "_load_question_context", side_effect=failure):
+        orchestrator._run_job("cliente", created["job_id"])
+
+    completed = orchestrator.get_job("cliente", created["job_id"])
+    assert completed["status"] == "completed"
+    assert completed["completion_reason"] == "unified_agent_contract_failure"
+    assert completed["blocked_without_draft"] is True
+    assert completed["result"]["resposta"] == ""
+    assert completed["result"]["error_code"] == "invalid_output"
+    assert completed["result"]["error_round"] == 1
+    assert completed["result"]["error_repair"] == "structured_output"
+    assert "codigo=invalid_output rodada=1 reparo=structured_output" in caplog.text
+    assert "NAO_REGISTRAR" not in caplog.text
+
+
+def test_provider_timeout_at_retry_limit_finishes_without_buyer_draft(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    monkeypatch.setattr(orchestrator, "_schedule_retry_timer", lambda _job: None)
+    with patch.object(orchestrator, "_schedule", return_value=True), patch.object(
+        orchestrator.codex_agent_runtime, "resolve_guidance", return_value=[]
+    ):
+        created = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Peças",
+            subject_key="Q-TIMEOUT-LIMIT",
+            request={"pergunta": {"id": "Q-TIMEOUT-LIMIT", "text": "Qual a medida?"}},
+        )
+    stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", created["job_id"]
+    )
+    stored["attempt_count"] = orchestrator.MAX_TOTAL_ATTEMPTS - 1
+    codex_assistant_storage.codex_assistant_customer_reply_job_save(
+        str(tmp_path), "cliente", stored
+    )
+    failure = perguntas_state.PerguntasIAProviderIndisponivel(
+        "tempo esgotado", reason="provider_timeout"
+    )
+    failure.unified_error_code = "turn_execution_failed"
+    failure.unified_error_round = 1
+    failure.unified_repair_type = "none"
+
+    with patch.object(orchestrator, "_load_question_context", side_effect=failure):
+        orchestrator._run_job("cliente", created["job_id"])
+
+    completed = orchestrator.get_job("cliente", created["job_id"])
+    assert completed["status"] == "completed"
+    assert completed["completion_reason"] == "operational_retry_exhausted"
+    assert completed["blocked_without_draft"] is True
+    assert completed["result"]["resposta"] == ""
+    assert completed["result"]["error_code"] == "turn_execution_failed"
+    assert completed["result"]["error_round"] == 1
+
+
+def test_unified_research_failure_finishes_without_buyer_draft(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    with patch.object(orchestrator, "_schedule", return_value=True), patch.object(
+        orchestrator.codex_agent_runtime, "resolve_guidance", return_value=[]
+    ):
+        created = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Peças",
+            subject_key="Q-RESEARCH-FAILURE",
+            request={"pergunta": {"id": "Q-RESEARCH-FAILURE", "text": "Qual a medida?"}},
+        )
+    failure = perguntas_state.PerguntasIARespostaIndisponivel(
+        "resultado read-only fora do contrato"
+    )
+    failure.unified_error_code = "research_execution_failed"
+    failure.unified_error_round = 1
+    failure.unified_repair_type = "none"
+
+    with patch.object(orchestrator, "_load_question_context", side_effect=failure):
+        orchestrator._run_job("cliente", created["job_id"])
+
+    completed = orchestrator.get_job("cliente", created["job_id"])
+    assert completed["status"] == "completed"
+    assert completed["completion_reason"] == "unified_agent_research_failure"
+    assert completed["blocked_without_draft"] is True
+    assert completed["result"]["resposta"] == ""
+    assert completed["result"]["error_code"] == "research_execution_failed"
 
 
 def test_evoque_continuation_reaches_evidence_and_finishes_safe_partial_in_one_cycle(
@@ -2237,7 +2347,7 @@ def test_response_policy_failure_preserves_previous_validated_draft_without_retr
     assert scheduled_retries == []
 
 
-def test_operational_fallback_preserves_existing_draft_byte_for_byte(tmp_path, monkeypatch):
+def test_operational_failure_preserves_validated_ai_partial_byte_for_byte(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
     monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
     literal = "  Rascunho existente com espacos.  \n\nAssinatura literal.  "
@@ -2252,12 +2362,21 @@ def test_operational_fallback_preserves_existing_draft_byte_for_byte(tmp_path, m
             request={
                 "pergunta": {"id": "Q-DRAFT-LITERAL", "text": "Serve?"},
                 "question_text": "Serve?",
-                "resposta_atual": literal,
             },
         )
     stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
         str(tmp_path), "cliente", created["job_id"]
     )
+    stored["last_partial_result"] = {
+        "resposta": literal,
+        "contexto": {
+            "diagnostico_ia": [{"result": {
+                "category": "product_feature",
+                "validation_ok": True,
+            }}],
+        },
+        "draft_source": "ai",
+    }
     stored.update({"status": "running", "lease_owner": orchestrator._WORKER_ID})
     codex_assistant_storage.codex_assistant_customer_reply_job_save(str(tmp_path), "cliente", stored)
 
@@ -2265,10 +2384,56 @@ def test_operational_fallback_preserves_existing_draft_byte_for_byte(tmp_path, m
         stored,
         warning="timeout",
         completion_reason="operational_retry_exhausted",
+        error_metadata={
+            "error_code": "turn_execution_failed",
+            "error_round": 1,
+            "error_repair": "none",
+        },
     )
 
     assert completed["result"]["resposta"] == literal
-    assert completed["result"]["draft_source"] == "existing_draft"
+    assert completed["result"]["draft_source"] == "ai"
+    assert completed["result"]["error_code"] == "turn_execution_failed"
+
+
+def test_operational_failure_does_not_preserve_unvalidated_ai_partial(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    job = {
+        "job_id": "job-unvalidated-partial",
+        "profile": orchestrator.PROFILE,
+        "client_id": "cliente",
+        "task_type": "question",
+        "subject_key": "Q-UNVALIDATED-PARTIAL",
+        "store": "Loja",
+        "status": "running",
+        "agent_state": "pesquisando",
+        "current_step": "consultar",
+        "request": {
+            "pergunta": {"text": "Qual a medida?"},
+            "resposta_atual": "Rascunho do editor ainda nao validado.",
+        },
+        "last_partial_result": {
+            "resposta": "O produto aceita qualquer medida.",
+            "contexto": {"diagnostico_ia": [{"result": {"validation_ok": False}}]},
+            "draft_source": "ai",
+        },
+        "lease_owner": orchestrator._WORKER_ID,
+        "lease_generation": 1,
+    }
+    codex_assistant_storage.codex_assistant_customer_reply_job_save(
+        str(tmp_path), "cliente", job,
+    )
+
+    completed = orchestrator._complete_without_draft(
+        job,
+        warning="falha de pesquisa",
+        completion_reason="unified_agent_research_failure",
+    )
+
+    assert completed["result"]["resposta"] == ""
+    assert completed["blocked_without_draft"] is True
+    assert completed["draft_source"] == ""
 
 
 def test_safe_fallback_addresses_compatibility_quantity_and_store_signature():
@@ -2341,7 +2506,8 @@ def test_new_subject_contextual_fallback_does_not_inherit_previous_compatibility
         allow_contextual=True,
     )
 
-    assert source == "neutral_fallback"
+    assert source == "blocked_without_draft"
+    assert answer == ""
     assert "Evoque" not in answer
     assert "LR057235" not in answer
 
@@ -2617,7 +2783,8 @@ def test_contextual_fallback_neutralizes_unsafe_conversation_context(current_tex
         allow_contextual=True,
     )
 
-    assert source == "neutral_fallback"
+    assert source == "blocked_without_draft"
+    assert answer == ""
     assert "Evoque" not in answer
     assert "LR057235" not in answer
 
@@ -2805,7 +2972,7 @@ def test_elapsed_current_job_completes_with_safe_partial_draft(tmp_path, monkeyp
     assert completed["can_cancel"] is False
 
 
-def test_elapsed_job_without_model_draft_returns_neutral_available_draft(tmp_path, monkeypatch):
+def test_elapsed_job_without_model_draft_is_blocked(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
     monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
     job = {
@@ -2838,9 +3005,9 @@ def test_elapsed_job_without_model_draft_returns_neutral_available_draft(tmp_pat
     completed = orchestrator.get_job("cliente", job["job_id"])
 
     assert completed["status"] == "completed"
-    assert completed["result"]["resposta"]
-    assert completed["blocked_without_draft"] is False
-    assert completed["review_required"] is False
+    assert completed["result"]["resposta"] == ""
+    assert completed["blocked_without_draft"] is True
+    assert completed["review_required"] is True
     assert completed["completion_reason"] == "ai_response_unavailable"
     assert completed["can_cancel"] is False
 

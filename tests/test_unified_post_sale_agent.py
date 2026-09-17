@@ -28,7 +28,7 @@ def _turn(*, action: str, answer: str = "", requests: list[dict] | None = None,
           review: bool = False) -> dict:
     return {
         "action": action,
-        "flow": "pre_sale",
+        "flow": "post_sale",
         "category": "post_sale_support",
         "subquestions": ["Resolver o atendimento do pedido."],
         "research_requests": list(requests or []),
@@ -41,6 +41,8 @@ def _turn(*, action: str, answer: str = "", requests: list[dict] | None = None,
         "compatibility_analysis": _compatibility(),
         "missing_fact_owner": "internal" if review else "none",
         "buyer_detail_needed": "",
+        "evidence_basis": "none",
+        "evidence_refs": [],
     }
 
 

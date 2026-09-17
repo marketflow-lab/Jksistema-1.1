@@ -144,6 +144,8 @@ def test_presale_execution_uses_one_unified_agent_and_preserves_server_scope(mon
             },
             "missing_fact_owner": "none",
             "buyer_detail_needed": "",
+            "evidence_basis": "manufacturer_model",
+            "evidence_refs": ["manual:model-exato"],
         }
 
     monkeypatch.setattr(execution, "_PerguntasCodexV3Client", Client)
@@ -241,8 +243,11 @@ def test_invalid_unified_output_becomes_existing_operational_error(monkeypatch) 
         ),
     )
 
-    with pytest.raises(PerguntasIARespostaIndisponivel, match="invalid_output"):
+    with pytest.raises(PerguntasIARespostaIndisponivel, match="invalid_output") as raised:
         execution._perguntas_ia_execucao_orquestrar(_context())
+    assert raised.value.unified_error_code == "invalid_output"
+    assert raised.value.unified_error_round == 0
+    assert raised.value.unified_repair_type == "structured_output"
 
 
 def test_client_unified_turn_updates_state_without_factual_review(monkeypatch) -> None:
@@ -342,6 +347,8 @@ def _turn(
     decision: str = "not_applicable",
     commercial_state: str = "not_applicable",
     compatibility: dict | None = None,
+    evidence_basis: str = "none",
+    evidence_refs: list[str] | None = None,
 ) -> dict:
     return {
         "action": action,
@@ -365,6 +372,8 @@ def _turn(
         },
         "missing_fact_owner": "none",
         "buyer_detail_needed": "",
+        "evidence_basis": evidence_basis,
+        "evidence_refs": list(evidence_refs or []),
     }
 
 
@@ -458,6 +467,384 @@ def test_pump_cycle_gap_research_does_not_depend_on_legacy_reason_literal() -> N
     assert research_calls[0][1] == 1
     assert research_calls[0][0][0]["type"] == "technical_web"
     assert len(turns) == 2
+
+
+def test_missing_product_identity_runs_identity_then_technical_web_in_same_round(
+    monkeypatch,
+) -> None:
+    events = []
+    captured = {}
+    identity_result = {
+        "function": "web_search_product_identity",
+        "arguments": {},
+        "result": {
+            "found": True,
+            "read_only": True,
+            "product_research_evidence": [
+                {"brand": "Fabricante A", "model": "Modelo 32A"},
+            ],
+        },
+    }
+    technical_result = {
+        "function": "web_search_question_context",
+        "arguments": {},
+        "result": {
+            "found": True,
+            "read_only": True,
+            "conflicts": [
+                {"source": "fabricante-a", "claim": "4 a 6 mm2"},
+                {"source": "fabricante-b", "claim": "ate 10 mm2 rigido"},
+            ],
+        },
+    }
+    packet = {
+        "identity": {
+            "store_ref": "store-9",
+            "seller_id": "seller-8",
+            "site_id": "MLB",
+            "sku": "632-K",
+            "item_id": "MLB4992847213",
+            "variation_id": "var-6",
+        },
+        "question": {
+            "id": "q-1",
+            "text": "Aceita fios de 4 mm, 6 mm ou 10 mm?",
+        },
+        "listing_facts": {
+            "title": "Conjunto tomada industrial 2P+T 32A azul",
+            "permalink": "https://produto.mercadolivre.com.br/MLB-4992847213",
+            "attributes": [],
+            "selected_variation": {"id": "var-6", "seller_sku": "632-K"},
+        },
+    }
+    client = SimpleNamespace(
+        client_id="tenant-2",
+        loja="Loja Exata",
+        agent_input={
+            "tenant_id": "tenant-modelo",
+            "store": "Loja do modelo",
+            "item": {"id": "MLB-DO-MODELO", "seller_sku": "SKU-DO-MODELO"},
+            "context": {"sku": "SKU-DO-MODELO"},
+            "question": {"text": "texto original"},
+        },
+        sku_question_context=packet,
+        unified_research_rounds=0,
+        unified_research_results=[],
+        context_pipeline=[],
+    )
+
+    monkeypatch.setattr(
+        unified_presale,
+        "bind_client_sku_question_context",
+        lambda *_args, **_kwargs: packet,
+    )
+    monkeypatch.setattr(
+        unified_presale,
+        "_mandatory_web_tool",
+        lambda _name, callback: callback(),
+    )
+
+    def identity_tool(client_id, research_input, prior_results):
+        events.append("identity")
+        captured["identity"] = (client_id, research_input, list(prior_results))
+        return identity_result
+
+    def web_tool(client_id, research_input, prior_results):
+        events.append("technical")
+        captured["technical"] = (client_id, research_input, list(prior_results))
+        return technical_result
+
+    bindings = unified_presale.GeneralBindings(
+        context_hub_tool=lambda *_args: {},
+        web_tool=web_tool,
+        product_identity_tool=identity_tool,
+    )
+    results = unified_presale.execute_unified_research(
+        client,
+        [{
+            "type": "technical_web",
+            "query": "bitola de fio aceita pelo borne",
+            "purpose": "confirmar bitola flexivel e rigida",
+            "preferred_authority": "fabricante",
+            "tenant_id": "tenant-modelo",
+            "store_id": "store-modelo",
+            "seller_id": "seller-modelo",
+            "site_id": "SITE-MODELO",
+            "sku": "SKU-DO-MODELO",
+            "item_id": "MLB-DO-MODELO",
+            "variation_id": "var-modelo",
+        }],
+        1,
+        bindings,
+    )
+
+    assert events == ["identity", "technical"]
+    assert [result["function"] for result in results] == [
+        "web_search_product_identity",
+        "web_search_question_context",
+    ]
+    assert client.unified_research_rounds == 1
+    for stage in ("identity", "technical"):
+        client_id, research_input, _prior = captured[stage]
+        assert client_id == "tenant-2"
+        assert research_input["tenant_id"] == "tenant-2"
+        assert research_input["store"] == "Loja Exata"
+        assert research_input["item"]["id"] == "MLB4992847213"
+        assert research_input["item"]["seller_sku"] == "632-K"
+        assert research_input["item"]["variation_id"] == "var-6"
+        assert research_input["context"] == {"sku": "632-K"}
+        assert research_input["sku_question_context"]["identity"] == packet["identity"]
+        assert "store_id" not in research_input
+        assert "seller_id" not in research_input
+        assert "site_id" not in research_input
+    assert captured["identity"][2] == []
+    assert captured["technical"][2] == [identity_result]
+    assert results[1]["result"]["conflicts"] == technical_result["result"]["conflicts"]
+
+
+def test_explicit_product_identity_web_uses_server_bound_scope(monkeypatch) -> None:
+    packet = {
+        "identity": {
+            "store_ref": "store-9",
+            "seller_id": "seller-8",
+            "site_id": "MLB",
+            "sku": "632-K",
+            "item_id": "MLB4992847213",
+        },
+        "question": {"id": "q-1", "text": "Qual fabricante e modelo?"},
+        "listing_facts": {"title": "Conjunto tomada industrial 32A"},
+    }
+    client = SimpleNamespace(
+        client_id="tenant-2",
+        loja="Loja Exata",
+        agent_input={"item": {}, "context": {}, "question": {}},
+        sku_question_context=packet,
+        unified_research_rounds=0,
+        unified_research_results=[],
+        context_pipeline=[],
+    )
+    calls = []
+    monkeypatch.setattr(
+        unified_presale,
+        "bind_client_sku_question_context",
+        lambda *_args, **_kwargs: packet,
+    )
+    monkeypatch.setattr(
+        unified_presale,
+        "_mandatory_web_tool",
+        lambda _name, callback: callback(),
+    )
+
+    def identity_tool(client_id, research_input, prior_results):
+        calls.append((client_id, research_input, prior_results))
+        return {
+            "function": "web_search_product_identity",
+            "result": {"found": True, "read_only": True},
+        }
+
+    results = unified_presale.execute_unified_research(
+        client,
+        [{
+            "type": "product_identity_web",
+            "query": "identificar produto",
+            "purpose": "achar fabricante e modelo",
+            "preferred_authority": "fabricante",
+        }],
+        1,
+        unified_presale.GeneralBindings(
+            context_hub_tool=lambda *_args: {},
+            web_tool=lambda *_args: pytest.fail("technical web was not requested"),
+            product_identity_tool=identity_tool,
+        ),
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0] == "tenant-2"
+    assert calls[0][1]["item"]["id"] == "MLB4992847213"
+    assert calls[0][1]["item"]["seller_sku"] == "632-K"
+    assert [result["function"] for result in results] == ["web_search_product_identity"]
+
+
+def test_complete_manufacturer_and_model_skip_automatic_identity_research(
+    monkeypatch,
+) -> None:
+    packet = {
+        "identity": {"sku": "SKU-7", "item_id": "MLB1"},
+        "question": {"id": "q-1", "text": "Qual a bitola?"},
+        "listing_facts": {
+            "title": "Tomada industrial",
+            "attributes": [
+                {"id": "BRAND", "value_name": "Fabricante A"},
+                {"id": "MODEL", "value_name": "Modelo 32A"},
+            ],
+        },
+    }
+    client = SimpleNamespace(
+        client_id="tenant-2",
+        loja="Loja Exata",
+        agent_input={"item": {}, "context": {}, "question": {}},
+        sku_question_context=packet,
+        unified_research_rounds=0,
+        unified_research_results=[],
+        context_pipeline=[],
+    )
+    monkeypatch.setattr(
+        unified_presale,
+        "bind_client_sku_question_context",
+        lambda *_args, **_kwargs: packet,
+    )
+    monkeypatch.setattr(
+        unified_presale,
+        "_mandatory_web_tool",
+        lambda _name, callback: callback(),
+    )
+
+    results = unified_presale.execute_unified_research(
+        client,
+        [{
+            "type": "technical_web",
+            "query": "bitola aceita",
+            "purpose": "confirmar especificacao",
+            "preferred_authority": "fabricante",
+        }],
+        1,
+        unified_presale.GeneralBindings(
+            context_hub_tool=lambda *_args: {},
+            web_tool=lambda *_args: {
+                "function": "web_search_question_context",
+                "result": {"found": True, "read_only": True},
+            },
+            product_identity_tool=lambda *_args: pytest.fail(
+                "complete identity must not be researched again"
+            ),
+        ),
+    )
+
+    assert [result["function"] for result in results] == ["web_search_question_context"]
+
+
+def test_sku_632k_identity_then_technical_consensus_answers_wire_sizes(
+    monkeypatch,
+) -> None:
+    packet = {
+        "identity": {
+            "store_ref": "store-9",
+            "seller_id": "seller-8",
+            "site_id": "MLB",
+            "sku": "632-K",
+            "item_id": "MLB4992847213",
+            "variation_id": "var-6",
+        },
+        "question": {
+            "id": "1365958367",
+            "text": "Quais bitolas de fios que este conjunto aceita 4 mm, 6 mm, 10mm?",
+        },
+        "listing_facts": {
+            "title": "Conjunto Tomada Industrial Plug Macho 2p+t 32a Azul 220-250v",
+            "permalink": "https://produto.mercadolivre.com.br/MLB-4992847213",
+            "attributes": [],
+            "selected_variation": {"id": "var-6", "seller_sku": "632-K"},
+        },
+    }
+    client = SimpleNamespace(
+        client_id="tenant-2",
+        loja="Loja Exata",
+        agent_input={"item": {}, "context": {}, "question": {}},
+        sku_question_context=packet,
+        unified_research_rounds=0,
+        unified_research_results=[],
+        context_pipeline=[],
+    )
+    sequence: list[str] = []
+    identity_result = {
+        "function": "web_search_product_identity",
+        "result": {
+            "found": True,
+            "read_only": True,
+            "product_research_evidence": [{
+                "ref": "fabricante:modelo-32a",
+                "brand": "Fabricante identificado",
+                "model": "Tomada 32 A",
+            }],
+        },
+    }
+    technical_result = {
+        "function": "web_search_question_context",
+        "result": {
+            "found": True,
+            "read_only": True,
+            "sources": [
+                {"ref": "manual:a", "claim": "4 e 6 mm2 para condutor flexivel"},
+                {"ref": "catalogo:b", "claim": "ate 10 mm2 para condutor rigido"},
+            ],
+        },
+    }
+    monkeypatch.setattr(
+        unified_presale,
+        "bind_client_sku_question_context",
+        lambda *_args, **_kwargs: packet,
+    )
+    monkeypatch.setattr(
+        unified_presale,
+        "_mandatory_web_tool",
+        lambda _name, callback: callback(),
+    )
+    bindings = unified_presale.GeneralBindings(
+        context_hub_tool=lambda *_args: {},
+        product_identity_tool=lambda *_args: sequence.append("identity") or identity_result,
+        web_tool=lambda *_args: sequence.append("technical") or technical_result,
+    )
+    turns = 0
+
+    def invoke(_prompt, results, _force_answer):
+        nonlocal turns
+        turns += 1
+        if turns == 1:
+            return _turn(
+                action="research",
+                research_requests=[{
+                    "type": "technical_web",
+                    "query": "tomada industrial 32 A bitola borne flexivel rigido",
+                    "purpose": "confirmar 4, 6 e 10 mm2",
+                    "preferred_authority": "fabricante e catalogos tecnicos",
+                }],
+            )
+        assert [item["function"] for item in results] == [
+            "web_search_product_identity",
+            "web_search_question_context",
+        ]
+        return {
+            **_turn(
+                action="answer",
+                answer=(
+                    "Aceita 4 e 6 mm2 com condutor flexivel; 10 mm2 somente quando o "
+                    "condutor for rigido, conforme a especificacao do borne."
+                ),
+                reason="consenso_tecnico_com_condicao_de_condutor",
+                decision="conditional",
+                commercial_state="partial",
+                evidence_basis="technical_consensus",
+                evidence_refs=["manual:a", "catalogo:b"],
+            ),
+            "requires_human_review": True,
+        }
+
+    result = run_unified_response_agent(
+        flow="pre_sale",
+        context={"sku_question_context": packet},
+        invoke_turn=invoke,
+        execute_research=lambda requests, round_number: unified_presale.execute_unified_research(
+            client, requests, round_number, bindings,
+        ),
+    )
+
+    assert sequence == ["identity", "technical"]
+    assert client.unified_research_rounds == 1
+    assert "4 e 6 mm2" in result["answer"]
+    assert "10 mm2" in result["answer"]
+    assert "flexivel" in result["answer"] and "rigido" in result["answer"]
+    assert result["evidence_basis"] == "technical_consensus"
+    assert result["requires_human_review"] is True
 
 
 @pytest.mark.parametrize(

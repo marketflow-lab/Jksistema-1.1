@@ -140,8 +140,8 @@ def test_rvc_v11_versions_and_complete_commercial_state_map_are_frozen() -> None
     assert agent_runtime._PERGUNTAS_IA_RESPONSE_POLICY_VERSION == "jk_ppv_response_policy_v11"
     assert agent_runtime._PERGUNTAS_IA_SELLER_METHOD_VERSION == "seller-conversion-v1"
     assert agent_runtime._PERGUNTAS_IA_COMMERCIAL_STATE_POLICY == EXPECTED_COMMERCIAL_STATE_POLICY
-    assert codex.PROMPT_VERSION == "jk_ml_customer_reply_codex_v18"
-    assert codex.SCHEMA_VERSION == "5.2"
+    assert codex.PROMPT_VERSION == "jk_ml_customer_reply_codex_v19"
+    assert codex.SCHEMA_VERSION == "5.3"
     assert codex.QUEUE_POLICY_VERSION == "jk_ppv_queue_v3"
     assert ia_treinamento_ppv._IA_TREINAMENTO_PPV_PROFILE_SCHEMA == "seller_behavior_profile_v2"
     assert ia_treinamento_ppv._IA_TREINAMENTO_PPV_PROFILE_VERSION == 2
@@ -442,6 +442,8 @@ def test_post_sale_generation_and_transport_preserve_nonempty_text_byte_for_byte
             },
             "missing_fact_owner": "none",
             "buyer_detail_needed": "",
+            "evidence_basis": "none",
+            "evidence_refs": [],
         }, ensure_ascii=False), "codex:test"),
     )
 

@@ -84,8 +84,8 @@ PUBLIC_SUBQUESTION_INTENTS = frozenset({
     "general",
     "post_sale",
 })
-PROMPT_VERSION = "jk_ml_customer_reply_codex_v18"
-SCHEMA_VERSION = "5.2"
+PROMPT_VERSION = "jk_ml_customer_reply_codex_v19"
+SCHEMA_VERSION = "5.3"
 QUEUE_POLICY_VERSION = "jk_ppv_queue_v3"
 VEHICLE_IDENTITY_POLICY = "jk_public_vin_decode_v1"
 PRODUCT_EVIDENCE_POLICY = "jk_product_evidence_v2"
@@ -121,6 +121,7 @@ PROMPT_HASH = hashlib.sha256(
         "canonical-document-full|guidance-full|operational-context-full|"
         "question-history-full|integral-envelope-full|"
         "stage-prompt-full|global-transport-full|"
+        "unified-response-agent-v19|structured-recovery-v1|blocked-without-draft-v1|"
         "conditional-public-web-v1|oem-characteristics-inheritance-v1|new-product-condition-v1|"
         "literal-store-signature-v1|target-variant-universe-research-v1|"
         "six-stage-sol-high|two-round-gap-research|directed-reference-relations|"
@@ -1267,12 +1268,10 @@ def _fallback_context_blocked_by_safety(context: dict[str, Any]) -> bool:
 
 
 def _neutral_fallback_with_source(job: dict[str, Any]) -> tuple[str, str]:
-    return (
-        "Boa tarde! Essa informação não está confirmada nos dados disponíveis do produto; "
-        "antes da compra, considere somente a especificação descrita no anúncio."
-        f"\n\n{_fallback_signature(job)}",
-        "neutral_fallback",
-    )
+    """Compatibility helper: internal failures never create buyer-facing text."""
+
+    del job
+    return "", "blocked_without_draft"
 
 
 def _safe_fallback_with_source(
@@ -1404,6 +1403,26 @@ def _complete_generation_blocked(
     )
 
 
+def _failure_metadata(value: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+    raw = value if isinstance(value, Mapping) else {}
+    code = str(raw.get("error_code") or "").strip().lower()
+    repair = str(raw.get("error_repair") or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9_]{1,80}", code):
+        code = ""
+    if not re.fullmatch(r"[a-z0-9_]{1,80}", repair):
+        repair = ""
+    try:
+        round_number = min(2, max(0, int(raw.get("error_round") or 0)))
+    except (TypeError, ValueError):
+        round_number = 0
+    metadata: dict[str, Any] = {}
+    if code:
+        metadata["error_code"] = code
+        metadata["error_round"] = round_number
+        metadata["error_repair"] = repair or "none"
+    return metadata
+
+
 def _complete_without_draft(
     job: dict[str, Any],
     *,
@@ -1412,83 +1431,81 @@ def _complete_without_draft(
     fallback_context: Optional[dict[str, Any]] = None,
     allow_contextual: bool = False,
     deadline_reached: bool = True,
+    error_metadata: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Compatibility entrypoint that now always returns an editable safe draft."""
+    """Finish without inventing buyer-facing text, preserving an existing draft."""
+
+    del fallback_context, allow_contextual
+    safe_error_metadata = _failure_metadata(
+        error_metadata if isinstance(error_metadata, Mapping) else job
+    )
 
     partial = job.get("last_partial_result") if isinstance(job.get("last_partial_result"), dict) else {}
-    request = job.get("request") if isinstance(job.get("request"), dict) else {}
     partial_answer = str(partial.get("resposta") or "")
-    request_answer = str(request.get("resposta_atual") or "")
-    preserved_answer = partial_answer if partial_answer.strip() else request_answer
+    partial_context = partial.get("contexto") if isinstance(partial.get("contexto"), dict) else {}
+    partial_diagnostic = _diagnostic_result(partial_context)
+    validated_partial = bool(
+        partial_answer.strip()
+        and partial_diagnostic.get("validation_ok") is True
+        and _safe_insufficient_draft(partial_answer, partial_context)
+    )
+    preserved_answer = partial_answer if validated_partial else ""
     if preserved_answer.strip():
         return _complete_with_best_available(
             job,
             answer=preserved_answer,
-            context=(partial.get("contexto") if isinstance(partial.get("contexto"), dict) else {}),
+            context=partial_context,
             matrix=list(partial.get("evidence_status") or []),
             warnings=_unique_warnings(partial.get("warnings"), [warning]),
-            draft_source=str(partial.get("draft_source") or ("ai" if partial_answer.strip() else "existing_draft")),
+            draft_source=str(partial.get("draft_source") or "ai"),
             completion_reason=completion_reason,
             deadline_reached=deadline_reached,
+            error_metadata=safe_error_metadata,
         )
 
     info_base = _runtime_info_base()
     client_id = str(job.get("client_id") or "default")
     job_id = str(job.get("job_id") or "")
-    version = max(1, int(job.get("proposal_version") or 1))
-    fallback_answer, draft_source = _safe_fallback_with_source(
-        job,
-        fallback_context=fallback_context,
-        allow_contextual=allow_contextual,
-    )
-    proposal_hash = _hash(
-        {
-            "job_id": job_id,
-            "version": version,
-            "store": job.get("store"),
-            "subject": job.get("event_subject_key") or job.get("subject_key"),
-            "answer": fallback_answer,
-        }
-    )
     result = {
-        "resposta": fallback_answer,
+        "resposta": "",
         "contexto": {},
         "evidence_envelope": {},
         "evidence_status": [],
         "data_sufficient": False,
         "warnings": _unique_warnings(job.get("warnings"), [warning]),
-        "proposal_id": job_id,
-        "proposal_version": version,
-        "proposal_hash": proposal_hash,
-        "requires_approval": True,
+        "proposal_id": "",
+        "proposal_version": max(1, int(job.get("proposal_version") or 1)),
+        "proposal_hash": "",
+        "requires_approval": False,
         "publish_attempted": False,
-        "completed_with_partial": True,
-        "blocked_without_draft": False,
+        "completed_with_partial": False,
+        "blocked_without_draft": True,
         "completion_reason": completion_reason,
-        "review_required": False,
-        "draft_source": draft_source,
+        "review_required": True,
+        "draft_source": "",
+        **safe_error_metadata,
     }
     job.update(
         {
             "status": "completed",
-            "agent_state": "aguardando_aprovacao",
-            "current_step": "aprovar",
+            "agent_state": "concluido",
+            "current_step": "responder",
             "result": result,
             "warnings": list(result["warnings"]),
             "deadline_reached": bool(deadline_reached),
-            "completed_with_partial": True,
-            "blocked_without_draft": False,
+            "completed_with_partial": False,
+            "blocked_without_draft": True,
             "completion_reason": completion_reason,
-            "review_required": False,
-            "draft_source": draft_source,
-            "proposal_id": job_id,
-            "proposal_version": version,
-            "proposal_hash": proposal_hash,
-            "requires_approval": True,
+            "review_required": True,
+            "draft_source": "",
+            "proposal_id": "",
+            "proposal_hash": "",
+            "requires_approval": False,
             "publish_attempted": False,
             "lease_owner": "",
             "lease_expires_ts": 0.0,
             "completed_at": _now(),
+            **safe_error_metadata,
         }
     )
     job.pop("last_partial_result", None)
@@ -1863,7 +1880,8 @@ def _complete_with_best_available(
     completion_reason: str = "evidence_insufficient_after_retry_limit",
     deadline_reached: bool = True,
     empty_completion_reason: str = "ai_response_unavailable",
-    empty_warning: str = "A IA nao concluiu a resposta; foi gerado um rascunho seguro editavel.",
+    empty_warning: str = "A IA nao concluiu uma resposta valida; nenhum rascunho foi disponibilizado.",
+    error_metadata: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Finish a bounded research job while preserving any nonempty AI draft."""
 
@@ -1905,17 +1923,20 @@ def _complete_with_best_available(
             return _complete_without_draft(
                 current,
                 warning=(
-                    "A classificacao estruturada ficou indisponivel; foi gerado um rascunho neutro com as informacoes disponiveis."
+                    "A classificacao estruturada ficou indisponivel; nenhum rascunho foi disponibilizado."
                 ),
                 completion_reason="ai_classification_unavailable",
+                error_metadata=error_metadata,
             )
         return _complete_without_draft(
             current,
             warning=empty_warning,
             completion_reason=empty_completion_reason,
+            error_metadata=error_metadata,
         )
     if completion_reason == "ai_response_preserved_unvalidated":
         current["operational_failure_count"] = 0
+    safe_error_metadata = _failure_metadata(error_metadata)
 
     final_context = context if isinstance(context, dict) and context else partial.get("contexto")
     if not isinstance(final_context, dict):
@@ -1972,6 +1993,7 @@ def _complete_with_best_available(
             or current.get("draft_source")
             or "ai"
         ),
+        **safe_error_metadata,
     }
     current.update(
         {
@@ -1993,6 +2015,7 @@ def _complete_with_best_available(
             "lease_owner": "",
             "lease_expires_ts": 0.0,
             "completed_at": _now(),
+            **safe_error_metadata,
         }
     )
     current.pop("error", None)
@@ -2054,7 +2077,7 @@ def _complete_retry_limit(job: dict[str, Any]) -> dict[str, Any]:
         return _complete_with_best_available(job)
     return _complete_without_draft(
         job,
-        warning="O limite operacional foi atingido; foi gerado um rascunho neutro editavel.",
+        warning="O limite operacional foi atingido; nenhum rascunho foi disponibilizado.",
         completion_reason="operational_retry_exhausted",
     )
 
@@ -2069,6 +2092,7 @@ def _persist_retry(
     error: str = "",
     immediate: bool = False,
     retry_kind: str = "evidence",
+    error_metadata: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     info_base = _runtime_info_base()
     client_id = str(job.get("client_id") or "default")
@@ -2107,6 +2131,7 @@ def _persist_retry(
         int(current.get("evidence_attempt_count") or 0),
         int(job.get("evidence_attempt_count") or 0),
     )
+    current.update(_failure_metadata(error_metadata))
     if current.get("cancel_requested"):
         current.update({"status": "cancelled", "agent_state": "cancelado", "current_step": "responder"})
         return codex_assistant_storage.codex_assistant_customer_reply_job_save(info_base, client_id, current)
@@ -2190,7 +2215,7 @@ def _persist_retry(
             )
         return _complete_without_draft(
             current,
-            warning="O limite operacional foi atingido; foi gerado um rascunho neutro editavel.",
+            warning="O limite operacional foi atingido; nenhum rascunho foi disponibilizado.",
             completion_reason="operational_retry_exhausted",
         )
     retry_index = (
@@ -4185,6 +4210,34 @@ def _is_operational_failure(exc: BaseException) -> bool:
     return False
 
 
+def _unified_failure_metadata(exc: BaseException) -> dict[str, Any]:
+    """Read only bounded diagnostics carried across the execution boundary."""
+
+    current: Optional[BaseException] = exc
+    visited: set[int] = set()
+    while isinstance(current, BaseException) and id(current) not in visited:
+        visited.add(id(current))
+        code = str(getattr(current, "unified_error_code", "") or "").strip().lower()
+        if code:
+            return _failure_metadata(
+                {
+                    "error_code": code,
+                    "error_round": getattr(current, "unified_error_round", 0),
+                    "error_repair": getattr(current, "unified_repair_type", "none"),
+                }
+            )
+        current = current.__cause__ or current.__context__
+    return {}
+
+
+def _unified_completion_reason(error_code: str) -> str:
+    if error_code in {"invalid_output", "research_limit_exceeded"}:
+        return "unified_agent_contract_failure"
+    if error_code == "research_execution_failed":
+        return "unified_agent_research_failure"
+    return "unified_agent_unavailable"
+
+
 def _is_classification_contract_failure(exc: BaseException) -> bool:
     if isinstance(
         exc,
@@ -4721,7 +4774,7 @@ def _run_job(client_id: str, job_id: str) -> None:
     if _job_deadline_expired(job):
         _complete_without_draft(
             job,
-            warning="O limite total da pesquisa foi atingido; foi gerado um rascunho neutro editavel.",
+            warning="O limite total da pesquisa foi atingido; nenhum rascunho foi disponibilizado.",
             completion_reason="execution_deadline_reached",
         )
         return
@@ -4730,7 +4783,7 @@ def _run_job(client_id: str, job_id: str) -> None:
     if int(job["attempt_count"]) > MAX_TOTAL_ATTEMPTS:
         _complete_without_draft(
             job,
-            warning="O limite total de tentativas foi atingido; foi gerado um rascunho neutro editavel.",
+            warning="O limite total de tentativas foi atingido; nenhum rascunho foi disponibilizado.",
             completion_reason="total_attempt_limit_reached",
         )
         return
@@ -4971,8 +5024,7 @@ def _run_job(client_id: str, job_id: str) -> None:
             _complete_without_draft(
                 job,
                 warning=(
-                    "A classificacao permaneceu inconclusiva; foi gerado um rascunho seguro "
-                    "editavel para revisao."
+                    "A classificacao permaneceu inconclusiva; nenhum rascunho foi disponibilizado."
                 ),
                 completion_reason="classification_inconclusive",
                 fallback_context=(fallback_context if isinstance(fallback_context, dict) else None),
@@ -4991,7 +5043,29 @@ def _run_job(client_id: str, job_id: str) -> None:
                 deadline_reached=False,
             )
             return
-        logger.warning("[PPV CODEX] evento=executar_job status=erro tipo=%s", type(exc).__name__)
+        unified_failure = _unified_failure_metadata(exc)
+        if unified_failure:
+            logger.warning(
+                "[PPV CODEX] evento=agente_unificado status=erro codigo=%s rodada=%s reparo=%s",
+                unified_failure["error_code"],
+                unified_failure["error_round"],
+                unified_failure["error_repair"],
+            )
+        else:
+            logger.warning("[PPV CODEX] evento=executar_job status=erro tipo=%s", type(exc).__name__)
+        if unified_failure and not isinstance(exc, PerguntasIAProviderIndisponivel):
+            error_code = str(unified_failure.get("error_code") or "unified_agent_error")
+            _complete_without_draft(
+                job,
+                warning=(
+                    "O agente unificado nao concluiu uma resposta valida. "
+                    "Revise o codigo operacional antes de gerar novamente."
+                ),
+                completion_reason=_unified_completion_reason(error_code),
+                deadline_reached=False,
+                error_metadata=unified_failure,
+            )
+            return
         if _is_response_policy_failure(exc):
             _complete_with_best_available(
                 job,
@@ -5004,7 +5078,7 @@ def _run_job(client_id: str, job_id: str) -> None:
                 empty_completion_reason="response_policy_violation",
                 empty_warning=(
                     "Nenhuma tentativa passou integralmente pelas regras de seguranca; "
-                    "foi gerado um rascunho conservador para revisao."
+                    "nenhum rascunho foi disponibilizado."
                 ),
             )
             return
@@ -5013,7 +5087,7 @@ def _run_job(client_id: str, job_id: str) -> None:
                 job,
                 warning=(
                     "Classificacao estruturada da IA indisponivel apos a regeneracao controlada; "
-                    "foi gerado um rascunho neutro editavel."
+                    "nenhum rascunho foi disponibilizado."
                 ),
                 completion_reason="classification_contract_violation",
                 fallback_context=(fallback_context if isinstance(fallback_context, dict) else None),
@@ -5023,7 +5097,7 @@ def _run_job(client_id: str, job_id: str) -> None:
         if not _is_operational_failure(exc):
             _complete_without_draft(
                 job,
-                warning="A pesquisa encontrou uma violacao de contrato interno; foi gerado um rascunho neutro editavel.",
+                warning="A execucao encontrou uma violacao de contrato interno; nenhum rascunho foi disponibilizado.",
                 completion_reason="non_operational_failure",
                 fallback_context=(fallback_context if isinstance(fallback_context, dict) else None),
                 deadline_reached=False,
@@ -5039,8 +5113,9 @@ def _run_job(client_id: str, job_id: str) -> None:
         ):
             _complete_without_draft(
                 job,
-                warning="O limite de falhas operacionais foi atingido; foi gerado um rascunho neutro editavel.",
+                warning="O limite de falhas operacionais foi atingido; nenhum rascunho foi disponibilizado.",
                 completion_reason="operational_retry_exhausted",
+                error_metadata=unified_failure,
             )
             return
         retry_job = _persist_retry(
@@ -5048,6 +5123,7 @@ def _run_job(client_id: str, job_id: str) -> None:
             error=str(getattr(exc, "reason", "") or "provider_unavailable")[:120],
             warnings=["Falha operacional temporaria; uma nova tentativa sera executada."],
             retry_kind="operational",
+            error_metadata=unified_failure,
         )
         if str(retry_job.get("status") or "") == "cancelled" or retry_job.get("cancel_requested"):
             return
@@ -5149,7 +5225,7 @@ def recover_pending_jobs() -> None:
             if str(job.get("status") or "") == "failed":
                 _complete_without_draft(
                     job,
-                    warning="Falha anterior encerrada pela politica limitada; foi gerado um rascunho neutro editavel.",
+                    warning="Falha anterior encerrada pela politica limitada; nenhum rascunho foi disponibilizado.",
                     completion_reason="legacy_failed_job_closed",
                 )
                 continue

@@ -385,6 +385,7 @@ class _PerguntasVertexGeminiV2Client:
         return GeneralBindings(
             context_hub_tool=_perguntas_ia_context_hub_tool,
             web_tool=_ia_agent_perguntas_web_tool,
+            product_identity_tool=_ia_agent_perguntas_product_identity_web_tool,
             alternative_tool=_find_same_store_compatible_alternative,
             listing_tool=resolve_runtime_adapter("tools", "mercado_livre_listing", marketplace_listing_query),
             product_tool=resolve_runtime_adapter("tools", "product_data", _ia_tool_get_product_data),

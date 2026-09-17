@@ -24,12 +24,14 @@ _COMMERCIAL_STATES = frozenset(
     {"fits", "variant", "partial", "insufficient", "incompatible", "not_applicable"}
 )
 _MISSING_FACT_OWNERS = frozenset({"buyer", "internal", "none"})
+_EVIDENCE_BASES = frozenset({"exact_sku", "manufacturer_model", "technical_consensus", "none"})
 UNIFIED_RESEARCH_TYPES = frozenset(
     {
         "listing",
         "internal_catalog",
         "bling",
         "context_hub",
+        "product_identity_web",
         "technical_web",
         "same_store_listing",
         "order",
@@ -59,6 +61,8 @@ _OUTPUT_KEYS = frozenset(
         "compatibility_analysis",
         "missing_fact_owner",
         "buyer_detail_needed",
+        "evidence_basis",
+        "evidence_refs",
     }
 )
 
@@ -131,6 +135,12 @@ UNIFIED_RESPONSE_AGENT_SCHEMA: dict[str, Any] = {
         "compatibility_analysis": _UNIFIED_COMPATIBILITY_SCHEMA,
         "missing_fact_owner": {"type": "string", "enum": sorted(_MISSING_FACT_OWNERS)},
         "buyer_detail_needed": {"type": "string", "maxLength": 600},
+        "evidence_basis": {"type": "string", "enum": sorted(_EVIDENCE_BASES)},
+        "evidence_refs": {
+            "type": "array",
+            "maxItems": 24,
+            "items": {"type": "string", "maxLength": 1000},
+        },
     },
 }
 
@@ -219,7 +229,12 @@ def _validate_compatibility(value: object) -> dict[str, Any] | None:
     }
 
 
-def _validate_turn(value: object, *, flow: UnifiedFlow) -> dict[str, Any]:
+def _validate_turn(
+    value: object,
+    *,
+    flow: UnifiedFlow,
+    research_budget_available: bool,
+) -> dict[str, Any]:
     if not isinstance(value, Mapping) or not value or frozenset(value) != _OUTPUT_KEYS:
         raise _operational_error("invalid_output", "unified agent returned an invalid output contract")
 
@@ -232,6 +247,8 @@ def _validate_turn(value: object, *, flow: UnifiedFlow) -> dict[str, Any]:
     commercial_state = value.get("commercial_state")
     missing_fact_owner = value.get("missing_fact_owner")
     buyer_detail_needed = value.get("buyer_detail_needed")
+    evidence_basis = value.get("evidence_basis")
+    evidence_refs = value.get("evidence_refs")
     answer = value.get("answer")
     requests = _validate_research_requests(value.get("research_requests"))
     compatibility = _validate_compatibility(value.get("compatibility_analysis"))
@@ -256,21 +273,40 @@ def _validate_turn(value: object, *, flow: UnifiedFlow) -> dict[str, Any]:
             compatibility is not None,
             missing_fact_owner in _MISSING_FACT_OWNERS,
             _is_text(buyer_detail_needed),
+            evidence_basis in _EVIDENCE_BASES,
+            _validate_text_list(evidence_refs, maximum=24),
         )
     )
     if not shape_valid:
         raise _operational_error("invalid_output", "unified agent returned invalid field values")
 
-    if action == "research" and (not requests or str(answer).strip()):
-        raise _operational_error("invalid_output", "research turn must contain requests and no public answer")
-    if action == "answer" and (requests or not str(answer).strip()):
-        raise _operational_error("invalid_output", "answer turn must contain a public answer and no requests")
+    if action == "research":
+        if not requests:
+            raise _operational_error("invalid_output", "research turn must contain requests")
+        # A model may include a premature public draft while correctly asking
+        # for decisive evidence.  The requests are useful; the unverified draft
+        # is not.  Keep the former and discard the latter.
+        answer = ""
+    elif requests and research_budget_available:
+        # Treat a nominal answer that still asks for evidence as a research
+        # turn.  This preserves a valid read-only request instead of failing
+        # the whole conversation on a recoverable action mismatch.
+        action = "research"
+        answer = ""
+    else:
+        if not str(answer).strip():
+            raise _operational_error("invalid_output", "answer turn must contain a public answer")
+        # Once the research budget is exhausted, an otherwise valid final
+        # answer wins over stale requests accidentally left in the payload.
+        requests = []
     if missing_fact_owner == "buyer" and not str(buyer_detail_needed).strip():
         raise _operational_error("invalid_output", "buyer-owned gap must identify the decisive buyer detail")
     if missing_fact_owner != "buyer" and str(buyer_detail_needed).strip():
         raise _operational_error("invalid_output", "buyer detail is only allowed for buyer-owned gaps")
     if action == "answer" and missing_fact_owner == "internal" and not requires_human_review:
         raise _operational_error("invalid_output", "internal fact gaps require human review")
+    if action == "answer" and evidence_basis == "technical_consensus" and not requires_human_review:
+        raise _operational_error("invalid_output", "technical consensus requires human review")
 
     return {
         "action": str(action),
@@ -287,6 +323,8 @@ def _validate_turn(value: object, *, flow: UnifiedFlow) -> dict[str, Any]:
         "compatibility_analysis": compatibility,
         "missing_fact_owner": str(missing_fact_owner),
         "buyer_detail_needed": str(buyer_detail_needed),
+        "evidence_basis": str(evidence_basis),
+        "evidence_refs": list(evidence_refs or []),
     }
 
 
@@ -301,12 +339,20 @@ def _turn_prompt(
     tool_results: Sequence[Mapping[str, Any]],
     force_answer: bool,
     research_rounds_used: int,
+    repair_output: bool = False,
 ) -> str:
     final_instruction = (
         "As duas rodadas permitidas terminaram. Retorne action=answer. Se faltar um fato interno, "
         "redija somente um rascunho cauteloso com os fatos comprovados e marque requires_human_review=true."
         if force_answer
         else "Retorne action=research somente se uma consulta read-only concreta ainda for decisiva."
+    )
+    repair_instruction = (
+        " A saida anterior violou o contrato. Corrija somente a estrutura nesta mesma conversa; "
+        "esta correcao nao e uma rodada de pesquisa. Preserve o raciocinio valido, nao invente fatos "
+        "e devolva todos os campos exigidos."
+        if repair_output
+        else ""
     )
     return (
         "AGENTE UNICO DE RESPOSTA DO MERCADO LIVRE. Classifique a pergunta, decomponha todas as "
@@ -317,11 +363,20 @@ def _turn_prompt(
         "response_signature e a response_policy materializadas no contexto pelo servidor. Se o comprador puder "
         "resolver a lacuna, faca uma unica pergunta natural e preencha buyer_detail_needed. Se a lacuna "
         "for interna, nao transfira a investigacao ao comprador. "
-        f"O flow imposto pelo servidor e {flow}. {final_instruction} "
+        f"O flow imposto pelo servidor e {flow}. {final_instruction}{repair_instruction} "
+        "Em action=research, forneca pelo menos um research_request valido e deixe answer vazio. "
+        "Em action=answer, deixe research_requests vazio e forneca answer. "
         "Responda exclusivamente no contrato JSON fechado fornecido pelo servidor, com todos os campos: "
         "action, flow, category, subquestions, research_requests, answer, confidence, reason, "
         "requires_human_review, decision, commercial_state, compatibility_analysis, missing_fact_owner e "
-        "buyer_detail_needed. Cada research_request tem exatamente type, query, purpose e preferred_authority. "
+        "buyer_detail_needed, evidence_basis e evidence_refs. evidence_basis deve ser exact_sku quando a "
+        "fonte comprovar o SKU exato, manufacturer_model quando comprovar fabricante e modelo, "
+        "technical_consensus quando a conclusao depender da avaliacao de consenso entre fontes tecnicas, ou "
+        "none quando ainda nao houver base. evidence_refs deve listar somente referencias presentes nos "
+        "resultados acumulados; technical_consensus sempre exige requires_human_review=true. "
+        "Quando as fontes distinguirem condutor flexivel de condutor rigido, preserve essa diferenca "
+        "como condicao natural da resposta, sem combinar os limites. "
+        "Cada research_request tem exatamente type, query, purpose e preferred_authority. "
         "compatibility_analysis tem exatamente applicable, target, decision, condition, missing_fields e "
         "evidence_refs, usando applicable=false e campos vazios quando nao se aplicar. Tipos permitidos em "
         f"research_requests.type: {', '.join(sorted(UNIFIED_RESEARCH_TYPES))}.\n\n"
@@ -340,6 +395,64 @@ def _validated_research_results(value: object) -> list[dict[str, Any]]:
             "read-only research returned an invalid result contract",
         )
     return [dict(item) for item in value]
+
+
+def _research_result_is_usable(value: Mapping[str, Any]) -> bool:
+    if str(value.get("status") or "").strip().lower() in {"failed", "unavailable", "timeout"}:
+        return False
+    result = value.get("result")
+    if not isinstance(result, Mapping):
+        return bool(value)
+    if (
+        result.get("unavailable") is True
+        or result.get("available") is False
+        or result.get("timeout") is True
+        or result.get("error")
+    ):
+        return False
+    if result.get("found") is False:
+        evidence_fields = (
+            "context", "results", "matches", "sources", "research_passages",
+            "product_research_evidence", "verified_product_evidence",
+        )
+        return any(result.get(field) not in (None, "", [], {}) for field in evidence_fields)
+    return True
+
+
+def _invoke_repair(
+    *,
+    flow: UnifiedFlow,
+    context: Mapping[str, Any],
+    accumulated_results: list[dict[str, Any]],
+    force_answer: bool,
+    research_rounds_used: int,
+    invoke_turn: InvokeTurn,
+) -> Mapping[str, Any]:
+    repair_prompt = _turn_prompt(
+        flow=flow,
+        context=context,
+        tool_results=accumulated_results,
+        force_answer=force_answer,
+        research_rounds_used=research_rounds_used,
+        repair_output=True,
+    )
+    try:
+        return invoke_turn(repair_prompt, copy.deepcopy(accumulated_results), force_answer)
+    except UnifiedResponseAgentOperationalError:
+        raise
+    except ValueError as exc:
+        if str(exc) == "invalid_structured_ai_payload":
+            raise _operational_error(
+                "invalid_output",
+                "unified agent returned invalid output after its repair attempt",
+            ) from exc
+        raise _operational_error(
+            "turn_execution_failed", "unified agent repair turn failed",
+        ) from exc
+    except Exception as exc:
+        raise _operational_error(
+            "turn_execution_failed", "unified agent repair turn failed",
+        ) from exc
 
 
 def run_unified_response_agent(
@@ -370,6 +483,7 @@ def run_unified_response_agent(
 
     accumulated_results: list[dict[str, Any]] = []
     research_rounds_used = 0
+    repair_used = False
     while True:
         force_answer = research_rounds_used >= max_research_rounds
         prompt = _turn_prompt(
@@ -379,13 +493,51 @@ def run_unified_response_agent(
             force_answer=force_answer,
             research_rounds_used=research_rounds_used,
         )
+
+        def invoke_repair_turn() -> Mapping[str, Any]:
+            nonlocal repair_used
+            if repair_used:
+                raise _operational_error(
+                    "invalid_output",
+                    "unified agent returned invalid output after its repair attempt",
+                )
+            repair_used = True
+            return _invoke_repair(
+                flow=flow,
+                context=context,
+                accumulated_results=accumulated_results,
+                force_answer=force_answer,
+                research_rounds_used=research_rounds_used,
+                invoke_turn=invoke_turn,
+            )
+
         try:
             raw_turn = invoke_turn(prompt, copy.deepcopy(accumulated_results), force_answer)
-        except UnifiedResponseAgentOperationalError:
-            raise
+        except UnifiedResponseAgentOperationalError as exc:
+            if exc.code != "invalid_output":
+                raise
+            raw_turn = invoke_repair_turn()
+        except ValueError as exc:
+            if str(exc) != "invalid_structured_ai_payload":
+                raise _operational_error("turn_execution_failed", "unified agent turn failed") from exc
+            raw_turn = invoke_repair_turn()
         except Exception as exc:
             raise _operational_error("turn_execution_failed", "unified agent turn failed") from exc
-        turn = _validate_turn(raw_turn, flow=flow)
+        try:
+            turn = _validate_turn(
+                raw_turn,
+                flow=flow,
+                research_budget_available=not force_answer,
+            )
+        except UnifiedResponseAgentOperationalError as exc:
+            if exc.code != "invalid_output" or repair_used:
+                raise
+            repaired_turn = invoke_repair_turn()
+            turn = _validate_turn(
+                repaired_turn,
+                flow=flow,
+                research_budget_available=not force_answer,
+            )
         if turn["action"] == "answer":
             return turn
         if force_answer:
@@ -402,17 +554,20 @@ def run_unified_response_agent(
             )
         except UnifiedResponseAgentOperationalError:
             raise
-        except Exception:
-            # Tool failures are evidence gaps, not permission to invent an
-            # answer.  Return the failure to the same model conversation so it
-            # can retry once or prepare the required cautious human-review
-            # draft after the research budget is exhausted.
-            raw_results = [{
-                "round": research_rounds_used,
-                "status": "failed",
-                "reason": "research_unavailable",
-            }]
-        accumulated_results.extend(_validated_research_results(raw_results))
+        except Exception as exc:
+            raise _operational_error(
+                "research_execution_failed",
+                "read-only research was unavailable",
+            ) from exc
+        validated_results = _validated_research_results(raw_results)
+        if not validated_results or not any(
+            _research_result_is_usable(item) for item in validated_results
+        ):
+            raise _operational_error(
+                "research_execution_failed",
+                "read-only research returned no usable evidence",
+            )
+        accumulated_results.extend(validated_results)
 
 
 __all__ = [

@@ -47,6 +47,7 @@ class CompatibilityBindings:
 class GeneralBindings:
     context_hub_tool: Callable[..., dict]
     web_tool: Callable[..., dict]
+    product_identity_tool: Optional[Callable[..., dict]] = None
     alternative_tool: Optional[Callable[..., dict]] = None
     listing_tool: Optional[Callable[..., dict]] = None
     product_tool: Optional[Callable[..., dict]] = None
