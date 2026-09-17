@@ -11,6 +11,8 @@ import copy
 import json
 from typing import Any, Literal, Mapping, Protocol, Sequence
 
+from ml_questions_gemini.public_reply_policy import PUBLIC_REPLY_CONCILIATION_GUIDANCE
+
 
 UNIFIED_RESPONSE_AGENT_STAGE = "unified_response_agent"
 MAX_UNIFIED_RESEARCH_ROUNDS = 2
@@ -341,6 +343,11 @@ def _turn_prompt(
     research_rounds_used: int,
     repair_output: bool = False,
 ) -> str:
+    general_guidance = (
+        "ORIENTACAO_GERAL_PRE_VENDA_CONFIAVEL: " + PUBLIC_REPLY_CONCILIATION_GUIDANCE
+        if flow == "pre_sale"
+        else ""
+    )
     final_instruction = (
         "As duas rodadas permitidas terminaram. Retorne action=answer. Se faltar um fato interno, "
         "redija somente um rascunho cauteloso com os fatos comprovados e marque requires_human_review=true."
@@ -363,6 +370,7 @@ def _turn_prompt(
         "response_signature e a response_policy materializadas no contexto pelo servidor. Se o comprador puder "
         "resolver a lacuna, faca uma unica pergunta natural e preencha buyer_detail_needed. Se a lacuna "
         "for interna, nao transfira a investigacao ao comprador. "
+        f"{general_guidance} "
         f"O flow imposto pelo servidor e {flow}. {final_instruction}{repair_instruction} "
         "Em action=research, forneca pelo menos um research_request valido e deixe answer vazio. "
         "Em action=answer, deixe research_requests vazio e forneca answer. "

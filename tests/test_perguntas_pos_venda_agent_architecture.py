@@ -40,8 +40,8 @@ CONTRACT_HASHES = {
     "routes": "77bdca722f74a16061e65ea83490c374f16cf1421d697f5cbc9d3af7cc273aea",
     "aliases": "f149aa04a166eacd3f942889d2495dc5a23be9bb3317160d97e247ae834aa68e",
     "schema": "500b7ccbcedc02d3a254e8114e974355be5635d2f01bd7dc929b212643cb254a",
-    "policy": "8d9dae7d9107e06c83cecb9945ffc5609abf877e2116861b0c490c5760a78a56",
-    "prompts": "9eadfa084da8f532cec7399cf038b064f200aa4d46ddb7ba5f6a33180dab0ff6",
+    "policy": "afc88102991cfe00ab4a2ca8b19ac2c466998e588bd0d905a3b5ebdbf55d1be9",
+    "prompts": "b82889bea4426d356829cef422fcc33a75f79d560ad186c721f8ea4351bfb21c",
     "exports": "fbd5bf89bb3a7d13d32c55dda0a0b89996c3c6a4828f94a250c94c5f18b74550",
 }
 LAYERS = {

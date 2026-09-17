@@ -155,7 +155,7 @@ from ml_questions_gemini.public_reply_policy import PUBLIC_REPLY_EVIDENCE_GUIDAN
 logger = logging.getLogger("jk_sistema")
 
 
-_PERGUNTAS_IA_RESPONSE_POLICY_VERSION = "jk_ppv_response_policy_v11"
+_PERGUNTAS_IA_RESPONSE_POLICY_VERSION = "jk_ppv_response_policy_v12"
 _PERGUNTAS_IA_SELLER_METHOD_VERSION = "seller-conversion-v1"
 _PERGUNTAS_IA_COMMERCIAL_STATE_POLICY = {
     "fits": {"cta": "direct_purchase", "benefit": True, "urgency": "official_current_only"},

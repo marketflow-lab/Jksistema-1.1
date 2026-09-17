@@ -288,7 +288,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         self.assertIn("context_hub_search", payload["allowed_tools"])
         self.assertIn("web_search_question_context", payload["allowed_tools"])
         self.assertEqual(payload["app_guidance_truth_class"], "versioned_technical")
-        self.assertEqual(payload["app_guidance_source"], "jk_ppv_response_policy_v11")
+        self.assertEqual(payload["app_guidance_source"], "jk_ppv_response_policy_v12")
         self.assertEqual(payload["commercial_method_version"], "seller-conversion-v1")
         self.assertEqual(payload["commercial_state_policy"]["fits"]["cta"], "direct_purchase")
         self.assertEqual(payload["commercial_state_policy"]["insufficient"]["cta"], "none")

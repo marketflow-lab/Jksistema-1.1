@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from ml_questions_gemini.public_reply_policy import PUBLIC_REPLY_CONCILIATION_GUIDANCE
 
 from backend.modules.perguntas_pos_venda.ai import provider_transport
 from backend.modules.perguntas_pos_venda.ai.unified_response_agent import (
@@ -89,6 +90,43 @@ def test_direct_answer_imposes_server_flow_and_skips_research():
     assert calls[0][1:] == ([], False)
     assert "tenant-server" in calls[0][0]
     assert "sku-server" in calls[0][0]
+
+
+def test_pre_sale_prompt_merges_general_guidance_and_preserves_specific_policy():
+    prompts: list[str] = []
+    specific_policy = "ORIENTACAO ESPECIFICA DA LOJA E DO SKU"
+
+    result = run_unified_response_agent(
+        flow="pre_sale",
+        context={
+            "response_policy": specific_policy,
+            "buyer_question_chat": [{"role": "seller", "text": "Resposta anterior."}],
+        },
+        invoke_turn=lambda prompt, _results, _force: prompts.append(prompt) or _answer(),
+        execute_research=lambda _requests, _round: pytest.fail("research must not run"),
+    )
+
+    assert result["action"] == "answer"
+    assert len(prompts) == 1
+    assert PUBLIC_REPLY_CONCILIATION_GUIDANCE in prompts[0]
+    assert specific_policy in prompts[0]
+    assert "ao mesmo comprador, no mesmo anuncio" in prompts[0]
+    assert "nunca misture os historicos dos compradores" in prompts[0]
+
+
+def test_post_sale_prompt_does_not_receive_pre_sale_general_guidance():
+    prompts: list[str] = []
+
+    result = run_unified_response_agent(
+        flow="post_sale",
+        context={"response_policy": "POLITICA POS-VENDA"},
+        invoke_turn=lambda prompt, _results, _force: prompts.append(prompt) or _answer(),
+        execute_research=lambda _requests, _round: pytest.fail("research must not run"),
+    )
+
+    assert result["flow"] == "post_sale"
+    assert len(prompts) == 1
+    assert PUBLIC_REPLY_CONCILIATION_GUIDANCE not in prompts[0]
 
 
 def test_two_research_rounds_reuse_callback_and_resend_full_accumulated_state():

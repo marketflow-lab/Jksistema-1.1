@@ -84,7 +84,7 @@ PUBLIC_SUBQUESTION_INTENTS = frozenset({
     "general",
     "post_sale",
 })
-PROMPT_VERSION = "jk_ml_customer_reply_codex_v19"
+PROMPT_VERSION = "jk_ml_customer_reply_codex_v20"
 SCHEMA_VERSION = "5.3"
 QUEUE_POLICY_VERSION = "jk_ppv_queue_v3"
 VEHICLE_IDENTITY_POLICY = "jk_public_vin_decode_v1"
@@ -101,7 +101,7 @@ PROMPT_HASH = hashlib.sha256(
         "codex-native|public-question-by-item-buyer|post-sale-by-pack|"
         "evidence-envelope-v3|bounded-public-research|ai-only-subquestions|"
         "classification-contract-v3|continuity-repair-v1|typed-provider-failures|"
-        "contextual-fallback-v1|response-policy-v11|public-reply-evidence-guidance-v2|sku-reference-fitment-links-v1|official-marketplace-policy-research-v1|compatibility-coverage-advisory-v1|"
+        "contextual-fallback-v1|response-policy-v12|public-reply-evidence-guidance-v3|sku-reference-fitment-links-v1|official-marketplace-policy-research-v1|compatibility-coverage-advisory-v1|"
         "compatibility-interface-evidence|seller-conversion-v1|seller-profile-v2|priority-queue-v3|"
         "public-technical-research-sol-high-v1|public-research-resilience-v2|"
         f"vehicle-identity-policy:{VEHICLE_IDENTITY_POLICY}|"
@@ -121,7 +121,7 @@ PROMPT_HASH = hashlib.sha256(
         "canonical-document-full|guidance-full|operational-context-full|"
         "question-history-full|integral-envelope-full|"
         "stage-prompt-full|global-transport-full|"
-        "unified-response-agent-v19|structured-recovery-v1|blocked-without-draft-v1|"
+        "unified-response-agent-v20|structured-recovery-v1|blocked-without-draft-v1|"
         "conditional-public-web-v1|oem-characteristics-inheritance-v1|new-product-condition-v1|"
         "literal-store-signature-v1|target-variant-universe-research-v1|"
         "six-stage-sol-high|two-round-gap-research|directed-reference-relations|"

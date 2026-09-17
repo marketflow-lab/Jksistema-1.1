@@ -23,7 +23,10 @@ from backend.modules.perguntas_pos_venda.ai.technical_resolution import (
 )
 from backend.modules.perguntas_pos_venda.ai import execution, tools
 from ml_questions_gemini.prompt_builder import PromptBuilder
-from ml_questions_gemini.public_reply_policy import PUBLIC_REPLY_EVIDENCE_GUIDANCE
+from ml_questions_gemini.public_reply_policy import (
+    PUBLIC_REPLY_CONCILIATION_GUIDANCE,
+    PUBLIC_REPLY_EVIDENCE_GUIDANCE,
+)
 from ml_questions_gemini.schemas import AIAnswer, ListingSnapshot, QuestionCategory, QuestionContext, SellerRules
 
 
@@ -210,9 +213,18 @@ def test_factual_revision_retains_guidance_and_preserves_candidate_as_untrusted_
     assert "assinatura da loja presente no candidato anterior" in prompt
 
 
-def test_v11_prompt_contract_distinguishes_listing_state_part_identity_and_fitment():
+def test_v12_prompt_contract_merges_general_reply_guidance_without_removing_evidence_rules():
     policy = PUBLIC_REPLY_EVIDENCE_GUIDANCE
-    assert "PUBLICAS v11" in policy
+    assert "PUBLICAS v12" in policy
+    assert PUBLIC_REPLY_CONCILIATION_GUIDANCE in policy
+    assert "mesma unidade, terminologia e nivel de detalhe" in policy
+    assert "nao faca conversoes sem evidencia tecnica" in policy
+    assert "ao mesmo comprador, no mesmo anuncio" in policy
+    assert "mesma loja, produto, SKU e variacao" in policy
+    assert "nunca misture os historicos dos compradores" in policy
+    assert "Somente quando um dado do comprador for indispensavel" in policy
+    assert "Preserve e combine as orientacoes especificas aplicaveis" in policy
+    assert "diga apenas que ainda nao e possivel confirmar a aplicacao" not in policy
     assert "A API oficial do Mercado Livre comprova o conteudo e o estado atual do anuncio" in policy
     assert "atributos tecnicos preenchidos pelo vendedor nao se tornam confirmacao do fabricante" in policy
     assert "Verifique separadamente dois vinculos" in policy
@@ -232,7 +244,7 @@ def test_internal_identity_gap_guidance_reaches_resolver_and_writer_without_forc
     question = "Serve na BMW 318d F31 Touring 2013?"
     packet = {**_packet(), "question": {"text": question}} if integral else {}
     decision = {"decision": "insufficient", "reason": "missing_sku_reference_link"}
-    literal = "Ainda não é possível confirmar a aplicação deste par. " + SIGNATURE
+    literal = "A ficha técnica disponível cobre somente as configurações nela identificadas. " + SIGNATURE
     final = AIAnswer(answer=literal, category="compatibility", requires_human_review=False)
     writer_prompts = []
     def capture(prompt, *_args, **_kwargs):
@@ -256,11 +268,16 @@ def test_internal_identity_gap_guidance_reaches_resolver_and_writer_without_forc
     for prompt in (resolver_prompt, writer_prompts[0]):
         assert "somente se uma informacao do comprador resolver a lacuna" in prompt
         assert "nem transfira ao comprador a tarefa de identificar o estoque" in prompt
-        assert "preserve os demais fatos conhecidos e nao invente pergunta" in prompt
+        assert "apresente somente os fatos sustentados e as condicoes concretas" in prompt
+        assert "sem negativa generica e sem inventar pergunta" in prompt
         assert "a resposta realmente resolver uma lacuna dele" in prompt
     assert result is final
     assert result.answer == literal
     assert "?" not in result.answer
+    normalized_answer = result.answer.lower()
+    assert "não é possível assegurar" not in normalized_answer
+    assert "os dados não confirmam" not in normalized_answer
+    assert "essa informação não está confirmada" not in normalized_answer
 
 
 @pytest.mark.parametrize("integral", [False, True], ids=["legacy", "sku-context"])
@@ -286,13 +303,13 @@ def test_planner_and_critic_apply_two_links_before_generation_or_review(integral
     assert "pedir codigo original quando somente geracao ou ano/carroceria" in critic
 
 
-def test_v11_hash_rejects_cached_v10_draft_without_changing_public_contracts():
+def test_v12_hash_rejects_cached_v11_draft_without_changing_public_contracts():
     from backend.services import perguntas_pos_venda_codex as codex
 
     current = {
-        "prompt_version": "jk_ml_customer_reply_codex_v18", "schema_version": "5.2",
+        "prompt_version": codex.PROMPT_VERSION, "schema_version": codex.SCHEMA_VERSION,
         "queue_policy_version": "jk_ppv_queue_v3", "prompt_hash": codex.PROMPT_HASH,
     }
     assert codex._job_contract_current(current)
-    prior_policy = {**current, "prompt_hash": "2318e116d6ca5dcf8e9586362718389c2632ea213130c4858f8fc37006e27660"}
+    prior_policy = {**current, "prompt_version": "jk_ml_customer_reply_codex_v19"}
     assert not codex._job_contract_current(prior_policy)
