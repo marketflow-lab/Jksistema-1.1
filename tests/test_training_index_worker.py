@@ -236,7 +236,7 @@ def test_store_rename_updates_revision_with_same_scope_identity_and_cache(root):
     assert current["expected_revision"] == canonical["editorial"]["revision"]
     assert current["notas_sku"] == original["notas_sku"]
 
-def test_external_write_debounce_waits_for_stable_note_and_preserves_previous_generation(root):
+def test_external_write_debounce_waits_for_stable_note_and_preserves_previous_generation(root, monkeypatch):
     import threading
     saved = save(root, "Initial")
     cache = worker.NoteCache()
@@ -245,9 +245,24 @@ def test_external_write_debounce_waits_for_stable_note_and_preserves_previous_ge
     target = note_path(root, saved)
     raw = target.read_text(encoding="utf-8")
     target.write_text(raw.replace("Initial", "Partial"), encoding="utf-8")
+    partial_scanned = threading.Event()
+    finished_written = threading.Event()
+    original_scan = cache.scan
+
+    def synchronized_scan(*args, **kwargs):
+        result = original_scan(*args, **kwargs)
+        if not partial_scanned.is_set():
+            partial_scanned.set()
+            assert finished_written.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(cache, "scan", synchronized_scan)
+
     def finish_write():
-        time.sleep(0.02)
-        target.write_text(raw.replace("Initial", "Finished"), encoding="utf-8")
+        if partial_scanned.wait(timeout=5):
+            target.write_text(raw.replace("Initial", "Finished"), encoding="utf-8")
+            finished_written.set()
+
     writer = threading.Thread(target=finish_write)
     writer.start()
     try:

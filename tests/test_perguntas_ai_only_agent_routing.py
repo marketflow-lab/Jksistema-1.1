@@ -12,11 +12,6 @@ from backend.modules.perguntas_pos_venda.ai import queries as agent_queries
 from backend.modules.perguntas_pos_venda.ai import runtime as agent_runtime
 from backend.modules.perguntas_pos_venda.ai import tools as agent_tools
 from backend.services import perguntas_pos_venda_agent as agent_facade
-from ml_questions_gemini.schemas import AIAnswer, QuestionCategory, ValidationResult
-from ml_questions_gemini.config import GeminiQuestionsSettings
-from ml_questions_gemini.adapters import context_from_agent_input
-from ml_questions_gemini.orchestrator import QuestionAnswerOrchestrator
-from ml_questions_gemini.validator import AnswerValidator
 
 
 def _classification(*, category: str, compatibility: dict, web: bool = False) -> dict:
@@ -603,7 +598,7 @@ def test_cloud_regulated_prompt_disables_commercial_method_and_escapes_injection
     assert json.loads(encoded_draft) == draft
 
 
-def test_missing_ai_category_receives_advisory_default_and_reaches_pipeline(monkeypatch) -> None:
+def test_missing_ai_category_is_left_for_unified_agent(monkeypatch) -> None:
     # This routing test does not require backend_api global provider wiring.
     def configured_adapter(group, key, default):
         if group == "models" and key == "public_model":
@@ -626,41 +621,29 @@ def test_missing_ai_category_receives_advisory_default_and_reaches_pipeline(monk
     )
 
     assert configured["agent_input"] is agent_input
-    assert agent_input["intent"]["categoria"] == "unknown"
-    assert agent_input["context"]["classificacao_consultiva_status"] == "fallback"
+    assert agent_input["intent"]["categoria"] == ""
+    assert agent_input["_unified_response_flow"] == "pre_sale"
+    assert configured["flow"] == "pre_sale"
     assert "context_hub_search" in agent_inputs._perguntas_ia_allowed_tools_classificadas(agent_input)
 
 
-@pytest.mark.parametrize(
-    ("reason", "expected_exception"),
-    [
-        ("ai_classification_uncertain", agent_runtime.PerguntasIAClassificacaoInconclusiva),
-        ("prompt_injection", agent_runtime.PerguntasIASegurancaBloqueada),
-    ],
-)
-def test_orchestration_empty_unknown_has_typed_semantic_or_security_result(
-    monkeypatch,
-    reason,
-    expected_exception,
-) -> None:
+def test_orchestration_invalid_unified_output_has_typed_operational_result(monkeypatch) -> None:
     class FakeClient:
         def __init__(self, *_args, **_kwargs):
             self.model_usado = "model-test"
+            self.manual_review_required = False
+            self.unified_research_rounds = 0
 
-    class FakeOrchestrator:
-        def __init__(self, **_kwargs):
-            pass
+        def collect_unified_initial_context(self, _metadata):
+            return {}
 
-        def process(self, **_kwargs):
-            return SimpleNamespace(
-                answer="",
-                category=QuestionCategory.UNKNOWN,
-                reason=reason,
-                source="policy",
-            )
+        def invoke_unified_turn(self, *_args, **_kwargs):
+            raise AssertionError("o runner simulado deve controlar a falha")
+
+        def execute_unified_research(self, *_args, **_kwargs):
+            raise AssertionError("o runner simulado deve controlar a pesquisa")
 
     monkeypatch.setattr(agent_execution, "_PerguntasCodexV3Client", FakeClient)
-    monkeypatch.setattr(agent_execution, "QuestionAnswerOrchestrator", FakeOrchestrator)
     monkeypatch.setattr(
         agent_execution,
         "context_from_agent_input",
@@ -678,8 +661,13 @@ def test_orchestration_empty_unknown_has_typed_semantic_or_security_result(
     )
     monkeypatch.setattr(
         agent_execution,
-        "_perguntas_ia_intencao_agent",
-        lambda _input: {"categoria": "unknown"},
+        "run_unified_response_agent",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            agent_execution.UnifiedResponseAgentOperationalError(
+                "invalid_output",
+                "contrato unificado invalido",
+            )
+        ),
     )
     settings = SimpleNamespace(
         auto_publish_enabled=False,
@@ -689,7 +677,7 @@ def test_orchestration_empty_unknown_has_typed_semantic_or_security_result(
         whitelisted_domains=[],
     )
 
-    with pytest.raises(expected_exception):
+    with pytest.raises(agent_runtime.PerguntasIARespostaIndisponivel) as captured:
         agent_execution._perguntas_ia_execucao_orquestrar({
             "agent_input": {},
             "settings": settings,
@@ -697,28 +685,44 @@ def test_orchestration_empty_unknown_has_typed_semantic_or_security_result(
             "loja": "Loja",
             "model_req": "model-test",
             "reasoning": "medium",
+            "post_sale": False,
+            "flow": "pre_sale",
         })
+
+    assert captured.value.unified_error_code == "invalid_output"
+    assert captured.value.unified_repair_type == "structured_output"
 
 
 def test_orchestration_provider_timeout_has_typed_operational_result(monkeypatch) -> None:
     class FakeClient:
         def __init__(self, *_args, **_kwargs):
             self.model_usado = "model-test"
+            self.manual_review_required = False
+            self.unified_research_rounds = 0
 
-    class FakeOrchestrator:
-        def __init__(self, **_kwargs):
-            pass
+        def collect_unified_initial_context(self, _metadata):
+            return {}
 
-        def process(self, **_kwargs):
-            return SimpleNamespace(
-                answer="",
-                category=QuestionCategory.PRODUCT_FEATURE,
+        def invoke_unified_turn(self, *_args, **_kwargs):
+            raise AssertionError("o runner simulado deve controlar a falha")
+
+        def execute_unified_research(self, *_args, **_kwargs):
+            raise AssertionError("o runner simulado deve controlar a pesquisa")
+
+    def raise_provider_timeout(**_kwargs):
+        try:
+            raise agent_runtime.PerguntasIAProviderIndisponivel(
+                "provedor temporariamente indisponivel",
                 reason="provider_timeout",
-                source="gemini_error",
             )
+        except agent_runtime.PerguntasIAProviderIndisponivel as exc:
+            raise agent_execution.UnifiedResponseAgentOperationalError(
+                "turn_execution_failed",
+                "falha do provedor no turno unificado",
+            ) from exc
 
     monkeypatch.setattr(agent_execution, "_PerguntasCodexV3Client", FakeClient)
-    monkeypatch.setattr(agent_execution, "QuestionAnswerOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(agent_execution, "run_unified_response_agent", raise_provider_timeout)
     monkeypatch.setattr(
         agent_execution,
         "context_from_agent_input",
@@ -750,6 +754,8 @@ def test_orchestration_provider_timeout_has_typed_operational_result(monkeypatch
             "loja": "Loja",
             "model_req": "model-test",
             "reasoning": "medium",
+            "post_sale": False,
+            "flow": "pre_sale",
         })
 
     assert captured.value.reason == "provider_timeout"
@@ -771,24 +777,48 @@ def test_public_answer_with_four_sentences_is_preserved_without_answer_validator
             self.compatibility_analysis = {}
             self.codex_thread_id = "thread-public"
             self.evidence_records = []
+            self.manual_review_required = False
+            self.unified_research_rounds = 0
 
-        def generate(self, _prompt, _metadata):
-            return AIAnswer(
-                answer=answer,
-                confidence=0.95,
-                requires_human_review=True,
-                reason="evidence_confirmed",
-                validation=ValidationResult(True, [], 0.99),
-            )
+        def collect_unified_initial_context(self, _metadata):
+            return {}
+
+        def invoke_unified_turn(self, *_args, **_kwargs):
+            raise AssertionError("o runner simulado deve fornecer a resposta")
+
+        def execute_unified_research(self, *_args, **_kwargs):
+            raise AssertionError("o runner simulado deve fornecer a resposta")
 
     monkeypatch.setattr(agent, "_PerguntasCodexV3Client", FakeClient)
     monkeypatch.setattr(
-        AnswerValidator, "validate",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("resposta inspecionada")),
+        agent,
+        "run_unified_response_agent",
+        lambda **_kwargs: {
+            "action": "answer",
+            "flow": "pre_sale",
+            "category": "product_feature",
+            "subquestions": ["Como funciona?"],
+            "research_requests": [],
+            "answer": answer,
+            "confidence": 0.95,
+            "reason": "evidence_confirmed",
+            "requires_human_review": True,
+            "decision": "yes",
+            "commercial_state": "fits",
+            "compatibility_analysis": {
+                "applicable": False,
+                "target": "",
+                "decision": "not_applicable",
+                "condition": "",
+                "missing_fields": [],
+                "evidence_refs": [],
+            },
+            "missing_fact_owner": "none",
+            "buyer_detail_needed": "",
+            "evidence_basis": "exact_sku",
+            "evidence_refs": ["anuncio:MLB1"],
+        },
     )
-    monkeypatch.setattr(agent, "GeminiQuestionsSettings", GeminiQuestionsSettings, raising=False)
-    monkeypatch.setattr(agent, "QuestionAnswerOrchestrator", QuestionAnswerOrchestrator, raising=False)
-    monkeypatch.setattr(agent, "context_from_agent_input", context_from_agent_input, raising=False)
     monkeypatch.setattr(agent, "ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO", 2000, raising=False)
     monkeypatch.setattr(agent, "ML_POS_VENDA_LIMITE_SEGURO", 340, raising=False)
     monkeypatch.setattr(agent, "_perguntas_ia_fluxo_pos_venda", lambda _input: False, raising=False)

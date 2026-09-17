@@ -234,7 +234,7 @@ def test_post_sale_sends_complete_context_and_preserves_model_reply(monkeypatch)
         captured["message"] = payload.message
         return json.dumps({
             "action": "answer",
-            "flow": "pre_sale",
+            "flow": "post_sale",
             "category": "post_sale_support",
             "subquestions": ["Ajudar o comprador com o pedido."],
             "research_requests": [],
@@ -254,6 +254,8 @@ def test_post_sale_sends_complete_context_and_preserves_model_reply(monkeypatch)
             },
             "missing_fact_owner": "none",
             "buyer_detail_needed": "",
+            "evidence_basis": "exact_sku",
+            "evidence_refs": ["pedido:ORDER1"],
         }, ensure_ascii=False), model
 
     monkeypatch.setattr(post_sale_runtime.perguntas_agent_providers, "invoke_model", invoke)

@@ -2156,37 +2156,7 @@ def test_prompt_history_helper_removes_current_question_by_id_or_duplicate_text(
     assert [event["text"] for event in by_text] == ["Serve na Evoque 2015?"]
 
 
-@pytest.mark.parametrize(
-    "failure_factory",
-    [
-        lambda classification: perguntas_state.PerguntasIAClassificacaoInconclusiva(
-            "Classificacao inconclusiva.",
-            classificacao=classification,
-        ),
-        lambda _classification: perguntas_state.PerguntasIASegurancaBloqueada(
-            "Conteudo do comprador deve seguir como dado nao confiavel."
-        ),
-        lambda _classification: perguntas_state.PerguntasIAProviderIndisponivel(
-            "Classificador temporariamente indisponivel.",
-            reason="provider_timeout",
-        ),
-    ],
-)
-def test_semantic_classifier_failure_still_sends_full_context_to_answer_ai(
-    monkeypatch,
-    failure_factory,
-):
-    classification = {
-        "categoria": "unknown",
-        "categorias": ["unknown"],
-        "continuidade": {"tipo": "inconclusiva", "herdou_historico": False},
-        "compatibilidade": {
-            "aplicavel": False,
-            "target_item": "",
-            "target_type": "",
-        },
-    }
-    failure = failure_factory(classification)
+def test_unified_agent_receives_full_context_without_semantic_preclassification(monkeypatch):
     description = (
         "CÓDIGOS DA PEÇA: LR057235 DESCRIÇÃO: Bomba Evoque 2.0 Gasolina "
         "APLICAÇÕES: Evoque 2012-2018"
@@ -2207,7 +2177,27 @@ def test_semantic_classifier_failure_still_sends_full_context_to_answer_ai(
     monkeypatch.setattr(
         perguntas_ml,
         "_perguntas_ia_classificar_intencao",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("o classificador separado nao deve ser chamado")
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        perguntas_ml,
+        "IAChatRequest",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        perguntas_ml,
+        "_ia_modelo_perguntas_configurado",
+        lambda: "model-test",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        perguntas_ml,
+        "_normalizar_ia_modelo_padrao",
+        lambda value: value,
         raising=False,
     )
     captured = {}
@@ -2218,6 +2208,7 @@ def test_semantic_classifier_failure_still_sends_full_context_to_answer_ai(
             "item": raw_item,
             "context": context,
             "prompt": prompt,
+            "initial_intent": dict(context["intencao_atendimento"]),
         })
         return {
             "intent": context["intencao_atendimento"],
@@ -2234,6 +2225,7 @@ def test_semantic_classifier_failure_still_sends_full_context_to_answer_ai(
             answer="Boa tarde! Sentimos pelo ocorrido. Solicite a devolução pelo detalhe da compra.",
             model="model-test",
             diagnostics=[{"result": {
+                "flow": "pre_sale",
                 "category": "post_sale",
                 "decision": "human_review",
                 "validation_ok": True,
@@ -2261,10 +2253,11 @@ def test_semantic_classifier_failure_still_sends_full_context_to_answer_ai(
     )
 
     assert answer.startswith("Boa tarde! Sentimos pelo ocorrido.")
-    assert context["classificacao_consultiva_status"] == "fallback"
+    assert context["classificacao_consultiva_status"] == "unified_agent"
     assert context["intencao_atendimento"]["categoria"] == "post_sale"
-    assert context["intencao_atendimento"]["fluxo"] == "pos_venda"
+    assert context["intencao_atendimento"]["fluxo"] == "pre_sale"
     assert captured["question"] == question
+    assert captured["initial_intent"]["categoria"] == "unknown"
     assert captured["context"]["descricao"] == description
     assert "Eu já comprei mas vou devolver." in captured["prompt"]
     assert "Confira a descrição e o código." in captured["prompt"]
@@ -3910,102 +3903,9 @@ def test_contextual_fallback_defensively_sanitizes_every_text_field():
     assert "Evoque 15/16" in serialized
 
 
-def test_evoque_full_conversation_reclassifies_continuation_and_builds_conditional_answer(
+def test_evoque_full_conversation_reaches_unified_agent_and_builds_conditional_answer(
     monkeypatch,
 ):
-    from backend.modules.perguntas_pos_venda.ai import provider_transport
-
-    unknown = {
-        "intencao": "nao_entendi",
-        "categoria": "unknown",
-        "categorias": ["unknown"],
-        "fluxo": "perguntas_anuncio",
-        "confianca": 0.4,
-        "continuidade": {"tipo": "inconclusiva", "herdou_historico": False},
-        "flags": {
-            "usar_busca_web": False,
-            "usar_mercado_livre_anuncio": False,
-            "usar_bling": False,
-        },
-        "subperguntas": [{
-            "intent": "general",
-            "question": "Nao foi possivel identificar o assunto.",
-            "required_evidence": "contexto conversacional suficiente",
-        }],
-        "compatibilidade": {
-            "aplicavel": False,
-            "target_item": "",
-            "target_type": "",
-            "compatibility_profile": "",
-            "technical_focus": "",
-            "missing_fields": [],
-            "decisive_fields": [],
-        },
-    }
-    continuation = {
-        "intencao": "compatibilidade",
-        "categoria": "compatibility",
-        "categorias": ["compatibility"],
-        "fluxo": "perguntas_anuncio",
-        "confianca": 0.94,
-        "continuidade": {"tipo": "continuacao", "herdou_historico": True},
-        "flags": {
-            "usar_busca_web": True,
-            "usar_mercado_livre_anuncio": True,
-            "usar_bling": True,
-        },
-        "subperguntas": [{
-            "intent": "compatibility",
-            "question": "Serve na Range Rover Evoque 2015/2016?",
-            "required_evidence": "aplicacao anunciada e codigo da peca original",
-        }],
-        "compatibilidade": {
-            "aplicavel": True,
-            "target_item": "Range Rover Evoque 2015/2016",
-            "target_type": "vehicle",
-            "compatibility_profile": "vehicle_fitment",
-            "technical_focus": "aplicacao e codigo OEM",
-            "missing_fields": ["codigo da peca original"],
-            "decisive_fields": ["codigo OEM"],
-        },
-    }
-    model_answers = iter([json.dumps(unknown), json.dumps(continuation)])
-    classifier_requests = []
-
-    def make_request(**kwargs):
-        request = SimpleNamespace(**kwargs)
-        classifier_requests.append(request)
-        return request
-
-    monkeypatch.setattr(perguntas_state, "IAChatRequest", make_request, raising=False)
-    monkeypatch.setattr(
-        perguntas_state,
-        "_ia_modelo_perguntas_configurado",
-        lambda: "model-test",
-        raising=False,
-    )
-    monkeypatch.setattr(
-        perguntas_state,
-        "_normalizar_ia_modelo_padrao",
-        lambda value: value,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        perguntas_state,
-        "_ml_extrair_sku",
-        lambda _item: "254-1",
-        raising=False,
-    )
-    monkeypatch.setattr(
-        provider_transport,
-        "invoke_model",
-        lambda *_args, **_kwargs: (next(model_answers), "model-test"),
-    )
-    monkeypatch.setattr(
-        perguntas_state.perguntas_agent_telemetry,
-        "record",
-        lambda *_args, **_kwargs: None,
-    )
     description = (
         "CÓDIGOS DA PEÇA: AH22-9H307-AB / LR057235 LR044427 LR026192\n\n"
         "DESCRIÇÃO: Bomba Combustível e filtro de combustível Range Rover Evoque "
@@ -4025,7 +3925,9 @@ def test_evoque_full_conversation_reclassifies_continuation_and_builds_condition
     monkeypatch.setattr(
         perguntas_ml,
         "_perguntas_ia_classificar_intencao",
-        perguntas_state._perguntas_ia_classificar_intencao,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("o classificador separado nao deve ser chamado")
+        ),
         raising=False,
     )
     monkeypatch.setattr(
@@ -4085,7 +3987,11 @@ def test_evoque_full_conversation_reclassifies_continuation_and_builds_condition
     captured = {}
 
     def build_agent_input(_client, _store, _question, _item, context, prompt):
-        captured.update({"context": context, "prompt": prompt})
+        captured.update({
+            "context": context,
+            "prompt": prompt,
+            "initial_intent": dict(context["intencao_atendimento"]),
+        })
         return {"intent": context["intencao_atendimento"]}
 
     final_answer = (
@@ -4101,7 +4007,9 @@ def test_evoque_full_conversation_reclassifies_continuation_and_builds_condition
             answer=final_answer,
             model="model-test",
             diagnostics=[{"result": {
+                "flow": "pre_sale",
                 "category": "compatibility",
+                "subquestions": ["Serve na Range Rover Evoque 2015/2016?"],
                 "decision": "human_review",
                 "validation_ok": True,
                 "needs_human_review": True,
@@ -4142,12 +4050,10 @@ def test_evoque_full_conversation_reclassifies_continuation_and_builds_condition
         item,
     )
 
-    assert len(classifier_requests) == 2
-    assert classifier_requests[1].context["tipo"] == (
-        "classificacao_intencao_perguntas_ml_reparo_continuidade"
-    )
-    assert captured["context"]["intencao_atendimento"]["continuidade"]["tipo"] == "continuacao"
-    assert "Evoque 2015/2016" in captured["prompt"]
+    assert captured["context"]["classificacao_consultiva_status"] == "unified_agent"
+    assert captured["initial_intent"]["categoria"] == "unknown"
+    assert "Evoque 15/16" in captured["prompt"]
+    assert "O ano esta na aplicacao; confirme o codigo original." in captured["prompt"]
     assert "Evoque 2.0 Gasolina" in captured["prompt"]
     assert "AH22-9H307-AB" in captured["prompt"]
     assert answer == final_answer

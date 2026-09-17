@@ -10,9 +10,16 @@ from requests import Response
 from google.cloud.firestore_v1.services.firestore.transports.rest import FirestoreRestTransport
 
 from backend.services import firebase_user_session as service
+from backend.services.transport_security import TRUSTED_CA_ENV_KEYS
 
 
 IDENTITY = {"username": "usuario", "client_id": "empresa-a", "machine_id": "pc:um"}
+
+
+@pytest.fixture(autouse=True)
+def isolated_tls_environment(monkeypatch):
+    for key in TRUSTED_CA_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
 
 
 @pytest.fixture

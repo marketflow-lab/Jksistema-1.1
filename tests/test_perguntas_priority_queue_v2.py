@@ -510,9 +510,9 @@ def test_operational_failures_stop_on_third_and_success_resets_consecutive_count
 
     terminal = orchestrator.get_job("tenant", exhausted["job_id"])
     assert terminal["status"] == "completed"
-    assert terminal["blocked_without_draft"] is False
-    assert terminal["result"]["resposta"]
-    assert terminal["review_required"] is False
+    assert terminal["blocked_without_draft"] is True
+    assert terminal["result"]["resposta"] == ""
+    assert terminal["review_required"] is True
     assert terminal["operational_failure_count"] == 3
     assert terminal["completion_reason"] == "operational_retry_exhausted"
 
