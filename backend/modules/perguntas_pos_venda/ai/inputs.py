@@ -7,7 +7,6 @@ import re
 import unicodedata
 
 from backend.services.favoritos_ml import _favoritos_ml_url_item_id
-from backend.services.mercadolivre_legacy_items import _ml_extrair_sku
 from backend.services.vin_transient import contains_vin_like_identifier
 
 from .attachments import message_attachments as _ml_pos_venda_mensagem_anexos
@@ -67,6 +66,74 @@ _PERGUNTAS_IA_RESEARCH_INPUT_FIELDS = frozenset({
 })
 
 
+def _perguntas_ia_item_sku(item: object, *, include_variations: bool = True) -> str:
+    entity = item if isinstance(item, dict) else {}
+    direct_fields = (
+        "seller_sku", "sellerSku", "SELLER_SKU", "sku", "SKU",
+        "seller_custom_field", "sellerCustomField", "SELLER_CUSTOM_FIELD",
+        "custom_sku", "item_sku",
+    )
+    attribute_values: dict[str, str] = {}
+    attribute_sources = [
+        *(entity.get("attributes") or []),
+        *(entity.get("attribute_combinations") or []),
+    ]
+    for attribute in attribute_sources:
+        if not isinstance(attribute, dict):
+            continue
+        label = unicodedata.normalize(
+            "NFKD", f"{attribute.get('id') or ''} {attribute.get('name') or ''}",
+        )
+        label = "".join(char for char in label if not unicodedata.combining(char)).upper()
+        normalized_label = label.replace(" ", "_")
+        marker = next(
+            (
+                value for value in ("SELLER_SKU", "SKU", "SELLER_CUSTOM_FIELD")
+                if value in normalized_label
+            ),
+            "",
+        )
+        if not marker:
+            continue
+        candidates = [
+            attribute.get("value_name"),
+            attribute.get("value_id"),
+            attribute.get("value"),
+        ]
+        for nested in attribute.get("values") or []:
+            if isinstance(nested, dict):
+                candidates.extend(
+                    nested.get(key) for key in ("name", "value_name", "value_id", "value")
+                )
+        value = next(
+            (str(candidate).strip() for candidate in candidates if str(candidate or "").strip()),
+            "",
+        )
+        if value:
+            attribute_values[marker] = value
+    for marker in ("SELLER_SKU", "SKU", "SELLER_CUSTOM_FIELD"):
+        if attribute_values.get(marker):
+            own_sku = attribute_values[marker]
+            break
+    else:
+        own_sku = ""
+        for field in direct_fields:
+            value = str(entity.get(field) or "").strip()
+            if value:
+                own_sku = value
+                break
+    if include_variations and not own_sku:
+        values = [
+            _perguntas_ia_item_sku(variation, include_variations=False)
+            for variation in entity.get("variations") or []
+            if isinstance(variation, dict)
+        ]
+        values = list(dict.fromkeys(value for value in values if value))
+        if len(values) == 1:
+            return values[0]
+    return own_sku
+
+
 def _perguntas_ia_research_input(agent_input: Optional[dict[str, Any]]) -> dict[str, Any]:
     """Keep seller instructions and examples outside research/tool decisions."""
 
@@ -79,13 +146,33 @@ def _perguntas_ia_research_input(agent_input: Optional[dict[str, Any]]) -> dict[
     sku_packet = projected.get("sku_question_context")
     if isinstance(sku_packet, dict):
         # V18 transports the immutable, store/SKU-bound integral envelope.
-        # Research tools still receive only the lookup identity fields.
+        # Research also needs the exact technical listing facts to formulate
+        # useful OEM/catalog queries.  The packet already removed sibling
+        # variations and bound these facts to the canonical item identity.
         item = projected.get("item") if isinstance(projected.get("item"), dict) else {}
-        projected["item"] = {
+        listing_facts = (
+            sku_packet.get("listing_facts")
+            if isinstance(sku_packet.get("listing_facts"), dict)
+            else {}
+        )
+        research_item = {
             key: item.get(key)
             for key in ("id", "title", "seller_sku", "catalog_product_id")
             if item.get(key) not in (None, "")
         }
+        for key in (
+            "title", "description", "condition", "category_id",
+            "catalog_product_id", "permalink", "official_current_listing",
+            "attributes", "sale_terms",
+        ):
+            value = listing_facts.get(key)
+            if value not in (None, "", [], {}):
+                research_item[key] = copy.deepcopy(value)
+        selected_variation = listing_facts.get("selected_variation")
+        if isinstance(selected_variation, dict) and selected_variation:
+            research_item["variation_id"] = selected_variation.get("id") or ""
+            research_item["variations"] = [copy.deepcopy(selected_variation)]
+        projected["item"] = research_item
         projected["question"] = dict(sku_packet.get("question") or {})
         projected["context"] = {
             "sku": (sku_packet.get("identity") or {}).get("sku"),
@@ -188,9 +275,19 @@ def _perguntas_ia_item_para_agente(item: dict, descricao: str = "") -> dict:
     variations = [
         {
             "id": variation.get("id") or "",
+            "seller_sku": _perguntas_ia_item_sku(variation, include_variations=False),
             "available_quantity": variation.get("available_quantity"),
             "price": variation.get("price"),
             "attribute_combinations": variation.get("attribute_combinations") or [],
+            "attributes": [
+                {
+                    "id": attr.get("id") or "",
+                    "name": attr.get("name") or "",
+                    "value_name": attr.get("value_name") or attr.get("value_id") or "",
+                }
+                for attr in (variation.get("attributes") or [])
+                if isinstance(attr, dict)
+            ],
         }
         for variation in (item.get("variations") or [])
         if isinstance(variation, dict)
@@ -204,7 +301,7 @@ def _perguntas_ia_item_para_agente(item: dict, descricao: str = "") -> dict:
         "condition": item.get("condition") or "", "category_id": item.get("category_id") or "",
         "catalog_product_id": item.get("catalog_product_id") or "",
         "listing_type_id": item.get("listing_type_id") or "", "buying_mode": item.get("buying_mode") or "",
-        "seller_sku": _ml_extrair_sku(item),
+        "seller_sku": _perguntas_ia_item_sku(item),
         "description": descricao,
         "attributes": atributos, "sale_terms": sale_terms,
         "shipping": item.get("shipping") if isinstance(item.get("shipping"), dict) else {},

@@ -47,6 +47,7 @@ from .deep_research_contracts import (
     sanitize_public_research_text,
 )
 from .deep_research_scoping import _identity_terms
+from .deep_research_sanitization import sanitize_public_listing_text
 
 from .deep_research_passages import (
     _bounded_research_passage,
@@ -228,7 +229,7 @@ def listing_document(agent_input: Mapping[str, Any]) -> ResearchDocumentV1 | Non
         )
         if value
     )
-    body = sanitize_public_research_text(body)
+    body = sanitize_public_listing_text(body)
     if not body:
         return None
     return ResearchDocumentV1(

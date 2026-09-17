@@ -4,9 +4,13 @@ import json
 
 import pytest
 
+from backend.modules.perguntas_pos_venda.ai.deep_research_documents import listing_document
+from backend.modules.perguntas_pos_venda.ai.clients import _v18_effective_tool_results
 from backend.modules.perguntas_pos_venda.ai.inputs import (
     _perguntas_ia_allowed_tools_classificadas,
     _perguntas_ia_deve_buscar_web_publica,
+    _perguntas_ia_item_para_agente,
+    _perguntas_ia_research_input,
 )
 from backend.modules.perguntas_pos_venda.ai.sku_question_context import (
     HIGH_RISK_STAGE_PROMPT_MAX_CHARS,
@@ -129,6 +133,233 @@ def _internal() -> dict:
             }],
         },
     }
+
+
+def _technical_listing_input(*, variation_id: str = "V1") -> dict:
+    source = _input("compatibility", "Serve na BMW 120i 2005 2.0 16V gasolina?")
+    source["product_evidence_identity"]["variation_id"] = variation_id
+    source["context"] = {"sku": "SKU-001", "variation_id": variation_id}
+    source["item"] = {
+        "id": "MLB100",
+        "seller_sku": "SKU-001",
+        "title": "Filtro combustível BMW 120i",
+        "permalink": "https://produto.mercadolivre.com.br/MLB-100",
+        "description": "DESC-341. Código OEM 16127233840. Contato +55 11 99999-9999.",
+        "condition": "new",
+        "category_id": "MLB-FILTERS",
+        "catalog_product_id": "CAT-341",
+        "official_current_listing": True,
+        "attributes": [
+            {"id": "BRAND", "name": "Marca", "value_name": "BRAND-GLOBAL"},
+            {"id": "PART_NUMBER", "name": "Número da peça", "value_name": "16127233840"},
+        ],
+        "sale_terms": [
+            {"id": "WARRANTY", "name": "Garantia", "value_name": "WARRANTY-90"},
+        ],
+        "variations": [
+            {
+                "id": "V1",
+                "seller_sku": "SKU-001",
+                "attribute_combinations": [
+                    {"id": "COLOR", "name": "Cor", "value_name": "COLOR-BLUE"},
+                ],
+                "attributes": [
+                    {"id": "PART_NUMBER", "name": "Número da peça", "value_name": "16127233840"},
+                ],
+            },
+            {
+                "id": "V2",
+                "seller_sku": "SIBLING-SKU",
+                "attribute_combinations": [
+                    {"id": "COLOR", "name": "Cor", "value_name": "SIBLING-COLOR"},
+                ],
+                "attributes": [
+                    {"id": "PART_NUMBER", "name": "Número da peça", "value_name": "SIBLING-SECRET"},
+                ],
+            },
+        ],
+    }
+    return source
+
+
+def test_agent_item_preserves_variation_technical_attributes() -> None:
+    raw = {
+        "id": "MLB100",
+        "title": "Filtro",
+        "seller_sku": "PARENT-SKU",
+        "description": "DESC-341",
+        "_ppv_official_current_listing": True,
+        "attributes": [{"id": "BRAND", "name": "Marca", "value_name": "BRAND-GLOBAL"}],
+        "sale_terms": [{"id": "WARRANTY", "name": "Garantia", "value_name": "WARRANTY-90"}],
+        "variations": [{
+            "id": "V1",
+            "seller_sku": "SKU-001",
+            "attribute_combinations": [
+                {"id": "COLOR", "name": "Cor", "value_name": "COLOR-BLUE"},
+            ],
+            "attributes": [
+                {"id": "PART_NUMBER", "name": "Número da peça", "value_name": "16127233840"},
+            ],
+        }],
+    }
+
+    item = _perguntas_ia_item_para_agente(raw)
+
+    assert item["description"] == "DESC-341"
+    assert item["attributes"][0]["value_name"] == "BRAND-GLOBAL"
+    assert item["sale_terms"][0]["value_name"] == "WARRANTY-90"
+    assert item["seller_sku"] == "PARENT-SKU"
+    assert item["variations"][0]["seller_sku"] == "SKU-001"
+    assert item["variations"][0]["attribute_combinations"][0]["value_name"] == "COLOR-BLUE"
+    assert item["variations"][0]["attributes"][0]["value_name"] == "16127233840"
+
+
+def test_agent_item_keeps_legacy_sku_sources_without_combining_variations() -> None:
+    item = _perguntas_ia_item_para_agente({
+        "id": "MLB100",
+        "variations": [
+            {
+                "id": "V1",
+                "attribute_combinations": [
+                    {"id": "SELLER_SKU", "values": [{"name": "SKU-001"}]},
+                ],
+            },
+            {"id": "V2", "seller_custom_field": "SKU-002"},
+        ],
+    })
+
+    assert item["seller_sku"] == ""
+    assert item["variations"][0]["seller_sku"] == "SKU-001"
+    assert item["variations"][1]["seller_sku"] == "SKU-002"
+
+
+def test_normalized_multi_variation_item_binds_exact_variation_without_aggregating_siblings() -> None:
+    raw = {
+        "id": "MLB100",
+        "title": "Filtro",
+        "seller_sku": "PARENT-SKU",
+        "permalink": "https://produto.mercadolivre.com.br/MLB-100",
+        "_ppv_official_current_listing": True,
+        "variations": [
+            {
+                "id": "V1",
+                "seller_sku": "SKU-001",
+                "attributes": [
+                    {"id": "PART_NUMBER", "name": "Número da peça", "value_name": "16127233840"},
+                ],
+            },
+            {
+                "id": "V2",
+                "seller_sku": "SIBLING-SKU",
+                "attributes": [
+                    {"id": "PART_NUMBER", "name": "Número da peça", "value_name": "SIBLING-SECRET"},
+                ],
+            },
+        ],
+    }
+    agent_input = _technical_listing_input()
+    agent_input["item"] = _perguntas_ia_item_para_agente(raw)
+
+    packet, _metrics = build_sku_question_context(
+        agent_input,
+        {"category": "compatibility"},
+        context_hub=_hub(),
+        force_high_risk=True,
+    )
+
+    encoded = json.dumps(packet, ensure_ascii=False)
+    assert agent_input["item"]["seller_sku"] == "PARENT-SKU"
+    assert packet["listing_facts"]["selected_variation"]["seller_sku"] == "SKU-001"
+    assert "SIBLING-SKU" not in encoded
+    assert "SIBLING-SECRET" not in encoded
+
+
+def test_exact_variation_with_different_sku_blocks_listing_facts() -> None:
+    agent_input = _technical_listing_input()
+    agent_input["item"]["seller_sku"] = "SKU-001"
+    agent_input["item"]["variations"][0]["seller_sku"] = "DIFFERENT-SKU"
+
+    packet, _metrics = build_sku_question_context(
+        agent_input,
+        {"category": "compatibility"},
+        context_hub=_hub(),
+        force_high_risk=True,
+    )
+
+    assert packet.get("listing_facts") is None
+    assert "identity_mismatch" in packet["route_reasons"]
+
+
+def test_high_risk_packet_and_research_receive_exact_listing_variation() -> None:
+    agent_input = _technical_listing_input()
+
+    packet, _metrics = build_sku_question_context(
+        agent_input,
+        {"category": "compatibility"},
+        context_hub=_hub(),
+        force_high_risk=True,
+    )
+
+    facts = packet["listing_facts"]
+    encoded = json.dumps(facts, ensure_ascii=False)
+    assert packet["route"] == ROUTE_HIGH_RISK
+    assert facts["scope"] == "listing_global"
+    assert facts["identity_scope"] == "exact_item_and_variation"
+    assert facts["variation_selection_state"] == "exact"
+    assert facts["description"].startswith("DESC-341")
+    assert "Código OEM 16127233840" in facts["description"]
+    assert "+55 11 99999-9999" not in facts["description"]
+    assert facts["attributes"][1]["value_name"] == "16127233840"
+    assert facts["sale_terms"][0]["value_name"] == "WARRANTY-90"
+    assert facts["selected_variation"]["id"] == "V1"
+    assert facts["selected_variation"]["scope"] == "selected_variation"
+    assert facts["selected_variation"]["attributes"][0]["value_name"] == "16127233840"
+    assert "SIBLING-SECRET" not in encoded
+    assert "SIBLING-COLOR" not in encoded
+    assert '"V2"' not in encoded
+
+    agent_input["sku_question_context"] = packet
+    research_input = _perguntas_ia_research_input(agent_input)
+    research_item = research_input["item"]
+    research_encoded = json.dumps(research_item, ensure_ascii=False)
+    assert research_item["description"].startswith("DESC-341")
+    assert research_item["official_current_listing"] is True
+    assert research_item["permalink"].endswith("MLB-100")
+    assert research_item["attributes"][1]["value_name"] == "16127233840"
+    assert research_item["variations"][0]["id"] == "V1"
+    assert "SIBLING-SECRET" not in research_encoded
+    assert '"V2"' not in research_encoded
+    listing_evidence = listing_document(research_input)
+    assert listing_evidence is not None
+    assert "16127233840" in listing_evidence.text
+    assert "SIBLING-SECRET" not in listing_evidence.text
+    assert "+55 11 99999-9999" not in listing_evidence.text
+
+    transported = _v18_effective_tool_results(packet, [_internal()])
+    transported_encoded = json.dumps(transported, ensure_ascii=False)
+    assert transported[0]["function"] == "store_sku_question_context"
+    assert "16127233840" in transported_encoded
+    assert "SIBLING-SECRET" not in transported_encoded
+    assert all(result.get("function") != "get_mercado_livre_listing" for result in transported)
+
+
+def test_high_risk_packet_never_exposes_sibling_without_exact_variation() -> None:
+    agent_input = _technical_listing_input(variation_id="")
+
+    packet, _metrics = build_sku_question_context(
+        agent_input,
+        {"category": "compatibility"},
+        context_hub=_hub(),
+        force_high_risk=True,
+    )
+
+    facts = packet["listing_facts"]
+    encoded = json.dumps(facts, ensure_ascii=False)
+    assert facts["scope"] == "listing_global"
+    assert facts["variation_selection_state"] == "unresolved"
+    assert "selected_variation" not in facts
+    assert "SIBLING-SECRET" not in encoded
+    assert "SIBLING-COLOR" not in encoded
 
 
 def test_operational_route_uses_only_requested_live_fields():

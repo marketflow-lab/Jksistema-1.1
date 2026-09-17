@@ -140,6 +140,60 @@ def test_approved_answer_uses_one_isolated_critic_call(monkeypatch: pytest.Monke
     assert client.context_pipeline[-1]["status"] == "pass"
 
 
+def test_critic_receives_exact_listing_technical_facts(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client()
+    client.agent_input["item"]["description"] = (
+        "Código OEM 16127233840. Contato +55 11 99999-9999 ou comprador@example.com."
+    )
+    client.sku_question_context = {
+        "schema": "jk_ml_store_sku_question_context_v1",
+        "listing_facts": {
+            "source": "mercado_livre_official_current_listing",
+            "scope": "listing_global",
+            "identity_scope": "exact_item_and_variation",
+            "variation_selection_state": "exact",
+            "description": "DESC-341",
+            "attributes": [
+                {"id": "PART_NUMBER", "name": "Número da peça", "value_name": "16127233840"},
+            ],
+            "sale_terms": [
+                {"id": "WARRANTY", "name": "Garantia", "value_name": "WARRANTY-90"},
+            ],
+            "selected_variation": {
+                "id": "V1",
+                "attributes": [
+                    {"id": "PART_NUMBER", "name": "Número da peça", "value_name": "16127233840"},
+                ],
+            },
+        },
+    }
+    captured: dict[str, str] = {}
+
+    def structured(prompt, _metadata, *, stage, isolated, **_kwargs):
+        captured[stage] = prompt
+        assert isolated is True
+        return _review("pass")
+
+    monkeypatch.setattr(client, "_call_structured_model", structured)
+    candidate = AIAnswer(
+        answer=f"Resposta técnica direta.\n\n{SIGNATURE}",
+        confidence=0.96,
+        category="compatibility",
+        requires_human_review=False,
+    )
+
+    result = client._review_public_answer(candidate, {"category": "compatibility"})
+
+    prompt = captured["factual_critic"]
+    assert result.validation is not None and result.validation.ok is True
+    assert "DESC-341" in prompt
+    assert "16127233840" in prompt
+    assert "WARRANTY-90" in prompt
+    assert "SIBLING-SECRET" not in prompt
+    assert "+55 11 99999-9999" not in prompt
+    assert "comprador@example.com" not in prompt
+
+
 def test_revision_transport_uses_configured_model_in_an_isolated_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

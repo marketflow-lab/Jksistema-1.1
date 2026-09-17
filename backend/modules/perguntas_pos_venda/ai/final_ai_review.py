@@ -13,7 +13,7 @@ from .factual_critic import (
     normalize_factual_review,
 )
 from .runtime import AIAnswer, ValidationResult, _PERGUNTAS_IA_RESPONSE_POLICY
-from .sku_question_context import _response_signature
+from .sku_question_context import _listing_plain, _response_signature
 
 
 def _failure_code(exc: Exception, *, revision: bool = False) -> str:
@@ -46,6 +46,20 @@ def _review_context(client: Any) -> dict[str, Any]:
     subquestions = agent_input.get("subquestions")
     if not isinstance(subquestions, list):
         subquestions = []
+    listing_facts = (
+        sku_context.get("listing_facts")
+        if isinstance(sku_context.get("listing_facts"), dict)
+        else {}
+    )
+    safe_item = {
+        key: copy.deepcopy(item.get(key))
+        for key in ("id", "seller_sku", "variation_id", "catalog_product_id")
+        if item.get(key) not in (None, "")
+    }
+    for key in ("title", "description"):
+        value = listing_facts.get(key) or _listing_plain(item.get(key))
+        if value:
+            safe_item[key] = value
     return {
         "flow_policy": flow_policy,
         "buyer_context": {
@@ -63,11 +77,8 @@ def _review_context(client: Any) -> dict[str, Any]:
                 if isinstance(agent_input.get("product_evidence_identity"), dict)
                 else {}
             ),
-            "item": {
-                key: copy.deepcopy(item.get(key))
-                for key in ("id", "seller_sku", "variation_id", "title", "description")
-                if item.get(key) not in (None, "")
-            },
+            "item": safe_item,
+            "listing_facts": copy.deepcopy(listing_facts),
             "official_store_context": copy.deepcopy(store_data),
             "sku_question_context": copy.deepcopy(sku_context),
             "seller_behavior_profile": copy.deepcopy(behavior_profile),

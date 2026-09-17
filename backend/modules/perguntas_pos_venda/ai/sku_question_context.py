@@ -6,6 +6,7 @@ import re
 import unicodedata
 from copy import deepcopy
 from typing import Any, Mapping, Sequence
+from urllib.parse import urlsplit, urlunsplit
 
 from backend.modules.context_hub.store_sku_contracts import (
     APPLICABLE_GUIDANCE_MAX_CHARS,
@@ -104,6 +105,12 @@ _OPERATIONAL_SOURCE_FIELDS = {
     # delivery. It may only contribute current fiscal/product configuration.
     "get_product_data": _OPERATIONAL_FIELDS["invoice"],
 }
+_TECHNICAL_LISTING_ROUTES = frozenset({ROUTE_SIMPLE_FACTUAL, ROUTE_HIGH_RISK})
+_PRODUCT_CODE_LABEL_MARKERS = (
+    "oem", "part_number", "part number", "numero de peca", "número de peça",
+    "codigo", "código", "referencia", "referência", "mpn", "gtin", "ean",
+    "upc", "sku",
+)
 
 
 def _plain(value: object) -> str:
@@ -137,6 +144,42 @@ def _identifier(value: object) -> str:
 
 def _identifier_key(value: object) -> str:
     return _identifier(value).casefold()
+
+
+def _listing_plain(value: object) -> str:
+    """Redact public prose while preserving explicitly labelled product codes."""
+
+    text = str(value or "")
+    protected: list[str] = []
+
+    def protect(match: re.Match[str]) -> str:
+        protected.append(match.group(0))
+        return f"__JK_PRODUCT_CODE_{len(protected) - 1}__"
+
+    text = re.sub(
+        r"(?i)\b(?:codigo(?:\s+oem|\s+original)?|código(?:\s+oem|\s+original)?|"
+        r"referencia|referência|numero\s+da\s+peca|número\s+da\s+peça|part\s*number|mpn|gtin|ean|upc)"
+        r"\s*[:#=\-]?\s*[A-Z0-9][A-Z0-9./\-]{3,31}\b",
+        protect,
+        text,
+    )
+    text = _plain(text)
+    for index, original in enumerate(protected):
+        text = text.replace(f"__JK_PRODUCT_CODE_{index}__", original)
+    return text
+
+
+def _public_http_url(value: object) -> str:
+    text = str(value or "").strip()
+    try:
+        parsed = urlsplit(text)
+    except ValueError:
+        return ""
+    if parsed.scheme.casefold() not in {"http", "https"} or not parsed.hostname:
+        return ""
+    if parsed.username or parsed.password:
+        return ""
+    return urlunsplit((parsed.scheme.casefold(), parsed.netloc, parsed.path, parsed.query, ""))[:2000]
 
 
 def _normalized(value: object) -> str:
@@ -230,15 +273,34 @@ def _identity_projection(
     identity = {key: _identifier(supplied.get(key)) for key in _IDENTITY_KEYS}
     item = agent_input.get("item") if isinstance(agent_input.get("item"), Mapping) else {}
     context = agent_input.get("context") if isinstance(agent_input.get("context"), Mapping) else {}
+    expected_variation = _identifier_key(identity.get("variation_id"))
+    variations = [
+        value for value in (item.get("variations") or []) if isinstance(value, Mapping)
+    ]
+    selected_variations = [
+        value for value in variations
+        if expected_variation and _identifier_key(value.get("id")) == expected_variation
+    ]
+    selected_variation = selected_variations[0] if len(selected_variations) == 1 else {}
+    observed_sku = (
+        selected_variation.get("seller_sku") or selected_variation.get("sku")
+        if selected_variation
+        else item.get("seller_sku") or item.get("sku") or context.get("sku")
+        or metadata.get("sku")
+    )
     observed = {
-        "sku": _identifier(
-            item.get("seller_sku") or item.get("sku") or context.get("sku")
-            or metadata.get("sku")
-        ),
+        "sku": _identifier(observed_sku),
         "item_id": _identifier(item.get("id") or context.get("item_id") or metadata.get("item_id")),
-        "variation_id": _identifier(context.get("variation_id") or metadata.get("variation_id")),
+        "variation_id": _identifier(
+            selected_variation.get("id")
+            or (context.get("variation_id") if not variations else "")
+            or (metadata.get("variation_id") if not variations else "")
+        ),
     }
-    mismatch = any(
+    missing_exact_variation = bool(
+        expected_variation and variations and len(selected_variations) != 1
+    )
+    mismatch = missing_exact_variation or any(
         identity.get(key)
         and observed.get(key)
         and _identifier_key(identity[key]) != _identifier_key(observed[key])
@@ -246,6 +308,125 @@ def _identity_projection(
     )
     complete = all(identity.get(key) for key in _IDENTITY_KEYS[:-1])
     return {key: value for key, value in identity.items() if value}, mismatch, complete
+
+
+def _listing_attribute_rows(values: object) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for raw in values if isinstance(values, list) else []:
+        if not isinstance(raw, Mapping):
+            continue
+        field_id = _identifier(raw.get("id"))
+        name = _plain(raw.get("name"))
+        label = f"{field_id} {name}".casefold()
+        value_raw = raw.get("value_name") or raw.get("value_id") or raw.get("value")
+        value = (
+            _identifier(value_raw)
+            if any(marker in label for marker in _PRODUCT_CODE_LABEL_MARKERS)
+            else _plain(value_raw)
+        )
+        row = {"id": field_id, "name": name, "value_name": value}
+        row = {key: item for key, item in row.items() if item}
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _listing_facts_projection(
+    agent_input: Mapping[str, Any],
+    identity: Mapping[str, str],
+    *,
+    route: str,
+    identity_complete: bool,
+    identity_mismatch: bool,
+) -> dict[str, Any]:
+    """Keep current technical listing facts bound to the exact item/variation."""
+
+    if route not in _TECHNICAL_LISTING_ROUTES or not identity_complete or identity_mismatch:
+        return {}
+    item = agent_input.get("item") if isinstance(agent_input.get("item"), Mapping) else {}
+    if item.get("official_current_listing") is not True:
+        return {}
+    expected_item = _identifier_key(identity.get("item_id"))
+    observed_item = _identifier_key(item.get("id"))
+    if not expected_item or observed_item != expected_item:
+        return {}
+
+    expected_variation = _identifier_key(identity.get("variation_id"))
+    variations = [
+        value for value in (item.get("variations") or []) if isinstance(value, Mapping)
+    ]
+    selected_variation: Mapping[str, Any] | None = None
+    if expected_variation:
+        matches = [
+            value for value in variations
+            if _identifier_key(value.get("id")) == expected_variation
+        ]
+        if len(matches) != 1:
+            return {}
+        selected_variation = matches[0]
+    elif variations:
+        # Public listing facts may describe every option, but variation facts
+        # are never transported without an exact selected variation.
+        selected_variation = None
+    variation_selection_state = (
+        "exact" if selected_variation else "unresolved" if variations else "not_applicable"
+    )
+
+    expected_sku = _identifier_key(identity.get("sku"))
+    observed_skus = {
+        _identifier_key(value)
+        for value in (
+            (
+                selected_variation.get("seller_sku")
+                or selected_variation.get("sku")
+            )
+            if selected_variation
+            else (item.get("seller_sku") or item.get("sku")),
+        )
+        if _identifier_key(value)
+    }
+    if not expected_sku or (observed_skus and expected_sku not in observed_skus):
+        return {}
+
+    facts: dict[str, Any] = {
+        "source": "mercado_livre_official_current_listing",
+        "scope": "listing_global",
+        "identity_scope": "exact_item_and_variation" if selected_variation else "exact_item",
+        "variation_selection_state": variation_selection_state,
+        "identity": {
+            key: identity[key]
+            for key in ("sku", "item_id", "variation_id")
+            if identity.get(key)
+        },
+        "permalink": _public_http_url(item.get("permalink") or item.get("url") or item.get("link")),
+        "official_current_listing": True,
+        "title": _listing_plain(item.get("title")),
+        "description": _listing_plain(item.get("description")),
+        "condition": _plain(item.get("condition")),
+        "category_id": _identifier(item.get("category_id")),
+        "catalog_product_id": _identifier(item.get("catalog_product_id")),
+        "attributes": _listing_attribute_rows(item.get("attributes")),
+        "sale_terms": _listing_attribute_rows(item.get("sale_terms")),
+    }
+    if selected_variation:
+        facts["selected_variation"] = {
+            "scope": "selected_variation",
+            "id": _identifier(selected_variation.get("id")),
+            "seller_sku": _identifier(selected_variation.get("seller_sku")),
+            "attribute_combinations": _listing_attribute_rows(
+                selected_variation.get("attribute_combinations")
+            ),
+            "attributes": _listing_attribute_rows(selected_variation.get("attributes")),
+        }
+        facts["selected_variation"] = {
+            key: value
+            for key, value in facts["selected_variation"].items()
+            if value not in (None, "", [], {})
+        }
+    return {
+        key: value for key, value in facts.items()
+        if value not in (None, "", [], {})
+    }
 
 
 def _tool_result(source: object) -> tuple[str, dict[str, Any]]:
@@ -573,6 +754,13 @@ def build_sku_question_context(
         requested_categories=_requested_operational_categories(category, question, subquestions),
         identity=identity,
     )
+    listing_facts = _listing_facts_projection(
+        source,
+        identity,
+        route=route,
+        identity_complete=identity_complete,
+        identity_mismatch=identity_mismatch,
+    )
     (
         generation, source_hashes, validity, binding_hash, conflicts, gaps,
     ) = _integral_evidence_metadata(hub_result, identity_complete=identity_complete)
@@ -586,6 +774,7 @@ def build_sku_question_context(
         "store_facts": {"product_condition": "new"},
         "response_signature": response_signature,
         "operational_data": operational,
+        "listing_facts": listing_facts,
         "generation": generation,
         "source_hashes": source_hashes,
         "binding_hash": binding_hash,
@@ -608,6 +797,7 @@ def build_sku_question_context(
         "store_facts": {"product_condition": "new"},
         "response_signature": response_signature,
         "operational_data": operational,
+        "listing_facts": listing_facts,
         "generation": generation,
         "source_hashes": source_hashes,
         "validity": validity,

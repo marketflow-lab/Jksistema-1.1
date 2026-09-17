@@ -126,6 +126,11 @@ _PHONE_NANP_RE = re.compile(
     r"[\s.-]?[2-9]\d{2}[\s.-]\d{4}(?!\d)"
 )
 _PROTECTED_VIN_MARKER = "[CHASSI_PROTEGIDO]"
+_LABELLED_PRODUCT_CODE_RE = re.compile(
+    r"(?i)\b(?:codigo(?:\s+oem|\s+original)?|código(?:\s+oem|\s+original)?|"
+    r"referencia|referência|numero\s+da\s+peca|número\s+da\s+peça|part\s*number|mpn|gtin|ean|upc)"
+    r"\s*[:#=\-]?\s*[A-Z0-9][A-Z0-9./\-]{3,31}\b"
+)
 
 
 def _plain(value: object) -> str:
@@ -251,6 +256,25 @@ def sanitize_public_research_text(value: object, maximum: int = 600_000) -> str:
     sanitized = _PHONE_NANP_RE.sub("[TELEFONE_PROTEGIDO]", sanitized)
     sanitized = _PHONE_RE.sub("[TELEFONE_PROTEGIDO]", sanitized)
     sanitized = _PHONE_BR_COMPACT_RE.sub("[TELEFONE_PROTEGIDO]", sanitized)
+    return sanitized[: max(0, int(maximum))]
+
+
+def sanitize_public_listing_text(value: object, maximum: int = 600_000) -> str:
+    """Sanitize official listing prose without discarding labelled product codes."""
+
+    source, decoding_complete = _percent_decode_fixed(value)
+    if not decoding_complete:
+        return "[CONTEUDO_CODIFICADO_PROTEGIDO]"[: max(0, int(maximum))]
+    protected: list[str] = []
+
+    def protect(match: re.Match[str]) -> str:
+        protected.append(match.group(0))
+        return f"__JK_LISTING_PRODUCT_CODE_{len(protected) - 1}__"
+
+    source = _LABELLED_PRODUCT_CODE_RE.sub(protect, source)
+    sanitized = sanitize_public_research_text(source, max(600_000, len(source) * 2))
+    for index, original in enumerate(protected):
+        sanitized = sanitized.replace(f"__JK_LISTING_PRODUCT_CODE_{index}__", original)
     return sanitized[: max(0, int(maximum))]
 
 
