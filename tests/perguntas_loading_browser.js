@@ -426,8 +426,19 @@ async function verifyDuplicateNames({ page, calls, control }) {
     await carregarContadoresNotificacoes(true);
   });
   assert.deepStrictEqual(await page.evaluate(() => [state.notificacoes.lojas['fixture-1'].perguntas, state.notificacoes.lojas['fixture-2'].perguntas]), [7, 13]);
-  assert.match(await page.locator('#lojas-grid .store-card[data-store-id="fixture-1"] .store-notifications').innerText(), /^7 perguntas$/);
-  assert.match(await page.locator('#lojas-grid .store-card[data-store-id="fixture-2"] .store-notifications').innerText(), /^13 perguntas$/);
+  const firstCounter = page.locator('#lojas-grid .store-card[data-store-id="fixture-1"] .store-notifications');
+  const secondCounter = page.locator('#lojas-grid .store-card[data-store-id="fixture-2"] .store-notifications');
+  assert.strictEqual(await firstCounter.innerText(), '7');
+  assert.strictEqual(await secondCounter.innerText(), '13');
+  assert.strictEqual(await firstCounter.locator('xpath=..').getAttribute('class'), 'store-card-status');
+  assert.strictEqual(await firstCounter.locator('.notification-pill').getAttribute('aria-label'), '7 perguntas não respondidas');
+  const [cardBox, counterBox] = await Promise.all([
+    page.locator('#lojas-grid .store-card[data-store-id="fixture-1"]').boundingBox(),
+    firstCounter.boundingBox(),
+  ]);
+  assert(cardBox && counterBox, 'card e contador devem estar visíveis');
+  assert(counterBox.y < cardBox.y + cardBox.height / 2, 'contador deve ficar na faixa superior do card');
+  assert(cardBox.x + cardBox.width - (counterBox.x + counterBox.width) <= 24, 'contador deve ficar no canto superior direito');
   const before = calls.filter(call => call.path.endsWith('/perguntas/lista')).length;
   let release;
   control.listHold = new Promise(resolve => { release = resolve; });

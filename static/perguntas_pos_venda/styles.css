@@ -374,6 +374,13 @@
             overflow-wrap: anywhere;
         }
 
+        .store-card-status {
+            display: inline-flex;
+            flex: 0 0 auto;
+            align-items: center;
+            gap: 8px;
+        }
+
         .store-meta {
             display: flex;
             flex-wrap: wrap;
@@ -407,10 +414,9 @@
         }
 
         .store-notifications {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
-            margin-top: 8px;
+            display: inline-flex;
+            flex: 0 0 auto;
+            align-items: center;
         }
 
         .store-notifications:empty {

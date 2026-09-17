@@ -242,7 +242,7 @@ function htmlNotificacoesLoja(nome, storeId = '') {
     const perguntas = formatarContadorNotificacao(dados.perguntas, dados.perguntasParcial);
     const partes = [];
     if (perguntas) {
-        partes.push(`<span class="notification-pill" title="Perguntas não respondidas">${escapeHtml(perguntas)} perguntas</span>`);
+        partes.push(`<span class="notification-pill" title="Perguntas não respondidas" aria-label="${escapeHtml(perguntas)} perguntas não respondidas">${escapeHtml(perguntas)}</span>`);
     }
     return partes.join('');
 }
@@ -552,8 +552,8 @@ function renderizarLojas() {
         <div class="store-card all-stores-card ${todasActive ? 'active' : ''}" data-loja="${TODAS_LOJAS_VALUE}" tabindex="0" aria-disabled="false">
             <span class="store-card-heading">
                 <span class="store-name">Todas as contas</span>
+                <span class="store-notifications" data-store-notifications="${TODAS_LOJAS_VALUE}">${htmlNotificacoesLoja(TODAS_LOJAS_VALUE)}</span>
             </span>
-            <span class="store-notifications" data-store-notifications="${TODAS_LOJAS_VALUE}">${htmlNotificacoesLoja(TODAS_LOJAS_VALUE)}</span>
         </div>
     ` : '';
     const lojasHtml = state.lojas.map((loja) => {
@@ -573,12 +573,14 @@ function renderizarLojas() {
             <div class="store-card ${active ? 'active' : ''} ${conectado ? '' : 'disabled'}" data-loja="${escapeHtml(nome)}" data-store-id="${escapeHtml(loja.store_id || '')}" tabindex="${conectado ? '0' : '-1'}" aria-disabled="${conectado ? 'false' : 'true'}">
                 <span class="store-card-heading">
                     <span class="store-name">${escapeHtml(nome)}</span>
-                    <span class="store-connection-dot ${dotClasse}" title="${escapeHtml(dotTitulo)}" aria-label="${escapeHtml(dotTitulo)}"></span>
+                    <span class="store-card-status">
+                        <span class="store-connection-dot ${dotClasse}" title="${escapeHtml(dotTitulo)}" aria-label="${escapeHtml(dotTitulo)}"></span>
+                        <span class="store-notifications" data-store-notifications="${escapeHtml(nome)}" data-store-id="${escapeHtml(loja.store_id || '')}">${htmlNotificacoesLoja(nome, loja.store_id)}</span>
+                    </span>
                 </span>
                 <span class="store-meta">
                     ${conectado ? '' : `<span class="badge ${badgeClasse}" title="${escapeHtml(mlMotivo)}">${badgeTexto}</span>`}
                 </span>
-                <span class="store-notifications" data-store-notifications="${escapeHtml(nome)}" data-store-id="${escapeHtml(loja.store_id || '')}">${htmlNotificacoesLoja(nome, loja.store_id)}</span>
                 <span class="store-options">
                     <label class="store-option">
                         <input class="store-config-checkbox" type="checkbox" data-config="responder_automaticamente" ${config.responder_automaticamente ? 'checked' : ''}>
