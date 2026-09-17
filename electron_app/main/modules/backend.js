@@ -1143,6 +1143,8 @@ function appendProvisionerOutput(logPath, label, output) {
 
 function ensurePythonRuntimeProvisioned(sourceRoot, targetRoot) {
     const portablePython = path.join(sourceRoot, 'python_runtime', 'portable', 'python.exe');
+    const installedPython = path.join(targetRoot, '.python-runtime', 'python.exe');
+    const runtimeContract = path.join(sourceRoot, 'installer-runtime.lock.json');
     const provisioner = path.join(sourceRoot, 'scripts', 'provision_python_runtime.py');
     const logPath = path.join(targetRoot, 'logs', 'python-runtime-provision.log');
     const statusPath = path.join(targetRoot, 'info', 'python-runtime-status.json');
@@ -1160,10 +1162,15 @@ function ensurePythonRuntimeProvisioned(sourceRoot, targetRoot) {
         );
     } catch (_err) {}
 
-    if (!fs.existsSync(portablePython)) {
+    const packageHasPortableRuntime = fs.existsSync(portablePython);
+    const packageSupportsInstalledReuse = fs.existsSync(runtimeContract);
+    const bootstrapPython = packageHasPortableRuntime
+        ? portablePython
+        : (packageSupportsInstalledReuse && fs.existsSync(installedPython) ? installedPython : '');
+    if (!bootstrapPython) {
         return Promise.reject(pythonRuntimeDiagnosticError(
-            'Python portatil nao foi encontrado no pacote. Reinstale o JK Sistema usando o instalador completo.',
-            { stage: 'portable_python', code: 'PORTABLE_PYTHON_MISSING', logPath, targetRoot }
+            'O runtime Python instalado esta ausente ou nao pode ser reutilizado. Reinstale o JK Sistema usando o instalador completo.',
+            { stage: 'portable_python', code: 'RUNTIME_REQUIRES_FULL_INSTALLER', logPath, targetRoot }
         ));
     }
     if (!fs.existsSync(provisioner)) {
@@ -1176,7 +1183,8 @@ function ensurePythonRuntimeProvisioned(sourceRoot, targetRoot) {
     logElectronLifecycle('python-runtime-provision-starting', {
         sourceRoot,
         targetRoot,
-        portablePython,
+        bootstrapPython,
+        packageHasPortableRuntime,
         provisioner,
         logPath,
         statusPath
@@ -1188,7 +1196,7 @@ function ensurePythonRuntimeProvisioned(sourceRoot, targetRoot) {
         let stderr = '';
         const outputLimit = 512 * 1024;
         const collect = (current, chunk) => `${current}${String(chunk || '')}`.slice(-outputLimit);
-        const child = spawn(portablePython, [
+        const child = spawn(bootstrapPython, [
             '-B',
             '-I',
             provisioner,

@@ -782,6 +782,77 @@ def test_quick_reuse_checks_pinned_runtime_trees_without_wheel_hashes(tmp_path, 
     assert status["action"] == "quick_reused"
 
 
+def test_quick_reuse_accepts_lightweight_package_with_runtime_contract(tmp_path, monkeypatch):
+    source, target, spec = _quick_reuse_fixture(tmp_path)
+    wheel_manifest = source / "python_wheels" / "manifest.json"
+    parts = (
+        spec.windows_portable_tree_sha256,
+        provisioner.sha256_file(source / "requirements.txt"),
+        provisioner.sha256_file(wheel_manifest),
+        "3" * 64,
+        "4" * 64,
+    )
+    runtime_id = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+    _write_json(
+        source / provisioner.INSTALLER_RUNTIME_LOCK_NAME,
+        {
+            "schema_version": 1,
+            "runtime_id": runtime_id,
+            "python": {
+                "version": spec.version,
+                "abi": spec.abi,
+                "portable": {
+                    "file_count": spec.windows_portable_file_count,
+                    "total_size": spec.windows_portable_total_size,
+                    "tree_sha256": spec.windows_portable_tree_sha256,
+                },
+            },
+            "wheelhouse": {
+                "requirements_sha256": parts[1],
+                "manifest_sha256": parts[2],
+                "wheel_count": 1,
+            },
+            "visual_cpp": {"sha256": parts[3]},
+            "whisper": {"manifest_sha256": parts[4]},
+        },
+    )
+    for payload in (source / "python_runtime", source / "python_wheels", source / "runtime-manifest.json"):
+        if payload.is_dir():
+            import shutil
+            shutil.rmtree(payload)
+        elif payload.exists():
+            payload.unlink()
+    logger = provisioner.ProvisionLogger(target / "logs" / "provision.log")
+    monkeypatch.setattr(provisioner, "probe_python", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(provisioner, "run_quick_dependency_spec_check", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(provisioner, "run_console_entrypoint_checks", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(provisioner, "tree_inventory", lambda *_args, **_kwargs: spec.portable_inventory)
+
+    result = provisioner.try_quick_reuse(source, target, spec, logger, 1)
+
+    assert result is not None
+    assert result["action"] == "quick_reused"
+    assert result["runtime_id"] == runtime_id
+    marker = json.loads((target / ".venv" / provisioner.VENV_MARKER_NAME).read_text(encoding="utf-8"))
+    assert marker["runtime_id"] == runtime_id
+    marker["runtime_id"] = "f" * 64
+    _write_json(target / ".venv" / provisioner.VENV_MARKER_NAME, marker)
+    with pytest.raises(provisioner.ProvisionError) as raised:
+        provisioner.provision(
+            source,
+            target,
+            spec,
+            logger,
+            lock_timeout=0,
+            command_timeout=1,
+            force=False,
+            quick_reuse=True,
+        )
+    assert raised.value.code == "runtime_requires_full_installer"
+    assert (target / ".python-runtime" / "python.exe").is_file()
+    assert (target / ".venv" / "Scripts" / "python.exe").is_file()
+
+
 def test_quick_reuse_normalizes_generated_runtime_bytecode(tmp_path, monkeypatch):
     source, target, spec = _quick_reuse_fixture(tmp_path)
     runtime = target / ".python-runtime"

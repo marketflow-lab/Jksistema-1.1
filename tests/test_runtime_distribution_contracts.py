@@ -11,13 +11,19 @@ def test_release_version_is_canonical_and_materialized():
     root_package = json.loads((root / "package.json").read_text(encoding="utf-8"))
     electron_package = json.loads((root / "electron_app" / "package.json").read_text(encoding="utf-8"))
     context_manifest = json.loads((root / "context-bundle-manifest.json").read_text(encoding="utf-8"))
-    runtime_manifest = json.loads((root / ".installer_runtime" / "runtime-manifest.json").read_text(encoding="utf-8-sig"))
+    runtime_manifest_path = root / ".installer_runtime" / "runtime-manifest.json"
+    runtime_contract = json.loads((root / "installer-runtime.lock.json").read_text(encoding="utf-8"))
 
     release_version = electron_package["version"]
     assert release_version == "1.0.140"
     assert root_package["version"] == release_version
     assert context_manifest["source_version"] == release_version
-    assert runtime_manifest["version"] == release_version
+    if runtime_manifest_path.is_file():
+        runtime_manifest = json.loads(runtime_manifest_path.read_text(encoding="utf-8-sig"))
+        assert runtime_manifest["version"] == release_version
+        assert runtime_manifest["runtime_id"] == runtime_contract["runtime_id"]
+    assert runtime_contract["schema_version"] == 1
+    assert len(runtime_contract["runtime_id"]) == 64
 
     local_app_resource = next(
         item for item in electron_package["build"]["extraResources"] if item.get("to") == "local_app"

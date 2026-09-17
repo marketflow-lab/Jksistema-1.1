@@ -4,6 +4,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 const { validateLocalAppManifestAtRoot } = require('./local-app-manifest');
+const { loadRuntimeContract } = require('./installer-runtime-contract');
 
 const appDir = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(appDir, '..');
@@ -184,6 +185,12 @@ function validateOfflineArtifacts(packageRoot, failures, sourceLayout = false) {
   for (const wheel of wheelManifest.wheels || []) validateManifestEntry(wheelDir, wheel, 'wheelhouse', failures);
 
   const runtime = readJson(runtimeManifestPath);
+  let runtimeContract = null;
+  try {
+    ({ contract: runtimeContract } = loadRuntimeContract(packageRoot));
+  } catch (err) {
+    failures.push(err && err.message ? err.message : String(err));
+  }
   const versions = readJson(packagedRuntimeVersionsPath);
   const centralVersions = readJson(runtimeVersionsPath);
   if (JSON.stringify(versions) !== JSON.stringify(centralVersions)) {
@@ -193,6 +200,12 @@ function validateOfflineArtifacts(packageRoot, failures, sourceLayout = false) {
   const runtimeVersion = String(runtime.version || '').trim();
   if (!runtimeVersion || runtimeVersion !== expectedAppVersion) {
     failures.push(`Versao do runtime offline divergente: esperado ${expectedAppVersion}, encontrado ${runtimeVersion || 'ausente'}`);
+  }
+  if (runtimeContract && String(runtime.runtime_id || '').toLowerCase() !== runtimeContract.runtime_id) {
+    failures.push('runtime_id do manifesto offline diverge do contrato imutavel');
+  }
+  if (runtimeContract && sha256File(wheelManifestPath) !== runtimeContract.wheelhouse.manifest_sha256) {
+    failures.push('Manifesto do wheelhouse diverge do contrato imutavel');
   }
   const expectedPython = versions.python || {};
   const runtimePython = runtime.python || {};
@@ -260,6 +273,12 @@ function validateOfflineArtifacts(packageRoot, failures, sourceLayout = false) {
   const modelRoot = sourceLayout
     ? path.join(packageRoot, '.installer_runtime', 'black_jhon', 'faster-whisper-small')
     : path.join(packageRoot, 'black_jhon_runtime', 'faster-whisper-small');
+  if (runtimeContract) {
+    const modelManifest = path.join(modelRoot, 'model-manifest.json');
+    if (!fileExists(modelManifest) || sha256File(modelManifest) !== runtimeContract.whisper.manifest_sha256) {
+      failures.push('Manifesto Whisper diverge do contrato imutavel');
+    }
+  }
   for (const entry of runtime.whisper && runtime.whisper.files || []) {
     validateManifestEntry(modelRoot, entry, 'Whisper Small', failures);
   }

@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "platform": "win32-x64",
+  "runtime_id": "d20e840199916c287a69f26e0ac478b16f6d98fcb704c48883c2ed6bd4cd601b",
+  "identity_order": [
+    "python.portable.tree_sha256",
+    "wheelhouse.requirements_sha256",
+    "wheelhouse.manifest_sha256",
+    "visual_cpp.sha256",
+    "whisper.manifest_sha256"
+  ],
+  "python": {
+    "version": "3.14.6",
+    "abi": "cp314",
+    "installer": {
+      "path": "python-3.14.6-amd64.exe",
+      "size": 30774112,
+      "sha256": "14b3e9a710a3fcf0bd9b55ab6b60412bd91227563f813fc49040cabc0209e0bd"
+    },
+    "portable": {
+      "path": "portable",
+      "file_count": 2125,
+      "total_size": 49431142,
+      "tree_sha256": "abb169e5f6c422761af643df722192a245f827ea3515aa7535cc3725f932b096"
+    }
+  },
+  "wheelhouse": {
+    "requirements_sha256": "26f680cf3026a720966b090db5b51b5d37aea91fc44f55776b383bffe8960708",
+    "manifest_sha256": "3d9019a31ee2072d14bbdf515d613b8ebaeb69ad55acd0377bcddd3cc856d29b",
+    "generated_at": "2026-08-24T13:51:18Z",
+    "wheel_count": 127
+  },
+  "visual_cpp": {
+    "path": "VC_redist.x64.exe",
+    "size": 18731856,
+    "sha256": "843068991daaa1f73ad9f6239bce4d0f6a07a51f18c37ea2a867e9beca71295c"
+  },
+  "whisper": {
+    "model": "small",
+    "engine": "faster-whisper==1.2.1",
+    "revision": "536b0662742c02347bc0e980a01041f333bce120",
+    "downloaded_at": "2026-07-10T18:37:34Z",
+    "total_bytes": 486213474,
+    "manifest_sha256": "04e3a38f7ff90b7fc69ddda6f5e08e083292039751ec0874ca5456fc3384c7f8",
+    "files": [
+      {
+        "path": "CACHEDIR.TAG",
+        "size": 195,
+        "sha256": "e8893e2dcb3f4545ef67a0a5b7b769113d38eef1aa61c7c7ba14659b02af955f"
+      },
+      {
+        "path": "models--Systran--faster-whisper-small/refs/main",
+        "size": 40,
+        "sha256": "8d5d066ac370fbf2b2921929949086f12e8466dacb5269c2d4bef92de48844c9"
+      },
+      {
+        "path": "models--Systran--faster-whisper-small/snapshots/536b0662742c02347bc0e980a01041f333bce120/config.json",
+        "size": 2370,
+        "sha256": "b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828"
+      },
+      {
+        "path": "models--Systran--faster-whisper-small/snapshots/536b0662742c02347bc0e980a01041f333bce120/model.bin",
+        "size": 483546902,
+        "sha256": "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671"
+      },
+      {
+        "path": "models--Systran--faster-whisper-small/snapshots/536b0662742c02347bc0e980a01041f333bce120/tokenizer.json",
+        "size": 2203239,
+        "sha256": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab"
+      },
+      {
+        "path": "models--Systran--faster-whisper-small/snapshots/536b0662742c02347bc0e980a01041f333bce120/vocabulary.txt",
+        "size": 459861,
+        "sha256": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913"
+      },
+      {
+        "path": "models--Systran--faster-whisper-small/trees/536b0662742c02347bc0e980a01041f333bce120.json",
+        "size": 867,
+        "sha256": "2c2a0eab9d9f5cb5b4585555f2dfd24e40ea4d6503560b99d2624c569be39b53"
+      }
+    ]
+  },
+  "baseline_full_installer": {
+    "release_tag": "v1.0.142",
+    "asset_name": "JK-Sistema-Cliente-Setup-1.0.142.exe"
+  }
+}
