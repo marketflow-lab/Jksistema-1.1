@@ -61,6 +61,8 @@ def resolver_loja_ativa_para_leitura(
     client_id: str,
     loja_referencia: Any = "",
     store_id: Any = "",
+    *,
+    lojas: Iterable[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Resolve a identidade imutavel da loja sem escolher nomes ambiguos.
 
@@ -69,7 +71,11 @@ def resolver_loja_ativa_para_leitura(
     ativa do tenant.
     """
 
-    lojas = _lojas_atuais(client_id)
+    lojas_ativas = (
+        _lojas_atuais(client_id)
+        if lojas is None
+        else [dict(loja) for loja in lojas if isinstance(loja, dict)]
+    )
     store_id_alvo = str(store_id or "").strip()
     referencia = str(loja_referencia or "").strip()
     referencia_norm = _normalizar_loja_leitura(referencia)
@@ -77,13 +83,13 @@ def resolver_loja_ativa_para_leitura(
     if store_id_alvo:
         candidatas = [
             loja
-            for loja in lojas
+            for loja in lojas_ativas
             if str(loja.get("store_id") or "").strip() == store_id_alvo
         ]
     else:
         candidatas = [
             loja
-            for loja in lojas
+            for loja in lojas_ativas
             if referencia_norm
             and any(
                 _normalizar_loja_leitura(alias) == referencia_norm

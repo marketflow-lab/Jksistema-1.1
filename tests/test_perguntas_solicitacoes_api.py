@@ -351,7 +351,7 @@ def test_job_identity_resolution_uses_exact_store_id_for_homonymous_stores(
     monkeypatch.setattr(
         cadastro_compatibilidade,
         "resolver_loja_ativa_para_leitura",
-        lambda client_id, loja, store_id: {
+        lambda client_id, loja, store_id, **_kwargs: {
             "store_id": store_id,
             "nome": loja,
         }
@@ -369,6 +369,54 @@ def test_job_identity_resolution_uses_exact_store_id_for_homonymous_stores(
     assert identity == {
         "store_id": "store-beta",
         "seller_id": "seller-beta",
+        "site_id": "MLB",
+    }
+
+
+def test_job_identity_uses_published_snapshot_while_canonical_store_is_busy(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    def canonical_loader(_client_id: str):
+        raise AssertionError("a geracao nao deve aguardar o lock canonico de lojas")
+
+    def snapshot_loader(client_id: str):
+        calls.append(client_id)
+        return [
+            {
+                "store_id": "store-alpha",
+                "nome": "Loja",
+                "integracoes": {
+                    "mercadolivre": {
+                        "user_id": "seller-alpha",
+                        "site_id": "MLB",
+                    }
+                },
+            }
+        ]
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_RUNTIME",
+        SimpleNamespace(
+            carregar_lojas=canonical_loader,
+            carregar_lojas_snapshot=snapshot_loader,
+        ),
+    )
+
+    identity = orchestrator._resolve_job_store_identity(
+        "tenant-a",
+        "Loja",
+        store_id="store-alpha",
+        seller_id="seller-alpha",
+        site_id="MLB",
+    )
+
+    assert calls == ["tenant-a"]
+    assert identity == {
+        "store_id": "store-alpha",
+        "seller_id": "seller-alpha",
         "site_id": "MLB",
     }
 
@@ -394,7 +442,7 @@ def test_job_identity_accepts_authenticated_site_when_local_site_is_blank(
     monkeypatch.setattr(
         cadastro_compatibilidade,
         "resolver_loja_ativa_para_leitura",
-        lambda client_id, loja, store_id: {
+        lambda client_id, loja, store_id, **_kwargs: {
             "store_id": store_id,
             "nome": loja,
         }
@@ -475,7 +523,10 @@ def test_job_identity_rejects_untrusted_site_as_typed_identity_error(
     monkeypatch.setattr(
         cadastro_compatibilidade,
         "resolver_loja_ativa_para_leitura",
-        lambda _client_id, loja, store_id: {"store_id": store_id, "nome": loja},
+        lambda _client_id, loja, store_id, **_kwargs: {
+            "store_id": store_id,
+            "nome": loja,
+        },
     )
 
     with pytest.raises(orchestrator.GenerationContextUnavailable) as caught:

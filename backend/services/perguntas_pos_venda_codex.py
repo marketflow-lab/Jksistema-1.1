@@ -245,8 +245,18 @@ def _resolve_job_store_identity(
         resolver_loja_ativa_para_leitura,
     )
 
+    runtime = _require_runtime()
+    loader = getattr(runtime, "carregar_lojas_snapshot", None)
+    if not callable(loader):
+        loader = getattr(runtime, "carregar_lojas", None)
     try:
-        resolved = resolver_loja_ativa_para_leitura(client_id, store, store_id)
+        rows = loader(client_id) if callable(loader) else []
+        resolved = resolver_loja_ativa_para_leitura(
+            client_id,
+            store,
+            store_id,
+            lojas=rows,
+        )
     except (OSError, RuntimeError):
         if str(store_id or "").strip():
             raise identity_mismatch("store_identity_unconfirmed")
@@ -256,9 +266,6 @@ def _resolve_job_store_identity(
         if str(store_id or "").strip():
             raise identity_mismatch("store_identity_unconfirmed")
         return {"store_id": "", "seller_id": "", "site_id": ""}
-    runtime = _require_runtime()
-    loader = getattr(runtime, "carregar_lojas", None)
-    rows = loader(client_id) if callable(loader) else []
     matches = [
         row for row in (rows or [])
         if isinstance(row, dict) and str(row.get("store_id") or "").strip() == resolved_store_id
