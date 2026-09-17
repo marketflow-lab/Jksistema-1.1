@@ -86,7 +86,12 @@ async function fixture(browser) {
         const transient = control.detailErrors.shift();
         if (transient) return route.fulfill({status: transient, contentType: 'application/json', headers: {'X-JK-Error-Scope': 'resource', 'X-JK-Retryable': 'true', 'Retry-After': control.retryAfter}, body: JSON.stringify({detail: 'Falha transitória sintética'})}).catch(() => {});
         if (control.detailDeny) return route.fulfill({ status: 403, contentType: 'application/json', headers: {'X-JK-Error-Scope': 'resource', 'X-JK-Retryable': 'false'}, body: JSON.stringify({ detail: 'Recurso indisponível' }) }).catch(() => {});
-        return json({ question: { text: 'Pergunta sintética de teste', buyer_name: '', buyer_question_chat: [], buyer_question_history_count: 1 }, store_id: call.store, partial: !control.omitComponents, stale: false,
+        const buyerQuestionChat = Array.from({ length: 12 }, (_, index) => ({
+          role: index % 2 === 0 ? 'buyer' : 'seller',
+          text: `Mensagem sintética ${index + 1} do histórico deste anúncio`,
+          date: new Date(Date.UTC(2026, 8, 8, 11, index)).toISOString(),
+        }));
+        return json({ question: { text: 'Pergunta sintética de teste', buyer_name: 'Comprador fixture', buyer_question_chat: buyerQuestionChat, buyer_question_history_count: 6 }, store_id: call.store, partial: !control.omitComponents, stale: false,
           history_truncated: control.history === 'ready', components: control.omitComponents ? undefined : { question: {state: 'ready'}, history: {state: control.history, retryable: false}, buyer: {state: 'unavailable', retryable: false} } });
       }
       if (url.pathname.endsWith('/perguntas/resumo')) return json({ lojas: stores.map(s => ({ ...s, perguntas: s === stores[10] ? null : control.counts[s.store_id] ?? 60, total: s === stores[10] ? null : 60, status_resumo: { UNANSWERED: 60 }, erro: s === stores[10] ? 'Falha sintética' : null })), partial: true });
@@ -131,6 +136,7 @@ async function main() {
     if (baseline) assert(slow.end, 'baseline espera pela loja lenta');
     else assert(!slow?.end, 'primeira lista deve aparecer antes da loja lenta');
     await page.waitForFunction(() => !state.carregandoPerguntas);
+    if (!baseline) await verifyResponsiveLayout(f);
     if (!baseline) {
       const summaryText = await page.locator('#perguntas-summary').innerText();
       assert.match(summaryText, /10\s*Contas/, 'contas deve somar somente consultas bem-sucedidas');
@@ -160,6 +166,118 @@ async function main() {
     await browser.close();
     await new Promise(resolve => server.close(resolve));
   }
+}
+
+async function verifyResponsiveLayout({ page }) {
+  await page.waitForFunction(() => document.querySelectorAll('.question-chat-bubble').length === 12);
+  await page.setViewportSize({ width: 1033, height: 657 });
+  await delay(50);
+  const desktop = await page.evaluate(() => {
+    const container = document.querySelector('.container');
+    const panel = document.querySelector('.panel');
+    const layout = document.querySelector('.questions-inbox-layout');
+    const left = document.querySelector('.questions-list-pane');
+    const right = document.querySelector('.question-detail-pane');
+    const rect = element => element.getBoundingClientRect();
+    left.scrollTop = 0;
+    right.scrollTop = 0;
+    left.scrollTop = left.scrollHeight;
+    const leftAfter = left.scrollTop;
+    const rightBefore = right.scrollTop;
+    right.scrollTop = right.scrollHeight;
+    return {
+      viewport: { width: innerWidth, height: innerHeight },
+      container: rect(container),
+      panel: rect(panel),
+      layout: rect(layout),
+      left: { rect: rect(left), clientHeight: left.clientHeight, scrollHeight: left.scrollHeight, scrollTop: leftAfter, afterRightScroll: left.scrollTop },
+      right: { rect: rect(right), clientHeight: right.clientHeight, scrollHeight: right.scrollHeight, scrollTop: right.scrollTop, before: rightBefore },
+      leftOverflow: getComputedStyle(left).overflowY,
+      rightOverflow: getComputedStyle(right).overflowY,
+      leftScrollbarWidth: getComputedStyle(left).scrollbarWidth,
+      bodyScrollWidth: document.documentElement.scrollWidth,
+      bodyScrollHeight: document.documentElement.scrollHeight,
+    };
+  });
+  assert(Math.abs(desktop.container.width - desktop.viewport.width) <= 1, 'container deve acompanhar toda a largura da viewport');
+  assert(Math.abs(desktop.container.height - desktop.viewport.height) <= 1, 'container deve acompanhar toda a altura da viewport');
+  assert(desktop.panel.bottom <= desktop.viewport.height + 1, 'painel deve terminar dentro da viewport');
+  assert(desktop.bodyScrollWidth <= desktop.viewport.width, 'layout desktop não pode criar rolagem horizontal no documento');
+  assert(desktop.bodyScrollHeight <= desktop.viewport.height, 'layout desktop não pode depender da rolagem do documento');
+  assert(Math.abs(desktop.left.rect.y - desktop.right.rect.y) <= 1 && desktop.right.rect.x > desktop.left.rect.x, 'fila e detalhe devem permanecer lado a lado');
+  assert.strictEqual(desktop.leftOverflow, 'auto');
+  assert.strictEqual(desktop.rightOverflow, 'auto');
+  assert.strictEqual(desktop.leftScrollbarWidth, 'thin', 'scrollbar da fila deve usar largura discreta');
+  assert(desktop.left.scrollHeight > desktop.left.clientHeight && desktop.left.scrollTop > 0, 'fila deve rolar dentro da própria coluna');
+  assert(desktop.right.scrollHeight > desktop.right.clientHeight && desktop.right.scrollTop > 0, 'mensagens devem rolar dentro da própria coluna');
+  assert.strictEqual(desktop.right.before, 0, 'rolagem da fila não pode mover as mensagens');
+  assert.strictEqual(desktop.left.afterRightScroll, desktop.left.scrollTop, 'rolagem das mensagens não pode mover a fila');
+
+  await page.setViewportSize({ width: 800, height: 360 });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await delay(50);
+  const lowViewport = await page.evaluate(() => {
+    const tab = document.querySelector('#aba-perguntas').getBoundingClientRect();
+    const left = document.querySelector('.questions-list-pane').getBoundingClientRect();
+    const right = document.querySelector('.question-detail-pane').getBoundingClientRect();
+    return {
+      bodyOverflow: getComputedStyle(document.body).overflowY,
+      leftOverflow: getComputedStyle(document.querySelector('.questions-list-pane')).overflowY,
+      rightOverflow: getComputedStyle(document.querySelector('.question-detail-pane')).overflowY,
+      tabHeight: tab.height,
+      sideBySide: Math.abs(left.y - right.y) <= 1 && right.x > left.x,
+      bodyScrollHeight: document.documentElement.scrollHeight,
+      bodyScrollWidth: document.documentElement.scrollWidth,
+      viewportHeight: innerHeight,
+      viewportWidth: innerWidth,
+    };
+  });
+  assert.strictEqual(lowViewport.bodyOverflow, 'auto', 'janela baixa deve usar a rolagem da página');
+  assert.strictEqual(lowViewport.leftOverflow, 'visible');
+  assert.strictEqual(lowViewport.rightOverflow, 'visible');
+  assert(lowViewport.tabHeight > 0 && lowViewport.sideBySide, 'janela baixa deve manter perguntas acessíveis em duas colunas');
+  assert(lowViewport.bodyScrollHeight > lowViewport.viewportHeight, 'janela baixa deve permitir alcançar todo o conteúdo');
+  assert(lowViewport.bodyScrollWidth <= lowViewport.viewportWidth, 'janela baixa não pode criar rolagem horizontal');
+
+  await page.setViewportSize({ width: 360, height: 480 });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await delay(50);
+  const mobile = await page.evaluate(() => {
+    const tab = document.querySelector('#aba-perguntas');
+    const left = document.querySelector('.questions-list-pane');
+    const right = document.querySelector('.question-detail-pane');
+    const leftRect = left.getBoundingClientRect();
+    const rightRect = right.getBoundingClientRect();
+    return {
+      tabOverflow: getComputedStyle(tab).overflowY,
+      bodyOverflow: getComputedStyle(document.body).overflowY,
+      leftOverflow: getComputedStyle(left).overflowY,
+      rightOverflow: getComputedStyle(right).overflowY,
+      stacked: rightRect.top >= leftRect.bottom - 1,
+      tabHeight: tab.getBoundingClientRect().height,
+      bodyScrollWidth: document.documentElement.scrollWidth,
+      bodyScrollHeight: document.documentElement.scrollHeight,
+      viewportHeight: innerHeight,
+      viewportWidth: innerWidth,
+    };
+  });
+  assert.strictEqual(mobile.tabOverflow, 'visible', 'em tela estreita a aba deve acompanhar a rolagem da página');
+  assert.strictEqual(mobile.bodyOverflow, 'auto', 'em tela estreita a página deve permanecer rolável');
+  assert.strictEqual(mobile.leftOverflow, 'visible');
+  assert.strictEqual(mobile.rightOverflow, 'visible');
+  assert(mobile.stacked, 'fila e detalhe devem ser empilhados em tela estreita');
+  assert(mobile.tabHeight > 0, 'aba de perguntas não pode ser comprimida pelo cabeçalho');
+  assert(mobile.bodyScrollHeight > mobile.viewportHeight, 'conteúdo empilhado deve continuar acessível pela rolagem da página');
+  assert(mobile.bodyScrollWidth <= mobile.viewportWidth, 'layout móvel não pode criar rolagem horizontal');
+  const mobileReach = await page.evaluate(() => {
+    window.scrollTo(0, document.documentElement.scrollHeight);
+    const detail = document.querySelector('.question-detail-pane').getBoundingClientRect();
+    return { scrollY, detailTop: detail.top, detailBottom: detail.bottom, viewportHeight: innerHeight };
+  });
+  assert(mobileReach.scrollY > 0, 'página estreita deve aceitar rolagem vertical');
+  assert(mobileReach.detailTop < mobileReach.viewportHeight && mobileReach.detailBottom > 0, 'detalhe deve ser alcançável no fim da página');
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await delay(50);
 }
 
 async function verifyPager() {
