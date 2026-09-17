@@ -13,6 +13,7 @@ const PAYLOAD_STATE_RELATIVE_PATH = path.join('info', 'runtime-payload-state.jso
 const WHISPER_PAYLOAD_ROOT = 'black_jhon_runtime';
 const WHISPER_MODEL_RELATIVE = `${WHISPER_PAYLOAD_ROOT}/faster-whisper-small`;
 const WHISPER_MODEL_MANIFEST = 'model-manifest.json';
+const INSTALLER_RUNTIME_LOCK = 'installer-runtime.lock.json';
 const SAFE_VERSION_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,119}$/;
 const SAFE_TRANSACTION_RE = /^[A-Za-z0-9_-]{1,96}$/;
 const PRESERVED_TOP_LEVEL = new Set([
@@ -552,12 +553,59 @@ function recoverInterruptedMaterialization(targetDir) {
     }
 }
 
+function loadWhisperContractDescriptor(sourceRoot, modelDir, manifestPath) {
+    const contractPath = path.join(sourceRoot, INSTALLER_RUNTIME_LOCK);
+    const contract = readJson(contractPath);
+    const whisper = contract && contract.whisper;
+    if (
+        !contract
+        || Number(contract.schema_version) !== 1
+        || !/^[a-f0-9]{64}$/.test(String(contract.runtime_id || '').trim().toLowerCase())
+        || !whisper
+        || !Array.isArray(whisper.files)
+        || !whisper.files.length
+        || !/^[a-f0-9]{64}$/.test(String(whisper.manifest_sha256 || '').trim().toLowerCase())
+    ) {
+        throw materializationError(
+            'WHISPER_MANIFEST_MISSING',
+            'Payload Whisper ausente e contrato de runtime invalido. Reinstale usando o instalador completo.'
+        );
+    }
+    const files = [];
+    const seen = new Set();
+    for (const entry of whisper.files) {
+        const relative = normalizePayloadRelativePath(entry && entry.path);
+        const expectedHash = String(entry && entry.sha256 || '').trim().toLowerCase();
+        const expectedSize = Number(entry && entry.size);
+        if (
+            seen.has(relative.toLowerCase())
+            || !/^[a-f0-9]{64}$/.test(expectedHash)
+            || !Number.isSafeInteger(expectedSize)
+            || expectedSize < 0
+        ) {
+            throw materializationError('WHISPER_FILE_INVALID', `Entrada invalida no contrato Whisper: ${relative}`);
+        }
+        seen.add(relative.toLowerCase());
+        files.push({ path: relative, size: expectedSize, sha256: expectedHash });
+    }
+    files.sort((left, right) => left.path.localeCompare(right.path, 'en'));
+    return {
+        modelDir,
+        manifestPath,
+        manifestSha256: String(whisper.manifest_sha256).trim().toLowerCase(),
+        runtimeId: String(contract.runtime_id).trim().toLowerCase(),
+        sourceAvailable: false,
+        verifyTargetHashes: true,
+        files
+    };
+}
+
 function loadWhisperPayloadDescriptor(sourceDir, verifyHashes = false) {
     const sourceRoot = path.resolve(sourceDir);
     const modelDir = resolveInside(sourceRoot, WHISPER_MODEL_RELATIVE);
     const manifestPath = path.join(modelDir, WHISPER_MODEL_MANIFEST);
     if (!pathExists(manifestPath)) {
-        throw materializationError('WHISPER_MANIFEST_MISSING', 'Manifesto do modelo Whisper ausente no pacote.');
+        return loadWhisperContractDescriptor(sourceRoot, modelDir, manifestPath);
     }
     assertPathComponentsNotLinks(sourceRoot, WHISPER_MODEL_RELATIVE);
     const manifest = readJson(manifestPath);
@@ -601,6 +649,8 @@ function loadWhisperPayloadDescriptor(sourceDir, verifyHashes = false) {
         modelDir,
         manifestPath,
         manifestSha256: sha256File(manifestPath),
+        sourceAvailable: true,
+        verifyTargetHashes: false,
         files
     };
 }
@@ -615,14 +665,80 @@ function whisperPayloadLooksCurrent(targetDir, descriptor) {
         const expectedFiles = [...descriptor.files.map(entry => entry.path), WHISPER_MODEL_MANIFEST]
             .sort((left, right) => left.localeCompare(right, 'en'));
         if (!arraysEqual(actualFiles, expectedFiles)) return false;
-        return descriptor.files.every(entry => {
+        const verifiedFiles = [];
+        const sizesMatch = descriptor.files.every(entry => {
             const candidate = resolveInside(targetModel, entry.path);
             const stat = assertNotLink(candidate, 'Arquivo do payload materializado');
+            verifiedFiles.push({
+                path: entry.path,
+                size: stat.size,
+                mtime_ms: stat.mtimeMs,
+                ctime_ms: stat.ctimeMs
+            });
             return stat.isFile() && stat.size === entry.size;
         });
+        if (!sizesMatch || !descriptor.verifyTargetHashes) return sizesMatch;
+
+        const snapshot = JSON.stringify(verifiedFiles);
+        const state = readJson(payloadStatePath(targetDir));
+        if (
+            state
+            && state.runtime_id === descriptor.runtimeId
+            && state.whisper_manifest_sha256 === descriptor.manifestSha256
+            && JSON.stringify(state.verified_files || []) === snapshot
+        ) {
+            return true;
+        }
+
+        const cacheKey = path.resolve(targetDir).toLowerCase();
+        const cached = whisperHashVerificationCache.get(cacheKey);
+        if (
+            cached
+            && cached.runtimeId === descriptor.runtimeId
+            && cached.manifestSha256 === descriptor.manifestSha256
+            && cached.snapshot === snapshot
+        ) {
+            return true;
+        }
+
+        const hashesMatch = descriptor.files.every(entry => (
+            sha256File(resolveInside(targetModel, entry.path)) === entry.sha256
+        ));
+        if (hashesMatch) {
+            whisperHashVerificationCache.set(cacheKey, {
+                runtimeId: descriptor.runtimeId,
+                manifestSha256: descriptor.manifestSha256,
+                snapshot
+            });
+        }
+        return hashesMatch;
     } catch (_err) {
         return false;
     }
+}
+
+const whisperHashVerificationCache = new Map();
+
+function payloadStateForDescriptor(targetDir, descriptor) {
+    const state = {
+        schema_version: 1,
+        whisper_manifest_sha256: descriptor.manifestSha256,
+        file_count: descriptor.files.length,
+        verified_at: new Date().toISOString()
+    };
+    if (!descriptor.verifyTargetHashes) return state;
+    const targetModel = resolveInside(targetDir, WHISPER_MODEL_RELATIVE);
+    state.runtime_id = descriptor.runtimeId;
+    state.verified_files = descriptor.files.map(entry => {
+        const stat = assertNotLink(resolveInside(targetModel, entry.path), 'Arquivo do payload materializado');
+        return {
+            path: entry.path,
+            size: stat.size,
+            mtime_ms: stat.mtimeMs,
+            ctime_ms: stat.ctimeMs
+        };
+    });
+    return state;
 }
 
 function payloadStatePath(targetDir) {
@@ -710,13 +826,14 @@ function ensureImmutableRuntimePayloads(options) {
         recoverPayloadJournalUnderLock(targetDir);
         let descriptor = loadWhisperPayloadDescriptor(sourceDir, false);
         if (whisperPayloadLooksCurrent(targetDir, descriptor)) {
-            writePayloadState(targetDir, {
-                schema_version: 1,
-                whisper_manifest_sha256: descriptor.manifestSha256,
-                file_count: descriptor.files.length,
-                verified_at: new Date().toISOString()
-            });
+            writePayloadState(targetDir, payloadStateForDescriptor(targetDir, descriptor));
             return { changed: false, adopted: true, manifestSha256: descriptor.manifestSha256 };
+        }
+        if (!descriptor.sourceAvailable) {
+            throw materializationError(
+                'RUNTIME_PAYLOAD_REQUIRES_FULL_INSTALLER',
+                'O runtime Whisper instalado esta ausente ou divergente. Reinstale usando o instalador completo.'
+            );
         }
         descriptor = loadWhisperPayloadDescriptor(sourceDir, true);
         const previousState = readJson(payloadStatePath(targetDir));
@@ -766,12 +883,7 @@ function ensureImmutableRuntimePayloads(options) {
         if (!whisperPayloadLooksCurrent(targetDir, descriptor)) {
             throw materializationError('WHISPER_TARGET_INVALID', 'Payload Whisper materializado ficou invalido.');
         }
-        writePayloadState(targetDir, {
-            schema_version: 1,
-            whisper_manifest_sha256: descriptor.manifestSha256,
-            file_count: descriptor.files.length,
-            verified_at: new Date().toISOString()
-        });
+        writePayloadState(targetDir, payloadStateForDescriptor(targetDir, descriptor));
         journal.phase = 'verified';
         journal.verified_at = new Date().toISOString();
         atomicWriteJson(journalPath, journal);

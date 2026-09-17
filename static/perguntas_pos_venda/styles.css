@@ -19,16 +19,21 @@
 
         * { box-sizing: border-box; }
 
+        html,
+        body {
+            height: 100%;
+        }
+
         body {
             margin: 0;
-            min-height: 100vh;
+            min-height: 0;
             font-family: 'Outfit', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             color: var(--text);
             background:
                 radial-gradient(circle at 8% -4%, rgba(56, 212, 255, 0.24), transparent 34%),
                 radial-gradient(circle at 95% 12%, rgba(72, 224, 164, 0.12), transparent 28%),
                 linear-gradient(120deg, var(--bg-a), var(--bg-b) 48%, var(--bg-c));
-            overflow-x: hidden;
+            overflow: hidden;
         }
 
         body::before {
@@ -46,9 +51,15 @@
         .container {
             position: relative;
             z-index: 1;
-            max-width: 1220px;
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+            width: 100%;
+            max-width: none;
+            height: 100vh;
+            height: 100dvh;
+            min-height: 0;
             margin: 0 auto;
-            padding: 26px;
+            padding: clamp(12px, 1.4vw, 22px);
         }
 
         .topbar {
@@ -111,6 +122,10 @@
         }
 
         .panel {
+            display: flex;
+            min-width: 0;
+            min-height: 0;
+            flex-direction: column;
             border: 1px solid var(--border);
             border-radius: 16px;
             background: linear-gradient(180deg, var(--panel), rgba(10, 19, 35, 0.94));
@@ -119,11 +134,13 @@
         }
 
         .module-store-header {
+            flex: 0 0 auto;
             padding: 12px 24px 2px;
         }
 
         .tab-control-row {
             display: flex;
+            flex: 0 0 auto;
             align-items: center;
             justify-content: space-between;
             gap: 8px;
@@ -277,7 +294,18 @@
             padding-top: 8px;
         }
 
-        .tab-content.active { display: block; }
+        .tab-content.active {
+            display: block;
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow-y: auto;
+        }
+
+        #aba-perguntas.tab-content.active {
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+            overflow: hidden;
+        }
 
         .section-head {
             display: flex;
@@ -374,6 +402,13 @@
             overflow-wrap: anywhere;
         }
 
+        .store-card-status {
+            display: inline-flex;
+            flex: 0 0 auto;
+            align-items: center;
+            gap: 8px;
+        }
+
         .store-meta {
             display: flex;
             flex-wrap: wrap;
@@ -407,10 +442,9 @@
         }
 
         .store-notifications {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
-            margin-top: 8px;
+            display: inline-flex;
+            flex: 0 0 auto;
+            align-items: center;
         }
 
         .store-notifications:empty {
@@ -1025,17 +1059,22 @@
 
         .questions-inbox-layout {
             display: grid;
-            grid-template-columns: minmax(290px, 320px) minmax(0, 1fr);
+            grid-template-columns: minmax(280px, clamp(300px, 27vw, 360px)) minmax(0, 1fr);
+            height: 100%;
+            min-height: 0;
             border: 1px solid rgba(104, 168, 255, 0.22);
             border-radius: 8px;
             background: rgba(7, 18, 28, 0.56);
-            overflow: visible;
+            overflow: hidden;
         }
 
         .questions-list-pane {
             min-width: 0;
+            min-height: 0;
             border-right: 1px solid rgba(104, 168, 255, 0.22);
             background: rgba(4, 12, 20, 0.42);
+            overflow-y: auto;
+            overscroll-behavior: contain;
         }
 
         .questions-list-pane .question-list {
@@ -1139,7 +1178,38 @@
 
         .question-detail-pane {
             min-width: 0;
+            min-height: 0;
             background: rgba(13, 24, 36, 0.56);
+            overflow-y: auto;
+            overscroll-behavior: contain;
+        }
+
+        .questions-list-pane,
+        .question-detail-pane {
+            scrollbar-gutter: stable;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(156, 183, 215, 0.34) transparent;
+        }
+
+        .questions-list-pane::-webkit-scrollbar,
+        .question-detail-pane::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .questions-list-pane::-webkit-scrollbar-track,
+        .question-detail-pane::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .questions-list-pane::-webkit-scrollbar-thumb,
+        .question-detail-pane::-webkit-scrollbar-thumb {
+            border-radius: 999px;
+            background: rgba(156, 183, 215, 0.34);
+        }
+
+        .questions-list-pane::-webkit-scrollbar-thumb:hover,
+        .question-detail-pane::-webkit-scrollbar-thumb:hover {
+            background: rgba(56, 212, 255, 0.5);
         }
 
         .question-detail-card {
@@ -2508,8 +2578,50 @@
 
         .hidden { display: none !important; }
 
+        @media (max-width: 1024px) {
+            .question-detail-body {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 720px), (max-height: 500px) {
+            html,
+            body {
+                height: auto;
+                min-height: 100%;
+            }
+            body {
+                overflow-x: hidden;
+                overflow-y: auto;
+            }
+            .container {
+                display: block;
+                height: auto;
+                min-height: 100vh;
+                min-height: 100dvh;
+            }
+            .tab-content.active {
+                flex: 0 0 auto;
+                overflow: visible;
+            }
+            #aba-perguntas.tab-content.active {
+                display: block;
+                overflow: visible;
+            }
+            .questions-inbox-layout {
+                height: auto;
+                overflow: visible;
+            }
+            .questions-list-pane,
+            .question-detail-pane {
+                overflow: visible;
+            }
+        }
+
         @media (max-width: 720px) {
-            .container { padding: 18px; }
+            .container {
+                padding: 12px;
+            }
             .topbar { align-items: stretch; flex-direction: column; }
             .top-actions { display: grid; grid-template-columns: 1fr 1fr; }
             .tab-control-row {

@@ -150,6 +150,8 @@ def _ml_pos_venda_anexar_perguntas_anuncio_comprador(
             for pergunta_raw in lote:
                 if not isinstance(pergunta_raw, dict):
                     continue
+                if str(pergunta_raw.get("item_id") or "").strip() != item_id:
+                    continue
                 comprador = pergunta_raw.get("from") if isinstance(pergunta_raw.get("from"), dict) else {}
                 if str(comprador.get("id") or "").strip() != buyer_id:
                     continue

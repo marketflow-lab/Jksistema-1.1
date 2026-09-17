@@ -25,6 +25,7 @@ LOCK_NAME = ".python-runtime-provision.lock"
 VENV_MARKER_NAME = ".jk-venv-ready.json"
 STATUS_RELATIVE_PATH = Path("info") / "python-runtime-status.json"
 VENV_BUILD_SENTINEL_RELATIVE_PATH = Path("info") / "python-runtime-venv-build.json"
+INSTALLER_RUNTIME_LOCK_NAME = "installer-runtime.lock.json"
 VENV_RENAME_RETRY_DELAYS = (0.5, 1.0, 2.0, 3.0, 4.0, 4.0)
 RUNTIME_COPY_RETRY_DELAYS = (0.5, 1.5)
 WINDOWS_RENAME_BUSY_ERRORS = frozenset({5, 32, 33})
@@ -689,6 +690,70 @@ def load_quick_reuse_metadata(
     pip health and imports remain the deep path's responsibility.
     """
 
+    contract_path = source_root / INSTALLER_RUNTIME_LOCK_NAME
+    if contract_path.is_file():
+        contract = read_json(contract_path, code="runtime_contract_invalid")
+        python = contract.get("python")
+        portable = python.get("portable") if isinstance(python, dict) else None
+        wheelhouse = contract.get("wheelhouse")
+        visual_cpp = contract.get("visual_cpp")
+        whisper = contract.get("whisper")
+        if (
+            contract.get("schema_version") != 1
+            or not isinstance(python, dict)
+            or not isinstance(portable, dict)
+            or not isinstance(wheelhouse, dict)
+            or not isinstance(visual_cpp, dict)
+            or not isinstance(whisper, dict)
+        ):
+            raise ProvisionError("runtime_contract_invalid", "Contrato de runtime incompleto.")
+        identity_parts = (
+            str(portable.get("tree_sha256") or "").lower(),
+            str(wheelhouse.get("requirements_sha256") or "").lower(),
+            str(wheelhouse.get("manifest_sha256") or "").lower(),
+            str(visual_cpp.get("sha256") or "").lower(),
+            str(whisper.get("manifest_sha256") or "").lower(),
+        )
+        if any(len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value) for value in identity_parts):
+            raise ProvisionError("runtime_contract_invalid", "Hashes do contrato de runtime sao invalidos.")
+        calculated_runtime_id = hashlib.sha256("\n".join(identity_parts).encode("utf-8")).hexdigest()
+        if str(contract.get("runtime_id") or "").lower() != calculated_runtime_id:
+            raise ProvisionError("runtime_contract_invalid", "runtime_id diverge dos componentes fixados.")
+        expected_portable = (
+            int(portable.get("file_count") or -1),
+            int(portable.get("total_size") or -1),
+            str(portable.get("tree_sha256") or "").lower(),
+        )
+        if (
+            str(python.get("version") or "") != spec.version
+            or str(python.get("abi") or "") != spec.abi
+            or expected_portable != spec.portable_inventory
+        ):
+            raise ProvisionError("runtime_contract_mismatch", "Contrato diverge do pin Python central.")
+        requirements = source_root / "requirements.txt"
+        if not requirements.is_file():
+            raise ProvisionError("requirements_missing", f"requirements.txt ausente em {source_root}")
+        requirements_hash = sha256_file(requirements)
+        if requirements_hash != identity_parts[1]:
+            raise ProvisionError("requirements_hash_mismatch", "requirements.txt diverge do contrato de runtime.")
+        expected = _marker_payload(
+            {
+                "file_count": expected_portable[0],
+                "total_size": expected_portable[1],
+                "tree_sha256": expected_portable[2],
+            },
+            {
+                "requirements_sha256": requirements_hash,
+                "wheel_manifest_sha256": identity_parts[2],
+                "wheel_count": int(wheelhouse.get("wheel_count") or -1),
+            },
+            spec,
+            runtime_id=calculated_runtime_id,
+        )
+        if expected["wheel_count"] <= 0:
+            raise ProvisionError("runtime_contract_invalid", "Quantidade de wheels invalida no contrato.")
+        return {"version": ""}, expected
+
     runtime_manifest = read_json(locate_runtime_manifest(source_root))
     python = runtime_manifest.get("python")
     if not isinstance(python, dict):
@@ -822,9 +887,13 @@ def load_quick_reuse_metadata(
 
 
 def _marker_payload(
-    runtime: dict[str, Any], wheelhouse: dict[str, Any], spec: RuntimeSpec
+    runtime: dict[str, Any],
+    wheelhouse: dict[str, Any],
+    spec: RuntimeSpec,
+    *,
+    runtime_id: str = "",
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "schema_version": 1,
         "state": "ready",
         "created_at": utc_now(),
@@ -835,6 +904,9 @@ def _marker_payload(
         "wheel_manifest_sha256": wheelhouse["wheel_manifest_sha256"],
         "wheel_count": wheelhouse["wheel_count"],
     }
+    if runtime_id:
+        payload["runtime_id"] = runtime_id
+    return payload
 
 
 def run_health_checks(
@@ -1012,6 +1084,13 @@ def try_quick_reuse(
                         "quick_reuse_metadata_mismatch",
                         f"Campo {field} do {label} diverge do pacote atual.",
                     )
+            metadata_runtime_id = str(metadata.get("runtime_id") or "").strip().lower()
+            expected_runtime_id = str(expected.get("runtime_id") or "").strip().lower()
+            if metadata_runtime_id and expected_runtime_id and metadata_runtime_id != expected_runtime_id:
+                raise ProvisionError(
+                    "quick_reuse_metadata_mismatch",
+                    f"runtime_id do {label} diverge do pacote atual.",
+                )
         if status.get("action") not in {"created", "reused", "quick_reused"}:
             raise ProvisionError("quick_reuse_metadata_mismatch", "Acao ready invalida no status.")
         if not str(marker.get("created_at") or "").strip():
@@ -1044,6 +1123,7 @@ def try_quick_reuse(
             **expected,
             "created_at": marker["created_at"],
         }
+        atomic_write_json(marker_path, result)
         write_status(target_root, "ready", spec, log_file=os.fspath(logger.path), **result)
         logger.write(result["message"])
         return result
@@ -1380,6 +1460,15 @@ def provision(
             quick_result = try_quick_reuse(source_root, target_root, spec, logger, command_timeout)
             if quick_result is not None:
                 return quick_result
+            if (
+                (source_root / INSTALLER_RUNTIME_LOCK_NAME).is_file()
+                and not python_executable(source_root / "python_runtime" / spec.windows_portable_path).is_file()
+            ):
+                raise ProvisionError(
+                    "runtime_requires_full_installer",
+                    "O runtime instalado esta ausente ou diverge do contrato. "
+                    "Reinstale usando o instalador completo.",
+                )
         write_status(
             target_root,
             "provisioning",
@@ -1398,7 +1487,17 @@ def provision(
             "total_size": portable_inventory[1],
             "tree_sha256": portable_inventory[2],
         }
-        marker = _marker_payload(portable_summary, wheelhouse, spec)
+        runtime_id = ""
+        if (source_root / INSTALLER_RUNTIME_LOCK_NAME).is_file():
+            _contract_manifest, contract_marker = load_quick_reuse_metadata(source_root, spec)
+            runtime_id = str(contract_marker.get("runtime_id") or "")
+            if wheelhouse["requirements_sha256"] != contract_marker["requirements_sha256"]:
+                raise ProvisionError("runtime_contract_mismatch", "Wheelhouse diverge do requirements fixado.")
+            if wheelhouse["wheel_manifest_sha256"] != contract_marker["wheel_manifest_sha256"]:
+                raise ProvisionError("runtime_contract_mismatch", "Manifesto do wheelhouse diverge do contrato.")
+            if wheelhouse["wheel_count"] != contract_marker["wheel_count"]:
+                raise ProvisionError("runtime_contract_mismatch", "Quantidade de wheels diverge do contrato.")
+        marker = _marker_payload(portable_summary, wheelhouse, spec, runtime_id=runtime_id)
         app_version = str(runtime_manifest.get("version") or "")
 
         runtime = target_root / ".python-runtime"

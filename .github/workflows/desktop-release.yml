@@ -1,0 +1,186 @@
+name: Desktop release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Tag da versao, por exemplo v1.0.143
+        required: true
+        type: string
+      release_mode:
+        description: App update reutiliza o runtime; runtime update gera o instalador completo
+        required: true
+        default: app-update
+        type: choice
+        options:
+          - app-update
+          - runtime-update
+      publish:
+        description: Publicar a GitHub Release depois de todos os gates
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and verify desktop artifacts
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      PYTHONUTF8: '1'
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\.cache\electron-builder
+
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@v4
+
+      - name: Validate release tag and package version
+        shell: pwsh
+        run: |
+          $package = Get-Content electron_app/package.json -Raw | ConvertFrom-Json
+          $expected = "v$($package.version)"
+          if ('${{ inputs.release_tag }}' -ne $expected) {
+            throw "Tag solicitada '${{ inputs.release_tag }}' diverge da versao do pacote '$expected'."
+          }
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: electron_app/package-lock.json
+
+      - name: Install Electron dependencies
+        run: npm.cmd --prefix electron_app ci
+
+      - name: Restore packaged Firebase presence configuration
+        shell: pwsh
+        env:
+          JK_FIREBASE_PRESENCE_ENV_B64: ${{ secrets.JK_FIREBASE_PRESENCE_ENV_B64 }}
+        run: |
+          if (-not $env:JK_FIREBASE_PRESENCE_ENV_B64) {
+            throw 'Secret JK_FIREBASE_PRESENCE_ENV_B64 ausente no repositorio.'
+          }
+          [IO.File]::WriteAllBytes(
+            (Join-Path $env:GITHUB_WORKSPACE 'firebase-presence.env'),
+            [Convert]::FromBase64String($env:JK_FIREBASE_PRESENCE_ENV_B64)
+          )
+
+      - name: Restore Electron builder cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/electron-builder
+          key: electron-builder-${{ runner.os }}-${{ hashFiles('electron_app/package-lock.json') }}
+
+      - name: Restore immutable runtime cache
+        if: inputs.release_mode == 'runtime-update'
+        uses: actions/cache@v4
+        with:
+          path: |
+            python_runtime
+            python_wheels
+            .installer_runtime
+          key: desktop-runtime-${{ runner.os }}-${{ hashFiles('installer-runtime.lock.json', 'runtime-versions.json', 'requirements.txt', 'scripts/prepare_installer_runtime.ps1') }}
+
+      - name: Verify runtime contract
+        run: npm.cmd --prefix electron_app run verify:runtime-contract
+
+      - name: Run release and runtime regression gates
+        shell: pwsh
+        run: |
+          node tests/electron_release_profiles.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node tests/electron_runtime_materialization.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node tests/electron_backend_bootstrap_regression.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build lightweight application update
+        if: inputs.release_mode == 'app-update'
+        run: npm.cmd --prefix electron_app run dist:update
+
+      - name: Restore pinned Whisper model
+        if: inputs.release_mode == 'runtime-update'
+        shell: pwsh
+        run: |
+          $model = Join-Path $env:GITHUB_WORKSPACE '.installer_runtime\black_jhon\faster-whisper-small'
+          .\scripts\restore_whisper_model.ps1 -Destination $model
+          "JK_WHISPER_MODEL_SOURCE=$model" | Add-Content $env:GITHUB_ENV
+
+      - name: Build complete offline installer
+        if: inputs.release_mode == 'runtime-update'
+        run: npm.cmd --prefix electron_app run dist:full
+
+      - name: Stage selected release artifacts
+        shell: pwsh
+        run: |
+          $mode = '${{ inputs.release_mode }}'
+          $source = if ($mode -eq 'app-update') { 'electron_app/dist-client-update' } else { 'electron_app/dist-client-setup' }
+          New-Item -ItemType Directory -Force release-artifacts | Out-Null
+          $files = @(Get-ChildItem -LiteralPath $source -File | Where-Object {
+            $_.Extension -in @('.exe', '.blockmap', '.yml')
+          })
+          if (@($files | Where-Object Name -eq 'latest.yml').Count -ne 1) { throw 'latest.yml ausente ou duplicado.' }
+          if (@($files | Where-Object Extension -eq '.exe').Count -ne 1) { throw 'Executavel da release ausente ou duplicado.' }
+          foreach ($file in $files) {
+            Copy-Item -LiteralPath $file.FullName -Destination (Join-Path 'release-artifacts' $file.Name)
+          }
+          Get-ChildItem release-artifacts -File | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          } | Set-Content release-artifacts/SHA256SUMS.txt -Encoding utf8
+
+      - name: Upload verified release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ inputs.release_tag }}-${{ inputs.release_mode }}
+          path: release-artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  publish:
+    name: Publish GitHub Release
+    if: inputs.publish
+    needs: build
+    runs-on: windows-latest
+    environment: desktop-release
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@v4
+
+      - name: Download verified artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-${{ inputs.release_tag }}-${{ inputs.release_mode }}
+          path: release-artifacts
+
+      - name: Publish atomically from draft
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ inputs.release_tag }}'
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) { throw "A release $tag ja existe; publicacao recusada para evitar sobrescrita parcial." }
+          gh release create $tag --target '${{ github.sha }}' --title $tag --notes "JK Sistema $tag" --draft
+          if ($LASTEXITCODE -ne 0) { throw 'Falha ao criar draft da release.' }
+          try {
+            gh release upload $tag release-artifacts/*
+            if ($LASTEXITCODE -ne 0) { throw 'Falha ao enviar os artefatos.' }
+            gh release edit $tag --draft=false --latest
+            if ($LASTEXITCODE -ne 0) { throw 'Falha ao publicar o draft.' }
+          } catch {
+            Write-Error "A release permaneceu em draft: $($_.Exception.Message)"
+            throw
+          }

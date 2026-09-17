@@ -84,7 +84,7 @@ PUBLIC_SUBQUESTION_INTENTS = frozenset({
     "general",
     "post_sale",
 })
-PROMPT_VERSION = "jk_ml_customer_reply_codex_v20"
+PROMPT_VERSION = "jk_ml_customer_reply_codex_v21"
 SCHEMA_VERSION = "5.3"
 QUEUE_POLICY_VERSION = "jk_ppv_queue_v3"
 VEHICLE_IDENTITY_POLICY = "jk_public_vin_decode_v1"
@@ -101,7 +101,7 @@ PROMPT_HASH = hashlib.sha256(
         "codex-native|public-question-by-item-buyer|post-sale-by-pack|"
         "evidence-envelope-v3|bounded-public-research|ai-only-subquestions|"
         "classification-contract-v3|continuity-repair-v1|typed-provider-failures|"
-        "contextual-fallback-v1|response-policy-v12|public-reply-evidence-guidance-v3|sku-reference-fitment-links-v1|official-marketplace-policy-research-v1|compatibility-coverage-advisory-v1|"
+        "contextual-fallback-v1|response-policy-v13|public-reply-evidence-guidance-v4|weighted-evidence-reconciliation-v1|sku-reference-fitment-links-v1|official-marketplace-policy-research-v1|compatibility-coverage-advisory-v1|"
         "compatibility-interface-evidence|seller-conversion-v1|seller-profile-v2|priority-queue-v3|"
         "public-technical-research-sol-high-v1|public-research-resilience-v2|"
         f"vehicle-identity-policy:{VEHICLE_IDENTITY_POLICY}|"
@@ -245,8 +245,18 @@ def _resolve_job_store_identity(
         resolver_loja_ativa_para_leitura,
     )
 
+    runtime = _require_runtime()
+    loader = getattr(runtime, "carregar_lojas_snapshot", None)
+    if not callable(loader):
+        loader = getattr(runtime, "carregar_lojas", None)
     try:
-        resolved = resolver_loja_ativa_para_leitura(client_id, store, store_id)
+        rows = loader(client_id) if callable(loader) else []
+        resolved = resolver_loja_ativa_para_leitura(
+            client_id,
+            store,
+            store_id,
+            lojas=rows,
+        )
     except (OSError, RuntimeError):
         if str(store_id or "").strip():
             raise identity_mismatch("store_identity_unconfirmed")
@@ -256,9 +266,6 @@ def _resolve_job_store_identity(
         if str(store_id or "").strip():
             raise identity_mismatch("store_identity_unconfirmed")
         return {"store_id": "", "seller_id": "", "site_id": ""}
-    runtime = _require_runtime()
-    loader = getattr(runtime, "carregar_lojas", None)
-    rows = loader(client_id) if callable(loader) else []
     matches = [
         row for row in (rows or [])
         if isinstance(row, dict) and str(row.get("store_id") or "").strip() == resolved_store_id

@@ -1,36 +1,37 @@
 # Atualizacao automatica
 
-O cliente desktop usa `electron-updater` com GitHub Releases.
+O cliente desktop usa `electron-updater` com GitHub Releases e possui dois perfis de pacote.
 
-## Como publicar uma nova versao
+- `app-update`: atualizacao comum e leve. Inclui Electron, codigo do `local_app` e o contrato `installer-runtime.lock.json`. Python, wheelhouse, Whisper e VC++ permanecem no computador e sao reutilizados somente depois da validacao dos hashes.
+- `runtime-update`: instalador completo e offline. Inclui todos os componentes e deve ser usado quando Python, `requirements.txt`, wheelhouse, Whisper, VC++ ou o shell de instalacao mudarem.
 
-1. Se a versão inclui autenticação remota, confirme antes que
-   `https://jkjkjk-485920.web.app/api/auth/v1/health` retorna `ok: true` e siga
-   `cloud/auth_gateway/README.md`. Não publique primeiro o desktop.
-2. Aumente a versao em `electron_app/package.json`, por exemplo de `1.0.5` para `1.0.6`.
-3. Gere e publique a release:
+O instalador completo mais recente permanece disponivel para instalacoes novas. Uma versao comum pode publicar somente o update leve; nesse caso, uma instalacao nova usa o instalador completo-base e recebe depois a atualizacao comum.
+
+## Publicacao pelo GitHub Actions
+
+1. Atualize a versao nos arquivos de release pelo fluxo normal.
+2. Confirme que `installer-runtime.lock.json` continua compativel. Alteracoes nos componentes pesados exigem um novo contrato e o modo `runtime-update`.
+3. Abra o workflow **Desktop release** e informe a tag correspondente, por exemplo `v1.0.143`.
+4. Escolha `app-update` para uma versao que altera somente o aplicativo ou `runtime-update` para gerar o instalador completo.
+5. Execute primeiro com `publish=false`. O GitHub gera, verifica e disponibiliza os artefatos internos por 14 dias.
+6. Depois da revisao, execute com `publish=true`. A publicacao nasce como draft e somente fica publica depois do upload integral.
+
+O workflow nao roda em `push` e nao publica sem a opcao explicita. A tag informada deve coincidir com a versao de `electron_app/package.json`.
+
+## Builds locais de diagnostico
 
 ```powershell
-cd electron_app
-$env:GH_TOKEN="SEU_TOKEN_DO_GITHUB_COM_PERMISSAO_DE_RELEASE"
-npm.cmd run dist:publish
+npm.cmd --prefix electron_app run dist:update
+npm.cmd --prefix electron_app run dist:full
 ```
 
-O `electron-builder` vai criar o instalador, o arquivo `latest.yml` e publicar tudo no repo:
+`dist:update` nao prepara nem carrega o runtime pesado. `dist:full` restaura e valida o ambiente offline completo. Esses comandos usam `--publish never`.
+O comando antigo `dist:publish` foi desativado para impedir build duplicado e publicacao parcial pela maquina local.
 
-`marketflow-lab/Jksistema-1.1`
+## Regras de seguranca
 
-## Como o app atualiza
-
-- Ao abrir o app instalado, ele verifica se existe uma versao nova.
-- Se existir, baixa automaticamente em segundo plano.
-- Ao terminar, pergunta se o usuario quer reiniciar para instalar.
-
-## Observacoes importantes
-
-- O app instalado so detecta versoes publicadas em GitHub Releases.
-- Apenas mudar arquivos/commits no GitHub nao dispara atualizacao automatica.
-- Nao coloque tokens de API dentro do app para atualizacao. Use sempre o canal normal de GitHub Releases ou um servidor proprio.
-- Dados locais da pasta `info` nao sao sobrescritos pelo atualizador.
-- `electron_app/client-config.json` e os módulos `backend/services/remote_auth_*` são recursos obrigatórios
-  do pacote. O verificador do instalador falha se eles não entrarem na atualização.
+- O update leve nunca serve como instalacao inicial. Se o runtime local estiver ausente ou divergente, o instalador ou o primeiro boot solicita o instalador completo.
+- `runtime_id` vincula a arvore Python, `requirements.txt`, manifesto das wheels, VC++ e manifesto Whisper.
+- O codigo continua sendo materializado de forma transacional; dados em `info`, ContextVault, SKU, logs, `.venv` e demais dados persistentes sao preservados.
+- `latest.yml` deve vir de somente um perfil por release. Versoes com mudanca de runtime publicam o `latest.yml` do instalador completo.
+- Tokens nao entram no aplicativo. O workflow usa o token efemero do GitHub somente no job protegido de publicacao.

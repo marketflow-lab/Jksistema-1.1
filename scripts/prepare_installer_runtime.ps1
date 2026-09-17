@@ -17,12 +17,17 @@ if ($PSVersionTable.PSEdition -eq "Desktop") {
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rootDir = Split-Path -Parent $scriptDir
 $runtimeVersionsPath = Join-Path $rootDir "runtime-versions.json"
+$runtimeLockPath = Join-Path $rootDir "installer-runtime.lock.json"
 if (-not (Test-Path -LiteralPath $runtimeVersionsPath -PathType Leaf)) {
     throw "Configuracao central de runtime ausente em $runtimeVersionsPath"
 }
 $runtimeVersions = Get-Content -LiteralPath $runtimeVersionsPath -Raw | ConvertFrom-Json
+$runtimeLock = Get-Content -LiteralPath $runtimeLockPath -Raw | ConvertFrom-Json
 if ([int]$runtimeVersions.schemaVersion -ne 1 -or -not $runtimeVersions.python) {
     throw "runtime-versions.json invalido."
+}
+if ([int]$runtimeLock.schema_version -ne 1 -or [string]$runtimeLock.runtime_id -notmatch '^[a-f0-9]{64}$') {
+    throw "installer-runtime.lock.json invalido."
 }
 $pythonVersion = [string]$runtimeVersions.python.version
 $pythonMinor = [string]$runtimeVersions.python.minor
@@ -368,6 +373,8 @@ function Test-Wheelhouse([string]$MarkerPath, [string]$RequirementsHash) {
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return $false }
     try {
         $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        $manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($manifestHash -ne ([string]$runtimeLock.wheelhouse.manifest_sha256).ToLowerInvariant()) { return $false }
         if ([string]$manifest.requirements_sha256 -ne $RequirementsHash) { return $false }
         if ([string]$manifest.python_version -ne $pythonMinor) { return $false }
         if ([string]$manifest.abi -ne $pythonAbi) { return $false }
@@ -476,6 +483,7 @@ if (-not (Test-Path -LiteralPath $vcInstaller -PathType Leaf)) {
     Invoke-WebRequest -Uri $vcInstallerUrl -OutFile $vcInstaller -UseBasicParsing
 }
 Assert-TrustedSignature $vcInstaller "Microsoft"
+Assert-PinnedFile $vcInstaller ([int64]$runtimeLock.visual_cpp.size) ([string]$runtimeLock.visual_cpp.sha256) "Visual C++ Redistributable"
 
 $requirementsHash = (Get-FileHash -LiteralPath $requirementsPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $prepareHash = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -550,7 +558,7 @@ if (-not $wheelhouseReady) {
         python_version = $pythonMinor
         abi = $pythonAbi
         platform = $pythonPlatform
-        generated_at = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        generated_at = [string]$runtimeLock.wheelhouse.generated_at
         wheels = @($wheels | Sort-Object Name | ForEach-Object {
             [ordered]@{
                 name = $_.Name
@@ -578,10 +586,16 @@ if (-not (Test-WhisperModel $stagedModelDir)) {
     Copy-Item -LiteralPath $modelSource -Destination $stagedModelDir -Recurse -Force
 }
 if (-not (Test-WhisperModel $stagedModelDir)) { throw "Whisper Small empacotado falhou na verificacao SHA256." }
+$modelManifestPath = Join-Path $stagedModelDir "model-manifest.json"
+$modelManifestHash = (Get-FileHash -LiteralPath $modelManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($modelManifestHash -ne ([string]$runtimeLock.whisper.manifest_sha256).ToLowerInvariant()) {
+    throw "Manifesto Whisper diverge do contrato de runtime."
+}
 
 $portableInventory = Get-PortableInventory $portableDir
 $buildManifest = [ordered]@{
     version = $appVersion
+    runtime_id = [string]$runtimeLock.runtime_id
     python = [ordered]@{
         version = $pythonVersion
         abi = $pythonAbi

@@ -292,7 +292,7 @@ def test_real_job_creation_accepts_canonical_site_with_blank_local_site(
     monkeypatch.setattr(
         cadastro_compatibilidade,
         "resolver_loja_ativa_para_leitura",
-        lambda client_id, loja, store_id: {
+        lambda client_id, loja, store_id, **_kwargs: {
             "store_id": store_id,
             "nome": loja,
         }

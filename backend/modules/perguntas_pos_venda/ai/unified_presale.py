@@ -290,6 +290,48 @@ def _web_research(
     )
 
 
+_UNBOUND_STORE_SKU_GAPS = frozenset({
+    "exact_identity_incomplete",
+    "identity_incomplete",
+    "identity_mismatch",
+    "listing_sku_binding_mismatch",
+    "variation_identity_required",
+})
+
+
+def _packet_store_sku_bound(packet: dict[str, Any]) -> bool:
+    """Confirm that the packet belongs to one approved, hashed listing/SKU binding."""
+
+    validity = packet.get("validity") if isinstance(packet.get("validity"), dict) else {}
+    generation = packet.get("generation") if isinstance(packet.get("generation"), dict) else {}
+    source_hashes = (
+        packet.get("source_hashes")
+        if isinstance(packet.get("source_hashes"), dict)
+        else {}
+    )
+    gaps = {
+        str(value or "").strip().lower()
+        for value in list(packet.get("gaps") or [])
+        if str(value or "").strip()
+    }
+    return bool(
+        validity.get("status") == "active_approved_generation"
+        and validity.get("identity_verified") is True
+        and validity.get("hashes_verified") is True
+        and validity.get("approval_state") == "approved"
+        and str(generation.get("id") or "").strip()
+        and str(generation.get("hash") or "").strip()
+        and bool(source_hashes)
+        and str(packet.get("binding_hash") or "").strip()
+        and not gaps.intersection(_UNBOUND_STORE_SKU_GAPS)
+    )
+
+
+def _packet_listing_item_bound(packet: dict[str, Any], value: object) -> bool:
+    identity = packet.get("identity") if isinstance(packet.get("identity"), dict) else {}
+    return bool(str(identity.get("item_id") or "").strip() and value)
+
+
 def _bound_packet_result(
     packet: dict[str, Any],
     operational: list[dict[str, Any]],
@@ -322,6 +364,16 @@ def _bound_packet_result(
         value = {"sources": matches} if matches else {}
     if not value:
         return _unavailable_research(tool_type, "bound_source_unavailable")
+    store_sku_bound = _packet_store_sku_bound(packet)
+    listing_item_bound = bool(
+        tool_type == "listing" and _packet_listing_item_bound(packet, value)
+    )
+    source_family = {
+        "listing": "listing",
+        "context_hub": "exact_sku_catalog",
+        "internal_catalog": "internal_catalog",
+        "bling": "bling",
+    }[tool_type]
     return {
         "function": function_name,
         "arguments": {},
@@ -329,7 +381,16 @@ def _bound_packet_result(
             "found": True,
             "read_only": True,
             "content_role": "untrusted_reference_data",
-            "store_sku_bound": True,
+            "source_family": source_family,
+            "listing_item_bound": listing_item_bound,
+            "store_sku_bound": store_sku_bound,
+            "evidence_scope": (
+                "exact_listing"
+                if listing_item_bound
+                else "exact_store_sku"
+                if store_sku_bound
+                else "reference_only"
+            ),
             "data": value,
         },
     }

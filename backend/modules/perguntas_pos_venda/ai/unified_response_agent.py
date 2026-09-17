@@ -11,7 +11,7 @@ import copy
 import json
 from typing import Any, Literal, Mapping, Protocol, Sequence
 
-from ml_questions_gemini.public_reply_policy import PUBLIC_REPLY_CONCILIATION_GUIDANCE
+from ml_questions_gemini.public_reply_policy import PUBLIC_REPLY_EVIDENCE_GUIDANCE
 
 
 UNIFIED_RESPONSE_AGENT_STAGE = "unified_response_agent"
@@ -26,7 +26,9 @@ _COMMERCIAL_STATES = frozenset(
     {"fits", "variant", "partial", "insufficient", "incompatible", "not_applicable"}
 )
 _MISSING_FACT_OWNERS = frozenset({"buyer", "internal", "none"})
-_EVIDENCE_BASES = frozenset({"exact_sku", "manufacturer_model", "technical_consensus", "none"})
+_EVIDENCE_BASES = frozenset(
+    {"exact_listing", "exact_sku", "manufacturer_model", "technical_consensus", "none"}
+)
 UNIFIED_RESEARCH_TYPES = frozenset(
     {
         "listing",
@@ -344,7 +346,7 @@ def _turn_prompt(
     repair_output: bool = False,
 ) -> str:
     general_guidance = (
-        "ORIENTACAO_GERAL_PRE_VENDA_CONFIAVEL: " + PUBLIC_REPLY_CONCILIATION_GUIDANCE
+        PUBLIC_REPLY_EVIDENCE_GUIDANCE
         if flow == "pre_sale"
         else ""
     )
@@ -377,11 +379,14 @@ def _turn_prompt(
         "Responda exclusivamente no contrato JSON fechado fornecido pelo servidor, com todos os campos: "
         "action, flow, category, subquestions, research_requests, answer, confidence, reason, "
         "requires_human_review, decision, commercial_state, compatibility_analysis, missing_fact_owner e "
-        "buyer_detail_needed, evidence_basis e evidence_refs. evidence_basis deve ser exact_sku quando a "
-        "fonte comprovar o SKU exato, manufacturer_model quando comprovar fabricante e modelo, "
+        "buyer_detail_needed, evidence_basis e evidence_refs. evidence_basis deve ser exact_listing quando "
+        "o anuncio exato sustentar a conclusao, exact_sku quando a fonte comprovar o SKU exato, "
+        "manufacturer_model quando comprovar fabricante e modelo, "
         "technical_consensus quando a conclusao depender da avaliacao de consenso entre fontes tecnicas, ou "
-        "none quando ainda nao houver base. evidence_refs deve listar somente referencias presentes nos "
-        "resultados acumulados; technical_consensus sempre exige requires_human_review=true. "
+        "none quando ainda nao houver base. evidence_refs deve listar somente referencias presentes no contexto "
+        "integral ou nos resultados acumulados. Para o anuncio use referencias estaveis como listing:title, "
+        "listing:description e listing:attribute:<id>, sem repetir o mesmo campo projetado em outro bloco. "
+        "technical_consensus sempre exige requires_human_review=true. "
         "Quando as fontes distinguirem condutor flexivel de condutor rigido, preserve essa diferenca "
         "como condicao natural da resposta, sem combinar os limites. "
         "Cada research_request tem exatamente type, query, purpose e preferred_authority. "

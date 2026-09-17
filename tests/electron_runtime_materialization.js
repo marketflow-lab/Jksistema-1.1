@@ -150,6 +150,41 @@ try {
   }).required, false);
   assertPersistentCanaries(target);
 
+  const lightweightSource = path.join(tempRoot, 'lightweight-source');
+  fs.cpSync(source, lightweightSource, { recursive: true });
+  const sourceModelRoot = path.join(source, 'black_jhon_runtime', 'faster-whisper-small');
+  const sourceModelManifest = path.join(sourceModelRoot, 'model-manifest.json');
+  const sourceModelContract = JSON.parse(read(sourceModelManifest));
+  write(path.join(lightweightSource, 'installer-runtime.lock.json'), `${JSON.stringify({
+    schema_version: 1,
+    runtime_id: 'a'.repeat(64),
+    whisper: {
+      manifest_sha256: generator.sha256File(sourceModelManifest),
+      files: sourceModelContract.files,
+    },
+  }, null, 2)}\n`);
+  fs.rmSync(path.join(lightweightSource, 'black_jhon_runtime'), { recursive: true, force: true });
+  generator.writeLocalAppManifest(lightweightSource, '2.0.0');
+  const lightweightPayload = materializer.ensureImmutableRuntimePayloads({
+    sourceDir: lightweightSource,
+    targetDir: target,
+  });
+  assert.strictEqual(lightweightPayload.changed, false);
+  assert.strictEqual(lightweightPayload.adopted, true);
+  const lightweightState = JSON.parse(read(path.join(target, 'info', 'runtime-payload-state.json')));
+  assert.strictEqual(lightweightState.runtime_id, 'a'.repeat(64));
+  assert.strictEqual(lightweightState.verified_files.length, sourceModelContract.files.length);
+  assert.strictEqual(materializer.ensureImmutableRuntimePayloads({
+    sourceDir: lightweightSource,
+    targetDir: target,
+  }).changed, false);
+  fs.writeFileSync(modelPath, Buffer.alloc(fs.statSync(modelPath).size, 0x78));
+  assert.throws(() => materializer.ensureImmutableRuntimePayloads({
+    sourceDir: lightweightSource,
+    targetDir: target,
+  }), /instalador completo/);
+  write(modelPath, 'modelo-imutavel');
+
   const payloadRollbackTarget = seedLegacyTarget(tempRoot, 'payload-rollback-target');
   assert.throws(() => materializer.ensureImmutableRuntimePayloads({
     sourceDir: source,

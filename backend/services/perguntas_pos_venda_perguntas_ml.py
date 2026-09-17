@@ -2043,12 +2043,13 @@ def _ml_perguntas_anexar_historico_comprador(
             for pergunta_raw in lote:
                 if not isinstance(pergunta_raw, dict):
                     continue
+                if str(pergunta_raw.get("item_id") or "").strip() != item_id:
+                    continue
                 comprador = pergunta_raw.get("from") if isinstance(pergunta_raw.get("from"), dict) else {}
                 buyer_id = str(comprador.get("id") or "").strip()
                 if buyer_id not in buyer_ids:
                     continue
                 pergunta_norm = _ml_perguntas_normalizar(pergunta_raw, {}, {})
-                pergunta_norm["item_id"] = item_id
                 historico_por_chave.setdefault((item_id, buyer_id), []).append(_ml_perguntas_copia_historico(pergunta_norm))
         except Exception as exc:
             logger.warning("[ML PERGUNTAS] evento=montar_historico status=erro tipo=%s", type(exc).__name__)

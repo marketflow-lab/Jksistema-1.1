@@ -114,9 +114,11 @@ assert.strictEqual(
 );
 assert(
   afterPackSource.includes('sanitizeLocalAppStaging(localAppDir)')
-    && afterPackSource.includes("[verifier, '--packaged', resourcesDir]")
-    && afterPackSource.includes("PYTHONDONTWRITEBYTECODE: '1'"),
-  'afterPack must sanitize only staging and run the packaged gate before artifact promotion'
+    && afterPackSource.includes('validateLocalAppManifestAtRoot(localAppDir, version)')
+    && !afterPackSource.includes('spawnSync')
+    && electronPackage.scripts.postdist.includes('verify:package:built')
+    && electronPackage.scripts['postdist:update'].includes('verify:update:built'),
+  'afterPack must validate its manifest once and leave the complete packaged gates to postdist'
 );
 assert(
   backendSource.includes('await stopTrackedProcessTree(child.pid)'),
