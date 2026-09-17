@@ -213,9 +213,9 @@ def test_factual_revision_retains_guidance_and_preserves_candidate_as_untrusted_
     assert "assinatura da loja presente no candidato anterior" in prompt
 
 
-def test_v12_prompt_contract_merges_general_reply_guidance_without_removing_evidence_rules():
+def test_v13_prompt_contract_merges_general_reply_guidance_and_weighted_evidence_rules():
     policy = PUBLIC_REPLY_EVIDENCE_GUIDANCE
-    assert "PUBLICAS v12" in policy
+    assert "PUBLICAS v13" in policy
     assert PUBLIC_REPLY_CONCILIATION_GUIDANCE in policy
     assert "mesma unidade, terminologia e nivel de detalhe" in policy
     assert "nao faca conversoes sem evidencia tecnica" in policy
@@ -224,6 +224,15 @@ def test_v12_prompt_contract_merges_general_reply_guidance_without_removing_evid
     assert "nunca misture os historicos dos compradores" in policy
     assert "Somente quando um dado do comprador for indispensavel" in policy
     assert "Preserve e combine as orientacoes especificas aplicaveis" in policy
+    assert "maioria ponderada" in policy
+    assert "um ponto por local explicito e distinto" in policy
+    assert "familia de fonte independente" in policy
+    assert "Uma unica fonte explicita vence por um a zero" in policy
+    assert "Omissao, campo ausente" in policy
+    assert "empate ou ausencia de afirmacao explicita" in policy
+    assert "conciliacao ponderada tiver uma conclusao vencedora" in policy
+    assert "Mantenha insufficient somente quando nao houver" in policy
+    assert "Se a identidade da peca continuar incerta, mantenha insufficient" not in policy
     assert "diga apenas que ainda nao e possivel confirmar a aplicacao" not in policy
     assert "A API oficial do Mercado Livre comprova o conteudo e o estado atual do anuncio" in policy
     assert "atributos tecnicos preenchidos pelo vendedor nao se tornam confirmacao do fabricante" in policy
@@ -232,8 +241,7 @@ def test_v12_prompt_contract_merges_general_reply_guidance_without_removing_evid
     assert "Um catalogo OEM que confirma a aplicacao de um codigo nao comprova sozinho" in policy
     assert "Fotos, semelhanca de titulo e respostas anteriores da loja, isoladamente" in policy
     assert "posicao dianteira/traseira, lado, cor e variacao de cada codigo" in policy
-    assert "nao mantenha insufficient apenas porque o anuncio ainda contem o erro" in policy
-    assert "Se a identidade da peca continuar incerta, mantenha insufficient" in policy
+    assert "nao mantenha insufficient apenas porque uma fonte ainda contem erro" in policy
     assert "Nao solicite codigo original quando esses dados ja resolvem a lacuna" in policy
     assert "Nao transfira ao comprador o conflito do cadastro" in policy
     assert "cliente, loja, seller, site e SKU exatos" in policy

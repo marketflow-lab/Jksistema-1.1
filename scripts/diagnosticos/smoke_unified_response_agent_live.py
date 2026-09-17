@@ -29,6 +29,11 @@ def _arguments() -> argparse.Namespace:
         help="Required because this invokes the configured live Codex provider.",
     )
     parser.add_argument("--model", default="codex:gpt-5.6-sol")
+    parser.add_argument(
+        "--case",
+        choices=("wire-consensus", "listing-majority"),
+        default="wire-consensus",
+    )
     return parser.parse_args()
 
 
@@ -38,25 +43,58 @@ def main() -> int:
         raise SystemExit("Use --confirm-live to invoke the configured live provider.")
     os.environ.setdefault("JK_CODEX_CONSOLE_ENABLED", "1")
 
-    packet = {
-        "identity": {
-            "store_ref": "manual-smoke-store",
-            "seller_id": "manual-smoke-seller",
-            "site_id": "MLB",
-            "sku": "632-K",
-            "item_id": "MLB4992847213",
-            "variation_id": "",
-        },
-        "question": {
-            "id": "manual-smoke-question",
-            "text": "Quais bitolas de fios que este conjunto aceita 4 mm, 6 mm, 10mm?",
-        },
-        "listing_facts": {
-            "title": "Conjunto Tomada Industrial Plug Macho 2p+t 32a Azul 220-250v",
-            "permalink": "https://produto.mercadolivre.com.br/MLB-4992847213",
-            "attributes": [],
-        },
-    }
+    listing_majority = args.case == "listing-majority"
+    packet = (
+        {
+            "identity": {
+                "store_ref": "manual-smoke-store",
+                "seller_id": "manual-smoke-seller",
+                "site_id": "MLB",
+                "sku": "358",
+                "item_id": "MLB-SYNTHETIC",
+                "variation_id": "",
+            },
+            "question": {
+                "id": "manual-smoke-listing-majority",
+                "text": "Serve para iPad 9 geracao?",
+            },
+            "listing_facts": {
+                "title": "Caneta Stylus com Palm Rejection para iPad 9 geracao",
+                "description": "Modelos compativeis: iPad 6, 7, 8 e 9 geracao.",
+                "attributes": [],
+            },
+            "catalog_document": {
+                "description": "Modelos: iPad 6, 7 e 8 geracao."
+            },
+            "validity": {
+                "status": "unavailable",
+                "identity_verified": False,
+                "hashes_verified": False,
+                "approval_state": "unknown",
+            },
+            "gaps": ["listing_sku_binding_mismatch"],
+        }
+        if listing_majority
+        else {
+            "identity": {
+                "store_ref": "manual-smoke-store",
+                "seller_id": "manual-smoke-seller",
+                "site_id": "MLB",
+                "sku": "632-K",
+                "item_id": "MLB4992847213",
+                "variation_id": "",
+            },
+            "question": {
+                "id": "manual-smoke-question",
+                "text": "Quais bitolas de fios que este conjunto aceita 4 mm, 6 mm, 10mm?",
+            },
+            "listing_facts": {
+                "title": "Conjunto Tomada Industrial Plug Macho 2p+t 32a Azul 220-250v",
+                "permalink": "https://produto.mercadolivre.com.br/MLB-4992847213",
+                "attributes": [],
+            },
+        }
+    )
     agent_input = {
         "_unified_response_flow": "pre_sale",
         "task": "manual_unified_response_agent_smoke",
@@ -66,11 +104,12 @@ def main() -> int:
         "site_id": "MLB",
         "question": packet["question"],
         "item": {
-            "id": "MLB4992847213",
-            "seller_sku": "632-K",
+            "id": packet["identity"]["item_id"],
+            "seller_sku": packet["identity"]["sku"],
             "title": packet["listing_facts"]["title"],
+            "description": packet["listing_facts"].get("description", ""),
         },
-        "context": {"sku": "632-K"},
+        "context": {"sku": packet["identity"]["sku"]},
     }
     client = _PerguntasCodexV3Client(
         "manual-smoke-tenant",
@@ -98,6 +137,37 @@ def main() -> int:
         round_number: int,
     ) -> list[dict[str, Any]]:
         research_rounds.append(round_number)
+        if listing_majority:
+            return [
+                {
+                    "function": "get_mercado_livre_listing",
+                    "result": {
+                        "found": True,
+                        "read_only": True,
+                        "source_family": "listing",
+                        "listing_item_bound": True,
+                        "store_sku_bound": False,
+                        "evidence_scope": "exact_listing",
+                        "data": packet["listing_facts"],
+                    },
+                },
+                {
+                    "function": "context_hub_search",
+                    "result": {
+                        "found": True,
+                        "read_only": True,
+                        "source_family": "exact_sku_catalog",
+                        "listing_item_bound": False,
+                        "store_sku_bound": False,
+                        "evidence_scope": "reference_only",
+                        "data": {
+                            "catalog_document": packet["catalog_document"],
+                            "validity": packet["validity"],
+                            "gaps": packet["gaps"],
+                        },
+                    },
+                },
+            ]
         return [
             {
                 "function": "web_search_product_identity",
@@ -140,6 +210,8 @@ def main() -> int:
                 "server_identity": packet["identity"],
                 "response_signature": "A equipe Loja Smoke agradece o contato.",
                 "response_policy": "Responda com os fatos tecnicos comprovados e condicione diferencas relevantes.",
+                "agent_input": agent_input,
+                "initial_read_only_context": {"sku_question_context": packet},
                 "sku_question_context": packet,
             },
             invoke_turn=invoke_turn,
@@ -162,18 +234,33 @@ def main() -> int:
             for invocation in invocations[1:]
         )
     )
-    checks = {
-        "researched": bool(research_rounds),
-        "same_thread": same_thread,
-        "conditional_wire_answer": all(
-            term in answer_normalized for term in ("4", "6", "10", "flex", "rigi")
-        ),
-        "technical_consensus": result.get("evidence_basis") == "technical_consensus",
-        "human_review": result.get("requires_human_review") is True,
-        "no_generic_fallback": "informação não está confirmada" not in answer_normalized,
-    }
+    checks = (
+        {
+            "direct_listing_answer": all(
+                term in answer_normalized for term in ("sim", "ipad", "9", "palm")
+            ),
+            "exact_listing": result.get("evidence_basis") == "exact_listing",
+            "decision_yes": result.get("decision") == "yes",
+            "no_false_negative": not any(
+                term in answer_normalized
+                for term in ("não serve", "nao serve", "não indicamos", "nao indicamos")
+            ),
+        }
+        if listing_majority
+        else {
+            "researched": bool(research_rounds),
+            "same_thread": same_thread,
+            "conditional_wire_answer": all(
+                term in answer_normalized for term in ("4", "6", "10", "flex", "rigi")
+            ),
+            "technical_consensus": result.get("evidence_basis") == "technical_consensus",
+            "human_review": result.get("requires_human_review") is True,
+            "no_generic_fallback": "informação não está confirmada" not in answer_normalized,
+        }
+    )
     print(json.dumps({
         "ok": all(checks.values()),
+        "case": args.case,
         "checks": checks,
         "provider_turns": len(invocations),
         "research_rounds": research_rounds,

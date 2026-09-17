@@ -423,8 +423,8 @@ def test_compatibility_uses_only_structured_target_profile_focus_and_missing_fie
     assert not hasattr(agent_facade, "_perguntas_ia_v2_resposta_segura_compatibilidade")
 
 
-def test_response_policy_v12_applies_rvc_only_when_commercial_state_allows_it() -> None:
-    assert agent_runtime._PERGUNTAS_IA_RESPONSE_POLICY_VERSION == "jk_ppv_response_policy_v12"
+def test_response_policy_v13_applies_rvc_only_when_commercial_state_allows_it() -> None:
+    assert agent_runtime._PERGUNTAS_IA_RESPONSE_POLICY_VERSION == "jk_ppv_response_policy_v13"
     assert agent_runtime._PERGUNTAS_IA_SELLER_METHOD_VERSION == "seller-conversion-v1"
     policy = agent_runtime._PERGUNTAS_IA_RESPONSE_POLICY["perguntas_anuncio"]
     assert "todo o material compilado e sanitizado" in policy
@@ -447,10 +447,10 @@ def test_response_policy_v12_applies_rvc_only_when_commercial_state_allows_it() 
     assert agent_runtime._PERGUNTAS_IA_COMMERCIAL_STATE_POLICY["incompatible"]["cta"] == "verified_same_store_alternative_only"
 
 
-def test_codex_prompt_v20_hash_includes_vehicle_and_evidence_policies() -> None:
+def test_codex_prompt_v21_hash_includes_vehicle_and_evidence_policies() -> None:
     from backend.services import perguntas_pos_venda_codex as codex
 
-    assert codex.PROMPT_VERSION == "jk_ml_customer_reply_codex_v20"
+    assert codex.PROMPT_VERSION == "jk_ml_customer_reply_codex_v21"
     assert codex.QUEUE_POLICY_VERSION == "jk_ppv_queue_v3"
     assert codex.SCHEMA_VERSION == "5.3"
     assert codex.VEHICLE_IDENTITY_POLICY == "jk_public_vin_decode_v1"

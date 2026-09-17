@@ -957,3 +957,59 @@ def test_incompatible_item_can_request_bound_same_store_alternative() -> None:
     assert turns[1][0]["result"]["store_sku_bound"] is True
     assert len(turns) == 2
     assert result["commercial_state"] == "incompatible"
+
+
+def test_bound_listing_keeps_exact_item_scope_without_claiming_invalid_sku_binding() -> None:
+    packet = {
+        "identity": {"item_id": "MLB-EXACT", "sku": "SKU-358"},
+        "listing_facts": {
+            "title": "Caneta Stylus para iPad 9 geracao",
+            "description": "Compativel com iPad 9 geracao.",
+        },
+        "generation": {"id": "generation-1", "hash": "a" * 64, "version": 1},
+        "binding_hash": "b" * 64,
+        "validity": {
+            "status": "unavailable",
+            "identity_verified": False,
+            "hashes_verified": False,
+            "approval_state": "unknown",
+        },
+        "gaps": ["listing_sku_binding_mismatch"],
+    }
+
+    result = unified_presale._bound_packet_result(packet, [], "listing")["result"]
+
+    assert result["found"] is True
+    assert result["source_family"] == "listing"
+    assert result["listing_item_bound"] is True
+    assert result["store_sku_bound"] is False
+    assert result["evidence_scope"] == "exact_listing"
+
+
+def test_bound_context_hub_requires_approved_generation_hashes_and_binding() -> None:
+    packet = {
+        "identity": {"item_id": "MLB-EXACT", "sku": "SKU-358"},
+        "canonical_document": {"description": "Compativel com iPad 9 geracao."},
+        "generation": {"id": "generation-1", "hash": "a" * 64, "version": 1},
+        "source_hashes": {"canonical_sku": "c" * 64},
+        "binding_hash": "b" * 64,
+        "validity": {
+            "status": "active_approved_generation",
+            "identity_verified": True,
+            "hashes_verified": True,
+            "approval_state": "approved",
+        },
+        "gaps": [],
+    }
+
+    result = unified_presale._bound_packet_result(packet, [], "context_hub")["result"]
+
+    assert result["source_family"] == "exact_sku_catalog"
+    assert result["listing_item_bound"] is False
+    assert result["store_sku_bound"] is True
+    assert result["evidence_scope"] == "exact_store_sku"
+
+    packet["gaps"] = ["listing_sku_binding_mismatch"]
+    mismatched = unified_presale._bound_packet_result(packet, [], "context_hub")["result"]
+    assert mismatched["store_sku_bound"] is False
+    assert mismatched["evidence_scope"] == "reference_only"
