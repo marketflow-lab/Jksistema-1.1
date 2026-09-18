@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -51,7 +52,19 @@ def test_deadline_blocks_followup_request_and_restores_context(clock, monkeypatc
     assert budget.remaining() is None
 
 
-def test_oauth_refresh_and_retry_share_read_budget(clock, monkeypatch):
+def _oauth_store(monkeypatch, tmp_path, cfg):
+    from backend.services import integracoes
+    cfg.update(_store_id_context="store", user_id="seller", site_id="MLB")
+    row = {"store_id": "store", "nome": "store", "integracoes": {"mercadolivre": dict(cfg)}}
+    row["integracoes"]["mercadolivre"].pop("_store_id_context")
+    monkeypatch.setattr(integracoes, "_get_tenant_path", lambda _client: str(tmp_path))
+    monkeypatch.setattr(integracoes, "buscar_loja_snapshot", lambda *_args: row)
+    monkeypatch.setattr(integracoes, "carregar_lojas", lambda _client: [row])
+    monkeypatch.setattr(integracoes, "_integracoes_bloquear_rmw_lojas", lambda _client: nullcontext())
+    monkeypatch.setattr(integracoes, "salvar_lojas", lambda *_args: None)
+
+
+def test_oauth_refresh_and_retry_share_read_budget(clock, monkeypatch, tmp_path):
     from backend.services import mercadolivre_legacy_api as api
 
     seen = []
@@ -71,6 +84,7 @@ def test_oauth_refresh_and_retry_share_read_budget(clock, monkeypatch):
     monkeypatch.setattr(api, "_env_bool", lambda *a: True, raising=False)
     monkeypatch.setattr(api, "logger", logging.getLogger("test"), raising=False)
     cfg = {"access_token": "old", "refresh_token": "refresh", "app_id": "app", "client_secret": "secret", "_store_id_context": "store"}
+    _oauth_store(monkeypatch, tmp_path, cfg)
     with budget.read_budget(15):
         result, cfg = api._ml_api_request("tenant", "store", cfg, "GET", "https://api.mercadolibre.com/questions/search")
     assert result.status_code == 200
@@ -103,7 +117,7 @@ def test_central_read_respects_same_budget(clock):
     assert timeouts[1] == (3.05, 35)
 
 
-def test_oauth_timeout_is_transient_for_screen_reads(monkeypatch):
+def test_oauth_timeout_is_transient_for_screen_reads(monkeypatch, tmp_path):
     from backend.services import mercadolivre_legacy_api as api
 
     def timeout(*a, **k):
@@ -112,6 +126,7 @@ def test_oauth_timeout_is_transient_for_screen_reads(monkeypatch):
     monkeypatch.setattr(api, "_ml_http_request", timeout, raising=False)
     monkeypatch.setattr(api, "_env_bool", lambda *a: True, raising=False)
     cfg = {"access_token": "old", "refresh_token": "refresh", "app_id": "app", "client_secret": "secret"}
+    _oauth_store(monkeypatch, tmp_path, cfg)
     with pytest.raises(HTTPException) as error:
         with budget.read_budget():
             api._ml_refresh_token("tenant", "store", cfg)

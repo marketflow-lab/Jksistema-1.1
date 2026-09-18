@@ -1,6 +1,7 @@
 import logging
+from contextlib import nullcontext
 
-from backend.services import favoritos_ml, mercadolivre_legacy_api
+from backend.services import favoritos_ml, mercadolivre_legacy_api, integracoes
 
 
 class _Response:
@@ -14,7 +15,7 @@ class _Response:
 
 
 def test_favoritos_refresh_ml_carrega_store_id_e_nao_persiste_contexto(
-    monkeypatch,
+    monkeypatch, tmp_path,
 ):
     loja = {
         "store_id": "StoreA",
@@ -29,6 +30,11 @@ def test_favoritos_refresh_ml_carrega_store_id_e_nao_persiste_contexto(
         },
     }
     gravacoes = []
+    monkeypatch.setattr(integracoes, "_get_tenant_path", lambda _client: str(tmp_path))
+    monkeypatch.setattr(integracoes, "buscar_loja_snapshot", lambda *_args: loja)
+    monkeypatch.setattr(integracoes, "carregar_lojas", lambda _client: [loja])
+    monkeypatch.setattr(integracoes, "_integracoes_bloquear_rmw_lojas", lambda _client: nullcontext())
+    monkeypatch.setattr(integracoes, "salvar_lojas", lambda client, rows: gravacoes.append(rows))
 
     def request(_client_id, _loja, token, _method, url, **_kwargs):
         if url.endswith("/oauth/token"):
@@ -106,8 +112,7 @@ def test_favoritos_refresh_ml_carrega_store_id_e_nao_persiste_contexto(
 
     assert resultado["id"] == "MLB123"
     assert len(gravacoes) == 1
-    args, kwargs = gravacoes[0]
-    assert args[:3] == ("cliente-a", "Loja Igual", "mercadolivre")
-    assert kwargs["store_id"] == "StoreA"
-    assert "_store_id_context" not in args[3]
-    assert args[3]["access_token"] == "access-new"
+    assert gravacoes[0][0]["store_id"] == "StoreA"
+    persisted = gravacoes[0][0]["integracoes"]["mercadolivre"]
+    assert "_store_id_context" not in persisted
+    assert persisted["access_token"] == "access-new"

@@ -109,6 +109,11 @@ def _ml_atualizar_api_loja_exata(
 
 
 def _ml_refresh_token(client_id: str, nome_loja: str, cfg: dict):
+    from backend.services.store_oauth_refresh import refresh_ml
+    return refresh_ml(client_id, nome_loja, cfg, _ml_exchange_refresh_token)
+
+
+def _ml_exchange_refresh_token(client_id: str, nome_loja: str, cfg: dict):
     from backend.services.central_accounts_client import is_marker
     if is_marker(cfg.get("access_token")):
         raise HTTPException(409, "A renovação desta conexão é controlada pela central.")
@@ -148,13 +153,10 @@ def _ml_refresh_token(client_id: str, nome_loja: str, cfg: dict):
             cfg["access_token"] = result.get("access_token", cfg.get("access_token"))
             cfg["refresh_token"] = novo_refresh_token
             cfg["updated_at"] = str(time.time())
-            _ml_atualizar_api_loja_exata(client_id, nome_loja, cfg)
             if str(novo_refresh_token or "") != str(refresh_token or ""):
                 _ml_http_invalidar_session(client_id, nome_loja, session_token, verify_ssl)
-            logger.info(f"[ML REFRESH] Ã¢Å“â€¦ Token renovado com sucesso para {nome_loja}")
             return cfg
 
-        logger.error(f"[ML REFRESH] Ã¢ÂÅ’ Erro ao renovar token: {resp.status_code} - {resp.text}")
         raise HTTPException(status_code=401, detail="NÃƒÂ£o foi possÃƒÂ­vel renovar o token. RefaÃƒÂ§a a autenticaÃƒÂ§ÃƒÂ£o OAuth.")
     except HTTPException:
         raise
@@ -164,7 +166,6 @@ def _ml_refresh_token(client_id: str, nome_loja: str, cfg: dict):
             raise HTTPException(status_code=504, detail="Tempo de consulta das perguntas esgotado.") from None
         raise HTTPException(status_code=401, detail="Erro ao renovar token. Refaça a autenticação OAuth.") from None
     except Exception as e:
-        logger.exception(f"[ML REFRESH] Ã¢ÂÅ’ Exception ao renovar token: {e}")
         raise HTTPException(status_code=401, detail="Erro ao renovar token. RefaÃƒÂ§a a autenticaÃƒÂ§ÃƒÂ£o OAuth.")
 
 
@@ -268,31 +269,9 @@ def _ml_descobrir_user_id_oauth(client_id: str, nome_loja: str, cfg: dict) -> di
 
 
 def _obter_cfg_ml(client_id: str, nome_loja: str, store_id: str | None = None) -> dict:
-    """ObtÃƒÂ©m e normaliza a configuraÃƒÂ§ÃƒÂ£o do Mercado Livre da loja."""
-    loja = buscar_loja(client_id, nome_loja, store_id=store_id) if store_id else buscar_loja(client_id, nome_loja)
-    if not loja:
-        raise HTTPException(status_code=404, detail="Loja nÃ£o encontrada")
-
-    integracoes = loja.get("integracoes") or {}
-    cfg = dict(integracoes.get("mercadolivre") or {})
-    if not cfg:
-        raise HTTPException(status_code=400, detail="IntegraÃƒÂ§ÃƒÂ£o do Mercado Livre nÃ£o configurada para esta loja")
-
-    cfg["app_id"] = cfg.get("app_id") or cfg.get("id") or cfg.get("client_id")
-    cfg["client_secret"] = cfg.get("client_secret") or cfg.get("secret")
-
-    if not cfg.get("access_token"):
-        raise HTTPException(status_code=401, detail="Token do Mercado Livre ausente. RefaÃƒÂ§a a autenticaÃƒÂ§ÃƒÂ£o OAuth.")
-
-    store_id_exato = str(loja.get("store_id") or "").strip()
-    if not store_id_exato:
-        raise HTTPException(status_code=409, detail="Loja sem store_id persistido.")
-    cfg = _ml_cfg_com_store_id_context(cfg, store_id_exato)
-    if cfg.get("central"):
-        return cfg
-    cfg = _ml_normalizar_oauth_compartilhado(client_id, nome_loja, cfg)
-    cfg = _ml_descobrir_user_id_oauth(client_id, nome_loja, cfg)
-    return cfg
+    """Resolve current authorized credentials without synchronous maintenance."""
+    from backend.services.perguntas_store_config import obter_cfg_ml_snapshot
+    return obter_cfg_ml_snapshot(client_id, nome_loja, store_id)
 
 
 def _ml_api_request(
@@ -312,6 +291,9 @@ def _ml_api_request(
     """Executa chamada autenticada na API do Mercado Livre com refresh automÃƒÂ¡tico do token."""
     if verify_ssl is False:
         logger.warning("[ML API] Tentativa legada de desabilitar TLS foi bloqueada para loja=%s.", loja)
+    if str(method).upper() not in {"GET", "HEAD", "OPTIONS"}:
+        from .store_oauth_refresh import revalidate_ml_mutation
+        cfg = revalidate_ml_mutation(client_id, loja, cfg)
     verify = str(os.environ.get("ML_CA_BUNDLE") or "").strip() or True
     access_token = str((cfg or {}).get("access_token") or "").strip()
     request_headers = _headers_ml(access_token)
@@ -335,6 +317,8 @@ def _ml_api_request(
     if resp.status_code == 401:
         _ml_http_invalidar_session(client_id, loja, access_token, verify)
         cfg = _ml_refresh_token(client_id, loja, cfg)
+        if str(method).upper() not in {"GET", "HEAD", "OPTIONS"}:
+            cfg = revalidate_ml_mutation(client_id, loja, cfg)
         access_token = str((cfg or {}).get("access_token") or "").strip()
         request_headers = _headers_ml(access_token)
         for key, value in dict(headers or {}).items():
