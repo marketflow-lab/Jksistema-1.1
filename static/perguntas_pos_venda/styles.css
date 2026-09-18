@@ -333,6 +333,33 @@
             margin-bottom: 0;
         }
 
+        .module-store-header .store-grid {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: flex-start;
+        }
+
+        .module-store-header .store-card {
+            flex: 0 1 auto;
+            inline-size: fit-content;
+            max-inline-size: 100%;
+        }
+
+        .module-store-header .store-card-heading {
+            justify-content: flex-start;
+        }
+
+        .module-store-header .store-name {
+            overflow: hidden;
+            overflow-wrap: normal;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .module-store-header .store-options {
+            contain: inline-size;
+        }
+
         .store-card {
             min-height: 0;
             border: 1px solid rgba(104, 168, 255, 0.28);
