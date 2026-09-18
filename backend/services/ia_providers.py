@@ -121,13 +121,35 @@ def _codex_provider_retry_after(exc: BaseException) -> int:
 
 
 def _codex_provider_exception_contract(exc: BaseException) -> tuple[str, bool, int]:
+    internal_rpc_errors: tuple[type[BaseException], ...] = ()
+    invalid_request_errors: tuple[type[BaseException], ...] = ()
+    server_busy_errors: tuple[type[BaseException], ...] = ()
+    transport_closed_errors: tuple[type[BaseException], ...] = ()
+    try:
+        from openai_codex.errors import (
+            InternalRpcError,
+            InvalidParamsError,
+            InvalidRequestError,
+            MethodNotFoundError,
+            ServerBusyError,
+            TransportClosedError,
+        )
+        internal_rpc_errors = (InternalRpcError,)
+        invalid_request_errors = (InvalidParamsError, InvalidRequestError, MethodNotFoundError)
+        server_busy_errors = (ServerBusyError,)
+        transport_closed_errors = (TransportClosedError,)
+    except (ImportError, ModuleNotFoundError):
+        pass
+
     if isinstance(exc, (TimeoutError, FuturesTimeoutError, requests.exceptions.Timeout)):
         return "provider_timeout", True, 0
     if isinstance(
         exc,
-        (ConnectionError, BrokenPipeError, requests.exceptions.ConnectionError),
+        (ConnectionError, BrokenPipeError, requests.exceptions.ConnectionError) + transport_closed_errors,
     ):
         return "provider_connection", True, 0
+    if isinstance(exc, invalid_request_errors):
+        return "codex_runtime_invalid", False, 0
     status_code = getattr(exc, "status_code", None)
     if status_code is None:
         status_code = getattr(getattr(exc, "response", None), "status_code", None)
@@ -148,7 +170,43 @@ def _codex_provider_exception_contract(exc: BaseException) -> tuple[str, bool, i
         return "codex_dependency_missing", False, 0
     if isinstance(exc, (FileNotFoundError, PermissionError)):
         return "codex_runtime_invalid", False, 0
+    if isinstance(exc, server_busy_errors):
+        return "provider_turn_failed", True, retry_after
+    if isinstance(exc, internal_rpc_errors):
+        # A generic -32603 means that the app-server and this SDK did not
+        # complete the JSON-RPC operation. One fresh-process recovery is made
+        # by the caller; repeating the same incompatible request indefinitely
+        # only keeps the public-answer job alive without producing a draft.
+        return "codex_runtime_invalid", False, 0
+    normalized_message = str(exc or "").strip().lower()
+    if any(marker in normalized_message for marker in (
+        "stream disconnected",
+        "error sending request",
+        "connection closed",
+        "connection reset",
+        "broken pipe",
+    )):
+        return "provider_connection", True, retry_after
     return "provider_turn_failed", True, retry_after
+
+
+def _codex_provider_reconnectable(exc: BaseException) -> bool:
+    """Bound recovery to failures that can represent a broken app-server session."""
+
+    reconnectable_errors: tuple[type[BaseException], ...] = ()
+    try:
+        from openai_codex.errors import InternalRpcError, TransportClosedError
+        reconnectable_errors = (InternalRpcError, TransportClosedError)
+    except (ImportError, ModuleNotFoundError):
+        pass
+    if isinstance(exc, reconnectable_errors):
+        return True
+    normalized_message = str(exc or "").strip().lower()
+    return any(marker in normalized_message for marker in (
+        "stream disconnected",
+        "turn completed event not received",
+        "error sending request",
+    ))
 
 
 def _codex_path_is_link(path: Path) -> bool:
@@ -1155,67 +1213,85 @@ def _chamar_codex_chat_com_thread(
                 # Preserve the legacy wire shape for every text-only call.
                 turn_input = turn_prompt
 
-            with Codex(
-                CodexConfig(
-                    codex_bin=console_execution.runtime_bin(),
-                    env=console_execution.sdk_env(),
-                    cwd=cwd,
-                    config_overrides=console_execution.readonly_config_overrides(),
-                )
-            ) as codex:
-                thread_kwargs = {
-                    "cwd": cwd,
-                    "model": model,
-                    "approval_mode": ApprovalMode.deny_all,
-                    "ephemeral": not bool(persist_thread),
-                    "developer_instructions": (
-                        "Voce e o nucleo de raciocinio Codex do orquestrador do JK Sistema. "
-                        "Responda em portugues do Brasil, somente em texto, usando apenas o contexto fornecido. "
-                        "As ferramentas e fontes sao executadas pelo backend; nao use shell, arquivos ou rede por conta propria. "
-                        "Nao publique, envie ou alegue executar alteracoes."
-                    ),
-                }
-                if str(thread_id or "").strip():
-                    try:
-                        resume_kwargs = dict(thread_kwargs)
-                        resume_kwargs.pop("ephemeral", None)
-                        thread = codex.thread_resume(str(thread_id).strip(), **resume_kwargs)
-                    except Exception as exc:
-                        if logger is not None:
-                            logger.warning(
-                                "[IA CODEX] Thread operacional indisponivel; iniciando outra (%s).",
-                                type(exc).__name__,
-                            )
+            codex_config = CodexConfig(
+                # Published SDK builds resolve their protocol-matched runtime
+                # when codex_bin is omitted.
+                env=console_execution.sdk_env(),
+                cwd=cwd,
+                config_overrides=console_execution.readonly_config_overrides(),
+            )
+            thread_kwargs = {
+                "cwd": cwd,
+                "model": model,
+                "approval_mode": ApprovalMode.deny_all,
+                "ephemeral": not bool(persist_thread),
+                "developer_instructions": (
+                    "Voce e o nucleo de raciocinio Codex do orquestrador do JK Sistema. "
+                    "Responda em portugues do Brasil, somente em texto, usando apenas o contexto fornecido. "
+                    "As ferramentas e fontes sao executadas pelo backend; nao use shell, arquivos ou rede por conta propria. "
+                    "Nao publique, envie ou alegue executar alteracoes."
+                ),
+            }
+            turn_kwargs = {
+                "cwd": cwd,
+                "model": model,
+                "approval_mode": ApprovalMode.deny_all,
+                "effort": getattr(ReasoningEffort, reasoning_effort_name, ReasoningEffort.medium),
+                "summary": ReasoningSummary.model_validate("auto"),
+            }
+            if output_schema is not None:
+                if not isinstance(output_schema, dict):
+                    raise TypeError("output_schema deve ser um objeto JSON Schema.")
+                turn_kwargs["output_schema"] = output_schema
+
+            def run_attempt(resume_thread_id: str) -> tuple[Any, str]:
+                with Codex(codex_config) as codex:
+                    if str(resume_thread_id or "").strip():
+                        try:
+                            resume_kwargs = dict(thread_kwargs)
+                            resume_kwargs.pop("ephemeral", None)
+                            thread = codex.thread_resume(str(resume_thread_id).strip(), **resume_kwargs)
+                        except Exception as exc:
+                            if logger is not None:
+                                logger.warning(
+                                    "[IA CODEX] Thread operacional indisponivel; iniciando outra (%s).",
+                                    type(exc).__name__,
+                                )
+                            thread = codex.thread_start(**thread_kwargs)
+                    else:
                         thread = codex.thread_start(**thread_kwargs)
-                else:
-                    thread = codex.thread_start(**thread_kwargs)
-                resolved_thread_id = str(getattr(thread, "id", "") or thread_id or "").strip()
-                if resolved_thread_id and callable(on_thread_ready):
-                    on_thread_ready(resolved_thread_id)
-                turn_kwargs = {
-                    "cwd": cwd,
-                    "model": model,
-                    "approval_mode": ApprovalMode.deny_all,
-                    "effort": getattr(ReasoningEffort, reasoning_effort_name, ReasoningEffort.medium),
-                    "summary": ReasoningSummary.model_validate("auto"),
-                }
-                if output_schema is not None:
-                    if not isinstance(output_schema, dict):
-                        raise TypeError("output_schema deve ser um objeto JSON Schema.")
-                    turn_kwargs["output_schema"] = output_schema
-                create_turn = getattr(thread, "turn", None)
-                if callable(create_turn):
-                    turn = create_turn(turn_input, **turn_kwargs)
-                    with _CODEX_PERSISTENT_TURNS_LOCK:
-                        _CODEX_PERSISTENT_TURNS[registry_key] = turn
-                    try:
-                        resultado = turn.run()
-                    finally:
+                    resolved_id = str(getattr(thread, "id", "") or resume_thread_id or "").strip()
+                    create_turn = getattr(thread, "turn", None)
+                    if callable(create_turn):
+                        turn = create_turn(turn_input, **turn_kwargs)
                         with _CODEX_PERSISTENT_TURNS_LOCK:
-                            if _CODEX_PERSISTENT_TURNS.get(registry_key) is turn:
-                                _CODEX_PERSISTENT_TURNS.pop(registry_key, None)
-                else:
-                    resultado = thread.run(turn_input, **turn_kwargs)
+                            _CODEX_PERSISTENT_TURNS[registry_key] = turn
+                        try:
+                            result = turn.run()
+                        finally:
+                            with _CODEX_PERSISTENT_TURNS_LOCK:
+                                if _CODEX_PERSISTENT_TURNS.get(registry_key) is turn:
+                                    _CODEX_PERSISTENT_TURNS.pop(registry_key, None)
+                    else:
+                        result = thread.run(turn_input, **turn_kwargs)
+                    return result, resolved_id
+
+            attempt_thread_id = str(thread_id or "").strip()
+            for communication_attempt in range(2):
+                try:
+                    resultado, resolved_thread_id = run_attempt(attempt_thread_id)
+                    break
+                except Exception as exc:
+                    if communication_attempt >= 1 or not _codex_provider_reconnectable(exc):
+                        raise
+                    if logger is not None:
+                        logger.warning(
+                            "[IA CODEX] Reiniciando comunicacao apos falha %s.",
+                            type(exc).__name__,
+                        )
+                    attempt_thread_id = ""
+            if resolved_thread_id and callable(on_thread_ready):
+                on_thread_ready(resolved_thread_id)
     except HTTPException as exc:
         if str(getattr(exc, "provider_error_reason", "") or "") in _CODEX_PROVIDER_ERROR_REASONS:
             raise
@@ -1255,7 +1331,7 @@ def _chamar_codex_chat_com_thread(
             reason="provider_empty_response",
             retryable=True,
         )
-    return resposta, str(getattr(thread, "id", "") or resolved_thread_id or "")
+    return resposta, str(resolved_thread_id or "")
 
 
 def _chamar_codex_chat(

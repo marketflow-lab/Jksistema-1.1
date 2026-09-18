@@ -305,6 +305,91 @@ def test_codex_cleans_local_images_when_turn_fails(
     assert not captured["path"].parent.exists()
 
 
+def test_codex_uses_pinned_runtime_and_recovers_internal_rpc_with_fresh_thread(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from openai_codex.errors import InternalRpcError
+
+    calls: dict[str, Any] = {
+        "configs": [],
+        "resumed": [],
+        "started": 0,
+        "ready": [],
+    }
+
+    class _Turn:
+        def __init__(self, thread_id: str) -> None:
+            self.thread_id = thread_id
+
+        def interrupt(self) -> None:
+            return None
+
+        def run(self):
+            if self.thread_id == "thread-stale":
+                raise InternalRpcError(-32603, "synthetic internal rpc failure")
+            return SimpleNamespace(
+                status=SimpleNamespace(value="completed"),
+                final_response='{"answer":"recuperada"}',
+            )
+
+    class _Thread:
+        def __init__(self, thread_id: str) -> None:
+            self.id = thread_id
+
+        def turn(self, _input: object, **_kwargs: object):
+            return _Turn(self.id)
+
+    class _Codex:
+        def __init__(self, config: object) -> None:
+            calls["configs"].append(config)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> bool:
+            return False
+
+        def thread_resume(self, thread_id: str, **_kwargs: object):
+            calls["resumed"].append(thread_id)
+            return _Thread(thread_id)
+
+        def thread_start(self, **_kwargs: object):
+            calls["started"] += 1
+            return _Thread("thread-recovered")
+
+    monkeypatch.setattr(ia_providers, "logger", logging.getLogger(__name__))
+    monkeypatch.setattr(console_execution, "enabled", lambda: True)
+    monkeypatch.setattr(console_execution, "sdk_installed", lambda: True)
+    monkeypatch.setattr(console_execution, "auth_detected", lambda: True)
+    monkeypatch.setattr(
+        console_execution,
+        "runtime_bin",
+        lambda: (_ for _ in ()).throw(AssertionError("external runtime must not be selected")),
+    )
+    monkeypatch.setattr(console_execution, "sdk_env", lambda: {})
+    monkeypatch.setattr(console_execution, "readonly_config_overrides", lambda: ())
+    monkeypatch.setattr(console_security, "readonly_cwd", lambda *_args: str(tmp_path))
+    monkeypatch.setattr(openai_codex, "Codex", _Codex)
+    monkeypatch.setattr(openai_codex, "CodexConfig", lambda **kwargs: kwargs)
+
+    response, thread_id = ia_providers._chamar_codex_chat_com_thread(
+        IAChatRequest(message="Pergunta", model="codex:gpt-5.6-sol"),
+        "tenant-test",
+        thread_id="thread-stale",
+        persist_thread=True,
+        on_thread_ready=calls["ready"].append,
+    )
+
+    assert response == '{"answer":"recuperada"}'
+    assert thread_id == "thread-recovered"
+    assert calls["resumed"] == ["thread-stale"]
+    assert calls["started"] == 1
+    assert calls["ready"] == ["thread-recovered"]
+    assert len(calls["configs"]) == 2
+    assert all("codex_bin" not in config for config in calls["configs"])
+
+
 def test_codex_missing_authentication_is_a_terminal_provider_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

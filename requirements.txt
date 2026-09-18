@@ -211,11 +211,11 @@ onnxruntime==1.27.0 \
     --hash=sha256:445fb702ea5241ba813a3ce2febe2e9408a64f6ad2eb610924322c536165f7cd \
     --hash=sha256:49e416be0d717338b6d041b99911b716d70c397d277056450724f93bdded3fc2
 
-openai-codex==0.1.0b3 ; sys_platform == "win32" \
-    --hash=sha256:8d1f9d346667aeecb435c6a45d0edb3f016187276ec452cf8094d813896276c4
+openai-codex==0.154.0 ; sys_platform == "win32" \
+    --hash=sha256:b5f354e1280621d0f5e28313ecf6974d2a98bcf0b088dbe791dc6df5044d2214
 
-openai-codex-cli-bin==0.137.0a4 ; sys_platform == "win32" \
-    --hash=sha256:9e13bf68e18e36bd3a0efd51213281c83e9f6ec22bdb7a45bd2e0211822733a9
+openai-codex-cli-bin==0.154.0 ; sys_platform == "win32" \
+    --hash=sha256:11ba8fbef6f3bafaed39b745a2b0b5648bf00c8d168e241b314d86000d577fcb
 
 openpyxl==3.1.5 \
     --hash=sha256:5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2

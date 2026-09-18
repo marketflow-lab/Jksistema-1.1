@@ -212,7 +212,7 @@ def test_codex_turn_path_registers_interruptible_turn(monkeypatch, tmp_path):
     assert ia_providers.cancel_codex_persistent_turn("job-turn-test") is False
 
 
-def test_thread_id_is_persisted_before_failed_turn_and_reused_on_retry(monkeypatch, tmp_path):
+def test_failed_new_thread_is_not_persisted_or_reused_on_retry(monkeypatch, tmp_path):
     from backend.services import codex_console
     import openai_codex
 
@@ -289,7 +289,7 @@ def test_thread_id_is_persisted_before_failed_turn_and_reused_on_retry(monkeypat
 
     waiting = orchestrator._persist_retry(job, error="turn crashed")
     assert waiting["status"] == "waiting_retry"
-    assert waiting["thread_id"] == "thread-created-before-run"
+    assert not waiting.get("thread_id")
     running = codex_assistant_storage.codex_assistant_customer_reply_job_save(
         str(tmp_path),
         "cliente",
@@ -298,7 +298,7 @@ def test_thread_id_is_persisted_before_failed_turn_and_reused_on_retry(monkeypat
     response, thread_id = ia_providers._chamar_codex_chat_com_thread(
         payload,
         "cliente",
-        thread_id=running["thread_id"],
+        thread_id=str(running.get("thread_id") or ""),
         persist_thread=True,
         active_turn_key=job["job_id"],
         reasoning_effort="medium",
@@ -307,7 +307,7 @@ def test_thread_id_is_persisted_before_failed_turn_and_reused_on_retry(monkeypat
 
     assert response == "Resposta"
     assert thread_id == "thread-created-before-run"
-    assert calls["resumed"] == ["thread-created-before-run"]
+    assert calls["resumed"] == []
 
 
 def _unified_answer(

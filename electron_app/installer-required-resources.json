@@ -250,8 +250,8 @@
   "requiredSourceGlobs": [
     { "pattern": "python_runtime/portable/python.exe", "min": 1 },
     { "pattern": "python_wheels/*.whl", "min": 20 },
-    { "pattern": "python_wheels/openai_codex-0.1.0b3-*.whl", "min": 1 },
-    { "pattern": "python_wheels/openai_codex_cli_bin-0.137.0a4-*.whl", "min": 1 },
+    { "pattern": "python_wheels/openai_codex-0.154.0-*.whl", "min": 1 },
+    { "pattern": "python_wheels/openai_codex_cli_bin-0.154.0-*.whl", "min": 1 },
     { "pattern": "python_wheels/faster_whisper-1.2.1-*.whl", "min": 1 },
     { "pattern": ".installer_runtime/black_jhon/faster-whisper-small/**/model.bin", "min": 1 }
   ],
@@ -815,8 +815,8 @@
   "requiredPackagedGlobs": [
     { "pattern": "local_app/python_runtime/portable/python.exe", "min": 1 },
     { "pattern": "local_app/python_wheels/*.whl", "min": 20 },
-    { "pattern": "local_app/python_wheels/openai_codex-0.1.0b3-*.whl", "min": 1 },
-    { "pattern": "local_app/python_wheels/openai_codex_cli_bin-0.137.0a4-*.whl", "min": 1 },
+    { "pattern": "local_app/python_wheels/openai_codex-0.154.0-*.whl", "min": 1 },
+    { "pattern": "local_app/python_wheels/openai_codex_cli_bin-0.154.0-*.whl", "min": 1 },
     { "pattern": "local_app/python_wheels/faster_whisper-1.2.1-*.whl", "min": 1 },
     { "pattern": "local_app/black_jhon_runtime/faster-whisper-small/**/model.bin", "min": 1 }
   ],
