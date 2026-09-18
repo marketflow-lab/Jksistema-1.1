@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import threading
 
+import pytest
+
 from backend.routers.perguntas_pos_venda import create_perguntas_pos_venda_router
 from backend.modules.perguntas_pos_venda.endpoints import question_automation as endpoints
 from backend.modules.perguntas_pos_venda.endpoints import store_config
@@ -549,3 +551,174 @@ def test_poll_does_not_recreate_current_terminal_review_job(monkeypatch):
     }]
     assert payload["queue_saturated"] is False
     assert payload["queue_backpressure"]["queue_saturated"] is False
+
+
+def _completed_question_job(*, human_review: bool = False, data_sufficient: bool = True) -> dict:
+    return {
+        "job_id": "job-q-1",
+        "status": "completed",
+        "agent_state": "aguardando_aprovacao",
+        "result": {
+            "resposta": "Resposta validada.",
+            "contexto": {
+                "ia_validacao_ok": True,
+                # A politica global legada continua marcando o rascunho como
+                # manual; apenas motivos intrinsecos devem bloquear o opt-out.
+                "ia_requer_revisao_humana": True,
+                "ia_requer_revisao_humana_intrinseca": human_review,
+                "manual_edit_required": False,
+            },
+            "data_sufficient": data_sufficient,
+            "warnings": [],
+            "requires_approval": True,
+            "publish_attempted": False,
+            "proposal_version": 1,
+            "proposal_hash": "hash-q-1",
+        },
+    }
+
+
+def _question_poll_for_direct_send() -> endpoints._QuestionPoll:
+    return endpoints._QuestionPoll(
+        client_id="tenant-a",
+        state={},
+        approvals=[],
+        max_per_store=1,
+    )
+
+
+def _completed_question_job_without_intrinsic_review_signal() -> dict:
+    job = _completed_question_job()
+    job["result"]["contexto"].pop("ia_requer_revisao_humana_intrinseca")
+    return job
+
+
+def test_unchecked_approval_sends_only_current_validated_sufficient_job(monkeypatch):
+    poll = _question_poll_for_direct_send()
+    sent = []
+    processed = []
+    verified = []
+    monkeypatch.setattr(endpoints.perguntas_pos_venda_codex, "enabled", lambda: True)
+    monkeypatch.setattr(
+        endpoints,
+        "_customer_reply_late_reconciliation_candidate",
+        lambda **_kwargs: (_completed_question_job(), False),
+    )
+    monkeypatch.setattr(
+        endpoints.perguntas_pos_venda_codex,
+        "approval_job_current",
+        lambda client_id, job_id: client_id == "tenant-a" and job_id == "job-q-1",
+    )
+    monkeypatch.setattr(
+        endpoints,
+        "_perguntas_ia_pergunta_respondida_ml",
+        lambda _client, _store, cfg, question_id: (
+            False,
+            {"id": question_id, "status": "UNANSWERED"},
+            cfg,
+        ),
+    )
+    monkeypatch.setattr(
+        endpoints,
+        "_perguntas_ia_enviar_resposta_ml",
+        lambda _client, store, cfg, question_id, answer: (
+            sent.append((store, question_id, answer)) or {"id": question_id},
+            cfg,
+        ),
+    )
+    monkeypatch.setattr(
+        endpoints,
+        "_perguntas_ia_marcar_processada",
+        lambda _state, store, question_id, status: processed.append(
+            (store, question_id, status)
+        ),
+    )
+    monkeypatch.setattr(
+        endpoints.perguntas_pos_venda_codex,
+        "mark_verified",
+        lambda **kwargs: verified.append(kwargs),
+    )
+
+    cfg, increment, stop = endpoints._question_poll_process_candidate(
+        poll,
+        store="Loja A",
+        store_id="store-a",
+        seller_id="seller-a",
+        site_id="MLB",
+        cfg={"user_id": "seller-a"},
+        question={"id": "Q-1", "text": "Serve?", "item_id": "MLB1"},
+        item={"id": "MLB1"},
+        automation_config={"solicitar_aprovacao": False},
+    )
+
+    assert cfg == {"user_id": "seller-a"}
+    assert (increment, stop) == (1, False)
+    assert sent == [("Loja A", "Q-1", "Resposta validada.")]
+    assert processed == [("Loja A", "Q-1", "sent_auto")]
+    assert poll.pending == []
+    assert poll.sent[0]["status"] == "sent_auto"
+    assert verified[0]["job_id"] == "job-q-1"
+    assert verified[0]["success"] is True
+
+
+@pytest.mark.parametrize(
+    ("automation_config", "job"),
+    [
+        ({"solicitar_aprovacao": True}, _completed_question_job()),
+        ({"solicitar_aprovacao": False}, _completed_question_job(human_review=True)),
+        ({"solicitar_aprovacao": False}, _completed_question_job(data_sufficient=False)),
+        (
+            {"solicitar_aprovacao": False},
+            _completed_question_job_without_intrinsic_review_signal(),
+        ),
+    ],
+)
+def test_approval_or_safety_review_prevents_direct_send(monkeypatch, automation_config, job):
+    poll = _question_poll_for_direct_send()
+    monkeypatch.setattr(endpoints.perguntas_pos_venda_codex, "enabled", lambda: True)
+    monkeypatch.setattr(
+        endpoints,
+        "_customer_reply_question_approval",
+        lambda **kwargs: {
+            "id": "approval-q-1",
+            "status": "pending",
+            "loja": kwargs["nome_loja"],
+            "question_id": kwargs["question_id"],
+            "resposta_sugerida": kwargs["resposta"],
+            **kwargs["contexto"],
+        },
+    )
+    monkeypatch.setattr(
+        endpoints,
+        "_customer_reply_late_reconciliation_candidate",
+        lambda **_kwargs: (job, False),
+    )
+    monkeypatch.setattr(
+        endpoints.perguntas_pos_venda_codex,
+        "approval_job_current",
+        lambda *_args: True,
+    )
+    monkeypatch.setattr(
+        endpoints,
+        "_perguntas_ia_enviar_resposta_ml",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("resposta que exige revisao nao pode ser enviada")
+        ),
+    )
+
+    _cfg, increment, stop = endpoints._question_poll_process_candidate(
+        poll,
+        store="Loja A",
+        store_id="store-a",
+        seller_id="seller-a",
+        site_id="MLB",
+        cfg={"user_id": "seller-a"},
+        question={"id": "Q-1", "text": "Serve?", "item_id": "MLB1"},
+        item={"id": "MLB1"},
+        automation_config=automation_config,
+    )
+
+    assert (increment, stop) == (1, False)
+    assert poll.sent == []
+    assert len(poll.pending) == 1
+    assert poll.pending[0]["question_id"] == "Q-1"

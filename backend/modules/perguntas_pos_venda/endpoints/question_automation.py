@@ -14,7 +14,10 @@ from backend.modules.perguntas_pos_venda.endpoints.contracts import _PERGUNTAS_A
 from backend.modules.perguntas_pos_venda.endpoints.runtime import runtime_adapter
 from backend.modules.perguntas_pos_venda.endpoints.security import get_tenant_id
 from backend.services import perguntas_pos_venda_codex
-from backend.services.perguntas_pos_venda_state import PerguntasIARespostaIndisponivel
+from backend.services.perguntas_pos_venda_state import (
+    ML_RESPOSTA_PERGUNTA_MAX_CHARS,
+    PerguntasIARespostaIndisponivel,
+)
 from backend.services.vendas_sync_progress import _corrigir_texto_mojibake
 from backend.modules.perguntas_pos_venda.endpoints.customer_reply import (
     _customer_reply_approval_job_current,
@@ -31,6 +34,7 @@ from backend.modules.perguntas_pos_venda.endpoints.question_paging import (
     _perguntas_automacao_buscar_todas,
     _perguntas_automacao_question_ids,
 )
+from backend.modules.perguntas_pos_venda.endpoints.state import ENDPOINTS_STATE
 
 _ml_api_request = runtime_adapter("_ml_api_request")
 _ml_buscar_itens_batch = runtime_adapter("_ml_buscar_itens_batch")
@@ -44,8 +48,11 @@ _obter_cfg_ml = runtime_adapter("_obter_cfg_ml")
 _perguntas_ia_aprovacao_pendente = runtime_adapter("_perguntas_ia_aprovacao_pendente")
 _perguntas_ia_aprovacoes_carregar = runtime_adapter("_perguntas_ia_aprovacoes_carregar")
 _perguntas_ia_aprovacoes_salvar = runtime_adapter("_perguntas_ia_aprovacoes_salvar")
+_perguntas_ia_enviar_resposta_ml = runtime_adapter("_perguntas_ia_enviar_resposta_ml")
 _perguntas_ia_gerar_resposta = runtime_adapter("_perguntas_ia_gerar_resposta")
 _perguntas_ia_ja_processada = runtime_adapter("_perguntas_ia_ja_processada")
+_perguntas_ia_marcar_processada = runtime_adapter("_perguntas_ia_marcar_processada")
+_perguntas_ia_pergunta_respondida_ml = runtime_adapter("_perguntas_ia_pergunta_respondida_ml")
 _perguntas_ia_resolver_aprovacao = runtime_adapter("_perguntas_ia_resolver_aprovacao")
 _perguntas_ia_state_carregar = runtime_adapter("_perguntas_ia_state_carregar")
 _perguntas_ia_state_salvar = runtime_adapter("_perguntas_ia_state_salvar")
@@ -154,7 +161,7 @@ def _question_poll_add_approval(
     question: dict,
     answer: str,
     context: dict,
-) -> None:
+) -> dict:
     approval = _customer_reply_question_approval(
         nome_loja=store, question_id=question_id, pergunta=question,
         resposta=answer, contexto=context,
@@ -162,6 +169,105 @@ def _question_poll_add_approval(
     poll.approvals.append(approval)
     poll.pending.append(approval)
     poll.approvals_changed = True
+    return approval
+
+
+def _question_poll_finish_answer(
+    poll: _QuestionPoll,
+    *,
+    store: str,
+    question_id: str,
+    question: dict,
+    answer: str,
+    context: dict,
+    automation_config: dict,
+    cfg: dict,
+) -> tuple[dict, int, bool]:
+    needs_approval = _customer_reply_requires_approval(
+        poll.client_id, automation_config, context
+    )
+    if len(answer) > ML_RESPOSTA_PERGUNTA_MAX_CHARS:
+        needs_approval = True
+        context = {
+            **context,
+            "manual_edit_required": True,
+            "manual_edit_reason": "resposta_acima_do_limite_mercado_livre",
+        }
+    if needs_approval:
+        _question_poll_add_approval(
+            poll, store, question_id, question, answer, context
+        )
+        return cfg, 1, False
+
+    try:
+        with ENDPOINTS_STATE.approval_send_lock:
+            responded, remote_question, cfg = _perguntas_ia_pergunta_respondida_ml(
+                poll.client_id, store, cfg, question_id
+            )
+            if not remote_question:
+                review_context = {
+                    **context,
+                    "manual_edit_required": True,
+                    "manual_edit_reason": "status_remoto_indisponivel_para_envio_automatico",
+                }
+                _question_poll_add_approval(
+                    poll, store, question_id, question, answer, review_context
+                )
+                return cfg, 1, False
+            if responded:
+                _perguntas_ia_marcar_processada(
+                    poll.state, store, question_id, "answered_elsewhere"
+                )
+                poll.state_changed = True
+                return cfg, 1, False
+            response, cfg = _perguntas_ia_enviar_resposta_ml(
+                poll.client_id, store, cfg, question_id, answer
+            )
+    except Exception as exc:
+        logger.warning(
+            "[ML PERGUNTAS IA] evento=envio_automatico status=erro tipo=%s",
+            type(exc).__name__,
+        )
+        poll.errors.append({
+            "loja": store,
+            "question_id": question_id,
+            "erro": str(exc),
+        })
+        return cfg, 1, False
+
+    poll.sent.append({
+        "loja": _corrigir_texto_mojibake(store),
+        "question_id": question_id,
+        "status": "sent_auto",
+        "resposta_enviada": answer,
+        "mercadolivre": response,
+    })
+    try:
+        _perguntas_ia_marcar_processada(poll.state, store, question_id, "sent_auto")
+        poll.state_changed = True
+    except Exception as exc:
+        logger.warning(
+            "[ML PERGUNTAS IA] evento=registrar_envio_automatico status=erro tipo=%s",
+            type(exc).__name__,
+        )
+    job_id = str(context.get("codex_job_id") or "").strip()
+    try:
+        perguntas_pos_venda_codex.mark_verified(
+            client_id=poll.client_id,
+            job_id=job_id,
+            success=True,
+            evidence={
+                "question_id": question_id,
+                "mercadolivre": response,
+                "automatic": True,
+            },
+        )
+    except Exception as exc:
+        logger.warning(
+            "[ML PERGUNTAS IA] evento=verificar_envio_automatico status=erro tipo=%s",
+            type(exc).__name__,
+        )
+    return cfg, 1, False
 
 
 def _question_poll_process_candidate(
@@ -174,6 +280,7 @@ def _question_poll_process_candidate(
     cfg: dict,
     question: dict,
     item: dict,
+    automation_config: dict,
 ) -> tuple[dict, int, bool]:
     question_id = str(question.get("id") or "").strip()
     request = {
@@ -190,8 +297,11 @@ def _question_poll_process_candidate(
             if reconciled:
                 return cfg, 0, False
             answer, context = _customer_reply_job_draft(latest)
-            _question_poll_add_approval(poll, store, question_id, question, answer, context)
-            return cfg, 1, False
+            return _question_poll_finish_answer(
+                poll, store=store, question_id=question_id, question=question,
+                answer=answer, context=context,
+                automation_config=automation_config, cfg=cfg,
+            )
         blocker = _customer_reply_automation_terminal_blocker(
             client_id=poll.client_id, task_type="question", store=store,
             subject_key=question_id, request=request,
@@ -231,10 +341,11 @@ def _question_poll_process_candidate(
         poll.approvals, context.get("codex_job_id")
     ):
         return cfg, 0, False
-    if _customer_reply_requires_approval():
-        _question_poll_add_approval(poll, store, question_id, question, answer, context)
-        return cfg, 1, False
-    return cfg, 0, False
+    return _question_poll_finish_answer(
+        poll, store=store, question_id=question_id, question=question,
+        answer=answer, context=context,
+        automation_config=automation_config, cfg=cfg,
+    )
 
 
 def _question_poll_store(
@@ -245,6 +356,7 @@ def _question_poll_store(
     cfg: dict,
     seller_id: str,
     questions: list[dict],
+    automation_config: dict,
 ) -> None:
     candidates = _question_poll_candidates(poll, store, questions)
     processed = 0
@@ -263,7 +375,8 @@ def _question_poll_store(
             cfg, increment, stop = _question_poll_process_candidate(
                 poll, store=store, store_id=store_id, seller_id=seller_id,
                 site_id=str(cfg.get("site_id") or "").strip(), cfg=cfg,
-                question=question, item=item
+                question=question, item=item,
+                automation_config=automation_config,
             )
             processed += increment
             if stop:
@@ -320,7 +433,8 @@ def ml_perguntas_automacao_poll(
             _question_poll_store(
                 poll, store=store,
                 store_id=str(store_config.get("store_id") or "").strip(),
-                cfg=cfg, seller_id=seller_id, questions=questions
+                cfg=cfg, seller_id=seller_id, questions=questions,
+                automation_config=config,
             )
         except HTTPException as exc:
             poll.errors.append({"loja": store, "erro": exc.detail})

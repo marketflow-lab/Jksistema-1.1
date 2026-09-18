@@ -160,6 +160,9 @@ def _customer_reply_question_approval(
         "ia_validacao_ok": contexto.get("ia_validacao_ok"),
         "ia_validacao_issues": contexto.get("ia_validacao_issues") or [],
         "ia_requer_revisao_humana": bool(contexto.get("ia_requer_revisao_humana")),
+        "ia_requer_revisao_humana_intrinseca": bool(
+            contexto.get("ia_requer_revisao_humana_intrinseca")
+        ),
         "manual_edit_required": bool(contexto.get("manual_edit_required")),
         "manual_edit_reason": str(contexto.get("manual_edit_reason") or ""),
         "codex_job_id": contexto.get("codex_job_id") or "",

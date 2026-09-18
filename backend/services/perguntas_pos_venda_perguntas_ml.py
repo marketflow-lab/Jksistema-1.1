@@ -1629,6 +1629,19 @@ def _perguntas_ia_gerar_resposta(
     diagnostico_v2 = {}
     if diagnostico_ia and isinstance(diagnostico_ia[0], dict) and isinstance(diagnostico_ia[0].get("result"), dict):
         diagnostico_v2 = diagnostico_ia[0].get("result") or {}
+    intrinsic_review_fields = (
+        "requires_human_review",
+        "manual_review_required",
+        "confidence_below_threshold",
+    )
+    intrinsic_review_known = all(
+        field in diagnostico_v2 for field in intrinsic_review_fields
+    )
+    intrinsic_review_required = (
+        bool(any(diagnostico_v2.get(field) for field in intrinsic_review_fields))
+        if intrinsic_review_known
+        else None
+    )
     contexto["intencao_atendimento"] = {
         "schema": "jk_ml_unified_response_agent_v1",
         "fluxo": diagnostico_v2.get("flow") or "pre_sale",
@@ -1646,6 +1659,7 @@ def _perguntas_ia_gerar_resposta(
         "modo_ia": ML_PERGUNTAS_IA_V2_MODO,
         "diagnostico_ia": diagnostico_ia,
         "ia_requer_revisao_humana": bool(diagnostico_v2.get("needs_human_review")),
+        "ia_requer_revisao_humana_intrinseca": intrinsic_review_required,
         "ia_decision": diagnostico_v2.get("decision") or "",
         "ia_categoria": diagnostico_v2.get("category") or "",
         "ia_validacao_ok": diagnostico_v2.get("validation_ok"),

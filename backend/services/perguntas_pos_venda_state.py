@@ -158,8 +158,9 @@ def _perguntas_loja_config_normalizar(config: dict | None = None) -> dict:
         intervalo_minutos = int(intervalo_minutos)
     return {
         "responder_automaticamente": bool(config.get("responder_automaticamente")),
-        # Automatico significa gerar o rascunho; publicar sempre exige humano.
-        "solicitar_aprovacao": True,
+        # Configuracoes legadas sem a chave continuam exigindo aprovacao. O
+        # envio direto so e habilitado por um ``false`` booleano persistido.
+        "solicitar_aprovacao": config.get("solicitar_aprovacao") is not False,
         "notificar_whatsapp_aprovacoes": bool(config.get("notificar_whatsapp_aprovacoes")),
         # Pos-venda aceita somente resposta manual. O valor legado permanece no
         # arquivo historico, mas nunca pode reativar sugestoes de IA/Black Jhon.
@@ -207,7 +208,7 @@ def _perguntas_loja_config_salvar(
     intervalo_cfg = _perguntas_loja_config_normalizar({"intervalo_minutos": intervalo_minutos})
     payload = {
         "responder_automaticamente": bool(responder_automaticamente),
-        "solicitar_aprovacao": True,
+        "solicitar_aprovacao": bool(solicitar_aprovacao),
         "notificar_whatsapp_aprovacoes": bool(notificar_whatsapp_aprovacoes),
         "habilitar_pos_venda_automatico": False,
         "intervalo_minutos": intervalo_cfg["intervalo_minutos"],

@@ -53,7 +53,8 @@ _CUSTOMER_REPLY_SEALED_RESULT_FIELDS = frozenset({
 
 _CUSTOMER_REPLY_SEALED_CONTEXT_FIELDS = frozenset({
     "model", "modo_ia", "ia_decision", "ia_categoria", "ia_validacao_ok",
-    "ia_requer_revisao_humana", "manual_edit_required", "manual_edit_reason",
+    "ia_requer_revisao_humana", "ia_requer_revisao_humana_intrinseca",
+    "manual_edit_required", "manual_edit_reason",
 })
 
 

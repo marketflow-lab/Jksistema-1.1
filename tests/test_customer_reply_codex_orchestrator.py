@@ -1218,15 +1218,17 @@ def test_two_independent_sources_are_sufficient_without_official_authority():
     assert warnings == []
 
 
-def test_automation_has_no_direct_auto_publish_branch():
-    questions_source = inspect.getsource(endpoints.ml_perguntas_automacao_poll)
-    question_execution_source = inspect.getsource(question_automation._question_poll_process_candidate)
+def test_question_automation_auto_publish_is_gated_and_post_sale_stays_manual():
+    questions_source = inspect.getsource(question_automation)
+    question_execution_source = inspect.getsource(question_automation._question_poll_finish_answer)
     post_sale_source = inspect.getsource(endpoints.ml_pos_venda_automacao_poll)
-    assert '"sent_auto"' not in questions_source
+    assert '"sent_auto"' in questions_source
     assert '"sent_auto_pos_venda"' not in post_sale_source
-    assert "_perguntas_ia_enviar_resposta_ml" not in questions_source
+    assert "_customer_reply_requires_approval" in question_execution_source
+    assert "_perguntas_ia_pergunta_respondida_ml" in question_execution_source
+    assert "_perguntas_ia_enviar_resposta_ml" in question_execution_source
+    assert "approval_send_lock" in question_execution_source
     assert "_ml_pos_venda_enviar_resposta_ml" not in post_sale_source
-    assert "codex_job_id" in question_execution_source
     assert '"disabled": True' in post_sale_source
     assert '"motivo": "pos_venda_somente_manual"' in post_sale_source
 
@@ -2507,6 +2509,9 @@ def test_unified_agent_receives_full_context_without_semantic_preclassification(
                 "decision": "human_review",
                 "validation_ok": True,
                 "needs_human_review": True,
+                "requires_human_review": False,
+                "manual_review_required": False,
+                "confidence_below_threshold": False,
             }}],
         ),
     )
@@ -4290,6 +4295,9 @@ def test_evoque_full_conversation_reaches_unified_agent_and_builds_conditional_a
                 "decision": "human_review",
                 "validation_ok": True,
                 "needs_human_review": True,
+                "requires_human_review": False,
+                "manual_review_required": False,
+                "confidence_below_threshold": False,
             }}],
         ),
     )
@@ -4336,6 +4344,7 @@ def test_evoque_full_conversation_reaches_unified_agent_and_builds_conditional_a
     assert answer == final_answer
     assert context["ia_categoria"] == "compatibility"
     assert context["ia_requer_revisao_humana"] is True
+    assert context["ia_requer_revisao_humana_intrinseca"] is False
 
 
 def test_restart_never_replaces_an_unavailable_ai_draft_with_fallback(tmp_path, monkeypatch):
@@ -4408,8 +4417,15 @@ def test_restart_recovers_a_valid_sealed_ai_draft(tmp_path, monkeypatch):
             "proposal_id": "job-restart-sealed",
             "proposal_version": 1,
             "proposal_hash": "hash",
+            "data_sufficient": True,
             "requires_approval": True,
             "publish_attempted": False,
+            "contexto": {
+                "ia_validacao_ok": True,
+                "ia_requer_revisao_humana": True,
+                "ia_requer_revisao_humana_intrinseca": False,
+                "manual_edit_required": False,
+            },
         },
     }
     codex_assistant_storage.codex_assistant_customer_reply_job_save(
@@ -4425,6 +4441,8 @@ def test_restart_recovers_a_valid_sealed_ai_draft(tmp_path, monkeypatch):
 
     assert recovered["agent_state"] == "aguardando_aprovacao"
     assert recovered["result"]["resposta"] == "CANARY_SEALED_RESTART"
+    assert recovered["result"]["data_sufficient"] is True
+    assert recovered["result"]["contexto"]["ia_requer_revisao_humana_intrinseca"] is False
     assert not recovered.get("blocked_without_draft")
     public = orchestrator.get_job("cliente", completed["job_id"])
     assert public["result"]["resposta"] == "CANARY_SEALED_RESTART"

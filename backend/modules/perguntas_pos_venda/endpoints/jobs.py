@@ -159,10 +159,33 @@ def _customer_reply_wait_or_raise(client_id: str, job: dict[str, Any]) -> dict[s
     return job
 
 
-def _customer_reply_requires_approval() -> bool:
-    """Automatic mode only prepares drafts; publishing always needs approval."""
+def _customer_reply_requires_approval(
+    client_id: str,
+    store_config: Any,
+    context: Any,
+) -> bool:
+    """Honor the store opt-out while failing closed on evidence or safety gaps."""
 
-    return True
+    config = store_config if isinstance(store_config, dict) else {}
+    if config.get("solicitar_aprovacao") is not False:
+        return True
+    details = context if isinstance(context, dict) else {}
+    if details.get("data_sufficient") is not True:
+        return True
+    if details.get("ia_validacao_ok") is not True:
+        return True
+    # ``ia_requer_revisao_humana`` also contains the legacy global policy that
+    # made every draft manual. Direct send is blocked by intrinsic review
+    # reasons, which are materialized separately by the current pipeline.
+    if details.get("ia_requer_revisao_humana_intrinseca") is not False:
+        return True
+    if details.get("manual_edit_required") is True:
+        return True
+    job_id = str(details.get("codex_job_id") or "").strip()
+    return not bool(
+        job_id
+        and perguntas_pos_venda_codex.approval_job_current(client_id, job_id)
+    )
 
 
 def ml_customer_reply_job_status(job_id: str, client_id: str = Depends(get_tenant_id)):

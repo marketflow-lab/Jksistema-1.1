@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from backend.schemas.perguntas_pos_venda import (
     PerguntasAprovacaoRequest,
+    PerguntasLojaConfigRequest,
     PosVendaGerarRespostaRequest,
     PosVendaMensagemRequest,
 )
@@ -53,6 +54,31 @@ def test_post_sale_automatic_flag_is_always_false_when_normalized_and_saved(tmp_
     persisted = json.loads((tmp_path / "perguntas_pos_venda_lojas_config.json").read_text(encoding="utf-8"))
     assert saved["habilitar_pos_venda_automatico"] is False
     assert persisted["JK Pecas"]["habilitar_pos_venda_automatico"] is False
+
+
+def test_question_approval_defaults_safe_and_persists_explicit_opt_out(tmp_path, monkeypatch):
+    assert PerguntasLojaConfigRequest(loja="JK Pecas").solicitar_aprovacao is True
+    assert state._perguntas_loja_config_normalizar({})["solicitar_aprovacao"] is True
+    assert state._perguntas_loja_config_normalizar({
+        "solicitar_aprovacao": False,
+    })["solicitar_aprovacao"] is False
+
+    monkeypatch.setattr(state, "get_tenant_path", lambda _client: str(tmp_path), raising=False)
+    saved = state._perguntas_loja_config_salvar(
+        "cliente",
+        "JK Pecas",
+        responder_automaticamente=True,
+        solicitar_aprovacao=False,
+        notificar_whatsapp_aprovacoes=False,
+        habilitar_pos_venda_automatico=False,
+        intervalo_minutos=5,
+    )
+
+    persisted = json.loads(
+        (tmp_path / "perguntas_pos_venda_lojas_config.json").read_text(encoding="utf-8")
+    )
+    assert saved["solicitar_aprovacao"] is False
+    assert persisted["JK Pecas"]["solicitar_aprovacao"] is False
 
 
 def test_post_sale_poll_is_noop_without_loading_ml_or_ai(monkeypatch):

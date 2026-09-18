@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 class PerguntasLojaConfigRequest(BaseModel):
     loja: str
     responder_automaticamente: bool = False
-    solicitar_aprovacao: bool = False
+    solicitar_aprovacao: bool = True
     notificar_whatsapp_aprovacoes: bool = False
     habilitar_pos_venda_automatico: bool = False
     intervalo_minutos: Optional[float] = 10

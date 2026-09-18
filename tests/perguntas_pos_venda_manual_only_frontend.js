@@ -32,6 +32,11 @@ assert.doesNotMatch(lojas, /buscarContadorPosVendaNaoLidas/);
 assert.doesNotMatch(lojas, /summary_only:\s*'true'/);
 assert.doesNotMatch(lojas, /data-config="habilitar_pos_venda_automatico"/);
 assert.match(lojas, /habilitar_pos_venda_automatico:\s*false/g);
+assert.match(lojas, /data-config="solicitar_aprovacao"[\s\S]*?config\.solicitar_aprovacao !== false \? 'checked' : ''/);
+assert.match(lojas, /const solicitarAprovacao = !!card\.querySelector\('\[data-config="solicitar_aprovacao"\]'\)\?\.checked;/);
+assert.match(lojas, /solicitar_aprovacao:\s*solicitarAprovacao/);
+assert.match(lojas, /solicitar_aprovacao:\s*config\.solicitar_aprovacao !== false/);
+assert.doesNotMatch(lojas, /Aprovação obrigatória para sugestões da IA/);
 assert.match(lojas, /function notificarAprovacaoSidebar[\s\S]*?aprovacaoEhPosVenda\(aprovacao\)\) return;/);
 assert.match(lojas, /const pendentes =[\s\S]*?\.filter\(\(item\) => !aprovacaoEhPosVenda\(item\)\)/);
 
