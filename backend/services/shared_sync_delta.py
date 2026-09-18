@@ -750,8 +750,11 @@ def _shared_sync_coletar_arquivos_delta(
     username: str = "",
     user_only: bool = False,
     known_keys: Optional[set[str]] = None,
+    *,
+    captured_entries: Optional[tuple[list[dict], list[str]]] = None,
 ) -> tuple[list[dict], list[str], list[str]]:
-    entries, warnings = _shared_sync_coletar_arquivos(client_id, scope, username=username, user_only=user_only)
+    entries, warnings = captured_entries if captured_entries is not None else _shared_sync_coletar_arquivos(client_id, scope, username=username, user_only=user_only)
+    warnings = list(warnings)
     conhecidos = set(known_keys or set())
     saida = []
     item_keys = []

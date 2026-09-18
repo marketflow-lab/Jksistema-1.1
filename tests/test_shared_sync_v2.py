@@ -128,7 +128,8 @@ def test_boot_web_mantem_todas_as_transferencias_manuais():
     {"enabled": True, "auto_pull": True, "mode_version": 2, "auto_pull_explicit": True},
     {"enabled": False},
 ])
-def test_machine_config_normaliza_preferencia_antiga_para_manual_sem_mudar_escopos(legacy, monkeypatch):
+def test_machine_config_normaliza_preferencia_antiga_para_manual_sem_mudar_escopos(legacy, monkeypatch, tmp_path):
+    _configure_integracoes_sync_test(tmp_path)
     monkeypatch.setenv("JK_SHARED_SYNC_AUTO", "1")
     assert shared_sync_config._shared_sync_auto_enabled() is False
     sessao = {"username": "operador", "client_id": "000002", "permissions": {"integracao": True}}
@@ -143,7 +144,8 @@ def test_machine_config_normaliza_preferencia_antiga_para_manual_sem_mudar_escop
     assert legacy == before
 
 
-def test_machine_config_save_preserva_historico_e_isola_sessao(monkeypatch):
+def test_machine_config_save_preserva_historico_e_isola_sessao(monkeypatch, tmp_path):
+    _configure_integracoes_sync_test(tmp_path)
     sessao = {"username": "operador", "client_id": "000002", "permissions": {"integracao": True}}
     original_scopes = {"machine-sync:cadastro": {"snapshot_hash": "confirmed", "synced_at": "2026-09-08"}}
     state = {"scopes": original_scopes}

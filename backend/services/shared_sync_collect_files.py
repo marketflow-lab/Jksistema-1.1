@@ -139,7 +139,7 @@ def _shared_sync_ler_arquivo_pacote(path: str) -> bytes:
         return f.read()
 
 
-def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = "", user_only: bool = False) -> tuple[list[dict], list[str]]:
+def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = "", user_only: bool = False, *, capture_only: bool = False) -> tuple[list[dict], list[str]]:
     tenant_path = get_tenant_path(client_id)
     tenant_abs = os.path.abspath(tenant_path)
     max_file = _shared_sync_max_file_bytes()
@@ -203,14 +203,18 @@ def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = ""
                     "abs_path": abs_path,
                     "mtime": os.path.getmtime(abs_path),
                 }
-                if _shared_sync_sqlite_ext(abs_path):
+                if _shared_sync_sqlite_ext(abs_path) or capture_only:
+                    if capture_only and not _shared_sync_sqlite_ext(abs_path) and os.path.getsize(abs_path) > max_file:
+                        warnings.append(f"{rel} ignorado: arquivo maior que o limite de sincronizacao.")
+                        continue
                     data = _shared_sync_ler_arquivo_pacote(abs_path)
                     size = len(data or b"")
                     entry.update({
                         "data": data,
                         "size": size,
-                        "sha256": _shared_sync_bytes_sha256(data),
                     })
+                    if not capture_only:
+                        entry["sha256"] = _shared_sync_bytes_sha256(data)
                 else:
                     size = os.path.getsize(abs_path)
                     entry.update({

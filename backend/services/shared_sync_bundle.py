@@ -34,6 +34,7 @@ from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.shared_sync_common import *
 from backend.services.shared_sync_context import configure_shared_sync_context, get_tenant_id
 from backend.services.shared_sync_delta import _shared_sync_csv_read_bytes
+from backend.services.store_lock_diagnostics import operation_scope
 
 
 def configure_shared_sync_bundle_runtime(runtime_module=None, peer_globals: dict[str, object] | None = None):
@@ -97,6 +98,8 @@ def _shared_sync_sanitize_transient_oauth_entries(scope: str, entries: list[dict
 def _shared_sync_sanitize_strict_legacy_photo_entries(
     client_id: str,
     entries: list[dict],
+    *,
+    strict_store_scope: bool | None = None,
 ) -> list[dict]:
     """Remove caminhos locais globais apenas da copia enviada pelo bundle."""
 
@@ -113,7 +116,7 @@ def _shared_sync_sanitize_strict_legacy_photo_entries(
         _cadastro_fotos_escopo_estrito,
     )
 
-    if not _cadastro_fotos_escopo_estrito(client_id):
+    if not (_cadastro_fotos_escopo_estrito(client_id) if strict_store_scope is None else strict_store_scope):
         return entries
     sanitizadas: list[dict] = []
     for item in entries:
@@ -163,6 +166,8 @@ def _shared_sync_sanitize_strict_legacy_photo_entries(
 def _shared_sync_canonicalize_cadastro_photo_config(
     client_id: str,
     entries: list[dict],
+    *,
+    capture_only: bool = False,
 ) -> list[dict]:
     """Validate the producer config with the receiver's closed contract."""
 
@@ -199,7 +204,7 @@ def _shared_sync_canonicalize_cadastro_photo_config(
         if "data" in item_config
         else _shared_sync_ler_arquivo_pacote(item_config.get("abs_path") or "")
     ) or b""
-    if hashlib.sha256(data).hexdigest() != str(item_config.get("sha256") or ""):
+    if not capture_only and hashlib.sha256(data).hexdigest() != str(item_config.get("sha256") or ""):
         raise HTTPException(
             status_code=409,
             detail={
@@ -227,12 +232,12 @@ def _shared_sync_canonicalize_cadastro_photo_config(
         data,
         label=rel,
     )
-    canonical = _shared_sync_entry_from_bytes(
+    canonical = ({**item_config, "data": _shared_sync_cadastro_photo_config_bytes(config)} if capture_only else _shared_sync_entry_from_bytes(
         config_rel,
         _shared_sync_cadastro_photo_config_bytes(config),
         item_config.get("mtime") or time.time(),
         item_config.get("item_keys") or [],
-    )
+    ))
     return [
         canonical if item is item_config else item
         for item in entries
@@ -242,6 +247,10 @@ def _shared_sync_canonicalize_cadastro_photo_config(
 def _shared_sync_filter_store_photos_by_canonical_rows(
     client_id: str,
     entries: list[dict],
+    *,
+    strict_store_scope: bool | None = None,
+    captured_references: dict[tuple, str] | None = None,
+    capture_only: bool = False,
 ) -> list[dict]:
     """Never advertise/store a photo revision before an active row owns it.
 
@@ -269,7 +278,7 @@ def _shared_sync_filter_store_photos_by_canonical_rows(
         _shared_sync_cadastro_lojas_photo_reference,
     )
 
-    if not _cadastro_fotos_escopo_estrito(client_id):
+    if not (_cadastro_fotos_escopo_estrito(client_id) if strict_store_scope is None else strict_store_scope):
         return entries
     cadastros = [
         item
@@ -296,7 +305,7 @@ def _shared_sync_filter_store_photos_by_canonical_rows(
             if "data" in item
             else _shared_sync_ler_arquivo_pacote(item["abs_path"])
         ) or b""
-        if hashlib.sha256(data).hexdigest() != str(item.get("sha256") or ""):
+        if not capture_only and hashlib.sha256(data).hexdigest() != str(item.get("sha256") or ""):
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -319,10 +328,15 @@ def _shared_sync_filter_store_photos_by_canonical_rows(
             }
             if str(row.get("deleted_at_utc") or "").strip():
                 continue
-            referencia = _shared_sync_cadastro_lojas_photo_reference(
-                row,
-                str(client_id),
-            )
+            row_key = tuple(sorted(row.items()))
+            if captured_references is not None and not capture_only:
+                if row_key not in captured_references:
+                    raise HTTPException(409, "O delta divergiu do cadastro capturado.")
+                referencia = captured_references[row_key]
+            else:
+                referencia = _shared_sync_cadastro_lojas_photo_reference(row, str(client_id))
+                if captured_references is not None:
+                    captured_references[row_key] = referencia
             if referencia:
                 referencia_normalizada = referencia.replace("\\", "/")
                 chave_referencia = referencia_normalizada.casefold()
@@ -330,6 +344,7 @@ def _shared_sync_filter_store_photos_by_canonical_rows(
                 autorizadas_paths.setdefault(chave_referencia, referencia_normalizada)
 
     if autorizadas:
+        validate_physical_paths = captured_references is None or capture_only
         canonical_abs = (
             str(cadastros[0].get("abs_path") or "").strip()
             if cadastros
@@ -339,8 +354,8 @@ def _shared_sync_filter_store_photos_by_canonical_rows(
             os.path.dirname(os.path.abspath(canonical_abs))
             if canonical_abs
             else os.path.abspath(get_tenant_path(client_id))
-        )
-        for chave_referencia in sorted(autorizadas):
+        ) if validate_physical_paths else ""
+        for chave_referencia in sorted(autorizadas) if validate_physical_paths else ():
             referencia = autorizadas_paths[chave_referencia]
             try:
                 target = _shared_sync_resolve_tenant_path(tenant_abs, referencia)
@@ -418,7 +433,7 @@ def _shared_sync_filter_store_photos_by_canonical_rows(
         in autorizadas
     ]
 
-def _shared_sync_montar_pacote_locked(
+def _shared_sync_capture_entries(
     client_id: str,
     scope: str,
     username: str,
@@ -427,7 +442,9 @@ def _shared_sync_montar_pacote_locked(
     known_keys: Optional[set[str]] = None,
     sanitize_user_share_oauth: bool = False,
     include_ai_context: bool = False,
-) -> tuple[bytes, dict, list[str]]:
+    *,
+    capture_only: bool = False,
+) -> dict:
     if scope == "lojas_integracoes":
         from backend.services.central_accounts_store_index import assert_legacy_sync_allowed
         assert_legacy_sync_allowed(client_id)
@@ -475,12 +492,13 @@ def _shared_sync_montar_pacote_locked(
                         )
                     if os.path.exists(os.path.join(tenant_abs, rel))
                 }
-        if known_keys is None:
+        if known_keys is None or capture_only:
             entries, warnings = _shared_sync_coletar_arquivos(
                 client_id,
                 scope,
                 username=username,
                 user_only=user_only,
+                **({"capture_only": True} if capture_only else {}),
             )
         else:
             entries, warnings, item_keys = _shared_sync_coletar_arquivos_delta(
@@ -509,7 +527,7 @@ def _shared_sync_montar_pacote_locked(
                     else _shared_sync_ler_arquivo_pacote(item["abs_path"])
                 )
                 materializadas.append(
-                    _shared_sync_entry_from_bytes(
+                    {**item, "data": bytes(data or b"")} if capture_only else _shared_sync_entry_from_bytes(
                         item.get("relative_path") or "",
                         data or b"",
                         item.get("mtime") or time.time(),
@@ -569,7 +587,7 @@ def _shared_sync_montar_pacote_locked(
                             ),
                         ) from exc
                     entries.append(
-                        _shared_sync_entry_from_bytes(
+                        {"relative_path": rel_canonico, "data": bytes(data), "mtime": mtime} if capture_only else _shared_sync_entry_from_bytes(
                             rel_canonico,
                             data,
                             mtime,
@@ -586,6 +604,59 @@ def _shared_sync_montar_pacote_locked(
                             + ", ".join(sorted(arquivos_sensiveis_faltantes))
                         ),
                     )
+    # Freeze every payload before releasing the coordinated locks. No caller
+    # may reopen a source path while hashing, filtering deltas or writing ZIP.
+    entries = [
+        {**item, "data": bytes(item["data"] if "data" in item else _shared_sync_ler_arquivo_pacote(item["abs_path"]))}
+        for item in entries
+    ]
+    strict = None
+    references = {}
+    if capture_only:
+        strict = False
+        if scope == "cadastro":
+            from backend.services.cadastro_fotos import _cadastro_fotos_escopo_estrito
+            strict = _cadastro_fotos_escopo_estrito(client_id)
+            # Trust/physical-path checks depend on the live store/config state;
+            # perform them under the lock and retain their adjudicated result.
+            entries = _shared_sync_canonicalize_cadastro_photo_config(client_id, entries, capture_only=True)
+            entries = _shared_sync_filter_store_photos_by_canonical_rows(
+                client_id, entries, strict_store_scope=strict,
+                captured_references=references, capture_only=True,
+            )
+            from backend.services.shared_sync_apply_scope import _shared_sync_validar_acesso_cadastro_central
+            _shared_sync_validar_acesso_cadastro_central(
+                client_id, get_tenant_path(client_id),
+                [(item["relative_path"], item["data"]) for item in entries],
+            )
+    return {"entries": entries, "warnings": warnings, "item_keys": item_keys,
+            "capture_only": capture_only, "strict": strict, "references": references}
+
+
+def _shared_sync_montar_pacote_locked(
+    client_id: str,
+    scope: str,
+    username: str,
+    machine_id: str = "",
+    user_only: bool = False,
+    known_keys: Optional[set[str]] = None,
+    sanitize_user_share_oauth: bool = False,
+    include_ai_context: bool = False,
+    *,
+    _captured: dict | None = None,
+) -> tuple[bytes, dict, list[str]]:
+    captured = _captured if _captured is not None else _shared_sync_capture_entries(
+        client_id, scope, username, machine_id, user_only, known_keys,
+        sanitize_user_share_oauth, include_ai_context,
+    )
+    entries, warnings, item_keys = captured["entries"], captured["warnings"], captured["item_keys"]
+    if captured["capture_only"]:
+        entries = [_shared_sync_entry_from_bytes(item["relative_path"], item["data"], item["mtime"], item.get("item_keys")) for item in entries]
+        if known_keys is not None:
+            entries, warnings, item_keys = _shared_sync_coletar_arquivos_delta(
+                client_id, scope, username=username, user_only=user_only,
+                known_keys=known_keys, captured_entries=(entries, warnings),
+            )
     if sanitize_user_share_oauth and scope == "lojas_integracoes":
         sanitizadas = []
         for item in entries:
@@ -598,18 +669,23 @@ def _shared_sync_montar_pacote_locked(
             sanitizadas.append(_shared_sync_entry_from_bytes(rel, data, item.get("mtime") or time.time(), item.get("item_keys") or []))
         entries = sanitizadas
     entries = _shared_sync_sanitize_transient_oauth_entries(scope, entries)
-    if scope == "cadastro":
+    if scope == "cadastro" and not captured["capture_only"]:
         entries = _shared_sync_canonicalize_cadastro_photo_config(
             client_id,
             entries,
         )
-    entries = _shared_sync_sanitize_strict_legacy_photo_entries(client_id, entries)
+    entries = _shared_sync_sanitize_strict_legacy_photo_entries(
+        client_id, entries,
+        **({"strict_store_scope": captured["strict"]} if captured["capture_only"] else {}),
+    )
     if scope == "cadastro":
         entries = _shared_sync_filter_store_photos_by_canonical_rows(
             client_id,
             entries,
+            **({"strict_store_scope": captured["strict"], "captured_references": captured["references"]}
+               if captured["capture_only"] else {}),
         )
-    if scope == "cadastro":
+    if scope == "cadastro" and not captured["capture_only"]:
         from backend.services.central_accounts_client import current
         if current(client_id) is not None:
             from backend.services.shared_sync_apply_scope import _shared_sync_validar_acesso_cadastro_central
@@ -679,8 +755,7 @@ def _shared_sync_montar_pacote_locked(
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
         for item in entries:
-            data = item.get("data") if "data" in item else _shared_sync_ler_arquivo_pacote(item["abs_path"])
-            zf.writestr("files/" + item["relative_path"], data or b"")
+            zf.writestr("files/" + item["relative_path"], item["data"])
         if ai_context_data is not None:
             from backend.services.shared_sync_ai_context import AI_CONTEXT_EXTENSION_PATH
 
@@ -694,6 +769,7 @@ def _shared_sync_montar_pacote_locked(
     return bundle, manifest, warnings
 
 
+@operation_scope("sync_bundle")
 def _shared_sync_montar_pacote(
     client_id: str,
     scope: str,
@@ -713,7 +789,7 @@ def _shared_sync_montar_pacote(
         from backend.services import integracoes
 
         with integracoes._integracoes_bloquear_rmw_lojas(client_id):
-            return _shared_sync_montar_pacote_locked(
+            captured = _shared_sync_capture_entries(
                 client_id,
                 scope,
                 username,
@@ -722,7 +798,14 @@ def _shared_sync_montar_pacote(
                 known_keys=known_keys,
                 sanitize_user_share_oauth=sanitize_user_share_oauth,
                 include_ai_context=include_ai_context,
+                capture_only=True,
             )
+        return _shared_sync_montar_pacote_locked(
+            client_id, scope, username, machine_id=machine_id,
+            user_only=user_only, known_keys=known_keys,
+            sanitize_user_share_oauth=sanitize_user_share_oauth,
+            include_ai_context=include_ai_context, _captured=captured,
+        )
     return _shared_sync_montar_pacote_locked(
         client_id,
         scope,

@@ -820,7 +820,7 @@ def test_bundle_inclui_config_e_foto_store_gif_bmp(
 
 
 @pytest.mark.parametrize("scope", ["lojas_integracoes", "cadastro", "vendas"])
-def test_bundle_publico_monta_scope_protegido_inteiramente_dentro_do_lock(
+def test_bundle_publico_captura_no_lock_e_monta_apos_liberacao(
     monkeypatch,
     scope,
 ):
@@ -836,11 +836,18 @@ def test_bundle_publico_monta_scope_protegido_inteiramente_dentro_do_lock(
             eventos.append("lock-exit")
 
     def montar(*args, **kwargs):
+        assert kwargs["_captured"] == {"frozen": True}
         eventos.append("montar")
         return b"bundle", {"scope": scope}, []
 
+    def capturar(*args, **kwargs):
+        assert kwargs["capture_only"] is True
+        eventos.append("capturar")
+        return {"frozen": True}
+
     monkeypatch.setattr(integracoes, "_integracoes_bloquear_rmw_lojas", bloquear)
     monkeypatch.setattr(shared_sync_bundle, "_shared_sync_montar_pacote_locked", montar)
+    monkeypatch.setattr(shared_sync_bundle, "_shared_sync_capture_entries", capturar)
 
     resultado = shared_sync_bundle._shared_sync_montar_pacote(
         "000002",
@@ -849,7 +856,7 @@ def test_bundle_publico_monta_scope_protegido_inteiramente_dentro_do_lock(
     )
 
     assert resultado == (b"bundle", {"scope": scope}, [])
-    assert eventos == ["lock-enter", "montar", "lock-exit"]
+    assert eventos == ["lock-enter", "capturar", "lock-exit", "montar"]
 
 
 def test_bundle_publico_nao_monta_quando_lock_falha(monkeypatch):

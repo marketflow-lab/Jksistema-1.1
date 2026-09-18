@@ -89,7 +89,13 @@ def _finish_store_delete(process: subprocess.Popen, timeout: float = 15.0) -> di
 
 @pytest.fixture(autouse=True)
 def _configure_cadastro_fotos_tenant(tmp_path, monkeypatch):
+    from backend.services import integracoes
+
     monkeypatch.setattr(cadastro_fotos, "PASTA_INFO", str(tmp_path), raising=False)
+    monkeypatch.setattr(
+        shared_sync_apply_scope, "get_tenant_path",
+        lambda client_id: str(tmp_path / str(client_id)), raising=False,
+    )
 
     def resolver_tenant(client_id):
         resolver = getattr(shared_sync_apply_scope, "get_tenant_path", None)
@@ -105,6 +111,12 @@ def _configure_cadastro_fotos_tenant(tmp_path, monkeypatch):
         resolver_tenant,
         raising=False,
     )
+    # Every coordinated writer must lock this test's physical tenant, not a
+    # runtime left configured by a previously executed test module.
+    monkeypatch.setattr(integracoes, "_get_tenant_path", resolver_tenant)
+    monkeypatch.setattr(integracoes, "PASTA_INFO", str(tmp_path))
+    monkeypatch.setattr(integracoes, "ARQUIVO_LOJAS", str(tmp_path / "lojas_config.json"))
+    monkeypatch.setattr(integracoes, "ARQUIVO_TEMP_AUTH", str(tmp_path / "temp_integracao.json"))
 
     def carregar_lojas(client_id):
         config_path = Path(resolver_tenant(client_id)) / "lojas_config.json"
@@ -2139,10 +2151,17 @@ def test_merge_e_crud_compartilham_lock_sem_lost_update(tmp_path, monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(cadastro_custos, "get_tenant_path", lambda _client_id: str(tenant), raising=False)
+    resolucoes = []
+
+    def resolver(_client_id, store_id, *, somente_commit=False):
+        assert _client_id == "000002" and store_id == "store-a"
+        resolucoes.append(somente_commit)
+        return {"store_id": store_id, "nome": "Loja A"}
+
     monkeypatch.setattr(
         cadastro_lojas_produtos,
         "resolver_loja_cadastro",
-        lambda _client_id, store_id: {"store_id": store_id, "nome": "Loja A"},
+        resolver,
     )
     monkeypatch.setattr(
         cadastro_lojas_produtos,
@@ -2205,6 +2224,7 @@ def test_merge_e_crud_compartilham_lock_sem_lost_update(tmp_path, monkeypatch):
     assert not crud_thread.is_alive()
     if failures:
         raise failures[0]
+    assert resolucoes[0] is False and True in resolucoes[1:]
     assert {(row["store_id"], row["sku"]) for row in _read_rows(target)} == {
         ("store-a", "BASE"),
         ("store-a", "CRUD"),
