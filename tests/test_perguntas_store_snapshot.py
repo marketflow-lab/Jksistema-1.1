@@ -13,6 +13,7 @@ import pytest
 
 from backend.modules.perguntas_pos_venda.endpoints import store_config
 from backend.services import central_accounts_client, integracoes
+from backend.services.perguntas_store_config import obter_cfg_ml_snapshot
 from backend.services import store_listing_service as listing
 from backend.services import store_public_snapshot as projection
 from backend.services import store_snapshot_transactions as transactions
@@ -73,6 +74,11 @@ def test_store_cards_do_not_wait_for_catalog_held_by_another_thread_and_real_wri
             canonical = integracoes.carregar_lojas_snapshot("tenant-" + suffix)
             assert time.perf_counter() - start < 0.5
             assert canonical[0]["integracoes"]["mercadolivre"]["access_token"] == "fixture-access"
+            start = time.perf_counter()
+            cfg = obter_cfg_ml_snapshot("tenant-" + suffix, "Loja " + suffix.upper(),
+                                         "store-" + suffix, seller_id="seller-" + suffix, site_id="MLB")
+            assert time.perf_counter() - start < 0.5
+            assert cfg["_store_id_context"] == "store-" + suffix
         assert not finished.is_set()
     worker.join(timeout=5)
     assert not worker.is_alive()

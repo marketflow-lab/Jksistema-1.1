@@ -15,7 +15,7 @@ assert.match(source, /next_retry_at_epoch|next_retry_in_seconds|Nova tentativa/)
 assert.match(source, /\/api\/mercadolivre\/assistant\/jobs\/\$\{encodeURIComponent\(jobId\)\}\/cancel/);
 assert.match(source, /question-ai-cancel-btn[\s\S]*Cancelar pesquisa/);
 assert.match(source, /cancelarPesquisaAtendimentoCodex\(questionKey\)/);
-assert.match(html, /perguntas\.js\?v=20260918-ai-error-contract-v1/);
+assert.match(html, /perguntas\.js\?v=20260918-store-contention-v1/);
 assert.match(html, /loading\.js\?v=20260918-ai-error-contract-v1/);
 assert.doesNotMatch(source, /A pesquisa terminou sem rascunho/);
 assert.match(source, /Rascunho gerado com as informacoes disponiveis/);
@@ -452,6 +452,14 @@ assert.strictEqual(preservedContextState._contextHubState, 'partial');
     assert.strictEqual(context.obterEstadoJobAtendimentoCodex('Loja A::Q-GONE'), null);
     assert.strictEqual(currentCard.elements.status.className, 'error');
     assert.strictEqual(currentCard.elements.status.textContent, 'Não foi possível gerar a sugestão. Tente novamente.');
+
+    currentCard.elements.textarea.value = 'Rascunho manual preservado.';
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-GONE', {
+        status: 'completed', completion_reason: 'stores_busy_retry_exhausted',
+        blocked_without_draft: true, result: { resposta: '' }
+    });
+    assert.strictEqual(currentCard.elements.textarea.value, 'Rascunho manual preservado.');
+    assert.match(currentCard.elements.status.textContent, /configuração da loja continua ocupada/);
 
     console.log('Perguntas Codex persistent frontend contract: OK');
 })().catch((error) => {

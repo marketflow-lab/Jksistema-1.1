@@ -22,11 +22,17 @@ def extract_sku(item):
 
 @pytest.fixture
 def reader(monkeypatch):
-    from backend.services import cadastro_compatibilidade
+    from backend.services import integracoes
     from backend.modules.context_hub import store_sku_repository
     monkeypatch.setattr(store_sku_repository, "load_store_sku_knowledge", lambda *args, **kwargs: {})
-    monkeypatch.setattr(cadastro_compatibilidade, "resolver_loja_ativa_para_leitura",
-                        lambda tenant, store: {"store_id": "store-a" if store == "Loja A" else "store-b"})
+    monkeypatch.setattr(integracoes, "carregar_lojas_snapshot", lambda tenant: [
+        {"store_id": "store-a", "nome": "Loja A", "integracoes": {"mercadolivre": {
+            "user_id": "123", "site_id": "MLB", "access_token": "fixture-a"}}},
+        {"store_id": "store-b", "nome": "Loja B", "integracoes": {"mercadolivre": {
+            "user_id": "456", "site_id": "MLB", "access_token": "fixture-b"}}},
+    ])
+    monkeypatch.setattr(integracoes, "carregar_lojas", lambda *_args: pytest.fail(
+        "Catalog evidence must not acquire the canonical store writer lock"))
     module = ModuleType("backend.modules.context_hub.catalog_product_repository")
     calls = []
 
@@ -205,12 +211,12 @@ def test_empty_catalog_fields_do_not_become_factual_evidence(reader):
 
 def test_real_catalog_snapshot_is_read_without_a_listing_generation(tmp_path, monkeypatch):
     from backend.modules.context_hub.catalog_product_repository import publish_catalog_snapshot
-    from backend.services import cadastro_compatibilidade
+    from backend.services import integracoes
     store_id = "a" * 24
     identity = {**IDENTITY, "store_ref": store_id}
     scope = {**identity, "tenant_scope": "tenant:tenant-a", "store_name": "Loja A"}
-    monkeypatch.setattr(cadastro_compatibilidade, "resolver_loja_ativa_para_leitura",
-                        lambda *args: {"store_id": store_id})
+    monkeypatch.setattr(integracoes, "carregar_lojas_snapshot",
+                        lambda *_args: [{"store_id": store_id, "nome": "Loja A"}])
     published = publish_catalog_snapshot("tenant-a", scope,
         [{"store_id": store_id, "sku": "001", "nome": "Sensor", "descricao": "Ficha propria", "marca": "Marca A", "custo": 20}],
         info_root=tmp_path)

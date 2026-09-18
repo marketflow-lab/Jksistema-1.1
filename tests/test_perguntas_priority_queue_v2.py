@@ -5,6 +5,9 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+from fastapi import HTTPException
+
 from backend.schemas.perguntas_pos_venda import PerguntasGerarRespostaRequest
 from backend.services import codex_assistant_storage
 from backend.services import perguntas_pos_venda_codex as orchestrator
@@ -536,6 +539,66 @@ def test_operational_failures_stop_on_third_and_success_resets_consecutive_count
     assert after_success["operational_failure_count"] == 0
     assert after_success["evidence_attempt_count"] == 1
     assert after_success["completion_reason"] == "ai_response_preserved_unvalidated"
+
+
+@pytest.mark.parametrize("recover", [False, True])
+@pytest.mark.parametrize("status,code", [
+    (409, "stores_busy"), (503, "stores_snapshot_credentials_unavailable"),
+])
+def test_store_contention_retries_without_counting_provider_outage(tmp_path, monkeypatch, recover, status, code):
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    monkeypatch.setattr(orchestrator, "_schedule", lambda _job: True)
+    monkeypatch.setattr(orchestrator, "_schedule_retry_timer", lambda _job: None)
+    monkeypatch.setattr(orchestrator.codex_agent_runtime, "resolve_guidance", lambda *a, **kw: [])
+    job = orchestrator.create_job(
+        client_id="tenant", task_type="question", store="Loja A", subject_key="Q-BUSY",
+        request={"pergunta": {"id": "Q-BUSY", "text": "Qual a marca?"}},
+    )
+    busy = HTTPException(status, detail={"code": code})
+    assert orchestrator._is_operational_failure(busy) is False
+    with patch.object(orchestrator, "_load_question_context", side_effect=busy):
+        for attempt in range(1 if recover else orchestrator.MAX_TOTAL_ATTEMPTS):
+            orchestrator._run_job("tenant", job["job_id"])
+            state = orchestrator.get_job("tenant", job["job_id"])
+            assert state["operational_failure_count"] == 0
+            if attempt + 1 < orchestrator.MAX_TOTAL_ATTEMPTS:
+                assert state["status"] == "waiting_retry"
+                assert "loja esta ocupada" in state["status_message"]
+                _queue_retry_now(str(tmp_path), "tenant", job["job_id"])
+    if recover:
+        with patch.object(orchestrator, "_load_question_context", return_value=(
+            "A marca nao foi confirmada nas fontes disponiveis.", _insufficient_context(),
+        )):
+            orchestrator._run_job("tenant", job["job_id"])
+        state = orchestrator.get_job("tenant", job["job_id"])
+        assert state["result"]["resposta"]
+        assert state["operational_failure_count"] == 0
+    else:
+        assert state["completion_reason"] == "stores_busy_retry_exhausted"
+        assert state["blocked_without_draft"] is True
+        assert state["result"]["resposta"] == ""
+    assert state["status"] == "completed"
+
+
+@pytest.mark.parametrize("detail", [
+    {"code": "stores_recovery_required"}, {"code": "identity_mismatch"},
+    {"code": "stores_coordination_unavailable"}, "stores_busy",
+])
+def test_store_retry_never_accepts_identity_or_recovery_errors(detail):
+    assert orchestrator._is_store_contention(HTTPException(409, detail=detail)) is False
+    assert orchestrator._is_store_contention(HTTPException(403, detail={"code": "stores_busy"})) is False
+
+
+def test_store_contention_respects_expired_deadline(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_schedule_retry_timer", lambda _job: pytest.fail("Expired job scheduled"))
+    job = _job("expired-busy", store="Loja A")
+    job.update({"attempt_count": 1, "deadline_at_epoch": time.time() - 1})
+    state = orchestrator._persist_retry(job, error="stores_busy", retry_kind="store_contention")
+    assert state["status"] == "completed"
+    assert state["completion_reason"] == "stores_busy_retry_exhausted"
+    assert state["operational_failure_count"] == 0
 
 
 def test_recovery_paginates_and_quarantines_more_than_500_outdated_jobs(tmp_path, monkeypatch):

@@ -2285,12 +2285,13 @@ def _persist_retry(
         return _complete_without_draft(
             current,
             warning="O limite operacional foi atingido; nenhum rascunho foi disponibilizado.",
-            completion_reason="operational_retry_exhausted",
+            completion_reason=("stores_busy_retry_exhausted" if retry_kind == "store_contention"
+                               else "operational_retry_exhausted"),
         )
     retry_index = (
         int(current.get("operational_failure_count") or 1)
         if retry_kind == "operational"
-        else 1
+        else retry_count if retry_kind == "store_contention" else 1
     )
     retry_after = (
         int(safe_error_metadata.get("retry_after") or 0)
@@ -2325,7 +2326,8 @@ def _persist_retry(
                 "O prazo restante nao permite uma nova tentativa; "
                 "nenhum rascunho foi disponibilizado."
             ),
-            completion_reason="operational_retry_exhausted",
+            completion_reason=("stores_busy_retry_exhausted" if retry_kind == "store_contention"
+                               else "operational_retry_exhausted"),
             error_metadata=safe_error_metadata,
         )
     if not immediate and deadline > 0.0:
@@ -2857,6 +2859,8 @@ def _evidence_matrix(
 
 def _friendly_retry_reason(reason: Any) -> str:
     normalized = _normal(reason)
+    if normalized == "stores_busy":
+        return "A configuracao da loja esta ocupada; aguardando a liberacao."
     if "evidencia" in normalized or "coverage" in normalized:
         return "Ainda faltam evidencias confiaveis para responder com seguranca."
     if "orientacao" in normalized:
@@ -2891,7 +2895,7 @@ def _status_message(job: dict[str, Any], *, queue_position: int = 0) -> str:
         return f"{labels.get(step, 'Pesquisa em andamento')}. Tentativa {max(1, attempt)}."
     if status == "completed":
         if job.get("blocked_without_draft") or result.get("blocked_without_draft"):
-            return "A pesquisa terminou e disponibilizou uma resposta alternativa."
+            return "A pesquisa terminou sem gerar um rascunho."
         if job.get("completed_with_partial") or result.get("completed_with_partial"):
             return "Rascunho gerado com as informacoes disponiveis."
         return "Resposta gerada e pronta para uso."
@@ -4274,6 +4278,23 @@ def _heartbeat_loop(
             logger.warning("[PPV CODEX] evento=renovar_lease status=erro")
 
 
+def _is_store_contention(exc: BaseException) -> bool:
+    # Only typed pre-publication store failures are transient. Identity conflicts,
+    # recovery failures and arbitrary HTTP 409 responses must remain terminal.
+    detail = getattr(exc, "detail", None)
+    if not isinstance(detail, dict):
+        return False
+    status = getattr(exc, "status_code", None)
+    code = detail.get("code")
+    return bool(
+        (status == 409 and code == "stores_busy")
+        or (status == 503 and code in {
+            "stores_snapshot_initializing", "stores_snapshot_unavailable",
+            "stores_snapshot_credentials_unavailable",
+        })
+    )
+
+
 def _is_operational_failure(exc: BaseException) -> bool:
     """Classify failures that may unlock the optional provider fallback.
 
@@ -4282,6 +4303,8 @@ def _is_operational_failure(exc: BaseException) -> bool:
     """
 
     if isinstance(exc, (PerguntasIAClassificacaoInconclusiva, PerguntasIASegurancaBloqueada)):
+        return False
+    if _is_store_contention(exc):
         return False
     if isinstance(exc, PerguntasIAProviderIndisponivel):
         if isinstance(getattr(exc, "retryable", None), bool):
@@ -4614,6 +4637,8 @@ def _load_question_context(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 
 
 def _load_question_context_impl(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    from backend.services.perguntas_store_config import obter_cfg_ml_snapshot
+
     runtime = _require_runtime()
     request = job.get("request") if isinstance(job.get("request"), dict) else {}
     client_id = str(job.get("client_id") or "default")
@@ -4626,7 +4651,7 @@ def _load_question_context_impl(job: dict[str, Any]) -> tuple[str, dict[str, Any
         canonical = load_job_context(job, runtime)
         question = dict(canonical["question"])
     if not question and question_id:
-        reload_cfg = runtime._obter_cfg_ml(client_id, store)
+        reload_cfg = obter_cfg_ml_snapshot(client_id, store, store_id=job.get("store_id"))
         try:
             response, reload_cfg = runtime._ml_api_request(
                 client_id,
@@ -4670,8 +4695,11 @@ def _load_question_context_impl(job: dict[str, Any]) -> tuple[str, dict[str, Any
         question["_resposta_atual"] = str(request.get("resposta_atual") or "")
     if str(request.get("orientacao_usuario") or "").strip():
         question["_orientacao_usuario"] = str(request.get("orientacao_usuario") or "").strip()[:1200]
-    cfg = (runtime._obter_cfg_ml(client_id, store, store_id=str(job.get("store_id") or ""))
-           if canonical else runtime._obter_cfg_ml(client_id, store))
+    cfg = obter_cfg_ml_snapshot(
+        client_id, store, store_id=job.get("store_id"),
+        seller_id=str(job.get("seller_id") or "") if canonical else None,
+        site_id=str(job.get("site_id") or "") if canonical else None,
+    )
     request_item = dict(request.get("item") or {}) if isinstance(request.get("item"), dict) else {}
     item: dict[str, Any] = dict(canonical["item"]) if canonical else {}
     official_current_listing = canonical is not None
@@ -5242,6 +5270,14 @@ def _run_job(client_id: str, job_id: str) -> None:
                 completion_reason="classification_contract_violation",
                 fallback_context=(fallback_context if isinstance(fallback_context, dict) else None),
                 deadline_reached=False,
+            )
+            return
+        if _is_store_contention(exc):
+            _persist_retry(
+                job,
+                error="stores_busy",
+                warnings=["A configuracao da loja esta ocupada; a geracao sera retomada automaticamente."],
+                retry_kind="store_contention",
             )
             return
         if not _is_operational_failure(exc):

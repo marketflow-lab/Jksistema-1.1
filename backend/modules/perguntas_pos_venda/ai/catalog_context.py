@@ -43,8 +43,11 @@ def issue_listing_identity_proof(
     exact_store_id = _text(store_id)
     if not exact_store_id:
         from backend.services.cadastro_compatibilidade import resolver_loja_ativa_para_leitura
+        from backend.services.integracoes import carregar_lojas_snapshot
         exact_store_id = _text(
-            resolver_loja_ativa_para_leitura(client_id, store).get("store_id")
+            resolver_loja_ativa_para_leitura(
+                client_id, store, lojas=carregar_lojas_snapshot(client_id),
+            ).get("store_id")
         )
     seller = _text(cfg.get("user_id") or cfg.get("seller_id"))
     item_seller = _text(official_item.get("seller_id") or (official_item.get("seller") or {}).get("id"))
@@ -83,6 +86,7 @@ def verified_listing_proof(client_id: str, identity: Mapping[str, Any], proof: o
 def bind_official_listing_catalog_identity(client_id, store, cfg, question, official_item, *, extract_sku):
     """Bind synchronous providers only at the official-read boundary."""
     from backend.services.cadastro_compatibilidade import resolver_loja_ativa_para_leitura
+    from backend.services.integracoes import carregar_lojas_snapshot
 
     question["_catalog_identity_proof"] = ""
     question["_product_evidence_identity"] = {}
@@ -90,7 +94,9 @@ def bind_official_listing_catalog_identity(client_id, store, cfg, question, offi
         item_id = _text(official_item.get("id"))
         if not item_id or (_text(question.get("item_id")) and _text(question["item_id"]) != item_id):
             return
-        scope = resolver_loja_ativa_para_leitura(client_id, store)
+        scope = resolver_loja_ativa_para_leitura(
+            client_id, store, lojas=carregar_lojas_snapshot(client_id),
+        )
         variations = [v for v in official_item.get("variations", []) if isinstance(v, Mapping)]
         if len(variations) > 1:
             return
@@ -100,7 +106,8 @@ def bind_official_listing_catalog_identity(client_id, store, cfg, question, offi
                     "site_id": _text(official_item.get("site_id")),
                     "sku": _text(extract_sku(dict(product))), "item_id": item_id,
                     "variation_id": _text(product.get("id")) if variations else ""}
-        sealed = issue_listing_identity_proof(client_id, store, cfg, official_item, identity, extract_sku=extract_sku)
+        sealed = issue_listing_identity_proof(client_id, store, cfg, official_item, identity,
+                                              extract_sku=extract_sku, store_id=scope.get("store_id"))
         if sealed:
             question["_catalog_identity_proof"] = sealed
             question["_product_evidence_identity"] = identity
@@ -200,11 +207,14 @@ def prove_order_item_context(
 ) -> list[dict[str, Any]]:
     """Use only exact lines of the server-loaded order belonging to this seller."""
     from backend.services.cadastro_compatibilidade import resolver_loja_ativa_para_leitura
+    from backend.services.integracoes import carregar_lojas_snapshot
 
     seller = _text(cfg.get("user_id") or cfg.get("seller_id"))
     if not seller or _text((order.get("seller") or {}).get("id")) != seller:
         return []
-    scope = resolver_loja_ativa_para_leitura(client_id, store)
+    scope = resolver_loja_ativa_para_leitura(
+        client_id, store, lojas=carregar_lojas_snapshot(client_id),
+    )
     results = []
     for line in order.get("order_items") or []:
         product = line.get("item") if isinstance(line, Mapping) else {}
@@ -229,7 +239,8 @@ def prove_order_item_context(
         identity = {"store_ref": _text(scope.get("store_id")), "seller_id": seller,
                     "site_id": _text(official_item.get("site_id")), "sku": sku,
                     "item_id": _text(product.get("id")), "variation_id": variation_id}
-        proof = issue_listing_identity_proof(client_id, store, cfg, selected_item, identity, extract_sku=extract_sku)
+        proof = issue_listing_identity_proof(client_id, store, cfg, selected_item, identity,
+                                             extract_sku=extract_sku, store_id=scope.get("store_id"))
         if not proof:
             continue
         try:

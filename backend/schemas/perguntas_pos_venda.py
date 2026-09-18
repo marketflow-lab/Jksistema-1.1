@@ -39,6 +39,7 @@ class PerguntasGerarRespostaRequest(BaseModel):
 
 class PerguntasEnviarRespostaRequest(BaseModel):
     loja: str
+    store_id: Optional[str] = ""
     question_id: str
     resposta: str
     pergunta: Optional[dict] = None

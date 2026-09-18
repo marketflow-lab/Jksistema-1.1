@@ -281,5 +281,12 @@ def load_job_context(job: dict, runtime) -> dict:
     except GenerationContextUnavailable:
         forget_session(job)
         raise
+    except HTTPException as error:
+        # Store publication is independent of authentication. Keep the initiating
+        # session so the orchestrator can retry the same authorized operation.
+        from backend.services.perguntas_pos_venda_codex import _is_store_contention
+        if _is_store_contention(error):
+            raise
+        raise _blocked("session", access=True) from error
     except Exception as error:
         raise _blocked("session", access=True) from error

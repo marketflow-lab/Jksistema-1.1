@@ -4451,6 +4451,12 @@ def test_completed_ai_draft_remains_literal_for_the_terminal_job_lifetime(tmp_pa
 
 
 def test_canonical_question_item_and_history_are_reloaded_by_ids(tmp_path, monkeypatch):
+    from backend.services import perguntas_store_config
+    monkeypatch.setattr(perguntas_store_config.integracoes, "carregar_lojas_snapshot", lambda client: [{
+        "store_id": "store-a", "nome": "Loja", "integracoes": {"mercadolivre": {
+            "user_id": "SELLER-1", "site_id": "MLB", "access_token": "synthetic-token",
+        }},
+    }] if client == "cliente" else [])
     class Response:
         status_code = 200
 
@@ -4465,7 +4471,7 @@ def test_canonical_question_item_and_history_are_reloaded_by_ids(tmp_path, monke
 
         @staticmethod
         def _obter_cfg_ml(_client, _store):
-            return {"user_id": "SELLER-1"}
+            raise AssertionError("Question generation must not acquire store maintenance locks")
 
         @staticmethod
         def _ml_api_request(_client, _store, cfg, _method, url, **_kwargs):
@@ -4525,6 +4531,12 @@ def test_canonical_question_item_and_history_are_reloaded_by_ids(tmp_path, monke
 
 
 def test_stale_request_item_cannot_be_marked_as_current_when_official_reload_fails(tmp_path, monkeypatch):
+    from backend.services import perguntas_store_config
+    monkeypatch.setattr(perguntas_store_config.integracoes, "carregar_lojas_snapshot", lambda client: [{
+        "store_id": "store-a", "nome": "Loja", "integracoes": {"mercadolivre": {
+            "user_id": "SELLER-1", "site_id": "MLB", "access_token": "synthetic-token",
+        }},
+    }] if client == "cliente" else [])
     class FailedResponse:
         status_code = 503
 

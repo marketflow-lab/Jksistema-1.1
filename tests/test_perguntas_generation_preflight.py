@@ -102,6 +102,21 @@ def test_direct_endpoint_cannot_bypass_failed_history_with_browser_flags(monkeyp
     assert caught.value.detail["code"] == "generation_context_unavailable"
 
 
+@pytest.mark.parametrize("status,code", [
+    (409, "stores_busy"), (503, "stores_snapshot_credentials_unavailable"),
+    (503, "stores_snapshot_initializing"), (503, "stores_snapshot_unavailable"),
+])
+def test_job_revalidation_preserves_transient_store_error_and_session(monkeypatch, status, code):
+    error = HTTPException(status, {"code": code})
+    def temporarily_unavailable(*args):
+        raise error
+    monkeypatch.setattr(preflight, "run_with_session", temporarily_unavailable)
+    monkeypatch.setattr(preflight, "forget_session", lambda job: pytest.fail("Authorized session lost"))
+    with pytest.raises(HTTPException) as caught:
+        preflight.load_job_context({}, object())
+    assert caught.value is error
+
+
 @pytest.mark.parametrize("surface", ["manual", "v2"])
 def test_synchronous_generation_exposes_context_hub_status(monkeypatch, surface):
     from backend.modules.perguntas_pos_venda.ai import catalog_context

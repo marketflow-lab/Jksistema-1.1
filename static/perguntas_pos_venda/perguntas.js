@@ -855,6 +855,9 @@ function normalizarFalhaGeracaoAtendimento(value = {}) {
 
 function classificarFalhaGeracaoAtendimento(value = {}) {
     const failure = normalizarFalhaGeracaoAtendimento(value);
+    if (failure.code === 'stores_busy' || failure.completionReason === 'stores_busy_retry_exhausted') {
+        return { ...failure, kind: 'store_busy' };
+    }
     if (failure.status === 401 || failure.scope === 'session' || failure.component === 'session') {
         return { ...failure, kind: 'session' };
     }
@@ -868,6 +871,9 @@ function classificarFalhaGeracaoAtendimento(value = {}) {
 }
 
 function mensagemFalhaGeracaoAtendimento(failure) {
+    if (failure?.kind === 'store_busy') {
+        return 'A configuração da loja continua ocupada. Aguarde a atualização das lojas e tente gerar novamente.';
+    }
     if (failure?.kind === 'auth') {
         return 'A autenticação local da IA expirou. Faça login no Codex e gere a sugestão novamente.';
     }
@@ -1397,6 +1403,7 @@ async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnvia
     botoesExtras.forEach((botao) => { botao.disabled = true; });
     if (btnGerar) btnGerar.disabled = true;
     setStatusRespostaPergunta(status, opcoes.salvarExemplo ? 'Enviando resposta e salvando exemplo da IA...' : 'Enviando resposta ao Mercado Livre...');
+    let envioConfirmado = false;
     try {
         const response = await fetch('/api/mercadolivre/perguntas/responder', {
             method: 'POST',
@@ -1407,6 +1414,7 @@ async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnvia
             body: JSON.stringify({
                 loja: lojaResposta,
                 question_id: questionId,
+                store_id: String(pergunta.store_id || ''),
                 resposta: texto,
                 pergunta,
                 sku: skuResposta,
@@ -1418,6 +1426,7 @@ async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnvia
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(mensagemErroApi(data, 'Erro ao enviar resposta.'));
+        envioConfirmado = true;
         pergunta.answer = {
             text: data.resposta ?? texto,
             status: 'ANSWERED',
@@ -1441,9 +1450,17 @@ async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnvia
         perguntasStatus.textContent = opcoes.salvarExemplo
             ? `Resposta enviada ao Mercado Livre pela loja ${lojaResposta} e salva como exemplo da IA.`
             : `Resposta enviada ao Mercado Livre pela loja ${lojaResposta}.`;
+        if (Array.isArray(data.warnings) && data.warnings.length) {
+            perguntasStatus.textContent += ' O envio foi confirmado; alguns registros locais estão pendentes. Não é necessário reenviar.';
+        }
         renderizarPerguntas();
         carregarContadoresNotificacoes(true);
     } catch (error) {
+        if (envioConfirmado) {
+            perguntasStatus.textContent = 'Resposta enviada ao Mercado Livre. Atualize a lista para conferir; não é necessário reenviar.';
+            setStatusRespostaPergunta(status, perguntasStatus.textContent);
+            return;
+        }
         setStatusRespostaPergunta(status, `Erro ao enviar: ${mensagemErro(error)}`, 'error');
         btnEnviar.disabled = !textarea.value.trim();
         botoesExtras.forEach((botao) => { botao.disabled = !textarea.value.trim(); });

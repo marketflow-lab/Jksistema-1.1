@@ -41,7 +41,8 @@ CONTRACT_HASHES = {
     "routes": "77bdca722f74a16061e65ea83490c374f16cf1421d697f5cbc9d3af7cc273aea",
     "exports": "cb28869e16292f3f0af3c259bd6dc70a62cfd29969d7aa7e1a46bf1458de4909",
     "signatures": "40509257eef17db74bca7ca80a11f7bc39229d3ab87101f72a4722f44aafad5e",
-    "schemas": "91eb3ca0ae524b6565020dfce4cc65c39995d09663b56e368cc4aa9be62239f4",
+    # Optional exact store_id for manual send; legacy name-only payloads remain valid.
+    "schemas": "7ed3425a7589d0ab39c74a089a0cd6f342528d09b387e4b278d290999b80cc51",
     "http_status_codes": "c06ceb69456b4923815b0461ddeef6f9c90b6fcf5c0568dd79b3fdbc888a4546",
     "governance": "af72e45eecb3012d9fbc01f23fc530977e25f72106912c85921b5f587d0b4dee",
 }

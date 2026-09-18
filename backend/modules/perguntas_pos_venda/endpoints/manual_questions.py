@@ -17,6 +17,7 @@ from backend.modules.perguntas_pos_venda.endpoints.jobs import (
 from backend.modules.perguntas_pos_venda.endpoints.questions_loading_support import resolve_scope
 from backend.services.cadastro_compatibilidade import resolver_loja_ativa_para_leitura
 from backend.modules.perguntas_pos_venda.ai.catalog_context import bind_official_listing_catalog_identity
+from backend.services.perguntas_store_config import obter_cfg_ml_snapshot
 
 _ml_api_item = runtime_adapter("_ml_api_item")
 _ml_api_item_com_oauth_tenant = runtime_adapter("_ml_api_item_com_oauth_tenant")
@@ -183,6 +184,11 @@ def ml_perguntas_responder_manual(req: PerguntasEnviarRespostaRequest, client_id
     if not resposta.strip():
         raise HTTPException(status_code=400, detail="Informe a resposta.")
 
+    # Resolve published identity/credentials without a store maintenance write.
+    # All preparation failures stay before the single remote publication.
+    cfg = obter_cfg_ml_snapshot(
+        client_id, loja, store_id=str(req.store_id or ""), require_name_match=True,
+    )
     proposal_info = None
     if str(req.proposal_id or "").strip():
         try:
@@ -202,32 +208,50 @@ def ml_perguntas_responder_manual(req: PerguntasEnviarRespostaRequest, client_id
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    cfg = _obter_cfg_ml(client_id, loja)
+    if proposal_info:
+        proposal_store_id = str((proposal_info.get("job") or {}).get("store_id") or "")
+        if proposal_store_id and proposal_store_id != str(cfg.get("_store_id_context") or ""):
+            raise HTTPException(status_code=403, detail="A proposta nao pertence a esta loja.")
     try:
         resposta_ml, cfg = _perguntas_ia_enviar_resposta_ml(client_id, loja, cfg, question_id, resposta)
     except Exception:
         if proposal_info:
+            try:
+                perguntas_pos_venda_codex.mark_verified(
+                    client_id=client_id,
+                    job_id=str(req.proposal_id or ""),
+                    success=False,
+                )
+            except Exception:
+                logger.warning("[ML PERGUNTAS] evento=registrar_falha_envio status=erro")
+        raise
+    # Mercado Livre confirmed the POST. Local bookkeeping must not report a
+    # send failure and invite the operator to publish the same answer again.
+    warnings = []
+    if proposal_info:
+        try:
             perguntas_pos_venda_codex.mark_verified(
                 client_id=client_id,
                 job_id=str(req.proposal_id or ""),
-                success=False,
+                success=True,
+                evidence={"question_id": question_id, "mercadolivre": resposta_ml},
             )
-        raise
-    if proposal_info:
-        perguntas_pos_venda_codex.mark_verified(
-            client_id=client_id,
-            job_id=str(req.proposal_id or ""),
-            success=True,
-            evidence={"question_id": question_id, "mercadolivre": resposta_ml},
+        except Exception:
+            warnings.append("local_verification_pending")
+            logger.warning("[ML PERGUNTAS] evento=registrar_confirmacao_envio status=erro")
+    resolvidas = []
+    try:
+        resolvidas = _perguntas_ia_resolver_aprovacoes_pendentes(
+            client_id,
+            loja,
+            question_id=question_id,
+            status="sent_manual",
+            motivo="pergunta_respondida_manualmente",
+            resposta=resposta,
         )
-    resolvidas = _perguntas_ia_resolver_aprovacoes_pendentes(
-        client_id,
-        loja,
-        question_id=question_id,
-        status="sent_manual",
-        motivo="pergunta_respondida_manualmente",
-        resposta=resposta,
-    )
+    except Exception:
+        warnings.append("local_approvals_pending")
+        logger.warning("[ML PERGUNTAS] evento=registrar_aprovacoes_envio status=erro")
     try:
         if resolvidas:
             for approval in resolvidas:
@@ -263,15 +287,20 @@ def ml_perguntas_responder_manual(req: PerguntasEnviarRespostaRequest, client_id
             )
     except Exception as exc:
         logger.warning("[ML PERGUNTAS IA] evento=registrar_memoria_manual status=erro tipo=%s", type(exc).__name__)
-    state = _perguntas_ia_state_carregar(client_id)
-    _perguntas_ia_marcar_processada(state, loja, question_id, "sent_manual")
-    _perguntas_ia_state_salvar(client_id, state)
+    try:
+        state = _perguntas_ia_state_carregar(client_id)
+        _perguntas_ia_marcar_processada(state, loja, question_id, "sent_manual")
+        _perguntas_ia_state_salvar(client_id, state)
+    except Exception:
+        warnings.append("local_state_pending")
+        logger.warning("[ML PERGUNTAS] evento=registrar_estado_envio status=erro")
     return {
         "success": True,
         "loja": loja,
         "question_id": question_id,
         "resposta": resposta,
         "mercadolivre": resposta_ml,
+        "warnings": warnings,
         "proposal_version": (proposal_info or {}).get("proposal_version") if proposal_info else None,
         "proposal_hash": (proposal_info or {}).get("proposal_hash") if proposal_info else "",
     }
