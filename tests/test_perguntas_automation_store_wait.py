@@ -22,14 +22,15 @@ def state(monkeypatch):
     return clock
 
 
-def test_store_wait_preserves_baseline_and_retries_boundedly(state, monkeypatch):
+@pytest.mark.parametrize("code", ["stores_snapshot_initializing", "store_oauth_busy"])
+def test_store_wait_preserves_baseline_and_retries_boundedly(state, monkeypatch, code):
     key = auto._perguntas_automacao_bg_key("tenant", "Store", "perguntas")
     auto.PERGUNTAS_AUTOMACAO_BG_LAST_RESULTS[key] = {
         "question_snapshot_initialized": True, "question_ids": ["42"], "change_token": "a" * 64,
         "enviadas": 2, "novas_pendentes": 1,
     }
     def unavailable(**kwargs):
-        raise HTTPException(503, detail={"code": "stores_snapshot_initializing"})
+        raise HTTPException(503, detail={"code": code})
     monkeypatch.setattr(auto, "ml_perguntas_automacao_poll", unavailable, raising=False)
     for delay in [5, 15, 30, 300, 300]:
         auto._perguntas_automacao_bg_executar("tenant", "Store", "perguntas", 300)

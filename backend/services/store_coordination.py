@@ -223,7 +223,7 @@ def legacy_resource_lock(root_path: os.PathLike[str] | str, timeout_seconds: flo
 
 
 @contextmanager
-def oauth_refresh_lock(tenant_path, store_id, provider="mercadolivre", timeout_seconds=30.0):
+def oauth_refresh_lock(tenant_path, store_id, provider="mercadolivre", timeout_seconds=10.0):
     """Single-flight exchange, before (and independent of) the store commit lock."""
     if coordination_active():
         raise StoreCoordinationError("lock_order")

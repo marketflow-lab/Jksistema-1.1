@@ -353,7 +353,7 @@ def ml_perguntas_automacao_poll(
     transient_store_error = any(
         isinstance(item.get("erro"), dict) and item["erro"].get("code") in {
             "stores_busy", "stores_snapshot_initializing", "stores_snapshot_unavailable",
-            "stores_snapshot_credentials_unavailable",
+            "stores_snapshot_credentials_unavailable", "store_oauth_busy",
         } for item in poll.errors
     )
     return jsonable_encoder({

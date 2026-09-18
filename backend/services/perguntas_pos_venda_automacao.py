@@ -60,7 +60,7 @@ def _stores_temporarily_unavailable(exc):
         (getattr(exc, "status_code", None) == 409 and detail.get("code") == "stores_busy")
         or (getattr(exc, "status_code", None) == 503 and detail.get("code") in {
             "stores_snapshot_initializing", "stores_snapshot_unavailable",
-            "stores_snapshot_credentials_unavailable",
+            "stores_snapshot_credentials_unavailable", "store_oauth_busy",
         })
     )
 
