@@ -536,11 +536,14 @@ def _perguntas_ia_execucao_orquestrar(contexto: dict) -> tuple:
     except ValueError:
         category = QuestionCategory.UNKNOWN
     confidence = float(unified.get("confidence") or 0.0)
-    requires_human = bool(
+    intrinsic_human_review = bool(
         unified.get("requires_human_review")
         or client.manual_review_required
-        or not settings.auto_publish_enabled
         or confidence < settings.min_confidence
+    )
+    requires_human = bool(
+        intrinsic_human_review
+        or not settings.auto_publish_enabled
     )
     publish_decision = PublishDecision.HUMAN_REVIEW if requires_human else PublishDecision.PUBLISH
     validation = ValidationResult(True, [], confidence)
@@ -620,6 +623,13 @@ def _perguntas_ia_atualizar_diagnostico(
         "publication_decision": resultado.decision.value,
         "needs_human_review": resultado.needs_human,
         "requires_human_review": bool(unified.get("requires_human_review")),
+        "manual_review_required": bool(client.manual_review_required),
+        "confidence_below_threshold": bool(
+            resultado.confidence < contexto["settings"].min_confidence
+        ),
+        "approval_policy_requires_review": not bool(
+            contexto["settings"].auto_publish_enabled
+        ),
         "confidence": resultado.confidence,
         "source": resultado.source,
         "reason": resultado.reason,
