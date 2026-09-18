@@ -234,6 +234,11 @@ def _ler_csv_generico(caminho: str) -> tuple[list[dict[str, str]], list[str]]:
         bruto = Path(caminho).read_bytes()
     except OSError as exc:
         raise HTTPException(status_code=500, detail="Nao foi possivel ler o cadastro por loja.") from exc
+    return _ler_csv_capturado(bruto)
+
+
+def _ler_csv_capturado(bruto: bytes) -> tuple[list[dict[str, str]], list[str]]:
+    """Parse immutable captured bytes without accessing canonical files."""
 
     texto = ""
     ultimo_erro: Exception | None = None
@@ -312,6 +317,10 @@ def _ler_registros_persistidos_caminho(
     caminho: os.PathLike[str] | str,
 ) -> tuple[list[dict[str, str]], list[str]]:
     linhas, colunas = _ler_csv_generico(os.fspath(caminho))
+    return _normalizar_registros_persistidos(linhas), colunas
+
+
+def _normalizar_registros_persistidos(linhas) -> list[dict[str, str]]:
     registros = [_normalizar_registro_persistido(linha) for linha in linhas]
     chaves: set[tuple[str, str]] = set()
     for item in registros:
@@ -327,7 +336,7 @@ def _ler_registros_persistidos_caminho(
                 detail="Cadastro por loja contem chave duplicada.",
             )
         chaves.add(chave)
-    return registros, colunas
+    return registros
 
 
 def _ler_registros_persistidos(client_id: str) -> tuple[list[dict[str, str]], list[str]]:
@@ -575,7 +584,7 @@ def _cadastro_propagar_referencias_fotos_preparadas(
 
 
 def _lojas_atuais(client_id: str) -> list[dict[str, Any]]:
-    lojas = integracoes.carregar_lojas(client_id)
+    lojas = integracoes.ler_lojas(client_id)
     return [dict(loja) for loja in (lojas or []) if isinstance(loja, dict)]
 
 
@@ -777,6 +786,7 @@ def _contexto_legado_de_tenant(
     lojas: Iterable[dict[str, Any]],
     *,
     fotos: dict[str, str] | None = None,
+    fontes_capturadas: dict[str, bytes] | None = None,
 ) -> dict[str, Any]:
     """Build the legacy shadow from explicit, already trusted inputs.
 
@@ -797,7 +807,10 @@ def _contexto_legado_de_tenant(
     fontes: dict[str, list[dict[str, str]]] = {}
     colunas_fontes: dict[str, list[str]] = {}
     for fonte, arquivo in _ARQUIVOS_LEGADOS.items():
-        linhas, colunas = _ler_csv_generico(os.path.join(tenant, arquivo))
+        if fontes_capturadas is None:
+            linhas, colunas = _ler_csv_generico(os.path.join(tenant, arquivo))
+        else:
+            linhas, colunas = _ler_csv_capturado(fontes_capturadas[arquivo])
         fontes[fonte] = linhas
         colunas_fontes[fonte] = colunas
 

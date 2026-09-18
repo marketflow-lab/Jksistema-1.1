@@ -1,5 +1,6 @@
 """Behavioral coverage for immutable, exact-store catalog source snapshots."""
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -43,6 +44,58 @@ def test_unbound_catalog_is_visible_preserves_zero_and_exact_scope(root):
     assert not repo.load_catalog_product("000003", scope(tenant="000003"), "001", info_root=root)["found"]
     with pytest.raises(ContextHubValidationError):
         repo.load_catalog_product("000003", scope(), "001", info_root=root)
+
+
+def test_activation_guard_only_covers_pointer_commit(root, monkeypatch):
+    held = []
+    observed = []
+    original_object = repo._object_text
+    original_index = repo._write_index
+
+    def render(*args):
+        assert not held
+        observed.append("render")
+        return original_object(*args)
+
+    def index(*args):
+        assert not held
+        observed.append("index")
+        return original_index(*args)
+
+    @contextmanager
+    def guard():
+        held.append(True)
+        try:
+            assert repo.catalog_snapshot_status("000002", scope(), info_root=root)["status"] == "not_synced"
+            yield
+            assert repo.catalog_snapshot_status("000002", scope(), info_root=root)["status"] == "completed"
+            observed.append("commit")
+        finally:
+            held.pop()
+
+    monkeypatch.setattr(repo, "_object_text", render)
+    monkeypatch.setattr(repo, "_write_index", index)
+    publish(root, [row()], activation_guard=guard)
+    assert observed == ["render", "commit", "index"]
+
+
+def test_activation_guard_failure_preserves_previous_generation_and_curation(root):
+    first = publish(root, [row(descricao="Antes")])
+    paths = repo._tenant_paths("000002", info_root=root)
+    curated = paths.vault_dir / "80_Curadoria" / "user.md"
+    curated.parent.mkdir(parents=True, exist_ok=True)
+    curated.write_text("User editorial content", encoding="utf8")
+
+    @contextmanager
+    def changed():
+        raise ContextHubValidationError("catalog_source_changed")
+        yield
+
+    with pytest.raises(ContextHubValidationError, match="catalog_source_changed"):
+        publish(root, [row(descricao="Depois")], activation_guard=changed)
+    assert load(root)["generation_id"] == first["generation_id"]
+    assert load(root)["document"]["fields"]["description"] == "Antes"
+    assert curated.read_text(encoding="utf8") == "User editorial content"
 
 
 def test_obsidian_machine_index_drives_exact_lookup_and_repairs_without_scan(root, monkeypatch):

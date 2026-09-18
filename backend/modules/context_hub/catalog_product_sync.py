@@ -7,7 +7,7 @@ No absent row is interpreted as a deletion: only explicit tombstones retire it.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import hashlib
 import json
 from pathlib import Path
@@ -21,6 +21,7 @@ from backend.modules.context_hub.path_safety import _assert_path_chain_safe
 from backend.modules.context_hub.paths import _tenant_paths
 from backend.modules.context_hub.runtime import _runtime_config
 from backend.modules.context_hub.store_sku_contracts import StoreSkuScope
+from backend.services.store_lock_diagnostics import operation_scope
 
 DEBOUNCE_SECONDS = 5.0
 RECONCILE_SECONDS = 15 * 60
@@ -41,7 +42,13 @@ def _stores(paths):
 
 def resolve_catalog_scope(client_id, store_id, *, info_root=None):
     paths = _tenant_paths(client_id, info_root=info_root)
-    matches = [item for item in _stores(paths) if item.get("store_id") == store_id]
+    return _scope_from_stores(paths, store_id, _stores(paths))
+
+
+def _scope_from_stores(paths, store_id, stores):
+    if not isinstance(stores, list) or any(not isinstance(item, dict) for item in stores):
+        raise ContextHubValidationError("store_config_invalid")
+    matches = [item for item in stores if item.get("store_id") == store_id]
     if len(matches) != 1:
         raise ContextHubValidationError("store_scope_unresolved")
     store = matches[0]
@@ -151,15 +158,31 @@ def notify_catalog_committed(client_id, store_id="", *, info_root=None):
         pass
 
 
-def load_catalog_source_snapshot(client_id, store_id, *, info_root=None):
-    """Same store/legacy resolution as Cadastro, without runtime-global rebinding."""
+@dataclass(frozen=True)
+class _CapturedCatalog:
+    stores: bytes
+    files: tuple[tuple[str, bytes], ...]
+    images: tuple[tuple[str, str], ...]
+    versions: tuple[tuple[str, tuple | None], ...]
+
+
+def _source_version(target):
+    try:
+        stat = target.stat()
+    except FileNotFoundError:
+        return None
+    return stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _capture_catalog_sources(paths, store_id):
+    """Only capture bytes and image references while holding writer locks."""
     from backend.services import cadastro_lojas_produtos as cadastro
+    from backend.services.cadastro_fotos_coordenacao import bloquear_transicao_fotos_tenant
     from backend.services.store_coordination import (
         coordinated_path_lock as path_lock_for,
         coordinated_path_locks as path_locks_for,
         store_lock,
     )
-    paths = _tenant_paths(client_id, info_root=info_root)
     files = ["lojas_config.json", cadastro.CADASTRO_PRODUTOS_LOJAS_ARQUIVO,
              *cadastro._ARQUIVOS_LEGADOS.values()]
     candidates = [paths.tenant_dir / name for name in files]
@@ -170,42 +193,91 @@ def load_catalog_source_snapshot(client_id, store_id, *, info_root=None):
     with (store_lock(paths.tenant_dir),
           path_lock_for(paths.tenant_dir / cadastro.CADASTRO_PRODUTOS_LOJAS_ARQUIVO),
           path_lock_for(paths.tenant_dir / "cadastro_custos_lojas.csv"),
+          bloquear_transicao_fotos_tenant(paths.tenant_dir),
           path_locks_for(str(target) for target in candidates)):
-        scope = resolve_catalog_scope(client_id, store_id, info_root=paths.info_root)
-        stores = _stores(paths)
-        store = {"store_id": store_id, "nome": scope["store_name"]}
-        context = cadastro._contexto_legado_de_tenant(
-            client_id, store, paths.tenant_dir, stores, fotos={})
-        rows, _ = cadastro._ler_registros_persistidos_caminho(
-            paths.tenant_dir / cadastro.CADASTRO_PRODUTOS_LOJAS_ARQUIVO)
-        # Explicit rows override their own store shadows, including tombstones.
-        products = dict(context["sombras"])
-        deleted = []
-        for row in rows:
-            if row["store_id"] != store_id:
-                continue
-            sku = row["sku_normalizado"]
-            if str(row.get("deleted_at_utc") or "").strip():
-                products.pop(sku, None)
-                deleted.append(sku)
-                continue
-            item = dict(row)
-            cadastro._aplicar_compilado(item, context.get("compilado", {}).get(sku, {}))
-            item["scope_source"] = "store_file"
-            products[sku] = item
-        _attach_store_images(paths, store_id, products)
-        return {"scope": scope, "products": list(products.values()),
-                "deleted_skus": deleted, "ambiguous_count": len(context["nao_mapeados"]),
-                "ambiguous_records": [
-                    {"sku": str(item.get("sku") or "")[:100],
-                     "row": str(item.get("linha") or ""),
-                     "record_id": hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest(),
-                     "reason": str(item.get("motivo") or "association_unresolved"),
-                     "source": str(item.get("fonte") or "")}
-                    for item in context["nao_mapeados"]]}
+        captured = []
+        for target in candidates:
+            _assert_path_chain_safe(target, paths.info_root)
+            try:
+                raw = target.read_bytes()
+            except FileNotFoundError:
+                if target.name == "lojas_config.json":
+                    raise
+                raw = b""
+            captured.append((target.name, raw))
+        images = tuple(_capture_store_images(paths, store_id).items())
+        from backend.services.cadastro_fotos import _cadastro_store_id_foto_segmento
+        photo_folder = paths.tenant_dir / "cadastro_fotos" / "lojas" / _cadastro_store_id_foto_segmento(store_id)
+        versions = tuple((target.relative_to(paths.tenant_dir).as_posix(), _source_version(target))
+                         for target in [*candidates, photo_folder])
+        return _CapturedCatalog(captured[0][1], tuple(captured[1:]), images, versions)
 
 
-def _attach_store_images(paths, store_id, products):
+@operation_scope("context_catalog")
+def load_catalog_source_snapshot(client_id, store_id, *, info_root=None):
+    """Resolve from one immutable capture, without runtime-global rebinding."""
+    from backend.services import cadastro_lojas_produtos as cadastro
+    paths = _tenant_paths(client_id, info_root=info_root)
+    captured = _capture_catalog_sources(paths, store_id)
+    stores = json.loads(captured.stores.decode("utf-8-sig"))
+    scope = _scope_from_stores(paths, store_id, stores)
+    files = dict(captured.files)
+    store = {"store_id": store_id, "nome": scope["store_name"]}
+    context = cadastro._contexto_legado_de_tenant(
+        client_id, store, paths.tenant_dir, stores, fotos={}, fontes_capturadas=files)
+    rows, _ = cadastro._ler_csv_capturado(files[cadastro.CADASTRO_PRODUTOS_LOJAS_ARQUIVO])
+    rows = cadastro._normalizar_registros_persistidos(rows)
+    # Explicit rows override their own store shadows, including tombstones.
+    products = dict(context["sombras"])
+    deleted = []
+    for row in rows:
+        if row["store_id"] != store_id:
+            continue
+        sku = row["sku_normalizado"]
+        if str(row.get("deleted_at_utc") or "").strip():
+            products.pop(sku, None)
+            deleted.append(sku)
+            continue
+        item = dict(row)
+        cadastro._aplicar_compilado(item, context.get("compilado", {}).get(sku, {}))
+        item["scope_source"] = "store_file"
+        products[sku] = item
+    _attach_store_images(paths, store_id, products, local=dict(captured.images))
+    return {"scope": scope, "products": list(products.values()),
+            "source_versions": captured.versions,
+            "deleted_skus": deleted, "ambiguous_count": len(context["nao_mapeados"]),
+            "ambiguous_records": [
+                {"sku": str(item.get("sku") or "")[:100],
+                 "row": str(item.get("linha") or ""),
+                 "record_id": hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest(),
+                 "reason": str(item.get("motivo") or "association_unresolved"),
+                 "source": str(item.get("fonte") or "")}
+                for item in context["nao_mapeados"]]}
+
+
+@contextmanager
+def _catalog_activation_guard(paths, snapshot):
+    """Revalidate captured source versions while switching the active pointer."""
+    from backend.services.store_coordination import store_lock, coordinated_path_lock, coordinated_path_locks
+    from backend.services.cadastro_fotos_coordenacao import bloquear_transicao_fotos_tenant
+    with (store_lock(paths.tenant_dir),
+          coordinated_path_lock(paths.tenant_dir / "cadastro_produtos_lojas.csv"),
+          coordinated_path_lock(paths.tenant_dir / "cadastro_custos_lojas.csv"),
+          bloquear_transicao_fotos_tenant(paths.tenant_dir),
+          coordinated_path_locks(paths.tenant_dir / name for name, _ in snapshot["source_versions"])):
+        for name, version in snapshot["source_versions"]:
+            target = paths.tenant_dir / name
+            _assert_path_chain_safe(target, paths.info_root)
+            if _source_version(target) != version:
+                raise ContextHubValidationError("catalog_source_changed")
+        current = resolve_catalog_scope(paths.client_id, snapshot["scope"]["store_ref"],
+                                        info_root=paths.info_root)
+        if current != snapshot["scope"]:
+            raise ContextHubValidationError("store_scope_changed")
+        yield
+
+
+def _capture_store_images(paths, store_id):
     from backend.services import cadastro_fotos as photos
     segment = photos._cadastro_store_id_foto_segmento(store_id)
     folder = paths.tenant_dir / "cadastro_fotos" / "lojas" / segment
@@ -216,6 +288,14 @@ def _attach_store_images(paths, store_id, products):
             _assert_path_chain_safe(target, paths.info_root)
             if target.is_file() and target.suffix.lower() in photos.CADASTRO_FOTOS_EXTENSOES:
                 local.setdefault(target.stem.upper(), target.relative_to(paths.tenant_dir).as_posix())
+    return local
+
+
+def _attach_store_images(paths, store_id, products, *, local=None):
+    from backend.services import cadastro_fotos as photos
+    segment = photos._cadastro_store_id_foto_segmento(store_id)
+    if local is None:
+        local = _capture_store_images(paths, store_id)
     for sku, product in products.items():
         for field, value in photos._cadastro_foto_referencias_candidatas(product):
             if not photos._cadastro_foto_referencia_local_cadastro(value):
@@ -247,8 +327,11 @@ def run_catalog_sync_now(client_id, store_id, *, sku="", info_root=None):
             snapshot = load_catalog_source_snapshot(client_id, store_id, info_root=paths.info_root)
             if _key(snapshot["scope"]) != key:
                 raise ContextHubValidationError("store_scope_changed")
+            if resolve_catalog_scope(client_id, store_id, info_root=paths.info_root) != snapshot["scope"]:
+                raise ContextHubValidationError("store_scope_changed")
             report = publish_catalog_snapshot(client_id, snapshot["scope"], snapshot["products"],
-                deleted_skus=snapshot["deleted_skus"], complete=True, info_root=paths.info_root)
+                deleted_skus=snapshot["deleted_skus"], complete=True, info_root=paths.info_root,
+                activation_guard=lambda: _catalog_activation_guard(paths, snapshot))
             if report.get("status") in {"error", "failed"}:
                 raise ContextHubValidationError("catalog_publish_failed")
             report = {**report, "ambiguous_count": snapshot["ambiguous_count"]}

@@ -201,6 +201,7 @@ def test_crud_hooks_follow_commit_and_locks_and_skip_rollback(env, monkeypatch):
     monkeypatch.setattr(cadastro_fotos, "PASTA_INFO", str(root), raising=False)
     stores = json.loads((tenant / "lojas_config.json").read_text())
     monkeypatch.setattr(integracoes, "carregar_lojas", lambda client_id: stores)
+    monkeypatch.setattr(integracoes, "ler_lojas", lambda client_id: stores)
     monkeypatch.setattr(integracoes, "_get_tenant_path", lambda client_id: str(root / client_id))
     monkeypatch.setattr(integracoes, "PASTA_INFO", str(root))
     notifications = []
@@ -246,3 +247,101 @@ def test_catalog_snapshot_coordinates_explicit_root_without_runtime(env, monkeyp
     result = sync.load_catalog_source_snapshot("testclient", STORE, info_root=root)
     assert result["scope"]["store_ref"] == STORE
     assert result["scope"]["seller_id"] == "12345"
+
+
+def test_catalog_processing_releases_locks_and_uses_only_immutable_capture(env, monkeypatch):
+    from backend.services import cadastro_lojas_produtos as cadastro, cadastro_fotos as photos
+    from backend.services.cadastro_fotos_coordenacao import bloquear_transicao_fotos_tenant
+    from backend.services.store_coordination import store_lock, coordinated_path_lock
+    root, tenant, _, _ = env
+    product_path = tenant / cadastro.CADASTRO_PRODUTOS_LOJAS_ARQUIVO
+    product_path.write_text(f"store_id;sku;descricao\n{STORE};001;Original\n", encoding="utf8")
+    (tenant / "produtos_compilado.csv").write_text(
+        f"store_id;sku;ncm\n{STORE};001;12345678\n", encoding="utf8")
+    segment = photos._cadastro_store_id_foto_segmento(STORE)
+    folder = tenant / "cadastro_fotos" / "lojas" / segment
+    folder.mkdir(parents=True)
+    image = folder / "001.png"
+    image.write_bytes(b"synthetic image")
+    entered, resume = threading.Event(), threading.Event()
+    original = cadastro._contexto_legado_de_tenant
+    results, errors = [], []
+
+    def paused(*args, **kwargs):
+        entered.set()
+        assert resume.wait(5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cadastro, "_contexto_legado_de_tenant", paused)
+
+    def read_snapshot():
+        try:
+            results.append(sync.load_catalog_source_snapshot("testclient", STORE, info_root=root))
+        except Exception as exc:
+            errors.append(exc)
+
+    reader = threading.Thread(target=read_snapshot)
+    reader.start()
+    try:
+        assert entered.wait(5)
+        started = time.monotonic()
+        with (store_lock(tenant, timeout_seconds=0.5), coordinated_path_lock(product_path),
+              coordinated_path_lock(tenant / "cadastro_custos_lojas.csv"),
+              bloquear_transicao_fotos_tenant(tenant)):
+            assert time.monotonic() - started < 0.5
+            product_path.write_text(f"store_id;sku;descricao\n{STORE};002;Alterado\n", encoding="utf8")
+            (tenant / "produtos_compilado.csv").write_text(
+                f"store_id;sku;ncm\n{STORE};001;87654321\n", encoding="utf8")
+            config = json.loads((tenant / "lojas_config.json").read_text())
+            config[0]["nome"] = "Loja Renomeada"
+            (tenant / "lojas_config.json").write_text(json.dumps(config))
+            image.unlink()
+            (folder / "002.png").write_bytes(b"new synthetic image")
+    finally:
+        resume.set()
+        reader.join(5)
+    assert not reader.is_alive() and not errors
+    assert results[0]["scope"]["store_name"] == "Loja A"
+    products = results[0]["products"]
+    assert len(products) == 1
+    assert products[0]["sku"] == "001" and products[0]["descricao"] == "Original"
+    assert products[0]["ncm"] == "12345678"
+    assert products[0]["foto"] == f"cadastro_fotos/lojas/{segment}/001.png"
+
+
+@pytest.mark.parametrize("change", ["rename", "seller", "remove"])
+def test_catalog_revalidates_scope_after_processing(env, monkeypatch, change):
+    from backend.modules.context_hub.contracts import ContextHubValidationError
+    root, tenant, calls, _ = env
+    original = sync.load_catalog_source_snapshot
+
+    def captured_then_changed(*args, **kwargs):
+        snapshot = original(*args, **kwargs)
+        config = json.loads((tenant / "lojas_config.json").read_text())
+        if change == "rename":
+            config[0]["nome"] = "Novo Nome"
+        elif change == "seller":
+            config[0]["integracoes"]["mercadolivre"]["user_id"] = "99999"
+        else:
+            config.pop(0)
+        (tenant / "lojas_config.json").write_text(json.dumps(config))
+        return snapshot
+
+    monkeypatch.setattr(sync, "load_catalog_source_snapshot", captured_then_changed)
+    with pytest.raises(ContextHubValidationError):
+        sync.run_catalog_sync_now("testclient", STORE, info_root=root)
+    assert not calls
+
+
+@pytest.mark.parametrize("name", ["lojas_config.json", "cadastro_produtos_lojas.csv",
+                                  "cadastro_custos_lojas.csv", "produtos_compilado.csv"])
+def test_activation_guard_rejects_source_changed_after_capture(env, name):
+    from backend.modules.context_hub.contracts import ContextHubValidationError
+    root, tenant, _, _ = env
+    snapshot = sync.load_catalog_source_snapshot("testclient", STORE, info_root=root)
+    target = tenant / name
+    original = target.read_bytes() if target.exists() else b""
+    target.write_bytes(original + b"\n")
+    with pytest.raises(ContextHubValidationError, match="catalog_source_changed"):
+        with sync._catalog_activation_guard(sync._tenant_paths("testclient", info_root=root), snapshot):
+            pytest.fail("changed source must not activate")

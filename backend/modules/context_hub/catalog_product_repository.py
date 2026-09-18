@@ -6,7 +6,7 @@ store-SKU generation/pointers are modified. Missing input is never a tombstone.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import json
 import re
 import sqlite3
@@ -183,7 +183,8 @@ def _catalog_index(paths, scope, active, manifest):
         return skus, current, current_manifest
 
 
-def publish_catalog_snapshot(client_id, scope_value, products, *, deleted_skus=(), complete=True, info_root=None):
+def publish_catalog_snapshot(client_id, scope_value, products, *, deleted_skus=(), complete=True, info_root=None,
+                             activation_guard=None):
     paths = _tenant_paths(client_id, info_root=info_root)
     scope = _scope_for_paths(paths, scope_value)
     key = _scope_key(scope)
@@ -241,18 +242,23 @@ def publish_catalog_snapshot(client_id, scope_value, products, *, deleted_skus=(
             revision = content_sha256({sku: entry["revision"] for sku, entry in manifest.items()})
             if not active or revision != active["revision"]:
                 generation_id = "catalog-" + _new_id()
-                con.execute("BEGIN IMMEDIATE")
-                try:
-                    con.execute("INSERT INTO catalog_product_generations VALUES (?,?,?,?,?,?)",
-                                (generation_id, key, revision, active["generation_id"] if active else "",
-                                 _utc_now(), canonical_json(manifest)))
-                    con.execute("INSERT INTO catalog_product_active VALUES (?,?) ON CONFLICT(scope_key) DO UPDATE SET generation_id=excluded.generation_id",
-                                (key, generation_id))
-                    con.commit()
-                except BaseException:
-                    con.rollback()
-                    raise
+                manifest_json = canonical_json(manifest)
+                with activation_guard() if activation_guard else nullcontext():
+                    con.execute("BEGIN IMMEDIATE")
+                    try:
+                        con.execute("INSERT INTO catalog_product_generations VALUES (?,?,?,?,?,?)",
+                                    (generation_id, key, revision, active["generation_id"] if active else "",
+                                     _utc_now(), manifest_json))
+                        con.execute("INSERT INTO catalog_product_active VALUES (?,?) ON CONFLICT(scope_key) DO UPDATE SET generation_id=excluded.generation_id",
+                                    (key, generation_id))
+                        con.commit()
+                    except BaseException:
+                        con.rollback()
+                        raise
                 active = {"generation_id": generation_id, "revision": revision}
+            elif activation_guard:
+                with activation_guard():
+                    pass
             _write_index(paths, scope, active, manifest)
             return {"status": "completed", "generation_id": active["generation_id"], "revision": revision,
                     "total": len(manifest), "changed": changed, "removed": removed,
