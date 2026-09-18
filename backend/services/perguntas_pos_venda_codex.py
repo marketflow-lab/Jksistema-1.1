@@ -148,7 +148,25 @@ PROVIDER_RETRY_REASONS = frozenset({
     "provider_connection",
     "provider_http_429",
     "provider_http_5xx",
+    "provider_turn_failed",
+    "provider_empty_response",
 })
+PROVIDER_TERMINAL_REASONS = frozenset({
+    "codex_authentication_required",
+    "codex_runtime_disabled",
+    "codex_dependency_missing",
+    "codex_runtime_invalid",
+})
+PROVIDER_ERROR_REASONS = PROVIDER_RETRY_REASONS | PROVIDER_TERMINAL_REASONS
+FAILURE_METADATA_KEYS = (
+    "error_code",
+    "error_round",
+    "error_repair",
+    "error_component",
+    "error_reason",
+    "retryable",
+    "retry_after",
+)
 AUTOMATION_QUEUE_PER_STORE_LIMIT = 3
 AUTOMATION_QUEUE_TOTAL_LIMIT = 12
 QUEUE_ORIGIN_MANUAL = "manual"
@@ -1394,6 +1412,7 @@ def _complete_generation_blocked(
     error_metadata = {"error_code": "generation_context_unavailable",
                       "error_component": error_component, "error_reason": error_reason,
                       "retryable": retryable, "retry_after": retry_after}
+    _clear_failure_metadata(job)
     job.update(status="completed", agent_state="concluido", current_step="consultar",
                result={"resposta": "", "contexto": {}, "data_sufficient": False,
                        "blocked_without_draft": True, "requires_approval": False,
@@ -1413,9 +1432,15 @@ def _complete_generation_blocked(
 def _failure_metadata(value: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
     raw = value if isinstance(value, Mapping) else {}
     code = str(raw.get("error_code") or "").strip().lower()
+    component = str(raw.get("error_component") or "").strip().lower()
+    reason = str(raw.get("error_reason") or "").strip().lower()
     repair = str(raw.get("error_repair") or "").strip().lower()
     if not re.fullmatch(r"[a-z0-9_]{1,80}", code):
         code = ""
+    if component != "ai_provider":
+        component = ""
+    if component == "ai_provider" and reason not in PROVIDER_ERROR_REASONS:
+        reason = "provider_turn_failed"
     if not re.fullmatch(r"[a-z0-9_]{1,80}", repair):
         repair = ""
     try:
@@ -1427,7 +1452,34 @@ def _failure_metadata(value: Optional[Mapping[str, Any]] = None) -> dict[str, An
         metadata["error_code"] = code
         metadata["error_round"] = round_number
         metadata["error_repair"] = repair or "none"
+        if component:
+            metadata["error_component"] = component
+            metadata["error_reason"] = reason
+            retryable = raw.get("retryable")
+            metadata["retryable"] = (
+                retryable
+                if isinstance(retryable, bool)
+                else reason in PROVIDER_RETRY_REASONS
+            )
+            try:
+                metadata["retry_after"] = min(
+                    86400,
+                    max(0, int(raw.get("retry_after") or 0)),
+                )
+            except (TypeError, ValueError, OverflowError):
+                metadata["retry_after"] = 0
     return metadata
+
+
+def _clear_failure_metadata(value: dict[str, Any]) -> None:
+    """Remove diagnostics from an older attempt before storing the current one."""
+
+    for key in FAILURE_METADATA_KEYS:
+        value.pop(key, None)
+    result = value.get("result")
+    if isinstance(result, dict):
+        for key in FAILURE_METADATA_KEYS:
+            result.pop(key, None)
 
 
 def _complete_without_draft(
@@ -1470,6 +1522,7 @@ def _complete_without_draft(
             error_metadata=safe_error_metadata,
         )
 
+    _clear_failure_metadata(job)
     info_base = _runtime_info_base()
     client_id = str(job.get("client_id") or "default")
     job_id = str(job.get("job_id") or "")
@@ -1665,6 +1718,7 @@ def _cancel_post_sale_job(job: dict[str, Any]) -> dict[str, Any]:
     current = dict(job or {})
     info_base = _runtime_info_base()
     client_id = str(current.get("client_id") or "default")
+    _clear_failure_metadata(current)
     current.pop("result", None)
     current.pop("last_partial_result", None)
     current.update(
@@ -1913,10 +1967,15 @@ def _complete_with_best_available(
     if _canonical_task_type(current.get("task_type")) == TASK_TYPE_POST_SALE:
         return _cancel_post_sale_job(current)
     if current.get("cancel_requested"):
+        _clear_failure_metadata(current)
         current.update({"status": "cancelled", "agent_state": "cancelado", "current_step": "responder"})
         return codex_assistant_storage.codex_assistant_customer_reply_job_save(info_base, client_id, current)
     if str(current.get("status") or "") == "completed" and isinstance(current.get("result"), dict):
         return current
+    safe_error_metadata = _failure_metadata(
+        error_metadata if isinstance(error_metadata, Mapping) else current
+    )
+    _clear_failure_metadata(current)
     partial = current.get("last_partial_result") if isinstance(current.get("last_partial_result"), dict) else {}
     current_answer = str(answer or "")
     final_answer = current_answer if current_answer.strip() else str(partial.get("resposta") or "")
@@ -1933,18 +1992,16 @@ def _complete_with_best_available(
                     "A classificacao estruturada ficou indisponivel; nenhum rascunho foi disponibilizado."
                 ),
                 completion_reason="ai_classification_unavailable",
-                error_metadata=error_metadata,
+                error_metadata=safe_error_metadata,
             )
         return _complete_without_draft(
             current,
             warning=empty_warning,
             completion_reason=empty_completion_reason,
-            error_metadata=error_metadata,
+            error_metadata=safe_error_metadata,
         )
     if completion_reason == "ai_response_preserved_unvalidated":
         current["operational_failure_count"] = 0
-    safe_error_metadata = _failure_metadata(error_metadata)
-
     final_context = context if isinstance(context, dict) and context else partial.get("contexto")
     if not isinstance(final_context, dict):
         final_context = {}
@@ -2080,12 +2137,14 @@ def _complete_with_best_available(
 
 
 def _complete_retry_limit(job: dict[str, Any]) -> dict[str, Any]:
+    error_metadata = _failure_metadata(job)
     if str(job.get("retry_kind") or "") == "evidence":
-        return _complete_with_best_available(job)
+        return _complete_with_best_available(job, error_metadata=error_metadata)
     return _complete_without_draft(
         job,
         warning="O limite operacional foi atingido; nenhum rascunho foi disponibilizado.",
         completion_reason="operational_retry_exhausted",
+        error_metadata=error_metadata,
     )
 
 
@@ -2138,8 +2197,11 @@ def _persist_retry(
         int(current.get("evidence_attempt_count") or 0),
         int(job.get("evidence_attempt_count") or 0),
     )
-    current.update(_failure_metadata(error_metadata))
+    safe_error_metadata = _failure_metadata(error_metadata)
+    _clear_failure_metadata(current)
+    current.update(safe_error_metadata)
     if current.get("cancel_requested"):
+        _clear_failure_metadata(current)
         current.update({"status": "cancelled", "agent_state": "cancelado", "current_step": "responder"})
         return codex_assistant_storage.codex_assistant_customer_reply_job_save(info_base, client_id, current)
 
@@ -2230,8 +2292,42 @@ def _persist_retry(
         if retry_kind == "operational"
         else 1
     )
-    delay = 0 if immediate else _retry_delay_seconds(retry_index, str(current.get("job_id") or ""))
+    retry_after = (
+        int(safe_error_metadata.get("retry_after") or 0)
+        if safe_error_metadata.get("retryable") is True
+        else 0
+    )
+    delay = (
+        0
+        if immediate
+        else max(
+            _retry_delay_seconds(retry_index, str(current.get("job_id") or "")),
+            retry_after,
+        )
+    )
     remaining = max(0.0, deadline - time.time()) if deadline > 0.0 else 0.0
+    if not immediate and deadline > 0.0 and delay >= remaining:
+        current.pop("next_retry_at_epoch", None)
+        current.pop("next_retry_delay_seconds", None)
+        current.pop("retry_ready_at", None)
+        if retry_kind == "evidence":
+            return _complete_with_best_available(
+                current,
+                answer=answer,
+                context=context,
+                matrix=matrix,
+                warnings=warnings,
+                error_metadata=safe_error_metadata,
+            )
+        return _complete_without_draft(
+            current,
+            warning=(
+                "O prazo restante nao permite uma nova tentativa; "
+                "nenhum rascunho foi disponibilizado."
+            ),
+            completion_reason="operational_retry_exhausted",
+            error_metadata=safe_error_metadata,
+        )
     if not immediate and deadline > 0.0:
         delay = min(delay, max(1, int(remaining)))
     current.update(
@@ -2322,6 +2418,7 @@ def _quarantine_outdated_job(
         "blocked_without_draft": True,
         "completion_reason": completion_reason,
     }
+    _clear_failure_metadata(job)
     job.update(
         {
             "status": "cancelled",
@@ -4187,6 +4284,8 @@ def _is_operational_failure(exc: BaseException) -> bool:
     if isinstance(exc, (PerguntasIAClassificacaoInconclusiva, PerguntasIASegurancaBloqueada)):
         return False
     if isinstance(exc, PerguntasIAProviderIndisponivel):
+        if isinstance(getattr(exc, "retryable", None), bool):
+            return bool(exc.retryable)
         return str(getattr(exc, "reason", "") or "") in PROVIDER_RETRY_REASONS
     current: Optional[BaseException] = exc
     visited: set[int] = set()
@@ -4220,21 +4319,46 @@ def _is_operational_failure(exc: BaseException) -> bool:
 def _unified_failure_metadata(exc: BaseException) -> dict[str, Any]:
     """Read only bounded diagnostics carried across the execution boundary."""
 
+    raw: dict[str, Any] = {}
     current: Optional[BaseException] = exc
     visited: set[int] = set()
     while isinstance(current, BaseException) and id(current) not in visited:
         visited.add(id(current))
         code = str(getattr(current, "unified_error_code", "") or "").strip().lower()
-        if code:
-            return _failure_metadata(
-                {
-                    "error_code": code,
-                    "error_round": getattr(current, "unified_error_round", 0),
-                    "error_repair": getattr(current, "unified_repair_type", "none"),
-                }
+        if code and not raw.get("error_code"):
+            raw.update({
+                "error_code": code,
+                "error_round": getattr(current, "unified_error_round", 0),
+                "error_repair": getattr(current, "unified_repair_type", "none"),
+            })
+        reason = str(
+            getattr(current, "provider_error_reason", "")
+            or (
+                getattr(current, "reason", "")
+                if isinstance(current, PerguntasIAProviderIndisponivel)
+                else ""
             )
+        ).strip().lower()
+        if reason in PROVIDER_ERROR_REASONS and not raw.get("error_component"):
+            retryable = getattr(current, "provider_error_retryable", None)
+            if not isinstance(retryable, bool):
+                retryable = getattr(current, "retryable", None)
+            raw.update({
+                "error_component": "ai_provider",
+                "error_reason": reason,
+                "retryable": (
+                    retryable
+                    if isinstance(retryable, bool)
+                    else reason in PROVIDER_RETRY_REASONS
+                ),
+                "retry_after": (
+                    getattr(current, "provider_error_retry_after", None)
+                    if hasattr(current, "provider_error_retry_after")
+                    else getattr(current, "retry_after", 0)
+                ),
+            })
         current = current.__cause__ or current.__context__
-    return {}
+    return _failure_metadata(raw) if raw.get("error_code") else {}
 
 
 def _unified_completion_reason(error_code: str) -> str:
@@ -4794,6 +4918,7 @@ def _run_job(client_id: str, job_id: str) -> None:
             completion_reason="total_attempt_limit_reached",
         )
         return
+    _clear_failure_metadata(job)
     job["restart_requested"] = False
     heartbeat_stop = threading.Event()
     heartbeat_thread = threading.Thread(
@@ -4934,6 +5059,7 @@ def _run_job(client_id: str, job_id: str) -> None:
                 deadline_reached=False,
             )
             return
+        _clear_failure_metadata(job)
         job.update(
             {
                 "status": "completed",
@@ -4993,6 +5119,7 @@ def _run_job(client_id: str, job_id: str) -> None:
     except _LeaseLost:
         logger.info("[PPV CODEX] evento=lease_perdida resultado=descartado")
     except InterruptedError as exc:
+        _clear_failure_metadata(job)
         job.update(
             {
                 "status": "cancelled",
@@ -5067,6 +5194,22 @@ def _run_job(client_id: str, job_id: str) -> None:
                 warning=(
                     "O agente unificado nao concluiu uma resposta valida. "
                     "Revise o codigo operacional antes de gerar novamente."
+                ),
+                completion_reason=_unified_completion_reason(error_code),
+                deadline_reached=False,
+                error_metadata=unified_failure,
+            )
+            return
+        if (
+            unified_failure
+            and isinstance(exc, PerguntasIAProviderIndisponivel)
+            and unified_failure.get("retryable") is False
+        ):
+            error_code = str(unified_failure.get("error_code") or "turn_execution_failed")
+            _complete_without_draft(
+                job,
+                warning=(
+                    "O provedor de IA requer ajuste operacional antes de uma nova geracao."
                 ),
                 completion_reason=_unified_completion_reason(error_code),
                 deadline_reached=False,

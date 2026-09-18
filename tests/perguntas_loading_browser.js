@@ -37,7 +37,7 @@ function questions(store, offset, limit) {
 async function fixture(browser) {
   const calls = [];
   const errors = [];
-  const control = { slowMs: 900, fastMs: 35, deny: '', fail: '', listHold: null, counts: {}, detailMs: 75, history: 'ready', detailDeny: false, itemDeny: false, omitComponents: false, itemMissingOnce: '', detailErrors: [], retryAfter: '0', generationReject: '', generationReason: '' };
+  const control = { slowMs: 900, fastMs: 35, deny: '', fail: '', listHold: null, counts: {}, detailMs: 75, history: 'ready', detailDeny: false, itemDeny: false, omitComponents: false, itemMissingOnce: '', detailErrors: [], retryAfter: '0', generationReject: '', generationReason: '', generationFailure: null };
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
@@ -97,6 +97,21 @@ async function fixture(browser) {
       if (url.pathname.endsWith('/perguntas/resumo')) return json({ lojas: stores.map(s => ({ ...s, perguntas: s === stores[10] ? null : control.counts[s.store_id] ?? 60, total: s === stores[10] ? null : 60, status_resumo: { UNANSWERED: 60 }, erro: s === stores[10] ? 'Falha sintética' : null })), partial: true });
       if (url.pathname.endsWith('/perguntas/resposta/gerar') && control.generationScope) return route.fulfill({status: control.generationScope === 'session' ? 401 : control.generationScope === 'resource' ? 404 : 403, contentType: 'application/json', headers: {'X-JK-Error-Code': `${control.generationScope}_disconnected`, 'X-JK-Error-Scope': control.generationScope}, body: JSON.stringify({detail: 'Consulta sem acesso na fixture'})}).catch(() => {});
       if (url.pathname.endsWith('/perguntas/resposta/gerar') && control.generationReject) return route.fulfill({status: 409, contentType: 'application/json', headers: {'X-JK-Error-Code': 'generation_context_unavailable', 'X-JK-Error-Component': control.generationReject, 'X-JK-Error-Reason': control.generationReason}, body: JSON.stringify({detail: control.generationReject === 'history' ? 'Histórico não confirmado. Tente novamente.' : control.generationReject === 'context_hub' ? 'Índice temporariamente indisponível.' : 'Contexto não confirmado. Tente novamente.'})}).catch(() => {});
+      if (url.pathname.endsWith('/perguntas/resposta/gerar') && control.generationFailure) {
+        const failure = control.generationFailure;
+        const headers = {
+          'X-JK-Error-Code': failure.code || 'generation_failed',
+          'X-JK-Error-Reason': failure.reason || '',
+          'X-JK-Error-Scope': failure.scope || 'resource'
+        };
+        if (failure.component) headers['X-JK-Error-Component'] = failure.component;
+        return route.fulfill({status: failure.status || 409, contentType: 'application/json', headers, body: JSON.stringify({
+          detail: failure.detail || 'Falha sintética ao gerar.',
+          error_code: failure.code || 'generation_failed',
+          error_reason: failure.reason || '',
+          error_component: failure.component || ''
+        })}).catch(() => {});
+      }
       if (url.pathname.endsWith('/perguntas/responder')) return json({ success: true, resposta: 'Resposta sintética confirmada' });
       if (url.pathname.endsWith('/ia-treinamento')) return json({ success: true, store_id: call.store, exemplos: {}, notas_sku: {}, orientacoes: '' });
       return json({ success: true, lojas: [], produtos: [], status: 'idle' });
@@ -381,7 +396,7 @@ async function verifyGenerationDenial({ page, control }) {
   await page.evaluate(() => selecionarLoja(TODAS_LOJAS_VALUE));
   await page.waitForFunction(() => document.querySelector('.question-ai-answer-btn')?.disabled === false);
   await page.locator('.question-answer-text').fill('Rascunho enquanto o servidor pesquisa');
-  await page.evaluate(() => aplicarResultadoJobAtendimentoCodex(state.perguntaSelecionadaKey, {blocked_without_draft: true, result: {resposta: '', blocked_without_draft: true, error_component: 'history', warnings: ['Histórico indisponível durante a pesquisa.']}}));
+  await page.evaluate(() => aplicarResultadoJobAtendimentoCodex(state.perguntaSelecionadaKey, {blocked_without_draft: true, error_code: 'generation_context_unavailable', result: {resposta: '', blocked_without_draft: true, error_code: 'generation_context_unavailable', error_component: 'history', warnings: ['Histórico indisponível durante a pesquisa.']}}));
   assert.strictEqual(await page.locator('.question-answer-text').inputValue(), 'Rascunho enquanto o servidor pesquisa', 'job bloqueado sem resposta não apaga rascunho local');
   assert.strictEqual(await page.locator('.question-ai-answer-btn').isEnabled(), false);
   assert.match(
@@ -403,9 +418,10 @@ async function verifyGenerationDenial({ page, control }) {
   await page.waitForFunction(() => document.querySelector('.question-ai-answer-btn')?.disabled === false);
   control.generationScope = 'resource';
   await page.locator('.question-ai-answer-btn').click();
-  await page.waitForFunction(() => state.perguntas.find(q => chavePerguntaAtendimento(q) === state.perguntaSelecionadaKey)?._questionState === 'blocked');
+  await page.waitForFunction(() => /não foi possível gerar a sugestão/i.test(document.querySelector('.question-answer-composer .question-answer-status')?.innerText || ''));
   assert(await page.evaluate(() => state.perguntas.length > 0 && state.lojas.length === 11), '404 de recurso durante geração não esvazia loja ou sessão');
-  assert.strictEqual(await page.evaluate(() => Boolean(state.perguntas.find(q => chavePerguntaAtendimento(q) === state.perguntaSelecionadaKey)?.text)), false);
+  assert.strictEqual(await page.evaluate(() => Boolean(state.perguntas.find(q => chavePerguntaAtendimento(q) === state.perguntaSelecionadaKey)?.text)), true, '404 sem componente explícito preserva a pergunta');
+  assert.strictEqual(await page.locator('.question-ai-answer-btn').isEnabled(), true, 'erro genérico deve permitir nova tentativa');
   await page.locator('[data-question-select]').nth(1).click();
   await page.waitForFunction(() => document.querySelector('.question-ai-answer-btn')?.disabled === false);
   control.generationScope = 'session';
@@ -460,6 +476,20 @@ async function verifyRecovery({ page, calls, control }) {
   assert.strictEqual(await page.locator('.question-ai-answer-btn').isEnabled(), true, 'Context Hub indisponível deve permitir nova tentativa sem apagar o contexto do Mercado Livre');
   control.generationReject = '';
   control.generationReason = '';
+  for (const failure of [
+    { reason: 'codex_authentication_required', expected: /autenticação local da IA expirou/i },
+    { reason: 'codex_runtime_invalid', expected: /IA local está indisponível neste computador/i },
+    { reason: 'provider_connection', expected: /IA está temporariamente indisponível/i },
+    { code: 'generation_context_unavailable', reason: 'context_expired', expected: /não foi possível gerar a sugestão/i }
+  ]) {
+    control.generationFailure = failure;
+    await page.locator('.question-ai-answer-btn').click();
+    await page.waitForFunction(source => new RegExp(source, 'i').test(document.querySelector('.question-answer-composer .question-answer-status')?.innerText || ''), failure.expected.source);
+    assert.strictEqual(await page.locator('.question-answer-text').inputValue(), 'Rascunho preservado na divergência');
+    assert.strictEqual(await page.locator('.question-ai-answer-btn').isEnabled(), true, 'falha terminal deve permitir Gerar IA novamente');
+    assert.strictEqual(await page.locator('[data-component="context"]').count(), 0, 'falha sem componente explícito não pode virar contexto expirado');
+  }
+  control.generationFailure = null;
   control.detailMs = 75;
   control.history = 'unavailable';
   await page.evaluate(() => JKPerguntasLoading.detalhe(state.perguntas[18], true));

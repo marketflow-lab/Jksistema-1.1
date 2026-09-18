@@ -824,6 +824,90 @@ async function salvarExemploRespostaPergunta(questionId, loja, textarea, botao, 
 }
 
 const CODEX_JOB_STORAGE_PREFIX = 'jk_ppv_codex_job_v2:';
+const GENERATION_FAILURE_REASONS = Object.freeze({
+    auth: new Set(['codex_authentication_required']),
+    runtime: new Set(['codex_runtime_disabled', 'codex_dependency_missing', 'codex_runtime_invalid']),
+    transient: new Set([
+        'provider_timeout', 'provider_connection', 'provider_http_429', 'provider_http_5xx',
+        'provider_turn_failed', 'provider_empty_response'
+    ])
+});
+const GENERATION_CONTEXT_COMPONENTS = new Set(['identity', 'question', 'history', 'item', 'context', 'context_hub']);
+
+function normalizarFalhaGeracaoAtendimento(value = {}) {
+    const source = value && typeof value === 'object' ? value : {};
+    const result = source.result && typeof source.result === 'object' ? source.result : {};
+    const pick = (...values) => values.find(item => item !== undefined && item !== null && String(item).trim() !== '');
+    const status = Number(pick(source.status_code, source.http_status, source.status, result.status_code, result.http_status, 0));
+    const retryableValue = pick(source.retryable, result.retryable, false);
+    return {
+        status: Number.isFinite(status) ? status : 0,
+        scope: String(pick(source.scope, source.error_scope, result.scope, result.error_scope, '') || '').trim().toLowerCase(),
+        code: String(pick(source.code, source.error_code, result.code, result.error_code, '') || '').trim().toLowerCase(),
+        component: String(pick(source.component, source.error_component, result.component, result.error_component, '') || '').trim().toLowerCase(),
+        reason: String(pick(source.reason, source.error_reason, result.reason, result.error_reason, '') || '').trim().toLowerCase(),
+        completionReason: String(pick(source.completionReason, source.completion_reason, result.completionReason, result.completion_reason, '') || '').trim().toLowerCase(),
+        retryable: retryableValue === true || retryableValue === 1 || String(retryableValue).trim().toLowerCase() === 'true',
+        retryAfter: Math.max(0, Number(pick(source.retryAfter, source.retry_after, result.retryAfter, result.retry_after, 0)) || 0),
+        blockedWithoutDraft: Boolean(source.blocked_without_draft || result.blocked_without_draft)
+    };
+}
+
+function classificarFalhaGeracaoAtendimento(value = {}) {
+    const failure = normalizarFalhaGeracaoAtendimento(value);
+    if (failure.status === 401 || failure.scope === 'session' || failure.component === 'session') {
+        return { ...failure, kind: 'session' };
+    }
+    if (failure.scope === 'store' || failure.component === 'store') return { ...failure, kind: 'store' };
+    if (GENERATION_FAILURE_REASONS.auth.has(failure.reason)) return { ...failure, kind: 'auth' };
+    if (GENERATION_FAILURE_REASONS.runtime.has(failure.reason)) return { ...failure, kind: 'runtime' };
+    if (GENERATION_FAILURE_REASONS.transient.has(failure.reason)) return { ...failure, kind: 'transient' };
+    const explicitContext = GENERATION_CONTEXT_COMPONENTS.has(failure.component)
+        && [failure.code, failure.completionReason].includes('generation_context_unavailable');
+    return { ...failure, kind: explicitContext ? 'context' : 'generic' };
+}
+
+function mensagemFalhaGeracaoAtendimento(failure) {
+    if (failure?.kind === 'auth') {
+        return 'A autenticação local da IA expirou. Faça login no Codex e gere a sugestão novamente.';
+    }
+    if (failure?.kind === 'runtime') {
+        return 'A IA local está indisponível neste computador. Verifique a configuração e tente novamente.';
+    }
+    if (failure?.kind === 'transient') {
+        return 'A IA está temporariamente indisponível. Tente novamente.';
+    }
+    return 'Não foi possível gerar a sugestão. Tente novamente.';
+}
+
+function limparFalhaGeracaoAtendimento(pergunta) {
+    if (!pergunta) return;
+    pergunta._generationError = '';
+    pergunta._generationComponent = '';
+    pergunta._generationReason = '';
+}
+
+function aplicarFalhaGeracaoAtendimento(questionKey, value) {
+    const failure = classificarFalhaGeracaoAtendimento(value);
+    const pergunta = (state.perguntas || []).find(q => chavePerguntaAtendimento(q) === questionKey);
+    if (['session', 'store', 'context'].includes(failure.kind)) {
+        window.JKPerguntasLoading?.rejeitarContexto(
+            pergunta,
+            failure.kind === 'session' ? 'session' : failure.kind === 'store' ? 'store' : failure.component,
+            [403, 404].includes(failure.status),
+            failure.reason
+        );
+        return { failure, message: pergunta?._generationError || mensagemFalhaGeracaoAtendimento(failure) };
+    }
+    if (pergunta) {
+        pergunta._generationComponent = '';
+        pergunta._generationReason = failure.reason;
+        pergunta._generationError = mensagemFalhaGeracaoAtendimento(failure);
+    }
+    return { failure, message: pergunta?._generationError || mensagemFalhaGeracaoAtendimento(failure) };
+}
+
+window.JKPerguntasClassificarFalhaGeracao = classificarFalhaGeracaoAtendimento;
 
 function tenantJobAtendimentoCodex() {
     try {
@@ -973,27 +1057,11 @@ function aplicarResultadoJobAtendimentoCodex(questionKey, data, tenantScope = te
         if (!textarea) return;
         const resposta = String(result.resposta ?? data.resposta ?? '');
         if (!resposta.trim()) {
-            const bloqueadoSemRascunho = Boolean(result.blocked_without_draft || data.blocked_without_draft);
-            if (!bloqueadoSemRascunho) textarea.value = '';
             delete textarea.dataset.codexProposalId;
             delete textarea.dataset.codexProposalVersion;
             delete textarea.dataset.codexProposalHash;
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
-            const warnings = Array.isArray(data?.warnings) && data.warnings.length ? data.warnings : result.warnings;
-            const avisoBloqueio = Array.isArray(warnings) && warnings.length
-                ? ` ${warnings[0]}`
-                : '';
-            const mensagem = `Nao foi possivel carregar o rascunho.${avisoBloqueio}`;
-            if (bloqueadoSemRascunho) {
-                const pergunta = (state.perguntas || []).find(q => chavePerguntaAtendimento(q) === questionKey);
-                if (pergunta) pergunta._generationError = mensagem;
-                window.JKPerguntasLoading?.rejeitarContexto(
-                    pergunta,
-                    result.error_component || data.error_component || 'context',
-                    false,
-                    result.error_reason || data.error_reason || ''
-                );
-            }
+            const { message: mensagem } = aplicarFalhaGeracaoAtendimento(questionKey, data);
             const currentStatus = cardsAtuaisJobAtendimentoCodex(questionKey)[0]?.querySelector('.question-answer-composer .question-answer-status') || status;
             setStatusRespostaPergunta(
                 currentStatus,
@@ -1100,6 +1168,7 @@ async function aguardarJobAtendimentoCodex(jobId, atualizarStatus, cancelamentoL
                 const error = new Error(mensagemErroApi(data, 'Falha temporaria ao acompanhar o agente Codex.'));
                 error.pollingStatus = response.status;
                 error.pollingTerminal = response.status === 404 || response.status === 410;
+                error.generationFailure = { ...data, status_code: response.status };
                 throw error;
             }
             falhasPolling = 0;
@@ -1109,6 +1178,7 @@ async function aguardarJobAtendimentoCodex(jobId, atualizarStatus, cancelamentoL
             if (data.status === 'failed') {
                 const failedError = new Error(data.error || 'O agente Codex nao conseguiu gerar a resposta.');
                 failedError.pollingTerminal = true;
+                failedError.generationFailure = data;
                 throw failedError;
             }
             if (data.status === 'cancelled') {
@@ -1166,9 +1236,13 @@ async function garantirPollingJobAtendimentoCodex(questionKey) {
                 'Pesquisa cancelada pelo usuario.'
             ));
         } else {
+            const fallback = mensagemErro(error) || 'Não foi possível acompanhar a geração da resposta.';
+            const failure = error?.generationFailure
+                ? aplicarFalhaGeracaoAtendimento(key, error.generationFailure)
+                : { message: fallback };
             cardsAtuaisJobAtendimentoCodex(key).forEach((card) => setStatusRespostaPergunta(
                 card.querySelector('.question-answer-composer .question-answer-status'),
-                mensagemErro(error) || 'Nao foi possivel acompanhar a geracao da resposta.',
+                failure.message,
                 'error'
             ));
         }
@@ -1237,7 +1311,7 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
     const lojaResposta = lojaOrigemItem(pergunta) || (todasAsLojasSelecionadas() ? '' : state.lojaSelecionada);
     if (!pergunta || !lojaResposta) return;
     const questionKey = chavePerguntaAtendimento(pergunta);
-    pergunta._generationError = '';
+    limparFalhaGeracaoAtendimento(pergunta);
     btnGerar.disabled = true;
     btnEnviar.disabled = true;
     setStatusRespostaPergunta(status, 'Gerando sugestao com IA...');
@@ -1262,10 +1336,18 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
             : null;
         if (!response.ok) {
             const apiMessage = mensagemErroApi(data, 'Erro ao gerar resposta com IA.');
-            pergunta._generationError = `Erro ao gerar IA: ${apiMessage}`;
-            const handled = window.JKPerguntasLoading?.tratarNegacaoGeracao(response, pergunta);
+            const denial = window.JKPerguntasLoading?.tratarNegacaoGeracao(response, pergunta, data) || {
+                status: response.status,
+                code: data?.error_code || data?.code || '',
+                component: data?.error_component || '',
+                reason: data?.error_reason || ''
+            };
+            const failure = classificarFalhaGeracaoAtendimento(denial);
+            if (!['session', 'store', 'context'].includes(failure.kind)) {
+                pergunta._generationError = mensagemFalhaGeracaoAtendimento(failure);
+            }
             const generationError = new Error(apiMessage);
-            generationError.contextHandled = Boolean(handled);
+            generationError.contextHandled = true;
             throw generationError;
         }
         if (data.job_id && data.status !== 'completed') {

@@ -87,6 +87,28 @@ from .unified_response_agent import (
 )
 
 
+_PERGUNTAS_IA_PROVIDER_ERROR_REASONS = frozenset({
+    "codex_authentication_required",
+    "codex_runtime_disabled",
+    "codex_dependency_missing",
+    "codex_runtime_invalid",
+    "provider_timeout",
+    "provider_connection",
+    "provider_http_429",
+    "provider_http_5xx",
+    "provider_turn_failed",
+    "provider_empty_response",
+})
+_PERGUNTAS_IA_PROVIDER_RETRY_REASONS = frozenset({
+    "provider_timeout",
+    "provider_connection",
+    "provider_http_429",
+    "provider_http_5xx",
+    "provider_turn_failed",
+    "provider_empty_response",
+})
+
+
 @dataclass(frozen=True, slots=True)
 class LegacyResponseBindings:
     settings_type: object = GeminiQuestionsSettings
@@ -375,14 +397,65 @@ def _perguntas_ia_repassar_falha_unificada(
         getattr(exc, "repair_type", "")
         or ("structured_output" if error_code == "invalid_output" else "none")
     ).strip().lower()
+    provider_contract: Optional[dict] = None
+    current: Optional[BaseException] = exc
+    visited: set[int] = set()
+    while isinstance(current, BaseException) and id(current) not in visited:
+        visited.add(id(current))
+        reason = str(
+            getattr(current, "provider_error_reason", "")
+            or (
+                getattr(current, "reason", "")
+                if isinstance(current, PerguntasIAProviderIndisponivel)
+                else ""
+            )
+        ).strip().lower()
+        if reason in _PERGUNTAS_IA_PROVIDER_ERROR_REASONS:
+            explicit_retryable = getattr(current, "provider_error_retryable", None)
+            if not isinstance(explicit_retryable, bool):
+                explicit_retryable = getattr(current, "retryable", None)
+            retryable = (
+                explicit_retryable
+                if isinstance(explicit_retryable, bool)
+                else reason in _PERGUNTAS_IA_PROVIDER_RETRY_REASONS
+            )
+            retry_after_raw = (
+                getattr(current, "provider_error_retry_after", None)
+                if hasattr(current, "provider_error_retry_after")
+                else getattr(current, "retry_after", 0)
+            )
+            try:
+                retry_after = min(86400, max(0, int(retry_after_raw or 0)))
+            except (TypeError, ValueError, OverflowError):
+                retry_after = 0
+            provider_contract = {
+                "reason": reason,
+                "retryable": bool(retryable),
+                "retry_after": retry_after,
+            }
+            break
+        current = current.__cause__ or current.__context__
+
     cause = exc.__cause__
-    failure = (
-        cause
-        if isinstance(cause, PerguntasIAProviderIndisponivel)
-        else PerguntasIARespostaIndisponivel(
+    if provider_contract:
+        failure = (
+            cause
+            if isinstance(cause, PerguntasIAProviderIndisponivel)
+            else PerguntasIAProviderIndisponivel(
+                "O provedor de IA nao concluiu o turno unificado.",
+                reason=provider_contract["reason"],
+                retryable=provider_contract["retryable"],
+                retry_after=provider_contract["retry_after"],
+            )
+        )
+        failure.reason = provider_contract["reason"]
+        failure.component = "ai_provider"
+        failure.retryable = provider_contract["retryable"]
+        failure.retry_after = provider_contract["retry_after"]
+    else:
+        failure = PerguntasIARespostaIndisponivel(
             f"Agente unificado nao gerou resposta valida ({exc.code})."
         )
-    )
     failure.unified_error_code = error_code
     failure.unified_error_round = error_round
     failure.unified_repair_type = repair_type

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from fastapi import HTTPException
 
 from backend.modules.perguntas_pos_venda.ai import execution as agent_execution
 from backend.modules.perguntas_pos_venda.ai import inputs as agent_inputs
@@ -759,6 +760,42 @@ def test_orchestration_provider_timeout_has_typed_operational_result(monkeypatch
         })
 
     assert captured.value.reason == "provider_timeout"
+    assert captured.value.component == "ai_provider"
+    assert captured.value.retryable is True
+    assert captured.value.retry_after == 0
+    assert captured.value.unified_error_code == "turn_execution_failed"
+
+
+def test_structured_provider_auth_failure_crosses_unified_boundary_as_terminal() -> None:
+    provider_error = HTTPException(status_code=503, detail="provider unavailable")
+    provider_error.provider_error_component = "ai_provider"
+    provider_error.provider_error_reason = "codex_authentication_required"
+    provider_error.provider_error_retryable = False
+    provider_error.provider_error_retry_after = 0
+
+    def replay_boundary() -> None:
+        try:
+            raise provider_error
+        except HTTPException as cause:
+            try:
+                raise agent_execution.UnifiedResponseAgentOperationalError(
+                    "turn_execution_failed",
+                    "unified turn failed",
+                ) from cause
+            except agent_execution.UnifiedResponseAgentOperationalError as unified_error:
+                agent_execution._perguntas_ia_repassar_falha_unificada(
+                    unified_error,
+                    SimpleNamespace(unified_research_rounds=0),
+                )
+
+    with pytest.raises(agent_runtime.PerguntasIAProviderIndisponivel) as captured:
+        replay_boundary()
+
+    assert captured.value.reason == "codex_authentication_required"
+    assert captured.value.component == "ai_provider"
+    assert captured.value.retryable is False
+    assert captured.value.retry_after == 0
+    assert captured.value.unified_error_code == "turn_execution_failed"
 
 
 def test_public_answer_with_four_sentences_is_preserved_without_answer_validator(monkeypatch) -> None:

@@ -296,9 +296,57 @@ def test_codex_cleans_local_images_when_turn_fails(
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail == "Codex indisponivel para gerar a resposta."
+    assert exc_info.value.provider_error_component == "ai_provider"
+    assert exc_info.value.provider_error_reason == "provider_turn_failed"
+    assert exc_info.value.provider_error_retryable is True
+    assert exc_info.value.provider_error_retry_after == 0
     assert str(captured["path"]) not in exc_info.value.detail
     assert not captured["path"].exists()
     assert not captured["path"].parent.exists()
+
+
+def test_codex_missing_authentication_is_a_terminal_provider_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(console_execution, "enabled", lambda: True)
+    monkeypatch.setattr(console_execution, "sdk_installed", lambda: True)
+    monkeypatch.setattr(console_execution, "auth_detected", lambda: False)
+
+    with pytest.raises(HTTPException) as exc_info:
+        ia_providers._chamar_codex_chat_com_thread(
+            IAChatRequest(message="Pergunta", model="codex:gpt-5.6-sol"),
+            "tenant-test",
+        )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.provider_error_component == "ai_provider"
+    assert exc_info.value.provider_error_reason == "codex_authentication_required"
+    assert exc_info.value.provider_error_retryable is False
+    assert exc_info.value.provider_error_retry_after == 0
+
+
+def test_codex_timeout_is_a_retryable_provider_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _Thread:
+        id = "thread-timeout"
+
+        def run(self, _input: object, **_kwargs: object):
+            raise TimeoutError("synthetic timeout")
+
+    _install_codex_runtime(monkeypatch, tmp_path, _Thread())
+
+    with pytest.raises(HTTPException) as exc_info:
+        ia_providers._chamar_codex_chat_com_thread(
+            IAChatRequest(message="Pergunta", model="codex:gpt-5.6-sol"),
+            "tenant-test",
+        )
+
+    assert exc_info.value.provider_error_component == "ai_provider"
+    assert exc_info.value.provider_error_reason == "provider_timeout"
+    assert exc_info.value.provider_error_retryable is True
+    assert exc_info.value.provider_error_retry_after == 0
 
 
 def test_codex_scavenger_removes_only_stale_scoped_generated_directories(tmp_path: Path) -> None:

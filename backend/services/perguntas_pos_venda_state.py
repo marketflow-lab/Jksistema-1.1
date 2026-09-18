@@ -441,11 +441,24 @@ class PerguntasIAClassificacaoInconclusiva(PerguntasIARespostaIndisponivel):
 
 
 class PerguntasIAProviderIndisponivel(PerguntasIARespostaIndisponivel):
-    """Falha tecnica transitória do provedor que pode consumir retry operacional."""
+    """Falha tecnica tipada do provedor, transitória ou terminal."""
 
-    def __init__(self, message: str, *, reason: str = "provider_unavailable"):
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str = "provider_unavailable",
+        retryable: Optional[bool] = None,
+        retry_after: int = 0,
+    ):
         super().__init__(message)
         self.reason = str(reason or "provider_unavailable")
+        self.component = "ai_provider"
+        self.retryable = retryable if isinstance(retryable, bool) else None
+        try:
+            self.retry_after = min(86400, max(0, int(retry_after or 0)))
+        except (TypeError, ValueError, OverflowError):
+            self.retry_after = 0
 
 
 class PerguntasIASegurancaBloqueada(PerguntasIARespostaIndisponivel):

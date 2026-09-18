@@ -172,16 +172,32 @@
         }
         return false;
     }
-    function generationDenial(response, question) {
-        const denial = { status: response.status,
-            scope: response.headers.get('X-JK-Error-Scope') || (response.status === 401 ? 'session' : 'resource'),
-            code: response.headers.get('X-JK-Error-Code'),
-            component: response.headers.get('X-JK-Error-Component') || '',
-            reason: response.headers.get('X-JK-Error-Reason') || ''
+    function generationDenial(response, question, payload = {}) {
+        const body = payload && typeof payload === 'object' ? payload : {};
+        const detail = body.detail && typeof body.detail === 'object' ? body.detail : {};
+        const header = name => response.headers.get(name) || '';
+        const retryHeader = header('X-JK-Retryable');
+        const retryValue = retryHeader || (body.retryable ?? detail.retryable ?? false);
+        const denial = {
+            ...body,
+            ...detail,
+            status_code: response.status,
+            scope: header('X-JK-Error-Scope') || body.error_scope || detail.error_scope || (response.status === 401 ? 'session' : 'resource'),
+            code: header('X-JK-Error-Code') || body.error_code || detail.error_code || body.code || detail.code || '',
+            component: header('X-JK-Error-Component') || body.error_component || detail.error_component || '',
+            reason: header('X-JK-Error-Reason') || body.error_reason || detail.error_reason || '',
+            retryable: retryValue === true || retryValue === 1 || String(retryValue).trim().toLowerCase() === 'true',
+            retry_after: Math.max(0, Number(header('Retry-After') || body.retry_after || detail.retry_after || 0) || 0)
         };
-        if (denial.component === 'session') { clear(); return true; }
-        if (denial.component === 'store') { revokeStore(String(question?.store_id || '')); return true; }
-        return handleDenial(denial, { store_id: question?.store_id }, question);
+        const failure = typeof root.JKPerguntasClassificarFalhaGeracao === 'function'
+            ? root.JKPerguntasClassificarFalhaGeracao(denial)
+            : { ...denial, kind: denial.scope === 'session' ? 'session' : denial.scope === 'store' ? 'store' : 'generic' };
+        if (failure.kind === 'session') { clear(); return failure; }
+        if (failure.kind === 'store') { revokeStore(String(question?.store_id || '')); return failure; }
+        if (failure.kind === 'context' && failure.component) {
+            rejectContext(question, failure.component, [403, 404].includes(failure.status), failure.reason || '');
+        }
+        return failure;
     }
     function revokeStore(id) {
         if (!id) return;
@@ -586,11 +602,12 @@
     function rejectContext(question, name, blocked = false, reason = '') {
         if (!question) return;
         const allowed = new Set(['session', 'store', 'identity', 'question', 'history', 'item', 'context', 'context_hub']);
-        name = allowed.has(name) ? name : 'context';
+        if (!allowed.has(name)) return;
         if (name === 'session') { clear(); return; }
         if (name === 'store') { revokeStore(String(question.store_id || '')); return; }
         if (name === 'identity') blocked = true;
-        const status = blocked ? 'blocked' : 'unavailable';
+        const expiredContext = name === 'context' && ['context_expired', 'context_superseded'].includes(reason);
+        const status = blocked ? 'blocked' : expiredContext ? 'stale' : 'unavailable';
         const resourceStatus = name === 'identity' ? 'unavailable' : status;
         question._generationComponent = name;
         question._generationReason = reason;

@@ -1312,7 +1312,12 @@ def test_transient_customer_reply_failure_is_retried_instead_of_failed(tmp_path,
     provider_failure = perguntas_state.PerguntasIAProviderIndisponivel(
         "Provedor temporariamente indisponivel.",
         reason="provider_http_429",
+        retryable=True,
+        retry_after=12,
     )
+    provider_failure.unified_error_code = "turn_execution_failed"
+    provider_failure.unified_error_round = 1
+    provider_failure.unified_repair_type = "none"
     with patch.object(orchestrator, "_load_question_context", side_effect=provider_failure):
         orchestrator._run_job("cliente", created["job_id"])
 
@@ -1320,6 +1325,278 @@ def test_transient_customer_reply_failure_is_retried_instead_of_failed(tmp_path,
     assert waiting["status"] == "waiting_retry"
     assert waiting["retry_count"] == 1
     assert waiting["retry_reason"] == "provider_http_429"
+    assert waiting["error_code"] == "turn_execution_failed"
+    assert waiting["error_component"] == "ai_provider"
+    assert waiting["error_reason"] == "provider_http_429"
+    assert waiting["retryable"] is True
+    assert waiting["retry_after"] == 12
+    stored_waiting = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", created["job_id"]
+    )
+    assert stored_waiting["next_retry_delay_seconds"] == 12
+
+
+def test_retry_after_beyond_remaining_deadline_finishes_without_waiting(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    scheduled_retries = []
+    monkeypatch.setattr(orchestrator, "_schedule_retry_timer", scheduled_retries.append)
+    with patch.object(orchestrator, "_schedule", return_value=True), patch.object(
+        orchestrator.codex_agent_runtime, "resolve_guidance", return_value=[]
+    ):
+        created = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Pecas",
+            subject_key="Q-RETRY-DEADLINE",
+            request={"pergunta": {"id": "Q-RETRY-DEADLINE", "text": "Serve?"}},
+        )
+    stored = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", created["job_id"]
+    )
+    deadline = time.time() + 30
+    stored["deadline_at_epoch"] = deadline
+    stored["execution_deadline_epoch"] = deadline
+    codex_assistant_storage.codex_assistant_customer_reply_job_save(
+        str(tmp_path), "cliente", stored
+    )
+    provider_failure = perguntas_state.PerguntasIAProviderIndisponivel(
+        "rate limited",
+        reason="provider_http_429",
+        retryable=True,
+        retry_after=60,
+    )
+    provider_failure.unified_error_code = "turn_execution_failed"
+    provider_failure.unified_error_round = 1
+    provider_failure.unified_repair_type = "none"
+
+    with patch.object(orchestrator, "_load_question_context", side_effect=provider_failure):
+        orchestrator._run_job("cliente", created["job_id"])
+
+    completed = orchestrator.get_job("cliente", created["job_id"])
+    persisted = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", created["job_id"]
+    )
+    assert completed["status"] == "completed"
+    assert completed["queued"] is False
+    assert completed["completion_reason"] == "operational_retry_exhausted"
+    assert completed["next_retry_at_epoch"] == 0.0
+    assert completed["error_code"] == "turn_execution_failed"
+    assert completed["error_component"] == "ai_provider"
+    assert completed["error_reason"] == "provider_http_429"
+    assert completed["retryable"] is True
+    assert completed["retry_after"] == 60
+    assert "next_retry_delay_seconds" not in persisted
+    assert scheduled_retries == []
+
+
+def test_terminal_provider_auth_failure_finishes_without_retry(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    scheduled_retries = []
+    monkeypatch.setattr(orchestrator, "_schedule_retry_timer", scheduled_retries.append)
+    with patch.object(orchestrator, "_schedule", return_value=True), patch.object(
+        orchestrator.codex_agent_runtime, "resolve_guidance", return_value=[]
+    ):
+        created = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Pecas",
+            subject_key="Q-AUTH-TERMINAL",
+            request={"pergunta": {"id": "Q-AUTH-TERMINAL", "text": "Serve?"}},
+        )
+    failure = perguntas_state.PerguntasIAProviderIndisponivel(
+        "Autenticacao ausente.",
+        reason="codex_authentication_required",
+        retryable=False,
+    )
+    failure.unified_error_code = "turn_execution_failed"
+    failure.unified_error_round = 1
+    failure.unified_repair_type = "none"
+
+    with patch.object(orchestrator, "_load_question_context", side_effect=failure):
+        orchestrator._run_job("cliente", created["job_id"])
+
+    completed = orchestrator.get_job("cliente", created["job_id"])
+    assert completed["status"] == "completed"
+    assert completed["completion_reason"] == "unified_agent_unavailable"
+    assert completed["retry_count"] == 0
+    assert completed["blocked_without_draft"] is True
+    assert completed["error_code"] == "turn_execution_failed"
+    assert completed["error_component"] == "ai_provider"
+    assert completed["error_reason"] == "codex_authentication_required"
+    assert completed["retryable"] is False
+    assert completed["retry_after"] == 0
+    assert scheduled_retries == []
+
+
+def test_provider_failure_metadata_allowlists_public_reason():
+    metadata = orchestrator._failure_metadata({
+        "error_code": "turn_execution_failed",
+        "error_component": "ai_provider",
+        "error_reason": "secret_provider_detail",
+        "retryable": False,
+        "retry_after": "invalid",
+    })
+
+    assert metadata == {
+        "error_code": "turn_execution_failed",
+        "error_round": 0,
+        "error_repair": "none",
+        "error_component": "ai_provider",
+        "error_reason": "provider_turn_failed",
+        "retryable": False,
+        "retry_after": 0,
+    }
+
+
+def test_provider_retry_metadata_is_cleared_when_next_attempt_succeeds(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    monkeypatch.setattr(orchestrator, "_schedule_retry_timer", lambda _job: None)
+    with patch.object(orchestrator, "_schedule", return_value=True), patch.object(
+        orchestrator.codex_agent_runtime, "resolve_guidance", return_value=[]
+    ):
+        created = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Pecas",
+            subject_key="Q-RETRY-SUCCESS-METADATA",
+            request={"pergunta": {"id": "Q-RETRY-SUCCESS-METADATA", "text": "Serve?"}},
+        )
+    failure = perguntas_state.PerguntasIAProviderIndisponivel(
+        "rate limited",
+        reason="provider_http_429",
+        retryable=True,
+        retry_after=12,
+    )
+    failure.unified_error_code = "turn_execution_failed"
+    failure.unified_error_round = 1
+    failure.unified_repair_type = "none"
+    with patch.object(orchestrator, "_load_question_context", side_effect=failure):
+        orchestrator._run_job("cliente", created["job_id"])
+
+    waiting = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", created["job_id"]
+    )
+    assert waiting["error_reason"] == "provider_http_429"
+    waiting.update({
+        "status": "queued",
+        "agent_state": "pesquisando",
+        "lease_owner": "",
+        "lease_expires_ts": 0.0,
+        "next_retry_at_epoch": 0.0,
+    })
+    codex_assistant_storage.codex_assistant_customer_reply_job_save(
+        str(tmp_path), "cliente", waiting
+    )
+
+    with patch.object(
+        orchestrator,
+        "_load_question_context",
+        return_value=("Serve conforme a aplicacao confirmada.", _official_context()),
+    ):
+        orchestrator._run_job("cliente", created["job_id"])
+
+    completed = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", created["job_id"]
+    )
+    assert completed["status"] == "completed"
+    assert completed["completion_reason"] == "evidence_confirmed"
+    for key in orchestrator.FAILURE_METADATA_KEYS:
+        assert key not in completed
+        assert key not in completed["result"]
+
+
+def test_provider_retry_metadata_does_not_contaminate_next_invalid_output(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(orchestrator, "_RECOVERY_STARTED", True)
+    monkeypatch.setattr(orchestrator, "_schedule_retry_timer", lambda _job: None)
+    with patch.object(orchestrator, "_schedule", return_value=True), patch.object(
+        orchestrator.codex_agent_runtime, "resolve_guidance", return_value=[]
+    ):
+        created = orchestrator.create_job(
+            client_id="cliente",
+            task_type="question",
+            store="JK Pecas",
+            subject_key="Q-RETRY-INVALID-METADATA",
+            request={"pergunta": {"id": "Q-RETRY-INVALID-METADATA", "text": "Serve?"}},
+        )
+    provider_failure = perguntas_state.PerguntasIAProviderIndisponivel(
+        "rate limited",
+        reason="provider_http_429",
+        retryable=True,
+        retry_after=12,
+    )
+    provider_failure.unified_error_code = "turn_execution_failed"
+    provider_failure.unified_error_round = 1
+    provider_failure.unified_repair_type = "none"
+    with patch.object(orchestrator, "_load_question_context", side_effect=provider_failure):
+        orchestrator._run_job("cliente", created["job_id"])
+
+    waiting = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", created["job_id"]
+    )
+    waiting.update({
+        "status": "queued",
+        "agent_state": "pesquisando",
+        "lease_owner": "",
+        "lease_expires_ts": 0.0,
+        "next_retry_at_epoch": 0.0,
+    })
+    codex_assistant_storage.codex_assistant_customer_reply_job_save(
+        str(tmp_path), "cliente", waiting
+    )
+    invalid_output = perguntas_state.PerguntasIARespostaIndisponivel("invalid output")
+    invalid_output.unified_error_code = "invalid_output"
+    invalid_output.unified_error_round = 1
+    invalid_output.unified_repair_type = "structured_output"
+    with patch.object(orchestrator, "_load_question_context", side_effect=invalid_output):
+        orchestrator._run_job("cliente", created["job_id"])
+
+    completed = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        str(tmp_path), "cliente", created["job_id"]
+    )
+    assert completed["result"]["error_code"] == "invalid_output"
+    assert completed["result"]["error_round"] == 1
+    assert completed["result"]["error_repair"] == "structured_output"
+    for key in ("error_component", "error_reason", "retryable", "retry_after"):
+        assert key not in completed
+        assert key not in completed["result"]
+
+
+def test_retry_exhaustion_preserves_current_provider_metadata(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    job = {
+        "job_id": "job-retry-limit-metadata",
+        "profile": orchestrator.PROFILE,
+        "client_id": "cliente",
+        "task_type": "public_question",
+        "subject_key": "Q-RETRY-LIMIT-METADATA",
+        "store": "Loja",
+        "status": "waiting_retry",
+        "retry_kind": "operational",
+        "error_code": "turn_execution_failed",
+        "error_round": 1,
+        "error_repair": "none",
+        "error_component": "ai_provider",
+        "error_reason": "provider_http_429",
+        "retryable": True,
+        "retry_after": 12,
+        "lease_owner": "",
+        "lease_generation": 0,
+    }
+    codex_assistant_storage.codex_assistant_customer_reply_job_save(
+        str(tmp_path), "cliente", job
+    )
+
+    completed = orchestrator._complete_retry_limit(job)
+
+    assert completed["result"]["error_code"] == "turn_execution_failed"
+    assert completed["result"]["error_component"] == "ai_provider"
+    assert completed["result"]["error_reason"] == "provider_http_429"
+    assert completed["result"]["retryable"] is True
+    assert completed["result"]["retry_after"] == 12
 
 
 def test_evoque_inconclusive_completes_once_with_contextual_fallback(tmp_path, monkeypatch):

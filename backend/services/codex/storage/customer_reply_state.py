@@ -87,6 +87,17 @@ _CUSTOMER_REPLY_DURABLE_FIELDS = frozenset({
 })
 
 
+_CUSTOMER_REPLY_FAILURE_METADATA_FIELDS = frozenset({
+    "error_code",
+    "error_round",
+    "error_repair",
+    "error_component",
+    "error_reason",
+    "retryable",
+    "retry_after",
+})
+
+
 _CUSTOMER_REPLY_SCOPE_ID_FIELDS = frozenset({
     "question_id", "item_id", "buyer_id", "pack_id", "order_id",
 })
@@ -518,6 +529,9 @@ def _customer_reply_transient_put(db_path: str, payload: dict[str, Any], transie
             return
         previous = _CUSTOMER_REPLY_TRANSIENT.get(key)
         merged = dict(previous[1]) if previous and previous[0] > time.time() else {}
+        for failure_key in _CUSTOMER_REPLY_FAILURE_METADATA_FIELDS:
+            if failure_key not in payload:
+                merged.pop(failure_key, None)
         for durable_key in ("vehicle_identity", "vehicle_identity_capture_status"):
             if durable_key in payload and durable_key not in transient:
                 merged.pop(durable_key, None)

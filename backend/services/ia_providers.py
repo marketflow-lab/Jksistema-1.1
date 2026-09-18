@@ -64,6 +64,91 @@ _CODEX_LOCAL_IMAGE_SUFFIXES = {
 }
 _CODEX_LOCAL_IMAGE_DIR_PREFIX = ".jk-codex-input-"
 _CODEX_LOCAL_IMAGE_ORPHAN_TTL_SECONDS = 60 * 60
+_CODEX_PROVIDER_ERROR_REASONS = frozenset({
+    "codex_authentication_required",
+    "codex_runtime_disabled",
+    "codex_dependency_missing",
+    "codex_runtime_invalid",
+    "provider_timeout",
+    "provider_connection",
+    "provider_http_429",
+    "provider_http_5xx",
+    "provider_turn_failed",
+    "provider_empty_response",
+})
+
+
+def _codex_provider_http_error(
+    status_code: int,
+    detail: str,
+    *,
+    reason: str,
+    retryable: bool,
+    retry_after: int = 0,
+) -> HTTPException:
+    """Create a bounded provider failure without exposing the original exception."""
+
+    safe_reason = str(reason or "").strip().lower()
+    if safe_reason not in _CODEX_PROVIDER_ERROR_REASONS:
+        safe_reason = "provider_turn_failed"
+    try:
+        safe_retry_after = min(86400, max(0, int(retry_after or 0)))
+    except (TypeError, ValueError, OverflowError):
+        safe_retry_after = 0
+    error = HTTPException(status_code=int(status_code), detail=str(detail or ""))
+    error.provider_error_component = "ai_provider"
+    error.provider_error_reason = safe_reason
+    error.provider_error_retryable = bool(retryable)
+    error.provider_error_retry_after = safe_retry_after
+    return error
+
+
+def _codex_provider_retry_after(exc: BaseException) -> int:
+    headers = getattr(exc, "headers", None)
+    if not isinstance(headers, dict):
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+    if not isinstance(headers, dict):
+        return 0
+    raw = next(
+        (value for key, value in headers.items() if str(key).strip().lower() == "retry-after"),
+        0,
+    )
+    try:
+        return min(86400, max(0, int(raw or 0)))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _codex_provider_exception_contract(exc: BaseException) -> tuple[str, bool, int]:
+    if isinstance(exc, (TimeoutError, FuturesTimeoutError, requests.exceptions.Timeout)):
+        return "provider_timeout", True, 0
+    if isinstance(
+        exc,
+        (ConnectionError, BrokenPipeError, requests.exceptions.ConnectionError),
+    ):
+        return "provider_connection", True, 0
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None:
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    try:
+        normalized_status = int(status_code or 0)
+    except (TypeError, ValueError, OverflowError):
+        normalized_status = 0
+    retry_after = _codex_provider_retry_after(exc)
+    if normalized_status == 429:
+        return "provider_http_429", True, retry_after
+    if 500 <= normalized_status <= 599:
+        return "provider_http_5xx", True, retry_after
+    if normalized_status in {401, 403}:
+        return "codex_authentication_required", False, 0
+    if 400 <= normalized_status <= 499:
+        return "codex_runtime_invalid", False, 0
+    if isinstance(exc, (ImportError, ModuleNotFoundError)):
+        return "codex_dependency_missing", False, 0
+    if isinstance(exc, (FileNotFoundError, PermissionError)):
+        return "codex_runtime_invalid", False, 0
+    return "provider_turn_failed", True, retry_after
 
 
 def _codex_path_is_link(path: Path) -> bool:
@@ -982,11 +1067,26 @@ def _chamar_codex_chat_com_thread(
     from backend.services.codex.console import telemetry as console_telemetry
 
     if not console_execution.enabled():
-        raise HTTPException(status_code=503, detail="Codex esta desabilitado neste runtime.")
+        raise _codex_provider_http_error(
+            503,
+            "Codex esta desabilitado neste runtime.",
+            reason="codex_runtime_disabled",
+            retryable=False,
+        )
     if not console_execution.sdk_installed():
-        raise HTTPException(status_code=503, detail="Dependencia do Codex nao instalada neste runtime.")
+        raise _codex_provider_http_error(
+            503,
+            "Dependencia do Codex nao instalada neste runtime.",
+            reason="codex_dependency_missing",
+            retryable=False,
+        )
     if not console_execution.auth_detected():
-        raise HTTPException(status_code=503, detail="Autenticacao local do Codex nao encontrada.")
+        raise _codex_provider_http_error(
+            503,
+            "Autenticacao local do Codex nao encontrada.",
+            reason="codex_authentication_required",
+            retryable=False,
+        )
 
     mensagem = _ia_chat_mensagem_contextual(payload)
     if not mensagem:
@@ -1116,19 +1216,45 @@ def _chamar_codex_chat_com_thread(
                                 _CODEX_PERSISTENT_TURNS.pop(registry_key, None)
                 else:
                     resultado = thread.run(turn_input, **turn_kwargs)
-    except HTTPException:
-        raise
+    except HTTPException as exc:
+        if str(getattr(exc, "provider_error_reason", "") or "") in _CODEX_PROVIDER_ERROR_REASONS:
+            raise
+        reason, retryable, retry_after = _codex_provider_exception_contract(exc)
+        raise _codex_provider_http_error(
+            int(getattr(exc, "status_code", 503) or 503),
+            str(getattr(exc, "detail", "") or "Codex indisponivel para gerar a resposta."),
+            reason=reason,
+            retryable=retryable,
+            retry_after=retry_after,
+        ) from exc
     except Exception as exc:
         if logger is not None:
             logger.warning("[IA CODEX] Falha ao gerar resposta (%s).", type(exc).__name__)
-        raise HTTPException(status_code=503, detail="Codex indisponivel para gerar a resposta.") from exc
+        reason, retryable, retry_after = _codex_provider_exception_contract(exc)
+        raise _codex_provider_http_error(
+            503,
+            "Codex indisponivel para gerar a resposta.",
+            reason=reason,
+            retryable=retryable,
+            retry_after=retry_after,
+        ) from exc
 
     status = str(getattr(getattr(resultado, "status", None), "value", getattr(resultado, "status", "")) or "")
     if status == "failed":
-        raise HTTPException(status_code=503, detail="Codex falhou ao gerar a resposta.")
+        raise _codex_provider_http_error(
+            503,
+            "Codex falhou ao gerar a resposta.",
+            reason="provider_turn_failed",
+            retryable=True,
+        )
     resposta = getattr(resultado, "final_response", "")
     if not isinstance(resposta, str) or not resposta.strip():
-        raise HTTPException(status_code=502, detail="Codex concluiu sem resposta final.")
+        raise _codex_provider_http_error(
+            502,
+            "Codex concluiu sem resposta final.",
+            reason="provider_empty_response",
+            retryable=True,
+        )
     return resposta, str(getattr(thread, "id", "") or resolved_thread_id or "")
 
 

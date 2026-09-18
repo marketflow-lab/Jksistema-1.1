@@ -15,7 +15,8 @@ assert.match(source, /next_retry_at_epoch|next_retry_in_seconds|Nova tentativa/)
 assert.match(source, /\/api\/mercadolivre\/assistant\/jobs\/\$\{encodeURIComponent\(jobId\)\}\/cancel/);
 assert.match(source, /question-ai-cancel-btn[\s\S]*Cancelar pesquisa/);
 assert.match(source, /cancelarPesquisaAtendimentoCodex\(questionKey\)/);
-assert.match(html, /perguntas\.js\?v=20260914-context-errors-v1/);
+assert.match(html, /perguntas\.js\?v=20260918-ai-error-contract-v1/);
+assert.match(html, /loading\.js\?v=20260918-ai-error-contract-v1/);
 assert.doesNotMatch(source, /A pesquisa terminou sem rascunho/);
 assert.match(source, /Rascunho gerado com as informacoes disponiveis/);
 assert.match(source, /const resposta = String\(result\.resposta \?\? data\.resposta \?\? ''\);/);
@@ -103,6 +104,37 @@ const stateEnd = source.indexOf("window.aguardarJobAtendimentoCodex", stateStart
 assert(stateStart >= 0 && stateEnd > stateStart, 'helpers persistentes do job nao encontrados');
 vm.runInContext(source.slice(stateStart, stateEnd), context);
 
+assert.strictEqual(context.classificarFalhaGeracaoAtendimento({ error_reason: 'codex_authentication_required' }).kind, 'auth');
+assert.strictEqual(context.classificarFalhaGeracaoAtendimento({ error_reason: 'codex_runtime_disabled' }).kind, 'runtime');
+assert.strictEqual(context.classificarFalhaGeracaoAtendimento({ error_reason: 'codex_dependency_missing' }).kind, 'runtime');
+assert.strictEqual(context.classificarFalhaGeracaoAtendimento({ error_reason: 'codex_runtime_invalid' }).kind, 'runtime');
+for (const reason of ['provider_timeout', 'provider_connection', 'provider_http_429', 'provider_http_5xx', 'provider_turn_failed', 'provider_empty_response']) {
+    assert.strictEqual(context.classificarFalhaGeracaoAtendimento({ error_reason: reason }).kind, 'transient');
+}
+assert.strictEqual(context.classificarFalhaGeracaoAtendimento({ error_reason: 'codex_runtime_unknown' }).kind, 'generic');
+assert.strictEqual(context.classificarFalhaGeracaoAtendimento({ error_reason: 'provider_unknown' }).kind, 'generic');
+assert.strictEqual(context.classificarFalhaGeracaoAtendimento({
+    error_code: 'generation_context_unavailable', error_reason: 'context_expired'
+}).kind, 'generic', 'contexto sem componente explícito deve permanecer genérico');
+assert.strictEqual(context.classificarFalhaGeracaoAtendimento({
+    error_code: 'generation_context_unavailable', error_component: 'context', error_reason: 'context_expired'
+}).kind, 'context');
+assert.strictEqual(context.classificarFalhaGeracaoAtendimento({
+    completion_reason: 'generation_context_unavailable', error_component: 'history'
+}).kind, 'context');
+assert.strictEqual(context.classificarFalhaGeracaoAtendimento({
+    status_code: 403, error_component: 'context', error_reason: 'context_expired'
+}).kind, 'generic', 'status HTTP e componente sem contrato não provam falha de contexto');
+assert.strictEqual(context.normalizarFalhaGeracaoAtendimento({ retryable: 'false' }).retryable, false);
+assert.strictEqual(context.normalizarFalhaGeracaoAtendimento({ retryable: 'true' }).retryable, true);
+const preservedContextState = {
+    _generationError: 'anterior', _generationComponent: 'context_hub', _generationReason: 'anterior',
+    _contextState: 'stale', _contextHubState: 'partial'
+};
+context.limparFalhaGeracaoAtendimento(preservedContextState);
+assert.strictEqual(preservedContextState._contextState, 'stale');
+assert.strictEqual(preservedContextState._contextHubState, 'partial');
+
 (async () => {
     currentCard = makeCard('Loja A::Q-BLOCKED');
     currentCard.elements.textarea.value = 'Rascunho do operador preservado';
@@ -111,13 +143,65 @@ vm.runInContext(source.slice(stateStart, stateEnd), context);
         result: { resposta: '', blocked_without_draft: true, warnings: ['Histórico indisponível. Tente novamente.'] }
     });
     assert.strictEqual(currentCard.elements.textarea.value, 'Rascunho do operador preservado');
-    assert.match(currentCard.elements.status.textContent, /Histórico indisponível/);
+    assert.strictEqual(currentCard.elements.status.textContent, 'Não foi possível gerar a sugestão. Tente novamente.');
+    assert.strictEqual(rejectedContext, null, 'falha sem componente não pode virar erro de contexto');
+
+    currentCard = makeCard('Loja A::Q-AUTH');
+    currentCard.elements.textarea.value = 'Rascunho preservado sem autenticação do Codex';
+    context.state.perguntas = [{ question_key: 'Loja A::Q-AUTH' }];
+    context.chavePerguntaAtendimento = (question) => question.question_key;
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-AUTH', {
+        blocked_without_draft: true,
+        error_reason: 'codex_authentication_required',
+        result: { resposta: '', blocked_without_draft: true }
+    });
+    assert.strictEqual(currentCard.elements.textarea.value, 'Rascunho preservado sem autenticação do Codex');
+    assert.strictEqual(currentCard.elements.status.textContent, 'A autenticação local da IA expirou. Faça login no Codex e gere a sugestão novamente.');
+    assert.strictEqual(rejectedContext, null);
+
+    currentCard = makeCard('Loja A::Q-RUNTIME');
+    currentCard.elements.textarea.value = 'Rascunho preservado sem runtime';
+    context.state.perguntas = [{ question_key: 'Loja A::Q-RUNTIME' }];
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-RUNTIME', {
+        blocked_without_draft: true,
+        error_reason: 'codex_dependency_missing',
+        result: { resposta: '', blocked_without_draft: true }
+    });
+    assert.strictEqual(currentCard.elements.textarea.value, 'Rascunho preservado sem runtime');
+    assert.strictEqual(currentCard.elements.status.textContent, 'A IA local está indisponível neste computador. Verifique a configuração e tente novamente.');
+    assert.strictEqual(rejectedContext, null);
+
+    currentCard = makeCard('Loja A::Q-TRANSIENT');
+    currentCard.elements.textarea.value = 'Rascunho preservado na falha transitória';
+    context.state.perguntas = [{ question_key: 'Loja A::Q-TRANSIENT' }];
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-TRANSIENT', {
+        blocked_without_draft: true,
+        error_reason: 'provider_timeout',
+        result: { resposta: '', blocked_without_draft: true }
+    });
+    assert.strictEqual(currentCard.elements.textarea.value, 'Rascunho preservado na falha transitória');
+    assert.strictEqual(currentCard.elements.status.textContent, 'A IA está temporariamente indisponível. Tente novamente.');
+    assert.strictEqual(rejectedContext, null);
+
+    currentCard = makeCard('Loja A::Q-CONTEXT-EXPIRED');
+    context.state.perguntas = [{ question_key: 'Loja A::Q-CONTEXT-EXPIRED' }];
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-CONTEXT-EXPIRED', {
+        blocked_without_draft: true,
+        error_code: 'generation_context_unavailable',
+        error_component: 'context',
+        error_reason: 'context_expired',
+        result: { resposta: '', blocked_without_draft: true }
+    });
+    assert.deepStrictEqual(rejectedContext, { component: 'context', reason: 'context_expired' });
+
+    rejectedContext = null;
     currentCard = makeCard('Loja A::Q-CONTEXT-HUB');
     currentCard.elements.textarea.value = 'Rascunho preservado com Obsidian indisponível';
     context.state.perguntas = [{ key: 'fixture' }];
     context.chavePerguntaAtendimento = () => 'Loja A::Q-CONTEXT-HUB';
     context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-CONTEXT-HUB', {
         blocked_without_draft: true,
+        error_code: 'generation_context_unavailable',
         error_component: 'context_hub',
         error_reason: 'training_index_initializing',
         result: { resposta: '', blocked_without_draft: true }
@@ -351,7 +435,7 @@ vm.runInContext(source.slice(stateStart, stateEnd), context);
     );
     assert.strictEqual(failedGets, 1, 'status failed deve encerrar o polling na primeira leitura');
     assert.strictEqual(context.obterEstadoJobAtendimentoCodex('Loja A::Q-FAILED'), null);
-    assert.strictEqual(currentCard.elements.status.textContent, 'Falha definitiva da fixture.');
+    assert.strictEqual(currentCard.elements.status.textContent, 'Não foi possível gerar a sugestão. Tente novamente.');
     assert.strictEqual(currentCard.elements.status.className, 'error');
 
     currentCard = makeCard('Loja A::Q-GONE');
@@ -367,6 +451,7 @@ vm.runInContext(source.slice(stateStart, stateEnd), context);
     assert.strictEqual(goneGets, 1, 'HTTP 410 deve encerrar o polling na primeira leitura');
     assert.strictEqual(context.obterEstadoJobAtendimentoCodex('Loja A::Q-GONE'), null);
     assert.strictEqual(currentCard.elements.status.className, 'error');
+    assert.strictEqual(currentCard.elements.status.textContent, 'Não foi possível gerar a sugestão. Tente novamente.');
 
     console.log('Perguntas Codex persistent frontend contract: OK');
 })().catch((error) => {
