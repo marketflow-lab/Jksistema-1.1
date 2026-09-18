@@ -41,6 +41,32 @@ from fastapi.responses import StreamingResponse
 from backend.services import perguntas_pos_venda_store
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.vendas_sync_progress import _corrigir_texto_mojibake
+from backend.services.store_lock_diagnostics import operation_scope
+
+
+def carregar_lojas(client_id):
+    from backend.services.integracoes import ler_lojas
+    return ler_lojas(client_id)
+
+
+_STORE_ENUM_NEXT = {}
+_STORE_ENUM_FAILURES = {}
+_STORE_RETRY_DELAYS = (5, 15, 30)
+
+
+def _stores_temporarily_unavailable(exc):
+    detail = getattr(exc, "detail", None)
+    return isinstance(detail, dict) and (
+        (getattr(exc, "status_code", None) == 409 and detail.get("code") == "stores_busy")
+        or (getattr(exc, "status_code", None) == 503 and detail.get("code") in {
+            "stores_snapshot_initializing", "stores_snapshot_unavailable",
+            "stores_snapshot_credentials_unavailable",
+        })
+    )
+
+
+def _store_retry_delay(attempt, normal):
+    return _STORE_RETRY_DELAYS[attempt - 1] if 1 <= attempt <= 3 else max(60, int(normal))
 
 
 def configure_perguntas_pos_venda_automacao_runtime(runtime_module=None, peers=None):
@@ -327,8 +353,9 @@ def _perguntas_automacao_bg_finalizar(
         if not _PERGUNTAS_AUTOMACAO_CHANGE_TOKEN_RE.fullmatch(change_token_anterior):
             change_token_anterior = ""
 
+        store_wait = bool((resultado or {}).get("_store_read_unavailable"))
         snapshot_completo, question_ids_atuais = _perguntas_automacao_bg_snapshot(resultado)
-        if erro or not snapshot_completo:
+        if erro or store_wait or not snapshot_completo:
             question_ids_finais = question_ids_anteriores
             change_token = change_token_anterior
             new_question_ids = []
@@ -346,7 +373,10 @@ def _perguntas_automacao_bg_finalizar(
         retry_after_seconds = _perguntas_automacao_bg_contagem(
             (resultado or {}).get("_retry_after_seconds")
         )
-        if retry_after_seconds:
+        store_attempt = int(anterior.get("store_read_attempt") or 0) + 1 if store_wait else 0
+        if store_wait:
+            next_delay = _store_retry_delay(store_attempt, intervalo_segundos or 600)
+        elif retry_after_seconds:
             next_delay = max(5, min(int(intervalo_segundos or 600), retry_after_seconds))
         else:
             next_delay = max(60, int(intervalo_segundos or 600))
@@ -373,70 +403,112 @@ def _perguntas_automacao_bg_finalizar(
             "cache_sync_cursor": _perguntas_automacao_bg_contagem(
                 (resultado or {}).get("_cache_sync_cursor")
             ),
+            "store_read_attempt": store_attempt,
         }
+        if store_wait:
+            current = PERGUNTAS_AUTOMACAO_BG_LAST_RESULTS[key]
+            current.update(success=False, question_snapshot_complete=False,
+                           erro="A configuracao das lojas esta sendo atualizada; checagem adiada.")
+            for field in ("enviadas", "novas_pendentes", "deferred"):
+                current[field] = anterior.get(field, 0)
 
 
+@operation_scope("automation")
 def _perguntas_automacao_bg_executar(client_id: str, loja: str, tipo: str, intervalo_segundos: int) -> None:
     key = _perguntas_automacao_bg_key(client_id, loja, tipo)
     if not _perguntas_automacao_bg_marcar_inicio(key, time.time()):
         return
     try:
         if tipo == "pos_venda":
-            sync_context = _perguntas_automacao_pos_venda_preparar_sync(client_id, loja)
             resultado = ml_pos_venda_automacao_poll(loja=loja, max_per_store=2, client_id=client_id)
             if not isinstance(resultado, dict):
                 resultado = {}
-            resultado = _perguntas_automacao_pos_venda_anotar_sync(
-                resultado,
-                client_id=client_id,
-                loja=loja,
-                context=sync_context,
-            )
+            if not resultado.get("disabled"):
+                sync_context = _perguntas_automacao_pos_venda_preparar_sync(client_id, loja)
+                resultado = _perguntas_automacao_pos_venda_anotar_sync(
+                    resultado, client_id=client_id, loja=loja, context=sync_context,
+                )
         else:
             resultado = ml_perguntas_automacao_poll(loja=loja, max_per_store=3, client_id=client_id)
         if not isinstance(resultado, dict):
             resultado = {}
-        logger.info(
-            "[ML PERGUNTAS AUTO BG] tenant=%s loja=%s tipo=%s enviadas=%s pendentes=%s erros=%s",
-            client_id,
-            loja,
-            tipo,
-            len(resultado.get("enviadas") or []),
-            len(resultado.get("novas_pendentes") or []),
-            len(resultado.get("erros") or []),
-        )
         _perguntas_automacao_bg_finalizar(key, intervalo_segundos, resultado=resultado)
     except Exception as exc:
-        logger.exception("[ML PERGUNTAS AUTO BG] Falha tenant=%s loja=%s tipo=%s", client_id, loja, tipo)
-        _perguntas_automacao_bg_finalizar(key, intervalo_segundos, erro=str(getattr(exc, "detail", None) or exc))
+        if _stores_temporarily_unavailable(exc):
+            _perguntas_automacao_bg_finalizar(
+                key, intervalo_segundos, resultado={"_store_read_unavailable": True},
+                erro="Configuracao de lojas temporariamente indisponivel.",
+            )
+        else:
+            logger.warning("[ML PERGUNTAS AUTO BG] evento=checagem status=erro tipo=%s", type(exc).__name__)
+            _perguntas_automacao_bg_finalizar(key, intervalo_segundos, erro="Nao foi possivel concluir a checagem.")
 
 
 def _perguntas_automacao_bg_tick() -> None:
     for client_id in _perguntas_automacao_bg_tenants():
-        configs_lojas = _perguntas_loja_configs_carregar(client_id)
-        for loja_cfg in carregar_lojas(client_id) or []:
+        if time.time() < _STORE_ENUM_NEXT.get(client_id, 0):
+            continue
+        configs_lojas = {}
+        try:
+            configs_lojas = _perguntas_loja_configs_carregar(client_id)
+            stores = carregar_lojas(client_id) or []
+        except Exception as exc:
+            temporary = _stores_temporarily_unavailable(exc)
+            attempt = _STORE_ENUM_FAILURES.get(client_id, 0) + 1
+            _STORE_ENUM_FAILURES[client_id] = attempt
+            intervals = []
+            for name, raw_config in configs_lojas.items():
+                try:
+                    config = _perguntas_loja_config_normalizar(raw_config)
+                    if not config.get("responder_automaticamente"):
+                        continue
+                    interval = max(60, int(float(config.get("intervalo_minutos") or 10) * 60))
+                except Exception:
+                    continue
+                intervals.append(interval)
+                _perguntas_automacao_bg_finalizar(
+                    _perguntas_automacao_bg_key(client_id, name, "perguntas"), interval,
+                    resultado={"_store_read_unavailable": temporary},
+                    erro="Configuracao de lojas indisponivel; checagem incompleta.",
+                )
+            normal = min(intervals, default=60)
+            _STORE_ENUM_NEXT[client_id] = time.time() + (_store_retry_delay(attempt, normal) if temporary else normal)
+            continue
+        _STORE_ENUM_NEXT.pop(client_id, None)
+        _STORE_ENUM_FAILURES.pop(client_id, None)
+        for loja_cfg in stores:
             if not isinstance(loja_cfg, dict):
                 continue
             nome_loja = str(loja_cfg.get("nome") or "").strip()
             if not nome_loja:
                 continue
 
-            config = _perguntas_loja_config_normalizar(configs_lojas.get(nome_loja))
-            if not config.get("responder_automaticamente"):
-                continue
-
-            integracoes = loja_cfg.get("integracoes") or {}
-            ml_cfg = integracoes.get("mercadolivre") if isinstance(integracoes, dict) else {}
-            if not _ml_oauth_status(ml_cfg).get("conectado"):
-                continue
-
-            intervalo_segundos = max(
-                15,
-                int(float(config.get("intervalo_minutos") or PERGUNTAS_AUTOMACAO_INTERVALO_PADRAO_MIN) * 60),
-            )
-            _perguntas_automacao_bg_executar(client_id, nome_loja, "perguntas", intervalo_segundos)
-            if config.get("habilitar_pos_venda_automatico"):
-                _perguntas_automacao_bg_executar(client_id, nome_loja, "pos_venda", intervalo_segundos)
+            intervalo_segundos = 600
+            try:
+                config = _perguntas_loja_config_normalizar(configs_lojas.get(nome_loja))
+                if not config.get("responder_automaticamente"):
+                    continue
+                intervalo_segundos = max(
+                    15,
+                    int(float(config.get("intervalo_minutos") or PERGUNTAS_AUTOMACAO_INTERVALO_PADRAO_MIN) * 60),
+                )
+                if "mercadolivre" in (loja_cfg.get("_unavailable_providers") or []):
+                    raise HTTPException(503, detail={"code": "stores_snapshot_credentials_unavailable"})
+                integracoes = loja_cfg.get("integracoes") or {}
+                ml_cfg = integracoes.get("mercadolivre") if isinstance(integracoes, dict) else {}
+                if not _ml_oauth_status(ml_cfg).get("conectado"):
+                    continue
+                _perguntas_automacao_bg_executar(client_id, nome_loja, "perguntas", intervalo_segundos)
+                if config.get("habilitar_pos_venda_automatico"):
+                    _perguntas_automacao_bg_executar(client_id, nome_loja, "pos_venda", intervalo_segundos)
+            except Exception as exc:
+                key = _perguntas_automacao_bg_key(client_id, nome_loja, "perguntas")
+                if _perguntas_automacao_bg_marcar_inicio(key, time.time()):
+                    _perguntas_automacao_bg_finalizar(
+                        key, intervalo_segundos,
+                        resultado={"_store_read_unavailable": _stores_temporarily_unavailable(exc)},
+                        erro="Configuracao da loja indisponivel; checagem incompleta.",
+                    )
 
 
 def _perguntas_automacao_bg_worker() -> None:
@@ -446,7 +518,11 @@ def _perguntas_automacao_bg_worker() -> None:
             _perguntas_automacao_bg_tick()
         except Exception:
             logger.exception("[ML PERGUNTAS AUTO BG] Falha inesperada no verificador")
-        time.sleep(10)
+        with PERGUNTAS_AUTOMACAO_BG_LOCK:
+            future = [value - time.time() for value in
+                      [*PERGUNTAS_AUTOMACAO_BG_NEXT_CHECKS.values(), *_STORE_ENUM_NEXT.values()]
+                      if value > time.time()]
+        time.sleep(min(10, max(.05, min(future, default=10))))
 
 
 def _perguntas_automacao_iniciar_background() -> None:

@@ -271,6 +271,18 @@ def test_poll_publica_snapshot_antes_de_falha_da_ia(monkeypatch):
     assert payload["erros"]
 
 
+def test_poll_marks_unpublished_provider_incomplete(monkeypatch):
+    _preparar_poll_paginado(monkeypatch, lambda *args, **kwargs: pytest.fail("unpublished provider sent request"))
+    monkeypatch.setattr(endpoints, "carregar_lojas", lambda _: [{
+        "nome": "Loja A", "integracoes": {}, "_unavailable_providers": ["mercadolivre"],
+    }])
+    monkeypatch.setattr(endpoints, "_ml_oauth_status", lambda cfg: {"conectado": False})
+    payload = endpoints.ml_perguntas_automacao_poll(loja="Loja A", client_id="tenant-a")
+    assert payload["_store_read_unavailable"] is True
+    assert payload["erros"][0]["erro"]["code"] == "stores_snapshot_credentials_unavailable"
+    assert payload["question_snapshots"][0]["question_snapshot_complete"] is False
+
+
 def _preparar_poll_paginado(monkeypatch, request_fn) -> None:
     monkeypatch.setattr(endpoints, "_perguntas_ia_state_carregar", lambda _client_id: {}, raising=False)
     monkeypatch.setattr(endpoints, "_perguntas_ia_aprovacoes_carregar", lambda _client_id: [], raising=False)

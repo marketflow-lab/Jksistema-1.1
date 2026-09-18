@@ -9,7 +9,6 @@ from fastapi import Depends, HTTPException
 from backend.modules.perguntas_pos_venda.endpoints.runtime import runtime_adapter
 from backend.modules.perguntas_pos_venda.endpoints.security import get_tenant_id
 from backend.schemas import PerguntasLojaConfigRequest, PerguntasLojasConfigLoteRequest
-from backend.services.integracoes import carregar_lojas as carregar_lojas_canonicas
 from backend.services.store_listing_service import read_store_cards
 from backend.services.perguntas_pos_venda_automacao import (
     _perguntas_automacao_bg_status,
@@ -26,9 +25,9 @@ _perguntas_loja_configs_carregar = runtime_adapter("_perguntas_loja_configs_carr
 
 
 def carregar_lojas(client_id: str):
-    """Canonical reader for mutations and automation, never the display cache."""
-
-    return carregar_lojas_canonicas(client_id)
+    """Read authorized stores; preference writes retain their own validation."""
+    from backend.services.integracoes import ler_lojas
+    return ler_lojas(client_id)
 
 
 def ml_perguntas_listar_lojas(client_id: str = Depends(get_tenant_id)):

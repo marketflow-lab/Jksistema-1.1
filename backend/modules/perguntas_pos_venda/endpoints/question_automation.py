@@ -51,7 +51,9 @@ _perguntas_ia_state_carregar = runtime_adapter("_perguntas_ia_state_carregar")
 _perguntas_ia_state_salvar = runtime_adapter("_perguntas_ia_state_salvar")
 _perguntas_loja_config_normalizar = runtime_adapter("_perguntas_loja_config_normalizar")
 _perguntas_loja_configs_carregar = runtime_adapter("_perguntas_loja_configs_carregar")
-carregar_lojas = runtime_adapter("carregar_lojas")
+def carregar_lojas(client_id):
+    from backend.services.integracoes import ler_lojas
+    return ler_lojas(client_id)
 logger = runtime_adapter("logger")
 
 
@@ -295,7 +297,10 @@ def ml_perguntas_automacao_poll(
         config = _perguntas_loja_config_normalizar(configs.get(store))
         integrations = store_config.get("integracoes") or {}
         ml_config = integrations.get("mercadolivre") if isinstance(integrations, dict) else {}
-        if not config.get("responder_automaticamente") or not _ml_oauth_status(ml_config).get("conectado"):
+        if not config.get("responder_automaticamente"):
+            continue
+        provider_pending = "mercadolivre" in (store_config.get("_unavailable_providers") or [])
+        if not provider_pending and not _ml_oauth_status(ml_config).get("conectado"):
             continue
         snapshot = {
             "loja": _corrigir_texto_mojibake(store),
@@ -304,7 +309,12 @@ def ml_perguntas_automacao_poll(
         }
         poll.snapshots.append(snapshot)
         try:
-            cfg = _obter_cfg_ml(client_id, store)
+            if provider_pending:
+                from backend.services.store_read_service import unavailable
+                raise unavailable()
+            exact_id = str(store_config.get("store_id") or "").strip()
+            cfg = (_obter_cfg_ml(client_id, store, store_id=exact_id)
+                   if exact_id else _obter_cfg_ml(client_id, store))
             seller_id = str(cfg.get("user_id") or "").strip()
             if not seller_id:
                 poll.errors.append({
@@ -340,11 +350,18 @@ def ml_perguntas_automacao_poll(
         for item in poll.deferred if isinstance(item, dict)
     )
     poll.queue["queue_saturated"] = saturated
+    transient_store_error = any(
+        isinstance(item.get("erro"), dict) and item["erro"].get("code") in {
+            "stores_busy", "stores_snapshot_initializing", "stores_snapshot_unavailable",
+            "stores_snapshot_credentials_unavailable",
+        } for item in poll.errors
+    )
     return jsonable_encoder({
         "success": True, "novas_pendentes": poll.pending, "pendentes": pending,
         "enviadas": poll.sent, "erros": poll.errors, "deferred": poll.deferred,
         "queue_saturated": saturated, "queue_backpressure": poll.queue,
         "question_snapshots": poll.snapshots,
+        **({"_store_read_unavailable": True} if transient_store_error else {}),
     })
 
 
