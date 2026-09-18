@@ -48,7 +48,7 @@ def _install_transport(
     user_product_calls: list[str] | None = None,
 ) -> None:
     monkeypatch.setattr(service, "_wait_catalog_rate_turn", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(service.integracoes, "carregar_lojas", lambda client_id: [_store(seller_id=seller_id)])
+    monkeypatch.setattr(service.integracoes, "ler_lojas", lambda client_id: [_store(seller_id=seller_id)])
     monkeypatch.setattr(
         service.mercadolivre,
         "_ml_cfg_com_store_id_context",
@@ -844,7 +844,7 @@ def test_configuration_changed_during_collection_is_rejected_without_secret_leak
     _install_transport(monkeypatch, handler)
     monkeypatch.setattr(
         service.integracoes,
-        "carregar_lojas",
+        "ler_lojas",
         lambda client_id: [copy.deepcopy(store_state["value"])],
     )
 
@@ -896,7 +896,7 @@ def test_transport_token_refresh_is_accepted_only_when_persisted_configuration_m
     _install_transport(monkeypatch, handler)
     monkeypatch.setattr(
         service.integracoes,
-        "carregar_lojas",
+        "ler_lojas",
         lambda client_id: [copy.deepcopy(store_state["value"])],
     )
     result = service.coletar_catalogo_mercadolivre("tenant-a", "store-a")

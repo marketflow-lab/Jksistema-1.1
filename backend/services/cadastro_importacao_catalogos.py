@@ -358,7 +358,7 @@ def _configuracao_fonte(
     loja_resolvida = resolver_loja_cadastro(client_id, store_id)
     lojas = [
         dict(item)
-        for item in (integracoes.carregar_lojas(client_id) or [])
+        for item in (integracoes.ler_lojas(client_id) or [])
         if isinstance(item, dict)
         and str(item.get("store_id") or "").strip() == loja_resolvida["store_id"]
     ]
@@ -370,6 +370,9 @@ def _configuracao_fonte(
                 "message": "A configuracao da loja mudou durante a operacao.",
             },
         )
+    if _SOURCE_INTEGRATION_KEYS[fonte] in lojas[0].get("_unavailable_providers", []):
+        from .store_read_service import unavailable
+        raise unavailable()
     integrations = lojas[0].get("integracoes")
     integrations = integrations if isinstance(integrations, dict) else {}
     config = integrations.get(_SOURCE_INTEGRATION_KEYS[fonte])

@@ -411,6 +411,9 @@ def _ia_lojas_ml_conectadas(client_id: str) -> list[str]:
     for loja in carregar_lojas(client_id) or []:
         if not isinstance(loja, dict):
             continue
+        if "mercadolivre" in loja.get("_unavailable_providers", []):
+            from backend.services.store_read_service import unavailable
+            raise unavailable()
         nome = str(loja.get("nome") or "").strip()
         integracoes = loja.get("integracoes") or {}
         cfg = integracoes.get("mercadolivre") if isinstance(integracoes, dict) else {}

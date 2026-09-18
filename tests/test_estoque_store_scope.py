@@ -53,7 +53,7 @@ def test_estoque_resolves_exact_case_sensitive_id_and_rejects_legacy_homonym(mon
 def test_historico_rejeita_lojas_homonimas_antes_de_efeitos(monkeypatch):
     monkeypatch.setattr(
         estoque_lancamentos.integracoes_service,
-        "carregar_lojas",
+        "ler_lojas",
         lambda _client_id: _homonymous_stores(),
     )
     efeitos = []

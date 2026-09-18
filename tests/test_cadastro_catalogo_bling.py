@@ -39,7 +39,7 @@ def _configure_stores(monkeypatch, stores_by_tenant=None):
     }
     monkeypatch.setattr(
         cadastro_catalogo_bling.integracoes,
-        "carregar_lojas",
+        "ler_lojas",
         lambda client_id: stores_by_tenant.get(str(client_id), []),
     )
     monkeypatch.setattr(

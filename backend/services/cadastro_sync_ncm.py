@@ -62,7 +62,7 @@ from fastapi import Depends, HTTPException
 
 from backend.services import integracoes as integracoes_service
 from backend.services.cadastro_common import *
-from backend.services.integracoes import carregar_lojas, renovar_token_bling_loja
+from backend.services.integracoes import ler_lojas as carregar_lojas, renovar_token_bling_loja
 from backend.services.monofasico_rules import avaliar_monofasico
 from backend.services.store_coordination import coordinated_path_lock as path_lock_for
 
@@ -541,6 +541,9 @@ def _resolver_loja_sync_ncm(client_id: str, store_id: str) -> dict:
             status_code=409,
             detail="store_id duplicado na configuracao de lojas.",
         )
+    if "bling" in correspondentes[0].get("_unavailable_providers", []):
+        from .store_read_service import unavailable
+        raise unavailable()
     return correspondentes[0]
 
 
@@ -813,6 +816,9 @@ def _sync_ncm_cadastro_worker(client_id: str, job_id: str, store_id: str | None 
         bling_por_store_id: dict[str, dict[str, Any]] = {}
         for loja in lojas:
             store_id_loja = str(loja.get("store_id") or "").strip()
+            if (not store_id_alvo or store_id_loja == store_id_alvo) and "bling" in loja.get("_unavailable_providers", []):
+                from .store_read_service import unavailable
+                raise unavailable()
             if store_id_loja:
                 lojas_por_id.setdefault(store_id_loja, []).append(loja)
             for nome_loja in _sync_ncm_nomes_loja(loja):

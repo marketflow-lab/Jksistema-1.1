@@ -25,7 +25,7 @@ from backend.schemas.estoque import (
     EstoqueSyncRequest,
 )
 from backend.services import estoque_context, integracoes as integracoes_service
-from backend.services.integracoes import carregar_lojas
+from backend.services.integracoes import ler_lojas as carregar_lojas
 from backend.services.store_coordination import coordinated_path_lock as path_lock_for
 from backend.services.runtime_bridge import bind_runtime_globals
 
@@ -131,6 +131,9 @@ def _estoque_erro_configuracao_alterada() -> HTTPException:
 
 
 def _estoque_snapshot_loja(loja: dict[str, Any]) -> dict[str, Any]:
+    if "bling" in loja.get("_unavailable_providers", []):
+        from .store_read_service import unavailable
+        raise unavailable()
     integracoes = loja.get("integracoes")
     integracoes = integracoes if isinstance(integracoes, dict) else {}
     return {
@@ -221,6 +224,9 @@ def _resolver_loja_estoque(
             )
         loja = correspondentes[0]
 
+    if "bling" in loja.get("_unavailable_providers", []):
+        from .store_read_service import unavailable
+        raise unavailable()
     nome_resolvido = _estoque_nome_loja_exato(loja.get("nome"))
     nomes_iguais = [
         item

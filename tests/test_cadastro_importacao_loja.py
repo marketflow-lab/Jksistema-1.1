@@ -41,6 +41,7 @@ def _configurar(monkeypatch, tmp_path):
         "carregar_lojas",
         lambda client_id: lojas.get(str(client_id), []),
     )
+    monkeypatch.setattr(integracoes, "ler_lojas", lambda client_id: lojas.get(str(client_id), []))
     return raiz, lojas
 
 

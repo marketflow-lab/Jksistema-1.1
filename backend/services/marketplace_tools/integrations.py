@@ -11,11 +11,19 @@ from . import runtime as _runtime
 
 logger = logging.getLogger(__name__)
 
+
+def _require_provider_ready(store, provider):
+    if provider in store.get("_unavailable_providers", []):
+        from backend.services.store_read_service import unavailable
+        raise unavailable()
+
+
 def bling_connected_stores(client_id: str) -> list[str]:
     lojas = []
     for loja in _runtime.load_stores(client_id) or []:
         if not isinstance(loja, dict):
             continue
+        _require_provider_ready(loja, "bling")
         nome = str(loja.get("nome") or "").strip()
         integracoes = loja.get("integracoes") or {}
         cfg = integracoes.get("bling") if isinstance(integracoes, dict) else {}
@@ -25,25 +33,25 @@ def bling_connected_stores(client_id: str) -> list[str]:
 
 def connected_stores(client_id: str, provedor: str, loja: Optional[str] = None) -> list[str]:
     provedor_norm = str(provedor or "").strip().lower()
-    conectadas = _runtime.ml_connected_stores(client_id) if provedor_norm in {"ml", "mercadolivre", "mercado_livre"} else bling_connected_stores(client_id)
+    provider = "mercadolivre" if provedor_norm in {"ml", "mercadolivre", "mercado_livre"} else "bling"
     loja_txt = str(loja or "").strip()
     if not loja_txt or loja_txt in {"__todas", "Todas as lojas"}:
+        conectadas = _runtime.ml_connected_stores(client_id) if provider == "mercadolivre" else bling_connected_stores(client_id)
         return conectadas[:5]
-
-    alvo_norm = _runtime.normalize_text(loja_txt)
-    for nome in conectadas:
-        if _runtime.normalize_text(nome) == alvo_norm:
-            return [nome]
-    for nome in conectadas:
-        nome_norm = _runtime.normalize_text(nome)
-        if alvo_norm and (alvo_norm in nome_norm or nome_norm in alvo_norm):
-            return [nome]
-    return conectadas[:5]
+    store = _runtime.find_store(client_id, loja_txt)
+    if not store:
+        raise HTTPException(404, detail="Loja nao encontrada no escopo solicitado.")
+    _require_provider_ready(store, provider)
+    cfg = (store.get("integracoes") or {}).get(provider) or {}
+    if not str(cfg.get("access_token") or "").strip():
+        raise HTTPException(401, detail="Reconecte a integracao da loja selecionada.")
+    return [str(store.get("nome") or loja_txt)]
 
 def get_bling_config(client_id: str, nome_loja: str) -> dict:
     loja = _runtime.find_store(client_id, nome_loja)
     if not loja:
         raise HTTPException(status_code=404, detail="Loja nao encontrada")
+    _require_provider_ready(loja, "bling")
 
     integracoes = loja.get("integracoes") or {}
     cfg = dict(integracoes.get("bling") or {})
@@ -73,6 +81,8 @@ def get_status(client_id: str, loja: Optional[str] = None) -> Optional[dict]:
             if loja_filtro and loja_filtro not in {"__todas", "Todas as lojas"}:
                 if _runtime.normalize_text(loja_filtro) not in _runtime.normalize_text(nome):
                     continue
+            _require_provider_ready(loja_cfg, "mercadolivre")
+            _require_provider_ready(loja_cfg, "bling")
             integracoes = loja_cfg.get("integracoes") or {}
             cfg_ml = integracoes.get("mercadolivre") if isinstance(integracoes, dict) else {}
             cfg_bling = integracoes.get("bling") if isinstance(integracoes, dict) else {}
@@ -94,6 +104,8 @@ def get_status(client_id: str, loja: Optional[str] = None) -> Optional[dict]:
                 "bling_conectadas": sum(1 for item in registros if item.get("bling_conectado")),
             },
         }
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.warning("[IA TOOLS] Falha ao consultar status das integracoes: %s", exc)
         return None
