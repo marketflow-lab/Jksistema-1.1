@@ -84,6 +84,7 @@
           "package.json",
           "*.py",
           "backend/**",
+          "vendor/**",
           "!backend/**/__pycache__/**",
           "!backend/**/*.pyc",
           "!backend/**/*.pyo",

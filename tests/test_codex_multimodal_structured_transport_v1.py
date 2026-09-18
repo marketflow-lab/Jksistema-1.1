@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -305,7 +306,15 @@ def test_codex_cleans_local_images_when_turn_fails(
     assert not captured["path"].parent.exists()
 
 
-def test_codex_uses_pinned_runtime_and_recovers_internal_rpc_with_fresh_thread(
+def test_packaged_codex_sdk_wheel_matches_pinned_digest() -> None:
+    root = Path(ia_providers.__file__).resolve().parents[2]
+    wheel = root / "vendor" / ia_providers._CODEX_PROVIDER_SDK_WHEEL
+
+    assert wheel.is_file()
+    assert hashlib.sha256(wheel.read_bytes()).hexdigest() == ia_providers._CODEX_PROVIDER_SDK_SHA256
+
+
+def test_codex_uses_external_runtime_and_recovers_internal_rpc_with_fresh_thread(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -316,6 +325,7 @@ def test_codex_uses_pinned_runtime_and_recovers_internal_rpc_with_fresh_thread(
         "resumed": [],
         "started": 0,
         "ready": [],
+        "thread_kwargs": [],
     }
 
     class _Turn:
@@ -352,23 +362,30 @@ def test_codex_uses_pinned_runtime_and_recovers_internal_rpc_with_fresh_thread(
 
         def thread_resume(self, thread_id: str, **_kwargs: object):
             calls["resumed"].append(thread_id)
+            calls["thread_kwargs"].append(_kwargs)
             return _Thread(thread_id)
 
         def thread_start(self, **_kwargs: object):
             calls["started"] += 1
+            calls["thread_kwargs"].append(_kwargs)
             return _Thread("thread-recovered")
 
     monkeypatch.setattr(ia_providers, "logger", logging.getLogger(__name__))
     monkeypatch.setattr(console_execution, "enabled", lambda: True)
     monkeypatch.setattr(console_execution, "sdk_installed", lambda: True)
     monkeypatch.setattr(console_execution, "auth_detected", lambda: True)
+    runtime_bin = str(tmp_path / "codex.exe")
+    monkeypatch.setattr(console_execution, "runtime_bin", lambda: runtime_bin)
+    monkeypatch.setattr(console_execution, "sdk_env", lambda: {})
     monkeypatch.setattr(
         console_execution,
-        "runtime_bin",
-        lambda: (_ for _ in ()).throw(AssertionError("external runtime must not be selected")),
+        "readonly_config_overrides",
+        lambda: (
+            'default_permissions="jk_black_jhon_readonly"',
+            'permissions.jk_black_jhon_readonly.filesystem={":root"="deny"}',
+            "features.shell_tool=false",
+        ),
     )
-    monkeypatch.setattr(console_execution, "sdk_env", lambda: {})
-    monkeypatch.setattr(console_execution, "readonly_config_overrides", lambda: ())
     monkeypatch.setattr(console_security, "readonly_cwd", lambda *_args: str(tmp_path))
     monkeypatch.setattr(openai_codex, "Codex", _Codex)
     monkeypatch.setattr(openai_codex, "CodexConfig", lambda **kwargs: kwargs)
@@ -387,7 +404,10 @@ def test_codex_uses_pinned_runtime_and_recovers_internal_rpc_with_fresh_thread(
     assert calls["started"] == 1
     assert calls["ready"] == ["thread-recovered"]
     assert len(calls["configs"]) == 2
-    assert all("codex_bin" not in config for config in calls["configs"])
+    assert all(config["codex_bin"] == runtime_bin for config in calls["configs"])
+    assert all(config["config_overrides"] == ("features.shell_tool=false",) for config in calls["configs"])
+    assert len(calls["thread_kwargs"]) == 2
+    assert all(kwargs["sandbox"].value == "read-only" for kwargs in calls["thread_kwargs"])
 
 
 def test_codex_missing_authentication_is_a_terminal_provider_failure(

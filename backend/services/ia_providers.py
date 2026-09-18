@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
@@ -76,6 +77,31 @@ _CODEX_PROVIDER_ERROR_REASONS = frozenset({
     "provider_turn_failed",
     "provider_empty_response",
 })
+_CODEX_PROVIDER_SDK_WHEEL = "openai_codex-0.154.0-py3-none-any.whl"
+_CODEX_PROVIDER_SDK_SHA256 = "b5f354e1280621d0f5e28313ecf6974d2a98bcf0b088dbe791dc6df5044d2214"
+
+
+def _codex_prefer_packaged_provider_sdk() -> bool:
+    """Load the protocol-compatible pure Python SDK shipped by app-update."""
+
+    if "openai_codex" in sys.modules:
+        return False
+    wheel = Path(__file__).resolve().parents[2] / "vendor" / _CODEX_PROVIDER_SDK_WHEEL
+    try:
+        if not wheel.is_file():
+            return False
+        digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    except OSError:
+        return False
+    if digest != _CODEX_PROVIDER_SDK_SHA256:
+        return False
+    wheel_path = str(wheel)
+    if wheel_path not in sys.path:
+        sys.path.insert(0, wheel_path)
+    return True
+
+
+_codex_prefer_packaged_provider_sdk()
 
 
 def _codex_provider_http_error(
@@ -1193,7 +1219,7 @@ def _chamar_codex_chat_com_thread(
     )
 
     try:
-        from openai_codex import ApprovalMode, Codex, CodexConfig
+        from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
         from openai_codex.generated.v2_all import ReasoningEffort, ReasoningSummary
 
         with _codex_local_image_files(imagens, cwd) as (image_paths, image_file_failures):
@@ -1213,17 +1239,28 @@ def _chamar_codex_chat_com_thread(
                 # Preserve the legacy wire shape for every text-only call.
                 turn_input = turn_prompt
 
+            runtime_bin = console_execution.runtime_bin()
+            config_overrides = tuple(console_execution.readonly_config_overrides())
+            if runtime_bin:
+                # The current external runtime enforces its built-in read-only
+                # sandbox. Legacy custom permission maps are intentionally
+                # omitted because the newer Windows sandbox rejects :root=deny
+                # before it can load the empty operational workspace.
+                config_overrides = tuple(
+                    value for value in config_overrides
+                    if not str(value).startswith(("default_permissions=", "permissions."))
+                )
             codex_config = CodexConfig(
-                # Published SDK builds resolve their protocol-matched runtime
-                # when codex_bin is omitted.
+                codex_bin=runtime_bin,
                 env=console_execution.sdk_env(),
                 cwd=cwd,
-                config_overrides=console_execution.readonly_config_overrides(),
+                config_overrides=config_overrides,
             )
             thread_kwargs = {
                 "cwd": cwd,
                 "model": model,
                 "approval_mode": ApprovalMode.deny_all,
+                "sandbox": Sandbox.read_only,
                 "ephemeral": not bool(persist_thread),
                 "developer_instructions": (
                     "Voce e o nucleo de raciocinio Codex do orquestrador do JK Sistema. "
