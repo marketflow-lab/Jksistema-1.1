@@ -191,7 +191,7 @@ def _codex_native_mcp_thread_config(task: dict[str, Any], screen_context: Any) -
         try:
             from backend.services import integracoes
 
-            configured_stores = integracoes.carregar_lojas(client_id)
+            configured_stores = integracoes.ler_lojas(client_id)
             for item in list(configured_stores or [])[:50]:
                 if not isinstance(item, dict):
                     continue

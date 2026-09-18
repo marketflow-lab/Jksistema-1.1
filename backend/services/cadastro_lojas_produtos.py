@@ -583,12 +583,12 @@ def _cadastro_propagar_referencias_fotos_preparadas(
     return alterados
 
 
-def _lojas_atuais(client_id: str) -> list[dict[str, Any]]:
-    lojas = integracoes.ler_lojas(client_id)
+def _lojas_atuais(client_id: str, *, somente_commit: bool = False) -> list[dict[str, Any]]:
+    lojas = integracoes.carregar_lojas(client_id) if somente_commit else integracoes.ler_lojas(client_id)
     return [dict(loja) for loja in (lojas or []) if isinstance(loja, dict)]
 
 
-def resolver_loja_cadastro(client_id: str, store_id: str) -> dict[str, str]:
+def resolver_loja_cadastro(client_id: str, store_id: str, *, somente_commit: bool = False) -> dict[str, str]:
     """Resolve an exact store id through Integracoes; names never identify rows."""
 
     store_id_alvo = str(store_id or "").strip()
@@ -596,7 +596,7 @@ def resolver_loja_cadastro(client_id: str, store_id: str) -> dict[str, str]:
         raise HTTPException(status_code=400, detail="store_id e obrigatorio.")
     correspondentes = [
         loja
-        for loja in _lojas_atuais(client_id)
+        for loja in _lojas_atuais(client_id, somente_commit=somente_commit)
         if str(loja.get("store_id") or "").strip() == store_id_alvo
     ]
     if len(correspondentes) == 1:
@@ -623,7 +623,7 @@ def _revalidar_loja_cadastro_para_commit(
     """Revalidate the exact store identity while the config lock is held."""
 
     try:
-        atual = resolver_loja_cadastro(client_id, snapshot.get("store_id") or "")
+        atual = resolver_loja_cadastro(client_id, snapshot.get("store_id") or "", somente_commit=True)
     except HTTPException as exc:
         if exc.status_code not in {404, 409}:
             raise

@@ -1170,7 +1170,7 @@ def _load_lojas(client_id: str) -> list[dict[str, Any]]:
     try:
         from backend.services import integracoes
 
-        return list(integracoes.carregar_lojas(client_id) or [])
+        return list(integracoes.ler_lojas(client_id) or [])
     except Exception:
         return []
 

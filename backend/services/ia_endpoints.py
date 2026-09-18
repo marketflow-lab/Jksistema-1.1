@@ -394,7 +394,7 @@ def _ia_chat_selection_authorized_stores(client_id: str) -> tuple[list[str], boo
     try:
         from backend.services import integracoes
 
-        configured_stores = integracoes.carregar_lojas(str(client_id or "").strip())
+        configured_stores = integracoes.ler_lojas(str(client_id or "").strip())
     except Exception as exc:
         if logger is not None:
             logger.warning("[IA DATA SELECTION] Lojas autorizadas indisponiveis: %s", type(exc).__name__)

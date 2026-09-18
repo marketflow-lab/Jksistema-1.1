@@ -95,7 +95,7 @@ def _default_runtime() -> SalesToolsRuntime:
             sku_variants=_lazy("backend.services.cadastro_common", "_sku_lookup_variantes"),
         ),
         stores=StoreAdapters(
-            load=_lazy("backend.services.integracoes", "carregar_lojas"),
+            load=_lazy("backend.services.integracoes", "ler_lojas"),
             tenant_path=_lazy("backend.services.ia_context", "get_tenant_path"),
         ),
         text=TextAdapters(

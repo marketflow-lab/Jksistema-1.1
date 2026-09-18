@@ -998,7 +998,7 @@ def _resolver_loja_bling(client_id: str, store_id: str) -> tuple[str, dict[str, 
 
     matches = [
         loja
-        for loja in (integracoes.carregar_lojas(tenant) or [])
+        for loja in (integracoes.ler_lojas(tenant) or [])
         if isinstance(loja, dict)
         and str(loja.get("store_id") or "").strip() == store_id_exato
     ]
@@ -1022,6 +1022,9 @@ def _resolver_loja_bling(client_id: str, store_id: str) -> tuple[str, dict[str, 
         )
 
     loja = matches[0]
+    if "bling" in loja.get("_unavailable_providers", []):
+        from .store_read_service import unavailable
+        raise unavailable()
     nome = str(loja.get("nome") or "").strip()
     cfg = dict(((loja.get("integracoes") or {}).get("bling") or {}))
     if not cfg or not (

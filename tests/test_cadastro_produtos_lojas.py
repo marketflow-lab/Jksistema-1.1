@@ -37,6 +37,7 @@ def _configure(monkeypatch, tmp_path, stores_by_client=None):
         "carregar_lojas",
         lambda client_id: stores_by_client.get(str(client_id), []),
     )
+    monkeypatch.setattr(integracoes, "ler_lojas", lambda client_id: stores_by_client.get(str(client_id), []))
     return info_root, stores_by_client
 
 
@@ -396,6 +397,7 @@ def test_store_mutation_revalidates_rename_before_commit(
 
     commits = []
     monkeypatch.setattr(integracoes, "carregar_lojas", carregar_com_rename)
+    monkeypatch.setattr(integracoes, "ler_lojas", carregar_com_rename)
     monkeypatch.setattr(
         cadastro_lojas_produtos,
         "_salvar_registros_atomico",

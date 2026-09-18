@@ -35,6 +35,7 @@ from backend.services.cadastro_fotos_coordenacao import (
 from backend.services.store_coordination import coordinated_path_lock as path_lock_for, remaining_timeout
 from backend.services.store_listing_service import lojas_config_lock
 from backend.services.store_snapshot_transactions import before_write
+from backend.services.store_lock_diagnostics import operation_scope
 
 
 logger = logging.getLogger("jk_sistema")
@@ -2092,6 +2093,7 @@ def salvar_turbo_local_central(client_id: str, lojas_centrais: list, store_id: s
         _integracoes_escrever_lojas_config_atomico(path, locais)
 
 
+@operation_scope("stores_maintenance")
 def carregar_lojas(client_id: str):
     """Carrega as lojas do cliente do arquivo JSON."""
     from backend.services.central_accounts_client import current
@@ -2206,6 +2208,14 @@ def carregar_lojas(client_id: str):
             or backup_invalido_isolado
             or fonte_recuperada_de_backup
         )
+        # Explicit maintenance assigns a connection epoch to legacy Bling
+        # credentials; operational reads never authorize an app ID alone.
+        for loja in lojas:
+            cfg_bling = (loja.get("integracoes") or {}).get("bling") or {}
+            if (isinstance(cfg_bling, dict) and any(cfg_bling.get(key) for key in ("access_token", "refresh_token", "api_key", "apikey"))
+                    and not str(cfg_bling.get("oauth_connection_id") or "").strip()):
+                cfg_bling["oauth_connection_id"] = secrets.token_urlsafe(24)
+                mudou = True
         lojas, mudou_oauth = _integracoes_normalizar_oauth_compartilhado_lojas(lojas)
         mudou = mudou or mudou_oauth
         lojas, mudou_sync = _integracoes_normalizar_sync_metadata(client_id, lojas, lojas)
@@ -2238,81 +2248,23 @@ def carregar_lojas(client_id: str):
         return lojas
 
 
+def ler_lojas(client_id: str):
+    """Operational read; maintenance and recovery belong to carregar_lojas."""
+    from .store_read_service import read_stores
+    return read_stores(client_id)
+
+
+def buscar_loja_snapshot(client_id: str, nome_loja: str, store_id: str | None = None):
+    return _integracoes_encontrar_loja_identidade(ler_lojas(client_id), nome_loja, store_id)
+
+
 def carregar_lojas_snapshot(client_id: str):
-    """Read the last published store identities without waiting for writers.
-
-    The public projection is the authorization boundary.  The canonical JSON is
-    replaced atomically, so intersecting both generations can expose an already
-    published store with its current credentials while a longer catalog/store
-    transaction is still holding the business mutex.  New or identity-changed
-    stores remain unavailable until their public generation is published.
-    """
-    from backend.services.central_accounts_client import current, session_expired
-
-    central = current(client_id)
-    if central is not None:
-        if central.expires_at <= time.time():
-            raise session_expired()
-        return central.stores()
-
-    from backend.services.store_listing_service import read_store_cards
-
-    public_rows = read_store_cards(client_id).get("lojas") or []
-    canonical_path = os.path.join(_tenant_path(client_id), "lojas_config.json")
-    deadline = time.monotonic() + 0.05
-    while True:
-        try:
-            canonical_rows = _integracoes_ler_lojas_config_arquivo(canonical_path)
-            _integracoes_validar_identidades_lojas_local(canonical_rows)
-            break
-        except PermissionError:
-            if time.monotonic() >= deadline:
-                raise HTTPException(
-                    status_code=503,
-                    detail={
-                        "code": "stores_snapshot_credentials_unavailable",
-                        "message": "A configuracao das lojas esta sendo atualizada.",
-                    },
-                    headers={"Retry-After": "2"},
-                ) from None
-            time.sleep(0.001)
-        except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError):
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "code": "stores_snapshot_credentials_unavailable",
-                    "message": "A configuracao das lojas ainda nao esta disponivel.",
-                },
-                headers={"Retry-After": "2"},
-            ) from None
-
-    published = {
-        str(row.get("store_id") or "").strip(): row
-        for row in public_rows
-        if isinstance(row, dict) and str(row.get("store_id") or "").strip()
-    }
-    authorized = []
-    for row in canonical_rows:
-        store_id = str(row.get("store_id") or "").strip()
-        public = published.get(store_id)
-        if public is None:
-            continue
-        integrations = row.get("integracoes") or {}
-        if not isinstance(integrations, dict):
-            continue
-        cfg = integrations.get("mercadolivre") or {}
-        if not isinstance(cfg, dict):
-            continue
-        seller_id = str(cfg.get("user_id") or "").strip()
-        site_id = str(cfg.get("site_id") or row.get("site_id") or "").strip()
-        if seller_id != str(public.get("seller_id") or "").strip():
-            continue
-        if site_id != str(public.get("site_id") or "").strip():
-            continue
-        authorized.append(row)
-    return authorized
+    """Compatibility view for ML readers; the shared reader binds each provider."""
+    return [row for row in ler_lojas(client_id)
+            if "mercadolivre" not in row.get("_unavailable_providers", [])]
 
 
+@operation_scope("stores_write")
 def salvar_lojas(
     client_id: str,
     lojas: list,
@@ -2367,6 +2319,11 @@ def salvar_lojas(
                     ):
                         atual["store_id"] = novo_id
             _integracoes_preservar_nomes_anteriores(lojas, atuais)
+            for loja in lojas:
+                cfg_bling = (loja.get("integracoes") or {}).get("bling") or {}
+                if (isinstance(cfg_bling, dict) and any(cfg_bling.get(key) for key in ("access_token", "refresh_token", "api_key", "apikey"))
+                        and not str(cfg_bling.get("oauth_connection_id") or "").strip()):
+                    cfg_bling["oauth_connection_id"] = secrets.token_urlsafe(24)
             lojas, _ = _integracoes_normalizar_sync_metadata(client_id, lojas, atuais)
             if _preservar_sync_metadata_validada:
                 _integracoes_preservar_sync_metadata_validada(
@@ -3107,22 +3064,13 @@ def _bling_config_atual(
                 "message": "Informe o store_id exato para acessar o token Bling.",
             },
         )
-    with lojas_config_lock(client_id):
-        loja = _integracoes_encontrar_loja_identidade(
-            carregar_lojas(client_id),
-            nome_loja,
-            store_id_exato,
-        )
-        if not isinstance(loja, dict):
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "store_config_changed",
-                    "message": "A identidade da loja nao existe mais.",
-                    "store_id": store_id_exato,
-                },
-            )
-        return dict(((loja.get("integracoes") or {}).get("bling") or {}))
+    loja = buscar_loja_snapshot(client_id, nome_loja, store_id_exato)
+    if not isinstance(loja, dict):
+        raise HTTPException(409, detail={"code": "store_config_changed", "message": "A identidade da loja nao existe mais."})
+    if "bling" in loja.get("_unavailable_providers", []):
+        from .store_read_service import unavailable
+        raise unavailable()
+    return dict(((loja.get("integracoes") or {}).get("bling") or {}))
 
 
 def _atualizar_bling_cas(
@@ -3186,6 +3134,7 @@ def _atualizar_bling_cas(
         return True, dict(atualizado)
 
 
+@operation_scope("oauth_refresh")
 def renovar_token_bling_loja(
     client_id: str,
     nome_loja: str,
@@ -3218,7 +3167,10 @@ def renovar_token_bling_loja(
     expected_refresh = str(hint.get("refresh_token") or "").strip()
     expected_access = str(hint.get("access_token") or "").strip()
     expected_updated_at = str(hint.get("updated_at") or "").strip()
-    with _bling_refresh_lock(client_id, nome_loja, store_id_exato):
+    from .store_oauth_refresh import oauth_gate
+    with oauth_gate(
+        _tenant_path(client_id), store_id_exato, "bling"
+    ):
         atual = _bling_config_atual(client_id, nome_loja, store_id_exato)
         refresh_atual = str(atual.get("refresh_token") or "").strip()
         access_atual = str(atual.get("access_token") or "").strip()
@@ -3645,6 +3597,8 @@ __all__ = [
     "_integracoes_normalizar_oauth_compartilhado_lojas",
     "carregar_lojas",
     "carregar_lojas_snapshot",
+    "ler_lojas",
+    "buscar_loja_snapshot",
     "salvar_lojas",
     "buscar_loja",
     "criar_loja",

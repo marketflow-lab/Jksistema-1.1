@@ -6,6 +6,7 @@ locks. A reader sees one complete published generation or SnapshotUnavailable.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import tempfile
@@ -29,6 +30,23 @@ _PUBLIC_REASONS = {
     "pendente": "Mercado Livre ainda não foi autenticado.",
     "reautenticar": "OAuth do Mercado Livre incompleto. Refaça a autenticação.",
 }
+
+
+def provider_identity(store, provider):
+    """Non-secret connection identity, independent of rotating credentials."""
+    cfg = (store.get("integracoes") or {}).get(provider) or {}
+    if not isinstance(cfg, dict):
+        raise SnapshotUnavailable("invalid_snapshot")
+    if not cfg:
+        return ""
+    if provider == "mercadolivre" and not str(cfg.get("user_id") or "").strip():
+        return ""
+    if provider == "bling" and not str(cfg.get("oauth_connection_id") or "").strip():
+        return ""
+    fields = (str(cfg.get("user_id") or ""), str(cfg.get("site_id") or store.get("site_id") or "")) if provider == "mercadolivre" else (str(cfg.get("oauth_connection_id") or ""),)
+    # Client ID identifies the OAuth application, never the account by itself.
+    fields += (str(cfg.get("id") or cfg.get("app_id") or cfg.get("client_id") or ""),)
+    return hashlib.sha256(json.dumps(fields, separators=(",", ":")).encode()).hexdigest()
 
 
 class SnapshotUnavailable(ValueError):
@@ -62,7 +80,7 @@ def _identity(value):
 
 def _validate(snapshot):
     if (not isinstance(snapshot, dict) or set(snapshot) != _ENVELOPE_KEYS
-            or type(snapshot["schema_version"]) is not int or snapshot["schema_version"] != 1):
+            or type(snapshot["schema_version"]) is not int or snapshot["schema_version"] not in (1, 2)):
         raise SnapshotUnavailable("invalid_snapshot")
     try:
         UUID(_text(snapshot["generation"], max_length=36))
@@ -75,8 +93,15 @@ def _validate(snapshot):
         raise SnapshotUnavailable("invalid_snapshot")
     seen = set()
     for row in snapshot["lojas"]:
-        if not isinstance(row, dict) or set(row) != _ROW_KEYS:
+        expected_keys = _ROW_KEYS | ({"provider_identities"} if snapshot["schema_version"] == 2 else set())
+        if not isinstance(row, dict) or set(row) != expected_keys:
             raise SnapshotUnavailable("invalid_snapshot")
+        if snapshot["schema_version"] == 2:
+            identities = row["provider_identities"]
+            if not isinstance(identities, dict) or set(identities) != {"mercadolivre", "bling"}:
+                raise SnapshotUnavailable("invalid_snapshot")
+            if any(value != "" and (not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value)) for value in identities.values()):
+                raise SnapshotUnavailable("invalid_snapshot")
         if not _text(row["nome"]).strip():
             raise SnapshotUnavailable("invalid_snapshot")
         for key in ("store_id", "site_id", "seller_id"):
@@ -132,9 +157,10 @@ def build_snapshot(stores, *, generation=None, published_at=None):
             "mercadolivre_motivo": _PUBLIC_REASONS[public_status],
             "mercadolivre_oauth_faltando": list(status["faltando"]),
             "precisa_reintegrar": False,
+            "provider_identities": {provider: provider_identity(store, provider) for provider in ("mercadolivre", "bling")},
         })
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generation": str(uuid4()) if generation is None else generation,
         "published_at": datetime.now(timezone.utc).isoformat() if published_at is None else published_at,
         "lojas": rows,

@@ -523,24 +523,14 @@ def _connected_stores(
     warnings: list[str] = []
     stores: list[tuple[str, dict[str, Any]]] = []
     lojas_cfg: list[dict[str, Any]] = []
-    try:
-        from backend.services.integracoes import carregar_lojas
-
-        lojas_cfg = [item for item in (carregar_lojas(client_id) or []) if isinstance(item, dict)]
-    except Exception as exc:
-        root = Path(__file__).resolve().parents[2]
-        path = root / "info" / str(client_id or "default") / "lojas_config.json"
-        if not path.exists() and str(client_id or "") != "default" and allow_default_fallback:
-            path = root / "info" / "default" / "lojas_config.json"
-        if path.exists():
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8-sig"))
-                lojas_cfg = [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
-                warnings.append("Usei leitura direta de lojas_config.json porque o servico de integracoes nao estava configurado.")
-            except Exception as read_exc:
-                return [], [f"Nao foi possivel carregar lojas Bling: {str(exc)[:120]}; fallback falhou: {str(read_exc)[:120]}"]
-        else:
-            return [], [f"Nao foi possivel carregar lojas Bling: {str(exc)[:180]}"]
+    from backend.services.integracoes import ler_lojas
+    # Never bypass a session, projection, or tenant error with raw/default data.
+    lojas_cfg = [item for item in ler_lojas(client_id) if isinstance(item, dict)]
+    unavailable = [item for item in lojas_cfg if "bling" in item.get("_unavailable_providers", [])
+                   and (not loja or _norm(item.get("nome")) == _norm(loja))]
+    if unavailable:
+        from backend.services.store_read_service import unavailable as temporary
+        raise temporary()
 
     conectadas: list[str] = []
     by_norm: dict[str, list[dict[str, Any]]] = {}

@@ -72,8 +72,8 @@ class MarketplaceToolsRuntime:
 def _default_runtime() -> MarketplaceToolsRuntime:
     return MarketplaceToolsRuntime(
         stores=StoreAdapters(
-            load=_lazy("backend.services.integracoes", "carregar_lojas"),
-            find=_lazy("backend.services.integracoes", "buscar_loja"),
+            load=_lazy("backend.services.integracoes", "ler_lojas"),
+            find=_lazy("backend.services.integracoes", "buscar_loja_snapshot"),
             ml_connected=_lazy("backend.services.sales_tools.api", "connected_ml_stores"),
             ml_config=_lazy("backend.services.mercadolivre_legacy_api", "_obter_cfg_ml"),
         ),

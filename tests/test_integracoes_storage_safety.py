@@ -1622,6 +1622,8 @@ def test_refresh_bling_semeia_e_preserva_oauth_connection_id(
     lojas = _bling_lojas()
     integracoes.salvar_lojas("000002", lojas)
     store_id = lojas[0]["store_id"]
+    connection_id = lojas[0]["integracoes"]["bling"]["oauth_connection_id"]
+    assert connection_id
     gerados = []
 
     def gerar_connection_id(_bytes):
@@ -1647,13 +1649,13 @@ def test_refresh_bling_semeia_e_preserva_oauth_connection_id(
         dict(lojas[0]["integracoes"]["bling"]),
         store_id=store_id,
     )
-    assert primeira["oauth_connection_id"] == "connection-semeada"
+    assert primeira["oauth_connection_id"] == connection_id
     persistida = integracoes.buscar_loja(
         "000002",
         "Loja A",
         store_id=store_id,
     )["integracoes"]["bling"]
-    assert persistida["oauth_connection_id"] == "connection-semeada"
+    assert persistida["oauth_connection_id"] == connection_id
 
     segunda = integracoes.renovar_token_bling_loja(
         "000002",
@@ -1661,13 +1663,13 @@ def test_refresh_bling_semeia_e_preserva_oauth_connection_id(
         dict(persistida),
         store_id=store_id,
     )
-    assert segunda["oauth_connection_id"] == "connection-semeada"
-    assert gerados == [True]
+    assert segunda["oauth_connection_id"] == connection_id
+    assert gerados == []
     assert integracoes.buscar_loja(
         "000002",
         "Loja A",
         store_id=store_id,
-    )["integracoes"]["bling"]["oauth_connection_id"] == "connection-semeada"
+    )["integracoes"]["bling"]["oauth_connection_id"] == connection_id
 
 
 def test_refresh_single_flight_mesma_loja_faz_um_post(tmp_path, monkeypatch):

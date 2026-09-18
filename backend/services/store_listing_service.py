@@ -108,10 +108,12 @@ def _initialize(client_id, tenant_path, key):
         with lojas_config_lock(client_id):
             initialize = publication_pending(tenant_path)
             try:
-                projection.read_snapshot(tenant_path)
+                initialize = initialize or projection.read_snapshot(tenant_path)["schema_version"] < 2
             except projection.SnapshotUnavailable:
                 initialize = True
-            if initialize:
+            # A scheduled repair can also be a legacy provider connection epoch
+            # migration even when the public envelope already has schema v2.
+            if initialize or key in _JOBS:
                 stores = _source().carregar_lojas(client_id)
                 if not (Path(tenant_path) / "lojas_config.json").exists():
                     _source().salvar_lojas(client_id, stores)
@@ -138,7 +140,7 @@ def _ensure_initialization(client_id, tenant_path):
         return failed_at is None
 
 
-def read_store_cards(client_id):
+def read_store_cards(client_id, *, include_provider_identities=False):
     """Never waits for a store/catalog/photo lock or performs canonical writes."""
     from .central_accounts_client import current, session_expired
     central = current(client_id)
@@ -146,7 +148,10 @@ def read_store_cards(client_id):
         if central.expires_at <= time.time():
             raise session_expired()
         snapshot = projection.build_snapshot(central.public_stores())
-        return {"lojas": snapshot["lojas"], "session_scoped": True, "snapshot": {
+        rows = snapshot["lojas"]
+        if not include_provider_identities:
+            rows = [{key: value for key, value in row.items() if key != "provider_identities"} for row in rows]
+        return {"lojas": rows, "session_scoped": True, "snapshot": {
             "generation": snapshot["generation"], "published_at": snapshot["published_at"],
             "status": "ready",
         }}
@@ -160,9 +165,12 @@ def read_store_cards(client_id):
             "message": "Carregando configuracao de lojas." if initializing else "Nao foi possivel atualizar a configuracao de lojas.",
         }, headers={"Retry-After": "2"}) from None
     pending = publication_pending(tenant_path)
-    if pending:
+    if pending or snapshot["schema_version"] < 2:
         _ensure_initialization(client_id, tenant_path)
-    return {"lojas": snapshot["lojas"], "snapshot": {
+    rows = snapshot["lojas"]
+    if not include_provider_identities:
+        rows = [{key: value for key, value in row.items() if key != "provider_identities"} for row in rows]
+    return {"lojas": rows, "snapshot": {
         "generation": snapshot["generation"], "published_at": snapshot["published_at"],
         "status": "updating" if pending else "ready",
     }}

@@ -81,7 +81,7 @@ def _loja_lista_definida(valor: Any) -> bool:
 
 def _dependencias_margens_concorrentes() -> dict[str, Any]:
     from backend.services import mercadolivre_legacy_core, promocoes_core
-    from backend.services.integracoes import carregar_lojas
+    from backend.services.integracoes import ler_lojas as carregar_lojas
 
     return {
         "carregar_lojas": carregar_lojas,

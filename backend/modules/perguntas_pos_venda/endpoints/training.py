@@ -92,7 +92,7 @@ def _resolver_context_hub_scope(client_id: str, loja: str, store_id: str) -> dic
 
     matches = [
         dict(value)
-        for value in (integracoes.carregar_lojas(client_id) or [])
+        for value in (integracoes.ler_lojas(client_id) or [])
         if isinstance(value, dict)
         and str(value.get("store_id") or "").strip() == str(store_id or "").strip()
     ]

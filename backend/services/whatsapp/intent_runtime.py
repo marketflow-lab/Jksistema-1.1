@@ -179,18 +179,11 @@ def _whatsapp_action_spec_query_only_domains(spec: Any) -> list[str]:
     return whatsapp_intent.action_spec_query_only_domains(spec)
 
 def _whatsapp_load_store_configs(client_id: Any) -> list[dict[str, Any]]:
-    tenant = str(client_id or "default").strip() or "default"
-    try:
-        from backend.services.integracoes import carregar_lojas
-
-        return [item for item in (carregar_lojas(tenant) or []) if isinstance(item, dict)]
-    except Exception:
-        path = (_info_dir() / tenant / "lojas_config.json").resolve()
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8-sig"))
-        except Exception:
-            return []
-        return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+    from backend.services.integracoes import ler_lojas
+    tenant = str(client_id or "").strip()
+    if not tenant:
+        raise ValueError("Tenant obrigatorio para consultar lojas.")
+    return [item for item in ler_lojas(tenant) if isinstance(item, dict)]
 
 def _whatsapp_authorized_api_stores(
     client_id: Any,

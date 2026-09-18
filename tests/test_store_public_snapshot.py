@@ -98,7 +98,8 @@ def test_closed_schema_and_identities_rejected_on_both_read_and_write(tmp_path, 
 
 def test_duplicate_json_fields_rejected(tmp_path):
     valid = snapshots.build_snapshot([])
-    payload = json.dumps(valid).replace('"schema_version": 1', '"schema_version": 1, "schema_version": 1')
+    version = valid["schema_version"]
+    payload = json.dumps(valid).replace(f'"schema_version": {version}', f'"schema_version": {version}, "schema_version": {version}')
     snapshots.snapshot_path(tmp_path).write_text(payload, encoding="utf-8")
     with pytest.raises(snapshots.SnapshotUnavailable):
         snapshots.read_snapshot(tmp_path)

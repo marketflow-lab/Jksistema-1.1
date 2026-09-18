@@ -75,7 +75,7 @@ def _estoque_historico_exigir_store_id(store_id: Any) -> str:
 
 def _carregar_lojas_historico(client_id: str) -> list[dict]:
     try:
-        lojas = integracoes_service.carregar_lojas(client_id) or []
+        lojas = integracoes_service.ler_lojas(client_id) or []
         return [loja for loja in lojas if isinstance(loja, dict)]
     except RuntimeError as exc:
         if "context was not configured" not in str(exc):

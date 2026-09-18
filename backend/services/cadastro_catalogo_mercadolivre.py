@@ -308,7 +308,7 @@ def _resolve_store(
 
     matches = [
         dict(store)
-        for store in integracoes.carregar_lojas(client_id) or []
+        for store in integracoes.ler_lojas(client_id) or []
         if isinstance(store, dict) and str(store.get("store_id") or "").strip() == requested
     ]
     if not matches:
@@ -323,6 +323,9 @@ def _resolve_store(
         )
 
     raw_store = matches[0]
+    if "mercadolivre" in raw_store.get("_unavailable_providers", []):
+        from .store_read_service import unavailable
+        raise unavailable()
     name = str(raw_store.get("nome") or requested).strip() or requested
     integrations = raw_store.get("integracoes") if isinstance(raw_store.get("integracoes"), dict) else {}
     persisted_cfg = dict(integrations.get("mercadolivre") or {})

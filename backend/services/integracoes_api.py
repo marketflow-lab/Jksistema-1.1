@@ -26,7 +26,8 @@ from backend.services.integracoes import (
     auth_ml_get_link,
     atualizar_api_loja,
     buscar_loja,
-    carregar_lojas,
+    buscar_loja_snapshot,
+    ler_lojas as carregar_lojas,
     consumir_temp_auth,
     criar_loja as criar_loja_identidade,
     criar_temp_auth_loja,
@@ -366,7 +367,7 @@ async def get_loja(
         if len(rows) != 1:
             raise HTTPException(404, "Loja não encontrada na sessão.")
         return rows[0]
-    loja = buscar_loja(client_id, nome_loja, store_id=store_id)
+    loja = buscar_loja_snapshot(client_id, nome_loja, store_id=store_id)
     if not loja:
         raise HTTPException(status_code=404, detail="Loja nao encontrada")
     return loja

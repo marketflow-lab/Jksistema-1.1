@@ -89,7 +89,7 @@ class LegacyBlingVendasAdapter:
             if helper_name in _ALLOWED_BLING_HELPERS:
                 helper = getattr(bling_vendas, helper_name)
             elif helper_name in _ALLOWED_INTEGRACOES_HELPERS:
-                helper = getattr(integracoes, helper_name)
+                helper = getattr(integracoes, "buscar_loja_snapshot" if helper_name == "buscar_loja" else helper_name)
             elif helper_name in _ALLOWED_ESTOQUE_HELPERS:
                 helper = getattr(estoque_historico, helper_name)
             else:

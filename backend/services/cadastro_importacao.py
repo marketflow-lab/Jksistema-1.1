@@ -519,7 +519,7 @@ async def importar_colunas_cadastro_por_sku(
                         status_code=400,
                         detail="Selecione a loja/conta para salvar os custos e impostos.",
                     )
-                loja_custo_snapshot = integracoes_service.buscar_loja(
+                loja_custo_snapshot = integracoes_service.buscar_loja_snapshot(
                     client_id,
                     nome_loja,
                 )

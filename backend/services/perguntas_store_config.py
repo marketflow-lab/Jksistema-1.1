@@ -32,7 +32,7 @@ def obter_cfg_ml_snapshot(
     exact store ID for persistence. Display-only status normalization does not
     need to write store configuration before a question read or answer POST.
     """
-    rows = integracoes.carregar_lojas_snapshot(client_id)
+    rows = integracoes.ler_lojas(client_id)
     exact = str(store_id or "").strip()
     if exact:
         matches = [row for row in rows if str(row.get("store_id") or "").strip() == exact]
@@ -53,6 +53,9 @@ def obter_cfg_ml_snapshot(
     if not exact:
         raise _identity_error("store_id_required", "A identidade exata da loja nao esta disponivel.")
     cfg = dict((row.get("integracoes") or {}).get("mercadolivre") or {})
+    if "mercadolivre" in row.get("_unavailable_providers", []):
+        from .store_read_service import unavailable
+        raise unavailable()
     current_seller = str(cfg.get("user_id") or "").strip()
     current_site = str(cfg.get("site_id") or row.get("site_id") or "").strip()
     if not current_seller or (current_site and not re.fullmatch(r"[A-Z]{3}", current_site)):

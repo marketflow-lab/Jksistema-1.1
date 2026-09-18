@@ -207,7 +207,7 @@ def _resolver_loja_ml_exata(client_id: str, store_id: str) -> tuple[dict[str, An
         raise HTTPException(status_code=400, detail=_detail("store_id_required", "store_id e obrigatorio."))
     stores = [
         dict(store)
-        for store in integracoes.carregar_lojas(client_id) or []
+        for store in integracoes.ler_lojas(client_id) or []
         if isinstance(store, dict)
         and str(store.get("store_id") or "").strip() == store_id_alvo
     ]
@@ -220,6 +220,9 @@ def _resolver_loja_ml_exata(client_id: str, store_id: str) -> tuple[dict[str, An
         )
 
     store = stores[0]
+    if "mercadolivre" in store.get("_unavailable_providers", []):
+        from .store_read_service import unavailable
+        raise unavailable()
     store_name = str(store.get("nome") or store_id_alvo).strip() or store_id_alvo
     integrations = store.get("integracoes") if isinstance(store.get("integracoes"), dict) else {}
     cfg = dict(integrations.get("mercadolivre") or {})
@@ -237,8 +240,6 @@ def _resolver_loja_ml_exata(client_id: str, store_id: str) -> tuple[dict[str, An
         )
 
     cfg = mercadolivre._ml_cfg_com_store_id_context(cfg, store_id_alvo)
-    cfg = mercadolivre._ml_normalizar_oauth_compartilhado(client_id, store_name, cfg)
-    cfg = mercadolivre._ml_descobrir_user_id_oauth(client_id, store_name, cfg)
     seller_id = str(cfg.get("user_id") or "").strip()
     if not seller_id:
         raise HTTPException(

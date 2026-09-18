@@ -720,7 +720,7 @@ def _cadastro_carregar_lojas_foto(client_id: str) -> list[dict[str, Any]]:
 
     return [
         dict(loja)
-        for loja in (integracoes.carregar_lojas(client_id) or [])
+        for loja in (integracoes.ler_lojas(client_id) or [])
         if isinstance(loja, dict)
     ]
 

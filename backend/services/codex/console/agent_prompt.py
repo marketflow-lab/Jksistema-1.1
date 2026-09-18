@@ -639,7 +639,7 @@ def _codex_agent_plan_short_data_selection(
     try:
         from backend.services import codex_data_selection_agent, integracoes
 
-        configured_stores = integracoes.carregar_lojas(tenant)
+        configured_stores = integracoes.ler_lojas(tenant)
         authorized_stores = [
             str(item.get("nome") or item.get("name") or "").strip()[:180]
             for item in list(configured_stores or [])[:50]
