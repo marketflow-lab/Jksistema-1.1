@@ -56,8 +56,9 @@ def test_public_routes_and_request_schemas_remain_compatible():
         assert hashlib.sha256(Path(filename).read_bytes().replace(b'\r\n', b'\n')).hexdigest() == digest
 
 
-@pytest.mark.parametrize('failure', [False, 'io', 'connection_loss'])
-def test_transaction_preserves_credentials_and_rolls_back(tmp_path, monkeypatch, failure):
+@pytest.mark.parametrize('existing_identity', [False, True])
+@pytest.mark.parametrize('failure', [False, 'io', 'connection_loss', 'token_changed', 'identity_changed'])
+def test_transaction_preserves_credentials_and_rolls_back(tmp_path, monkeypatch, failure, existing_identity):
     tenant = tmp_path / 'info' / 'tenant-a'
     tenant.mkdir(parents=True)
     integracoes.configure_integracoes_context(
@@ -66,6 +67,13 @@ def test_transaction_preserves_credentials_and_rolls_back(tmp_path, monkeypatch,
     )
     config = {'id': 'app', 'secret': 'secret', 'access_token': 'local-access',
               'refresh_token': 'local-refresh', 'connected': True, 'oauth_invalid': False}
+    if existing_identity:
+        config['oauth_connection_id'] = 'existing-local-identity'
+    generated = []
+    def generate_identity(size):
+        generated.append(size)
+        return 'prepared-local-identity'
+    monkeypatch.setattr(apply.secrets, 'token_urlsafe', generate_identity)
     local = [{'store_id': 'a' * 32, 'nome': 'Store A', 'integracoes': {'bling': config}}]
     target = tenant / 'lojas_config.json'
     target.write_text(json.dumps(local), encoding='utf-8')
@@ -75,17 +83,23 @@ def test_transaction_preserves_credentials_and_rolls_back(tmp_path, monkeypatch,
     original_legacy = legacy.read_bytes()
     remote = [{'store_id': 'a' * 32, 'nome': 'Store A', 'integracoes': {'bling': {
         **config, 'access_token': 'different', 'refresh_token': 'different-refresh',
+        'oauth_connection_id': 'remote-identity-must-not-be-used',
         'connected': False, 'oauth_invalid': True}}},
         {'store_id': 'b' * 32, 'nome': 'Store B', 'integracoes': {}}]
     sources = [('lojas_config.json', json.dumps(remote).encode()),
                ('integracoes.json', json.dumps({'Store A': {'bling': remote[0]['integracoes']['bling']}}).encode())]
     write = apply._shared_sync_atomic_write
-    if failure == 'connection_loss':
+    if failure in {'connection_loss', 'token_changed', 'identity_changed'}:
         commit = integracoes._integracoes_commit_lojas_tombstones
         def corrupt_after_commit(*args, **kwargs):
             commit(*args, **kwargs)
             corrupted = json.loads(target.read_bytes())
-            corrupted[0]['integracoes']['bling']['connected'] = False
+            key, value = {
+                'connection_loss': ('connected', False),
+                'token_changed': ('access_token', 'unexpected-token'),
+                'identity_changed': ('oauth_connection_id', 'unexpected-identity'),
+            }[failure]
+            corrupted[0]['integracoes']['bling'][key] = value
             target.write_text(json.dumps(corrupted), encoding='utf-8')
         monkeypatch.setattr(integracoes, '_integracoes_commit_lojas_tombstones', corrupt_after_commit)
     if failure:
@@ -109,9 +123,41 @@ def test_transaction_preserves_credentials_and_rolls_back(tmp_path, monkeypatch,
         assert saved[0]['integracoes']['bling']['access_token'] == config['access_token']
         assert saved[0]['integracoes']['bling']['refresh_token'] == config['refresh_token']
         assert saved[0]['integracoes']['bling']['connected'] is True
+        expected_identity = 'existing-local-identity' if existing_identity else 'prepared-local-identity'
+        assert saved[0]['integracoes']['bling']['oauth_connection_id'] == expected_identity
+        assert {key: value for key, value in saved[0]['integracoes']['bling'].items()
+                if key not in {'_sync_version', '_sync_updated_at', 'oauth_connection_id'}} == {
+                    key: value for key, value in config.items() if key != 'oauth_connection_id'}
         assert result['connection_conflicts'] == 1
         assert result['connection_verification'] == 'not_performed'
     assert legacy.read_bytes() == original_legacy
+    assert generated == ([] if existing_identity else [24])
+
+
+def test_transaction_does_not_seed_or_reconnect_bling_without_credentials(tmp_path, monkeypatch):
+    tenant = tmp_path / 'info' / 'tenant-a'
+    tenant.mkdir(parents=True)
+    integracoes.configure_integracoes_context(
+        pasta_info=str(tenant.parent), get_tenant_path=lambda _: str(tenant),
+        normalizar_integracao_conectada=lambda _service, data: data,
+    )
+    disconnected = {'id': 'app', 'connected': False, 'oauth_invalid': True}
+    local = [{'store_id': 'a' * 32, 'nome': 'Store A', 'integracoes': {'bling': disconnected}}]
+    target = tenant / 'lojas_config.json'
+    target.write_text(json.dumps(local), encoding='utf-8')
+    incoming = copy.deepcopy(local)
+    incoming[0]['integracoes']['bling'].update(
+        access_token='remote-token', oauth_connection_id='remote-identity', connected=True,
+    )
+    monkeypatch.setattr(apply.secrets, 'token_urlsafe', lambda _: pytest.fail('no credential to identify'))
+    apply._shared_sync_aplicar_lojas_integracoes(
+        'tenant-a', [('lojas_config.json', json.dumps(incoming).encode())],
+        str(tenant), str(tenant / '_backup'), add_only=True,
+        strict_oauth_conflicts=True, preserve_local_connections=True,
+    )
+    saved = json.loads(target.read_bytes())[0]['integracoes']['bling']
+    assert {key: value for key, value in saved.items()
+            if key not in {'_sync_version', '_sync_updated_at'}} == disconnected
 
 
 def test_receipt_identity_cannot_be_spoofed():

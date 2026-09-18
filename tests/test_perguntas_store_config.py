@@ -20,7 +20,7 @@ def _store(identity="StoreA", name="Loja A", seller="seller-a", site="MLB"):
 @pytest.fixture
 def rows(monkeypatch):
     values = {"tenant-a": [_store()], "tenant-b": [_store("StoreB", "Loja B", "seller-b")]}
-    monkeypatch.setattr(config.integracoes, "carregar_lojas_snapshot", lambda tenant: values[tenant])
+    monkeypatch.setattr(config.integracoes, "ler_lojas", lambda tenant: values[tenant])
     def canonical_forbidden(*_args, **_kwargs):
         pytest.fail("Question credentials must not enter the canonical writer path")
     monkeypatch.setattr(config.integracoes, "carregar_lojas", canonical_forbidden)
@@ -104,7 +104,7 @@ def test_snapshot_unavailable_is_propagated_without_canonical_fallback(rows, mon
                           headers={"Retry-After": "2"})
     def unavailable(_tenant):
         raise error
-    monkeypatch.setattr(config.integracoes, "carregar_lojas_snapshot", unavailable)
+    monkeypatch.setattr(config.integracoes, "ler_lojas", unavailable)
     with pytest.raises(HTTPException) as caught:
         config.obter_cfg_ml_snapshot("tenant-a", "Loja A", "StoreA")
     assert caught.value is error

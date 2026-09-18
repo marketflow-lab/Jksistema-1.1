@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import tempfile
@@ -1905,6 +1906,21 @@ def _shared_sync_aplicar_lojas_integracoes(
             connection_conflicts = _shared_sync_connection_conflicts(
                 original_connections, por_rel["lojas_config.json"],
             )
+            # Seed legacy Bling identity in the prepared local connection,
+            # before the canonical save can add it implicitly. The verifier
+            # must compare the exact nonce generated here, never a remote one
+            # or a value observed after commit. Keep preimages byte-for-byte
+            # unchanged so every failure still restores the original files.
+            local_connections = json.loads(original_connections)
+            for local_store in local_connections:
+                cfg_bling = (local_store.get("integracoes") or {}).get("bling") or {}
+                if (
+                    isinstance(cfg_bling, dict)
+                    and any(cfg_bling.get(key) for key in ("access_token", "refresh_token", "api_key", "apikey"))
+                    and not str(cfg_bling.get("oauth_connection_id") or "").strip()
+                ):
+                    cfg_bling["oauth_connection_id"] = secrets.token_urlsafe(24)
+            original_connections = json.dumps(local_connections, ensure_ascii=False).encode("utf-8")
             prepared["lojas_config.json"] = _shared_sync_preserve_connection_blocks(
                 original_connections, prepared["lojas_config.json"],
             )
