@@ -42,6 +42,20 @@ function sha256File(file) {
   return hash.digest('hex');
 }
 
+function canonicalExistingPath(value) {
+  const resolved = path.resolve(String(value || '.'));
+  const canonical = fs.realpathSync.native(resolved);
+  return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+}
+
+function isStrictPathInside(parent, candidate) {
+  const relative = path.relative(parent, candidate);
+  return Boolean(relative)
+    && relative !== '..'
+    && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative);
+}
+
 function validateContextBundleAtRoot(bundleRoot, failures, label) {
   const manifestFile = path.join(bundleRoot, 'context-bundle-manifest.json');
   const knowledgeRoot = path.join(bundleRoot, 'docs', 'knowledge');
@@ -320,9 +334,22 @@ function validateOfflineResolution(packageRoot, failures) {
       maxBuffer: 16 * 1024 * 1024,
       env,
     });
-    const normalizedToolRoot = path.resolve(toolRoot).toLowerCase();
-    const pipPath = String(pipProbe.stdout || '').split(/\r?\n/, 1)[0].trim();
-    if (pipProbe.status !== 0 || !path.resolve(pipPath || '.').toLowerCase().startsWith(`${normalizedToolRoot}${path.sep}`)) {
+    const [pipPath = '', prefixPath = ''] = String(pipProbe.stdout || '')
+      .split(/\r?\n/)
+      .map(value => value.trim());
+    let isolatedPip = false;
+    if (pipProbe.status === 0 && pipPath && prefixPath) {
+      try {
+        // O runner pode fornecer TEMP com nome 8.3 (RUNNER~1), enquanto o
+        // Python resolve o mesmo diretorio para o nome longo (runneradmin).
+        const canonicalToolRoot = canonicalExistingPath(toolRoot);
+        const canonicalPrefix = canonicalExistingPath(prefixPath);
+        const canonicalPipPath = canonicalExistingPath(pipPath);
+        isolatedPip = canonicalPrefix === canonicalToolRoot
+          && isStrictPathInside(canonicalToolRoot, canonicalPipPath);
+      } catch (_err) {}
+    }
+    if (!isolatedPip) {
       failures.push(`pip do verificador nao ficou isolado na venv temporaria: ${(pipProbe.stderr || pipProbe.stdout || '').trim().slice(-3000)}`);
       return;
     }
