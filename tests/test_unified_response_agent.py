@@ -99,7 +99,7 @@ def test_pre_sale_prompt_merges_general_guidance_and_preserves_specific_policy()
     result = run_unified_response_agent(
         flow="pre_sale",
         context={
-            "response_policy": specific_policy,
+            "response_policy": PUBLIC_REPLY_EVIDENCE_GUIDANCE + specific_policy,
             "buyer_question_chat": [{"role": "seller", "text": "Resposta anterior."}],
         },
         invoke_turn=lambda prompt, _results, _force: prompts.append(prompt) or _answer(),
@@ -108,7 +108,9 @@ def test_pre_sale_prompt_merges_general_guidance_and_preserves_specific_policy()
 
     assert result["action"] == "answer"
     assert len(prompts) == 1
-    assert PUBLIC_REPLY_EVIDENCE_GUIDANCE in prompts[0]
+    guidance_marker = "ORIENTACAO GERAL DE PERGUNTAS PUBLICAS v13"
+    assert guidance_marker in prompts[0]
+    assert prompts[0].count(guidance_marker) == 1
     assert specific_policy in prompts[0]
     assert "ao mesmo comprador, no mesmo anuncio" in prompts[0]
     assert "nunca misture os historicos dos compradores" in prompts[0]
@@ -131,7 +133,7 @@ def test_post_sale_prompt_does_not_receive_pre_sale_general_guidance():
     assert PUBLIC_REPLY_EVIDENCE_GUIDANCE not in prompts[0]
 
 
-def test_two_research_rounds_reuse_callback_and_resend_full_accumulated_state():
+def test_two_research_rounds_send_accumulated_results_once_via_tool_results():
     prompts: list[str] = []
     turn_results: list[list[dict[str, Any]]] = []
     force_flags: list[bool] = []
@@ -186,8 +188,8 @@ def test_two_research_rounds_reuse_callback_and_resend_full_accumulated_state():
         "order-integral",
     )
     assert all(all(marker in prompt for marker in identity_markers) for prompt in prompts)
-    assert "evidence-1" in prompts[1]
-    assert "evidence-1" in prompts[2] and "evidence-2" in prompts[2]
+    assert all("RESULTADOS_ACUMULADOS_NAO_CONFIAVEIS" not in prompt for prompt in prompts)
+    assert all("evidence-1" not in prompt and "evidence-2" not in prompt for prompt in prompts)
 
 
 def test_research_with_premature_answer_discards_draft_and_executes_request():
@@ -467,6 +469,7 @@ def test_exact_sku_evidence_can_answer_directly_without_forcing_review():
 def test_exact_listing_title_and_description_can_answer_directly_despite_catalog_omission():
     prompts: list[str] = []
     context = {
+        "response_policy": PUBLIC_REPLY_EVIDENCE_GUIDANCE,
         "agent_input": {
             "item": {
                 "id": "MLB-EXACT",

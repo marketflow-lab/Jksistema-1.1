@@ -94,6 +94,28 @@ def test_openai_preserves_question_with_compact_planned_evidence(monkeypatch):
     assert '"quantity":7' in user_text
 
 
+def test_ml_stage_appends_explicit_tool_results_exactly_once(monkeypatch):
+    marker = "RESULTADO_TECNICO_UNICO"
+    request_json = _capture_openai_request(
+        monkeypatch,
+        IAChatRequest(
+            message="PROMPT_SEM_RESULTADO_TECNICO",
+            context={
+                "modulo": "perguntas_pos_venda",
+                "tipo": "novo_fluxo_perguntas_v2_unified_response_agent",
+                "tipo_treinamento": "perguntas_anuncio",
+                "desativar_recursos_chat": True,
+            },
+            model="gpt-5.4-nano",
+            tool_results=[{"function": "technical_web", "result": {"context": marker}}],
+        ),
+    )
+
+    user_text = _openai_user_text(request_json)
+    assert user_text.count(marker) == 1
+    assert "Evidencia selecionada pelo backend" in user_text
+
+
 def test_planned_evidence_is_bounded_valid_and_redacts_sensitive_fields():
     payload = IAChatRequest(
         message="resuma",

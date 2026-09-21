@@ -81,6 +81,7 @@ from .validation import (
 from .clients import (
     _PerguntasCodexV3Client,
 )
+from .model_context import unified_agent_input_for_model
 from .unified_response_agent import (
     UnifiedResponseAgentOperationalError,
     run_unified_response_agent,
@@ -107,7 +108,6 @@ _PERGUNTAS_IA_PROVIDER_RETRY_REASONS = frozenset({
     "provider_turn_failed",
     "provider_empty_response",
 })
-
 
 @dataclass(frozen=True, slots=True)
 class LegacyResponseBindings:
@@ -506,6 +506,11 @@ def _perguntas_ia_execucao_orquestrar(contexto: dict) -> tuple:
     signature = resolve_runtime_adapter(
         "state", "store_signature", _perguntas_ia_assinatura_loja,
     )(contexto["loja"])
+    model_agent_input = unified_agent_input_for_model(
+        agent_input,
+        server_identity=server_identity,
+        response_signature=signature,
+    )
     unified_context = {
         "flow": contexto["flow"],
         "server_identity": server_identity,
@@ -516,7 +521,7 @@ def _perguntas_ia_execucao_orquestrar(contexto: dict) -> tuple:
         "response_policy_version": _PERGUNTAS_IA_RESPONSE_POLICY_VERSION,
         "seller_method_version": _PERGUNTAS_IA_SELLER_METHOD_VERSION,
         "approval_required": not bool(settings.auto_publish_enabled),
-        "agent_input": copy.deepcopy(agent_input),
+        "agent_input": model_agent_input,
         "initial_read_only_context": initial_context,
     }
     try:

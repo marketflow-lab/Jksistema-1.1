@@ -50,6 +50,7 @@ LAYERS = {
     "deep_research_contracts": 0, "deep_research_prefetch": 0, "deep_research_scoping": 0,
     "deep_research_sanitization": 0, "input_contracts": 0, "input_sanitization": 0,
     "official_source_registry": 0, "sku_question_context": 0, "unified_response_agent": 0,
+    "model_context": 0,
     "technical_planning": 0, "technical_evidence_persistence": 0, "factual_critic": 0,
     "runtime": 1, "deep_research_analysis": 1, "deep_research_claims": 1,
     "sku_question_prompts": 1,

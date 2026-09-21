@@ -8,6 +8,7 @@ import pytest
 
 from backend.modules.perguntas_pos_venda.ai import clients
 from backend.modules.perguntas_pos_venda.ai import execution
+from backend.modules.perguntas_pos_venda.ai.model_context import unified_agent_input_for_model
 from backend.modules.perguntas_pos_venda.ai import unified_presale
 from backend.modules.perguntas_pos_venda.ai.unified_response_agent import (
     UnifiedResponseAgentOperationalError,
@@ -93,6 +94,98 @@ def test_pending_legacy_intent_does_not_run_or_gate_on_a_separate_classifier(mon
     assert agent_input["_unified_response_flow"] == "pre_sale"
 
 
+def test_model_projection_removes_duplicate_representations_without_losing_answer_facts() -> None:
+    signature = "A equipe Loja Exata agradece o contato."
+    agent_input = {
+        "tenant_id": "tenant-2",
+        "store": "Loja Exata",
+        "prompt": "PROMPT LEGADO COM DESCRICAO REPETIDA",
+        "app_guidance": "POLITICA REPETIDA",
+        "app_guidance_source": "policy-v1",
+        "app_guidance_truth_class": "versioned_technical",
+        "app_guidance_usage": "published_behavior_policy_not_product_evidence",
+        "commercial_method_version": "seller-v1",
+        "intent": {"fluxo": "pre_sale"},
+        "question": {
+            "id": "q-1",
+            "item_id": "MLB1",
+            "text": "Tem outra cor?",
+            "history": [{"role": "buyer", "text": "Quero a maior."}],
+            "history_count": 1,
+            "history_source": "Mercado Livre",
+        },
+        "item": {
+            "id": "MLB1",
+            "title": "Produto Exato",
+            "seller_sku": "SKU-7",
+            "description": "DESCRICAO OFICIAL",
+            "permalink": "https://produto.mercadolivre.com.br/MLB1",
+            "link": "https://produto.mercadolivre.com.br/MLB1",
+            "url": "https://produto.mercadolivre.com.br/MLB1",
+            "variations": [{"id": "var-6", "seller_sku": "SKU-7-A", "available_quantity": 4}],
+        },
+        "context": {
+            "tenant_id": "tenant-2",
+            "loja": "Loja Exata",
+            "store_id": "store-9",
+            "seller_id": "seller-8",
+            "site_id": "MLB",
+            "question_id": "q-1",
+            "item_id": "MLB1",
+            "variation_id": "var-6",
+            "order_id": "",
+            "titulo": "Produto Exato",
+            "sku": "SKU-7",
+            "permalink": "https://produto.mercadolivre.com.br/MLB1",
+            "descricao": "DESCRICAO OFICIAL",
+            "descricao_chars": 17,
+            "descricao_disponivel": True,
+            "pergunta": "Tem outra cor?",
+            "assinatura_obrigatoria": signature,
+            "intencao_atendimento": {"fluxo": "pre_sale"},
+            "busca_outra_peca": {},
+            "contexto_exclusivo": "MANTER ESTE FATO",
+        },
+        "seller_behavior_profile": {"orientacao_obsidian": "MANTER ORIENTACAO"},
+        "verified_product_evidence": [{"field_name": "material", "value": "aco"}],
+    }
+    identity = {
+        "tenant_id": "tenant-2",
+        "store": "Loja Exata",
+        "store_id": "store-9",
+        "seller_id": "seller-8",
+        "site_id": "MLB",
+        "sku": "SKU-7",
+        "item_id": "MLB1",
+        "variation_id": "var-6",
+        "order_id": "",
+    }
+
+    projected = unified_agent_input_for_model(
+        agent_input,
+        server_identity=identity,
+        response_signature=signature,
+    )
+
+    for duplicate in (
+        "prompt", "app_guidance", "app_guidance_source", "app_guidance_truth_class",
+        "app_guidance_usage", "commercial_method_version", "tenant_id", "store",
+    ):
+        assert duplicate not in projected
+    assert projected["question"] == {
+        "id": "q-1",
+        "text": "Tem outra cor?",
+        "history": [{"role": "buyer", "text": "Quero a maior."}],
+    }
+    assert projected["item"]["description"] == "DESCRICAO OFICIAL"
+    assert projected["item"]["variations"][0]["available_quantity"] == 4
+    assert "link" not in projected["item"] and "url" not in projected["item"]
+    assert projected["context"] == {"contexto_exclusivo": "MANTER ESTE FATO"}
+    assert projected["seller_behavior_profile"]["orientacao_obsidian"] == "MANTER ORIENTACAO"
+    assert projected["verified_product_evidence"][0]["value"] == "aco"
+    assert agent_input["prompt"] == "PROMPT LEGADO COM DESCRICAO REPETIDA"
+
+
 def test_presale_execution_uses_one_unified_agent_and_preserves_server_scope(monkeypatch) -> None:
     captured = {}
 
@@ -112,7 +205,15 @@ def test_presale_execution_uses_one_unified_agent_and_preserves_server_scope(mon
 
         def collect_unified_initial_context(self, metadata):
             captured["metadata"] = metadata
-            return {"sku_question_context": {"identity": {"sku": "SKU-7"}}}
+            return {"sku_question_context": {
+                "identity": {"sku": "SKU-7"},
+                "canonical_document": {"obsidian_fact": "CANONICAL-PRESERVED"},
+                "catalog_document": {"obsidian_catalog": "CATALOG-PRESERVED"},
+                "guidance": {
+                    "general": {"text": "GENERAL-PRESERVED"},
+                    "sku": {"text": "SKU-GUIDANCE-PRESERVED"},
+                },
+            }}
 
         def invoke_unified_turn(self, *_args, **_kwargs):
             raise AssertionError("runner fake owns the result")
@@ -176,6 +277,11 @@ def test_presale_execution_uses_one_unified_agent_and_preserves_server_scope(mon
         "variation_id": "var-6",
         "order_id": "",
     }
+    sku_context = captured["context"]["initial_read_only_context"]["sku_question_context"]
+    assert sku_context["canonical_document"] == {"obsidian_fact": "CANONICAL-PRESERVED"}
+    assert sku_context["catalog_document"] == {"obsidian_catalog": "CATALOG-PRESERVED"}
+    assert sku_context["guidance"]["general"] == {"text": "GENERAL-PRESERVED"}
+    assert sku_context["guidance"]["sku"] == {"text": "SKU-GUIDANCE-PRESERVED"}
     assert captured["invoke_turn"] == client.invoke_unified_turn
     assert captured["execute_research"] == client.execute_unified_research
 

@@ -142,11 +142,13 @@ def test_post_sale_unified_agent_reuses_thread_and_materializes_official_policy(
     _configure_provider(monkeypatch)
     prompts: list[str] = []
     thread_ids: list[str] = []
+    tool_result_payloads: list[list[dict]] = []
     policy_calls: list[dict] = []
 
     def invoke(_tenant, payload, model):
         prompts.append(payload.message)
         thread_ids.append(str(payload.context.get("_codex_thread_id") or ""))
+        tool_result_payloads.append(list(payload.tool_results or []))
         assert payload.context["context_collection_stage"] == "unified_response_agent"
         payload.context["_codex_thread_id_result"] = "thread-shared"
         if len(prompts) == 1:
@@ -198,7 +200,10 @@ def test_post_sale_unified_agent_reuses_thread_and_materializes_official_policy(
     assert "Resposta que já estava sendo editada." in prompts[0]
     assert "Mantenha a saudação" in prompts[0]
     assert "Nao use CTA de compra" in prompts[0]
-    assert "official_marketplace_policy_research" in prompts[1]
+    assert "official_marketplace_policy_research" not in prompts[1]
+    assert "official_marketplace_policy_research" in json.dumps(
+        tool_result_payloads[1], ensure_ascii=False,
+    )
     for prompt in prompts:
         assert '"tenant_id":"tenant-a"' in prompt
         assert '"store_id":"Loja Teste"' in prompt

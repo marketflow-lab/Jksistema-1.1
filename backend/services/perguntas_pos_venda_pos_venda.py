@@ -1521,12 +1521,13 @@ def _ml_pos_venda_gerar_resposta_ia(
     model_state = {"used": model_req}
 
     def invoke_turn(prompt: str, tool_results: list[dict[str, Any]], force_answer: bool) -> Mapping[str, Any]:
-        del tool_results, force_answer
+        del force_answer
         payload = IAChatRequest(
             message=_ml_pos_venda_unified_trusted_prompt(prompt, assinatura, limite_resposta),
             page="Perguntas e pos venda",
             context=provider_context,
             model=model_req,
+            tool_results=list(tool_results or []),
         )
         resposta_turno, modelo_turno = perguntas_agent_providers.invoke_model(
             client_id,
