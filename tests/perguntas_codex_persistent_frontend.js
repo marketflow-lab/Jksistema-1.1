@@ -15,16 +15,25 @@ assert.match(source, /next_retry_at_epoch|next_retry_in_seconds|Nova tentativa/)
 assert.match(source, /\/api\/mercadolivre\/assistant\/jobs\/\$\{encodeURIComponent\(jobId\)\}\/cancel/);
 assert.match(source, /question-ai-cancel-btn[\s\S]*Cancelar pesquisa/);
 assert.match(source, /cancelarPesquisaAtendimentoCodex\(questionKey\)/);
-assert.match(html, /perguntas\.js\?v=20260918-store-contention-v1/);
-assert.match(html, /loading\.js\?v=20260918-ai-error-contract-v1/);
+assert.match(html, /perguntas\.js\?v=20260921-question-draft-recovery-v1/);
+assert.match(html, /loading\.js\?v=20260921-question-draft-recovery-v1/);
+assert.match(html, /lojas-snapshot\.js\?v=20260921-question-draft-recovery-v1/);
 assert.doesNotMatch(source, /A pesquisa terminou sem rascunho/);
 assert.match(source, /Rascunho gerado com as informacoes disponiveis/);
-assert.match(source, /const resposta = String\(result\.resposta \?\? data\.resposta \?\? ''\);/);
+assert.match(source, /const respostaResultado = String\(result\.resposta \?\? data\?\.resposta \?\? ''\);/);
 assert.match(source, /resposta_atual: String\(textarea\.value \|\| ''\)/);
 assert.match(source, /function skuRealPergunta\(pergunta\)/);
 assert.doesNotMatch(source, /String\(result\.resposta \|\| data\.resposta \|\| ''\)\.trim\(\)/);
 assert.doesNotMatch(source, /resposta_atual: String\(textarea\.value \|\| ''\)\.trim\(\)/);
 assert.match(source, /response\.status === 404 \|\| response\.status === 410/);
+assert.match(source, /CODEX_DRAFT_AUTOSAVE_DEBOUNCE_MS = 500/);
+for (const helper of [
+    'recuperarRascunhoJobAtendimentoCodex',
+    'agendarAutosaveRascunhoAtendimentoCodex',
+    'flushAutosaveRascunhoAtendimentoCodex',
+    'finalizarEstadoJobAtendimentoCodex',
+    'marcarAtualizacaoProgramaticaRascunhoAtendimentoCodex'
+]) assert.match(source, new RegExp(`function ${helper}\\b`), `contrato ausente: ${helper}`);
 
 class FakeClassList {
     constructor() { this.values = new Set(['hidden']); }
@@ -55,12 +64,13 @@ function makeCard(questionKey) {
 }
 
 const storage = new Map();
+const loadingDrafts = new Map();
 let tenantAtual = 'tenant-1';
 const timerCallbacks = [];
 let currentCard = makeCard('Loja A::Q1');
 let fetchImpl = async () => ({ ok: true, json: async () => ({ status: 'cancelled' }) });
 let rejectedContext = null;
-const container = { querySelectorAll: () => [currentCard] };
+const container = { querySelectorAll: () => currentCard ? [currentCard] : [] };
 const context = {
     state: {},
     perguntasDetail: container,
@@ -94,7 +104,18 @@ const context = {
     clearTimeout: () => {},
     window: {
         JKPerguntasLoading: {
-            rejeitarContexto: (_question, component, _blocked, reason) => { rejectedContext = { component, reason }; }
+            rejeitarContexto: (_question, component, _blocked, reason) => { rejectedContext = { component, reason }; },
+            obterRascunhoPorChave: questionKey => {
+                const draft = loadingDrafts.get(String(questionKey || ''));
+                return draft ? { ...draft } : null;
+            },
+            atualizarRascunhoPorChave: (questionKey, patch = {}) => {
+                const key = String(questionKey || '');
+                const draft = { ...(loadingDrafts.get(key) || {}), ...(patch || {}), perguntaSelecionadaKey: key };
+                loadingDrafts.set(key, draft);
+                return { ...draft };
+            },
+            removerRascunhoPorChave: questionKey => loadingDrafts.delete(String(questionKey || ''))
         }
     }
 };
@@ -364,7 +385,15 @@ assert.strictEqual(preservedContextState._contextHubState, 'partial');
     const completed = await context.cancelarPesquisaAtendimentoCodex('Loja A::Q2');
     assert.strictEqual(completed.status, 'completed');
     assert.strictEqual(currentCard.elements.textarea.value, 'Resposta vencedora.');
-    assert.strictEqual(context.obterEstadoJobAtendimentoCodex('Loja A::Q2'), null, 'completed deve limpar storage sem marcar cancelado');
+    assert.deepStrictEqual(
+        [
+            context.obterEstadoJobAtendimentoCodex('Loja A::Q2')?.terminal,
+            context.obterEstadoJobAtendimentoCodex('Loja A::Q2')?.polling_active,
+            context.obterEstadoJobAtendimentoCodex('Loja A::Q2')?.cancelled
+        ],
+        [true, false, false],
+        'completed deve manter referência terminal recuperável até envio ou descarte'
+    );
 
     currentCard = makeCard('Loja A::Q3');
     context.salvarEstadoJobAtendimentoCodex('Loja A::Q3', {
@@ -397,6 +426,93 @@ assert.strictEqual(preservedContextState._contextHubState, 'partial');
     await Promise.all([pollOne, pollSame]);
     assert.strictEqual(pollGets, 2, 're-render nao deve duplicar polling');
     assert.strictEqual(currentCard.elements.textarea.value, 'Resposta apos rerender.');
+
+    const offscreenKey = 'Loja A::Q-OFFSCREEN';
+    context.state.perguntas = [{ question_key: offscreenKey, store_id: 'store-a', id: 'Q-OFFSCREEN' }];
+    context.salvarEstadoJobAtendimentoCodex(offscreenKey, {
+        job_id: 'job-completed-offscreen', status_message: 'Consultando', can_cancel: true, polling_active: true
+    });
+    currentCard = null;
+    fetchImpl = async () => ({
+        ok: true,
+        json: async () => ({
+            status: 'completed',
+            job_id: 'job-completed-offscreen',
+            result: {
+                resposta: 'Resposta concluida fora do DOM.',
+                proposal_id: 'proposal-offscreen',
+                proposal_version: 3,
+                proposal_hash: 'hash-offscreen'
+            }
+        })
+    });
+    const offscreenCompleted = await context.garantirPollingJobAtendimentoCodex(offscreenKey);
+    assert.strictEqual(offscreenCompleted.status, 'completed');
+    assert.strictEqual(
+        context.window.JKPerguntasLoading.obterRascunhoPorChave(offscreenKey)?.resposta,
+        'Resposta concluida fora do DOM.',
+        'conclusao sem card deve materializar um rascunho recuperavel'
+    );
+
+    assert.deepStrictEqual(
+        [
+            context.obterEstadoJobAtendimentoCodex(offscreenKey)?.terminal,
+            context.obterEstadoJobAtendimentoCodex(offscreenKey)?.polling_active
+        ],
+        [true, false],
+        'conclusao sem card deve manter referência terminal para A-B-A e reload'
+    );
+    context.window.JKPerguntasLoading.atualizarRascunhoPorChave(offscreenKey, {
+        resposta: 'Edição local ainda não salva.'
+    });
+    context.aplicarResultadoJobAtendimentoCodex(offscreenKey, offscreenCompleted);
+    assert.strictEqual(
+        context.window.JKPerguntasLoading.obterRascunhoPorChave(offscreenKey)?.resposta,
+        'Edição local ainda não salva.',
+        'resultado repetido da mesma versão não pode substituir edição local'
+    );
+    context.aplicarResultadoJobAtendimentoCodex(offscreenKey, {
+        ...offscreenCompleted,
+        result: { ...offscreenCompleted.result, resposta: 'Versão antiga.', proposal_version: 2, proposal_hash: 'hash-antigo' }
+    });
+    assert.strictEqual(
+        context.window.JKPerguntasLoading.obterRascunhoPorChave(offscreenKey)?.resposta,
+        'Edição local ainda não salva.',
+        'versão antiga nunca pode substituir o rascunho atual'
+    );
+    fetchImpl = async () => ({
+        ok: false,
+        status: 409,
+        json: async () => ({ detail: { code: 'proposal_conflict' } })
+    });
+    const timersAntesConflito = timerCallbacks.length;
+    context.agendarAutosaveRascunhoAtendimentoCodex(offscreenKey);
+    assert.strictEqual(timerCallbacks.length, timersAntesConflito + 1);
+    timerCallbacks.pop()();
+    await new Promise(resolve => setImmediate(resolve));
+    context.window.JKPerguntasLoading.atualizarRascunhoPorChave(offscreenKey, {
+        resposta: 'Edição local mantida após conflito.'
+    });
+    context.agendarAutosaveRascunhoAtendimentoCodex(offscreenKey);
+    assert.strictEqual(
+        timerCallbacks.length,
+        timersAntesConflito,
+        'conflito 409 deve bloquear novos autosaves silenciosos até revisão'
+    );
+    tenantAtual = 'tenant-2';
+    assert.strictEqual(context.obterEstadoJobAtendimentoCodex(offscreenKey), null, 'outro tenant nao pode recuperar a referência terminal');
+    tenantAtual = 'tenant-1';
+    assert.strictEqual(context.window.JKPerguntasLoading.obterRascunhoPorChave('Loja B::Q-OFFSCREEN'), null, 'outra loja/pergunta nao pode recuperar o rascunho');
+
+    context.limparEstadoJobAtendimentoCodex(offscreenKey);
+    assert.strictEqual(context.obterEstadoJobAtendimentoCodex(offscreenKey), null);
+    assert.strictEqual(
+        context.window.JKPerguntasLoading.obterRascunhoPorChave(offscreenKey)?.resposta,
+        'Edição local mantida após conflito.',
+        'limpar somente o job deve preservar o texto editável em falha ou cancelamento'
+    );
+    context.window.JKPerguntasLoading.removerRascunhoPorChave(offscreenKey);
+    assert.strictEqual(context.window.JKPerguntasLoading.obterRascunhoPorChave(offscreenKey), null, 'limpeza explícita de envio deve remover o rascunho recuperável');
 
     const countsByJob = new Map();
     fetchImpl = async (url) => {

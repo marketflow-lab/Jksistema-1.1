@@ -184,7 +184,7 @@ function garantirTreinamentoAtendimentoCarregado() {
     if (state.treinamentoCarregado || state.treinamentoAtendimentoCarregando) return;
     state.treinamentoAtendimentoCarregando = true;
     carregarTreinamentoAI()
-        .then(() => renderizarPerguntas())
+        .then(() => renderizarPerguntasPreservandoInteracao())
         .catch(() => {})
         .finally(() => {
             state.treinamentoAtendimentoCarregando = false;
@@ -383,6 +383,7 @@ function renderizarPerguntas() {
     perguntasList.querySelectorAll('[data-question-select]').forEach((button) => {
         button.addEventListener('click', () => {
             window.JKPerguntasLoading?.salvarRascunho();
+            flushAutosaveRascunhoAtendimentoCodex(state.perguntaSelecionadaKey).catch(() => {});
             state.perguntaSelecionadaKey = button.dataset.questionSelect || '';
             renderizarPerguntas();
             window.JKPerguntasLoading?.restaurarRascunho();
@@ -478,16 +479,31 @@ function capturarInteracaoPerguntas() {
     };
 }
 
+function renderizarPerguntasPreservandoInteracao() {
+    if (typeof window.JKPerguntasLoading?.renderizarSeguro === 'function') {
+        window.JKPerguntasLoading.renderizarSeguro();
+        return;
+    }
+    const snapshot = capturarInteracaoPerguntas();
+    renderizarPerguntas();
+    restaurarInteracaoPerguntas(snapshot);
+}
+
 function restaurarInteracaoPerguntas(snapshot) {
     if (!snapshot || snapshot.perguntaSelecionadaKey !== state.perguntaSelecionadaKey) return;
     const textarea = perguntasDetail && perguntasDetail.querySelector('.question-answer-text');
     const checkbox = perguntasDetail && perguntasDetail.querySelector('.question-save-example-checkbox');
     if (textarea && snapshot.resposta !== null) {
-        textarea.value = snapshot.resposta;
-        if (snapshot.proposalId) textarea.dataset.codexProposalId = snapshot.proposalId;
-        if (snapshot.proposalVersion) textarea.dataset.codexProposalVersion = snapshot.proposalVersion;
-        if (snapshot.proposalHash) textarea.dataset.codexProposalHash = snapshot.proposalHash;
-        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        marcarAtualizacaoProgramaticaRascunhoAtendimentoCodex(textarea, () => {
+            textarea.value = snapshot.resposta;
+            if (snapshot.proposalId) textarea.dataset.codexProposalId = snapshot.proposalId;
+            else delete textarea.dataset.codexProposalId;
+            if (snapshot.proposalVersion) textarea.dataset.codexProposalVersion = snapshot.proposalVersion;
+            else delete textarea.dataset.codexProposalVersion;
+            if (snapshot.proposalHash) textarea.dataset.codexProposalHash = snapshot.proposalHash;
+            else delete textarea.dataset.codexProposalHash;
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        });
         ajustarAlturaTextareaAtendimento(textarea);
         textarea.scrollTop = snapshot.textareaScrollTop || 0;
     }
@@ -495,7 +511,7 @@ function restaurarInteracaoPerguntas(snapshot) {
         checkbox.checked = snapshot.checkboxMarcado;
         checkbox.dispatchEvent(new Event('change', { bubbles: true }));
     }
-    if (snapshot.codexJobState && snapshot.perguntaSelecionadaKey) {
+    if (snapshot.codexJobState && snapshot.perguntaSelecionadaKey && !obterEstadoJobAtendimentoCodex(snapshot.perguntaSelecionadaKey)) {
         salvarEstadoJobAtendimentoCodex(snapshot.perguntaSelecionadaKey, snapshot.codexJobState);
         aplicarEstadoJobAtendimentoCodex(snapshot.perguntaSelecionadaKey);
     }
@@ -620,8 +636,11 @@ function preencherTextareaPerguntaComSugestao(card, resposta, opcoes = {}) {
         setStatusRespostaPergunta(status, 'Sugestao da IA disponivel; o campo ja tinha texto.', 'ok');
         return { ok: false, skipped: true, message: 'O campo de resposta ja tinha texto.' };
     }
-    textarea.value = resposta;
-    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    marcarAtualizacaoProgramaticaRascunhoAtendimentoCodex(textarea, () => {
+        textarea.value = resposta;
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    agendarAutosaveRascunhoAtendimentoCodex(card.dataset.questionKey || '');
     ajustarAlturaTextareaAtendimento(textarea);
     if (opcoes.focus !== false) {
         textarea.focus();
@@ -639,8 +658,11 @@ function preencherRespostaPerguntaSugerida(payload, opcoes = {}) {
     if (!card) {
         const pergunta = encontrarPerguntaDaSugestao(payload);
         if (pergunta) {
+            window.JKPerguntasLoading?.salvarRascunho();
+            flushAutosaveRascunhoAtendimentoCodex(state.perguntaSelecionadaKey).catch(() => {});
             state.perguntaSelecionadaKey = chavePerguntaAtendimento(pergunta);
             renderizarPerguntas();
+            window.JKPerguntasLoading?.restaurarRascunho();
             card = encontrarCardPerguntaSugestao(payload) || perguntasDetail?.querySelector('[data-question-card]');
         }
     }
@@ -662,6 +684,8 @@ function sugestaoEhPosVenda(payload) {
 function registrarIntegracaoSidebarPerguntas() {
     window.JKPerguntasPosVenda = window.JKPerguntasPosVenda || {};
     window.JKPerguntasPosVenda.preencherRespostaPergunta = preencherRespostaPerguntaSugerida;
+    window.JKPerguntasPosVenda.prepararSaidaRascunhos = prepararSaidaRascunhosAtendimentoCodex;
+    window.JKPerguntasPosVenda.limparPersistenciaRascunhos = limparPersistenciaRascunhosAtendimentoCodex;
     window.JKPerguntasPosVenda.preencherRespostaSugerida = function preencherRespostaSugeridaAtendimento(payload, opcoes = {}) {
         if (sugestaoEhPosVenda(payload)) return { ok: false, blocked: true, message: 'Sugestoes de IA estao desativadas no pos-venda.' };
         return preencherRespostaPerguntaSugerida(payload, opcoes);
@@ -679,6 +703,7 @@ function registrarIntegracaoSidebarPerguntas() {
 }
 
 registrarIntegracaoSidebarPerguntas();
+window.addEventListener('pagehide', prepararSaidaRascunhosAtendimentoCodex);
 
 function configurarAcoesRespostaPerguntas() {
     [perguntasList, perguntasDetail].filter(Boolean).forEach((container) => container.querySelectorAll('[data-question-card]').forEach((card) => {
@@ -711,7 +736,13 @@ function configurarAcoesRespostaPerguntas() {
             if (btnSalvarExemplo) btnSalvarExemplo.disabled = vazio;
             ajustarAlturaTextareaAtendimento(textarea);
         };
-        textarea.addEventListener('input', atualizarBotaoEnviar);
+        textarea.addEventListener('input', () => {
+            atualizarBotaoEnviar();
+            registrarRascunhoAtendimentoCodex(questionKey, textarea);
+        });
+        textarea.addEventListener('blur', () => {
+            flushAutosaveRascunhoAtendimentoCodex(questionKey).catch(() => {});
+        });
         btnEnviar.addEventListener('click', () => enviarRespostaPerguntaManual(questionId, questionLoja, textarea, btnEnviar, btnGerar, status));
         if (btnEnviarSalvar) {
             btnEnviarSalvar.addEventListener('click', () => enviarRespostaPerguntaManual(questionId, questionLoja, textarea, btnEnviarSalvar, btnGerar, status, { salvarExemplo: true, botoesExtras: [btnEnviar, btnSalvarExemplo] }));
@@ -744,6 +775,8 @@ function configurarAcoesRespostaPerguntas() {
         const jobState = obterEstadoJobAtendimentoCodex(questionKey);
         if (jobState && jobState.polling_active && jobState.job_id) {
             garantirPollingJobAtendimentoCodex(questionKey).catch(() => {});
+        } else if (jobState && jobState.terminal && jobState.job_id) {
+            recuperarRascunhoJobAtendimentoCodex(questionKey).catch(() => {});
         }
         atualizarBotaoEnviar();
     }));
@@ -854,6 +887,11 @@ async function salvarExemploRespostaPergunta(questionId, loja, textarea, botao, 
 }
 
 const CODEX_JOB_STORAGE_PREFIX = 'jk_ppv_codex_job_v2:';
+const CODEX_DRAFT_AUTOSAVE_DEBOUNCE_MS = 500;
+const atualizacoesProgramaticasRascunhoAtendimentoCodex = new WeakSet();
+const autosavesRascunhoAtendimentoCodex = new Map();
+const recuperacoesRascunhoAtendimentoCodex = new Map();
+const jobsRecuperadosRascunhoAtendimentoCodex = new Set();
 const GENERATION_FAILURE_REASONS = Object.freeze({
     auth: new Set(['codex_authentication_required']),
     runtime: new Set(['codex_runtime_disabled', 'codex_dependency_missing', 'codex_runtime_invalid']),
@@ -863,6 +901,20 @@ const GENERATION_FAILURE_REASONS = Object.freeze({
     ])
 });
 const GENERATION_CONTEXT_COMPONENTS = new Set(['identity', 'question', 'history', 'item', 'context', 'context_hub']);
+
+function marcarAtualizacaoProgramaticaRascunhoAtendimentoCodex(textarea, callback) {
+    if (!textarea || typeof callback !== 'function') return undefined;
+    atualizacoesProgramaticasRascunhoAtendimentoCodex.add(textarea);
+    try {
+        return callback();
+    } finally {
+        atualizacoesProgramaticasRascunhoAtendimentoCodex.delete(textarea);
+    }
+}
+
+function atualizacaoProgramaticaRascunhoAtendimentoCodex(textarea) {
+    return Boolean(textarea && atualizacoesProgramaticasRascunhoAtendimentoCodex.has(textarea));
+}
 
 function normalizarFalhaGeracaoAtendimento(value = {}) {
     const source = value && typeof value === 'object' ? value : {};
@@ -995,12 +1047,29 @@ function salvarEstadoJobAtendimentoCodex(questionKey, value, tenantScope = tenan
         question_key: key,
         tenant,
         job_id: String(value.job_id || ''),
+        store_id: String(value.store_id || ''),
+        question_id: String(value.question_id || ''),
+        terminal: value.terminal === true,
         status_message: String(value.status_message || 'Pesquisa em andamento.'),
         can_cancel: value.can_cancel !== false,
         polling_active: value.polling_active !== false,
-        cancelled: value.cancelled === true
+        cancelled: value.cancelled === true,
+        proposal_id: String(value.proposal_id || ''),
+        proposal_version: Math.max(0, Number(value.proposal_version || 0) || 0),
+        proposal_hash: String(value.proposal_hash || ''),
+        draft_updated_at: String(value.draft_updated_at || '')
     };
-    memoriaJobsAtendimentoCodex()[runtimeKeyJobAtendimentoCodex(key, tenant)] = safe;
+    const runtimeKey = runtimeKeyJobAtendimentoCodex(key, tenant);
+    const previous = memoriaJobsAtendimentoCodex()[runtimeKey];
+    if (previous?.job_id && previous.job_id !== safe.job_id) {
+        const autosave = autosavesRascunhoAtendimentoCodex.get(runtimeKey);
+        if (autosave?.timer) clearTimeout(autosave.timer);
+        if (autosave) autosave.cancelled = true;
+        autosavesRascunhoAtendimentoCodex.delete(runtimeKey);
+        recuperacoesRascunhoAtendimentoCodex.delete(runtimeKey);
+        jobsRecuperadosRascunhoAtendimentoCodex.delete(`${runtimeKey}::${previous.job_id}`);
+    }
+    memoriaJobsAtendimentoCodex()[runtimeKey] = safe;
     try { sessionStorage.setItem(storageKeyJobAtendimentoCodex(key, tenant), JSON.stringify(safe)); } catch (_error) {}
     return { ...safe };
 }
@@ -1014,7 +1083,15 @@ function atualizarEstadoJobAtendimentoCodex(questionKey, patch, tenantScope = te
 
 function limparEstadoJobAtendimentoCodex(questionKey, tenantScope = tenantJobAtendimentoCodex()) {
     const key = String(questionKey || '');
-    delete memoriaJobsAtendimentoCodex()[runtimeKeyJobAtendimentoCodex(key, tenantScope)];
+    const runtimeKey = runtimeKeyJobAtendimentoCodex(key, tenantScope);
+    const previous = memoriaJobsAtendimentoCodex()[runtimeKey] || null;
+    const autosave = autosavesRascunhoAtendimentoCodex.get(runtimeKey);
+    if (autosave?.timer) clearTimeout(autosave.timer);
+    if (autosave) autosave.cancelled = true;
+    autosavesRascunhoAtendimentoCodex.delete(runtimeKey);
+    recuperacoesRascunhoAtendimentoCodex.delete(runtimeKey);
+    if (previous?.job_id) jobsRecuperadosRascunhoAtendimentoCodex.delete(`${runtimeKey}::${previous.job_id}`);
+    delete memoriaJobsAtendimentoCodex()[runtimeKey];
     try { sessionStorage.removeItem(storageKeyJobAtendimentoCodex(key, tenantScope)); } catch (_error) {}
     aplicarEstadoJobAtendimentoCodex(key, tenantScope);
 }
@@ -1058,6 +1135,383 @@ function aplicarEstadoJobAtendimentoCodex(questionKey, tenantScope = tenantJobAt
     });
 }
 
+function perguntaAtendimentoPorChave(questionKey) {
+    const key = String(questionKey || '');
+    return (state.perguntas || []).find(item => chavePerguntaAtendimento(item) === key) || null;
+}
+
+function resultadoJobAtendimentoCodex(data) {
+    return data && data.result && typeof data.result === 'object' ? data.result : (data || {});
+}
+
+function metadadosPropostaJobAtendimentoCodex(data) {
+    const result = resultadoJobAtendimentoCodex(data);
+    return {
+        proposalId: String(result.proposal_id || data?.proposal_id || data?.job_id || ''),
+        proposalVersion: String(result.proposal_version || data?.proposal_version || 0),
+        proposalHash: String(result.proposal_hash || data?.proposal_hash || ''),
+        draftUpdatedAt: String(result.draft_updated_at || data?.draft_updated_at || '')
+    };
+}
+
+function atualizarMetadadosPropostaAtendimentoCodex(questionKey, metadata) {
+    const patch = {
+        proposalId: String(metadata?.proposalId || ''),
+        proposalVersion: String(metadata?.proposalVersion || ''),
+        proposalHash: String(metadata?.proposalHash || '')
+    };
+    window.JKPerguntasLoading?.atualizarRascunhoPorChave?.(questionKey, patch);
+    cardsAtuaisJobAtendimentoCodex(questionKey).forEach((card) => {
+        const textarea = card.querySelector('.question-answer-text');
+        if (!textarea) return;
+        if (patch.proposalId) textarea.dataset.codexProposalId = patch.proposalId;
+        else delete textarea.dataset.codexProposalId;
+        if (patch.proposalVersion) textarea.dataset.codexProposalVersion = patch.proposalVersion;
+        else delete textarea.dataset.codexProposalVersion;
+        if (patch.proposalHash) textarea.dataset.codexProposalHash = patch.proposalHash;
+        else delete textarea.dataset.codexProposalHash;
+    });
+}
+
+function finalizarEstadoJobAtendimentoCodex(questionKey, data, tenantScope = tenantJobAtendimentoCodex()) {
+    const key = String(questionKey || '');
+    const current = obterEstadoJobAtendimentoCodex(key, tenantScope) || {};
+    const result = resultadoJobAtendimentoCodex(data);
+    const jobId = String(data?.job_id || result.job_id || current.job_id || '');
+    if (!key || !jobId) return null;
+    const pergunta = perguntaAtendimentoPorChave(key);
+    const metadata = metadadosPropostaJobAtendimentoCodex(data);
+    const saved = salvarEstadoJobAtendimentoCodex(key, {
+        ...current,
+        job_id: jobId,
+        store_id: String(data?.store_id || result.store_id || current.store_id || pergunta?.store_id || ''),
+        question_id: String(data?.question_id || result.question_id || current.question_id || pergunta?.id || ''),
+        terminal: true,
+        polling_active: false,
+        can_cancel: false,
+        cancelled: false,
+        status_message: String(data?.status_message || current.status_message || 'Sugestão disponível para revisão.'),
+        proposal_id: metadata.proposalId,
+        proposal_version: metadata.proposalVersion,
+        proposal_hash: metadata.proposalHash,
+        draft_updated_at: metadata.draftUpdatedAt
+    }, tenantScope);
+    jobsRecuperadosRascunhoAtendimentoCodex.add(`${runtimeKeyJobAtendimentoCodex(key, tenantScope)}::${jobId}`);
+    aplicarEstadoJobAtendimentoCodex(key, tenantScope);
+    return saved;
+}
+
+function validarIdentidadeJobAtendimentoCodex(questionKey, data) {
+    const pergunta = perguntaAtendimentoPorChave(questionKey);
+    if (!pergunta || !data || typeof data !== 'object') return false;
+    const result = resultadoJobAtendimentoCodex(data);
+    const storeId = String(data.store_id || result.store_id || '');
+    const questionId = String(data.question_id || result.question_id || '');
+    const subjectKey = String(data.subject_key || data.event_subject_key || result.subject_key || result.event_subject_key || '');
+    if (!storeId || storeId !== String(pergunta.store_id || '')) return false;
+    if (questionId) return questionId === String(pergunta.id || '');
+    return Boolean(subjectKey && [String(pergunta.id || ''), String(questionKey || '')].includes(subjectKey));
+}
+
+async function recuperarRascunhoJobAtendimentoCodex(questionKey) {
+    const key = String(questionKey || '');
+    const active = obterEstadoJobAtendimentoCodex(key);
+    if (!key || !active?.job_id) return null;
+    if (active.polling_active) return garantirPollingJobAtendimentoCodex(key);
+    const tenantScope = String(active.tenant || tenantJobAtendimentoCodex());
+    const runtimeKey = runtimeKeyJobAtendimentoCodex(key, tenantScope);
+    const recoveredKey = `${runtimeKey}::${active.job_id}`;
+    if (jobsRecuperadosRascunhoAtendimentoCodex.has(recoveredKey)) return active;
+    if (recuperacoesRascunhoAtendimentoCodex.has(runtimeKey)) return recuperacoesRascunhoAtendimentoCodex.get(runtimeKey);
+    const baseline = window.JKPerguntasLoading?.obterRascunhoPorChave?.(key) || null;
+    const baselineRevision = Math.max(0, Number(baseline?.draftRevision || 0));
+    const recovery = (async () => {
+        const response = await fetch(`/api/mercadolivre/assistant/jobs/${encodeURIComponent(active.job_id)}`, {
+            headers: obterAuthHeaders(),
+            cache: 'no-store'
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            if ([401, 403, 404, 410].includes(response.status)) limparEstadoJobAtendimentoCodex(key, tenantScope);
+            throw new Error(mensagemErroApi(data, 'Não foi possível recuperar o rascunho da IA.'));
+        }
+        if (!validarIdentidadeJobAtendimentoCodex(key, data)) {
+            limparEstadoJobAtendimentoCodex(key, tenantScope);
+            throw new Error('A referência salva não pertence a esta pergunta e foi descartada.');
+        }
+        if (['queued', 'running', 'waiting_retry'].includes(String(data.status || ''))) {
+            atualizarEstadoJobAtendimentoCodex(key, {
+                ...active,
+                polling_active: true,
+                can_cancel: data.can_cancel !== false,
+                status_message: mensagemProgressoJobAtendimentoCodex(data)
+            }, tenantScope);
+            return garantirPollingJobAtendimentoCodex(key);
+        }
+        if (data.status !== 'completed') {
+            limparEstadoJobAtendimentoCodex(key, tenantScope);
+            return data;
+        }
+        const result = resultadoJobAtendimentoCodex(data);
+        const agentState = String(data.agent_state || result.agent_state || '').trim();
+        const proposalUnavailable = Boolean(
+            (agentState && agentState !== 'aguardando_aprovacao')
+            || data.blocked_without_draft
+            || result.blocked_without_draft
+            || data.draft_expired
+            || result.draft_expired
+            || data.publish_attempted
+            || result.publish_attempted
+            || data.approved
+            || result.approved
+        );
+        if (proposalUnavailable) {
+            limparEstadoJobAtendimentoCodex(key, tenantScope);
+            window.JKPerguntasLoading?.removerRascunhoPorChave?.(key);
+            return data;
+        }
+        const current = window.JKPerguntasLoading?.obterRascunhoPorChave?.(key) || null;
+        const currentRevision = Math.max(0, Number(current?.draftRevision || 0));
+        if (currentRevision !== baselineRevision) {
+            const metadata = metadadosPropostaJobAtendimentoCodex(data);
+            atualizarMetadadosPropostaAtendimentoCodex(key, metadata);
+            finalizarEstadoJobAtendimentoCodex(key, data, tenantScope);
+            agendarAutosaveRascunhoAtendimentoCodex(key);
+        } else {
+            aplicarResultadoJobAtendimentoCodex(key, data, tenantScope);
+            const draftCleared = data?.draft_cleared === true || result.draft_cleared === true;
+            if (!draftCleared && !String(result.resposta ?? data?.resposta ?? '').trim()) {
+                limparEstadoJobAtendimentoCodex(key, tenantScope);
+            }
+        }
+        jobsRecuperadosRascunhoAtendimentoCodex.add(recoveredKey);
+        return data;
+    })().finally(() => recuperacoesRascunhoAtendimentoCodex.delete(runtimeKey));
+    recuperacoesRascunhoAtendimentoCodex.set(runtimeKey, recovery);
+    return recovery;
+}
+
+function rascunhoAtendimentoCodexPorChave(questionKey) {
+    const key = String(questionKey || '');
+    let snapshot = window.JKPerguntasLoading?.obterRascunhoPorChave?.(key) || null;
+    if (!snapshot && key === state.perguntaSelecionadaKey) {
+        snapshot = capturarInteracaoPerguntas();
+        if (snapshot) window.JKPerguntasLoading?.atualizarRascunhoPorChave?.(key, snapshot);
+    }
+    return snapshot;
+}
+
+function estadoAutosaveRascunhoAtendimentoCodex(questionKey, tenantScope = tenantJobAtendimentoCodex()) {
+    const runtimeKey = runtimeKeyJobAtendimentoCodex(questionKey, tenantScope);
+    let entry = autosavesRascunhoAtendimentoCodex.get(runtimeKey);
+    if (!entry) {
+        entry = {
+            runtimeKey,
+            questionKey: String(questionKey || ''),
+            tenantScope,
+            timer: null,
+            pending: false,
+            inFlight: null,
+            lastError: null,
+            conflicted: false,
+            keepaliveRequested: false,
+            cancelled: false
+        };
+        autosavesRascunhoAtendimentoCodex.set(runtimeKey, entry);
+    }
+    return entry;
+}
+
+function registrarRascunhoAtendimentoCodex(questionKey, textarea) {
+    const key = String(questionKey || '');
+    if (!key || !textarea) return null;
+    const snapshot = window.JKPerguntasLoading?.atualizarRascunhoPorChave?.(key, {
+        resposta: String(textarea.value || ''),
+        proposalId: String(textarea.dataset.codexProposalId || ''),
+        proposalVersion: String(textarea.dataset.codexProposalVersion || ''),
+        proposalHash: String(textarea.dataset.codexProposalHash || ''),
+        selectionStart: textarea.selectionStart,
+        selectionEnd: textarea.selectionEnd,
+        selectionDirection: textarea.selectionDirection,
+        textareaScrollTop: textarea.scrollTop
+    });
+    if (!atualizacaoProgramaticaRascunhoAtendimentoCodex(textarea)) {
+        agendarAutosaveRascunhoAtendimentoCodex(key);
+    }
+    return snapshot;
+}
+
+function agendarAutosaveRascunhoAtendimentoCodex(questionKey) {
+    const key = String(questionKey || '');
+    const active = obterEstadoJobAtendimentoCodex(key);
+    if (!key || !active?.job_id || !active.terminal) return null;
+    const entry = estadoAutosaveRascunhoAtendimentoCodex(key, active.tenant);
+    if (entry.conflicted) {
+        atualizarStatusAutosaveRascunhoAtendimentoCodex(
+            key,
+            'O rascunho mudou em outra sessão. A edição local foi preservada; revise antes de continuar.',
+            'error'
+        );
+        return entry;
+    }
+    entry.cancelled = false;
+    entry.pending = true;
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => {
+        entry.timer = null;
+        executarAutosaveRascunhoAtendimentoCodex(entry).catch(() => {});
+    }, CODEX_DRAFT_AUTOSAVE_DEBOUNCE_MS);
+    return entry;
+}
+
+function atualizarStatusAutosaveRascunhoAtendimentoCodex(questionKey, message, type = '') {
+    cardsAtuaisJobAtendimentoCodex(questionKey).forEach((card) => {
+        setStatusRespostaPergunta(card.querySelector('.question-answer-composer .question-answer-status'), message, type);
+    });
+}
+
+async function executarAutosaveRascunhoAtendimentoCodex(entry, options = {}) {
+    if (!entry || entry.cancelled) return null;
+    if (entry.conflicted) {
+        if (entry.lastError) throw entry.lastError;
+        return null;
+    }
+    if (entry.inFlight) return entry.inFlight;
+    if (!entry.pending) return null;
+    const active = obterEstadoJobAtendimentoCodex(entry.questionKey, entry.tenantScope);
+    const pergunta = perguntaAtendimentoPorChave(entry.questionKey);
+    const snapshot = rascunhoAtendimentoCodexPorChave(entry.questionKey);
+    if (!active?.job_id || !active.terminal || !pergunta || !snapshot) {
+        entry.pending = false;
+        return null;
+    }
+    entry.pending = false;
+    const keepalive = options.keepalive === true || entry.keepaliveRequested === true;
+    entry.keepaliveRequested = false;
+    const resposta = String(snapshot.resposta || '');
+    const body = {
+        store_id: String(pergunta.store_id || active.store_id || ''),
+        question_id: String(pergunta.id || active.question_id || ''),
+        resposta,
+        expected_proposal_version: Math.max(0, Number(snapshot.proposalVersion || active.proposal_version || 0) || 0),
+        expected_proposal_hash: String(snapshot.proposalHash || active.proposal_hash || '')
+    };
+    entry.inFlight = (async () => {
+        const response = await fetch(`/api/mercadolivre/assistant/jobs/${encodeURIComponent(active.job_id)}/draft`, {
+            method: 'PATCH',
+            headers: { ...obterAuthHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            cache: 'no-store',
+            keepalive
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            const error = new Error(mensagemErroApi(data, 'Não foi possível salvar o rascunho.'));
+            error.status = response.status;
+            throw error;
+        }
+        if (!validarIdentidadeJobAtendimentoCodex(entry.questionKey, data)) {
+            limparEstadoJobAtendimentoCodex(entry.questionKey, entry.tenantScope);
+            throw new Error('A resposta do autosave não pertence a esta pergunta.');
+        }
+        const metadata = metadadosPropostaJobAtendimentoCodex(data);
+        atualizarMetadadosPropostaAtendimentoCodex(entry.questionKey, metadata);
+        window.JKPerguntasLoading?.atualizarRascunhoPorChave?.(entry.questionKey, {
+            confirmedResponse: data.draft_cleared === true ? '' : String(data.resposta ?? resposta)
+        });
+        finalizarEstadoJobAtendimentoCodex(entry.questionKey, data, entry.tenantScope);
+        entry.lastError = null;
+        entry.conflicted = false;
+        atualizarStatusAutosaveRascunhoAtendimentoCodex(
+            entry.questionKey,
+            data.draft_cleared === true ? 'Rascunho limpo no servidor.' : 'Rascunho salvo automaticamente.',
+            'ok'
+        );
+        return data;
+    })().catch((error) => {
+        entry.lastError = error;
+        entry.conflicted = error?.status === 409;
+        if (entry.conflicted) entry.pending = false;
+        if (!entry.cancelled) atualizarStatusAutosaveRascunhoAtendimentoCodex(
+            entry.questionKey,
+            entry.conflicted
+                ? 'O rascunho mudou em outra sessão. A edição local foi preservada; revise antes de continuar.'
+                : `Erro ao salvar rascunho: ${mensagemErro(error)}`,
+            'error'
+        );
+        throw error;
+    }).finally(() => {
+        entry.inFlight = null;
+        if (entry.pending && !entry.cancelled && !entry.conflicted) {
+            executarAutosaveRascunhoAtendimentoCodex(entry).catch(() => {});
+        }
+    });
+    return entry.inFlight;
+}
+
+async function flushAutosaveRascunhoAtendimentoCodex(questionKey, options = {}) {
+    const key = String(questionKey || '');
+    if (!key) return null;
+    const active = obterEstadoJobAtendimentoCodex(key);
+    if (!active?.job_id || !active.terminal) return null;
+    const entry = estadoAutosaveRascunhoAtendimentoCodex(key, active.tenant);
+    if (entry.timer) {
+        clearTimeout(entry.timer);
+        entry.timer = null;
+    }
+    if (entry.lastError && !entry.conflicted && !entry.inFlight) entry.pending = true;
+    if (entry.pending && !entry.inFlight) await executarAutosaveRascunhoAtendimentoCodex(entry, options);
+    while (entry.inFlight) {
+        await entry.inFlight;
+        if (entry.pending) await executarAutosaveRascunhoAtendimentoCodex(entry, options);
+    }
+    if (entry.lastError && !entry.pending) throw entry.lastError;
+    return null;
+}
+
+function prepararSaidaRascunhosAtendimentoCodex() {
+    window.JKPerguntasLoading?.salvarRascunho?.();
+    autosavesRascunhoAtendimentoCodex.forEach((entry) => {
+        if (entry.timer) {
+            clearTimeout(entry.timer);
+            entry.timer = null;
+        }
+        if (entry.conflicted) return;
+        if (entry.lastError && !entry.inFlight) entry.pending = true;
+        entry.keepaliveRequested = true;
+        if (entry.inFlight) entry.pending = true;
+        if (entry.pending && !entry.inFlight) executarAutosaveRascunhoAtendimentoCodex(entry, { keepalive: true }).catch(() => {});
+    });
+}
+
+function limparPersistenciaRascunhosAtendimentoCodex(options = {}) {
+    const tenantScope = tenantJobAtendimentoCodex();
+    const questionKeys = new Set((options.questionKeys || []).map(value => String(value || '')).filter(Boolean));
+    const storeId = String(options.storeId || '');
+    const targeted = Boolean(questionKeys.size || storeId);
+    const shouldClear = (questionKey, value = {}) => {
+        if (!questionKeys.size && !storeId) return true;
+        return questionKeys.has(String(questionKey || '')) || (storeId && String(value.store_id || '').trim() === storeId);
+    };
+    Object.entries(memoriaJobsAtendimentoCodex()).forEach(([runtimeKey, value]) => {
+        if ((targeted && value?.tenant !== tenantScope) || !shouldClear(value.question_key, value)) return;
+        limparEstadoJobAtendimentoCodex(value.question_key, value?.tenant || tenantScope);
+        window.JKPerguntasLoading?.removerRascunhoPorChave?.(value.question_key);
+        recuperacoesRascunhoAtendimentoCodex.delete(runtimeKey);
+    });
+    try {
+        const storageKeys = [];
+        for (let index = 0; index < sessionStorage.length; index += 1) {
+            const storageKey = sessionStorage.key(index);
+            if (storageKey?.startsWith(CODEX_JOB_STORAGE_PREFIX)) storageKeys.push(storageKey);
+        }
+        storageKeys.forEach((storageKey) => {
+            const value = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
+            if ((!targeted || value?.tenant === tenantScope) && shouldClear(value.question_key, value)) sessionStorage.removeItem(storageKey);
+        });
+    } catch (_error) {}
+}
+
 function statusContextHubResultado(result) {
     if (!result || typeof result !== 'object') return null;
     const raw = result.context_hub_status ?? result.contexto?.context_hub_status;
@@ -1087,16 +1541,59 @@ function avisoContextHubResultado(status) {
 function aplicarResultadoJobAtendimentoCodex(questionKey, data, tenantScope = tenantJobAtendimentoCodex()) {
     if (String(tenantScope || 'default') !== tenantJobAtendimentoCodex()) return;
     const result = data && data.result && typeof data.result === 'object' ? data.result : (data || {});
+    const respostaResultado = String(result.resposta ?? data?.resposta ?? '');
+    const draftCleared = data?.draft_cleared === true || result.draft_cleared === true;
+    const metadata = metadadosPropostaJobAtendimentoCodex(data);
+    const existing = window.JKPerguntasLoading?.obterRascunhoPorChave?.(questionKey) || null;
+    const incomingVersion = Math.max(0, Number(metadata.proposalVersion || 0) || 0);
+    const existingVersion = Math.max(0, Number(existing?.proposalVersion || 0) || 0);
+    const sameProposal = Boolean(
+        existing?.proposalId
+        && metadata.proposalId
+        && String(existing.proposalId) === metadata.proposalId
+    );
+    const sameRevision = sameProposal
+        && incomingVersion === existingVersion
+        && Boolean(existing?.proposalHash)
+        && String(existing.proposalHash) === metadata.proposalHash;
+    const hasConfirmedResponse = existing && Object.prototype.hasOwnProperty.call(existing, 'confirmedResponse');
+    const localEditPending = sameRevision
+        && hasConfirmedResponse
+        && String(existing.resposta ?? '') !== String(existing.confirmedResponse ?? '');
+    if ((sameProposal && incomingVersion > 0 && existingVersion > incomingVersion) || localEditPending) return;
+    if (respostaResultado.trim() || draftCleared) {
+        window.JKPerguntasLoading?.atualizarRascunhoPorChave?.(questionKey, {
+            resposta: draftCleared ? '' : respostaResultado,
+            proposalId: metadata.proposalId,
+            proposalVersion: metadata.proposalVersion,
+            proposalHash: metadata.proposalHash,
+            confirmedResponse: draftCleared ? '' : respostaResultado
+        });
+        finalizarEstadoJobAtendimentoCodex(questionKey, data, tenantScope);
+    }
     cardsAtuaisJobAtendimentoCodex(questionKey).forEach((card) => {
         const textarea = card.querySelector('.question-answer-text');
         const status = card.querySelector('.question-answer-composer .question-answer-status');
         if (!textarea) return;
-        const resposta = String(result.resposta ?? data.resposta ?? '');
+        const resposta = respostaResultado;
         if (!resposta.trim()) {
-            delete textarea.dataset.codexProposalId;
-            delete textarea.dataset.codexProposalVersion;
-            delete textarea.dataset.codexProposalHash;
-            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            if (draftCleared) {
+                marcarAtualizacaoProgramaticaRascunhoAtendimentoCodex(textarea, () => {
+                    textarea.value = '';
+                    textarea.dataset.codexProposalId = metadata.proposalId;
+                    textarea.dataset.codexProposalVersion = metadata.proposalVersion || '1';
+                    textarea.dataset.codexProposalHash = metadata.proposalHash;
+                    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                });
+                setStatusRespostaPergunta(status, 'Rascunho limpo. Você pode escrever uma nova resposta.', 'ok');
+                return;
+            }
+            marcarAtualizacaoProgramaticaRascunhoAtendimentoCodex(textarea, () => {
+                delete textarea.dataset.codexProposalId;
+                delete textarea.dataset.codexProposalVersion;
+                delete textarea.dataset.codexProposalHash;
+                textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            });
             const { message: mensagem } = aplicarFalhaGeracaoAtendimento(questionKey, data);
             const currentStatus = cardsAtuaisJobAtendimentoCodex(questionKey)[0]?.querySelector('.question-answer-composer .question-answer-status') || status;
             setStatusRespostaPergunta(
@@ -1128,11 +1625,13 @@ function aplicarResultadoJobAtendimentoCodex(questionKey, data, tenantScope = te
             card.querySelector('[data-component="context_hub"]')?.remove();
             card.querySelector('[data-context-message="context_hub"]')?.remove();
         }
-        textarea.value = resposta;
-        textarea.dataset.codexProposalId = String(result.proposal_id || data.proposal_id || data.job_id || '');
-        textarea.dataset.codexProposalVersion = String(result.proposal_version || data.proposal_version || 1);
-        textarea.dataset.codexProposalHash = String(result.proposal_hash || data.proposal_hash || '');
-        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        marcarAtualizacaoProgramaticaRascunhoAtendimentoCodex(textarea, () => {
+            textarea.value = resposta;
+            textarea.dataset.codexProposalId = metadata.proposalId;
+            textarea.dataset.codexProposalVersion = metadata.proposalVersion || '1';
+            textarea.dataset.codexProposalHash = metadata.proposalHash;
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        });
         const draftSource = String(result.draft_source || data?.draft_source || '').trim().toLowerCase();
         const contextStatus = result.context_status && typeof result.context_status === 'object'
             ? result.context_status
@@ -1263,7 +1762,9 @@ async function garantirPollingJobAtendimentoCodex(questionKey) {
         () => obterEstadoJobAtendimentoCodex(key, tenantScope)?.cancelled === true
     ).then((data) => {
         aplicarResultadoJobAtendimentoCodex(key, data, tenantScope);
-        limparEstadoJobAtendimentoCodex(key, tenantScope);
+        const result = resultadoJobAtendimentoCodex(data);
+        const draftCleared = data?.draft_cleared === true || result.draft_cleared === true;
+        if (!draftCleared && !String(result.resposta ?? data?.resposta ?? '').trim()) limparEstadoJobAtendimentoCodex(key, tenantScope);
         return data;
     }).catch((error) => {
         if (error && error.cancelled) {
@@ -1304,7 +1805,9 @@ async function cancelarPesquisaAtendimentoCodex(questionKey) {
         if (!response.ok) throw new Error(mensagemErroApi(data, 'Erro ao cancelar a pesquisa.'));
         if (data.status === 'completed') {
             aplicarResultadoJobAtendimentoCodex(key, data);
-            limparEstadoJobAtendimentoCodex(key);
+            const result = resultadoJobAtendimentoCodex(data);
+            const draftCleared = data?.draft_cleared === true || result.draft_cleared === true;
+            if (!draftCleared && !String(result.resposta ?? data?.resposta ?? '').trim()) limparEstadoJobAtendimentoCodex(key);
             return data;
         }
         if (data.status === 'cancelled') {
@@ -1347,6 +1850,7 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
     const lojaResposta = lojaOrigemItem(pergunta) || (todasAsLojasSelecionadas() ? '' : state.lojaSelecionada);
     if (!pergunta || !lojaResposta) return;
     const questionKey = chavePerguntaAtendimento(pergunta);
+    try { await flushAutosaveRascunhoAtendimentoCodex(questionKey); } catch (_error) {}
     limparFalhaGeracaoAtendimento(pergunta);
     btnGerar.disabled = true;
     btnEnviar.disabled = true;
@@ -1389,6 +1893,9 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
         if (data.job_id && data.status !== 'completed') {
             salvarEstadoJobAtendimentoCodex(questionKey, {
                 job_id: String(data.job_id),
+                store_id: String(pergunta.store_id || ''),
+                question_id: String(pergunta.id || ''),
+                terminal: false,
                 status_message: data.status_message || 'Pesquisa em andamento.',
                 can_cancel: data.can_cancel !== false,
                 polling_active: true,
@@ -1423,9 +1930,11 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
 
 async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnviar, btnGerar, status, opcoes = {}) {
     const pergunta = obterPerguntaPorId(questionId, loja);
-    const texto = String(textarea.value || '');
     const lojaResposta = lojaOrigemItem(pergunta) || (todasAsLojasSelecionadas() ? '' : state.lojaSelecionada);
-    if (!pergunta || !lojaResposta || !texto.trim()) return;
+    if (!pergunta || !lojaResposta) return;
+    const questionKey = chavePerguntaAtendimento(pergunta);
+    let texto = String(textarea.value || '');
+    if (!texto.trim()) return;
     const skuResposta = skuRealPergunta(pergunta);
     const itemIdResposta = String((pergunta.item_id || '')).trim();
     const botoesExtras = Array.isArray(opcoes.botoesExtras) ? opcoes.botoesExtras.filter(Boolean) : [];
@@ -1435,6 +1944,10 @@ async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnvia
     setStatusRespostaPergunta(status, opcoes.salvarExemplo ? 'Enviando resposta e salvando exemplo da IA...' : 'Enviando resposta ao Mercado Livre...');
     let envioConfirmado = false;
     try {
+        window.JKPerguntasLoading?.salvarRascunho?.();
+        await flushAutosaveRascunhoAtendimentoCodex(questionKey);
+        texto = String(textarea.value || '');
+        if (!texto.trim()) throw new Error('A resposta está vazia.');
         const response = await fetch('/api/mercadolivre/perguntas/responder', {
             method: 'POST',
             headers: {
@@ -1463,6 +1976,8 @@ async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnvia
             date_created: new Date().toISOString()
         };
         pergunta.status = 'ANSWERED';
+        limparEstadoJobAtendimentoCodex(questionKey);
+        window.JKPerguntasLoading?.removerRascunhoPorChave?.(questionKey);
         try { window.JKPerguntasLoading?.invalidar(lojaResposta, pergunta); } catch (_) { /* Envio já confirmado. */ }
         delete textarea.dataset.codexProposalId;
         delete textarea.dataset.codexProposalVersion;

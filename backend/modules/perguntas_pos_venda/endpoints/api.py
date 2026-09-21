@@ -7,6 +7,7 @@ from backend.modules.perguntas_pos_venda.endpoints.approvals import (
 )
 from backend.modules.perguntas_pos_venda.endpoints.jobs import (
     ml_customer_reply_job_cancel,
+    ml_customer_reply_job_draft_patch,
     ml_customer_reply_job_status,
     ml_customer_reply_solicitacoes_list,
 )
@@ -105,6 +106,7 @@ __all__ = [
     "ml_pos_venda_automacao_poll",
     "ml_customer_reply_job_status",
     "ml_customer_reply_job_cancel",
+    "ml_customer_reply_job_draft_patch",
     "ml_customer_reply_solicitacoes_list",
     "ml_listar_perguntas",
 ]

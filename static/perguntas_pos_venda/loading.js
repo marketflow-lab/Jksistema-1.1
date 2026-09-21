@@ -102,8 +102,9 @@
         map.delete(key); map.set(key, value);
         if (map.size > 500) map.delete(map.keys().next().value);
     }
-    function clear(resetStores = true) {
+    function clear(resetStores = true, clearPersistence = true) {
         generation++; controller?.abort(); detailRun?.controller.abort(); detailRun = null;
+        if (clearPersistence) root.JKPerguntasPosVenda?.limparPersistenciaRascunhos?.();
         views.clear(); itemCache.clear(); detailCache.clear(); drafts.clear(); revisions.clear();
         currentView = ''; activePager = null;
         state.notificacoes = { carregando: false, atualizadoEm: 0, lojas: {}, totais: {}, erros: {} };
@@ -201,12 +202,16 @@
     }
     function revokeStore(id) {
         if (!id) return;
+        const revokedQuestionKeys = state.perguntas
+            .filter(q => String(q.store_id) === id)
+            .map(q => chavePerguntaAtendimento(q));
         revisions.set(id, (revisions.get(id) || 0) + 1);
         for (const [key, pager] of views) if (pager.stores.some(s => String(s.store.store_id) === id)) views.delete(key);
         for (const map of [itemCache, detailCache, drafts]) for (const key of map.keys()) if (key.startsWith(`${id}::`)) map.delete(key);
         state.perguntas = state.perguntas.filter(q => String(q.store_id) !== id);
         if (!state.perguntas.some(q => chavePerguntaAtendimento(q) === state.perguntaSelecionadaKey)) state.perguntaSelecionadaKey = '';
-        renderizarPerguntas();
+        root.JKPerguntasPosVenda?.limparPersistenciaRascunhos?.({ storeId: id, questionKeys: revokedQuestionKeys });
+        renderSafe();
     }
     function retryDelay(value) {
         if (!value) return 0;
@@ -262,8 +267,31 @@
     function saveDraft() {
         const snapshot = capturarInteracaoPerguntas();
         if (activePager) activePager.selectedKey = state.perguntaSelecionadaKey;
-        if (snapshot?.perguntaSelecionadaKey) boundedSet(drafts, snapshot.perguntaSelecionadaKey, snapshot);
+        if (snapshot?.perguntaSelecionadaKey) updateDraft(snapshot.perguntaSelecionadaKey, snapshot);
         return snapshot;
+    }
+    function getDraft(questionKey) {
+        const key = String(questionKey || '');
+        const snapshot = key ? drafts.get(key) : null;
+        return snapshot ? { ...snapshot } : null;
+    }
+    function updateDraft(questionKey, patch = {}) {
+        const key = String(questionKey || '');
+        if (!key) return null;
+        const previous = drafts.get(key) || { perguntaSelecionadaKey: key };
+        const responseChanged = Object.prototype.hasOwnProperty.call(patch || {}, 'resposta')
+            && String(patch.resposta ?? '') !== String(previous.resposta ?? '');
+        const snapshot = {
+            ...previous,
+            ...(patch || {}),
+            perguntaSelecionadaKey: key,
+            draftRevision: Math.max(0, Number(previous.draftRevision || 0)) + (responseChanged ? 1 : 0)
+        };
+        boundedSet(drafts, key, snapshot);
+        return { ...snapshot };
+    }
+    function removeDraft(questionKey) {
+        drafts.delete(String(questionKey || ''));
     }
     function renderSafe() {
         const snapshot = saveDraft();
@@ -663,8 +691,25 @@
         }
         if (chavePerguntaAtendimento(question) === state.perguntaSelecionadaKey) renderSafe();
     }
-    root.JKPerguntasLoading = { carregar: load, invalidar: invalidate, detalhe: detail, tentarNovamente: retrySelected, rejeitarContexto: rejectContext, tratarNegacaoGeracao: generationDenial, limpar: clear, salvarRascunho: saveDraft, restaurarRascunho: () => restaurarInteracaoPerguntas(drafts.get(state.perguntaSelecionadaKey)), request, verificarSessao: checkSession, QuestionPager };
-    root.addEventListener('pagehide', clear);
+    root.JKPerguntasLoading = {
+        carregar: load,
+        invalidar: invalidate,
+        detalhe: detail,
+        tentarNovamente: retrySelected,
+        rejeitarContexto: rejectContext,
+        tratarNegacaoGeracao: generationDenial,
+        limpar: clear,
+        salvarRascunho: saveDraft,
+        restaurarRascunho: () => restaurarInteracaoPerguntas(drafts.get(state.perguntaSelecionadaKey)),
+        obterRascunhoPorChave: getDraft,
+        atualizarRascunhoPorChave: updateDraft,
+        removerRascunhoPorChave: removeDraft,
+        renderizarSeguro: renderSafe,
+        request,
+        verificarSessao: checkSession,
+        QuestionPager
+    };
+    root.addEventListener('pagehide', () => clear(false, false));
     root.addEventListener('storage', checkSession);
     root.addEventListener('jk:logout', clear);
     root.addEventListener('focus', checkSession);

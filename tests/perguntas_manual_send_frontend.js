@@ -14,12 +14,21 @@ async function scenario(confirmed, renderFails = false) {
     const status = {};
     const button = { disabled: false };
     const posts = [];
+    const invalidatedDrafts = [];
+    const cleanedDrafts = [];
     const context = {
-        state: {}, perguntasStatus: {}, window: {},
+        state: {}, perguntasStatus: {}, window: {
+            JKPerguntasLoading: {
+                invalidar: (loja, current) => { invalidatedDrafts.push([loja, current.id]); }
+            }
+        },
         obterPerguntaPorId: () => question,
+        chavePerguntaAtendimento: current => `${current.store_id}::${current.id}`,
         lojaOrigemItem: () => 'Fixture store',
         skuRealPergunta: () => 'sku-fixture',
         obterAuthHeaders: () => ({}),
+        flushAutosaveRascunhoAtendimentoCodex: async () => {},
+        limparEstadoJobAtendimentoCodex: questionKey => { cleanedDrafts.push(questionKey); },
         setStatusRespostaPergunta: (target, text) => { target.textContent = text; },
         mensagemErroApi: () => 'Falha temporária nas lojas.',
         mensagemErro: error => error.message,
@@ -48,10 +57,12 @@ async function scenario(confirmed, renderFails = false) {
             assert.match(context.perguntasStatus.textContent, /envio foi confirmado/);
         }
         assert.strictEqual(textarea.dataset.codexProposalId, undefined);
+        assert.deepStrictEqual(invalidatedDrafts, [['Fixture store', 'q-fixture']], 'envio confirmado deve invalidar o rascunho persistido da pergunta');
     } else {
         assert.strictEqual(question.status, undefined);
         assert.strictEqual(button.disabled, false);
         assert.strictEqual(textarea.dataset.codexProposalId, 'draft');
+        assert.deepStrictEqual(invalidatedDrafts, [], 'falha de envio deve preservar o rascunho para nova tentativa');
         assert.match(status.textContent, /Erro ao enviar/);
     }
 }

@@ -519,6 +519,7 @@ context.carregarContadoresNotificacoes = async () => { recargasContadores += 1; 
     context.window.scrollY = 29;
     context.Event = class FakeEvent { constructor(type) { this.type = type; } };
     context.ajustarAlturaTextareaAtendimento = () => {};
+    context.marcarAtualizacaoProgramaticaRascunhoAtendimentoCodex = (_textarea, callback) => callback();
     context.obterEstadoJobAtendimentoCodex = () => null;
     context.salvarEstadoJobAtendimentoCodex = () => null;
     context.aplicarEstadoJobAtendimentoCodex = () => null;

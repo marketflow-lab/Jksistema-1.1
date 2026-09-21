@@ -37,7 +37,7 @@ function questions(store, offset, limit) {
 async function fixture(browser) {
   const calls = [];
   const errors = [];
-  const control = { slowMs: 900, fastMs: 35, deny: '', fail: '', listHold: null, counts: {}, detailMs: 75, history: 'ready', detailDeny: false, itemDeny: false, omitComponents: false, itemMissingOnce: '', detailErrors: [], retryAfter: '0', generationReject: '', generationReason: '', generationFailure: null };
+  const control = { slowMs: 900, fastMs: 35, deny: '', fail: '', listHold: null, trainingHold: null, trainingPayload: null, jobs: new Map(), counts: {}, detailMs: 75, history: 'ready', detailDeny: false, itemDeny: false, omitComponents: false, itemMissingOnce: '', detailErrors: [], retryAfter: '0', generationReject: '', generationReason: '', generationFailure: null };
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
@@ -119,8 +119,61 @@ async function fixture(browser) {
           error_component: failure.component || ''
         })}).catch(() => {});
       }
+      const jobMatch = url.pathname.match(/^\/api\/mercadolivre\/assistant\/jobs\/([^/]+)$/);
+      if (jobMatch && route.request().method() === 'GET') {
+        const payload = control.jobs.get(decodeURIComponent(jobMatch[1]));
+        return payload ? json(payload) : json({ detail: 'Job sintético não encontrado.' }, 404);
+      }
+      const draftMatch = url.pathname.match(/^\/api\/mercadolivre\/assistant\/jobs\/([^/]+)\/draft$/);
+      if (draftMatch && route.request().method() === 'PATCH') {
+        const jobId = decodeURIComponent(draftMatch[1]);
+        const payload = control.jobs.get(jobId);
+        if (!payload) return json({ detail: 'Job sintético não encontrado.' }, 404);
+        const body = JSON.parse(route.request().postData() || '{}');
+        const current = payload.result || {};
+        const currentVersion = Number(current.proposal_version || payload.proposal_version || 1);
+        const currentHash = String(current.proposal_hash || payload.proposal_hash || '');
+        const requested = String(body.resposta || '');
+        const normalized = requested.trim() ? requested : '';
+        if ((Number(body.expected_proposal_version) !== currentVersion || String(body.expected_proposal_hash || '') !== currentHash)
+            && normalized !== String(current.resposta || '')) {
+          return json({ detail: { code: 'proposal_conflict', proposal_version: currentVersion, proposal_hash: currentHash } }, 409);
+        }
+        const changed = normalized !== String(current.resposta || '') || Boolean(current.draft_cleared) !== !normalized;
+        const proposalVersion = changed ? currentVersion + 1 : currentVersion;
+        const proposalHash = changed ? `hash-browser-draft-${proposalVersion}` : currentHash;
+        const updated = {
+          ...payload,
+          proposal_version: proposalVersion,
+          proposal_hash: proposalHash,
+          draft_cleared: !normalized,
+          result: {
+            ...current,
+            resposta: normalized,
+            proposal_version: proposalVersion,
+            proposal_hash: proposalHash,
+            draft_updated_at: new Date().toISOString(),
+            draft_cleared: !normalized
+          }
+        };
+        control.jobs.set(jobId, updated);
+        return json({
+          job_id: jobId,
+          store_id: body.store_id,
+          question_id: body.question_id,
+          proposal_id: String(current.proposal_id || jobId),
+          proposal_version: proposalVersion,
+          proposal_hash: proposalHash,
+          resposta: normalized,
+          draft_updated_at: updated.result.draft_updated_at,
+          draft_cleared: !normalized
+        });
+      }
       if (url.pathname.endsWith('/perguntas/responder')) return json({ success: true, resposta: 'Resposta sintética confirmada' });
-      if (url.pathname.endsWith('/ia-treinamento')) return json({ success: true, store_id: call.store, exemplos: {}, notas_sku: {}, orientacoes: '' });
+      if (url.pathname.endsWith('/ia-treinamento')) {
+        if (control.trainingHold) await control.trainingHold;
+        return json(control.trainingPayload || { success: true, store_id: call.store, exemplos: {}, notas_sku: {}, orientacoes: '' });
+      }
       return json({ success: true, lojas: [], produtos: [], status: 'idle' });
     }
     if (url.origin !== fixture.origin) return route.abort();
@@ -151,6 +204,17 @@ async function main() {
   try {
     const f = await fixture(browser);
     const { page, calls, errors } = f;
+    let releaseTraining;
+    if (!baseline) {
+      f.control.trainingHold = new Promise(resolve => { releaseTraining = resolve; });
+      f.control.trainingPayload = {
+        success: true,
+        store_id: 'fixture-1',
+        exemplos: { perguntas_anuncio: [], pos_venda: [] },
+        notas_sku: { 'SKU-TRAINING-FIXTURE': 'Orientação carregada depois da sugestão.' },
+        orientacoes: ''
+      };
+    }
     await page.goto(`${fixture.origin}/perguntas_pos_venda.html`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => document.querySelectorAll('[data-question-select]').length === 20);
     const first = await page.evaluate(() => window.__loadingMetrics);
@@ -161,6 +225,8 @@ async function main() {
     if (!baseline) {
       await verifyUnspecifiedVariations(f);
       await verifyResponsiveLayout(f);
+      await verifyTrainingRerender(f, releaseTraining);
+      await verifyCompletedJobDraftRecovery(f);
     }
     if (!baseline) {
       const summaryText = await page.locator('#perguntas-summary').innerText();
@@ -191,6 +257,200 @@ async function main() {
     await browser.close();
     await new Promise(resolve => server.close(resolve));
   }
+}
+
+async function verifyTrainingRerender({ page, calls, control }, releaseTraining) {
+  await page.waitForFunction(() => !state.treinamentoAtendimentoCarregando);
+  await page.evaluate(() => selecionarLoja('Fixture 01', 'fixture-1'));
+  await page.waitForFunction(() => state.lojaSelecionadaStoreId === 'fixture-1' && state.perguntas.length === 20 && !state.carregandoPerguntas);
+  for (let attempt = 0; attempt < 100 && !calls.some(call => call.path.endsWith('/ia-treinamento')); attempt++) await delay(10);
+  assert(calls.some(call => call.path.endsWith('/ia-treinamento')), 'fixture deve manter a orientação em carregamento para testar o rerender tardio');
+  await page.waitForFunction(() => document.querySelector('.question-answer-text'));
+  const key = await page.evaluate(() => {
+    const selected = state.perguntas.find(question => chavePerguntaAtendimento(question) === state.perguntaSelecionadaKey);
+    selected.item_sku = 'SKU-TRAINING-FIXTURE';
+    renderizarPerguntas();
+    aplicarResultadoJobAtendimentoCodex(state.perguntaSelecionadaKey, {
+      job_id: 'job-training-rerender',
+      result: {
+        resposta: 'Sugestão preservada durante o carregamento das orientações.',
+        proposal_id: 'proposal-training-rerender',
+        proposal_version: 7,
+        proposal_hash: 'hash-training-rerender'
+      }
+    });
+    return state.perguntaSelecionadaKey;
+  });
+  try {
+    releaseTraining();
+  } finally {
+    control.trainingHold = null;
+  }
+  await page.waitForFunction(() => document.querySelector('.question-sku-guidance-text')?.value === 'Orientação carregada depois da sugestão.');
+  const restored = await page.evaluate(expectedKey => {
+    const textarea = document.querySelector('.question-answer-text');
+    return {
+      key: state.perguntaSelecionadaKey,
+      resposta: textarea?.value || '',
+      proposalId: textarea?.dataset.codexProposalId || '',
+      proposalVersion: textarea?.dataset.codexProposalVersion || '',
+      proposalHash: textarea?.dataset.codexProposalHash || '',
+      keyMatches: state.perguntaSelecionadaKey === expectedKey
+    };
+  }, key);
+  assert.strictEqual(restored.keyMatches, true, 'rerender das orientações deve manter a pergunta selecionada');
+  assert.strictEqual(restored.resposta, 'Sugestão preservada durante o carregamento das orientações.');
+  assert.deepStrictEqual(
+    [restored.proposalId, restored.proposalVersion, restored.proposalHash],
+    ['proposal-training-rerender', '7', 'hash-training-rerender'],
+    'rerender das orientações deve preservar os metadados usados no envio'
+  );
+}
+
+async function verifyCompletedJobDraftRecovery({ page, control }) {
+  await page.waitForFunction(() => state.perguntas.length >= 2 && document.querySelector('.question-answer-text'));
+  const fixture = await page.evaluate(() => {
+    const first = state.perguntas[0];
+    const second = state.perguntas[1];
+    return {
+      firstKey: chavePerguntaAtendimento(first),
+      firstStoreId: String(first.store_id || ''),
+      firstQuestionId: String(first.id || ''),
+      secondKey: chavePerguntaAtendimento(second)
+    };
+  });
+  const jobId = 'job-browser-offscreen';
+  const completed = {
+    status: 'completed',
+    agent_state: 'aguardando_aprovacao',
+    job_id: jobId,
+    store_id: fixture.firstStoreId,
+    question_id: fixture.firstQuestionId,
+    result: {
+      resposta: 'Resposta concluída enquanto a pergunta estava fora do detalhe.',
+      proposal_id: 'proposal-browser-offscreen',
+      proposal_version: 11,
+      proposal_hash: 'hash-browser-offscreen'
+    }
+  };
+  control.jobs.set(jobId, completed);
+  await page.evaluate(({ questionKey, jobId: currentJobId, storeId, questionId }) => {
+    salvarEstadoJobAtendimentoCodex(questionKey, {
+      job_id: currentJobId,
+      store_id: storeId,
+      question_id: questionId,
+      status_message: 'Pesquisa sintética em andamento.',
+      can_cancel: true,
+      polling_active: true
+    });
+  }, { questionKey: fixture.firstKey, jobId, storeId: fixture.firstStoreId, questionId: fixture.firstQuestionId });
+  await page.locator(`[data-question-select="${fixture.secondKey}"]`).click();
+  await page.waitForFunction(key => state.perguntaSelecionadaKey === key, fixture.secondKey);
+  await page.evaluate(key => garantirPollingJobAtendimentoCodex(key), fixture.firstKey);
+  assert.strictEqual(await page.locator('.question-answer-text').inputValue(), '', 'conclusão da pergunta A não pode preencher o composer da pergunta B');
+
+  await page.locator(`[data-question-select="${fixture.firstKey}"]`).click();
+  await page.waitForFunction(key => state.perguntaSelecionadaKey === key, fixture.firstKey);
+  await page.waitForFunction(() => document.querySelector('.question-answer-text')?.value === 'Resposta concluída enquanto a pergunta estava fora do detalhe.');
+  let restored = await page.evaluate(() => {
+    const textarea = document.querySelector('.question-answer-text');
+    return {
+      resposta: textarea?.value || '',
+      proposalId: textarea?.dataset.codexProposalId || '',
+      proposalVersion: textarea?.dataset.codexProposalVersion || '',
+      proposalHash: textarea?.dataset.codexProposalHash || ''
+    };
+  });
+  assert.deepStrictEqual(
+    [restored.proposalId, restored.proposalVersion, restored.proposalHash],
+    ['proposal-browser-offscreen', '11', 'hash-browser-offscreen'],
+    'A-B-A deve restaurar texto e identidade da proposta concluída'
+  );
+  const beforeReload = await page.evaluate(key => ({
+    jobState: obterEstadoJobAtendimentoCodex(key),
+    storedJobs: Object.keys(sessionStorage).filter(storageKey => storageKey.startsWith('jk_ppv_codex_job_v2:')).length
+  }), fixture.firstKey);
+  assert.strictEqual(beforeReload.jobState?.terminal, true, 'referência terminal deve existir antes do reload');
+  assert.strictEqual(beforeReload.storedJobs, 1, 'referência terminal deve estar no sessionStorage antes do reload');
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => document.querySelectorAll('[data-question-select]').length === 20);
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (await page.locator('.question-answer-text').inputValue() === completed.result.resposta) break;
+    await delay(50);
+  }
+  restored = await page.evaluate(() => {
+    const textarea = document.querySelector('.question-answer-text');
+    return {
+      key: state.perguntaSelecionadaKey,
+      resposta: textarea?.value || '',
+      proposalId: textarea?.dataset.codexProposalId || '',
+      proposalVersion: textarea?.dataset.codexProposalVersion || '',
+      proposalHash: textarea?.dataset.codexProposalHash || '',
+      jobState: obterEstadoJobAtendimentoCodex(state.perguntaSelecionadaKey),
+      storedJobs: Object.keys(sessionStorage).filter(key => key.startsWith('jk_ppv_codex_job_v2:')).length
+    };
+  });
+  assert.strictEqual(restored.key, fixture.firstKey);
+  assert.deepStrictEqual(
+    [restored.resposta, restored.proposalId, restored.proposalVersion, restored.proposalHash],
+    [completed.result.resposta, 'proposal-browser-offscreen', '11', 'hash-browser-offscreen'],
+    `reload deve recuperar somente a proposta persistida da pergunta selecionada: ${JSON.stringify(restored)}`
+  );
+  const edited = 'Última edição confirmada no backend.';
+  await page.locator('.question-answer-text').fill(edited);
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (control.jobs.get(jobId)?.result?.resposta === edited) break;
+    await delay(25);
+  }
+  assert.strictEqual(control.jobs.get(jobId)?.result?.resposta, edited, 'autosave deve confirmar a edição manual no backend');
+  assert.strictEqual(control.jobs.get(jobId)?.result?.proposal_version, 12);
+  assert.strictEqual(
+    await page.evaluate(answer => Object.values(sessionStorage).some(value => String(value).includes(answer)), edited),
+    false,
+    'sessionStorage deve guardar somente identificadores, nunca o texto da resposta'
+  );
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => document.querySelectorAll('[data-question-select]').length === 20);
+  await page.waitForFunction(expected => document.querySelector('.question-answer-text')?.value === expected, edited);
+  assert.deepStrictEqual(
+    await page.evaluate(() => {
+      const textarea = document.querySelector('.question-answer-text');
+      return [textarea?.value || '', textarea?.dataset.codexProposalVersion || '', textarea?.dataset.codexProposalHash || ''];
+    }),
+    [edited, '12', 'hash-browser-draft-12'],
+    'reload deve trazer exatamente a última edição e os metadados confirmados'
+  );
+
+  await page.locator('.question-answer-text').fill('');
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (control.jobs.get(jobId)?.draft_cleared === true) break;
+    await delay(25);
+  }
+  assert.strictEqual(control.jobs.get(jobId)?.draft_cleared, true, 'campo vazio deve persistir tombstone');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => document.querySelectorAll('[data-question-select]').length === 20);
+  await page.waitForFunction(() => document.querySelector('.question-answer-text')?.dataset.codexProposalVersion === '13');
+  assert.strictEqual(await page.locator('.question-answer-text').inputValue(), '', 'tombstone deve impedir o texto antigo de reaparecer');
+  control.jobs.set(jobId, {
+    ...control.jobs.get(jobId),
+    agent_state: 'concluido',
+    result: { ...control.jobs.get(jobId).result, publish_attempted: true, approved: true }
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => document.querySelectorAll('[data-question-select]').length === 20);
+  await page.waitForFunction(() => Object.keys(sessionStorage).every(key => !key.startsWith('jk_ppv_codex_job_v2:')));
+  assert.deepStrictEqual(
+    await page.evaluate(() => {
+      const textarea = document.querySelector('.question-answer-text');
+      return [textarea?.value || '', textarea?.dataset.codexProposalId || ''];
+    }),
+    ['', ''],
+    'proposta já verificada deve remover a referência e não ser recuperada'
+  );
+  await page.waitForFunction(() => !state.carregandoPerguntas);
+  await page.evaluate(key => limparEstadoJobAtendimentoCodex(key), fixture.firstKey);
 }
 
 async function verifyUnspecifiedVariations({ page }) {

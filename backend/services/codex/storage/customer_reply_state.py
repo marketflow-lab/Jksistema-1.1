@@ -47,7 +47,8 @@ _CUSTOMER_REPLY_SEALED_RESULT_FIELDS = frozenset({
     "resposta", "model", "proposal_id", "proposal_version", "proposal_hash",
     "data_sufficient", "publish_attempted", "requires_approval",
     "completed_with_partial", "blocked_without_draft", "draft_source",
-    "completion_reason", "review_required",
+    "completion_reason", "review_required", "draft_updated_at", "draft_cleared",
+    "revised_by_operator",
 })
 
 
@@ -84,6 +85,7 @@ _CUSTOMER_REPLY_DURABLE_FIELDS = frozenset({
     "last_attempt_completed_at", "created_at", "updated_at", "completed_at",
     "data_sufficient", "publish_attempted", "requires_approval",
     "completion_reason", "draft_source", "review_required", "draft_expired", "retry_kind",
+    "draft_updated_at", "draft_cleared", "revised_by_operator",
     "error_code", "error_component", "error_reason", "retryable", "retry_after",
 })
 
@@ -427,7 +429,8 @@ def _customer_reply_durable_payload(payload: dict[str, Any]) -> tuple[dict[str, 
     for key in (
         "proposal_id", "proposal_version", "proposal_hash", "data_sufficient",
         "publish_attempted", "requires_approval", "completed_with_partial",
-        "blocked_without_draft", "draft_source",
+        "blocked_without_draft", "draft_source", "draft_updated_at", "draft_cleared",
+        "revised_by_operator",
     ):
         if key in result and key not in durable:
             durable[key] = result.get(key)

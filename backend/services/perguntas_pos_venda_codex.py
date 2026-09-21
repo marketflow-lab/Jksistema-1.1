@@ -33,6 +33,7 @@ from backend.services.perguntas_generation_preflight import (
     identity_mismatch,
 )
 from backend.services.codex.storage import customer_replies as customer_reply_storage
+from backend.services.codex.storage import proposal_drafts as proposal_draft_storage
 from backend.services.codex_turn_context import (
     EVIDENCE_ENVELOPE_V2,
     conversation_key,
@@ -52,6 +53,7 @@ from backend.services.vin_transient import (
     contains_vin_like_identifier,
 )
 from backend.services.perguntas_pos_venda_state import (
+    ML_RESPOSTA_PERGUNTA_MAX_CHARS,
     PerguntasIAClassificacaoInconclusiva,
     PerguntasIAProviderIndisponivel,
     PerguntasIASegurancaBloqueada,
@@ -191,6 +193,15 @@ _INITIAL_CREATION_PROCESS_STRIPES = 256
 
 class _LeaseLost(RuntimeError):
     pass
+
+
+class ProposalDraftConflict(ValueError):
+    """The proposal changed after the operator loaded the draft."""
+
+    def __init__(self, proposal_version: int, proposal_hash: str):
+        super().__init__("A proposta foi atualizada. Recarregue o rascunho antes de salvar novamente.")
+        self.proposal_version = max(1, int(proposal_version or 1))
+        self.proposal_hash = str(proposal_hash or "")
 
 
 def _lease_generation(job: Any) -> int:
@@ -2958,9 +2969,9 @@ def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, An
         "subquestions": list(job.get("subquestions") or []),
         "evidence_status": list(result.get("evidence_status") or job.get("evidence_status") or []),
         "data_sufficient": bool(result.get("data_sufficient")) if result else False,
-        "proposal_id": str(result.get("proposal_id") or ""),
+        "proposal_id": str(result.get("proposal_id") or job.get("proposal_id") or ""),
         "proposal_version": int(result.get("proposal_version") or job.get("proposal_version") or 1),
-        "proposal_hash": str(result.get("proposal_hash") or ""),
+        "proposal_hash": str(result.get("proposal_hash") or job.get("proposal_hash") or ""),
         "warnings": list(result.get("warnings") or job.get("warnings") or []),
         "result": result,
         "error": str(job.get("error") or ""),
@@ -2986,6 +2997,8 @@ def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, An
         "contract_quarantined": bool(job.get("contract_quarantined")),
         "completion_reason": completion_reason,
         "draft_source": draft_source,
+        "draft_updated_at": str(result.get("draft_updated_at") or job.get("draft_updated_at") or ""),
+        "draft_cleared": bool(result.get("draft_cleared") or job.get("draft_cleared")),
         "review_required": bool(result.get("review_required") or job.get("review_required")),
         "research_history": list(job.get("research_history") or [])[-RETRY_HISTORY_LIMIT:],
         "queue_position": max(0, int(queue_position or 0)),
@@ -3943,6 +3956,7 @@ def get_job(client_id: str, job_id: str) -> Optional[dict[str, Any]]:
             str(job.get("agent_state") or "") == "aguardando_aprovacao"
             or bool(job.get("draft_expired"))
         )
+        and not bool(job.get("draft_cleared"))
         and not codex_assistant_storage.codex_assistant_customer_reply_job_has_transient(
             info_base, client_id, job_id
         )
@@ -5433,6 +5447,163 @@ def _dispatch_pending() -> None:
         logger.warning("[PPV CODEX] evento=despachar_fila status=erro")
 
 
+def revise_proposal_draft(
+    *,
+    client_id: str,
+    job_id: str,
+    store_id: str,
+    seller_id: str,
+    site_id: str,
+    question_id: str,
+    answer: str,
+    expected_proposal_version: int,
+    expected_proposal_hash: str,
+) -> dict[str, Any]:
+    """Persist an operator draft revision without approving or publishing it."""
+
+    info_base = _runtime_info_base()
+    job = codex_assistant_storage.codex_assistant_customer_reply_job_get(
+        info_base, client_id, job_id
+    )
+    if not isinstance(job, dict):
+        raise KeyError(job_id)
+    if _canonical_task_type(job.get("task_type")) != TASK_TYPE_PUBLIC_QUESTION:
+        raise PermissionError("A tarefa nao pertence ao atendimento de perguntas.")
+    expected_scope = {
+        "store_id": str(store_id or "").strip(),
+        "seller_id": str(seller_id or "").strip(),
+        "site_id": str(site_id or "").strip(),
+    }
+    if any(
+        not expected_scope[field]
+        or str(job.get(field) or "").strip() != expected_scope[field]
+        for field in expected_scope
+    ):
+        raise PermissionError("A proposta nao pertence a loja autorizada nesta sessao.")
+    stored_question_id = str(job.get("question_id") or "").strip()
+    if not stored_question_id or stored_question_id != str(question_id or "").strip():
+        raise PermissionError("A proposta nao pertence a pergunta informada.")
+    if not _job_contract_current(job):
+        if not _job_terminal(job):
+            _quarantine_outdated_job(job, client_id=client_id)
+        raise ValueError("A proposta usa um contrato de IA anterior. Gere uma nova resposta antes de editar.")
+    if (
+        str(job.get("status") or "") != "completed"
+        or str(job.get("agent_state") or "") != "aguardando_aprovacao"
+        or bool(job.get("contract_quarantined"))
+        or bool(job.get("blocked_without_draft"))
+    ):
+        raise ValueError("A tarefa nao possui proposta editavel.")
+
+    result = dict(job.get("result")) if isinstance(job.get("result"), dict) else {}
+    if not result and not bool(job.get("draft_cleared")):
+        raise ValueError("O rascunho expirou. Gere uma nova resposta antes de editar.")
+    current_version = max(1, int(job.get("proposal_version") or result.get("proposal_version") or 1))
+    current_hash = str(job.get("proposal_hash") or result.get("proposal_hash") or "")
+    requested_answer = str(answer or "")
+    if len(requested_answer) > ML_RESPOSTA_PERGUNTA_MAX_CHARS:
+        raise ValueError(
+            f"A resposta deve ter no maximo {ML_RESPOSTA_PERGUNTA_MAX_CHARS} caracteres."
+        )
+    draft_cleared = not requested_answer.strip()
+    persisted_answer = "" if draft_cleared else requested_answer
+    current_cleared = bool(result.get("draft_cleared") or job.get("draft_cleared"))
+    current_answer = "" if current_cleared else str(result.get("resposta") or "")
+    if current_answer == persisted_answer and current_cleared == draft_cleared:
+        return {
+            "job_id": str(job.get("job_id") or job_id),
+            "store_id": expected_scope["store_id"],
+            "question_id": stored_question_id,
+            "proposal_id": str(result.get("proposal_id") or job.get("proposal_id") or job_id),
+            "proposal_version": current_version,
+            "proposal_hash": current_hash,
+            "resposta": current_answer,
+            "draft_updated_at": str(
+                result.get("draft_updated_at")
+                or job.get("draft_updated_at")
+                or job.get("updated_at")
+                or job.get("completed_at")
+                or ""
+            ),
+            "draft_cleared": current_cleared,
+        }
+    if (
+        int(expected_proposal_version or 0) != current_version
+        or str(expected_proposal_hash or "") != current_hash
+    ):
+        raise ProposalDraftConflict(current_version, current_hash)
+
+    proposal_version = current_version + 1
+    event_subject_key = str(job.get("event_subject_key") or job.get("subject_key") or "")
+    proposal_hash = _hash(
+        {
+            "job_id": str(job.get("job_id") or job_id),
+            "version": proposal_version,
+            "store": str(job.get("store") or ""),
+            "subject": event_subject_key,
+            "answer": persisted_answer,
+        }
+    )
+    draft_updated_at = _now()
+    proposal_id = str(result.get("proposal_id") or job.get("proposal_id") or job_id)
+    for field in ("approved", "approved_at"):
+        result.pop(field, None)
+    result.update(
+        {
+            "resposta": persisted_answer,
+            "proposal_id": proposal_id,
+            "proposal_version": proposal_version,
+            "proposal_hash": proposal_hash,
+            "requires_approval": not draft_cleared,
+            "publish_attempted": False,
+            "blocked_without_draft": False,
+            "review_required": True,
+            "draft_source": "" if draft_cleared else "operator",
+            "draft_updated_at": draft_updated_at,
+            "draft_cleared": draft_cleared,
+            "revised_by_operator": True,
+        }
+    )
+    job.update(
+        {
+            "proposal_id": proposal_id,
+            "proposal_version": proposal_version,
+            "proposal_hash": proposal_hash,
+            "requires_approval": not draft_cleared,
+            "draft_source": "" if draft_cleared else "operator",
+            "draft_updated_at": draft_updated_at,
+            "draft_cleared": draft_cleared,
+            "draft_expired": False,
+            "revised_by_operator": True,
+            "result": result,
+        }
+    )
+    saved = proposal_draft_storage.customer_reply_proposal_save_cas(
+        info_base,
+        client_id,
+        job,
+        expected_proposal_version=current_version,
+        expected_proposal_hash=current_hash,
+    )
+    if saved.get(proposal_draft_storage.PROPOSAL_CAS_APPLIED) is not True:
+        saved_result = saved.get("result") if isinstance(saved.get("result"), dict) else {}
+        raise ProposalDraftConflict(
+            int(saved.get("proposal_version") or saved_result.get("proposal_version") or 1),
+            str(saved.get("proposal_hash") or saved_result.get("proposal_hash") or ""),
+        )
+    return {
+        "job_id": str(job.get("job_id") or job_id),
+        "store_id": expected_scope["store_id"],
+        "question_id": stored_question_id,
+        "proposal_id": proposal_id,
+        "proposal_version": proposal_version,
+        "proposal_hash": proposal_hash,
+        "resposta": persisted_answer,
+        "draft_updated_at": draft_updated_at,
+        "draft_cleared": draft_cleared,
+    }
+
+
 def approve_or_refresh_proposal(
     *,
     client_id: str,
@@ -5620,6 +5791,7 @@ __all__ = [
     "wait_job",
     "cancel_job",
     "recover_pending_jobs",
+    "revise_proposal_draft",
     "approve_or_refresh_proposal",
     "mark_verified",
     "mark_rejected",

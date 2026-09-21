@@ -36,6 +36,7 @@ PERGUNTAS_POS_VENDA_ENDPOINTS: tuple[str, ...] = (
     "ml_pos_venda_automacao_poll",
     "ml_customer_reply_job_status",
     "ml_customer_reply_job_cancel",
+    "ml_customer_reply_job_draft_patch",
     "ml_customer_reply_solicitacoes_list",
     "ml_listar_perguntas",
 )

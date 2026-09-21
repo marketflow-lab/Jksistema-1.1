@@ -9,6 +9,10 @@ from fastapi.encoders import jsonable_encoder
 
 from backend.modules.perguntas_pos_venda.endpoints.security import get_tenant_id
 from backend.modules.perguntas_pos_venda.endpoints import questions_loading_support
+from backend.schemas import (
+    PerguntasAssistantDraftPatchRequest,
+    PerguntasAssistantDraftPatchResponse,
+)
 from backend.services import perguntas_pos_venda_codex
 
 
@@ -202,6 +206,50 @@ def ml_customer_reply_job_cancel(job_id: str, client_id: str = Depends(get_tenan
     return jsonable_encoder(job)
 
 
+def ml_customer_reply_job_draft_patch(
+    job_id: str,
+    payload: PerguntasAssistantDraftPatchRequest,
+    request: Request,
+    client_id: str = Depends(get_tenant_id),
+):
+    stores = _authorized_store_catalog(request, client_id)
+    store_id = str(payload.store_id or "").strip()
+    identity = stores.get(store_id)
+    if not identity:
+        raise HTTPException(status_code=403, detail="Loja nao autorizada nesta sessao.")
+    if not identity.get("seller_id") or not identity.get("site_id"):
+        raise HTTPException(status_code=409, detail="A identidade da loja ainda nao esta completa.")
+    try:
+        revised = perguntas_pos_venda_codex.revise_proposal_draft(
+            client_id=client_id,
+            job_id=str(job_id or "").strip(),
+            store_id=store_id,
+            seller_id=identity["seller_id"],
+            site_id=identity["site_id"],
+            question_id=str(payload.question_id or "").strip(),
+            answer=payload.resposta,
+            expected_proposal_version=payload.expected_proposal_version,
+            expected_proposal_hash=payload.expected_proposal_hash,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Tarefa de atendimento nao encontrada.") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except perguntas_pos_venda_codex.ProposalDraftConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "proposal_conflict",
+                "message": str(exc),
+                "proposal_version": exc.proposal_version,
+                "proposal_hash": exc.proposal_hash,
+            },
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return jsonable_encoder(PerguntasAssistantDraftPatchResponse(**revised))
+
+
 def ml_customer_reply_solicitacoes_list(
     request: Request,
     store_id: str = "",
@@ -253,5 +301,6 @@ def ml_customer_reply_solicitacoes_list(
 __all__ = [
     "ml_customer_reply_job_status",
     "ml_customer_reply_job_cancel",
+    "ml_customer_reply_job_draft_patch",
     "ml_customer_reply_solicitacoes_list",
 ]

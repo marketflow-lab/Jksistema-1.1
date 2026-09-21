@@ -25,6 +25,8 @@ MODEL_TYPES = (
     ppv_schemas.PerguntasAprovacaoRequest,
     ppv_schemas.PerguntasGerarRespostaRequest,
     ppv_schemas.PerguntasEnviarRespostaRequest,
+    ppv_schemas.PerguntasAssistantDraftPatchRequest,
+    ppv_schemas.PerguntasAssistantDraftPatchResponse,
     ppv_schemas.MLQuestionsV2ProcessRequest,
     ppv_schemas.MLQuestionsV2ReviewActionRequest,
     ppv_schemas.PosVendaMensagemRequest,
@@ -36,17 +38,13 @@ MODEL_TYPES = (
     TrainingRefreshRequest,
 )
 CONTRACT_HASHES = {
-    # Additive indexed ficha GET/refresh POST and optional technical-source CAS;
-    # safe opt-out default for question approval; legacy endpoint signatures and
-    # facade exports remain unchanged.
-    "routes": "77bdca722f74a16061e65ea83490c374f16cf1421d697f5cbc9d3af7cc273aea",
-    "exports": "cb28869e16292f3f0af3c259bd6dc70a62cfd29969d7aa7e1a46bf1458de4909",
-    "signatures": "40509257eef17db74bca7ca80a11f7bc39229d3ab87101f72a4722f44aafad5e",
-    # Optional exact store_id for manual send and safe opt-out default for
-    # question approval; legacy name-only payloads remain valid.
-    "schemas": "2b4845b13ae58d1bbab138aaa67691c84e9c82392e886231347527ceb7c99ecd",
+    # Additive draft PATCH with optimistic concurrency and sealed persistence.
+    "routes": "aeb09afaf9b2e68a43fec2bdcf7bdae813c3f98600b4df442e194b8488877eb7",
+    "exports": "7f4ae8abcba9cd229d40d93ed5da479d36327acaa02fab6ef2efad7903f10390",
+    "signatures": "aa38d5fcf4222cfd5ba33e2ce8867d2d22c55e7f8c6c15521c5880f0e253e038",
+    "schemas": "6a1af279285b3daefc049ef09e0a975996abafc95ca7c48e3f970e03ed7c8922",
     "http_status_codes": "c06ceb69456b4923815b0461ddeef6f9c90b6fcf5c0568dd79b3fdbc888a4546",
-    "governance": "af72e45eecb3012d9fbc01f23fc530977e25f72106912c85921b5f587d0b4dee",
+    "governance": "5eb6eadbc9ab3bb638bac5e1fadd1fa1d99cc3cfc590850ef86ef65d7c11f400",
 }
 GOVERNANCE_NAMES = (
     "_ML_POS_VENDA_RECENT_DAYS",
@@ -159,9 +157,9 @@ def _snapshot() -> dict[str, object]:
 
 def test_perguntas_pos_venda_endpoints_contract_snapshot() -> None:
     snapshot = _snapshot()
-    assert len(snapshot["routes"]) == 40
-    assert len(snapshot["exports"]) == 36
-    assert len(snapshot["schemas"]) == 14
+    assert len(snapshot["routes"]) == 41
+    assert len(snapshot["exports"]) == 37
+    assert len(snapshot["schemas"]) == 16
     assert {name: _digest(value) for name, value in snapshot.items()} == CONTRACT_HASHES
 
 

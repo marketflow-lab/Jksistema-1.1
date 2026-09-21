@@ -2,7 +2,7 @@
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PerguntasLojaConfigRequest(BaseModel):
@@ -48,6 +48,30 @@ class PerguntasEnviarRespostaRequest(BaseModel):
     proposal_id: Optional[str] = ""
     proposal_version: Optional[int] = 0
     proposal_hash: Optional[str] = ""
+
+
+class PerguntasAssistantDraftPatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    store_id: str = Field(min_length=1, max_length=160)
+    question_id: str = Field(min_length=1, max_length=160)
+    resposta: str = Field(max_length=2_000)
+    expected_proposal_version: int = Field(ge=1)
+    expected_proposal_hash: str = Field(min_length=1, max_length=256)
+
+
+class PerguntasAssistantDraftPatchResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str
+    store_id: str
+    question_id: str
+    proposal_id: str
+    proposal_version: int
+    proposal_hash: str
+    resposta: str
+    draft_updated_at: str
+    draft_cleared: bool
 
 
 class MLQuestionsV2ProcessRequest(BaseModel):
@@ -105,6 +129,8 @@ __all__ = [
     "PerguntasAprovacaoRequest",
     "PerguntasGerarRespostaRequest",
     "PerguntasEnviarRespostaRequest",
+    "PerguntasAssistantDraftPatchRequest",
+    "PerguntasAssistantDraftPatchResponse",
     "MLQuestionsV2ProcessRequest",
     "MLQuestionsV2ReviewActionRequest",
     "PosVendaMensagemRequest",

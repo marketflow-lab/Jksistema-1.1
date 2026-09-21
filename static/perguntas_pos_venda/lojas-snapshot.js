@@ -164,5 +164,5 @@
     root.addEventListener('storage', checkSession);
     root.addEventListener('focus', checkSession);
     root.addEventListener('jk:logout', () => cancel(true));
-    root.addEventListener('pagehide', () => cancel(true));
+    root.addEventListener('pagehide', () => cancel(false));
 })(window);
