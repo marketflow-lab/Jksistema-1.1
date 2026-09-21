@@ -11,7 +11,7 @@ O instalador completo mais recente permanece disponivel para instalacoes novas. 
 
 1. Atualize a versao nos arquivos de release pelo fluxo normal.
 2. Confirme que `installer-runtime.lock.json` continua compativel. Alteracoes nos componentes pesados exigem um novo contrato e o modo `runtime-update`.
-3. Abra o workflow **Desktop release** e informe a tag correspondente, por exemplo `v1.0.151`.
+3. Abra o workflow **Desktop release** e informe a tag correspondente, por exemplo `v1.0.152`.
 4. Escolha `app-update` para uma versao que altera somente o aplicativo ou `runtime-update` para gerar o instalador completo.
 5. Execute primeiro com `publish=false`. O GitHub gera, verifica e disponibiliza os artefatos internos por 14 dias.
 6. Depois da revisao, execute com `publish=true`. A publicacao nasce como draft e somente fica publica depois do upload integral.
