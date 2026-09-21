@@ -32,7 +32,7 @@ jobs:
   build:
     name: Build and verify desktop artifacts
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       PYTHONUTF8: '1'
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\.cache\electron-builder
@@ -80,7 +80,6 @@ jobs:
           key: electron-builder-${{ runner.os }}-${{ hashFiles('electron_app/package-lock.json') }}
 
       - name: Restore immutable runtime cache
-        if: inputs.release_mode == 'runtime-update'
         uses: actions/cache@v4
         with:
           path: |
@@ -101,13 +100,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node tests/electron_backend_bootstrap_regression.js
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Build lightweight application update
-        if: inputs.release_mode == 'app-update'
-        run: npm.cmd --prefix electron_app run dist:update
+          .\tests\electron_release_artifact_staging.ps1
 
       - name: Restore pinned Whisper model
-        if: inputs.release_mode == 'runtime-update'
         shell: pwsh
         run: |
           $model = Join-Path $env:GITHUB_WORKSPACE '.installer_runtime\black_jhon\faster-whisper-small'
@@ -115,27 +110,16 @@ jobs:
           "JK_WHISPER_MODEL_SOURCE=$model" | Add-Content $env:GITHUB_ENV
 
       - name: Build complete offline installer
-        if: inputs.release_mode == 'runtime-update'
         run: npm.cmd --prefix electron_app run dist:full
+
+      - name: Build lightweight application update
+        if: inputs.release_mode == 'app-update'
+        run: npm.cmd --prefix electron_app run dist:update
 
       - name: Stage selected release artifacts
         shell: pwsh
         run: |
-          $mode = '${{ inputs.release_mode }}'
-          $source = if ($mode -eq 'app-update') { 'electron_app/dist-client-update' } else { 'electron_app/dist-client-setup' }
-          New-Item -ItemType Directory -Force release-artifacts | Out-Null
-          $files = @(Get-ChildItem -LiteralPath $source -File | Where-Object {
-            $_.Extension -in @('.exe', '.blockmap', '.yml')
-          })
-          if (@($files | Where-Object Name -eq 'latest.yml').Count -ne 1) { throw 'latest.yml ausente ou duplicado.' }
-          if (@($files | Where-Object Extension -eq '.exe').Count -ne 1) { throw 'Executavel da release ausente ou duplicado.' }
-          foreach ($file in $files) {
-            Copy-Item -LiteralPath $file.FullName -Destination (Join-Path 'release-artifacts' $file.Name)
-          }
-          Get-ChildItem release-artifacts -File | ForEach-Object {
-            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$hash  $($_.Name)"
-          } | Set-Content release-artifacts/SHA256SUMS.txt -Encoding utf8
+          .\scripts\stage_desktop_release_artifacts.ps1 -Mode '${{ inputs.release_mode }}'
 
       - name: Upload verified release artifacts
         uses: actions/upload-artifact@v4

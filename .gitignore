@@ -122,8 +122,10 @@ electron_app/dist-client/
 electron_app/dist-client-final/
 electron_app/dist-client-nosign/
 electron_app/dist-client-setup/
+electron_app/dist-client-update/
 electron_app/dist-client-setup-next/
 electron_app/dist-client-setup.zip
+release-artifacts/
 electron_app/dist-private/
 dist-private/
 electron_app/private_build/
