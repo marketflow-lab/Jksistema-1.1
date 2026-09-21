@@ -401,15 +401,42 @@
             if (token === generation) state.carregandoPerguntas = false;
         }
     }
+    function attributeValue(attribute) {
+        return String(attribute?.value_name || attribute?.values?.[0]?.name || '').trim();
+    }
+    function variationSku(variation) {
+        const attributes = Array.isArray(variation?.attributes) ? variation.attributes : [];
+        return String(variation?.seller_custom_field
+            || attributeValue(attributes.find(attribute => attribute?.id === 'SELLER_SKU')) || '').trim();
+    }
+    function variationName(variation, index) {
+        const combinations = (Array.isArray(variation?.attribute_combinations) ? variation.attribute_combinations : [])
+            .map(attribute => ({ name: String(attribute?.name || '').trim(), value: attributeValue(attribute) }))
+            .filter(attribute => attribute.value);
+        if (!combinations.length) return `Variação ${index + 1}`;
+        if (combinations.length === 1) return combinations[0].value;
+        return combinations.map(attribute => attribute.name ? `${attribute.name}: ${attribute.value}` : attribute.value).join(' · ');
+    }
     function itemFields(item, question) {
-        const variation = (item.variations || []).find(v => String(v.id) === String(question.variation_id || question.item_variation_id));
-        const attrs = variation?.attributes || item.attributes || [];
+        const variations = Array.isArray(item.variations) ? item.variations.filter(value => value && typeof value === 'object') : [];
         const variationId = question.variation_id || question.item_variation_id;
+        const variation = variations.find(value => String(value.id) === String(variationId));
+        const attrs = variation?.attributes || item.attributes || [];
         const sku = variationId
-            ? (variation ? variation.seller_custom_field || attrs.find(a => a.id === 'SELLER_SKU')?.value_name || '' : question.item_sku || '')
-            : item.item_sku || item.seller_custom_field || attrs.find(a => a.id === 'SELLER_SKU')?.value_name || '';
+            ? (variation ? variationSku(variation) : question.item_sku || '')
+            : item.item_sku || item.seller_custom_field || attributeValue(attrs.find(a => a.id === 'SELLER_SKU')) || '';
+        const itemVariations = variationId ? [] : variations.map((value, index) => {
+            const rawQuantity = value.available_quantity;
+            const quantity = rawQuantity === null || rawQuantity === undefined || rawQuantity === '' ? Number.NaN : Number(rawQuantity);
+            return {
+                id: String(value.id || ''),
+                name: variationName(value, index),
+                sku: variationSku(value),
+                available_quantity: Number.isFinite(quantity) ? Math.max(0, Math.trunc(quantity)) : null,
+            };
+        });
         return { item_title: item.title || item.item_title, item_thumbnail: item.secure_thumbnail || item.thumbnail || item.item_thumbnail,
-            item_permalink: item.permalink || item.item_permalink, item_sku: sku, _itemReady: true };
+            item_permalink: item.permalink || item.item_permalink, item_sku: sku, item_variations: itemVariations, _itemReady: true };
     }
     function component(data, name) {
         return data?.components?.[name] || { state: data?.stale ? 'stale' : 'unavailable', retryable: false };
@@ -469,7 +496,7 @@
                         if (q._itemReady) boundedSet(itemCache, `${q.store_id}::${q.item_id}`, { item, at: Number(data.consultado_em || Date.now()) });
                         else if (info.state === 'blocked') {
                             itemCache.delete(`${q.store_id}::${q.item_id}`);
-                            for (const name of ['item_title', 'item_thumbnail', 'item_permalink', 'item_sku']) q[name] = '';
+                            for (const name of ['item_title', 'item_thumbnail', 'item_permalink', 'item_sku', 'item_variations']) q[name] = '';
                         }
                         clearGenerationContextWhenReady(q);
                     });
@@ -482,7 +509,7 @@
                         q._itemState = [401, 403].includes(error.status) ? 'blocked' : 'unavailable';
                         if (q._itemState === 'blocked') {
                             itemCache.delete(`${q.store_id}::${q.item_id}`);
-                            for (const name of ['item_title', 'item_thumbnail', 'item_permalink', 'item_sku']) q[name] = '';
+                            for (const name of ['item_title', 'item_thumbnail', 'item_permalink', 'item_sku', 'item_variations']) q[name] = '';
                         }
                     });
                     perguntasStatus.textContent = 'Lista disponível. Não foi possível completar alguns anúncios; tente novamente.';
@@ -619,7 +646,7 @@
         } else if (name === 'item' || name === 'identity') {
             itemCache.delete(`${question.store_id}::${question.item_id}`);
             Object.assign(question, { _itemReady: false, _itemState: resourceStatus });
-            if (blocked) for (const field of ['item_title', 'item_thumbnail', 'item_permalink', 'item_sku']) question[field] = '';
+            if (blocked) for (const field of ['item_title', 'item_thumbnail', 'item_permalink', 'item_sku', 'item_variations']) question[field] = '';
         }
         if (['question', 'history', 'identity'].includes(name)) {
             detailCache.delete(keyOf(question));

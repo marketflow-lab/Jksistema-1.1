@@ -215,6 +215,31 @@ function renderizarLinhaPerguntaAtendimento(pergunta, selecionada) {
     `;
 }
 
+function renderizarVariacoesPerguntaAtendimento(pergunta) {
+    if (pergunta.variation_id || pergunta.item_variation_id) return '';
+    const variacoes = Array.isArray(pergunta.item_variations) ? pergunta.item_variations : [];
+    if (!variacoes.length) return '';
+    const itens = variacoes.map(variacao => {
+        const nome = String(variacao?.name || 'Variação').trim();
+        const sku = String(variacao?.sku || '').trim();
+        const estoqueInformado = variacao?.available_quantity !== null
+            && variacao?.available_quantity !== undefined && variacao?.available_quantity !== ''
+            && Number.isFinite(Number(variacao.available_quantity));
+        const estoque = estoqueInformado ? Math.max(0, Math.trunc(Number(variacao.available_quantity))) : null;
+        return `<li class="question-variation-item">
+            <span class="question-variation-identity">
+                <strong>${escapeHtml(nome)}</strong>
+                ${sku ? `<small>SKU ${escapeHtml(sku)}</small>` : ''}
+            </span>
+            <span class="question-variation-stock ${estoque === null || estoque === 0 ? 'empty' : ''}">Estoque atual: ${escapeHtml(estoque === null ? 'não informado' : estoque)}</span>
+        </li>`;
+    }).join('');
+    return `<div class="question-variations">
+        <span class="question-variations-label">Variações e estoque atual</span>
+        <ul class="question-variation-list">${itens}</ul>
+    </div>`;
+}
+
 function renderizarDetalhePerguntaAtendimento(pergunta) {
     if (!perguntasDetail) return;
     if (!pergunta) {
@@ -229,6 +254,10 @@ function renderizarDetalhePerguntaAtendimento(pergunta) {
         ? `<a href="${escapeHtml(pergunta.item_permalink)}" target="_blank" rel="noopener">${escapeHtml(titulo)}</a>`
         : escapeHtml(titulo);
     const sku = String(pergunta.item_sku || '').trim();
+    const variacoesHtml = renderizarVariacoesPerguntaAtendimento(pergunta);
+    const quantidadeVariacoes = Array.isArray(pergunta.item_variations) ? pergunta.item_variations.length : 0;
+    const identidadeItem = sku ? `SKU ${sku}` : quantidadeVariacoes
+        ? `${quantidadeVariacoes} ${quantidadeVariacoes === 1 ? 'variação' : 'variações'}` : 'SKU -';
     const comprador = pergunta.buyer_name || pergunta.buyer_nickname || pergunta.from_id || '-';
     const answer = pergunta.answer && pergunta.answer.text
         ? `<div class="answer-box">${escapeHtml(pergunta.answer.text)}</div>`
@@ -289,7 +318,7 @@ function renderizarDetalhePerguntaAtendimento(pergunta) {
                     <h3 class="question-detail-title">${tituloHtml}</h3>
                     <div class="question-detail-meta">
                         <span>An&uacute;ncio ${escapeHtml(pergunta.item_id || '-')}</span>
-                        <span>SKU ${escapeHtml(sku || '-')}</span>
+                        <span>${escapeHtml(identidadeItem)}</span>
                         <span>Comprador ${escapeHtml(comprador)}</span>
                         <span>Pergunta ${escapeHtml(pergunta.id || '-')}</span>
                     </div>
@@ -306,7 +335,8 @@ function renderizarDetalhePerguntaAtendimento(pergunta) {
                 <aside class="question-detail-context">
                     <div class="question-context-card">
                         <h3>Dados r&aacute;pidos</h3>
-                        <p>SKU ${escapeHtml(sku || '-')} &middot; ${escapeHtml(titulo)}.</p>
+                        <p>${sku ? `SKU ${escapeHtml(sku)} &middot; ${escapeHtml(titulo)}.` : variacoesHtml ? 'Varia&ccedil;&atilde;o n&atilde;o especificada na pergunta.' : `SKU - &middot; ${escapeHtml(titulo)}.`}</p>
+                        ${variacoesHtml}
                     </div>
                     <div class="question-context-card">
                         <h3>Orienta&ccedil;&otilde;es da IA para este SKU</h3>

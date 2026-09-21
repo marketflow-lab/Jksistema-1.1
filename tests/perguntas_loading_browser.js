@@ -78,7 +78,14 @@ async function fixture(browser) {
         const ids = url.searchParams.getAll('item_ids').flatMap(value => value.split(','));
         const missing = ids.includes(control.itemMissingOnce) ? control.itemMissingOnce : '';
         if (missing) control.itemMissingOnce = '';
-        const itens = ids.filter(id => id !== missing).map(id => ({ id, item_id: id, item_title: `Anúncio ${id}`, item_thumbnail: '', item_permalink: '', item_sku: '001' }));
+        const itens = ids.filter(id => id !== missing).map(id => ({
+          id, item_id: id, item_title: `Anúncio ${id}`, item_thumbnail: '', item_permalink: '', item_sku: '',
+          variations: [
+            { id: 'gray', attribute_combinations: [{ id: 'COLOR', name: 'Cor', value_name: 'Cinza' }], attributes: [{ id: 'SELLER_SKU', value_name: 'T74-11' }], available_quantity: 7 },
+            { id: 'beige', attribute_combinations: [{ id: 'COLOR', name: 'Cor', value_name: 'Bege' }], seller_custom_field: 'T74-5', available_quantity: 3 },
+            { id: 'black', attribute_combinations: [{ id: 'COLOR', name: 'Cor', value_name: 'Preto' }], seller_custom_field: 'T74-1', available_quantity: 0 },
+          ],
+        }));
         return json({ itens, items: itens, store_id: call.store, partial: Boolean(missing), item_states: Object.fromEntries(ids.map(id => [id, {state: id === missing ? 'unavailable' : 'ready', retryable: id === missing}])) });
       }
       if (url.pathname.endsWith('/perguntas/detalhe')) {
@@ -151,7 +158,10 @@ async function main() {
     if (baseline) assert(slow.end, 'baseline espera pela loja lenta');
     else assert(!slow?.end, 'primeira lista deve aparecer antes da loja lenta');
     await page.waitForFunction(() => !state.carregandoPerguntas);
-    if (!baseline) await verifyResponsiveLayout(f);
+    if (!baseline) {
+      await verifyUnspecifiedVariations(f);
+      await verifyResponsiveLayout(f);
+    }
     if (!baseline) {
       const summaryText = await page.locator('#perguntas-summary').innerText();
       assert.match(summaryText, /10\s*Contas/, 'contas deve somar somente consultas bem-sucedidas');
@@ -181,6 +191,18 @@ async function main() {
     await browser.close();
     await new Promise(resolve => server.close(resolve));
   }
+}
+
+async function verifyUnspecifiedVariations({ page }) {
+  await page.waitForFunction(() => document.querySelectorAll('.question-variation-item').length === 3);
+  const rows = await page.locator('.question-variation-item').allInnerTexts();
+  assert.deepStrictEqual(rows, [
+    'Cinza\nSKU T74-11\nEstoque atual: 7',
+    'Bege\nSKU T74-5\nEstoque atual: 3',
+    'Preto\nSKU T74-1\nEstoque atual: 0',
+  ]);
+  assert.match(await page.locator('.question-detail-meta').innerText(), /3 variaç(?:ão|ões)/);
+  assert.match(await page.locator('.question-context-card').first().innerText(), /Variação não especificada na pergunta/);
 }
 
 async function verifyResponsiveLayout({ page }) {
