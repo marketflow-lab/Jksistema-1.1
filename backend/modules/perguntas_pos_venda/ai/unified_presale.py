@@ -10,6 +10,7 @@ from typing import Any
 from .client_workflows import GeneralBindings, _classified_tool, _mandatory_web_tool
 from .general_commercial import _collect_general_internal_sources
 from .inputs import _perguntas_ia_research_input
+from .model_context import context_hub_packet_for_model
 from .sku_question_context import bind_client_sku_question_context
 
 
@@ -341,14 +342,14 @@ def _bound_packet_result(
         value = copy.deepcopy(packet.get("listing_facts") or {})
         function_name = "get_mercado_livre_listing"
     elif tool_type == "context_hub":
+        projected_packet = context_hub_packet_for_model(packet)
         value = {
-            key: copy.deepcopy(packet.get(key))
+            key: copy.deepcopy(projected_packet.get(key))
             for key in (
-                "canonical_document", "catalog_document", "catalog_generation",
-                "guidance", "generation", "source_hashes", "validity", "binding_hash",
+                "canonical_document", "catalog_document", "guidance", "validity",
                 "conflicts", "gaps",
             )
-            if packet.get(key) not in (None, "", [], {})
+            if projected_packet.get(key) not in (None, "", [], {})
         }
         function_name = "context_hub_search"
     else:

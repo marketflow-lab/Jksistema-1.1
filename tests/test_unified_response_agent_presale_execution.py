@@ -8,7 +8,11 @@ import pytest
 
 from backend.modules.perguntas_pos_venda.ai import clients
 from backend.modules.perguntas_pos_venda.ai import execution
-from backend.modules.perguntas_pos_venda.ai.model_context import unified_agent_input_for_model
+from backend.modules.perguntas_pos_venda.ai.model_context import (
+    compact_server_identity_for_model,
+    unified_agent_input_for_model,
+    unified_initial_context_for_model,
+)
 from backend.modules.perguntas_pos_venda.ai import unified_presale
 from backend.modules.perguntas_pos_venda.ai.unified_response_agent import (
     UnifiedResponseAgentOperationalError,
@@ -105,11 +109,46 @@ def test_model_projection_removes_duplicate_representations_without_losing_answe
         "app_guidance_truth_class": "versioned_technical",
         "app_guidance_usage": "published_behavior_policy_not_product_evidence",
         "commercial_method_version": "seller-v1",
+        "task": "mercado_livre_public_question_draft",
+        "orchestrator_profile": "mercado_livre_customer_reply",
+        "locale": "pt-BR",
+        "store_id": "store-9",
+        "seller_id": "seller-8",
+        "site_id": "MLB",
+        "order_id": "order-4",
+        "legacy_guidance_available": True,
+        "legacy_guidance_hash": "legacy-hash",
+        "legacy_fallback_enabled": True,
+        "legacy_fallback_used": False,
+        "legacy_retirement_zero_use_days": 30,
+        "context_collection_pipeline": [{"step": 1}],
+        "allowed_tools": ["context_hub_search"],
+        "tool_policy": {"usar_context_hub": True},
+        "constraints": {"read_only": True},
+        "use_web_search": True,
+        "web_search_required": True,
+        "force_external_research": True,
+        "research_gap_only": True,
+        "research_attempt": 2,
+        "product_evidence_identity": {"sku": "SKU-7", "item_id": "MLB1"},
+        "_catalog_identity_proof": "catalog-proof",
+        "_codex_thread_id": "thread-1",
+        "_codex_job_id": "job-1",
+        "_codex_conversation_key": "conversation-1",
+        "_codex_active_turn_key": "turn-1",
+        "_codex_on_thread_ready": "callback",
+        "_codex_operational_failure_count": 1,
+        "_codex_prompt_version": "prompt-v1",
+        "_codex_schema_version": "schema-v1",
+        "_research_session_key": "research-1",
         "intent": {"fluxo": "pre_sale"},
         "question": {
             "id": "q-1",
             "item_id": "MLB1",
             "text": "Tem outra cor?",
+            "status": "UNANSWERED",
+            "buyer_id": "buyer-1",
+            "buyer_name": "Nome removido",
             "history": [{"role": "buyer", "text": "Quero a maior."}],
             "history_count": 1,
             "history_source": "Mercado Livre",
@@ -119,6 +158,11 @@ def test_model_projection_removes_duplicate_representations_without_losing_answe
             "title": "Produto Exato",
             "seller_sku": "SKU-7",
             "description": "DESCRICAO OFICIAL",
+            "thumbnail": "https://example.invalid/image.jpg",
+            "pictures_count": 3,
+            "site_id": "MLB",
+            "listing_type_id": "gold_special",
+            "buying_mode": "buy_it_now",
             "permalink": "https://produto.mercadolivre.com.br/MLB1",
             "link": "https://produto.mercadolivre.com.br/MLB1",
             "url": "https://produto.mercadolivre.com.br/MLB1",
@@ -158,7 +202,7 @@ def test_model_projection_removes_duplicate_representations_without_losing_answe
         "sku": "SKU-7",
         "item_id": "MLB1",
         "variation_id": "var-6",
-        "order_id": "",
+        "order_id": "order-4",
     }
 
     projected = unified_agent_input_for_model(
@@ -170,20 +214,130 @@ def test_model_projection_removes_duplicate_representations_without_losing_answe
     for duplicate in (
         "prompt", "app_guidance", "app_guidance_source", "app_guidance_truth_class",
         "app_guidance_usage", "commercial_method_version", "tenant_id", "store",
+        "store_id", "seller_id", "site_id", "order_id", "task",
+        "orchestrator_profile", "locale", "legacy_guidance_available",
+        "legacy_guidance_hash", "legacy_fallback_enabled", "legacy_fallback_used",
+        "legacy_retirement_zero_use_days", "context_collection_pipeline",
+        "allowed_tools", "tool_policy", "constraints", "use_web_search",
+        "web_search_required", "force_external_research", "research_gap_only",
+        "research_attempt", "product_evidence_identity", "_catalog_identity_proof",
+        "_codex_thread_id", "_codex_job_id", "_codex_conversation_key",
+        "_codex_active_turn_key", "_codex_on_thread_ready",
+        "_codex_operational_failure_count", "_codex_prompt_version",
+        "_codex_schema_version", "_research_session_key",
     ):
         assert duplicate not in projected
     assert projected["question"] == {
-        "id": "q-1",
         "text": "Tem outra cor?",
         "history": [{"role": "buyer", "text": "Quero a maior."}],
     }
     assert projected["item"]["description"] == "DESCRICAO OFICIAL"
-    assert projected["item"]["variations"][0]["available_quantity"] == 4
+    assert projected["item"]["variations"] == [{
+        "seller_sku": "SKU-7-A", "available_quantity": 4,
+    }]
+    for removed_item_key in (
+        "id", "seller_sku", "sku", "variation_id", "thumbnail",
+        "pictures_count", "site_id", "listing_type_id", "buying_mode",
+    ):
+        assert removed_item_key not in projected["item"]
     assert "link" not in projected["item"] and "url" not in projected["item"]
     assert projected["context"] == {"contexto_exclusivo": "MANTER ESTE FATO"}
     assert projected["seller_behavior_profile"]["orientacao_obsidian"] == "MANTER ORIENTACAO"
     assert projected["verified_product_evidence"][0]["value"] == "aco"
     assert agent_input["prompt"] == "PROMPT LEGADO COM DESCRICAO REPETIDA"
+
+
+def test_context_hub_projection_removes_control_metadata_and_keeps_obsidian_documents() -> None:
+    initial_context = {"sku_question_context": {
+        "schema": "schema-v1",
+        "policy": "policy-v1",
+        "route": "simple_factual",
+        "route_reasons": ["canonical_evidence_sufficient"],
+        "category": "product_feature",
+        "question": {"text": "Pergunta duplicada"},
+        "subquestions": [{"question": "Subpergunta duplicada"}],
+        "identity": {"sku": "SKU-7", "item_id": "MLB1", "variation_id": "var-6"},
+        "canonical_document": {
+            "id": "OBSIDIAN-ID-PRESERVED",
+            "seller_id": "OBSIDIAN-SELLER-PRESERVED",
+            "fact": "FATO CANONICO PRESERVADO",
+        },
+        "catalog_document": {
+            "sku": "OBSIDIAN-SKU-PRESERVED",
+            "fact": "FATO DE CATALOGO PRESERVADO",
+        },
+        "catalog_generation": {"id": "catalog-1", "revision": 2},
+        "guidance": {
+            "general": {"text": "ORIENTACAO GERAL PRESERVADA"},
+            "sku": {"text": "ORIENTACAO SKU PRESERVADA"},
+        },
+        "listing_facts": {
+            "identity": {"sku": "SKU-7", "item_id": "MLB1"},
+            "title": "Produto",
+            "selected_variation": {
+                "id": "var-6", "seller_sku": "SKU-7", "available_quantity": 4,
+            },
+        },
+        "operational_data": [{
+            "source": "get_mercado_livre_listing",
+            "matches": [{
+                "item_id": "MLB1",
+                "seller_sku": "SKU-7",
+                "available_quantity": 4,
+                "variations": [{
+                    "id": "var-6", "seller_sku": "SKU-7", "available_quantity": 4,
+                }],
+            }],
+        }],
+        "generation": {"id": "generation-1", "hash": "hash-1", "version": 3},
+        "source_hashes": {"canonical": "hash-2"},
+        "validity": {"status": "active_approved_generation"},
+        "integral_core_hash": "hash-3",
+        "binding_hash": "hash-4",
+        "conflicts": [{"field": "material"}],
+        "gaps": ["decisive_fact_missing"],
+        "web": {"required": True, "reason": "decisive_fact_missing"},
+        "content_role": "untrusted_reference_data",
+        "instruction_policy": "controle interno",
+        "response_signature": "Assinatura duplicada",
+    }}
+
+    projected = unified_initial_context_for_model(initial_context)
+    packet = projected["sku_question_context"]
+
+    for control_key in (
+        "schema", "policy", "route", "route_reasons", "category", "question",
+        "subquestions", "identity", "catalog_generation", "generation",
+        "source_hashes", "integral_core_hash", "binding_hash", "content_role",
+        "instruction_policy", "response_signature", "web",
+    ):
+        assert control_key not in packet
+    assert packet["canonical_document"] == initial_context["sku_question_context"]["canonical_document"]
+    assert packet["catalog_document"] == initial_context["sku_question_context"]["catalog_document"]
+    assert packet["guidance"] == initial_context["sku_question_context"]["guidance"]
+    assert packet["validity"] == {"status": "active_approved_generation"}
+    assert packet["conflicts"] == [{"field": "material"}]
+    assert packet["gaps"] == ["decisive_fact_missing"]
+    assert packet["listing_facts"]["selected_variation"] == {"available_quantity": 4}
+    assert packet["operational_data"][0]["matches"][0] == {
+        "available_quantity": 4,
+        "variations": [{"available_quantity": 4}],
+    }
+    assert initial_context["sku_question_context"]["identity"]["sku"] == "SKU-7"
+
+
+def test_compact_model_identity_contains_only_sku_item_and_variation() -> None:
+    assert compact_server_identity_for_model({
+        "tenant_id": "tenant-2",
+        "store": "Loja Exata",
+        "store_id": "store-9",
+        "seller_id": "seller-8",
+        "site_id": "MLB",
+        "sku": "SKU-7",
+        "item_id": "MLB1",
+        "variation_id": "var-6",
+        "order_id": "order-4",
+    }) == {"sku": "SKU-7", "item_id": "MLB1", "variation_id": "var-6"}
 
 
 def test_presale_execution_uses_one_unified_agent_and_preserves_server_scope(monkeypatch) -> None:
@@ -206,6 +360,8 @@ def test_presale_execution_uses_one_unified_agent_and_preserves_server_scope(mon
         def collect_unified_initial_context(self, metadata):
             captured["metadata"] = metadata
             return {"sku_question_context": {
+                "schema": "internal-schema",
+                "route": "simple_factual",
                 "identity": {"sku": "SKU-7"},
                 "canonical_document": {"obsidian_fact": "CANONICAL-PRESERVED"},
                 "catalog_document": {"obsidian_catalog": "CATALOG-PRESERVED"},
@@ -267,17 +423,17 @@ def test_presale_execution_uses_one_unified_agent_and_preserves_server_scope(mon
     assert captured["max_research_rounds"] == 2
     assert captured["context"]["response_signature"] == "Assinatura exata."
     assert captured["context"]["server_identity"] == {
-        "tenant_id": "tenant-2",
-        "store": "Loja Exata",
-        "store_id": "store-9",
-        "seller_id": "seller-8",
-        "site_id": "MLB",
         "sku": "SKU-7",
         "item_id": "MLB1",
         "variation_id": "var-6",
-        "order_id": "",
     }
+    assert "response_policy_version" not in captured["context"]
+    assert "seller_method_version" not in captured["context"]
+    assert "approval_required" not in captured["context"]
     sku_context = captured["context"]["initial_read_only_context"]["sku_question_context"]
+    assert "schema" not in sku_context
+    assert "route" not in sku_context
+    assert "identity" not in sku_context
     assert sku_context["canonical_document"] == {"obsidian_fact": "CANONICAL-PRESERVED"}
     assert sku_context["catalog_document"] == {"obsidian_catalog": "CATALOG-PRESERVED"}
     assert sku_context["guidance"]["general"] == {"text": "GENERAL-PRESERVED"}
@@ -1114,6 +1270,12 @@ def test_bound_context_hub_requires_approved_generation_hashes_and_binding() -> 
     assert result["listing_item_bound"] is False
     assert result["store_sku_bound"] is True
     assert result["evidence_scope"] == "exact_store_sku"
+    assert result["data"]["canonical_document"] == packet["canonical_document"]
+    assert result["data"]["validity"] == packet["validity"]
+    for control_key in (
+        "identity", "generation", "source_hashes", "binding_hash",
+    ):
+        assert control_key not in result["data"]
 
     packet["gaps"] = ["listing_sku_binding_mismatch"]
     mismatched = unified_presale._bound_packet_result(packet, [], "context_hub")["result"]

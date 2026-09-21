@@ -81,7 +81,11 @@ from .validation import (
 from .clients import (
     _PerguntasCodexV3Client,
 )
-from .model_context import unified_agent_input_for_model
+from .model_context import (
+    compact_server_identity_for_model,
+    unified_agent_input_for_model,
+    unified_initial_context_for_model,
+)
 from .unified_response_agent import (
     UnifiedResponseAgentOperationalError,
     run_unified_response_agent,
@@ -513,16 +517,13 @@ def _perguntas_ia_execucao_orquestrar(contexto: dict) -> tuple:
     )
     unified_context = {
         "flow": contexto["flow"],
-        "server_identity": server_identity,
+        "server_identity": compact_server_identity_for_model(server_identity),
         "response_signature": signature,
         "response_policy": _PERGUNTAS_IA_RESPONSE_POLICY[
             "pos_venda" if contexto["post_sale"] else "perguntas_anuncio"
         ],
-        "response_policy_version": _PERGUNTAS_IA_RESPONSE_POLICY_VERSION,
-        "seller_method_version": _PERGUNTAS_IA_SELLER_METHOD_VERSION,
-        "approval_required": not bool(settings.auto_publish_enabled),
         "agent_input": model_agent_input,
-        "initial_read_only_context": initial_context,
+        "initial_read_only_context": unified_initial_context_for_model(initial_context),
     }
     try:
         unified = run_unified_response_agent(

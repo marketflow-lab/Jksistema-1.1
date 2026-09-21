@@ -86,7 +86,7 @@ PUBLIC_SUBQUESTION_INTENTS = frozenset({
     "general",
     "post_sale",
 })
-PROMPT_VERSION = "jk_ml_customer_reply_codex_v22"
+PROMPT_VERSION = "jk_ml_customer_reply_codex_v23"
 SCHEMA_VERSION = "5.3"
 QUEUE_POLICY_VERSION = "jk_ppv_queue_v3"
 VEHICLE_IDENTITY_POLICY = "jk_public_vin_decode_v1"
@@ -123,7 +123,7 @@ PROMPT_HASH = hashlib.sha256(
         "canonical-document-full|guidance-full|operational-context-full|"
         "question-history-full|integral-envelope-full|"
         "stage-prompt-full|global-transport-full|"
-        "unified-response-agent-v21|deduplicated-model-context-v1|structured-recovery-v1|blocked-without-draft-v1|"
+        "unified-response-agent-v21|deduplicated-model-context-v2|structured-recovery-v1|blocked-without-draft-v1|"
         "conditional-public-web-v1|oem-characteristics-inheritance-v1|new-product-condition-v1|"
         "literal-store-signature-v1|target-variant-universe-research-v1|"
         "six-stage-sol-high|two-round-gap-research|directed-reference-relations|"
