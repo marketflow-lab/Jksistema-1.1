@@ -56,6 +56,16 @@ def _salvar(client_id: str, registros: dict) -> None:
             os.remove(temporario)
 
 
+def ler_importador_loja_por_store_id(client_id: str, store_id: str) -> dict:
+    """Read only the record belonging to an already resolved store identity."""
+
+    if not client_id or not store_id:
+        return {}
+    with _LOCK:
+        registro = _carregar(client_id).get(store_id)
+    return dict(registro) if isinstance(registro, dict) else {}
+
+
 async def obter_importador_loja(store_id: str, client_id: str = Depends(lojas.get_tenant_id)):
     loja = lojas.resolver_loja_cadastro(client_id, store_id)
     with _LOCK:

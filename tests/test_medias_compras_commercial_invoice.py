@@ -2,6 +2,7 @@ import asyncio
 import base64
 import copy
 import io
+import json
 
 import pytest
 from openpyxl import load_workbook
@@ -10,6 +11,7 @@ from backend.routers.medias_compras import create_medias_compras_router
 from backend.schemas.medias_compras import ListaPedidoUpdateRequest
 from backend.services import medias_compras_excel as excel_service
 from backend.services import medias_compras_listas as listas_service
+from backend.services import cadastro_compatibilidade, cadastro_importador_loja
 
 
 PNG_1X1 = base64.b64decode(
@@ -166,6 +168,66 @@ def test_gerador_commercial_invoice_reproduz_modelo_totais_e_foto(tmp_path, monk
     assert len(sheet._images) == 1
     assert sheet._images[0].anchor._from.col == 5
     assert sheet._images[0].anchor._from.row == 8
+
+
+def test_commercial_invoice_usa_todos_os_dados_da_loja_exata(tmp_path, monkeypatch):
+    registros = {
+        "store-a": {
+            "nome_empresa": "Empresa A Ltda.",
+            "tax_id": "00.000.000/0001-00",
+            "telefone": "+5500000000000",
+            "email": "a@example.test",
+            "contato": "Pessoa A",
+            "logradouro": "Rua A, 10",
+            "bairro": "Centro",
+            "cidade": "Cidade A",
+            "cep": "00000-000",
+            "estado": "Estado A",
+            "pais": "Brazil",
+        },
+        "store-b": {"nome_empresa": "Empresa B Ltda.", "email": "b@example.test"},
+    }
+    (tmp_path / "cadastro_importador_loja.json").write_text(
+        json.dumps({"schema": "jk.cadastro.importador_loja.v1", "lojas": registros}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cadastro_importador_loja.lojas, "get_tenant_path", lambda _client_id: str(tmp_path))
+    monkeypatch.setattr(
+        cadastro_compatibilidade,
+        "visao_produtos_cadastro_contexto_loja",
+        lambda _client_id, referencia: {"store_id": referencia if referencia in registros else ""},
+    )
+
+    lista = {"store_id": "store-a", "loja": "Loja A", "itens": []}
+    sheet = _carregar_commercial_invoice(
+        excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a")
+    )
+    assert sheet["F4"].value.splitlines() == [
+        "Buyer: Empresa A Ltda.",
+        "TAX ID: 00.000.000/0001-00",
+        "Phone: +5500000000000",
+        "E-mail: a@example.test",
+        "Contact Personal: Pessoa A",
+        "Address: Rua A, 10",
+        "Neighborhood: Centro",
+        "City: Cidade A",
+        "ZIP CODE: 00000-000",
+        "State: Estado A",
+        "Country: Brazil",
+    ]
+    assert "Empresa B" not in sheet["F4"].value
+
+    lista["store_id"] = "store-b"
+    sheet = _carregar_commercial_invoice(
+        excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a")
+    )
+    assert sheet["F4"].value == "Buyer: Empresa B Ltda.\nE-mail: b@example.test"
+
+    lista["store_id"] = "unknown"
+    sheet = _carregar_commercial_invoice(
+        excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a")
+    )
+    assert sheet["F4"].value == "STORE: Loja A"
 
 
 def test_gerador_inclui_pendentes_e_mantem_numericos_ausentes_em_branco():
