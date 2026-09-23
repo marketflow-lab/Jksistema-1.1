@@ -1062,7 +1062,7 @@
         .rastreamento-carga-popover {
             position: fixed;
             z-index: 3600;
-            width: min(520px, calc(100vw - 24px));
+            width: min(760px, calc(100vw - 24px));
             max-height: min(690px, calc(100vh - 24px));
             overflow-y: auto;
             border: 1px solid rgba(99, 220, 255, 0.58);
@@ -1200,6 +1200,30 @@
             line-height: 1.35;
             margin: 2px 0 10px;
         }
+        .rastreamento-carga-trajeto {
+            margin: 12px 0;
+        }
+        .rastreamento-carga-etapas {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 8px;
+            border: 1px solid rgba(126, 203, 255, 0.25);
+            border-radius: 11px;
+            background: rgba(14, 42, 69, 0.75);
+            padding: 15px 10px;
+        }
+        .rastreamento-carga-etapa {
+            min-width: 0;
+            border-top: 3px dashed rgba(126, 203, 255, 0.4);
+            padding-top: 12px;
+            overflow-wrap: anywhere;
+        }
+        .rastreamento-carga-etapa.is-realizada { border-top-style: solid; border-top-color: #69c9ee; }
+        .rastreamento-carga-etapa strong,
+        .rastreamento-carga-etapa span { display: block; }
+        .rastreamento-carga-etapa strong { color: #eaf5ff; font-size: 0.8rem; }
+        .rastreamento-carga-etapa span { color: #a8c6da; font-size: 0.72rem; line-height: 1.35; margin-top: 5px; }
+        .rastreamento-carga-etapa .rastreamento-carga-marco { color: #ffd89a; font-weight: 750; margin: 0 0 7px; }
         .rastreamento-carga-acoes {
             display: flex;
             flex-wrap: wrap;
@@ -1498,6 +1522,7 @@
                 padding: 12px;
             }
             .rastreamento-carga-grid { grid-template-columns: 1fr; }
+            .rastreamento-carga-etapas { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .rastreamento-carga-acoes { justify-content: stretch; }
             .rastreamento-carga-acao { flex: 1 1 auto; }
         }
@@ -2970,6 +2995,26 @@
             '</div>';
         }
 
+        function etapaRastreamentoCargaHtml(rotulo, local, tipoData, data, realizada) {
+            return '<div class="rastreamento-carga-etapa' + (realizada ? ' is-realizada' : '') + '">' +
+                '<span class="rastreamento-carga-marco">' + escaparHtml(rotulo) + '</span>' +
+                '<strong>' + escaparHtml(textoRastreamentoEmbarque(local) || 'Local não informado') + '</strong>' +
+                '<span>' + escaparHtml(tipoData) + ': ' + escaparHtml(textoRastreamentoEmbarque(data) || 'Aguardando informação') + '</span>' +
+            '</div>';
+        }
+
+        function montarTrajetoRastreamentoCargaHtml(tracking) {
+            var saidaRealizada = !!textoRastreamentoEmbarque(tracking.atd);
+            return '<div class="rastreamento-carga-trajeto" aria-label="Linha do tempo da carga">' +
+                '<div class="rastreamento-carga-secao-titulo">Trajeto da carga</div>' +
+                '<div class="rastreamento-carga-etapas">' +
+                    etapaRastreamentoCargaHtml('Origem', tracking.origin, 'Retorno do contêiner', tracking.ladenReturnTime, !!tracking.ladenReturnTime) +
+                    etapaRastreamentoCargaHtml('Saída do porto', tracking.origin, saidaRealizada ? 'ATD' : 'ETD', tracking.atd || tracking.etd, saidaRealizada) +
+                    etapaRastreamentoCargaHtml('Chegada prevista', tracking.destination, 'ETA', tracking.eta, false) +
+                    etapaRastreamentoCargaHtml('Carga disponível', tracking.destination, 'Previsão de retirada', tracking.cargoAvailableAt, false) +
+                '</div></div>';
+        }
+
         function formatarHorarioConsultaCarga(valor) {
             var texto = textoRastreamentoEmbarque(valor);
             if (!texto) return '';
@@ -3029,6 +3074,7 @@
                         itemRastreamentoCargaHtml('ETA', tracking.eta) +
                         itemRastreamentoCargaHtml('Carga disponível no destino', tracking.cargoAvailableAt) +
                     '</div>' +
+                    montarTrajetoRastreamentoCargaHtml(tracking) +
                     '<div class="rastreamento-carga-fonte">Fonte: ' + escaparHtml(fonte) + (consultaEm ? ' • consulta em ' + escaparHtml(consultaEm) : '') + '.</div>';
             } else {
                 retornoHtml = '<div class="rastreamento-carga-aviso" role="status">Os dados cadastrados estão disponíveis abaixo. Use Atualizar para consultar o retorno público.</div>';

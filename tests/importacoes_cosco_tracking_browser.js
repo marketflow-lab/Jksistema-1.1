@@ -29,6 +29,10 @@ To Be Shipped
 40HQ*1
 Full Chain
 Container
+Laden Return Time
+2026-09-07 15:20:00 CST
+ATD
+2026-09-17 10:29:35 CST
 ETD
 2026-09-04 12:00:00 CST
 ETA
@@ -75,6 +79,8 @@ assert.deepStrictEqual(parsed, {
     trafficTerm: 'CY | CY',
     equipment: '40HQ*1',
     etd: '2026-09-04 12:00:00 CST',
+    ladenReturnTime: '2026-09-07 15:20:00 CST',
+    atd: '2026-09-17 10:29:35 CST',
     eta: '2026-10-08 12:00:00 BRT',
     cargoAvailableAt: '2026-10-09 19:00:00 BRT',
 });
