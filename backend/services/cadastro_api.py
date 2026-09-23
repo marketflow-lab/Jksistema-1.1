@@ -10,6 +10,7 @@ from backend.services.cadastro_lojas_listagem import *
 from backend.services.cadastro_mercadolivre import *
 from backend.services.cadastro_importacao_catalogos import *
 from backend.services.cadastro_fornecedores import *
+from backend.services.cadastro_importador_loja import *
 
 
 def configure_cadastro_api_runtime(runtime_module=None):
@@ -41,6 +42,8 @@ CADASTRO_ENDPOINTS += (
     'obter_importacao_catalogo',
     'cancelar_importacao_catalogo',
     'aplicar_importacao_catalogo',
+    'obter_importador_loja',
+    'salvar_importador_loja',
 )
 
 __all__ = ['listar_produtos_cadastro', 'importar_colunas_cadastro_por_sku', 'salvar_produto_cadastro', 'listar_colunas_cadastro', 'obter_produto_cadastro', 'atualizar_produto_cadastro_completo', 'incluir_produto_cadastro_completo', 'obter_produto_cadastro_query', 'atualizar_produto_cadastro_completo_query', 'listar_fornecedores_cadastro', 'criar_fornecedor_cadastro', 'atualizar_fornecedor_cadastro', 'excluir_fornecedor_cadastro', 'CADASTRO_ENDPOINTS', 'configure_cadastro_api_runtime']
@@ -64,4 +67,6 @@ __all__ += [
     'obter_importacao_catalogo',
     'cancelar_importacao_catalogo',
     'aplicar_importacao_catalogo',
+    'obter_importador_loja',
+    'salvar_importador_loja',
 ]

@@ -77,9 +77,26 @@ class CadastroFornecedorRequest(BaseModel):
     observacao_pagamento: str = ""
 
 
+class CadastroImportadorLojaRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    nome_empresa: str = ""
+    tax_id: str = ""
+    telefone: str = ""
+    email: str = ""
+    contato: str = ""
+    logradouro: str = ""
+    bairro: str = ""
+    cidade: str = ""
+    cep: str = ""
+    estado: str = ""
+    pais: str = ""
+
+
 __all__ = [
     "CadastroProdutoRequest",
     "CadastroProdutoLojaRequest",
     "CadastroProdutoLojaAtualizacaoRequest",
     "CadastroFornecedorRequest",
+    "CadastroImportadorLojaRequest",
 ]
