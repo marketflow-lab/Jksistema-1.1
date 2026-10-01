@@ -76,6 +76,11 @@ def test_gerador_commercial_invoice_reproduz_modelo_totais_e_foto(tmp_path, monk
     foto.write_bytes(PNG_1X1)
     monkeypatch.setattr(excel_service, "get_tenant_path", lambda _client_id: str(raiz_tenant))
     monkeypatch.setattr(
+        cadastro_compatibilidade,
+        "visao_produtos_cadastro_contexto_loja",
+        lambda _client_id, _referencia: {"store_id": "", "scope": "unresolved"},
+    )
+    monkeypatch.setattr(
         excel_service,
         "_resolver_foto_cadastro_sku",
         lambda _client_id, sku, _foto_ref: str(foto) if sku == "001" else "",

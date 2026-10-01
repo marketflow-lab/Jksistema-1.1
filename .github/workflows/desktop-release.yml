@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Tag da versao, por exemplo v1.0.154
+        description: Tag da versao, por exemplo v1.0.158
         required: true
         type: string
       release_mode:
@@ -115,6 +115,10 @@ jobs:
       - name: Build lightweight application update
         if: inputs.release_mode == 'app-update'
         run: npm.cmd --prefix electron_app run dist:update
+
+      - name: Verify complete offline runtime
+        if: inputs.release_mode == 'runtime-update'
+        run: node electron_app/scripts/verify-installer-package.js --packaged electron_app/dist-client-setup/win-unpacked/resources --deep-runtime
 
       - name: Stage selected release artifacts
         shell: pwsh
